@@ -695,11 +695,15 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
             last_result = result
         return last_result
 
+    # --- QQBot: native media support via running gateway adapter ---
+    if platform == Platform.QQBOT and media_files:
+        return await _send_qqbot_media(pconfig, chat_id, message, media_files)
+
     # --- Non-media platforms ---
     if media_files and not message.strip():
         return {
             "error": (
-                f"send_message MEDIA delivery is currently only supported for telegram, discord, matrix, weixin, signal, yuanbao and feishu; "
+                f"send_message MEDIA delivery is currently only supported for telegram, discord, matrix, weixin, signal, qqbot, yuanbao and feishu; "
                 f"target {platform.value} had only media attachments"
             )
         }
@@ -707,7 +711,7 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
     if media_files:
         warning = (
             f"MEDIA attachments were omitted for {platform.value}; "
-            "native send_message media delivery is currently only supported for telegram, discord, matrix, weixin, signal, yuanbao and feishu"
+            "native send_message media delivery is currently only supported for telegram, discord, matrix, weixin, signal, qqbot, yuanbao and feishu"
         )
 
     last_result = None
@@ -1794,6 +1798,68 @@ def _check_send_message():
         return is_gateway_running()
     except Exception:
         return False
+
+
+async def _send_qqbot_media(pconfig, chat_id, message, media_files):
+    """Send text + media to QQBot via the running gateway adapter.
+
+    Unlike the text-only _send_qqbot() which creates a one-shot REST client,
+    media delivery requires the running adapter's upload pipeline (chunked upload,
+    file_info tokens, etc.). Falls back to text-only if the adapter isn't running.
+    """
+    # Get the live QQBot adapter from the gateway runner
+    adapter = None
+    try:
+        from gateway.run import _gateway_runner_ref
+        runner = _gateway_runner_ref()
+        if runner is not None:
+            from gateway.config import Platform as GWPlatform
+            adapter = runner.adapters.get(GWPlatform.QQBOT)
+    except Exception:
+        pass
+
+    if adapter is None:
+        return _error(
+            "QQBot media send requires a running QQBot gateway adapter. "
+            "Start the gateway with QQBot platform enabled, or send text-only."
+        )
+
+    last_result = None
+
+    # Send text first (if any)
+    if message and message.strip():
+        result = await adapter.send(chat_id, message)
+        if not result.success:
+            return _error(result.error or "QQBot text send failed")
+        last_result = {"success": True, "platform": "qqbot", "chat_id": chat_id,
+                       "message_id": result.message_id or ""}
+
+    # Send each media file
+    for media_path, is_voice in (media_files or []):
+        if not os.path.exists(media_path):
+            return _error(f"Media file not found: {media_path}")
+
+        ext = os.path.splitext(media_path)[1].lower()
+        try:
+            if ext in _IMAGE_EXTS:
+                result = await adapter.send_image_file(chat_id, media_path)
+            elif ext in _VIDEO_EXTS:
+                result = await adapter.send_video(chat_id, media_path)
+            elif ext in (_VOICE_EXTS | _AUDIO_EXTS) or is_voice:
+                result = await adapter.send_voice(chat_id, media_path)
+            else:
+                result = await adapter.send_document(chat_id, media_path)
+        except Exception as exc:
+            return _error(f"QQBot media send failed: {exc}")
+
+        if not result.success:
+            return _error(result.error or "QQBot media send failed")
+        last_result = {"success": True, "platform": "qqbot", "chat_id": chat_id,
+                       "message_id": result.message_id or ""}
+
+    if last_result is None:
+        return _error("No deliverable text or media")
+    return last_result
 
 
 async def _send_qqbot(pconfig, chat_id, message):

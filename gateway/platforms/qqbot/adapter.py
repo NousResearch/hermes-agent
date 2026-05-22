@@ -37,6 +37,7 @@ import json
 import logging
 import mimetypes
 import os
+import threading
 import time
 import uuid
 from datetime import datetime, timezone
@@ -229,6 +230,11 @@ class QQAdapter(BasePlatformAdapter):
         self._last_seq: Optional[int] = None
         self._chat_type_map: Dict[str, str] = {}  # chat_id → "c2c"|"group"|"guild"|"dm"
 
+        # Dedicated WS thread (isolates QQBot from the main gateway loop)
+        self._ws_thread: Optional[threading.Thread] = None
+        self._ws_loop: Optional[asyncio.AbstractEventLoop] = None
+        self._main_loop: Optional[asyncio.AbstractEventLoop] = None
+
         # Request/response correlation
         self._pending_responses: Dict[str, asyncio.Future] = {}
         self._seen_messages: Dict[str, float] = {}
@@ -238,10 +244,10 @@ class QQAdapter(BasePlatformAdapter):
         # Typing debounce: chat_id → last send_typing timestamp
         self._typing_sent_at: Dict[str, float] = {}
 
-        # Token cache
+        # Token cache (thread-safe: accessed from both main loop and WS thread)
         self._access_token: Optional[str] = None
         self._token_expires_at: float = 0.0
-        self._token_lock = asyncio.Lock()
+        self._token_lock = threading.Lock()
 
         # Upload cache: content_hash -> {file_info, file_uuid, expires_at}
         self._upload_cache: Dict[str, Dict[str, Any]] = {}
@@ -314,14 +320,28 @@ class QQAdapter(BasePlatformAdapter):
             gateway_url = await self._get_gateway_url()
             logger.info("[%s] Gateway URL: %s", self._log_tag, gateway_url)
 
-            # 3. Open WebSocket
-            await self._open_ws(gateway_url)
+            # 3. Start WebSocket in a dedicated thread so heartbeat/reconnect
+            #    backoff never blocks the main gateway event loop (shared with
+            #    Discord, Feishu, etc.). Same pattern as qqbot-agent-sdk and
+            #    the Feishu adapter's _run_official_feishu_ws_client.
+            self._main_loop = asyncio.get_running_loop()
+            self._ws_thread = threading.Thread(
+                target=self._run_ws_thread,
+                args=(gateway_url,),
+                name=f"qqbot-ws-{self._app_id}",
+                daemon=True,
+            )
+            self._ws_thread.start()
 
-            # 4. Start listeners
-            self._listen_task = asyncio.create_task(self._listen_loop())
-            self._heartbeat_task = asyncio.create_task(self._heartbeat_loop())
-            self._mark_connected()
-            logger.info("[%s] Connected", self._log_tag)
+            # Wait for the WS thread to connect (up to 30s)
+            waited = 0.0
+            while waited < 30.0 and not self.is_connected:
+                await asyncio.sleep(0.2)
+                waited += 0.2
+            if not self.is_connected:
+                raise RuntimeError("WebSocket thread did not connect within 30s")
+
+            logger.info("[%s] Connected (WS on dedicated thread)", self._log_tag)
             return True
         except Exception as exc:
             message = f"QQ startup failed: {exc}"
@@ -336,21 +356,19 @@ class QQAdapter(BasePlatformAdapter):
         self._running = False
         self._mark_disconnected()
 
-        if self._listen_task:
-            self._listen_task.cancel()
-            try:
-                await self._listen_task
-            except asyncio.CancelledError:
-                pass
-            self._listen_task = None
-
-        if self._heartbeat_task:
-            self._heartbeat_task.cancel()
-            try:
-                await self._heartbeat_task
-            except asyncio.CancelledError:
-                pass
-            self._heartbeat_task = None
+        # Stop the WS thread's event loop (if running in dedicated thread).
+        # Tasks inside the thread are cleaned up by _run_ws_thread's finally block.
+        if self._ws_loop and not self._ws_loop.is_closed():
+            self._ws_loop.call_soon_threadsafe(self._ws_loop.stop)
+        if self._ws_thread and self._ws_thread.is_alive():
+            self._ws_thread.join(timeout=5.0)
+            if self._ws_thread.is_alive():
+                logger.warning("[%s] WS thread still alive after 5s join timeout", self._log_tag)
+        self._ws_thread = None
+        self._ws_loop = None
+        # Clear task references (they belonged to the WS loop, now stopped)
+        self._listen_task = None
+        self._heartbeat_task = None
 
         await self._cleanup()
         self._release_platform_lock()
@@ -377,21 +395,109 @@ class QQAdapter(BasePlatformAdapter):
         self._pending_responses.clear()
 
     # ------------------------------------------------------------------
+    # Dedicated WebSocket thread
+    #
+    # Runs its own asyncio event loop so heartbeat, reconnect backoff,
+    # and network I/O never block the main gateway loop (shared with
+    # Discord, Feishu, Telegram, etc.). Same pattern as qqbot-agent-sdk
+    # QQWebSocket and the Feishu adapter's _run_official_feishu_ws_client.
+    # ------------------------------------------------------------------
+
+    def _run_ws_thread(self, gateway_url: str) -> None:
+        """Entry point for the dedicated WS daemon thread."""
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        self._ws_loop = loop
+        try:
+            loop.run_until_complete(self._ws_thread_main(gateway_url))
+        except Exception as exc:
+            if self._running:
+                logger.error("[%s] WS thread crashed: %s", self._log_tag, exc, exc_info=True)
+        finally:
+            # Clean up all pending tasks
+            pending = asyncio.all_tasks(loop)
+            if pending:
+                loop.run_until_complete(asyncio.gather(*pending, return_exceptions=True))
+            try:
+                loop.close()
+            except Exception:
+                pass
+            self._ws_loop = None
+
+    async def _ws_thread_main(self, gateway_url: str) -> None:
+        """Main coroutine running inside the WS thread's event loop."""
+        try:
+            await self._open_ws(gateway_url)
+            # Start listeners inside the WS loop
+            self._listen_task = asyncio.create_task(self._listen_loop())
+            self._heartbeat_task = asyncio.create_task(self._heartbeat_loop())
+            self._mark_connected()
+
+            # Wait for the listen task (reconnect loop lives inside it).
+            # When _listen_loop exits (fatal error / _running=False / max retries),
+            # we clean up. We do NOT gather the heartbeat task here because
+            # _restart_heartbeat() replaces it on every Hello — the gather would
+            # hold a stale reference.
+            try:
+                await self._listen_task
+            except asyncio.CancelledError:
+                pass
+            except Exception as exc:
+                logger.error(
+                    "[%s] listen task exited with exception: %s",
+                    self._log_tag, exc, exc_info=exc,
+                )
+        finally:
+            # Cancel whatever heartbeat task is currently active
+            if self._heartbeat_task and not self._heartbeat_task.done():
+                self._heartbeat_task.cancel()
+                try:
+                    await self._heartbeat_task
+                except asyncio.CancelledError:
+                    pass
+            if self._ws and not self._ws.closed:
+                await self._ws.close()
+            self._ws = None
+            if self._session and not self._session.closed:
+                await self._session.close()
+            self._session = None
+
+    # ------------------------------------------------------------------
     # Token management
     # ------------------------------------------------------------------
 
     async def _ensure_token(self) -> str:
-        """Return a valid access token, refreshing if needed (with singleflight)."""
+        """Return a valid access token, refreshing if needed.
+
+        Delegates to the synchronous _ensure_token_sync() in a thread-pool
+        executor so we never hold a threading.Lock while awaiting I/O on the
+        event loop. This prevents the main loop from blocking if the WS thread
+        is concurrently refreshing the token.
+        """
+        # Fast path: token still fresh, no lock needed
         if self._access_token and time.time() < self._token_expires_at - 60:
             return self._access_token
 
-        async with self._token_lock:
-            # Double-check after acquiring lock
+        # Run the sync token refresh in the default executor (thread pool)
+        # to avoid blocking the event loop with threading.Lock.acquire()
+        loop = asyncio.get_running_loop()
+        return await loop.run_in_executor(None, self._ensure_token_sync)
+
+    def _ensure_token_sync(self) -> str:
+        """Synchronous token refresh for use in the WS thread.
+
+        Uses httpx.Client (sync) to avoid cross-loop issues. The threading.Lock
+        ensures mutual exclusion with the async version.
+        """
+        if self._access_token and time.time() < self._token_expires_at - 60:
+            return self._access_token
+
+        with self._token_lock:
             if self._access_token and time.time() < self._token_expires_at - 60:
                 return self._access_token
 
             try:
-                resp = await self._http_client.post(
+                resp = httpx.post(
                     TOKEN_URL,
                     json={"appId": self._app_id, "clientSecret": self._client_secret},
                     timeout=DEFAULT_API_TIMEOUT,
@@ -411,9 +517,32 @@ class QQAdapter(BasePlatformAdapter):
             self._access_token = token
             self._token_expires_at = time.time() + expires_in
             logger.info(
-                "[%s] Access token refreshed, expires in %ds", self._log_tag, expires_in
+                "[%s] Access token refreshed (sync), expires in %ds",
+                self._log_tag, expires_in,
             )
             return self._access_token
+
+    def _get_gateway_url_sync(self) -> str:
+        """Synchronous gateway URL fetch for use in the WS thread."""
+        token = self._ensure_token_sync()
+        try:
+            resp = httpx.get(
+                f"{API_BASE}{GATEWAY_URL_PATH}",
+                headers={
+                    "Authorization": f"QQBot {token}",
+                    "User-Agent": build_user_agent(),
+                },
+                timeout=DEFAULT_API_TIMEOUT,
+            )
+            resp.raise_for_status()
+            data = resp.json()
+        except Exception as exc:
+            raise RuntimeError(f"Failed to get QQ Bot gateway URL: {exc}") from exc
+
+        url = data.get("url")
+        if not url:
+            raise RuntimeError(f"QQ Bot gateway response missing url: {data}")
+        return url
 
     async def _get_gateway_url(self) -> str:
         """Fetch the WebSocket gateway URL from the REST API."""
@@ -651,7 +780,12 @@ class QQAdapter(BasePlatformAdapter):
                     backoff_idx += 1
 
     async def _reconnect(self, backoff_idx: int) -> bool:
-        """Attempt to reconnect the WebSocket. Returns True on success."""
+        """Attempt to reconnect the WebSocket. Returns True on success.
+
+        Runs inside the WS thread's event loop. Uses synchronous token/gateway
+        helpers (httpx.Client) to avoid cross-loop issues with the main loop's
+        httpx.AsyncClient.
+        """
         delay = RECONNECT_BACKOFF[min(backoff_idx, len(RECONNECT_BACKOFF) - 1)]
         logger.info(
             "[%s] Reconnecting in %ds (attempt %d)...",
@@ -663,8 +797,10 @@ class QQAdapter(BasePlatformAdapter):
 
         self._heartbeat_interval = 30.0  # reset until Hello
         try:
-            await self._ensure_token()
-            gateway_url = await self._get_gateway_url()
+            # Use sync versions — safe to call from any thread, avoids
+            # sharing the main loop's httpx.AsyncClient across threads.
+            self._ensure_token_sync()
+            gateway_url = self._get_gateway_url_sync()
             await self._open_ws(gateway_url)
             self._mark_connected()
             logger.info("[%s] Reconnected", self._log_tag)
@@ -691,6 +827,21 @@ class QQAdapter(BasePlatformAdapter):
                 raise QQCloseError(msg.data, msg.extra)
             elif msg.type in {aiohttp.WSMsgType.CLOSED, aiohttp.WSMsgType.ERROR}:
                 raise RuntimeError("WebSocket closed")
+
+    def _restart_heartbeat(self) -> None:
+        """Cancel the current heartbeat task and start a fresh one.
+
+        Called on every Hello (op 10) — both initial connect and reconnect —
+        so the new heartbeat_interval takes effect immediately. Without this,
+        a stale ``asyncio.sleep()`` from the previous connection could delay
+        the first heartbeat by up to the old interval, risking a 4009 timeout
+        from the QQ gateway.
+
+        Reference: qqbot-agent-sdk QQWebSocket._reconnect() does the same.
+        """
+        if self._heartbeat_task and not self._heartbeat_task.done():
+            self._heartbeat_task.cancel()
+        self._heartbeat_task = asyncio.ensure_future(self._heartbeat_loop())
 
     async def _heartbeat_loop(self) -> None:
         """Send periodic heartbeats (QQ Gateway expects op 1 heartbeat with latest seq).
@@ -720,7 +871,7 @@ class QQAdapter(BasePlatformAdapter):
 
         Reference: https://bot.q.qq.com/wiki/develop/api-v2/dev-prepare/interface-framework/reference.html
         """
-        token = await self._ensure_token()
+        token = self._ensure_token_sync()  # sync — runs in WS thread
         identify_payload = {
             "op": 2,
             "d": {
@@ -753,7 +904,7 @@ class QQAdapter(BasePlatformAdapter):
 
         Reference: https://bot.q.qq.com/wiki/develop/api-v2/dev-prepare/interface-framework/reference.html
         """
-        token = await self._ensure_token()
+        token = self._ensure_token_sync()  # sync — runs in WS thread
         resume_payload = {
             "op": 6,
             "d": {
@@ -794,6 +945,32 @@ class QQAdapter(BasePlatformAdapter):
         except RuntimeError:
             return None
 
+    def _dispatch_to_main_loop(self, coro) -> None:
+        """Schedule a coroutine on the main event loop from the WS thread.
+
+        Inbound message handlers (e.g. _on_message) must run on the main loop
+        because they call into the gateway session machinery (agent creation,
+        tool execution, etc.) which shares state with other platform adapters.
+
+        If _main_loop is None (tests or legacy single-loop mode), falls back to
+        creating a task in the current loop.
+        """
+        if self._main_loop and self._main_loop.is_running():
+            future = asyncio.run_coroutine_threadsafe(coro, self._main_loop)
+            # Log exceptions that would otherwise be silently swallowed
+            future.add_done_callback(self._log_dispatch_exception)
+        else:
+            self._create_task(coro)
+
+    def _log_dispatch_exception(self, future) -> None:
+        """Done-callback for _dispatch_to_main_loop futures."""
+        try:
+            future.result()
+        except Exception as exc:
+            logger.error(
+                "[%s] Dispatched coroutine raised: %s", self._log_tag, exc, exc_info=exc
+            )
+
     def _dispatch_payload(self, payload: Dict[str, Any]) -> None:
         """Route inbound WebSocket payloads (dispatch synchronously, spawn async handlers)."""
         op = payload.get("op")
@@ -815,6 +992,10 @@ class QQAdapter(BasePlatformAdapter):
                 interval_ms,
                 self._heartbeat_interval,
             )
+            # Restart heartbeat task so the new interval takes effect immediately.
+            # Without this, a stale sleep from the previous connection could delay
+            # the first heartbeat by up to the old interval — risking a 4009 timeout.
+            self._restart_heartbeat()
             # Authenticate: send Resume if we have a session, else Identify.
             # Use _create_task which is safe when no event loop is running (tests).
             if self._session_id and self._last_seq is not None:
@@ -836,9 +1017,11 @@ class QQAdapter(BasePlatformAdapter):
                     "GUILD_MESSAGE_CREATE",
                     "GUILD_AT_MESSAGE_CREATE",
             }:
-                asyncio.create_task(self._on_message(t, d))
+                # Dispatch message handling to the main loop — _on_message
+                # calls into gateway session machinery shared with other platforms.
+                self._dispatch_to_main_loop(self._on_message(t, d))
             elif t == "INTERACTION_CREATE":
-                self._create_task(self._on_interaction(d))
+                self._dispatch_to_main_loop(self._on_interaction(d))
             else:
                 logger.debug("[%s] Unhandled dispatch: %s", self._log_tag, t)
             return

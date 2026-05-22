@@ -605,11 +605,15 @@ def _find_all_skills(*, skip_disabled: bool = False) -> List[Dict[str, Any]]:
 
                 category = _get_category_from_path(skill_md)
 
+                from agent.skill_utils import extract_skill_conditions
+                conditions = extract_skill_conditions(frontmatter)
+
                 seen_names.add(name)
                 skills.append({
                     "name": name,
                     "description": description,
                     "category": category,
+                    "model": conditions.get("model") or "",
                 })
 
             except (UnicodeDecodeError, PermissionError) as e:

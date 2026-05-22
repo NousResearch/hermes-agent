@@ -31,6 +31,7 @@ def test_metadata_as_string_does_not_crash():
         "requires_toolsets": [],
         "fallback_for_tools": [],
         "requires_tools": [],
+        "model": "",
     }
 
 
@@ -43,6 +44,7 @@ def test_metadata_as_none():
         "requires_toolsets": [],
         "fallback_for_tools": [],
         "requires_tools": [],
+        "model": "",
     }
 
 
@@ -55,4 +57,23 @@ def test_metadata_missing_entirely():
         "requires_toolsets": [],
         "fallback_for_tools": [],
         "requires_tools": [],
+        "model": "",
     }
+
+
+def test_hermes_model_field():
+    """hermes.model declares the preferred model for delegation to this skill."""
+    frontmatter = {
+        "metadata": {"hermes": {"model": "anthropic/claude-opus-4-7"}}
+    }
+    result = extract_skill_conditions(frontmatter)
+    assert result["model"] == "anthropic/claude-opus-4-7"
+
+
+def test_hermes_model_field_absent():
+    """hermes.model defaults to empty string when not declared."""
+    frontmatter = {
+        "metadata": {"hermes": {"requires_toolsets": ["web"]}}
+    }
+    result = extract_skill_conditions(frontmatter)
+    assert result["model"] == ""

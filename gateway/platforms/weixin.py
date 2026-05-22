@@ -383,7 +383,10 @@ async def _api_post(
         raw = await response.text()
         if not response.ok:
             raise RuntimeError(f"iLink POST {endpoint} HTTP {response.status}: {raw[:200]}")
-        return json.loads(raw)
+        try:
+            return json.loads(raw)
+        except (json.JSONDecodeError, ValueError):
+            raise RuntimeError(f"iLink POST {endpoint} returned invalid JSON: {raw[:200]}")
 
 
 async def _api_get(
@@ -403,7 +406,10 @@ async def _api_get(
         raw = await response.text()
         if not response.ok:
             raise RuntimeError(f"iLink GET {endpoint} HTTP {response.status}: {raw[:200]}")
-        return json.loads(raw)
+        try:
+            return json.loads(raw)
+        except (json.JSONDecodeError, ValueError):
+            raise RuntimeError(f"iLink GET {endpoint} returned invalid JSON: {raw[:200]}")
 
 
 async def _get_updates(

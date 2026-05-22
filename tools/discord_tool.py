@@ -95,6 +95,8 @@ def _discord_request(
         except Exception:
             pass
         raise DiscordAPIError(e.code, error_body) from e
+    except (json.JSONDecodeError, ValueError) as e:
+        raise DiscordAPIError(0, f"Invalid JSON response from Discord: {e}") from e
 
 
 class DiscordAPIError(Exception):

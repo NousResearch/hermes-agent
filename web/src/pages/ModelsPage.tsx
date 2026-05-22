@@ -1,4 +1,12 @@
-import { useCallback, useEffect, useLayoutEffect, useState } from "react";
+import {
+  type CSSProperties,
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useRef,
+  useState,
+} from "react";
+import { createPortal } from "react-dom";
 import {
   Brain,
   ChevronDown,
@@ -195,6 +203,57 @@ function UseAsMenu({
   const [open, setOpen] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const triggerRef = useRef<HTMLDivElement>(null);
+  const menuRef = useRef<HTMLDivElement>(null);
+  const [menuStyle, setMenuStyle] = useState<CSSProperties>({
+    visibility: "hidden",
+  });
+
+  const updateMenuPosition = useCallback(() => {
+    const trigger = triggerRef.current;
+    if (!trigger || typeof window === "undefined") return;
+
+    const rect = trigger.getBoundingClientRect();
+    const menu = menuRef.current;
+    const gutter = 8;
+    const gap = 4;
+    const viewportWidth = window.innerWidth;
+    const viewportHeight = window.innerHeight;
+    const fallbackWidth = Math.min(260, viewportWidth - gutter * 2);
+    const menuWidth = Math.min(
+      menu?.offsetWidth || fallbackWidth,
+      viewportWidth - gutter * 2,
+    );
+
+    const availableBelow = viewportHeight - rect.bottom - gutter;
+    const availableAbove = rect.top - gutter;
+    const openBelow = availableBelow >= 220 || availableBelow >= availableAbove;
+    const availableHeight = Math.max(
+      120,
+      (openBelow ? availableBelow : availableAbove) - gap,
+    );
+    const menuHeight = Math.min(
+      menu?.offsetHeight || availableHeight,
+      availableHeight,
+    );
+    const left = Math.min(
+      Math.max(gutter, rect.right - menuWidth),
+      viewportWidth - gutter - menuWidth,
+    );
+    const top = openBelow
+      ? Math.min(rect.bottom + gap, viewportHeight - gutter - menuHeight)
+      : Math.max(gutter, rect.top - gap - menuHeight);
+
+    setMenuStyle({
+      left,
+      maxHeight: availableHeight,
+      maxWidth: viewportWidth - gutter * 2,
+      minWidth: 220,
+      overflowY: "auto",
+      top,
+      visibility: "visible",
+    });
+  }, []);
 
   const assign = async (
     scope: "main" | "auxiliary",
@@ -220,16 +279,108 @@ function UseAsMenu({
   // Close on outside click.
   useEffect(() => {
     if (!open) return;
-    const onDown = (e: MouseEvent) => {
-      const target = e.target as HTMLElement | null;
-      if (target && !target.closest?.("[data-use-as-menu]")) setOpen(false);
+    const onDown = (e: PointerEvent) => {
+      const target = e.target as Node | null;
+      if (
+        target &&
+        (triggerRef.current?.contains(target) || menuRef.current?.contains(target))
+      ) {
+        return;
+      }
+      setOpen(false);
     };
-    window.addEventListener("mousedown", onDown);
-    return () => window.removeEventListener("mousedown", onDown);
-  }, [open]);
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setOpen(false);
+    };
+    window.addEventListener("pointerdown", onDown);
+    window.addEventListener("keydown", onKeyDown);
+    window.addEventListener("resize", updateMenuPosition);
+    window.addEventListener("scroll", updateMenuPosition, true);
+    return () => {
+      window.removeEventListener("pointerdown", onDown);
+      window.removeEventListener("keydown", onKeyDown);
+      window.removeEventListener("resize", updateMenuPosition);
+      window.removeEventListener("scroll", updateMenuPosition, true);
+    };
+  }, [open, updateMenuPosition]);
+
+  useLayoutEffect(() => {
+    if (!open) return;
+    updateMenuPosition();
+  }, [open, updateMenuPosition]);
+
+  const menu =
+    open && typeof document !== "undefined"
+      ? createPortal(
+          <div
+            ref={menuRef}
+            data-use-as-menu
+            role="menu"
+            className="fixed z-[200] border border-border bg-card shadow-lg"
+            style={menuStyle}
+          >
+            <button
+              type="button"
+              role="menuitem"
+              onClick={() => assign("main", "")}
+              disabled={busy}
+              className="flex w-full items-center justify-between px-3 py-2 text-xs hover:bg-muted/50 disabled:opacity-40"
+            >
+              <span className="flex items-center gap-2">
+                <Star className="h-3 w-3" />
+                Main model
+              </span>
+              {isMain && (
+                <span className="text-[9px] uppercase tracking-wider text-primary/80">
+                  current
+                </span>
+              )}
+            </button>
+
+            <div className="border-t border-border/50 px-3 py-1.5 text-[9px] uppercase tracking-wider text-muted-foreground">
+              Auxiliary task
+            </div>
+
+            <button
+              type="button"
+              role="menuitem"
+              onClick={() => assign("auxiliary", "")}
+              disabled={busy}
+              className="flex w-full items-center justify-between px-3 py-1.5 text-xs hover:bg-muted/50 disabled:opacity-40"
+            >
+              <span>All auxiliary tasks</span>
+            </button>
+
+            {AUX_TASKS.map((t) => (
+              <button
+                key={t.key}
+                type="button"
+                role="menuitem"
+                onClick={() => assign("auxiliary", t.key)}
+                disabled={busy}
+                className="flex w-full items-center justify-between px-3 py-1.5 text-xs hover:bg-muted/50 disabled:opacity-40"
+              >
+                <span>{t.label}</span>
+                {mainAuxTask === t.key && (
+                  <span className="text-[9px] uppercase tracking-wider text-primary/80">
+                    current
+                  </span>
+                )}
+              </button>
+            ))}
+
+            {error && (
+              <div className="px-3 py-2 text-[10px] text-destructive border-t border-border/50">
+                {error}
+              </div>
+            )}
+          </div>,
+          document.body,
+        )
+      : null;
 
   return (
-    <div className="relative" data-use-as-menu>
+    <div ref={triggerRef} data-use-as-menu>
       <Button
         size="sm"
         outlined
@@ -237,65 +388,12 @@ function UseAsMenu({
         disabled={busy}
         className="text-[10px] h-6 px-2"
         prefix={busy ? <Spinner /> : null}
+        aria-haspopup="menu"
+        aria-expanded={open}
       >
         Use as <ChevronDown className="h-3 w-3" />
       </Button>
-      {open && (
-        <div className="absolute right-0 top-full mt-1 z-50 min-w-[220px] border border-border bg-card shadow-lg">
-          <button
-            type="button"
-            onClick={() => assign("main", "")}
-            disabled={busy}
-            className="flex w-full items-center justify-between px-3 py-2 text-xs hover:bg-muted/50 disabled:opacity-40"
-          >
-            <span className="flex items-center gap-2">
-              <Star className="h-3 w-3" />
-              Main model
-            </span>
-            {isMain && (
-              <span className="text-[9px] uppercase tracking-wider text-primary/80">
-                current
-              </span>
-            )}
-          </button>
-
-          <div className="border-t border-border/50 px-3 py-1.5 text-[9px] uppercase tracking-wider text-muted-foreground">
-            Auxiliary task
-          </div>
-
-          <button
-            type="button"
-            onClick={() => assign("auxiliary", "")}
-            disabled={busy}
-            className="flex w-full items-center justify-between px-3 py-1.5 text-xs hover:bg-muted/50 disabled:opacity-40"
-          >
-            <span>All auxiliary tasks</span>
-          </button>
-
-          {AUX_TASKS.map((t) => (
-            <button
-              key={t.key}
-              type="button"
-              onClick={() => assign("auxiliary", t.key)}
-              disabled={busy}
-              className="flex w-full items-center justify-between px-3 py-1.5 text-xs hover:bg-muted/50 disabled:opacity-40"
-            >
-              <span>{t.label}</span>
-              {mainAuxTask === t.key && (
-                <span className="text-[9px] uppercase tracking-wider text-primary/80">
-                  current
-                </span>
-              )}
-            </button>
-          ))}
-
-          {error && (
-            <div className="px-3 py-2 text-[10px] text-destructive border-t border-border/50">
-              {error}
-            </div>
-          )}
-        </div>
-      )}
+      {menu}
     </div>
   );
 }

@@ -3590,6 +3590,70 @@ class HermesCLI:
                         frags.append(("class:status-bar-yolo", "⚠ YOLO"))
                     frags.append(("class:status-bar", " "))
 
+            # ── Hardware stats on the right side ──
+            try:
+                from hermes_cli.hardware_bar import get_monitor
+                hw = get_monitor().get_stats()
+                if hw:
+                    hw_parts = []
+                    # CPU
+                    cpu_pct = float(hw.get("cpu", "0").rstrip("%"))
+                    cpu_style = "class:status-bar-good" if cpu_pct < 60 else (
+                        "class:status-bar-warn" if cpu_pct < 85 else "class:status-bar-bad"
+                    )
+                    hw_parts.append(("class:status-bar-strong", "CPU"))
+                    hw_parts.append((cpu_style, f" {hw['cpu']} "))
+                    # RAM
+                    ram_pct = float(hw.get("ram_pct", "0").rstrip("%"))
+                    ram_style = "class:status-bar-good" if ram_pct < 70 else (
+                        "class:status-bar-warn" if ram_pct < 90 else "class:status-bar-bad"
+                    )
+                    hw_parts.append(("class:status-bar-dim", "│"))
+                    hw_parts.append(("class:status-bar-strong", " RAM"))
+                    hw_parts.append((ram_style, f" {hw['ram']} "))
+                    # Battery
+                    if "bat" in hw:
+                        bat_pct = float(hw["bat"].rstrip("%"))
+                        bat_status = hw.get("bat_status", "")
+                        if bat_status == "full":
+                            bat_style = "class:status-bar-good"
+                            bat_icon = "⚡"
+                        elif bat_status == "charging":
+                            bat_style = "class:status-bar-good"
+                            bat_icon = "⚡"
+                        elif bat_pct < 20:
+                            bat_style = "class:status-bar-bad"
+                            bat_icon = "🪫"
+                        elif bat_pct < 50:
+                            bat_style = "class:status-bar-warn"
+                            bat_icon = "🔋"
+                        else:
+                            bat_style = "class:status-bar-good"
+                            bat_icon = "🔋"
+                        hw_parts.append(("class:status-bar-dim", "│"))
+                        hw_parts.append((bat_style, f" {bat_icon} {hw['bat']} "))
+                    # Disk
+                    if "disk" in hw:
+                        disk_pct = float(hw["disk"].rstrip("%"))
+                        disk_style = "class:status-bar-good" if disk_pct < 80 else (
+                            "class:status-bar-warn" if disk_pct < 95 else "class:status-bar-bad"
+                        )
+                        hw_parts.append(("class:status-bar-dim", "│"))
+                        hw_parts.append(("class:status-bar-strong", " DISK"))
+                        hw_parts.append((disk_style, f" {hw['disk']} "))
+
+                    # Calculate padding to push hardware stats to the right
+                    left_width = sum(self._status_bar_display_width(t) for _, t in frags)
+                    hw_width = sum(self._status_bar_display_width(t) for _, t in hw_parts)
+                    gap = width - left_width - hw_width - 1
+                    if gap > 2:
+                        frags.append(("class:status-bar-dim", " " * gap))
+                    else:
+                        frags.append(("class:status-bar-dim", " │ "))
+                    frags.extend(hw_parts)
+            except Exception:
+                pass
+
             total_width = sum(self._status_bar_display_width(text) for _, text in frags)
             if total_width > width:
                 plain_text = "".join(text for _, text in frags)
@@ -11805,6 +11869,7 @@ class HermesCLI:
         spinner_widget=None,
         spacer,
         status_bar,
+        hardware_bar=None,
         input_rule_top,
         image_bar,
         input_area,
@@ -11831,6 +11896,7 @@ class HermesCLI:
                 spacer,
                 *self._get_extra_tui_widgets(),
                 status_bar,
+                hardware_bar,
                 input_rule_top,
                 image_bar,
                 input_area,
@@ -13585,6 +13651,8 @@ class HermesCLI:
             ),
         )
 
+        hardware_bar = None
+
         # Allow wrapper CLIs to register extra keybindings.
         self._register_extra_tui_keybindings(kb, input_area=input_area)
 
@@ -13605,6 +13673,7 @@ class HermesCLI:
                     spinner_widget=spinner_widget,
                     spacer=spacer,
                     status_bar=status_bar,
+                    hardware_bar=hardware_bar,
                     input_rule_top=input_rule_top,
                     image_bar=image_bar,
                     input_area=input_area,
@@ -13685,6 +13754,8 @@ class HermesCLI:
         _disable_prompt_toolkit_cpr_warning(app)
         self._app = app  # Store reference for clarify_callback
 
+
+
         # ── Fix ghost status-bar lines on terminal resize ──────────────
         # Resize handling: monkey-patch prompt_toolkit's _output_screen_diff
         # to suppress the deliberate "reserve vertical space" scroll-up.
@@ -13757,7 +13828,17 @@ class HermesCLI:
 
         app._on_resize = _resize_clear_ghosts
 
+        # Start hardware monitor for live stats
+        try:
+            from hermes_cli.hardware_bar import get_monitor
+            _hw_monitor = get_monitor()
+            _hw_monitor.start()
+            self._hw_monitor = _hw_monitor
+        except Exception:
+            _hw_monitor = None
+
         def spinner_loop():
+            _last_hw_hash = ""
             while not self._should_exit:
                 if not self._app:
                     time.sleep(0.1)
@@ -13766,11 +13847,17 @@ class HermesCLI:
                     self._invalidate(min_interval=0.1)
                     time.sleep(0.1)
                 else:
-                    # Do not repaint the idle prompt every second. In non-full-screen
-                    # prompt_toolkit mode, background redraws can fight tmux/Ghostty/cmux
-                    # viewport restoration after focus changes and visually move the
-                    # command input area. Keep idle stable; input/agent events still
-                    # invalidate explicitly when the UI actually changes.
+                    # Check if hardware stats changed — if so, invalidate
+                    # to update the status bar without waiting for keypress
+                    if _hw_monitor:
+                        try:
+                            stats = _hw_monitor.get_stats()
+                            hw_hash = "|".join(f"{k}:{v}" for k, v in sorted(stats.items()))
+                            if hw_hash != _last_hw_hash:
+                                _last_hw_hash = hw_hash
+                                self._invalidate(min_interval=0.5)
+                        except Exception:
+                            pass
                     time.sleep(0.2)
 
         spinner_thread = threading.Thread(target=spinner_loop, daemon=True)

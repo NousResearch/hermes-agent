@@ -108,7 +108,15 @@ SIGNAL_ALLOWED_USERS=+1234567890,+0987654321    # Comma-separated E.164 numbers 
 
 # Optional
 SIGNAL_GROUP_ALLOWED_USERS=groupId1,groupId2     # Enable groups (omit to disable, * for all)
-SIGNAL_HOME_CHANNEL=+1234567890                  # Default delivery target for cron jobs
+SIGNAL_HOME_CHANNEL=+123****7890                  # Default delivery target for cron jobs
+SIGNAL_WAKE_ON_REACTIONS=false                    # Wake on emoji reaction events (opt-in)
+```
+
+You can also set reaction wakeups in `~/.hermes/config.yaml`:
+
+```yaml
+signal:
+  wake_on_reactions: true
 ```
 
 Then start the gateway:
@@ -177,9 +185,11 @@ Signal messages render with **native formatting** instead of literal markdown ch
 
 **Reply quotes.** When Hermes replies to a specific message, it now posts a native reply that quotes the original — same UI affordance Signal users see when they use "Reply" themselves. This is automatic for replies generated in response to an inbound message.
 
-**Reactions.** The agent can react to messages via the standard reaction API; reactions surface in Signal as emoji reactions on the referenced message rather than as extra text.
+**Outbound reactions.** The agent can react to messages via the standard reaction API; reactions surface in Signal as emoji reactions on the referenced message rather than as extra text.
 
-None of this requires additional config — it ships on by default in recent signal-cli builds. If your `signal-cli` version is too old, Hermes falls back to plaintext delivery and logs a one-time warning.
+**Inbound reaction wakeups.** By default, reaction-only envelopes are ignored so emoji activity does not unexpectedly wake the agent. Set `SIGNAL_WAKE_ON_REACTIONS=true` or `signal.wake_on_reactions: true` to treat inbound reactions as lightweight conversational events. When enabled, Hermes includes the reacted-to message text and recent per-chat context when it has seen them locally, so the agent can decide whether a 👍, 👎, ✅, ❌, or similar reaction is actionable or just noise. Group reaction wakeups still require the group to be allowed via `SIGNAL_GROUP_ALLOWED_USERS`, but they do not require a textual @mention because reactions cannot contain one.
+
+Native formatting and outbound reactions require no additional config — they ship on by default in recent signal-cli builds. If your `signal-cli` version is too old, Hermes falls back to plaintext delivery and logs a one-time warning.
 
 ### Typing Indicators
 

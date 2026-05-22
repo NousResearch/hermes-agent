@@ -699,6 +699,12 @@ platform_toolsets:
 #   reactions: true                  # Show processing reactions (default: true)
 #   history_backfill: true           # Recover missed channel messages on mention (default: true)
 #   history_backfill_limit: 50       # Max messages to scan backwards (default: 50)
+#
+# Signal-specific settings (config.yaml top-level, not under platforms:):
+#
+# signal:
+#   require_mention: false           # Require @mention in allowed groups (default: false)
+#   wake_on_reactions: false         # Wake agent on inbound emoji reaction events (default: false)
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Available toolsets (use these names in platform_toolsets or the toolsets list)

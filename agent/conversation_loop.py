@@ -3430,7 +3430,9 @@ def run_conversation(
             try:
                 from hermes_cli.plugins import invoke_hook as _invoke_hook
                 _assistant_tool_calls = getattr(assistant_message, "tool_calls", None) or []
-                _assistant_text = assistant_message.content or ""
+                # Fallback to reasoning_content for models that put normal responses there
+                # (e.g., qwen3.5 on NVIDIA NIM returns reasoning_content instead of content)
+                _assistant_text = assistant_message.content or getattr(assistant_message, "reasoning_content", None) or ""
                 _invoke_hook(
                     "post_api_request",
                     task_id=effective_task_id,
@@ -3455,16 +3457,18 @@ def run_conversation(
                 pass
 
             # Handle assistant response
-            if assistant_message.content and not agent.quiet_mode:
+            _assistant_text = assistant_message.content or getattr(assistant_message, "reasoning_content", None) or ""
+            if _assistant_text and not agent.quiet_mode:
                 if agent.verbose_logging:
-                    agent._vprint(f"{agent.log_prefix}🤖 Assistant: {assistant_message.content}")
+                    agent._vprint(f"{agent.log_prefix}🤖 Assistant: {_assistant_text}")
                 else:
-                    agent._vprint(f"{agent.log_prefix}🤖 Assistant: {assistant_message.content[:100]}{'...' if len(assistant_message.content) > 100 else ''}")
+                    agent._vprint(f"{agent.log_prefix}🤖 Assistant: {_assistant_text[:100]}{'...' if len(_assistant_text) > 100 else ''}")
 
             # Notify progress callback of model's thinking (used by subagent
             # delegation to relay the child's reasoning to the parent display).
-            if (assistant_message.content and agent.tool_progress_callback):
-                _think_text = assistant_message.content.strip()
+            _thinking_text_raw = assistant_message.content or getattr(assistant_message, "reasoning_content", None) or ""
+            _think_text = _thinking_text_raw.strip()
+            if _think_text and agent.tool_progress_callback:
                 # Strip reasoning XML tags that shouldn't leak to parent display
                 _think_text = re.sub(
                     r'</?(?:REASONING_SCRATCHPAD|think|reasoning)>', '', _think_text
@@ -3485,7 +3489,8 @@ def run_conversation(
             
             # Check for incomplete <REASONING_SCRATCHPAD> (opened but never closed)
             # This means the model ran out of output tokens mid-reasoning — retry up to 2 times
-            if has_incomplete_scratchpad(assistant_message.content or ""):
+            raw_content = assistant_message.content or getattr(assistant_message, "reasoning_content", None) or ""
+            if has_incomplete_scratchpad(raw_content):
                 agent._incomplete_scratchpad_retries += 1
                 
                 agent._buffer_vprint(f"⚠️  Incomplete <REASONING_SCRATCHPAD> detected (opened but never closed)")
@@ -3904,7 +3909,12 @@ def run_conversation(
             
             else:
                 # No tool calls - this is the final response
-                final_response = assistant_message.content or ""
+                # Promote reasoning_content to final_response if content is missing
+                # This handles models (like Qwen 3.5 on NIM) that put the main answer in reasoning_content
+                # NOTE: NormalizedResponse stores reasoning_content as a @property reading from
+                # provider_data (not model_extra, which NormalizedResponse doesn't have).
+                _promoted = getattr(assistant_message, "reasoning_content", None) if not assistant_message.content else None
+                final_response = assistant_message.content or _promoted or ""
                 
                 # Fix: unmute output when entering the no-tool-call branch
                 # so the user can see empty-response warnings and recovery
@@ -4047,7 +4057,9 @@ def run_conversation(
                         or getattr(assistant_message, "reasoning_details", None)
                         or _has_inline_thinking
                     )
-                    if _has_structured and agent._thinking_prefill_retries < 2:
+                    if _has_structured and agent._thinking_prefill_retries < 2 and not (
+                        "qwen" in agent.model.lower() and "3.5" in agent.model and final_response.strip()
+                    ):
                         agent._thinking_prefill_retries += 1
                         logger.info(
                             "Thinking-only response (no visible content) — "

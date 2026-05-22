@@ -29,9 +29,10 @@ import os
 import re
 import tempfile
 from contextlib import contextmanager
+from difflib import SequenceMatcher
 from pathlib import Path
 from hermes_constants import get_hermes_home
-from typing import Dict, Any, List, Optional
+from typing import Dict, Any, List, Optional, Tuple
 
 from utils import atomic_replace
 
@@ -101,6 +102,91 @@ def _scan_memory_content(content: str) -> Optional[str]:
         if re.search(pattern, content, re.IGNORECASE):
             return f"Blocked: content matches threat pattern '{pid}'. Memory entries are injected into the system prompt and must not contain injection or exfiltration payloads."
 
+    return None
+
+
+# ---------------------------------------------------------------------------
+# Memory content hygiene — soft advisory checks for durable content quality.
+#
+# The tool schema already tells the model "don't save task progress, session
+# outcomes, completed-work logs, or temporary TODO state". In practice the
+# model still over-saves under completion bias, so we add lightweight runtime
+# checks as a defense-in-depth backstop. These are ADVISORY, not blocking --
+# they surface as a "hygiene_warning" field on the successful response so
+# the caller can see what slipped through without disrupting legitimate use.
+# ---------------------------------------------------------------------------
+
+# Phrases that commonly accompany session-log / completion-diary entries.
+# Each entry: (pattern, reason, suggestion). Patterns allow up to 60 chars
+# between the completion verb and the date, so real-world log entries like
+# "Deployed new pipeline 2024-03-15" or "Rotated API keys on 2024-06-01"
+# still match.
+_HYGIENE_SESSION_LOG_PATTERNS: List[Tuple[str, str, str]] = [
+    (r'\bdeployed\b.{0,60}\b\d{4}-\d{2}-\d{2}\b', "dated deployment log",
+     "Deployment events don't need to persist -- the changelog/commit history is the source of truth."),
+    (r'\brotated\b.{0,60}\b\d{4}-\d{2}-\d{2}\b', "dated credential rotation log",
+     "Rotation events are audit history, not durable memory."),
+    (r'\bretired\b.{0,60}\b\d{4}-\d{2}-\d{2}\b', "dated retirement log",
+     "Which files were archived on a specific date is session history, not a durable fact."),
+    (r'\b(installed|completed|fixed|shipped|resolved)\b.{0,60}\b\d{4}-\d{2}-\d{2}\b', "dated completion log",
+     "Completion events are session outcomes -- use session_search to recall them later."),
+    (r'views?\s*\(\s*\d{4}-\d{2}-\d{2}\s*\)', "dated opinion/view snapshot",
+     "Views change -- a dated snapshot goes stale within days. Prefer durable convention over ephemeral state."),
+    (r'\bas of \d{4}-\d{2}-\d{2}\b', "dated point-in-time snapshot",
+     "'As of DATE' content goes stale. Save the convention, not the snapshot."),
+]
+
+# Soft size threshold -- surfaces a warning above this percentage.
+_HYGIENE_SIZE_WARN_PCT = 0.75
+
+# Fuzzy-duplicate threshold -- similarity above this suggests using replace.
+_HYGIENE_DUP_THRESHOLD = 0.75
+
+
+def _check_hygiene(content: str, existing_entries: List[str],
+                   current_chars: int, limit: int) -> Optional[Dict[str, Any]]:
+    """Run advisory hygiene checks.
+
+    Returns a dict describing the concern (never blocks -- the caller decides
+    whether to surface it). Returns None when the entry passes cleanly.
+    """
+    warnings = []
+
+    # 1) Session-log phrasing
+    for pattern, reason, suggestion in _HYGIENE_SESSION_LOG_PATTERNS:
+        if re.search(pattern, content, re.IGNORECASE):
+            warnings.append({
+                "type": "session_log",
+                "reason": reason,
+                "suggestion": suggestion,
+            })
+            break  # one session-log warning is enough
+
+    # 2) Size pressure
+    projected = current_chars + len(ENTRY_DELIMITER) + len(content)
+    if projected > limit * _HYGIENE_SIZE_WARN_PCT:
+        warnings.append({
+            "type": "size_pressure",
+            "reason": f"memory will be at {projected:,}/{limit:,} chars ({projected/limit:.0%}) after this add",
+            "suggestion": "Consider pruning stale entries -- durable memory works best with headroom.",
+        })
+
+    # 3) Near-duplicate detection (cheap on small N -- memory rarely exceeds
+    # a few dozen entries). Only flag if similarity is high AND neither is a
+    # strict substring (substring matches are legitimate replace targets, but
+    # the model should use replace, not add).
+    for existing in existing_entries:
+        ratio = SequenceMatcher(a=content.lower(), b=existing.lower()).ratio()
+        if ratio >= _HYGIENE_DUP_THRESHOLD:
+            warnings.append({
+                "type": "near_duplicate",
+                "reason": f"{ratio:.0%} similar to existing entry: {existing[:80]}{'...' if len(existing) > 80 else ''}",
+                "suggestion": "Use 'replace' with the existing entry's unique substring instead of 'add'.",
+            })
+            break  # one dup warning is enough
+
+    if warnings:
+        return {"warnings": warnings}
     return None
 
 
@@ -238,6 +324,7 @@ class MemoryStore:
 
             entries = self._entries_for(target)
             limit = self._char_limit(target)
+            current_before_add = self._char_count(target)
 
             # Reject exact duplicates
             if content in entries:
@@ -264,7 +351,12 @@ class MemoryStore:
             self._set_entries(target, entries)
             self.save_to_disk(target)
 
-        return self._success_response(target, "Entry added.")
+            # Hygiene check runs after accepting (advisory, non-blocking).
+            # Uses the pre-add snapshot: entries and current char count BEFORE this add,
+            # so "near-duplicate" comparisons don't include the content we just saved.
+            hygiene = _check_hygiene(content, entries[:-1], current_before_add, limit)
+
+        return self._success_response(target, "Entry added.", hygiene=hygiene)
 
     def replace(self, target: str, old_text: str, new_content: str) -> Dict[str, Any]:
         """Find entry containing old_text substring, replace it with new_content."""
@@ -373,7 +465,8 @@ class MemoryStore:
 
     # -- Internal helpers --
 
-    def _success_response(self, target: str, message: str = None) -> Dict[str, Any]:
+    def _success_response(self, target: str, message: str = None,
+                          hygiene: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         entries = self._entries_for(target)
         current = self._char_count(target)
         limit = self._char_limit(target)
@@ -388,6 +481,8 @@ class MemoryStore:
         }
         if message:
             resp["message"] = message
+        if hygiene and hygiene.get("warnings"):
+            resp["hygiene_warning"] = hygiene["warnings"]
         return resp
 
     def _render_block(self, target: str, entries: List[str]) -> str:

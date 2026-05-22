@@ -696,6 +696,10 @@ def _run_review_in_thread(
             if isinstance(_rt.get("command"), str) and _rt["command"]:
                 _fork_kwargs["acp_command"] = _rt["command"]
                 _fork_kwargs["acp_args"] = _rt.get("args") or []
+            # Match parent's reasoning config so the fork's ``thinking`` /
+            # ``output_config`` are byte-identical in the request body —
+            # Anthropic's cache key is namespaced by ``thinking`` presence.
+            _fork_kwargs["reasoning_config"] = getattr(agent, "reasoning_config", None)
             review_agent = AIAgent(
                 model=_rt.get("model") or agent.model,
                 max_iterations=16,

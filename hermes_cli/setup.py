@@ -1742,13 +1742,8 @@ def setup_terminal_backend(config: dict):
                 save_env_value("SPRITES_TOKEN", token)
                 print_success("    Configured")
 
-        # Optional custom API base URL
-        print()
-        current_base = get_env_value("SPRITES_BASE_URL") or ""
-        base = prompt("  Sprites API base URL (blank for default)", current_base)
-        if base:
-            save_env_value("SPRITES_BASE_URL", base)
-        elif current_base:
+        # Drop any previously-saved override of the base URL — it's now fixed.
+        if get_env_value("SPRITES_BASE_URL"):
             remove_env_value("SPRITES_BASE_URL")
 
         print()

@@ -162,7 +162,6 @@ For native Anthropic auth, Hermes prefers Claude Code's own credential files whe
 | `VERCEL_TEAM_ID` | Vercel team ID (required with `VERCEL_TOKEN`) |
 | `VERCEL_OIDC_TOKEN` | Vercel short-lived OIDC token (development-only alternative) |
 | `SPRITES_TOKEN` | Sprites: stateful cloud sandboxes on Fly.io ([sprites.dev](https://sprites.dev/)) |
-| `SPRITES_BASE_URL` | Sprites API base URL (default: `https://api.sprites.dev`) |
 
 ### Langfuse Observability
 

@@ -297,8 +297,6 @@ pip install 'hermes-agent[sprites]'
 
 **Required authentication:** `SPRITES_TOKEN` environment variable. Get a token with `sprite login` or `sprite auth setup --token …` from the [Sprites CLI](https://sprites.dev).
 
-**Optional:** `SPRITES_BASE_URL` overrides the default `https://api.sprites.dev` endpoint (useful for self-hosted deployments).
-
 **Persistence:** With `container_persistent: true`, `cleanup()` leaves the Sprite running so the next session can resume against the same filesystem and live VM. With `persistent: false`, the Sprite is deleted on cleanup. Sprites also support server-side checkpoints exposed by the SDK (`sprite.create_checkpoint`, `sprite.restore_checkpoint`), but Hermes does not invoke them automatically — manage checkpoints via the `sprite-env` CLI if needed.
 
 **Credential files:** Hermes pushes `~/.hermes/` credentials/skills/cache into the Sprite at startup via the Sprite filesystem API. Files modified by the agent inside the Sprite are **not** synced back to the host on cleanup (see _Remote-to-Host File Sync_ — sync_back is unsupported on this backend).

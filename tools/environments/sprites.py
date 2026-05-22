@@ -67,11 +67,8 @@ class SpritesEnvironment(BaseEnvironment):
                 "Sprites backend requires SPRITES_TOKEN. "
                 "Run `hermes setup terminal` or set SPRITES_TOKEN in .env."
             )
-        base_url = os.getenv("SPRITES_BASE_URL", "https://api.sprites.dev")
-
         self._client = SpritesClient(
             token=token,
-            base_url=base_url,
             timeout=max(30.0, float(timeout)),
         )
         self._persistent = persistent_filesystem

@@ -2,7 +2,7 @@ name: Tests
 
 on:
   push:
-    branches: [main]
+    branches: [main, ethie/slice-test-4]
     paths-ignore:
       - '**/*.md'
       - 'docs/**'
@@ -109,7 +109,7 @@ jobs:
   # (including PRs) get balanced slicing.
   save-durations:
     needs: test
-    if: always() && github.ref == 'refs/heads/main'
+    if: always() && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/heads/ethie/slice-test-'))
     runs-on: ubuntu-latest
     steps:
       - name: Download all slice durations

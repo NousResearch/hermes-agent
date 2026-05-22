@@ -145,6 +145,52 @@
     );
   }
 
+  function channelModePanel(app, busy, run) {
+    if (!app) return null;
+    const modes = app.channel_modes || {};
+    const channels = app.channels || [];
+    if (!channels.length) return null;
+    const anyLive = channels.some((channel) => (modes[channel] || "dry_run") === "live");
+    return card(anyLive ? "border-red-400/40 bg-red-500/5" : null,
+      h("div", { className: "flex items-center justify-between gap-2" },
+        h("h2", { className: "text-lg font-semibold" }, "Channel publish modes"),
+        anyLive ? h("span", { className: "text-xs text-red-200 font-medium" }, "LIVE channel(s) active") : h("span", { className: "text-xs text-midground/60" }, "All channels dry-run")
+      ),
+      h("p", { className: "mt-2 text-xs text-midground/70" }, "Until a real connector is registered, switching a channel to live still falls back to dry-run automatically (audited). When the connector IS wired, live = real public posts."),
+      h("div", { className: "mt-3 flex flex-col gap-2" },
+        channels.map((channel) => {
+          const mode = modes[channel] || "dry_run";
+          const live = mode === "live";
+          return h("div", {
+            key: channel,
+            className: cx("flex items-center justify-between rounded-xl border p-2.5", live ? "border-red-400/40 bg-red-500/10" : "border-midground/15 bg-background/60"),
+          },
+            h("div", { className: "flex items-center gap-2" },
+              h("span", { className: "text-sm font-medium" }, channel),
+              h("span", { className: cx("inline-flex rounded-full border px-2 py-0.5 text-[10px]", live ? "border-red-300/40 bg-red-300/10 text-red-100" : "border-midground/20 text-midground/70") }, mode)
+            ),
+            h("button", {
+              type: "button",
+              disabled: !!busy,
+              onClick: () => {
+                const nextMode = live ? "dry_run" : "live";
+                if (nextMode === "live") {
+                  const confirmText = window.prompt(`Switch ${channel} to LIVE for ${app.slug}? Live means real public posts when a connector is registered.\n\nType the channel name (${channel}) to confirm:`);
+                  if (!confirmText || confirmText.trim() !== channel) return;
+                }
+                return run(`mode ${channel}`, () => fetchJSON(`${API}/apps/${encodeURIComponent(app.slug)}/channels/${encodeURIComponent(channel)}/mode`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ mode: nextMode, reviewer: "dashboard" }) }));
+              },
+              className: cx(
+                "min-h-[32px] rounded-lg border px-2.5 py-1 text-xs font-medium",
+                live ? "border-red-400/40 text-red-100 hover:bg-red-500/10" : "border-midground/20 text-foreground hover:bg-midground/10"
+              ),
+            }, live ? "switch to dry-run" : "switch to LIVE")
+          );
+        })
+      )
+    );
+  }
+
   function MarketingFactoryPage() {
     const [data, setData] = useState(null);
     const [loading, setLoading] = useState(true);
@@ -243,7 +289,16 @@
             h("input", { type: "number", min: 1, max: 31, value: days, onChange: (e) => setDays(Number(e.target.value || 7)), className: "min-h-[44px] w-20 rounded-xl border border-midground/20 bg-background px-3 text-sm" }),
             smallButton("Generate", () => run("generate", () => fetchJSON(`${API}/campaigns/generate`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ app_slug: appSlug, days }) })), !!busy || !appSlug, "primary"),
             smallButton(`Schedule approved (${approved.length})`, () => run("schedule", () => fetchJSON(`${API}/schedule?app_slug=${encodeURIComponent(appSlug)}`, { method: "POST" })), !!busy || !approved.length),
-            smallButton(`Dry-run publish (${scheduled.length})`, () => run("publish", () => fetchJSON(`${API}/publish-dry-run?app_slug=${encodeURIComponent(appSlug)}`, { method: "POST" })), !!busy || !scheduled.length)
+            smallButton(`Dry-run publish (${scheduled.length})`, () => run("publish", () => fetchJSON(`${API}/publish-dry-run?app_slug=${encodeURIComponent(appSlug)}`, { method: "POST" })), !!busy || !scheduled.length),
+            smallButton(`Publish — mode-aware (${scheduled.length})`, () => {
+              const currentApp = (data?.apps || []).find((a) => a.slug === appSlug);
+              const liveChannels = currentApp ? (currentApp.channels || []).filter((c) => (currentApp.channel_modes || {})[c] === "live") : [];
+              if (liveChannels.length) {
+                const ok = window.confirm(`LIVE channels active for ${appSlug}: ${liveChannels.join(", ")}.\n\nIf a real connector is registered, this WILL post publicly. Without a connector it falls back to dry-run (audited). Proceed?`);
+                if (!ok) return;
+              }
+              return run("publish-modes", () => fetchJSON(`${API}/publish?app_slug=${encodeURIComponent(appSlug)}`, { method: "POST" }));
+            }, !!busy || !scheduled.length)
           )
         )
       ),
@@ -298,6 +353,7 @@
 
         h("div", { className: "flex flex-col gap-4" },
           tokenPanel(data?.summary?.budgets),
+          channelModePanel((data?.apps || []).find((app) => app.slug === appSlug), busy, run),
           card(null,
             h("h2", { className: "text-lg font-semibold" }, "Brand apps"),
             h("div", { className: "mt-3 flex flex-col gap-3" },

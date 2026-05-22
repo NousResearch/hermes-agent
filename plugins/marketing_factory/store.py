@@ -14,7 +14,7 @@ from hermes_constants import get_hermes_home
 
 
 SCHEMA_VERSION = 1
-STATUSES = {"draft", "needs_review", "approved", "rejected", "scheduled", "dry_run_posted"}
+STATUSES = {"draft", "needs_review", "approved", "rejected", "scheduled", "dry_run_posted", "posted"}
 
 
 def utc_now() -> str:
@@ -143,11 +143,48 @@ class MarketingFactoryStore:
         merged.setdefault("forbidden_claims", [])
         merged.setdefault("assets", [])
         merged.setdefault("content_pillars", [])
+        # Phase 4: every channel starts in dry_run. `live` requires both a registered
+        # real connector AND an explicit set_channel_mode call.
+        existing_modes = dict(existing.get("channel_modes") or {})
+        for channel in merged.get("channels", []):
+            existing_modes.setdefault(channel, "dry_run")
+        merged["channel_modes"] = existing_modes
         state["apps"][slug] = merged
         state["brand_memories"].setdefault(slug, {"learnings": [], "summaries": []})
         self._write_state(state)
         self.audit("brand_profile.upserted", slug, {"name": merged.get("name"), "channels": merged.get("channels", [])})
         return merged
+
+    def set_channel_mode(self, app_slug: str, channel: str, mode: str, reviewer: str = "human") -> Dict[str, Any]:
+        """Switch a channel between `dry_run` and `live`.
+
+        Switching to `live` is *only* honored at publish time when a real connector
+        is registered for that channel. Until then, the Publisher logs an audit
+        warning and falls back to dry_run automatically.
+        """
+        if mode not in {"dry_run", "live"}:
+            raise ValueError("mode must be 'dry_run' or 'live'")
+        slug = _require_slug(app_slug)
+        state = self.load()
+        app = state["apps"].get(slug)
+        if not app:
+            raise KeyError(f"Unknown app slug: {slug}")
+        if channel not in (app.get("channels") or []):
+            raise ValueError(f"Channel {channel!r} is not declared on {slug}")
+        modes = dict(app.get("channel_modes") or {})
+        previous = modes.get(channel, "dry_run")
+        modes[channel] = mode
+        app["channel_modes"] = modes
+        app["updated_at"] = utc_now()
+        state["apps"][slug] = app
+        self._write_state(state)
+        self.audit("channel_mode.changed", slug, {
+            "channel": channel,
+            "previous": previous,
+            "next": mode,
+            "reviewer": reviewer,
+        })
+        return {"app_slug": slug, "channel": channel, "previous": previous, "mode": mode}
 
     def require_app(self, app_slug: str) -> Dict[str, Any]:
         slug = _require_slug(app_slug)
@@ -322,7 +359,7 @@ class MarketingFactoryStore:
         draft = state["drafts"].get(draft_id)
         if not draft:
             raise KeyError(f"Unknown draft id: {draft_id}")
-        if draft["status"] not in {"scheduled", "dry_run_posted"}:
+        if draft["status"] not in {"scheduled", "dry_run_posted", "posted"}:
             raise ValueError("draft must be scheduled before dry-run publish")
         event_id = new_id("pub")
         event = {
@@ -341,6 +378,62 @@ class MarketingFactoryStore:
         draft["updated_at"] = utc_now()
         self._write_state(state)
         self.audit("publish.dry_run", draft["app_slug"], {"draft_id": draft_id, "event_id": event_id, "channel": draft["channel"]})
+        return event
+
+    def record_publish_event(
+        self,
+        draft_id: str,
+        connector_result: Dict[str, Any],
+        *,
+        fallback_reason: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Persist a publish event produced by any connector and update draft status.
+
+        `connector_result` must include `mode`, `would_post`, `posted` (per
+        `BaseChannelConnector` contract). `fallback_reason` is set by
+        `PublisherAgent` when a live publish was downgraded to dry_run (no
+        connector registered, or connector raised). Audits the event with a
+        mode-specific action so dashboards can distinguish real posts.
+        """
+        state = self.load()
+        draft = state["drafts"].get(draft_id)
+        if not draft:
+            raise KeyError(f"Unknown draft id: {draft_id}")
+        if draft["status"] not in {"scheduled", "dry_run_posted", "posted"}:
+            raise ValueError("draft must be scheduled before publish")
+        event_id = new_id("pub")
+        mode = str(connector_result.get("mode") or "dry_run")
+        posted = bool(connector_result.get("posted"))
+        would_post = bool(connector_result.get("would_post"))
+        event = {
+            "id": event_id,
+            "draft_id": draft_id,
+            "app_slug": draft["app_slug"],
+            "channel": draft["channel"],
+            "mode": mode,
+            "would_post": would_post,
+            "posted": posted,
+            "body": draft["body"],
+            "payload": deepcopy(connector_result.get("payload") or {}),
+            "fallback_reason": fallback_reason,
+            "created_at": utc_now(),
+        }
+        state["publish_events"][event_id] = event
+        if posted:
+            draft["status"] = "posted"
+        elif mode == "dry_run":
+            draft["status"] = "dry_run_posted"
+        draft["updated_at"] = utc_now()
+        self._write_state(state)
+        action = f"publish.{mode}" + (".fallback" if fallback_reason else "")
+        self.audit(action, draft["app_slug"], {
+            "draft_id": draft_id,
+            "event_id": event_id,
+            "channel": draft["channel"],
+            "mode": mode,
+            "posted": posted,
+            "fallback_reason": fallback_reason,
+        })
         return event
 
     def write_steering(self, app_slug: str, steering: Dict[str, Any]) -> Dict[str, Any]:

@@ -284,6 +284,136 @@ def test_approval_writes_structured_brand_memory_and_invalidates_steering(isolat
     assert final_state["brand_memories"]["pupular"].get("steering") is None
 
 
+def test_channel_modes_seed_dry_run_for_every_channel(isolate_home):
+    """Phase 4: every brand profile starts with channel_modes={ch: dry_run for ch in channels}."""
+    from plugins.marketing_factory.pipeline import MarketingFactoryPipeline
+    from plugins.marketing_factory.store import MarketingFactoryStore
+
+    store = MarketingFactoryStore()
+    MarketingFactoryPipeline(store).initialize_samples()
+    state = store.load()
+    for slug in ("pupular", "setvenue"):
+        app = state["apps"][slug]
+        assert app.get("channel_modes"), f"{slug} missing channel_modes"
+        assert all(mode == "dry_run" for mode in app["channel_modes"].values()), f"{slug} has non-dry_run default"
+        assert set(app["channel_modes"].keys()) == set(app["channels"]), f"{slug} mode keys don't match channels"
+
+
+def test_set_channel_mode_audits_and_rejects_unknown_channels(isolate_home):
+    from plugins.marketing_factory.pipeline import MarketingFactoryPipeline
+    from plugins.marketing_factory.store import MarketingFactoryStore
+
+    store = MarketingFactoryStore()
+    MarketingFactoryPipeline(store).initialize_samples()
+
+    result = store.set_channel_mode("pupular", "x", "live", reviewer="tester")
+    assert result == {"app_slug": "pupular", "channel": "x", "previous": "dry_run", "mode": "live"}
+    assert store.require_app("pupular")["channel_modes"]["x"] == "live"
+
+    actions = [event["action"] for event in store.list_audit(app_slug="pupular", limit=100)]
+    assert "channel_mode.changed" in actions
+
+    with pytest.raises(ValueError):
+        store.set_channel_mode("pupular", "linkedin", "live")  # not in pupular's channels
+    with pytest.raises(ValueError):
+        store.set_channel_mode("pupular", "x", "bogus")  # invalid mode
+
+
+def test_publish_scheduled_falls_back_to_dry_run_when_no_live_connector(isolate_home):
+    """Phase 4 safety contract: channel_mode=live without a registered connector
+    must publish as dry_run and emit a `publish.dry_run.fallback` audit event
+    so the dashboard can flag it."""
+    from plugins.marketing_factory.pipeline import MarketingFactoryPipeline
+    from plugins.marketing_factory.store import MarketingFactoryStore
+
+    store = MarketingFactoryStore()
+    pipe = MarketingFactoryPipeline(store)
+    pipe.initialize_samples()
+    generated = pipe.generate_campaign("pupular", days=1)
+    draft = generated["drafts"][0]
+    store.set_approval(draft["id"], "approved", reviewer="tester")
+    schedule = pipe.scheduler.schedule_approved(store, app_slug="pupular")
+    assert schedule, "scheduler should produce at least one schedule"
+
+    # Flip the channel to live — but no real connector is registered, so the
+    # publisher must fall back gracefully instead of raising or posting.
+    store.set_channel_mode("pupular", draft["channel"], "live", reviewer="tester")
+
+    events = pipe.publisher.publish_scheduled(store, app_slug="pupular")
+    assert len(events) == 1
+    event = events[0]
+    assert event["mode"] == "dry_run"
+    assert event["posted"] is False
+    assert event["would_post"] is True
+    assert event["fallback_reason"] == "no_live_connector"
+
+    final_state = store.load()
+    final_draft = final_state["drafts"][draft["id"]]
+    assert final_draft["status"] == "dry_run_posted"  # NOT "posted"
+
+    audit_actions = [e["action"] for e in store.list_audit(app_slug="pupular", limit=200)]
+    assert "publish.dry_run.fallback" in audit_actions
+
+
+def test_publish_scheduled_uses_registered_live_connector_when_present(isolate_home):
+    """Phase 4: when a real connector IS registered, publish_scheduled goes live."""
+    from typing import Any, Dict
+    from plugins.marketing_factory import connectors
+    from plugins.marketing_factory.connectors.base import BaseChannelConnector
+    from plugins.marketing_factory.pipeline import MarketingFactoryPipeline
+    from plugins.marketing_factory.store import MarketingFactoryStore
+
+    class StubLiveX(BaseChannelConnector):
+        mode = "live"
+        channel = "x"
+
+        def publish(self, draft: Dict[str, Any]) -> Dict[str, Any]:
+            return {
+                "mode": "live",
+                "would_post": False,
+                "posted": True,
+                "channel": "x",
+                "body": draft.get("body"),
+                "payload": {"fake_tweet_id": "12345"},
+            }
+
+    store = MarketingFactoryStore()
+    pipe = MarketingFactoryPipeline(store)
+    pipe.initialize_samples()
+    generated = pipe.generate_campaign("pupular", days=1)
+    draft = generated["drafts"][0]
+    # Force the draft channel to X so our stub connector matches.
+    state = store.load()
+    state["drafts"][draft["id"]]["channel"] = "x"
+    store._write_state(state)
+    store.set_approval(draft["id"], "approved", reviewer="tester")
+    pipe.scheduler.schedule_approved(store, app_slug="pupular")
+    store.set_channel_mode("pupular", "x", "live", reviewer="tester")
+
+    # Register the stub for the duration of this test.
+    previous = connectors._REGISTRY.pop("x", None)
+    connectors.register("x", StubLiveX())
+    try:
+        events = pipe.publisher.publish_scheduled(store, app_slug="pupular")
+    finally:
+        connectors._REGISTRY.pop("x", None)
+        if previous is not None:
+            connectors._REGISTRY["x"] = previous
+
+    assert len(events) == 1
+    event = events[0]
+    assert event["mode"] == "live"
+    assert event["posted"] is True
+    assert event["payload"].get("fake_tweet_id") == "12345"
+    assert event["fallback_reason"] is None
+
+    audit_actions = [e["action"] for e in store.list_audit(app_slug="pupular", limit=200)]
+    assert "publish.live" in audit_actions
+
+    final_draft = store.load()["drafts"][draft["id"]]
+    assert final_draft["status"] == "posted"
+
+
 def test_dashboard_bulk_approve_and_reject_endpoints(isolate_home):
     from fastapi import FastAPI
     from fastapi.testclient import TestClient

@@ -32,6 +32,11 @@ class ScheduleBody(BaseModel):
     scheduled_for: Optional[str] = None
 
 
+class ChannelModeBody(BaseModel):
+    mode: str = Field(..., pattern="^(dry_run|live)$")
+    reviewer: str = "dashboard"
+
+
 def _store() -> MarketingFactoryStore:
     return MarketingFactoryStore()
 
@@ -191,4 +196,27 @@ async def schedule_approved(app_slug: Optional[str] = None):
 async def publish_scheduled_dry_run(app_slug: Optional[str] = None):
     store = _store()
     result = _pipe(store).publisher.dry_run_publish_scheduled(store, app_slug=app_slug)
+    return {"result": result, "overview": _overview(store)}
+
+
+@router.post("/publish")
+async def publish_scheduled_with_channel_modes(app_slug: Optional[str] = None):
+    """Channel-mode-aware publish. Drafts on channels marked `live` go through
+    the registered connector if available; everything else falls back to dry_run.
+    Always safe to call — no connectors are registered by default, so this
+    behaves identically to /publish-dry-run until a human wires one in."""
+    store = _store()
+    result = _pipe(store).publisher.publish_scheduled(store, app_slug=app_slug)
+    return {"result": result, "overview": _overview(store)}
+
+
+@router.post("/apps/{app_slug}/channels/{channel}/mode")
+async def set_channel_mode(app_slug: str, channel: str, body: ChannelModeBody):
+    store = _store()
+    try:
+        result = store.set_channel_mode(app_slug, channel, body.mode, reviewer=body.reviewer)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     return {"result": result, "overview": _overview(store)}

@@ -16,6 +16,12 @@ import os
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional
 
+from plugins.marketing_factory.connectors import (
+    BaseChannelConnector,
+    get_dry_run_connector,
+    get_live_connector,
+)
+from plugins.marketing_factory.connectors.base import ConnectorError
 from plugins.marketing_factory.model_dispatcher import dispatch, dispatch_json
 from plugins.marketing_factory.store import MarketingFactoryStore, utc_now
 
@@ -301,11 +307,51 @@ class SchedulerAgent:
 
 class PublisherAgent:
     def dry_run_publish_scheduled(self, store: MarketingFactoryStore, app_slug: Optional[str] = None) -> List[Dict[str, Any]]:
+        """Force a dry-run publish regardless of brand-profile `channel_modes`.
+
+        Kept for backward-compat with tests/dashboard/CLI and as the "preview"
+        primitive — never posts publicly. For the channel-mode-aware path,
+        callers should use `publish_scheduled`.
+        """
         events = []
         for schedule in store.list_schedules(app_slug=app_slug):
             draft = store.get_draft(schedule["draft_id"], app_slug=schedule["app_slug"])
             if draft["status"] == "scheduled":
                 events.append(store.dry_run_publish(draft["id"]))
+        return events
+
+    def publish_scheduled(self, store: MarketingFactoryStore, app_slug: Optional[str] = None) -> List[Dict[str, Any]]:
+        """Respect each draft's `channel_modes[channel]`:
+          - mode == "live" + a real connector registered → call connector.publish(draft)
+          - mode == "live" + no connector → dry_run + audit fallback("no_live_connector")
+          - mode == "live" + connector raises ConnectorError → dry_run + audit fallback(error)
+          - mode == "dry_run" (default) → DryRunConnector
+
+        Idempotent: drafts already in `posted` or `dry_run_posted` are skipped.
+        """
+        events: List[Dict[str, Any]] = []
+        for schedule in store.list_schedules(app_slug=app_slug):
+            draft = store.get_draft(schedule["draft_id"], app_slug=schedule["app_slug"])
+            if draft["status"] != "scheduled":
+                continue
+            app = store.require_app(draft["app_slug"])
+            channel = draft["channel"]
+            mode = (app.get("channel_modes") or {}).get(channel, "dry_run")
+            connector: Optional[BaseChannelConnector] = None
+            fallback_reason: Optional[str] = None
+            if mode == "live":
+                connector = get_live_connector(channel)
+                if connector is None:
+                    fallback_reason = "no_live_connector"
+            if connector is not None:
+                try:
+                    result = connector.publish(draft)
+                except ConnectorError as exc:
+                    fallback_reason = f"connector_error: {exc}"
+                    connector = None
+            if connector is None:
+                result = get_dry_run_connector().publish(draft)
+            events.append(store.record_publish_event(draft["id"], result, fallback_reason=fallback_reason))
         return events
 
 

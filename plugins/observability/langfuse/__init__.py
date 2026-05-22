@@ -19,6 +19,15 @@ Optional env vars:
   HERMES_LANGFUSE_SAMPLE_RATE - sampling rate 0.0–1.0 (default: 1.0)
   HERMES_LANGFUSE_MAX_CHARS   - max chars per field (default: 12000)
   HERMES_LANGFUSE_DEBUG       - set to "true" for verbose logging
+
+Dual export to a second OTLP endpoint (opt-in, no extra collector needed):
+  Setting OTEL_EXPORTER_OTLP_TRACES_ENDPOINT (or OTEL_EXPORTER_OTLP_ENDPOINT)
+  to an OTLP HTTP URL causes every Langfuse span to be mirrored to that
+  endpoint in addition to Langfuse Cloud — handy for keeping a copy in
+  Tempo, Phoenix, Datadog, etc. Headers, protocol, timeout, and other
+  exporter knobs are read from the standard OTEL_EXPORTER_OTLP_* env vars
+  (the OTLP exporter handles them; nothing extra to configure here).
+  Requires the optional ``opentelemetry-exporter-otlp-proto-http`` package.
 """
 from __future__ import annotations
 
@@ -137,6 +146,56 @@ def _validate_langfuse_key(env_name: str, value: str) -> Optional[str]:
     )
 
 
+def _build_dual_export_tracer_provider() -> Optional[Any]:
+    """If ``OTEL_EXPORTER_OTLP_TRACES_ENDPOINT`` (or
+    ``OTEL_EXPORTER_OTLP_ENDPOINT``) is set, build a ``TracerProvider``
+    with a ``BatchSpanProcessor`` wired to the OTLP HTTP exporter and
+    return it. The caller passes the provider to ``Langfuse(...)`` via
+    its ``tracer_provider`` kwarg; Langfuse then attaches its own
+    ``LangfuseSpanProcessor`` to the same provider, so every span is
+    exported to both Langfuse and the configured OTLP endpoint.
+
+    This is the documented "dual export" pattern — it keeps the existing
+    Langfuse experience intact while letting the operator mirror traces
+    into Tempo, Phoenix, Datadog, or any other OTel-compatible backend
+    without standing up a separate OpenTelemetry Collector.
+
+    All other OTLP knobs (headers, protocol, timeout, compression) are
+    read from the standard ``OTEL_EXPORTER_OTLP_*`` env vars by the
+    exporter itself; nothing else here needs to know about them.
+
+    Returns ``None`` when:
+
+    * The endpoint env var is unset (single-export — the prior behaviour).
+    * The optional ``opentelemetry-exporter-otlp-proto-http`` package is
+      not installed (fail-open with a one-line warning).
+    """
+    endpoint = (
+        _env("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT")
+        or _env("OTEL_EXPORTER_OTLP_ENDPOINT")
+    )
+    if not endpoint:
+        return None
+    try:
+        from opentelemetry.sdk.trace import TracerProvider
+        from opentelemetry.sdk.trace.export import BatchSpanProcessor
+        from opentelemetry.exporter.otlp.proto.http.trace_exporter import (
+            OTLPSpanExporter,
+        )
+    except ImportError as exc:
+        logger.warning(
+            "Langfuse: OTEL_EXPORTER_OTLP_(TRACES_)ENDPOINT is set but "
+            "opentelemetry-exporter-otlp-proto-http is not installed; "
+            "continuing with Langfuse-only export (%s)",
+            exc,
+        )
+        return None
+
+    provider = TracerProvider()
+    provider.add_span_processor(BatchSpanProcessor(OTLPSpanExporter()))
+    return provider
+
+
 def _get_langfuse() -> Optional[Langfuse]:
     """Return a cached Langfuse client, or ``None`` if unavailable.
 
@@ -208,6 +267,10 @@ def _get_langfuse() -> Optional[Langfuse]:
             kwargs["sample_rate"] = float(sample_rate)
         except ValueError:
             logger.warning("Invalid HERMES_LANGFUSE_SAMPLE_RATE=%r", sample_rate)
+
+    dual_provider = _build_dual_export_tracer_provider()
+    if dual_provider is not None:
+        kwargs["tracer_provider"] = dual_provider
 
     try:
         _LANGFUSE_CLIENT = Langfuse(**kwargs)

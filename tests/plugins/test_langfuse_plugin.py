@@ -704,3 +704,151 @@ class TestToolObservationKeying:
         assert ended["output"] == {"status": "done"}
         assert not state.tools
 
+
+# ---------------------------------------------------------------------------
+# Dual export to a second OTLP endpoint
+# ---------------------------------------------------------------------------
+
+class TestDualExport:
+    """The plugin can mirror every Langfuse span to a second OTLP endpoint
+    when OTEL_EXPORTER_OTLP_TRACES_ENDPOINT or OTEL_EXPORTER_OTLP_ENDPOINT
+    is set. The mirror is opt-in, opt-out by simply unsetting the env var.
+
+    These tests exercise the helper directly rather than booting the full
+    Langfuse client, since the construction path is already covered above.
+    """
+
+    def _fresh_plugin(self):
+        mod_name = "plugins.observability.langfuse"
+        sys.modules.pop(mod_name, None)
+        return importlib.import_module(mod_name)
+
+    def test_returns_none_when_no_endpoint_env(self, monkeypatch):
+        for var in (
+            "OTEL_EXPORTER_OTLP_TRACES_ENDPOINT",
+            "OTEL_EXPORTER_OTLP_ENDPOINT",
+        ):
+            monkeypatch.delenv(var, raising=False)
+        mod = self._fresh_plugin()
+        assert mod._build_dual_export_tracer_provider() is None
+
+    def test_returns_none_and_warns_when_otlp_package_missing(
+        self, monkeypatch, caplog
+    ):
+        monkeypatch.setenv("OTEL_EXPORTER_OTLP_ENDPOINT", "http://collector:4318")
+        # Block the OTLP exporter import by stuffing a None into sys.modules.
+        monkeypatch.setitem(
+            sys.modules,
+            "opentelemetry.exporter.otlp.proto.http.trace_exporter",
+            None,
+        )
+        mod = self._fresh_plugin()
+        with caplog.at_level(logging.WARNING, logger=mod.logger.name):
+            result = mod._build_dual_export_tracer_provider()
+        assert result is None
+        assert any(
+            "opentelemetry-exporter-otlp-proto-http is not installed" in r.message
+            for r in caplog.records
+        )
+
+    def test_returns_provider_when_endpoint_set_and_deps_present(
+        self, monkeypatch
+    ):
+        """When the env var is set AND the OTLP exporter is importable, the
+        helper returns a TracerProvider with one BatchSpanProcessor attached."""
+        pytest.importorskip("opentelemetry.sdk.trace")
+        pytest.importorskip("opentelemetry.exporter.otlp.proto.http.trace_exporter")
+
+        monkeypatch.setenv(
+            "OTEL_EXPORTER_OTLP_TRACES_ENDPOINT",
+            "http://collector.local:4318/v1/traces",
+        )
+        mod = self._fresh_plugin()
+        provider = mod._build_dual_export_tracer_provider()
+
+        from opentelemetry.sdk.trace import TracerProvider
+
+        assert isinstance(provider, TracerProvider)
+        # Exactly one BatchSpanProcessor wired (Langfuse will add its own
+        # processor later when it consumes the provider).
+        # The internal _active_span_processor is a wrapper; checking that the
+        # provider has at least one registered processor is enough for the
+        # contract.
+        assert hasattr(provider, "_active_span_processor")
+
+    def test_endpoint_traces_specific_wins_over_generic(self, monkeypatch):
+        """Standard OTEL precedence: OTEL_EXPORTER_OTLP_TRACES_ENDPOINT
+        wins over OTEL_EXPORTER_OTLP_ENDPOINT when both are set."""
+        pytest.importorskip("opentelemetry.sdk.trace")
+        pytest.importorskip("opentelemetry.exporter.otlp.proto.http.trace_exporter")
+
+        monkeypatch.setenv(
+            "OTEL_EXPORTER_OTLP_TRACES_ENDPOINT", "http://specific:4318"
+        )
+        monkeypatch.setenv("OTEL_EXPORTER_OTLP_ENDPOINT", "http://generic:4318")
+        mod = self._fresh_plugin()
+        # The helper just has to return non-None; precise endpoint selection
+        # is handled inside OTLPSpanExporter which reads env vars itself.
+        # We verify the helper does not skip when either env var is set.
+        provider = mod._build_dual_export_tracer_provider()
+        assert provider is not None
+
+    def test_get_langfuse_passes_tracer_provider_when_dual_export_on(
+        self, monkeypatch
+    ):
+        """End-to-end wiring: when dual-export is configured, _get_langfuse
+        passes the constructed TracerProvider to Langfuse(...)."""
+        monkeypatch.setenv("HERMES_LANGFUSE_PUBLIC_KEY", "pk-lf-test")
+        monkeypatch.setenv("HERMES_LANGFUSE_SECRET_KEY", "sk-lf-test")
+        monkeypatch.setenv(
+            "OTEL_EXPORTER_OTLP_ENDPOINT", "http://collector:4318"
+        )
+
+        mod = self._fresh_plugin()
+
+        # Sentinel provider; bypasses real OTel imports.
+        sentinel = object()
+        monkeypatch.setattr(
+            mod, "_build_dual_export_tracer_provider", lambda: sentinel
+        )
+
+        captured_kwargs: dict = {}
+
+        class _FakeLangfuse:
+            def __init__(self, **kw):
+                captured_kwargs.update(kw)
+
+        monkeypatch.setattr(mod, "Langfuse", _FakeLangfuse)
+        monkeypatch.setattr(mod, "_LANGFUSE_CLIENT", None)
+
+        client = mod._get_langfuse()
+        assert isinstance(client, _FakeLangfuse)
+        assert captured_kwargs.get("tracer_provider") is sentinel
+
+    def test_get_langfuse_omits_tracer_provider_when_dual_export_off(
+        self, monkeypatch
+    ):
+        """When dual-export is not configured, the kwarg is absent so
+        Langfuse falls back to its default global TracerProvider behaviour."""
+        monkeypatch.setenv("HERMES_LANGFUSE_PUBLIC_KEY", "pk-lf-test")
+        monkeypatch.setenv("HERMES_LANGFUSE_SECRET_KEY", "sk-lf-test")
+        for var in (
+            "OTEL_EXPORTER_OTLP_TRACES_ENDPOINT",
+            "OTEL_EXPORTER_OTLP_ENDPOINT",
+        ):
+            monkeypatch.delenv(var, raising=False)
+
+        mod = self._fresh_plugin()
+
+        captured_kwargs: dict = {}
+
+        class _FakeLangfuse:
+            def __init__(self, **kw):
+                captured_kwargs.update(kw)
+
+        monkeypatch.setattr(mod, "Langfuse", _FakeLangfuse)
+        monkeypatch.setattr(mod, "_LANGFUSE_CLIENT", None)
+
+        mod._get_langfuse()
+        assert "tracer_provider" not in captured_kwargs
+

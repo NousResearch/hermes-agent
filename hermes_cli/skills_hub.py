@@ -13,6 +13,7 @@ handler are thin wrappers that parse args and delegate.
 import json
 import re
 import shutil
+import sys
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -414,7 +415,7 @@ def do_browse(page: int = 1, page_size: int = 20, source: str = "all",
 def do_install(identifier: str, category: str = "", force: bool = False,
                console: Optional[Console] = None, skip_confirm: bool = False,
                invalidate_cache: bool = True,
-               name_override: str = "") -> None:
+               name_override: str = "") -> bool:
     """Fetch, quarantine, scan, confirm, and install a skill.
 
     ``name_override`` lets non-interactive callers (slash commands, gateway,
@@ -423,6 +424,10 @@ def do_install(identifier: str, category: str = "", force: bool = False,
     triggers a prompt instead; ``skip_confirm=True`` means "non-interactive"
     (so pair it with ``name_override`` when installing from a URL that has
     no frontmatter).
+
+    Returns ``True`` when the requested skill is installed or already present,
+    and ``False`` when resolution, fetch, scan, confirmation, or installation
+    prevents the install from completing.
     """
     from tools.skills_hub import (
         GitHubAuth, create_source_router, ensure_hub_dirs,
@@ -441,7 +446,7 @@ def do_install(identifier: str, category: str = "", force: bool = False,
     if "/" not in identifier:
         identifier = _resolve_short_name(identifier, sources, c)
         if not identifier:
-            return
+            return False
 
     c.print(f"\n[bold]Fetching:[/] {identifier}")
 
@@ -465,7 +470,7 @@ def do_install(identifier: str, category: str = "", force: bool = False,
             )
         else:
             c.print()
-        return
+        return False
 
     # URL-sourced skills may arrive with an empty name when SKILL.md has no
     # ``name:`` in frontmatter AND the URL path doesn't yield a valid
@@ -482,7 +487,7 @@ def do_install(identifier: str, category: str = "", force: bool = False,
                 "Must be a lowercase identifier (letters, digits, hyphens, "
                 "underscores; starts with a letter).\n"
             )
-            return
+            return False
         elif skip_confirm:
             # Non-interactive surface (slash command / TUI / gateway). Can't
             # prompt — emit an actionable error.
@@ -497,14 +502,14 @@ def do_install(identifier: str, category: str = "", force: bool = False,
                 "[dim]Or ask the SKILL.md's author to add a `name:` field to "
                 "its YAML frontmatter.[/]\n"
             )
-            return
+            return False
         else:
             # Interactive TTY — prompt.
             url = bundle_meta.get("url") or identifier
             chosen = _prompt_for_skill_name(c, url)
             if not chosen:
                 c.print("[dim]Installation cancelled.[/]\n")
-                return
+                return False
             bundle.name = chosen
             bundle_meta["awaiting_name"] = False
         # Keep SkillMeta in sync so downstream "already installed" checks,
@@ -532,7 +537,7 @@ def do_install(identifier: str, category: str = "", force: bool = False,
         c.print(f"[yellow]Warning:[/] '{bundle.name}' is already installed at {existing['install_path']}")
         if not force:
             c.print("Use --force to reinstall.\n")
-            return
+            return True
 
     extra_metadata = dict(getattr(meta, "extra", {}) or {})
     extra_metadata.update(getattr(bundle, "metadata", {}) or {})
@@ -545,7 +550,7 @@ def do_install(identifier: str, category: str = "", force: bool = False,
         from tools.skills_hub import append_audit_log
         append_audit_log("BLOCKED", bundle.name, bundle.source,
                          bundle.trust_level, "invalid_path", str(exc))
-        return
+        return False
     c.print(f"[dim]Quarantined to {q_path.relative_to(q_path.parent.parent.parent)}[/]")
 
     # Scan
@@ -564,7 +569,7 @@ def do_install(identifier: str, category: str = "", force: bool = False,
         append_audit_log("BLOCKED", bundle.name, bundle.source,
                          bundle.trust_level, result.verdict,
                          f"{len(result.findings)}_findings")
-        return
+        return False
 
     if extra_metadata:
         metadata_lines = _format_extra_metadata_lines(extra_metadata)
@@ -602,7 +607,7 @@ def do_install(identifier: str, category: str = "", force: bool = False,
         if answer not in {"y", "yes"}:
             c.print("[dim]Installation cancelled.[/]\n")
             shutil.rmtree(q_path, ignore_errors=True)
-            return
+            return False
 
     # Install
     try:
@@ -613,7 +618,7 @@ def do_install(identifier: str, category: str = "", force: bool = False,
         from tools.skills_hub import append_audit_log
         append_audit_log("BLOCKED", bundle.name, bundle.source,
                          bundle.trust_level, "invalid_path", str(exc))
-        return
+        return False
     from tools.skills_hub import SKILLS_DIR
     c.print(f"[bold green]Installed:[/] {install_dir.relative_to(SKILLS_DIR)}")
     c.print(f"[dim]Files: {', '.join(bundle.files.keys())}[/]\n")
@@ -628,6 +633,8 @@ def do_install(identifier: str, category: str = "", force: bool = False,
     else:
         c.print("[dim]Skill will be available in your next session.[/]")
         c.print("[dim]Use /reset to start a new session now, or --now to activate immediately (invalidates prompt cache).[/]\n")
+
+    return True
 
 
 def do_inspect(identifier: str, console: Optional[Console] = None) -> None:
@@ -1328,9 +1335,11 @@ def skills_command(args) -> None:
     elif action == "search":
         do_search(args.query, source=args.source, limit=args.limit)
     elif action == "install":
-        do_install(args.identifier, category=args.category, force=args.force,
-                   skip_confirm=getattr(args, "yes", False),
-                   name_override=getattr(args, "name", "") or "")
+        installed = do_install(args.identifier, category=args.category, force=args.force,
+                               skip_confirm=getattr(args, "yes", False),
+                               name_override=getattr(args, "name", "") or "")
+        if installed is False:
+            sys.exit(1)
     elif action == "inspect":
         do_inspect(args.identifier)
     elif action == "list":

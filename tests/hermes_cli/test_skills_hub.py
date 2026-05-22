@@ -1,4 +1,5 @@
 from io import StringIO
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import pytest
@@ -316,6 +317,75 @@ def test_do_install_scans_with_resolved_identifier(monkeypatch, tmp_path, hub_en
     do_install("skils-sh/anthropics/skills/frontend-design", console=console, skip_confirm=True)
 
     assert scanned["source"] == canonical_identifier
+
+
+def test_do_install_unknown_short_name_returns_false(monkeypatch):
+    import tools.skills_hub as hub
+
+    monkeypatch.setattr(hub, "ensure_hub_dirs", lambda: None)
+    monkeypatch.setattr(hub, "GitHubAuth", lambda: object())
+    monkeypatch.setattr(hub, "create_source_router", lambda auth: [])
+    monkeypatch.setattr(
+        hub,
+        "unified_search",
+        lambda query, sources, source_filter="all", limit=20: [],
+    )
+
+    sink = StringIO()
+    console = Console(file=sink, force_terminal=False, color_system=None)
+
+    assert do_install(
+        "definitely-not-a-real-skill-zzz",
+        console=console,
+        skip_confirm=True,
+    ) is False
+    assert "No skill named 'definitely-not-a-real-skill-zzz' found" in sink.getvalue()
+
+
+def test_do_install_suggested_short_name_returns_false(monkeypatch):
+    import tools.skills_hub as hub
+
+    monkeypatch.setattr(hub, "ensure_hub_dirs", lambda: None)
+    monkeypatch.setattr(hub, "GitHubAuth", lambda: object())
+    monkeypatch.setattr(hub, "create_source_router", lambda auth: [])
+    monkeypatch.setattr(
+        hub,
+        "unified_search",
+        lambda query, sources, source_filter="all", limit=20: [
+            SimpleNamespace(
+                name="conceptual-diagram",
+                identifier="official/creative/conceptual-diagram",
+            )
+        ],
+    )
+
+    sink = StringIO()
+    console = Console(file=sink, force_terminal=False, color_system=None)
+
+    assert do_install("concept-diagram", console=console, skip_confirm=True) is False
+    output = sink.getvalue()
+    assert "No exact match for 'concept-diagram'" in output
+    assert "official/creative/conceptual-diagram" in output
+
+
+def test_skills_command_exits_nonzero_when_install_fails(monkeypatch):
+    import hermes_cli.skills_hub as cli_hub
+
+    monkeypatch.setattr(cli_hub, "do_install", lambda *args, **kwargs: False)
+
+    args = SimpleNamespace(
+        skills_action="install",
+        identifier="definitely-not-a-real-skill-zzz",
+        category="",
+        force=False,
+        yes=True,
+        name="",
+    )
+
+    with pytest.raises(SystemExit) as exc:
+        cli_hub.skills_command(args)
+
+    assert exc.value.code == 1
 
 
 # ---------------------------------------------------------------------------

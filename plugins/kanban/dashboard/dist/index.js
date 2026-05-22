@@ -86,6 +86,25 @@
     return body || raw;
   }
 
+  // Assignment pickers should show every installed Hermes profile, even on a
+  // fresh board where no task has been assigned yet. Keep task-derived
+  // assignees as a fallback/extension so external worker lanes remain usable.
+  function profileAssignmentOptions(board, fallbackAssignees) {
+    const seen = new Set();
+    const out = [];
+    const add = function (name, description) {
+      const value = String(name || "").trim();
+      if (!value || seen.has(value)) return;
+      seen.add(value);
+      out.push({ name: value, description: description || "" });
+    };
+    for (const p of ((board && board.profiles) || [])) {
+      add((p && p.name) || p, p && p.description);
+    }
+    for (const a of (fallbackAssignees || (board && board.assignees) || [])) add(a, "");
+    return out;
+  }
+
   // Order matches BOARD_COLUMNS in plugin_api.py.
   const COLUMN_ORDER = ["triage", "todo", "ready", "running", "blocked", "done"];
   // English fallback dictionaries — used when the i18n catalog is missing
@@ -1011,7 +1030,7 @@
         }),
        selectedIds.size > 0 ? h(BulkActionBar, {
          count: selectedIds.size,
-         assignees: (boardData && boardData.assignees) || [],
+         assignees: profileAssignmentOptions(boardData),
          onApply: applyBulk,
          onClear: clearSelected,
          onSelectAllVisible: selectAllVisible,
@@ -1035,6 +1054,7 @@
           onOpen: setSelectedTaskId,
           onCreate: createTask,
           allTasks: boardData.columns.reduce(function (acc, c) { return acc.concat(c.tasks); }, []),
+          assignees: profileAssignmentOptions(boardData),
         }),
         selectedTaskId ? h(TaskDrawer, {
           taskId: selectedTaskId,
@@ -1043,7 +1063,7 @@
           onRefresh: loadBoard,
           renderMarkdown: renderMd,
           allTasks: boardData.columns.reduce(function (acc, c) { return acc.concat(c.tasks); }, []),
-          assignees: (boardData && boardData.assignees) || [],
+          assignees: profileAssignmentOptions(boardData),
           eventTick: taskEventTick[selectedTaskId] || 0,
         }) : null,
       ),
@@ -1379,7 +1399,10 @@
             },
               h("option", { value: "" }, "(unassigned)"),
               (assignees || []).map(function (a) {
-                return h("option", { key: a, value: a }, a);
+                const name = (a && a.name) || a;
+                const desc = a && a.description;
+                return h("option", { key: name, value: name, title: desc || "" },
+                  desc ? `${name} — ${desc.slice(0, 60)}` : name);
               }),
             ),
           )
@@ -1956,7 +1979,7 @@
   function BoardToolbar(props) {
     const { t } = useI18n();
     const tenants = (props.board && props.board.tenants) || [];
-    const assignees = (props.board && props.board.assignees) || [];
+    const assignees = profileAssignmentOptions(props.board);
     return h("div", { className: "flex flex-wrap items-end gap-3" },
       h("div", { className: "flex flex-col gap-1",
                  title: "Fuzzy-match tasks by id, title, or description. Matches across all columns." },
@@ -1990,7 +2013,10 @@
         }, selectChangeHandler(props.setAssigneeFilter)),
           h(SelectOption, { value: "" }, tx(t, "allProfiles", "All profiles")),
           assignees.map(function (a) {
-            return h(SelectOption, { key: a, value: a }, a);
+            const name = (a && a.name) || a;
+            const desc = a && a.description;
+            return h(SelectOption, { key: name, value: name, title: desc || "" },
+              desc ? `${name} — ${desc.slice(0, 60)}` : name);
           }),
         ),
       ),
@@ -2119,8 +2145,14 @@
         }, selectChangeHandler(setAssignee)),
           h(SelectOption, { value: "" }, "— reassign —"),
           h(SelectOption, { value: "__none__" }, "(unassign)"),
-          props.assignees.map(function (a) {
-            return h(SelectOption, { key: a, value: a }, a);
+          (props.assignees || []).map(function (a) {
+            const name = (a && a.name) || a;
+            const desc = a && a.description;
+            return h(SelectOption, {
+              key: name,
+              value: name,
+              title: desc || "",
+            }, desc ? `${name} — ${desc.slice(0, 60)}` : name);
           }),
         ),
         h(Button, {
@@ -2245,6 +2277,7 @@
           onOpen: props.onOpen,
           onCreate: props.onCreate,
           allTasks: props.allTasks,
+          assignees: props.assignees,
         });
       }),
       h(TrashDropZone, {
@@ -2353,6 +2386,7 @@
       showCreate ? h(InlineCreate, {
         columnName: props.column.name,
         allTasks: props.allTasks,
+        assignees: props.assignees,
         onSubmit: function (body) {
           props.onCreate(body).then(function () { setShowCreate(false); });
         },
@@ -2653,21 +2687,26 @@
         rows: 2,
       }),
       h("div", { className: "flex gap-2" },
-        h(Input, {
+        h(Select, Object.assign({
           value: assignee,
-          onChange: function (e) { setAssignee(e.target.value); },
-          placeholder: props.columnName === "triage"
-            ? tx(t, "specifier", "specifier")
-            : tx(t, "assigneePlaceholder", "assignee"),
           className: "h-7 text-xs flex-1",
           title: props.columnName === "triage"
             ? "Hermes profile that will spec this task (default: the dispatcher's configured specifier). Leave blank to let the dispatcher pick."
             : "Hermes profile to assign. Leave blank and the dispatcher will pick from available profiles when the task is Ready.",
-          style: { textTransform: "none" },
-          autoCapitalize: "none",
-          autoCorrect: "off",
-          spellCheck: false,
-        }),
+        }, selectChangeHandler(setAssignee)),
+          h(SelectOption, { value: "" }, props.columnName === "triage"
+            ? tx(t, "specifierDefault", "— default specifier —")
+            : tx(t, "assigneeDefault", "— unassigned / auto-pick —")),
+          (props.assignees || []).map(function (a) {
+            const name = (a && a.name) || a;
+            const desc = a && a.description;
+            return h(SelectOption, {
+              key: name,
+              value: name,
+              title: desc || "",
+            }, desc ? `${name} — ${desc.slice(0, 60)}` : name);
+          }),
+        ),
         h(Input, {
           type: "number",
           value: priority,
@@ -2994,7 +3033,7 @@
       ),
       h("div", { className: "hermes-kanban-drawer-meta" },
         h(MetaRow, { label: tx(i18n, "status", "Status"), value: t.status }),
-        h(AssigneeEditor, { task: t, onPatch: props.onPatch }),
+        h(AssigneeEditor, { task: t, onPatch: props.onPatch, assignees: props.assignees }),
         h(PriorityEditor, { task: t, onPatch: props.onPatch }),
         t.tenant ? h(MetaRow, { label: tx(i18n, "tenant", "Tenant"), value: t.tenant }) : null,
         h(MetaRow, {
@@ -3271,6 +3310,19 @@
     const [editing, setEditing] = useState(false);
     const [v, setV] = useState(props.task.assignee || "");
     useEffect(function () { setV(props.task.assignee || ""); }, [props.task.assignee]);
+    const options = useMemo(function () {
+      const seen = new Set();
+      const out = [];
+      const add = function (name, description) {
+        const value = String(name || "").trim();
+        if (!value || seen.has(value)) return;
+        seen.add(value);
+        out.push({ name: value, description: description || "" });
+      };
+      add(props.task.assignee || "", "");
+      for (const a of (props.assignees || [])) add((a && a.name) || a, a && a.description);
+      return out;
+    }, [props.assignees, props.task.assignee]);
     if (!editing) {
       return h("div", { className: "hermes-kanban-meta-row" },
         h("span", { className: "hermes-kanban-meta-label" }, tx(t, "assignee", "Assignee")),
@@ -3286,20 +3338,27 @@
     };
     return h("div", { className: "hermes-kanban-meta-row" },
       h("span", { className: "hermes-kanban-meta-label" }, tx(t, "assignee", "Assignee")),
-      h(Input, {
-        value: v, autoFocus: true,
-        onChange: function (e) { setV(e.target.value); },
-        onKeyDown: function (e) {
-          if (e.key === "Enter") { e.preventDefault(); save(); }
-          if (e.key === "Escape") setEditing(false);
-        },
-        placeholder: tx(t, "emptyAssignee", "(empty = unassign)"),
-        className: "h-7 text-xs flex-1",
-        style: { textTransform: "none" },
-        autoCapitalize: "none",
-        autoCorrect: "off",
-        spellCheck: false,
-      }),
+      h("div", { className: "flex flex-1 items-center gap-1" },
+        h(Select, Object.assign({
+          value: v,
+          className: "h-7 text-xs flex-1",
+          onKeyDown: function (e) {
+            if (e.key === "Enter") { e.preventDefault(); save(); }
+            if (e.key === "Escape") setEditing(false);
+          },
+        }, selectChangeHandler(setV)),
+          h(SelectOption, { value: "" }, tx(t, "emptyAssignee", "(empty = unassign)")),
+          options.map(function (a) {
+            return h(SelectOption, {
+              key: a.name,
+              value: a.name,
+              title: a.description || "",
+            }, a.description ? `${a.name} — ${a.description.slice(0, 60)}` : a.name);
+          }),
+        ),
+        h(Button, { onClick: save, size: "sm" }, tx(t, "save", "Save")),
+        h(Button, { onClick: function () { setEditing(false); setV(props.task.assignee || ""); }, size: "sm" }, tx(t, "cancel", "Cancel")),
+      ),
     );
   }
 

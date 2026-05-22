@@ -12,6 +12,7 @@ import os
 import sys
 import time
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from fastapi import FastAPI
@@ -76,7 +77,61 @@ def test_board_empty(client):
     assert all(len(c["tasks"]) == 0 for c in data["columns"])
     assert data["tenants"] == []
     assert data["assignees"] == []
+    assert "profiles" in data
     assert data["latest_event_id"] == 0
+
+
+def test_board_includes_installed_profile_options(client, monkeypatch):
+    from hermes_cli import profiles as profiles_mod
+
+    monkeypatch.setattr(
+        profiles_mod,
+        "list_profiles",
+        lambda: [
+            SimpleNamespace(
+                name="default",
+                description="General Hermes profile",
+                is_default=True,
+            ),
+            SimpleNamespace(
+                name="engineer",
+                description="Implements software tasks",
+                is_default=False,
+            ),
+        ],
+    )
+
+    r = client.get("/api/plugins/kanban/board")
+    assert r.status_code == 200
+    data = r.json()
+    assert data["assignees"] == []
+    assert data["profiles"] == [
+        {
+            "name": "default",
+            "description": "General Hermes profile",
+            "is_default": True,
+        },
+        {
+            "name": "engineer",
+            "description": "Implements software tasks",
+            "is_default": False,
+        },
+    ]
+
+
+def test_board_loads_when_profile_discovery_fails(client, monkeypatch):
+    from hermes_cli import profiles as profiles_mod
+
+    def boom():
+        raise RuntimeError("profile scan failed")
+
+    monkeypatch.setattr(profiles_mod, "list_profiles", boom)
+
+    r = client.get("/api/plugins/kanban/board")
+    assert r.status_code == 200
+    data = r.json()
+    assert data["profiles"] == []
+    assert "columns" in data
 
 
 # ---------------------------------------------------------------------------

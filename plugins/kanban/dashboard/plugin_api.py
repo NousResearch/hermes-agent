@@ -462,7 +462,9 @@ def get_board(
                 "SELECT DISTINCT tenant FROM tasks WHERE tenant IS NOT NULL ORDER BY tenant"
             )
         ]
-        # List of distinct assignees for the lane-by-profile sub-grouping.
+        # List of distinct assignees for the lane-by-profile sub-grouping and
+        # filtering. This is task-derived so external/custom assignees still
+        # appear even if they are not installed Hermes profiles.
         assignees = [
             r["assignee"]
             for r in conn.execute(
@@ -470,6 +472,24 @@ def get_board(
                 "AND status != 'archived' ORDER BY assignee"
             )
         ]
+        # Installed Hermes profiles for assignment dropdowns. Keep this
+        # separate from task-derived assignees: operators should be able to
+        # assign a fresh board to an installed profile before that profile has
+        # any existing tasks. If profile discovery fails, degrade gracefully to
+        # an empty list so the dashboard still loads.
+        try:
+            from hermes_cli import profiles as profiles_mod
+            profile_options = [
+                {
+                    "name": p.name,
+                    "description": p.description or "",
+                    "is_default": bool(p.is_default),
+                }
+                for p in profiles_mod.list_profiles()
+            ]
+        except Exception as exc:
+            log.warning("kanban dashboard failed to list profiles: %s", exc)
+            profile_options = []
 
         return {
             "columns": [
@@ -477,6 +497,7 @@ def get_board(
             ],
             "tenants": tenants,
             "assignees": assignees,
+            "profiles": profile_options,
             "latest_event_id": int(latest_event_id),
             "now": int(time.time()),
         }

@@ -6137,9 +6137,16 @@ def _apply_yaml_config(yaml_cfg: dict, discord_cfg: dict) -> dict | None:
 
 
 def _is_connected(config) -> bool:
-    """Discord is considered connected when DISCORD_BOT_TOKEN is set."""
-    import os
-    return bool(os.getenv("DISCORD_BOT_TOKEN", "").strip())
+    """Discord is considered connected when DISCORD_BOT_TOKEN is set.
+
+    Looks up via ``hermes_cli.gateway.get_env_value`` at call time (not via
+    the plugin's own bound import) so tests that patch ``gateway_mod.get_env_value``
+    — including ``test_setup_openclaw_migration`` — can suppress ambient
+    ``DISCORD_BOT_TOKEN`` env vars. Matches what the legacy
+    ``_PLATFORMS["discord"]`` dispatch did before this migration.
+    """
+    import hermes_cli.gateway as gateway_mod
+    return bool((gateway_mod.get_env_value("DISCORD_BOT_TOKEN") or "").strip())
 
 
 def _build_adapter(config):

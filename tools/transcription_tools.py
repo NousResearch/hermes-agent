@@ -217,6 +217,22 @@ def _try_lazy_install_stt() -> bool:
     return False
 
 
+# Names of the 6 STT providers with native handlers in this module.
+# Kept in sync with ``agent.transcription_registry._BUILTIN_NAMES`` —
+# a regression test fails if they drift. The plugin hook from
+# issue #30398-style follow-up rejects plugins registering under any
+# of these names; the dispatcher in ``transcribe_audio`` short-circuits
+# them defensively as well.
+BUILTIN_STT_PROVIDERS = frozenset({
+    "local",
+    "local_command",
+    "groq",
+    "openai",
+    "mistral",
+    "xai",
+})
+
+
 def _get_provider(stt_config: dict) -> str:
     """Determine which STT provider to use.
 
@@ -326,6 +342,142 @@ def _get_provider(stt_config: dict) -> str:
     except Exception:
         pass
     return "none"
+
+
+# ---------------------------------------------------------------------------
+# Plugin provider dispatch (issue follow-up to #30398 — STT pluggability)
+# ---------------------------------------------------------------------------
+
+
+def _dispatch_to_plugin_provider(
+    file_path: str,
+    provider: str,
+    *,
+    model: Optional[str] = None,
+    language: Optional[str] = None,
+) -> Optional[Dict[str, Any]]:
+    """Route the call to a plugin-registered transcription provider, or
+    return None.
+
+    Returns the transcribe-response dict on dispatch, or ``None`` to
+    fall through to the legacy "No STT provider available" error path.
+
+    Resolution invariants enforced here:
+
+    1. Built-in provider names short-circuit — never reach the plugin
+       registry. The caller (``transcribe_audio``) handles ``local``,
+       ``groq``, ``openai``, etc. via its existing elif chain; this
+       function defensively rejects those names so a plugin can't be
+       silently dispatched under a built-in name even if it somehow
+       slipped past the registry's built-in shadow guard.
+    2. Plugin dispatch fires only when ``provider`` matches a
+       registered :class:`TranscriptionProvider` whose ``name`` equals
+       the configured value. Unknown names with no plugin registered
+       return None (caller surfaces the legacy "No STT provider"
+       message).
+    3. Availability gating: when the matched plugin reports
+       ``is_available() == False`` (missing API key, missing optional
+       SDK, etc.) this returns an error envelope identifying the
+       plugin as unavailable — **not** ``None`` — because the user
+       explicitly opted into this plugin via ``stt.provider`` and the
+       generic fallthrough message would be misleading.
+
+    Provider exceptions are caught and converted into the standard
+    error envelope (matches the legacy built-in error shapes — the
+    gateway/CLI caller already expects ``{success: False, error:
+    "...", transcript: ""}`` on failure).
+    """
+    if not provider:
+        return None
+    key = provider.lower().strip()
+    if key in BUILTIN_STT_PROVIDERS or key == "none":
+        return None
+    try:
+        from agent.transcription_registry import get_provider
+        from hermes_cli.plugins import _ensure_plugins_discovered
+
+        _ensure_plugins_discovered()
+        plugin_provider = get_provider(key)
+        if plugin_provider is None:
+            # Long-lived sessions may have discovered plugins before a
+            # bundled backend was patched in or before config changed.
+            # Retry once with a forced refresh before surfacing fall-
+            # through. Mirrors the image_gen / browser dispatcher
+            # recovery pattern.
+            _ensure_plugins_discovered(force=True)
+            plugin_provider = get_provider(key)
+    except Exception as exc:  # noqa: BLE001 — discovery failure is non-fatal
+        logger.debug("STT plugin dispatch skipped (discovery failed): %s", exc)
+        return None
+    if plugin_provider is None:
+        return None
+
+    # Availability gate: when a plugin reports it's not configured
+    # (missing API key, missing optional SDK, etc.) surface a clean
+    # error envelope **instead of** falling through to the generic
+    # "No STT provider" message. The user explicitly set
+    # ``stt.provider: <plugin>`` in config — surfacing the plugin's
+    # own availability failure is more actionable than the generic
+    # auto-detect-failure error, and avoids routing the call into a
+    # plugin that's about to crash messily.
+    #
+    # ``is_available()`` MUST NOT raise per the ABC contract; defend
+    # anyway so a buggy plugin can't break dispatch for everyone.
+    try:
+        available = plugin_provider.is_available()
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(
+            "STT plugin provider '%s' is_available() raised: %s — "
+            "treating as unavailable", key, exc, exc_info=True,
+        )
+        available = False
+    if not available:
+        logger.info(
+            "STT plugin provider '%s' reports not available; returning "
+            "unavailability envelope.", key,
+        )
+        return {
+            "success": False,
+            "transcript": "",
+            "error": (
+                f"STT plugin '{key}' is not available — check that its "
+                "required credentials / dependencies are configured."
+            ),
+            "provider": key,
+        }
+
+    logger.info("Transcribing with plugin STT provider '%s'...", key)
+    try:
+        result = plugin_provider.transcribe(
+            file_path,
+            model=model,
+            language=language,
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(
+            "STT plugin provider '%s' raised: %s", key, exc, exc_info=True,
+        )
+        return {
+            "success": False,
+            "transcript": "",
+            "error": f"STT plugin '{key}' raised: {exc}",
+            "provider": key,
+        }
+
+    # Defensive: plugins should return a dict matching the contract. If
+    # they don't, surface a clear error envelope rather than leaking a
+    # weird object back to the gateway.
+    if not isinstance(result, dict):
+        return {
+            "success": False,
+            "transcript": "",
+            "error": f"STT plugin '{key}' returned a non-dict result",
+            "provider": key,
+        }
+    # Stamp provider if the plugin forgot to.
+    result.setdefault("provider", key)
+    return result
+
 
 # ---------------------------------------------------------------------------
 # Shared validation
@@ -905,6 +1057,30 @@ def transcribe_audio(file_path: str, model: Optional[str] = None) -> Dict[str, A
         # xAI Grok STT doesn't use a model parameter — pass through for logging
         model_name = model or "grok-stt"
         return _transcribe_xai(file_path, model_name)
+
+    # Plugin-registered STT backend (e.g. OpenRouter, SenseAudio,
+    # Gemini-STT). Fires only when ``provider`` is neither a built-in
+    # nor ``"none"``. The dispatcher enforces built-ins-always-win
+    # defensively. Returns None when no plugin is registered for the
+    # configured name, falling through to the legacy "No STT provider"
+    # error message below.
+    #
+    # Plugin-scoped config namespace mirrors the built-in pattern
+    # (``stt.openai.model``, ``stt.mistral.model``): plugins read their
+    # per-provider config under ``stt.<provider>`` and the dispatcher
+    # forwards ``language`` from there. Top-level ``model`` argument
+    # overrides any config-set model.
+    plugin_cfg = stt_config.get(provider, {}) if isinstance(stt_config.get(provider), dict) else {}
+    plugin_language = plugin_cfg.get("language")
+    plugin_model = model or plugin_cfg.get("model")
+    plugin_result = _dispatch_to_plugin_provider(
+        file_path,
+        provider,
+        model=plugin_model,
+        language=plugin_language,
+    )
+    if plugin_result is not None:
+        return plugin_result
 
     # No provider available
     return {

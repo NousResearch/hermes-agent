@@ -48,5 +48,27 @@
   },
   "engines": {
     "node": ">=20.0"
+  },
+  "overrides": {
+    "@babel/plugin-transform-modules-systemjs": "7.29.4",
+    "brace-expansion": "1.1.13",
+    "dompurify": "3.4.5",
+    "fast-uri": "3.1.2",
+    "follow-redirects": "1.16.0",
+    "lodash": "4.18.1",
+    "lodash-es": "4.18.1",
+    "mermaid": "11.15.0",
+    "picomatch": "2.3.2",
+    "postcss": "8.5.15",
+    "qs": "6.15.2",
+    "serialize-javascript": "7.0.5",
+    "sirv": "3.0.2",
+    "undici": "7.24.0",
+    "uuid": "11.1.1",
+    "webpack-dev-server": "5.2.4",
+    "ws": "8.20.1",
+    "express": {
+      "path-to-regexp": "0.1.13"
+    }
   }
 }

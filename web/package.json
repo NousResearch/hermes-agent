@@ -46,5 +46,8 @@
     "typescript": "~5.9.3",
     "typescript-eslint": "^8.56.1",
     "vite": "^7.3.1"
+  },
+  "overrides": {
+    "sanitize-html": "^2.17.4"
   }
 }

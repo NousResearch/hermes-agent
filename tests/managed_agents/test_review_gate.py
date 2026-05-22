@@ -182,4 +182,3 @@ def test_review_result_is_serializable(tmp_path):
     payload = result.to_dict()
     assert payload["severity"]["p2"] == 1
     assert payload["optional_fixes"] == ["tune copy"]
-

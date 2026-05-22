@@ -163,4 +163,3 @@ rules: []
 
     with pytest.raises(PolicyEngineError, match="priority_order"):
         load_policy_engine(path)
-

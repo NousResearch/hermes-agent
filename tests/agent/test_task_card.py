@@ -127,4 +127,3 @@ def test_from_dict_ignores_unknown_keys():
     assert card.raw_user_request == "hello"
     assert card.compiled_intent.real_task == "hello"
     assert card.status == "pending"
-

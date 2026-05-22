@@ -165,4 +165,3 @@ def test_from_legacy_json_registry_normalizes_existing_config():
     assert codex.permission is PermissionMode.READ_ONLY
     assert codex.risk_allowed == frozenset({RiskLevel.R0})
     assert codex.status is AgentStatus.ACTIVE
-

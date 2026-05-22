@@ -27,6 +27,7 @@ except ModuleNotFoundError:
 import argparse
 import asyncio
 import logging
+import os
 import sys
 from pathlib import Path
 from hermes_constants import get_hermes_home
@@ -138,7 +139,54 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="Accept all prompts (currently used by --setup-browser to skip the "
              "~400 MB Chromium download confirmation).",
     )
+    parser.add_argument(
+        "--profile",
+        "-p",
+        default=None,
+        help=(
+            "Hermes profile name to run ACP under. Selects the profile's "
+            "config.yaml, .env, skills, memory, and gateway state. Lets "
+            "editor configs expose multiple ACP agents (e.g. "
+            "``hermes-acp -p code-reviewer``)."
+        ),
+    )
     return parser.parse_args(argv)
+
+
+def _apply_profile_override(profile_name: str | None) -> None:
+    """Resolve ``--profile`` and publish HERMES_HOME / HERMES_PROFILE.
+
+    Runs at ACP startup so that ``hermes-acp -p <name>`` direct invocations
+    (used by editor configs like Zed agent commands) end up with the same
+    environment as ``hermes -p <name> acp`` — i.e. ``get_hermes_home()``
+    returns the profile directory and downstream callers that branch on
+    ``HERMES_PROFILE`` see the canonical name.
+
+    When the env is *already* pointing at this profile (because the parent
+    ``hermes_cli.main._apply_profile_override`` ran first), the resolver is
+    a no-op: ``setdefault`` preserves the inherited HERMES_PROFILE and the
+    HERMES_HOME assignment writes the same string back.
+    """
+    if not profile_name:
+        return
+    try:
+        from hermes_cli.profiles import normalize_profile_name, resolve_profile_env
+
+        hermes_home = resolve_profile_env(profile_name)
+        canonical_name = normalize_profile_name(profile_name)
+    except (ValueError, FileNotFoundError) as exc:
+        print(f"Error: {exc}", file=sys.stderr)
+        sys.exit(1)
+    except Exception as exc:
+        # Profile resolution must never prevent ACP from starting; surface
+        # the issue and fall back to whatever environment the caller had.
+        print(
+            f"Warning: profile override failed ({exc}), using default",
+            file=sys.stderr,
+        )
+        return
+    os.environ["HERMES_HOME"] = hermes_home
+    os.environ.setdefault("HERMES_PROFILE", canonical_name)
 
 
 def _print_version() -> None:
@@ -212,6 +260,11 @@ def _run_setup_browser(assume_yes: bool = False) -> int:
 def main(argv: list[str] | None = None) -> None:
     """Entry point: load env, configure logging, run the ACP agent."""
     args = _parse_args(argv)
+    # Apply ``--profile`` BEFORE any subcommand branch so ``--check`` /
+    # ``--setup`` / ``--setup-browser`` and the default server start path
+    # all observe the profile-scoped HERMES_HOME (.env, config.yaml,
+    # skills, memory, gateway state).
+    _apply_profile_override(args.profile)
     if args.version:
         _print_version()
         return

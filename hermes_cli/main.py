@@ -313,9 +313,10 @@ def _apply_profile_override() -> None:
     # 3. If we found a profile, resolve and set HERMES_HOME
     if profile_name is not None:
         try:
-            from hermes_cli.profiles import resolve_profile_env
+            from hermes_cli.profiles import normalize_profile_name, resolve_profile_env
 
             hermes_home = resolve_profile_env(profile_name)
+            canonical_name = normalize_profile_name(profile_name)
         except (ValueError, FileNotFoundError) as exc:
             print(f"Error: {exc}", file=sys.stderr)
             sys.exit(1)
@@ -327,6 +328,12 @@ def _apply_profile_override() -> None:
             )
             return
         os.environ["HERMES_HOME"] = hermes_home
+        # Also publish the canonical profile name so downstream code that
+        # branches on profile identity (kanban, gateway adapters, ACP entry)
+        # can pick it up without re-parsing HERMES_HOME. Honour any value the
+        # caller already exported — a deliberate ``HERMES_PROFILE=...`` on
+        # the spawning shell should win over this best-effort default.
+        os.environ.setdefault("HERMES_PROFILE", canonical_name)
         # Strip the flag from argv so argparse doesn't choke
         if consume > 0:
             for i, arg in enumerate(argv):
@@ -14618,6 +14625,14 @@ Examples:
                 acp_argv.append("--setup-browser")
             if getattr(args, "assume_yes", False):
                 acp_argv.append("--yes")
+            # Forward the active profile name so ACP can announce it in logs
+            # and so direct ``hermes-acp`` invocations from editor configs
+            # behave the same as ``hermes -p <name> acp``. The env var is
+            # populated by ``_apply_profile_override`` when ``-p/--profile``
+            # was passed; absence means the default profile.
+            active_profile = os.environ.get("HERMES_PROFILE", "").strip()
+            if active_profile and active_profile != "default":
+                acp_argv.extend(["--profile", active_profile])
             acp_main(acp_argv)
         except ImportError:
             print("ACP dependencies not installed.", file=sys.stderr)

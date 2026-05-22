@@ -138,3 +138,74 @@ class TestApplyProfileOverrideHermesHomeGuard:
         _apply_profile_override()
 
         assert os.environ.get("HERMES_HOME") is None
+
+
+class TestApplyProfileOverridePublishesProfileName:
+    """Regression guard for #30571.
+
+    The override must publish ``HERMES_PROFILE`` alongside ``HERMES_HOME``
+    so downstream callers that branch on the active profile name (ACP
+    entry, kanban, gateway adapters) can read it without re-parsing the
+    HERMES_HOME path.
+    """
+
+    def test_explicit_flag_sets_hermes_profile_canonical_name(self, tmp_path, monkeypatch):
+        """``hermes -p Coder gateway`` must export ``HERMES_PROFILE=coder``
+        (the canonical, lower-cased name)."""
+        monkeypatch.delenv("HERMES_PROFILE", raising=False)
+
+        _run_apply_profile_override(
+            tmp_path,
+            monkeypatch,
+            hermes_home=None,
+            active_profile="Coder",
+            argv=["hermes", "-p", "Coder", "acp"],
+        )
+
+        assert os.environ.get("HERMES_PROFILE") == "coder"
+
+    def test_active_profile_file_sets_hermes_profile(self, tmp_path, monkeypatch):
+        """Sticky default profile picked up from ``active_profile`` must
+        also publish ``HERMES_PROFILE``."""
+        monkeypatch.delenv("HERMES_PROFILE", raising=False)
+
+        _run_apply_profile_override(
+            tmp_path,
+            monkeypatch,
+            hermes_home=None,
+            active_profile="coder",
+        )
+
+        assert os.environ.get("HERMES_PROFILE") == "coder"
+
+    def test_existing_hermes_profile_is_preserved(self, tmp_path, monkeypatch):
+        """A deliberate ``HERMES_PROFILE`` exported by the spawning shell
+        must win — setdefault, not overwrite."""
+        monkeypatch.setenv("HERMES_PROFILE", "operator-set")
+
+        _run_apply_profile_override(
+            tmp_path,
+            monkeypatch,
+            hermes_home=None,
+            active_profile="coder",
+        )
+
+        assert os.environ.get("HERMES_PROFILE") == "operator-set"
+
+    def test_default_profile_does_not_publish_hermes_profile(self, tmp_path, monkeypatch):
+        """``active_profile=default`` is the no-op case — neither
+        HERMES_HOME nor HERMES_PROFILE should be assigned."""
+        hermes_root = tmp_path / ".hermes"
+        hermes_root.mkdir(parents=True, exist_ok=True)
+
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        monkeypatch.delenv("HERMES_HOME", raising=False)
+        monkeypatch.delenv("HERMES_PROFILE", raising=False)
+        monkeypatch.setattr(sys, "argv", ["hermes", "gateway", "start"])
+        (hermes_root / "active_profile").write_text("default")
+
+        from hermes_cli.main import _apply_profile_override
+        _apply_profile_override()
+
+        assert os.environ.get("HERMES_PROFILE") is None
+        assert os.environ.get("HERMES_HOME") is None

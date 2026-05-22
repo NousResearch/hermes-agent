@@ -3460,6 +3460,8 @@ class GatewayRunner:
             adapter.set_fatal_error_handler(self._handle_adapter_fatal_error)
             adapter.set_session_store(self.session_store)
             adapter.set_busy_session_handler(self._handle_active_session_busy_message)
+            if hasattr(adapter, "set_interaction_authorizer"):
+                adapter.set_interaction_authorizer(self._is_user_authorized)
             
             # Try to connect
             logger.info("Connecting to %s...", platform.value)
@@ -4741,6 +4743,8 @@ class GatewayRunner:
                     adapter.set_fatal_error_handler(self._handle_adapter_fatal_error)
                     adapter.set_session_store(self.session_store)
                     adapter.set_busy_session_handler(self._handle_active_session_busy_message)
+                    if hasattr(adapter, "set_interaction_authorizer"):
+                        adapter.set_interaction_authorizer(self._is_user_authorized)
 
                     success = await self._connect_adapter_with_timeout(adapter, platform)
                     if success:
@@ -6555,7 +6559,8 @@ class GatewayRunner:
                 # Normalize underscores to hyphens so Telegram's underscored
                 # autocomplete form matches plugin commands registered with
                 # hyphens. See hermes_cli/commands.py:_build_telegram_menu.
-                plugin_handler = get_plugin_command_handler(command.replace("_", "-"))
+                plugin_command = command.replace("_", "-")
+                plugin_handler = get_plugin_command_handler(plugin_command)
                 if plugin_handler:
                     user_args = event.get_command_args().strip()
                     result = plugin_handler(user_args)
@@ -8352,7 +8357,10 @@ class GatewayRunner:
         if text.startswith("kanban"):
             text = text[len("kanban"):].lstrip()
 
-        tokens = shlex.split(text) if text else []
+        try:
+            tokens = shlex.split(text) if text else []
+        except ValueError:
+            tokens = text.split() if text else []
         requested_board = None
         action = None
         i = 0
@@ -13923,11 +13931,6 @@ class GatewayRunner:
 
         proxy_key = os.getenv("GATEWAY_PROXY_KEY", "").strip()
 
-        platform_key = _platform_config_key(source.platform)
-        user_config = _load_gateway_config()
-        from hermes_cli.tools_config import _get_platform_tools
-        enabled_toolsets = sorted(_get_platform_tools(user_config, platform_key))
-
         def _run_still_current() -> bool:
             if run_generation is None or not session_key:
                 return True
@@ -13968,11 +13971,29 @@ class GatewayRunner:
             "model": "hermes-agent",
             "messages": api_messages,
             "stream": True,
-            "hermes_proxy_scope": {
+        }
+
+        platform_key = _platform_config_key(source.platform)
+        user_config = _load_gateway_config()
+        from hermes_cli.tools_config import _get_platform_tools
+        enabled_toolsets = sorted(_get_platform_tools(user_config, platform_key))
+
+        from gateway.proxy_scope_auth import (
+            PROXY_SCOPE_SIGNATURE_HEADER,
+            PROXY_SCOPE_TIMESTAMP_HEADER,
+            get_proxy_scope_key,
+            sign_proxy_scope,
+        )
+        proxy_scope_key = get_proxy_scope_key()
+        if proxy_scope_key:
+            proxy_scope = {
                 "origin_platform": platform_key,
                 "enabled_toolsets": enabled_toolsets,
-            },
-        }
+            }
+            proxy_scope_ts, proxy_scope_sig = sign_proxy_scope(proxy_scope, proxy_scope_key)
+            body["hermes_proxy_scope"] = proxy_scope
+            headers[PROXY_SCOPE_TIMESTAMP_HEADER] = proxy_scope_ts
+            headers[PROXY_SCOPE_SIGNATURE_HEADER] = proxy_scope_sig
 
         # Set up platform streaming if available -------------------------
         _stream_consumer = None
@@ -13980,7 +14001,6 @@ class GatewayRunner:
         if _scfg is None:
             from gateway.config import StreamingConfig
             _scfg = StreamingConfig()
-
         from gateway.display_config import resolve_display_setting
         _plat_streaming = resolve_display_setting(
             user_config, platform_key, "streaming"

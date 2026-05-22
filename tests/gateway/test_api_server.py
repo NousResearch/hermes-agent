@@ -643,6 +643,69 @@ class TestCapabilitiesEndpoint:
 
 class TestChatCompletionsEndpoint:
     @pytest.mark.asyncio
+    async def test_rejects_unsigned_proxy_scope(self, auth_adapter):
+        """Normal API clients cannot supply gateway proxy scope metadata."""
+        app = _create_app(auth_adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(auth_adapter, "_run_agent", new_callable=AsyncMock) as mock_run:
+                resp = await cli.post(
+                    "/v1/chat/completions",
+                    json={
+                        "model": "test",
+                        "messages": [{"role": "user", "content": "hi"}],
+                        "hermes_proxy_scope": {
+                            "origin_platform": "matrix",
+                            "enabled_toolsets": ["all"],
+                        },
+                    },
+                    headers={"Authorization": "Bearer sk-secret"},
+                )
+
+                assert resp.status == 403
+                data = await resp.json()
+                assert "trusted gateway proxy authentication" in data["error"]["message"]
+                mock_run.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_accepts_signed_proxy_scope(self, auth_adapter, monkeypatch):
+        """Trusted gateway proxy calls may preserve the originating tool scope."""
+        from gateway.proxy_scope_auth import (
+            PROXY_SCOPE_SIGNATURE_HEADER,
+            PROXY_SCOPE_TIMESTAMP_HEADER,
+            sign_proxy_scope,
+        )
+
+        monkeypatch.setenv("GATEWAY_PROXY_SCOPE_KEY", "scope-secret")
+        proxy_scope = {"origin_platform": "matrix", "enabled_toolsets": ["todo"]}
+        ts, sig = sign_proxy_scope(proxy_scope, "scope-secret")
+
+        app = _create_app(auth_adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(auth_adapter, "_run_agent", new_callable=AsyncMock) as mock_run:
+                mock_run.return_value = (
+                    {"final_response": "ok", "messages": [], "api_calls": 1},
+                    {"input_tokens": 1, "output_tokens": 1, "total_tokens": 2},
+                )
+                resp = await cli.post(
+                    "/v1/chat/completions",
+                    json={
+                        "model": "test",
+                        "messages": [{"role": "user", "content": "hi"}],
+                        "hermes_proxy_scope": proxy_scope,
+                    },
+                    headers={
+                        "Authorization": "Bearer sk-secret",
+                        PROXY_SCOPE_TIMESTAMP_HEADER: ts,
+                        PROXY_SCOPE_SIGNATURE_HEADER: sig,
+                    },
+                )
+
+                assert resp.status == 200
+                mock_run.assert_awaited_once()
+                assert mock_run.call_args.kwargs["origin_platform"] == "matrix"
+                assert mock_run.call_args.kwargs["enabled_toolsets_override"] == ["todo"]
+
+    @pytest.mark.asyncio
     async def test_invalid_json_returns_400(self, adapter):
         app = _create_app(adapter)
         async with TestClient(TestServer(app)) as cli:

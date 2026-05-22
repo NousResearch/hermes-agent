@@ -1331,6 +1331,22 @@ display:
 #   redact_pii: false
 
 # =============================================================================
+# Plugin discovery
+# =============================================================================
+# User-installed and external plugins are discovered for visibility, but their
+# code only runs after the plugin key is listed in plugins.enabled. External
+# paths may point to a plugin collection directory or to a direct checkout with
+# a root plugin.yaml.
+#
+# plugins:
+#   extra_paths:
+#     - ~/src/hermes-private-plugin
+#     - ~/src/hermes-private-plugins
+#   enabled:
+#     - my-tool-plugin
+#   disabled: []
+
+# =============================================================================
 # Shell-script hooks
 # =============================================================================
 # Register shell scripts as plugin-hook callbacks.  Each entry is executed as

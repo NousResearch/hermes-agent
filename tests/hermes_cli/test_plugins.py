@@ -86,6 +86,25 @@ def _make_plugin_dir(base: Path, name: str, *, register_body: str = "pass",
     return plugin_dir
 
 
+def _write_plugins_config(
+    hermes_home: Path,
+    *,
+    enabled: list[str] | None = None,
+    disabled: list[str] | None = None,
+    extra_paths: list[str] | str | None = None,
+) -> None:
+    cfg: dict = {"plugins": {}}
+    plugins_cfg = cfg["plugins"]
+    if enabled is not None:
+        plugins_cfg["enabled"] = enabled
+    if disabled is not None:
+        plugins_cfg["disabled"] = disabled
+    if extra_paths is not None:
+        plugins_cfg["extra_paths"] = extra_paths
+    hermes_home.mkdir(parents=True, exist_ok=True)
+    (hermes_home / "config.yaml").write_text(yaml.safe_dump(cfg))
+
+
 # ── TestPluginDiscovery ────────────────────────────────────────────────────
 
 
@@ -348,6 +367,162 @@ class TestPluginDiscovery:
         mgr.discover_and_load()
 
         assert "proj_plugin" not in mgr._plugins
+
+    def test_discover_external_plugin_collection_from_config(self, tmp_path, monkeypatch):
+        """Configured external plugin collections are discovered but still opt-in."""
+        hermes_home = tmp_path / "hermes_test"
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        external_root = tmp_path / "private_plugins"
+        _make_plugin_dir(
+            external_root,
+            "private-router",
+            register_body='ctx.register_command("private-router", lambda raw: "ok")',
+            auto_enable=False,
+        )
+        _write_plugins_config(
+            hermes_home,
+            enabled=[],
+            extra_paths=[str(external_root)],
+        )
+
+        mgr = PluginManager()
+        mgr.discover_and_load()
+
+        loaded = mgr._plugins["private-router"]
+        assert loaded.manifest.source == "external"
+        assert loaded.enabled is False
+        assert "not enabled" in (loaded.error or "")
+        assert "private-router" not in mgr._plugin_commands
+
+        _write_plugins_config(
+            hermes_home,
+            enabled=["private-router"],
+            extra_paths=[str(external_root)],
+        )
+
+        mgr = PluginManager()
+        mgr.discover_and_load()
+
+        loaded = mgr._plugins["private-router"]
+        assert loaded.manifest.source == "external"
+        assert loaded.enabled is True
+        assert "private-router" in mgr._plugin_commands
+
+    def test_discover_external_direct_checkout_from_config(self, tmp_path, monkeypatch):
+        """A direct private plugin checkout with root plugin.yaml can be enabled."""
+        hermes_home = tmp_path / "hermes_test"
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        checkout = tmp_path / "direct-plugin"
+        checkout.mkdir()
+        (checkout / "plugin.yaml").write_text(
+            yaml.safe_dump(
+                {
+                    "name": "direct-plugin",
+                    "version": "0.1.0",
+                    "kind": "backend",
+                }
+            )
+        )
+        (checkout / "__init__.py").write_text(
+            "def register(ctx):\n"
+            "    ctx.register_command('direct-plugin', lambda raw: 'ok')\n"
+        )
+        _write_plugins_config(
+            hermes_home,
+            enabled=["direct-plugin"],
+            extra_paths=[str(checkout)],
+        )
+
+        mgr = PluginManager()
+        mgr.discover_and_load()
+
+        loaded = mgr._plugins["direct-plugin"]
+        assert loaded.manifest.source == "external"
+        assert loaded.manifest.kind == "backend"
+        assert loaded.enabled is True
+        assert "direct-plugin" in mgr._plugin_commands
+
+    def test_discover_external_plugin_paths_from_env(self, tmp_path, monkeypatch):
+        """HERMES_PLUGIN_PATHS adds external plugin roots."""
+        hermes_home = tmp_path / "hermes_test"
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        external_root = tmp_path / "private_plugins"
+        _make_plugin_dir(external_root, "private-env", auto_enable=False)
+        _write_plugins_config(hermes_home, enabled=["private-env"])
+        monkeypatch.setenv("HERMES_PLUGIN_PATHS", str(external_root))
+
+        mgr = PluginManager()
+        mgr.discover_and_load()
+
+        loaded = mgr._plugins["private-env"]
+        assert loaded.manifest.source == "external"
+        assert loaded.enabled is True
+
+    def test_unenabled_external_plugin_does_not_shadow_bundled_backend(self, tmp_path, monkeypatch):
+        """External discovery alone must not replace a bundled auto-loaded backend."""
+        hermes_home = tmp_path / "hermes_test"
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        bundled_root = tmp_path / "bundled_plugins"
+        external_root = tmp_path / "private_plugins"
+        monkeypatch.setenv("HERMES_BUNDLED_PLUGINS", str(bundled_root))
+        _make_plugin_dir(
+            bundled_root,
+            "shared-plugin",
+            register_body='ctx.register_command("bundled-shared", lambda raw: "bundled")',
+            manifest_extra={"kind": "backend"},
+            auto_enable=False,
+        )
+        _make_plugin_dir(
+            external_root,
+            "shared-plugin",
+            register_body='ctx.register_command("external-shared", lambda raw: "external")',
+            auto_enable=False,
+        )
+        _write_plugins_config(hermes_home, enabled=[], extra_paths=[str(external_root)])
+
+        mgr = PluginManager()
+        mgr.discover_and_load()
+
+        loaded = mgr._plugins["shared-plugin"]
+        assert loaded.manifest.source == "bundled"
+        assert loaded.enabled is True
+        assert "bundled-shared" in mgr._plugin_commands
+        assert "external-shared" not in mgr._plugin_commands
+
+    def test_enabled_external_plugin_can_replace_bundled_backend(self, tmp_path, monkeypatch):
+        """An explicitly enabled external plugin can replace an earlier bundled key."""
+        hermes_home = tmp_path / "hermes_test"
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        bundled_root = tmp_path / "bundled_plugins"
+        external_root = tmp_path / "private_plugins"
+        monkeypatch.setenv("HERMES_BUNDLED_PLUGINS", str(bundled_root))
+        _make_plugin_dir(
+            bundled_root,
+            "shared-plugin",
+            register_body='ctx.register_command("bundled-shared", lambda raw: "bundled")',
+            manifest_extra={"kind": "backend"},
+            auto_enable=False,
+        )
+        _make_plugin_dir(
+            external_root,
+            "shared-plugin",
+            register_body='ctx.register_command("external-shared", lambda raw: "external")',
+            auto_enable=False,
+        )
+        _write_plugins_config(
+            hermes_home,
+            enabled=["shared-plugin"],
+            extra_paths=[str(external_root)],
+        )
+
+        mgr = PluginManager()
+        mgr.discover_and_load()
+
+        loaded = mgr._plugins["shared-plugin"]
+        assert loaded.manifest.source == "external"
+        assert loaded.enabled is True
+        assert "external-shared" in mgr._plugin_commands
+        assert "bundled-shared" not in mgr._plugin_commands
 
     def test_discover_is_idempotent(self, tmp_path, monkeypatch):
         """Calling discover_and_load() twice does not duplicate plugins."""

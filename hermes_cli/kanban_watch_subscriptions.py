@@ -1,74 +1,67 @@
 from __future__ import annotations
 
-import os
-from typing import Any, Optional
+from typing import Optional
 
 
 SESSION_EVENT_DELIVERY_MODE = "session_event"
 
 
-def _get_session_env(name: str) -> str:
-    try:
-        from gateway.session_context import get_session_env
-    except Exception:
-        get_session_env = None
-    value = ""
-    if get_session_env is not None:
-        try:
-            value = get_session_env(name, "")
-        except Exception:
-            value = ""
-    if not value:
-        value = os.getenv(name, "")
-    return str(value or "").strip()
-
-
 def _active_profile_name() -> str:
     try:
         from hermes_cli.profiles import get_active_profile_name
+
         return get_active_profile_name() or "default"
     except Exception:
         return "default"
 
 
-def current_session_watch_subscription() -> Optional[dict[str, Optional[str]]]:
-    session_key = _get_session_env("HERMES_SESSION_KEY")
-    platform = _get_session_env("HERMES_SESSION_PLATFORM").lower()
-    chat_id = _get_session_env("HERMES_SESSION_CHAT_ID")
-    thread_id = _get_session_env("HERMES_SESSION_THREAD_ID")
-    user_id = _get_session_env("HERMES_SESSION_USER_ID")
-    if not session_key or not platform or not chat_id:
+def _parse_session_key(session_key: str) -> Optional[dict[str, str]]:
+    """Parse a gateway session key into routing fields.
+
+    Session keys follow ``agent:main:{platform}:{chat_type}:{chat_id}[:extra...]``.
+    We only derive ``thread_id`` when the suffix is unambiguous (``dm`` and
+    ``thread`` chat types). For group/channel keys the 6th element may be a
+    participant id rather than a thread id, so we intentionally leave it unset.
+    """
+    parts = str(session_key or "").strip().split(":")
+    if len(parts) < 5 or parts[0] != "agent" or parts[1] != "main":
+        return None
+    parsed = {
+        "platform": parts[2].strip().lower(),
+        "chat_type": parts[3].strip().lower(),
+        "chat_id": parts[4].strip(),
+    }
+    if len(parts) > 5 and parsed["chat_type"] in {"dm", "thread"}:
+        parsed["thread_id"] = parts[5].strip()
+    return parsed if parsed["platform"] and parsed["chat_id"] else None
+
+
+def watch_subscription_from_session_key(
+    session_key: str,
+) -> Optional[dict[str, Optional[str]]]:
+    session_key = str(session_key or "").strip()
+    if not session_key:
+        return None
+    parsed = _parse_session_key(session_key)
+    if not parsed:
         return None
     return {
         "delivery_mode": SESSION_EVENT_DELIVERY_MODE,
         "session_key": session_key,
-        "platform": platform,
-        "chat_id": chat_id,
-        "thread_id": thread_id or None,
-        "user_id": user_id or None,
+        "platform": parsed["platform"],
+        "chat_id": parsed["chat_id"],
+        "thread_id": parsed.get("thread_id") or None,
+        "user_id": None,
         "notifier_profile": _active_profile_name(),
     }
 
 
-def resolve_create_task_watch_subscriptions(kb: Any, conn: Any) -> list[dict[str, Optional[str]]]:
-    current_task_id = str(os.getenv("HERMES_KANBAN_TASK", "") or "").strip()
-    if current_task_id:
-        inherited: list[dict[str, Optional[str]]] = []
-        for sub in kb.list_notify_subs(conn, current_task_id):
-            if (sub.get("delivery_mode") or "message") != SESSION_EVENT_DELIVERY_MODE:
-                continue
-            if not sub.get("session_key") or not sub.get("platform") or not sub.get("chat_id"):
-                continue
-            inherited.append({
-                "delivery_mode": SESSION_EVENT_DELIVERY_MODE,
-                "session_key": str(sub.get("session_key") or ""),
-                "platform": str(sub.get("platform") or "").lower(),
-                "chat_id": str(sub.get("chat_id") or ""),
-                "thread_id": str(sub.get("thread_id") or "") or None,
-                "user_id": (str(sub.get("user_id") or "") or None),
-                "notifier_profile": (str(sub.get("notifier_profile") or "") or None),
-            })
-        if inherited:
-            return inherited
-    current = current_session_watch_subscription()
-    return [current] if current else []
+def require_watcher_session_key_subscription(
+    session_key: str,
+) -> list[dict[str, Optional[str]]]:
+    sub = watch_subscription_from_session_key(session_key)
+    if sub:
+        return [sub]
+    raise ValueError(
+        "watcher_session_key must be a valid Hermes gateway session key"
+    )

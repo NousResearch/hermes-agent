@@ -2695,13 +2695,128 @@ class GatewayRunner:
                 session_key, task_id, board,
             )
             return False
-        text = f"[KANBAN_WATCHER_EVENT] board={board} task_id={task_id} status={status}"
+        text = self._build_kanban_session_event_text(
+            board=board,
+            task_id=task_id,
+            status=status,
+        )
         return self._enqueue_session_event(
             session_key=session_key,
             source=entry.origin,
             text=text,
             adapter=adapter,
         )
+
+    @staticmethod
+    def _build_kanban_session_event_text(*, board: str, task_id: str, status: str) -> str:
+        return (
+            f"[KANBAN_WATCHER_EVENT] board={board} task_id={task_id} moved to status={status}\n"
+            "This is a synthetic watcher event, not a new user instruction: "
+            "follow prior user instructions about how to handle Kanban watcher "
+            "events in this conversation. If none apply, provide a concise "
+            "summary of the task's outcome, and do nothing else.\n"
+            f"You may inspect the task using `hermes kanban --board {board} show {task_id}`."
+        )
+
+    @staticmethod
+    def _kanban_status_from_event_kind(kind: str) -> str:
+        return "Done" if kind == "completed" else str(kind or "").replace("_", " ").title()
+
+    @staticmethod
+    def _build_kanban_terminal_event_message(*, sub: dict, task: Any, ev: Any) -> Optional[str]:
+        kind = getattr(ev, "kind", None)
+        if not kind:
+            return None
+        title = (task.title if task else sub["task_id"])[:120]
+        who = (task.assignee if task and task.assignee else None)
+        tag = f"@{who} " if who else ""
+        if kind == "completed":
+            handoff = ""
+            payload_summary = None
+            if getattr(ev, "payload", None) and ev.payload.get("summary"):
+                payload_summary = str(ev.payload["summary"])
+            if payload_summary:
+                h = payload_summary.strip().splitlines()[0][:200]
+                handoff = f"\n{h}"
+            elif task and task.result:
+                r = task.result.strip().splitlines()[0][:160]
+                handoff = f"\n{r}"
+            return (
+                f"✔ {tag}Kanban {sub['task_id']} done"
+                f" — {title}{handoff}"
+            )
+        if kind == "blocked":
+            reason = ""
+            if getattr(ev, "payload", None) and ev.payload.get("reason"):
+                reason = f": {str(ev.payload['reason'])[:160]}"
+            return f"⏸ {tag}Kanban {sub['task_id']} blocked{reason}"
+        if kind == "gave_up":
+            err = ""
+            if getattr(ev, "payload", None) and ev.payload.get("error"):
+                err = f"\n{str(ev.payload['error'])[:200]}"
+            return (
+                f"✖ {tag}Kanban {sub['task_id']} gave up "
+                f"after repeated spawn failures{err}"
+            )
+        if kind == "crashed":
+            return (
+                f"✖ {tag}Kanban {sub['task_id']} worker crashed "
+                f"(pid gone); dispatcher will retry"
+            )
+        if kind == "timed_out":
+            limit = 0
+            if getattr(ev, "payload", None) and ev.payload.get("limit_seconds"):
+                limit = int(ev.payload["limit_seconds"])
+            return (
+                f"⏱ {tag}Kanban {sub['task_id']} timed out "
+                f"(max_runtime={limit}s); will retry"
+            )
+        return None
+
+    async def _deliver_kanban_session_event(
+        self,
+        *,
+        adapter: Any,
+        sub: dict,
+        task: Any,
+        ev: Any,
+        board_slug: str,
+    ) -> bool:
+        """Deliver the normal task notification, then enqueue the synthetic watcher event."""
+        msg = self._build_kanban_terminal_event_message(sub=sub, task=task, ev=ev)
+        if not msg:
+            return True
+        metadata: dict[str, Any] = {}
+        if sub.get("thread_id"):
+            metadata["thread_id"] = sub["thread_id"]
+        await adapter.send(sub["chat_id"], msg, metadata=metadata)
+        if getattr(ev, "kind", None) == "completed":
+            try:
+                await self._deliver_kanban_artifacts(
+                    adapter=adapter,
+                    chat_id=sub["chat_id"],
+                    metadata=metadata,
+                    event_payload=getattr(ev, "payload", None),
+                    task=task,
+                )
+            except Exception as art_exc:
+                logger.debug(
+                    "kanban notifier: artifact delivery for %s failed: %s",
+                    sub["task_id"], art_exc,
+                )
+        delivered = self._enqueue_kanban_session_event(
+            board=board_slug,
+            task_id=sub["task_id"],
+            status=self._kanban_status_from_event_kind(getattr(ev, "kind", "")),
+            session_key=str(sub.get("session_key") or ""),
+        )
+        if not delivered:
+            logger.warning(
+                "kanban notifier: normal notification delivered for %s on board %s, "
+                "but synthetic session_event enqueue failed for %s",
+                sub["task_id"], board_slug, sub.get("session_key"),
+            )
+        return True
 
     @staticmethod
     def _is_goal_continuation_event(event_or_text: Any) -> bool:
@@ -5002,7 +5117,7 @@ class GatewayRunner:
                                     platform=sub["platform"],
                                     chat_id=sub["chat_id"],
                                     thread_id=sub.get("thread_id") or "",
-                                    delivery_mode=sub.get("delivery_mode") or "message",
+                                    delivery_mode=sub.get("delivery_mode") or "notification",
                                     session_key=sub.get("session_key") or None,
                                     kinds=TERMINAL_KINDS,
                                 )
@@ -5055,7 +5170,7 @@ class GatewayRunner:
                         )
                         continue
                     title = (task.title if task else sub["task_id"])[:120]
-                    delivery_mode = sub.get("delivery_mode") or "message"
+                    delivery_mode = sub.get("delivery_mode") or "notification"
                     sub_key = (
                         sub["task_id"], sub["platform"],
                         sub["chat_id"], sub.get("thread_id") or "",
@@ -5065,19 +5180,15 @@ class GatewayRunner:
                         for ev in d["events"]:
                             kind = ev.kind
                             try:
-                                status = "Done" if kind == "completed" else "Blocked"
-                                delivered = self._enqueue_kanban_session_event(
-                                    board=board_slug,
-                                    task_id=sub["task_id"],
-                                    status=status,
-                                    session_key=str(sub.get("session_key") or ""),
+                                await self._deliver_kanban_session_event(
+                                    adapter=adapter,
+                                    sub=sub,
+                                    task=task,
+                                    ev=ev,
+                                    board_slug=board_slug or "",
                                 )
-                                if not delivered:
-                                    raise RuntimeError(
-                                        "session lane unavailable for kanban session_event delivery"
-                                    )
                                 logger.debug(
-                                    "kanban notifier: enqueued %s session_event for %s into %s on board %s",
+                                    "kanban notifier: delivered %s normal notification and enqueued session_event for %s into %s on board %s",
                                     kind, sub["task_id"], sub.get("session_key"), board_slug,
                                 )
                                 sub_fail_counts.pop(sub_key, None)
@@ -5119,58 +5230,12 @@ class GatewayRunner:
 
                     for ev in d["events"]:
                         kind = ev.kind
-                        # Identity prefix: attribute terminal pings to the
-                        # worker that did the work. Makes fleets (where one
-                        # chat subscribes to many tasks) legible at a glance.
-                        who = (task.assignee if task and task.assignee else None)
-                        tag = f"@{who} " if who else ""
-                        if kind == "completed":
-                            # Prefer the run's summary (the worker's
-                            # intentional human-facing handoff, carried
-                            # in the event payload), then fall back to
-                            # task.result for legacy rows written before
-                            # runs shipped.
-                            handoff = ""
-                            payload_summary = None
-                            if ev.payload and ev.payload.get("summary"):
-                                payload_summary = str(ev.payload["summary"])
-                            if payload_summary:
-                                h = payload_summary.strip().splitlines()[0][:200]
-                                handoff = f"\n{h}"
-                            elif task and task.result:
-                                r = task.result.strip().splitlines()[0][:160]
-                                handoff = f"\n{r}"
-                            msg = (
-                                f"✔ {tag}Kanban {sub['task_id']} done"
-                                f" — {title}{handoff}"
-                            )
-                        elif kind == "blocked":
-                            reason = ""
-                            if ev.payload and ev.payload.get("reason"):
-                                reason = f": {str(ev.payload['reason'])[:160]}"
-                            msg = f"⏸ {tag}Kanban {sub['task_id']} blocked{reason}"
-                        elif kind == "gave_up":
-                            err = ""
-                            if ev.payload and ev.payload.get("error"):
-                                err = f"\n{str(ev.payload['error'])[:200]}"
-                            msg = (
-                                f"✖ {tag}Kanban {sub['task_id']} gave up "
-                                f"after repeated spawn failures{err}"
-                            )
-                        elif kind == "crashed":
-                            msg = (
-                                f"✖ {tag}Kanban {sub['task_id']} worker crashed "
-                                f"(pid gone); dispatcher will retry"
-                            )
-                        elif kind == "timed_out":
-                            limit = 0
-                            if ev.payload and ev.payload.get("limit_seconds"):
-                                limit = int(ev.payload["limit_seconds"])
-                            msg = (
-                                f"⏱ {tag}Kanban {sub['task_id']} timed out "
-                                f"(max_runtime={limit}s); will retry"
-                            )
-                        else:
+                        msg = self._build_kanban_terminal_event_message(
+                            sub=sub,
+                            task=task,
+                            ev=ev,
+                        )
+                        if not msg:
                             continue
                         metadata: dict[str, Any] = {}
                         if sub.get("thread_id"):
@@ -5281,7 +5346,7 @@ class GatewayRunner:
                 platform=sub["platform"],
                 chat_id=sub["chat_id"],
                 thread_id=sub.get("thread_id") or "",
-                delivery_mode=sub.get("delivery_mode") or "message",
+                delivery_mode=sub.get("delivery_mode") or "notification",
                 session_key=sub.get("session_key") or None,
                 new_cursor=cursor,
             )
@@ -5298,7 +5363,7 @@ class GatewayRunner:
                 platform=sub["platform"],
                 chat_id=sub["chat_id"],
                 thread_id=sub.get("thread_id") or "",
-                delivery_mode=sub.get("delivery_mode") or "message",
+                delivery_mode=sub.get("delivery_mode") or "notification",
                 session_key=sub.get("session_key") or None,
             )
         finally:
@@ -5321,7 +5386,7 @@ class GatewayRunner:
                 platform=sub["platform"],
                 chat_id=sub["chat_id"],
                 thread_id=sub.get("thread_id") or "",
-                delivery_mode=sub.get("delivery_mode") or "message",
+                delivery_mode=sub.get("delivery_mode") or "notification",
                 session_key=sub.get("session_key") or None,
                 claimed_cursor=claimed_cursor,
                 old_cursor=old_cursor,

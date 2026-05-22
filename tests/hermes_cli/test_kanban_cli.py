@@ -166,26 +166,84 @@ def test_run_slash_json_output(kanban_home):
     assert payload["status"] == "ready"
 
 
-def test_run_slash_create_watch_json_uses_session_key(kanban_home, monkeypatch):
-    monkeypatch.setenv("HERMES_SESSION_KEY", "agent:main:discord:thread:watch:1")
-    monkeypatch.setenv("HERMES_SESSION_PLATFORM", "discord")
-    monkeypatch.setenv("HERMES_SESSION_CHAT_ID", "chat-watch")
-    monkeypatch.setenv("HERMES_SESSION_THREAD_ID", "thread-1")
-    out = kc.run_slash("create 'watched cli' --assignee alice --watch --json")
+def test_run_slash_create_watch_json_uses_explicit_session_key(kanban_home):
+    out = kc.run_slash(
+        "create 'watched cli' --assignee alice "
+        "--watcher-session-key agent:main:discord:thread:watch:1 --json"
+    )
     payload = json.loads(out)
     assert "watcher_session_key" not in payload
     with kb.connect() as conn:
         subs = kb.list_notify_subs(conn, payload["id"])
     assert len(subs) == 1
+    assert subs[0]["platform"] == "discord"
+    assert subs[0]["chat_id"] == "watch"
+    assert subs[0]["thread_id"] == "1"
     assert subs[0]["session_key"] == "agent:main:discord:thread:watch:1"
 
 
-def test_run_slash_create_watch_without_session_key_still_succeeds(kanban_home, monkeypatch):
-    monkeypatch.delenv("HERMES_SESSION_KEY", raising=False)
+def test_run_slash_create_watch_with_invalid_session_key_fails(kanban_home):
+    out = kc.run_slash(
+        "create 'watched cli bad key' --assignee alice "
+        "--watcher-session-key not-a-session-key --json"
+    )
+    assert "watcher_session_key must be a valid Hermes gateway session key" in out
+    with kb.connect() as conn:
+        rows = conn.execute("SELECT COUNT(*) FROM tasks").fetchone()[0]
+    assert rows == 0
+
+
+def test_run_slash_create_watch_prefix_parse_error(kanban_home):
     out = kc.run_slash("create 'watched cli no key' --assignee alice --watch --json")
-    payload = json.loads(out)
-    assert payload["title"] == "watched cli no key"
-    assert "watcher_session_key" not in payload
+    assert "argument --watcher-session-key: expected one argument" in out
+    with kb.connect() as conn:
+        rows = conn.execute("SELECT COUNT(*) FROM tasks").fetchone()[0]
+    assert rows == 0
+
+
+def test_notify_subscribe_defaults_to_notification_and_supports_session_event(kanban_home):
+    with kb.connect() as conn:
+        tid = kb.create_task(conn, title="notify me", assignee="alice")
+
+    out = kc.run_slash(
+        f"notify-subscribe {tid} --platform discord --chat-id room-1"
+    )
+    assert f"Subscribed discord:room-1 to {tid}" in out
+
+    with kb.connect() as conn:
+        subs = kb.list_notify_subs(conn, tid)
+    assert len(subs) == 1
+    assert subs[0]["delivery_mode"] == "notification"
+    assert subs[0]["session_key"] == ""
+
+    out = kc.run_slash(
+        f"notify-subscribe {tid} --platform discord --chat-id room-2 "
+        "--delivery-mode session_event "
+        "--session-key agent:main:discord:thread:room-2:99"
+    )
+    assert f"Subscribed discord:room-2 to {tid}" in out
+
+    with kb.connect() as conn:
+        subs = sorted(kb.list_notify_subs(conn, tid), key=lambda s: s["chat_id"])
+    assert len(subs) == 2
+    assert subs[0]["delivery_mode"] == "notification"
+    assert subs[1]["delivery_mode"] == "session_event"
+    assert subs[1]["session_key"] == "agent:main:discord:thread:room-2:99"
+
+
+def test_notify_subscribe_session_event_requires_session_key(kanban_home):
+    with kb.connect() as conn:
+        tid = kb.create_task(conn, title="notify strict", assignee="alice")
+
+    out = kc.run_slash(
+        f"notify-subscribe {tid} --platform discord --chat-id room-3 "
+        "--delivery-mode session_event"
+    )
+    assert "session_key is required for delivery_mode='session_event'" in out
+
+    with kb.connect() as conn:
+        subs = kb.list_notify_subs(conn, tid)
+    assert subs == []
 
 
 def test_run_slash_show_json_omits_watcher_session_key(kanban_home):

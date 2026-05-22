@@ -960,7 +960,7 @@ CREATE TABLE IF NOT EXISTS kanban_notify_subs (
     chat_id          TEXT NOT NULL,
     thread_id        TEXT NOT NULL DEFAULT '',
     user_id          TEXT,
-    delivery_mode    TEXT NOT NULL DEFAULT 'message',
+    delivery_mode    TEXT NOT NULL DEFAULT 'notification',
     session_key      TEXT,
     last_event_id    INTEGER NOT NULL DEFAULT 0,
     created_at       INTEGER NOT NULL,
@@ -1565,7 +1565,7 @@ def _migrate_add_optional_columns(conn: sqlite3.Connection) -> None:
                 conn,
                 "kanban_notify_subs",
                 "delivery_mode",
-                "delivery_mode TEXT NOT NULL DEFAULT 'message'",
+                "delivery_mode TEXT NOT NULL DEFAULT 'notification'",
             )
         if "session_key" not in notify_cols:
             _add_column_if_missing(
@@ -1978,8 +1978,8 @@ def create_task(
                         thread_id = str(watch_sub.get("thread_id") or "").strip()
                         user_id = (str(watch_sub.get("user_id") or "").strip() or None)
                         delivery_mode = (
-                            str(watch_sub.get("delivery_mode") or "message").strip().lower()
-                            or "message"
+                            str(watch_sub.get("delivery_mode") or "notification").strip().lower()
+                            or "notification"
                         )
                         session_key = str(watch_sub.get("session_key") or "").strip() or None
                         notifier_profile = (
@@ -1987,15 +1987,15 @@ def create_task(
                         )
                         if not platform or not chat_id:
                             raise ValueError("watch subscription platform and chat_id are required")
-                        if delivery_mode not in {"message", "session_event"}:
+                        if delivery_mode not in {"notification", "session_event"}:
                             raise ValueError(
-                                "watch subscription delivery_mode must be 'message' or 'session_event'"
+                                "watch subscription delivery_mode must be 'notification' or 'session_event'"
                             )
                         if delivery_mode == "session_event" and not session_key:
                             raise ValueError(
                                 "watch subscription session_key is required for delivery_mode='session_event'"
                             )
-                        if delivery_mode == "message":
+                        if delivery_mode == "notification":
                             session_key = None
                         conn.execute(
                             """
@@ -6474,28 +6474,28 @@ def add_notify_sub(
     thread_id: Optional[str] = None,
     user_id: Optional[str] = None,
     notifier_profile: Optional[str] = None,
-    delivery_mode: str = "message",
+    delivery_mode: str = "notification",
     session_key: Optional[str] = None,
 ) -> None:
     """Register a notification subscription for ``task_id``.
 
-    ``delivery_mode='message'`` targets a chat/thread via platform/chat_id/thread_id.
+    ``delivery_mode='notification'`` targets a chat/thread via platform/chat_id/thread_id.
     ``delivery_mode='session_event'`` additionally binds the durable gateway lane
     via ``session_key`` so the gateway can enqueue a synthetic turn instead of
-    sending a plain outbound message.
+    sending a plain outbound notification.
     """
     platform = str(platform or "").strip().lower()
     chat_id = str(chat_id or "").strip()
     thread_id = str(thread_id or "").strip()
-    delivery_mode = str(delivery_mode or "message").strip().lower() or "message"
+    delivery_mode = str(delivery_mode or "notification").strip().lower() or "notification"
     session_key = str(session_key or "").strip() or None
     if not task_id or not platform or not chat_id:
         raise ValueError("task_id, platform, and chat_id are required")
-    if delivery_mode not in {"message", "session_event"}:
-        raise ValueError("delivery_mode must be 'message' or 'session_event'")
+    if delivery_mode not in {"notification", "session_event"}:
+        raise ValueError("delivery_mode must be 'notification' or 'session_event'")
     if delivery_mode == "session_event" and not session_key:
         raise ValueError("session_key is required for delivery_mode='session_event'")
-    if delivery_mode == "message":
+    if delivery_mode == "notification":
         session_key = None
     now = int(time.time())
     session_key_db = session_key or ""
@@ -6560,7 +6560,7 @@ def remove_notify_sub(
     platform: str,
     chat_id: str,
     thread_id: Optional[str] = None,
-    delivery_mode: str = "message",
+    delivery_mode: str = "notification",
     session_key: Optional[str] = None,
 ) -> bool:
     with write_txn(conn):
@@ -6573,7 +6573,7 @@ def remove_notify_sub(
                 platform,
                 chat_id,
                 thread_id or "",
-                str(delivery_mode or "message").strip().lower() or "message",
+                str(delivery_mode or "notification").strip().lower() or "notification",
                 str(session_key or "").strip(),
             ),
         )
@@ -6587,7 +6587,7 @@ def unseen_events_for_sub(
     platform: str,
     chat_id: str,
     thread_id: Optional[str] = None,
-    delivery_mode: str = "message",
+    delivery_mode: str = "notification",
     session_key: Optional[str] = None,
     kinds: Optional[Iterable[str]] = None,
 ) -> tuple[int, list[Event]]:
@@ -6606,7 +6606,7 @@ def unseen_events_for_sub(
             platform,
             chat_id,
             thread_id or "",
-            str(delivery_mode or "message").strip().lower() or "message",
+            str(delivery_mode or "notification").strip().lower() or "notification",
             str(session_key or "").strip(),
         ),
     ).fetchone()
@@ -6646,7 +6646,7 @@ def claim_unseen_events_for_sub(
     platform: str,
     chat_id: str,
     thread_id: Optional[str] = None,
-    delivery_mode: str = "message",
+    delivery_mode: str = "notification",
     session_key: Optional[str] = None,
     kinds: Optional[Iterable[str]] = None,
 ) -> tuple[int, int, list[Event]]:
@@ -6674,7 +6674,7 @@ def claim_unseen_events_for_sub(
                 platform,
                 chat_id,
                 thread_id or "",
-                str(delivery_mode or "message").strip().lower() or "message",
+                str(delivery_mode or "notification").strip().lower() or "notification",
                 str(session_key or "").strip(),
             ),
         ).fetchone()
@@ -6703,7 +6703,7 @@ def claim_unseen_events_for_sub(
                 platform,
                 chat_id,
                 thread_id or "",
-                str(delivery_mode or "message").strip().lower() or "message",
+                str(delivery_mode or "notification").strip().lower() or "notification",
                 str(session_key or "").strip(),
                 int(old_cursor),
             ),
@@ -6718,7 +6718,7 @@ def advance_notify_cursor(
     platform: str,
     chat_id: str,
     thread_id: Optional[str] = None,
-    delivery_mode: str = "message",
+    delivery_mode: str = "notification",
     session_key: Optional[str] = None,
     new_cursor: int,
 ) -> None:
@@ -6733,7 +6733,7 @@ def advance_notify_cursor(
                 platform,
                 chat_id,
                 thread_id or "",
-                str(delivery_mode or "message").strip().lower() or "message",
+                str(delivery_mode or "notification").strip().lower() or "notification",
                 str(session_key or "").strip(),
             ),
         )
@@ -6746,7 +6746,7 @@ def rewind_notify_cursor(
     platform: str,
     chat_id: str,
     thread_id: Optional[str] = None,
-    delivery_mode: str = "message",
+    delivery_mode: str = "notification",
     session_key: Optional[str] = None,
     claimed_cursor: int,
     old_cursor: int,
@@ -6762,7 +6762,7 @@ def rewind_notify_cursor(
                 platform,
                 chat_id,
                 thread_id or "",
-                str(delivery_mode or "message").strip().lower() or "message",
+                str(delivery_mode or "notification").strip().lower() or "notification",
                 str(session_key or "").strip(),
                 int(claimed_cursor),
             ),

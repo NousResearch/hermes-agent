@@ -1896,6 +1896,21 @@ def test_create_task_stamps_watcher_session_key(kanban_home):
     assert subs[0]["session_key"] == "agent:main:discord:thread:abc:def"
 
 
+def test_add_notify_sub_defaults_to_notification(kanban_home):
+    with kb.connect() as conn:
+        tid = kb.create_task(conn, title="default notify")
+        kb.add_notify_sub(
+            conn,
+            task_id=tid,
+            platform="discord",
+            chat_id="chat-default",
+        )
+        subs = kb.list_notify_subs(conn, tid)
+    assert len(subs) == 1
+    assert subs[0]["delivery_mode"] == "notification"
+    assert subs[0]["session_key"] == ""
+
+
 def test_set_and_clear_task_watcher_round_trip(kanban_home):
     with kb.connect() as conn:
         tid = kb.create_task(conn, title="watched")

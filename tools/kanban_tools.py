@@ -34,7 +34,7 @@ import os
 from typing import Any, Optional
 
 from tools.registry import registry, tool_error
-from hermes_cli.kanban_watch_subscriptions import resolve_create_task_watch_subscriptions
+from hermes_cli.kanban_watch_subscriptions import require_watcher_session_key_subscription
 
 logger = logging.getLogger(__name__)
 
@@ -668,9 +668,11 @@ def _handle_create(args: dict, **kw) -> str:
     idempotency_key = args.get("idempotency_key")
     max_runtime_seconds = args.get("max_runtime_seconds")
     initial_status = args.get("initial_status") or "running"
-    watch, bool_error = _parse_bool_arg(args, "watch")
-    if bool_error:
-        return tool_error(bool_error)
+    if "watch" in args:
+        return tool_error(
+            "kanban_create: unexpected argument 'watch'; use watcher_session_key"
+        )
+    watcher_session_key = args.get("watcher_session_key")
     skills = args.get("skills")
     if isinstance(skills, str):
         # Accept a single skill name as a string for convenience.
@@ -690,13 +692,10 @@ def _handle_create(args: dict, **kw) -> str:
         kb, conn = _connect(board=board)
         try:
             watch_subscriptions = []
-            if watch:
-                watch_subscriptions = resolve_create_task_watch_subscriptions(kb, conn)
-                if not watch_subscriptions:
-                    logger.warning(
-                        "kanban_create watch=true requested for %r but no session-event subscription binding could be resolved; creating without watch subscription",
-                        title,
-                    )
+            if watcher_session_key:
+                watch_subscriptions = require_watcher_session_key_subscription(
+                    str(watcher_session_key)
+                )
             new_tid = kb.create_task(
                 conn,
                 title=str(title).strip(),
@@ -1166,13 +1165,13 @@ KANBAN_CREATE_SCHEMA = {
                     "'running', which preserves the usual dispatch path."
                 ),
             },
-            "watch": {
-                "type": "boolean",
+            "watcher_session_key": {
+                "type": "string",
                 "description": (
-                    "If true, bind the new task to the current watcher/session "
-                    "lane when one can be resolved. Resolution order: current "
-                    "task's watcher row first, then HERMES_SESSION_KEY. When no "
-                    "key is available the task is still created without a watcher."
+                    "Explicit Hermes gateway session key to bind as the child "
+                    "task's session-event watcher. Required when you want watcher "
+                    "handbacks on spawned subtasks; no implicit inheritance or env "
+                    "fallback exists."
                 ),
             },
             "skills": {

@@ -25,7 +25,9 @@ from pathlib import Path
 from typing import Any, Optional
 
 from hermes_cli import kanban_db as kb
-from hermes_cli.kanban_watch_subscriptions import resolve_create_task_watch_subscriptions
+from hermes_cli.kanban_watch_subscriptions import (
+    require_watcher_session_key_subscription,
+)
 from hermes_cli import kanban_swarm as ks
 from hermes_cli.profiles import get_active_profile_name, get_profile_dir, seed_profile_skills
 
@@ -351,8 +353,13 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
                           help="Initial card status. Use 'blocked' for cards "
                                "that require immediate human ops (R3 gate) "
                                "to skip the brief running-to-blocked transition.")
-    p_create.add_argument("--watch", action="store_true",
-                          help="Bind the new task to the current watcher/session lane when possible")
+    p_create.add_argument(
+        "--watcher-session-key",
+        help=(
+            "Bind the new task to a specific watcher/session lane using an explicit "
+            "Hermes gateway session key"
+        ),
+    )
     p_create.add_argument("--json", action="store_true", help="Emit JSON output")
 
     # --- swarm ---
@@ -673,6 +680,17 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
     p_nsub.add_argument("--chat-id", required=True)
     p_nsub.add_argument("--thread-id", default=None)
     p_nsub.add_argument("--user-id", default=None)
+    p_nsub.add_argument(
+        "--session-key",
+        default=None,
+        help="Optional Hermes gateway session key used by session_event subscriptions.",
+    )
+    p_nsub.add_argument(
+        "--delivery-mode",
+        choices=("notification", "session_event"),
+        default="notification",
+        help="Subscription delivery mode (default: notification).",
+    )
     p_nsub.add_argument(
         "--notifier-profile", default=None,
         help="Profile gateway that owns/delivers this subscription (default: active profile)",
@@ -1326,15 +1344,12 @@ def _cmd_create(args: argparse.Namespace) -> int:
             file=sys.stderr,
         )
         return 2
-    watch_subscriptions = []
     with kb.connect_closing() as conn:
-        if getattr(args, "watch", False):
-            watch_subscriptions = resolve_create_task_watch_subscriptions(kb, conn)
-            if not watch_subscriptions:
-                logger.warning(
-                    "kanban create --watch requested for %r but no session-event subscription binding could be resolved; creating without watch subscription",
-                    args.title,
-                )
+        watch_subscriptions = []
+        if getattr(args, "watcher_session_key", None):
+            watch_subscriptions = require_watcher_session_key_subscription(
+                args.watcher_session_key
+            )
         task_id = kb.create_task(
             conn,
             title=args.title,
@@ -2373,6 +2388,8 @@ def _cmd_notify_subscribe(args: argparse.Namespace) -> int:
             platform=args.platform, chat_id=args.chat_id,
             thread_id=args.thread_id, user_id=args.user_id,
             notifier_profile=args.notifier_profile or _profile_author(),
+            delivery_mode=args.delivery_mode,
+            session_key=args.session_key,
         )
     print(f"Subscribed {args.platform}:{args.chat_id}"
           + (f":{args.thread_id}" if args.thread_id else "")

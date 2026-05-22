@@ -709,6 +709,41 @@ def _ensure_ssl_certs() -> None:
             os.environ["SSL_CERT_FILE"] = candidate
             return
 
+def _raise_fd_soft_limit(min_soft: int = 4096) -> None:
+    """Raise RLIMIT_NOFILE soft limit toward the hard limit (Unix only).
+
+    macOS ships a default soft limit of 256, which is easily exhausted by
+    multiple MCP subprocesses + per-profile gateways (#30230).  Bumping
+    early prevents EMFILE crashes in session save / kanban dispatch and
+    complements the per-shutdown auxiliary-client reap added in #14210.
+
+    Bumps to ``min(min_soft, hard)``; if the soft limit is already above
+    ``min_soft``, leaves it alone.  All failures are swallowed silently:
+    Windows has no ``resource`` module, sandboxed environments may
+    forbid ``setrlimit``, and a missed raise is a soft regression (the
+    original symptom — EMFILE under load — is what's getting fixed).
+    """
+    try:
+        import resource
+    except ImportError:
+        return  # Windows / no POSIX resource module
+    try:
+        soft, hard = resource.getrlimit(resource.RLIMIT_NOFILE)
+    except (OSError, ValueError):
+        return
+    if soft >= min_soft:
+        return
+    target = min_soft if hard == resource.RLIM_INFINITY else min(min_soft, hard)
+    if target <= soft:
+        return
+    try:
+        resource.setrlimit(resource.RLIMIT_NOFILE, (target, hard))
+    except (OSError, ValueError):
+        # Sandboxed envs / hard-limit kernels reject the bump; the
+        # original EMFILE symptom is still what surfaces if so.
+        pass
+
+
 def _home_target_env_var(platform_name: str) -> str:
     """Return the configured home-target env var for a platform.
 
@@ -739,6 +774,7 @@ def _restart_notification_pending() -> bool:
 os.environ["_HERMES_GATEWAY"] = "1"
 
 _ensure_ssl_certs()
+_raise_fd_soft_limit()
 
 # Add parent directory to path
 sys.path.insert(0, str(Path(__file__).parent.parent))

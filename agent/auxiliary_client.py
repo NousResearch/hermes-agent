@@ -1499,7 +1499,7 @@ def _resolve_api_key_provider() -> Tuple[Optional[OpenAI], Optional[str]]:
 
 def _try_openrouter(explicit_api_key: str = None, model: str = None) -> Tuple[Optional[OpenAI], Optional[str]]:
     pool_present, entry = _select_pool_entry("openrouter")
-    if pool_present:
+    if pool_present and entry is not None:
         or_key = explicit_api_key or _pool_runtime_api_key(entry)
         if not or_key:
             _mark_provider_unhealthy("openrouter", ttl=60)

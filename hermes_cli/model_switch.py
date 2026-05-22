@@ -1239,13 +1239,14 @@ def list_authenticated_providers(
         if not has_creds:
             continue
 
-        # Use curated list, falling back to models.dev if no curated list.
-        # For preferred providers, merge models.dev entries into the curated
-        # catalog so newly released models (e.g. mimo-v2.5-pro on opencode-go)
-        # show up in the picker without requiring a Hermes release.
-        model_ids = curated.get(hermes_id, [])
+        # For preferred providers (nvidia, deepseek, etc.) use live API-backed
+        # discovery so the /model picker reflects what the provider currently
+        # has available — not a stale curated+merged snapshot.
+        # Falls back to curated+merged list when the live endpoint is down.
         if hermes_id in _MODELS_DEV_PREFERRED:
-            model_ids = _merge_with_models_dev(hermes_id, model_ids)
+            model_ids = provider_model_ids(hermes_id)
+        else:
+            model_ids = curated.get(hermes_id, [])
         total = len(model_ids)
         top = model_ids[:max_models]
 
@@ -1364,6 +1365,13 @@ def list_authenticated_providers(
                 model_ids = _ids if _ids is not None else (curated.get(hermes_slug, []) or curated.get(pid, []))
             except Exception:
                 model_ids = curated.get(hermes_slug, []) or curated.get(pid, [])
+        elif overlay.auth_type == "api_key":
+            # Use live API-backed discovery so the /model picker reflects
+            # what the provider's API actually serves — not the stale static
+            # curated catalog.  provider_model_ids() falls back to the curated
+            # list when the live endpoint is unreachable, so this is safe for
+            # offline / misconfigured cases too.
+            model_ids = provider_model_ids(hermes_slug)
         else:
             # Use curated list — look up by Hermes slug, fall back to overlay key
             model_ids = curated.get(hermes_slug, []) or curated.get(pid, [])

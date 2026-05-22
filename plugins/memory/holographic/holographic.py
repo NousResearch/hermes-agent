@@ -33,11 +33,18 @@ except ImportError:
 logger = logging.getLogger(__name__)
 
 _TWO_PI = 2.0 * math.pi
+_FLOAT32_BLOB_PREFIX = b"HRR1"
 
 
 def _require_numpy() -> None:
     if not _HAS_NUMPY:
         raise RuntimeError("numpy is required for holographic operations")
+
+
+def _np():
+    """Return the numpy module after the runtime availability guard."""
+    _require_numpy()
+    return np  # type: ignore[name-defined]
 
 
 def encode_atom(word: str, dim: int = 1024) -> "np.ndarray":
@@ -161,19 +168,63 @@ def encode_fact(content: str, entities: list[str], dim: int = 1024) -> "np.ndarr
 
 
 def phases_to_bytes(phases: "np.ndarray") -> bytes:
-    """Serialize phase vector to bytes. float64 tobytes — 8 KB at dim=1024."""
-    _require_numpy()
-    return phases.tobytes()
+    """Serialize phase vectors as float32 blobs.
 
-
-def bytes_to_phases(data: bytes) -> "np.ndarray":
-    """Deserialize bytes back to phase vector. Inverse of phases_to_bytes.
-
-    The .copy() call is required because frombuffer returns a read-only view
-    backed by the bytes object; callers expect a mutable array.
+    float32 halves SQLite BLOB storage versus the legacy float64 format
+    (4 KB + a 4-byte format prefix instead of 8 KB at dim=1024) while
+    preserving enough precision for phase-similarity retrieval.
+    ``bytes_to_phases`` keeps reading legacy float64 blobs for backward
+    compatibility.
     """
-    _require_numpy()
-    return np.frombuffer(data, dtype=np.float64).copy()
+    numpy = _np()
+    payload = numpy.asarray(phases, dtype=numpy.float32).tobytes()
+    return _FLOAT32_BLOB_PREFIX + payload
+
+
+def bytes_to_phases(data: bytes, dim: int | None = None) -> "np.ndarray":
+    """Deserialize a phase vector from new float32 or legacy float64 storage.
+
+    New float32 blobs carry a small prefix so callers can round-trip without
+    knowing ``dim``. Legacy float64 blobs are raw NumPy bytes and remain
+    readable for backward compatibility. The returned array is copied and
+    promoted to float64 so downstream HRR math keeps the existing numerical
+    behavior.
+    """
+    numpy = _np()
+
+    if dim is not None:
+        float32_payload_bytes = dim * numpy.dtype(numpy.float32).itemsize
+        float32_blob_bytes = len(_FLOAT32_BLOB_PREFIX) + float32_payload_bytes
+        float64_bytes = dim * numpy.dtype(numpy.float64).itemsize
+
+        if data.startswith(_FLOAT32_BLOB_PREFIX) and len(data) == float32_blob_bytes:
+            payload = data[len(_FLOAT32_BLOB_PREFIX):]
+            return numpy.frombuffer(payload, dtype=numpy.float32).astype(numpy.float64)
+        if len(data) == float64_bytes:
+            return numpy.frombuffer(data, dtype=numpy.float64).copy()
+        if data.startswith(_FLOAT32_BLOB_PREFIX):
+            payload_len = len(data) - len(_FLOAT32_BLOB_PREFIX)
+            raise ValueError(
+                f"HRR vector blob has {len(data)} bytes ({payload_len} payload bytes after "
+                f"the float32 prefix); expected {float32_blob_bytes} (prefixed float32) "
+                f"or {float64_bytes} (legacy float64) for dim={dim}"
+            )
+        raise ValueError(
+            f"HRR legacy vector blob has {len(data)} bytes; expected "
+            f"{float64_bytes} (float64) for dim={dim}"
+        )
+
+    if data.startswith(_FLOAT32_BLOB_PREFIX):
+        payload = data[len(_FLOAT32_BLOB_PREFIX):]
+        if len(payload) % numpy.dtype(numpy.float32).itemsize != 0:
+            raise ValueError(
+                f"HRR float32 vector blob has invalid payload byte length: {len(payload)}"
+            )
+        return numpy.frombuffer(payload, dtype=numpy.float32).astype(numpy.float64)
+
+    if len(data) % numpy.dtype(numpy.float64).itemsize != 0:
+        raise ValueError(f"HRR legacy vector blob has invalid byte length: {len(data)}")
+    return numpy.frombuffer(data, dtype=numpy.float64).copy()
 
 
 def snr_estimate(dim: int, n_items: int) -> float:

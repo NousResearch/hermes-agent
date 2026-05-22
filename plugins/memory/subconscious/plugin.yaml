@@ -1,0 +1,7 @@
+name: subconscious
+version: 0.1.0
+description: "Local structured subconscious memory — working/episodic/semantic/procedural layers with deterministic daily reflection."
+hooks:
+  - on_memory_write
+  - on_pre_compress
+  - on_session_end

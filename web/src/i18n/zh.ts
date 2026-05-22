@@ -650,6 +650,7 @@ export const zh: Translations = {
     columnLabels: {
       triage: "待分类",
       todo: "待办",
+      scheduled: "已调度",
       ready: "就绪",
       running: "进行中",
       blocked: "阻塞",
@@ -659,6 +660,7 @@ export const zh: Translations = {
     columnHelp: {
       triage: "原始想法 — 规范制定者将完善规格",
       todo: "等待依赖项或未分配",
+      scheduled: "等待已知的时间延迟或已调度的跟进",
       ready: "依赖项已满足；分配一个配置文件以便调度",
       running: "已被工作者认领 — 执行中",
       blocked: "工作者请求人工输入",

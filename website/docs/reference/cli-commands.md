@@ -212,6 +212,7 @@ Subcommands:
 | `stop` | Stop the service (or foreground process). |
 | `restart` | Restart the service. |
 | `status` | Show service status. |
+| `list` | List **all profiles** and whether each profile's gateway is currently running (with PID where available). Handy when you run multiple profiles side-by-side and want a single overview. |
 | `install` | Install as a systemd (Linux) or launchd (macOS) background service. |
 | `uninstall` | Remove the installed service. |
 | `setup` | Interactive messaging-platform setup. |
@@ -825,6 +826,7 @@ Notes:
 - `--force` does not override a `dangerous` scan verdict.
 - `--source skills-sh` searches the public `skills.sh` directory.
 - `--source well-known` lets you point Hermes at a site exposing `/.well-known/skills/index.json`.
+- `--source browse-sh` searches [browse.sh](https://browse.sh)'s catalog of 200+ site-specific browser-automation skills. Identifiers look like `browse-sh/airbnb.com/search-listings-ddgioa`.
 - Passing an `http(s)://…/*.md` URL installs a single-file SKILL.md directly. When frontmatter has no `name:` and the URL slug isn't a valid identifier, an interactive terminal prompts for a name; non-interactive surfaces (`/skills install` inside the TUI, gateway platforms) require `--name <x>` instead.
 
 ## `hermes bundles`

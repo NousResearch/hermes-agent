@@ -37,6 +37,7 @@ from typing import List, Optional
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from hermes_constants import get_hermes_home
+from hermes_cli._subprocess_compat import windows_hide_flags
 from hermes_cli.config import load_config, _expand_env_vars
 from hermes_time import now as _hermes_now
 
@@ -887,6 +888,7 @@ def _run_job_script(script_path: str) -> tuple[bool, str]:
         pass
 
     try:
+        popen_kwargs = {"creationflags": windows_hide_flags()} if sys.platform == "win32" else {}
         result = subprocess.run(
             argv,
             capture_output=True,
@@ -894,6 +896,7 @@ def _run_job_script(script_path: str) -> tuple[bool, str]:
             timeout=script_timeout,
             cwd=str(path.parent),
             env=run_env,
+            **popen_kwargs,
         )
         stdout = (result.stdout or "").strip()
         stderr = (result.stderr or "").strip()
@@ -1950,7 +1953,10 @@ def tick(verbose: bool = True, adapters=None, loop=None) -> int:
         return sum(_results)
     finally:
         if fcntl:
-            fcntl.flock(lock_fd, fcntl.LOCK_UN)
+            try:
+                fcntl.flock(lock_fd, fcntl.LOCK_UN)
+            except (OSError, IOError):
+                pass
         elif msvcrt:
             try:
                 msvcrt.locking(lock_fd.fileno(), msvcrt.LK_UNLCK, 1)

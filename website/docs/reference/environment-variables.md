@@ -70,7 +70,7 @@ All variables go in `~/.hermes/.env`. You can also set them with `hermes config 
 | `HERMES_GEMINI_PROJECT_ID` | GCP project ID for paid Gemini tiers (free tier auto-provisions) |
 | `ANTHROPIC_API_KEY` | Anthropic Console API key ([console.anthropic.com](https://console.anthropic.com/)) |
 | `ANTHROPIC_TOKEN` | Manual or legacy Anthropic OAuth/setup-token override |
-| `DASHSCOPE_API_KEY` | Alibaba Cloud DashScope API key for Qwen models ([modelstudio.console.alibabacloud.com](https://modelstudio.console.alibabacloud.com/)) |
+| `DASHSCOPE_API_KEY` | Qwen Cloud (Alibaba DashScope) API key for Qwen models ([modelstudio.console.alibabacloud.com](https://modelstudio.console.alibabacloud.com/)) |
 | `DASHSCOPE_BASE_URL` | Custom DashScope base URL (default: `https://dashscope-intl.aliyuncs.com/compatible-mode/v1`; use `https://dashscope.aliyuncs.com/compatible-mode/v1` for mainland-China region) |
 | `DEEPSEEK_API_KEY` | DeepSeek API key for direct DeepSeek access ([platform.deepseek.com](https://platform.deepseek.com/api_keys)) |
 | `DEEPSEEK_BASE_URL` | Custom DeepSeek API base URL |
@@ -82,7 +82,7 @@ All variables go in `~/.hermes/.env`. You can also set them with `hermes config 
 | `STEPFUN_BASE_URL` | Override StepFun base URL (default: `https://api.stepfun.com/v1`) |
 | `OLLAMA_API_KEY` | Ollama Cloud API key — managed Ollama catalog without local GPU ([ollama.com/settings/keys](https://ollama.com/settings/keys)) |
 | `OLLAMA_BASE_URL` | Override Ollama Cloud base URL (default: `https://ollama.com/v1`) |
-| `XAI_API_KEY` | xAI (Grok) API key for chat + TTS ([console.x.ai](https://console.x.ai/)) |
+| `XAI_API_KEY` | xAI (Grok) API key for chat + TTS + web search ([console.x.ai](https://console.x.ai/)) |
 | `XAI_BASE_URL` | Override xAI base URL (default: `https://api.x.ai/v1`) |
 | `MISTRAL_API_KEY` | Mistral API key for Voxtral TTS and Voxtral STT ([console.mistral.ai](https://console.mistral.ai)) |
 | `AWS_REGION` | AWS region for Bedrock inference (e.g. `us-east-1`, `eu-central-1`). Read by boto3. |
@@ -579,6 +579,7 @@ Advanced per-platform knobs for throttling the outbound message batcher. Most us
 |----------|-------------|
 | `SESSION_IDLE_MINUTES` | Reset sessions after N minutes of inactivity (default: 1440) |
 | `SESSION_RESET_HOUR` | Daily reset hour in 24h format (default: 4 = 4am) |
+| `HERMES_SESSION_ID` | **Exported automatically into every tool subprocess** Hermes spawns (`terminal`, `execute_code`, persistent shell, Docker/Singularity backends, delegated subagent runs). Set by the agent to the current session ID; user scripts called from tools can read it to correlate their output, telemetry, or side effects with the originating Hermes session. **You should not set this manually** — overriding it from a parent shell only takes effect outside an agent run, and is overwritten the moment the agent starts a session. |
 
 ## Context Compression (config.yaml only)
 

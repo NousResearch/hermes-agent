@@ -342,6 +342,25 @@ describe('createGatewayEventHandler', () => {
     expect(appended[appended.length - 1]).toMatchObject({ role: 'assistant', text: 'final answer' })
   })
 
+  it('shows verbose reasoning even when normal reasoning display is off', () => {
+    vi.useFakeTimers()
+    patchUiState({ showReasoning: false })
+    const appended: Msg[] = []
+    const streamed = 'verbose-only reasoning'
+
+    try {
+      const onEvent = createGatewayEventHandler(buildCtx(appended))
+
+      onEvent({ payload: { text: streamed, verbose: true }, type: 'reasoning.delta' } as any)
+      vi.runOnlyPendingTimers()
+
+      expect(turnController.reasoningText).toBe(streamed)
+      expect(getTurnState().reasoning).toBe(streamed)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
   it('ignores fallback reasoning.available when streamed reasoning already exists', () => {
     const appended: Msg[] = []
     const streamed = 'short streamed reasoning'
@@ -379,11 +398,11 @@ describe('createGatewayEventHandler', () => {
     const handler = createGatewayEventHandler(ctx)
 
     handler({
-      payload: { message: 'Chrome launched and listening on port 9222' },
+      payload: { message: 'Chromium-family browser launched and listening on port 9222' },
       type: 'browser.progress'
     } as any)
 
-    expect(ctx.system.sys).toHaveBeenCalledWith('Chrome launched and listening on port 9222')
+    expect(ctx.system.sys).toHaveBeenCalledWith('Chromium-family browser launched and listening on port 9222')
   })
 
   it('annotates gateway.start_timeout with stderr tail lines so users can diagnose without /logs', () => {
@@ -483,6 +502,25 @@ describe('createGatewayEventHandler', () => {
     expect(appended[1]?.tools?.[0]).toContain('Patch')
     expect(appended[3]?.text).toBe('patch applied')
     expect(appended[3]?.text).not.toContain('```diff')
+  })
+
+  it('keeps verbose result text on inline_diff tool completions', () => {
+    const appended: Msg[] = []
+    const onEvent = createGatewayEventHandler(buildCtx(appended))
+    const diff = '--- a/foo.ts\n+++ b/foo.ts\n@@\n-old\n+new'
+
+    onEvent({
+      payload: { args_text: '{ "path": "foo.ts" }', context: 'foo.ts', name: 'patch', tool_id: 'tool-1' },
+      type: 'tool.start'
+    } as any)
+    onEvent({
+      payload: { inline_diff: diff, result_text: 'patched result', tool_id: 'tool-1' },
+      type: 'tool.complete'
+    } as any)
+
+    expect(turnController.segmentMessages[0]).toMatchObject({ kind: 'diff' })
+    expect(turnController.segmentMessages[0]?.tools?.[0]).toContain('Args:\n{ "path": "foo.ts" }')
+    expect(turnController.segmentMessages[0]?.tools?.[0]).toContain('Result:\npatched result')
   })
 
   it('keeps full final responses from duplicating flushed pre-diff narration', () => {

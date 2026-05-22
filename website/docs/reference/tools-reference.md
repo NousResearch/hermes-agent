@@ -181,7 +181,7 @@ Registered when the agent is either (a) spawned by the kanban dispatcher (`HERME
 
 | Tool | Description | Requires environment |
 |------|-------------|----------------------|
-| `vision_analyze` | Analyze images using AI vision. Provides a comprehensive description and answers a specific question about the image content. | — |
+| `vision_analyze` | Analyze images using AI vision. On vision-capable main models, returns the raw image pixels as a multimodal tool result so the model sees them natively on its next turn. On text-only main models, falls back to an auxiliary vision model that describes the image and returns the description as text. Tool signature is identical either way. | — |
 
 ## `video` toolset
 

@@ -19,11 +19,15 @@ Three distinct failure modes the user community hit during rollout:
    one-line hint pointing the user at https://grok.com and ``/model``.
 
 3. Multi-turn replay of ``codex_reasoning_items`` (with
-   ``encrypted_content``) is now suppressed for ``is_xai_responses=True``
-   in ``_chat_messages_to_responses_input``.  xAI's OAuth/SuperGrok
-   surface rejects replayed encrypted reasoning items; Grok still
-   reasons natively each turn, so coherence rides on visible message
-   text.
+   ``encrypted_content``) was briefly suppressed for ``is_xai_responses``
+   in PR #26644 on the theory that xAI's OAuth/SuperGrok surface
+   rejected replayed encrypted reasoning items.  That suppression was
+   reverted shortly after: xAI confirmed they explicitly want Hermes to
+   thread encrypted reasoning back across turns, and the original
+   multi-turn failure mode was actually the prelude-SSE issue closed by
+   Fix A above.  The remaining tests here lock in that xAI receives
+   replayed reasoning AND that we ask xAI to echo it back in the
+   ``include`` array.
 """
 
 from types import SimpleNamespace
@@ -316,8 +320,15 @@ def test_codex_reasoning_replay_default_includes_encrypted_content():
     assert reasoning[0]["encrypted_content"] == "enc_blob"
 
 
-def test_codex_reasoning_replay_stripped_for_xai_oauth():
-    """xAI OAuth surface must NOT receive replayed encrypted reasoning."""
+def test_codex_reasoning_replay_includes_encrypted_content_for_xai():
+    """xAI must receive replayed encrypted reasoning items (May 2026 reversal).
+
+    Earlier we stripped these on the theory that the OAuth/SuperGrok
+    surface rejected them.  xAI subsequently confirmed they explicitly
+    want Hermes to thread encrypted reasoning back across turns for
+    cross-turn coherence — that's the whole point of the partnership
+    integration.
+    """
     from agent.codex_responses_adapter import _chat_messages_to_responses_input
 
     msgs = [
@@ -328,10 +339,13 @@ def test_codex_reasoning_replay_stripped_for_xai_oauth():
 
     items = _chat_messages_to_responses_input(msgs, is_xai_responses=True)
     reasoning = [it for it in items if it.get("type") == "reasoning"]
-    assert reasoning == []
+    assert len(reasoning) == 1, (
+        "xAI must receive replayed reasoning items — see docstring for the "
+        "May 2026 reversal of the earlier suppression gate."
+    )
+    assert reasoning[0]["encrypted_content"] == "enc_blob"
 
-    # The assistant's visible text must still survive — coherence across
-    # turns rides on the message text alone.
+    # And the assistant's visible text must still be present alongside it.
     assistant_items = [
         it for it in items
         if it.get("role") == "assistant" or it.get("type") == "message"
@@ -339,8 +353,12 @@ def test_codex_reasoning_replay_stripped_for_xai_oauth():
     assert assistant_items, "assistant message must still be present"
 
 
-def test_codex_transport_xai_request_omits_encrypted_content_include():
-    """Verify the xAI ``include`` array no longer requests encrypted reasoning."""
+def test_codex_transport_xai_request_includes_encrypted_content():
+    """xAI ``include`` array must request ``reasoning.encrypted_content``.
+
+    This is the request-side half of the May 2026 reversal: we ask xAI
+    to echo back encrypted reasoning so the next turn can replay it.
+    """
     from agent.transports.codex import ResponsesApiTransport
 
     transport = ResponsesApiTransport()
@@ -355,14 +373,11 @@ def test_codex_transport_xai_request_omits_encrypted_content_include():
         reasoning_config={"enabled": True, "effort": "medium"},
         is_xai_responses=True,
     )
-    # Without this gate, xAI would echo back encrypted_content blobs we'd
-    # then store in codex_reasoning_items and replay next turn — which is
-    # exactly the multi-turn failure mode we're closing.
-    assert kwargs["include"] == []
+    assert kwargs["include"] == ["reasoning.encrypted_content"]
 
 
-def test_codex_transport_xai_strips_replayed_reasoning_in_input():
-    """End-to-end: build_kwargs on xai-oauth must strip prior reasoning."""
+def test_codex_transport_xai_replays_reasoning_in_input():
+    """End-to-end: build_kwargs on xAI must replay prior encrypted reasoning."""
     from agent.transports.codex import ResponsesApiTransport
 
     transport = ResponsesApiTransport()
@@ -381,7 +396,8 @@ def test_codex_transport_xai_strips_replayed_reasoning_in_input():
     )
     input_items = kwargs["input"]
     reasoning_items = [it for it in input_items if it.get("type") == "reasoning"]
-    assert reasoning_items == []
+    assert len(reasoning_items) == 1
+    assert reasoning_items[0]["encrypted_content"] == "enc_blob"
 
 
 def test_codex_transport_native_codex_still_replays_reasoning_in_input():

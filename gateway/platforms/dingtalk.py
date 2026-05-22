@@ -774,7 +774,14 @@ class DingTalkAdapter(BasePlatformAdapter):
                             elif mapped == "audio":
                                 media_types.append("audio")
                                 if msg_type == MessageType.TEXT:
-                                    msg_type = MessageType.AUDIO
+                                    # DingTalk's "voice" rich-text item is a
+                                    # native voice note — route through STT.
+                                    # "audio" comes from file uploads only;
+                                    # keep those as AUDIO (no auto-STT).
+                                    if item_type == "voice":
+                                        msg_type = MessageType.VOICE
+                                    else:
+                                        msg_type = MessageType.AUDIO
                             elif mapped == "video":
                                 media_types.append("video")
                                 if msg_type == MessageType.TEXT:

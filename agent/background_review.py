@@ -390,6 +390,9 @@ def _run_review_in_thread(
             # parent below so memory(action="add") writes from
             # the review still land on disk; the review just
             # has zero side effects on external providers.
+            # Match parent's toolset config so ``tools[]`` is byte-identical
+            # in the request body — Anthropic's cache key includes it.
+            # (The runtime whitelist below still restricts dispatch.)
             review_agent = AIAgent(
                 model=agent.model,
                 max_iterations=16,
@@ -401,6 +404,8 @@ def _run_review_in_thread(
                 api_key=_parent_runtime.get("api_key") or None,
                 credential_pool=getattr(agent, "_credential_pool", None),
                 parent_session_id=agent.session_id,
+                enabled_toolsets=getattr(agent, "enabled_toolsets", None),
+                disabled_toolsets=getattr(agent, "disabled_toolsets", None),
                 skip_memory=True,
             )
             review_agent._memory_write_origin = "background_review"

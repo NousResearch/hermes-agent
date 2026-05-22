@@ -1307,7 +1307,10 @@ def _resolve_xai_oauth_for_aux() -> Optional[Tuple[str, str]]:
     with xAI Grok OAuth.
     """
     try:
-        from hermes_cli.auth import DEFAULT_XAI_OAUTH_BASE_URL
+        from hermes_cli.auth import (
+            DEFAULT_XAI_OAUTH_BASE_URL,
+            _xai_validate_inference_base_url,
+        )
 
         pool = load_pool("xai-oauth")
         if pool and pool.has_credentials():
@@ -1318,13 +1321,13 @@ def _resolve_xai_oauth_for_aux() -> Optional[Tuple[str, str]]:
                     or getattr(entry, "access_token", "")
                     or ""
                 ).strip()
-                base_url = str(
+                base_url = _xai_validate_inference_base_url(
                     os.getenv("HERMES_XAI_BASE_URL", "").strip().rstrip("/")
                     or os.getenv("XAI_BASE_URL", "").strip().rstrip("/")
-                    or getattr(entry, "runtime_base_url", None)
-                    or getattr(entry, "base_url", None)
-                    or DEFAULT_XAI_OAUTH_BASE_URL
-                ).strip().rstrip("/")
+                    or str(getattr(entry, "runtime_base_url", None) or "").strip().rstrip("/")
+                    or str(getattr(entry, "base_url", None) or "").strip().rstrip("/"),
+                    fallback=DEFAULT_XAI_OAUTH_BASE_URL,
+                )
                 if api_key and base_url:
                     return api_key, base_url
     except Exception as exc:

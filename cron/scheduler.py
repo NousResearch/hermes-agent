@@ -590,28 +590,10 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
     from tools.send_message_tool import _send_to_platform
     from gateway.config import load_gateway_config, Platform
 
-    # Optionally wrap the content with a header/footer so the user knows this
-    # is a cron delivery.  Wrapping is on by default; set cron.wrap_response: false
-    # in config.yaml for clean output.
-    wrap_response = True
-    try:
-        user_cfg = load_config()
-        wrap_response = user_cfg.get("cron", {}).get("wrap_response", True)
-    except Exception:
-        pass
-
-    if wrap_response:
-        task_name = job.get("name", job["id"])
-        job_id = job.get("id", "")
-        delivery_content = (
-            f"Cronjob Response: {task_name}\n"
-            f"(job_id: {job_id})\n"
-            f"-------------\n\n"
-            f"{content}\n\n"
-            f"To stop or manage this job, send me a new message (e.g. \"stop reminder {task_name}\")."
-        )
-    else:
-        delivery_content = content
+    # Cron outputs are already rendered in their user-facing form before this
+    # point.  Delivery must not inject headers, job metadata, or management
+    # footers around scheduled-job content.
+    delivery_content = content
 
     # Extract MEDIA: tags so attachments are forwarded as files, not raw text
     from gateway.platforms.base import BasePlatformAdapter
@@ -1704,7 +1686,27 @@ def _run_job_impl(job: dict) -> tuple[bool, str, str, Optional[str]]:
         # Use a separate variable for log display; keep final_response clean
         # for delivery logic (empty response = no delivery).
         logged_response = final_response if final_response else "(No response generated)"
-        
+
+        # ------------------------------------------------------------------
+        # Clean delivery mode (cron-clean-delivery skill or explicit rule)
+        # Keeps skill-managed outputs free of scheduler metadata.
+        # ------------------------------------------------------------------
+        skills_list = job.get("skills") or []
+        if isinstance(skills_list, str):
+            skills_list = [skills_list]
+        skill_names = [str(s).strip() for s in skills_list if str(s).strip()]
+
+        is_clean_delivery = (
+            "cron-clean-delivery" in skill_names
+            or "OUTPUT FORMAT RULE (MANDATORY)" in prompt
+            or "OUTPUT FORMAT RULE (STRICT" in prompt
+        )
+
+        if is_clean_delivery:
+            clean_output = final_response.strip()
+            logger.info("Job '%s' using clean delivery (cron-clean-delivery)", job_name)
+            return True, clean_output, final_response, None
+
         output = f"""# Cron Job: {job_name}
 
 **Job ID:** {job_id}
@@ -1719,7 +1721,7 @@ def _run_job_impl(job: dict) -> tuple[bool, str, str, Optional[str]]:
 
 {logged_response}
 """
-        
+
         logger.info("Job '%s' completed successfully", job_name)
         return True, output, final_response, None
         

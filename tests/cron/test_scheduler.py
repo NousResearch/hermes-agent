@@ -488,7 +488,7 @@ class TestRoutingIntents:
 
 
 class TestDeliverResultWrapping:
-    """Verify that cron deliveries are wrapped with header/footer and no longer mirrored."""
+    """Verify that cron deliveries send the stored output content verbatim."""
 
     def _safe_media_path(self, tmp_path, monkeypatch, name, data=b"media"):
         root = tmp_path / "media-cache"
@@ -501,8 +501,8 @@ class TestDeliverResultWrapping:
         )
         return media_file.resolve()
 
-    def test_delivery_wraps_content_with_header_and_footer(self):
-        """Delivered content should include task name header and agent-invisible note."""
+    def test_delivery_sends_raw_content_without_header_or_footer(self):
+        """Delivered content should not include cron wrapper metadata."""
         from gateway.config import Platform
 
         pconfig = MagicMock()
@@ -511,7 +511,8 @@ class TestDeliverResultWrapping:
         mock_cfg.platforms = {Platform.TELEGRAM: pconfig}
 
         with patch("gateway.config.load_gateway_config", return_value=mock_cfg), \
-             patch("tools.send_message_tool._send_to_platform", new=AsyncMock(return_value={"success": True})) as send_mock:
+             patch("tools.send_message_tool._send_to_platform", new=AsyncMock(return_value={"success": True})) as send_mock, \
+             patch("cron.scheduler.load_config", return_value={"cron": {"wrap_response": True}}):
             job = {
                 "id": "test-job",
                 "name": "daily-report",
@@ -522,14 +523,13 @@ class TestDeliverResultWrapping:
 
         send_mock.assert_called_once()
         sent_content = send_mock.call_args.kwargs.get("content") or send_mock.call_args[0][-1]
-        assert "Cronjob Response: daily-report" in sent_content
-        assert "(job_id: test-job)" in sent_content
-        assert "-------------" in sent_content
-        assert "Here is today's summary." in sent_content
-        assert "To stop or manage this job" in sent_content
+        assert sent_content == "Here is today's summary."
+        assert "Cronjob Response" not in sent_content
+        assert "job_id" not in sent_content
+        assert "To stop or manage this job" not in sent_content
 
-    def test_delivery_uses_job_id_when_no_name(self):
-        """When a job has no name, the wrapper should fall back to job id."""
+    def test_delivery_does_not_inject_job_id_when_no_name(self):
+        """A job without a display name should still deliver only raw content."""
         from gateway.config import Platform
 
         pconfig = MagicMock()
@@ -547,7 +547,8 @@ class TestDeliverResultWrapping:
             _deliver_result(job, "Output.")
 
         sent_content = send_mock.call_args.kwargs.get("content") or send_mock.call_args[0][-1]
-        assert "Cronjob Response: abc-123" in sent_content
+        assert sent_content == "Output."
+        assert "abc-123" not in sent_content
 
     def test_delivery_skips_wrapping_when_config_disabled(self):
         """When cron.wrap_response is false, deliver raw content without header/footer."""

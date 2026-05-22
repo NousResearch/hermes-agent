@@ -70,6 +70,14 @@ class TestPlatformConfigRoundtrip:
         restored = PlatformConfig.from_dict({"gateway_restart_notification": "false"})
         assert restored.gateway_restart_notification is False
 
+    def test_shutdown_notification_alias_suppresses_lifecycle_notices(self):
+        restored = PlatformConfig.from_dict({"shutdown_notification": False})
+        assert restored.gateway_restart_notification is False
+
+    def test_shutdown_notification_alias_in_extra_suppresses_lifecycle_notices(self):
+        restored = PlatformConfig.from_dict({"extra": {"shutdown_notification": "false"}})
+        assert restored.gateway_restart_notification is False
+
 
 class TestGetConnectedPlatforms:
     def test_returns_enabled_with_token(self):
@@ -323,6 +331,23 @@ class TestLoadGatewayConfig:
         load_gateway_config()
 
         assert os.environ.get("DISCORD_THREAD_REQUIRE_MENTION") == "true"
+
+    def test_bridges_discord_shutdown_notification_alias_from_config_yaml(self, tmp_path, monkeypatch):
+        """discord.shutdown_notification=false should suppress lifecycle pings."""
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        config_path = hermes_home / "config.yaml"
+        config_path.write_text(
+            "discord:\n"
+            "  shutdown_notification: false\n",
+            encoding="utf-8",
+        )
+
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+        config = load_gateway_config()
+
+        assert config.platforms[Platform.DISCORD].gateway_restart_notification is False
 
     def test_thread_require_mention_yaml_does_not_overwrite_env(self, tmp_path, monkeypatch):
         """Explicit env var should win over config.yaml (env > yaml precedence)."""

@@ -120,8 +120,8 @@ class TestInterruptKeyConsistency:
         # NOT stored under chat_id
         assert source.chat_id not in adapter._pending_messages
 
-        # Interrupt event was set
-        assert adapter._active_sessions[session_key].is_set()
+        # Text follow-ups queue silently and do not interrupt the active turn.
+        assert adapter._active_sessions[session_key].is_set() is False
 
     @pytest.mark.asyncio
     async def test_photo_followup_is_queued_without_interrupt(self):

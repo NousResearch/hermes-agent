@@ -38,6 +38,7 @@ import tempfile
 import threading
 import time
 import sqlite3
+import uuid
 from collections import OrderedDict
 from contextvars import copy_context
 from pathlib import Path
@@ -3994,6 +3995,15 @@ class GatewayRunner:
             adapter.set_fatal_error_handler(self._handle_adapter_fatal_error)
             adapter.set_session_store(self.session_store)
             adapter.set_busy_session_handler(self._handle_active_session_busy_message)
+            adapter._busy_text_mode = self._busy_text_mode
+            if adapter._busy_text_mode == "" and self._busy_text_mode != "":
+                raise RuntimeError(
+                    f"_busy_text_mode propagation failed for "
+                    f"{adapter.__class__.__name__}. "
+                    f"Runner has _busy_text_mode={self._busy_text_mode!r} "
+                    f"but adapter is empty after propagation."
+                )
+            adapter.gateway_runner = self
             
             # Try to connect
             logger.info("Connecting to %s...", platform.value)
@@ -5606,6 +5616,15 @@ class GatewayRunner:
                     adapter.set_fatal_error_handler(self._handle_adapter_fatal_error)
                     adapter.set_session_store(self.session_store)
                     adapter.set_busy_session_handler(self._handle_active_session_busy_message)
+                    adapter._busy_text_mode = self._busy_text_mode
+                    if adapter._busy_text_mode == "" and self._busy_text_mode != "":
+                        raise RuntimeError(
+                            f"_busy_text_mode propagation failed for "
+                            f"{adapter.__class__.__name__}. "
+                            f"Runner has _busy_text_mode={self._busy_text_mode!r} "
+                            f"but adapter is empty after propagation."
+                        )
+                    adapter.gateway_runner = self
 
                     success = await self._connect_adapter_with_timeout(adapter, platform)
                     if success:
@@ -8549,11 +8568,22 @@ class GatewayRunner:
         if message_text is None:
             return
 
+        adapter = self.adapters.get(source.platform)
+        agent_turn_id = self._new_agent_turn_id(session_key, run_generation, 0)
+        context_prompt_for_turn = self._prepare_coalesced_turn_context(
+            adapter,
+            event,
+            context_prompt,
+            agent_turn_id=agent_turn_id,
+            run_id=run_generation,
+        )
+        self._bind_adapter_agent_turn(adapter, session_key, agent_turn_id)
+
         # Bind this gateway run generation to the adapter's active-session
         # event so deferred post-delivery callbacks can be released by the
         # same run that registered them.
         self._bind_adapter_run_generation(
-            self.adapters.get(source.platform),
+            adapter,
             session_key,
             run_generation,
         )
@@ -8572,12 +8602,13 @@ class GatewayRunner:
             # Run the agent
             agent_result = await self._run_agent(
                 message=message_text,
-                context_prompt=context_prompt,
+                context_prompt=context_prompt_for_turn,
                 history=history,
                 source=source,
                 session_id=session_entry.session_id,
                 session_key=session_key,
                 run_generation=run_generation,
+                agent_turn_id=agent_turn_id,
                 event_message_id=self._reply_anchor_for_event(event),
                 channel_prompt=event.channel_prompt,
             )
@@ -15042,6 +15073,53 @@ class GatewayRunner:
         except Exception:
             pass
 
+    def _new_agent_turn_id(
+        self,
+        session_key: str | None,
+        run_generation: int | None,
+        interrupt_depth: int,
+    ) -> str:
+        safe_generation = int(run_generation or 0)
+        return f"turn_{safe_generation}_{interrupt_depth}_{uuid.uuid4().hex[:10]}"
+
+    def _prepare_coalesced_turn_context(
+        self,
+        adapter: Any,
+        event: MessageEvent,
+        context_prompt: str,
+        *,
+        agent_turn_id: str,
+        run_id: int | None,
+    ) -> str:
+        """Attach coalescing observability and hidden model context."""
+        if not adapter or event is None:
+            return context_prompt
+        try:
+            marker = getattr(adapter, "mark_coalesced_group_attached_to_turn", None)
+            if callable(marker):
+                marker(event, agent_turn_id=agent_turn_id, run_id=run_id)
+        except Exception:
+            logger.debug("coalesced turn attachment instrumentation failed", exc_info=True)
+        try:
+            note_builder = getattr(adapter, "build_coalesced_context_note", None)
+            note = note_builder(event) if callable(note_builder) else ""
+        except Exception:
+            logger.debug("coalesced context note build failed", exc_info=True)
+            note = ""
+        if not note:
+            return context_prompt
+        return (context_prompt + "\n\n" + note).strip() if context_prompt else note
+
+    def _bind_adapter_agent_turn(self, adapter: Any, session_key: str | None, agent_turn_id: str) -> None:
+        if not adapter or not session_key:
+            return
+        binder = getattr(adapter, "bind_agent_turn_for_session", None)
+        if callable(binder):
+            try:
+                binder(session_key, agent_turn_id)
+            except Exception:
+                logger.debug("agent turn binding failed", exc_info=True)
+
     async def _interrupt_and_clear_session(
         self,
         session_key: str,
@@ -15557,6 +15635,7 @@ class GatewayRunner:
         _interrupt_depth: int = 0,
         event_message_id: Optional[str] = None,
         channel_prompt: Optional[str] = None,
+        agent_turn_id: Optional[str] = None,
     ) -> Dict[str, Any]:
         """
         Run the agent with the given message and context.
@@ -15570,9 +15649,14 @@ class GatewayRunner:
         This is run in a thread pool to not block the event loop.
         Supports interruption via new messages.
         """
+        agent_turn_id = agent_turn_id or self._new_agent_turn_id(
+            session_key,
+            run_generation,
+            _interrupt_depth,
+        )
         # ---- Proxy mode: delegate to remote API server ----
         if self._get_proxy_url():
-            return await self._run_agent_via_proxy(
+            proxy_result = await self._run_agent_via_proxy(
                 message=message,
                 context_prompt=context_prompt,
                 history=history,
@@ -15582,6 +15666,10 @@ class GatewayRunner:
                 run_generation=run_generation,
                 event_message_id=event_message_id,
             )
+            if isinstance(proxy_result, dict):
+                proxy_result.setdefault("agent_turn_id", agent_turn_id)
+                proxy_result.setdefault("run_id", run_generation)
+            return proxy_result
 
         from run_agent import AIAgent
         import queue
@@ -16151,6 +16239,38 @@ class GatewayRunner:
         result_holder = [None]  # Mutable container for the result
         tools_holder = [None]   # Mutable container for the tool definitions
         stream_consumer_holder = [None]  # Mutable container for stream consumer
+        stream_output_recorded = False
+
+        def _record_stream_output_if_delivered(
+            adapter: Any = None,
+            turn_id: Optional[str] = None,
+        ) -> None:
+            nonlocal stream_output_recorded
+            if stream_output_recorded or not session_key:
+                return
+            _stream_consumer = stream_consumer_holder[0]
+            if _stream_consumer is None:
+                return
+            delivered = bool(
+                getattr(_stream_consumer, "final_response_sent", False)
+                or getattr(_stream_consumer, "final_content_delivered", False)
+            )
+            if not delivered:
+                return
+            _adapter = adapter or self.adapters.get(source.platform)
+            recorder = getattr(_adapter, "record_agent_output", None)
+            if not callable(recorder):
+                return
+            try:
+                recorder(
+                    session_key,
+                    agent_turn_id=turn_id or agent_turn_id,
+                    outbound_message_id=getattr(_stream_consumer, "_message_id", None),
+                    is_final_answer=True,
+                )
+                stream_output_recorded = True
+            except Exception:
+                logger.debug("stream output correlation failed", exc_info=True)
         
         # Bridge sync step_callback → async hooks.emit for agent:step events
         _loop_for_step = asyncio.get_running_loop()
@@ -16282,6 +16402,8 @@ class GatewayRunner:
                     "messages": [],
                     "api_calls": 0,
                     "tools": [],
+                    "agent_turn_id": agent_turn_id,
+                    "run_id": run_generation,
                 }
 
             pr = self._provider_routing
@@ -16921,6 +17043,8 @@ class GatewayRunner:
                     "output_tokens": _output_toks,
                     "model": _resolved_model,
                     "context_length": _context_length,
+                    "agent_turn_id": agent_turn_id,
+                    "run_id": run_generation,
                 }
             
             # Scan tool results for MEDIA:<path> tags that need to be delivered
@@ -17083,8 +17207,28 @@ class GatewayRunner:
                 "context_length": _context_length,
                 "session_id": effective_session_id,
                 "response_previewed": result.get("response_previewed", False),
+                "agent_turn_id": agent_turn_id,
+                "run_id": run_generation,
             }
         
+        # B1.3: Initialize pre-output assimilation state on every adapter
+        # that supports it.  Iterating over self.adapters instead of
+        # looking up by source.platform ensures the call works reliably
+        # across all session types (including Discord DMs and other
+        # platforms where source may be absent or the platform key may
+        # not match the adapters dict exactly).
+        if session_key:
+            for adapter in list(self.adapters.values()):
+                init_pc = getattr(adapter, "init_precommit_state", None)
+                if callable(init_pc):
+                    # Build key using adapter's own config to match _try_assimilate / commit_precommit_turn lookup
+                    adapter_session_key = build_session_key(
+                        source,
+                        group_sessions_per_user=adapter.config.extra.get("group_sessions_per_user", True),
+                        thread_sessions_per_user=adapter.config.extra.get("thread_sessions_per_user", False),
+                    )
+                    init_pc(adapter_session_key)
+
         # Start progress message sender if enabled
         progress_task = None
         if tool_progress_enabled:
@@ -17430,6 +17574,111 @@ class GatewayRunner:
             pending_event = None
             pending = None
             if result and adapter and session_key:
+                # B1.3: Pre-output assimilation restart loop.
+                # If the agent was interrupted and the adapter has assimilated
+                # follow-up messages (text arrived before visible output),
+                # restart the turn with expanded input instead of queueing a
+                # second turn.
+                if result.get("interrupted"):
+                    _get_assim = getattr(adapter, "_get_assimilation_pending", None)
+                    if callable(_get_assim):
+                        has_assim, assim_text, rev, texts = _get_assim(session_key)
+                        if has_assim:
+                            self._evict_cached_agent(session_key)
+                            init_precommit = getattr(adapter, "init_precommit_state", None)
+                            if callable(init_precommit):
+                                # Build key using adapter's own config to match _try_assimilate / commit_precommit_turn lookup
+                                adapter_session_key = build_session_key(
+                                    source,
+                                    group_sessions_per_user=adapter.config.extra.get("group_sessions_per_user", True),
+                                    thread_sessions_per_user=adapter.config.extra.get("thread_sessions_per_user", False),
+                                )
+                                init_precommit(adapter_session_key)
+                            expanded_message = message + "\n" + assim_text
+                            expanded_context = context_prompt
+                            sig_enabled = getattr(adapter, "_is_assimilation_signaling_enabled", None)
+                            if callable(sig_enabled) and sig_enabled():
+                                build_note = getattr(adapter, "_build_assimilation_context_note", None)
+                                if callable(build_note):
+                                    note = build_note(session_key)
+                                    if note:
+                                        expanded_context = (context_prompt + "\n\n" + note).strip()
+                            try:
+                                emit = getattr(adapter, "_emit_coalescing_event", None)
+                                if callable(emit):
+                                    emit("turn_restart_requested", {
+                                        "session_key": session_key,
+                                        "revision": rev,
+                                        "restart_count": (
+                                            adapter._precommit_state.get(session_key, {}).get("restart_count", 0)
+                                            if hasattr(adapter, "_precommit_state") else 0
+                                        ),
+                                        "assimilated_count": len(texts),
+                                    })
+                            except Exception:
+                                pass
+                            logger.info(
+                                "B1.3 restarting turn for session %s: revision=%d, assimilated=%d messages",
+                                session_key or "?", rev, len(texts),
+                            )
+                            try:
+                                return await self._run_agent(
+                                    message=expanded_message,
+                                    context_prompt=expanded_context,
+                                    history=history,
+                                    source=source,
+                                    session_id=session_id,
+                                    session_key=session_key,
+                                    run_generation=run_generation,
+                                    _interrupt_depth=_interrupt_depth,
+                                    event_message_id=event_message_id,
+                                    channel_prompt=channel_prompt,
+                                    agent_turn_id=agent_turn_id,
+                                )
+                            except Exception:
+                                logger.warning(
+                                    "B1.3 restart failed for session %s — "
+                                    "queuing assimilated messages as pending turn",
+                                    session_key or "?",
+                                    exc_info=True,
+                                )
+                                if adapter and session_key:
+                                    try:
+                                        emit = getattr(adapter, "_emit_coalescing_event", None)
+                                        if callable(emit):
+                                            emit("turn_restart_failed", {
+                                                "session_key": session_key,
+                                                "revision": rev,
+                                                "fallback": "queue_as_pending",
+                                            })
+                                    except Exception:
+                                        pass
+                                    pending_event = MessageEvent(
+                                        text=expanded_message,
+                                        message_type=MessageType.TEXT,
+                                        source=source,
+                                    )
+                                    if pending_event:
+                                        merge_pending_message_event(
+                                            adapter._pending_messages,
+                                            session_key,
+                                            pending_event,
+                                            merge_text=True,
+                                        )
+                                    adapter.clear_precommit_state(session_key)
+                                return result_holder[0] or {
+                                    "final_response": "",
+                                    "messages": [],
+                                    "error": "restart_failed",
+                                }
+
+                flush_text_debounce = getattr(adapter, "_flush_text_debounce_now", None)
+                if callable(flush_text_debounce):
+                    # Agent-level active drain owns queue-mode debounce state;
+                    # force-flush timers into the adapter pending slot so this
+                    # drain consumes them instead of letting stale work fire
+                    # after the visible turn has moved on.
+                    await flush_text_debounce(session_key)
                 pending_event = _dequeue_pending_event(adapter, session_key)
                 # /queue overflow: after consuming the adapter's "next-up"
                 # slot, promote the next queued event into it so the
@@ -17526,6 +17775,10 @@ class GatewayRunner:
                     if _sc and stream_task:
                         try:
                             await asyncio.wait_for(stream_task, timeout=5.0)
+                            _record_stream_output_if_delivered(
+                                adapter,
+                                result.get("agent_turn_id") or agent_turn_id,
+                            )
                         except (asyncio.TimeoutError, asyncio.CancelledError):
                             stream_task.cancel()
                             try:
@@ -17547,11 +17800,19 @@ class GatewayRunner:
                                 "Queued follow-up for session %s: final stream delivery not confirmed; sending first response before continuing.",
                                 session_key or "?",
                             )
-                            await adapter.send(
+                            _first_send_result = await adapter.send(
                                 source.chat_id,
                                 first_response,
                                 metadata=_status_thread_metadata,
                             )
+                            recorder = getattr(adapter, "record_agent_output", None)
+                            if callable(recorder):
+                                recorder(
+                                    session_key,
+                                    agent_turn_id=result.get("agent_turn_id"),
+                                    outbound_message_id=getattr(_first_send_result, "message_id", None),
+                                    is_final_answer=True,
+                                )
                         except Exception as e:
                             logger.warning("Failed to send first response before queued message: %s", e)
                     elif first_response:
@@ -17624,15 +17885,32 @@ class GatewayRunner:
                     except Exception:
                         pass
 
+                followup_agent_turn_id = self._new_agent_turn_id(
+                    session_key,
+                    run_generation,
+                    _interrupt_depth + 1,
+                )
+                followup_context_prompt = context_prompt
+                if pending_event is not None:
+                    followup_context_prompt = self._prepare_coalesced_turn_context(
+                        adapter,
+                        pending_event,
+                        context_prompt,
+                        agent_turn_id=followup_agent_turn_id,
+                        run_id=run_generation,
+                    )
+                self._bind_adapter_agent_turn(adapter, session_key, followup_agent_turn_id)
+
                 followup_result = await self._run_agent(
                     message=next_message,
-                    context_prompt=context_prompt,
+                    context_prompt=followup_context_prompt,
                     history=updated_history,
                     source=next_source,
                     session_id=session_id,
                     session_key=session_key,
                     run_generation=run_generation,
                     _interrupt_depth=_interrupt_depth + 1,
+                    agent_turn_id=followup_agent_turn_id,
                     event_message_id=next_message_id,
                     channel_prompt=next_channel_prompt,
                 )
@@ -17660,11 +17938,13 @@ class GatewayRunner:
                     stream_task.cancel()
                     try:
                         await stream_task
+                        _record_stream_output_if_delivered()
                     except asyncio.CancelledError:
                         pass
                 else:
                     try:
                         await asyncio.wait_for(stream_task, timeout=5.0)
+                        _record_stream_output_if_delivered()
                     except (asyncio.TimeoutError, asyncio.CancelledError):
                         stream_task.cancel()
                         try:
@@ -17776,6 +18056,9 @@ class GatewayRunner:
             except Exception as _rpe:
                 logger.debug("Post-delivery cleanup registration failed: %s", _rpe)
 
+        if isinstance(response, dict):
+            response.setdefault("agent_turn_id", agent_turn_id)
+            response.setdefault("run_id", run_generation)
         return response
 
 

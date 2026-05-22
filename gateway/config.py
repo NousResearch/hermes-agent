@@ -325,10 +325,16 @@ class PlatformConfig:
         # gateway_restart_notification may be bridged into extra via the
         # shared-key loop in load_gateway_config(); check both top-level
         # and extra so YAML ``discord: gateway_restart_notification: false``
-        # works without needing a separate platforms: block.
+        # works without needing a separate platforms: block.  Older local
+        # configs used ``shutdown_notification`` for the same lifecycle-notice
+        # suppression intent, so treat it as a backward-compatible alias.
         _grn = data.get("gateway_restart_notification")
         if _grn is None:
             _grn = data.get("extra", {}).get("gateway_restart_notification")
+        if _grn is None:
+            _grn = data.get("shutdown_notification")
+        if _grn is None:
+            _grn = data.get("extra", {}).get("shutdown_notification")
 
         return cls(
             enabled=_coerce_bool(data.get("enabled"), False),
@@ -868,6 +874,8 @@ def load_gateway_config() -> GatewayConfig:
                         bridged["channel_prompts"] = channel_prompts
                 if "gateway_restart_notification" in platform_cfg:
                     bridged["gateway_restart_notification"] = platform_cfg["gateway_restart_notification"]
+                elif "shutdown_notification" in platform_cfg:
+                    bridged["gateway_restart_notification"] = platform_cfg["shutdown_notification"]
                 enabled_was_explicit = "enabled" in platform_cfg
                 if not bridged and not enabled_was_explicit:
                     continue

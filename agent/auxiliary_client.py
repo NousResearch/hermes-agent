@@ -1097,6 +1097,26 @@ def _endpoint_speaks_anthropic_messages(base_url: str) -> bool:
     return False
 
 
+def _is_specialized_client(client_obj: Any) -> bool:
+    """Check if the client is already a specialized wrapper that should not be re-wrapped."""
+    if _safe_isinstance(client_obj, AnthropicAuxiliaryClient):
+        return True
+    if _safe_isinstance(client_obj, CodexAuxiliaryClient):
+        return True
+    try:
+        from agent.gemini_native_adapter import GeminiNativeClient
+        if _safe_isinstance(client_obj, GeminiNativeClient):
+            return True
+    except ImportError:
+        pass
+    try:
+        from agent.copilot_acp_client import CopilotACPClient
+        if _safe_isinstance(client_obj, CopilotACPClient):
+            return True
+    except ImportError:
+        pass
+    return False
+
 def _maybe_wrap_anthropic(
     client_obj: Any,
     model: str,
@@ -1120,24 +1140,8 @@ def _maybe_wrap_anthropic(
     - ``api_mode`` is explicitly set to a non-Anthropic transport.
     - The ``anthropic`` SDK is not installed (falls back to OpenAI wire).
     """
-    # Already wrapped — don't double-wrap.
-    if _safe_isinstance(client_obj, AnthropicAuxiliaryClient):
+    if _is_specialized_client(client_obj):
         return client_obj
-    # Other specialized adapters we should never re-dispatch.
-    if _safe_isinstance(client_obj, CodexAuxiliaryClient):
-        return client_obj
-    try:
-        from agent.gemini_native_adapter import GeminiNativeClient
-        if _safe_isinstance(client_obj, GeminiNativeClient):
-            return client_obj
-    except ImportError:
-        pass
-    try:
-        from agent.copilot_acp_client import CopilotACPClient
-        if _safe_isinstance(client_obj, CopilotACPClient):
-            return client_obj
-    except ImportError:
-        pass
 
     # Explicit non-anthropic api_mode wins over URL heuristics.
     if api_mode and api_mode != "anthropic_messages":

@@ -246,11 +246,13 @@ class PairingStore:
             # at their TTL by _cleanup_expired.
             matched_key = None
             matched_entry = None
+            any_new_format_checked = False
             for entry_id, entry in pending.items():
                 if not isinstance(entry, dict):
                     continue
                 if "salt" not in entry or "hash" not in entry:
                     continue
+                any_new_format_checked = True
                 try:
                     salt = bytes.fromhex(entry["salt"])
                 except ValueError:
@@ -262,7 +264,13 @@ class PairingStore:
                     break
 
             if matched_key is None:
-                self._record_failed_attempt(platform)
+                # Skip failure recording only when pending is non-empty but
+                # every entry is legacy format (no salt/hash). This is the
+                # post-upgrade window where admins still have plaintext codes
+                # pending. Empty pending or a real hash-format mismatch both
+                # count as genuine failures.
+                if not pending or any_new_format_checked:
+                    self._record_failed_attempt(platform)
                 return None
 
             del pending[matched_key]

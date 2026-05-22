@@ -3737,7 +3737,12 @@ def _platform_status(platform: dict) -> str:
                 configured = bool(entry.is_connected(synthetic))
             except Exception:
                 configured = False
-        if not configured:
+        else:
+            # No is_connected hook — fall back to check_fn as a coarse
+            # "are deps present" gate. Don't fall back when is_connected
+            # is defined and returned False; that would let "SDK is
+            # installed" override "no token configured" and incorrectly
+            # report the platform as ready.
             try:
                 configured = bool(entry.check_fn())
             except Exception:

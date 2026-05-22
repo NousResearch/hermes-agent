@@ -540,34 +540,43 @@ def _format_process_result(
     if data.get("success") is False and data.get("error"):
         return f"Process error: {data.get('error')}"
     action = str((args or {}).get("action") or "process").strip() or "process"
-    if isinstance(data.get("processes"), list):
-        processes = data["processes"]
-        lines = [f"Processes: {len(processes)}"]
-        for proc in processes[:20]:
-            if not isinstance(proc, dict):
-                lines.append(f"- {proc}")
-                continue
-            sid = str(proc.get("session_id") or proc.get("id") or "?")
-            status = str(
-                proc.get("status") or ("exited" if proc.get("exited") else "running")
-            )
-            cmd = str(proc.get("command") or "").strip()
-            pid = proc.get("pid")
-            code = proc.get("exit_code")
-            bits = [status]
-            if pid is not None:
-                bits.append(f"pid {pid}")
-            if code is not None:
-                bits.append(f"exit {code}")
-            lines.append(
-                f"- `{sid}` — {', '.join(bits)}" + (f" — {cmd[:120]}" if cmd else "")
-            )
-        if len(processes) > 20:
-            lines.append(f"... {len(processes) - 20} more process(es)")
-        return "\n".join(lines)
 
-    status = str(data.get("status") or data.get("state") or action).strip()
+    processes = data.get("processes")
+    if isinstance(processes, list):
+        return _format_process_list(processes)
+
     sid = str(data.get("session_id") or (args or {}).get("session_id") or "").strip()
+    return _format_single_process(data, action, sid)
+
+
+def _format_process_list(processes: List[Any]) -> str:
+    lines = [f"Processes: {len(processes)}"]
+    for proc in processes[:20]:
+        if not isinstance(proc, dict):
+            lines.append(f"- {proc}")
+            continue
+        sid = str(proc.get("session_id") or proc.get("id") or "?")
+        status = str(
+            proc.get("status") or ("exited" if proc.get("exited") else "running")
+        )
+        cmd = str(proc.get("command") or "").strip()
+        pid = proc.get("pid")
+        code = proc.get("exit_code")
+        bits = [status]
+        if pid is not None:
+            bits.append(f"pid {pid}")
+        if code is not None:
+            bits.append(f"exit {code}")
+        lines.append(
+            f"- `{sid}` — {', '.join(bits)}" + (f" — {cmd[:120]}" if cmd else "")
+        )
+    if len(processes) > 20:
+        lines.append(f"... {len(processes) - 20} more process(es)")
+    return "\n".join(lines)
+
+
+def _format_single_process(data: Dict[str, Any], action: str, sid: str) -> str:
+    status = str(data.get("status") or data.get("state") or action).strip()
     lines = [f"Process {action}: {status}" + (f" (`{sid}`)" if sid else "")]
     for key, label in (
         ("command", "Command"),
@@ -859,14 +868,24 @@ def _format_media_or_cron_result(
     return "\n".join(lines)
 
 
-def _format_generic_list_result(tool_name: str, data: list) -> str:
-    lines = [f"{tool_name}: {len(data)} item{'s' if len(data) != 1 else ''}"]
-    for item in data[:12]:
-        lines.append(f"- {_truncate_text(str(item), limit=240)}")
-    return _truncate_text("\n".join(lines), limit=5000)
+def _format_generic_structured_result(
+    tool_name: str, result: Optional[str]
+) -> Optional[str]:
+    data = _json_loads_maybe(result)
+    if not isinstance(data, (dict, list)):
+        return result if isinstance(result, str) and result.strip() else None
+    if isinstance(data, list):
+        lines = [f"{tool_name}: {len(data)} item{'s' if len(data) != 1 else ''}"]
+        for item in data[:12]:
+            lines.append(f"- {_truncate_text(str(item), limit=240)}")
+        return _truncate_text("\n".join(lines), limit=5000)
 
 
-def _add_priority_keys(data: dict, lines: list, seen: set) -> None:
+    lines = [
+        f"✅ {tool_name} completed"
+        if data.get("success") is True
+        else f"{tool_name} result"
+    ]
     priority_keys = (
         "message",
         "status",

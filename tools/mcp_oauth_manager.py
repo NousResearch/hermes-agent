@@ -292,6 +292,97 @@ def _make_hermes_provider_class() -> Optional[type]:
             ):
                 storage.save_oauth_metadata(meta)
 
+        async def _handle_refresh_response(self, response):  # type: ignore[override]
+            """Clear stale OAuth state on disk when token refresh fails.
+
+            The MCP SDK's base implementation only nulls ``current_tokens``
+            in memory when the authorization server rejects a refresh
+            (oauth2.py ~line 445). It leaves both the tokens file AND the
+            cached dynamic ``client_info`` on disk untouched, and does not
+            null ``context.client_info`` in memory. The subsequent 401
+            branch then takes the ``if not self.context.client_info``
+            check at line 561, sees the stale client_info, and SKIPS
+            dynamic client re-registration — reusing a ``client_id`` that
+            the authorization server has already invalidated alongside
+            the rejected refresh token. The new browser flow then comes
+            back with ``invalid_client`` / ``unknown_token`` style errors
+            without ever giving the user a chance to log in fresh.
+
+            Restarting the process doesn't help because the stale state
+            reloads from disk. The only known workaround is manually
+            wiping ``~/.hermes/mcp-tokens/<server>.*`` and restarting.
+
+            Fix: when the parent reports refresh failure, wipe both the
+            tokens file and (for dynamic clients) the client_info file
+            from disk, and null ``context.client_info`` in memory. The
+            SDK's 401 branch on the same flow then takes the dynamic
+            registration path, the user gets a clean browser login, and
+            recovery happens inline without a process restart or manual
+            file deletion.
+
+            Pre-registered clients (``hermes_preregistered_client: True``
+            in the stored info) are PRESERVED — those ``client_id`` /
+            ``client_secret`` pairs are configured in ``config.yaml`` and
+            must not be deleted by the runtime.
+
+            ``oauth_metadata`` is intentionally KEPT: the token_endpoint
+            URL etc. are still valid post-revocation and skipping
+            rediscovery makes recovery faster.
+
+            Reference: Claude Code's auth.ts ``handleRefreshFailure``
+            does the same thing (clears all OAuth state on refresh
+            failure so the next flow re-registers and re-authorizes).
+            """
+            ok = await super()._handle_refresh_response(response)
+            if ok:
+                return True
+            # Parent already cleared in-memory tokens. Now reach further
+            # and wipe disk + in-memory client_info so the SDK's 401
+            # branch re-registers cleanly.
+            try:
+                from tools.mcp_oauth import HermesTokenStorage, _read_json
+                storage = self.context.storage
+                if isinstance(storage, HermesTokenStorage):
+                    tokens_path = storage._tokens_path()  # noqa: SLF001
+                    tokens_path.unlink(missing_ok=True)
+
+                    client_info_path = storage._client_info_path()  # noqa: SLF001
+                    existing = _read_json(client_info_path)
+                    is_dynamic = (
+                        isinstance(existing, dict)
+                        and existing.get("hermes_dynamic_client") is True
+                    )
+                    is_preregistered = (
+                        isinstance(existing, dict)
+                        and existing.get("hermes_preregistered_client") is True
+                    )
+                    if is_dynamic and not is_preregistered:
+                        client_info_path.unlink(missing_ok=True)
+                        # Also null in-memory so the SDK's 401 branch
+                        # takes the dynamic-registration path on the
+                        # same async_auth_flow generator.
+                        self.context.client_info = None
+                        logger.info(
+                            "MCP OAuth '%s': refresh rejected, cleared stale "
+                            "tokens + dynamic client_info; next request will "
+                            "trigger fresh DCR and browser auth",
+                            self._hermes_server_name,
+                        )
+                    else:
+                        logger.info(
+                            "MCP OAuth '%s': refresh rejected, cleared stale "
+                            "tokens (preserved pre-registered client_info); "
+                            "next request will trigger browser auth",
+                            self._hermes_server_name,
+                        )
+            except Exception as exc:  # pragma: no cover - defensive
+                logger.warning(
+                    "MCP OAuth '%s': cleanup after refresh failure raised "
+                    "(non-fatal, SDK will still attempt re-auth): %s",
+                    self._hermes_server_name, exc,
+                )
+            return False
+
         async def async_auth_flow(self, request):  # type: ignore[override]
             # Pre-flow hook: ask the manager to refresh from disk if needed.
             # Any failure here is non-fatal — we just log and proceed with

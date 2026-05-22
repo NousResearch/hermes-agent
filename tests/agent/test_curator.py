@@ -243,12 +243,50 @@ def test_load_cron_protected_returns_empty_when_cron_unavailable(curator_env, mo
     an empty set silently — missing cron support is not a fatal error."""
     import sys
     c = curator_env["curator"]
-    # Setting a module to None in sys.modules simulates a missing/blocked module.
-    # Python 3.12+ raises ModuleNotFoundError; Python 3.11 raises plain ImportError.
-    # _load_cron_protected uses `except ImportError` + e.name check to handle both.
-    monkeypatch.setitem(sys.modules, "cron.jobs", None)
-    result = c._load_cron_protected()
+    # Use a meta_path finder that raises ModuleNotFoundError consistently across all
+    # Python versions.  (sys.modules[key]=None raises plain ImportError on Python 3.11
+    # but ModuleNotFoundError on 3.12+; after the isinstance fix, plain ImportError is
+    # treated as fail-closed — so we need a technique that always gives ModuleNotFoundError.)
+    monkeypatch.delitem(sys.modules, "cron.jobs", raising=False)
+
+    class _BlockCronJobs:
+        def find_spec(self, fullname, path, target=None):
+            if fullname == "cron.jobs":
+                raise ModuleNotFoundError("No module named 'cron.jobs'", name="cron.jobs")
+
+    blocker = _BlockCronJobs()
+    sys.meta_path.insert(0, blocker)
+    try:
+        result = c._load_cron_protected()
+    finally:
+        sys.meta_path.remove(blocker)
+        # Do NOT reimport cron.jobs here: doing so would update sys.modules["cron"].jobs
+        # to a fresh module object while monkeypatch restores sys.modules["cron.jobs"]
+        # to the original, causing a split that breaks later tests that do
+        # `import cron.jobs as cron_jobs` (which reads the package attribute, not sys.modules).
+
     assert result == set()
+
+
+def test_load_cron_protected_returns_none_when_symbol_missing(
+    curator_env, monkeypatch, caplog
+):
+    """When cron.jobs IS installed but get_active_skill_refs doesn't exist (partial
+    upgrade / older module), the import raises plain ImportError with e.name=='cron.jobs'.
+    _load_cron_protected must NOT treat this as 'module absent' — it must fail-closed."""
+    import sys, logging, types
+
+    c = curator_env["curator"]
+
+    # Inject a fake cron.jobs module without get_active_skill_refs.
+    fake_mod = types.ModuleType("cron.jobs")
+    monkeypatch.setitem(sys.modules, "cron.jobs", fake_mod)
+
+    with caplog.at_level(logging.WARNING, logger="agent.curator"):
+        result = c._load_cron_protected()
+
+    assert result is None, "missing symbol should be fail-closed, not treated as absent"
+    assert any("auto-archive transitions will be skipped" in rec.message for rec in caplog.records)
 
 
 def test_load_cron_protected_returns_none_and_warns_on_runtime_error(

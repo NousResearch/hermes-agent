@@ -262,13 +262,20 @@ def _load_cron_protected() -> Optional[Set[str]]:
     """
     try:
         from cron.jobs import get_active_skill_refs
-    except ImportError as e:
-        # ModuleNotFoundError (subclass) — real missing module, any Python version.
-        # Plain ImportError — Python ≤ 3.11 with sys.modules["cron.jobs"] = None.
-        # Both cases share e.name == "cron" or "cron.jobs" when the subsystem is absent.
+    except ModuleNotFoundError as e:
         if getattr(e, "name", None) in ("cron", "cron.jobs"):
             return set()  # cron subsystem not installed — no jobs exist
-        # A dependency *inside* cron.jobs failed — treat as broken, fail-closed.
+        # A dependency *inside* cron.jobs is missing — treat as broken, fail-closed.
+        logger.warning(
+            "curator: cron.jobs failed to import — "
+            "auto-archive transitions will be skipped this run: %s", e,
+        )
+        return None
+    except ImportError as e:
+        # Plain ImportError (not ModuleNotFoundError) means the module IS present but the
+        # symbol is missing — e.g., "cannot import name 'get_active_skill_refs'" from an
+        # older cron module.  e.name == "cron.jobs" in this case too, so we cannot rely on
+        # e.name alone; we must treat any plain ImportError as fail-closed.
         logger.warning(
             "curator: cron.jobs failed to import — "
             "auto-archive transitions will be skipped this run: %s", e,
@@ -1424,8 +1431,9 @@ def _render_candidate_list(cron_protected: Optional[Set[str]] = None) -> str:
     if cron_protected is None:
         lines.append(
             "⚠ Cron-protection guard unavailable (cron store error). "
-            "Do NOT archive any skill this run — cron job dependencies cannot be verified.\n"
+            "Do NOT archive any skill this run — cron job dependencies cannot be verified."
         )
+        lines.append("")
         cron_protected = set()
 
     protected_names = sorted(cron_protected)

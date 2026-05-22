@@ -1747,6 +1747,37 @@ DEFAULT_CONFIG = {
         "retries": 2,
     },
 
+    # =========================================================================
+    # External secret sources
+    # =========================================================================
+    # Pull credentials from external secret managers at process startup
+    # rather than storing them in ~/.hermes/.env.
+    "secrets": {
+        "bitwarden": {
+            # Master switch.  When false, BSM is never contacted and the
+            # bws binary is never auto-installed — same as not having
+            # this section at all.
+            "enabled": False,
+            # Name of the env var that holds the Bitwarden machine-account
+            # access token.  This is the one bootstrap secret; it lives
+            # in ~/.hermes/.env (or your shell) and never in config.yaml.
+            "access_token_env": "BWS_ACCESS_TOKEN",
+            # UUID of the BSM project to sync from.
+            "project_id": "",
+            # Seconds to cache fetched secrets in-process.  0 disables.
+            "cache_ttl_seconds": 300,
+            # When True, BSM values overwrite existing env vars.  Default
+            # True because the point of using BSM is centralized rotation —
+            # if .env had the final say, rotating in Bitwarden wouldn't
+            # take effect until you also cleared the matching .env line.
+            "override_existing": True,
+            # When True, the bws binary is auto-downloaded into
+            # ~/.hermes/bin/ on first use.  When False you must install
+            # bws yourself and have it on PATH.
+            "auto_install": True,
+        },
+    },
+
     # Config schema version - bump this when adding new required fields
     "_config_version": 23,
 }
@@ -3017,7 +3048,7 @@ def _normalize_custom_provider_entry(
         "api_mode", "transport", "model", "default_model", "models",
         "context_length", "rate_limit_delay",
         "request_timeout_seconds", "stale_timeout_seconds",
-        "discover_models",
+        "discover_models", "extra_body",
     }
     for camel, snake in _CAMEL_ALIASES.items():
         if camel in entry and snake not in entry:
@@ -3111,6 +3142,10 @@ def _normalize_custom_provider_entry(
     discover_models = entry.get("discover_models")
     if isinstance(discover_models, bool):
         normalized["discover_models"] = discover_models
+
+    extra_body = entry.get("extra_body")
+    if isinstance(extra_body, dict):
+        normalized["extra_body"] = dict(extra_body)
 
     return normalized
 
@@ -3272,7 +3307,7 @@ _KNOWN_ROOT_KEYS = {
 # Valid fields inside a custom_providers list entry
 _VALID_CUSTOM_PROVIDER_FIELDS = {
     "name", "base_url", "api_key", "api_mode", "model", "models",
-    "context_length", "rate_limit_delay",
+    "context_length", "rate_limit_delay", "extra_body",
     # key_env is read at runtime by runtime_provider.py and auxiliary_client.py
     # — include it here so the set accurately describes the supported schema.
     "key_env",

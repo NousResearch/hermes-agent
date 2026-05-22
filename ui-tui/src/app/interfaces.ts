@@ -1,4 +1,4 @@
-import type { ScrollBoxHandle } from '@hermes/ink'
+import type { MouseTrackingMode, ScrollBoxHandle } from '@hermes/ink'
 import type { MutableRefObject, ReactNode, RefObject, SetStateAction } from 'react'
 
 import type { PasteEvent } from '../components/textInput.js'
@@ -106,7 +106,7 @@ export interface UiState {
   info: null | SessionInfo
   inlineDiffs: boolean
   locale: Locale
-  mouseTracking: boolean
+  mouseTracking: MouseTrackingMode
   sections: SectionVisibility
   showCost: boolean
   showReasoning: boolean
@@ -353,7 +353,7 @@ export interface AppLayoutTranscriptProps {
 export interface AppLayoutProps {
   actions: AppLayoutActions
   composer: AppLayoutComposerProps
-  mouseTracking: boolean
+  mouseTracking: MouseTrackingMode
   progress: AppLayoutProgressProps
   status: AppLayoutStatusProps
   transcript: AppLayoutTranscriptProps

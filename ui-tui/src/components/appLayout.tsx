@@ -6,9 +6,10 @@ import { useGateway } from '../app/gatewayContext.js'
 import type { AppLayoutProps } from '../app/interfaces.js'
 import { $isBlocked, $overlayState, patchOverlayState } from '../app/overlayStore.js'
 import { $uiState } from '../app/uiStore.js'
-import { INLINE_MODE, SHOW_FPS } from '../config/env.js'
+import { INLINE_MODE, SHOW_FPS, TERMUX_TUI_MODE } from '../config/env.js'
 import { type TranslationKey, useI18n } from '../i18n/index.js'
 import { pick } from '../lib/text.js'
+import { PLACEHOLDER } from '../content/placeholders.js'
 import {
   COMPOSER_PROMPT_GAP_WIDTH,
   composerPromptWidth,
@@ -171,10 +172,10 @@ const ComposerPane = memo(function ComposerPane({
   const i18n = useI18n()
   const isBlocked = useStore($isBlocked)
   const sh = (composer.inputBuf[0] ?? composer.input).startsWith('!')
-  const promptText = composerPromptText(ui.theme.brand.prompt, ui.info?.profile_name, sh)
+  const promptText = composerPromptText(ui.theme.brand.prompt, ui.info?.profile_name, sh, TERMUX_TUI_MODE, composer.cols)
   const promptWidth = composerPromptWidth(promptText)
   const promptBlank = ' '.repeat(promptWidth)
-  const inputColumns = stableComposerColumns(composer.cols, promptWidth)
+  const inputColumns = stableComposerColumns(composer.cols, promptWidth, TERMUX_TUI_MODE)
   const inputHeight = inputVisualHeight(composer.input, inputColumns)
   const inputMouseRef = useRef<null | TextInputMouseApi>(null)
 

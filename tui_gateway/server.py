@@ -854,19 +854,50 @@ def _coerce_statusbar(raw) -> str:
     return "top"
 
 
-def _display_mouse_tracking(display: dict) -> bool:
-    """Return canonical display.mouse_tracking with legacy tui_mouse fallback."""
+_MOUSE_TRACKING_ALIASES = {
+    "0": "off",
+    "1": "all",
+    "all": "all",
+    "any": "all",
+    "button": "buttons",
+    "buttons": "buttons",
+    "click": "buttons",
+    "false": "off",
+    "full": "all",
+    "no": "off",
+    "off": "off",
+    "on": "all",
+    "scroll": "wheel",
+    "true": "all",
+    "wheel": "wheel",
+    "yes": "all",
+}
+
+
+def _display_mouse_tracking(display: dict) -> str:
+    """Resolve display.mouse_tracking to one of ``off|wheel|buttons|all``.
+
+    Boolean values keep their legacy meaning (``True`` → ``all``, ``False`` →
+    ``off``). The ``wheel`` preset (DEC 1000+1006) is the tmux-friendly
+    subset — wheel + click only, no hover events to trigger prompt-row
+    clipboard probes. Legacy ``tui_mouse`` is honored only when
+    ``mouse_tracking`` is absent.
+    """
     if not isinstance(display, dict):
-        return True
+        return "all"
     if "mouse_tracking" in display:
         raw = display.get("mouse_tracking")
     else:
         raw = display.get("tui_mouse", True)
     if raw is False or raw == 0:
-        return False
+        return "off"
+    if raw is True or raw is None:
+        return "all"
+    if isinstance(raw, (int, float)):
+        return "all"
     if isinstance(raw, str):
-        return raw.strip().lower() not in {"0", "false", "no", "off"}
-    return True
+        return _MOUSE_TRACKING_ALIASES.get(raw.strip().lower(), "all")
+    return "all"
 
 
 def _load_reasoning_config() -> dict | None:
@@ -1037,6 +1068,10 @@ def _load_enabled_toolsets() -> list[str] | None:
 
 def _session_tool_progress_mode(sid: str) -> str:
     return str(_sessions.get(sid, {}).get("tool_progress_mode", "all") or "all")
+
+
+def _session_verbose(sid: str) -> bool:
+    return _session_tool_progress_mode(sid) == "verbose"
 
 
 def _tool_progress_enabled(sid: str) -> bool:
@@ -1470,6 +1505,74 @@ def _tool_ctx(name: str, args: dict) -> str:
         return ""
 
 
+_TUI_VERBOSE_TEXT_MAX_CHARS = 16_000
+_TUI_VERBOSE_TEXT_MAX_LINES = 240
+
+
+def _cap_tui_verbose_text(text: str) -> str:
+    if (
+        len(text) <= _TUI_VERBOSE_TEXT_MAX_CHARS
+        and text.count("\n") < _TUI_VERBOSE_TEXT_MAX_LINES
+    ):
+        return text
+
+    idx = len(text)
+    start = 0
+    for _ in range(_TUI_VERBOSE_TEXT_MAX_LINES):
+        idx = text.rfind("\n", 0, idx)
+        if idx < 0:
+            start = 0
+            break
+        start = idx + 1
+
+    line_start = start
+    start = max(line_start, len(text) - _TUI_VERBOSE_TEXT_MAX_CHARS)
+    if start > line_start:
+        next_break = text.find("\n", start)
+        if 0 <= next_break < len(text) - 1:
+            start = next_break + 1
+
+    tail = text[start:].lstrip()
+    omitted_chars = max(0, len(text) - len(tail))
+    omitted_lines = text[:start].count("\n")
+    if omitted_lines:
+        label = (
+            "[showing verbose tail; omitted "
+            f"{omitted_lines} lines / {omitted_chars} chars]\n"
+        )
+    else:
+        label = f"[showing verbose tail; omitted {omitted_chars} chars]\n"
+    return f"{label}{tail}"
+
+
+def _redact_tui_verbose_text(text: str) -> str:
+    try:
+        from agent.redact import redact_sensitive_text
+
+        redacted = redact_sensitive_text(str(text), force=True)
+    except Exception:
+        return ""
+    return _cap_tui_verbose_text(redacted)
+
+
+def _tool_args_text(args: dict) -> str:
+    try:
+        raw = json.dumps(args or {}, indent=2, ensure_ascii=False, default=str)
+    except Exception:
+        raw = str(args or {})
+    return _redact_tui_verbose_text(raw)
+
+
+def _tool_result_text(result: object) -> str:
+    try:
+        from agent.tool_dispatch_helpers import _multimodal_text_summary
+
+        raw = _multimodal_text_summary(result)
+    except Exception:
+        raw = str(result)
+    return _redact_tui_verbose_text(raw)
+
+
 def _fmt_tool_duration(seconds: float | None) -> str:
     if seconds is None:
         return ""
@@ -1531,13 +1634,18 @@ def _on_tool_start(sid: str, tool_call_id: str, name: str, args: dict):
             pass
         session.setdefault("tool_started_at", {})[tool_call_id] = time.time()
     if _tool_progress_enabled(sid):
+        payload = {
+            "tool_id": tool_call_id,
+            "name": name,
+            "context": _tool_ctx(name, args),
+        }
+        if _session_verbose(sid):
+            args_text = _tool_args_text(args)
+            if args_text:
+                payload["args_text"] = args_text
         # tool.complete is the source of truth for todos (full list from the
         # tool result). args.todos here may be a partial merge update.
-        _emit(
-            "tool.start",
-            sid,
-            {"tool_id": tool_call_id, "name": name, "context": _tool_ctx(name, args)},
-        )
+        _emit("tool.start", sid, payload)
 
 
 def _on_tool_complete(sid: str, tool_call_id: str, name: str, args: dict, result: str):
@@ -1554,6 +1662,10 @@ def _on_tool_complete(sid: str, tool_call_id: str, name: str, args: dict, result
     summary = _tool_summary(name, result, duration_s)
     if summary:
         payload["summary"] = summary
+    if _session_verbose(sid):
+        result_text = _tool_result_text(result)
+        if result_text:
+            payload["result_text"] = result_text
     if name == "todo":
         try:
             data = json.loads(result)
@@ -1593,7 +1705,10 @@ def _on_tool_progress(
         _emit("tool.progress", sid, {"name": name, "preview": preview or ""})
         return
     if event_type == "reasoning.available" and preview:
-        _emit("reasoning.available", sid, {"text": str(preview)})
+        payload: dict[str, object] = {"text": str(preview)}
+        if _session_verbose(sid):
+            payload["verbose"] = True
+        _emit("reasoning.available", sid, payload)
         return
     if event_type.startswith("subagent."):
         payload = {
@@ -1669,7 +1784,11 @@ def _agent_cbs(sid: str) -> dict:
         "tool_gen_callback": lambda name: _tool_progress_enabled(sid)
         and _emit("tool.generating", sid, {"name": name}),
         "thinking_callback": lambda text: _emit("thinking.delta", sid, {"text": text}),
-        "reasoning_callback": lambda text: _emit("reasoning.delta", sid, {"text": text}),
+        "reasoning_callback": lambda text: _emit(
+            "reasoning.delta",
+            sid,
+            {"text": text, **({"verbose": True} if _session_verbose(sid) else {})},
+        ),
         "status_callback": lambda kind, text=None: _status_update(
             sid, str(kind), None if text is None else str(text)
         ),
@@ -4087,22 +4206,25 @@ def _(rid, params: dict) -> dict:
         return _ok(rid, {"key": key, "value": nv})
 
     if key == "mouse":
-        raw = str(value or "").strip().lower()
+        # Explicit None check rather than `value or ""` so falsy non-string
+        # inputs (0, False) reach the alias map as themselves — both map to
+        # 'off' via _MOUSE_TRACKING_ALIASES — instead of being collapsed to
+        # '' and triggering the toggle path. The slash command always passes
+        # a string, but programmatic JSON-RPC callers may send booleans.
+        raw = ("" if value is None else str(value)).strip().lower()
         cfg = _load_cfg()
         display = cfg.get("display") if isinstance(cfg.get("display"), dict) else {}
         current = _display_mouse_tracking(display)
 
         if raw in {"", "toggle"}:
-            nv = not current
-        elif raw == "on":
-            nv = True
-        elif raw == "off":
-            nv = False
+            nv = "all" if current == "off" else "off"
+        elif raw in _MOUSE_TRACKING_ALIASES:
+            nv = _MOUSE_TRACKING_ALIASES[raw]
         else:
             return _err(rid, 4002, f"unknown mouse value: {value}")
 
         _write_config_key("display.mouse_tracking", nv)
-        return _ok(rid, {"key": key, "value": "on" if nv else "off"})
+        return _ok(rid, {"key": key, "value": nv})
 
     if key == "indicator":
         # Use an explicit None check rather than `value or ""` so falsy
@@ -4275,8 +4397,7 @@ def _(rid, params: dict) -> dict:
         return _ok(rid, {"value": _coerce_statusbar(raw)})
     if key == "mouse":
         display = _load_cfg().get("display")
-        on = _display_mouse_tracking(display)
-        return _ok(rid, {"value": "on" if on else "off"})
+        return _ok(rid, {"value": _display_mouse_tracking(display)})
     if key == "mtime":
         cfg_path = _hermes_home / "config.yaml"
         try:
@@ -4413,15 +4534,16 @@ _TUI_EXTRA_META: dict[str, dict[str, str]] = {
     "/details": {"en": "Control agent detail visibility", "zh": "控制 Agent 详情可见性"},
     "/logs": {"en": "Show recent gateway log lines", "zh": "显示最近的网关日志"},
     "/mouse": {
-        "en": "Toggle mouse/wheel tracking [on|off|toggle]",
-        "zh": "切换鼠标/滚轮追踪 [on|off|toggle]",
+        "en": "Set mouse tracking preset [on|off|toggle|wheel|buttons|all]",
+        "zh": "设置鼠标追踪预设 [on|off|toggle|wheel|buttons|all]",
     },
 }
 
-_TUI_EXTRA: list[tuple[str, str]] = [
-    ("/compact", "TUI"),
-    ("/logs", "TUI"),
-    ("/mouse", "TUI"),
+_TUI_EXTRA: list[tuple[str, str, str]] = [
+    ("/compact", "Toggle compact display mode", "TUI"),
+    ("/details", "Control agent detail visibility", "TUI"),
+    ("/logs", "Show recent gateway log lines", "TUI"),
+    ("/mouse", "Set mouse tracking preset [on|off|toggle|wheel|buttons|all]", "TUI"),
 ]
 
 
@@ -4482,7 +4604,7 @@ def _(rid, params: dict) -> dict:
                 cat_order.append(cat)
             cat_map[cat].append([c, desc])
 
-        for name, cat in _TUI_EXTRA:
+        for name, _desc, cat in _TUI_EXTRA:
             desc = _tui_extra_meta(name)
             all_pairs.append([name, desc])
             if cat not in cat_map:

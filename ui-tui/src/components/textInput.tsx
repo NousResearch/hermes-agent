@@ -13,6 +13,7 @@ import {
   isVoiceToggleKey,
   type ParsedVoiceRecordKey
 } from '../lib/platform.js'
+import { isTermuxTuiMode } from '../lib/termux.js'
 
 type InkExt = typeof Ink & {
   stringWidth: (s: string) => number
@@ -298,7 +299,23 @@ export function canFastBackspaceShape(current: string, cursor: number, columns?:
 export function supportsFastEchoTerminal(env: NodeJS.ProcessEnv = process.env): boolean {
   // Terminal.app still shows paint/cursor artifacts under the fast-echo
   // bypass path. Fall back to the normal Ink render path there.
-  return (env.TERM_PROGRAM ?? '').trim() !== 'Apple_Terminal'
+  if ((env.TERM_PROGRAM ?? '').trim() === 'Apple_Terminal') {
+    return false
+  }
+
+  // Termux terminals are especially sensitive to bypass-path cursor drift and
+  // stale paints at soft-wrap boundaries on tall/narrow viewports. Keep this
+  // off by default in Termux mode; allow explicit opt-in for local debugging.
+  if (isTermuxTuiMode(env)) {
+    const override = String(env.HERMES_TUI_TERMUX_FAST_ECHO ?? '').trim().toLowerCase()
+    if (override) {
+      return /^(?:1|true|yes|on)$/i.test(override)
+    }
+
+    return false
+  }
+
+  return true
 }
 
 function renderWithCursor(value: string, cursor: number) {

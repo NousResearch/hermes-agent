@@ -2,6 +2,7 @@ import { Ansi, Box, NoSelect, Text } from '@hermes/ink'
 import { memo, useState } from 'react'
 
 import { useI18n } from '../i18n/index.js'
+import { TERMUX_TUI_MODE } from '../config/env.js'
 import { LONG_MSG } from '../config/limits.js'
 import { sectionMode } from '../domain/details.js'
 import { userDisplay } from '../domain/messages.js'
@@ -142,7 +143,7 @@ export const MessageLine = memo(function MessageLine({
     }
 
     if (msg.role === 'assistant') {
-      const bodyWidth = transcriptBodyWidth(cols, msg.role, t.brand.prompt)
+      const bodyWidth = transcriptBodyWidth(cols, msg.role, t.brand.prompt, TERMUX_TUI_MODE)
 
       return isStreaming ? (
         // Incremental markdown: split at the last stable block boundary so
@@ -204,7 +205,7 @@ export const MessageLine = memo(function MessageLine({
           </Text>
         </NoSelect>
 
-        <Box width={transcriptBodyWidth(cols, msg.role, t.brand.prompt)}>{content}</Box>
+        <Box width={transcriptBodyWidth(cols, msg.role, t.brand.prompt, TERMUX_TUI_MODE)}>{content}</Box>
       </Box>
     </Box>
   )

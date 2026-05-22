@@ -164,23 +164,48 @@ def _build_skill_message(
     user_instruction: str = "",
     runtime_note: str = "",
     session_id: str | None = None,
+    command_mode: bool = False,
 ) -> str:
     """Format a loaded skill into a user/system message payload."""
     from tools.skills_tool import SKILLS_DIR
 
     content = str(loaded_skill.get("content") or "")
 
+    frontmatter: dict[str, Any] = {}
+    try:
+        from agent.skill_utils import parse_frontmatter
+
+        raw_content = str(
+            loaded_skill.get("raw_content") or loaded_skill.get("content") or ""
+        )
+        frontmatter, _ = parse_frontmatter(raw_content)
+    except Exception:
+        frontmatter = {}
+
+    command_prompt = ""
+    metadata = frontmatter.get("metadata") if isinstance(frontmatter, dict) else {}
+    if isinstance(metadata, dict):
+        hermes_meta = metadata.get("hermes")
+        if isinstance(hermes_meta, dict):
+            raw_command_prompt = hermes_meta.get("command_prompt")
+            if isinstance(raw_command_prompt, str):
+                command_prompt = raw_command_prompt.strip()
+
+    effective_content = command_prompt if command_mode and command_prompt else content
+
     # ── Template substitution and inline-shell expansion ──
-    # Done before anything else so downstream blocks (setup notes,
-    # supporting-file hints) see the expanded content.
+    # Select the effective content before preprocessing so command-mode skills
+    # do not execute inline-shell snippets from the omitted full skill body.
     skills_cfg = _load_skills_config()
     if skills_cfg.get("template_vars", True):
-        content = _substitute_template_vars(content, skill_dir, session_id)
+        effective_content = _substitute_template_vars(
+            effective_content, skill_dir, session_id
+        )
     if skills_cfg.get("inline_shell", False):
         timeout = int(skills_cfg.get("inline_shell_timeout", 10) or 10)
-        content = _expand_inline_shell(content, skill_dir, timeout)
+        effective_content = _expand_inline_shell(effective_content, skill_dir, timeout)
 
-    parts = [activation_note, "", content.strip()]
+    parts = [activation_note, "", effective_content.strip()]
 
     # ── Inject the absolute skill directory so the agent can reference
     #    bundled scripts without an extra skill_view() round-trip. ──
@@ -233,7 +258,7 @@ def _build_skill_message(
                         rel = str(f.relative_to(skill_dir))
                         supporting.append(rel)
 
-    if supporting and skill_dir:
+    if supporting and skill_dir and not (command_mode and command_prompt):
         try:
             skill_view_target = str(skill_dir.relative_to(SKILLS_DIR))
         except ValueError:
@@ -430,6 +455,7 @@ def build_skill_invocation_message(
     user_instruction: str = "",
     task_id: str | None = None,
     runtime_note: str = "",
+    command_mode: bool = False,
 ) -> Optional[str]:
     """Build the user message content for a skill slash command invocation.
 
@@ -460,7 +486,7 @@ def build_skill_invocation_message(
 
     activation_note = (
         f'[IMPORTANT: The user has invoked the "{skill_name}" skill, indicating they want '
-        "you to follow its instructions. The full skill content is loaded below.]"
+        "you to follow its instructions. The relevant skill instructions are loaded below.]"
     )
     return _build_skill_message(
         loaded_skill,
@@ -469,6 +495,7 @@ def build_skill_invocation_message(
         user_instruction=user_instruction,
         runtime_note=runtime_note,
         session_id=task_id,
+        command_mode=command_mode,
     )
 
 

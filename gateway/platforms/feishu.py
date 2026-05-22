@@ -3993,7 +3993,8 @@ class FeishuAdapter(BasePlatformAdapter):
         """Per-group policy gate for non-DM traffic."""
         sender_open_id = getattr(sender_id, "open_id", None)
         sender_user_id = getattr(sender_id, "user_id", None)
-        sender_ids = {sender_open_id, sender_user_id} - {None}
+        sender_union_id = getattr(sender_id, "union_id", None)
+        sender_ids = {sender_open_id, sender_user_id, sender_union_id} - {None}
 
         if sender_ids and self._admins and (sender_ids & self._admins):
             return True

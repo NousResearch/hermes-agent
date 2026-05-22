@@ -210,6 +210,20 @@ This gives the main agent and dashboard a compact view of whether review and tes
 
 Approval is gated once follow-ups are planned. `hermes kanban review <task_id> approve` refuses to mark the implementation task done until every planned follow-up for the current implementation run has successful worker evidence. For the built-in Codex adapter, a follow-up that exits 0 and blocks with `review.required: true` counts as successful evidence: Hermes still reviews the bounded receipt, not the full Codex session. Pending, running, missing, timed out, binary-missing, or nonzero-exit follow-ups block approval with an explicit gate error. `request-changes` remains available at any time and unblocks the implementation task for another worker run.
 
+Before deciding, controllers can read a single acceptance snapshot:
+
+```bash
+hermes kanban acceptance <implementation_task_id> --json
+```
+
+The Python tool equivalent is `kanban_acceptance`, and the dashboard/API route is:
+
+```text
+GET /api/plugins/kanban/tasks/<task_id>/acceptance
+```
+
+This snapshot combines implementation evidence, planned review/test follow-up evidence, the follow-up gate, `approval_allowed`, `request_changes_allowed`, and a deterministic `recommended_action`. It is still bounded evidence; it does not replay full external-worker sessions.
+
 ## Skill lane intent
 
 Hermes skills can choose an existing lane directly:
@@ -272,9 +286,11 @@ For a standalone shell invocation, prefer `--persist` when a later dispatcher pr
 Progress queries should read Kanban state, events, logs, and run metadata:
 
 - `hermes kanban progress <task_id> --json`
+- `hermes kanban acceptance <task_id> --json`
 - `hermes kanban progress <goal_or_root_task_id> --children --json`
 - `hermes kanban reviews --json`
 - `GET /api/plugins/kanban/tasks/<task_id>/progress`
+- `GET /api/plugins/kanban/tasks/<task_id>/acceptance`
 - `GET /api/plugins/kanban/tasks/<task_id>/progress?children=true`
 - `GET /api/plugins/kanban/reviews`
 - `hermes kanban show <task_id>`
@@ -311,8 +327,9 @@ assigned lane.
 
 Configured orchestrator/main-agent profiles can use the equivalent tools:
 `kanban_reviews` for the queue, `kanban_progress` for one task's bounded
-snapshot, `kanban_plan_review` to create independent review/test follow-ups,
-and `kanban_review` to approve or request changes. These tools are
+snapshot, `kanban_acceptance` for implementation plus review/test evidence,
+`kanban_plan_review` to create independent review/test follow-ups, and
+`kanban_review` to approve or request changes. These tools are
 orchestrator-only; dispatcher-spawned Codex workers do not see them.
 
 Pass `include_children=true` to `kanban_progress` when the task is a goal/root

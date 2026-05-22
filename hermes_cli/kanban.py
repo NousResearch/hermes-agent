@@ -485,6 +485,28 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
         help="Include related child/dependency worker progress summaries for goal/root tasks",
     )
 
+    # --- acceptance ---
+    p_acceptance = sub.add_parser(
+        "acceptance",
+        help="Read bounded implementation and review/test follow-up evidence",
+    )
+    p_acceptance.add_argument("task_id")
+    p_acceptance.add_argument("--json", action="store_true")
+    p_acceptance.add_argument(
+        "--log-tail",
+        type=int,
+        default=None,
+        metavar="BYTES",
+        help="Include the last N bytes of the implementation worker log",
+    )
+    p_acceptance.add_argument(
+        "--followup-log-tail",
+        type=int,
+        default=None,
+        metavar="BYTES",
+        help="Include the last N bytes of each follow-up worker log",
+    )
+
     # --- reviews ---
     p_reviews = sub.add_parser(
         "reviews",
@@ -1063,6 +1085,7 @@ def kanban_command(args: argparse.Namespace) -> int:
         "ls":       _cmd_list,
         "show":     _cmd_show,
         "progress": _cmd_progress,
+        "acceptance": _cmd_acceptance,
         "reviews":  _cmd_reviews,
         "review":   _cmd_review,
         "plan-review": _cmd_plan_review,
@@ -2037,6 +2060,49 @@ def _cmd_progress(args: argparse.Namespace) -> int:
                 print("      review: required")
             if summary:
                 print(f"      summary: {summary[:160]}")
+    return 0
+
+
+def _cmd_acceptance(args: argparse.Namespace) -> int:
+    with kb.connect() as conn:
+        payload = kb.task_acceptance_snapshot(
+            conn,
+            args.task_id,
+            log_tail_bytes=getattr(args, "log_tail", None),
+            followup_log_tail_bytes=getattr(args, "followup_log_tail", None),
+        )
+    if payload is None:
+        print(f"no such task: {args.task_id}", file=sys.stderr)
+        return 1
+    if getattr(args, "json", False):
+        print(json.dumps(payload, indent=2, ensure_ascii=False))
+        return 0
+
+    task = (payload.get("implementation") or {}).get("task") or {}
+    gate = payload.get("review_followup_gate") or {}
+    print(f"Acceptance {task.get('id', args.task_id)}: {task.get('title', '')}")
+    print(f"  status:             {task.get('status', '-')}")
+    print(f"  recommended_action: {payload.get('recommended_action')}")
+    print(f"  approval_allowed:   {payload.get('approval_allowed')}")
+    if gate:
+        print(
+            "  followup_gate:      "
+            f"ready={gate.get('ready')} "
+            f"satisfied={gate.get('satisfied', 0)}/{gate.get('required', 0)}"
+        )
+        for reason in gate.get("blocking_reasons") or []:
+            print(f"    - {reason}")
+    followups = payload.get("followups") or []
+    if followups:
+        print("  followups:")
+        for item in followups:
+            snap = item.get("snapshot") or {}
+            ftask = snap.get("task") or {}
+            gate_item = item.get("gate_item") or {}
+            print(
+                f"    - {item.get('purpose')}: {item.get('task_id')} "
+                f"{ftask.get('status', '-')} state={gate_item.get('state', '-')}"
+            )
     return 0
 
 

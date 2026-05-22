@@ -1676,6 +1676,14 @@ def test_plan_review_endpoint_creates_review_and_test_followups(client, tmp_path
     assert progress.review_followup_gate["ready"] is False
     assert progress.review_followup_gate["pending"] == 2
 
+    acceptance = client.get(f"/api/plugins/kanban/tasks/{tid}/acceptance")
+    assert acceptance.status_code == 200, acceptance.text
+    acceptance_data = acceptance.json()
+    assert acceptance_data["recommended_action"] == "wait_for_followups"
+    assert acceptance_data["approval_allowed"] is False
+    assert acceptance_data["review_followup_gate"]["pending"] == 2
+    assert [item["purpose"] for item in acceptance_data["followups"]] == ["review", "test"]
+
     early = client.post(
         f"/api/plugins/kanban/tasks/{tid}/review",
         json={

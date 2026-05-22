@@ -598,6 +598,41 @@ def get_task_progress(
         conn.close()
 
 
+@router.get("/tasks/{task_id}/acceptance")
+def get_task_acceptance(
+    task_id: str,
+    log_tail: Optional[int] = Query(
+        None,
+        ge=1,
+        le=_WORKER_EVIDENCE_LOG_TAIL_MAX_BYTES,
+        description="Include the last N bytes of the implementation worker log",
+    ),
+    followup_log_tail: Optional[int] = Query(
+        None,
+        ge=1,
+        le=_WORKER_EVIDENCE_LOG_TAIL_MAX_BYTES,
+        description="Include the last N bytes of each follow-up worker log",
+    ),
+    board: Optional[str] = Query(None),
+):
+    """Read bounded implementation plus review/test follow-up evidence."""
+    board = _resolve_board(board)
+    conn = _conn(board=board)
+    try:
+        payload = kanban_db.task_acceptance_snapshot(
+            conn,
+            task_id,
+            log_tail_bytes=log_tail,
+            followup_log_tail_bytes=followup_log_tail,
+            board=board,
+        )
+        if payload is None:
+            raise HTTPException(status_code=404, detail=f"task {task_id} not found")
+        return payload
+    finally:
+        conn.close()
+
+
 @router.get("/reviews")
 def list_review_required(
     assignee: Optional[str] = Query(None),

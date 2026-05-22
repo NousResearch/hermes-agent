@@ -2629,6 +2629,126 @@ def review_followup_gate_status(
     }
 
 
+def _acceptance_source_run_id(snapshot: TaskProgressSnapshot) -> Optional[int]:
+    if snapshot.evidence and isinstance(snapshot.evidence.get("review"), dict):
+        source_run_id = snapshot.evidence["review"].get("source_run_id")
+        try:
+            if source_run_id is not None:
+                return int(source_run_id)
+        except (TypeError, ValueError):
+            pass
+    return snapshot.run.id if snapshot.run else None
+
+
+def task_acceptance_snapshot(
+    conn: sqlite3.Connection,
+    task_id: str,
+    *,
+    log_tail_bytes: Optional[int] = None,
+    followup_log_tail_bytes: Optional[int] = None,
+    board: Optional[str] = None,
+) -> Optional[dict[str, Any]]:
+    """Return bounded implementation + follow-up evidence for final review.
+
+    This is the control-plane read used by main agents and dashboards before
+    approving or requesting changes. It intentionally works from structured
+    Kanban evidence and bounded log tails, not from complete external-worker
+    sessions.
+    """
+    implementation = task_progress_snapshot(
+        conn,
+        task_id,
+        log_tail_bytes=log_tail_bytes,
+        include_children=False,
+        board=board,
+    )
+    if implementation is None:
+        return None
+    source_run_id = _acceptance_source_run_id(implementation)
+    gate = (
+        review_followup_gate_status(
+            conn,
+            task_id,
+            source_run_id=source_run_id,
+        )
+        if source_run_id is not None
+        else None
+    )
+    followups: list[dict[str, Any]] = []
+    for ref in _review_followup_refs(conn, task_id, source_run_id=source_run_id):
+        snap = task_progress_snapshot(
+            conn,
+            ref["task_id"],
+            log_tail_bytes=followup_log_tail_bytes,
+            include_children=False,
+            board=board,
+        )
+        followups.append({
+            "purpose": ref["purpose"],
+            "relationship": ref["relationship"],
+            "task_id": ref["task_id"],
+            "source_run_id": ref.get("source_run_id"),
+            "gate_item": next(
+                (
+                    item for item in (gate or {}).get("items", [])
+                    if item.get("task_id") == ref["task_id"]
+                    and item.get("purpose") == ref["purpose"]
+                ),
+                None,
+            ),
+            "snapshot": snap.to_dict() if snap else None,
+        })
+
+    review_meta = (
+        implementation.evidence.get("review")
+        if implementation.evidence
+        and isinstance(implementation.evidence.get("review"), dict)
+        else {}
+    )
+    review_required = implementation.review_required
+    review_decision = review_meta.get("decision") if isinstance(review_meta, dict) else None
+    approval_allowed = bool(review_required and (gate is None or gate.get("ready")))
+    request_changes_allowed = bool(review_required)
+    followups_planned = gate is not None
+    if review_decision == "approved" or implementation.task.status == "done":
+        recommended_action = "done"
+    elif review_decision == "changes_requested":
+        recommended_action = "wait_for_implementation"
+    elif review_required and not followups_planned:
+        recommended_action = "plan_review_followups"
+    elif review_required and gate and gate.get("failed"):
+        recommended_action = "request_changes_or_replan_followups"
+    elif review_required and gate and not gate.get("ready"):
+        recommended_action = "wait_for_followups"
+    elif approval_allowed:
+        recommended_action = "review_followup_evidence"
+    elif implementation.task.status == "running":
+        recommended_action = "wait_for_implementation"
+    elif implementation.task.status == "blocked":
+        recommended_action = "inspect_blocked_task"
+    else:
+        recommended_action = "none"
+
+    return {
+        "task_id": task_id,
+        "source_run_id": source_run_id,
+        "implementation": implementation.to_dict(),
+        "followups": followups,
+        "review_followup_gate": gate,
+        "followups_planned": followups_planned,
+        "approval_allowed": approval_allowed,
+        "request_changes_allowed": request_changes_allowed,
+        "recommended_action": recommended_action,
+        "review_strategy": {
+            "review_full_session": False,
+            "evidence_scope": (
+                "bounded Kanban metadata, worker receipts, progress events, "
+                "verification summaries, and optional log tails"
+            ),
+        },
+    }
+
+
 def _require_review_followup_gate_ready(
     conn: sqlite3.Connection,
     task_id: str,

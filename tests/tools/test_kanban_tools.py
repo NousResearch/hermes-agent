@@ -112,12 +112,13 @@ def test_worker_with_kanban_toolset_still_hides_board_routing(monkeypatch, tmp_p
         "kanban_list",
         "kanban_unblock",
         "kanban_progress",
+        "kanban_acceptance",
         "kanban_reviews",
         "kanban_review",
         "kanban_plan_review",
     }.isdisjoint(kanban), (
         f"Board-routing tools leaked into worker schema: "
-        f"{kanban & {'kanban_list', 'kanban_unblock', 'kanban_progress', 'kanban_reviews', 'kanban_review', 'kanban_plan_review'}}"
+        f"{kanban & {'kanban_list', 'kanban_unblock', 'kanban_progress', 'kanban_acceptance', 'kanban_reviews', 'kanban_review', 'kanban_plan_review'}}"
     )
 
 
@@ -140,6 +141,7 @@ def test_kanban_tools_visible_with_toolset_config(monkeypatch, tmp_path):
     expected = {
         "kanban_list",
         "kanban_progress",
+        "kanban_acceptance",
         "kanban_reviews",
         "kanban_review",
         "kanban_plan_review",
@@ -518,6 +520,7 @@ def test_review_tools_reject_worker_context(worker_env):
 
     for handler, args in [
         (kt._handle_progress, {"task_id": worker_env}),
+        (kt._handle_acceptance, {"task_id": worker_env}),
         (kt._handle_reviews, {}),
         (kt._handle_review, {"task_id": worker_env, "decision": "approve"}),
         (kt._handle_plan_review, {"task_id": worker_env}),
@@ -577,6 +580,12 @@ def test_plan_review_tool_creates_review_and_test_followups(monkeypatch, worker_
     assert test_task.assignee == "codex-test"
     assert "app.py" in review_task.body
     assert "pytest -q" in test_task.body
+
+    acceptance = json.loads(kt._handle_acceptance({"task_id": tid}))
+    assert acceptance["recommended_action"] == "wait_for_followups"
+    assert acceptance["approval_allowed"] is False
+    assert acceptance["review_followup_gate"]["pending"] == 2
+    assert [item["purpose"] for item in acceptance["followups"]] == ["review", "test"]
 
     early = json.loads(kt._handle_review({
         "task_id": tid,

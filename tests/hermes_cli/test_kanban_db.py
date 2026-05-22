@@ -475,6 +475,53 @@ def test_review_worker_evidence_approve_requires_planned_followups(
     assert approved_events[-1].payload["review_followup_gate"]["ready"] is True
 
 
+def test_task_acceptance_snapshot_summarizes_followup_evidence(
+    kanban_home, tmp_path,
+):
+    metadata = {
+        "worker_lane": {"name": "codex-deep", "kind": "codex_cli", "exit_code": 0},
+        "git": {"changed_files": ["app.py"], "diff_summary": " app.py | 4 ++++"},
+        "verification": {"commands": ["pytest -q"], "summary": "passed"},
+        "review": {"required": True, "reason": "Codex completed; Hermes review required"},
+    }
+    with kb.connect() as conn:
+        tid = kb.create_task(
+            conn,
+            title="acceptance evidence",
+            assignee="codex-deep",
+            workspace_kind="dir",
+            workspace_path=str(tmp_path),
+        )
+        task = kb.claim_task(conn, tid, claimer="worker:codex-deep")
+        assert task is not None
+        assert kb.block_task(
+            conn,
+            tid,
+            reason="review-required: Codex completed; Hermes review required",
+            expected_run_id=task.current_run_id,
+            metadata=metadata,
+        )
+        before_plan = kb.task_acceptance_snapshot(conn, tid)
+        plan = kb.plan_review_followups(conn, tid)
+        pending = kb.task_acceptance_snapshot(conn, tid)
+        _finish_followup_with_worker_evidence(conn, plan.review_task_id, lane="codex-review")
+        _finish_followup_with_worker_evidence(conn, plan.test_task_id, lane="codex-test")
+        ready = kb.task_acceptance_snapshot(conn, tid)
+
+    assert before_plan["recommended_action"] == "plan_review_followups"
+    assert before_plan["followups"] == []
+    assert before_plan["review_strategy"]["review_full_session"] is False
+    assert pending["recommended_action"] == "wait_for_followups"
+    assert pending["approval_allowed"] is False
+    assert pending["review_followup_gate"]["pending"] == 2
+    assert ready["recommended_action"] == "review_followup_evidence"
+    assert ready["approval_allowed"] is True
+    assert ready["review_followup_gate"]["ready"] is True
+    assert [item["purpose"] for item in ready["followups"]] == ["review", "test"]
+    assert ready["followups"][0]["snapshot"]["worker_lane"]["name"] == "codex-review"
+    assert ready["followups"][1]["snapshot"]["verification"]["commands"] == ["pytest -q"]
+
+
 def test_review_followup_gate_uses_current_source_run_only(
     kanban_home, tmp_path,
 ):

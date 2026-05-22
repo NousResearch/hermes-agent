@@ -459,6 +459,53 @@ def _handle_progress(args: dict, **kw) -> str:
         return tool_error(f"kanban_progress: {e}")
 
 
+def _handle_acceptance(args: dict, **kw) -> str:
+    """Read implementation plus review/test follow-up acceptance evidence."""
+    guard = _require_orchestrator_tool("kanban_acceptance")
+    if guard:
+        return guard
+    tid = args.get("task_id")
+    if not tid:
+        return tool_error("task_id is required")
+    log_tail_bytes, int_error = _parse_positive_int_arg(
+        args,
+        "log_tail_bytes",
+        default=None,
+        maximum=KANBAN_LOG_TAIL_MAX_BYTES,
+    )
+    if int_error:
+        return tool_error(int_error)
+    followup_log_tail_bytes, followup_error = _parse_positive_int_arg(
+        args,
+        "followup_log_tail_bytes",
+        default=None,
+        maximum=KANBAN_LOG_TAIL_MAX_BYTES,
+    )
+    if followup_error:
+        return tool_error(followup_error)
+    board = args.get("board")
+    try:
+        kb, conn = _connect(board=board)
+        try:
+            payload = kb.task_acceptance_snapshot(
+                conn,
+                str(tid),
+                log_tail_bytes=log_tail_bytes,
+                followup_log_tail_bytes=followup_log_tail_bytes,
+                board=board,
+            )
+            if payload is None:
+                return tool_error(f"task {tid} not found")
+            return json.dumps(payload)
+        finally:
+            conn.close()
+    except ValueError as e:
+        return tool_error(f"kanban_acceptance: {e}")
+    except Exception as e:
+        logger.exception("kanban_acceptance failed")
+        return tool_error(f"kanban_acceptance: {e}")
+
+
 def _handle_reviews(args: dict, **kw) -> str:
     """List review-required external-worker evidence snapshots."""
     guard = _require_orchestrator_tool("kanban_reviews")
@@ -1103,6 +1150,36 @@ KANBAN_PROGRESS_SCHEMA = {
     },
 }
 
+KANBAN_ACCEPTANCE_SCHEMA = {
+    "name": "kanban_acceptance",
+    "description": (
+        "Read bounded implementation evidence plus planned review/test "
+        "follow-up evidence for a review-required task. Use this before "
+        "approving or requesting changes; it reports approval_allowed, "
+        "recommended_action, follow-up gate state, and never replays full "
+        "external-worker sessions. Orchestrator-only."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "task_id": {
+                "type": "string",
+                "description": "Implementation task id to inspect.",
+            },
+            "log_tail_bytes": {
+                "type": "integer",
+                "description": "Optional implementation worker-log tail bytes. Max 65536.",
+            },
+            "followup_log_tail_bytes": {
+                "type": "integer",
+                "description": "Optional per-follow-up worker-log tail bytes. Max 65536.",
+            },
+            "board": _board_schema_prop(),
+        },
+        "required": ["task_id"],
+    },
+}
+
 KANBAN_REVIEWS_SCHEMA = {
     "name": "kanban_reviews",
     "description": (
@@ -1604,6 +1681,15 @@ registry.register(
     handler=_handle_progress,
     check_fn=_check_kanban_orchestrator_mode,
     emoji="📈",
+)
+
+registry.register(
+    name="kanban_acceptance",
+    toolset="kanban",
+    schema=KANBAN_ACCEPTANCE_SCHEMA,
+    handler=_handle_acceptance,
+    check_fn=_check_kanban_orchestrator_mode,
+    emoji="🧾",
 )
 
 registry.register(

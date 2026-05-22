@@ -700,6 +700,12 @@ def test_run_slash_plan_review_json_creates_followups(
     assert repeated["created"] == []
     assert set(repeated["existing"]) == {payload["review_task_id"], payload["test_task_id"]}
 
+    acceptance = json.loads(kc.run_slash(f"acceptance {tid} --json"))
+    assert acceptance["recommended_action"] == "wait_for_followups"
+    assert acceptance["approval_allowed"] is False
+    assert acceptance["review_followup_gate"]["pending"] == 2
+    assert [item["purpose"] for item in acceptance["followups"]] == ["review", "test"]
+
     out = kc.run_slash(
         f"review {tid} approve --reviewer ralph --summary 'too early' --json"
     )

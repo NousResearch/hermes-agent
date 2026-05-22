@@ -1809,7 +1809,9 @@ def _run_llm_review(prompt: str) -> Dict[str, Any]:
         )
         # Mark this fork as a background review so tool-layer guards (e.g.
         # the cron-protection check in _delete_skill()) activate correctly.
-        # Use the canonical constant so this stays in sync with is_background_review().
+        # conversation_loop.py reads _memory_write_origin and calls
+        # set_current_write_origin() at the start of run_conversation(),
+        # which sets the ContextVar that is_background_review() reads.
         from tools.skill_provenance import BACKGROUND_REVIEW
         review_agent._memory_write_origin = BACKGROUND_REVIEW
         # Disable recursive nudges — the curator must never spawn its own review.

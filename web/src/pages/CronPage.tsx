@@ -1,4 +1,14 @@
-import { useCallback, useEffect, useLayoutEffect, useState } from "react";
+import {
+  type CSSProperties,
+  type RefObject,
+  type ReactNode,
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useRef,
+  useState,
+} from "react";
+import { createPortal } from "react-dom";
 import { Clock, Pause, Pencil, Play, Plus, Save, Trash2, X, Zap } from "lucide-react";
 import { Badge } from "@nous-research/ui/ui/components/badge";
 import { Button } from "@nous-research/ui/ui/components/button";
@@ -285,6 +295,116 @@ function buildCronUpdate(
   };
 }
 
+function PickerDropdown({
+  anchorRef,
+  children,
+  onClose,
+  open,
+}: {
+  anchorRef: RefObject<HTMLElement | null>;
+  children: ReactNode;
+  onClose(): void;
+  open: boolean;
+}) {
+  const menuRef = useRef<HTMLDivElement>(null);
+  const [menuStyle, setMenuStyle] = useState<CSSProperties>({
+    visibility: "hidden",
+  });
+
+  const updateMenuPosition = useCallback(() => {
+    const anchor = anchorRef.current;
+    if (!anchor || typeof window === "undefined") return;
+
+    const rect = anchor.getBoundingClientRect();
+    const gutter = 12;
+    const gap = 4;
+    const viewportWidth = window.innerWidth;
+    const viewportHeight = window.innerHeight;
+    const compact = viewportWidth < 640;
+    const maxWidth = viewportWidth - gutter * 2;
+    const width = compact
+      ? maxWidth
+      : Math.min(Math.max(rect.width, 280), maxWidth);
+    const left = compact
+      ? gutter
+      : Math.min(
+          Math.max(gutter, rect.left),
+          viewportWidth - gutter - width,
+        );
+    const availableBelow = viewportHeight - rect.bottom - gutter;
+    const availableAbove = rect.top - gutter;
+    const openBelow = availableBelow >= 220 || availableBelow >= availableAbove;
+    const availableHeight = Math.max(
+      120,
+      (openBelow ? availableBelow : availableAbove) - gap,
+    );
+    const menuHeight = Math.min(
+      menuRef.current?.offsetHeight || availableHeight,
+      availableHeight,
+    );
+    const top = openBelow
+      ? Math.min(rect.bottom + gap, viewportHeight - gutter - menuHeight)
+      : Math.max(gutter, rect.top - gap - menuHeight);
+
+    setMenuStyle({
+      left,
+      maxHeight: availableHeight,
+      top,
+      visibility: "visible",
+      width,
+    });
+  }, [anchorRef]);
+
+  useEffect(() => {
+    if (!open) return;
+
+    const onPointerDown = (event: PointerEvent) => {
+      const target = event.target as Node | null;
+      if (
+        target &&
+        (anchorRef.current?.contains(target) || menuRef.current?.contains(target))
+      ) {
+        return;
+      }
+      onClose();
+    };
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") onClose();
+    };
+
+    window.addEventListener("pointerdown", onPointerDown);
+    window.addEventListener("keydown", onKeyDown);
+    window.addEventListener("resize", updateMenuPosition);
+    window.addEventListener("scroll", updateMenuPosition, true);
+    return () => {
+      window.removeEventListener("pointerdown", onPointerDown);
+      window.removeEventListener("keydown", onKeyDown);
+      window.removeEventListener("resize", updateMenuPosition);
+      window.removeEventListener("scroll", updateMenuPosition, true);
+    };
+  }, [anchorRef, onClose, open, updateMenuPosition]);
+
+  useLayoutEffect(() => {
+    if (!open) return;
+    updateMenuPosition();
+    const frame = window.requestAnimationFrame(updateMenuPosition);
+    return () => window.cancelAnimationFrame(frame);
+  }, [open, updateMenuPosition]);
+
+  if (!open || typeof document === "undefined") return null;
+
+  return createPortal(
+    <div
+      ref={menuRef}
+      className="fixed z-[220] overflow-y-auto border border-border bg-card shadow-xl"
+      style={menuStyle}
+    >
+      {children}
+    </div>,
+    document.body,
+  );
+}
+
 function ChoiceInputField({
   id,
   label,
@@ -305,6 +425,7 @@ function ChoiceInputField({
   const { t } = useI18n();
   const [open, setOpen] = useState(false);
   const [filterText, setFilterText] = useState("");
+  const anchorRef = useRef<HTMLDivElement>(null);
   const choices = uniquePickerOptions(options);
   const normalizedFilter = filterText.trim().toLowerCase();
   const visibleChoices = choices
@@ -321,65 +442,64 @@ function ChoiceInputField({
   };
 
   return (
-    <div
-      className="grid gap-2"
-      onBlur={() => {
-        window.setTimeout(() => setOpen(false), 120);
-      }}
-    >
+    <div className="grid gap-2">
       <Label htmlFor={id}>{label}</Label>
-      <Input
-        id={id}
-        placeholder={placeholder}
-        value={value}
-        onFocus={() => {
-          setFilterText("");
-          setOpen(true);
-        }}
-        onClick={() => {
-          setFilterText("");
-          setOpen(true);
-        }}
-        onChange={(e) => {
-          setFilterText(e.target.value);
-          onChange(e.target.value);
-          setOpen(true);
-        }}
-        onKeyDown={(e) => {
-          if (e.key === "Escape") {
-            setOpen(false);
-          }
-        }}
-      />
-      {open && (
-        <div className="max-h-52 overflow-y-auto border border-border bg-card shadow-lg">
-          {visibleChoices.length > 0 ? (
-            visibleChoices.map((option) => (
-              <button
-                type="button"
-                key={option.value}
-                className="block w-full border-b border-border/60 px-3 py-2 text-left text-xs hover:bg-muted/60 last:border-b-0"
-                onMouseDown={(e) => e.preventDefault()}
-                onClick={() => selectOption(option.value)}
-                title={option.description}
-              >
-                <span className="block font-mono text-foreground">
-                  {option.label || option.value}
+      <div ref={anchorRef}>
+        <Input
+          id={id}
+          placeholder={placeholder}
+          value={value}
+          onFocus={() => {
+            setFilterText("");
+            setOpen(true);
+          }}
+          onClick={() => {
+            setFilterText("");
+            setOpen(true);
+          }}
+          onChange={(e) => {
+            setFilterText(e.target.value);
+            onChange(e.target.value);
+            setOpen(true);
+          }}
+          onKeyDown={(e) => {
+            if (e.key === "Escape") {
+              setOpen(false);
+            }
+          }}
+        />
+      </div>
+      <PickerDropdown
+        anchorRef={anchorRef}
+        onClose={() => setOpen(false)}
+        open={open}
+      >
+        {visibleChoices.length > 0 ? (
+          visibleChoices.map((option) => (
+            <button
+              type="button"
+              key={option.value}
+              className="block w-full border-b border-border/60 px-3 py-2 text-left text-xs hover:bg-muted/60 last:border-b-0"
+              onMouseDown={(e) => e.preventDefault()}
+              onClick={() => selectOption(option.value)}
+              title={option.description}
+            >
+              <span className="block font-mono text-foreground">
+                {option.label || option.value}
+              </span>
+              {option.description && (
+                <span className="mt-0.5 block truncate text-[11px] text-muted-foreground">
+                  {option.description}
                 </span>
-                {option.description && (
-                  <span className="mt-0.5 block truncate text-[11px] text-muted-foreground">
-                    {option.description}
-                  </span>
-                )}
-              </button>
-            ))
-          ) : (
-            <div className="px-3 py-2 text-xs text-muted-foreground">
-              {t.common.noResults}
-            </div>
-          )}
-        </div>
-      )}
+              )}
+            </button>
+          ))
+        ) : (
+          <div className="px-3 py-2 text-xs text-muted-foreground">
+            {t.common.noResults}
+          </div>
+        )}
+      </PickerDropdown>
       <p className="text-[11px] leading-relaxed text-muted-foreground">{helper}</p>
     </div>
   );
@@ -409,6 +529,7 @@ function MultiValuePicker({
   const { t } = useI18n();
   const [draft, setDraft] = useState("");
   const [open, setOpen] = useState(false);
+  const anchorRef = useRef<HTMLDivElement>(null);
   const choices = uniquePickerOptions(options);
   const values = splitList(value);
   const selected = new Set(values);
@@ -444,12 +565,7 @@ function MultiValuePicker({
   };
 
   return (
-    <div
-      className="grid gap-2"
-      onBlur={() => {
-        window.setTimeout(() => setOpen(false), 120);
-      }}
-    >
+    <div className="grid gap-2">
       <Label htmlFor={`${id}-input`}>{label}</Label>
 
       {values.length > 0 && (
@@ -473,7 +589,7 @@ function MultiValuePicker({
         </div>
       )}
 
-      <div className="flex gap-2">
+      <div ref={anchorRef} className="flex gap-2">
         <Input
           id={`${id}-input`}
           placeholder={placeholder}
@@ -508,35 +624,37 @@ function MultiValuePicker({
         </Button>
       </div>
 
-      {open && (
-        <div className="max-h-52 overflow-y-auto border border-border bg-card shadow-lg">
-          {visibleChoices.length > 0 ? (
-            visibleChoices.map((option) => (
-              <button
-                type="button"
-                key={option.value}
-                className="block w-full border-b border-border/60 px-3 py-2 text-left text-xs hover:bg-muted/60 last:border-b-0"
-                onMouseDown={(e) => e.preventDefault()}
-                onClick={() => commitValues(option.value)}
-                title={option.description}
-              >
-                <span className="block font-mono text-foreground">
-                  {option.label || option.value}
+      <PickerDropdown
+        anchorRef={anchorRef}
+        onClose={() => setOpen(false)}
+        open={open}
+      >
+        {visibleChoices.length > 0 ? (
+          visibleChoices.map((option) => (
+            <button
+              type="button"
+              key={option.value}
+              className="block w-full border-b border-border/60 px-3 py-2 text-left text-xs hover:bg-muted/60 last:border-b-0"
+              onMouseDown={(e) => e.preventDefault()}
+              onClick={() => commitValues(option.value)}
+              title={option.description}
+            >
+              <span className="block font-mono text-foreground">
+                {option.label || option.value}
+              </span>
+              {option.description && (
+                <span className="mt-0.5 block truncate text-[11px] text-muted-foreground">
+                  {option.description}
                 </span>
-                {option.description && (
-                  <span className="mt-0.5 block truncate text-[11px] text-muted-foreground">
-                    {option.description}
-                  </span>
-                )}
-              </button>
-            ))
-          ) : (
-            <div className="px-3 py-2 text-xs text-muted-foreground">
-              {t.common.noResults}
-            </div>
-          )}
-        </div>
-      )}
+              )}
+            </button>
+          ))
+        ) : (
+          <div className="px-3 py-2 text-xs text-muted-foreground">
+            {t.common.noResults}
+          </div>
+        )}
+      </PickerDropdown>
 
       <p className="text-[11px] leading-relaxed text-muted-foreground">{helper}</p>
     </div>

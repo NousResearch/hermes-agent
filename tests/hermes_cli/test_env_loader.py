@@ -87,3 +87,91 @@ def test_main_import_applies_user_env_over_shell_values(tmp_path, monkeypatch):
 
     assert os.getenv("OPENAI_BASE_URL") == "https://new.example/v1"
     assert os.getenv("HERMES_INFERENCE_PROVIDER") == "custom"
+
+
+def test_decode_vault_broker_env_accepts_double_encoded_json():
+    from hermes_cli.env_loader import _decode_vault_broker_env
+
+    payload = '"{\\"env\\": {\\"TELEGRAM_BOT_TOKEN\\": \\"token-value\\"}}"'
+
+    assert _decode_vault_broker_env(payload) == {"TELEGRAM_BOT_TOKEN": "token-value"}
+
+
+def test_load_hermes_dotenv_injects_missing_telegram_token_from_vault(tmp_path, monkeypatch):
+    import hermes_cli.env_loader as env_loader
+
+    home = tmp_path / "hermes"
+    vault_bin = home / "hermes-agent" / "venv" / "bin" / "hermes-vault"
+    vault_bin.parent.mkdir(parents=True)
+    vault_bin.write_text("#!/bin/sh\n", encoding="utf-8")
+    (home / ".env").write_text("# TELEGRAM_BOT_TOKEN migrated to vault\n", encoding="utf-8")
+
+    monkeypatch.delenv("TELEGRAM_BOT_TOKEN", raising=False)
+    monkeypatch.setenv("HERMES_VAULT_ENABLE_RUNTIME_INJECTION", "1")
+    monkeypatch.setenv("HERMES_VAULT_POLICY", str(tmp_path / "policy.yaml"))
+    monkeypatch.setattr(env_loader, "_VAULT_INJECTED", False)
+    monkeypatch.setattr(env_loader.sys, "platform", "darwin")
+
+    calls = []
+
+    class Result:
+        def __init__(self, stdout=""):
+            self.stdout = stdout
+
+    def fake_run(cmd, **kwargs):
+        calls.append((cmd, kwargs))
+        if cmd[:3] == ["security", "find-generic-password", "-s"]:
+            return Result(stdout="vault-passphrase\n")
+        assert cmd[:4] == [str(vault_bin), "broker", "env", "telegram"]
+        assert kwargs["env"]["HERMES_VAULT_PASSPHRASE"] == "vault-passphrase"
+        return Result(stdout='{"env": {"TELEGRAM_BOT_TOKEN": "vault-token"}}')
+
+    monkeypatch.setattr(env_loader.subprocess, "run", fake_run)
+
+    loaded = env_loader.load_hermes_dotenv(hermes_home=home)
+
+    assert loaded == [home / ".env"]
+    assert os.environ["TELEGRAM_BOT_TOKEN"] == "vault-token"
+    assert len(calls) == 2
+
+
+def test_load_hermes_dotenv_skips_vault_when_token_already_present(tmp_path, monkeypatch):
+    import hermes_cli.env_loader as env_loader
+
+    home = tmp_path / "hermes"
+    home.mkdir()
+    monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "existing-token")
+    monkeypatch.setenv("HERMES_VAULT_ENABLE_RUNTIME_INJECTION", "1")
+    monkeypatch.setattr(env_loader, "_VAULT_INJECTED", False)
+
+    def fail_run(*args, **kwargs):
+        raise AssertionError("vault broker should not run when env already has token")
+
+    monkeypatch.setattr(env_loader.subprocess, "run", fail_run)
+
+    env_loader.load_hermes_dotenv(hermes_home=home)
+
+    assert os.environ["TELEGRAM_BOT_TOKEN"] == "existing-token"
+
+
+def test_load_hermes_dotenv_skips_vault_on_non_macos(tmp_path, monkeypatch):
+    import hermes_cli.env_loader as env_loader
+
+    home = tmp_path / "hermes"
+    vault_bin = home / "hermes-agent" / "venv" / "bin" / "hermes-vault"
+    vault_bin.parent.mkdir(parents=True)
+    vault_bin.write_text("#!/bin/sh\n", encoding="utf-8")
+
+    monkeypatch.delenv("TELEGRAM_BOT_TOKEN", raising=False)
+    monkeypatch.setenv("HERMES_VAULT_ENABLE_RUNTIME_INJECTION", "1")
+    monkeypatch.setattr(env_loader, "_VAULT_INJECTED", False)
+    monkeypatch.setattr(env_loader.sys, "platform", "linux")
+
+    def fail_run(*args, **kwargs):
+        raise AssertionError("macOS keychain lookup should not run on non-macOS")
+
+    monkeypatch.setattr(env_loader.subprocess, "run", fail_run)
+
+    env_loader.load_hermes_dotenv(hermes_home=home)
+
+    assert "TELEGRAM_BOT_TOKEN" not in os.environ

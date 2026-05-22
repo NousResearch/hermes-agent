@@ -64,7 +64,9 @@ class CommandDef:
 COMMAND_REGISTRY: list[CommandDef] = [
     # Session
     CommandDef("new", "Start a new session (fresh session ID + history)", "Session",
-               aliases=("reset",)),
+               aliases=("reset",), args_hint="[name]"),
+    CommandDef("topic", "Enable or inspect Telegram DM topic sessions", "Session",
+               gateway_only=True, args_hint="[off|help|session-id]"),
     CommandDef("clear", "Clear screen and start a new session", "Session",
                cli_only=True),
     CommandDef("redraw", "Force a full UI repaint (recovers from terminal drift)", "Session",
@@ -77,6 +79,8 @@ COMMAND_REGISTRY: list[CommandDef] = [
     CommandDef("undo", "Remove the last user/assistant exchange", "Session"),
     CommandDef("title", "Set a title for the current session", "Session",
                args_hint="[name]"),
+    CommandDef("handoff", "Hand off this session to a messaging platform (Telegram, Discord, etc.)", "Session",
+               args_hint="<platform>", cli_only=True),
     CommandDef("branch", "Branch the current session (explore a different path)", "Session",
                aliases=("fork",), args_hint="[name]"),
     CommandDef("compress", "Manually compress conversation context", "Session",
@@ -100,7 +104,10 @@ COMMAND_REGISTRY: list[CommandDef] = [
                args_hint="<prompt>"),
     CommandDef("goal", "Set a standing goal Hermes works on across turns until achieved", "Session",
                args_hint="[text | pause | resume | clear | status]"),
+    CommandDef("subgoal", "Add or manage extra criteria on the active goal", "Session",
+               args_hint="[text | remove N | clear]"),
     CommandDef("status", "Show session info", "Session"),
+    CommandDef("whoami", "Show your slash command access (admin / user)", "Info"),
     CommandDef("profile", "Show active profile name and home directory", "Info"),
     CommandDef("sethome", "Set this chat as the home channel", "Session",
                gateway_only=True, aliases=("set-home",)),
@@ -108,10 +115,16 @@ COMMAND_REGISTRY: list[CommandDef] = [
                args_hint="[name]"),
 
     # Configuration
+    CommandDef("sessions", "Browse and resume previous sessions", "Session"),
+
+    # Configuration
     CommandDef("config", "Show current configuration", "Configuration",
                cli_only=True),
     CommandDef("model", "Switch model for this session", "Configuration",
                aliases=("provider",), args_hint="[model] [--provider name] [--global]"),
+    CommandDef("codex-runtime", "Toggle codex app-server runtime for OpenAI/Codex models",
+               "Configuration", aliases=("codex_runtime",),
+               args_hint="[auto|codex_app_server]"),
     CommandDef("gquota", "Show Google Gemini Code Assist quota usage", "Info",
                cli_only=True),
 
@@ -152,24 +165,29 @@ COMMAND_REGISTRY: list[CommandDef] = [
     CommandDef("skills", "Search, install, inspect, or manage skills",
                "Tools & Skills", cli_only=True,
                subcommands=("search", "browse", "inspect", "install")),
+    CommandDef("bundles", "List skill bundles (aliases /<name> for multiple skills)",
+               "Tools & Skills"),
     CommandDef("cron", "Manage scheduled tasks", "Tools & Skills",
                cli_only=True, args_hint="[subcommand]",
                subcommands=("list", "add", "create", "edit", "pause", "resume", "run", "remove")),
-    CommandDef("curator", "Background skill maintenance (status, run, pin, archive)",
+    CommandDef("curator", "Background skill maintenance (status, run, pin, archive, list-archived)",
                "Tools & Skills", args_hint="[subcommand]",
-               subcommands=("status", "run", "pause", "resume", "pin", "unpin", "restore")),
+               subcommands=("status", "run", "pause", "resume", "pin", "unpin", "restore", "list-archived")),
     CommandDef("kanban", "Multi-profile collaboration board (tasks, links, comments)",
                "Tools & Skills", args_hint="[subcommand]",
-               subcommands=("list", "ls", "show", "create", "assign", "link", "unlink",
-                            "claim", "comment", "complete", "block", "unblock", "archive",
-                            "tail", "dispatch", "context", "init", "gc")),
+               subcommands=("init", "boards", "create", "list", "ls", "show", "assign",
+                            "reclaim", "reassign", "diagnostics", "diag", "link", "unlink",
+                            "claim", "comment", "complete", "edit", "block", "unblock",
+                            "archive", "tail", "dispatch", "stats", "notify-subscribe",
+                            "notify-list", "notify-unsubscribe", "log", "runs",
+                            "heartbeat", "assignees", "context", "specify", "gc")),
     CommandDef("reload", "Reload .env variables into the running session", "Tools & Skills",
                cli_only=True),
     CommandDef("reload-mcp", "Reload MCP servers from config", "Tools & Skills",
                aliases=("reload_mcp",)),
     CommandDef("reload-skills", "Re-scan ~/.hermes/skills/ for newly installed or removed skills",
                "Tools & Skills", aliases=("reload_skills",)),
-    CommandDef("browser", "Connect browser tools to your live Chrome via CDP", "Tools & Skills",
+    CommandDef("browser", "Connect browser tools to your live Chromium-family browser via CDP", "Tools & Skills",
                cli_only=True, args_hint="[connect|disconnect|status]",
                subcommands=("connect", "disconnect", "status")),
     CommandDef("plugins", "List installed plugins and their status",
@@ -186,19 +204,20 @@ COMMAND_REGISTRY: list[CommandDef] = [
                args_hint="[days]"),
     CommandDef("platforms", "Show gateway/messaging platform status", "Info",
                cli_only=True, aliases=("gateway",)),
+    CommandDef("platform", "Pause, resume, or list a failing gateway platform", "Info",
+               gateway_only=True, args_hint="<pause|resume|list> [name]"),
     CommandDef("copy", "Copy the last assistant response to clipboard", "Info",
                cli_only=True, args_hint="[number]"),
     CommandDef("paste", "Attach clipboard image from your clipboard", "Info",
                cli_only=True),
     CommandDef("image", "Attach a local image file for your next prompt", "Info",
                cli_only=True, args_hint="<path>"),
-    CommandDef("update", "Update Hermes Agent to the latest version", "Info",
-               gateway_only=True),
+    CommandDef("update", "Update Hermes Agent to the latest version", "Info"),
     CommandDef("debug", "Upload debug report (system info + logs) and get shareable links", "Info"),
 
     # Exit
-    CommandDef("quit", "Exit the CLI", "Exit",
-               cli_only=True, aliases=("exit",)),
+    CommandDef("quit", "Exit the CLI (use --delete to also remove session history)", "Exit",
+               cli_only=True, aliases=("exit",), args_hint="[--delete]"),
 ]
 
 
@@ -399,6 +418,11 @@ def _is_gateway_available(cmd: CommandDef, config_overrides: set[str] | None = N
     return False
 
 
+def _requires_argument(args_hint: str) -> bool:
+    """Return True when selecting a command without text would be incomplete."""
+    return args_hint.strip().startswith("<")
+
+
 def gateway_help_lines() -> list[str]:
     """Generate gateway help text lines from the registry."""
     overrides = _resolve_config_gates()
@@ -457,22 +481,93 @@ def telegram_bot_commands() -> list[tuple[str, str]]:
     underscores.  Aliases are skipped -- Telegram shows one menu entry per
     canonical command.
 
-    Plugin-registered slash commands are included so plugins get native
-    autocomplete in Telegram without touching core code.
+    Built-in commands that require arguments (e.g. /queue, /steer, /background)
+    are **included** because their handlers return usage text when selected
+    without a payload, making them discoverable via autocomplete.
+
+    Plugin-registered slash commands that require arguments are **excluded**
+    because plugins may not provide a no-arg usage fallback.
     """
     overrides = _resolve_config_gates()
     result: list[tuple[str, str]] = []
     for cmd in COMMAND_REGISTRY:
         if not _is_gateway_available(cmd, overrides):
             continue
+        # Built-in arg-taking commands are included — their handlers show
+        # usage text when invoked without arguments, and hiding them from
+        # the menu hurts discoverability (issue #24312).
         tg_name = _sanitize_telegram_name(cmd.name)
         if tg_name:
             result.append((tg_name, cmd.description))
-    for name, description, _args_hint in _iter_plugin_command_entries():
+    for name, description, args_hint in _iter_plugin_command_entries():
+        if _requires_argument(args_hint):
+            continue
         tg_name = _sanitize_telegram_name(name)
         if tg_name:
             result.append((tg_name, description))
     return result
+
+
+_TELEGRAM_MENU_PRIORITY = (
+    # Most-typed everyday commands first.
+    "help",
+    "new",
+    "stop",
+    "status",
+    "resume",
+    "sessions",
+    "model",
+    # Maintenance / diagnostics — the ones that prompted this priority list.
+    "debug",
+    "restart",
+    "update",
+    "verbose",
+    "commands",
+    # Mid-turn session control.
+    "approve",
+    "deny",
+    "queue",
+    "steer",
+    "background",
+    # Lower-priority but still useful operational built-ins.
+    "reasoning",
+    "usage",
+    "platforms",
+    "platform",
+    "profile",
+    "whoami",
+)
+"""Built-in commands that should stay visible in Telegram's capped menu.
+
+Telegram only displays a small BotCommand menu in practice.  The full Hermes
+registry is still dispatchable when typed manually, but operational commands
+need to survive the visible menu cap ahead of lower-priority built-ins.
+"""
+
+
+def _prioritize_telegram_menu_commands(
+    commands: list[tuple[str, str]],
+) -> list[tuple[str, str]]:
+    priority = {
+        _sanitize_telegram_name(name): index
+        for index, name in enumerate(_TELEGRAM_MENU_PRIORITY)
+    }
+    return [
+        command
+        for _index, command in sorted(
+            enumerate(commands),
+            key=lambda item: (
+                0,
+                priority[item[1][0]],
+                item[0],
+            )
+            if item[1][0] in priority
+            else (
+                1,
+                item[0],
+            ),
+        )
+    ]
 
 
 _CMD_NAME_LIMIT = 32
@@ -688,11 +783,12 @@ def telegram_menu_commands(max_commands: int = 100) -> tuple[list[tuple[str, str
 
     Returns:
         (menu_commands, hidden_count) where hidden_count is the number of
-        skill commands omitted due to the cap.
+        commands omitted due to the cap.
     """
-    core_commands = list(telegram_bot_commands())
+    core_commands = _prioritize_telegram_menu_commands(list(telegram_bot_commands()))
     reserved_names = {n for n, _ in core_commands}
     all_commands = list(core_commands)
+    hidden_core_count = max(0, len(all_commands) - max_commands)
 
     remaining_slots = max(0, max_commands - len(all_commands))
     entries, hidden_count = _collect_gateway_skill_entries(
@@ -704,7 +800,7 @@ def telegram_menu_commands(max_commands: int = 100) -> tuple[list[tuple[str, str
     )
     # Drop the cmd_key — Telegram only needs (name, desc) pairs.
     all_commands.extend((n, d) for n, d, _k in entries)
-    return all_commands[:max_commands], hidden_count
+    return all_commands[:max_commands], hidden_count + hidden_core_count
 
 
 def discord_skill_commands(
@@ -792,7 +888,7 @@ def discord_skill_commands_by_category(
     # names are marked with a sentinel so the warning distinguishes
     # "skill collided with a reserved command" from "two skills collided
     # on the 32-char clamp" — the latter is the rename-worthy case.
-    _names_used: dict[str, str] = {n: "<reserved>" for n in reserved_names}
+    _names_used: dict[str, str] = dict.fromkeys(reserved_names, "<reserved>")
     hidden = 0
 
     try:
@@ -1091,9 +1187,11 @@ class SlashCommandCompleter(Completer):
         self,
         skill_commands_provider: Callable[[], Mapping[str, dict[str, Any]]] | None = None,
         command_filter: Callable[[str], bool] | None = None,
+        skill_bundles_provider: Callable[[], Mapping[str, dict[str, Any]]] | None = None,
     ) -> None:
         self._skill_commands_provider = skill_commands_provider
         self._command_filter = command_filter
+        self._skill_bundles_provider = skill_bundles_provider
         # Cached project file list for fuzzy @ completions
         self._file_cache: list[str] = []
         self._file_cache_time: float = 0.0
@@ -1115,6 +1213,20 @@ class SlashCommandCompleter(Completer):
         except Exception:
             return {}
 
+    def _iter_skill_bundles(self) -> Mapping[str, dict[str, Any]]:
+        if self._skill_bundles_provider is None:
+            return {}
+        try:
+            return self._skill_bundles_provider() or {}
+        except Exception:
+            return {}
+
+    # Commands that open pickers when run without arguments.
+    # These should NOT receive a trailing space in completions because:
+    # - The TUI's submit handler applies completions on Enter if input differs
+    # - Adding space makes "/model" → "/model " which blocks picker execution
+    _PICKER_COMMANDS = frozenset({"model", "skin", "personality"})
+
     @staticmethod
     def _completion_text(cmd_name: str, word: str) -> str:
         """Return replacement text for a completion.
@@ -1123,8 +1235,17 @@ class SlashCommandCompleter(Completer):
         returning ``help`` would be a no-op and prompt_toolkit suppresses the
         menu. Appending a trailing space keeps the dropdown visible and makes
         backspacing retrigger it naturally.
+
+        However, commands that open pickers (model, skin, personality) should
+        NOT get a trailing space — the TUI would apply the completion on Enter
+        and block the picker from opening.
         """
-        return f"{cmd_name} " if cmd_name == word else cmd_name
+        if cmd_name != word:
+            return cmd_name
+        # Don't add space for picker commands — allows Enter to execute them
+        if cmd_name in SlashCommandCompleter._PICKER_COMMANDS:
+            return cmd_name
+        return f"{cmd_name} "
 
     @staticmethod
     def _extract_path_word(text: str) -> str | None:
@@ -1325,9 +1446,9 @@ class SlashCommandCompleter(Completer):
             try:
                 proc = subprocess.run(
                     cmd, capture_output=True, text=True, timeout=2,
-                    cwd=cwd,
+                    cwd=cwd, encoding="utf-8", errors="replace",
                 )
-                if proc.returncode == 0 and proc.stdout.strip():
+                if proc.returncode == 0 and proc.stdout and proc.stdout.strip():
                     raw = proc.stdout.strip().split("\n")
                     # Store relative paths
                     for p in raw[:5000]:
@@ -1577,6 +1698,19 @@ class SlashCommandCompleter(Completer):
                     start_position=-len(word),
                     display=cmd,
                     display_meta=desc,
+                )
+
+        for cmd, info in self._iter_skill_bundles().items():
+            cmd_name = cmd[1:]
+            if cmd_name.startswith(word):
+                description = str(info.get("description", "Skill bundle"))
+                short_desc = description[:50] + ("..." if len(description) > 50 else "")
+                skill_count = len(info.get("skills", []))
+                yield Completion(
+                    self._completion_text(cmd_name, word),
+                    start_position=-len(word),
+                    display=cmd,
+                    display_meta=f"▣ {short_desc} ({skill_count} skills)",
                 )
 
         for cmd, info in self._iter_skill_commands().items():

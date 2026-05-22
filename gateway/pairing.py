@@ -18,6 +18,7 @@ Security features (based on OWASP + NIST SP 800-63-4 guidance):
 Storage: ~/.hermes/pairing/
 """
 
+import hashlib
 import json
 import os
 import secrets
@@ -148,6 +149,11 @@ class PairingStore:
 
     # ----- Pending codes -----
 
+    @staticmethod
+    def _hash_code(code: str, salt: bytes) -> str:
+        """Hash a pairing code with the given salt using SHA-256."""
+        return hashlib.sha256(salt + code.encode("utf-8")).hexdigest()
+
     def generate_code(
         self, platform: str, user_id: str, user_name: str = ""
     ) -> Optional[str]:
@@ -158,6 +164,9 @@ class PairingStore:
           - User is rate-limited (too recent request)
           - Max pending codes reached for this platform
           - User/platform is in lockout due to failed attempts
+
+        The code is NOT stored in plaintext.  Only a salted SHA-256 hash is
+        persisted so that reading the pending file does not reveal codes.
         """
         with self._lock:
             self._cleanup_expired(platform)
@@ -178,8 +187,17 @@ class PairingStore:
             # Generate cryptographically random code
             code = "".join(secrets.choice(ALPHABET) for _ in range(CODE_LENGTH))
 
-            # Store pending request
-            pending[code] = {
+            # Hash the code with a random salt before storing
+            salt = os.urandom(16)
+            code_hash = self._hash_code(code, salt)
+
+            # Use a unique entry id as the key (not the code itself)
+            entry_id = secrets.token_hex(8)
+
+            # Store pending request with hashed code
+            pending[entry_id] = {
+                "hash": code_hash,
+                "salt": salt.hex(),
                 "user_id": user_id,
                 "user_name": user_name,
                 "created_at": time.time(),
@@ -195,41 +213,97 @@ class PairingStore:
         """
         Approve a pairing code. Adds the user to the approved list.
 
-        Returns {user_id, user_name} on success, None if code is invalid/expired.
+        Returns ``{user_id, user_name}`` on success, ``None`` if the code is
+        invalid/expired OR the platform is currently locked out after
+        ``MAX_FAILED_ATTEMPTS`` failed approvals (#10195). Callers can
+        disambiguate with ``_is_locked_out(platform)``.
+
+        Verification: the user-provided code is hashed with each stored
+        entry's salt and compared to the stored hash using constant-time
+        comparison. Pre-hash entries (legacy plaintext-key format from
+        pre-upgrade pending.json files) are silently ignored — they get
+        pruned at TTL by ``_cleanup_expired``.
         """
         with self._lock:
             self._cleanup_expired(platform)
             code = code.upper().strip()
 
+            # Lockout check — must run before the pending lookup so a
+            # valid code (e.g. one already sitting in pending) cannot be
+            # accepted once the lockout fires. Without this, the lockout
+            # only blocks `generate_code`, not `approve_code` — nullifying
+            # the brute-force protection for any code already issued.
+            if self._is_locked_out(platform):
+                return None
+
             pending = self._load_json(self._pending_path(platform))
-            if code not in pending:
+
+            # Find the entry whose hash matches the provided code.
+            # Tolerate legacy plaintext-key entries (no salt/hash) and
+            # malformed entries — skip them rather than KeyError, so an
+            # in-place upgrade across an existing pending.json doesn't
+            # crash on the first approve call. Legacy entries get pruned
+            # at their TTL by _cleanup_expired.
+            matched_key = None
+            matched_entry = None
+            for entry_id, entry in pending.items():
+                if not isinstance(entry, dict):
+                    continue
+                if "salt" not in entry or "hash" not in entry:
+                    continue
+                try:
+                    salt = bytes.fromhex(entry["salt"])
+                except ValueError:
+                    continue
+                candidate_hash = self._hash_code(code, salt)
+                if secrets.compare_digest(candidate_hash, entry["hash"]):
+                    matched_key = entry_id
+                    matched_entry = entry
+                    break
+
+            if matched_key is None:
                 self._record_failed_attempt(platform)
                 return None
 
-            entry = pending.pop(code)
+            del pending[matched_key]
             self._save_json(self._pending_path(platform), pending)
 
             # Add to approved list
-            self._approve_user(platform, entry["user_id"], entry.get("user_name", ""))
+            self._approve_user(platform, matched_entry["user_id"],
+                               matched_entry.get("user_name", ""))
 
             return {
-                "user_id": entry["user_id"],
-                "user_name": entry.get("user_name", ""),
+                "user_id": matched_entry["user_id"],
+                "user_name": matched_entry.get("user_name", ""),
             }
 
     def list_pending(self, platform: str = None) -> list:
-        """List pending pairing requests, optionally filtered by platform."""
+        """List pending pairing requests, optionally filtered by platform.
+
+        Codes are stored hashed — the ``code`` field is replaced with the
+        first 8 hex characters of the hash so admins can distinguish entries
+        without revealing the original code. Legacy plaintext-key entries
+        (pre-hash format) are shown with a "legacy" placeholder so admins
+        can see them age out without crashing on a missing ``hash`` field.
+        """
         results = []
         platforms = [platform] if platform else self._all_platforms("pending")
         for p in platforms:
             self._cleanup_expired(p)
             pending = self._load_json(self._pending_path(p))
-            for code, info in pending.items():
-                age_min = int((time.time() - info["created_at"]) / 60)
+            for entry_id, info in pending.items():
+                if not isinstance(info, dict):
+                    continue
+                created_at = info.get("created_at")
+                if not isinstance(created_at, (int, float)):
+                    continue
+                age_min = int((time.time() - created_at) / 60)
+                hash_val = info.get("hash")
+                code_display = hash_val[:8] if isinstance(hash_val, str) else "legacy"
                 results.append({
                     "platform": p,
-                    "code": code,
-                    "user_id": info["user_id"],
+                    "code": code_display,
+                    "user_id": info.get("user_id", ""),
                     "user_name": info.get("user_name", ""),
                     "age_minutes": age_min,
                 })
@@ -286,17 +360,29 @@ class PairingStore:
     # ----- Cleanup -----
 
     def _cleanup_expired(self, platform: str) -> None:
-        """Remove expired pending codes."""
+        """Remove expired pending codes.
+
+        Tolerant of malformed / legacy entries — anything without a numeric
+        ``created_at`` is treated as expired (it's effectively unusable
+        with the new hash-keyed schema anyway).
+        """
         path = self._pending_path(platform)
         pending = self._load_json(path)
         now = time.time()
-        expired = [
-            code for code, info in pending.items()
-            if (now - info["created_at"]) > CODE_TTL_SECONDS
-        ]
+        expired = []
+        for entry_id, info in pending.items():
+            if not isinstance(info, dict):
+                expired.append(entry_id)
+                continue
+            created_at = info.get("created_at")
+            if not isinstance(created_at, (int, float)):
+                expired.append(entry_id)
+                continue
+            if (now - created_at) > CODE_TTL_SECONDS:
+                expired.append(entry_id)
         if expired:
-            for code in expired:
-                del pending[code]
+            for entry_id in expired:
+                del pending[entry_id]
             self._save_json(path, pending)
 
     def _all_platforms(self, suffix: str) -> list:

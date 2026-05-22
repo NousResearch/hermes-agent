@@ -158,7 +158,11 @@ def _make_interaction(
 
     return SimpleNamespace(
         user=user_obj,
-        guild=SimpleNamespace(owner_id=999),
+        # `get_member` needed for the guild-scoped role fallback path in
+        # _is_allowed_user after the #12136 cross-guild fix. Fixture guild
+        # has no members by default — tests exercising positive role paths
+        # assign their own Member via user.roles + matching allowed_role_ids.
+        guild=SimpleNamespace(owner_id=999, id=guild_id, get_member=lambda uid: None),
         guild_id=guild_id,
         channel_id=channel_id,
         channel=channel,

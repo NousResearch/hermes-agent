@@ -71,17 +71,17 @@ class TestMinimaxThinkingSupport:
 
 
 class TestMinimaxAuxModel:
-    """Verify auxiliary model is standard (not highspeed)."""
+    """Verify auxiliary model is standard (not highspeed) — now reads from profiles."""
 
     def test_minimax_aux_is_standard(self):
-        from agent.auxiliary_client import _API_KEY_PROVIDER_AUX_MODELS
-        assert _API_KEY_PROVIDER_AUX_MODELS["minimax"] == "MiniMax-M2.7"
-        assert _API_KEY_PROVIDER_AUX_MODELS["minimax-cn"] == "MiniMax-M2.7"
+        from agent.auxiliary_client import _get_aux_model_for_provider
+        assert _get_aux_model_for_provider("minimax") == "MiniMax-M2.7"
+        assert _get_aux_model_for_provider("minimax-cn") == "MiniMax-M2.7"
 
     def test_minimax_aux_not_highspeed(self):
-        from agent.auxiliary_client import _API_KEY_PROVIDER_AUX_MODELS
-        assert "highspeed" not in _API_KEY_PROVIDER_AUX_MODELS["minimax"]
-        assert "highspeed" not in _API_KEY_PROVIDER_AUX_MODELS["minimax-cn"]
+        from agent.auxiliary_client import _get_aux_model_for_provider
+        assert "highspeed" not in _get_aux_model_for_provider("minimax")
+        assert "highspeed" not in _get_aux_model_for_provider("minimax-cn")
 
 
 class TestMinimaxBetaHeaders:

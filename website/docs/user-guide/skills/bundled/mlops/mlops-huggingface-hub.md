@@ -19,6 +19,7 @@ HuggingFace hf CLI: search/download/upload models, datasets.
 | Version | `1.0.0` |
 | Author | Hugging Face |
 | License | MIT |
+| Platforms | linux, macos, windows |
 
 ## Reference: full SKILL.md
 

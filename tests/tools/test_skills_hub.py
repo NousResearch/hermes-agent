@@ -101,7 +101,7 @@ class TestTrustLevelFor:
         src = self._source()
         result = src.trust_level_for("owner/repo")
         # No path part — still resolves repo correctly
-        assert result in ("trusted", "community")
+        assert result in {"trusted", "community"}
 
 
 # ---------------------------------------------------------------------------
@@ -560,6 +560,11 @@ class TestFindSkillInRepoTree:
 
 
 class TestWellKnownSkillSource:
+    @pytest.fixture(autouse=True)
+    def _allow_public_skill_fetches(self, monkeypatch):
+        monkeypatch.setattr("tools.skills_hub.is_safe_url", lambda _url: True)
+        monkeypatch.setattr("tools.skills_hub.check_website_access", lambda _url: None)
+
     def _source(self):
         return WellKnownSkillSource()
 
@@ -675,6 +680,11 @@ class TestWellKnownSkillSource:
 
 
 class TestUrlSource:
+    @pytest.fixture(autouse=True)
+    def _allow_public_skill_fetches(self, monkeypatch):
+        monkeypatch.setattr("tools.skills_hub.is_safe_url", lambda _url: True)
+        monkeypatch.setattr("tools.skills_hub.check_website_access", lambda _url: None)
+
     def _source(self):
         return UrlSource()
 
@@ -752,6 +762,13 @@ class TestUrlSource:
     def test_inspect_returns_none_on_http_error(self, mock_get):
         mock_get.side_effect = httpx.HTTPError("boom")
         assert self._source().inspect("https://example.com/SKILL.md") is None
+
+    @patch("tools.skills_hub.httpx.get")
+    @patch("tools.skills_hub.check_website_access", return_value=None)
+    @patch("tools.skills_hub.is_safe_url", return_value=False)
+    def test_inspect_blocks_private_url(self, _mock_safe, _mock_policy, mock_get):
+        assert self._source().inspect("http://127.0.0.1/SKILL.md") is None
+        mock_get.assert_not_called()
 
     @patch("tools.skills_hub.httpx.get")
     def test_inspect_flags_awaiting_name_when_unresolvable(self, mock_get):
@@ -856,6 +873,24 @@ class TestUrlSource:
         assert self._source().fetch("https://example.com/SKILL.md") is None
 
     @patch("tools.skills_hub.httpx.get")
+    @patch("tools.skills_hub.check_website_access", return_value=None)
+    @patch("tools.skills_hub.is_safe_url", side_effect=[True, False])
+    def test_fetch_blocks_redirect_to_private_url(self, _mock_safe, _mock_policy, mock_get):
+        redirect = MagicMock(status_code=302)
+        redirect.headers = {"location": "http://127.0.0.1/private/SKILL.md"}
+        mock_get.return_value = redirect
+
+        assert self._source().fetch("https://example.com/SKILL.md") is None
+        assert mock_get.call_count == 1
+
+    @patch("tools.skills_hub.httpx.get")
+    @patch("tools.skills_hub.check_website_access", return_value=None)
+    @patch("tools.skills_hub.is_safe_url", return_value=False)
+    def test_fetch_blocks_private_url(self, _mock_safe, _mock_policy, mock_get):
+        assert self._source().fetch("http://127.0.0.1/SKILL.md") is None
+        mock_get.assert_not_called()
+
+    @patch("tools.skills_hub.httpx.get")
     def test_fetch_skips_non_matching_identifier(self, mock_get):
         assert self._source().fetch("owner/repo/skill") is None
         mock_get.assert_not_called()
@@ -896,6 +931,69 @@ class TestCheckForSkillUpdates:
         skill_dir = tmp_path / "demo-skill"
         skill_dir.mkdir()
         (skill_dir / "SKILL.md").write_text("same content")
+        (skill_dir / "references").mkdir()
+        (skill_dir / "references" / "checklist.md").write_text("- [ ] security\n")
+
+        assert bundle_content_hash(bundle) == content_hash(skill_dir)
+
+    def test_bundle_content_hash_accepts_binary_files(self):
+        bundle = SkillBundle(
+            name="demo-binary-skill",
+            files={
+                "SKILL.md": "# Demo\n",
+                "assets/logo.png": b"\x89PNG\r\n\x1a\nbinary",
+            },
+            source="github",
+            identifier="owner/repo/demo-binary-skill",
+            trust_level="community",
+        )
+
+        digest = bundle_content_hash(bundle)
+
+        assert digest.startswith("sha256:")
+
+    def test_bundle_content_hash_bytes_matches_str_equivalent(self):
+        """Bytes content must hash identically to its str-decoded form."""
+        text_bundle = SkillBundle(
+            name="demo-skill",
+            files={
+                "SKILL.md": "same content",
+                "references/checklist.md": "- [ ] security\n",
+            },
+            source="github",
+            identifier="owner/repo/demo-skill",
+            trust_level="community",
+        )
+        bytes_bundle = SkillBundle(
+            name="demo-skill",
+            files={
+                "SKILL.md": b"same content",
+                "references/checklist.md": b"- [ ] security\n",
+            },
+            source="github",
+            identifier="owner/repo/demo-skill",
+            trust_level="community",
+        )
+
+        assert bundle_content_hash(bytes_bundle) == bundle_content_hash(text_bundle)
+
+    def test_bundle_content_hash_mixed_matches_on_disk(self, tmp_path):
+        """In-memory bundle hash must equal on-disk content_hash for mixed bytes+str."""
+        from tools.skills_guard import content_hash
+
+        bundle = SkillBundle(
+            name="demo-skill",
+            files={
+                "SKILL.md": b"# Demo Skill\n",
+                "references/checklist.md": "- [ ] security\n",
+            },
+            source="github",
+            identifier="owner/repo/demo-skill",
+            trust_level="community",
+        )
+        skill_dir = tmp_path / "demo-skill"
+        skill_dir.mkdir()
+        (skill_dir / "SKILL.md").write_bytes(b"# Demo Skill\n")
         (skill_dir / "references").mkdir()
         (skill_dir / "references" / "checklist.md").write_text("- [ ] security\n")
 
@@ -1181,10 +1279,11 @@ class TestUnifiedSearchDedup:
         return src
 
     def test_dedup_keeps_first_seen(self):
+        # Same identifier from two sources — only the first (community) is kept when equal trust.
         s1 = SkillMeta(name="skill", description="from A", source="a",
-                        identifier="a/skill", trust_level="community")
+                        identifier="shared/skill", trust_level="community")
         s2 = SkillMeta(name="skill", description="from B", source="b",
-                        identifier="b/skill", trust_level="community")
+                        identifier="shared/skill", trust_level="community")
         src_a = self._make_source("a", [s1])
         src_b = self._make_source("b", [s2])
         results = unified_search("skill", [src_a, src_b])
@@ -1192,10 +1291,11 @@ class TestUnifiedSearchDedup:
         assert results[0].description == "from A"
 
     def test_dedup_prefers_trusted_over_community(self):
+        # Same identifier — trusted wins over community.
         community = SkillMeta(name="skill", description="community", source="a",
-                               identifier="a/skill", trust_level="community")
+                               identifier="shared/skill", trust_level="community")
         trusted = SkillMeta(name="skill", description="trusted", source="b",
-                             identifier="b/skill", trust_level="trusted")
+                             identifier="shared/skill", trust_level="trusted")
         src_a = self._make_source("a", [community])
         src_b = self._make_source("b", [trusted])
         results = unified_search("skill", [src_a, src_b])
@@ -1205,9 +1305,9 @@ class TestUnifiedSearchDedup:
     def test_dedup_prefers_builtin_over_trusted(self):
         """Regression: builtin must not be overwritten by trusted."""
         builtin = SkillMeta(name="skill", description="builtin", source="a",
-                             identifier="a/skill", trust_level="builtin")
+                             identifier="shared/skill", trust_level="builtin")
         trusted = SkillMeta(name="skill", description="trusted", source="b",
-                             identifier="b/skill", trust_level="trusted")
+                             identifier="shared/skill", trust_level="trusted")
         src_a = self._make_source("a", [builtin])
         src_b = self._make_source("b", [trusted])
         results = unified_search("skill", [src_a, src_b])
@@ -1216,13 +1316,30 @@ class TestUnifiedSearchDedup:
 
     def test_dedup_trusted_not_overwritten_by_community(self):
         trusted = SkillMeta(name="skill", description="trusted", source="a",
-                             identifier="a/skill", trust_level="trusted")
+                             identifier="shared/skill", trust_level="trusted")
         community = SkillMeta(name="skill", description="community", source="b",
-                               identifier="b/skill", trust_level="community")
+                               identifier="shared/skill", trust_level="community")
         src_a = self._make_source("a", [trusted])
         src_b = self._make_source("b", [community])
         results = unified_search("skill", [src_a, src_b])
         assert results[0].trust_level == "trusted"
+
+    def test_browse_sh_same_name_different_site_not_deduped(self):
+        # Browse.sh skills from different hostnames share task names (e.g. "search-listings")
+        # but have unique identifiers. They must NOT be collapsed into one result.
+        airbnb = SkillMeta(
+            name="search-listings", description="Airbnb search", source="browse-sh",
+            identifier="browse-sh/airbnb.com/search-listings-ddgioa", trust_level="community",
+        )
+        booking = SkillMeta(
+            name="search-listings", description="Booking.com search", source="browse-sh",
+            identifier="browse-sh/booking.com/search-listings-xyzab", trust_level="community",
+        )
+        src = self._make_source("browse-sh", [airbnb, booking])
+        results = unified_search("search-listings", [src])
+        assert len(results) == 2, (
+            "browse-sh skills with the same name but different sites must not be deduplicated"
+        )
 
     def test_source_filter(self):
         s1 = SkillMeta(name="s1", description="d", source="a",

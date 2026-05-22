@@ -475,7 +475,46 @@ def _check_gateway_running(profile_dir: Path) -> bool:
     """Check if a gateway is running for a given profile directory."""
     try:
         from gateway.status import get_running_pid
-        return get_running_pid(profile_dir / "gateway.pid", cleanup_stale=False) is not None
+        pid = get_running_pid(profile_dir / "gateway.pid", cleanup_stale=False)
+        if pid is not None:
+            return True
+    except Exception:
+        pass
+    # Fallback: pidfile missing/stale — scan ps for an active gateway with this profile.
+    # Do not use host process state inside pytest: live developer gateways can
+    # otherwise make isolated temp profiles look running.
+    if os.environ.get("PYTEST_CURRENT_TEST"):
+        return False
+    # Only do this for the real on-disk Hermes home/profiles, not pytest temp homes:
+    # a live `--profile default` gateway on the developer machine must not make an
+    # isolated temp default profile look running.
+    try:
+        import subprocess
+        default_home = _get_default_hermes_home().resolve()
+        resolved_dir = profile_dir.resolve()
+        profiles_root = default_home / "profiles"
+        if resolved_dir == default_home:
+            profile_name = "default"
+        elif resolved_dir.parent == profiles_root:
+            profile_name = resolved_dir.name
+        else:
+            return False
+        result = subprocess.run(
+            ["ps", "-ax", "-o", "command="],
+            capture_output=True, text=True, timeout=2,
+        )
+        for line in result.stdout.splitlines():
+            if "hermes_cli.main" not in line:
+                continue
+            try:
+                import shlex
+                parts = shlex.split(line)
+            except ValueError:
+                parts = line.split()
+            for i, part in enumerate(parts[:-1]):
+                if part == "--profile" and parts[i + 1] == profile_name:
+                    return True
+        return False
     except Exception:
         return False
 

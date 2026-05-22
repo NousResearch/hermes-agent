@@ -9,6 +9,22 @@ import pytest
 import hermes_cli.gateway as gateway
 
 
+def test_gateway_run_args_always_pin_profile(monkeypatch):
+    monkeypatch.setattr(gateway, "get_python_path", lambda: "/py")
+
+    assert gateway._gateway_run_args_for_profile("default") == [
+        "/py",
+        "-m",
+        "hermes_cli.main",
+        "--profile",
+        "default",
+        "gateway",
+        "run",
+        "--replace",
+    ]
+    assert gateway._gateway_run_args_for_profile("ruta")[3:5] == ["--profile", "ruta"]
+
+
 def _install_fake_gateway_run(monkeypatch, start_gateway):
     module = ModuleType("gateway.run")
     module.start_gateway = start_gateway

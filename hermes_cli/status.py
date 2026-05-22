@@ -563,6 +563,97 @@ def show_status(args):
         except OSError:
             pass
 
+        # Per-profile gateway status
+        print()
+        print(color("◆ Gateways", Colors.CYAN, Colors.BOLD))
+        try:
+            import time as _time
+            from hermes_cli.profiles import list_profiles as _list_profiles
+            from gateway.status import get_running_pid as _get_running_pid
+            _gw_profiles = _list_profiles()
+            for _prof in _gw_profiles:
+                _profile_home = _prof.path
+                _log_file = _profile_home / "logs" / "gateway.log"
+
+                # Try pidfile first
+                _pid = None
+                _pidfile_missing = False
+                try:
+                    _pid = _get_running_pid(_profile_home / "gateway.pid", cleanup_stale=False)
+                except Exception:
+                    pass
+                if _pid is None:
+                    _pidfile_missing = True
+
+                # ps-aux fallback: running without a valid pidfile
+                _ps_fallback = False
+                if _pid is None:
+                    try:
+                        _ps_result = subprocess.run(
+                            ["ps", "-ax", "-o", "pid=,command="],
+                            capture_output=True, text=True, timeout=2,
+                        )
+                        for _ps_line in _ps_result.stdout.splitlines():
+                            if "hermes_cli.main" not in _ps_line:
+                                continue
+                            try:
+                                _fields = _ps_line.strip().split(maxsplit=1)
+                                _candidate_pid = int(_fields[0])
+                                _cmdline = _fields[1] if len(_fields) > 1 else ""
+                            except (ValueError, IndexError):
+                                continue
+                            try:
+                                import shlex as _shlex
+                                _parts = _shlex.split(_cmdline)
+                            except ValueError:
+                                _parts = _cmdline.split()
+                            for _i, _part in enumerate(_parts[:-1]):
+                                if _part == "--profile" and _parts[_i + 1] == _prof.name:
+                                    _pid = _candidate_pid
+                                    _ps_fallback = True
+                                    break
+                            if _ps_fallback:
+                                break
+                    except Exception:
+                        pass
+
+                _gw_running = _pid is not None
+
+                # Log age from mtime
+                _log_age_str = ""
+                try:
+                    if _log_file.exists():
+                        _age_secs = int(_time.time() - _log_file.stat().st_mtime)
+                        if _age_secs < 60:
+                            _log_age_str = f"log_age={_age_secs}s"
+                        elif _age_secs < 3600:
+                            _log_age_str = f"log_age={_age_secs // 60}m"
+                        else:
+                            _log_age_str = f"log_age={_age_secs // 3600}h"
+                except Exception:
+                    pass
+
+                # Home path with ~ abbreviation
+                try:
+                    _home_display = str(_profile_home).replace(str(Path.home()), "~")
+                except Exception:
+                    _home_display = str(_profile_home)
+
+                # Compose line
+                _gw_status = (color("✓ running", Colors.GREEN) if _gw_running
+                              else color("✗ stopped", Colors.RED))
+                _line_parts = [_gw_status]
+                if _pid is not None:
+                    _line_parts.append(f"pid={_pid}")
+                if _log_age_str:
+                    _line_parts.append(_log_age_str)
+                _line_parts.append(f"home={_home_display}")
+                print(f"  {_prof.name:<12} {'  '.join(_line_parts)}")
+                if _ps_fallback and _pidfile_missing:
+                    print(f"               {color('⚠ pidfile missing, detected via ps-aux fallback', Colors.YELLOW)}")
+        except Exception as _gw_err:
+            print(f"  (error: {_gw_err})")
+
     print()
     print(color("─" * 60, Colors.DIM))
     print(color("  Run 'hermes doctor' for detailed diagnostics", Colors.DIM))

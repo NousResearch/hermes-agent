@@ -138,6 +138,50 @@ def _redirect_cache(tmp_path, monkeypatch):
     )
 
 
+class TestBotEventDiagnostics:
+    """#30091 — surface upstream filters that drop bot events."""
+
+    @pytest.mark.asyncio
+    async def test_handler_emits_debug_for_bot_event(self, adapter, caplog):
+        import logging
+        caplog.set_level(logging.DEBUG, logger="plugins.platforms.slack.adapter")
+        # Stub dedup so the debug log is hit even on a bot subtype.
+        adapter._dedup = MagicMock()
+        adapter._dedup.is_duplicate.return_value = True  # short-circuit after debug log
+        event = {
+            "type": "message",
+            "subtype": "bot_message",
+            "user": "U_OTHER_BOT",
+            "bot_id": "B_OTHER",
+            "bot_profile": {"name": "Liatrio Brain"},
+            "ts": "12345.6789",
+            "channel": "C_SHARED",
+            "thread_ts": "12300.0",
+        }
+        await adapter._handle_slack_message(event)
+        debug_lines = [r.getMessage() for r in caplog.records if r.levelno == logging.DEBUG]
+        assert any(
+            "event received" in line
+            and "bot_id=B_OTHER" in line
+            and "user=U_OTHER_BOT" in line
+            and "Liatrio Brain" in line
+            for line in debug_lines
+        ), debug_lines
+
+    def test_allow_bots_startup_diagnostic_extra(self):
+        """When allow_bots is configured via PlatformConfig.extra, the connect
+        path must surface the SLACK_ALLOWED_USERS + manifest-subscription
+        requirement so bot-to-bot interop doesn't fail silently."""
+        # We can't easily run connect() end-to-end, but the diagnostic block
+        # reads from self.config.extra / SLACK_ALLOW_BOTS in isolation; we
+        # verify the read path here.
+        cfg = PlatformConfig(enabled=True, token="***", extra={"allow_bots": "all"})
+        a = SlackAdapter(cfg)
+        # The connect-time diagnostic gates on the adapter's normalized
+        # allow_bots policy helper.
+        assert a._slack_allow_bots() == "all"
+
+
 # ---------------------------------------------------------------------------
 # TestSlashCommandSessionIsolation
 # ---------------------------------------------------------------------------

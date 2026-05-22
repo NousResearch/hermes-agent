@@ -1889,6 +1889,39 @@ class SlackAdapter(BasePlatformAdapter):
                 "[Slack] Socket Mode connected (%d workspace(s))",
                 len(self._team_clients),
             )
+
+            # Bot-event interop diagnostic. When the user has opted into
+            # bot messages via ``slack.allow_bots`` / ``SLACK_ALLOW_BOTS``,
+            # surface the additional plumbing they almost certainly also
+            # need so bot-to-bot interop doesn't silently fail.
+            #
+            # See #30091: a user reported that with ``allow_bots: all``
+            # configured, bot messages in shared threads were still
+            # dropped. Two things upstream of this code can swallow them:
+            #   1. The Slack app's event subscriptions in the manifest —
+            #      Socket Mode does not deliver events the app hasn't
+            #      subscribed to (``message.channels`` for public
+            #      channels, ``message.groups`` for private channels,
+            #      ``message.im`` for DMs).
+            #   2. The SLACK_ALLOWED_USERS / GATEWAY_ALLOWED_USERS
+            #      per-user allowlists — the other bot's user id must be
+            #      present (or GATEWAY_ALLOW_ALL_USERS=true).
+            #
+            # Logging once at INFO keeps the startup line discoverable
+            # without requiring DEBUG to enable.
+            _allow_bots_cfg = self._slack_allow_bots()
+            if _allow_bots_cfg != "none":
+                logger.info(
+                    "[Slack] allow_bots=%s — for bot-to-bot interop also ensure: "
+                    "(a) the Slack app manifest subscribes to message.channels / "
+                    "message.groups / message.im as appropriate (run "
+                    "'hermes slack manifest' if unsure), and (b) the other bot's "
+                    "Slack user id is in SLACK_ALLOWED_USERS or "
+                    "GATEWAY_ALLOW_ALL_USERS=true. Without these, bot events are "
+                    "silently dropped upstream of the allow_bots gate.",
+                    _allow_bots_cfg,
+                )
+
             return True
 
         except Exception as e:  # pragma: no cover - defensive logging
@@ -4199,6 +4232,28 @@ class SlackAdapter(BasePlatformAdapter):
         self, event: dict, payload: Optional[dict] = None
     ) -> None:
         """Handle an incoming Slack message event."""
+        # DEBUG entry log — fires BEFORE any filtering so users debugging
+        # bot-to-bot interop, allow_bots config, or SLACK_ALLOWED_USERS
+        # drops can confirm whether the event actually arrived from Slack
+        # (vs. being silently filtered upstream by the app's event
+        # subscriptions — Socket Mode will not deliver events the app
+        # manifest hasn't subscribed to). See #30091. Metadata only — never
+        # the message text.
+        if logger.isEnabledFor(logging.DEBUG):
+            _bot_profile = event.get("bot_profile") or {}
+            _bot_name = (_bot_profile.get("name") if isinstance(_bot_profile, dict) else "") or ""
+            logger.debug(
+                "[Slack] event received type=%s subtype=%s user=%s bot_id=%s bot_name=%s "
+                "channel=%s ts=%s thread_ts=%s",
+                event.get("type"),
+                event.get("subtype"),
+                event.get("user", "") or "",
+                event.get("bot_id", "") or "",
+                _bot_name,
+                event.get("channel", ""),
+                event.get("ts", ""),
+                event.get("thread_ts", ""),
+            )
         if event.get("subtype") == "message_changed":
             updated_message = event.get("message")
             if not isinstance(updated_message, dict):

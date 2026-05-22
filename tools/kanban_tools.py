@@ -687,9 +687,9 @@ def _handle_create(args: dict, **kw) -> str:
     try:
         kb, conn = _connect(board=board)
         try:
-            watch_subscriptions = []
+            watch_subscription = None
             if watcher_session_key:
-                watch_subscriptions = require_watcher_session_key_subscription(
+                watch_subscription = require_watcher_session_key_subscription(
                     str(watcher_session_key)
                 )
             new_tid = kb.create_task(
@@ -712,7 +712,7 @@ def _handle_create(args: dict, **kw) -> str:
                 initial_status=str(initial_status),
                 created_by=os.environ.get("HERMES_PROFILE") or "worker",
                 session_id=session_id,
-                watch_subscriptions=watch_subscriptions or None,
+                watch_subscription=watch_subscription,
             )
             new_task = kb.get_task(conn, new_tid)
             return _ok(

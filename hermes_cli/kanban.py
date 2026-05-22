@@ -1345,9 +1345,9 @@ def _cmd_create(args: argparse.Namespace) -> int:
         )
         return 2
     with kb.connect_closing() as conn:
-        watch_subscriptions = []
+        watch_subscription = None
         if getattr(args, "watcher_session_key", None):
-            watch_subscriptions = require_watcher_session_key_subscription(
+            watch_subscription = require_watcher_session_key_subscription(
                 args.watcher_session_key
             )
         task_id = kb.create_task(
@@ -1368,7 +1368,7 @@ def _cmd_create(args: argparse.Namespace) -> int:
             skills=getattr(args, "skills", None) or None,
             max_retries=max_retries,
             initial_status=getattr(args, "initial_status", "running"),
-            watch_subscriptions=watch_subscriptions or None,
+            watch_subscription=watch_subscription,
         )
         task = kb.get_task(conn, task_id)
     if getattr(args, "json", False):

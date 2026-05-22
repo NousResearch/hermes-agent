@@ -117,12 +117,11 @@ def test_connect_migrates_legacy_db_before_optional_column_indexes(tmp_path):
     migration adds those columns, or boards predating the column fail to
     open before migration can run.
 
-    Covers all five indexes that sit on additive columns:
+    Covers the additive indexed columns that must wait until after migration:
     - ``tasks.session_id``              -> ``idx_tasks_session_id``    (#28447)
     - ``tasks.tenant``                  -> ``idx_tasks_tenant``        (#16081)
     - ``tasks.idempotency_key``         -> ``idx_tasks_idempotency``   (#17805)
     - ``task_events.run_id``            -> ``idx_events_run``          (#17805)
-    - ``kanban_notify_subs.session_key`` -> ``idx_watchers_session``
     """
     db_path = tmp_path / "legacy-kanban.db"
     conn = sqlite3.connect(str(db_path))
@@ -158,7 +157,7 @@ def test_connect_migrates_legacy_db_before_optional_column_indexes(tmp_path):
         )
     """)
     # Legacy watcher schema: missing notifier_profile, delivery_mode,
-    # and session_key.
+    # and session_key. Migration must remain additive only.
     conn.execute("""
         CREATE TABLE kanban_notify_subs (
             task_id TEXT NOT NULL,
@@ -210,10 +209,9 @@ def test_connect_migrates_legacy_db_before_optional_column_indexes(tmp_path):
     assert "idx_tasks_tenant" in indexes
     assert "idx_tasks_idempotency" in indexes
     assert "idx_events_run" in indexes
-    assert "idx_watchers_session" in indexes
 
 
-def test_connect_rebuilds_legacy_notify_table_shape_and_normalizes_message_mode(tmp_path):
+def test_connect_adds_missing_notify_columns_without_rebuilding_table(tmp_path):
     db_path = tmp_path / "legacy-notify-shape.db"
     conn = sqlite3.connect(str(db_path))
     conn.execute("""
@@ -252,21 +250,13 @@ def test_connect_rebuilds_legacy_notify_table_shape_and_normalizes_message_mode(
             user_id TEXT,
             created_at INTEGER NOT NULL,
             last_event_id INTEGER NOT NULL DEFAULT 0,
-            notifier_profile TEXT,
-            delivery_mode TEXT NOT NULL DEFAULT 'message',
-            session_key TEXT,
             PRIMARY KEY (task_id, platform, chat_id, thread_id)
         )
     """)
     conn.execute(
         "INSERT INTO kanban_notify_subs "
-        "(task_id, platform, chat_id, thread_id, user_id, created_at, last_event_id, notifier_profile, delivery_mode, session_key) "
-        "VALUES ('t_legacy1', 'discord', 'chat-1', '', NULL, 10, 2, NULL, 'message', NULL)"
-    )
-    conn.execute(
-        "INSERT INTO kanban_notify_subs "
-        "(task_id, platform, chat_id, thread_id, user_id, created_at, last_event_id, notifier_profile, delivery_mode, session_key) "
-        "VALUES ('t_legacy2', 'discord', 'chat-2', 'thread-2', NULL, 20, 3, 'main', 'session_event', 'agent:main:discord:thread:chat-2:thread-2')"
+        "(task_id, platform, chat_id, thread_id, user_id, created_at, last_event_id) "
+        "VALUES ('t_legacy1', 'discord', 'chat-1', '', NULL, 10, 2)"
     )
     conn.commit()
     conn.close()
@@ -278,19 +268,12 @@ def test_connect_rebuilds_legacy_notify_table_shape_and_normalizes_message_mode(
             for row in sorted(info_rows, key=lambda row: int(row["pk"] or 0))
             if int(row["pk"] or 0) > 0
         ]
-        subs = sorted(kb.list_notify_subs(migrated), key=lambda row: row["task_id"])
-        integrity = [row[0] for row in migrated.execute("PRAGMA integrity_check")]
+        subs = kb.list_notify_subs(migrated)
 
-    assert pk_cols == [
-        "task_id", "platform", "chat_id", "thread_id", "delivery_mode", "session_key"
-    ]
-    assert integrity == ["ok"]
+    assert pk_cols == ["task_id", "platform", "chat_id", "thread_id"]
     assert subs[0]["task_id"] == "t_legacy1"
     assert subs[0]["delivery_mode"] == "notification"
-    assert subs[0]["session_key"] == ""
-    assert subs[1]["task_id"] == "t_legacy2"
-    assert subs[1]["delivery_mode"] == "session_event"
-    assert subs[1]["session_key"] == "agent:main:discord:thread:chat-2:thread-2"
+    assert subs[0]["session_key"] is None
 
 
 # ---------------------------------------------------------------------------
@@ -1954,8 +1937,8 @@ def test_session_id_compose_with_tenant_filter(kanban_home):
     assert [t.title for t in rows] == ["match"]
 
 
-def test_create_task_stamps_watcher_session_key(kanban_home):
-    watch_sub = {
+def test_create_task_binds_watch_subscription(kanban_home):
+    watch_subscription = {
         "delivery_mode": "session_event",
         "session_key": "agent:main:discord:thread:abc:def",
         "platform": "discord",
@@ -1966,7 +1949,7 @@ def test_create_task_stamps_watcher_session_key(kanban_home):
         tid = kb.create_task(
             conn,
             title="watched",
-            watch_subscriptions=[watch_sub],
+            watch_subscription=watch_subscription,
         )
         task = kb.get_task(conn, tid)
         subs = kb.list_notify_subs(conn, tid)

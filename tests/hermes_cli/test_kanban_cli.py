@@ -244,13 +244,13 @@ def test_run_slash_show_json_omits_watcher_session_key(kanban_home):
             conn,
             title="watched show",
             assignee="alice",
-            watch_subscriptions=[{
+            watch_subscription={
                 "delivery_mode": "session_event",
                 "session_key": "agent:main:discord:thread:show:1",
                 "platform": "discord",
                 "chat_id": "chat-show",
                 "thread_id": "thread-show",
-            }],
+            },
         )
     raw = kc.run_slash(f"show {tid} --json")
     payload = json.loads(raw)

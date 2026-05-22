@@ -687,7 +687,6 @@ class Task:
     # set the env var. Lets clients render a per-session board without
     # relying on tenant + time-window heuristics.
     session_id: Optional[str] = None
-    watcher_session_key: Optional[str] = None
 
     @classmethod
     def from_row(cls, row: sqlite3.Row) -> "Task":
@@ -757,7 +756,6 @@ class Task:
             session_id=(
                 row["session_id"] if "session_id" in keys else None
             ),
-            watcher_session_key=None,
         )
 
 
@@ -1414,116 +1412,6 @@ def _add_column_if_missing(
         raise
 
 
-def _rebuild_notify_subs_table_if_needed(conn: sqlite3.Connection) -> bool:
-    """Repair legacy/corrupted ``kanban_notify_subs`` tables in place."""
-    row = conn.execute(
-        "SELECT sql FROM sqlite_master WHERE type='table' AND name='kanban_notify_subs'"
-    ).fetchone()
-    if row is None:
-        return False
-
-    table_sql = str(row["sql"] or "")
-    info_rows = list(conn.execute("PRAGMA table_info(kanban_notify_subs)"))
-    pk_cols = [
-        r["name"]
-        for r in sorted(info_rows, key=lambda r: int(r["pk"] or 0))
-        if int(r["pk"] or 0) > 0
-    ]
-    expected_pk_cols = [
-        "task_id", "platform", "chat_id", "thread_id", "delivery_mode", "session_key"
-    ]
-    legacy_default_message = "DEFAULT 'message'" in table_sql or 'DEFAULT "message"' in table_sql
-    legacy_pk_shape = pk_cols != expected_pk_cols
-    invalid_rows = conn.execute(
-        """
-        SELECT COUNT(*)
-          FROM kanban_notify_subs
-         WHERE typeof(task_id) != 'text'
-            OR trim(task_id) = ''
-            OR typeof(platform) != 'text'
-            OR trim(platform) = ''
-            OR chat_id IS NULL
-            OR typeof(chat_id) != 'text'
-            OR trim(chat_id) = ''
-            OR created_at IS NULL
-            OR typeof(created_at) NOT IN ('integer', 'real')
-            OR lower(trim(COALESCE(CAST(delivery_mode AS TEXT), 'message'))) NOT IN ('message', 'notification', 'session_event')
-            OR (
-                lower(trim(COALESCE(CAST(delivery_mode AS TEXT), 'message'))) = 'session_event'
-                AND trim(COALESCE(CAST(session_key AS TEXT), '')) = ''
-            )
-        """
-    ).fetchone()[0]
-
-    if not (legacy_default_message or legacy_pk_shape or invalid_rows):
-        return False
-
-    conn.execute("ALTER TABLE kanban_notify_subs RENAME TO kanban_notify_subs__legacy")
-    conn.execute(
-        """
-        CREATE TABLE kanban_notify_subs (
-            task_id          TEXT NOT NULL,
-            platform         TEXT NOT NULL,
-            chat_id          TEXT NOT NULL,
-            thread_id        TEXT NOT NULL DEFAULT '',
-            user_id          TEXT,
-            delivery_mode    TEXT NOT NULL DEFAULT 'notification',
-            session_key      TEXT,
-            last_event_id    INTEGER NOT NULL DEFAULT 0,
-            created_at       INTEGER NOT NULL,
-            notifier_profile TEXT,
-            PRIMARY KEY (task_id, platform, chat_id, thread_id, delivery_mode, session_key)
-        )
-        """
-    )
-    conn.execute(
-        """
-        INSERT OR IGNORE INTO kanban_notify_subs (
-            task_id, platform, chat_id, thread_id, user_id,
-            delivery_mode, session_key, last_event_id, created_at, notifier_profile
-        )
-        SELECT
-            trim(CAST(task_id AS TEXT)),
-            lower(trim(CAST(platform AS TEXT))),
-            trim(CAST(chat_id AS TEXT)),
-            trim(COALESCE(CAST(thread_id AS TEXT), '')),
-            NULLIF(trim(COALESCE(CAST(user_id AS TEXT), '')), ''),
-            CASE lower(trim(COALESCE(CAST(delivery_mode AS TEXT), 'message')))
-                WHEN 'message' THEN 'notification'
-                WHEN 'session_event' THEN 'session_event'
-                ELSE 'notification'
-            END,
-            CASE
-                WHEN lower(trim(COALESCE(CAST(delivery_mode AS TEXT), 'message'))) = 'session_event'
-                THEN NULLIF(trim(COALESCE(CAST(session_key AS TEXT), '')), '')
-                ELSE ''
-            END,
-            CAST(COALESCE(last_event_id, 0) AS INTEGER),
-            CAST(created_at AS INTEGER),
-            NULLIF(trim(COALESCE(CAST(notifier_profile AS TEXT), '')), '')
-        FROM kanban_notify_subs__legacy
-        WHERE typeof(task_id) = 'text'
-          AND trim(task_id) != ''
-          AND typeof(platform) = 'text'
-          AND trim(platform) != ''
-          AND chat_id IS NOT NULL
-          AND typeof(chat_id) = 'text'
-          AND trim(chat_id) != ''
-          AND created_at IS NOT NULL
-          AND typeof(created_at) IN ('integer', 'real')
-          AND lower(trim(COALESCE(CAST(delivery_mode AS TEXT), 'message'))) IN ('message', 'notification', 'session_event')
-          AND (
-                lower(trim(COALESCE(CAST(delivery_mode AS TEXT), 'message'))) != 'session_event'
-                OR trim(COALESCE(CAST(session_key AS TEXT), '')) != ''
-          )
-        """
-    )
-    conn.execute("DROP TABLE kanban_notify_subs__legacy")
-    conn.execute("CREATE INDEX IF NOT EXISTS idx_notify_task ON kanban_notify_subs(task_id)")
-    conn.execute("CREATE INDEX IF NOT EXISTS idx_watchers_session ON kanban_notify_subs(session_key)")
-    return True
-
-
 def _migrate_add_optional_columns(conn: sqlite3.Connection) -> None:
     """Add columns that were introduced after v1 release to legacy DBs.
 
@@ -1681,14 +1569,6 @@ def _migrate_add_optional_columns(conn: sqlite3.Connection) -> None:
             _add_column_if_missing(
                 conn, "kanban_notify_subs", "session_key", "session_key TEXT"
             )
-        _rebuild_notify_subs_table_if_needed(conn)
-        # Same ordering rule as the additive indexes above: legacy
-        # ``kanban_notify_subs`` rows may predate ``session_key``, so create
-        # the index only after the migration adds the column.
-        conn.execute(
-            "CREATE INDEX IF NOT EXISTS idx_watchers_session "
-            "ON kanban_notify_subs(session_key)"
-        )
 
     # One-shot backfill: any task that is 'running' before runs existed
     # had its claim_lock / claim_expires / worker_pid on the task row.
@@ -1891,7 +1771,7 @@ def create_task(
     max_retries: Optional[int] = None,
     initial_status: str = "running",
     session_id: Optional[str] = None,
-    watch_subscriptions: Optional[Iterable[dict[str, Any]]] = None,
+    watch_subscription: Optional[dict[str, Any]] = None,
     board: Optional[str] = None,
 ) -> str:
     """Create a new task and optionally link it under parent tasks.
@@ -2080,52 +1960,49 @@ def create_task(
                         session_id,
                     ),
                 )
-                if watch_subscriptions:
-                    for watch_sub in watch_subscriptions:
-                        if not watch_sub:
-                            continue
-                        platform = str(watch_sub.get("platform") or "").strip().lower()
-                        chat_id = str(watch_sub.get("chat_id") or "").strip()
-                        thread_id = str(watch_sub.get("thread_id") or "").strip()
-                        user_id = (str(watch_sub.get("user_id") or "").strip() or None)
-                        delivery_mode = (
-                            str(watch_sub.get("delivery_mode") or "notification").strip().lower()
-                            or "notification"
+                if watch_subscription:
+                    platform = str(watch_subscription.get("platform") or "").strip().lower()
+                    chat_id = str(watch_subscription.get("chat_id") or "").strip()
+                    thread_id = str(watch_subscription.get("thread_id") or "").strip()
+                    user_id = (str(watch_subscription.get("user_id") or "").strip() or None)
+                    delivery_mode = (
+                        str(watch_subscription.get("delivery_mode") or "notification").strip().lower()
+                        or "notification"
+                    )
+                    session_key = str(watch_subscription.get("session_key") or "").strip() or None
+                    notifier_profile = (
+                        str(watch_subscription.get("notifier_profile") or "").strip() or None
+                    )
+                    if not platform or not chat_id:
+                        raise ValueError("watch subscription platform and chat_id are required")
+                    if delivery_mode not in {"notification", "session_event"}:
+                        raise ValueError(
+                            "watch subscription delivery_mode must be 'notification' or 'session_event'"
                         )
-                        session_key = str(watch_sub.get("session_key") or "").strip() or None
-                        notifier_profile = (
-                            str(watch_sub.get("notifier_profile") or "").strip() or None
+                    if delivery_mode == "session_event" and not session_key:
+                        raise ValueError(
+                            "watch subscription session_key is required for delivery_mode='session_event'"
                         )
-                        if not platform or not chat_id:
-                            raise ValueError("watch subscription platform and chat_id are required")
-                        if delivery_mode not in {"notification", "session_event"}:
-                            raise ValueError(
-                                "watch subscription delivery_mode must be 'notification' or 'session_event'"
-                            )
-                        if delivery_mode == "session_event" and not session_key:
-                            raise ValueError(
-                                "watch subscription session_key is required for delivery_mode='session_event'"
-                            )
-                        if delivery_mode == "notification":
-                            session_key = None
-                        conn.execute(
-                            """
-                            INSERT OR IGNORE INTO kanban_notify_subs
-                                (task_id, platform, chat_id, thread_id, user_id, delivery_mode, session_key, notifier_profile, created_at)
-                            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-                            """,
-                            (
-                                task_id,
-                                platform,
-                                chat_id,
-                                thread_id,
-                                user_id,
-                                delivery_mode,
-                                session_key or "",
-                                notifier_profile,
-                                now,
-                            ),
-                        )
+                    if delivery_mode == "notification":
+                        session_key = None
+                    conn.execute(
+                        """
+                        INSERT OR IGNORE INTO kanban_notify_subs
+                            (task_id, platform, chat_id, thread_id, user_id, delivery_mode, session_key, notifier_profile, created_at)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        """,
+                        (
+                            task_id,
+                            platform,
+                            chat_id,
+                            thread_id,
+                            user_id,
+                            delivery_mode,
+                            session_key or "",
+                            notifier_profile,
+                            now,
+                        ),
+                    )
                 for pid in parents:
                     conn.execute(
                         "INSERT OR IGNORE INTO task_links (parent_id, child_id) VALUES (?, ?)",

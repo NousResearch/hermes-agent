@@ -58,10 +58,10 @@ def watch_subscription_from_session_key(
 
 def require_watcher_session_key_subscription(
     session_key: str,
-) -> list[dict[str, Optional[str]]]:
+) -> dict[str, Optional[str]]:
     sub = watch_subscription_from_session_key(session_key)
     if sub:
-        return [sub]
+        return sub
     raise ValueError(
         "watcher_session_key must be a valid Hermes gateway session key"
     )

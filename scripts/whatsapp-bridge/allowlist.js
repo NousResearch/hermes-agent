@@ -64,8 +64,12 @@ export function expandWhatsAppIdentifiers(identifier, sessionDir) {
 }
 
 export function matchesAllowedUser(senderId, allowedUsers, sessionDir) {
+  // Empty allowlist = NO ONE allowed (secure default, #8389).  Operators
+  // who want an open bot must set ``WHATSAPP_ALLOWED_USERS=*`` explicitly.
+  // Previous behaviour (empty → return true) let any stranger DM the
+  // bridge and trigger a Python-side pairing-code reply.
   if (!allowedUsers || allowedUsers.size === 0) {
-    return true;
+    return false;
   }
 
   // "*" means allow everyone (consistent with SIGNAL_GROUP_ALLOWED_USERS)

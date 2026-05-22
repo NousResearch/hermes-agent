@@ -314,3 +314,281 @@ def test_dry_run_skips_snapshot(backup_env, monkeypatch):
     assert not any(r.get("reason") == "pre-curator-run" for r in rows), (
         "dry-run must not create a pre-run snapshot"
     )
+
+
+# ---------------------------------------------------------------------------
+# cron-jobs backup + rollback (the part issue #18671's follow-up adds)
+# ---------------------------------------------------------------------------
+
+
+def _write_cron_jobs(home: Path, jobs: list) -> Path:
+    """Write a synthetic cron/jobs.json under HERMES_HOME. Returns the path.
+    Mirrors cron.jobs.save_jobs() wrapper shape: `{"jobs": [...], "updated_at": ...}`.
+    """
+    cron_dir = home / "cron"
+    cron_dir.mkdir(parents=True, exist_ok=True)
+    path = cron_dir / "jobs.json"
+    path.write_text(
+        json.dumps({"jobs": jobs, "updated_at": "2026-05-01T00:00:00Z"}, indent=2),
+        encoding="utf-8",
+    )
+    return path
+
+
+def _reload_cron_jobs(home: Path):
+    """Reload cron.jobs so its module-level HERMES_DIR picks up the tmp HOME."""
+    import hermes_constants
+    importlib.reload(hermes_constants)
+    if "cron.jobs" in sys.modules:
+        import cron.jobs as _cj
+        importlib.reload(_cj)
+    else:
+        import cron.jobs as _cj  # noqa: F401
+    import cron.jobs as cj
+    return cj
+
+
+def test_snapshot_includes_cron_jobs(backup_env):
+    """With a cron/jobs.json present, snapshot writes cron-jobs.json and records it in manifest."""
+    cb = backup_env["cb"]
+    _write_skill(backup_env["skills"], "alpha")
+    _write_cron_jobs(backup_env["home"], [
+        {"id": "job-a", "name": "a", "schedule": "every 1h", "skills": ["alpha"]},
+        {"id": "job-b", "name": "b", "schedule": "every 2h", "skill": "alpha"},
+    ])
+
+    snap = cb.snapshot_skills(reason="test")
+    assert snap is not None
+    assert (snap / cb.CRON_JOBS_FILENAME).exists()
+
+    mf = json.loads((snap / "manifest.json").read_text(encoding="utf-8"))
+    assert mf["cron_jobs"]["backed_up"] is True
+    assert mf["cron_jobs"]["jobs_count"] == 2
+
+
+def test_snapshot_without_cron_jobs_file_still_succeeds(backup_env):
+    """No cron/jobs.json on disk → snapshot succeeds, manifest records absence."""
+    cb = backup_env["cb"]
+    _write_skill(backup_env["skills"], "alpha")
+    # Deliberately do not create ~/.hermes/cron/jobs.json
+
+    snap = cb.snapshot_skills(reason="test")
+    assert snap is not None
+    assert not (snap / cb.CRON_JOBS_FILENAME).exists()
+
+    mf = json.loads((snap / "manifest.json").read_text(encoding="utf-8"))
+    assert mf["cron_jobs"]["backed_up"] is False
+    assert "cron/jobs.json" in mf["cron_jobs"]["reason"]
+
+
+def test_snapshot_cron_jobs_malformed_json_still_captured(backup_env):
+    """Malformed jobs.json is still copied to the snapshot (fidelity over
+    validation); the manifest notes the parse warning."""
+    cb = backup_env["cb"]
+    _write_skill(backup_env["skills"], "alpha")
+    (backup_env["home"] / "cron").mkdir()
+    (backup_env["home"] / "cron" / "jobs.json").write_text("{oh no", encoding="utf-8")
+
+    snap = cb.snapshot_skills(reason="test")
+    assert snap is not None
+    # Raw file was copied even though we couldn't parse it
+    assert (snap / cb.CRON_JOBS_FILENAME).read_text() == "{oh no"
+
+    mf = json.loads((snap / "manifest.json").read_text(encoding="utf-8"))
+    assert mf["cron_jobs"]["backed_up"] is True
+    assert mf["cron_jobs"]["jobs_count"] == 0
+    assert "parse_warning" in mf["cron_jobs"]
+
+
+def test_rollback_restores_cron_skill_links(backup_env):
+    """End-to-end: snapshot with job [alpha,beta], curator-style in-place
+    rewrite to [umbrella], then rollback → skills restored to [alpha,beta]."""
+    cb = backup_env["cb"]
+    home = backup_env["home"]
+    _write_skill(backup_env["skills"], "alpha")
+    _write_skill(backup_env["skills"], "beta")
+    _write_skill(backup_env["skills"], "umbrella")
+
+    cj = _reload_cron_jobs(home)
+    cj.create_job(name="weekly", prompt="p", schedule="every 7d",
+                  skills=["alpha", "beta"])
+
+    snap = cb.snapshot_skills(reason="pre-curator-run")
+    assert snap is not None
+
+    # Simulate the curator's in-place cron rewrite after consolidation
+    cj.rewrite_skill_refs(
+        consolidated={"alpha": "umbrella", "beta": "umbrella"},
+        pruned=[],
+    )
+    live_after_curator = cj.load_jobs()
+    assert live_after_curator[0]["skills"] == ["umbrella"]
+
+    # Now roll back
+    ok, msg, _ = cb.rollback(backup_id=snap.name)
+    assert ok, msg
+    assert "cron links" in msg
+
+    live_after_rollback = cj.load_jobs()
+    # skills restored; legacy `skill` mirror follows first element
+    assert live_after_rollback[0]["skills"] == ["alpha", "beta"]
+
+
+def test_rollback_only_touches_skill_fields(backup_env):
+    """Every field other than skills/skill must remain untouched across rollback.
+    Schedule, enabled, prompt, timestamps — all live state, hands off."""
+    cb = backup_env["cb"]
+    home = backup_env["home"]
+    _write_skill(backup_env["skills"], "alpha")
+
+    # Hand-rolled jobs.json with varied fields (no real create_job — we want
+    # exact field control).
+    _write_cron_jobs(home, [{
+        "id": "stable-id",
+        "name": "original-name",
+        "prompt": "original prompt",
+        "schedule": "every 1h",
+        "skills": ["alpha"],
+        "enabled": True,
+        "last_run_at": "2026-04-01T00:00:00Z",
+    }])
+    snap = cb.snapshot_skills(reason="pre-curator-run")
+    assert snap is not None
+
+    # User/scheduler activity AFTER the snapshot: rename the job, change
+    # the schedule, update timestamps, and (curator) rewrite the skills list.
+    cj = _reload_cron_jobs(home)
+    jobs = cj.load_jobs()
+    jobs[0]["name"] = "renamed-since-snapshot"
+    jobs[0]["schedule"] = "every 30m"
+    jobs[0]["last_run_at"] = "2026-05-01T12:00:00Z"
+    jobs[0]["skills"] = ["umbrella"]  # pretend curator did this
+    cj.save_jobs(jobs)
+
+    ok, _, _ = cb.rollback(backup_id=snap.name)
+    assert ok
+
+    after = cj.load_jobs()
+    job = after[0]
+    # skills: restored
+    assert job["skills"] == ["alpha"]
+    # everything else: untouched (live state preserved)
+    assert job["name"] == "renamed-since-snapshot"
+    assert job["schedule"] == "every 30m"
+    assert job["last_run_at"] == "2026-05-01T12:00:00Z"
+    assert job["prompt"] == "original prompt"
+
+
+def test_rollback_skips_jobs_the_user_deleted(backup_env):
+    """If the user deleted a cron job after the snapshot, rollback must
+    NOT resurrect it — the user's delete is a later, explicit choice."""
+    cb = backup_env["cb"]
+    home = backup_env["home"]
+    _write_skill(backup_env["skills"], "alpha")
+
+    _write_cron_jobs(home, [
+        {"id": "keep-me", "name": "keep", "schedule": "every 1h", "skills": ["alpha"]},
+        {"id": "delete-me", "name": "gone", "schedule": "every 1h", "skills": ["alpha"]},
+    ])
+    snap = cb.snapshot_skills(reason="pre-curator-run")
+
+    # User deletes one job after the snapshot
+    cj = _reload_cron_jobs(home)
+    cj.save_jobs([j for j in cj.load_jobs() if j["id"] != "delete-me"])
+
+    ok, _, _ = cb.rollback(backup_id=snap.name)
+    assert ok
+
+    live_after = cj.load_jobs()
+    live_ids = {j["id"] for j in live_after}
+    assert "keep-me" in live_ids
+    assert "delete-me" not in live_ids  # not resurrected
+
+
+def test_rollback_leaves_new_jobs_untouched(backup_env):
+    """Jobs created AFTER the snapshot must pass through rollback unchanged."""
+    cb = backup_env["cb"]
+    home = backup_env["home"]
+    _write_skill(backup_env["skills"], "alpha")
+    _write_cron_jobs(home, [
+        {"id": "original", "name": "o", "schedule": "every 1h", "skills": ["alpha"]},
+    ])
+    snap = cb.snapshot_skills(reason="pre-curator-run")
+
+    cj = _reload_cron_jobs(home)
+    jobs = cj.load_jobs()
+    jobs.append({"id": "new-after-snapshot", "name": "new",
+                 "schedule": "every 15m", "skills": ["brand-new-skill"]})
+    cj.save_jobs(jobs)
+
+    ok, _, _ = cb.rollback(backup_id=snap.name)
+    assert ok
+
+    live = cj.load_jobs()
+    by_id = {j["id"]: j for j in live}
+    assert "new-after-snapshot" in by_id
+    # New job's fields completely preserved
+    assert by_id["new-after-snapshot"]["skills"] == ["brand-new-skill"]
+    assert by_id["new-after-snapshot"]["schedule"] == "every 15m"
+
+
+def test_rollback_with_snapshot_missing_cron_succeeds(backup_env):
+    """Older snapshots (created before this feature shipped) have no
+    cron-jobs.json. Rollback must still restore the skills tree and not
+    error out."""
+    cb = backup_env["cb"]
+    home = backup_env["home"]
+    _write_skill(backup_env["skills"], "alpha")
+
+    # No cron/jobs.json at snapshot time — simulates a pre-feature snapshot
+    snap = cb.snapshot_skills(reason="test")
+    assert snap is not None
+    assert not (snap / cb.CRON_JOBS_FILENAME).exists()
+
+    # Later the user created a cron job
+    _write_cron_jobs(home, [
+        {"id": "later-job", "name": "l", "schedule": "every 1h", "skills": ["x"]},
+    ])
+
+    ok, msg, _ = cb.rollback(backup_id=snap.name)
+    # Main rollback still succeeds; cron report notes the missing file.
+    assert ok, msg
+    # Jobs.json untouched (nothing to restore from)
+    cj = _reload_cron_jobs(home)
+    jobs = cj.load_jobs()
+    assert jobs[0]["id"] == "later-job"
+    assert jobs[0]["skills"] == ["x"]
+
+
+def test_restore_cron_skill_links_standalone(backup_env):
+    """Unit-level test on _restore_cron_skill_links without the full rollback.
+    Verifies the report structure carefully."""
+    cb = backup_env["cb"]
+    home = backup_env["home"]
+
+    # Prime a snapshot dir manually with cron-jobs.json
+    backups_dir = home / "skills" / ".curator_backups" / "fake-id"
+    backups_dir.mkdir(parents=True)
+    (backups_dir / cb.CRON_JOBS_FILENAME).write_text(json.dumps([
+        {"id": "job-1", "name": "one", "skills": ["narrow-a", "narrow-b"]},
+        {"id": "job-2", "name": "two", "skill": "legacy-single"},
+        {"id": "job-gone", "name": "deleted", "skills": ["whatever"]},
+    ]), encoding="utf-8")
+
+    # Live jobs: job-1 got rewritten, job-2 unchanged, job-gone deleted
+    _write_cron_jobs(home, [
+        {"id": "job-1", "name": "one", "skills": ["umbrella"], "schedule": "every 1h"},
+        {"id": "job-2", "name": "two", "skill": "legacy-single", "schedule": "every 1h"},
+        {"id": "job-new", "name": "new", "skills": ["x"], "schedule": "every 1h"},
+    ])
+    _reload_cron_jobs(home)
+
+    report = cb._restore_cron_skill_links(backups_dir)
+    assert report["attempted"] is True
+    assert report["error"] is None
+    assert report["unchanged"] == 1  # job-2 matched
+    assert len(report["restored"]) == 1  # job-1 got restored
+    assert report["restored"][0]["job_id"] == "job-1"
+    assert report["restored"][0]["to"]["skills"] == ["narrow-a", "narrow-b"]
+    assert len(report["skipped_missing"]) == 1
+    assert report["skipped_missing"][0]["job_id"] == "job-gone"

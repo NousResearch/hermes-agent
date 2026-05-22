@@ -2,6 +2,7 @@
 name: pokemon-player
 description: "Play Pokemon via headless emulator + RAM reads."
 tags: [gaming, pokemon, emulator, pyboy, gameplay, gameboy]
+platforms: [linux, macos, windows]
 ---
 # Pokemon Player
 

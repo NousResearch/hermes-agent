@@ -23,6 +23,7 @@ import re
 import secrets
 import struct
 import tempfile
+import textwrap
 import time
 import uuid
 from datetime import datetime
@@ -31,6 +32,8 @@ from typing import Any, Dict, List, Optional, Tuple
 from urllib.parse import quote, urlparse
 
 logger = logging.getLogger(__name__)
+
+WEIXIN_COPY_LINE_WIDTH = 120
 
 try:
     import aiohttp
@@ -548,17 +551,21 @@ async def _upload_ciphertext(
     Accepts either a constructed CDN URL (from upload_param) or a direct
     upload_full_url — both use POST with the raw ciphertext as the body.
     """
-    timeout = aiohttp.ClientTimeout(total=120)
-    async with session.post(upload_url, data=ciphertext, headers={"Content-Type": "application/octet-stream"}, timeout=timeout) as response:
-        if response.status == 200:
-            encrypted_param = response.headers.get("x-encrypted-param")
-            if encrypted_param:
-                await response.read()
-                return encrypted_param
+    # Use asyncio.wait_for() instead of aiohttp ClientTimeout to avoid
+    # "Timeout context manager should be used inside a task" errors when
+    # invoked via asyncio.run_coroutine_threadsafe() from cron jobs.
+    async def _do_upload() -> str:
+        async with session.post(upload_url, data=ciphertext, headers={"Content-Type": "application/octet-stream"}) as response:
+            if response.status == 200:
+                encrypted_param = response.headers.get("x-encrypted-param")
+                if encrypted_param:
+                    await response.read()
+                    return encrypted_param
+                raw = await response.text()
+                raise RuntimeError(f"CDN upload missing x-encrypted-param header: {raw[:200]}")
             raw = await response.text()
-            raise RuntimeError(f"CDN upload missing x-encrypted-param header: {raw[:200]}")
-        raw = await response.text()
-        raise RuntimeError(f"CDN upload HTTP {response.status}: {raw[:200]}")
+            raise RuntimeError(f"CDN upload HTTP {response.status}: {raw[:200]}")
+    return await asyncio.wait_for(_do_upload(), timeout=120)
 
 
 async def _download_bytes(
@@ -567,10 +574,13 @@ async def _download_bytes(
     url: str,
     timeout_seconds: float = 60.0,
 ) -> bytes:
-    timeout = aiohttp.ClientTimeout(total=timeout_seconds)
-    async with session.get(url, timeout=timeout) as response:
-        response.raise_for_status()
-        return await response.read()
+    # Use asyncio.wait_for() instead of aiohttp ClientTimeout to avoid
+    # "Timeout context manager should be used inside a task" errors.
+    async def _do_download() -> bytes:
+        async with session.get(url) as response:
+            response.raise_for_status()
+            return await response.read()
+    return await asyncio.wait_for(_do_download(), timeout=timeout_seconds)
 
 
 _WEIXIN_CDN_ALLOWLIST: frozenset[str] = frozenset(
@@ -595,7 +605,7 @@ def _assert_weixin_cdn_url(url: str) -> None:
     except Exception as exc:  # noqa: BLE001
         raise ValueError(f"Unparseable media URL: {url!r}") from exc
 
-    if scheme not in ("http", "https"):
+    if scheme not in {"http", "https"}:
         raise ValueError(
             f"Media URL has disallowed scheme {scheme!r}; only http/https are permitted."
         )
@@ -722,6 +732,46 @@ def _normalize_markdown_blocks(content: str) -> str:
         result.append(line)
 
     return "\n".join(result).strip()
+
+
+def _wrap_copy_friendly_lines_for_weixin(content: str) -> str:
+    """Wrap long display lines that are hard to copy in WeChat clients."""
+    if not content:
+        return content
+
+    wrapped: List[str] = []
+    in_code_block = False
+
+    for raw_line in content.splitlines():
+        line = raw_line.rstrip()
+        stripped = line.strip()
+
+        if _FENCE_RE.match(stripped):
+            in_code_block = not in_code_block
+            wrapped.append(line)
+            continue
+
+        if (
+            in_code_block
+            or len(line) <= WEIXIN_COPY_LINE_WIDTH
+            or not stripped
+            or stripped.startswith("|")
+            or _TABLE_RULE_RE.match(stripped)
+        ):
+            wrapped.append(line)
+            continue
+
+        wrapped_lines = textwrap.wrap(
+            line,
+            width=WEIXIN_COPY_LINE_WIDTH,
+            break_long_words=False,
+            break_on_hyphens=False,
+            replace_whitespace=False,
+            drop_whitespace=True,
+        )
+        wrapped.extend(wrapped_lines or [line])
+
+    return "\n".join(wrapped).strip()
 
 
 def _split_markdown_blocks(content: str) -> List[str]:
@@ -933,7 +983,7 @@ def _extract_text(item_list: List[Dict[str, Any]]) -> str:
             ref = item.get("ref_msg") or {}
             ref_item = ref.get("message_item") or {}
             ref_type = ref_item.get("type")
-            if ref_type in (ITEM_IMAGE, ITEM_VIDEO, ITEM_FILE, ITEM_VOICE):
+            if ref_type in {ITEM_IMAGE, ITEM_VIDEO, ITEM_FILE, ITEM_VOICE}:
                 title = ref.get("title") or ""
                 prefix = f"[引用媒体: {title}]\n" if title else "[引用媒体]\n"
                 return f"{prefix}{text}".strip()
@@ -1037,11 +1087,11 @@ async def qr_login(
         except Exception as _qr_exc:
             print(f"（终端二维码渲染失败: {_qr_exc}，请直接打开上面的二维码链接）")
 
-        deadline = time.time() + timeout_seconds
+        deadline = time.monotonic() + timeout_seconds
         current_base_url = ILINK_BASE_URL
         refresh_count = 0
 
-        while time.time() < deadline:
+        while time.monotonic() < deadline:
             try:
                 status_resp = await _api_get(
                     session,
@@ -1216,7 +1266,12 @@ class WeixinAdapter(BasePlatformAdapter):
             logger.debug("[%s] Token lock unavailable (non-fatal): %s", self.name, exc)
 
         self._poll_session = aiohttp.ClientSession(trust_env=True, connector=_make_ssl_connector())
-        self._send_session = aiohttp.ClientSession(trust_env=True, connector=_make_ssl_connector())
+        # Disable aiohttp's built-in ClientTimeout (total=None) to prevent
+        # "Timeout context manager should be used inside a task" errors when
+        # send() is invoked via asyncio.run_coroutine_threadsafe() from cron.
+        # Timeout is managed externally via asyncio.wait_for() in _api_post/_api_get.
+        _no_aiohttp_timeout = aiohttp.ClientTimeout(total=None, connect=None, sock_connect=None, sock_read=None)
+        self._send_session = aiohttp.ClientSession(trust_env=True, connector=_make_ssl_connector(), timeout=_no_aiohttp_timeout)
         self._token_store.restore(self._account_id)
         self._poll_task = asyncio.create_task(self._poll_loop(), name="weixin-poll")
         self._mark_connected()
@@ -1276,7 +1331,7 @@ class WeixinAdapter(BasePlatformAdapter):
 
                 ret = response.get("ret", 0)
                 errcode = response.get("errcode", 0)
-                if ret not in (0, None) or errcode not in (0, None):
+                if ret not in {0, None} or errcode not in {0, None}:
                     if (ret == SESSION_EXPIRED_ERRCODE or errcode == SESSION_EXPIRED_ERRCODE
                             or _is_stale_session_ret(ret, errcode, response.get("errmsg"))):
                         logger.error("[%s] Session expired; pausing for 10 minutes", self.name)
@@ -1333,6 +1388,15 @@ class WeixinAdapter(BasePlatformAdapter):
         if message_id and self._dedup.is_duplicate(message_id):
             return
 
+        # Secondary content-fingerprint dedup for text messages
+        item_list = message.get("item_list") or []
+        text = _extract_text(item_list)
+        if text:
+            content_key = f"content:{sender_id}:{hashlib.md5(text.encode()).hexdigest()}"
+            if self._dedup.is_duplicate(content_key):
+                logger.debug("[%s] Content-dedup: skipping duplicate message from %s", self.name, sender_id)
+                return
+
         chat_type, effective_chat_id = _guess_chat_type(message, self._account_id)
         if chat_type == "group":
             if self._group_policy == "disabled":
@@ -1347,8 +1411,6 @@ class WeixinAdapter(BasePlatformAdapter):
             self._token_store.set(self._account_id, sender_id, context_token)
         asyncio.create_task(self._maybe_fetch_typing_ticket(sender_id, context_token or None))
 
-        item_list = message.get("item_list") or []
-        text = _extract_text(item_list)
         media_paths: List[str] = []
         media_types: List[str] = []
 
@@ -1539,7 +1601,7 @@ class WeixinAdapter(BasePlatformAdapter):
                 if resp and isinstance(resp, dict):
                     ret = resp.get("ret")
                     errcode = resp.get("errcode")
-                    if (ret is not None and ret not in (0,)) or (errcode is not None and errcode not in (0,)):
+                    if (ret is not None and ret not in {0,}) or (errcode is not None and errcode not in {0,}):
                         is_session_expired = (
                             ret == SESSION_EXPIRED_ERRCODE
                             or errcode == SESSION_EXPIRED_ERRCODE
@@ -1817,10 +1879,14 @@ class WeixinAdapter(BasePlatformAdapter):
             raise ValueError(f"Blocked unsafe URL (SSRF protection): {url}")
 
         assert self._send_session is not None
-        async with self._send_session.get(url, timeout=aiohttp.ClientTimeout(total=30)) as response:
-            response.raise_for_status()
-            data = await response.read()
-            suffix = Path(url.split("?", 1)[0]).suffix or ".bin"
+        # Use asyncio.wait_for() instead of aiohttp ClientTimeout to avoid
+        # "Timeout context manager should be used inside a task" errors.
+        async def _do_fetch():
+            async with self._send_session.get(url) as response:
+                response.raise_for_status()
+                return await response.read()
+        data = await asyncio.wait_for(_do_fetch(), timeout=30)
+        suffix = Path(url.split("?", 1)[0]).suffix or ".bin"
         with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as handle:
             handle.write(data)
             return handle.name
@@ -1999,7 +2065,7 @@ class WeixinAdapter(BasePlatformAdapter):
     def format_message(self, content: Optional[str]) -> str:
         if content is None:
             return ""
-        return _normalize_markdown_blocks(content)
+        return _wrap_copy_friendly_lines_for_weixin(_normalize_markdown_blocks(content))
 
 
 async def send_weixin_direct(
@@ -2030,7 +2096,9 @@ async def send_weixin_direct(
 
     live_adapter = _LIVE_ADAPTERS.get(resolved_token)
     send_session = getattr(live_adapter, '_send_session', None)
-    if live_adapter is not None and send_session is not None and not send_session.closed:
+    if (live_adapter is not None and send_session is not None
+            and not send_session.closed
+            and send_session._loop is asyncio.get_running_loop()):
         last_result: Optional[SendResult] = None
         cleaned = live_adapter.format_message(message)
         if cleaned:

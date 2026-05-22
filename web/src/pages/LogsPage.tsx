@@ -46,6 +46,12 @@ const LINE_COLORS: Record<string, string> = {
 const toOptions = <T extends string>(values: readonly T[]) =>
   values.map((v) => ({ value: v, label: v }));
 
+const filterGroupClass =
+  "flex min-w-0 w-full flex-col items-start gap-1.5 sm:w-auto sm:max-w-full sm:flex-row sm:items-center";
+
+const segmentedClass =
+  "w-fit max-w-full flex-wrap justify-start self-start";
+
 export default function LogsPage() {
   const [file, setFile] = useState<(typeof FILES)[number]>("agent");
   const [level, setLevel] = useState<(typeof LEVELS)[number]>("ALL");
@@ -87,7 +93,7 @@ export default function LogsPage() {
       </span>,
     );
     setEnd(
-      <div className="flex w-full min-w-0 flex-wrap items-center justify-end gap-2 sm:gap-3">
+      <div className="flex w-full min-w-0 flex-wrap items-center justify-start gap-2 sm:justify-end sm:gap-3">
         <div className="flex items-center gap-2">
           <Switch
             checked={autoRefresh}
@@ -145,39 +151,43 @@ export default function LogsPage() {
   }, [autoRefresh, fetchLogs]);
 
   return (
-    <div className="flex flex-col gap-4">
+    <div className="flex min-w-0 max-w-full flex-col gap-4">
       <PluginSlot name="logs:top" />
       <div
         role="toolbar"
         aria-label={t.logs.title}
-        className="flex flex-wrap items-center gap-x-6 gap-y-2"
+        className="flex min-w-0 max-w-full flex-col items-start gap-3 sm:flex-row sm:flex-wrap sm:items-start sm:gap-x-6 sm:gap-y-3"
       >
-        <FilterGroup label={t.logs.file}>
+        <FilterGroup label={t.logs.file} className={filterGroupClass}>
           <Segmented
+            className={segmentedClass}
             value={file}
             onChange={setFile}
             options={toOptions(FILES)}
           />
         </FilterGroup>
 
-        <FilterGroup label={t.logs.level}>
+        <FilterGroup label={t.logs.level} className={filterGroupClass}>
           <Segmented
+            className={segmentedClass}
             value={level}
             onChange={setLevel}
             options={toOptions(LEVELS)}
           />
         </FilterGroup>
 
-        <FilterGroup label={t.logs.component}>
+        <FilterGroup label={t.logs.component} className={filterGroupClass}>
           <Segmented
+            className={segmentedClass}
             value={component}
             onChange={setComponent}
             options={toOptions(COMPONENTS)}
           />
         </FilterGroup>
 
-        <FilterGroup label={t.logs.lines}>
+        <FilterGroup label={t.logs.lines} className={filterGroupClass}>
           <Segmented
+            className={segmentedClass}
             value={String(lineCount)}
             onChange={(v) =>
               setLineCount(Number(v) as (typeof LINE_COUNTS)[number])
@@ -190,7 +200,7 @@ export default function LogsPage() {
         </FilterGroup>
       </div>
 
-      <Card>
+      <Card className="min-w-0 max-w-full overflow-hidden">
         <CardHeader className="py-3 px-4">
           <CardTitle className="text-sm flex items-center gap-2">
             <FileText className="h-4 w-4" />
@@ -206,7 +216,7 @@ export default function LogsPage() {
 
           <div
             ref={scrollRef}
-            className="p-4 font-mono-ui text-xs leading-5 overflow-auto min-h-[400px] max-h-[calc(100vh-220px)]"
+            className="max-w-full min-h-[400px] max-h-[calc(100vh-220px)] overflow-auto p-4 font-mono-ui text-xs leading-5 break-words"
           >
             {lines.length === 0 && !loading && (
               <p className="text-muted-foreground text-center py-8">

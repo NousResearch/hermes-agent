@@ -19,6 +19,7 @@ Canvas LMS integration — fetch enrolled courses and assignments using API toke
 | Version | `1.0.0` |
 | Author | community |
 | License | MIT |
+| Platforms | linux, macos, windows |
 | Tags | `Canvas`, `LMS`, `Education`, `Courses`, `Assignments` |
 
 ## Reference: full SKILL.md

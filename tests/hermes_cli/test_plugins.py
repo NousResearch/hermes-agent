@@ -894,6 +894,21 @@ class TestPluginCommands:
     """Tests for plugin slash command registration via register_command()."""
 
 
+    def test_register_command_with_category(self):
+        """category is stored for mobile/API command discovery surfaces."""
+        mgr = PluginManager()
+        manifest = PluginManifest(name="test-plugin", source="user")
+        ctx = PluginContext(manifest, mgr)
+
+        ctx.register_command(
+            "joke",
+            lambda a: a,
+            description="Generate a joke",
+            category="Creative",
+        )
+
+        entry = mgr._plugin_commands["joke"]
+        assert entry["category"] == "Creative"
 
     def test_register_command_empty_name_rejected(self, caplog):
         """Empty name after normalization is rejected with a warning."""

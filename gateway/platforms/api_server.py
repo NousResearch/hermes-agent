@@ -3159,7 +3159,6 @@ class APIServerAdapter(BasePlatformAdapter):
                 "session_model_lock": {"method": "POST", "path": "/api/sessions/{session_id}/model"},
             },
         }
-
         manager = self._plugin_manager
         # The process-global manager belongs to the listener's launch profile.
         # Never advertise its extensions on a multiplexed profile response.
@@ -3202,6 +3201,14 @@ class APIServerAdapter(BasePlatformAdapter):
                     for entry in plugin_caps
                     if isinstance(entry, dict) and entry.get("plugin")
                 }
+
+        try:
+            from hermes_cli.commands import gateway_command_registry
+
+            payload["commands"] = gateway_command_registry()
+        except Exception as exc:
+            logger.debug("[%s] Command registry unavailable for capabilities: %s", self.name, exc)
+            payload["commands"] = []
 
         return web.json_response(payload)
 

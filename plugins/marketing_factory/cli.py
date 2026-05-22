@@ -68,6 +68,13 @@ def register_cli(subparser: argparse.ArgumentParser) -> None:
     poll = subs.add_parser("poll", help="One scheduled-poller tick: fire publish on all due drafts across all apps")
     poll.add_argument("--json", action="store_true")
 
+    enable_poller = subs.add_parser("enable-poller", help="Register a Hermes cron job that runs `marketing-factory poll` on a recurring interval")
+    enable_poller.add_argument("--interval", default="5m", help="How often to poll (e.g. 1m, 5m, 1h). Default: 5m.")
+    enable_poller.add_argument("--name", default="marketing-factory-poll", help="Cron job display name")
+
+    disable_poller = subs.add_parser("disable-poller", help="Remove the scheduled-poller cron job and its wrapper script")
+    disable_poller.add_argument("--name", default="marketing-factory-poll")
+
     add_app = subs.add_parser("add-app", help="Add or upsert a brand profile without editing Python")
     add_app.add_argument("--slug", required=True)
     add_app.add_argument("--name", required=True)
@@ -114,7 +121,7 @@ def register_cli(subparser: argparse.ArgumentParser) -> None:
 def marketing_command(args: argparse.Namespace) -> int:
     sub = getattr(args, "marketing_command", None)
     if not sub:
-        print("usage: hermes marketing-factory {init,status,apps,add-app,update-app,remove-app,campaigns,drafts,approvals,approve,reject,schedule,publish-dry-run,poll,audit,export,generate,full-dry-run}")
+        print("usage: hermes marketing-factory {init,status,apps,add-app,update-app,remove-app,campaigns,drafts,approvals,approve,reject,schedule,publish-dry-run,poll,enable-poller,disable-poller,audit,export,generate,full-dry-run}")
         return 2
     store = MarketingFactoryStore(getattr(args, "store_path", None))
     pipe = MarketingFactoryPipeline(store)
@@ -184,6 +191,43 @@ def marketing_command(args: argparse.Namespace) -> int:
         if sub == "remove-app":
             result = store.remove_app(args.slug, cascade=not args.no_cascade)
             _print_json(result)
+            return 0
+        if sub == "enable-poller":
+            from hermes_constants import get_hermes_home
+            from cron.jobs import create_job, list_jobs, remove_job
+            scripts_dir = get_hermes_home() / "scripts"
+            scripts_dir.mkdir(parents=True, exist_ok=True)
+            script_name = "marketing-factory-poll.sh"
+            script_path = scripts_dir / script_name
+            script_path.write_text("#!/usr/bin/env bash\nexec hermes marketing-factory poll \"$@\"\n", encoding="utf-8")
+            script_path.chmod(0o755)
+            # Remove any existing job with the same name so this is idempotent.
+            for existing_job in list_jobs(include_disabled=True):
+                if existing_job.get("name") == args.name:
+                    remove_job(existing_job["id"])
+            job = create_job(
+                prompt=None,
+                schedule=f"every {args.interval}",
+                name=args.name,
+                script=script_name,
+                no_agent=True,
+            )
+            _print_json({"job_id": job["id"], "name": job.get("name"), "schedule": job.get("schedule"), "script": script_name, "scripts_dir": str(scripts_dir)})
+            return 0
+        if sub == "disable-poller":
+            from hermes_constants import get_hermes_home
+            from cron.jobs import list_jobs, remove_job
+            removed = []
+            for existing_job in list_jobs(include_disabled=True):
+                if existing_job.get("name") == args.name:
+                    remove_job(existing_job["id"])
+                    removed.append(existing_job["id"])
+            script_path = get_hermes_home() / "scripts" / "marketing-factory-poll.sh"
+            script_removed = False
+            if script_path.exists():
+                script_path.unlink()
+                script_removed = True
+            _print_json({"removed_jobs": removed, "script_removed": script_removed})
             return 0
         if sub == "poll":
             result = pipe.poll()

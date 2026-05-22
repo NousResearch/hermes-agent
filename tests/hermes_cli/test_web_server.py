@@ -109,6 +109,13 @@ class TestWebServerEndpoints:
             pytest.skip("fastapi/starlette not installed")
 
         import hermes_state
+
+        # Make sure test plugins are enabled and loaded
+        monkeypatch.setattr("hermes_cli.plugins._get_enabled_plugins", lambda: ["hermes-achievements", "kanban"])
+        monkeypatch.setattr("hermes_cli.plugins._get_disabled_plugins", lambda: [])
+        import hermes_cli.web_server
+        hermes_cli.web_server._get_dashboard_plugins(force_rescan=True)
+
         from hermes_constants import get_hermes_home
         from hermes_cli.web_server import app, _SESSION_HEADER_NAME, _SESSION_TOKEN
 
@@ -562,6 +569,13 @@ class TestNewEndpoints:
             pytest.skip("fastapi/starlette not installed")
 
         import hermes_state
+
+        from hermes_cli.plugins import _get_enabled_plugins, _get_disabled_plugins
+        monkeypatch.setattr("hermes_cli.plugins._get_enabled_plugins", lambda: ["hermes-achievements", "kanban"])
+        monkeypatch.setattr("hermes_cli.plugins._get_disabled_plugins", lambda: [])
+        from hermes_cli.web_server import _get_dashboard_plugins
+        _get_dashboard_plugins(force_rescan=True)
+
         from hermes_constants import get_hermes_home
         from hermes_cli.web_server import app, _SESSION_HEADER_NAME, _SESSION_TOKEN
 
@@ -1838,6 +1852,11 @@ class TestPluginAPIAuth:
             pytest.skip("fastapi/starlette not installed")
 
         import hermes_state
+        from hermes_cli.plugins import _get_enabled_plugins, _get_disabled_plugins
+        monkeypatch.setattr("hermes_cli.plugins._get_enabled_plugins", lambda: ["hermes-achievements", "kanban"])
+        monkeypatch.setattr("hermes_cli.plugins._get_disabled_plugins", lambda: [])
+        import hermes_cli.web_server
+        hermes_cli.web_server._get_dashboard_plugins(force_rescan=True)
         from hermes_constants import get_hermes_home
         from hermes_cli.web_server import app, _SESSION_HEADER_NAME, _SESSION_TOKEN
 

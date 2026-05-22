@@ -68,6 +68,56 @@ def test_decompose_creates_children_and_promotes_root(kanban_home):
     assert c1.assignee == "engineer"
 
 
+def test_decompose_children_inherit_goal_workspace_and_runtime_fields(
+    kanban_home, tmp_path,
+):
+    workspace = tmp_path / ".worktrees" / "goal-work"
+    with kb.connect() as conn:
+        root = kb.create_task(
+            conn,
+            title="goal with repo workspace",
+            assignee="orchestrator",
+            workspace_kind="worktree",
+            workspace_path=str(workspace),
+            branch_name="wt/goal-work",
+            tenant="tenant-a",
+            priority=7,
+            triage=True,
+            max_runtime_seconds=600,
+            max_retries=2,
+            session_id="sess-goal-1",
+        )
+        child_ids = kb.decompose_triage_task(
+            conn,
+            root,
+            root_assignee="orchestrator",
+            children=[
+                {"title": "implement", "assignee": "codex-deep"},
+                {"title": "review", "assignee": "codex-review", "parents": [0]},
+            ],
+            author="planner",
+        )
+        assert child_ids is not None
+        children = [kb.get_task(conn, child_id) for child_id in child_ids]
+        events = kb.list_events(conn, root)
+
+    for child in children:
+        assert child is not None
+        assert child.workspace_kind == "worktree"
+        assert child.workspace_path == str(workspace)
+        assert child.branch_name == "wt/goal-work"
+        assert child.tenant == "tenant-a"
+        assert child.priority == 7
+        assert child.max_runtime_seconds == 600
+        assert child.max_retries == 2
+        assert child.session_id == "sess-goal-1"
+
+    decomposed = next(event for event in events if event.kind == "decomposed")
+    assert decomposed.payload["inherited"]["workspace_kind"] == "worktree"
+    assert decomposed.payload["inherited"]["workspace_path"] == str(workspace)
+    assert decomposed.payload["inherited"]["branch_name"] == "wt/goal-work"
+
+
 def test_decompose_returns_none_when_task_missing(kanban_home):
     with kb.connect() as conn:
         result = kb.decompose_triage_task(

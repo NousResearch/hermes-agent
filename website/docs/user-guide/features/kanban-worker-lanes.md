@@ -273,6 +273,22 @@ It never waits for, signals, or replays a running Codex worker. Use
 POST /api/plugins/kanban/tasks/<task_id>/advance-acceptance
 ```
 
+For decomposed goal/root tasks, use the root-level controller:
+
+```bash
+hermes kanban advance-goal <goal_or_root_task_id> --json
+```
+
+`advance-goal` reads the root's child progress without interrupting workers,
+dispatches only ready child tasks for that root, advances any review-required
+child through the same review/test/acceptance workflow, and completes the root
+only after all related child tasks are `done` or `archived`. The tool/API
+equivalents are `kanban_advance_goal` and:
+
+```text
+POST /api/plugins/kanban/tasks/<task_id>/advance-goal
+```
+
 ## Skill lane intent
 
 Hermes skills can choose an existing lane directly:
@@ -337,11 +353,13 @@ Progress queries should read Kanban state, events, logs, and run metadata:
 - `hermes kanban progress <task_id> --json`
 - `hermes kanban acceptance <task_id> --json`
 - `hermes kanban advance-acceptance <task_id> --json`
+- `hermes kanban advance-goal <goal_or_root_task_id> --json`
 - `hermes kanban progress <goal_or_root_task_id> --children --json`
 - `hermes kanban reviews --json`
 - `GET /api/plugins/kanban/tasks/<task_id>/progress`
 - `GET /api/plugins/kanban/tasks/<task_id>/acceptance`
 - `POST /api/plugins/kanban/tasks/<task_id>/advance-acceptance`
+- `POST /api/plugins/kanban/tasks/<task_id>/advance-goal`
 - `GET /api/plugins/kanban/tasks/<task_id>/progress?children=true`
 - `GET /api/plugins/kanban/reviews`
 - `hermes kanban show <task_id>`
@@ -383,7 +401,8 @@ snapshot, `kanban_acceptance` for implementation plus review/test evidence,
 `kanban_verify` to run configured deterministic Hermes-side checks,
 `kanban_plan_review` to create and optionally dispatch independent review/test
 follow-ups, `kanban_advance_acceptance` to move the control-plane workflow to
-the next safe boundary, and `kanban_review` to approve or request changes.
+the next safe boundary, `kanban_advance_goal` to advance decomposed goal/root
+tasks across their children, and `kanban_review` to approve or request changes.
 These tools are orchestrator-only; dispatcher-spawned Codex workers do not see
 them.
 
@@ -415,10 +434,25 @@ The current `/goal` session-level semantics remain intact. The opt-in bridge is 
 
 ```bash
 hermes kanban goal "complex objective" --assignee orchestrator --session <session-id>
-hermes kanban goal "complex objective" --assignee orchestrator --decompose
+hermes kanban goal "complex objective" --assignee orchestrator --workspace dir:/repo --decompose
 ```
 
-`--decompose` runs the existing Kanban decomposer immediately. Its child tasks can use worker lane assignees from the registry, such as `codex-deep`, and the dispatcher later starts those external workers.
+`--decompose` runs the existing Kanban decomposer immediately. Its child tasks
+inherit the root task's workspace, branch, tenant, priority, runtime cap, retry
+cap, and session id, so a goal created with `--workspace dir:/repo` can fan out
+Codex child tasks that work in the intended repository without manual DB
+patching. The child tasks can use worker lane assignees from the registry, such
+as `codex-deep`, and the dispatcher later starts those external workers.
+
+After decomposition, a controller can repeatedly call:
+
+```bash
+hermes kanban progress <goal_or_root_task_id> --children --json
+hermes kanban advance-goal <goal_or_root_task_id> --json
+```
+
+The first command reports child status; the second performs the next safe
+control-plane action for the root and its children.
 
 ## Failure modes the dispatcher handles
 

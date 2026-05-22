@@ -115,12 +115,13 @@ def test_worker_with_kanban_toolset_still_hides_board_routing(monkeypatch, tmp_p
         "kanban_acceptance",
         "kanban_verify",
         "kanban_advance_acceptance",
+        "kanban_advance_goal",
         "kanban_reviews",
         "kanban_review",
         "kanban_plan_review",
     }.isdisjoint(kanban), (
         f"Board-routing tools leaked into worker schema: "
-        f"{kanban & {'kanban_list', 'kanban_unblock', 'kanban_progress', 'kanban_acceptance', 'kanban_verify', 'kanban_advance_acceptance', 'kanban_reviews', 'kanban_review', 'kanban_plan_review'}}"
+        f"{kanban & {'kanban_list', 'kanban_unblock', 'kanban_progress', 'kanban_acceptance', 'kanban_verify', 'kanban_advance_acceptance', 'kanban_advance_goal', 'kanban_reviews', 'kanban_review', 'kanban_plan_review'}}"
     )
 
 
@@ -146,6 +147,7 @@ def test_kanban_tools_visible_with_toolset_config(monkeypatch, tmp_path):
         "kanban_acceptance",
         "kanban_verify",
         "kanban_advance_acceptance",
+        "kanban_advance_goal",
         "kanban_reviews",
         "kanban_review",
         "kanban_plan_review",
@@ -783,6 +785,64 @@ def test_advance_acceptance_tool_dry_run_plans_scoped_followups(
     assert unrelated_task.status == "ready"
     assert review_task.status == "ready"
     assert test_task.status == "ready"
+
+
+def test_advance_goal_tool_dry_run_dispatches_only_goal_children(
+    monkeypatch,
+    worker_env,
+    tmp_path,
+):
+    monkeypatch.delenv("HERMES_KANBAN_TASK", raising=False)
+    from hermes_cli import profiles
+    from hermes_cli import kanban_db as kb
+    from tools import kanban_tools as kt
+
+    monkeypatch.setattr(profiles, "profile_exists", lambda name: True)
+    conn = kb.connect()
+    try:
+        root = kb.create_task(
+            conn,
+            title="tool goal",
+            workspace_kind="dir",
+            workspace_path=str(tmp_path),
+            triage=True,
+        )
+        child_ids = kb.decompose_triage_task(
+            conn,
+            root,
+            root_assignee="orchestrator",
+            children=[{"title": "implement", "assignee": "codex-deep"}],
+            author="planner",
+        )
+        assert child_ids is not None
+        unrelated = kb.create_task(
+            conn,
+            title="unrelated",
+            assignee="alice",
+            workspace_kind="dir",
+            workspace_path=str(tmp_path),
+        )
+    finally:
+        conn.close()
+
+    out = kt._handle_advance_goal({
+        "task_id": root,
+        "dry_run": True,
+    })
+    d = json.loads(out)
+    spawned_ids = {item["task_id"] for item in d["steps"][0]["dispatch"]["spawned"]}
+
+    conn = kb.connect()
+    try:
+        child = kb.get_task(conn, child_ids[0])
+        unrelated_task = kb.get_task(conn, unrelated)
+    finally:
+        conn.close()
+
+    assert d["steps"][0]["kind"] == "dispatch_goal_children"
+    assert spawned_ids == {child_ids[0]}
+    assert child.status == "ready"
+    assert unrelated_task.status == "ready"
 
 
 def test_complete_happy_path(worker_env):

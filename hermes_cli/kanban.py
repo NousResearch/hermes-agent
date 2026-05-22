@@ -78,6 +78,7 @@ def _task_to_dict(t: kb.Task) -> dict[str, Any]:
         "started_at": t.started_at,
         "completed_at": t.completed_at,
         "result": t.result,
+        "max_runtime_seconds": t.max_runtime_seconds,
         "skills": list(t.skills) if t.skills else [],
         "max_retries": t.max_retries,
         "session_id": t.session_id,
@@ -377,8 +378,17 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
     p_goal.add_argument("goal", help="Goal text / complex objective")
     p_goal.add_argument("--session", default=None, help="Originating session id")
     p_goal.add_argument("--assignee", default=None, help="Orchestrator assignee")
+    p_goal.add_argument("--workspace", default="scratch",
+                        help="scratch | worktree | worktree:<path> | dir:<path> "
+                             "(inherited by decomposed child tasks)")
+    p_goal.add_argument("--branch", default=None,
+                        help="Branch name for worktree goal tasks, e.g. wt/t6-wire")
     p_goal.add_argument("--tenant", default=None, help="Tenant namespace")
     p_goal.add_argument("--priority", type=int, default=0, help="Priority tiebreaker")
+    p_goal.add_argument("--max-runtime", default=None,
+                        help="Per-task runtime cap inherited by decomposed child tasks")
+    p_goal.add_argument("--max-retries", type=int, default=None,
+                        help="Per-task retry breaker inherited by decomposed child tasks")
     p_goal.add_argument("--created-by", default="goal", help="Creator recorded on the task")
     p_goal.add_argument("--idempotency-key", default=None, help="Dedup key for the top-level task")
     p_goal.add_argument(
@@ -577,6 +587,58 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
         help="Task result when the workflow reaches approve",
     )
     p_advance.add_argument("--json", action="store_true")
+
+    # --- advance-goal ---
+    p_advance_goal = sub.add_parser(
+        "advance-goal",
+        help="Advance a decomposed goal/root task and its worker children",
+    )
+    p_advance_goal.add_argument("task_id")
+    p_advance_goal.add_argument("--review-assignee", default="codex-review")
+    p_advance_goal.add_argument("--test-assignee", default="codex-test")
+    p_advance_goal.add_argument(
+        "--no-dispatch",
+        action="store_true",
+        help="Do not dispatch ready child or follow-up workers",
+    )
+    p_advance_goal.add_argument(
+        "--dispatch-max",
+        type=int,
+        default=None,
+        metavar="N",
+        help="Cap scoped child/follow-up worker spawns",
+    )
+    p_advance_goal.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="With dispatch enabled, report spawns without claiming tasks",
+    )
+    p_advance_goal.add_argument(
+        "--no-verify",
+        action="store_true",
+        help="Do not run configured Hermes acceptance checks for children",
+    )
+    p_advance_goal.add_argument(
+        "--no-approve",
+        action="store_true",
+        help="Stop before approving children or completing the root",
+    )
+    p_advance_goal.add_argument(
+        "--reviewer",
+        default=None,
+        help="Reviewer/controller name for planned tasks and approvals",
+    )
+    p_advance_goal.add_argument(
+        "--summary",
+        default=None,
+        help="Approval summary when child/root workflows reach approve",
+    )
+    p_advance_goal.add_argument(
+        "--result",
+        default=None,
+        help="Task result when child/root workflows reach approve",
+    )
+    p_advance_goal.add_argument("--json", action="store_true")
 
     # --- reviews ---
     p_reviews = sub.add_parser(
@@ -1176,6 +1238,7 @@ def kanban_command(args: argparse.Namespace) -> int:
         "acceptance": _cmd_acceptance,
         "verify": _cmd_verify,
         "advance-acceptance": _cmd_advance_acceptance,
+        "advance-goal": _cmd_advance_goal,
         "reviews":  _cmd_reviews,
         "review":   _cmd_review,
         "plan-review": _cmd_plan_review,
@@ -1748,12 +1811,39 @@ def _cmd_goal(args: argparse.Namespace) -> int:
     from hermes_cli.goals import create_kanban_task_from_goal
 
     try:
+        ws_kind, ws_path = _parse_workspace_flag(getattr(args, "workspace", "scratch"))
+        branch_name = _parse_branch_flag(getattr(args, "branch", None))
+    except argparse.ArgumentTypeError as exc:
+        print(f"kanban goal: {exc}", file=sys.stderr)
+        return 2
+    if branch_name and ws_kind != "worktree":
+        print("kanban goal: --branch is only valid with --workspace worktree", file=sys.stderr)
+        return 2
+    try:
+        max_runtime = _parse_duration(getattr(args, "max_runtime", None))
+    except ValueError as exc:
+        print(f"kanban goal: --max-runtime: {exc}", file=sys.stderr)
+        return 2
+    max_retries = getattr(args, "max_retries", None)
+    if max_retries is not None and max_retries < 1:
+        print(
+            f"kanban goal: --max-retries must be >= 1 (got {max_retries})",
+            file=sys.stderr,
+        )
+        return 2
+
+    try:
         task_id = create_kanban_task_from_goal(
             args.goal,
             session_id=getattr(args, "session", None),
             assignee=getattr(args, "assignee", None),
             tenant=getattr(args, "tenant", None),
             priority=int(getattr(args, "priority", 0) or 0),
+            workspace_kind=ws_kind,
+            workspace_path=ws_path,
+            branch_name=branch_name,
+            max_runtime_seconds=max_runtime,
+            max_retries=max_retries,
             board=getattr(args, "board", None),
             created_by=getattr(args, "created_by", None) or "goal",
             idempotency_key=getattr(args, "idempotency_key", None),
@@ -2269,6 +2359,45 @@ def _cmd_advance_acceptance(args: argparse.Namespace) -> int:
     print(f"  approval_allowed:   {final.get('approval_allowed')}")
     impl_task = ((final.get("implementation") or {}).get("task") or {})
     print(f"  status:             {impl_task.get('status', '-')}")
+    return 0
+
+
+def _cmd_advance_goal(args: argparse.Namespace) -> int:
+    reviewer = getattr(args, "reviewer", None) or _profile_author()
+    try:
+        with kb.connect() as conn:
+            payload = kb.advance_goal_acceptance_workflow(
+                conn,
+                args.task_id,
+                review_assignee=getattr(args, "review_assignee", None),
+                test_assignee=getattr(args, "test_assignee", None),
+                dispatch=not bool(getattr(args, "no_dispatch", False)),
+                dry_run=bool(getattr(args, "dry_run", False)),
+                dispatch_max=getattr(args, "dispatch_max", None),
+                verify=not bool(getattr(args, "no_verify", False)),
+                approve=not bool(getattr(args, "no_approve", False)),
+                reviewer=reviewer,
+                summary=getattr(args, "summary", None),
+                result=getattr(args, "result", None),
+            )
+    except ValueError as exc:
+        print(f"kanban advance-goal: {exc}", file=sys.stderr)
+        return 2
+    if getattr(args, "json", False):
+        print(json.dumps(payload, indent=2, ensure_ascii=False))
+        return 0
+    final = payload.get("final") or {}
+    root_task = final.get("task") or {}
+    child_summary = final.get("child_summary") or {}
+    print(f"Advanced goal for {args.task_id}:")
+    if not payload.get("steps"):
+        print("  - no action")
+    for step in payload.get("steps") or []:
+        print(f"  - {step.get('kind')}")
+    print(f"  status:             {root_task.get('status', '-')}")
+    print(f"  children:           {child_summary.get('done', 0)}/{child_summary.get('total', 0)} done")
+    if payload.get("incomplete_children"):
+        print(f"  incomplete:         {len(payload.get('incomplete_children') or [])}")
     return 0
 
 

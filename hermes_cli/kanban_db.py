@@ -3448,6 +3448,258 @@ def advance_acceptance_workflow(
     }
 
 
+def _dispatch_spawn_count(payload: dict[str, Any]) -> int:
+    spawned = payload.get("spawned") if isinstance(payload, dict) else None
+    return len(spawned) if isinstance(spawned, list) else 0
+
+
+def _advance_child_spawn_count(payload: dict[str, Any]) -> int:
+    total = 0
+    for step in payload.get("steps") or []:
+        if not isinstance(step, dict):
+            continue
+        dispatch_payload = step.get("dispatch")
+        if isinstance(dispatch_payload, dict):
+            total += _dispatch_spawn_count(dispatch_payload)
+    return total
+
+
+def _remaining_dispatch_budget(
+    dispatch_max: Optional[int],
+    used: int,
+) -> Optional[int]:
+    if dispatch_max is None:
+        return None
+    return max(0, int(dispatch_max) - int(used))
+
+
+def advance_goal_acceptance_workflow(
+    conn: sqlite3.Connection,
+    task_id: str,
+    *,
+    review_assignee: Optional[str] = "codex-review",
+    test_assignee: Optional[str] = "codex-test",
+    dispatch: bool = True,
+    dry_run: bool = False,
+    dispatch_max: Optional[int] = None,
+    verify: bool = True,
+    approve: bool = True,
+    reviewer: str = "hermes-controller",
+    summary: Optional[str] = None,
+    result: Optional[str] = None,
+    board: Optional[str] = None,
+) -> dict[str, Any]:
+    """Advance a top-level goal/root task and its worker children.
+
+    This is the root-level control-plane loop for `/goal`/decomposed tasks.
+    It never waits for or interrupts running workers. It can dispatch ready
+    child implementation tasks, advance review-required children through the
+    bounded evidence workflow, and mark the root done once every related child
+    is done or archived.
+    """
+
+    steps: list[dict[str, Any]] = []
+    child_advances: list[dict[str, Any]] = []
+    dispatch_used = 0
+
+    initial_snapshot = task_progress_snapshot(
+        conn,
+        task_id,
+        include_children=True,
+        board=board,
+    )
+    if initial_snapshot is None:
+        raise ValueError(f"unknown task {task_id}")
+    if initial_snapshot.task.status == "done":
+        return {
+            "task_id": task_id,
+            "steps": steps,
+            "child_advances": child_advances,
+            "initial": initial_snapshot.to_dict(),
+            "final": initial_snapshot.to_dict(),
+            "advanced": False,
+        }
+
+    refs = _progress_summary_task_refs(conn, task_id)
+    child_ids_for_dispatch = [child_id for child_id, _relationship in refs]
+    if not child_ids_for_dispatch:
+        steps.append({
+            "kind": "inspect_goal",
+            "reason": "goal/root task has no related child worker tasks",
+        })
+        return {
+            "task_id": task_id,
+            "steps": steps,
+            "child_advances": child_advances,
+            "initial": initial_snapshot.to_dict(),
+            "final": initial_snapshot.to_dict(),
+            "advanced": False,
+        }
+
+    if dispatch:
+        remaining = _remaining_dispatch_budget(dispatch_max, dispatch_used)
+        if remaining is None or remaining > 0:
+            dispatch_result = dispatch_once(
+                conn,
+                dry_run=dry_run,
+                max_spawn=remaining,
+                only_task_ids=child_ids_for_dispatch,
+                board=board,
+            )
+            dispatch_payload = dispatch_result.to_dict()
+            dispatch_used += _dispatch_spawn_count(dispatch_payload)
+            if (
+                dispatch_payload.get("spawned")
+                or dispatch_payload.get("promoted")
+                or dispatch_payload.get("skipped_unassigned")
+                or dispatch_payload.get("skipped_nonspawnable")
+                or dispatch_payload.get("skipped_concurrency")
+                or dispatch_payload.get("respawn_guarded")
+                or dispatch_payload.get("auto_blocked")
+                or dispatch_payload.get("timed_out")
+                or dispatch_payload.get("crashed")
+                or dispatch_payload.get("stale")
+            ):
+                steps.append({
+                    "kind": "dispatch_goal_children",
+                    "dispatch": dispatch_payload,
+                })
+
+    for child_id, relationship in refs:
+        snap = task_progress_snapshot(
+            conn,
+            child_id,
+            include_children=False,
+            board=board,
+        )
+        if snap is None or snap.task.status in {"done", "archived"}:
+            continue
+        if snap.task.status == "running":
+            steps.append({
+                "kind": "wait_for_child",
+                "task_id": child_id,
+                "relationship": relationship,
+                "reason": "child worker is still running",
+            })
+            continue
+        if not snap.review_required:
+            continue
+        remaining = _remaining_dispatch_budget(dispatch_max, dispatch_used)
+        child_payload = advance_acceptance_workflow(
+            conn,
+            child_id,
+            review_assignee=review_assignee,
+            test_assignee=test_assignee,
+            dispatch=dispatch and (remaining is None or remaining > 0),
+            dry_run=dry_run,
+            dispatch_max=remaining,
+            verify=verify,
+            approve=approve,
+            reviewer=reviewer,
+            summary=summary,
+            result=result,
+            board=board,
+        )
+        dispatch_used += _advance_child_spawn_count(child_payload)
+        child_advances.append({
+            "task_id": child_id,
+            "relationship": relationship,
+            "advance": child_payload,
+        })
+        if child_payload.get("steps"):
+            steps.append({
+                "kind": "advance_child_acceptance",
+                "task_id": child_id,
+                "relationship": relationship,
+                "steps": child_payload.get("steps") or [],
+                "recommended_action": (
+                    (child_payload.get("final") or {}).get("recommended_action")
+                ),
+            })
+
+    recompute_ready(conn)
+    final_snapshot = task_progress_snapshot(
+        conn,
+        task_id,
+        include_children=True,
+        board=board,
+    )
+    if final_snapshot is None:
+        raise ValueError(f"unknown task {task_id}")
+
+    children = final_snapshot.children or []
+    incomplete_children = [
+        {
+            "task_id": ((child.get("task") or {}).get("id")),
+            "status": ((child.get("task") or {}).get("status")),
+            "relationship": child.get("relationship"),
+            "review_required": child.get("review_required"),
+        }
+        for child in children
+        if ((child.get("task") or {}).get("status")) not in {"done", "archived"}
+    ]
+    if not incomplete_children and approve and final_snapshot.task.status != "done":
+        root = get_task(conn, task_id)
+        if root and root.status in {"ready", "running", "blocked"}:
+            completion_summary = (
+                summary
+                or f"Goal accepted after {len(children)} worker child task(s) completed"
+            )
+            completion_result = result or completion_summary
+            completed = complete_task(
+                conn,
+                task_id,
+                result=completion_result,
+                summary=completion_summary,
+            )
+            if completed:
+                steps.append({
+                    "kind": "complete_goal",
+                    "child_count": len(children),
+                })
+                final_snapshot = task_progress_snapshot(
+                    conn,
+                    task_id,
+                    include_children=True,
+                    board=board,
+                )
+        elif root and root.status != "done":
+            steps.append({
+                "kind": "wait_for_goal_ready",
+                "status": root.status,
+                "reason": "all known children are terminal but the root is not ready",
+            })
+
+    final_payload = final_snapshot.to_dict() if final_snapshot else None
+    if steps:
+        try:
+            with write_txn(conn):
+                _append_event(
+                    conn,
+                    task_id,
+                    "goal_acceptance_advanced",
+                    {
+                        "reviewer": reviewer,
+                        "dispatch_used": dispatch_used,
+                        "step_kinds": [step.get("kind") for step in steps],
+                        "incomplete_children": incomplete_children,
+                    },
+                )
+        except Exception:
+            pass
+
+    return {
+        "task_id": task_id,
+        "steps": steps,
+        "child_advances": child_advances,
+        "initial": initial_snapshot.to_dict(),
+        "final": final_payload,
+        "incomplete_children": incomplete_children,
+        "dispatch_used": dispatch_used,
+        "advanced": bool(steps or child_advances),
+    }
+
+
 def _require_acceptance_check_gate_ready(
     conn: sqlite3.Connection,
     task_id: str,
@@ -3664,8 +3916,12 @@ def plan_review_followups(
             created_by=created_by,
             workspace_kind=snapshot.task.workspace_kind,
             workspace_path=snapshot.task.workspace_path,
+            branch_name=snapshot.task.branch_name,
             tenant=snapshot.task.tenant,
             priority=snapshot.task.priority,
+            max_runtime_seconds=snapshot.task.max_runtime_seconds,
+            max_retries=snapshot.task.max_retries,
+            session_id=snapshot.task.session_id,
             idempotency_key=key,
             board=board,
         )
@@ -3690,8 +3946,12 @@ def plan_review_followups(
             created_by=created_by,
             workspace_kind=snapshot.task.workspace_kind,
             workspace_path=snapshot.task.workspace_path,
+            branch_name=snapshot.task.branch_name,
             tenant=snapshot.task.tenant,
             priority=snapshot.task.priority,
+            max_runtime_seconds=snapshot.task.max_runtime_seconds,
+            max_retries=snapshot.task.max_retries,
+            session_id=snapshot.task.session_id,
             idempotency_key=key,
             board=board,
         )
@@ -5391,13 +5651,23 @@ def decompose_triage_task(
     child_ids: list[str] = []
     with write_txn(conn):
         root_row = conn.execute(
-            "SELECT id, status, tenant FROM tasks WHERE id = ?", (task_id,)
+            "SELECT id, status, priority, workspace_kind, workspace_path, "
+            "branch_name, tenant, max_runtime_seconds, max_retries, session_id "
+            "FROM tasks WHERE id = ?",
+            (task_id,),
         ).fetchone()
         if root_row is None:
             return None
         if root_row["status"] != "triage":
             return None
         tenant = root_row["tenant"]
+        root_workspace_kind = root_row["workspace_kind"] or "scratch"
+        root_workspace_path = root_row["workspace_path"]
+        root_branch_name = root_row["branch_name"]
+        root_priority = int(root_row["priority"] or 0)
+        root_max_runtime = root_row["max_runtime_seconds"]
+        root_max_retries = root_row["max_retries"]
+        root_session_id = root_row["session_id"]
 
         # Create children. Status is 'todo' regardless of parents — we
         # link them under the root AFTER creation so the dispatcher
@@ -5410,22 +5680,43 @@ def decompose_triage_task(
             assignee = _canonical_assignee(child.get("assignee"))
             conn.execute(
                 "INSERT INTO tasks "
-                "(id, title, body, assignee, status, workspace_kind, "
-                " tenant, created_at, created_by) "
-                "VALUES (?, ?, ?, ?, 'todo', 'scratch', ?, ?, ?)",
+                "(id, title, body, assignee, status, priority, workspace_kind, "
+                " workspace_path, branch_name, tenant, created_at, created_by, "
+                " max_runtime_seconds, max_retries, session_id) "
+                "VALUES (?, ?, ?, ?, 'todo', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (
                     new_id,
                     title,
                     body if isinstance(body, str) else None,
                     assignee,
+                    root_priority,
+                    root_workspace_kind,
+                    root_workspace_path,
+                    root_branch_name,
                     tenant,
                     now,
                     (author or "decomposer"),
+                    root_max_runtime,
+                    root_max_retries,
+                    root_session_id,
                 ),
             )
             _append_event(
                 conn, new_id, "created",
-                {"by": author or "decomposer", "from_decompose_of": task_id},
+                {
+                    "by": author or "decomposer",
+                    "from_decompose_of": task_id,
+                    "assignee": assignee,
+                    "status": "todo",
+                    "tenant": tenant,
+                    "workspace_kind": root_workspace_kind,
+                    "workspace_path": root_workspace_path,
+                    "branch_name": root_branch_name,
+                    "priority": root_priority,
+                    "max_runtime_seconds": root_max_runtime,
+                    "max_retries": root_max_retries,
+                    "session_id": root_session_id,
+                },
             )
             child_ids.append(new_id)
 
@@ -5486,6 +5777,16 @@ def decompose_triage_task(
             {
                 "child_ids": child_ids,
                 "root_assignee": root_assignee,
+                "inherited": {
+                    "workspace_kind": root_workspace_kind,
+                    "workspace_path": root_workspace_path,
+                    "branch_name": root_branch_name,
+                    "tenant": tenant,
+                    "priority": root_priority,
+                    "max_runtime_seconds": root_max_runtime,
+                    "max_retries": root_max_retries,
+                    "session_id": root_session_id,
+                },
             },
         )
 

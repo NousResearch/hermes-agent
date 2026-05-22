@@ -865,6 +865,51 @@ def test_run_slash_advance_acceptance_dry_run_plans_scoped_followups(
     assert payload["final"]["recommended_action"] == "wait_for_followups"
 
 
+def test_run_slash_advance_goal_dry_run_scopes_child_dispatch(
+    kanban_home,
+    tmp_path,
+    all_assignees_spawnable,
+):
+    with kb.connect() as conn:
+        root = kb.create_task(
+            conn,
+            title="goal via slash",
+            workspace_kind="dir",
+            workspace_path=str(tmp_path),
+            triage=True,
+        )
+        child_ids = kb.decompose_triage_task(
+            conn,
+            root,
+            root_assignee="orchestrator",
+            children=[{"title": "implement", "assignee": "codex-deep"}],
+            author="planner",
+        )
+        assert child_ids is not None
+        unrelated = kb.create_task(
+            conn,
+            title="unrelated",
+            assignee="alice",
+            workspace_kind="dir",
+            workspace_path=str(tmp_path),
+        )
+
+    payload = json.loads(kc.run_slash(
+        f"advance-goal {root} --dry-run --json"
+    ))
+    spawned_ids = {item["task_id"] for item in payload["steps"][0]["dispatch"]["spawned"]}
+
+    with kb.connect() as conn:
+        child = kb.get_task(conn, child_ids[0])
+        unrelated_task = kb.get_task(conn, unrelated)
+
+    assert payload["steps"][0]["kind"] == "dispatch_goal_children"
+    assert spawned_ids == {child_ids[0]}
+    assert child.status == "ready"
+    assert unrelated_task.status == "ready"
+    assert payload["final"]["task"]["status"] == "todo"
+
+
 def test_run_slash_worker_lane_request_validates_without_enabling(
     kanban_home, tmp_path,
 ):
@@ -942,7 +987,9 @@ def test_run_slash_worker_lane_request_rejects_shell_command(
 def test_run_slash_goal_creates_top_level_task(kanban_home):
     payload = json.loads(kc.run_slash(
         "goal 'refactor the worker lane bridge' "
-        "--session sess-goal-1 --assignee orchestrator --tenant dev --priority 3 --json"
+        "--session sess-goal-1 --assignee orchestrator --tenant dev "
+        "--priority 3 --workspace dir:/tmp/hermes-goal-repo "
+        "--max-runtime 15m --max-retries 2 --json"
     ))
 
     assert payload["task"]["status"] == "triage"
@@ -950,6 +997,10 @@ def test_run_slash_goal_creates_top_level_task(kanban_home):
     assert payload["task"]["session_id"] == "sess-goal-1"
     assert payload["task"]["tenant"] == "dev"
     assert payload["task"]["priority"] == 3
+    assert payload["task"]["workspace_kind"] == "dir"
+    assert payload["task"]["workspace_path"] == "/tmp/hermes-goal-repo"
+    assert payload["task"]["max_runtime_seconds"] == 900
+    assert payload["task"]["max_retries"] == 2
     assert payload["decompose"] is None
     assert payload["child_ids"] == []
 
@@ -1007,7 +1058,8 @@ def test_run_slash_goal_can_decompose_to_worker_lane(kanban_home, monkeypatch):
 
     payload = json.loads(kc.run_slash(
         "goal 'ship codex worker lane orchestration' "
-        "--assignee orchestrator --decompose --json"
+        "--assignee orchestrator --workspace dir:/tmp/hermes-goal-repo "
+        "--max-runtime 20m --max-retries 2 --decompose --json"
     ))
 
     assert payload["task"]["status"] == "todo"
@@ -1018,6 +1070,10 @@ def test_run_slash_goal_can_decompose_to_worker_lane(kanban_home, monkeypatch):
         child = kb.get_task(conn, payload["child_ids"][0])
     assert child.assignee == "codex-deep"
     assert child.status == "ready"
+    assert child.workspace_kind == "dir"
+    assert child.workspace_path == "/tmp/hermes-goal-repo"
+    assert child.max_runtime_seconds == 1200
+    assert child.max_retries == 2
 
 
 # ---------------------------------------------------------------------------

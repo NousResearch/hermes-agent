@@ -125,6 +125,7 @@ Registered when the agent is either (a) spawned by the kanban dispatcher (`HERME
 | `kanban_show` | Show the active kanban task assigned to this worker (title, description, comments, dependencies). | `HERMES_KANBAN_TASK` or `kanban` toolset |
 | `kanban_list` | List board tasks with filters. Orchestrator-only; hidden from dispatcher-spawned task workers. | profile with `kanban` toolset |
 | `kanban_progress` | Read one task's latest worker progress, heartbeat, bounded evidence, and optional log tail without interrupting the worker. Orchestrator-only. | profile with `kanban` toolset |
+| `kanban_advance_goal` | Advance a decomposed goal/root task across child dispatch, review/test/acceptance, and root completion without interrupting workers. Orchestrator-only. | profile with `kanban` toolset |
 | `kanban_reviews` | List review-required external-worker evidence snapshots. Orchestrator-only. | profile with `kanban` toolset |
 | `kanban_review` | Approve bounded worker evidence or request changes, without reading the full worker session. Orchestrator-only. | profile with `kanban` toolset |
 | `kanban_complete` | Mark the current task done with a structured handoff payload (results, artifacts, follow-ups). | `HERMES_KANBAN_TASK` or `kanban` toolset |
@@ -269,4 +270,3 @@ Registered only on the `hermes-yuanbao` platform toolset. Yuanbao is Tencent's c
 | `yb_send_dm` | Send a private/direct message to a user in a group, with optional media files. | Yuanbao credentials |
 | `yb_search_sticker` | Search the built-in Yuanbao sticker (TIM face) catalogue by keyword. | Yuanbao credentials |
 | `yb_send_sticker` | Send a built-in sticker to the current Yuanbao chat. | Yuanbao credentials |
-

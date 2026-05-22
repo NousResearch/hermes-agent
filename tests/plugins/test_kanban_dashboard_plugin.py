@@ -1881,6 +1881,63 @@ def test_advance_acceptance_endpoint_dry_run_plans_scoped_followups(
     assert data["final"]["recommended_action"] == "wait_for_followups"
 
 
+def test_advance_goal_endpoint_dry_run_dispatches_goal_children(
+    client,
+    tmp_path,
+    monkeypatch,
+):
+    from hermes_cli import kanban_db as kb
+    from hermes_cli import profiles
+
+    monkeypatch.setattr(profiles, "profile_exists", lambda name: True)
+    conn = kb.connect()
+    try:
+        root = kb.create_task(
+            conn,
+            title="goal via api",
+            workspace_kind="dir",
+            workspace_path=str(tmp_path),
+            triage=True,
+        )
+        child_ids = kb.decompose_triage_task(
+            conn,
+            root,
+            root_assignee="orchestrator",
+            children=[{"title": "implement", "assignee": "codex-deep"}],
+            author="planner",
+        )
+        assert child_ids is not None
+        unrelated = kb.create_task(
+            conn,
+            title="unrelated",
+            assignee="alice",
+            workspace_kind="dir",
+            workspace_path=str(tmp_path),
+        )
+    finally:
+        conn.close()
+
+    response = client.post(
+        f"/api/plugins/kanban/tasks/{root}/advance-goal",
+        json={"dry_run": True},
+    )
+
+    assert response.status_code == 200, response.text
+    data = response.json()
+    spawned_ids = {item["task_id"] for item in data["steps"][0]["dispatch"]["spawned"]}
+    conn = kb.connect()
+    try:
+        child = kb.get_task(conn, child_ids[0])
+        unrelated_task = kb.get_task(conn, unrelated)
+    finally:
+        conn.close()
+
+    assert data["steps"][0]["kind"] == "dispatch_goal_children"
+    assert spawned_ids == {child_ids[0]}
+    assert child.status == "ready"
+    assert unrelated_task.status == "ready"
+
+
 def test_worker_lane_request_endpoint_validates_without_enabling(client):
     from hermes_cli.worker_lanes import clear_worker_lanes, get_worker_lane
 

@@ -605,6 +605,64 @@ def _handle_advance_acceptance(args: dict, **kw) -> str:
         return tool_error(f"kanban_advance_acceptance: {e}")
 
 
+def _handle_advance_goal(args: dict, **kw) -> str:
+    """Advance a decomposed goal/root task and its worker children."""
+    guard = _require_orchestrator_tool("kanban_advance_goal")
+    if guard:
+        return guard
+    tid = args.get("task_id")
+    if not tid:
+        return tool_error("task_id is required")
+    dispatch, dispatch_error = _parse_bool_arg(args, "dispatch", default=True)
+    if dispatch_error:
+        return tool_error(dispatch_error)
+    dry_run, dry_run_error = _parse_bool_arg(args, "dry_run", default=False)
+    if dry_run_error:
+        return tool_error(dry_run_error)
+    verify, verify_error = _parse_bool_arg(args, "verify", default=True)
+    if verify_error:
+        return tool_error(verify_error)
+    approve, approve_error = _parse_bool_arg(args, "approve", default=True)
+    if approve_error:
+        return tool_error(approve_error)
+    dispatch_max, dispatch_max_error = _parse_positive_int_arg(
+        args,
+        "dispatch_max",
+        default=None,
+        maximum=64,
+    )
+    if dispatch_max_error:
+        return tool_error(dispatch_max_error)
+    reviewer = args.get("reviewer") or os.environ.get("HERMES_PROFILE") or "agent"
+    board = args.get("board")
+    try:
+        kb, conn = _connect(board=board)
+        try:
+            payload = kb.advance_goal_acceptance_workflow(
+                conn,
+                str(tid),
+                review_assignee=args.get("review_assignee") or "codex-review",
+                test_assignee=args.get("test_assignee") or "codex-test",
+                dispatch=dispatch,
+                dry_run=dry_run,
+                dispatch_max=dispatch_max,
+                verify=verify,
+                approve=approve,
+                reviewer=str(reviewer),
+                summary=args.get("summary"),
+                result=args.get("result"),
+                board=board,
+            )
+            return json.dumps(payload)
+        finally:
+            conn.close()
+    except ValueError as e:
+        return tool_error(f"kanban_advance_goal: {e}")
+    except Exception as e:
+        logger.exception("kanban_advance_goal failed")
+        return tool_error(f"kanban_advance_goal: {e}")
+
+
 def _handle_reviews(args: dict, **kw) -> str:
     """List review-required external-worker evidence snapshots."""
     guard = _require_orchestrator_tool("kanban_reviews")
@@ -1420,6 +1478,67 @@ KANBAN_ADVANCE_ACCEPTANCE_SCHEMA = {
     },
 }
 
+KANBAN_ADVANCE_GOAL_SCHEMA = {
+    "name": "kanban_advance_goal",
+    "description": (
+        "Advance a decomposed goal/root task without interrupting workers: "
+        "dispatch ready child implementation tasks, advance review-required "
+        "children through review/test/acceptance, and complete the root once "
+        "all related children are terminal. Orchestrator-only."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "task_id": {
+                "type": "string",
+                "description": "Goal/root task id to advance.",
+            },
+            "review_assignee": {
+                "type": "string",
+                "description": "Review worker lane for child follow-ups. Default codex-review.",
+            },
+            "test_assignee": {
+                "type": "string",
+                "description": "Test worker lane for child follow-ups. Default codex-test.",
+            },
+            "dispatch": {
+                "type": "boolean",
+                "description": "Whether to run scoped dispatcher passes. Default true.",
+            },
+            "dry_run": {
+                "type": "boolean",
+                "description": "With dispatch=true, report spawns without claiming tasks.",
+            },
+            "dispatch_max": {
+                "type": "integer",
+                "description": "Scoped child/follow-up spawn cap. Max 64.",
+            },
+            "verify": {
+                "type": "boolean",
+                "description": "Whether to run configured acceptance checks for children. Default true.",
+            },
+            "approve": {
+                "type": "boolean",
+                "description": "Whether to approve child evidence and complete the root when gates pass.",
+            },
+            "reviewer": {
+                "type": "string",
+                "description": "Controller/reviewer identity.",
+            },
+            "summary": {
+                "type": "string",
+                "description": "Approval/root completion summary if the workflow reaches approve.",
+            },
+            "result": {
+                "type": "string",
+                "description": "Task result if the workflow reaches approve.",
+            },
+            "board": _board_schema_prop(),
+        },
+        "required": ["task_id"],
+    },
+}
+
 KANBAN_REVIEWS_SCHEMA = {
     "name": "kanban_reviews",
     "description": (
@@ -1963,6 +2082,15 @@ registry.register(
     handler=_handle_advance_acceptance,
     check_fn=_check_kanban_orchestrator_mode,
     emoji="⏭",
+)
+
+registry.register(
+    name="kanban_advance_goal",
+    toolset="kanban",
+    schema=KANBAN_ADVANCE_GOAL_SCHEMA,
+    handler=_handle_advance_goal,
+    check_fn=_check_kanban_orchestrator_mode,
+    emoji="⏩",
 )
 
 registry.register(

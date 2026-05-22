@@ -40,7 +40,7 @@ What you'll see:
 | Command | What it does |
 |---|---|
 | `/goal <text>` | Set (or replace) the standing goal. Kicks off the first turn immediately so you don't need to send a separate message. |
-| `/goal create <objective> [--assignee X] [--decompose]` | Create a Kanban top-level goal task without starting the Ralph loop. Uses the same bridge as `/kanban goal`, and `--decompose` can fan out child tasks to registered worker lanes. |
+| `/goal create <objective> [--assignee X] [--workspace dir:/repo] [--decompose]` | Create a Kanban top-level goal task without starting the Ralph loop. Uses the same bridge as `/kanban goal`; `--decompose` can fan out child tasks to registered worker lanes, and child tasks inherit the root workspace. |
 | `/goal` or `/goal status` | Show the current goal, its status, and turns used. |
 | `/goal pause` | Stop the auto-continuation loop without clearing the goal. |
 | `/goal resume` | Resume the loop (resets the turn counter back to zero). |

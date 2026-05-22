@@ -954,6 +954,99 @@ def test_advance_acceptance_workflow_runs_checks_and_approves(
     assert any(event.kind == "worker_review_approved" for event in events)
 
 
+def test_advance_goal_acceptance_advances_child_followups_and_completes_root(
+    kanban_home,
+    tmp_path,
+):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    (workspace / "ok.txt").write_text("ok\n", encoding="utf-8")
+    (kanban_home / "config.yaml").write_text(
+        "kanban:\n"
+        "  acceptance_checks:\n"
+        "    exact-file:\n"
+        "      argv: [python3, -c, \"from pathlib import Path; "
+        "assert Path('ok.txt').read_text() == 'ok\\\\n'\"]\n",
+        encoding="utf-8",
+    )
+    metadata = {
+        "worker_lane": {"name": "codex-deep", "kind": "codex_cli", "exit_code": 0},
+        "verification": {"commands": ["pytest -q"], "summary": "passed"},
+        "review": {"required": True, "reason": "Codex completed; Hermes review required"},
+    }
+    with kb.connect() as conn:
+        root = kb.create_task(
+            conn,
+            title="goal root",
+            workspace_kind="dir",
+            workspace_path=str(workspace),
+            triage=True,
+        )
+        child_ids = kb.decompose_triage_task(
+            conn,
+            root,
+            root_assignee="orchestrator",
+            children=[{"title": "implement", "assignee": "codex-deep"}],
+            author="planner",
+        )
+        assert child_ids is not None
+        child = child_ids[0]
+        claimed = kb.claim_task(conn, child, claimer="worker:codex-deep")
+        assert claimed is not None
+        assert kb.block_task(
+            conn,
+            child,
+            reason="review-required: Codex completed; Hermes review required",
+            expected_run_id=claimed.current_run_id,
+            metadata=metadata,
+        )
+
+        first = kb.advance_goal_acceptance_workflow(
+            conn,
+            root,
+            reviewer="controller",
+            dispatch=False,
+        )
+        plan_step = first["child_advances"][0]["advance"]["steps"][0]
+        plan = plan_step["plan"]
+        _finish_followup_with_worker_evidence(
+            conn,
+            plan["review_task_id"],
+            lane="codex-review",
+            verdict="approve",
+        )
+        _finish_followup_with_worker_evidence(
+            conn,
+            plan["test_task_id"],
+            lane="codex-test",
+            verdict="pass",
+        )
+
+        second = kb.advance_goal_acceptance_workflow(
+            conn,
+            root,
+            reviewer="controller",
+            dispatch=False,
+            summary="goal accepted",
+        )
+        root_task = kb.get_task(conn, root)
+        child_task = kb.get_task(conn, child)
+        events = kb.list_events(conn, root)
+
+    assert first["steps"][0]["kind"] == "advance_child_acceptance"
+    assert plan["review_task_id"] and plan["test_task_id"]
+    assert [step["kind"] for step in second["child_advances"][0]["advance"]["steps"]] == [
+        "run_acceptance_checks",
+        "approve",
+    ]
+    assert any(step["kind"] == "complete_goal" for step in second["steps"])
+    assert root_task.status == "done"
+    assert child_task.status == "done"
+    assert second["final"]["task"]["status"] == "done"
+    assert second["incomplete_children"] == []
+    assert any(event.kind == "goal_acceptance_advanced" for event in events)
+
+
 def test_task_acceptance_snapshot_summarizes_followup_evidence(
     kanban_home, tmp_path,
 ):
@@ -1107,10 +1200,14 @@ def test_plan_review_followups_creates_independent_review_and_test_tasks(
             conn,
             title="implementation",
             assignee="codex-deep",
-            workspace_kind="dir",
+            workspace_kind="worktree",
             workspace_path=str(tmp_path),
+            branch_name="wt/review-followups",
             tenant="tenant-a",
             priority=7,
+            max_runtime_seconds=600,
+            max_retries=2,
+            session_id="sess-review-followup",
         )
         task = kb.claim_task(conn, tid, claimer="worker:codex-deep")
         assert task is not None
@@ -1154,8 +1251,16 @@ def test_plan_review_followups_creates_independent_review_and_test_tasks(
     assert test_task.assignee == "codex-test"
     assert review_task.workspace_path == str(tmp_path)
     assert test_task.workspace_path == str(tmp_path)
+    assert review_task.branch_name == "wt/review-followups"
+    assert test_task.branch_name == "wt/review-followups"
     assert review_task.tenant == "tenant-a"
     assert test_task.priority == 7
+    assert review_task.max_runtime_seconds == 600
+    assert test_task.max_runtime_seconds == 600
+    assert review_task.max_retries == 2
+    assert test_task.max_retries == 2
+    assert review_task.session_id == "sess-review-followup"
+    assert test_task.session_id == "sess-review-followup"
     assert "Review implementation evidence" in review_task.title
     assert "Verify implementation evidence" in test_task.title
     assert "hermes_cli/kanban_db.py" in review_task.body

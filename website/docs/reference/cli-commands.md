@@ -412,6 +412,7 @@ Multi-profile, multi-project collaboration board. Each install can host many boa
 | `archive <id>` | Hide from default list. `gc` will remove scratch workspaces. |
 | `tail <id>` | Follow a task's event stream. |
 | `progress <id>` | Read a task's latest worker progress, heartbeat, bounded evidence, and optional log tail without claiming or interrupting it. Flags: `--json`, `--log-tail`. |
+| `advance-goal <id>` | Advance a decomposed goal/root task without interrupting workers: dispatch ready child tasks, advance review-required children through review/test/acceptance, and complete the root when all child gates pass. Flags mirror `advance-acceptance`: `--review-assignee`, `--test-assignee`, `--no-dispatch`, `--dispatch-max`, `--dry-run`, `--no-verify`, `--no-approve`, `--reviewer`, `--summary`, `--result`, `--json`. |
 | `reviews` | List tasks whose latest worker run is waiting for Hermes review (`review.required: true`). Flags: `--assignee`, `--tenant`, `--lane`, `--limit`, `--log-tail`, `--json`. |
 | `review <id> approve\|request-changes` | Resolve a review-required worker handoff from bounded evidence. `approve` marks the task done; `request-changes` writes a reviewer comment and unblocks the task for another worker run. Flags: `--reviewer`, `--comment`, `--summary`, `--result`, `--json`. |
 | `worker-lanes` / `lanes` | List registered external worker lanes, current active/max concurrency, per-status counts, and active task/run/pid instances. `--json` for machine output. |

@@ -388,6 +388,35 @@ def test_create_kanban_task_from_goal_bridge_is_opt_in_and_idempotent(hermes_hom
     assert "refactor worker lanes" in task.body
 
 
+def test_create_kanban_task_from_goal_accepts_workspace_for_decomposition(
+    hermes_home, tmp_path,
+):
+    from hermes_cli import kanban_db as kb
+    from hermes_cli.goals import create_kanban_task_from_goal
+
+    workspace = tmp_path / "repo"
+    tid = create_kanban_task_from_goal(
+        "ship repo change",
+        session_id="goal-session-2",
+        assignee="orchestrator",
+        workspace_kind="dir",
+        workspace_path=str(workspace),
+        max_runtime_seconds=900,
+        max_retries=2,
+    )
+
+    with kb.connect() as conn:
+        task = kb.get_task(conn, tid)
+
+    assert task is not None
+    assert task.status == "triage"
+    assert task.workspace_kind == "dir"
+    assert task.workspace_path == str(workspace)
+    assert task.max_runtime_seconds == 900
+    assert task.max_retries == 2
+    assert task.session_id == "goal-session-2"
+
+
 def test_run_kanban_goal_bridge_creates_task_with_session(hermes_home):
     from hermes_cli import kanban_db as kb
     from hermes_cli.goals import run_kanban_goal_bridge

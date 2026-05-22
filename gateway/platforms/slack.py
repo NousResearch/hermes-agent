@@ -52,6 +52,11 @@ from gateway.platforms.base import (
 
 logger = logging.getLogger(__name__)
 
+
+def _is_no_reply_sentinel(content: Any) -> bool:
+    """Return True when ``content`` is the explicit Slack no-reply sentinel."""
+    return isinstance(content, str) and content.strip() == "NO_REPLY"
+
 # ContextVar carrying the user_id of the slash-command invoker.
 # Set in _handle_slash_command, read in send() to match the correct
 # stashed response_url when multiple users issue commands on the same
@@ -765,6 +770,10 @@ class SlackAdapter(BasePlatformAdapter):
         """Send a message to a Slack channel or DM."""
         if not self._app:
             return SendResult(success=False, error="Not connected")
+
+        if _is_no_reply_sentinel(content):
+            logger.debug("[Slack] Suppressed explicit no-reply sentinel for channel %s", chat_id)
+            return SendResult(success=True, raw_response={"suppressed": "NO_REPLY"})
 
         try:
             # Check for a pending slash-command context.  When the user ran a

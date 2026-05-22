@@ -229,7 +229,7 @@ The migration resolves all three formats. For env templates and SecretRef object
 
 5. **Test messaging** — if you migrated platform tokens, restart the gateway: `systemctl --user restart hermes-gateway`
 
-6. **Check session policies** — verify `hermes config get session_reset` matches your expectations.
+6. **Check session policies** — run `hermes config show` and verify the `session_reset` value matches your expectations.
 
 7. **Re-pair WhatsApp** — WhatsApp uses QR code pairing (Baileys), not token migration. Run `hermes whatsapp` to pair.
 

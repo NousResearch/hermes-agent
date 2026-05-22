@@ -3676,6 +3676,60 @@ _RESPAWN_GUARD_PR_URL_RE = re.compile(
     re.IGNORECASE,
 )
 
+# In-process cache: pr_url -> (is_open: bool, fetched_at: float)
+_GITHUB_PR_STATE_CACHE: dict[str, tuple[bool, float]] = {}
+_GITHUB_PR_CACHE_TTL = 300  # 5 minutes
+
+
+def _fetch_pr_state(pr_url: str) -> bool | None:
+    """Return True if the PR is open, False if merged/closed, None if unresolved.
+
+    Queries the GitHub REST API (public repos, no token required for state).
+    Results are cached for _GITHUB_PR_CACHE_TTL seconds to avoid repeated
+    network calls during a single dispatch pass.
+    """
+    import urllib.request
+
+    # Convert web URL (https://github.com/owner/repo/pull/N) to API URL.
+    # _RESPAWN_GUARD_PR_URL_RE guarantees the URL matches this pattern.
+    try:
+        api_url = re.sub(
+            r"^https?://github\\.com/([^/]+)/([^/]+)/pull/(\\d+)$",
+            lambda m: f"https://api.github.com/repos/{m.group(1)}/{m.group(2)}/pulls/{m.group(3)}",
+            pr_url,
+        )
+    except Exception:
+        return None
+
+    now = time.time()
+    cache_key = pr_url  # cache by original web URL for lookups from comment text
+    if cache_key in _GITHUB_PR_STATE_CACHE:
+        _, fetched_at = _GITHUB_PR_STATE_CACHE[cache_key]
+        if now - fetched_at < _GITHUB_PR_CACHE_TTL:
+            return _GITHUB_PR_STATE_CACHE[cache_key][0]
+
+    # Lazy import to avoid hard-blocking on httpx/stdlib availability.
+    # Use stdlib urllib so this works without any extra packages.
+    try:
+        headers = {"Accept": "application/vnd.github+json"}
+        token = os.environ.get("GITHUB_TOKEN") or os.environ.get("GH_TOKEN")
+        if token:
+            headers["Authorization"] = f"Bearer {token}"
+
+        req = urllib.request.Request(api_url, headers=headers)
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            data = json.loads(resp.read())
+            # PR state: "open", "closed", "merged"
+            state = data.get("state", "").lower()
+            is_open = state == "open"
+            _GITHUB_PR_STATE_CACHE[cache_key] = (is_open, now)
+            return is_open
+    except Exception:
+        # Network error, rate limit, private repo, missing token, etc.
+        # Fall back to URL-only heuristic (legacy behaviour) rather than
+        # silently allowing a task that genuinely has an active PR.
+        return None
+
 
 @dataclass
 class DispatchResult:
@@ -4636,8 +4690,16 @@ def check_respawn_guard(conn: sqlite3.Connection, task_id: str) -> Optional[str]
         "SELECT body FROM task_comments WHERE task_id = ? AND created_at >= ?",
         (task_id, pr_cutoff),
     ).fetchall():
-        if c["body"] and _RESPAWN_GUARD_PR_URL_RE.search(c["body"]):
-            return "active_pr"
+        if c["body"]:
+            for match in _RESPAWN_GUARD_PR_URL_RE.findall(c["body"]):
+                pr_state = _fetch_pr_state(match)
+                # pr_state is True (open)  -> definitely guard
+                # pr_state is False (merged/closed) -> not an active PR, skip URL
+                # pr_state is None (error/no-token)  -> fall back to legacy
+                #   URL-only behaviour (block to be safe)
+                if pr_state is False:
+                    continue
+                return "active_pr"
 
     return None
 

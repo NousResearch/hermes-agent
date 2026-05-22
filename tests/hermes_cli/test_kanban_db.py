@@ -1278,6 +1278,65 @@ def test_respawn_guard_old_pr_comment_not_guarded(kanban_home):
     assert reason is None
 
 
+def test_respawn_guard_merged_pr_not_guarded(kanban_home, monkeypatch):
+    """A merged PR URL does NOT trigger active_pr — guard now checks GitHub state."""
+    # Prime the cache so _fetch_pr_state returns False (merged).
+    kb._GITHUB_PR_STATE_CACHE.clear()
+    monkeypatch.setenv("GITHUB_TOKEN", "")
+
+    def fake_fetch(url):
+        return False  # merged/closed
+
+    with monkeypatch.context() as m:
+        m.setattr(kb, "_fetch_pr_state", fake_fetch)
+        with kb.connect() as conn:
+            t = kb.create_task(conn, title="merged-pr", assignee="alice")
+            kb.add_comment(
+                conn, t, "worker",
+                "PR merged: https://github.com/example-org/example-repo/pull/61",
+            )
+            reason = kb.check_respawn_guard(conn, t)
+        assert reason is None, f"Expected None for merged PR, got {reason!r}"
+
+
+def test_respawn_guard_open_pr_still_guarded(kanban_home, monkeypatch):
+    """An open PR URL still triggers active_pr — _fetch_pr_state returns True."""
+    def fake_fetch(url):
+        return True  # open
+
+    with monkeypatch.context() as m:
+        m.setattr(kb, "_fetch_pr_state", fake_fetch)
+        with kb.connect() as conn:
+            t = kb.create_task(conn, title="open-pr", assignee="alice")
+            kb.add_comment(
+                conn, t, "worker",
+                "PR opened: https://github.com/example-org/example-repo/pull/99",
+            )
+            reason = kb.check_respawn_guard(conn, t)
+        assert reason == "active_pr"
+
+
+def test_respawn_guard_network_error_falls_back_to_guarding(kanban_home, monkeypatch):
+    """When _fetch_pr_state returns None (network error / no token), guard anyway.
+
+    This preserves the legacy safe-by-default behaviour: a task with a PR URL
+    that we can't verify is treated as potentially having an active PR.
+    """
+    def fake_fetch(url):
+        return None  # unresolved
+
+    with monkeypatch.context() as m:
+        m.setattr(kb, "_fetch_pr_state", fake_fetch)
+        with kb.connect() as conn:
+            t = kb.create_task(conn, title="unresolved-pr", assignee="alice")
+            kb.add_comment(
+                conn, t, "worker",
+                "PR: https://github.com/example-org/example-repo/pull/100",
+            )
+            reason = kb.check_respawn_guard(conn, t)
+        assert reason == "active_pr"
+
+
 def test_dispatch_respawn_guard_defers_auth_error_without_auto_block(
     kanban_home, all_assignees_spawnable
 ):

@@ -399,7 +399,24 @@ def _build_pid_record() -> dict:
         "kind": _GATEWAY_KIND,
         "argv": list(sys.argv),
         "start_time": _get_process_start_time(os.getpid()),
+        "hermes_profile": os.environ.get("HERMES_PROFILE"),
     }
+
+
+def pidfile_records_different_profile(
+    existing_record: Optional[dict[str, Any]],
+    current_profile: Optional[str],
+) -> bool:
+    """Return True when the existing pidfile names a different HERMES_PROFILE.
+
+    Used by --replace to refuse cross-profile takeover. A pidfile without the
+    ``hermes_profile`` field (e.g. written by an older gateway build) returns
+    False so we preserve the prior "one HERMES_HOME, one gateway" behavior on
+    upgrade. Same-profile records (including both-None) also return False.
+    """
+    if not isinstance(existing_record, dict) or "hermes_profile" not in existing_record:
+        return False
+    return existing_record.get("hermes_profile") != current_profile
 
 
 def _build_runtime_status_record() -> dict[str, Any]:

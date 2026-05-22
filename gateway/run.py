@@ -19588,11 +19588,16 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
     # Prevent two gateways from running under the same HERMES_HOME.
     # The PID file is scoped to HERMES_HOME, so future multi-profile
     # setups (each profile using a distinct HERMES_HOME) will naturally
-    # allow concurrent instances without tripping this guard.
+    # allow concurrent instances without tripping this guard. When
+    # --replace is used and the existing pidfile names a different
+    # HERMES_PROFILE, we refuse the takeover instead of cross-killing a
+    # sibling profile that shares this HERMES_HOME (#30155).
     from gateway.status import (
+        _read_pid_record,
         acquire_gateway_runtime_lock,
         get_running_pid,
         get_process_start_time,
+        pidfile_records_different_profile,
         release_gateway_runtime_lock,
         remove_pid_file,
         terminate_pid,
@@ -19600,6 +19605,30 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
     existing_pid = get_running_pid()
     if existing_pid is not None and existing_pid != os.getpid():
         if replace:
+            current_profile = os.environ.get("HERMES_PROFILE")
+            existing_record = _read_pid_record()
+            if pidfile_records_different_profile(existing_record, current_profile):
+                existing_profile = (existing_record or {}).get("hermes_profile")
+                hermes_home = str(get_hermes_home())
+                logger.error(
+                    "Refusing --replace: existing gateway (PID %d) is running with "
+                    "HERMES_PROFILE=%r but this invocation has HERMES_PROFILE=%r "
+                    "under shared HERMES_HOME=%s. Set a distinct HERMES_HOME per "
+                    "profile to run them concurrently.",
+                    existing_pid, existing_profile, current_profile, hermes_home,
+                )
+                print(
+                    f"\n❌ Refusing --replace: another gateway is running under this "
+                    f"HERMES_HOME with a different HERMES_PROFILE.\n"
+                    f"   Existing gateway (PID {existing_pid}): HERMES_PROFILE={existing_profile!r}\n"
+                    f"   This invocation:                       HERMES_PROFILE={current_profile!r}\n"
+                    f"   HERMES_HOME={hermes_home}\n"
+                    f"\n"
+                    f"   Set a distinct HERMES_HOME for each profile (e.g. "
+                    f"/var/lib/hermes-<profile>) so each gets its own gateway.pid.\n",
+                    file=sys.stderr,
+                )
+                return False
             existing_start_time = get_process_start_time(existing_pid)
             logger.info(
                 "Replacing existing gateway instance (PID %d) with --replace.",

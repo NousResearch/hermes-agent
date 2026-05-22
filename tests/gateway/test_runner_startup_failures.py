@@ -422,6 +422,51 @@ async def test_start_gateway_replace_clears_marker_on_permission_denied(
 
 
 @pytest.mark.asyncio
+async def test_start_gateway_replace_refuses_cross_profile_takeover(monkeypatch, tmp_path):
+    """--replace must not SIGKILL a sibling gateway running under a different HERMES_PROFILE.
+
+    Regression for #30155: when two gateways share HERMES_HOME but have different
+    HERMES_PROFILE values, the second --replace invocation used to read the
+    sibling's pidfile and kill it. Now we read the existing pidfile's profile
+    field, compare to the current env, and refuse the takeover with a clear
+    error if they differ.
+    """
+    import json
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setenv("HERMES_PROFILE", "beta")
+
+    (tmp_path / "gateway.pid").write_text(json.dumps({
+        "pid": 42,
+        "kind": "hermes-gateway",
+        "argv": ["python", "-m", "hermes_cli.main", "gateway", "run"],
+        "start_time": 111,
+        "hermes_profile": "alpha",
+    }))
+
+    terminate_calls: list = []
+
+    monkeypatch.setattr("gateway.status.get_running_pid", lambda: 42)
+    monkeypatch.setattr(
+        "gateway.status.terminate_pid",
+        lambda pid, force=False: terminate_calls.append((pid, force)),
+    )
+    monkeypatch.setattr("gateway.run.os.getpid", lambda: 100)
+    monkeypatch.setattr("tools.skills_sync.sync_skills", lambda quiet=True: None)
+    monkeypatch.setattr("hermes_logging.setup_logging", lambda hermes_home, mode: tmp_path)
+    monkeypatch.setattr("hermes_logging._add_rotating_handler", lambda *args, **kwargs: None)
+
+    from gateway.run import start_gateway
+
+    ok = await start_gateway(config=GatewayConfig(), replace=True, verbosity=None)
+
+    assert ok is False
+    assert terminate_calls == [], "Cross-profile sibling must not be SIGKILLed"
+    # The legitimate sibling's pidfile must remain on disk for it to keep running.
+    assert (tmp_path / "gateway.pid").exists()
+
+
+@pytest.mark.asyncio
 async def test_runner_degrades_gracefully_when_all_adapters_missing(monkeypatch, tmp_path, caplog):
     """When all enabled platforms have no adapter (missing library or credentials),
     the gateway should NOT return failure — it should warn and continue running for

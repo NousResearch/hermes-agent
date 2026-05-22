@@ -294,6 +294,75 @@ class TestGatewayPidState:
             status.release_gateway_runtime_lock()
 
 
+class TestGatewayPidProfile:
+    """--replace must refuse cross-profile takeover when HERMES_HOME is shared (#30155)."""
+
+    def test_build_pid_record_includes_hermes_profile(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.setenv("HERMES_PROFILE", "alpha")
+
+        record = status._build_pid_record()
+
+        assert record["hermes_profile"] == "alpha"
+
+    def test_build_pid_record_records_none_when_profile_unset(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.delenv("HERMES_PROFILE", raising=False)
+
+        record = status._build_pid_record()
+
+        assert "hermes_profile" in record
+        assert record["hermes_profile"] is None
+
+    def test_write_pid_file_persists_hermes_profile(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.setenv("HERMES_PROFILE", "beta")
+
+        status.write_pid_file()
+
+        payload = json.loads((tmp_path / "gateway.pid").read_text())
+        assert payload["hermes_profile"] == "beta"
+
+    def test_pidfile_records_different_profile_flags_cross_profile_takeover(self):
+        existing = {"pid": 1000, "hermes_profile": "alpha"}
+
+        assert status.pidfile_records_different_profile(existing, "beta") is True
+
+    def test_pidfile_records_different_profile_allows_same_profile(self):
+        existing = {"pid": 1000, "hermes_profile": "alpha"}
+
+        assert status.pidfile_records_different_profile(existing, "alpha") is False
+
+    def test_pidfile_records_different_profile_allows_both_unset(self):
+        existing = {"pid": 1000, "hermes_profile": None}
+
+        assert status.pidfile_records_different_profile(existing, None) is False
+
+    def test_pidfile_records_different_profile_flags_asymmetric_unset(self):
+        # Existing gateway uses a profile; new invocation does not (or vice versa).
+        # Either way, the user is mixing profile-aware and profile-unaware launches
+        # under a shared HERMES_HOME — same footgun as the alpha/beta case.
+        existing_with_profile = {"pid": 1000, "hermes_profile": "alpha"}
+        assert status.pidfile_records_different_profile(existing_with_profile, None) is True
+
+        existing_without_profile = {"pid": 1000, "hermes_profile": None}
+        assert status.pidfile_records_different_profile(existing_without_profile, "alpha") is True
+
+    def test_pidfile_records_different_profile_skips_legacy_record_without_field(self):
+        # An old pidfile written before this change has no ``hermes_profile`` key.
+        # We can't infer the running gateway's profile, so we preserve the prior
+        # "one HERMES_HOME, one gateway" behavior and let --replace proceed.
+        legacy_existing = {"pid": 1000, "kind": "hermes-gateway"}
+
+        assert status.pidfile_records_different_profile(legacy_existing, "alpha") is False
+        assert status.pidfile_records_different_profile(legacy_existing, None) is False
+
+    def test_pidfile_records_different_profile_handles_missing_record(self):
+        # If the pidfile vanished between get_running_pid() and the profile read,
+        # _read_pid_record() returns None — treat as "nothing to refuse".
+        assert status.pidfile_records_different_profile(None, "alpha") is False
+
+
 class TestGatewayRuntimeStatus:
     def test_write_json_file_uses_atomic_json_write(self, tmp_path, monkeypatch):
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))

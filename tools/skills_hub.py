@@ -3117,7 +3117,18 @@ def _source_matches(source: SkillSource, source_name: str) -> bool:
         "skills.sh": "skills-sh",
     }
     normalized = aliases.get(source_name, source_name)
-    return source.source_id() == normalized
+    source_id = source.source_id()
+    if source_id == normalized:
+        return True
+
+    # Skills installed from skills.sh may have been installed through the
+    # cached Hermes index. Prefer the index first when checking updates so the
+    # fetched bundle hash matches the installed/lockfile hash, but keep the
+    # direct skills.sh source as fallback when the index cannot resolve it.
+    if normalized == "skills-sh" and source_id == "hermes-index":
+        return True
+
+    return False
 
 
 def check_for_skill_updates(
@@ -3142,14 +3153,31 @@ def check_for_skill_updates(
         source_name = entry.get("source", "")
         candidate_sources = [src for src in sources if _source_matches(src, source_name)] or sources
 
+        current_hash = entry.get("content_hash", "")
         bundle = None
+        latest_hash = ""
+        first_bundle = None
+        first_hash = ""
         for src in candidate_sources:
             try:
-                bundle = src.fetch(identifier)
+                candidate = src.fetch(identifier)
             except Exception:
-                bundle = None
-            if bundle:
+                candidate = None
+            if not candidate:
+                continue
+
+            candidate_hash = bundle_content_hash(candidate)
+            if first_bundle is None:
+                first_bundle = candidate
+                first_hash = candidate_hash
+            if current_hash and candidate_hash == current_hash:
+                bundle = candidate
+                latest_hash = candidate_hash
                 break
+
+        if bundle is None:
+            bundle = first_bundle
+            latest_hash = first_hash
 
         if not bundle:
             results.append({
@@ -3160,8 +3188,6 @@ def check_for_skill_updates(
             })
             continue
 
-        current_hash = entry.get("content_hash", "")
-        latest_hash = bundle_content_hash(bundle)
         status = "up_to_date" if current_hash == latest_hash else "update_available"
         results.append({
             "name": entry.get("name", ""),

@@ -26,6 +26,7 @@ from tools.skills_hub import (
     append_audit_log,
     _skill_meta_to_dict,
     quarantine_bundle,
+    _source_matches,
 )
 
 
@@ -1048,6 +1049,81 @@ class TestCheckForSkillUpdates:
         results = check_for_skill_updates(lock=lock, sources=[source])
 
         assert results[0]["status"] == "up_to_date"
+
+    def test_skills_sh_update_check_prefers_hermes_index_when_available(self):
+        """skills.sh installs may be locked from the Hermes index bundle."""
+        index_bundle = SkillBundle(
+            name="mobile-accessibility",
+            files={"SKILL.md": "indexed content"},
+            source="skills.sh",
+            identifier="skills-sh/community-access/accessibility-agents/mobile-accessibility",
+            trust_level="community",
+        )
+        direct_bundle = SkillBundle(
+            name="mobile-accessibility",
+            files={"SKILL.md": "direct skills.sh content"},
+            source="skills.sh",
+            identifier="skills-sh/community-access/accessibility-agents/mobile-accessibility",
+            trust_level="community",
+        )
+        lock = MagicMock()
+        lock.list_installed.return_value = [{
+            "name": "mobile-accessibility",
+            "source": "skills.sh",
+            "identifier": "skills-sh/community-access/accessibility-agents/mobile-accessibility",
+            "content_hash": bundle_content_hash(index_bundle),
+            "install_path": "mobile-accessibility",
+        }]
+        hermes_index = MagicMock()
+        hermes_index.source_id.return_value = "hermes-index"
+        hermes_index.fetch.return_value = index_bundle
+        skills_sh = MagicMock()
+        skills_sh.source_id.return_value = "skills-sh"
+        skills_sh.fetch.return_value = direct_bundle
+
+        results = check_for_skill_updates(lock=lock, sources=[hermes_index, skills_sh])
+
+        assert _source_matches(hermes_index, "skills.sh")
+        assert results[0]["status"] == "up_to_date"
+        hermes_index.fetch.assert_called_once()
+        skills_sh.fetch.assert_not_called()
+
+    def test_skills_sh_update_check_falls_back_to_direct_matching_hash(self):
+        """Use a later candidate if it matches the installed lock hash."""
+        index_bundle = SkillBundle(
+            name="mobile-accessibility",
+            files={"SKILL.md": "indexed content"},
+            source="skills.sh",
+            identifier="skills-sh/community-access/accessibility-agents/mobile-accessibility",
+            trust_level="community",
+        )
+        direct_bundle = SkillBundle(
+            name="mobile-accessibility",
+            files={"SKILL.md": "direct skills.sh content"},
+            source="skills.sh",
+            identifier="skills-sh/community-access/accessibility-agents/mobile-accessibility",
+            trust_level="community",
+        )
+        lock = MagicMock()
+        lock.list_installed.return_value = [{
+            "name": "mobile-accessibility",
+            "source": "skills.sh",
+            "identifier": "skills-sh/community-access/accessibility-agents/mobile-accessibility",
+            "content_hash": bundle_content_hash(direct_bundle),
+            "install_path": "mobile-accessibility",
+        }]
+        hermes_index = MagicMock()
+        hermes_index.source_id.return_value = "hermes-index"
+        hermes_index.fetch.return_value = index_bundle
+        skills_sh = MagicMock()
+        skills_sh.source_id.return_value = "skills-sh"
+        skills_sh.fetch.return_value = direct_bundle
+
+        results = check_for_skill_updates(lock=lock, sources=[hermes_index, skills_sh])
+
+        assert results[0]["status"] == "up_to_date"
+        hermes_index.fetch.assert_called_once()
+        skills_sh.fetch.assert_called_once()
 
 
 class TestCreateSourceRouter:

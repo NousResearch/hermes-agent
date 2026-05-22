@@ -1374,6 +1374,7 @@ class TestWebServerEndpoints:
         assert "general" in data["category_order"]
         assert "kanban.respawn_guard.active_pr" in schema
         assert schema["kanban.respawn_guard.active_pr"]["type"] == "boolean"
+        assert schema["kanban.respawn_guard.active_pr"]["label"] == "Active PR respawn guard"
 
     def test_get_config_defaults(self):
         resp = self.client.get("/api/config/defaults")
@@ -2930,6 +2931,7 @@ class TestBuildSchemaFromConfig:
         assert len(runtime_entry["options"]) >= 3
         active_pr_entry = CONFIG_SCHEMA["kanban.respawn_guard.active_pr"]
         assert active_pr_entry["type"] == "boolean"
+        assert active_pr_entry["label"] == "Active PR respawn guard"
         assert "recent GitHub PR comment" in active_pr_entry["description"]
 
     def test_empty_prefix_produces_correct_keys(self):

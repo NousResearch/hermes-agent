@@ -3,8 +3,11 @@
 from __future__ import annotations
 
 import os
+import logging
 from pathlib import Path
 from typing import Optional
+
+logger = logging.getLogger(__name__)
 
 
 def _hermes_home_path() -> Path:
@@ -74,17 +77,49 @@ def get_safe_write_root() -> Optional[str]:
         return None
 
 
-def is_write_denied(path: str, home: str | None = None) -> bool:
-    """Return True if path is blocked by the write denylist or safe root.
+def _is_outside_root(candidate: str, root: str) -> bool:
+    """Return True when candidate is outside root (or incomparable)."""
+    try:
+        return os.path.commonpath([candidate, root]) != root
+    except ValueError:
+        # Mixed drives / invalid roots are always treated as outside.
+        return True
 
-    Args:
-        path: Candidate write path.
-        home: Optional target-environment home directory. When file tools run
-            over SSH or another remote backend, this must be the remote home
-            rather than the local Hermes process home.
+
+def is_write_denied(
+    path: str,
+    home: str | None = None,
+    base_dir: str | None = None,
+) -> bool:
+    """Return True if path is blocked by denylist or root constraints.
+
+    Enforcement order is additive (most restrictive wins):
+    1) static denylist/prefixes
+    2) optional call-site ``base_dir`` sandbox
+    3) optional ``HERMES_WRITE_SAFE_ROOT`` sandbox
+
+    ``home`` selects which user-home denylist paths are evaluated.
     """
     home = os.path.realpath(os.path.expanduser(home or "~"))
-    resolved = os.path.realpath(os.path.expanduser(str(path)))
+    base_root = (
+        os.path.realpath(os.path.expanduser(str(base_dir)))
+        if base_dir
+        else None
+    )
+    path_str = os.path.expanduser(str(path))
+    if os.path.isabs(path_str):
+        resolved = os.path.realpath(path_str)
+    elif base_root:
+        resolved = os.path.realpath(os.path.join(base_root, path_str))
+        if _is_outside_root(resolved, base_root):
+            logger.debug(
+                "Denied write path outside base_dir: path=%r base_dir=%r",
+                path,
+                base_dir,
+            )
+            return True
+    else:
+        resolved = os.path.realpath(path_str)
 
     if resolved in build_write_denied_paths(home):
         return True
@@ -92,8 +127,13 @@ def is_write_denied(path: str, home: str | None = None) -> bool:
         if resolved.startswith(prefix):
             return True
 
+    # Absolute paths skip the relative-join check above, so enforce base_root
+    # containment for both absolute and relative inputs here.
+    if base_root and _is_outside_root(resolved, base_root):
+        return True
+
     safe_root = get_safe_write_root()
-    if safe_root and not (resolved == safe_root or resolved.startswith(safe_root + os.sep)):
+    if safe_root and _is_outside_root(resolved, safe_root):
         return True
 
     return False

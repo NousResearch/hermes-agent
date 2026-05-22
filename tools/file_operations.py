@@ -85,11 +85,9 @@ def _get_safe_write_root() -> Optional[str]:
     return _shared_get_safe_write_root()
 
 
-def _is_write_denied(path: str) -> bool:
+def _is_write_denied(path: str, base_dir: str | None = None) -> bool:
     """Return True if path is on the write deny list."""
-    # base_dir is retained for backward compatibility with older callers/tests;
-    # the shared policy helper now resolves paths solely from the target path.
-    return _shared_is_write_denied(path)
+    return _shared_is_write_denied(path, base_dir=base_dir)
 
 
 # =============================================================================

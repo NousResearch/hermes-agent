@@ -3313,9 +3313,12 @@ async def events_ws(ws: WebSocket) -> None:
         await ws.close(code=4400)
         return
 
-    await ws.accept()
-
+    # Register the subscriber in the same critical section as accept().
+    # This guarantees websocket_connect() only returns after the channel
+    # subscription is live, avoiding a connect/publish race where the first
+    # broadcast can be dropped.
     async with _event_lock:
+        await ws.accept()
         _event_channels.setdefault(channel, set()).add(ws)
 
     try:

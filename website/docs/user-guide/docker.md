@@ -212,7 +212,7 @@ services:
     command: gateway run
     ports:
       - "8642:8642"   # gateway API
-      - "127.0.0.1:9119:9119"   # dashboard, host-loopback only
+      - "127.0.0.1:9119:9119"   # dashboard (only reached when HERMES_DASHBOARD=1)
     volumes:
       - ~/.hermes:/opt/data
     environment:

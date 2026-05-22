@@ -50,6 +50,59 @@ import os
 import sys
 from typing import Any, Optional
 
+
+def _normalize_tool_kwargs(kwargs: dict[str, Any]) -> dict[str, Any]:
+    """Normalize MCP clients that wrap dynamic tool args in a single
+    ``kwargs`` parameter.
+
+    ``FastMCP.add_tool`` cannot infer per-tool schemas from dynamic runtime
+    JSON schemas here, so some clients (notably Codex) expose/call every tool
+    as ``kwargs: string``. Hermes' ``handle_function_call`` expects the real
+    tool arguments (e.g. ``{"prompt": ...}`` for ``image_generate``), so unwrap
+    common shapes before dispatch.
+    """
+    if set(kwargs.keys()) != {"kwargs"}:
+        return kwargs
+
+    raw = kwargs.get("kwargs")
+    if isinstance(raw, dict):
+        nested = raw.get("kwargs")
+        return nested if isinstance(nested, dict) else raw
+    if not isinstance(raw, str):
+        return kwargs
+
+    text = raw.strip()
+    if not text:
+        return {}
+
+    # JSON object, optionally nested as {"kwargs": {...}}.
+    if text.startswith("{"):
+        try:
+            parsed = json.loads(text)
+            if isinstance(parsed, dict):
+                nested = parsed.get("kwargs")
+                return nested if isinstance(nested, dict) else parsed
+        except Exception:
+            pass
+
+    # Simple key:value lines, good enough for Codex retries like:
+    # prompt: ...\naspect_ratio: landscape
+    parsed_lines: dict[str, str] = {}
+    for line in text.splitlines():
+        if ":" not in line:
+            continue
+        key, value = line.split(":", 1)
+        key = key.strip()
+        if key:
+            parsed_lines[key] = value.strip()
+    if parsed_lines:
+        return parsed_lines
+
+    # Last-resort compatibility: treat a raw string as a prompt for the image
+    # generation tool path. Other tools will return their normal validation
+    # errors if this is not suitable.
+    return {"prompt": text}
+
 logger = logging.getLogger(__name__)
 
 
@@ -162,7 +215,7 @@ def _build_server() -> Any:
         def _make_handler(tool_name: str):
             def _dispatch(**kwargs: Any) -> str:
                 try:
-                    return handle_function_call(tool_name, kwargs or {})
+                    return handle_function_call(tool_name, _normalize_tool_kwargs(kwargs or {}))
                 except Exception as exc:
                     logger.exception("tool %s raised", tool_name)
                     return json.dumps({"error": str(exc), "tool": tool_name})

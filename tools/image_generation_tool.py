@@ -656,6 +656,7 @@ def _upscale_image(image_url: str, original_prompt: str) -> Optional[Dict[str, A
 def image_generate_tool(
     prompt: str,
     aspect_ratio: str = DEFAULT_ASPECT_RATIO,
+    reference_images: Optional[list[str]] = None,
     num_inference_steps: Optional[int] = None,
     guidance_scale: Optional[float] = None,
     num_images: Optional[int] = None,
@@ -696,6 +697,13 @@ def image_generate_tool(
     try:
         if not prompt or not isinstance(prompt, str) or len(prompt.strip()) == 0:
             raise ValueError("Prompt is required and must be a non-empty string")
+
+        if reference_images:
+            raise ValueError(
+                "reference_images were provided, but the built-in FAL image path "
+                "is text-to-image only. Set image_gen.provider to a plugin that "
+                "supports reference images (for example openai-codex-ref)."
+            )
 
         if not (fal_key_is_configured() or _resolve_managed_fal_gateway()):
             raise ValueError(_build_no_backend_setup_message())
@@ -948,6 +956,11 @@ IMAGE_GENERATE_SCHEMA = {
                 "description": "The aspect ratio of the generated image. 'landscape' is 16:9 wide, 'portrait' is 16:9 tall, 'square' is 1:1.",
                 "default": DEFAULT_ASPECT_RATIO,
             },
+            "reference_images": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": "Optional image reference paths or URLs to guide likeness/style when the active backend supports reference-image generation or editing.",
+            },
         },
         "required": ["prompt"],
     },
@@ -990,7 +1003,7 @@ def _read_configured_image_provider():
     return None
 
 
-def _dispatch_to_plugin_provider(prompt: str, aspect_ratio: str):
+def _dispatch_to_plugin_provider(prompt: str, aspect_ratio: str, reference_images=None):
     """Route the call to a plugin-registered provider when one is selected.
 
     Returns a JSON string on dispatch, or ``None`` to fall through to the
@@ -1046,6 +1059,8 @@ def _dispatch_to_plugin_provider(prompt: str, aspect_ratio: str):
         kwargs = {"prompt": prompt, "aspect_ratio": aspect_ratio}
         if configured_model:
             kwargs["model"] = configured_model
+        if reference_images is not None:
+            kwargs["reference_images"] = reference_images
         result = provider.generate(**kwargs)
     except Exception as exc:
         logger.warning(
@@ -1073,16 +1088,18 @@ def _handle_image_generate(args, **kw):
     if not prompt:
         return tool_error("prompt is required for image generation")
     aspect_ratio = args.get("aspect_ratio", DEFAULT_ASPECT_RATIO)
+    reference_images = args.get("reference_images")
 
     # Route to a plugin-registered provider if one is active (and it's
     # not the in-tree FAL path).
-    dispatched = _dispatch_to_plugin_provider(prompt, aspect_ratio)
+    dispatched = _dispatch_to_plugin_provider(prompt, aspect_ratio, reference_images=reference_images)
     if dispatched is not None:
         return dispatched
 
     return image_generate_tool(
         prompt=prompt,
         aspect_ratio=aspect_ratio,
+        reference_images=reference_images,
     )
 
 

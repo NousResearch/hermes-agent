@@ -363,15 +363,67 @@ class TestAspectRatioNormalization:
 
 class TestRegistryIntegration:
 
-    def test_schema_exposes_only_prompt_and_aspect_ratio_to_agent(self, image_tool):
+    def test_schema_exposes_prompt_aspect_ratio_and_reference_images_to_agent(self, image_tool):
         """The agent-facing schema must stay tight — model selection is a
-        user-level config choice, not an agent-level arg."""
+        user-level config choice, while reference images are an intentional
+        image-editing input for providers that support them."""
         props = image_tool.IMAGE_GENERATE_SCHEMA["parameters"]["properties"]
-        assert set(props.keys()) == {"prompt", "aspect_ratio"}
+        assert set(props.keys()) == {"prompt", "aspect_ratio", "reference_images"}
+        assert props["reference_images"]["type"] == "array"
 
     def test_aspect_ratio_enum_is_three_values(self, image_tool):
         enum = image_tool.IMAGE_GENERATE_SCHEMA["parameters"]["properties"]["aspect_ratio"]["enum"]
         assert set(enum) == {"landscape", "square", "portrait"}
+
+    def test_plugin_dispatch_passes_reference_images(self, image_tool, monkeypatch):
+        """Core owns the tool contract; backend plugins own the edit behavior."""
+        import hermes_cli.plugins as plugins_mod
+        from agent.image_gen_provider import ImageGenProvider, success_response
+        from agent.image_gen_registry import _reset_for_tests, register_provider
+
+        captured = {}
+
+        class FakeReferenceProvider(ImageGenProvider):
+            @property
+            def name(self):
+                return "fake-ref"
+
+            def generate(self, prompt, aspect_ratio="landscape", **kwargs):
+                captured.update(kwargs)
+                return success_response(
+                    image="/tmp/fake.png",
+                    model="fake-model",
+                    prompt=prompt,
+                    aspect_ratio=aspect_ratio,
+                    provider=self.name,
+                )
+
+        _reset_for_tests()
+        register_provider(FakeReferenceProvider())
+        monkeypatch.setattr(image_tool, "_read_configured_image_provider", lambda: "fake-ref")
+        monkeypatch.setattr(image_tool, "_read_configured_image_model", lambda: None)
+        monkeypatch.setattr(plugins_mod, "_ensure_plugins_discovered", lambda force=False: None)
+
+        result = image_tool._dispatch_to_plugin_provider(
+            "use this reference",
+            "square",
+            reference_images=["/tmp/ref.png"],
+        )
+
+        assert '"success": true' in result.lower()
+        assert captured["reference_images"] == ["/tmp/ref.png"]
+        _reset_for_tests()
+
+    def test_fal_path_rejects_reference_images_instead_of_prompt_only(self, image_tool):
+        result = image_tool.image_generate_tool(
+            prompt="use this reference",
+            aspect_ratio="square",
+            reference_images=["/tmp/ref.png"],
+        )
+
+        assert '"success": false' in result.lower()
+        assert "reference_images" in result
+        assert "image_gen.provider" in result
 
 
 # ---------------------------------------------------------------------------

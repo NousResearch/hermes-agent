@@ -21,6 +21,13 @@ def _reset_chromium_cache():
     bt._cached_chromium_installed = None
 
 
+@pytest.fixture(autouse=True)
+def _isolate_chromium_detection(monkeypatch):
+    """Ignore host Chrome/Chromium so tests only exercise Playwright cache logic."""
+    monkeypatch.delenv("AGENT_BROWSER_EXECUTABLE_PATH", raising=False)
+    monkeypatch.setattr(bt.shutil, "which", lambda _name: None)
+
+
 class TestChromiumSearchRoots:
     def test_respects_playwright_browsers_path_env(self, monkeypatch, tmp_path):
         monkeypatch.setenv("PLAYWRIGHT_BROWSERS_PATH", str(tmp_path))

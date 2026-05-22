@@ -150,6 +150,10 @@ class MarketingFactoryStore:
         for channel in merged.get("channels", []):
             existing_modes.setdefault(channel, "dry_run")
         merged["channel_modes"] = existing_modes
+        # Phase 15: auto_generate is opt-in (off by default) so the LLM doesn't burn
+        # tokens on apps the user isn't actively running. Threshold defaults to 3.
+        merged.setdefault("auto_generate", existing.get("auto_generate", False))
+        merged.setdefault("auto_generate_threshold", existing.get("auto_generate_threshold", 3))
         state["apps"][slug] = merged
         state["brand_memories"].setdefault(slug, {"learnings": [], "summaries": []})
         self._write_state(state)
@@ -211,6 +215,32 @@ class MarketingFactoryStore:
         self._write_state(state)
         self.audit("brand_profile.removed", slug, {"removed": deps})
         return {"app_slug": slug, "removed": deps}
+
+    def set_auto_generate(self, app_slug: str, enabled: bool, *, threshold: Optional[int] = None, reviewer: str = "human") -> Dict[str, Any]:
+        """Toggle the per-app auto-generation flag and optionally update its threshold."""
+        slug = _require_slug(app_slug)
+        state = self.load()
+        app = state["apps"].get(slug)
+        if not app:
+            raise KeyError(f"Unknown app slug: {slug}")
+        previous_enabled = bool(app.get("auto_generate", False))
+        previous_threshold = int(app.get("auto_generate_threshold") or 3)
+        app["auto_generate"] = bool(enabled)
+        if threshold is not None:
+            if int(threshold) < 1:
+                raise ValueError("threshold must be >= 1")
+            app["auto_generate_threshold"] = int(threshold)
+        app["updated_at"] = utc_now()
+        state["apps"][slug] = app
+        self._write_state(state)
+        self.audit("auto_generate.changed", slug, {
+            "previous_enabled": previous_enabled,
+            "next_enabled": bool(enabled),
+            "previous_threshold": previous_threshold,
+            "next_threshold": int(app["auto_generate_threshold"]),
+            "reviewer": reviewer,
+        })
+        return {"app_slug": slug, "auto_generate": bool(enabled), "auto_generate_threshold": int(app["auto_generate_threshold"])}
 
     def set_channel_mode(self, app_slug: str, channel: str, mode: str, reviewer: str = "human") -> Dict[str, Any]:
         """Switch a channel between `dry_run` and `live`.

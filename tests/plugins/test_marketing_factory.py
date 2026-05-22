@@ -525,6 +525,77 @@ def test_weekly_digest_via_api_endpoint(isolate_home):
     assert response_404.status_code == 404
 
 
+def test_auto_generate_default_off_means_poll_does_not_generate(isolate_home):
+    """Phase 15: by default, poll() never auto-generates — opt-in only to avoid runaway spend."""
+    from plugins.marketing_factory.pipeline import MarketingFactoryPipeline
+    from plugins.marketing_factory.store import MarketingFactoryStore
+
+    store = MarketingFactoryStore()
+    pipe = MarketingFactoryPipeline(store)
+    pipe.initialize_samples()
+    # No campaigns yet, both apps default to auto_generate=False
+    result = pipe.poll()
+    assert result["auto_generated_apps"] == []
+
+
+def test_auto_generate_on_with_empty_queue_fires_campaign(isolate_home):
+    from datetime import datetime, timedelta, timezone
+    from plugins.marketing_factory.pipeline import MarketingFactoryPipeline
+    from plugins.marketing_factory.store import MarketingFactoryStore
+
+    store = MarketingFactoryStore()
+    pipe = MarketingFactoryPipeline(store)
+    pipe.initialize_samples()
+
+    # Flip pupular's auto_generate ON with threshold=3
+    store.set_auto_generate("pupular", True, threshold=3, reviewer="tester")
+
+    # No existing campaigns or drafts — queue is empty (0 < 3), should fire
+    result = pipe.poll()
+    auto = result["auto_generated_apps"]
+    assert any(a["app_slug"] == "pupular" for a in auto), "Expected pupular to be auto-generated"
+    record = next(a for a in auto if a["app_slug"] == "pupular")
+    assert record["pending_before"] == 0
+    assert record["threshold"] == 3
+    assert record["draft_count"] > 0
+
+
+def test_auto_generate_skips_when_queue_full(isolate_home):
+    from plugins.marketing_factory.pipeline import MarketingFactoryPipeline
+    from plugins.marketing_factory.store import MarketingFactoryStore
+
+    store = MarketingFactoryStore()
+    pipe = MarketingFactoryPipeline(store)
+    pipe.initialize_samples()
+    # Generate 7 drafts (fills the queue past threshold=3)
+    pipe.generate_campaign("pupular", days=7)
+    store.set_auto_generate("pupular", True, threshold=3, reviewer="tester")
+
+    result = pipe.poll()
+    assert all(a["app_slug"] != "pupular" for a in result["auto_generated_apps"])
+
+
+def test_auto_generate_cooldown_blocks_second_poll(isolate_home):
+    from plugins.marketing_factory.pipeline import MarketingFactoryPipeline
+    from plugins.marketing_factory.store import MarketingFactoryStore
+
+    store = MarketingFactoryStore()
+    pipe = MarketingFactoryPipeline(store)
+    pipe.initialize_samples()
+    store.set_auto_generate("pupular", True, threshold=3, reviewer="tester")
+
+    first = pipe.poll()
+    assert any(a["app_slug"] == "pupular" for a in first["auto_generated_apps"])
+
+    # Reject all the drafts so the queue empties again — cooldown should still block
+    for draft in store.list_drafts(app_slug="pupular"):
+        if draft["status"] == "needs_review":
+            store.set_approval(draft["id"], "rejected", reviewer="tester", reason="cooldown test")
+
+    second = pipe.poll()
+    assert all(a["app_slug"] != "pupular" for a in second["auto_generated_apps"]), "Cooldown should block second auto-generation"
+
+
 def test_reschedule_updates_draft_and_schedule_record(isolate_home):
     """Phase 14: reschedule on an approved draft updates both draft.scheduled_for AND the schedules record."""
     from plugins.marketing_factory.pipeline import MarketingFactoryPipeline

@@ -46,6 +46,12 @@ class DraftRescheduleBody(BaseModel):
     scheduled_for: str
 
 
+class AutoGenerateBody(BaseModel):
+    enabled: bool
+    threshold: Optional[int] = None
+    reviewer: str = "dashboard"
+
+
 class AppCreateBody(BaseModel):
     slug: str
     name: str
@@ -364,6 +370,18 @@ async def run_poll():
     """
     store = _store()
     result = _pipe(store).poll()
+    return {"result": result, "overview": _overview(store)}
+
+
+@router.post("/apps/{app_slug}/auto-generate")
+async def set_auto_generate(app_slug: str, body: AutoGenerateBody):
+    store = _store()
+    try:
+        result = store.set_auto_generate(app_slug, body.enabled, threshold=body.threshold, reviewer=body.reviewer)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     return {"result": result, "overview": _overview(store)}
 
 

@@ -973,20 +973,29 @@ class MarketingFactoryPipeline:
 
         return {"items": items, "healthy": not items, "checked_at": now_dt.isoformat()}
 
+    AUTO_GENERATE_COOLDOWN_HOURS = 24
+    AUTO_GENERATE_DEFAULT_DAYS = 7
+
     def poll(self, now: Optional[datetime] = None) -> Dict[str, Any]:
         """One tick of the scheduled poller. Walks every app, fires
-        `publish_scheduled(due_only=True)`, records the result on
-        `state.poll`. Designed to be called from a cron job:
+        `publish_scheduled(due_only=True)`, AND triggers auto-generation
+        for any opt-in app whose pending queue is below threshold. Records
+        the result on `state.poll`. Designed to be called from a cron job:
             hermes cron create --schedule "every 5m" --command "hermes marketing-factory poll"
 
-        Returns: {polled_apps, due_count, fired_count, events, last_poll}
+        Returns: {polled_apps, due_count, fired_count, events,
+                  auto_generated_apps, last_poll}
         """
         cutoff = now or datetime.now(timezone.utc)
         apps = self.store.list_apps()
         all_events: List[Dict[str, Any]] = []
+        auto_generated_apps: List[Dict[str, Any]] = []
         # Count drafts that are due across all apps (for reporting, includes
         # ones we did not fire because they were already non-scheduled).
         due_count = 0
+        state = self.store.load()
+        cooldown = timedelta(hours=self.AUTO_GENERATE_COOLDOWN_HOURS)
+
         for app in apps:
             schedules = self.store.list_schedules(app_slug=app["slug"])
             for schedule in schedules:
@@ -1001,12 +1010,57 @@ class MarketingFactoryPipeline:
                     due_count += 1
             events = self.publisher.publish_scheduled(self.store, app_slug=app["slug"], due_only=True, now=cutoff)
             all_events.extend(events)
+
+            # Auto-generation: opt-in per app. Only if queue is below threshold
+            # AND no campaign was generated in the cooldown window — prevents
+            # runaway loops when the user isn't approving.
+            if not app.get("auto_generate"):
+                continue
+            threshold = int(app.get("auto_generate_threshold") or 3)
+            pending = sum(
+                1 for d in state.get("drafts", {}).values()
+                if d.get("app_slug") == app["slug"] and d.get("status") in {"needs_review", "approved", "scheduled"}
+            )
+            if pending >= threshold:
+                continue
+            recent_campaign = False
+            for camp in state.get("campaigns", {}).values():
+                if camp.get("app_slug") != app["slug"]:
+                    continue
+                try:
+                    camp_dt = datetime.fromisoformat(str(camp.get("created_at") or "").replace("Z", "+00:00"))
+                except ValueError:
+                    continue
+                if camp_dt.tzinfo is None:
+                    camp_dt = camp_dt.replace(tzinfo=timezone.utc)
+                if (cutoff - camp_dt) < cooldown:
+                    recent_campaign = True
+                    break
+            if recent_campaign:
+                continue
+            try:
+                result = self.generate_campaign(app["slug"], days=self.AUTO_GENERATE_DEFAULT_DAYS)
+                auto_generated_apps.append({
+                    "app_slug": app["slug"],
+                    "campaign_id": result["campaign"]["id"],
+                    "draft_count": len(result["drafts"]),
+                    "pending_before": pending,
+                    "threshold": threshold,
+                })
+                # Refresh local state snapshot since we just wrote campaigns/drafts
+                state = self.store.load()
+            except Exception as exc:  # noqa: BLE001 — auto-gen failure must not break the poll
+                logger.warning("auto_generate failed for %s: %s", app["slug"], exc)
+
         last_poll = self.store.record_poll(fired=len(all_events), due=due_count, polled_apps=len(apps))
+        if auto_generated_apps:
+            self.store.audit("poll.auto_generated", None, {"count": len(auto_generated_apps), "apps": [a["app_slug"] for a in auto_generated_apps]})
         return {
             "polled_apps": len(apps),
             "due_count": due_count,
             "fired_count": len(all_events),
             "events": all_events,
+            "auto_generated_apps": auto_generated_apps,
             "last_poll": last_poll,
         }
 

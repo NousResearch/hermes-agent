@@ -536,9 +536,22 @@
                 h("div", { className: "flex items-start justify-between gap-2" },
                   h("button", { type: "button", onClick: () => setAppSlug(app.slug), className: "flex-1 text-left" },
                     h("div", { className: "font-semibold" }, app.name || app.slug),
-                    h("div", { className: "mt-1 text-midground" }, app.positioning || app.icp || "No positioning set")
+                    h("div", { className: "mt-1 text-midground" }, app.positioning || app.icp || "No positioning set"),
+                    h("div", { className: "mt-2 flex items-center gap-2 text-[10px]" },
+                      h("span", { className: cx("inline-flex rounded-full border px-2 py-0.5", app.auto_generate ? "border-cyan-300/40 bg-cyan-300/10 text-cyan-100" : "border-midground/20 text-midground/70") }, `auto-gen: ${app.auto_generate ? "ON" : "off"}${app.auto_generate ? ` (≤${app.auto_generate_threshold || 3})` : ""}`)
+                    )
                   ),
                   h("div", { className: "flex flex-col gap-1 items-end" },
+                    h("button", {
+                      type: "button",
+                      disabled: !!busy,
+                      onClick: () => {
+                        const enabled = !app.auto_generate;
+                        if (enabled && !window.confirm(`Turn ON auto-generation for ${app.slug}? When fewer than ${app.auto_generate_threshold || 3} drafts are pending, the poll tick will fire a new 7-day campaign (cooldown 24h between auto-runs).`)) return;
+                        return run(`auto-gen ${app.slug}`, () => fetchJSON(`${API}/apps/${encodeURIComponent(app.slug)}/auto-generate`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ enabled, reviewer: "dashboard" }) }));
+                      },
+                      className: "text-[10px] text-midground/60 hover:text-cyan-200 underline",
+                    }, app.auto_generate ? "turn auto-gen off" : "turn auto-gen on"),
                     h("button", {
                       type: "button",
                       disabled: !!busy,

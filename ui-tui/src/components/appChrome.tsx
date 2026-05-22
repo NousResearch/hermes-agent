@@ -4,7 +4,7 @@ import { type ReactNode, type RefObject, useEffect, useMemo, useRef, useState } 
 import unicodeSpinners from 'unicode-animations'
 
 import { $delegationState } from '../app/delegationStore.js'
-import type { IndicatorStyle } from '../app/interfaces.js'
+import type { IndicatorStyle, StreamTokenStatus } from '../app/interfaces.js'
 import { useTurnSelector } from '../app/turnStore.js'
 import { $uiState } from '../app/uiStore.js'
 import { FACES } from '../content/faces.js'
@@ -283,6 +283,7 @@ export function StatusRule({
   bgCount,
   sessionStartedAt,
   showCost,
+  streamTokens,
   turnStartedAt,
   voiceLabel,
   t
@@ -310,6 +311,14 @@ export function StatusRule({
             <Text color={statusColor}>{status}</Text>
           )}
           <Text color={t.color.muted}> │ {modelLabel(model, modelReasoningEffort, modelFast)}</Text>
+          {streamTokens.phase ? (
+            <Text color={t.color.muted}>
+              {' │ '}
+              <Text color={t.color.accent}>
+                {streamTokens.phase === 'prefill' ? '↑' : '↓'} {fmtK(streamTokens.tokens)}
+              </Text>
+            </Text>
+          ) : null}
           {ctxLabel ? <Text color={t.color.muted}> │ {ctxLabel}</Text> : null}
           {bar ? (
             <Text color={t.color.muted}>
@@ -468,6 +477,7 @@ interface StatusRuleProps {
   t: Theme
   turnStartedAt?: null | number
   usage: Usage
+  streamTokens: StreamTokenStatus
   voiceLabel?: string
 }
 

@@ -113,8 +113,14 @@ export interface UiState {
   status: string
   statusBar: StatusBarMode
   streaming: boolean
+  streamTokens: StreamTokenStatus
   theme: Theme
   usage: Usage
+}
+
+export interface StreamTokenStatus {
+  phase: 'decode' | 'prefill' | null
+  tokens: number
 }
 
 export interface VirtualHistoryState {

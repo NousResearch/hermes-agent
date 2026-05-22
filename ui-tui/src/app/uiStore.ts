@@ -24,6 +24,7 @@ const buildUiState = (): UiState => ({
   status: 'summoning hermes…',
   statusBar: 'top',
   streaming: true,
+  streamTokens: { phase: null, tokens: 0 },
   theme: DEFAULT_THEME,
   usage: ZERO
 })

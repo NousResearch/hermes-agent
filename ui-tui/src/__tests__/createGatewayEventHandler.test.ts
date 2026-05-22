@@ -139,6 +139,7 @@ describe('createGatewayEventHandler', () => {
     const verdict = '✓ Goal achieved: long judge reason goes only in transcript, not merged with cwd label.'
 
     vi.useFakeTimers()
+
     try {
       onEvent({
         payload: { kind: 'goal', text: verdict },
@@ -949,5 +950,60 @@ describe('createGatewayEventHandler', () => {
       vi.runAllTimers()
       vi.useRealTimers()
     }
+  })
+
+  describe('stream token indicator', () => {
+    it('flips to prefill on message.start, decode on delta, accumulates across phases, resets on message.complete', () => {
+      const onEvent = createGatewayEventHandler(buildCtx([]))
+
+      expect(getUiState().streamTokens).toEqual({ phase: null, tokens: 0 })
+
+      onEvent({ payload: {}, type: 'message.start' } as any)
+      expect(getUiState().streamTokens.phase).toBe('prefill')
+      expect(getUiState().streamTokens.tokens).toBe(0)
+
+      const first = 'Hello, world! '.repeat(4)
+      onEvent({ payload: { text: first }, type: 'message.delta' } as any)
+      const expectedAfterDelta = estimateTokensRough(first)
+      expect(getUiState().streamTokens).toEqual({ phase: 'decode', tokens: expectedAfterDelta })
+
+      onEvent({ payload: { name: 'read_file', tool_id: 't1' }, type: 'tool.start' } as any)
+      expect(getUiState().streamTokens.phase).toBe('prefill')
+      expect(getUiState().streamTokens.tokens).toBe(expectedAfterDelta)
+
+      const second = 'follow-up text'
+      onEvent({ payload: { text: second }, type: 'message.delta' } as any)
+      expect(getUiState().streamTokens).toEqual({
+        phase: 'decode',
+        tokens: expectedAfterDelta + estimateTokensRough(second)
+      })
+
+      onEvent({ payload: { text: 'done' }, type: 'message.complete' } as any)
+      expect(getUiState().streamTokens).toEqual({ phase: null, tokens: 0 })
+    })
+
+    it('counts reasoning/thinking deltas toward the decode total', () => {
+      const onEvent = createGatewayEventHandler(buildCtx([]))
+
+      onEvent({ payload: {}, type: 'message.start' } as any)
+      const reasoning = 'pondering the question deeply'
+      onEvent({ payload: { text: reasoning }, type: 'reasoning.delta' } as any)
+
+      expect(getUiState().streamTokens).toEqual({
+        phase: 'decode',
+        tokens: estimateTokensRough(reasoning)
+      })
+    })
+
+    it('resets on error', () => {
+      const onEvent = createGatewayEventHandler(buildCtx([]))
+
+      onEvent({ payload: {}, type: 'message.start' } as any)
+      onEvent({ payload: { text: 'abc def ghi' }, type: 'message.delta' } as any)
+      expect(getUiState().streamTokens.tokens).toBeGreaterThan(0)
+
+      onEvent({ payload: { message: 'boom' }, type: 'error' } as any)
+      expect(getUiState().streamTokens).toEqual({ phase: null, tokens: 0 })
+    })
   })
 })

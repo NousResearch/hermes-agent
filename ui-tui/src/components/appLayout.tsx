@@ -361,6 +361,7 @@ const StatusRulePane = memo(function StatusRulePane({
         showCost={ui.showCost}
         status={ui.status}
         statusColor={status.statusColor}
+        streamTokens={ui.streamTokens}
         t={ui.theme}
         turnStartedAt={status.turnStartedAt}
         usage={ui.usage}

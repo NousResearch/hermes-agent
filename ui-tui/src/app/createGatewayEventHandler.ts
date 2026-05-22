@@ -1,6 +1,6 @@
 import { STARTUP_IMAGE, STARTUP_QUERY } from '../config/env.js'
 import { STREAM_BATCH_MS } from '../config/timing.js'
-import { SETUP_REQUIRED_TITLE, buildSetupRequiredSections } from '../content/setup.js'
+import { buildSetupRequiredSections, SETUP_REQUIRED_TITLE } from '../content/setup.js'
 import type {
   CommandsCatalogResponse,
   ConfigFullResponse,
@@ -11,7 +11,7 @@ import type {
 } from '../gatewayTypes.js'
 import { rpcErrorMessage } from '../lib/rpc.js'
 import { topLevelSubagents } from '../lib/subagentTree.js'
-import { formatToolCall, stripAnsi } from '../lib/text.js'
+import { estimateTokensRough, formatToolCall, stripAnsi } from '../lib/text.js'
 import { fromSkin } from '../theme.js'
 import type { Msg, SubagentProgress, SubagentStatus } from '../types.js'
 
@@ -134,6 +134,38 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
     rpc<DelegationStatusResponse>('delegation.status', {})
       .then(r => applyDelegationStatus(r))
       .catch(() => {})
+  }
+
+  const setStreamPhase = (phase: 'decode' | 'prefill' | null) =>
+    patchUiState(state => {
+      const current = state.streamTokens
+
+      if (phase === null) {
+        if (current.phase === null && current.tokens === 0) {
+          return state
+        }
+
+        return { ...state, streamTokens: { phase: null, tokens: 0 } }
+      }
+
+      if (current.phase === phase) {
+        return state
+      }
+
+      return { ...state, streamTokens: { ...current, phase } }
+    })
+
+  const addStreamTokens = (text: string) => {
+    const n = estimateTokensRough(text)
+
+    if (n <= 0) {
+      return
+    }
+
+    patchUiState(state => ({
+      ...state,
+      streamTokens: { phase: 'decode', tokens: state.streamTokens.tokens + n }
+    }))
   }
 
   const setStatus = (status: string) => {
@@ -321,6 +353,7 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
 
           if (value) {
             turnController.recordReasoningDelta(value)
+            addStreamTokens(value)
           }
         }
 
@@ -329,6 +362,7 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
 
       case 'message.start':
         turnController.startMessage()
+        setStreamPhase('prefill')
 
         return
       case 'status.update': {
@@ -340,6 +374,7 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
 
         if (p.kind === 'goal') {
           sys(p.text)
+
           const brief = p.text.startsWith('✓')
             ? '✓ goal complete'
             : p.text.startsWith('↻')
@@ -347,8 +382,10 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
               : p.text.startsWith('⏸')
                 ? '⏸ goal paused'
                 : 'ready'
+
           setStatus(brief)
           restoreStatusAfter(6000)
+
           return
         }
 
@@ -356,6 +393,7 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
 
         if (p.kind === 'compressing') {
           sys(p.text)
+
           return
         }
 
@@ -492,6 +530,7 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
       case 'reasoning.delta':
         if (ev.payload?.text) {
           turnController.recordReasoningDelta(ev.payload.text, Boolean(ev.payload.verbose))
+          addStreamTokens(ev.payload.text)
         }
 
         return
@@ -523,11 +562,13 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
           ev.payload.context ?? '',
           ev.payload.args_text ? stripAnsi(String(ev.payload.args_text)) : undefined
         )
+        setStreamPhase('prefill')
 
         return
       case 'tool.complete': {
         const inlineDiffText =
           ev.payload.inline_diff && getUiState().inlineDiffs ? stripAnsi(String(ev.payload.inline_diff)).trim() : ''
+
         const resultText = ev.payload.result_text ? stripAnsi(String(ev.payload.result_text)) : undefined
 
         if (inlineDiffText) {
@@ -589,7 +630,6 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
         sys(`[bg ${ev.payload.task_id}] ${ev.payload.text}`)
 
         return
-
       case 'review.summary': {
         // Self-improvement background review emitted a persistent summary
         // of what it saved to memory/skills. Surface it as a system line
@@ -597,6 +637,7 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
         // flash. Python-side already formats it as "💾 Self-improvement
         // review: …".
         const text = String(ev.payload?.text ?? '').trim()
+
         if (text) {
           sys(text)
         }
@@ -696,6 +737,7 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
 
       case 'message.delta':
         turnController.recordMessageDelta(ev.payload ?? {})
+        addStreamTokens(ev.payload?.text ?? ev.payload?.rendered ?? '')
 
         return
       case 'message.complete': {
@@ -711,6 +753,7 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
         }
 
         setStatus('ready')
+        setStreamPhase(null)
 
         if (ev.payload?.usage) {
           patchUiState(state => ({ ...state, usage: { ...state.usage, ...ev.payload!.usage } }))
@@ -721,6 +764,7 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
 
       case 'error':
         turnController.recordError()
+        setStreamPhase(null)
 
         {
           const message = String(ev.payload?.message || 'unknown error')

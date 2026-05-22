@@ -336,20 +336,46 @@ def _is_present(spec: str) -> bool:
         return False
 
 
+def _running_in_venv() -> bool:
+    """True if ``sys.executable`` belongs to a virtual environment.
+
+    PEP 405 venvs (and virtualenv) always set ``sys.prefix`` to the venv
+    root, which differs from ``sys.base_prefix`` (the underlying system
+    Python). When they match, Hermes was installed against the system
+    interpreter directly — common for ``pip install --user hermes-agent``
+    on Debian/Ubuntu/Kali/Termux containers.
+    """
+    return sys.prefix != sys.base_prefix
+
+
 def _venv_pip_install(specs: tuple[str, ...], *, timeout: int = 300) -> _InstallResult:
-    """Install ``specs`` into the active venv using uv → pip → ensurepip ladder.
+    """Install ``specs`` into the active interpreter using uv → pip ladder.
 
     Mirrors the strategy in ``hermes_cli.tools_config._pip_install`` but
     kept independent here so this module has no CLI dependency.
+
+    PEP 668 handling: when Hermes is installed against a system Python
+    (no venv — ``sys.prefix == sys.base_prefix``), modern Debian-based
+    distros refuse ``pip install`` without ``--break-system-packages``.
+    Rather than mutate the system site-packages, we install into the
+    user-site (``pip install --user`` / ``uv pip install --system
+    --target=<user-site>``) which is writable without root and respects
+    PEP 668. Inside a real venv the original fast-path is unchanged.
     """
     if not specs:
         return _InstallResult(True, "", "")
 
+    in_venv = _running_in_venv()
     venv_root = Path(sys.executable).parent.parent
-    uv_env = {**os.environ, "VIRTUAL_ENV": str(venv_root)}
+    uv_env = {**os.environ, "VIRTUAL_ENV": str(venv_root)} if in_venv else None
 
-    # Tier 1: uv (preferred — fast, doesn't need pip in the venv)
-    uv_bin = shutil.which("uv")
+    # Tier 1: uv (preferred — fast, doesn't need pip in the venv).
+    # Skip uv when running against a system Python: uv's --system flag
+    # writes to the system site-packages (e.g. /usr/lib), which is
+    # exactly what PEP 668 was designed to prevent. We want the same
+    # user-site fallback that pip --user gives us; uv has no equivalent
+    # flag today, so fall through to pip Tier 2 in that case.
+    uv_bin = shutil.which("uv") if in_venv else None
     if uv_bin:
         try:
             r = subprocess.run(
@@ -381,9 +407,16 @@ def _venv_pip_install(specs: tuple[str, ...], *, timeout: int = 300) -> _Install
             return _InstallResult(False, "",
                                   f"pip not available and ensurepip failed: {e}")
 
+    pip_args = pip_cmd + ["install", *specs]
+    if not in_venv:
+        # --user writes to ~/.local/lib/.../site-packages, which is on
+        # sys.path for the same interpreter and is exempt from PEP 668.
+        # No root, no system site-packages mutation.
+        pip_args.insert(3, "--user")
+
     try:
         r = subprocess.run(
-            pip_cmd + ["install", *specs],
+            pip_args,
             capture_output=True, text=True, timeout=timeout,
         )
         return _InstallResult(r.returncode == 0, r.stdout or "", r.stderr or "")

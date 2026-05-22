@@ -405,3 +405,109 @@ class TestRefreshActiveFeatures:
         result = ld.refresh_active_features()
         assert result["a.ok"] == "current"
         assert result["b.fail"].startswith("failed:")
+
+
+# ---------------------------------------------------------------------------
+# PEP 668 / system-Python handling
+# ---------------------------------------------------------------------------
+
+
+class TestVenvPipInstallPEP668:
+    """When Hermes is installed against a system Python (no venv), PEP 668
+    distros (Debian/Ubuntu/Kali) refuse bare ``pip install``. The installer
+    must fall back to ``pip install --user`` and skip the uv tier (which
+    would either silently write to the system or refuse with the same error).
+
+    Inside a venv, the original fast-path must remain unchanged: uv first,
+    pip without --user.
+    """
+
+    def _capture_subprocess_run(self, monkeypatch, returncode=0, stderr=""):
+        """Capture each subprocess.run call without actually executing."""
+        import subprocess as _sp
+        calls: list[list[str]] = []
+
+        def fake_run(cmd, *args, **kwargs):
+            calls.append(list(cmd))
+            return _sp.CompletedProcess(cmd, returncode, "", stderr)
+
+        monkeypatch.setattr(ld.subprocess, "run", fake_run)
+        return calls
+
+    def test_running_in_venv_detects_real_venv(self, monkeypatch):
+        monkeypatch.setattr(ld.sys, "prefix", "/opt/myvenv")
+        monkeypatch.setattr(ld.sys, "base_prefix", "/usr")
+        assert ld._running_in_venv() is True
+
+    def test_running_in_venv_detects_system_python(self, monkeypatch):
+        # PEP 668 system interpreter: prefix == base_prefix
+        monkeypatch.setattr(ld.sys, "prefix", "/usr")
+        monkeypatch.setattr(ld.sys, "base_prefix", "/usr")
+        assert ld._running_in_venv() is False
+
+    def test_system_python_uses_pip_user_and_skips_uv(self, monkeypatch):
+        # System Python: should never invoke uv (would target system
+        # site-packages), and pip must include --user.
+        monkeypatch.setattr(ld, "_running_in_venv", lambda: False)
+        monkeypatch.setattr(ld.shutil, "which", lambda name: "/usr/bin/uv"
+                            if name == "uv" else None)
+        calls = self._capture_subprocess_run(monkeypatch, returncode=0)
+
+        result = ld._venv_pip_install(("somepkg>=1.0",))
+
+        assert result.success is True
+        # No uv calls — uv was skipped entirely.
+        assert not any("/usr/bin/uv" in c[0] for c in calls), (
+            f"uv must not be invoked against system Python; saw {calls!r}"
+        )
+        # Find the actual install call (probe --version may come first).
+        install_calls = [c for c in calls if "install" in c]
+        assert install_calls, f"no install call recorded: {calls!r}"
+        assert "--user" in install_calls[0], (
+            f"pip --user flag missing on system Python: {install_calls[0]!r}"
+        )
+
+    def test_venv_uses_uv_first_without_user_flag(self, monkeypatch):
+        # Real venv: original behavior. uv tier wins, no --user flag.
+        monkeypatch.setattr(ld, "_running_in_venv", lambda: True)
+        monkeypatch.setattr(ld.shutil, "which", lambda name: "/opt/uv/bin/uv"
+                            if name == "uv" else None)
+        calls = self._capture_subprocess_run(monkeypatch, returncode=0)
+
+        result = ld._venv_pip_install(("somepkg>=1.0",))
+
+        assert result.success is True
+        assert calls, "expected at least one subprocess call"
+        # First call should be uv pip install (no --user, no --break-system).
+        assert calls[0][0] == "/opt/uv/bin/uv"
+        assert "--user" not in calls[0]
+        assert "--break-system-packages" not in calls[0]
+
+    def test_venv_pip_fallback_no_user_flag(self, monkeypatch):
+        # Real venv, uv unavailable: pip tier runs without --user.
+        monkeypatch.setattr(ld, "_running_in_venv", lambda: True)
+        monkeypatch.setattr(ld.shutil, "which", lambda name: None)
+        calls = self._capture_subprocess_run(monkeypatch, returncode=0)
+
+        result = ld._venv_pip_install(("somepkg>=1.0",))
+
+        assert result.success is True
+        install_calls = [c for c in calls if "install" in c]
+        assert install_calls
+        assert "--user" not in install_calls[0], (
+            f"--user should not appear in venv install: {install_calls[0]!r}"
+        )
+
+    def test_system_python_uv_present_still_skipped(self, monkeypatch):
+        # Defense in depth: even if uv is on PATH and the env happens to
+        # have VIRTUAL_ENV set (e.g. user's shell), _running_in_venv()
+        # is the source of truth and uv must be skipped.
+        monkeypatch.setattr(ld, "_running_in_venv", lambda: False)
+        monkeypatch.setattr(ld.shutil, "which", lambda name: "/usr/bin/uv"
+                            if name == "uv" else None)
+        monkeypatch.setenv("VIRTUAL_ENV", "/some/stale/path")
+        calls = self._capture_subprocess_run(monkeypatch, returncode=0)
+
+        ld._venv_pip_install(("somepkg>=1.0",))
+
+        assert not any("/usr/bin/uv" in c[0] for c in calls)

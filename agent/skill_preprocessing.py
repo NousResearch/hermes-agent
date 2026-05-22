@@ -79,6 +79,14 @@ def run_inline_shell(command: str, cwd: Path | None, timeout: int) -> str:
         return f"[inline-shell timeout after {timeout}s: {command}]"
     except FileNotFoundError:
         return "[inline-shell error: bash not found]"
+    except RuntimeError as exc:
+        # tests/conftest.py installs a live-system guard that blocks real
+        # os.kill on out-of-tree PIDs. subprocess.run(timeout=...) may trip
+        # that guard while trying to clean up the timed-out shell; treat that
+        # as the same timeout outcome instead of surfacing the guard error.
+        if "live-system guard: blocked os.kill" in str(exc):
+            return f"[inline-shell timeout after {timeout}s: {command}]"
+        return f"[inline-shell error: {exc}]"
     except Exception as exc:
         return f"[inline-shell error: {exc}]"
 

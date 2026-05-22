@@ -326,6 +326,44 @@ LINTERS = {
     '.rs': 'rustfmt --check {file} 2>&1',
 }
 
+# Extensions where the per-file shell linter is structurally weaker than
+# a real LSP server AND produces phantom errors on real-world projects:
+#
+# - ``.ts``: ``tsc --noEmit FILE.ts`` ignores ``tsconfig.json`` and
+#   defaults to no-lib / ES5, so every ES2015+ stdlib reference
+#   (``Promise``, ``Map``, ``Set``, ``ReadonlySet``, ``Iterable``,
+#   ``Math.imul``, ``Number.isFinite``, etc.) reports as missing.  This
+#   floods the agent's lint field with 20K+ tokens of false positives on
+#   every edit.  No supported tsc flag fixes the single-file invocation;
+#   the canonical replacement is ``tsserver`` via LSP, which respects
+#   tsconfig and gives true diagnostics.
+#
+#   ``.tsx`` is intentionally NOT in ``LINTERS`` (and therefore not
+#   here): it has no shell linter entry, so it falls through to the
+#   ``ext not in LINTERS`` skip case unchanged.  Pre-PR behavior:
+#   ``.tsx`` was implicitly ``skipped``.  Keeping it that way means
+#   ``.tsx`` edits with LSP disabled get no per-file syntax check
+#   (same as before this PR) instead of the broken ``tsc`` invocation
+#   that ``.ts`` used to get.  When LSP is enabled, ``.tsx`` is covered
+#   by the LSP tier via ``_maybe_lsp_diagnostics`` exactly as ``.ts``.
+#
+# - ``.go``: ``go vet FILE.go`` fails outside a module / GOPATH with
+#   "cannot find package" — already partially handled by
+#   ``_LINTER_UNUSABLE_PATTERNS`` but only when the package error is the
+#   ONLY output; mixed real+phantom output still leaks through.
+#   ``gopls`` is the canonical replacement.
+#
+# - ``.rs``: ``rustfmt --check FILE.rs`` is style, not type-checking, and
+#   rejects non-Cargo project files.  ``rust-analyzer`` is the canonical
+#   replacement.
+#
+# When the LSP service is configured AND ``enabled_for(path)`` for this
+# extension's file, ``_check_lint`` skips the shell linter for these
+# extensions — the ``lsp_diagnostics`` channel carries the real signal.
+# Everything else in ``LINTERS`` (Python ``py_compile``, ``node --check``)
+# is fast, file-local, and correct, so it runs unconditionally.
+_SHELL_LINTER_LSP_REDUNDANT = frozenset({'.ts', '.go', '.rs'})
+
 
 # Patterns that indicate the linter base command exists on PATH but
 # couldn't actually run — e.g. ``npx tsc`` when tsc isn't installed in
@@ -1169,6 +1207,19 @@ class ShellFileOperations(FileOperations):
         if ext not in LINTERS:
             return LintResult(skipped=True, message=f"No linter for {ext} files")
 
+        # If a real LSP server is active and claims this file, skip the
+        # shell linter for extensions whose per-file shell invocation is
+        # structurally weaker / floods phantom errors.  See
+        # ``_SHELL_LINTER_LSP_REDUNDANT`` above for the rationale per ext.
+        # The LSP tier runs separately via ``_maybe_lsp_diagnostics`` and
+        # carries the real diagnostics in ``lsp_diagnostics`` on the
+        # WriteResult / PatchResult.
+        if ext in _SHELL_LINTER_LSP_REDUNDANT and self._lsp_will_handle(path):
+            return LintResult(
+                skipped=True,
+                message=f"LSP server handles {ext} — shell linter skipped",
+            )
+
         linter_cmd = LINTERS[ext]
         # Extract the base command (first word)
         base_cmd = linter_cmd.split()[0]
@@ -1331,6 +1382,40 @@ class ShellFileOperations(FileOperations):
             if ext_lower in srv.extensions:
                 return True
         return False
+
+    def _lsp_will_handle(self, path: str) -> bool:
+        """Return True iff the LSP service is active AND will lint this file.
+
+        Stronger than :meth:`_lsp_handles_extension` — that one only checks
+        the static server registry.  This one additionally requires the
+        LSP service to be configured/enabled and the file to pass
+        :meth:`agent.lsp.manager.LSPService.enabled_for` (which gates on
+        workspace detection, disabled-server set, and the broken-pair
+        short-circuit).
+
+        Used by :meth:`_check_lint` to decide whether to skip the per-file
+        shell linter for extensions in ``_SHELL_LINTER_LSP_REDUNDANT``.
+
+        Best-effort: any failure path returns False so the shell linter
+        runs as before — never suppress lint based on an LSP probe that
+        couldn't actually answer the question.
+        """
+        if not self._lsp_local_only():
+            return False
+        try:
+            from agent.lsp import get_service
+        except Exception:  # noqa: BLE001
+            return False
+        try:
+            svc = get_service()
+        except Exception:  # noqa: BLE001
+            return False
+        if svc is None:
+            return False
+        try:
+            return bool(svc.enabled_for(path))
+        except Exception:  # noqa: BLE001
+            return False
 
     def _snapshot_lsp_baseline(self, path: str) -> None:
         """Capture pre-edit LSP diagnostics so the post-write delta is correct.

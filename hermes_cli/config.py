@@ -134,8 +134,7 @@ _EXTRA_ENV_KEYS = frozenset({
     "MATRIX_RECOVERY_KEY",
     # Langfuse observability plugin — optional tuning keys + standard SDK vars.
     # Activation is via plugins.enabled (opt-in through `hermes plugins enable
-    # observability/langfuse` or `hermes tools → Langfuse`); credentials gate
-    # the plugin at runtime.
+    # observability/langfuse`); credentials gate the plugin at runtime.
     "HERMES_LANGFUSE_ENV",
     "HERMES_LANGFUSE_RELEASE",
     "HERMES_LANGFUSE_SAMPLE_RATE",
@@ -189,19 +188,83 @@ def is_managed() -> bool:
     return get_managed_system() is not None
 
 
+_NIX_UPDATE_MSG = "Update your Nix flake input and rebuild (e.g. nix flake update, nixos-rebuild, or home-manager switch)"
+
+
 def get_managed_update_command() -> Optional[str]:
     """Return the preferred upgrade command for a managed install."""
     managed_system = get_managed_system()
     if managed_system == "Homebrew":
         return "brew upgrade hermes-agent"
     if managed_system == "NixOS":
-        return "sudo nixos-rebuild switch"
+        return _NIX_UPDATE_MSG
     return None
+
+
+def detect_install_method(project_root: Optional[Path] = None) -> str:
+    """Detect how Hermes was installed: 'docker', 'nixos', 'homebrew', 'git', or 'pip'.
+
+    Resolution order:
+    1. Stamped ``~/.hermes/.install_method`` file (written by installers)
+    2. HERMES_MANAGED env / .managed marker (NixOS, Homebrew)
+    3. Container detection (/.dockerenv, /run/.containerenv, cgroup)
+    4. .git directory presence -> 'git'
+    5. Fallback -> 'pip'
+    """
+    stamp = get_hermes_home() / ".install_method"
+    try:
+        method = stamp.read_text(encoding="utf-8").strip().lower()
+        if method:
+            return method
+    except OSError:
+        pass
+    managed = get_managed_system()
+    if managed:
+        return managed.lower().replace(" ", "-")
+    from hermes_constants import is_container
+    if is_container():
+        return "docker"
+    if project_root is None:
+        project_root = Path(__file__).parent.parent.resolve()
+    if (project_root / ".git").is_dir():
+        return "git"
+    return "pip"
+
+
+def stamp_install_method(method: str) -> None:
+    """Write the install method to ~/.hermes/.install_method."""
+    stamp = get_hermes_home() / ".install_method"
+    try:
+        stamp.parent.mkdir(parents=True, exist_ok=True)
+        stamp.write_text(method + "\n", encoding="utf-8")
+    except OSError:
+        pass
+
+
+def recommended_update_command_for_method(method: str) -> str:
+    """Return the update command or guidance for a given install method."""
+    if method == "nixos":
+        return _NIX_UPDATE_MSG
+    if method == "homebrew":
+        return "brew upgrade hermes-agent"
+    if method == "docker":
+        return "docker pull nousresearch/hermes-agent:latest"
+    if method == "pip":
+        import shutil
+        uv = shutil.which("uv")
+        if uv:
+            return "uv pip install --upgrade hermes-agent"
+        return "pip install --upgrade hermes-agent"
+    return "hermes update"
 
 
 def recommended_update_command() -> str:
     """Return the best update command for the current installation."""
-    return get_managed_update_command() or "hermes update"
+    managed_cmd = get_managed_update_command()
+    if managed_cmd:
+        return managed_cmd
+    method = detect_install_method()
+    return recommended_update_command_for_method(method)
 
 
 def format_managed_message(action: str = "modify this Hermes installation") -> str:
@@ -401,7 +464,10 @@ def ensure_hermes_home():
     else:
         home.mkdir(parents=True, exist_ok=True)
         _secure_dir(home)
-        for subdir in ("cron", "sessions", "logs", "logs/curator", "memories"):
+        for subdir in (
+            "cron", "sessions", "logs", "logs/curator", "memories",
+            "pairing", "hooks", "image_cache", "audio_cache", "skills",
+        ):
             d = home / subdir
             d.mkdir(parents=True, exist_ok=True)
             _secure_dir(d)
@@ -737,6 +803,17 @@ DEFAULT_CONFIG = {
                                       # 0 for long-running rolling-compaction sessions
                                       # where you want nothing pinned except the
                                       # system prompt + rolling summary + recent tail.
+        "abort_on_summary_failure": False,  # When True, auto-compression that fails
+                                      # to generate a summary (aux LLM errored / returned
+                                      # non-JSON / timed out) aborts entirely instead of
+                                      # dropping the middle window with a static
+                                      # "summary unavailable" placeholder.  Messages are
+                                      # preserved unchanged and the session "freezes" at
+                                      # its current size until the user runs /compress
+                                      # (which bypasses the failure cooldown) or /new.
+                                      # Default False matches historical behavior; set to
+                                      # True if you'd rather pause than silently lose
+                                      # context turns when your aux model is flaky.
     },
 
     # Anthropic prompt caching (Claude via OpenRouter or native Anthropic API).
@@ -838,15 +915,10 @@ DEFAULT_CONFIG = {
             "timeout": 120,        # seconds — compression summarises large contexts; increase for local models
             "extra_body": {},
         },
-        "session_search": {
-            "provider": "auto",
-            "model": "",
-            "base_url": "",
-            "api_key": "",
-            "timeout": 30,
-            "extra_body": {},
-            "max_concurrency": 3,  # Clamp parallel summaries to avoid request-burst 429s on small providers
-        },
+        # Note: session_search no longer uses an auxiliary LLM (PR #27590 —
+        # single-shape tool returns DB content directly). The old
+        # ``auxiliary.session_search.*`` block was removed here. Existing
+        # values in user config.yaml files are harmless leftovers and ignored.
         "skills_hub": {
             "provider": "auto",
             "model": "",
@@ -890,6 +962,31 @@ DEFAULT_CONFIG = {
             "base_url": "",
             "api_key": "",
             "timeout": 120,
+            "extra_body": {},
+        },
+        # Kanban decomposer — decomposes a triage task into a graph of
+        # child tasks routed to specialist profiles by description.
+        # Invoked by ``hermes kanban decompose`` and the kanban
+        # auto-decompose dispatcher tick. Returns a JSON task graph;
+        # uses more tokens than the specifier so allow more headroom.
+        "kanban_decomposer": {
+            "provider": "auto",
+            "model": "",
+            "base_url": "",
+            "api_key": "",
+            "timeout": 180,
+            "extra_body": {},
+        },
+        # Profile describer — auto-generates a 1-2 sentence description
+        # of what a profile is good at. Invoked by
+        # ``hermes profile describe <name> --auto`` and the dashboard's
+        # auto-generate button. Short, cheap call.
+        "profile_describer": {
+            "provider": "auto",
+            "model": "",
+            "base_url": "",
+            "api_key": "",
+            "timeout": 60,
             "extra_body": {},
         },
         # Curator — skill-usage review fork. Timeout is generous because the
@@ -1112,6 +1209,10 @@ DEFAULT_CONFIG = {
         "provider": "",    # e.g. "openrouter" (empty = inherit parent provider + credentials)
         "base_url": "",    # direct OpenAI-compatible endpoint for subagents
         "api_key": "",     # API key for delegation.base_url (falls back to OPENAI_API_KEY)
+        "api_mode": "",    # wire protocol for delegation.base_url: "chat_completions",
+                           # "codex_responses", or "anthropic_messages". Empty = auto-detect
+                           # from URL (e.g. /anthropic suffix → anthropic_messages). Set this
+                           # explicitly for non-standard endpoints the heuristic can't detect.
         # When delegate_task narrows child toolsets explicitly, preserve any
         # MCP toolsets the parent already has enabled. On by default so
         # narrowing (e.g. toolsets=["web","browser"]) expresses "I want these
@@ -1269,6 +1370,18 @@ DEFAULT_CONFIG = {
         # list_roles, member_info, search_members, fetch_messages, list_pins,
         # pin_message, unpin_message, create_thread, add_role, remove_role.
         "server_actions": "",
+        # Accept arbitrary attachment file types (not just SUPPORTED_DOCUMENT_TYPES).
+        # When True, any uploaded file is cached to disk with mime
+        # application/octet-stream and the path is surfaced to the agent so it
+        # can use terminal/read_file/etc. against it. Default False preserves
+        # the historical allowlist behaviour.
+        # Env override: DISCORD_ALLOW_ANY_ATTACHMENT.
+        "allow_any_attachment": False,
+        # Maximum bytes per attachment the gateway will cache. The whole file
+        # is held in memory while being written, so unlimited uploads carry a
+        # real memory cost. Default 32 MiB matches the historical hardcoded
+        # cap. Set to 0 for no cap. Env override: DISCORD_MAX_ATTACHMENT_BYTES.
+        "max_attachment_bytes": 33554432,
     },
 
     # WhatsApp platform settings (gateway mode)
@@ -1417,6 +1530,36 @@ DEFAULT_CONFIG = {
         # same task/profile (spawn_failed, timed_out, or crashed). Reassignment
         # resets the streak for the new profile.
         "failure_limit": 2,
+        # Worker stdout/stderr logs rotate at spawn time. Defaults preserve
+        # the historical 2 MiB + one-backup behavior; long-running workers can
+        # raise these to keep more early failure evidence.
+        "worker_log_rotate_bytes": 2 * 1024 * 1024,
+        "worker_log_backup_count": 1,
+        # Profile that decomposes tasks in the Triage column. When unset,
+        # falls back to the default profile (the one `hermes` launches with
+        # no -p flag). Set this to a dedicated 'orchestrator' profile if you
+        # want decomposition to use a different model/skills from your main
+        # working profile.
+        "orchestrator_profile": "",
+        # Where a child task lands if the orchestrator can't match an
+        # assignee to any installed profile. When unset, falls back to the
+        # default profile. A task never ends up with assignee=None.
+        "default_assignee": "",
+        # When true, the kanban dispatcher auto-runs the decomposer on
+        # tasks that land in Triage (every dispatcher tick). When false,
+        # decomposition is manual via `hermes kanban decompose <id>` or
+        # the dashboard's Decompose button.
+        "auto_decompose": True,
+        # Max triage tasks to decompose per dispatcher tick. Prevents a
+        # large bulk-load of triage tasks from spending a burst of aux
+        # LLM calls in one tick. Excess tasks defer to the next tick.
+        "auto_decompose_per_tick": 3,
+        # Stale detection: running tasks that have exceeded this many
+        # seconds without a heartbeat (since ``last_heartbeat_at``) are
+        # auto-reclaimed to ``ready`` on the next dispatcher tick. The
+        # worker process (if still running host-locally) is terminated
+        # before the reclaim.  0 disables stale detection entirely.
+        "dispatch_stale_timeout_seconds": 14400,
     },
 
     # execute_code settings — controls the tool used for programmatic tool calls.
@@ -1439,6 +1582,15 @@ DEFAULT_CONFIG = {
         "level": "INFO",       # Minimum level for agent.log: DEBUG, INFO, WARNING
         "max_size_mb": 5,      # Max size per log file before rotation
         "backup_count": 3,     # Number of rotated backup files to keep
+        # Periodic process memory usage logging (gateway only). Emits a
+        # grep-friendly "[MEMORY] rss=...MB ..." line at the configured
+        # interval so slow leaks in the long-lived gateway are visible
+        # in agent.log / gateway.log as a time series. Ported from
+        # cline/cline#10343.
+        "memory_monitor": {
+            "enabled": True,         # Flip to false to silence the periodic line
+            "interval_seconds": 300, # Default: every 5 minutes
+        },
     },
 
     # Remotely-hosted model catalog manifest.  When enabled, the CLI fetches
@@ -1496,6 +1648,15 @@ DEFAULT_CONFIG = {
         # the sweep on every CLI invocation).  Tracked via state_meta in
         # state.db itself, so it's shared across all processes.
         "min_interval_hours": 24,
+        # Legacy per-session JSON snapshot writer.  When true, the agent
+        # rewrites ``~/.hermes/sessions/session_{sid}.json`` on every turn
+        # boundary with the full message list.  state.db is canonical and
+        # has every field the snapshot stored (plus per-message timestamps
+        # and token counts), so this is off by default — the snapshots had
+        # no consumer outside their own overwrite guard and accumulated
+        # GBs of disk on heavy users.  Opt in only if you have an external
+        # tool that consumes the JSON files directly.
+        "write_json_snapshots": False,
     },
 
     # Contextual first-touch onboarding hints (see agent/onboarding.py).
@@ -1567,6 +1728,54 @@ DEFAULT_CONFIG = {
         # Empty by default; the registry defaults work for typical
         # setups.
         "servers": {},
+    },
+
+    # X (Twitter) Search via xAI's built-in x_search Responses tool.
+    # The tool registers when xAI credentials are available (SuperGrok
+    # OAuth or XAI_API_KEY) AND the x_search toolset is enabled in
+    # `hermes tools`. These settings tune the backing Responses API call.
+    "x_search": {
+        # xAI model used for the Responses call. grok-4.20-reasoning is
+        # the recommended default; any Grok model with x_search tool
+        # access works.
+        "model": "grok-4.20-reasoning",
+        # Request timeout in seconds (minimum 30). x_search can take
+        # 60-120s for complex queries — the default is generous.
+        "timeout_seconds": 180,
+        # Number of automatic retries on 5xx / ReadTimeout / ConnectionError.
+        # Each retry backs off (1.5x attempt seconds, capped at 5s).
+        "retries": 2,
+    },
+
+    # =========================================================================
+    # External secret sources
+    # =========================================================================
+    # Pull credentials from external secret managers at process startup
+    # rather than storing them in ~/.hermes/.env.
+    "secrets": {
+        "bitwarden": {
+            # Master switch.  When false, BSM is never contacted and the
+            # bws binary is never auto-installed — same as not having
+            # this section at all.
+            "enabled": False,
+            # Name of the env var that holds the Bitwarden machine-account
+            # access token.  This is the one bootstrap secret; it lives
+            # in ~/.hermes/.env (or your shell) and never in config.yaml.
+            "access_token_env": "BWS_ACCESS_TOKEN",
+            # UUID of the BSM project to sync from.
+            "project_id": "",
+            # Seconds to cache fetched secrets in-process.  0 disables.
+            "cache_ttl_seconds": 300,
+            # When True, BSM values overwrite existing env vars.  Default
+            # True because the point of using BSM is centralized rotation —
+            # if .env had the final say, rotating in Bitwarden wouldn't
+            # take effect until you also cleared the matching .env line.
+            "override_existing": True,
+            # When True, the bws binary is auto-downloaded into
+            # ~/.hermes/bin/ on first use.  When False you must install
+            # bws yourself and have it on PATH.
+            "auto_install": True,
+        },
     },
 
     # Config schema version - bump this when adding new required fields
@@ -2839,6 +3048,7 @@ def _normalize_custom_provider_entry(
         "api_mode", "transport", "model", "default_model", "models",
         "context_length", "rate_limit_delay",
         "request_timeout_seconds", "stale_timeout_seconds",
+        "discover_models", "extra_body",
     }
     for camel, snake in _CAMEL_ALIASES.items():
         if camel in entry and snake not in entry:
@@ -2928,6 +3138,14 @@ def _normalize_custom_provider_entry(
     rate_limit_delay = entry.get("rate_limit_delay")
     if isinstance(rate_limit_delay, (int, float)) and rate_limit_delay >= 0:
         normalized["rate_limit_delay"] = rate_limit_delay
+
+    discover_models = entry.get("discover_models")
+    if isinstance(discover_models, bool):
+        normalized["discover_models"] = discover_models
+
+    extra_body = entry.get("extra_body")
+    if isinstance(extra_body, dict):
+        normalized["extra_body"] = dict(extra_body)
 
     return normalized
 
@@ -3089,7 +3307,7 @@ _KNOWN_ROOT_KEYS = {
 # Valid fields inside a custom_providers list entry
 _VALID_CUSTOM_PROVIDER_FIELDS = {
     "name", "base_url", "api_key", "api_mode", "model", "models",
-    "context_length", "rate_limit_delay",
+    "context_length", "rate_limit_delay", "extra_body",
     # key_env is read at runtime by runtime_provider.py and auxiliary_client.py
     # — include it here so the set accurately describes the supported schema.
     "key_env",
@@ -4157,7 +4375,38 @@ def load_config() -> Dict[str, Any]:
     The cache is keyed on ``str(config_path)`` so profile switches
     (which change ``HERMES_HOME`` and therefore ``get_config_path()``)
     don't collide.
+
+    Read-only callers should use ``load_config_readonly()`` to skip the
+    defensive deepcopy — that path matters in agent-loop hot spots like
+    ``get_provider_request_timeout`` which is called once per API turn.
     """
+    return _load_config_impl(want_deepcopy=True)
+
+
+def load_config_readonly() -> Dict[str, Any]:
+    """Fast-path variant of ``load_config()`` for callers that ONLY READ.
+
+    Returns the cached config dict directly without the defensive deepcopy
+    that ``load_config()`` applies. **Mutating the returned dict (or any
+    nested structure) corrupts the in-process cache for every subsequent
+    caller** — only use this when you are absolutely sure your code path
+    will not write to the result. If you need to mutate or pass to
+    ``save_config``, call ``load_config()`` instead.
+
+    Why this exists: ``load_config()`` cache-hit cost is ~265us per call,
+    half of which (~135us) is the defensive deepcopy. The agent loop calls
+    into config reads (timeouts, thresholds, feature flags) ~20-50x per
+    conversation; skipping deepcopy here removes a measurable allocation
+    source and the GC pressure that comes with it.
+
+    Note: this returns a plain ``dict`` (not ``MappingProxyType``) so
+    existing ``isinstance(x, dict)`` guards downstream keep working. The
+    safety guarantee is purely documented, not enforced — be careful.
+    """
+    return _load_config_impl(want_deepcopy=False)
+
+
+def _load_config_impl(*, want_deepcopy: bool) -> Dict[str, Any]:
     with _CONFIG_LOCK:
         ensure_hermes_home()
         config_path = get_config_path()
@@ -4171,7 +4420,7 @@ def load_config() -> Dict[str, Any]:
 
         cached = _LOAD_CONFIG_CACHE.get(path_key)
         if cached is not None and cache_key is not None and cached[:2] == cache_key:
-            return copy.deepcopy(cached[2])
+            return copy.deepcopy(cached[2]) if want_deepcopy else cached[2]
 
         config = copy.deepcopy(DEFAULT_CONFIG)
 
@@ -4195,9 +4444,24 @@ def load_config() -> Dict[str, Any]:
         expanded = _expand_env_vars(normalized)
         _LAST_EXPANDED_CONFIG_BY_PATH[path_key] = copy.deepcopy(expanded)
         if cache_key is not None:
-            _LOAD_CONFIG_CACHE[path_key] = (cache_key[0], cache_key[1], copy.deepcopy(expanded))
+            # Cache stores a separate deepcopy so subsequent ``load_config()``
+            # (deepcopy=True) callers can mutate freely without affecting the
+            # cached value, and ``load_config_readonly()`` (deepcopy=False)
+            # callers all see the same stable cached object.
+            cached_copy = copy.deepcopy(expanded)
+            _LOAD_CONFIG_CACHE[path_key] = (cache_key[0], cache_key[1], cached_copy)
+            # On the readonly path return the same cached object subsequent
+            # calls will see — keeps "two readonly calls return the same
+            # object" invariant that callers may rely on for identity checks.
+            if not want_deepcopy:
+                return cached_copy
         else:
             _LOAD_CONFIG_CACHE.pop(path_key, None)
+        # First-load result is a fresh dict (not aliased to the cache); safe
+        # to return directly. For the deepcopy=True path this is the
+        # canonical "freshly-built mutable result" the function has always
+        # returned. For the deepcopy=False path with no cache (e.g. config
+        # file missing), it's also fine — callers get an isolated object.
         return expanded
 
 

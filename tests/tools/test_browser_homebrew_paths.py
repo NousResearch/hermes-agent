@@ -68,10 +68,10 @@ class TestDiscoverHomebrewNodeDirs:
             if p == "/opt/homebrew/opt":
                 return True
             # node@20/bin and node@24/bin exist
-            if p in (
+            if p in {
                 "/opt/homebrew/opt/node@20/bin",
                 "/opt/homebrew/opt/node@24/bin",
-            ):
+            }:
                 return True
             return False
 
@@ -171,10 +171,10 @@ class TestFindAgentBrowser:
         real_isdir = os.path.isdir
 
         def selective_isdir(path):
-            if path in (
+            if path in {
                 "/data/data/com.termux/files/usr/bin",
                 "/data/data/com.termux/files/usr/sbin",
-            ):
+            }:
                 return True
             return real_isdir(path)
 
@@ -486,10 +486,10 @@ class TestRunBrowserCommandPathConstruction:
         real_isdir = os.path.isdir
 
         def selective_isdir(path):
-            if path in (
+            if path in {
                 "/data/data/com.termux/files/usr/bin",
                 "/data/data/com.termux/files/usr/sbin",
-            ):
+            }:
                 return True
             if path.startswith(str(tmp_path)):
                 return True

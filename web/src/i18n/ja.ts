@@ -654,6 +654,7 @@ export const ja: Translations = {
     columnLabels: {
       triage: "トリアージ",
       todo: "ToDo",
+      scheduled: "スケジュール済み",
       ready: "準備完了",
       running: "進行中",
       blocked: "ブロック中",
@@ -663,7 +664,8 @@ export const ja: Translations = {
     columnHelp: {
       triage: "未整理のアイデア — スペシファイアが仕様を肉付けします",
       todo: "依存関係の待機中、または未割り当て",
-      ready: "割り当て済み、ディスパッチャーのティック待ち",
+      scheduled: "既知の時間遅延またはスケジュール済みのフォローアップ待ち",
+      ready: "依存関係は満たされています。ディスパッチするにはプロファイルを割り当ててください",
       running: "ワーカーが取得中 — 実行中",
       blocked: "ワーカーが人間の入力を求めています",
       done: "完了",

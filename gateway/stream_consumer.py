@@ -16,6 +16,7 @@ Credit: jobless0x (#774, #1312), OutThisLife (#798), clicksingh (#697).
 from __future__ import annotations
 
 import asyncio
+import inspect
 import logging
 import queue
 import re
@@ -65,9 +66,9 @@ class StreamConsumerConfig:
     #             when the adapter + chat supports it; fall back to edit.
     #   "draft" — explicitly request native draft streaming; fall back to
     #             edit when unsupported.
-    #   "edit"  — progressive editMessageText (legacy behavior).
+    #   "edit"  — progressive editMessageText (legacy/default behavior).
     #   "off"   — handled by the gateway before the consumer is even built.
-    transport: str = "auto"
+    transport: str = "edit"
     # Hint for the consumer about the originating chat type (e.g. "dm",
     # "group", "supergroup", "forum").  Used to gate native draft streaming,
     # which is platform-specific (Telegram drafts are DM-only).
@@ -196,6 +197,35 @@ class GatewayStreamConsumer:
         """True when the final response content reached the user, even if
         the subsequent cosmetic edit (cursor removal) failed."""
         return self._final_content_delivered
+
+    async def _edit_message(
+        self,
+        *,
+        message_id: str,
+        content: str,
+        finalize: bool = False,
+    ):
+        """Edit via the adapter, passing routing metadata when supported."""
+        kwargs = {
+            "chat_id": self.chat_id,
+            "message_id": message_id,
+            "content": content,
+        }
+        # Keep the long-standing stream-consumer contract: concrete adapters
+        # must accept finalize= even when it is False (guarded by tests).
+        kwargs["finalize"] = finalize
+
+        if self.metadata:
+            try:
+                params = inspect.signature(self.adapter.edit_message).parameters
+                if "metadata" in params or any(
+                    param.kind is inspect.Parameter.VAR_KEYWORD
+                    for param in params.values()
+                ):
+                    kwargs["metadata"] = self.metadata
+            except (TypeError, ValueError):
+                pass
+        return await self.adapter.edit_message(**kwargs)
 
     def on_segment_break(self) -> None:
         """Finalize the current stream segment and start a fresh message."""
@@ -733,8 +763,7 @@ class GatewayStreamConsumer:
                 ):
                     clean_text = self._last_sent_text[:-len(self.cfg.cursor)]
                     try:
-                        result = await self.adapter.edit_message(
-                            chat_id=self.chat_id,
+                        result = await self._edit_message(
                             message_id=self._message_id,
                             content=clean_text,
                         )
@@ -846,7 +875,7 @@ class GatewayStreamConsumer:
         the chat type (e.g. Telegram drafts are DM-only) and platform-version
         gates (e.g. python-telegram-bot 22.6+).
         """
-        transport = (self.cfg.transport or "auto").lower()
+        transport = (self.cfg.transport or "edit").lower()
         if transport == "edit":
             return False
         # "off" is filtered upstream by the gateway; treat as edit defensively.
@@ -959,8 +988,7 @@ class GatewayStreamConsumer:
         if not prefix or not prefix.strip():
             return
         try:
-            await self.adapter.edit_message(
-                chat_id=self.chat_id,
+            await self._edit_message(
                 message_id=self._message_id,
                 content=prefix,
             )
@@ -1167,8 +1195,7 @@ class GatewayStreamConsumer:
                     ):
                         return True
                     # Edit existing message
-                    result = await self.adapter.edit_message(
-                        chat_id=self.chat_id,
+                    result = await self._edit_message(
                         message_id=self._message_id,
                         content=text,
                         finalize=finalize,

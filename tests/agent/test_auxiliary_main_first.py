@@ -371,7 +371,7 @@ class TestResolveVisionMainFirst:
             provider, client, model = resolve_vision_provider_client()
 
         assert client is fallback_client
-        assert provider in ("openrouter", "nous")
+        assert provider in {"openrouter", "nous"}
 
     def test_explicit_provider_override_still_wins(self):
         """Explicit config override bypasses main-first policy."""

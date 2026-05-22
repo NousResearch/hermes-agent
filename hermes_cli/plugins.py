@@ -325,8 +325,15 @@ class PluginContext:
         is_async: bool = False,
         description: str = "",
         emoji: str = "",
+        override: bool = False,
     ) -> None:
-        """Register a tool in the global registry **and** track it as plugin-provided."""
+        """Register a tool in the global registry **and** track it as plugin-provided.
+
+        Pass ``override=True`` to replace an existing built-in tool with the
+        same name (e.g. swap the default ``browser_navigate`` for a custom
+        CDP-backed implementation). Without it, attempting to register a name
+        already claimed by a different toolset is rejected.
+        """
         from tools.registry import registry
 
         registry.register(
@@ -339,9 +346,13 @@ class PluginContext:
             is_async=is_async,
             description=description,
             emoji=emoji,
+            override=override,
         )
         self._manager._plugin_tool_names.add(name)
-        logger.debug("Plugin %s registered tool: %s", self.manifest.name, name)
+        logger.debug(
+            "Plugin %s registered tool: %s%s",
+            self.manifest.name, name, " (override)" if override else "",
+        )
 
     # -- message injection --------------------------------------------------
 
@@ -594,6 +605,38 @@ class PluginContext:
         _register_web_provider(provider)
         logger.info(
             "Plugin '%s' registered web provider: %s",
+            self.manifest.name, provider.name,
+        )
+
+    # -- browser provider registration ---------------------------------------
+
+    def register_browser_provider(self, provider) -> None:
+        """Register a cloud browser backend.
+
+        ``provider`` must be an instance of
+        :class:`agent.browser_provider.BrowserProvider`. The
+        ``provider.name`` attribute is what ``browser.cloud_provider`` in
+        ``config.yaml`` matches against when routing cloud-mode
+        ``browser_*`` tool calls.
+
+        Mirrors :meth:`register_web_search_provider` exactly — same
+        registration shape, same gating, same logging. The browser
+        subsystem's dispatcher (:func:`tools.browser_tool._get_cloud_provider`)
+        consults the registry built up by these calls.
+        """
+        from agent.browser_provider import BrowserProvider
+        from agent.browser_registry import register_provider as _register_browser_provider
+
+        if not isinstance(provider, BrowserProvider):
+            logger.warning(
+                "Plugin '%s' tried to register a browser provider that does "
+                "not inherit from BrowserProvider. Ignoring.",
+                self.manifest.name,
+            )
+            return
+        _register_browser_provider(provider)
+        logger.info(
+            "Plugin '%s' registered browser provider: %s",
             self.manifest.name, provider.name,
         )
 

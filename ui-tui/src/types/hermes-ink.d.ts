@@ -164,6 +164,7 @@ declare module '@hermes/ink' {
     readonly column: number
     readonly active: boolean
   }): (el: unknown) => void
+  export function useCursorAdvance(): (dx: number, dy?: number) => void
   export function useStdin(): {
     readonly stdin: NodeJS.ReadStream
     readonly setRawMode: (value: boolean) => void

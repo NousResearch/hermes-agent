@@ -654,6 +654,7 @@ export const af: Translations = {
     columnLabels: {
       triage: "Triage",
       todo: "Te doen",
+      scheduled: "Geskeduleerd",
       ready: "Gereed",
       running: "Aan die gang",
       blocked: "Geblokkeer",
@@ -663,7 +664,8 @@ export const af: Translations = {
     columnHelp: {
       triage: "Rou idees — 'n spesifiseerder sal die spesifikasie uitwerk",
       todo: "Wag op afhanklikhede of nie toegewys nie",
-      ready: "Toegewys en wag vir 'n versender-tik",
+      scheduled: "Wag op 'n bekende tydvertraging of geskeduleerde opvolg",
+      ready: "Afhanklikhede is bevredig; wys 'n profiel toe om te versend",
       running: "Deur 'n werker geëis — in vlug",
       blocked: "Werker het mensinvoer aangevra",
       done: "Voltooi",

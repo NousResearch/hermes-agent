@@ -197,6 +197,26 @@ def _normalize_local_command_model(model_name: Optional[str]) -> str:
     return _normalize_local_model(model_name)
 
 
+def _try_lazy_install_stt() -> bool:
+    """Attempt to lazy-install faster-whisper and return True on success.
+
+    The module-level ``_HAS_FASTER_WHISPER`` flag is set at import time and
+    cached. If the package wasn't installed at startup, calling ``ensure()``
+    installs it. This function re-checks dynamically after installation so
+    the provider can use it immediately without a process restart.
+    """
+    try:
+        from tools.lazy_deps import ensure
+        ensure("stt.faster_whisper")
+        # Re-check dynamically after install
+        import importlib.util as _iu
+        if _iu.find_spec("faster_whisper"):
+            return True
+    except Exception as exc:
+        logger.debug("Lazy install of faster-whisper failed: %s", exc)
+    return False
+
+
 def _get_provider(stt_config: dict) -> str:
     """Determine which STT provider to use.
 
@@ -218,6 +238,9 @@ def _get_provider(stt_config: dict) -> str:
                 return "local"
             if _has_local_command():
                 return "local_command"
+            # Try lazy-install before giving up
+            if _try_lazy_install_stt():
+                return "local"
             logger.warning(
                 "STT provider 'local' configured but unavailable "
                 "(install faster-whisper or set HERMES_LOCAL_STT_COMMAND)"
@@ -266,10 +289,12 @@ def _get_provider(stt_config: dict) -> str:
             return "none"
 
         if provider == "xai":
-            if get_env_value("XAI_API_KEY"):
+            from tools.xai_http import resolve_xai_http_credentials
+
+            if resolve_xai_http_credentials().get("api_key"):
                 return "xai"
             logger.warning(
-                "STT provider 'xai' configured but XAI_API_KEY not set"
+                "STT provider 'xai' configured but no xAI credentials are available"
             )
             return "none"
 
@@ -283,15 +308,23 @@ def _get_provider(stt_config: dict) -> str:
         return "local"
     if _has_local_command():
         return "local_command"
+    # Try lazy-install before falling through to cloud providers
+    if _try_lazy_install_stt():
+        return "local"
     if _HAS_OPENAI and get_env_value("GROQ_API_KEY"):
         logger.info("No local STT available, using Groq Whisper API")
         return "groq"
     if _HAS_OPENAI and _has_openai_audio_backend():
         logger.info("No local STT available, using OpenAI Whisper API")
         return "openai"
-    if get_env_value("XAI_API_KEY"):
-        logger.info("No local STT available, using xAI Grok STT API")
-        return "xai"
+    try:
+        from tools.xai_http import resolve_xai_http_credentials
+
+        if resolve_xai_http_credentials().get("api_key"):
+            logger.info("No local STT available, using xAI Grok STT API")
+            return "xai"
+    except Exception:
+        pass
     return "none"
 
 # ---------------------------------------------------------------------------
@@ -396,7 +429,8 @@ def _transcribe_local(file_path: str, model_name: str) -> Dict[str, Any]:
     global _local_model, _local_model_name
 
     if not _HAS_FASTER_WHISPER:
-        return {"success": False, "transcript": "", "error": "faster-whisper not installed"}
+        if not _try_lazy_install_stt():
+            return {"success": False, "transcript": "", "error": "faster-whisper not installed"}
 
     try:
         # Lazy-load the model (downloads on first use, ~150 MB for 'base')
@@ -704,15 +738,23 @@ def _transcribe_xai(file_path: str, model_name: str) -> Dict[str, Any]:
     Supports Inverse Text Normalization, diarization, and word-level timestamps.
     Requires ``XAI_API_KEY`` environment variable.
     """
-    api_key = get_env_value("XAI_API_KEY")
+    from tools.xai_http import resolve_xai_http_credentials
+
+    creds = resolve_xai_http_credentials()
+    api_key = str(creds.get("api_key") or "").strip()
     if not api_key:
-        return {"success": False, "transcript": "", "error": "XAI_API_KEY not set"}
+        return {
+            "success": False,
+            "transcript": "",
+            "error": "No xAI credentials found. Configure xAI OAuth in `hermes model` or set XAI_API_KEY",
+        }
 
     stt_config = _load_stt_config()
     xai_config = stt_config.get("xai", {})
     base_url = str(
         xai_config.get("base_url")
         or get_env_value("XAI_STT_BASE_URL")
+        or creds.get("base_url")
         or XAI_STT_BASE_URL
     ).strip().rstrip("/")
     language = str(
@@ -872,7 +914,7 @@ def transcribe_audio(file_path: str, model: Optional[str] = None) -> Dict[str, A
             "No STT provider available. Install faster-whisper for free local "
             f"transcription, configure {LOCAL_STT_COMMAND_ENV} or install a local whisper CLI, "
             "set GROQ_API_KEY for free Groq Whisper, set MISTRAL_API_KEY for Mistral "
-            "Voxtral Transcribe, set XAI_API_KEY for xAI Grok STT, or set VOICE_TOOLS_OPENAI_KEY "
+            "Voxtral Transcribe, configure xAI OAuth or set XAI_API_KEY for xAI Grok STT, or set VOICE_TOOLS_OPENAI_KEY "
             "or OPENAI_API_KEY for the OpenAI Whisper API."
         ),
     }

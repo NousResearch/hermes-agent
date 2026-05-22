@@ -452,6 +452,37 @@ requires_env:
 
 Both formats can be mixed in the same list. Already-set variables are skipped silently.
 
+### Lazy-install optional Python dependencies
+
+If your plugin wraps an SDK that not every user will have installed (a vendor SDK, a heavy ML lib, a platform-specific package), don't `import` it at the top of the module. Use the `tools.lazy_deps.ensure(...)` helper inside the tool handler — Hermes will install the package on first use, gated by the user's `security.allow_lazy_installs` config.
+
+```python
+# tools.py
+from tools.lazy_deps import ensure, FeatureUnavailable
+
+def my_tool_handler(args, **kwargs):
+    try:
+        ensure("my-plugin.my-backend")   # key must be in LAZY_DEPS
+    except FeatureUnavailable as exc:
+        return {"error": str(exc)}
+
+    import my_backend_sdk   # safe now
+    ...
+```
+
+Two rules from the security model in `tools/lazy_deps.py`:
+
+| Rule | Why |
+|---|---|
+| Your feature key must appear in the in-tree `LAZY_DEPS` allowlist | Prevents a malicious config from coaxing Hermes into installing arbitrary packages — only specs Hermes itself ships are eligible |
+| Specs are PyPI-by-name only | No `--index-url`, `git+https://`, or file: paths. Pin versions with PEP 440 (`"my-sdk>=1.2,<2"`) inside the allowlist entry |
+
+For third-party plugins distributed via pip, declare the optional deps as `[project.optional-dependencies]` extras in your own `pyproject.toml` and tell users to `pip install your-plugin[backend]` — that path doesn't go through `lazy_deps`. The lazy-install dance is most useful for **bundled** plugins where shipping a hard dependency on every install would bloat the base Hermes footprint.
+
+When `security.allow_lazy_installs: false` is set globally, `ensure()` raises `FeatureUnavailable` immediately with a remediation hint — your plugin should catch it and degrade gracefully (return an error result, not crash the tool loop).
+
+
+
 ### Conditional tool availability
 
 For tools that depend on optional libraries:
@@ -464,6 +495,30 @@ ctx.register_tool(
     check_fn=lambda: _has_optional_lib(),  # False = tool hidden from model
 )
 ```
+
+### Overriding a built-in tool
+
+To replace a built-in tool with your own implementation (e.g. swap the
+default browser tool for a headed-Chrome CDP backend, or replace
+`web_search` with a custom corporate index), pass `override=True`:
+
+```python
+def register(ctx):
+    ctx.register_tool(
+        name="browser_navigate",             # same name as the built-in
+        toolset="plugin_my_browser",         # your own toolset namespace
+        schema={...},
+        handler=my_custom_navigate,
+        override=True,                       # explicit opt-in
+    )
+```
+
+Without `override=True`, the registry rejects any registration that would
+shadow an existing tool from a different toolset — this prevents
+accidental overwrites. The override is logged at INFO level so it's
+auditable in `~/.hermes/logs/agent.log`. Plugins load after built-in
+tools, so the registration order is correct: your handler replaces the
+built-in one.
 
 ### Register multiple hooks
 

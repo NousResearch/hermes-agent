@@ -61,6 +61,7 @@ CONFIGURABLE_TOOLSETS = [
     ("video",           "🎬 Video Analysis",            "video_analyze (requires video-capable model)"),
     ("image_gen",       "🎨 Image Generation",          "image_generate"),
     ("video_gen",       "🎬 Video Generation",          "video_generate (text-to-video + image-to-video)"),
+    ("x_search",        "🐦 X (Twitter) Search",        "x_search (requires xAI OAuth or XAI_API_KEY)"),
     ("moa",             "🧠 Mixture of Agents",         "mixture_of_agents"),
     ("tts",             "🔊 Text-to-Speech",            "text_to_speech"),
     ("skills",          "📚 Skills",                    "list, view, manage"),
@@ -86,7 +87,40 @@ CONFIGURABLE_TOOLSETS = [
 # Video gen is off by default — it's a niche, paid, slow feature. Users
 # who want it opt in via `hermes tools` → Video Generation, which walks
 # them through provider + model selection.
-_DEFAULT_OFF_TOOLSETS = {"moa", "homeassistant", "spotify", "discord", "discord_admin", "video", "video_gen"}
+#
+# X search is off by default for users without xAI credentials, but
+# auto-enables when SuperGrok OAuth tokens are stored OR XAI_API_KEY is
+# set — mirroring the HASS_TOKEN → homeassistant auto-enable below. The
+# `hermes tools` → X (Twitter) Search setup walks users through credential
+# setup. The tool's check_fn means the schema still won't appear to the
+# model if the credential later goes missing or expires.
+_DEFAULT_OFF_TOOLSETS = {"moa", "homeassistant", "spotify", "discord", "discord_admin", "video", "video_gen", "x_search"}
+
+
+def _xai_credentials_present() -> bool:
+    """Cheap, side-effect-free check for usable xAI credentials.
+
+    Used to auto-enable the ``x_search`` toolset when the user has either
+    completed xAI Grok OAuth (SuperGrok subscription) or set
+    ``XAI_API_KEY``. Does NOT hit the network — only inspects the local
+    auth store and environment. The tool's runtime ``check_fn`` still
+    gates schema registration if creds later expire or get revoked.
+    """
+    try:
+        from hermes_cli.auth import _read_xai_oauth_tokens
+
+        _read_xai_oauth_tokens()
+        return True
+    except Exception:
+        pass
+    try:
+        from tools.xai_http import get_env_value as _xai_get_env_value
+
+        if str(_xai_get_env_value("XAI_API_KEY") or "").strip():
+            return True
+    except Exception:
+        pass
+    return bool(str(os.environ.get("XAI_API_KEY") or "").strip())
 
 # Platform-scoped toolsets: only appear in the `hermes tools` checklist for
 # these platforms, and only resolve/save for these platforms.  A toolset
@@ -194,11 +228,10 @@ TOOL_CATEGORIES = {
             },
             {
                 "name": "xAI TTS",
-                "tag": "Grok voices - requires xAI API key",
-                "env_vars": [
-                    {"key": "XAI_API_KEY", "prompt": "xAI API key", "url": "https://console.x.ai/"},
-                ],
+                "tag": "Grok voices — uses xAI Grok OAuth or XAI_API_KEY",
+                "env_vars": [],
                 "tts_provider": "xai",
+                "post_setup": "xai_grok",
             },
             {
                 "name": "ElevenLabs",
@@ -278,6 +311,16 @@ TOOL_CATEGORIES = {
     "image_gen": {
         "name": "Image Generation",
         "icon": "🎨",
+        # Per-provider rows for FAL.ai (`plugins/image_gen/fal`), OpenAI,
+        # OpenAI Codex, and xAI are injected at runtime from each
+        # ``plugins.image_gen.<vendor>`` package via
+        # ``_plugin_image_gen_providers()`` in ``_visible_providers``.
+        # Only non-provider UX setup-flow rows remain here:
+        #   - "Nous Subscription" — managed FAL billed via the Nous
+        #     subscription (requires_nous_auth + override_env_vars).
+        #     Uses the fal plugin as the underlying backend but has a
+        #     distinct setup UX.
+        # Mirrors the shape browser/video_gen ship today.
         "providers": [
             {
                 "name": "Nous Subscription",
@@ -287,15 +330,6 @@ TOOL_CATEGORIES = {
                 "requires_nous_auth": True,
                 "managed_nous_feature": "image_gen",
                 "override_env_vars": ["FAL_KEY"],
-                "imagegen_backend": "fal",
-            },
-            {
-                "name": "FAL.ai",
-                "badge": "paid",
-                "tag": "Pick from flux-2-klein, flux-2-pro, gpt-image, nano-banana, etc.",
-                "env_vars": [
-                    {"key": "FAL_KEY", "prompt": "FAL API key", "url": "https://fal.ai/dashboard/keys"},
-                ],
                 "imagegen_backend": "fal",
             },
         ],
@@ -309,9 +343,53 @@ TOOL_CATEGORIES = {
         # converge image_gen toward.
         "providers": [],
     },
+    "x_search": {
+        "name": "X (Twitter) Search",
+        "setup_title": "Select xAI Credential Source",
+        "setup_note": (
+            "Hermes routes X searches through xAI's built-in x_search "
+            "Responses tool. Both credential sources hit the same "
+            "https://api.x.ai/v1/responses endpoint — pick whichever you "
+            "already have. SuperGrok OAuth is preferred when both are set "
+            "(uses your subscription quota instead of API spend)."
+        ),
+        "icon": "🐦",
+        "providers": [
+            {
+                "name": "xAI Grok OAuth (SuperGrok Subscription)",
+                "badge": "subscription",
+                "tag": "Browser login at accounts.x.ai — no API key required",
+                "env_vars": [],
+                "post_setup": "xai_grok",
+            },
+            {
+                "name": "xAI API key",
+                "badge": "paid",
+                "tag": "Direct xAI API billing via XAI_API_KEY",
+                "env_vars": [
+                    {
+                        "key": "XAI_API_KEY",
+                        "prompt": "xAI API key",
+                        "url": "https://console.x.ai/",
+                    },
+                ],
+            },
+        ],
+    },
     "browser": {
         "name": "Browser Automation",
         "icon": "🌐",
+        # Per-provider rows for Browserbase, Browser Use, and Firecrawl are
+        # injected at runtime from plugins.browser.<vendor>.provider via
+        # _plugin_browser_providers() in _visible_providers(). Only
+        # non-provider UX setup-flow rows remain here:
+        #   - "Nous Subscription (Browser Use cloud)" — managed Browser Use
+        #     billed via Nous subscription (requires_nous_auth +
+        #     override_env_vars). Uses the browser-use plugin as the
+        #     underlying backend but has a distinct setup UX.
+        #   - "Local Browser" — non-cloud option, no CloudBrowserProvider.
+        #   - "Camofox" — anti-detection local Firefox; short-circuits the
+        #     cloud-provider dispatch path via _is_camofox_mode().
         "providers": [
             {
                 "name": "Nous Subscription (Browser Use cloud)",
@@ -330,37 +408,6 @@ TOOL_CATEGORIES = {
                 "tag": "Headless Chromium, no API key needed",
                 "env_vars": [],
                 "browser_provider": "local",
-                "post_setup": "agent_browser",
-            },
-            {
-                "name": "Browserbase",
-                "badge": "paid",
-                "tag": "Cloud browser with stealth and proxies",
-                "env_vars": [
-                    {"key": "BROWSERBASE_API_KEY", "prompt": "Browserbase API key", "url": "https://browserbase.com"},
-                    {"key": "BROWSERBASE_PROJECT_ID", "prompt": "Browserbase project ID"},
-                ],
-                "browser_provider": "browserbase",
-                "post_setup": "agent_browser",
-            },
-            {
-                "name": "Browser Use",
-                "badge": "paid",
-                "tag": "Cloud browser with remote execution",
-                "env_vars": [
-                    {"key": "BROWSER_USE_API_KEY", "prompt": "Browser Use API key", "url": "https://browser-use.com"},
-                ],
-                "browser_provider": "browser-use",
-                "post_setup": "agent_browser",
-            },
-            {
-                "name": "Firecrawl",
-                "badge": "paid",
-                "tag": "Cloud browser with remote execution",
-                "env_vars": [
-                    {"key": "FIRECRAWL_API_KEY", "prompt": "Firecrawl API key", "url": "https://firecrawl.dev"},
-                ],
-                "browser_provider": "firecrawl",
                 "post_setup": "agent_browser",
             },
             {
@@ -423,31 +470,6 @@ TOOL_CATEGORIES = {
             },
         ],
     },
-    "langfuse": {
-        "name": "Langfuse Observability",
-        "icon": "📊",
-        "providers": [
-            {
-                "name": "Langfuse Cloud",
-                "tag": "Hosted Langfuse (cloud.langfuse.com)",
-                "env_vars": [
-                    {"key": "HERMES_LANGFUSE_PUBLIC_KEY", "prompt": "Langfuse public key (pk-lf-...)", "url": "https://cloud.langfuse.com"},
-                    {"key": "HERMES_LANGFUSE_SECRET_KEY", "prompt": "Langfuse secret key (sk-lf-...)", "url": "https://cloud.langfuse.com"},
-                ],
-                "post_setup": "langfuse",
-            },
-            {
-                "name": "Langfuse Self-Hosted",
-                "tag": "Self-hosted Langfuse instance",
-                "env_vars": [
-                    {"key": "HERMES_LANGFUSE_PUBLIC_KEY", "prompt": "Langfuse public key (pk-lf-...)"},
-                    {"key": "HERMES_LANGFUSE_SECRET_KEY", "prompt": "Langfuse secret key (sk-lf-...)"},
-                    {"key": "HERMES_LANGFUSE_BASE_URL", "prompt": "Langfuse server URL (e.g. http://localhost:3000)", "default": "http://localhost:3000"},
-                ],
-                "post_setup": "langfuse",
-            },
-        ],
-    },
 }
 
 # Simple env-var requirements for toolsets NOT in TOOL_CATEGORIES.
@@ -459,6 +481,11 @@ TOOLSET_ENV_REQUIREMENTS = {
 
 
 # ─── Post-Setup Hooks ─────────────────────────────────────────────────────────
+
+
+def _cua_driver_cmd() -> str:
+    """Return the cua-driver executable name/path, honoring non-empty overrides."""
+    return os.environ.get("HERMES_CUA_DRIVER_CMD", "").strip() or "cua-driver"
 
 
 def _pip_install(
@@ -529,6 +556,55 @@ def _pip_install(
     )
 
 
+
+def _check_cua_driver_asset_for_arch() -> bool:
+    """Check whether the latest CUA release ships an asset for this architecture.
+
+    Returns True if the asset likely exists (or if we cannot determine it).
+    Returns False and prints a warning when the asset is confirmed missing,
+    so callers can skip the install attempt and avoid a raw 404.
+    """
+    import platform as _plat
+    import urllib.request
+
+    machine = _plat.machine()  # "x86_64" or "arm64"
+    if machine == "arm64":
+        # arm64 (Apple Silicon) assets are always published.
+        return True
+
+    # x86_64 / Intel — probe the latest release for an architecture-specific
+    # asset before falling through to the upstream installer.
+    api_url = (
+        "https://api.github.com/repos/trycua/cua/releases/latest"
+    )
+    try:
+        req = urllib.request.Request(api_url, headers={"Accept": "application/vnd.github+json"})
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            release = _json.loads(resp.read().decode())
+        tag = release.get("tag_name", "")
+        assets = release.get("assets", [])
+        arch_names = {"x86_64", "amd64"}
+        has_asset = any(
+            any(a in a_info.get("name", "").lower() for a in arch_names)
+            for a_info in assets
+        )
+        if not has_asset:
+            _print_warning(
+                f"    Latest CUA release ({tag}) has no Intel (x86_64) asset."
+            )
+            _print_info(
+                "    CUA Driver currently only ships Apple Silicon builds."
+            )
+            _print_info(
+                "    See: https://github.com/trycua/cua/issues/1493"
+            )
+            return False
+    except Exception:
+        # Network / API failure — proceed and let the installer handle it.
+        pass
+    return True
+
+
 def install_cua_driver(upgrade: bool = False) -> bool:
     """Install or refresh the cua-driver binary used by Computer Use.
 
@@ -558,7 +634,8 @@ def install_cua_driver(upgrade: bool = False) -> bool:
         _print_warning("    Computer Use (cua-driver) is macOS-only; skipping.")
         return False
 
-    binary = shutil.which("cua-driver")
+    driver_cmd = _cua_driver_cmd()
+    binary = shutil.which(driver_cmd)
 
     # Not installed → fresh install path (only when caller asked for it).
     if not binary and not upgrade:
@@ -566,18 +643,20 @@ def install_cua_driver(upgrade: bool = False) -> bool:
             _print_warning("    curl not found — install manually:")
             _print_info("      https://github.com/trycua/cua/blob/main/libs/cua-driver/README.md")
             return False
+        if not _check_cua_driver_asset_for_arch():
+            return False
         return _run_cua_driver_installer(label="Installing")
 
     # Already installed and caller didn't ask to upgrade → just confirm.
     if binary and not upgrade:
         try:
             version = subprocess.run(
-                ["cua-driver", "--version"],
+                [driver_cmd, "--version"],
                 capture_output=True, text=True, timeout=5,
             ).stdout.strip()
-            _print_success(f"    cua-driver already installed: {version or 'unknown version'}")
+            _print_success(f"    {driver_cmd} already installed: {version or 'unknown version'}")
         except Exception:
-            _print_success("    cua-driver already installed.")
+            _print_success(f"    {driver_cmd} already installed.")
         _print_info("    Grant macOS permissions if not done yet:")
         _print_info("      System Settings > Privacy & Security > Accessibility")
         _print_info("      System Settings > Privacy & Security > Screen Recording")
@@ -588,11 +667,14 @@ def install_cua_driver(upgrade: bool = False) -> bool:
         _print_warning("    curl not found — cannot refresh cua-driver.")
         return bool(binary)
 
+    if not _check_cua_driver_asset_for_arch():
+        return bool(binary)
+
     if binary:
         # Show before/after version when we have a baseline. Best-effort.
         try:
             before = subprocess.run(
-                ["cua-driver", "--version"],
+                [driver_cmd, "--version"],
                 capture_output=True, text=True, timeout=5,
             ).stdout.strip()
         except Exception:
@@ -604,13 +686,13 @@ def install_cua_driver(upgrade: bool = False) -> bool:
     if ok and before:
         try:
             after = subprocess.run(
-                ["cua-driver", "--version"],
+                [driver_cmd, "--version"],
                 capture_output=True, text=True, timeout=5,
             ).stdout.strip()
             if after and after != before:
-                _print_success(f"    cua-driver upgraded: {before} → {after}")
+                _print_success(f"    {driver_cmd} upgraded: {before} → {after}")
             elif after:
-                _print_info(f"    cua-driver up to date: {after}")
+                _print_info(f"    {driver_cmd} up to date: {after}")
         except Exception:
             pass
     return ok
@@ -634,11 +716,12 @@ def _run_cua_driver_installer(label: str = "Installing", verbose: bool = True) -
         _print_info(f"    {label} cua-driver (macOS background computer-use)...")
     else:
         _print_info(f"    {label} cua-driver...")
+    driver_cmd = _cua_driver_cmd()
     try:
         result = subprocess.run(install_cmd, shell=True, timeout=300)
-        if result.returncode == 0 and shutil.which("cua-driver"):
+        if result.returncode == 0 and shutil.which(driver_cmd):
             if verbose:
-                _print_success("    cua-driver installed.")
+                _print_success(f"    {driver_cmd} installed.")
                 _print_info("    IMPORTANT — grant macOS permissions now:")
                 _print_info("      System Settings > Privacy & Security > Accessibility")
                 _print_info("      System Settings > Privacy & Security > Screen Recording")
@@ -772,21 +855,35 @@ def _run_post_setup(post_setup_key: str):
         camofox_dir = PROJECT_ROOT / "node_modules" / "@askjo" / "camofox-browser"
         _npm_bin = shutil.which("npm")
         if not camofox_dir.exists() and _npm_bin:
-            _print_info("    Installing Camofox browser server...")
+            _print_info("    Installing Camofox browser package...")
+            _print_info("    First run downloads the Camoufox engine (~300MB) — this can take several minutes.")
             import subprocess
-            # Absolute npm path so .cmd shim executes on Windows.
-            result = subprocess.run(
-                [_npm_bin, "install", "--silent"],
-                capture_output=True, text=True, cwd=str(PROJECT_ROOT)
-            )
-            if result.returncode == 0:
-                _print_success("    Camofox installed")
-            else:
-                _print_warning("    npm install failed - run manually: npm install")
+            # Install @askjo/camofox-browser on-demand. It is NOT in
+            # package.json so that `hermes update` does not silently pull
+            # the ~300MB Camoufox Firefox-fork binary for every user.
+            # Stream output (no capture, no --silent) so the long-running
+            # postinstall download is visible instead of looking frozen.
+            try:
+                result = subprocess.run(
+                    [_npm_bin, "install", "@askjo/camofox-browser@^1.5.2",
+                     "--no-fund", "--no-audit", "--progress=false"],
+                    cwd=str(PROJECT_ROOT),
+                )
+                if result.returncode == 0:
+                    _print_success("    Camofox installed")
+                else:
+                    _print_warning(
+                        "    npm install failed — run manually: "
+                        "npm install @askjo/camofox-browser"
+                    )
+            except Exception as exc:
+                _print_warning(f"    Camofox install failed: {exc}")
+                _print_info(
+                    "    Run manually: npm install @askjo/camofox-browser"
+                )
         if camofox_dir.exists():
             _print_info("    Start the Camofox server:")
             _print_info("      npx @askjo/camofox-browser")
-            _print_info("    First run downloads the Camoufox engine (~300MB)")
             _print_info("    Or use Docker: docker run -p 9377:9377 -e CAMOFOX_PORT=9377 jo-inc/camofox-browser")
         elif not shutil.which("npm"):
             _print_warning("    Node.js not found. Install Camofox via Docker:")
@@ -895,35 +992,72 @@ def _run_post_setup(post_setup_key: str):
             _print_warning(f"    Spotify login failed: {exc}")
             _print_info("    Run manually: hermes auth spotify")
 
-    elif post_setup_key == "langfuse":
-        # Install the langfuse SDK.
+    elif post_setup_key == "xai_grok":
+        # Shared credential bootstrap for any picker entry that talks to xAI
+        # (TTS, Video Gen, future Image Gen, etc.). Accepts either a
+        # SuperGrok-tier OAuth bearer token (preferred — billed against the
+        # user's existing subscription) or a raw XAI_API_KEY from
+        # console.x.ai. The picker entries declare empty env_vars so we
+        # drive the full auth UX here.
         try:
-            __import__("langfuse")
-            _print_success("    langfuse SDK already installed")
-        except ImportError:
-            _print_info("    Installing langfuse SDK...")
-            result = _pip_install(["langfuse", "--quiet"], timeout=120)
-            if result.returncode == 0:
-                _print_success("    langfuse SDK installed")
-            else:
-                _print_warning("    langfuse SDK install failed — run manually: uv pip install langfuse")
-        # Opt the bundled observability/langfuse plugin into plugins.enabled.
-        # The plugin ships in the repo but doesn't load until the user enables
-        # it (standalone plugins are opt-in).
+            from hermes_cli.auth import get_xai_oauth_auth_status
+            oauth_logged_in = bool(get_xai_oauth_auth_status().get("logged_in"))
+        except Exception:
+            oauth_logged_in = False
+        existing_api_key = get_env_value("XAI_API_KEY")
+
+        if oauth_logged_in:
+            _print_success(
+                "    xAI will use your xAI Grok OAuth (SuperGrok Subscription) credentials"
+            )
+            return
+        if existing_api_key:
+            _print_success("    xAI will use your existing XAI_API_KEY")
+            return
+
+        _print_info("    xAI needs credentials. Choose one:")
         try:
-            from hermes_cli.plugins_cmd import _get_enabled_set, _save_enabled_set
-            enabled = _get_enabled_set()
-            if "observability/langfuse" in enabled or "langfuse" in enabled:
-                _print_success("    Plugin observability/langfuse already enabled")
-            else:
-                enabled.add("observability/langfuse")
-                _save_enabled_set(enabled)
-                _print_success("    Plugin observability/langfuse enabled")
+            from hermes_cli.setup import (
+                _run_xai_oauth_login_from_setup,
+                prompt_choice,
+                prompt as _setup_prompt,
+            )
+            from hermes_cli.config import save_env_value
         except Exception as exc:
-            _print_warning(f"    Could not enable plugin automatically: {exc}")
-            _print_info("    Run manually: hermes plugins enable observability/langfuse")
-        _print_info("    Restart Hermes for tracing to take effect.")
-        _print_info("    Verify: hermes plugins list")
+            _print_warning(f"    Could not load setup helpers: {exc}")
+            _print_info("    Run later: hermes auth add xai-oauth   (or set XAI_API_KEY)")
+            return
+
+        idx = prompt_choice(
+            "    How do you want xAI to authenticate?",
+            choices=[
+                "Sign in with xAI Grok OAuth (SuperGrok Subscription) — browser login",
+                "Paste an xAI API key (console.x.ai)",
+                "Skip — configure later via `hermes auth add xai-oauth`",
+            ],
+            default=0,
+        )
+        if idx == 0:
+            if _run_xai_oauth_login_from_setup():
+                _print_success(
+                    "    Logged in — xAI will use these OAuth credentials"
+                )
+            else:
+                _print_warning(
+                    "    xAI Grok OAuth login did not complete. "
+                    "Run later: hermes auth add xai-oauth"
+                )
+        elif idx == 1:
+            api_key = _setup_prompt("    xAI API key", password=True)
+            if api_key:
+                save_env_value("XAI_API_KEY", api_key)
+                _print_success("    XAI_API_KEY saved")
+            else:
+                _print_warning(
+                    "    No API key provided. Run later: hermes auth add xai-oauth"
+                )
+        else:
+            _print_info("    xAI will remain inactive until credentials are configured.")
 
 
 # ─── Platform / Toolset Helpers ───────────────────────────────────────────────
@@ -1065,6 +1199,23 @@ def _get_platform_tools(
             if ts_tools and ts_tools.issubset(all_tool_names):
                 enabled_toolsets.add(ts_key)
 
+        # Auto-enable ``x_search`` when xAI credentials are configured.
+        # Unlike ``homeassistant`` (whose ``ha_*`` tools live inside the
+        # platform composite and thus pass the subset check above),
+        # ``x_search`` is its own one-tool toolset that the composite does
+        # NOT include, so the subset loop never picks it up. Inject it
+        # directly here, mirroring the HASS_TOKEN → ``homeassistant`` rule
+        # below: once you have working creds, you don't have to also click
+        # through ``hermes tools`` to flip the toolset on. Only fires when
+        # the user has not yet saved an explicit toolset list — once they
+        # do, the saved list is authoritative.
+        x_search_auto_enabled = (
+            _toolset_allowed_for_platform("x_search", platform)
+            and _xai_credentials_present()
+        )
+        if x_search_auto_enabled:
+            enabled_toolsets.add("x_search")
+
         default_off = set(_DEFAULT_OFF_TOOLSETS)
         # Legacy safety: if the platform's own name matches a default-off
         # toolset (e.g. `homeassistant` platform + `homeassistant` toolset),
@@ -1082,6 +1233,11 @@ def _get_platform_tools(
         # regressed after #14798 made cron honor per-platform tool config.
         if "homeassistant" in default_off and os.getenv("HASS_TOKEN"):
             default_off.remove("homeassistant")
+        # Symmetric carve-out for x_search auto-enable (see the inject
+        # block above). Without this, the default_off subtraction would
+        # strip the entry we just added.
+        if x_search_auto_enabled and "x_search" in default_off:
+            default_off.remove("x_search")
         enabled_toolsets -= default_off
 
     # Recover non-configurable platform toolsets (e.g. discord, feishu_doc,
@@ -1412,12 +1568,9 @@ def _plugin_image_gen_providers() -> list[dict]:
     Each returned dict looks like a regular ``TOOL_CATEGORIES`` provider
     row but carries an ``image_gen_plugin_name`` marker so downstream
     code (config writing, model picker) knows to route through the
-    plugin registry instead of the in-tree FAL backend.
-
-    FAL is skipped — it's already exposed by the hardcoded
-    ``TOOL_CATEGORIES["image_gen"]`` entries. When FAL gets ported to
-    a plugin in a follow-up PR, the hardcoded entries go away and this
-    function surfaces it alongside OpenAI automatically.
+    plugin registry. Every image-gen backend is a plugin now — there
+    are no hardcoded rows left in ``TOOL_CATEGORIES["image_gen"]`` for
+    this function to dedupe against (see issue #26241).
     """
     try:
         from agent.image_gen_registry import list_providers
@@ -1430,24 +1583,22 @@ def _plugin_image_gen_providers() -> list[dict]:
 
     rows: list[dict] = []
     for provider in providers:
-        if getattr(provider, "name", None) == "fal":
-            # FAL has its own hardcoded rows today.
-            continue
         try:
             schema = provider.get_setup_schema()
         except Exception:
             continue
         if not isinstance(schema, dict):
             continue
-        rows.append(
-            {
-                "name": schema.get("name", provider.display_name),
-                "badge": schema.get("badge", ""),
-                "tag": schema.get("tag", ""),
-                "env_vars": schema.get("env_vars", []),
-                "image_gen_plugin_name": provider.name,
-            }
-        )
+        row = {
+            "name": schema.get("name", provider.display_name),
+            "badge": schema.get("badge", ""),
+            "tag": schema.get("tag", ""),
+            "env_vars": schema.get("env_vars", []),
+            "image_gen_plugin_name": provider.name,
+        }
+        if schema.get("post_setup"):
+            row["post_setup"] = schema["post_setup"]
+        rows.append(row)
     return rows
 
 
@@ -1476,15 +1627,16 @@ def _plugin_video_gen_providers() -> list[dict]:
             continue
         if not isinstance(schema, dict):
             continue
-        rows.append(
-            {
-                "name": schema.get("name", provider.display_name),
-                "badge": schema.get("badge", ""),
-                "tag": schema.get("tag", ""),
-                "env_vars": schema.get("env_vars", []),
-                "video_gen_plugin_name": provider.name,
-            }
-        )
+        row = {
+            "name": schema.get("name", provider.display_name),
+            "badge": schema.get("badge", ""),
+            "tag": schema.get("tag", ""),
+            "env_vars": schema.get("env_vars", []),
+            "video_gen_plugin_name": provider.name,
+        }
+        if schema.get("post_setup"):
+            row["post_setup"] = schema["post_setup"]
+        rows.append(row)
     return rows
 
 
@@ -1546,6 +1698,61 @@ def _plugin_web_search_providers() -> list[dict]:
     return rows
 
 
+# Mirror of _plugin_web_search_providers for cloud browser backends. After
+# PR #25214, Browserbase / Browser Use / Firecrawl live as plugins under
+# plugins/browser/<vendor>/; this helper is the sole source of provider rows
+# for those three in the "Browser Automation" picker. The hardcoded
+# ``TOOL_CATEGORIES["browser"]`` entries that drove the category before
+# were deleted in the same PR; only non-provider UX setup-flow rows remain
+# ("Nous Subscription", "Local Browser", "Camofox") — see the comment block
+# in ``TOOL_CATEGORIES["browser"]`` for why each one stays hardcoded.
+def _plugin_browser_providers() -> list[dict]:
+    """Build picker-row dicts from plugin-registered cloud browser providers.
+
+    Each returned dict mirrors the legacy ``TOOL_CATEGORIES["browser"]``
+    schema (``name`` / ``badge`` / ``tag`` / ``env_vars`` /
+    ``browser_provider`` / ``post_setup``) so the picker behaves identically
+    whether a provider was hardcoded or plugin-registered.
+
+    Populates ``browser_provider`` (the legacy config key written to
+    ``browser.cloud_provider``) and a ``browser_plugin_name`` marker so
+    setup / write paths can route through the registry when they want to.
+    """
+    try:
+        from agent.browser_registry import list_providers as _list_browser_providers
+        from hermes_cli.plugins import _ensure_plugins_discovered
+
+        _ensure_plugins_discovered()
+        providers = _list_browser_providers()
+    except Exception:
+        return []
+
+    rows: list[dict] = []
+    for provider in providers:
+        name = getattr(provider, "name", None)
+        if not name:
+            continue
+        try:
+            schema = provider.get_setup_schema()
+        except Exception:
+            continue
+        if not isinstance(schema, dict):
+            continue
+        row = {
+            "name": schema.get("name", provider.display_name),
+            "badge": schema.get("badge", ""),
+            "tag": schema.get("tag", ""),
+            "env_vars": schema.get("env_vars", []),
+            "browser_provider": name,
+            "browser_plugin_name": name,
+        }
+        # Pass-through optional fields the schema can opt into.
+        if schema.get("post_setup"):
+            row["post_setup"] = schema["post_setup"]
+        rows.append(row)
+    return rows
+
+
 def _visible_providers(cat: dict, config: dict) -> list[dict]:
     """Return provider entries visible for the current auth/config state."""
     features = get_nous_subscription_features(config)
@@ -1575,6 +1782,14 @@ def _visible_providers(cat: dict, config: dict) -> list[dict]:
     if cat.get("name") == "Web Search & Extract":
         visible.extend(_plugin_web_search_providers())
 
+    # Inject plugin-registered cloud browser backends. After PR #25214,
+    # Browserbase / Browser Use / Firecrawl are the plugin-supplied rows;
+    # the hardcoded "Nous Subscription" / "Local Browser" / "Camofox" rows
+    # stay because they're non-provider UX setup flows (subscription auth,
+    # local fallback, and the REST-API anti-detection backend respectively).
+    if cat.get("name") == "Browser Automation":
+        visible.extend(_plugin_browser_providers())
+
     return visible
 
 
@@ -1592,7 +1807,7 @@ _POST_SETUP_INSTALLED: dict = {
     # entry when (a) the post_setup is the ONLY install side-effect for
     # a no-key provider, and (b) an installed-state check is cheap and
     # doesn't trigger a heavy import.
-    "cua_driver": lambda: bool(shutil.which("cua-driver")),
+    "cua_driver": lambda: bool(shutil.which(_cua_driver_cmd())),
 }
 
 
@@ -1747,6 +1962,11 @@ def _is_provider_active(provider: dict, config: dict) -> bool:
     if plugin_name:
         image_cfg = config.get("image_gen", {})
         return isinstance(image_cfg, dict) and image_cfg.get("provider") == plugin_name
+
+    video_plugin_name = provider.get("video_gen_plugin_name")
+    if video_plugin_name:
+        video_cfg = config.get("video_gen", {})
+        return isinstance(video_cfg, dict) and video_cfg.get("provider") == video_plugin_name
 
     managed_feature = provider.get("managed_nous_feature")
     if managed_feature:
@@ -2477,6 +2697,9 @@ def _reconfigure_provider(provider: dict, config: dict):
             _print_success("    Updated")
         else:
             _print_info("    Kept current")
+
+    if provider.get("post_setup"):
+        _run_post_setup(provider["post_setup"])
 
     # Imagegen backends prompt for model selection on reconfig too.
     plugin_name = provider.get("image_gen_plugin_name")

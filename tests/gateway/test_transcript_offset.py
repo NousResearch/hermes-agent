@@ -31,7 +31,7 @@ def _filter_history(history: list) -> list:
         role = msg.get("role")
         if not role:
             continue
-        if role in ("session_meta",):
+        if role in {"session_meta",}:
             continue
         if role == "system":
             continue

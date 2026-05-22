@@ -60,16 +60,18 @@ export default function PluginsPage() {
 
   useEffect(() => {
     setEnd(
-      <Button
-        ghost
-        size="sm"
-        className="shrink-0 gap-2"
-        disabled={loading || rescanBusy}
-        onClick={() => void onRescan()}
-      >
-        {rescanBusy ? <Spinner /> : <RefreshCw className="h-3.5 w-3.5" />}
-        {t.pluginsPage.refreshDashboard}
-      </Button>,
+      <div className="flex w-full min-w-0 justify-start sm:justify-end">
+        <Button
+          ghost
+          size="sm"
+          className="w-max max-w-full shrink-0 gap-2"
+          disabled={loading || rescanBusy}
+          onClick={() => void onRescan()}
+        >
+          {rescanBusy ? <Spinner /> : <RefreshCw className="h-3.5 w-3.5" />}
+          {t.pluginsPage.refreshDashboard}
+        </Button>
+      </div>,
     );
     return () => setEnd(null);
   }, [loading, rescanBusy, setEnd, t.pluginsPage.refreshDashboard]);
@@ -413,32 +415,20 @@ function PluginRowCard(props: PluginRowCardProps) {
 
         <div className="flex flex-wrap items-start justify-between gap-4">
 
+          <div className="flex min-w-0 flex-1 flex-wrap items-center gap-3">
 
-          <div className="min-w-0 flex-1">
+            <span className="truncate font-semibold">{row.name}</span>
 
-            <div className="flex flex-wrap items-center gap-3">
+            <Badge tone="outline">
+              {t.pluginsPage.sourceBadge}: {row.source}
+            </Badge>
 
-              <span className="truncate font-semibold">{row.name}</span>
+            <Badge tone="outline">v{row.version || "—"}</Badge>
 
-              <Badge tone="outline">
-                {t.pluginsPage.sourceBadge}: {row.source}
-              </Badge>
+            <Badge tone={badgeTone}>{row.runtime_status}</Badge>
 
-
-              <Badge tone="outline">v{row.version || "—"}</Badge>
-
-              <Badge tone={badgeTone}>{row.runtime_status}</Badge>
-
-              {row.auth_required ? (
-                <Badge tone="destructive">{t.pluginsPage.authRequired}</Badge>
-              ) : null}
-            </div>
-
-            {row.description ? (
-
-              <p className="mt-2 max-w-2xl text-[0.7rem] tracking-[0.06em] text-midforeground/75 normal-case">
-                {row.description}
-              </p>
+            {row.auth_required ? (
+              <Badge tone="destructive">{t.pluginsPage.authRequired}</Badge>
             ) : null}
           </div>
 
@@ -543,6 +533,12 @@ function PluginRowCard(props: PluginRowCardProps) {
             ) : null}
           </div>
         </div>
+
+        {row.description ? (
+          <p className="min-w-0 w-full text-[0.7rem] tracking-[0.06em] text-midforeground/75 normal-case break-words">
+            {row.description}
+          </p>
+        ) : null}
 
         {dm?.slots?.length ? (
 

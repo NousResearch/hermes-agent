@@ -50,6 +50,7 @@ class FailoverReason(enum.Enum):
 
     # Request format
     format_error = "format_error"        # 400 bad request — abort or strip + retry
+    multimodal_tool_content_unsupported = "multimodal_tool_content_unsupported"  # Provider rejected list-type content in tool messages (e.g. Xiaomi MiMo) — downgrade to text and retry
 
     # Provider-specific
     thinking_signature = "thinking_signature"  # Anthropic thinking block sig invalid
@@ -163,6 +164,32 @@ _IMAGE_TOO_LARGE_PATTERNS = [
     "image size exceeds",   # variant
     # "request_too_large" on a request known to contain an image → image is
     # the likely culprit; we still try the shrink path before giving up.
+]
+
+# Providers that follow the OpenAI spec strictly require tool message
+# ``content`` to be a string.  Some (Anthropic native, Codex Responses,
+# Gemini native, first-party OpenAI) extend this to accept a content-parts
+# list (text + image_url) so screenshots from computer_use survive.  Others
+# (Xiaomi MiMo, some Alibaba endpoints, a long tail of OpenAI-compatible
+# providers) reject the list with a 400 — the patterns below are the most
+# common error shapes we see.  Recovery: strip image parts from tool
+# messages in-place, record the (provider, model) for the rest of the
+# session so we don't waste another call learning the same lesson, retry.
+#
+# See: https://github.com/NousResearch/hermes-agent/issues/27344
+_MULTIMODAL_TOOL_CONTENT_PATTERNS = [
+    # Xiaomi MiMo: {"error":{"code":"400","message":"Param Incorrect","param":"text is not set"}}
+    "text is not set",
+    # Generic "tool message must be string" shapes
+    "tool message content must be a string",
+    "tool content must be a string",
+    "tool message must be a string",
+    # OpenAI-compat servers that reject list-type tool content with a
+    # schema-validation message
+    "expected string, got list",
+    "expected string, got array",
+    # Alibaba/DashScope variant
+    "tool_call.content must be string",
 ]
 
 # Context overflow patterns
@@ -510,6 +537,35 @@ def classify_api_error(
             should_compress=False,
         )
 
+    # xAI Grok subscription entitlement errors.
+    #
+    # xAI returns "You have either run out of available resources or do not
+    # have an active Grok subscription" through two distinct code paths:
+    #
+    #   • HTTP 403 — status_code is set; _classify_by_status (step 2) routes
+    #     it to FailoverReason.auth correctly, and _is_entitlement_failure
+    #     then prevents the credential-refresh loop.
+    #
+    #   • SSE ``type=error`` frame — surfaced as _StreamErrorEvent with
+    #     status_code=None.  _classify_by_status is skipped entirely, and
+    #     "grok subscription" / "out of available resources" appear in none
+    #     of the message-pattern lists below.  Without this guard the error
+    #     falls through to FailoverReason.unknown (retryable=True), burning
+    #     max_retries before the agent stops — and _is_entitlement_failure
+    #     is never called because it only runs under FailoverReason.auth.
+    #
+    # Both X Premium+ and SuperGrok subscribers hit this path when their
+    # subscription tier does not cover the requested model or feature.
+    if (
+        "do not have an active grok subscription" in error_msg
+        or ("out of available resources" in error_msg and "grok" in error_msg)
+    ):
+        return _result(
+            FailoverReason.auth,
+            retryable=False,
+            should_fallback=True,
+        )
+
     # ── 2. HTTP status code classification ──────────────────────────
 
     if status_code is not None:
@@ -752,6 +808,19 @@ def _classify_400(
 ) -> ClassifiedError:
     """Classify 400 Bad Request — context overflow, format error, or generic."""
 
+    # Multimodal tool content rejected from 400.  Must be checked BEFORE
+    # image_too_large because the recovery is different (strip image parts
+    # from tool messages, mark the model as no-list-tool-content for the
+    # rest of the session) and BEFORE context_overflow because some of the
+    # patterns ("text is not set") are ambiguous in isolation but become
+    # specific when combined with a 400 on a request known to contain
+    # multimodal tool content.
+    if any(p in error_msg for p in _MULTIMODAL_TOOL_CONTENT_PATTERNS):
+        return result_fn(
+            FailoverReason.multimodal_tool_content_unsupported,
+            retryable=True,
+        )
+
     # Image-too-large from 400 (Anthropic's 5 MB per-image check fires this way).
     # Must be checked BEFORE context_overflow because messages can trip both
     # patterns ("exceeds" + "image") and image-shrink is a cheaper recovery.
@@ -891,6 +960,13 @@ def _classify_by_message(
             FailoverReason.payload_too_large,
             retryable=True,
             should_compress=True,
+        )
+
+    # Multimodal tool content patterns (from message text when no status_code)
+    if any(p in error_msg for p in _MULTIMODAL_TOOL_CONTENT_PATTERNS):
+        return result_fn(
+            FailoverReason.multimodal_tool_content_unsupported,
+            retryable=True,
         )
 
     # Image-too-large patterns (from message text when no status_code)

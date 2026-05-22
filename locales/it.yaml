@@ -90,6 +90,7 @@ gateway:
     nothing_to_do:         "Niente da comprimere per ora (la trascrizione è ancora tutta contesto protetto)."
     focus_line:            "Focus: \"{topic}\""
     summary_failed:        "⚠️ Generazione del riepilogo non riuscita ({error}). {count} messaggio/i storico/i sono stati rimossi e sostituiti con un segnaposto; il contesto precedente non è più recuperabile. Considera di controllare la configurazione del modello auxiliary.compression."
+    aborted:               "⚠️ Compressione interrotta ({error}). Nessun messaggio è stato eliminato — la conversazione è invariata. Esegui /compress per riprovare, /reset per una nuova sessione, o controlla la configurazione del modello auxiliary.compression."
     aux_failed:            "ℹ️ Il modello di compressione configurato `{model}` non è riuscito ({error}). Recupero effettuato usando il modello principale — il contesto è intatto — ma potresti voler controllare `auxiliary.compression.model` in config.yaml."
     failed:                "Compressione non riuscita: {error}"
 

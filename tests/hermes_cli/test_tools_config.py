@@ -12,8 +12,10 @@ from hermes_cli.tools_config import (
     _get_platform_tools,
     _platform_toolset_summary,
     _reconfigure_tool,
+    _run_post_setup,
     _save_platform_tools,
     _toolset_has_keys,
+    _toolset_needs_configuration_prompt,
     CONFIGURABLE_TOOLSETS,
     TOOL_CATEGORIES,
     _visible_providers,
@@ -123,6 +125,62 @@ def test_get_platform_tools_homeassistant_toolset_off_for_cron_when_hass_token_m
 
     cron_enabled = _get_platform_tools({}, "cron")
     assert "homeassistant" not in cron_enabled
+
+
+def test_get_platform_tools_x_search_auto_enabled_when_xai_oauth_present(monkeypatch):
+    """x_search toolset auto-enables across platforms when xAI Grok OAuth
+    tokens are present, mirroring the HASS_TOKEN → homeassistant rule.
+
+    The user already authenticated via SuperGrok OAuth; they shouldn't have
+    to also click through `hermes tools` → X (Twitter) Search to flip the
+    toolset on. Tool's check_fn still gates schema registration if creds
+    later go missing.
+    """
+    monkeypatch.delenv("XAI_API_KEY", raising=False)
+    monkeypatch.setattr(
+        "hermes_cli.tools_config._xai_credentials_present", lambda: True
+    )
+
+    for plat in ("cli", "cron", "telegram"):
+        enabled = _get_platform_tools({}, plat)
+        assert "x_search" in enabled, f"x_search missing for {plat}"
+
+
+def test_get_platform_tools_x_search_auto_enabled_when_xai_api_key_present(monkeypatch):
+    """x_search toolset auto-enables when XAI_API_KEY is set, even without
+    OAuth tokens — the API-key path is a supported credential source."""
+    monkeypatch.setenv("XAI_API_KEY", "fake-xai-key")
+
+    cli_enabled = _get_platform_tools({}, "cli")
+    assert "x_search" in cli_enabled
+
+
+def test_get_platform_tools_x_search_off_when_no_xai_credentials(monkeypatch):
+    """Without any xAI credentials, x_search stays off — preserves the
+    "don't ship the schema to users who can't use it" default."""
+    monkeypatch.delenv("XAI_API_KEY", raising=False)
+    monkeypatch.setattr(
+        "hermes_cli.tools_config._xai_credentials_present", lambda: False
+    )
+
+    cli_enabled = _get_platform_tools({}, "cli")
+    assert "x_search" not in cli_enabled
+
+
+def test_get_platform_tools_x_search_respects_explicit_config(monkeypatch):
+    """Once the user has saved an explicit toolset list via `hermes tools`,
+    that list is authoritative — x_search auto-enable does NOT fire even
+    when xAI creds exist. The saved list represents deliberate choices."""
+    monkeypatch.delenv("XAI_API_KEY", raising=False)
+    monkeypatch.setattr(
+        "hermes_cli.tools_config._xai_credentials_present", lambda: True
+    )
+
+    # User explicitly opted into spotify but not x_search via `hermes tools`.
+    config = {"platform_toolsets": {"cli": ["hermes-cli", "spotify"]}}
+    enabled = _get_platform_tools(config, "cli")
+    assert "x_search" not in enabled
+    assert "spotify" in enabled
 
 
 def test_get_platform_tools_expands_composite_when_mixed_with_configurable():
@@ -696,6 +754,91 @@ def test_numeric_mcp_server_name_does_not_crash_sorted():
 
 # ─── Imagegen Backend Picker Wiring ────────────────────────────────────────
 
+def test_toolset_has_keys_treats_no_key_providers_as_configured():
+    config = {}
+
+    assert _toolset_has_keys("computer_use", config) is True
+
+
+def test_computer_use_needs_configuration_when_cua_driver_post_setup_pending():
+    """No-key providers can still need setup when their post_setup is unsatisfied.
+
+    Returning users enabling Computer Use through `hermes tools` must reach the
+    cua-driver post-setup installer even though the provider has no API keys.
+    """
+    with patch("shutil.which", return_value=None):
+        assert _toolset_needs_configuration_prompt("computer_use", {}) is True
+
+
+def test_computer_use_skips_configuration_when_cua_driver_already_installed():
+    """Installed post_setup dependencies should keep returning-user toggles no-op."""
+    def fake_which(name: str):
+        return "/usr/local/bin/cua-driver" if name == "cua-driver" else None
+
+    with patch("shutil.which", side_effect=fake_which):
+        assert _toolset_needs_configuration_prompt("computer_use", {}) is False
+
+
+def test_computer_use_respects_custom_cua_driver_command():
+    """The setup gate should match runtime's HERMES_CUA_DRIVER_CMD override."""
+    def fake_which(name: str):
+        return "/opt/bin/custom-cua" if name == "custom-cua" else None
+
+    with patch.dict("os.environ", {"HERMES_CUA_DRIVER_CMD": "custom-cua"}), \
+         patch("shutil.which", side_effect=fake_which):
+        assert _toolset_needs_configuration_prompt("computer_use", {}) is False
+
+
+def test_computer_use_blank_custom_driver_command_falls_back_to_default():
+    """Blank overrides should not make the setup gate look for an empty command."""
+    def fake_which(name: str):
+        return "/usr/local/bin/cua-driver" if name == "cua-driver" else None
+
+    with patch.dict("os.environ", {"HERMES_CUA_DRIVER_CMD": "   "}), \
+         patch("shutil.which", side_effect=fake_which):
+        assert _toolset_needs_configuration_prompt("computer_use", {}) is False
+
+
+def test_computer_use_post_setup_respects_custom_driver_command_when_installed():
+    """post_setup already-installed checks should version-probe the override."""
+    def fake_which(name: str):
+        return "/opt/bin/custom-cua" if name == "custom-cua" else None
+
+    with patch.dict("os.environ", {"HERMES_CUA_DRIVER_CMD": "custom-cua"}), \
+         patch("platform.system", return_value="Darwin"), \
+         patch("shutil.which", side_effect=fake_which), \
+         patch("subprocess.run") as run:
+        run.return_value.stdout = "custom 1.2.3\n"
+
+        _run_post_setup("cua_driver")
+
+    run.assert_called_once()
+    assert run.call_args.args[0] == ["custom-cua", "--version"]
+
+
+def test_computer_use_post_setup_missing_override_does_not_accept_default_binary():
+    """A default cua-driver binary must not satisfy a missing runtime override."""
+    seen = []
+
+    def fake_which(name: str):
+        seen.append(name)
+        if name == "cua-driver":
+            return "/usr/local/bin/cua-driver"
+        if name == "curl":
+            return None
+        return None
+
+    with patch.dict("os.environ", {"HERMES_CUA_DRIVER_CMD": "custom-cua"}), \
+         patch("platform.system", return_value="Darwin"), \
+         patch("shutil.which", side_effect=fake_which), \
+         patch("subprocess.run") as run:
+        _run_post_setup("cua_driver")
+
+    run.assert_not_called()
+    assert "custom-cua" in seen
+    assert "curl" in seen
+
+
 class TestImagegenBackendRegistry:
     """IMAGEGEN_BACKENDS tags drive the model picker flow in tools_config."""
 
@@ -989,3 +1132,27 @@ def test_reconfigure_browser_provider_overwrites_stale_use_gateway():
     provider = {"name": "Browserbase", "browser_provider": "browserbase", "env_vars": []}
     _reconfigure_provider(provider, config)
     assert config["browser"]["use_gateway"] is False
+
+
+@pytest.mark.parametrize("provider_name,post_setup_key", [
+    ("Camofox", "camofox"),
+])
+def test_reconfigure_provider_runs_post_setup_for_env_var_providers(
+    monkeypatch, provider_name, post_setup_key
+):
+    """_reconfigure_provider() must call _run_post_setup() for providers that have
+    both env_vars and post_setup — parity with _configure_provider() line 2286."""
+    called = []
+    monkeypatch.setattr("hermes_cli.tools_config._run_post_setup", lambda key: called.append(key))
+    monkeypatch.setattr("hermes_cli.tools_config.get_env_value", lambda k: None)
+    monkeypatch.setattr("hermes_cli.tools_config._prompt", lambda *a, **kw: "")
+    monkeypatch.setattr("hermes_cli.tools_config.save_env_value", lambda k, v: None)
+
+    provider = next(
+        p
+        for p in TOOL_CATEGORIES["browser"]["providers"]
+        if p["name"] == provider_name
+    )
+    _reconfigure_provider(provider, {})
+
+    assert called == [post_setup_key]

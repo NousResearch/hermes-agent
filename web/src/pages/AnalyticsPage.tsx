@@ -439,7 +439,7 @@ export default function AnalyticsPage() {
     );
     setEnd(
       showTokens === false ? null : (
-        <div className="flex w-full min-w-0 flex-wrap items-center justify-end gap-2 sm:gap-2">
+        <div className="flex w-full min-w-0 flex-wrap items-center justify-start gap-2 sm:justify-end sm:gap-2">
           <div className="flex flex-wrap items-center gap-1.5">
             {PERIODS.map((p) => (
               <Button

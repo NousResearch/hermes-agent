@@ -653,6 +653,7 @@ export const fr: Translations = {
     columnLabels: {
       triage: "Triage",
       todo: "À faire",
+      scheduled: "Planifié",
       ready: "Prêt",
       running: "En cours",
       blocked: "Bloqué",
@@ -662,7 +663,8 @@ export const fr: Translations = {
     columnHelp: {
       triage: "Idées brutes — un specifier rédigera la spécification",
       todo: "En attente de dépendances ou non assigné",
-      ready: "Assigné et en attente d'un tick du dispatcher",
+      scheduled: "En attente d'un délai connu ou d'un suivi planifié",
+      ready: "Dépendances satisfaites ; assignez un profil pour dispatch",
       running: "Réclamé par un worker — en cours d'exécution",
       blocked: "Le worker a demandé une intervention humaine",
       done: "Terminé",

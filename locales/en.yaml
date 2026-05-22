@@ -105,6 +105,7 @@ gateway:
     nothing_to_do:         "Nothing to compress yet (the transcript is still all protected context)."
     focus_line:            "Focus: \"{topic}\""
     summary_failed:        "⚠️ Summary generation failed ({error}). {count} historical message(s) were removed and replaced with a placeholder; earlier context is no longer recoverable. Consider checking your auxiliary.compression model configuration."
+    aborted:               "⚠️ Compression aborted ({error}). No messages were dropped — conversation is unchanged. Run /compress to retry, /reset for a clean session, or check your auxiliary.compression model configuration."
     aux_failed:            "ℹ️ Configured compression model `{model}` failed ({error}). Recovered using your main model — context is intact — but you may want to check `auxiliary.compression.model` in config.yaml."
     failed:                "Compression failed: {error}"
 

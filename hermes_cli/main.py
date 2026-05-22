@@ -1294,7 +1294,7 @@ def _make_tui_argv(tui_dir: Path, tui_dev: bool) -> tuple[list[str], Path]:
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True,
-            env={**os.environ, "CI": "1"},
+            env={**os.environ, "CI": "1", "PWD": str(tui_dir)},
         )
         if result.returncode != 0:
             combined = f"{result.stdout or ''}\n{result.stderr or ''}".strip()
@@ -1318,6 +1318,7 @@ def _make_tui_argv(tui_dir: Path, tui_dev: bool) -> tuple[list[str], Path]:
             cwd=str(ink_dir),
             capture_output=True,
             text=True,
+            env={**os.environ, "PWD": str(ink_dir)},
         )
         if result.returncode != 0:
             combined = f"{result.stdout or ''}{result.stderr or ''}".strip()
@@ -1346,6 +1347,7 @@ def _make_tui_argv(tui_dir: Path, tui_dev: bool) -> tuple[list[str], Path]:
             cwd=str(tui_dir),
             capture_output=True,
             text=True,
+            env={**os.environ, "PWD": str(tui_dir)},
         )
         if result.returncode != 0:
             combined = f"{result.stdout or ''}{result.stderr or ''}".strip()

@@ -813,6 +813,8 @@ class TaskProgressSnapshot:
     review_required: bool
     evidence: Optional[dict]
     worker_log_tail: Optional[str]
+    children: Optional[list[dict[str, Any]]] = None
+    child_summary: Optional[dict[str, Any]] = None
 
     def to_dict(self) -> dict[str, Any]:
         worker_lane = None
@@ -877,6 +879,8 @@ class TaskProgressSnapshot:
             "verification": verification,
             "evidence": self.evidence,
             "worker_log_tail": self.worker_log_tail,
+            "children": self.children,
+            "child_summary": self.child_summary,
         }
 
 
@@ -2060,6 +2064,7 @@ def task_progress_snapshot(
     *,
     log_tail_bytes: Optional[int] = None,
     board: Optional[str] = None,
+    include_children: bool = False,
 ) -> Optional[TaskProgressSnapshot]:
     """Return a read-only progress/evidence snapshot for ``task_id``.
 
@@ -2080,6 +2085,14 @@ def task_progress_snapshot(
         and isinstance(evidence.get("review"), dict)
         and evidence["review"].get("required")
     )
+    children = None
+    child_summary = None
+    if include_children:
+        children, child_summary = task_children_progress_summary(
+            conn,
+            task_id,
+            board=board,
+        )
     return TaskProgressSnapshot(
         task=task,
         run=run,
@@ -2095,7 +2108,203 @@ def task_progress_snapshot(
             tail_bytes=log_tail_bytes,
             board=board,
         ) if log_tail_bytes else None,
+        children=children,
+        child_summary=child_summary,
     )
+
+
+def _compact_progress_event_payload(payload: Optional[dict]) -> Optional[dict]:
+    if not isinstance(payload, dict):
+        return None
+    items = payload.get("items")
+    if not isinstance(items, list):
+        return None
+    compact_items: list[dict[str, Any]] = []
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        compact: dict[str, Any] = {}
+        if item.get("index") is not None:
+            compact["index"] = item.get("index")
+        if item.get("status") is not None:
+            compact["status"] = str(item.get("status"))[:40]
+        if item.get("text") is not None:
+            compact["text"] = str(item.get("text"))[:400]
+        if compact:
+            compact_items.append(compact)
+        if len(compact_items) >= 10:
+            break
+    return {
+        "lane": str(payload.get("lane"))[:120] if payload.get("lane") else None,
+        "worker_kind": (
+            str(payload.get("worker_kind"))[:120]
+            if payload.get("worker_kind")
+            else None
+        ),
+        "items": compact_items,
+    }
+
+
+def _progress_summary_task_refs(
+    conn: sqlite3.Connection,
+    task_id: str,
+) -> list[tuple[str, str]]:
+    refs: list[tuple[str, str]] = []
+    seen: set[str] = set()
+
+    def add(ids: Iterable[str], relationship: str) -> None:
+        for raw_id in ids:
+            related_id = str(raw_id).strip()
+            if not related_id or related_id == task_id or related_id in seen:
+                continue
+            seen.add(related_id)
+            refs.append((related_id, relationship))
+
+    add(child_ids(conn, task_id), "child")
+
+    decomposed = _latest_event(conn, task_id, kind="decomposed")
+    payload = decomposed.payload if decomposed else None
+    if isinstance(payload, dict):
+        raw_child_ids = payload.get("child_ids")
+        if isinstance(raw_child_ids, list):
+            add(
+                (
+                    child_id
+                    for child_id in raw_child_ids
+                    if isinstance(child_id, str)
+                ),
+                "decomposed_child",
+            )
+
+    if not refs:
+        add(parent_ids(conn, task_id), "dependency")
+
+    return refs
+
+
+def task_children_progress_summary(
+    conn: sqlite3.Connection,
+    task_id: str,
+    *,
+    board: Optional[str] = None,
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    """Return related worker progress summaries without mutating workers.
+
+    Direct child links cover ordinary parent->child graphs. Decomposed goal
+    roots currently wait on worker tasks by linking those tasks as parents of
+    the root, so the decomposed event's child_ids (or direct parents as a
+    fallback) are also summarized for goal/root progress queries.
+    """
+    refs = _progress_summary_task_refs(conn, task_id)
+    children: list[dict[str, Any]] = []
+    status_counts: dict[str, int] = {}
+    relationship_counts: dict[str, int] = {}
+    lanes: dict[str, int] = {}
+    review_required = 0
+    progress_items_total = 0
+    running = 0
+    done = 0
+
+    for child_id, relationship in refs:
+        snap = task_progress_snapshot(
+            conn,
+            child_id,
+            board=board,
+            include_children=False,
+        )
+        if snap is None:
+            continue
+        t = snap.task
+        status_counts[t.status] = status_counts.get(t.status, 0) + 1
+        relationship_counts[relationship] = relationship_counts.get(relationship, 0) + 1
+        if t.status == "running":
+            running += 1
+        if t.status == "done":
+            done += 1
+        if snap.review_required:
+            review_required += 1
+        worker_lane = None
+        if snap.evidence and isinstance(snap.evidence.get("worker_lane"), dict):
+            worker_lane = snap.evidence["worker_lane"]
+        elif t.assignee:
+            worker_lane = {"name": t.assignee}
+        lane_name = (
+            worker_lane.get("name")
+            if isinstance(worker_lane, dict)
+            else None
+        )
+        if lane_name:
+            lanes[lane_name] = lanes.get(lane_name, 0) + 1
+
+        progress = _compact_progress_event_payload(snap.worker_progress)
+        items = progress.get("items") if progress else []
+        progress_items_total += len(items)
+        run = snap.run
+        children.append({
+            "task": {
+                "id": t.id,
+                "title": t.title,
+                "assignee": t.assignee,
+                "status": t.status,
+                "worker_pid": t.worker_pid,
+                "current_run_id": t.current_run_id,
+                "last_heartbeat_at": t.last_heartbeat_at,
+                "workspace_kind": t.workspace_kind,
+                "workspace_path": t.workspace_path,
+            },
+            "relationship": relationship,
+            "run": (
+                {
+                    "id": run.id,
+                    "status": run.status,
+                    "outcome": run.outcome,
+                    "summary": run.summary,
+                    "error": run.error,
+                    "worker_pid": run.worker_pid,
+                    "started_at": run.started_at,
+                    "ended_at": run.ended_at,
+                }
+                if run else None
+            ),
+            "worker_lane": worker_lane,
+            "worker_progress": progress,
+            "last_heartbeat_event": (
+                {
+                    "id": snap.heartbeat_event.id,
+                    "created_at": snap.heartbeat_event.created_at,
+                    "run_id": snap.heartbeat_event.run_id,
+                    "payload": snap.heartbeat_event.payload,
+                }
+                if snap.heartbeat_event else None
+            ),
+            "last_event": (
+                {
+                    "id": snap.last_event.id,
+                    "kind": snap.last_event.kind,
+                    "created_at": snap.last_event.created_at,
+                    "run_id": snap.last_event.run_id,
+                }
+                if snap.last_event else None
+            ),
+            "review_required": snap.review_required,
+            "verification": (
+                snap.evidence.get("verification")
+                if snap.evidence and isinstance(snap.evidence, dict)
+                else None
+            ),
+        })
+
+    summary = {
+        "total": len(children),
+        "done": done,
+        "running": running,
+        "review_required": review_required,
+        "status_counts": status_counts,
+        "relationship_counts": relationship_counts,
+        "lanes": lanes,
+        "progress_items": progress_items_total,
+    }
+    return children, summary
 
 
 def review_required_snapshots(

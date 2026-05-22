@@ -429,6 +429,13 @@ def _handle_progress(args: dict, **kw) -> str:
     )
     if int_error:
         return tool_error(int_error)
+    include_children, bool_error = _parse_bool_arg(
+        args,
+        "include_children",
+        default=False,
+    )
+    if bool_error:
+        return tool_error(bool_error)
     board = args.get("board")
     try:
         kb, conn = _connect(board=board)
@@ -437,6 +444,7 @@ def _handle_progress(args: dict, **kw) -> str:
                 conn,
                 str(tid),
                 log_tail_bytes=log_tail_bytes,
+                include_children=include_children,
                 board=board,
             )
             if snapshot is None:
@@ -1031,6 +1039,14 @@ KANBAN_PROGRESS_SCHEMA = {
                 "description": (
                     "Optional worker-log tail bytes to include. Max 65536. "
                     "Omit unless the bounded evidence needs a small log tail."
+                ),
+            },
+            "include_children": {
+                "type": "boolean",
+                "description": (
+                    "When true, include related child/dependency worker "
+                    "progress summaries for a goal/root task. This is "
+                    "read-only and does not interrupt workers."
                 ),
             },
             "board": _board_schema_prop(),

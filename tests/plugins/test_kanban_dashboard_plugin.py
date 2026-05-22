@@ -1439,6 +1439,71 @@ def test_task_progress_endpoint_is_read_only_and_bounded(client, tmp_path):
     assert after.claim_lock == before.claim_lock
 
 
+def test_task_progress_endpoint_includes_decomposed_child_workers(client):
+    conn = kb.connect()
+    try:
+        root = kb.create_task(conn, title="dashboard goal", triage=True)
+        child_ids = kb.decompose_triage_task(
+            conn,
+            root,
+            root_assignee="orchestrator",
+            children=[
+                {"title": "implement", "assignee": "codex-fast"},
+                {"title": "review", "assignee": "codex-deep"},
+            ],
+            author="planner",
+        )
+        assert child_ids is not None
+        running_id, review_id = child_ids
+
+        running = kb.claim_task(conn, running_id, claimer="worker:fast")
+        assert running is not None
+        kb.record_task_event(
+            conn,
+            running_id,
+            "worker_progress",
+            {"lane": "codex-fast", "items": [{"index": 1, "status": "running", "text": "mock"}]},
+            run_id=running.current_run_id,
+        )
+        reviewing = kb.claim_task(conn, review_id, claimer="worker:deep")
+        assert reviewing is not None
+        assert kb.block_task(
+            conn,
+            review_id,
+            reason="review-required: Codex completed; Hermes review required",
+            expected_run_id=reviewing.current_run_id,
+            metadata={
+                "worker_lane": {"name": "codex-deep", "kind": "codex_cli", "exit_code": 0},
+                "verification": {"commands": ["pytest -q"], "summary": "passed"},
+                "review": {"required": True, "reason": "Codex completed; Hermes review required"},
+            },
+        )
+        before = kb.get_task(conn, running_id)
+    finally:
+        conn.close()
+
+    r = client.get(f"/api/plugins/kanban/tasks/{root}/progress?children=true")
+    assert r.status_code == 200, r.text
+    data = r.json()
+
+    conn = kb.connect()
+    try:
+        after = kb.get_task(conn, running_id)
+    finally:
+        conn.close()
+
+    assert data["task"]["id"] == root
+    assert data["child_summary"]["total"] == 2
+    assert data["child_summary"]["running"] == 1
+    assert data["child_summary"]["review_required"] == 1
+    assert data["child_summary"]["relationship_counts"]["decomposed_child"] == 2
+    by_id = {child["task"]["id"]: child for child in data["children"]}
+    assert by_id[running_id]["worker_progress"]["items"][0]["text"] == "mock"
+    assert by_id[review_id]["worker_lane"]["name"] == "codex-deep"
+    assert after.status == "running"
+    assert after.claim_lock == before.claim_lock
+
+
 def test_reviews_endpoint_lists_review_required_evidence(client, tmp_path):
     from hermes_cli import kanban_db as kb
 

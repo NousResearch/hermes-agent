@@ -130,6 +130,95 @@ def test_task_progress_snapshot_surfaces_review_evidence(kanban_home, tmp_path):
     assert payload["verification"]["commands"] == ["pytest -q"]
 
 
+def test_task_progress_snapshot_includes_decomposed_child_workers(kanban_home):
+    metadata = {
+        "worker_lane": {"name": "codex-deep", "kind": "codex_cli", "exit_code": 0},
+        "verification": {"commands": ["pytest -q"], "summary": "passed"},
+        "review": {"required": True, "reason": "Codex completed; Hermes review required"},
+    }
+    with kb.connect() as conn:
+        root = kb.create_task(conn, title="complex goal", triage=True)
+        child_ids = kb.decompose_triage_task(
+            conn,
+            root,
+            root_assignee="orchestrator",
+            children=[
+                {"title": "implement", "assignee": "codex-fast"},
+                {"title": "review evidence", "assignee": "codex-deep"},
+            ],
+            author="planner",
+        )
+        assert child_ids is not None
+        running_id, review_id = child_ids
+
+        running = kb.claim_task(conn, running_id, claimer="worker:fast")
+        assert running is not None
+        kb._set_worker_pid(conn, running_id, 4242)
+        kb.record_task_event(
+            conn,
+            running_id,
+            "worker_progress",
+            {
+                "lane": "codex-fast",
+                "items": [
+                    {"index": 1, "status": "done", "text": "分析入口"},
+                    {"index": 2, "status": "running", "text": "修改 dispatcher"},
+                ],
+            },
+            run_id=running.current_run_id,
+        )
+        assert kb.heartbeat_worker(
+            conn,
+            running_id,
+            note="still working",
+            expected_run_id=running.current_run_id,
+        )
+
+        reviewing = kb.claim_task(conn, review_id, claimer="worker:deep")
+        assert reviewing is not None
+        assert kb.block_task(
+            conn,
+            review_id,
+            reason="review-required: Codex completed; Hermes review required",
+            expected_run_id=reviewing.current_run_id,
+            metadata=metadata,
+        )
+
+        before = kb.get_task(conn, running_id)
+        snapshot = kb.task_progress_snapshot(conn, root, include_children=True)
+        after = kb.get_task(conn, running_id)
+
+    assert snapshot is not None
+    assert snapshot.task.id == root
+    assert snapshot.task.status == "todo"
+    assert snapshot.child_summary["total"] == 2
+    assert snapshot.child_summary["running"] == 1
+    assert snapshot.child_summary["review_required"] == 1
+    assert snapshot.child_summary["status_counts"]["running"] == 1
+    assert snapshot.child_summary["status_counts"]["blocked"] == 1
+    assert snapshot.child_summary["relationship_counts"]["decomposed_child"] == 2
+    assert snapshot.child_summary["lanes"]["codex-fast"] == 1
+    assert snapshot.child_summary["lanes"]["codex-deep"] == 1
+    assert snapshot.child_summary["progress_items"] == 2
+
+    by_id = {child["task"]["id"]: child for child in snapshot.children}
+    running_child = by_id[running_id]
+    assert running_child["relationship"] == "decomposed_child"
+    assert running_child["task"]["status"] == "running"
+    assert running_child["task"]["worker_pid"] == 4242
+    assert running_child["worker_progress"]["items"][1]["text"] == "修改 dispatcher"
+    assert running_child["last_heartbeat_event"]["payload"]["note"] == "still working"
+
+    review_child = by_id[review_id]
+    assert review_child["review_required"] is True
+    assert review_child["worker_lane"]["name"] == "codex-deep"
+    assert review_child["verification"]["commands"] == ["pytest -q"]
+
+    assert after.status == "running"
+    assert after.claim_lock == before.claim_lock
+    assert after.current_run_id == before.current_run_id
+
+
 def test_review_required_snapshots_lists_bounded_evidence(
     kanban_home, tmp_path,
 ):

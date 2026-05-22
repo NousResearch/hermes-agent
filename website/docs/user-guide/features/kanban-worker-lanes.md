@@ -240,8 +240,10 @@ For a standalone shell invocation, prefer `--persist` when a later dispatcher pr
 Progress queries should read Kanban state, events, logs, and run metadata:
 
 - `hermes kanban progress <task_id> --json`
+- `hermes kanban progress <goal_or_root_task_id> --children --json`
 - `hermes kanban reviews --json`
 - `GET /api/plugins/kanban/tasks/<task_id>/progress`
+- `GET /api/plugins/kanban/tasks/<task_id>/progress?children=true`
 - `GET /api/plugins/kanban/reviews`
 - `hermes kanban show <task_id>`
 - `hermes kanban tail <task_id>`
@@ -275,6 +277,17 @@ Configured orchestrator/main-agent profiles can use the equivalent tools:
 `kanban_reviews` for the queue, `kanban_progress` for one task's bounded
 snapshot, and `kanban_review` to approve or request changes. These tools are
 orchestrator-only; dispatcher-spawned Codex workers do not see them.
+
+Pass `include_children=true` to `kanban_progress` when the task is a goal/root
+task and the controller needs a compact status roll-up without interrupting
+running workers. The snapshot includes `child_summary` counts and a bounded
+`children` list with each related worker task's relationship, status, lane,
+latest run state, latest progress checklist, latest heartbeat event,
+review-required flag, and verification evidence. For ordinary graphs this
+summarizes direct child tasks. For decomposed goals, Hermes also summarizes the
+worker tasks recorded in the root task's `decomposed.child_ids` event, because
+the current decomposer links those worker tasks as dependencies that wake the
+root when complete.
 
 ## Goal bridge
 

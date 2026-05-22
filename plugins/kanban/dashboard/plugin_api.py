@@ -574,6 +574,10 @@ def get_task_progress(
         le=_WORKER_EVIDENCE_LOG_TAIL_MAX_BYTES,
         description="Include the last N bytes of the worker log",
     ),
+    children: bool = Query(
+        False,
+        description="Include related child/dependency worker progress summaries",
+    ),
     board: Optional[str] = Query(None),
 ):
     """Read a task's worker progress/evidence snapshot without mutating it."""
@@ -584,6 +588,7 @@ def get_task_progress(
             conn,
             task_id,
             log_tail_bytes=log_tail,
+            include_children=children,
             board=board,
         )
         if snapshot is None:

@@ -331,6 +331,80 @@ def test_progress_reads_snapshot_without_interrupting_worker(monkeypatch, worker
     assert after.claim_lock == before.claim_lock
 
 
+def test_progress_include_children_summarizes_decomposed_goal(monkeypatch, worker_env):
+    monkeypatch.delenv("HERMES_KANBAN_TASK", raising=False)
+    from hermes_cli import kanban_db as kb
+    from tools import kanban_tools as kt
+
+    conn = kb.connect()
+    try:
+        root = kb.create_task(conn, title="tool goal", triage=True)
+        child_ids = kb.decompose_triage_task(
+            conn,
+            root,
+            root_assignee="orchestrator",
+            children=[
+                {"title": "implement", "assignee": "codex-fast"},
+                {"title": "review", "assignee": "codex-deep"},
+            ],
+            author="planner",
+        )
+        assert child_ids is not None
+        running_id, review_id = child_ids
+
+        running = kb.claim_task(conn, running_id, claimer="worker:fast")
+        assert running is not None
+        kb.record_task_event(
+            conn,
+            running_id,
+            "worker_progress",
+            {"lane": "codex-fast", "items": [{"index": 1, "status": "running", "text": "mock"}]},
+            run_id=running.current_run_id,
+        )
+        reviewing = kb.claim_task(conn, review_id, claimer="worker:deep")
+        assert reviewing is not None
+        assert kb.block_task(
+            conn,
+            review_id,
+            reason="review-required: Codex completed; Hermes review required",
+            expected_run_id=reviewing.current_run_id,
+            metadata={
+                "worker_lane": {"name": "codex-deep", "kind": "codex_cli", "exit_code": 0},
+                "verification": {"commands": ["pytest -q"], "summary": "passed"},
+                "review": {"required": True, "reason": "Codex completed; Hermes review required"},
+            },
+        )
+        before = kb.get_task(conn, running_id)
+    finally:
+        conn.close()
+
+    out = kt._handle_progress({"task_id": root, "include_children": True})
+    d = json.loads(out)
+
+    conn = kb.connect()
+    try:
+        after = kb.get_task(conn, running_id)
+    finally:
+        conn.close()
+
+    assert d["task"]["id"] == root
+    assert d["child_summary"]["total"] == 2
+    assert d["child_summary"]["running"] == 1
+    assert d["child_summary"]["review_required"] == 1
+    assert d["child_summary"]["relationship_counts"]["decomposed_child"] == 2
+    by_id = {child["task"]["id"]: child for child in d["children"]}
+    assert by_id[running_id]["worker_progress"]["items"][0]["text"] == "mock"
+    assert by_id[review_id]["worker_lane"]["name"] == "codex-deep"
+    assert after.status == "running"
+    assert after.claim_lock == before.claim_lock
+
+
+def test_progress_schema_exposes_include_children():
+    from tools import kanban_tools as kt
+
+    assert kt.KANBAN_PROGRESS_SCHEMA["parameters"]["properties"]["include_children"]["type"] == "boolean"
+
+
 def test_reviews_lists_review_required_worker_evidence(monkeypatch, worker_env, tmp_path):
     monkeypatch.delenv("HERMES_KANBAN_TASK", raising=False)
     from hermes_cli import kanban_db as kb

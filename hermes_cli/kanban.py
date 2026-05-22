@@ -479,6 +479,11 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
         metavar="BYTES",
         help="Include the last N bytes of the worker log in the snapshot",
     )
+    p_progress.add_argument(
+        "--children",
+        action="store_true",
+        help="Include related child/dependency worker progress summaries for goal/root tasks",
+    )
 
     # --- reviews ---
     p_reviews = sub.add_parser(
@@ -1927,6 +1932,7 @@ def _cmd_progress(args: argparse.Namespace) -> int:
             conn,
             args.task_id,
             log_tail_bytes=getattr(args, "log_tail", None),
+            include_children=bool(getattr(args, "children", False)),
         )
     if snapshot is None:
         print(f"no such task: {args.task_id}", file=sys.stderr)
@@ -1975,6 +1981,36 @@ def _cmd_progress(args: argparse.Namespace) -> int:
         sys.stdout.write(payload["worker_log_tail"])
         if not payload["worker_log_tail"].endswith("\n"):
             sys.stdout.write("\n")
+    child_summary = payload.get("child_summary") or {}
+    children = payload.get("children") or []
+    if child_summary:
+        print("\nChildren:")
+        print(
+            f"  total={child_summary.get('total', 0)} "
+            f"done={child_summary.get('done', 0)} "
+            f"running={child_summary.get('running', 0)} "
+            f"review_required={child_summary.get('review_required', 0)}"
+        )
+        for child in children:
+            ctask = child.get("task") or {}
+            lane_meta = child.get("worker_lane") or {}
+            lane = lane_meta.get("name") or ctask.get("assignee") or "-"
+            run = child.get("run") or {}
+            summary = (run.get("summary") or "").splitlines()[0]
+            print(
+                f"  - {ctask.get('id', '-')} "
+                f"{ctask.get('status', '-')} @{lane}: "
+                f"{ctask.get('title', '')[:80]}"
+            )
+            progress = child.get("worker_progress") or {}
+            items = progress.get("items") if isinstance(progress, dict) else None
+            if items:
+                rendered = "; ".join(_render_progress_items(items[:3]))
+                print(f"      progress: {rendered[:160]}")
+            if child.get("review_required"):
+                print("      review: required")
+            if summary:
+                print(f"      summary: {summary[:160]}")
     return 0
 
 

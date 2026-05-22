@@ -439,6 +439,64 @@ def test_run_slash_progress_json_is_read_only(kanban_home):
     assert after.claim_lock == before.claim_lock
 
 
+def test_run_slash_progress_children_json_summarizes_goal_workers(kanban_home):
+    with kb.connect() as conn:
+        root = kb.create_task(conn, title="goal", triage=True)
+        child_ids = kb.decompose_triage_task(
+            conn,
+            root,
+            root_assignee="orchestrator",
+            children=[
+                {"title": "implement", "assignee": "codex-fast"},
+                {"title": "review", "assignee": "codex-deep"},
+            ],
+            author="planner",
+        )
+        assert child_ids is not None
+        running_id, review_id = child_ids
+
+        running = kb.claim_task(conn, running_id, claimer="worker:fast")
+        assert running is not None
+        kb.record_task_event(
+            conn,
+            running_id,
+            "worker_progress",
+            {"lane": "codex-fast", "items": [{"index": 1, "status": "running", "text": "mock"}]},
+            run_id=running.current_run_id,
+        )
+        reviewing = kb.claim_task(conn, review_id, claimer="worker:deep")
+        assert reviewing is not None
+        assert kb.block_task(
+            conn,
+            review_id,
+            reason="review-required: Codex completed; Hermes review required",
+            expected_run_id=reviewing.current_run_id,
+            metadata={
+                "worker_lane": {"name": "codex-deep", "kind": "codex_cli", "exit_code": 0},
+                "verification": {"commands": ["pytest -q"], "summary": "passed"},
+                "review": {"required": True, "reason": "Codex completed; Hermes review required"},
+            },
+        )
+        before = kb.get_task(conn, running_id)
+
+    payload = json.loads(kc.run_slash(f"progress {root} --children --json"))
+
+    with kb.connect() as conn:
+        after = kb.get_task(conn, running_id)
+
+    assert payload["task"]["id"] == root
+    assert payload["child_summary"]["total"] == 2
+    assert payload["child_summary"]["running"] == 1
+    assert payload["child_summary"]["review_required"] == 1
+    assert payload["child_summary"]["relationship_counts"]["decomposed_child"] == 2
+    by_id = {child["task"]["id"]: child for child in payload["children"]}
+    assert by_id[running_id]["worker_progress"]["items"][0]["text"] == "mock"
+    assert by_id[review_id]["worker_lane"]["name"] == "codex-deep"
+    assert by_id[review_id]["verification"]["commands"] == ["pytest -q"]
+    assert after.status == "running"
+    assert after.claim_lock == before.claim_lock
+
+
 def test_run_slash_reviews_lists_review_required_evidence(
     kanban_home, tmp_path,
 ):

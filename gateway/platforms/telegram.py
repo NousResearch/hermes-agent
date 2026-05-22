@@ -71,6 +71,7 @@ from gateway.platforms.base import (
     MessageType,
     ProcessingOutcome,
     SendResult,
+    _custom_unit_to_cp,
     cache_image_from_bytes,
     cache_audio_from_bytes,
     cache_video_from_bytes,
@@ -191,6 +192,31 @@ def _strip_mdv2(text: str) -> str:
     # Remove MarkdownV2 spoiler markers (||text|| → text)
     cleaned = re.sub(r'\|\|([^|]+)\|\|', r'\1', cleaned)
     return cleaned
+
+
+def _escape_chunk_indicators(chunks: List[str]) -> List[str]:
+    """Escape pagination suffixes appended by ``truncate_message``.
+
+    ``BasePlatformAdapter.truncate_message`` appends plain `` (1/2)`` suffixes.
+    Parentheses are special in Telegram MarkdownV2, so every chunk that is sent
+    with ``parse_mode=MarkdownV2`` must carry escaped indicators.
+    """
+    return [re.sub(r" \((\d+)/(\d+)\)$", r" \\(\1/\2\\)", chunk) for chunk in chunks]
+
+
+def _ends_with_open_mdv2_escape(text: str) -> bool:
+    """Return True if *text* ends with an odd run of backslashes.
+
+    Splitting a pre-formatted MarkdownV2 string after the escape backslash but
+    before the escaped character turns the next chunk into invalid MarkdownV2
+    (Telegram errors such as "character '-' is reserved").
+    """
+    count = 0
+    for ch in reversed(text):
+        if ch != "\\":
+            break
+        count += 1
+    return count % 2 == 1
 
 
 # ---------------------------------------------------------------------------
@@ -1669,6 +1695,55 @@ class TelegramAdapter(BasePlatformAdapter):
         else:  # "first" (default)
             return chunk_index == 0
 
+    def _format_and_split_markdownv2(self, content: str) -> List[str]:
+        """Format content for MarkdownV2 without splitting escape pairs.
+
+        Telegram rejects MarkdownV2 chunks when a split happens between a
+        backslash and the escaped special character.  Format each raw chunk
+        independently so chunk boundaries are chosen before MarkdownV2 escaping;
+        if a pathological chunk still grows past Telegram's UTF-16 limit after
+        escaping, split the formatted text defensively and never leave an open
+        escape at the boundary.
+        """
+        # Keep raw chunks well below Telegram's hard limit because MarkdownV2
+        # escaping can substantially inflate punctuation-heavy operational
+        # reports (paths, file names, bullets, versions).  A conservative raw
+        # limit avoids the fragile fallback path that has to split already-
+        # formatted MarkdownV2.
+        raw_limit = max(32, int(self.MAX_MESSAGE_LENGTH * 0.45))
+        raw_chunks = self.truncate_message(content, raw_limit, len_fn=utf16_len)
+        chunks: List[str] = []
+        for raw_chunk in raw_chunks:
+            formatted = self.format_message(raw_chunk)
+            if utf16_len(formatted) <= self.MAX_MESSAGE_LENGTH:
+                chunks.append(formatted)
+                continue
+
+            # Rare fallback for punctuation-heavy text where escaping inflates
+            # one already-small raw chunk beyond Telegram's limit.
+            remaining = formatted
+            reserve = 10
+            while utf16_len(remaining) > self.MAX_MESSAGE_LENGTH:
+                limit = _custom_unit_to_cp(remaining, self.MAX_MESSAGE_LENGTH - reserve, utf16_len)
+                while limit > 1 and _ends_with_open_mdv2_escape(remaining[:limit]):
+                    limit -= 1
+                split_at = max(1, limit)
+                chunks.append(remaining[:split_at])
+                remaining = remaining[split_at:].lstrip()
+            if remaining:
+                chunks.append(remaining)
+
+        if len(chunks) > 1:
+            # Indicators may come from truncate_message(raw_chunks), and the
+            # fallback splitting above may add chunks without indicators.  First
+            # escape any existing raw indicators; then, if no indicators exist,
+            # add escaped ones for consistent Telegram UX.
+            chunks = _escape_chunk_indicators(chunks)
+            if not any(re.search(r" \\\((\d+)/(\d+)\\\)$", chunk) for chunk in chunks):
+                total = len(chunks)
+                chunks = [f"{chunk} \\({i + 1}/{total}\\)" for i, chunk in enumerate(chunks)]
+        return chunks
+
     async def send(
         self,
         chat_id: str,
@@ -1685,19 +1760,11 @@ class TelegramAdapter(BasePlatformAdapter):
             return SendResult(success=True, message_id=None)
         
         try:
-            # Format and split message if needed
-            formatted = self.format_message(content)
-            chunks = self.truncate_message(
-                formatted, self.MAX_MESSAGE_LENGTH, len_fn=utf16_len,
-            )
-            if len(chunks) > 1:
-                # truncate_message appends a raw " (1/2)" suffix. Escape the
-                # MarkdownV2-special parentheses so Telegram doesn't reject the
-                # chunk and fall back to plain text.
-                chunks = [
-                    re.sub(r" \((\d+)/(\d+)\)$", r" \\(\1/\2\\)", chunk)
-                    for chunk in chunks
-                ]
+            # Format each raw chunk independently.  Do not split the already
+            # escaped MarkdownV2 string: that can cut between a backslash and
+            # the escaped special character, making Telegram reject the chunk
+            # and forcing a plain-text fallback.
+            chunks = self._format_and_split_markdownv2(content)
             
             message_ids = []
             thread_id = self._metadata_thread_id(metadata)

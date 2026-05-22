@@ -732,6 +732,35 @@ async def test_send_escapes_chunk_indicator_for_markdownv2(adapter):
     assert re.search(r" \\\([0-9]+/[0-9]+\\\)$", sent_texts[-1])
 
 
+@pytest.mark.asyncio
+async def test_send_chunks_do_not_split_markdownv2_escape_pairs(adapter):
+    """Long formatted replies must not fall back to plain text because a
+    chunk boundary split ``\\-``/``\\.`` escape pairs.
+    """
+    adapter.MAX_MESSAGE_LENGTH = 80
+    adapter._bot = MagicMock()
+
+    sent_texts = []
+
+    async def _fake_send_message(**kwargs):
+        text = kwargs["text"]
+        # Simulate Telegram's relevant MarkdownV2 rejection: a reserved '-' or
+        # '.' outside code/plain text must be escaped.  The old implementation
+        # split the already-escaped string and could leave '-' at chunk start.
+        if kwargs.get("parse_mode") is not None:
+            assert not re.search(r"(?<!\\)[-.]", text), text
+            assert not text.endswith("\\"), text
+        sent_texts.append(text)
+        return SimpleNamespace(message_id=len(sent_texts))
+
+    adapter._bot.send_message = AsyncMock(side_effect=_fake_send_message)
+
+    result = await adapter.send("123", "-." * 120)
+
+    assert result.success is True
+    assert len(sent_texts) > 1
+
+
 # =========================================================================
 # edit_message — streaming Markdown safety
 # =========================================================================

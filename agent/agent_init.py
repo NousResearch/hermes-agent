@@ -1446,8 +1446,22 @@ def init_agent(
     # errors. Even with the cache fix, dedup is the right defense
     # against plugin paths that may register the same schemas via
     # ctx.register_tool(). Mirrors the memory tools dedup above.
+    #
+    # Respect the platform's enabled_toolsets configuration (#5544):
+    # context engine tools follow the same gating pattern as memory
+    # provider tools — without the gate, `platform_toolsets: telegram: []`
+    # would still leak lcm_* tools into the tool surface and incur the
+    # same local-model latency penalty.
     agent._context_engine_tool_names: set = set()
-    if hasattr(agent, "context_compressor") and agent.context_compressor and agent.tools is not None:
+    if (
+        hasattr(agent, "context_compressor")
+        and agent.context_compressor
+        and agent.tools is not None
+        and (
+            agent.enabled_toolsets is None
+            or "context_engine" in agent.enabled_toolsets
+        )
+    ):
         _existing_tool_names = {
             t.get("function", {}).get("name")
             for t in agent.tools

@@ -1372,12 +1372,15 @@ class TestWebServerEndpoints:
         assert isinstance(data["category_order"], list)
         assert len(data["category_order"]) > 0
         assert "general" in data["category_order"]
+        assert "kanban.respawn_guard.active_pr" in schema
+        assert schema["kanban.respawn_guard.active_pr"]["type"] == "boolean"
 
     def test_get_config_defaults(self):
         resp = self.client.get("/api/config/defaults")
         assert resp.status_code == 200
         defaults = resp.json()
         assert "model" in defaults
+        assert defaults["kanban"]["respawn_guard"]["active_pr"] is True
 
     def test_get_env_vars(self):
         resp = self.client.get("/api/env")
@@ -2919,6 +2922,15 @@ class TestBuildSchemaFromConfig:
             assert entry["type"] == "select"
             assert "options" in entry
             assert "local" in entry["options"]
+            assert "vercel_sandbox" in entry["options"]
+        runtime_entry = CONFIG_SCHEMA["terminal.vercel_runtime"]
+        assert runtime_entry["type"] == "select"
+        assert "node24" in runtime_entry["options"]
+        assert "python3.13" in runtime_entry["options"]
+        assert len(runtime_entry["options"]) >= 3
+        active_pr_entry = CONFIG_SCHEMA["kanban.respawn_guard.active_pr"]
+        assert active_pr_entry["type"] == "boolean"
+        assert "recent GitHub PR comment" in active_pr_entry["description"]
 
     def test_empty_prefix_produces_correct_keys(self):
         from hermes_cli.web_server import _build_schema_from_config

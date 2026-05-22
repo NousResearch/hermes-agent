@@ -220,6 +220,8 @@ up on the next tick (60s by default).
 kanban:
   dispatch_in_gateway: true        # default
   dispatch_interval_seconds: 60    # default
+  respawn_guard:
+    active_pr: true                # default; set false for shared-PR sequential lanes
 ```
 
 Override the config flag at runtime via `HERMES_KANBAN_DISPATCH_IN_GATEWAY=0`

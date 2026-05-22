@@ -39,7 +39,11 @@ class TestWeComAdapterInit:
     def test_declares_non_editable_message_capability(self):
         from gateway.platforms.wecom import WeComAdapter
 
-        assert WeComAdapter.SUPPORTS_MESSAGE_EDITING is False
+        # WeCom now supports message editing via native streaming replies.
+        # SUPPORTS_MESSAGE_EDITING defaults to True (inherited from base).
+        assert getattr(WeComAdapter, "SUPPORTS_MESSAGE_EDITING", True) is True
+        # WeCom requires an explicit finalize call to close the stream.
+        assert WeComAdapter.REQUIRES_EDIT_FINALIZE is True
 
     def test_reads_config_from_extra(self):
         from gateway.platforms.wecom import WeComAdapter

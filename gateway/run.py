@@ -15435,7 +15435,18 @@ class GatewayRunner:
             )
 
         from run_agent import AIAgent
+        from gateway.config import Platform
         import queue
+
+        # Send an immediate typing indicator for WeCom so the user sees
+        # visual feedback before the agent starts processing.
+        if source.platform == Platform.WECOM:
+            _typing_adapter = self.adapters.get(source.platform)
+            if _typing_adapter:
+                try:
+                    await _typing_adapter.send_typing(source.chat_id)
+                except Exception:
+                    pass
 
         def _run_still_current() -> bool:
             if run_generation is None or not session_key:
@@ -16051,6 +16062,10 @@ class GatewayRunner:
         def _status_callback_sync(event_type: str, message: str) -> None:
             if not _status_adapter or not _run_still_current():
                 return
+            # WeCom: suppress status callbacks — the streaming typing indicator
+            # already signals activity; sending status text creates extra bubbles.
+            if source.platform == Platform.WECOM:
+                return
             prepared_message = _prepare_gateway_status_message(
                 source.platform,
                 event_type,
@@ -16190,6 +16205,10 @@ class GatewayRunner:
                         if source.platform == Platform.MATRIX:
                             _effective_cursor = ""
                             _buffer_only = True
+                        elif source.platform == Platform.WECOM:
+                            # WeCom: no cursor (the native streaming bubble
+                            # already shows a typing indicator).
+                            _effective_cursor = ""
                         # Fresh-final applies to Telegram only — other
                         # platforms either edit in place cheaply or don't
                         # have the edit-timestamp-stays-stale problem.
@@ -16208,11 +16227,19 @@ class GatewayRunner:
                             transport=_scfg.transport or "edit",
                             chat_type=getattr(source, "chat_type", "") or "",
                         )
+                        # WeCom: pass streaming_preview metadata so the stream
+                        # consumer's initial send() opens a native streaming
+                        # bubble that can be edited.
+                        _stream_metadata = (
+                            {"streaming_preview": True}
+                            if source.platform == Platform.WECOM
+                            else _status_thread_metadata
+                        )
                         _stream_consumer = GatewayStreamConsumer(
                             adapter=_adapter,
                             chat_id=source.chat_id,
                             config=_consumer_cfg,
-                            metadata=_status_thread_metadata,
+                            metadata=_stream_metadata,
                             on_new_message=(
                                 (lambda: progress_queue.put(("__reset__",)))
                                 if progress_queue is not None
@@ -16223,6 +16250,10 @@ class GatewayRunner:
                         if _want_stream_deltas:
                             def _stream_delta_cb(text: str) -> None:
                                 if _run_still_current():
+                                    # WeCom: suppress segment breaks (text=None)
+                                    # so all content stays in one streaming bubble.
+                                    if text is None and source.platform == Platform.WECOM:
+                                        return
                                     _stream_consumer.on_delta(text)
                         stream_consumer_holder[0] = _stream_consumer
                 except Exception as _sc_err:
@@ -16232,12 +16263,19 @@ class GatewayRunner:
                 if not _run_still_current():
                     return
                 if _stream_consumer is not None:
+                    # WeCom: suppress all interim messages — they would create
+                    # extra bubbles or corrupt the streaming bubble content.
+                    if source.platform == Platform.WECOM:
+                        return
                     if already_streamed:
                         _stream_consumer.on_segment_break()
                     else:
                         _stream_consumer.on_commentary(text)
                     return
                 if already_streamed or not _status_adapter or not str(text or "").strip():
+                    return
+                # WeCom fallback: suppress even when stream consumer is not set up.
+                if source.platform == Platform.WECOM:
                     return
                 safe_schedule_threadsafe(
                     _status_adapter.send(
@@ -17065,6 +17103,10 @@ class GatewayRunner:
         async def _notify_long_running():
             if _NOTIFY_INTERVAL is None:
                 return  # Notifications disabled (gateway_notify_interval: 0)
+            # WeCom: suppress "Still working..." notifications — the native
+            # streaming typing indicator already signals that work is in progress.
+            if source.platform == Platform.WECOM:
+                return
             _notify_adapter = self.adapters.get(source.platform)
             if not _notify_adapter:
                 return

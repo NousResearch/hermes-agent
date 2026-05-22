@@ -143,10 +143,13 @@ class WeComAdapter(BasePlatformAdapter):
     """WeCom AI Bot adapter backed by a persistent WebSocket connection."""
 
     MAX_MESSAGE_LENGTH = MAX_MESSAGE_LENGTH
-    SUPPORTS_MESSAGE_EDITING = False
     # Threshold for detecting WeCom client-side message splits.
     # When a chunk is near the 4000-char limit, a continuation is almost certain.
     _SPLIT_THRESHOLD = 3900
+
+    # WeCom streaming replies require an explicit finalize (finish=true) to
+    # transition the client out of the typing-indicator state.
+    REQUIRES_EDIT_FINALIZE = True
 
     def __init__(self, config: PlatformConfig):
         super().__init__(config, Platform.WECOM)
@@ -175,6 +178,13 @@ class WeComAdapter(BasePlatformAdapter):
         self._pending_responses: Dict[str, asyncio.Future] = {}
         self._dedup = MessageDeduplicator(max_size=DEDUP_MAX_SIZE)
         self._reply_req_ids: Dict[str, str] = {}
+        self._last_chat_req_ids: Dict[str, str] = {}
+
+        # Streaming reply state: maps stream_id -> reply_req_id for progressive
+        # updates via aibot_respond_msg with finish flag.
+        self._streaming_replies: Dict[str, str] = {}
+        # Chats where a streaming respond is active (finish=false was sent).
+        self._streaming_active_chats: set = set()
 
         # Text batching: merge rapid successive messages (Telegram-style).
         # WeCom clients split long messages around 4000 chars.
@@ -183,7 +193,6 @@ class WeComAdapter(BasePlatformAdapter):
         self._pending_text_batches: Dict[str, MessageEvent] = {}
         self._pending_text_batch_tasks: Dict[str, asyncio.Task] = {}
         self._device_id = uuid.uuid4().hex
-        self._last_chat_req_ids: Dict[str, str] = {}
 
     # ------------------------------------------------------------------
     # Connection lifecycle
@@ -456,6 +465,52 @@ class WeComAdapter(BasePlatformAdapter):
             return response
         finally:
             self._pending_responses.pop(normalized_req_id, None)
+
+    def _find_active_stream(self, chat_id: str) -> Optional[str]:
+        """Return the active stream_id for a chat, or None."""
+        if chat_id not in self._streaming_active_chats:
+            return None
+        # Find a stream_id whose reply context matches this chat.
+        # In practice there's at most one active stream per chat.
+        for stream_id, reply_req_id in self._streaming_replies.items():
+            # The _last_chat_req_ids maps chat→req_id; if this reply's
+            # context matches, it belongs to this chat.
+            if self._last_chat_req_ids.get(chat_id) == reply_req_id:
+                return stream_id
+        # Fallback: if only one stream is active and one chat is active,
+        # they must be the same.
+        if len(self._streaming_replies) == 1:
+            return next(iter(self._streaming_replies))
+        return None
+
+    async def _send_reply_stream(
+        self,
+        reply_req_id: str,
+        stream_id: str,
+        content: str,
+        *,
+        finish: bool = True,
+    ) -> Dict[str, Any]:
+        """Send a native WeCom streaming reply via ``aibot_respond_msg``.
+
+        WeCom associates progressive updates with the combination of inbound
+        ``req_id`` and a stable ``stream.id``.  The first ``finish=False``
+        frame creates the streaming bubble, later frames refresh it, and the
+        final ``finish=True`` frame closes it.
+        """
+        response = await self._send_reply_request(
+            reply_req_id,
+            {
+                "msgtype": "stream",
+                "stream": {
+                    "id": stream_id,
+                    "finish": finish,
+                    "content": content[:self.MAX_MESSAGE_LENGTH],
+                },
+            },
+        )
+        self._raise_for_wecom_error(response, "send reply stream")
+        return response
 
     @staticmethod
     def _new_req_id(prefix: str) -> str:
@@ -1340,11 +1395,18 @@ class WeComAdapter(BasePlatformAdapter):
         reply_to: Optional[str] = None,
         metadata: Optional[Dict[str, Any]] = None,
     ) -> SendResult:
-        """Send markdown to a WeCom chat via proactive ``aibot_send_msg``."""
-        del metadata
+        """Send markdown to a WeCom chat.
+
+        When metadata contains ``streaming_preview: True``, uses native WeCom
+        streaming replies (``aibot_respond_msg`` with ``finish=False``) so that
+        subsequent ``edit_message()`` calls can update the same bubble.
+        """
 
         if not chat_id:
             return SendResult(success=False, error="chat_id is required")
+
+        metadata = metadata or {}
+        streaming_preview = bool(metadata.get("streaming_preview"))
 
         try:
             reply_req_id = self._reply_req_id_for_message(reply_to)
@@ -1352,8 +1414,34 @@ class WeComAdapter(BasePlatformAdapter):
             if not reply_req_id and chat_id in self._last_chat_req_ids:
                 reply_req_id = self._last_chat_req_ids[chat_id]
 
-            if reply_req_id:
+            if reply_req_id and streaming_preview:
+                # If send_typing() already opened a streaming bubble for this
+                # chat, reuse that bubble instead of opening a second one.
+                existing_stream_id = self._find_active_stream(chat_id)
+                if existing_stream_id:
+                    # Send the first content frame into the existing bubble.
+                    response = await self._send_reply_stream(
+                        self._streaming_replies[existing_stream_id],
+                        existing_stream_id,
+                        content,
+                        finish=False,
+                    )
+                    message_id = existing_stream_id
+                else:
+                    # Open a new streaming bubble.
+                    stream_id = self._new_req_id("stream")
+                    response = await self._send_reply_stream(
+                        reply_req_id,
+                        stream_id,
+                        content,
+                        finish=False,
+                    )
+                    self._streaming_replies[stream_id] = reply_req_id
+                    self._streaming_active_chats.add(chat_id)
+                    message_id = stream_id
+            elif reply_req_id:
                 response = await self._send_reply_markdown(reply_req_id, content)
+                message_id = self._payload_req_id(response) or uuid.uuid4().hex[:12]
             else:
                 response = await self._send_request(
                     APP_CMD_SEND,
@@ -1363,6 +1451,7 @@ class WeComAdapter(BasePlatformAdapter):
                         "markdown": {"content": content[:self.MAX_MESSAGE_LENGTH]},
                     },
                 )
+                message_id = self._payload_req_id(response) or uuid.uuid4().hex[:12]
         except asyncio.TimeoutError:
             return SendResult(success=False, error="Timeout sending message to WeCom")
         except Exception as exc:
@@ -1371,11 +1460,14 @@ class WeComAdapter(BasePlatformAdapter):
 
         error = self._response_error(response)
         if error:
+            if streaming_preview:
+                self._streaming_replies.pop(message_id, None)
+                self._streaming_active_chats.discard(chat_id)
             return SendResult(success=False, error=error)
 
         return SendResult(
             success=True,
-            message_id=self._payload_req_id(response) or uuid.uuid4().hex[:12],
+            message_id=message_id,
             raw_response=response,
         )
 
@@ -1469,8 +1561,69 @@ class WeComAdapter(BasePlatformAdapter):
         )
 
     async def send_typing(self, chat_id: str, metadata=None) -> None:
-        """WeCom does not expose typing indicators in this adapter."""
-        del chat_id, metadata
+        """Open a WeCom streaming bubble as a typing indicator.
+
+        Sends an empty ``aibot_respond_msg`` with ``finish=False`` so the
+        WeCom client displays an animated typing indicator immediately.  The
+        stream consumer's first ``send()`` with ``streaming_preview`` will
+        detect the active streaming state and reuse the bubble.
+        """
+        del metadata
+        if chat_id in self._streaming_active_chats:
+            return  # Already have an active streaming bubble
+
+        reply_req_id = self._reply_req_id_for_message(None)
+        if not reply_req_id and chat_id in self._last_chat_req_ids:
+            reply_req_id = self._last_chat_req_ids[chat_id]
+        if not reply_req_id:
+            return  # No inbound reply context available
+
+        stream_id = self._new_req_id("typing")
+        try:
+            await self._send_reply_stream(reply_req_id, stream_id, "", finish=False)
+            self._streaming_replies[stream_id] = reply_req_id
+            self._streaming_active_chats.add(chat_id)
+            logger.debug("[%s] Opened typing bubble %s for chat %s", self.name, stream_id, chat_id)
+        except Exception as exc:
+            logger.debug("[%s] send_typing failed for chat %s: %s", self.name, chat_id, exc)
+
+    async def edit_message(
+        self,
+        chat_id: str,
+        message_id: str,
+        content: str,
+        *,
+        finalize: bool = False,
+    ) -> SendResult:
+        """Edit a streaming message via ``aibot_respond_msg``.
+
+        The ``message_id`` is the stream_id returned by ``send()`` when it
+        opened the streaming bubble.  Progressive edits use ``finish=False``;
+        the final edit uses ``finish=True`` to close the bubble.
+        """
+        reply_req_id = self._streaming_replies.get(message_id)
+        if not reply_req_id:
+            return SendResult(success=False, error="No streaming reply context for this message")
+
+        try:
+            await self._send_reply_stream(
+                reply_req_id,
+                message_id,
+                content,
+                finish=finalize,
+            )
+            if finalize:
+                self._streaming_replies.pop(message_id, None)
+                self._streaming_active_chats.discard(chat_id)
+            return SendResult(success=True, message_id=message_id)
+        except asyncio.TimeoutError:
+            return SendResult(success=False, error="Timeout editing streaming reply")
+        except Exception as exc:
+            # On error, clean up streaming state to avoid stuck bubbles
+            self._streaming_replies.pop(message_id, None)
+            self._streaming_active_chats.discard(chat_id)
+            logger.error("[%s] Stream edit failed: %s", self.name, exc)
+            return SendResult(success=False, error=str(exc))
 
     async def get_chat_info(self, chat_id: str) -> Dict[str, Any]:
         """Return minimal chat info."""

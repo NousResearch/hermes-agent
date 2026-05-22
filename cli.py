@@ -12996,7 +12996,13 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
         if self._command_running:
             return _state_fragment("class:prompt-working", self._command_spinner_frame())
         if self._agent_running:
-            return _state_fragment("class:prompt-working", "⚕")
+            _working_icon = "⚕"
+            try:
+                from hermes_cli.skin_engine import get_active_skin
+                _working_icon = get_active_skin().get_branding("status_prefix", "⚕").rstrip()
+            except Exception:
+                pass
+            return _state_fragment("class:prompt-working", _working_icon)
         if self._voice_mode:
             return _state_fragment("class:voice-prompt", "🎤")
         return [("class:prompt", symbol)]

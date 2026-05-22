@@ -2578,20 +2578,23 @@ _FOLLOWUP_VERDICT_BULLET_RE = re.compile(r"^\s*[-*]?\s*([a-z][a-z_-]*)\b")
 
 def _extract_followup_verdict_from_text(text: str) -> Optional[str]:
     lines = text.splitlines()
+    verdicts: list[str] = []
     for index, line in enumerate(lines):
         match = _FOLLOWUP_VERDICT_LINE_RE.match(line)
         if match:
-            return match.group(1).strip().lower().replace("-", "_")
+            verdicts.append(match.group(1).strip().lower().replace("-", "_"))
+            continue
         if _FOLLOWUP_VERDICT_HEADER_RE.match(line):
             for next_line in lines[index + 1 : index + 4]:
                 if not next_line.strip():
                     continue
                 bullet = _FOLLOWUP_VERDICT_BULLET_RE.match(next_line)
-                return (
-                    bullet.group(1).strip().lower().replace("-", "_")
-                    if bullet else None
-                )
-    return None
+                if bullet:
+                    verdicts.append(
+                        bullet.group(1).strip().lower().replace("-", "_")
+                    )
+                break
+    return verdicts[-1] if verdicts else None
 
 
 def _extract_followup_verdict(run: Optional[Run]) -> Optional[str]:

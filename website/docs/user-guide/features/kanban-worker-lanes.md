@@ -298,7 +298,10 @@ child through the same review/test/acceptance workflow, and completes the root
 only after all related child tasks are `done` or `archived`. If a child
 follow-up or acceptance gate fails, the default behavior is the same bounded
 `request-changes` feedback on that child, leaving the root incomplete until the
-child is rerun and accepted. The tool/API equivalents are
+child is rerun and accepted. That feedback is scoped to the failed
+implementation run: the next implementation claim gets the latest requested
+changes in its worker context, and review/test follow-ups from the old run do
+not satisfy the approval gate for the new run. The tool/API equivalents are
 `kanban_advance_goal` and:
 
 ```text

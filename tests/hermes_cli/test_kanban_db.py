@@ -741,6 +741,87 @@ def test_review_followup_verdict_ignores_recommended_action(
     assert test_item["state"] == "satisfied"
 
 
+def test_review_followup_verdict_prefers_latest_structured_verdict(
+    kanban_home, tmp_path,
+):
+    metadata = {
+        "worker_lane": {"name": "codex-deep", "kind": "codex_cli", "exit_code": 0},
+        "verification": {"commands": ["pytest -q"], "summary": "passed"},
+        "review": {"required": True, "reason": "Codex completed; Hermes review required"},
+    }
+    with kb.connect() as conn:
+        tid = kb.create_task(
+            conn,
+            title="implementation with echoed prior verdict",
+            assignee="codex-deep",
+            workspace_kind="dir",
+            workspace_path=str(tmp_path),
+        )
+        task = kb.claim_task(conn, tid, claimer="worker:codex-deep")
+        assert task is not None
+        assert kb.block_task(
+            conn,
+            tid,
+            reason="review-required: Codex completed; Hermes review required",
+            expected_run_id=task.current_run_id,
+            metadata=metadata,
+        )
+        plan = kb.plan_review_followups(conn, tid)
+        review = kb.claim_task(conn, plan.review_task_id, claimer="worker:codex-review")
+        assert review is not None
+        assert kb.block_task(
+            conn,
+            plan.review_task_id,
+            reason="review-required: Codex completed; Hermes review required",
+            expected_run_id=review.current_run_id,
+            metadata={
+                "worker_lane": {
+                    "name": "codex-review",
+                    "kind": "codex_cli",
+                    "exit_code": 0,
+                    "timed_out": False,
+                    "binary_missing": False,
+                    "output_tail": (
+                        "## Comment thread\n"
+                        "Failed follow-ups:\n"
+                        "- review task old: review follow-up verdict "
+                        "'request_changes' does not satisfy the gate\n"
+                        "  verdict: request_changes\n\n"
+                        "## Required review output\n"
+                        "State one verdict: approve, request_changes, or blocked.\n\n"
+                        "Progress:\n"
+                        "- [x] inspected current implementation\n\n"
+                        "Verdict: approve\n"
+                    ),
+                },
+                "verification": {
+                    "commands": ["git diff -- file"],
+                    "summary": "Verdict: approve\npassed",
+                },
+                "review": {
+                    "required": True,
+                    "reason": "Codex completed; Hermes review required",
+                },
+            },
+        )
+        _finish_followup_with_worker_evidence(
+            conn,
+            plan.test_task_id,
+            lane="codex-test",
+            verdict="pass",
+        )
+        gate = kb.review_followup_gate_status(
+            conn,
+            tid,
+            source_run_id=task.current_run_id,
+        )
+
+    review_item = next(item for item in gate["items"] if item["purpose"] == "review")
+    assert review_item["verdict"] == "approve"
+    assert review_item["state"] == "satisfied"
+    assert gate["ready"] is True
+
+
 def test_acceptance_check_gate_requires_configured_check_success(
     kanban_home, tmp_path,
 ):
@@ -1373,6 +1454,144 @@ def test_advance_goal_acceptance_requests_changes_for_failed_child_followup(
         }
     ]
     assert "Review/test follow-up gate failed" in comments[-1].body
+
+
+def test_advance_goal_acceptance_reruns_child_after_failed_followup(
+    kanban_home,
+    tmp_path,
+):
+    first_metadata = {
+        "worker_lane": {"name": "codex-deep", "kind": "codex_cli", "exit_code": 0},
+        "verification": {"commands": ["pytest -q"], "summary": "first passed"},
+        "review": {"required": True, "reason": "first run needs review"},
+    }
+    second_metadata = {
+        "worker_lane": {"name": "codex-deep", "kind": "codex_cli", "exit_code": 0},
+        "verification": {"commands": ["pytest -q"], "summary": "second passed"},
+        "review": {"required": True, "reason": "second run needs review"},
+    }
+    with kb.connect() as conn:
+        root = kb.create_task(
+            conn,
+            title="goal root rerun child",
+            workspace_kind="dir",
+            workspace_path=str(tmp_path),
+            triage=True,
+        )
+        child_ids = kb.decompose_triage_task(
+            conn,
+            root,
+            root_assignee="orchestrator",
+            children=[{"title": "implement", "assignee": "codex-deep"}],
+            author="planner",
+        )
+        assert child_ids is not None
+        child = child_ids[0]
+
+        first_claim = kb.claim_task(conn, child, claimer="worker:codex-deep")
+        assert first_claim is not None
+        assert kb.block_task(
+            conn,
+            child,
+            reason="review-required: first run needs review",
+            expected_run_id=first_claim.current_run_id,
+            metadata=first_metadata,
+        )
+
+        first_advance = kb.advance_goal_acceptance_workflow(
+            conn,
+            root,
+            reviewer="controller",
+            dispatch=False,
+        )
+        first_plan = first_advance["child_advances"][0]["advance"]["steps"][0]["plan"]
+        _finish_followup_with_worker_evidence(
+            conn,
+            first_plan["review_task_id"],
+            lane="codex-review",
+            verdict="request_changes",
+        )
+        _finish_followup_with_worker_evidence(
+            conn,
+            first_plan["test_task_id"],
+            lane="codex-test",
+            verdict="pass",
+        )
+
+        request_changes = kb.advance_goal_acceptance_workflow(
+            conn,
+            root,
+            reviewer="controller",
+            dispatch=False,
+        )
+        retry_context = kb.build_worker_context(conn, child)
+        child_after_request = kb.get_task(conn, child)
+
+        second_claim = kb.claim_task(conn, child, claimer="worker:codex-deep")
+        assert second_claim is not None
+        assert second_claim.current_run_id != first_claim.current_run_id
+        assert kb.block_task(
+            conn,
+            child,
+            reason="review-required: second run needs review",
+            expected_run_id=second_claim.current_run_id,
+            metadata=second_metadata,
+        )
+        second_advance = kb.advance_goal_acceptance_workflow(
+            conn,
+            root,
+            reviewer="controller",
+            dispatch=False,
+        )
+        second_plan = second_advance["child_advances"][0]["advance"]["steps"][0]["plan"]
+        _finish_followup_with_worker_evidence(
+            conn,
+            second_plan["review_task_id"],
+            lane="codex-review",
+            verdict="approve",
+        )
+        _finish_followup_with_worker_evidence(
+            conn,
+            second_plan["test_task_id"],
+            lane="codex-test",
+            verdict="pass",
+        )
+
+        final = kb.advance_goal_acceptance_workflow(
+            conn,
+            root,
+            reviewer="controller",
+            dispatch=False,
+            summary="goal accepted after retry",
+        )
+        root_task = kb.get_task(conn, root)
+        child_task = kb.get_task(conn, child)
+        child_acceptance = kb.task_acceptance_snapshot(conn, child)
+        runs = kb.list_runs(conn, child)
+        root_events = kb.list_events(conn, root)
+        child_events = kb.list_events(conn, child)
+
+    assert request_changes["child_advances"][0]["advance"]["steps"][0]["kind"] == "request_changes"
+    assert child_after_request.status == "ready"
+    assert "## Requested changes to address before finishing" in retry_context
+    assert "Review/test follow-up gate failed" in retry_context
+    assert first_plan["review_task_id"] != second_plan["review_task_id"]
+    assert first_plan["test_task_id"] != second_plan["test_task_id"]
+    assert child_acceptance is not None
+    assert child_acceptance["source_run_id"] == second_claim.current_run_id
+    assert child_acceptance["review_followup_gate"]["ready"] is True
+    assert {
+        item["task_id"]
+        for item in child_acceptance["review_followup_gate"]["items"]
+    } == {second_plan["review_task_id"], second_plan["test_task_id"]}
+    assert [run.outcome for run in runs][:2] == ["blocked", "blocked"]
+    assert runs[-1].outcome == "completed"
+    assert root_task.status == "done"
+    assert child_task.status == "done"
+    assert final["final"]["task"]["status"] == "done"
+    assert any(step["kind"] == "complete_goal" for step in final["steps"])
+    assert any(event.kind == "goal_acceptance_advanced" for event in root_events)
+    assert any(event.kind == "worker_review_changes_requested" for event in child_events)
 
 
 def test_task_acceptance_snapshot_summarizes_followup_evidence(

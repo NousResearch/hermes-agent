@@ -9950,9 +9950,15 @@ class GatewayRunner:
                     _cur_api_key = current_api_key
 
                     async def _on_model_selected(
-                        _chat_id: str, model_id: str, provider_slug: str
+                        _chat_id: str, model_id: str, provider_slug: str,
+                        _override_session_key: str | None = None,
                     ) -> str:
                         """Perform the model switch and return confirmation text."""
+                        # Use the override session key if provided (e.g., from
+                        # Telegram forum topic picker state), otherwise fall back
+                        # to the captured key from the /model command event.
+                        effective_key = _override_session_key or _session_key
+
                         result = _switch_model(
                             raw_input=model_id,
                             current_provider=_cur_provider,
@@ -9973,7 +9979,7 @@ class GatewayRunner:
                         _cache = getattr(_self, "_agent_cache", None)
                         if _cache_lock and _cache is not None:
                             with _cache_lock:
-                                cached_entry = _cache.get(_session_key)
+                                cached_entry = _cache.get(effective_key)
                         if cached_entry and cached_entry[0] is not None:
                             try:
                                 cached_entry[0].switch_model(
@@ -9989,12 +9995,12 @@ class GatewayRunner:
                         # Store model note + session override
                         if not hasattr(_self, "_pending_model_notes"):
                             _self._pending_model_notes = {}
-                        _self._pending_model_notes[_session_key] = (
+                        _self._pending_model_notes[effective_key] = (
                             f"[Note: model was just switched from {_cur_model} to {result.new_model} "
                             f"via {result.provider_label or result.target_provider}. "
                             f"Adjust your self-identification accordingly.]"
                         )
-                        _self._session_model_overrides[_session_key] = {
+                        _self._session_model_overrides[effective_key] = {
                             "model": result.new_model,
                             "provider": result.target_provider,
                             "api_key": result.api_key,
@@ -10005,7 +10011,7 @@ class GatewayRunner:
                         # Evict cached agent so the next turn creates a fresh
                         # agent from the override rather than relying on the
                         # stale cache signature to trigger a rebuild.
-                        _self._evict_cached_agent(_session_key)
+                        _self._evict_cached_agent(effective_key)
 
                         # Build confirmation text
                         plabel = result.provider_label or result.target_provider
@@ -16895,6 +16901,18 @@ class GatewayRunner:
             # user/assistant pair — losing the compressed summary and tail.
             # Reset to 0 so the gateway writes ALL compressed messages.
             _effective_history_offset = 0 if _session_was_split else len(agent_history)
+
+            # After a session split, the agent's session_id changed but the
+            # session_key is the same.  The override dict is keyed by
+            # session_key, so it survives the split automatically.  However,
+            # the cached agent instance may still hold the old model — evict
+            # it so the next turn rebuilds from the override.
+            if _session_was_split and session_key in self._session_model_overrides:
+                self._evict_cached_agent(session_key)
+                logger.debug(
+                    "Preserved model override across session split %s → %s (key=%s)",
+                    session_id, effective_session_id, session_key,
+                )
 
             # Auto-generate session title after first exchange (non-blocking)
             if final_response and self._session_db:

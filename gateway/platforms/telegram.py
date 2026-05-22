@@ -2818,7 +2818,14 @@ class TelegramAdapter(BasePlatformAdapter):
                 return
 
             try:
-                result_text = await callback(chat_id, model_id, provider_slug)
+                # Pass the stored session_key from picker state so the
+                # override is keyed to the correct forum-topic session,
+                # not the base group session captured at /model time.
+                picker_session_key = state.get("session_key")
+                result_text = await callback(
+                    chat_id, model_id, provider_slug,
+                    _override_session_key=picker_session_key,
+                )
             except Exception as exc:
                 logger.error("Model picker switch failed: %s", exc)
                 result_text = f"Error switching model: {exc}"

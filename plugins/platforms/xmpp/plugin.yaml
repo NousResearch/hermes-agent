@@ -59,3 +59,11 @@ optional_env:
     description: "Human label for the home channel (defaults to the JID)"
     prompt: "Home channel display name (or empty)"
     password: false
+  - name: XMPP_UPLOAD_SERVICE
+    description: "Pin the XEP-0363 HTTP Upload component JID (default: auto-discover)"
+    prompt: "Upload service JID (or empty)"
+    password: false
+  - name: XMPP_HTML_FORMATTING
+    description: "Emit XEP-0071 XHTML-IM dual body so clients can render bold/italic/links (default: true)"
+    prompt: "Send XHTML-IM dual body? (true/false)"
+    password: false

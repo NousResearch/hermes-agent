@@ -30,7 +30,75 @@ _strip_control_chars = _xmpp._strip_control_chars
 _split_message = _xmpp._split_message
 _parse_bool = _xmpp._parse_bool
 _parse_comma_list = _xmpp._parse_comma_list
+_markdown_to_xhtml_im = _xmpp._markdown_to_xhtml_im
+_markdown_to_xhtml_im_fallback = _xmpp._markdown_to_xhtml_im_fallback
+_html_escape = _xmpp._html_escape
+_sanitize_link_url = _xmpp._sanitize_link_url
+_content_type_for = _xmpp._content_type_for
+_UploadUnavailable = _xmpp._UploadUnavailable
 MUC_PREFIX = _xmpp.MUC_PREFIX
+
+
+class _FakeStanza:
+    """Minimal slixmpp stanza stand-in that records ``stanza['html']['body']``."""
+
+    class _Slot:
+        def __init__(self, parent: "_FakeStanza", key: str):
+            self._parent = parent
+            self._key = key
+
+        def __setitem__(self, k, v):
+            if self._key == "html" and k == "body":
+                self._parent._html_body = v
+            elif self._key == "oob" and k == "url":
+                self._parent._oob_url = v
+
+        def __getitem__(self, k):  # pragma: no cover - not used by adapter
+            return None
+
+    def __init__(self, mto: str, mbody: str, mtype: str):
+        self.mto = mto
+        self.mbody = mbody
+        self.mtype = mtype
+        self._html_body = None
+        self._oob_url = None
+        self._sent = False
+        self._sent_by: list = []
+
+    def __getitem__(self, key):
+        return _FakeStanza._Slot(self, key)
+
+    def send(self):
+        self._sent = True
+        self._sent_by.append(self)
+
+
+def _make_mock_client(*, has_html: bool = False):
+    """Build a MagicMock that mirrors slixmpp's surface for tests.
+
+    The adapter calls ``client.make_message(mto=, mbody=, mtype=).send()``
+    (returning the stanza for ``stanza["html"]["body"]`` assignment), and
+    consults ``"xep_0071" in client.plugin`` to decide whether to attach
+    XHTML-IM.
+    """
+    client = MagicMock()
+    client.plugin = {"xep_0071": MagicMock()} if has_html else {}
+    sent_stanzas: list = []
+
+    def _make_message(*, mto, mbody, mtype, **_kwargs):
+        stanza = _FakeStanza(mto=mto, mbody=mbody, mtype=mtype)
+        original_send = stanza.send
+
+        def _record():
+            sent_stanzas.append(stanza)
+            return original_send()
+
+        stanza.send = _record  # type: ignore[assignment]
+        return stanza
+
+    client.make_message.side_effect = _make_message
+    client._sent_stanzas = sent_stanzas
+    return client
 
 
 # ---------------------------------------------------------------------------
@@ -327,19 +395,19 @@ def test_resolve_target_empty():
 # ---------------------------------------------------------------------------
 
 @pytest.mark.asyncio
-async def test_send_dm_calls_send_message():
+async def test_send_dm_strips_markdown_in_body():
     from gateway.config import PlatformConfig
     cfg = PlatformConfig(enabled=True, extra={"jid": "bot@x", "password": "y"})
     adapter = XMPPAdapter(cfg)
-    adapter._client = MagicMock()
+    adapter._client = _make_mock_client()
 
     result = await adapter.send("alice@example.org", "**hi**")
     assert result.success is True
-    adapter._client.send_message.assert_called_once()
-    kwargs = adapter._client.send_message.call_args.kwargs
-    assert kwargs["mto"] == "alice@example.org"
-    assert kwargs["mtype"] == "chat"
-    assert "**" not in kwargs["mbody"]
+    sent = adapter._client._sent_stanzas
+    assert len(sent) == 1
+    assert sent[0].mto == "alice@example.org"
+    assert sent[0].mtype == "chat"
+    assert "**" not in sent[0].mbody
 
 
 @pytest.mark.asyncio
@@ -347,13 +415,13 @@ async def test_send_muc_uses_groupchat():
     from gateway.config import PlatformConfig
     cfg = PlatformConfig(enabled=True, extra={"jid": "bot@x", "password": "y"})
     adapter = XMPPAdapter(cfg)
-    adapter._client = MagicMock()
+    adapter._client = _make_mock_client()
 
     result = await adapter.send(f"{MUC_PREFIX}ops@conf", "hello")
     assert result.success is True
-    kwargs = adapter._client.send_message.call_args.kwargs
-    assert kwargs["mto"] == "ops@conf"
-    assert kwargs["mtype"] == "groupchat"
+    sent = adapter._client._sent_stanzas
+    assert sent[0].mto == "ops@conf"
+    assert sent[0].mtype == "groupchat"
 
 
 @pytest.mark.asyncio
@@ -371,11 +439,11 @@ async def test_send_empty_body_after_strip_succeeds_without_call():
     from gateway.config import PlatformConfig
     cfg = PlatformConfig(enabled=True, extra={"jid": "bot@x", "password": "y"})
     adapter = XMPPAdapter(cfg)
-    adapter._client = MagicMock()
+    adapter._client = _make_mock_client()
 
     result = await adapter.send("alice@example.org", "\x00 \r\n  ")
     assert result.success is True
-    adapter._client.send_message.assert_not_called()
+    assert adapter._client.make_message.call_count == 0
 
 
 @pytest.mark.asyncio
@@ -383,12 +451,72 @@ async def test_send_splits_long_message():
     from gateway.config import PlatformConfig
     cfg = PlatformConfig(enabled=True, extra={"jid": "bot@x", "password": "y", "max_message_length": 100})
     adapter = XMPPAdapter(cfg)
-    adapter._client = MagicMock()
+    adapter._client = _make_mock_client()
 
     body = "lorem ipsum " * 50
     result = await adapter.send("alice@example.org", body)
     assert result.success is True
-    assert adapter._client.send_message.call_count >= 2
+    assert len(adapter._client._sent_stanzas) >= 2
+
+
+@pytest.mark.asyncio
+async def test_send_emits_xhtml_im_for_single_chunk():
+    """Single-chunk markdown messages should carry both <body> and <html>."""
+    from gateway.config import PlatformConfig
+    cfg = PlatformConfig(enabled=True, extra={"jid": "bot@x", "password": "y"})
+    adapter = XMPPAdapter(cfg)
+    adapter._client = _make_mock_client(has_html=True)
+
+    result = await adapter.send("alice@example.org", "**hello** _world_")
+    assert result.success is True
+    sent = adapter._client._sent_stanzas
+    assert len(sent) == 1
+    assert sent[0]._html_body, "single-chunk markdown should set the html body"
+    assert "<strong>" in sent[0]._html_body or "<b>" in sent[0]._html_body
+
+
+@pytest.mark.asyncio
+async def test_send_skips_xhtml_im_when_no_formatting():
+    """Plain text messages should not waste bytes on an empty <html> block."""
+    from gateway.config import PlatformConfig
+    cfg = PlatformConfig(enabled=True, extra={"jid": "bot@x", "password": "y"})
+    adapter = XMPPAdapter(cfg)
+    adapter._client = _make_mock_client(has_html=True)
+
+    result = await adapter.send("alice@example.org", "plain text reply")
+    assert result.success is True
+    sent = adapter._client._sent_stanzas
+    assert sent[0]._html_body in (None, "")
+
+
+@pytest.mark.asyncio
+async def test_send_skips_xhtml_im_on_multi_chunk():
+    """Chunked sends should fall through to plain text only."""
+    from gateway.config import PlatformConfig
+    cfg = PlatformConfig(enabled=True, extra={"jid": "bot@x", "password": "y", "max_message_length": 80})
+    adapter = XMPPAdapter(cfg)
+    adapter._client = _make_mock_client(has_html=True)
+
+    result = await adapter.send("alice@example.org", "**bold** " + ("lorem " * 30))
+    assert result.success is True
+    sent = adapter._client._sent_stanzas
+    assert len(sent) >= 2
+    for stanza in sent:
+        assert stanza._html_body in (None, "")
+
+
+@pytest.mark.asyncio
+async def test_send_respects_html_formatting_disabled():
+    from gateway.config import PlatformConfig
+    cfg = PlatformConfig(enabled=True, extra={
+        "jid": "bot@x", "password": "y", "html_formatting": False,
+    })
+    adapter = XMPPAdapter(cfg)
+    adapter._client = _make_mock_client(has_html=True)
+
+    result = await adapter.send("alice@example.org", "**hi**")
+    assert result.success is True
+    assert adapter._client._sent_stanzas[0]._html_body in (None, "")
 
 
 # ---------------------------------------------------------------------------
@@ -620,3 +748,206 @@ def test_register_calls_register_platform():
     assert callable(kwargs["adapter_factory"])
     assert callable(kwargs["setup_fn"])
     assert "XMPP" in kwargs["platform_hint"]
+    # Adapter advertises media support via XEP-0363; the hint should
+    # tell the agent it can emit MEDIA: tags.
+    assert "MEDIA" in kwargs["platform_hint"]
+
+
+# ---------------------------------------------------------------------------
+# 11. XHTML-IM (XEP-0071) helpers
+# ---------------------------------------------------------------------------
+
+def test_html_escape_basic():
+    assert _html_escape("<a>&\"x") == "&lt;a&gt;&amp;&quot;x"
+
+
+def test_sanitize_link_url_rejects_dangerous_schemes():
+    assert _sanitize_link_url("javascript:alert(1)") == ""
+    assert _sanitize_link_url("DATA:text/html,<script>") == ""
+    assert _sanitize_link_url("vbscript:msgbox") == ""
+    assert _sanitize_link_url("https://example.org/x") == "https://example.org/x"
+
+
+def test_markdown_to_xhtml_im_bold_italic_code():
+    html = _markdown_to_xhtml_im("**bold** _italic_ `code`")
+    assert "bold" in html and "italic" in html and "code" in html
+    assert "<strong>" in html or "<b>" in html
+    assert "<em>" in html or "<i>" in html
+    assert "<code>" in html
+
+
+def test_markdown_to_xhtml_im_link():
+    html = _markdown_to_xhtml_im("see [docs](https://example.org/x)")
+    assert "<a href=\"https://example.org/x\">" in html
+    assert ">docs</a>" in html
+
+
+def test_markdown_to_xhtml_im_escapes_html_in_code():
+    html = _markdown_to_xhtml_im("`<script>alert(1)</script>`")
+    assert "&lt;script&gt;" in html
+    assert "<script>" not in html
+
+
+def test_markdown_to_xhtml_im_fenced_code_block():
+    html = _markdown_to_xhtml_im("```python\nprint('hi')\n```")
+    assert "<pre>" in html
+    # The python ``markdown`` library may emit ``<code class="language-…">``;
+    # the regex fallback emits a bare ``<code>``. Both are valid XHTML-IM.
+    assert "<code" in html
+    assert "print" in html
+
+
+def test_markdown_to_xhtml_im_empty_returns_empty():
+    assert _markdown_to_xhtml_im("") == ""
+    assert _markdown_to_xhtml_im("   ").strip() == ""
+
+
+def test_markdown_to_xhtml_im_fallback_path_explicit():
+    """The fallback path must produce a usable subset even without the
+    optional ``markdown`` package available at import time."""
+    html = _markdown_to_xhtml_im_fallback("**a** [x](https://y/) `<b>`")
+    assert "<strong>" in html
+    assert "<a href=\"https://y/\">" in html
+    assert "&lt;b&gt;" in html
+
+
+# ---------------------------------------------------------------------------
+# 12. HTTP Upload (XEP-0363)
+# ---------------------------------------------------------------------------
+
+def test_content_type_for_known_extensions():
+    assert _content_type_for("/tmp/x.png") == "image/png"
+    assert _content_type_for("/tmp/x.jpg") == "image/jpeg"
+    assert _content_type_for("/tmp/x.ogg") == "audio/ogg"
+    assert _content_type_for("/tmp/x.mp4") == "video/mp4"
+    assert _content_type_for("/tmp/x.pdf") == "application/pdf"
+    assert _content_type_for("/tmp/x.weirdext") == "application/octet-stream"
+    assert _content_type_for("/tmp/no-extension") == "application/octet-stream"
+
+
+@pytest.mark.asyncio
+async def test_send_image_url_uses_oob_for_https():
+    from gateway.config import PlatformConfig
+    cfg = PlatformConfig(enabled=True, extra={"jid": "bot@x", "password": "y"})
+    adapter = XMPPAdapter(cfg)
+    adapter._client = _make_mock_client()
+
+    result = await adapter.send_image("alice@example.org", "https://example.org/cat.png", caption="look")
+    assert result.success is True
+    sent = adapter._client._sent_stanzas
+    assert "https://example.org/cat.png" in sent[0].mbody
+    assert "look" in sent[0].mbody
+
+
+@pytest.mark.asyncio
+async def test_upload_then_send_falls_back_when_no_service(tmp_path):
+    from gateway.config import PlatformConfig
+    cfg = PlatformConfig(enabled=True, extra={"jid": "bot@x", "password": "y"})
+    adapter = XMPPAdapter(cfg)
+    adapter._client = _make_mock_client()
+    adapter._upload_service_resolved = False  # no upload component on the server
+
+    img = tmp_path / "cat.png"
+    img.write_bytes(b"\x89PNG\r\n\x1a\nfake")
+
+    result = await adapter._upload_then_send("alice@example.org", str(img), caption="cute")
+    assert result.success is True
+    sent = adapter._client._sent_stanzas
+    assert any("cat.png" in s.mbody for s in sent)
+    assert any("upload failed" in s.mbody for s in sent)
+
+
+@pytest.mark.asyncio
+async def test_upload_then_send_rejects_missing_file():
+    from gateway.config import PlatformConfig
+    cfg = PlatformConfig(enabled=True, extra={"jid": "bot@x", "password": "y"})
+    adapter = XMPPAdapter(cfg)
+    adapter._client = _make_mock_client()
+
+    result = await adapter._upload_then_send("alice@x", "/tmp/does-not-exist.png")
+    assert result.success is False
+    assert "not found" in (result.error or "").lower()
+
+
+@pytest.mark.asyncio
+async def test_upload_then_send_emits_oob_url_on_success(tmp_path):
+    """Mock the slixmpp upload plugin and verify the resulting send."""
+    from gateway.config import PlatformConfig
+    cfg = PlatformConfig(enabled=True, extra={"jid": "bot@x", "password": "y"})
+    adapter = XMPPAdapter(cfg)
+    adapter._client = _make_mock_client()
+
+    img = tmp_path / "cat.png"
+    img.write_bytes(b"\x89PNG\r\n\x1a\n" + b"x" * 64)
+
+    upload_plugin = MagicMock()
+    upload_plugin.upload_file = AsyncMock(return_value="https://uploads.example.org/cat.png")
+    adapter._client.plugin = {"xep_0363": upload_plugin}
+    adapter._upload_service_resolved = "uploads.example.org"
+
+    result = await adapter._upload_then_send("alice@example.org", str(img), caption="cute")
+    assert result.success is True
+    upload_plugin.upload_file.assert_awaited_once()
+    sent = adapter._client._sent_stanzas
+    assert "https://uploads.example.org/cat.png" in sent[0].mbody
+    assert "cute" in sent[0].mbody
+
+
+@pytest.mark.asyncio
+async def test_upload_file_raises_unavailable_when_service_missing():
+    from gateway.config import PlatformConfig
+    cfg = PlatformConfig(enabled=True, extra={"jid": "bot@x", "password": "y"})
+    adapter = XMPPAdapter(cfg)
+    adapter._client = _make_mock_client()
+    adapter._upload_service_resolved = False
+
+    with pytest.raises(_UploadUnavailable):
+        await adapter._upload_file("/tmp/anything.png")
+
+
+@pytest.mark.asyncio
+async def test_resolve_upload_service_pinned_skips_discovery(monkeypatch):
+    from gateway.config import PlatformConfig
+    cfg = PlatformConfig(enabled=True, extra={
+        "jid": "bot@x", "password": "y", "upload_service": "uploads.example.org",
+    })
+    adapter = XMPPAdapter(cfg)
+    adapter._client = MagicMock()
+    # find_upload_service should not be called when the operator pins one
+    upload_plugin = MagicMock()
+    upload_plugin.find_upload_service = AsyncMock()
+    adapter._client.plugin = {"xep_0363": upload_plugin}
+
+    await adapter._resolve_upload_service()
+    upload_plugin.find_upload_service.assert_not_awaited()
+    assert adapter._upload_service_resolved == "uploads.example.org"
+
+
+# ---------------------------------------------------------------------------
+# 13. New env-vars surface via _env_enablement
+# ---------------------------------------------------------------------------
+
+def test_env_enablement_seeds_upload_and_html_keys(monkeypatch):
+    monkeypatch.setenv("XMPP_JID", "bot@example.org")
+    monkeypatch.setenv("XMPP_PASSWORD", "secret")
+    monkeypatch.setenv("XMPP_UPLOAD_SERVICE", "uploads.example.org")
+    monkeypatch.setenv("XMPP_HTML_FORMATTING", "false")
+
+    seed = _env_enablement()
+    assert seed["upload_service"] == "uploads.example.org"
+    assert seed["html_formatting"] is False
+
+
+def test_adapter_init_reads_new_keys(monkeypatch):
+    from gateway.config import PlatformConfig
+    for v in ("XMPP_UPLOAD_SERVICE", "XMPP_HTML_FORMATTING"):
+        monkeypatch.delenv(v, raising=False)
+
+    cfg = PlatformConfig(enabled=True, extra={
+        "jid": "bot@x", "password": "y",
+        "upload_service": "uploads.x.org",
+        "html_formatting": False,
+    })
+    adapter = XMPPAdapter(cfg)
+    assert adapter.upload_service == "uploads.x.org"
+    assert adapter.html_formatting is False

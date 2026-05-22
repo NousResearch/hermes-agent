@@ -30,6 +30,9 @@ Optional environment variables:
     XMPP_ALLOW_ALL_USERS      true = bypass the allowlist (dev only)
     XMPP_HOME_CHANNEL         Default target for cron deliveries
     XMPP_HOME_CHANNEL_NAME    Display name for the home channel
+    XMPP_UPLOAD_SERVICE       Pin the XEP-0363 upload service JID
+                              (default: SRV-style auto-discovery)
+    XMPP_HTML_FORMATTING      Emit XEP-0071 XHTML-IM dual body (default: true)
 
 The ``slixmpp`` Python package is imported lazily — the plugin stays
 importable for discovery and setup-time prompts even when slixmpp is not
@@ -86,11 +89,11 @@ def _strip_resource(jid: str) -> str:
 
 
 def _strip_markdown(text: str) -> str:
-    """Convert markdown to plain text for XMPP delivery.
+    """Convert markdown to plain text for the XMPP ``<body>`` fallback.
 
-    XMPP message bodies are plain text by default; some clients render
-    XHTML-IM (XEP-0071) but that requires a separate stanza extension we
-    do not emit. Stripping the markup keeps messages readable everywhere.
+    XHTML-IM aware clients render the parallel ``<html>`` element produced
+    by :func:`_format_html`; this strip keeps the plain-body fallback
+    readable on clients that do not.
     """
     # Bold / italic / strikethrough
     text = re.sub(r"\*\*(.+?)\*\*", r"\1", text)
@@ -159,6 +162,229 @@ def _split_message(content: str, max_bytes: int) -> List[str]:
 
 
 # ---------------------------------------------------------------------------
+# XHTML-IM helpers (XEP-0071)
+# ---------------------------------------------------------------------------
+
+# XHTML-IM allows a restricted subset of HTML. We target what the popular
+# mobile + desktop clients (Conversations, Dino, Gajim, Profanity) all
+# render: p, br, strong, em, code, pre, a, ul, ol, li, blockquote, span.
+_XHTML_IM_NS = "http://www.w3.org/1999/xhtml"
+
+
+def _html_escape(text: str) -> str:
+    return (
+        text.replace("&", "&amp;")
+        .replace("<", "&lt;")
+        .replace(">", "&gt;")
+        .replace('"', "&quot;")
+    )
+
+
+def _sanitize_link_url(url: str) -> str:
+    """Reject dangerous schemes (``javascript:``, ``data:``, ``vbscript:``)."""
+    stripped = (url or "").strip()
+    scheme = stripped.split(":", 1)[0].lower().strip() if ":" in stripped else ""
+    if scheme in {"javascript", "data", "vbscript"}:
+        return ""
+    return stripped.replace('"', "&quot;")
+
+
+def _markdown_to_xhtml_im(text: str) -> str:
+    """Convert markdown to a safe XHTML-IM subset.
+
+    Uses the ``markdown`` library when installed (matches the Matrix
+    adapter's path; ``markdown`` is pinned for the ``matrix`` extra and
+    is therefore commonly available in Hermes installs). Falls back to a
+    regex pipeline when not.
+
+    Returns an XHTML fragment suitable for assignment to
+    ``msg['html']['body']`` in slixmpp. The caller wraps it in a single
+    ``<p>...</p>`` envelope so the result is well-formed even when the
+    markdown source is empty.
+    """
+    text = text or ""
+    if not text.strip():
+        return ""
+
+    try:
+        import markdown as _md  # type: ignore[import-untyped]
+
+        md = _md.Markdown(extensions=["fenced_code", "nl2br", "sane_lists"])
+        if "html_block" in md.preprocessors:
+            md.preprocessors.deregister("html_block")
+        html = md.convert(text)
+        md.reset()
+        # ``markdown`` wraps single-paragraph output in a stray <p>; XMPP
+        # clients render dual ``<p>`` blocks with a leading blank line, so
+        # strip the wrapper when there is only one.
+        if html.count("<p>") == 1:
+            html = html.replace("<p>", "", 1).replace("</p>", "", 1)
+        return html.strip()
+    except ImportError:
+        return _markdown_to_xhtml_im_fallback(text)
+
+
+def _markdown_to_xhtml_im_fallback(text: str) -> str:
+    """Regex Markdown-to-XHTML-IM for installs without the ``markdown`` package."""
+    placeholders: List[str] = []
+
+    def _protect(html_fragment: str) -> str:
+        placeholders.append(html_fragment)
+        return f"\x00P{len(placeholders) - 1}\x00"
+
+    # Fenced code blocks: ```lang\n...\n```
+    result = re.sub(
+        r"```[a-zA-Z0-9_+\-]*\n?(.*?)```",
+        lambda m: _protect(f"<pre><code>{_html_escape(m.group(1))}</code></pre>"),
+        text,
+        flags=re.DOTALL,
+    )
+    # Inline code
+    result = re.sub(
+        r"`([^`\n]+)`",
+        lambda m: _protect(f"<code>{_html_escape(m.group(1))}</code>"),
+        result,
+    )
+    # Images (extract URL only — XHTML-IM ``<img>`` is poorly supported)
+    result = re.sub(
+        r"!\[([^\]]*)\]\(([^)]+)\)",
+        lambda m: _protect(_html_escape(m.group(2))),
+        result,
+    )
+    # Links: [text](url)
+    result = re.sub(
+        r"\[([^\]]+)\]\(([^)]+)\)",
+        lambda m: _protect(
+            '<a href="{}">{}</a>'.format(
+                _sanitize_link_url(m.group(2)),
+                _html_escape(m.group(1)),
+            )
+        )
+        if _sanitize_link_url(m.group(2))
+        else _protect(_html_escape(m.group(1))),
+        result,
+    )
+    # HTML-escape the rest
+    parts = re.split(r"(\x00P\d+\x00)", result)
+    for idx, part in enumerate(parts):
+        if not part.startswith("\x00P"):
+            parts[idx] = _html_escape(part)
+    result = "".join(parts)
+
+    # Inline emphasis on the escaped+protected string
+    result = re.sub(r"\*\*(.+?)\*\*", r"<strong>\1</strong>", result)
+    result = re.sub(r"__(.+?)__", r"<strong>\1</strong>", result)
+    result = re.sub(r"(?<!\*)\*(?!\*)(.+?)(?<!\*)\*(?!\*)", r"<em>\1</em>", result)
+    result = re.sub(r"(?<!\w)_(?!_)(.+?)(?<!_)_(?!\w)", r"<em>\1</em>", result)
+
+    # Block-level: headings → <strong>; lists; blockquotes; paragraphs
+    lines = result.split("\n")
+    out_lines: List[str] = []
+    i = 0
+    while i < len(lines):
+        line = lines[i]
+        hdr = re.match(r"^(#{1,6})\s+(.+)$", line)
+        if hdr:
+            out_lines.append(f"<p><strong>{hdr.group(2).strip()}</strong></p>")
+            i += 1
+            continue
+        if re.match(r"^(\s*[-*]\s+)", line):
+            bullets = []
+            while i < len(lines) and re.match(r"^(\s*[-*]\s+)", lines[i]):
+                bullets.append(re.sub(r"^\s*[-*]\s+", "", lines[i]))
+                i += 1
+            out_lines.append("<ul>" + "".join(f"<li>{b}</li>" for b in bullets) + "</ul>")
+            continue
+        if re.match(r"^\s*\d+\.\s+", line):
+            items = []
+            while i < len(lines) and re.match(r"^\s*\d+\.\s+", lines[i]):
+                items.append(re.sub(r"^\s*\d+\.\s+", "", lines[i]))
+                i += 1
+            out_lines.append("<ol>" + "".join(f"<li>{it}</li>" for it in items) + "</ol>")
+            continue
+        if line.startswith("&gt; ") or line == "&gt;":
+            bq = []
+            while i < len(lines) and (lines[i].startswith("&gt; ") or lines[i] == "&gt;"):
+                bq.append(lines[i][5:] if lines[i].startswith("&gt; ") else "")
+                i += 1
+            out_lines.append("<blockquote>" + "<br>".join(bq) + "</blockquote>")
+            continue
+        if not line.strip():
+            i += 1
+            continue
+        # Plain paragraph
+        para = [line]
+        i += 1
+        while i < len(lines) and lines[i].strip() and not _starts_block(lines[i]):
+            para.append(lines[i])
+            i += 1
+        out_lines.append("<p>" + "<br>".join(para) + "</p>")
+
+    rendered = "".join(out_lines)
+    # Restore protected fragments
+    rendered = re.sub(
+        r"\x00P(\d+)\x00",
+        lambda m: placeholders[int(m.group(1))],
+        rendered,
+    )
+    return rendered
+
+
+def _starts_block(line: str) -> bool:
+    return bool(
+        re.match(r"^(#{1,6})\s+", line)
+        or re.match(r"^(\s*[-*]\s+)", line)
+        or re.match(r"^\s*\d+\.\s+", line)
+        or line.startswith("&gt; ")
+        or line == "&gt;"
+    )
+
+
+# ---------------------------------------------------------------------------
+# Media / file helpers
+# ---------------------------------------------------------------------------
+
+_IMAGE_EXTS = frozenset({".png", ".jpg", ".jpeg", ".gif", ".webp", ".heic"})
+_AUDIO_EXTS = frozenset({".ogg", ".opus", ".mp3", ".wav", ".m4a", ".flac", ".aac"})
+_VIDEO_EXTS = frozenset({".mp4", ".webm", ".mov", ".mkv", ".avi"})
+
+_CONTENT_TYPE_BY_EXT = {
+    ".png": "image/png",
+    ".jpg": "image/jpeg",
+    ".jpeg": "image/jpeg",
+    ".gif": "image/gif",
+    ".webp": "image/webp",
+    ".heic": "image/heic",
+    ".ogg": "audio/ogg",
+    ".opus": "audio/ogg",
+    ".mp3": "audio/mpeg",
+    ".wav": "audio/wav",
+    ".m4a": "audio/mp4",
+    ".flac": "audio/flac",
+    ".aac": "audio/aac",
+    ".mp4": "video/mp4",
+    ".webm": "video/webm",
+    ".mov": "video/quicktime",
+    ".mkv": "video/x-matroska",
+    ".avi": "video/x-msvideo",
+    ".pdf": "application/pdf",
+    ".zip": "application/zip",
+    ".txt": "text/plain",
+}
+
+
+def _content_type_for(path: str) -> str:
+    _, dot, ext = path.rpartition(".")
+    if not dot:
+        return "application/octet-stream"
+    return _CONTENT_TYPE_BY_EXT.get("." + ext.lower(), "application/octet-stream")
+
+
+class _UploadUnavailable(Exception):
+    """Raised when HTTP Upload is not usable for the current request."""
+
+
+# ---------------------------------------------------------------------------
 # Adapter
 # ---------------------------------------------------------------------------
 
@@ -207,11 +433,22 @@ class XMPPAdapter(BasePlatformAdapter):
 
         self.max_message_length = int(extra.get("max_message_length") or MAX_MESSAGE_LENGTH)
 
+        self.upload_service = (
+            os.getenv("XMPP_UPLOAD_SERVICE") or extra.get("upload_service") or ""
+        ).strip() or None
+        self.html_formatting = _parse_bool(
+            os.getenv("XMPP_HTML_FORMATTING", extra.get("html_formatting", True)),
+            default=True,
+        )
+
         # Runtime state
         self._client = None  # slixmpp.ClientXMPP
         self._lock_key: Optional[str] = None
         self._connected_event = asyncio.Event()
         self._closing = False
+        # Upload service discovery: None = not probed yet, False = unavailable,
+        # str = service JID. Cached on session_start to avoid per-send discovery.
+        self._upload_service_resolved: Any = None
 
     @property
     def name(self) -> str:
@@ -263,6 +500,10 @@ class XMPPAdapter(BasePlatformAdapter):
         client.register_plugin("xep_0030")  # Service Discovery
         client.register_plugin("xep_0199")  # XMPP Ping
         client.register_plugin("xep_0045")  # Multi-User Chat
+        client.register_plugin("xep_0066")  # Out-of-band data (attachment URLs)
+        client.register_plugin("xep_0363")  # HTTP File Upload
+        if self.html_formatting:
+            client.register_plugin("xep_0071")  # XHTML-IM
 
         # TLS toggles. ``enable_starttls`` controls whether slixmpp negotiates
         # STARTTLS during stream negotiation; ``enable_direct_tls`` covers
@@ -354,7 +595,42 @@ class XMPPAdapter(BasePlatformAdapter):
                 except Exception:
                     logger.exception("XMPP: failed to join MUC %s", room)
 
+        # Pre-warm the HTTP Upload service so the first attachment send does
+        # not pay the discovery round-trip. Failure (no upload component on
+        # the server) becomes a sticky False so subsequent send_image_file /
+        # send_document calls fall back to text immediately.
+        await self._resolve_upload_service()
+
         self._connected_event.set()
+
+    async def _resolve_upload_service(self) -> None:
+        client = self._client
+        if client is None:
+            self._upload_service_resolved = False
+            return
+        if self.upload_service:
+            self._upload_service_resolved = self.upload_service
+            logger.info("XMPP: using pinned upload service %s", self.upload_service)
+            return
+        try:
+            upload = client.plugin["xep_0363"]
+            iq = await upload.find_upload_service()
+            if iq is None:
+                logger.info(
+                    "XMPP: no HTTP Upload service advertised by %s; "
+                    "media will be sent as text", _strip_resource(self.jid).split("@", 1)[-1]
+                )
+                self._upload_service_resolved = False
+                return
+            service_jid = str(iq["from"]) if iq.get("from") else True
+            self._upload_service_resolved = service_jid
+            logger.info("XMPP: discovered HTTP Upload service: %s", service_jid)
+        except Exception:
+            logger.warning(
+                "XMPP: HTTP Upload discovery failed; media will be sent as text",
+                exc_info=True,
+            )
+            self._upload_service_resolved = False
 
     def _on_failed_auth(self, event):
         logger.error("XMPP: authentication failed for %s", _strip_resource(self.jid))
@@ -483,14 +759,37 @@ class XMPPAdapter(BasePlatformAdapter):
         if not target:
             return SendResult(success=False, error=f"Invalid XMPP target: {chat_id!r}")
 
-        body = _strip_control_chars(_strip_markdown(content or ""))
-        if not body.strip():
+        plain = _strip_control_chars(_strip_markdown(content or ""))
+        if not plain.strip():
             return SendResult(success=True, message_id=str(int(time.time() * 1000)))
+
+        chunks = _split_message(plain, self.max_message_length)
+        # XHTML-IM only on single-chunk messages: splitting HTML across
+        # stanzas at arbitrary byte boundaries would produce invalid
+        # fragments, and most XMPP clients reject those.
+        emit_html = (
+            self.html_formatting
+            and len(chunks) == 1
+            and "xep_0071" in self._client.plugin
+        )
+        html_body = ""
+        if emit_html:
+            html_body = _markdown_to_xhtml_im(content or "")
+            # Skip the html element when the rendered fragment is identical
+            # to the plain body (no formatting present): nothing to gain.
+            if html_body and html_body.strip() == _html_escape(plain).strip():
+                html_body = ""
 
         last_id = ""
         try:
-            for chunk in _split_message(body, self.max_message_length):
-                self._client.send_message(mto=target, mbody=chunk, mtype=mtype)
+            for idx, chunk in enumerate(chunks):
+                stanza = self._client.make_message(mto=target, mbody=chunk, mtype=mtype)
+                if emit_html and idx == 0 and html_body:
+                    try:
+                        stanza["html"]["body"] = html_body
+                    except Exception:
+                        logger.debug("XMPP: failed to attach XHTML-IM body", exc_info=True)
+                stanza.send()
                 last_id = str(int(time.time() * 1000))
                 await asyncio.sleep(0.05)
         except Exception as e:
@@ -520,15 +819,189 @@ class XMPPAdapter(BasePlatformAdapter):
         reply_to: Optional[str] = None,
         metadata: Optional[Dict[str, Any]] = None,
     ) -> SendResult:
-        """Fall back to a text message containing the URL.
+        """Send an HTTPS image URL with an OOB extension.
 
-        Native XMPP image delivery requires HTTP Upload (XEP-0363), which
-        depends on the server providing an upload component. The plugin
-        keeps the surface conservative until that is wired in — many
-        deployments still treat HTTP Upload as optional.
+        Clients that understand XEP-0066 (Conversations, Gajim, Dino) treat
+        ``<x xmlns='jabber:x:oob'><url>…</url></x>`` as an inline
+        attachment and render the image; clients that ignore the extension
+        still see the URL in ``<body>`` and can tap through.
         """
-        text = f"{caption}\n{image_url}".strip() if caption else image_url
-        return await self.send(chat_id, text, reply_to=reply_to, metadata=metadata)
+        return await self._send_url_with_oob(
+            chat_id=chat_id,
+            url=image_url,
+            caption=caption,
+        )
+
+    async def send_image_file(
+        self,
+        chat_id: str,
+        image_path: str,
+        caption: Optional[str] = None,
+        reply_to: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+        **kwargs,
+    ) -> SendResult:
+        return await self._upload_then_send(chat_id, image_path, caption=caption)
+
+    async def send_animation(
+        self,
+        chat_id: str,
+        animation_url: str,
+        caption: Optional[str] = None,
+        reply_to: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> SendResult:
+        # The gateway routes local-file animated GIFs through
+        # ``send_image_file`` already; this path is for hosted URLs.
+        return await self._send_url_with_oob(chat_id, animation_url, caption=caption)
+
+    async def send_voice(
+        self,
+        chat_id: str,
+        audio_path: str,
+        caption: Optional[str] = None,
+        reply_to: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+        **kwargs,
+    ) -> SendResult:
+        return await self._upload_then_send(chat_id, audio_path, caption=caption)
+
+    async def send_video(
+        self,
+        chat_id: str,
+        video_path: str,
+        caption: Optional[str] = None,
+        reply_to: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+        **kwargs,
+    ) -> SendResult:
+        return await self._upload_then_send(chat_id, video_path, caption=caption)
+
+    async def send_document(
+        self,
+        chat_id: str,
+        file_path: str,
+        caption: Optional[str] = None,
+        file_name: Optional[str] = None,
+        reply_to: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+        **kwargs,
+    ) -> SendResult:
+        return await self._upload_then_send(chat_id, file_path, caption=caption)
+
+    async def _send_url_with_oob(
+        self,
+        chat_id: str,
+        url: str,
+        *,
+        caption: Optional[str] = None,
+    ) -> SendResult:
+        """Send a stanza whose ``<body>`` is *url* plus an OOB extension."""
+        if self._client is None:
+            return SendResult(success=False, error="Not connected")
+        target, mtype = self._resolve_target(chat_id)
+        if not target:
+            return SendResult(success=False, error=f"Invalid XMPP target: {chat_id!r}")
+        clean_url = _strip_control_chars(url or "").strip()
+        if not clean_url:
+            return SendResult(success=False, error="Empty URL")
+
+        body_lines = []
+        if caption:
+            body_lines.append(_strip_control_chars(_strip_markdown(caption)))
+        body_lines.append(clean_url)
+        body = "\n".join(line for line in body_lines if line.strip())
+
+        try:
+            stanza = self._client.make_message(mto=target, mbody=body, mtype=mtype)
+            # Attach OOB only for http(s) URLs — file:// or relative paths
+            # would let a misconfigured caller leak local paths to peers.
+            if clean_url.startswith(("https://", "http://")):
+                try:
+                    stanza["oob"]["url"] = clean_url
+                except Exception:
+                    logger.debug("XMPP: failed to attach OOB extension", exc_info=True)
+            stanza.send()
+        except Exception as e:
+            return SendResult(success=False, error=str(e))
+        return SendResult(success=True, message_id=str(int(time.time() * 1000)))
+
+    async def _upload_then_send(
+        self,
+        chat_id: str,
+        path: str,
+        *,
+        caption: Optional[str] = None,
+    ) -> SendResult:
+        """Upload *path* via HTTP Upload then send the resulting URL via OOB.
+
+        Falls back to a text message describing the file when the upload
+        component is unavailable or the upload fails.
+        """
+        if self._client is None:
+            return SendResult(success=False, error="Not connected")
+        if not path or not os.path.isfile(path):
+            return SendResult(success=False, error=f"File not found: {path!r}")
+
+        try:
+            url = await self._upload_file(path)
+        except _UploadUnavailable as exc:
+            logger.info("XMPP: falling back to text for %s — %s", path, exc)
+            return await self._send_upload_fallback(chat_id, path, caption, str(exc))
+
+        return await self._send_url_with_oob(chat_id, url, caption=caption)
+
+    async def _upload_file(self, path: str) -> str:
+        """Upload a local file via XEP-0363 and return the HTTPS URL.
+
+        Raises :class:`_UploadUnavailable` when the upload service is not
+        available, the file exceeds the server's advertised limit, or the
+        HTTP PUT itself fails. Callers turn the exception into a text
+        fallback so a missing upload component never breaks message
+        delivery.
+        """
+        if self._upload_service_resolved is None:
+            await self._resolve_upload_service()
+        if not self._upload_service_resolved:
+            raise _UploadUnavailable("no HTTP Upload service available")
+
+        client = self._client
+        if client is None:
+            raise _UploadUnavailable("not connected")
+
+        from pathlib import Path as _Path
+
+        size = os.path.getsize(path)
+        content_type = _content_type_for(path)
+        domain_kwarg: Dict[str, Any] = {}
+        if isinstance(self._upload_service_resolved, str):
+            domain_kwarg["domain"] = self._upload_service_resolved
+
+        try:
+            upload = client.plugin["xep_0363"]
+            url = await upload.upload_file(
+                _Path(path),
+                size=size,
+                content_type=content_type,
+                **domain_kwarg,
+            )
+        except Exception as exc:  # UploadServiceNotFound / FileTooBig / HTTPError
+            raise _UploadUnavailable(str(exc)) from exc
+        return str(url)
+
+    async def _send_upload_fallback(
+        self,
+        chat_id: str,
+        path: str,
+        caption: Optional[str],
+        reason: str,
+    ) -> SendResult:
+        """Send a text bubble when an upload could not happen."""
+        filename = os.path.basename(path) or path
+        body = f"📎 {filename} (upload failed: {reason})"
+        if caption:
+            body = f"{caption}\n{body}"
+        return await self.send(chat_id, body)
 
     async def get_chat_info(self, chat_id: str) -> Dict[str, Any]:
         if chat_id.startswith(MUC_PREFIX):
@@ -597,6 +1070,12 @@ def _env_enablement() -> Optional[dict]:
     rooms = (os.getenv("XMPP_ROOMS") or "").strip()
     if rooms:
         seed["rooms"] = _parse_comma_list(rooms)
+    upload_service = (os.getenv("XMPP_UPLOAD_SERVICE") or "").strip()
+    if upload_service:
+        seed["upload_service"] = upload_service
+    html_formatting = (os.getenv("XMPP_HTML_FORMATTING") or "").strip()
+    if html_formatting:
+        seed["html_formatting"] = html_formatting.lower() in _TRUTHY
 
     home = (os.getenv("XMPP_HOME_CHANNEL") or "").strip()
     if home:
@@ -850,11 +1329,16 @@ def register(ctx) -> None:
         pii_safe=False,
         allow_update_command=True,
         platform_hint=(
-            "You are chatting via XMPP. Most XMPP clients render plain text "
-            "only — do not use markdown formatting. JIDs look like email "
-            "addresses (user@server). MUC rooms are identified by a "
-            "``muc:`` prefix; in rooms, users address you by your nickname. "
-            "There is no native attachment channel here, so describe files "
-            "or links in text rather than emitting MEDIA: tags."
+            "You are chatting via XMPP. JIDs look like email addresses "
+            "(user@server). MUC rooms are identified by a ``muc:`` "
+            "prefix; in rooms, users address you by your nickname. "
+            "You can use markdown sparingly (bold, italic, code, links, "
+            "lists) — the adapter renders it via XHTML-IM for clients "
+            "that support it, with a plain-text fallback for the rest. "
+            "Files attach natively when the server has an HTTP Upload "
+            "component: include MEDIA:/absolute/path/to/file in your "
+            "response and the adapter uploads it and sends the URL with "
+            "an OOB attachment hint. If the server has no upload "
+            "component the message arrives as text describing the file."
         ),
     )

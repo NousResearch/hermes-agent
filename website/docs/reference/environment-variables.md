@@ -500,6 +500,8 @@ Used by the bundled XMPP platform plugin (`plugins/platforms/xmpp/`). See [Messa
 | `XMPP_ALLOW_ALL_USERS` | Dev-only escape hatch — accepts any JID. Default: `false`. |
 | `XMPP_HOME_CHANNEL` | Default delivery target for cron jobs with `deliver: xmpp`. Prefix MUC targets with `muc:`. |
 | `XMPP_HOME_CHANNEL_NAME` | Human label for the home channel. |
+| `XMPP_UPLOAD_SERVICE` | Pin the XEP-0363 HTTP Upload component JID. Default: auto-discover on session start. |
+| `XMPP_HTML_FORMATTING` | Emit XEP-0071 XHTML-IM dual body so clients that opt in render bold/italic/code/links/lists. Default: `true`. |
 
 ### Advanced Messaging Tuning
 

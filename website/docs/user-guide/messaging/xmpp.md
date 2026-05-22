@@ -42,6 +42,8 @@ XMPP_HOME_CHANNEL=alice@example.org
 | `XMPP_ALLOW_ALL_USERS` | No | Set `true` to disable the allowlist (dev only) |
 | `XMPP_HOME_CHANNEL` | No | Default JID for cron delivery (prefix MUC targets with `muc:`) |
 | `XMPP_HOME_CHANNEL_NAME` | No | Human label for the home channel |
+| `XMPP_UPLOAD_SERVICE` | No | Pin the HTTP Upload component JID. Default: auto-discover |
+| `XMPP_HTML_FORMATTING` | No | Emit XHTML-IM dual body for rich rendering. Default: `true` |
 
 ## Run a local Prosody for testing
 
@@ -91,11 +93,31 @@ send_message(target="xmpp:alice@example.org", message="Done!")
 send_message(target="xmpp:muc:ops@conference.example.org", message="Deploy finished.")
 ```
 
+## Media attachments (HTTP Upload, XEP-0363)
+
+When the agent emits `MEDIA:/absolute/path/to/file`, the adapter uploads the file to the server's HTTP Upload component (auto-discovered on connect, or pinned via `XMPP_UPLOAD_SERVICE`) and delivers the resulting HTTPS URL as a stanza with an XEP-0066 OOB extension. XMPP clients that understand OOB (Conversations, Dino, Gajim, Profanity) render the file inline; clients that don't still see the URL in the message body and can tap through.
+
+Requirements:
+
+- The server needs an HTTP Upload component. Prosody enables it with `Component "uploads.example.org" "http_file_share"` in `prosody.cfg.lua`. ejabberd ships `mod_http_upload`.
+- The file must be reachable to the bot's local filesystem at the absolute path the agent emitted. The adapter rejects relative paths and missing files before contacting the server.
+- The file must fit under the server's advertised upload size limit. Larger files arrive as a plain-text "📎 filename (upload failed: …)" line, with the reason logged in `gateway.log`.
+
+Disable file uploads entirely with `XMPP_UPLOAD_SERVICE=disabled` (any unreachable JID also works) — the adapter then falls back to text-only attachments for every media send.
+
+## Rich text (XHTML-IM, XEP-0071)
+
+Markdown in the agent's response is sent in two parallel forms:
+
+- `<body>` — markdown stripped to plain text, for clients that read only the body.
+- `<html>` — an XHTML-IM fragment with `<strong>`, `<em>`, `<code>`, `<pre>`, `<a>`, `<ul>`, `<ol>`, and `<blockquote>`, for clients that opt in to XEP-0071.
+
+Dual-body emission only happens for messages that fit in a single stanza; chunked responses fall back to plain text because splitting XHTML across stanzas produces invalid fragments most clients reject. Set `XMPP_HTML_FORMATTING=false` to opt out entirely (some MUC components strip the `<html>` element and dual-body looks redundant in that case).
+
 ## Limitations
 
-- **No native media delivery.** XMPP HTTP Upload (XEP-0363) is not wired in; the adapter sends image URLs and file paths as text. Tell the agent to describe attachments in plain text rather than emitting `MEDIA:` tags.
-- **Plain text only.** Markdown in the agent's response is stripped before sending — most clients render the body verbatim, and XHTML-IM (XEP-0071) is not emitted.
 - **OMEMO / OpenPGP encryption is not handled by the adapter.** Use a server you trust and STARTTLS for transport security; end-to-end encryption requires a client that speaks OMEMO and is out of scope here.
+- **Image preview for HTTP URLs:** the adapter sets the OOB extension for `https://` URLs the agent emits inline via markdown (`![alt](url)`); plain `http://` URLs are *not* OOB-flagged to keep tappable links from auto-rendering as attachments on hostile pages.
 
 ## Troubleshooting
 

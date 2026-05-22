@@ -255,18 +255,18 @@ PROVIDER_REGISTRY: Dict[str, ProviderConfig] = {
     ),
     "kimi-coding": ProviderConfig(
         id="kimi-coding",
-        name="Kimi / Moonshot",
+        name="Kimi Code",
         auth_type="api_key",
-        # Legacy platform.moonshot.ai keys use this endpoint (OpenAI-compat).
-        # sk-kimi- (Kimi Code) keys are auto-redirected to api.kimi.com/coding
-        # by _resolve_kimi_base_url() below.
-        inference_base_url="https://api.moonshot.ai/v1",
+        # Kimi Code keys (sk-kimi-*) use api.kimi.com/coding and expose
+        # the single model kimi-for-coding. Legacy platform.moonshot.ai keys
+        # can still override KIMI_BASE_URL if needed.
+        inference_base_url="https://api.kimi.com/coding",
         api_key_env_vars=("KIMI_API_KEY", "KIMI_CODING_API_KEY"),
         base_url_env_var="KIMI_BASE_URL",
     ),
     "kimi-coding-cn": ProviderConfig(
         id="kimi-coding-cn",
-        name="Kimi / Moonshot (China)",
+        name="Kimi / Moonshot China",
         auth_type="api_key",
         inference_base_url="https://api.moonshot.cn/v1",
         api_key_env_vars=("KIMI_CN_API_KEY",),
@@ -1406,8 +1406,8 @@ def resolve_provider(
         "x-ai": "xai", "x.ai": "xai", "grok": "xai",
         "xai-oauth": "xai-oauth", "x-ai-oauth": "xai-oauth",
         "grok-oauth": "xai-oauth", "xai-grok-oauth": "xai-oauth",
-        "kimi": "kimi-coding", "kimi-for-coding": "kimi-coding", "moonshot": "kimi-coding",
-        "kimi-cn": "kimi-coding-cn", "moonshot-cn": "kimi-coding-cn",
+        "kimi": "kimi-coding", "kimi-for-coding": "kimi-coding", "kimi-code": "kimi-coding",
+        "kimi-cn": "kimi-coding-cn", "moonshot": "kimi-coding-cn", "moonshot-cn": "kimi-coding-cn",
         "step": "stepfun", "stepfun-coding-plan": "stepfun",
         "arcee-ai": "arcee", "arceeai": "arcee",
         "gmi-cloud": "gmi", "gmicloud": "gmi",

@@ -1202,8 +1202,7 @@ def list_authenticated_providers(
 
     # --- 1. Check Hermes-mapped providers ---
     for hermes_id, mdev_id in PROVIDER_TO_MODELS_DEV.items():
-        # Skip aliases that map to the same models.dev provider (e.g.
-        # kimi-coding and kimi-coding-cn both → kimi-for-coding).
+        # Skip aliases that map to the same models.dev provider.
         # The first one with valid credentials wins (#10526).
         if mdev_id in seen_mdev_ids:
             continue
@@ -1250,8 +1249,7 @@ def list_authenticated_providers(
         top = model_ids[:max_models]
 
         slug = hermes_id
-        pinfo = _mdev_pinfo(mdev_id)
-        display_name = pinfo.name if pinfo else mdev_id
+        display_name = get_label(hermes_id)
 
         results.append({
             "slug": slug,

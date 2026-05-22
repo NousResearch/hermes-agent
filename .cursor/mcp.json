@@ -2,7 +2,10 @@
   "mcpServers": {
     "hermes": {
       "command": "${workspaceFolder}/hermes-mcp-serve",
-      "args": []
+      "args": [],
+      "env": {
+        "HERMES_AGENTS_DIR": "/mnt/c/Projects/biotech_screener/biotech-screener/agents"
+      }
     }
   }
 }

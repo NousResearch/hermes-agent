@@ -12313,36 +12313,14 @@ class HermesCLI:
                 self._voice_speak_response_async(response)
 
 
-            # Re-queue the interrupt message (and any that arrived while we were
-            # processing the first) as the next prompt for process_loop.
+            # Re-queue interrupt follow-up(s) and any leftover /steer as the
+            # next prompt(s) for process_loop. Order matters: leftover steer
+            # must land BEFORE the interrupt follow-up so the next turn honors
+            # the steer first (#30323).
             # Only reached when busy_input_mode == "interrupt" (the default).
             # In "queue" mode Enter routes directly to _pending_input so this
             # block is never hit.
-            if pending_message and hasattr(self, '_pending_input'):
-                all_parts = [pending_message]
-                while not self._interrupt_queue.empty():
-                    try:
-                        extra = self._interrupt_queue.get_nowait()
-                        if extra:
-                            all_parts.append(extra)
-                    except queue.Empty:
-                        break
-                combined = "\n".join(all_parts)
-                n = len(all_parts)
-                preview = combined[:50] + ("..." if len(combined) > 50 else "")
-                if n > 1:
-                    print(f"\n⚡ Sending {n} messages after interrupt: '{preview}'")
-                else:
-                    print(f"\n⚡ Sending after interrupt: '{preview}'")
-                self._pending_input.put(combined)
-
-            # If a /steer was left over (agent finished before another tool
-            # batch could absorb it), deliver it as the next user turn.
-            _leftover_steer = result.get("pending_steer") if result else None
-            if _leftover_steer and hasattr(self, '_pending_input'):
-                preview = _leftover_steer[:60] + ("..." if len(_leftover_steer) > 60 else "")
-                print(f"\n⏩ Delivering leftover /steer as next turn: '{preview}'")
-                self._pending_input.put(_leftover_steer)
+            self._enqueue_post_run_followups(pending_message, result)
 
             return response
             
@@ -12364,6 +12342,47 @@ class HermesCLI:
             if tts_thread is not None and tts_thread.is_alive():
                 tts_thread.join(timeout=5)
     
+    def _enqueue_post_run_followups(self, pending_message, result):
+        """Enqueue post-run follow-up turns onto ``self._pending_input``.
+
+        Deterministic ordering: leftover ``pending_steer`` is enqueued first
+        so the next turn honors the user's steer before any interrupt
+        follow-up text. Otherwise the queue (FIFO) would surface the
+        interrupt follow-up first and the steer guidance would be applied
+        too late or appear dropped. See #30323.
+        """
+        if not hasattr(self, '_pending_input'):
+            return
+
+        # Leftover /steer first: agent finished before another tool batch
+        # could absorb it (returned in result["pending_steer"]).
+        _leftover_steer = result.get("pending_steer") if result else None
+        if _leftover_steer:
+            preview = _leftover_steer[:60] + ("..." if len(_leftover_steer) > 60 else "")
+            print(f"\n⏩ Delivering leftover /steer as next turn: '{preview}'")
+            self._pending_input.put(_leftover_steer)
+
+        # Interrupt follow-up second: re-queue the interrupt message and any
+        # that arrived while we were processing the first as the next prompt
+        # for process_loop.
+        if pending_message:
+            all_parts = [pending_message]
+            while not self._interrupt_queue.empty():
+                try:
+                    extra = self._interrupt_queue.get_nowait()
+                    if extra:
+                        all_parts.append(extra)
+                except queue.Empty:
+                    break
+            combined = "\n".join(all_parts)
+            n = len(all_parts)
+            preview = combined[:50] + ("..." if len(combined) > 50 else "")
+            if n > 1:
+                print(f"\n⚡ Sending {n} messages after interrupt: '{preview}'")
+            else:
+                print(f"\n⚡ Sending after interrupt: '{preview}'")
+            self._pending_input.put(combined)
+
     def _print_exit_summary(self):
         """Print session resume info on exit, similar to Claude Code."""
         print()

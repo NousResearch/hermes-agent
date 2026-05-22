@@ -511,4 +511,4 @@ export type TranslationKey = keyof typeof catalog
 const trail = { draftPrefix: 'drafting ', analyzeLabel: 'analyzing tool output…' }
 
 // ── Full language pack ───────────────────────────────────────────
-export const en: LangPack = { toolVerbs, verbs, status, catalog, trail }
+export const en: LangPack = { toolVerbs, verbs, status, catalog, trail, verbStyle: 'pad' as const }

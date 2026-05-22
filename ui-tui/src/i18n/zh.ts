@@ -506,4 +506,4 @@ const catalog: Record<TranslationKey, TranslationValue> = {
 const trail = { draftPrefix: '正在生成 ', analyzeLabel: '正在分析工具输出…' }
 
 // ── Full language pack ───────────────────────────────────────────
-export const zh: LangPack = { toolVerbs, verbs, status, catalog, trail }
+export const zh: LangPack = { toolVerbs, verbs, status, catalog, trail, verbStyle: 'ellipsis' as const }

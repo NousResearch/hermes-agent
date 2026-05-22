@@ -95,3 +95,8 @@ export const toolsetLabel = (raw: string, locale: Locale): string => {
   const label = (pack.catalog as Record<string, string>)[`toolset.${key}`]
   return label ?? (en.catalog as Record<string, string>)[`toolset.${key}`] ?? key
 }
+
+/** Whether the language pack prefers ellipsis over padding for status-bar verbs.
+ *  Language-agnostic — each pack declares its own verbStyle. */
+export const shouldEllipsisVerb = (locale: Locale): boolean =>
+  getPack(locale).verbStyle === 'ellipsis'

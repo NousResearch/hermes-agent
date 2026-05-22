@@ -32,6 +32,10 @@ export interface LangPack {
   /** UI string catalog — key set is authoritative from the EN pack. */
   catalog: Record<string, TranslationValue>
   trail: { draftPrefix: string; analyzeLabel: string }
+  /** How the status bar renders thinking verbs.
+   *  'pad' — pad to a fixed width (Latin languages)
+   *  'ellipsis' — append '…' (CJK languages) */
+  verbStyle: 'ellipsis' | 'pad'
 }
 
 // ── Shared glossary ────────────────────────────────────────────

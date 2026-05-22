@@ -15,7 +15,7 @@ import { fmtK } from '../lib/text.js'
 import { useScrollbarSnapshot, useViewportSnapshot } from '../lib/viewportStore.js'
 import type { Theme } from '../theme.js'
 import type { Msg, Usage } from '../types.js'
-import { getThinkingVerbs, useI18n } from '../i18n/index.js'
+import { getThinkingVerbs, shouldEllipsisVerb, useI18n } from '../i18n/index.js'
 
 const FACE_TICK_MS = 2500
 const HEART_COLORS = ['#ff5fa2', '#ff4d6d']
@@ -128,7 +128,7 @@ function FaceTicker({ color, startedAt }: { color: string; startedAt?: null | nu
 
   const { frame } = renderIndicator(style, tick)
   const verb = verbs[verbTick % verbs.length] ?? ''
-  const verbSegment = showVerb ? ` ${['zh', 'zh-hant', 'ja', 'ko'].includes(locale) ? `${verb}…` : padVerb(verb)}` : ''
+  const verbSegment = showVerb ? ` ${shouldEllipsisVerb(locale) ? `${verb}…` : padVerb(verb)}` : ''
   // Leading space keeps a gap between the frame and the duration when the
   // verb segment is hidden (e.g. `unicode` spinner style).  When the verb
   // IS shown, its trailing padding already provides the gap, so the extra

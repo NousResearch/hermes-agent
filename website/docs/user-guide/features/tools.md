@@ -66,13 +66,14 @@ The terminal tool can execute commands in different environments:
 | `modal` | Cloud execution | Serverless, scale |
 | `daytona` | Cloud sandbox workspace | Persistent remote dev environments |
 | `vercel_sandbox` | Vercel Sandbox cloud microVM | Cloud execution with snapshot-backed filesystem persistence |
+| `sprites` | Sprites (Fly.io) cloud sandbox | Persistent sandboxes with native checkpoint & restore |
 
 ### Configuration
 
 ```yaml
 # In ~/.hermes/config.yaml
 terminal:
-  backend: local    # or: docker, ssh, singularity, modal, daytona, vercel_sandbox
+  backend: local    # or: docker, ssh, singularity, modal, daytona, vercel_sandbox, sprites
   cwd: "."          # Working directory
   timeout: 180      # Command timeout in seconds
 ```
@@ -150,6 +151,21 @@ With `container_persistent: true`, Hermes uses Vercel snapshots to preserve file
 Background terminal commands use Hermes' generic non-local process flow: spawn, poll, wait, log, and kill work through the normal process tool while the sandbox is alive, but Hermes does not provide native Vercel detached-process recovery after cleanup or restart.
 
 Leave `container_disk` unset or at the shared default `51200`; custom disk sizing is unsupported for Vercel Sandbox and will fail diagnostics/backend creation.
+
+### Sprites (Fly.io)
+
+```bash
+pip install 'hermes-agent[sprites]'
+hermes config set terminal.backend sprites
+```
+
+Authenticate with `SPRITES_TOKEN` (`sprite login`, or `sprite auth setup --token …` from the [Sprites CLI](https://sprites.dev)). Hermes names each sandbox `hermes-{task_id}` and on every session start either resumes the existing Sprite or creates a fresh one.
+
+**Restricted tokens (recommended for CI / shared envs):** in the Sprites dashboard you can mint a token scoped to a name prefix and a max-sprites cap. Setting the prefix to `hermes` matches Hermes' deterministic naming exactly — the token can manage every sandbox Hermes spawns and nothing else in the account.
+
+With `container_persistent: true` (the default), `cleanup()` leaves the Sprite running and the next session resumes against the same filesystem and live VM. With `container_persistent: false`, the Sprite is deleted on cleanup. Sprites' ext4 filesystem is the authoritative store, so this backend deliberately skips Hermes' remote-to-host file sync — agent-modified files stay inside the Sprite and surface again on resume.
+
+Sprites allocates compute dynamically (up to 8 CPU / 16 GB RAM per Sprite); user-selectable `container_cpu` / `container_memory` / `container_disk` knobs are ignored on this backend until the platform exposes them.
 
 ### Container Resources
 

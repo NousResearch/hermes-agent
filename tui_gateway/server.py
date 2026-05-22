@@ -1623,7 +1623,7 @@ def _on_tool_start(sid: str, tool_call_id: str, name: str, args: dict):
                 session.setdefault("edit_snapshots", {})[tool_call_id] = snapshot
         except Exception:
             pass
-        session.setdefault("tool_started_at", {})[tool_call_id] = time.time()
+        session.setdefault("tool_started_at", {})[tool_call_id] = time.monotonic()
     if _tool_progress_enabled(sid):
         payload = {
             "tool_id": tool_call_id,
@@ -1647,7 +1647,7 @@ def _on_tool_complete(sid: str, tool_call_id: str, name: str, args: dict, result
     if session is not None:
         snapshot = session.setdefault("edit_snapshots", {}).pop(tool_call_id, None)
         started_at = session.setdefault("tool_started_at", {}).pop(tool_call_id, None)
-    duration_s = time.time() - started_at if started_at else None
+    duration_s = time.monotonic() - started_at if started_at else None
     if duration_s is not None:
         payload["duration_s"] = duration_s
     summary = _tool_summary(name, result, duration_s)

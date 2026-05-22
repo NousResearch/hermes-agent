@@ -86,6 +86,9 @@ def _make_agent(monkeypatch):
     stub._append_guardrail_observation = _ra.AIAgent._append_guardrail_observation.__get__(
         stub
     )
+    stub._tool_result_content_for_active_model = (
+        _ra.AIAgent._tool_result_content_for_active_model.__get__(stub)
+    )
     stub.interrupt = _ra.AIAgent.interrupt.__get__(stub)
     stub.clear_interrupt = _ra.AIAgent.clear_interrupt.__get__(stub)
     # /steer injection (added in PR #12116) fires after every concurrent

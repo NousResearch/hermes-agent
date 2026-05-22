@@ -340,7 +340,7 @@ Without ffmpeg, Edge TTS audio is sent as a regular audio file (still playable, 
 
 Configure the TTS provider in your `config.yaml` under the `tts.provider` key.
 
-## Large Files (>20MB) via Local Bot API Server
+## Large Files (>20MB) via Local Bot API Server {#large-files-20mb--via-local-bot-api-server}
 
 Telegram's **public** Bot API caps `getFile` downloads at **20 MB**, so any voice note, audio file, video, or document larger than that is silently rejected by Hermes with a "too large" reply. The documented way around this is to run a **local** [telegram-bot-api](https://github.com/tdlib/telegram-bot-api) daemon — the same server software Telegram uses, but running on your network. A local server raises the file ceiling to **2 GB** and Hermes auto-lifts its own internal cap when it sees a custom `base_url` configured.
 

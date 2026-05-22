@@ -38,7 +38,7 @@ If you plan to use this profile as a kanban worker (or want the kanban orchestra
 hermes profile create researcher --description "Reads source code and external docs, writes findings."
 ```
 
-You can also set or auto-generate the description later with `hermes profile describe` — see the [Kanban guide](./features/kanban#auto-vs-manual-orchestration) for the full routing model.
+You can also set or auto-generate the description later with `hermes profile describe` — see the [Kanban guide](/user-guide/features/kanban#auto-vs-manual-orchestration) for the full routing model.
 
 ### Clone config only (`--clone`)
 

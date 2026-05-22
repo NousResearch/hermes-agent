@@ -9,7 +9,7 @@ description: "Text-to-speech and voice message transcription across all platform
 Hermes Agent supports both text-to-speech output and voice message transcription across all messaging platforms.
 
 :::tip Nous Subscribers
-If you have a paid [Nous Portal](https://portal.nousresearch.com) subscription, OpenAI TTS is available through the **[Tool Gateway](tool-gateway.md)** without a separate OpenAI API key. Run `hermes model` or `hermes tools` to enable it.
+If you have a paid [Nous Portal](https://portal.nousresearch.com) subscription, OpenAI TTS is available through the **[Tool Gateway](/user-guide/features/tool-gateway)** without a separate OpenAI API key. Run `hermes model` or `hermes tools` to enable it.
 :::
 
 ## Text-to-Speech

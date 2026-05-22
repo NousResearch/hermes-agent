@@ -439,7 +439,7 @@ GUI는 철저히 **DB 읽기 + `kanban_db` 쓰기** 레이어입니다.
 
 handler는 전부 얇은 wrapper이고, 실제 비즈니스 로직은 `kanban_db`에 있습니다.
 
-### Dashboard 설정
+### Dashboard 설정 {#auto-vs-manual-orchestration}
 
 `~/.hermes/config.yaml`의 `dashboard.kanban` 아래 키로 기본 동작을 바꿀 수 있습니다.
 

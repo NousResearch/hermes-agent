@@ -1116,7 +1116,6 @@ class APIServerAdapter(BasePlatformAdapter):
             tool_complete_callback=tool_complete_callback,
             session_db=self._ensure_session_db(),
             fallback_model=fallback_model,
-            reasoning_config=reasoning_config,
             gateway_session_key=gateway_session_key,
             request_overrides=params_overrides or None,
         )

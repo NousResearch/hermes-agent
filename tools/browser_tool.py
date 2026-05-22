@@ -3074,28 +3074,21 @@ def browser_vision(question: str, annotate: bool = False, task_id: Optional[str]
     screenshot_path = screenshots_dir / f"browser_screenshot_{uuid_mod.uuid4().hex}.png"
     effective_task_id = _last_session_key(task_id or "default")
 
-    # Save screenshot to terminal.cwd/screenshots so it's accessible via workspace API
-    try:
-        screenshots_dir.mkdir(parents=True, exist_ok=True)
-        
-        # Prune old screenshots (older than 24 hours) to prevent unbounded disk growth
-        _cleanup_old_screenshots(screenshots_dir, max_age_hours=24)
-        
-        # Lightpanda has no graphical renderer — pre-route screenshots to Chrome
-        # via the fallback helper instead of letting the normal path fail with a
-        # CDP error or return a placeholder PNG.  The normal analysis path below
-        # still owns base64 encoding, provider routing, resizing retry, redaction,
-        # and response shape.
-        engine = _get_browser_engine()
-        _lp_prerouted = False
-        _lp_fallback_warning = None
-        if engine == "lightpanda" and _should_inject_engine(engine):
-            logger.debug("browser_vision: pre-routing screenshot to Chrome (engine=lightpanda)")
-            screenshot_args = []
-            if annotate:
-                screenshot_args.append("--annotate")
-            fb_result = _chrome_fallback_screenshot(
-                effective_task_id, screenshot_args, _get_command_timeout(),
+    # Lightpanda has no graphical renderer — pre-route screenshots to Chrome
+    # via the fallback helper instead of letting the normal path fail with a
+    # CDP error or return a placeholder PNG.  The normal analysis path below
+    # still owns base64 encoding, provider routing, resizing retry, redaction,
+    # and response shape.
+    engine = _get_browser_engine()
+    _lp_prerouted = False
+    _lp_fallback_warning = None
+    if engine == "lightpanda" and _should_inject_engine(engine):
+        logger.debug("browser_vision: pre-routing screenshot to Chrome (engine=lightpanda)")
+        screenshot_args = []
+        if annotate:
+            screenshot_args.append("--annotate")
+        fb_result = _chrome_fallback_screenshot(
+            effective_task_id, screenshot_args, _get_command_timeout(),
         )
         fb_reason = "Lightpanda has no graphical renderer for screenshots; used Chrome for vision capture."
         fb_result = _annotate_lightpanda_fallback(fb_result, fb_reason)

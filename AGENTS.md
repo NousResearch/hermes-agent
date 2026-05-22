@@ -514,7 +514,7 @@ explicitly (it's idempotent).
 
 Separate discovery system for pluggable memory backends. Current built-in
 providers include **honcho, mem0, supermemory, byterover, hindsight,
-holographic, openviking, retaindb**.
+holographic, openviking, retaindb, memanto**.
 
 Each provider implements the `MemoryProvider` ABC (see `agent/memory_provider.py`)
 and is orchestrated by `agent/memory_manager.py`. Lifecycle hooks include

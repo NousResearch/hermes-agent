@@ -1,12 +1,12 @@
 ---
 sidebar_position: 4
 title: "Memory Providers"
-description: "External memory provider plugins — Honcho, OpenViking, Mem0, Hindsight, Holographic, RetainDB, ByteRover, Supermemory"
+description: "External memory provider plugins — Honcho, OpenViking, Mem0, Hindsight, Holographic, RetainDB, ByteRover, Supermemory, Memanto"
 ---
 
 # Memory Providers
 
-Hermes Agent ships with 8 external memory provider plugins that give the agent persistent, cross-session knowledge beyond the built-in MEMORY.md and USER.md. Only **one** external provider can be active at a time — the built-in memory is always active alongside it.
+Hermes Agent ships with 9 external memory provider plugins that give the agent persistent, cross-session knowledge beyond the built-in MEMORY.md and USER.md. Only **one** external provider can be active at a time — the built-in memory is always active alongside it.
 
 ## Quick Start
 
@@ -22,7 +22,7 @@ Or set manually in `~/.hermes/config.yaml`:
 
 ```yaml
 memory:
-  provider: openviking   # or honcho, mem0, hindsight, holographic, retaindb, byterover, supermemory
+  provider: openviking   # or honcho, mem0, hindsight, holographic, retaindb, byterover, supermemory, memanto
 ```
 
 ## How It Works
@@ -522,6 +522,54 @@ echo 'SUPERMEMORY_API_KEY=***' >> ~/.hermes/.env
 
 ---
 
+### Memanto
+
+A typed long-term memory **agent** backed by the Moorcheh vector platform. Each Memanto namespace is a first-class *agent* (`memanto agent create/activate`), so one Hermes identity maps to one Memanto agent. Memories carry a semantic type, confidence, and provenance, and can be retrieved by similarity or synthesized into a grounded answer (RAG).
+
+| | |
+|---|---|
+| **Best for** | Typed memory with confidence/provenance and RAG-style answers grounded only in stored memory |
+| **Requires** | `pip install memanto` + [Moorcheh API key](https://console.moorcheh.ai/api-keys) |
+| **Data storage** | Moorcheh Cloud |
+| **Cost** | Moorcheh pricing |
+
+**Tools:** `memanto_remember` (store a typed memory), `memanto_recall` (semantic search), `memanto_answer` (RAG answer grounded in stored memories)
+
+**Setup:**
+```bash
+hermes memory setup    # select "memanto"
+# Or manually:
+hermes config set memory.provider memanto
+echo 'MOORCHEH_API_KEY=***' >> ~/.hermes/.env
+```
+
+**Config:** `$HERMES_HOME/memanto.json`
+
+| Key | Default | Description |
+|-----|---------|-------------|
+| `agent_id` | `hermes-{identity}` | Memanto agent id (memory namespace). `{identity}` expands to the profile name (e.g. `hermes-coder`). |
+| `pattern` | `tool` | Memanto agent pattern used when auto-creating: `support`, `project`, or `tool`. |
+| `auto_recall` | `true` | Inject relevant memories before each turn |
+| `auto_capture` | `true` | Store cleaned user/assistant turns as `event` memories |
+| `auto_create` | `true` | Create the agent on first use if it does not exist |
+| `mirror_memory_writes` | `true` | Echo Hermes built-in `memory`/`user` writes into Memanto |
+| `max_recall_results` | `10` | Max memories formatted into prefetch context (1–100) |
+| `min_confidence` | `null` | Drop recalled memories below this confidence (0.0–1.0) |
+| `session_duration_hours` | `null` | Override Memanto session lifetime |
+
+**Environment variables:** `MOORCHEH_API_KEY` (required), `MEMANTO_AGENT_ID` (overrides the config agent id).
+
+**Key features:**
+- 13-type memory taxonomy (`fact`, `preference`, `decision`, `goal`, `instruction`, `event`, `observation`, …) with confidence + provenance
+- RAG answers grounded only in stored memory via `memanto_answer`
+- **Profile-scoped agents** — use `{identity}` in `agent_id` to isolate memories per Hermes profile
+- Background session warmup so the first turn's recall doesn't also pay agent activation latency
+- Writes skipped in `cron`, `flush`, and `subagent` contexts
+
+**Support:** [memanto.ai](https://memanto.ai) · [moorcheh.ai](https://moorcheh.ai)
+
+---
+
 ## Provider Comparison
 
 | Provider | Storage | Cost | Tools | Dependencies | Unique Feature |
@@ -534,13 +582,14 @@ echo 'SUPERMEMORY_API_KEY=***' >> ~/.hermes/.env
 | **RetainDB** | Cloud | $20/mo | 5 | `requests` | Delta compression |
 | **ByteRover** | Local/Cloud | Free/Paid | 3 | `brv` CLI | Pre-compression extraction |
 | **Supermemory** | Cloud | Paid | 4 | `supermemory` | Context fencing + session graph ingest + multi-container |
+| **Memanto** | Cloud | Paid | 3 | `memanto` | Typed memory (confidence + provenance) + RAG answers |
 
 ## Profile Isolation
 
 Each provider's data is isolated per [profile](/docs/user-guide/profiles):
 
 - **Local storage providers** (Holographic, ByteRover) use `$HERMES_HOME/` paths which differ per profile
-- **Config file providers** (Honcho, Mem0, Hindsight, Supermemory) store config in `$HERMES_HOME/` so each profile has its own credentials
+- **Config file providers** (Honcho, Mem0, Hindsight, Supermemory, Memanto) store config in `$HERMES_HOME/` so each profile has its own credentials
 - **Cloud providers** (RetainDB) auto-derive profile-scoped project names
 - **Env var providers** (OpenViking) are configured via each profile's `.env` file
 

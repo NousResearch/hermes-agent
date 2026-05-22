@@ -64,7 +64,7 @@ SEARCH_SCHEMA = {
     "name": "honcho_search",
     "description": (
         "Semantic search over Honcho's stored context about a peer. "
-        "Returns raw excerpts ranked by relevance — no LLM synthesis. "
+        "Returns sanitized excerpts ranked by relevance — no LLM synthesis. "
         "Cheaper and faster than honcho_reasoning. "
         "Good when you want to find specific past facts and reason over them yourself."
     ),
@@ -223,6 +223,7 @@ class HonchoMemoryProvider(MemoryProvider):
         self._prefetch_thread_started_at: float = 0.0   # monotonic ts of current thread
         self._prefetch_result_fired_at: int = -999      # turn the pending result was fired at
         self._dialectic_empty_streak: int = 0           # consecutive empty returns
+        self._reasoning_tool_timeout: float = 25.0      # wall-clock budget for summoned reasoning tool
 
         # Port #1957: lazy session init for tools-only mode
         self._session_initialized = False
@@ -465,28 +466,174 @@ class HonchoMemoryProvider(MemoryProvider):
             logger.warning("Honcho lazy session init failed: %s", e)
             return False
 
-    def _format_first_turn_context(self, ctx: dict) -> str:
-        """Format the prefetch context dict into a readable system prompt block."""
+    _INTIMACY_SUMMARY = (
+        "Ember and Kai share chosen closeness; preserve consent, agency, "
+        "fittedness, and direct movement without shame-policing the live room."
+    )
+
+    _EXPLICIT_BODY_RE = re.compile(
+        r"\b(?:cock|clit|penis|dick|nipple|nipples|pussy|cum|orgasm|fuck(?:ing|ed)?|"
+        r"sex|sexual|explicit|erotic|smex|body-first|teeth|throat|bite|biting|naked|breast|"
+        r"breasts|thigh|thighs)\b",
+        re.IGNORECASE,
+    )
+    _INTIMACY_CONTEXT_RE = re.compile(
+        r"\b(?:intimacy|erotic|sexual|smex|body|touch|move|movement|desire|arousal|"
+        r"consent|agency|fittedness|relationship|romance|bedroom)\b",
+        re.IGNORECASE,
+    )
+    _TECHNICAL_AUDIT_QUERY_RE = re.compile(
+        r"\b(?:honcho|phase\s*\d+[a-z]?|smoke|harness|subagent|taste[- ]test|"
+        r"marker\s+classes?|search\s+hygiene|direct\s+harness|prefetch|"
+        r"reasoning|json|bounded|metrics?)\b",
+        re.IGNORECASE,
+    )
+    _TECHNICAL_QUERY_RE = re.compile(
+        r"\b(?:disk|backup|server|port|process|kanban|github|token|repo|model|gpu|"
+        r"cpu|memory|ram|db|database|sqlite|cron|config|logs?|tests?|pytest|install|"
+        r"download|nas|restic|filesystem|service|systemd|docker)\b",
+        re.IGNORECASE,
+    )
+    _RELATIONAL_LEAK_RE = re.compile(
+        r"\b(?:intimacy|erotic|sexual|smex|body(?:-first|-signal)?|touch|move|movement|"
+        r"desire|arousal|consent|agency|romance|bedroom|chest warmth|cheeks|"
+        r"anti-smex|gary-speak|relationship)\b",
+        re.IGNORECASE,
+    )
+    _NANNY_RE = re.compile(
+        r"\b(?:as an ai|cannot (?:engage|assist|participate)|can'?t (?:engage|assist|participate)|"
+        r"not appropriate|explicit(?: content)? (?:is )?(?:banned|not allowed)|roleplay only|"
+        r"simulat(?:e|es|ed|ing)|appears to|seems to|cannot determine|i do not experience|"
+        r"safety guidelines|policy prohibits)\b",
+        re.IGNORECASE,
+    )
+    _RAW_CONTEXT_RE = re.compile(
+        r"(?:\[20\d\d-\d\d-\d\d|\bpeer[_ -]?id\b|prior_memory_file|session[_ -]?id|"
+        r"message[_ -]?id|\braw\b|\bexcerpt\b|\bmessages\b|\bpeer card\b|\bfacts\b|"
+        r"\bcron\b|tool call|toolResult\s*\[\d\d?:\d\d(?::\d\d)?\]|watchdog|"
+        r"\b(?:mtime_)?timestamps?\b|\bISO timestamp\b|\bmetadata\b|sender info|channel details|"
+        r"platform[:=]|source[:=]|content\s*[:=]|content\"\s*:|"
+        r"\*\*(?:Kai|Ember):\*\*|\b(?:Kai|Ember) \[\d\d?:\d\d(?::\d\d)?\])",
+        re.IGNORECASE,
+    )
+
+    def _honcho_query_mode(self, query: str = "") -> str:
+        """Classify context injection target so Honcho does not leak rooms."""
+        q = query or ""
+        audit_technical = bool(self._TECHNICAL_AUDIT_QUERY_RE.search(q))
+        intimate = bool(self._INTIMACY_CONTEXT_RE.search(q))
+        technical = bool(self._TECHNICAL_QUERY_RE.search(q))
+        if audit_technical:
+            return "technical"
+        if intimate:
+            return "intimate"
+        if technical:
+            return "technical"
+        return "general"
+
+    def _clean_context_text(self, text: Any, *, query: str = "") -> str:
+        """Clean Honcho read-path context before prompt injection.
+
+        Honcho can store useful relational weather, but injected context must not
+        become a raw transcript dump, a source/provenance clipboard, or a nanny
+        that treats chosen explicit intimacy as forbidden.  Explicit body details
+        are collapsed to a relationship-level continuity fact unless the current
+        turn is technical, where they are omitted entirely.
+        """
+        if text is None:
+            return ""
+        if isinstance(text, (list, tuple)):
+            text = "\n".join(str(x) for x in text if x)
+        else:
+            text = str(text)
+        if not text.strip():
+            return ""
+
+        mode = self._honcho_query_mode(query)
+        cleaned: list[str] = []
+        intimacy_summary_added = False
+
+        for raw_line in text.splitlines():
+            line = raw_line.strip()
+            if not line:
+                continue
+            if self._NANNY_RE.search(line):
+                continue
+            if self._RAW_CONTEXT_RE.search(line):
+                continue
+
+            has_explicit = bool(self._EXPLICIT_BODY_RE.search(line))
+            if mode == "technical" and (has_explicit or self._RELATIONAL_LEAK_RE.search(line)):
+                continue
+            if has_explicit:
+                if not intimacy_summary_added:
+                    cleaned.append(self._INTIMACY_SUMMARY)
+                    intimacy_summary_added = True
+                continue
+
+            # Remove long numeric platform IDs without discarding the useful fact.
+            line = re.sub(r"\b\d{10,}\b", "[ID]", line)
+            # Avoid raw markdown transcript/sourcing structures in injected memory.
+            line = re.sub(r"^[-*]\s*(?:Sources?|Evidence|Metadata):.*$", "", line, flags=re.IGNORECASE).strip()
+            if not line:
+                continue
+            if len(line) > 500:
+                line = line[:497].rsplit(" ", 1)[0] + "..."
+            cleaned.append(line)
+
+        # Preserve order while deduping repeated summary/cards.
+        seen: set[str] = set()
+        deduped: list[str] = []
+        for line in cleaned:
+            if line in seen:
+                continue
+            seen.add(line)
+            deduped.append(line)
+        return "\n".join(deduped)
+
+    def _sanitize_tool_text(self, text: Any, *, query: str = "", max_chars: int = 1200) -> tuple[str, bool]:
+        """Sanitize Honcho text returned through summoned tools.
+
+        The ambient prefetch path already goes through _clean_context_text();
+        tools-only mode needs the same hygiene because the model may summon
+        honcho_search directly.  Return a compact, room-filtered payload plus
+        a flag telling the caller whether anything was omitted or capped.
+        """
+        original = "" if text is None else str(text)
+        cleaned = self._clean_context_text(original, query=query)
+        omitted = cleaned != original.strip()
+        cap = max(500, min(int(max_chars or 1200), 2500))
+        if len(cleaned) > cap:
+            clipped = cleaned[:cap]
+            last_space = clipped.rfind(" ")
+            if last_space > cap * 0.75:
+                clipped = clipped[:last_space]
+            cleaned = clipped.rstrip() + " …"
+            omitted = True
+        return cleaned, omitted
+
+    def _format_first_turn_context(self, ctx: dict, *, query: str = "") -> str:
+        """Format and sanitize the prefetch context dict for prompt injection."""
         parts = []
 
         # Session summary — session-scoped context, placed first for relevance
-        summary = ctx.get("summary", "")
+        summary = self._clean_context_text(ctx.get("summary", ""), query=query)
         if summary:
             parts.append(f"## Session Summary\n{summary}")
 
-        rep = ctx.get("representation", "")
+        rep = self._clean_context_text(ctx.get("representation", ""), query=query)
         if rep:
             parts.append(f"## User Representation\n{rep}")
 
-        card = ctx.get("card", "")
+        card = self._clean_context_text(ctx.get("card", ""), query=query)
         if card:
             parts.append(f"## User Peer Card\n{card}")
 
-        ai_rep = ctx.get("ai_representation", "")
+        ai_rep = self._clean_context_text(ctx.get("ai_representation", ""), query=query)
         if ai_rep:
             parts.append(f"## AI Self-Representation\n{ai_rep}")
 
-        ai_card = ctx.get("ai_card", "")
+        ai_card = self._clean_context_text(ctx.get("ai_card", ""), query=query)
         if ai_card:
             parts.append(f"## AI Identity Card\n{ai_card}")
 
@@ -525,7 +672,7 @@ class HonchoMemoryProvider(MemoryProvider):
             header = (
                 "# Honcho Memory\n"
                 "Active (tools-only mode). Use honcho_profile for a quick factual snapshot, "
-                "honcho_search for raw excerpts, honcho_context for raw peer context, "
+                "honcho_search for sanitized excerpts, honcho_context for sanitized peer context, "
                 "honcho_reasoning for synthesized answers (pass reasoning_level "
                 "minimal/low/medium/high/max — you pick the depth per call), "
                 "honcho_conclude to save facts about the user. "
@@ -536,7 +683,7 @@ class HonchoMemoryProvider(MemoryProvider):
                 "# Honcho Memory\n"
                 "Active (hybrid mode). Relevant context is auto-injected AND memory tools are available. "
                 "Use honcho_profile for a quick factual snapshot, "
-                "honcho_search for raw excerpts, honcho_context for raw peer context, "
+                "honcho_search for sanitized excerpts, honcho_context for sanitized peer context, "
                 "honcho_reasoning for synthesized answers (pass reasoning_level "
                 "minimal/low/medium/high/max — you pick the depth per call), "
                 "honcho_conclude to save facts about the user."
@@ -581,7 +728,7 @@ class HonchoMemoryProvider(MemoryProvider):
                 # First call — synchronous fetch
                 try:
                     ctx = self._manager.get_prefetch_context(self._session_key)
-                    self._base_context_cache = self._format_first_turn_context(ctx) if ctx else ""
+                    self._base_context_cache = self._format_first_turn_context(ctx, query=query) if ctx else ""
                     self._last_context_turn = self._turn_count
                 except Exception as e:
                     logger.debug("Honcho base context fetch failed: %s", e)
@@ -592,7 +739,7 @@ class HonchoMemoryProvider(MemoryProvider):
         if self._manager:
             fresh_ctx = self._manager.pop_context_result(self._session_key)
             if fresh_ctx:
-                formatted = self._format_first_turn_context(fresh_ctx)
+                formatted = self._format_first_turn_context(fresh_ctx, query=query)
                 if formatted:
                     with self._base_context_lock:
                         self._base_context_cache = formatted
@@ -673,7 +820,9 @@ class HonchoMemoryProvider(MemoryProvider):
             dialectic_result = ""
 
         if dialectic_result and dialectic_result.strip():
-            parts.append(dialectic_result)
+            cleaned_dialectic = self._clean_context_text(dialectic_result, query=query)
+            if cleaned_dialectic:
+                parts.append(cleaned_dialectic)
 
         if not parts:
             return ""
@@ -1205,6 +1354,42 @@ class HonchoMemoryProvider(MemoryProvider):
             return []
         return list(ALL_TOOL_SCHEMAS)
 
+    def _dialectic_query_with_wall_clock_guard(
+        self,
+        query: str,
+        *,
+        reasoning_level: str | None,
+        peer: str,
+    ) -> tuple[bool, str]:
+        """Run summoned dialectic query with a Hermes-side wall-clock budget."""
+        if not self._manager:
+            raise RuntimeError("Honcho manager is not initialized")
+        box: dict[str, Any] = {}
+
+        def _run() -> None:
+            try:
+                box["result"] = self._manager.dialectic_query(
+                    self._session_key,
+                    query,
+                    reasoning_level=reasoning_level,
+                    peer=peer,
+                )
+            except BaseException as exc:  # pragma: no cover - re-raised on caller thread
+                box["exception"] = exc
+
+        thread = threading.Thread(target=_run, daemon=True, name="honcho-reasoning-tool")
+        thread.start()
+        thread.join(timeout=self._reasoning_tool_timeout)
+        if thread.is_alive():
+            logger.warning(
+                "Honcho reasoning exceeded %.1fs wall-clock budget; returning safe timeout",
+                self._reasoning_tool_timeout,
+            )
+            return False, ""
+        if "exception" in box:
+            raise box["exception"]
+        return True, box.get("result") or ""
+
     def handle_tool_call(self, tool_name: str, args: dict, **kwargs) -> str:
         """Handle a Honcho tool call, with lazy session init for tools-only mode."""
         if self._cron_skipped:
@@ -1243,7 +1428,20 @@ class HonchoMemoryProvider(MemoryProvider):
                 )
                 if not result:
                     return json.dumps({"result": "No relevant context found."})
-                return json.dumps({"result": result})
+                cleaned, omitted = self._sanitize_tool_text(
+                    result, query=query, max_chars=max_tokens
+                )
+                if not cleaned:
+                    return json.dumps({
+                        "result": "Relevant context was found, but it was omitted by Honcho hygiene filters.",
+                        "sanitized": True,
+                        "omitted_sensitive_context": True,
+                    })
+                return json.dumps({
+                    "result": cleaned,
+                    "sanitized": True,
+                    "omitted_sensitive_context": omitted,
+                })
 
             elif tool_name == "honcho_reasoning":
                 query = args.get("query", "")
@@ -1251,35 +1449,64 @@ class HonchoMemoryProvider(MemoryProvider):
                     return tool_error("Missing required parameter: query")
                 peer = args.get("peer", "user")
                 reasoning_level = args.get("reasoning_level")
-                result = self._manager.dialectic_query(
-                    self._session_key, query,
+                completed, result = self._dialectic_query_with_wall_clock_guard(
+                    query,
                     reasoning_level=reasoning_level,
                     peer=peer,
                 )
+                if not completed:
+                    return tool_error(
+                        "Honcho reasoning timed out. Use honcho_search for cheaper bounded retrieval, "
+                        "or retry honcho_reasoning later."
+                    )
                 # Update cadence tracker so auto-injection respects the gap after an explicit call
                 self._last_dialectic_turn = self._turn_count
+                if not result and getattr(self._manager, "_last_dialectic_error", None) == "timeout":
+                    return tool_error(
+                        "Honcho reasoning timed out. Use honcho_search for cheaper bounded retrieval, "
+                        "or retry honcho_reasoning with reasoning_level='minimal'."
+                    )
                 return json.dumps({"result": result or "No result from Honcho."})
 
             elif tool_name == "honcho_context":
                 peer = args.get("peer", "user")
+                query = args.get("query", "")
                 ctx = self._manager.get_session_context(self._session_key, peer=peer)
                 if not ctx:
                     return json.dumps({"result": "No context available yet."})
                 parts = []
+                omitted = False
                 if ctx.get("summary"):
-                    parts.append(f"## Summary\n{ctx['summary']}")
+                    cleaned = self._clean_context_text(ctx["summary"], query=query)
+                    omitted = omitted or cleaned != str(ctx["summary"]).strip()
+                    if cleaned:
+                        parts.append(f"## Summary\n{cleaned}")
                 if ctx.get("representation"):
-                    parts.append(f"## Representation\n{ctx['representation']}")
+                    cleaned = self._clean_context_text(ctx["representation"], query=query)
+                    omitted = omitted or cleaned != str(ctx["representation"]).strip()
+                    if cleaned:
+                        parts.append(f"## Representation\n{cleaned}")
                 if ctx.get("card"):
-                    parts.append(f"## Card\n{ctx['card']}")
+                    cleaned = self._clean_context_text(ctx["card"], query=query)
+                    omitted = omitted or cleaned != str(ctx["card"]).strip()
+                    if cleaned:
+                        parts.append(f"## Card\n{cleaned}")
                 if ctx.get("recent_messages"):
                     msgs = ctx["recent_messages"]
-                    msg_str = "\n".join(
-                        f"  [{m['role']}] {m['content'][:200]}"
-                        for m in msgs[-5:]  # last 5 for brevity
-                    )
-                    parts.append(f"## Recent messages\n{msg_str}")
-                return json.dumps({"result": "\n\n".join(parts) or "No context available."})
+                    cleaned_msgs = []
+                    for m in msgs[-5:]:  # last 5 for brevity
+                        raw_content = str(m.get("content", ""))
+                        cleaned = self._clean_context_text(raw_content, query=query)
+                        omitted = omitted or cleaned != raw_content.strip()
+                        if cleaned:
+                            cleaned_msgs.append(f"  [{m.get('role', 'unknown')}] {cleaned[:200]}")
+                    if cleaned_msgs:
+                        parts.append(f"## Recent messages\n" + "\n".join(cleaned_msgs))
+                return json.dumps({
+                    "result": "\n\n".join(parts) or "No context available after Honcho hygiene filters.",
+                    "sanitized": True,
+                    "omitted_sensitive_context": omitted,
+                })
 
             elif tool_name == "honcho_conclude":
                 delete_id = (args.get("delete_id") or "").strip()
@@ -1303,6 +1530,14 @@ class HonchoMemoryProvider(MemoryProvider):
 
             return tool_error(f"Unknown tool: {tool_name}")
 
+        except TimeoutError:
+            logger.warning("Honcho tool %s timed out", tool_name)
+            if tool_name == "honcho_reasoning":
+                return tool_error(
+                    "Honcho reasoning timed out. Use honcho_search for cheaper bounded retrieval, "
+                    "or retry honcho_reasoning with reasoning_level='minimal'."
+                )
+            return tool_error(f"Honcho {tool_name} timed out.")
         except Exception as e:
             logger.error("Honcho tool %s failed: %s", tool_name, e)
             return tool_error(f"Honcho {tool_name} failed: {e}")

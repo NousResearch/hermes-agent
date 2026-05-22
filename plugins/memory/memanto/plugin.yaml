@@ -1,0 +1,5 @@
+name: memanto
+version: 1.0.0
+description: "Memanto memory agent — typed long-term memory (remember/recall/answer) backed by Moorcheh, with auto-recall, turn capture, and RAG."
+pip_dependencies:
+  - memanto

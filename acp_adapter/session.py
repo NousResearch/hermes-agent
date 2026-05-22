@@ -8,7 +8,7 @@ history.
 """
 from __future__ import annotations
 
-from hermes_constants import get_hermes_home
+from hermes_constants import get_hermes_home, parse_reasoning_effort
 
 import copy
 import json
@@ -24,6 +24,24 @@ from threading import Lock
 from typing import Any, Dict, List, Optional
 
 logger = logging.getLogger(__name__)
+
+
+def _parse_agent_reasoning_config(agent_config: dict[str, Any]) -> dict[str, Any] | None:
+    effort = str(agent_config.get("reasoning_effort", "") or "").strip()
+    parsed = parse_reasoning_effort(effort)
+    if effort and parsed is None:
+        logger.warning("Unknown ACP reasoning_effort '%s', using provider default", effort)
+    return parsed
+
+
+def _parse_agent_service_tier(agent_config: dict[str, Any]) -> str | None:
+    raw = str(agent_config.get("service_tier", "") or "").strip().lower()
+    if not raw or raw in {"normal", "default", "standard", "off", "none"}:
+        return None
+    if raw in {"fast", "priority", "on"}:
+        return "priority"
+    logger.warning("Unknown ACP service_tier '%s', ignoring", raw)
+    return None
 
 
 def _normalize_cwd_for_compare(cwd: str | None) -> str:
@@ -537,12 +555,18 @@ class SessionManager:
         elif isinstance(model_cfg, str) and model_cfg.strip():
             default_model = model_cfg.strip()
 
+        agent_config = config.get("agent") if isinstance(config.get("agent"), dict) else {}
+        reasoning_config = _parse_agent_reasoning_config(agent_config)
+        service_tier = _parse_agent_service_tier(agent_config)
+
         kwargs = {
             "platform": "acp",
             "enabled_toolsets": ["hermes-acp"],
             "quiet_mode": True,
             "session_id": session_id,
             "model": model or default_model,
+            "reasoning_config": reasoning_config,
+            "service_tier": service_tier,
         }
 
         try:

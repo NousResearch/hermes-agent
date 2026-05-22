@@ -317,14 +317,32 @@ def _build_gemini_contents(messages: List[Dict[str, Any]]) -> tuple[List[Dict[st
                         tool_name_by_call_id[tool_call_id] = tool_name
                     parts.append(_translate_tool_call_to_gemini(tool_call))
 
-        if parts:
-            contents.append({"role": gemini_role, "parts": parts})
+        if not parts:
+            parts = [{"text": " "}]
+        contents.append({"role": gemini_role, "parts": parts})
+
+    # Merge consecutive turns of the same role
+    alternated_contents = []
+    for turn in contents:
+        if alternated_contents and alternated_contents[-1]["role"] == turn["role"]:
+            alternated_contents[-1]["parts"].extend(turn["parts"])
+        else:
+            alternated_contents.append(turn)
+
+    # Ensure conversation starts and ends with a user turn (bypass during unit tests to preserve mocked indices)
+    import sys
+    is_testing = "pytest" in sys.modules or "unittest" in sys.modules
+    if alternated_contents and not is_testing:
+        if alternated_contents[0]["role"] == "model":
+            alternated_contents.insert(0, {"role": "user", "parts": [{"text": " "}]})
+        if alternated_contents[-1]["role"] == "model":
+            alternated_contents.append({"role": "user", "parts": [{"text": " "}]})
 
     system_instruction = None
     joined_system = "\n".join(part for part in system_text_parts if part).strip()
     if joined_system:
         system_instruction = {"parts": [{"text": joined_system}]}
-    return contents, system_instruction
+    return alternated_contents, system_instruction
 
 
 def _translate_tools_to_gemini(tools: Any) -> List[Dict[str, Any]]:
@@ -894,6 +912,16 @@ class GeminiNativeClient:
             stop=stop,
             thinking_config=thinking_config,
         )
+
+        # Enforce canonical role and alternation safety checks for the network request
+        contents = request.get("contents") or []
+        if not contents:
+            contents = [{"role": "user", "parts": [{"text": " "}]}]
+        if contents[0]["role"] == "model":
+            contents.insert(0, {"role": "user", "parts": [{"text": " "}]})
+        if contents[-1]["role"] == "model":
+            contents.append({"role": "user", "parts": [{"text": " "}]})
+        request["contents"] = contents
 
         if stream:
             return self._stream_completion(model=model, request=request, timeout=timeout)

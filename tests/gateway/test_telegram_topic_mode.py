@@ -1130,8 +1130,18 @@ async def test_topic_refuses_unauthorized_user(tmp_path, monkeypatch):
 
 
 # ──────────────────────────────────────────────────────────────────────
-# Cross-topic Reply leak / stripped-reply recovery
+# Cross-topic Reply leak / stripped-reply recovery (opt-in pinning)
 # ──────────────────────────────────────────────────────────────────────
+#
+# Pin-to-current-topic recovery is gated behind the
+# ``telegram.extra.pin_root_dm_replies`` flag (default off). See #30411 —
+# the always-on version broke the root-DM → new-topic flow plus the
+# downstream auto-rename and tool-call routing in that new topic.
+
+
+def _pin_root_dm_replies(runner, *, enabled: bool = True) -> None:
+    """Helper: toggle the opt-in pin_root_dm_replies flag on a fixture runner."""
+    runner.config.platforms[Platform.TELEGRAM].extra["pin_root_dm_replies"] = enabled
 
 
 def _seed_two_topic_bindings(session_db):
@@ -1171,24 +1181,28 @@ def test_recover_returns_none_for_known_topic(tmp_path):
     db = SessionDB(db_path=tmp_path / "state.db")
     _seed_two_topic_bindings(db)
     runner = _make_runner(session_db=db)
+    _pin_root_dm_replies(runner)
 
     assert runner._recover_telegram_topic_thread_id(_make_source(thread_id="222")) is None
 
 
 def test_recover_rewrites_unknown_thread_id_to_most_recent(tmp_path):
     # Cross-topic Reply leak: inbound thread_id is a Telegram-only id we never bound.
+    # Requires the operator to opt into pin_root_dm_replies.
     db = SessionDB(db_path=tmp_path / "state.db")
     _seed_two_topic_bindings(db)
     runner = _make_runner(session_db=db)
+    _pin_root_dm_replies(runner)
 
     assert runner._recover_telegram_topic_thread_id(_make_source(thread_id="9999")) == "222"
 
 
 def test_recover_rewrites_lobby_thread_id_to_most_recent(tmp_path):
-    # Stripped plain reply: thread_id is None, topic mode is on.
+    # Stripped plain reply: thread_id is None, topic mode is on, operator opted in.
     db = SessionDB(db_path=tmp_path / "state.db")
     _seed_two_topic_bindings(db)
     runner = _make_runner(session_db=db)
+    _pin_root_dm_replies(runner)
 
     assert runner._recover_telegram_topic_thread_id(_make_source(thread_id=None)) == "222"
 
@@ -1197,6 +1211,7 @@ def test_recover_returns_none_when_topic_mode_disabled(tmp_path):
     # Non-topic-mode DMs keep the existing strip-to-lobby behavior.
     db = SessionDB(db_path=tmp_path / "state.db")
     runner = _make_runner(session_db=db)
+    _pin_root_dm_replies(runner)
 
     assert runner._recover_telegram_topic_thread_id(_make_source(thread_id=None)) is None
 
@@ -1205,8 +1220,113 @@ def test_recover_returns_none_when_no_bindings_yet(tmp_path):
     db = SessionDB(db_path=tmp_path / "state.db")
     db.enable_telegram_topic_mode(chat_id="208214988", user_id="208214988")
     runner = _make_runner(session_db=db)
+    _pin_root_dm_replies(runner)
 
     assert runner._recover_telegram_topic_thread_id(_make_source(thread_id=None)) is None
+
+
+# ──────────────────────────────────────────────────────────────────────
+# Regression: #30411 — opt-in default keeps root-DM → new-topic flow
+# ──────────────────────────────────────────────────────────────────────
+#
+# Before this fix, _recover_telegram_topic_thread_id() was unconditional
+# whenever topic mode was on, so a fresh root-DM message (lobby thread_id)
+# was silently pinned to the user's last topic. That broke the documented
+# behavior: a new root-DM message should create a NEW topic, get auto-
+# renamed after one turn, and have tool-call output routed to *that* new
+# topic. The fix makes the pinning opt-in via ``pin_root_dm_replies`` so
+# the default flow is restored. These tests pin the default-off contract.
+
+
+def test_pin_root_dm_replies_default_off(tmp_path):
+    """#30411: default-off — root-DM with existing topics is left alone so a new topic can spawn."""
+    db = SessionDB(db_path=tmp_path / "state.db")
+    _seed_two_topic_bindings(db)
+    runner = _make_runner(session_db=db)
+    # No extra.pin_root_dm_replies → flag is None → opt-out (default).
+
+    # Lobby/stripped: would have been pinned pre-fix; now returns None.
+    assert runner._recover_telegram_topic_thread_id(_make_source(thread_id=None)) is None
+    # Cross-topic Reply leak: would have been rewritten pre-fix; now returns None.
+    assert runner._recover_telegram_topic_thread_id(_make_source(thread_id="9999")) is None
+    # Sanity: helper agrees the flag is off.
+    assert runner._telegram_pin_root_dm_replies_enabled(_make_source(thread_id=None)) is False
+
+
+def test_pin_root_dm_replies_explicit_false(tmp_path):
+    """#30411: explicit False is also opt-out — no pinning, mirrors default."""
+    db = SessionDB(db_path=tmp_path / "state.db")
+    _seed_two_topic_bindings(db)
+    runner = _make_runner(session_db=db)
+    _pin_root_dm_replies(runner, enabled=False)
+
+    assert runner._recover_telegram_topic_thread_id(_make_source(thread_id=None)) is None
+    assert runner._recover_telegram_topic_thread_id(_make_source(thread_id="9999")) is None
+    assert runner._telegram_pin_root_dm_replies_enabled(_make_source(thread_id=None)) is False
+
+
+@pytest.mark.parametrize("truthy", ["true", "True", "1", "yes", "on"])
+def test_pin_root_dm_replies_truthy_string_opts_in(tmp_path, truthy):
+    """YAML often serializes booleans as strings; accept the same shapes as disable_topic_auto_rename."""
+    db = SessionDB(db_path=tmp_path / "state.db")
+    _seed_two_topic_bindings(db)
+    runner = _make_runner(session_db=db)
+    runner.config.platforms[Platform.TELEGRAM].extra["pin_root_dm_replies"] = truthy
+
+    # With the flag on, a stripped plain reply gets pinned to the most recent topic.
+    assert runner._recover_telegram_topic_thread_id(_make_source(thread_id=None)) == "222"
+    assert runner._telegram_pin_root_dm_replies_enabled(_make_source(thread_id=None)) is True
+
+
+def test_pin_root_dm_replies_disable_topic_auto_rename_decoupled(tmp_path):
+    """Auto-rename and the pin flag are independent — neither must clobber the other.
+
+    Reproduces the second half of #30411: ``disable_topic_auto_rename`` was
+    silently misbehaving because the always-on recovery rewrote thread_ids
+    out from under the rename path. With the fix, the auto-rename helper
+    keeps its own contract regardless of the pin flag.
+    """
+    db = SessionDB(db_path=tmp_path / "state.db")
+    runner = _make_runner(session_db=db)
+
+    # Default: auto-rename enabled (not disabled).
+    assert runner._telegram_topic_auto_rename_disabled(_make_source(thread_id="222")) is False
+    # Pin flag is independent of auto-rename and defaults off.
+    assert runner._telegram_pin_root_dm_replies_enabled(_make_source(thread_id="222")) is False
+
+    # Turn pin on — auto-rename must remain enabled (operator didn't ask to disable it).
+    _pin_root_dm_replies(runner)
+    assert runner._telegram_topic_auto_rename_disabled(_make_source(thread_id="222")) is False
+    assert runner._telegram_pin_root_dm_replies_enabled(_make_source(thread_id="222")) is True
+
+    # Turn auto-rename off — pin flag must remain whatever it was, independently.
+    runner.config.platforms[Platform.TELEGRAM].extra["disable_topic_auto_rename"] = True
+    assert runner._telegram_topic_auto_rename_disabled(_make_source(thread_id="222")) is True
+    assert runner._telegram_pin_root_dm_replies_enabled(_make_source(thread_id="222")) is True
+
+
+def test_pin_root_dm_replies_tool_call_routing_default(tmp_path):
+    """#30411 edge case: tool-call payload arriving with the inbound thread_id is left alone in default mode.
+
+    The bug: a tool-call event would carry the recovered (pinned) thread_id
+    instead of the topic the user actually replied in, so progress messages
+    surfaced in the wrong topic. With pinning off by default, the recovery
+    helper must not mutate the thread_id of an inbound event — leaving it
+    free to be routed to whichever topic the source actually points at.
+    """
+    db = SessionDB(db_path=tmp_path / "state.db")
+    _seed_two_topic_bindings(db)
+    runner = _make_runner(session_db=db)
+    # Default mode (flag unset). A tool-call inbound for topic "111" — the
+    # *older* topic, not the most-recent — must not be rewritten to "222".
+    src = _make_source(thread_id="111")
+    assert runner._recover_telegram_topic_thread_id(src) is None
+
+    # And opting in must not mangle a *known* topic either — pinning only
+    # ever rewrites unknown / lobby inbound ids, never a real bound topic.
+    _pin_root_dm_replies(runner)
+    assert runner._recover_telegram_topic_thread_id(_make_source(thread_id="111")) is None
+    assert runner._recover_telegram_topic_thread_id(_make_source(thread_id="222")) is None
 
 
 def test_list_telegram_topic_bindings_for_chat(tmp_path):

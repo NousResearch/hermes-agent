@@ -2040,19 +2040,58 @@ class GatewayRunner:
             session_id=session_entry.session_id,
         )
 
+    def _telegram_pin_root_dm_replies_enabled(self, source: SessionSource) -> bool:
+        """Return True when the operator opted into pinning root-DM replies.
+
+        Controlled via ``gateway.platforms.telegram.extra.pin_root_dm_replies``.
+        Default is False: a new message from the root Telegram DM creates a
+        fresh topic (the original pre-#30411 behavior) and tool-call output
+        routes to that topic. Set True to opt into the legacy pin-to-current-
+        topic behavior introduced by ``_recover_telegram_topic_thread_id``;
+        useful when you specifically want a cross-topic Reply or a stripped
+        plain reply to fall back to the user's most-recent topic instead of
+        spawning a new session.
+        """
+        if source.platform != Platform.TELEGRAM:
+            return False
+        platform_cfg = (
+            self.config.platforms.get(source.platform)
+            if getattr(self, "config", None) and getattr(self.config, "platforms", None)
+            else None
+        )
+        if platform_cfg is None:
+            return False
+        extra = getattr(platform_cfg, "extra", None) or {}
+        value = extra.get("pin_root_dm_replies")
+        if value is None:
+            return False
+        if isinstance(value, bool):
+            return value
+        if isinstance(value, str):
+            return value.strip().lower() in {"1", "true", "yes", "on"}
+        return bool(value)
+
     def _recover_telegram_topic_thread_id(
         self,
         source: SessionSource,
     ) -> Optional[str]:
-        """Pin DM-topic routing to the user's last-active topic.
+        """Opt-in: pin DM-topic routing to the user's last-active topic.
 
         Telegram fragments topic-mode DMs two ways: a Reply on a message
         in another topic delivers ``message_thread_id`` for *that* topic,
         and ``_build_message_event`` strips the thread_id on plain replies
-        (#3206 — needed for non-topic users). Both route the user to the
-        wrong session. When topic mode is on, rewrite the thread_id to the
-        user's most-recent binding if the inbound id is missing/General or
-        not a known topic for this chat. Returns None to leave it alone.
+        (#3206 — needed for non-topic users). Both can route the user to a
+        different session than where they replied. When topic mode is on
+        *and* the operator opted in via ``extra.pin_root_dm_replies``,
+        rewrite the thread_id to the user's most-recent binding if the
+        inbound id is missing/General or not a known topic for this chat.
+
+        The flag defaults to off because the previous always-on behavior
+        broke the root-DM → new-topic flow (see #30411): a fresh root-DM
+        message would be silently pinned to the user's last topic instead
+        of spawning a new one, which also broke auto-topic-rename and
+        tool-call routing for the new session. Returns None to leave the
+        thread_id alone.
         """
         if (
             source.platform != Platform.TELEGRAM
@@ -2060,6 +2099,7 @@ class GatewayRunner:
             or not source.chat_id
             or not source.user_id
             or not self._telegram_topic_mode_enabled(source)
+            or not self._telegram_pin_root_dm_replies_enabled(source)
         ):
             return None
         session_db = getattr(self, "_session_db", None)

@@ -700,6 +700,7 @@ class TestGetDueJobs:
         """Recurring jobs past their dynamic grace window are fast-forwarded, not fired.
 
         For an hourly job, grace = 30 min. Setting 35 min late exceeds the window.
+        State must still be updated (last_run_at, completed_count) for consistency.
         """
         job = create_job(prompt="Stale", schedule="every 1h")
         # Force next_run_at to 35 minutes ago (beyond the 30-min grace for hourly)
@@ -714,6 +715,22 @@ class TestGetDueJobs:
         from cron.jobs import _ensure_aware, _hermes_now
         next_dt = _ensure_aware(datetime.fromisoformat(updated["next_run_at"]))
         assert next_dt > _hermes_now()
+        # State should reflect the skipped run
+        assert updated["last_run_at"] is not None, "last_run_at not set after fast-forward"
+        assert updated["repeat"]["completed"] == 1, f"completed count wrong: {updated['repeat']['completed']}"
+
+    def test_stale_fast_forward_repeat_limit_removes_job(self, tmp_cron_dir):
+        """Fast-forwarding a job that hits its repeat limit should remove it."""
+        job = create_job(prompt="Limited", schedule="every 1h", repeat=1)
+        # Force next_run_at to 35 minutes ago so it fast-forwards
+        jobs = load_jobs()
+        jobs[0]["next_run_at"] = (datetime.now() - timedelta(minutes=35)).isoformat()
+        save_jobs(jobs)
+
+        due = get_due_jobs()
+        assert len(due) == 0
+        # Job should be removed because repeat limit (1) was hit
+        assert get_job(job["id"]) is None, "Job should have been removed after fast-forward hit repeat limit"
 
     def test_future_not_returned(self, tmp_cron_dir):
         create_job(prompt="Not yet", schedule="every 1h")

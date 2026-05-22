@@ -1078,6 +1078,15 @@ def _get_due_jobs_locked() -> List[Dict[str, Any]]:
                     # Update the job in storage
                     for rj in raw_jobs:
                         if rj["id"] == job["id"]:
+                            rj["last_run_at"] = now.isoformat()
+                            if rj.get("repeat"):
+                                rj["repeat"]["completed"] = rj["repeat"].get("completed", 0) + 1
+                                times = rj["repeat"].get("times")
+                                if times is not None and times > 0 and rj["repeat"]["completed"] >= times:
+                                    # Fast-forward hit repeat limit — remove the job
+                                    raw_jobs = [j for j in raw_jobs if j["id"] != job["id"]]
+                                    needs_save = True
+                                    break
                             rj["next_run_at"] = new_next
                             needs_save = True
                             break

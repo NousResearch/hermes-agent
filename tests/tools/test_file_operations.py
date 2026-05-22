@@ -68,10 +68,14 @@ class TestIsWriteDenied:
             "webhook_subscriptions.json",
             "mcp-tokens/token1.json",
             "mcp-tokens/subdir/token2.json",
+            "pairing/telegram-approved.json",
+            "pairing/discord-approved.json",
+            "pairing/telegram-pending.json",
+            "pairing",
         ],
     )
     def test_hermes_control_files_and_mcp_tokens_denied(self, path):
-        """Hermes control files and mcp-tokens entries must be write-denied."""
+        """Hermes control files and mcp-tokens/pairing entries must be write-denied."""
         from hermes_constants import get_hermes_home
         hermes_home = get_hermes_home()
         full_path = str(hermes_home / path)
@@ -139,6 +143,29 @@ class TestIsWriteDenied:
         assert _is_write_denied(str(root / "mcp-tokens" / "tok.json")) is True
         # The directory itself must also be denied (not just files inside)
         assert _is_write_denied(str(root / "mcp-tokens")) is True
+
+    def test_pairing_dir_denied(self, tmp_path, monkeypatch):
+        """Regression: pairing/ must be write-denied under both profile and root.
+
+        PR #30383 introduced ~/.hermes/pairing/{platform}-approved.json as the
+        gateway access-control list. Without this block, a prompt-injected agent
+        can write arbitrary user IDs into an approved file, granting persistent
+        gateway access without going through the pairing code flow — the same
+        threat class that motivated protecting webhook_subscriptions.json.
+        """
+        root = tmp_path / "hermes"
+        profile = root / "profiles" / "coder"
+        profile.mkdir(parents=True)
+        monkeypatch.setenv("HERMES_HOME", str(profile))
+
+        # Active profile pairing entries
+        assert _is_write_denied(str(profile / "pairing" / "telegram-approved.json")) is True
+        assert _is_write_denied(str(profile / "pairing" / "discord-pending.json")) is True
+        # The directory itself
+        assert _is_write_denied(str(profile / "pairing")) is True
+        # Root pairing entries (profile mode — same shape as mcp-tokens gap)
+        assert _is_write_denied(str(root / "pairing" / "telegram-approved.json")) is True
+        assert _is_write_denied(str(root / "pairing")) is True
 
 
 

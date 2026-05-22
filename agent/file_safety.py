@@ -127,6 +127,12 @@ def is_write_denied(path: str) -> bool:
                 return True
         except Exception:
             pass
+        try:
+            pairing_real = os.path.realpath(os.path.join(base_real, "pairing"))
+            if resolved == pairing_real or resolved.startswith(pairing_real + os.sep):
+                return True
+        except Exception:
+            pass
 
     safe_root = get_safe_write_root()
     if safe_root and not (resolved == safe_root or resolved.startswith(safe_root + os.sep)):

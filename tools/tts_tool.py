@@ -37,6 +37,7 @@ Usage:
 import asyncio
 import base64
 import datetime
+import gc
 import json
 import logging
 import os
@@ -44,9 +45,11 @@ import queue
 import re
 import shlex
 import shutil
+import struct
 import subprocess
 import tempfile
 import threading
+import time
 import uuid
 from pathlib import Path
 from typing import Callable, Dict, Any, Optional
@@ -1949,8 +1952,17 @@ def _generate_gemini_tts(text: str, output_path: str, tts_config: Dict[str, Any]
 
 
 # ===========================================================================
-# NeuTTS (local, on-device TTS via neutts_cli)
+# NeuTTS (local, on-device TTS via neutts)
 # ===========================================================================
+
+DEFAULT_NEUTTS_MODEL = "neuphonic/neutts-air-q4-gguf"
+DEFAULT_NEUTTS_CODEC_REPO = "neuphonic/neucodec"
+DEFAULT_NEUTTS_IDLE_UNLOAD_SECONDS = 30 * 60
+NEUTTS_OUTPUT_FORMATS = frozenset({"mp3", "m4a", "aac", "wav", "ogg", "flac"})
+
+_neutts_cache_lock = threading.RLock()
+_neutts_cache: Dict[str, Any] = {}
+_neutts_idle_timer: Optional[threading.Timer] = None
 
 def _check_neutts_available() -> bool:
     """Check if the neutts engine is importable (installed locally)."""
@@ -1980,57 +1992,259 @@ def _default_neutts_ref_text() -> str:
     return str(Path(__file__).parent / "neutts_samples" / "jo.txt")
 
 
-def _generate_neutts(text: str, output_path: str, tts_config: Dict[str, Any]) -> str:
-    """Generate speech using the local NeuTTS engine.
+def _bool_config(value: Any, default: bool = False) -> bool:
+    if isinstance(value, bool):
+        return value
+    if value is None:
+        return default
+    if isinstance(value, (int, float)):
+        return bool(value)
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized in {"1", "true", "yes", "on"}:
+            return True
+        if normalized in {"0", "false", "no", "off"}:
+            return False
+    return default
 
-    Runs synthesis in a subprocess via tools/neutts_synth.py to keep the
-    ~500MB model in a separate process that exits after synthesis.
-    Outputs WAV; the caller handles conversion for Telegram if needed.
-    """
+
+def _neutts_warm_cache_enabled(neutts_config: Dict[str, Any]) -> bool:
+    return _bool_config(neutts_config.get("warm_cache"), default=True)
+
+
+def _neutts_idle_unload_seconds(neutts_config: Dict[str, Any]) -> float:
+    raw = neutts_config.get("idle_unload_seconds", DEFAULT_NEUTTS_IDLE_UNLOAD_SECONDS)
+    try:
+        value = float(raw)
+    except (TypeError, ValueError):
+        return float(DEFAULT_NEUTTS_IDLE_UNLOAD_SECONDS)
+    return value if value > 0 else float(DEFAULT_NEUTTS_IDLE_UNLOAD_SECONDS)
+
+
+def _neutts_output_format(neutts_config: Dict[str, Any], default: str = "mp3") -> str:
+    raw = neutts_config.get("output_format") or neutts_config.get("format") or default
+    fmt = str(raw).lower().strip().lstrip(".")
+    if fmt == "aac":
+        # Raw .aac is less useful for iMessage/file previews; M4A is the common
+        # MPEG-4 container for AAC audio.
+        return "m4a"
+    if fmt in NEUTTS_OUTPUT_FORMATS:
+        return fmt
+    return default
+
+
+def _neutts_resolved_config(tts_config: Dict[str, Any]) -> Dict[str, str]:
+    neutts_config = tts_config.get("neutts", {}) if isinstance(tts_config, dict) else {}
+    return {
+        "ref_audio": str(Path(neutts_config.get("ref_audio", "") or _default_neutts_ref_audio()).expanduser()),
+        "ref_text": str(Path(neutts_config.get("ref_text", "") or _default_neutts_ref_text()).expanduser()),
+        "model": str(neutts_config.get("model", DEFAULT_NEUTTS_MODEL)),
+        "device": str(neutts_config.get("device", "cpu")),
+        "codec_repo": str(neutts_config.get("codec_repo", DEFAULT_NEUTTS_CODEC_REPO)),
+    }
+
+
+def _neutts_cache_key(resolved: Dict[str, str]) -> str:
+    ref_audio = Path(resolved["ref_audio"])
+    ref_text = Path(resolved["ref_text"])
+
+    def stamp(path: Path) -> tuple[str, int, int]:
+        try:
+            stat = path.stat()
+            return (str(path.resolve()), int(stat.st_mtime_ns), int(stat.st_size))
+        except OSError:
+            return (str(path), 0, 0)
+
+    return json.dumps({
+        "model": resolved["model"],
+        "device": resolved["device"],
+        "codec_repo": resolved["codec_repo"],
+        "ref_audio": stamp(ref_audio),
+        "ref_text": stamp(ref_text),
+    }, sort_keys=True)
+
+
+def _write_neutts_wav(path: str, samples, sample_rate: int = 24000) -> None:
+    """Write mono 16-bit WAV samples without requiring soundfile."""
+    try:
+        import soundfile as sf
+        sf.write(path, samples, sample_rate)
+        return
+    except ImportError:
+        pass
+
+    try:
+        import numpy as np
+    except ImportError:
+        # The real NeuTTS runtime depends on NumPy, but keeping this writer
+        # stdlib-capable makes the provider's fallback/test path independent of
+        # an optional audio-writing stack.
+        values = samples.tolist() if hasattr(samples, "tolist") else samples
+        pcm_bytes = b"".join(
+            struct.pack("<h", max(-32768, min(32767, round(float(sample) * 32767))))
+            for sample in values
+        )
+    else:
+        if not isinstance(samples, np.ndarray):
+            samples = np.array(samples, dtype=np.float32)
+        samples = samples.flatten()
+        samples = np.clip(samples, -1.0, 1.0)
+        pcm_bytes = (samples * 32767).astype(np.int16).tobytes()
+
+    num_channels = 1
+    bits_per_sample = 16
+    byte_rate = sample_rate * num_channels * (bits_per_sample // 8)
+    block_align = num_channels * (bits_per_sample // 8)
+    data_size = len(pcm_bytes)
+    with open(path, "wb") as f:
+        f.write(b"RIFF")
+        f.write(struct.pack("<I", 36 + data_size))
+        f.write(b"WAVE")
+        f.write(b"fmt ")
+        f.write(struct.pack("<IHHIIHH", 16, 1, num_channels, sample_rate, byte_rate, block_align, bits_per_sample))
+        f.write(b"data")
+        f.write(struct.pack("<I", data_size))
+        f.write(pcm_bytes)
+
+
+def _convert_neutts_wav(wav_path: str, output_path: str) -> str:
+    if wav_path == output_path:
+        return output_path
+    ffmpeg = shutil.which("ffmpeg")
+    if not ffmpeg:
+        os.replace(wav_path, output_path)
+        return output_path
+
+    suffix = Path(output_path).suffix.lower()
+    cmd = [ffmpeg, "-i", wav_path, "-y", "-loglevel", "error"]
+    if suffix == ".m4a":
+        cmd += ["-c:a", "aac", "-b:a", "128k"]
+    cmd.append(output_path)
+    subprocess.run(cmd, check=True, timeout=30)
+    try:
+        os.remove(wav_path)
+    except FileNotFoundError:
+        pass
+    return output_path
+
+
+def _schedule_neutts_idle_unload(idle_seconds: float) -> None:
+    global _neutts_idle_timer
+    if _neutts_idle_timer:
+        _neutts_idle_timer.cancel()
+
+    def _callback() -> None:
+        with _neutts_cache_lock:
+            if not _neutts_cache:
+                return
+            last_used = max(float(entry.get("last_used_at", 0.0)) for entry in _neutts_cache.values())
+            if time.monotonic() - last_used < idle_seconds:
+                _schedule_neutts_idle_unload(idle_seconds)
+                return
+            _clear_neutts_cache("idle")
+
+    _neutts_idle_timer = threading.Timer(idle_seconds, _callback)
+    _neutts_idle_timer.daemon = True
+    _neutts_idle_timer.start()
+
+
+def _clear_neutts_cache(reason: str = "manual") -> None:
+    global _neutts_idle_timer
+    with _neutts_cache_lock:
+        if _neutts_idle_timer:
+            _neutts_idle_timer.cancel()
+            _neutts_idle_timer = None
+        if _neutts_cache:
+            logger.info("[NeuTTS] clearing warm cache (%s)", reason)
+        _neutts_cache.clear()
+    gc.collect()
+
+
+def _generate_neutts_warm(text: str, output_path: str, tts_config: Dict[str, Any]) -> str:
+    """Generate speech with a cached in-process NeuTTS model/reference."""
+    neutts_config = tts_config.get("neutts", {}) if isinstance(tts_config, dict) else {}
+    resolved = _neutts_resolved_config(tts_config)
+    ref_audio = Path(resolved["ref_audio"])
+    ref_text_path = Path(resolved["ref_text"])
+    if not ref_audio.exists():
+        raise RuntimeError(f"NeuTTS reference audio not found: {ref_audio}")
+    if not ref_text_path.exists():
+        raise RuntimeError(f"NeuTTS reference text not found: {ref_text_path}")
+
+    key = _neutts_cache_key(resolved)
+    wav_path = output_path if output_path.endswith(".wav") else str(Path(output_path).with_suffix(".wav"))
+    Path(wav_path).parent.mkdir(parents=True, exist_ok=True)
+
+    with _neutts_cache_lock:
+        entry = _neutts_cache.get(key)
+        if entry is None:
+            from neutts import NeuTTS
+            tts = NeuTTS(
+                backbone_repo=resolved["model"],
+                backbone_device=resolved["device"],
+                codec_repo=resolved["codec_repo"],
+                codec_device=resolved["device"],
+            )
+            ref_codes = tts.encode_reference(str(ref_audio))
+            ref_text = ref_text_path.read_text(encoding="utf-8").strip()
+            entry = {
+                "tts": tts,
+                "ref_codes": ref_codes,
+                "ref_text": ref_text,
+                "loaded_at": time.monotonic(),
+                "last_used_at": time.monotonic(),
+                "resolved": resolved,
+            }
+            _neutts_cache.clear()
+            _neutts_cache[key] = entry
+            logger.info("[NeuTTS] warm cache loaded: model=%s device=%s", resolved["model"], resolved["device"])
+        else:
+            entry["last_used_at"] = time.monotonic()
+
+        wav = entry["tts"].infer(text, entry["ref_codes"], entry["ref_text"])
+        entry["last_used_at"] = time.monotonic()
+        _write_neutts_wav(wav_path, wav, 24000)
+        _schedule_neutts_idle_unload(_neutts_idle_unload_seconds(neutts_config))
+
+    return _convert_neutts_wav(wav_path, output_path)
+
+
+def _generate_neutts_subprocess(text: str, output_path: str, tts_config: Dict[str, Any]) -> str:
+    """Generate speech using the one-shot NeuTTS helper subprocess."""
     import sys
 
-    neutts_config = tts_config.get("neutts") or {}
-    ref_audio = neutts_config.get("ref_audio", "") or _default_neutts_ref_audio()
-    ref_text = neutts_config.get("ref_text", "") or _default_neutts_ref_text()
-    model = neutts_config.get("model", "neuphonic/neutts-air-q4-gguf")
-    device = neutts_config.get("device", "cpu")
-
-    # NeuTTS outputs WAV natively — use a .wav path for generation,
-    # let the caller convert to the final format afterward.
-    wav_path = output_path
-    if not output_path.endswith(".wav"):
-        wav_path = output_path.rsplit(".", 1)[0] + ".wav"
+    # Preserve the current upstream subprocess behavior while sharing the
+    # feature's normalized configuration and conversion path with warm mode.
+    resolved = _neutts_resolved_config(tts_config)
+    wav_path = output_path if output_path.endswith(".wav") else str(Path(output_path).with_suffix(".wav"))
+    Path(wav_path).parent.mkdir(parents=True, exist_ok=True)
 
     synth_script = str(Path(__file__).parent / "neutts_synth.py")
     cmd = [
         sys.executable, synth_script,
         "--text", text,
         "--out", wav_path,
-        "--ref-audio", ref_audio,
-        "--ref-text", ref_text,
-        "--model", model,
-        "--device", device,
+        "--ref-audio", resolved["ref_audio"],
+        "--ref-text", resolved["ref_text"],
+        "--model", resolved["model"],
+        "--device", resolved["device"],
     ]
 
     result = subprocess.run(cmd, capture_output=True, text=True, timeout=120, stdin=subprocess.DEVNULL)
     if result.returncode != 0:
         stderr = result.stderr.strip()
-        # Filter out the "OK:" line from stderr
-        error_lines = [l for l in stderr.splitlines() if not l.startswith("OK:")]
+        error_lines = [line for line in stderr.splitlines() if not line.startswith("OK:")]
         raise RuntimeError(f"NeuTTS synthesis failed: {chr(10).join(error_lines) or 'unknown error'}")
 
-    # If the caller wanted .mp3 or .ogg, convert from WAV
-    if wav_path != output_path:
-        ffmpeg = shutil.which("ffmpeg")
-        if ffmpeg:
-            conv_cmd = [ffmpeg, "-i", wav_path, "-y", "-loglevel", "error", output_path]
-            subprocess.run(conv_cmd, check=True, timeout=30, stdin=subprocess.DEVNULL, creationflags=windows_hide_flags())
-            os.remove(wav_path)
-        else:
-            # No ffmpeg — just rename the WAV to the expected path
-            os.rename(wav_path, output_path)
+    return _convert_neutts_wav(wav_path, output_path)
 
-    return output_path
+
+def _generate_neutts(text: str, output_path: str, tts_config: Dict[str, Any]) -> str:
+    """Generate speech using NeuTTS, warm-cache by default with subprocess opt-out."""
+    neutts_config = tts_config.get("neutts", {}) if isinstance(tts_config, dict) else {}
+    if _neutts_warm_cache_enabled(neutts_config):
+        return _generate_neutts_warm(text, output_path, tts_config)
+    return _generate_neutts_subprocess(text, output_path, tts_config)
 
 
 # ===========================================================================
@@ -2366,6 +2580,9 @@ def text_to_speech_tool(
         out_dir.mkdir(parents=True, exist_ok=True)
         if command_provider_config is not None:
             fmt = _get_command_tts_output_format(command_provider_config)
+            file_path = out_dir / f"tts_{timestamp}.{fmt}"
+        elif provider == "neutts":
+            fmt = _neutts_output_format(tts_config.get("neutts", {}))
             file_path = out_dir / f"tts_{timestamp}.{fmt}"
         # Use .ogg for Telegram with providers that support native Opus output,
         # otherwise fall back to .mp3 (Edge TTS will attempt ffmpeg conversion later).

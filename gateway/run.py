@@ -2391,18 +2391,30 @@ class GatewayRunner:
         # saveable artifact (Type E). If yes, append a routing block to
         # the system prompt so Coach has an unambiguous cue to enqueue +
         # announce rather than inline the artifact. Failures are silent.
+        #
+        # Skip when a Confirm-leg pending-announcement block is already in
+        # the context (built above by build_session_context_prompt). In
+        # that case the user turn is most likely a Confirm reply to a
+        # prior do-then-tell — running Type-E detection on top would
+        # inject conflicting guidance.
         try:
-            from agent.turn_intent_detector import (
-                detect_turn_intent,
-                render_injection_block,
-                log_result as _log_turn_intent,
-            )
-            _user_text = getattr(event, "text", "") or ""
-            _detection = detect_turn_intent(_user_text)
-            _log_turn_intent(source.chat_id or "", _detection)
-            _block = render_injection_block(_detection)
-            if _block:
-                context_prompt = context_prompt + "\n" + _block
+            if "Pending sub-agent announcements" in context_prompt:
+                logger.info(
+                    "turn-intent: chat=%s skipped=pending_announcement_present",
+                    source.chat_id or "unknown",
+                )
+            else:
+                from agent.turn_intent_detector import (
+                    detect_turn_intent,
+                    render_injection_block,
+                    log_result as _log_turn_intent,
+                )
+                _user_text = getattr(event, "text", "") or ""
+                _detection = detect_turn_intent(_user_text)
+                _log_turn_intent(source.chat_id or "", _detection)
+                _block = render_injection_block(_detection)
+                if _block:
+                    context_prompt = context_prompt + "\n" + _block
         except Exception as _tid_err:  # noqa: BLE001
             logger.debug("turn-intent detector failed: %s", _tid_err)
 

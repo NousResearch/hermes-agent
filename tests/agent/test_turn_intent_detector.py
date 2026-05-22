@@ -32,12 +32,12 @@ class TestDetectTurnIntent:
         class _FakeMsg:
             content = (
                 '{"route_to_subagent": true, "sub_agent": "analyst", '
-                '"suggested_action": "Draft metrics cheat sheet for next '
-                'interview prep", "suggested_announcement": "Analyst will '
-                'put a cheat sheet together so those numbers are top of '
-                'mind next time.", "confidence": "high", '
-                '"reasoning": "User explicitly asks for a saveable cheat '
-                'sheet artifact."}'
+                '"id_slug": "draft-interview-prep-flashcards", '
+                '"suggested_action": "Draft interview-prep flashcards", '
+                '"suggested_announcement": "Analyst will put the '
+                'flashcards together.", "confidence": "high", '
+                '"reasoning": "User explicitly asks for a saveable '
+                'reference artifact."}'
             )
 
         class _FakeChoice:
@@ -53,15 +53,15 @@ class TestDetectTurnIntent:
         )
 
         result = tid.detect_turn_intent(
-            "just got out of the glossier screen. blanked on metrics ugh. "
-            "can you make me a cheat sheet for those numbers so i don't "
-            "blank next time?"
+            "interview's on friday — can you put together flashcards "
+            "covering the common product-sense questions?"
         )
 
         assert result["checked"] is True
         assert result["route_to_subagent"] is True
         assert result["sub_agent"] == "analyst"
-        assert "cheat sheet" in result["suggested_action"]
+        assert result["id_slug"] == "draft-interview-prep-flashcards"
+        assert "flashcards" in result["suggested_action"]
         assert "Analyst will" in result["suggested_announcement"]
         assert result["confidence"] == "high"
 
@@ -152,15 +152,17 @@ class TestRenderInjectionBlock:
             "checked": True,
             "route_to_subagent": True,
             "sub_agent": "analyst",
-            "suggested_action": "Draft metrics cheat sheet",
-            "suggested_announcement": "Analyst will draft it.",
+            "id_slug": "draft-flashcards",
+            "suggested_action": "Draft interview-prep flashcards",
+            "suggested_announcement": "Analyst will draft them.",
         }
         block = tid.render_injection_block(detection)
         assert block is not None
         assert "Detected user intent" in block
         assert "analyst" in block
-        assert "Draft metrics cheat sheet" in block
-        assert "Analyst will draft it." in block
+        assert 'id="coach-commit-draft-flashcards"' in block
+        assert "Draft interview-prep flashcards" in block
+        assert "Analyst will draft them." in block
         assert "enqueue_action" in block
         assert "announce_subagent" in block
 
@@ -182,7 +184,19 @@ class TestRenderInjectionBlock:
             "checked": True,
             "route_to_subagent": True,
             "sub_agent": "analyst",
+            "id_slug": "x",
             "suggested_action": None,  # missing
+            "suggested_announcement": "x",
+        }
+        assert tid.render_injection_block(detection) is None
+
+    def test_returns_none_when_id_slug_missing(self):
+        detection = {
+            "checked": True,
+            "route_to_subagent": True,
+            "sub_agent": "analyst",
+            "id_slug": None,
+            "suggested_action": "x",
             "suggested_announcement": "x",
         }
         assert tid.render_injection_block(detection) is None
@@ -218,6 +232,45 @@ class TestLogResult:
 # =========================================================================
 # _parse_response — direct
 # =========================================================================
+
+class TestSanitizeSlug:
+    def test_clean_slug_passes_through(self):
+        assert tid._sanitize_slug("draft-cover-letter") == "draft-cover-letter"
+
+    def test_uppercase_lowercased(self):
+        assert tid._sanitize_slug("Draft-Cover-Letter") == "draft-cover-letter"
+
+    def test_spaces_become_dashes(self):
+        assert tid._sanitize_slug("draft cover letter") == "draft-cover-letter"
+
+    def test_underscores_become_dashes(self):
+        assert tid._sanitize_slug("draft_cover_letter") == "draft-cover-letter"
+
+    def test_double_dashes_collapsed(self):
+        assert tid._sanitize_slug("draft--cover") == "draft-cover"
+
+    def test_leading_coach_commit_stripped(self):
+        assert tid._sanitize_slug("coach-commit-draft-x") == "draft-x"
+
+    def test_special_chars_dropped(self):
+        assert tid._sanitize_slug("draft!cover@letter#") == "draftcoverletter"
+
+    def test_trims_edges(self):
+        assert tid._sanitize_slug("---draft-x---") == "draft-x"
+
+    def test_empty_returns_none(self):
+        assert tid._sanitize_slug("") is None
+        assert tid._sanitize_slug(None) is None
+        assert tid._sanitize_slug("---") is None
+
+    def test_too_long_returns_none(self):
+        long = "a-" * 40
+        assert tid._sanitize_slug(long) is None
+
+    def test_non_string_returns_none(self):
+        assert tid._sanitize_slug(42) is None
+        assert tid._sanitize_slug(["a", "b"]) is None
+
 
 class TestParseResponse:
     def test_clean_json(self):

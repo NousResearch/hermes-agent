@@ -58,27 +58,27 @@ Route to a sub-agent when the user is asking for something they would
 conversational answer.
 
 Examples that ROUTE:
-- "can you make me a cheat sheet for those metrics?" → analyst
-- "draft a follow-up email to Sarah" → publicist
-- "what roles are open in NYC for entry-level marketing?" → scout
-- "compare these two job descriptions" → analyst
-- "write me a cold-outreach line for that recruiter" → publicist
+- "put together a one-pager I can keep in my notes" → analyst
+- "write the LinkedIn message to my old manager" → publicist
+- "which Series A health-tech companies are hiring product folks?" → scout
+- "break down the comp gap between these two offers" → analyst
+- "give me a 30-second elevator pitch for the Stripe panel" → publicist
 
 Examples that DO NOT route (Coach handles inline):
-- "what do you think of my situation?" → emotional / advice
-- "should I take the offer?" → decision-prompting
-- "i feel stuck" → emotional
-- "yes" / "go for it" / "makes sense" → confirmation
-- "what is engagement rate?" → conceptual question with a one-line answer
-- "how are you?" → conversational
+- "do you think the title bump is worth the pay cut?" → decision-prompting
+- "i can't tell if i'm overthinking this" → emotional
+- "yep" / "go" / "that works" → confirmation
+- "what's the typical interview loop at growth-stage startups?" → conceptual
+- "how's it going?" → conversational
 
 Return STRICT JSON, no prose, no markdown fence:
 
 {
   "route_to_subagent": <true|false>,
   "sub_agent": "<scout|analyst|publicist|null>",
-  "suggested_action": "<one-line verb+object describing the artifact, e.g. 'Draft metrics cheat sheet for next interview prep'. Null if route_to_subagent=false>",
-  "suggested_announcement": "<one sentence, third-person, sub-agent as subject. Example: 'Analyst will put a cheat sheet together so those numbers are top of mind next time.' Null if route_to_subagent=false>",
+  "id_slug": "<lowercase-hyphenated short slug describing this action, 3-6 words, no leading 'coach-commit-' prefix. Example: 'draft-stripe-panel-pitch'. Null if route_to_subagent=false>",
+  "suggested_action": "<one-line verb+object describing the artifact. Null if route_to_subagent=false>",
+  "suggested_announcement": "<one sentence, third-person, sub-agent as subject. Null if route_to_subagent=false>",
   "confidence": "<high|medium|low>",
   "reasoning": "<one short sentence>"
 }
@@ -131,6 +131,7 @@ def detect_turn_intent(user_message: str) -> dict[str, Any]:
         "skipped": None,
         "route_to_subagent": False,
         "sub_agent": None,
+        "id_slug": None,
         "suggested_action": None,
         "suggested_announcement": None,
         "confidence": None,
@@ -172,11 +173,40 @@ def detect_turn_intent(user_message: str) -> dict[str, Any]:
     out["checked"] = True
     out["route_to_subagent"] = bool(parsed.get("route_to_subagent"))
     out["sub_agent"] = parsed.get("sub_agent") or None
+    out["id_slug"] = _sanitize_slug(parsed.get("id_slug"))
     out["suggested_action"] = parsed.get("suggested_action") or None
     out["suggested_announcement"] = parsed.get("suggested_announcement") or None
     out["confidence"] = parsed.get("confidence") or None
     out["reasoning"] = parsed.get("reasoning") or None
     return out
+
+
+def _sanitize_slug(raw: Any) -> str | None:
+    """Coerce the LLM-provided slug into a safe lowercase-hyphenated form.
+
+    Returns None on anything unusable so the caller can skip injection
+    rather than ship a malformed id to Coach. Strips any 'coach-commit-'
+    prefix in case the LLM included it despite the prompt saying not to.
+    """
+    if not isinstance(raw, str):
+        return None
+    s = raw.strip().lower()
+    if s.startswith("coach-commit-"):
+        s = s[len("coach-commit-"):]
+    # Keep only [a-z0-9-], collapse runs of dashes, trim edges.
+    out_chars: list[str] = []
+    for ch in s:
+        if ch.isalnum() or ch == "-":
+            out_chars.append(ch)
+        elif ch in (" ", "_"):
+            out_chars.append("-")
+    cleaned = "".join(out_chars)
+    while "--" in cleaned:
+        cleaned = cleaned.replace("--", "-")
+    cleaned = cleaned.strip("-")
+    if not cleaned or len(cleaned) > 60:
+        return None
+    return cleaned
 
 
 def render_injection_block(detection: dict[str, Any]) -> str | None:
@@ -193,8 +223,10 @@ def render_injection_block(detection: dict[str, Any]) -> str | None:
     sub_agent = detection.get("sub_agent")
     action = detection.get("suggested_action")
     announcement = detection.get("suggested_announcement")
-    if not (sub_agent and action and announcement):
+    id_slug = detection.get("id_slug")
+    if not (sub_agent and action and announcement and id_slug):
         return None
+    full_id = f"coach-commit-{id_slug}"
 
     lines = [
         "",
@@ -203,7 +235,7 @@ def render_injection_block(detection: dict[str, Any]) -> str | None:
         "that should be authored by a sub-agent, not inlined into your "
         "reply). Follow this routing unless the user message is clearly "
         "something else:",
-        f"  - Call `enqueue_action(id=\"coach-commit-<slug>\", "
+        f"  - Call `enqueue_action(id=\"{full_id}\", "
         f"action=\"{action}\", sub_agent=\"{sub_agent}\")` to record "
         "the action.",
         f"  - Call `announce_subagent(sub_agent=\"{sub_agent}\", "

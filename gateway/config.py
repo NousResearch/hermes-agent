@@ -14,12 +14,21 @@ import json
 from pathlib import Path
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Any, Callable
-from enum import Enum
+from enum import Enum, EnumType
 
 from hermes_cli.config import get_hermes_home
 from utils import is_truthy_value
 
 logger = logging.getLogger(__name__)
+
+
+class _PlatformEnumType(EnumType):
+    """Expose plugin pseudo-members via attribute access (e.g. Platform.GOOGLE_CHAT)."""
+
+    def __getattr__(cls, name: str):
+        if name in cls._member_map_:
+            return cls._member_map_[name]
+        return super().__getattr__(name)
 
 
 def _coerce_bool(value: Any, default: bool = True) -> bool:
@@ -79,13 +88,15 @@ def _normalize_notice_delivery(value: Any, default: str = "public") -> str:
 _Platform__bundled_plugin_names: Optional[set] = None
 
 
-class Platform(Enum):
+class Platform(Enum, metaclass=_PlatformEnumType):
     """Supported messaging platforms.
 
     Built-in platforms have explicit members.  Plugin platforms use dynamic
     members created on-demand by ``_missing_()`` so that
     ``Platform("irc")`` works without modifying this enum.  Dynamic members
     are cached in ``_value2member_map_`` for identity-stable comparisons.
+    Attribute access (``Platform.GOOGLE_CHAT``) resolves the same cached
+    pseudo-members via :class:`_PlatformEnumType`.
     """
     LOCAL = "local"
     TELEGRAM = "telegram"

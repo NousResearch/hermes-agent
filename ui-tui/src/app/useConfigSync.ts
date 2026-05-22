@@ -9,8 +9,8 @@ import type {
 } from '../gatewayTypes.js'
 import {
   DEFAULT_VOICE_RECORD_KEY,
-  parseVoiceRecordKey,
-  type ParsedVoiceRecordKey
+  type ParsedVoiceRecordKey,
+  parseVoiceRecordKey
 } from '../lib/platform.js'
 import { asRpcResult } from '../lib/rpc.js'
 
@@ -114,6 +114,7 @@ export async function hydrateFullConfig(
 ): Promise<ConfigFullResponse | null> {
   const cfg = await quietRpc<ConfigFullResponse>(gw, 'config.get', { key: 'full' })
   applyDisplay(cfg, setBell, setVoiceRecordKey)
+
   return cfg
 }
 
@@ -125,6 +126,7 @@ export const applyDisplay = (
   const d = cfg?.config?.display ?? {}
 
   setBell(!!d.bell_on_complete)
+
   // Only push the voice record key when the RPC actually returned a
   // config payload. ``quietRpc()`` collapses failures to ``null``; if we
   // reset the cached shortcut on every null we would clobber a custom
@@ -135,6 +137,7 @@ export const applyDisplay = (
   if (setVoiceRecordKey && cfg) {
     setVoiceRecordKey(_voiceRecordKeyFromConfig(cfg))
   }
+
   patchUiState({
     busyInputMode: normalizeBusyInputMode(d.busy_input_mode),
     compact: !!d.tui_compact,

@@ -5,8 +5,9 @@ Bedrock (and Azure AI Foundry) that window is still gated behind the
 ``context-1m-2025-08-07`` beta header as of 2026-04. Without it, Bedrock
 caps these models at 200K even though ``model_metadata.py`` advertises 1M.
 
-These tests guard the invariant that the header is always emitted on the
-Bedrock client path, and that it survives the MiniMax bearer-auth strip.
+These tests guard the invariant that the header reaches Bedrock-specific
+paths without re-adding it to native Anthropic defaults (some subscriptions
+reject the beta on short auxiliary calls).
 """
 
 from unittest.mock import MagicMock, patch
@@ -15,24 +16,35 @@ from unittest.mock import MagicMock, patch
 class TestBedrockContext1MBeta:
     """``context-1m-2025-08-07`` must reach Bedrock Claude requests."""
 
-    def test_common_betas_includes_1m(self):
+    def test_common_betas_excludes_1m_for_native_defaults(self):
         from agent.anthropic_adapter import _COMMON_BETAS, _CONTEXT_1M_BETA
 
         assert _CONTEXT_1M_BETA == "context-1m-2025-08-07"
-        assert _CONTEXT_1M_BETA in _COMMON_BETAS
+        assert _CONTEXT_1M_BETA not in _COMMON_BETAS
 
-    def test_common_betas_for_native_anthropic_includes_1m(self):
-        """Native Anthropic endpoints (and Bedrock with empty base_url) get 1M."""
+    def test_common_betas_for_native_anthropic_omits_1m(self):
+        """Native Anthropic endpoints must not get 1M by default."""
         from agent.anthropic_adapter import (
             _common_betas_for_base_url,
             _CONTEXT_1M_BETA,
         )
 
-        assert _CONTEXT_1M_BETA in _common_betas_for_base_url(None)
-        assert _CONTEXT_1M_BETA in _common_betas_for_base_url("")
-        assert _CONTEXT_1M_BETA in _common_betas_for_base_url(
-            "https://api.anthropic.com"
+        for url in (None, "", "https://api.anthropic.com"):
+            betas = _common_betas_for_base_url(url)
+            assert _CONTEXT_1M_BETA not in betas, (
+                f"1M beta must not be in default betas for {url!r}"
+            )
+
+    def test_common_betas_includes_1m_for_azure(self):
+        from agent.anthropic_adapter import (
+            _common_betas_for_base_url,
+            _CONTEXT_1M_BETA,
         )
+
+        betas = _common_betas_for_base_url(
+            "https://my-resource.services.ai.azure.com/anthropic"
+        )
+        assert _CONTEXT_1M_BETA in betas
 
     def test_common_betas_strips_1m_for_minimax(self):
         """MiniMax bearer-auth endpoints host their own models — strip 1M beta."""
@@ -83,12 +95,12 @@ class TestBedrockContext1MBeta:
         """Fast-mode requests (per-request extra_headers) still include 1M beta.
 
         Per-request extra_headers override client-level default_headers, so
-        the fast-mode path must re-include everything in _COMMON_BETAS.
+        the Bedrock fast-mode path must opt in via include_context_1m_beta.
         """
         from agent.anthropic_adapter import build_anthropic_kwargs
 
         kwargs = build_anthropic_kwargs(
-            model="claude-opus-4-7",
+            model="claude-opus-4-6",
             messages=[{"role": "user", "content": "hi"}],
             tools=None,
             max_tokens=1024,
@@ -97,6 +109,7 @@ class TestBedrockContext1MBeta:
             # Empty base_url mirrors AnthropicBedrock (no HTTP base URL)
             base_url=None,
             fast_mode=True,
+            include_context_1m_beta=True,
         )
         beta_header = kwargs.get("extra_headers", {}).get("anthropic-beta", "")
         assert "context-1m-2025-08-07" in beta_header, (

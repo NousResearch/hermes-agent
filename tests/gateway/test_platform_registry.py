@@ -24,6 +24,13 @@ class TestPlatformEnumDynamic:
         assert p.value == "irc"
         assert p.name == "IRC"
 
+    def test_dynamic_member_attribute_access(self):
+        """Plugin platforms are reachable as Platform.NAME after first lookup."""
+        import plugins.platforms.google_chat.adapter  # noqa: E402 — registers member
+
+        assert Platform.GOOGLE_CHAT.value == "google_chat"
+        assert Platform("google_chat") is Platform.GOOGLE_CHAT
+
     def test_dynamic_member_identity_stable(self):
         """Same value returns same object (cached)."""
         a = Platform("irc")

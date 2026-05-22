@@ -33,6 +33,7 @@ function visualLines(value: string, cols: number): VisualLine[] {
     if (!parts.length) {
       lines.push({ start: sourceLineStart, end: sourceLineStart })
       sourceLineStart += 1
+
       continue
     }
 
@@ -61,6 +62,7 @@ function visualLines(value: string, cols: number): VisualLine[] {
         column = 0
         breakPart = null
         i = lineStartPart
+
         continue
       }
 

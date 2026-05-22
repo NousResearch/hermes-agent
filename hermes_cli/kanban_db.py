@@ -5912,7 +5912,7 @@ def _pid_alive(pid: Optional[int]) -> bool:
     return True
 
 
-def _respawn_guard_enabled(name: str, *, default: bool = True) -> bool:
+def _respawn_guard_enabled(name: str, *, default: bool = False) -> bool:
     """Return whether a named respawn guard is enabled.
 
     Unknown/missing guards default to ``default`` for backward compatibility.
@@ -6892,7 +6892,7 @@ def check_respawn_guard(conn: sqlite3.Connection, task_id: str) -> Optional[str]
         return "recent_success"
 
     # 4. GitHub PR URL in a recent comment — prior worker already opened a PR.
-    if _respawn_guard_enabled("active_pr"):
+    if _respawn_guard_enabled("active_pr", default=True):
         pr_cutoff = now - _RESPAWN_GUARD_PR_WINDOW
         for c in conn.execute(
             "SELECT body FROM task_comments WHERE task_id = ? AND created_at >= ?",

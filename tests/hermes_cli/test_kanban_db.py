@@ -1809,8 +1809,17 @@ def test_dispatch_reclaims_stale_before_spawning(kanban_home):
 # Respawn guard (check_respawn_guard + dispatch_once integration)
 # ---------------------------------------------------------------------------
 
-def test_respawn_guard_none_on_fresh_task(kanban_home):
-    """A fresh task with no failures or runs is not guarded."""
+
+def test_respawn_guard_enabled_missing_guard_defaults_false(monkeypatch):
+    """Unknown guards default to False unless a caller opts in explicitly."""
+
+    monkeypatch.setattr("hermes_cli.config.load_config", lambda: {"kanban": {"respawn_guard": {}}})
+
+    assert kb._respawn_guard_enabled("missing_guard") is False
+    assert kb._respawn_guard_enabled("missing_guard", default=True) is True
+
+
+def test_respawn_guard_fresh_task_not_guarded(kanban_home):
     with kb.connect() as conn:
         t = kb.create_task(conn, title="fresh", assignee="alice")
         reason = kb.check_respawn_guard(conn, t)
@@ -1908,7 +1917,7 @@ def test_respawn_guard_active_pr_in_comment(kanban_home):
 def test_respawn_guard_active_pr_disabled_via_config(kanban_home, monkeypatch):
     """The active_pr guard can be disabled for shared-PR sequential lanes."""
 
-    monkeypatch.setattr(kb, "_respawn_guard_enabled", lambda name, default=True: False)
+    monkeypatch.setattr(kb, "_respawn_guard_enabled", lambda name, default=False: False)
 
     with kb.connect() as conn:
         t = kb.create_task(conn, title="has-pr", assignee="alice")
@@ -2034,7 +2043,7 @@ def test_dispatch_respawn_guard_active_pr_disabled_allows_spawn(
     kanban_home, all_assignees_spawnable, monkeypatch
 ):
     """Disabling the active_pr guard lets shared-PR lanes continue spawning."""
-    monkeypatch.setattr(kb, "_respawn_guard_enabled", lambda name, default=True: False)
+    monkeypatch.setattr(kb, "_respawn_guard_enabled", lambda name, default=False: False)
     spawned_ids = []
 
     def fake_spawn(task, workspace):

@@ -5,6 +5,7 @@ All tests use mocks -- no real MCP servers or subprocesses are started.
 
 import asyncio
 import json
+import os
 import threading
 import time
 from types import SimpleNamespace
@@ -1317,7 +1318,7 @@ class TestBuildSafeEnv:
             result = _build_safe_env(None)
 
         # Safe vars present
-        assert result["PATH"] == "/usr/bin"
+        assert "/usr/bin" in result["PATH"].split(os.pathsep)
         assert result["HOME"] == "/home/test"
         assert result["USER"] == "test"
         assert result["LANG"] == "en_US.UTF-8"
@@ -1333,7 +1334,7 @@ class TestBuildSafeEnv:
         with patch.dict("os.environ", {"PATH": "/usr/bin"}, clear=True):
             result = _build_safe_env({"MY_CUSTOM_VAR": "hello"})
 
-        assert result["PATH"] == "/usr/bin"
+        assert "/usr/bin" in result["PATH"].split(os.pathsep)
         assert result["MY_CUSTOM_VAR"] == "hello"
 
     def test_user_env_overrides_safe(self):
@@ -1353,7 +1354,7 @@ class TestBuildSafeEnv:
             result = _build_safe_env(None)
 
         assert isinstance(result, dict)
-        assert result["PATH"] == "/usr/bin"
+        assert "/usr/bin" in result["PATH"].split(os.pathsep)
         assert result["HOME"] == "/root"
 
     def test_secret_vars_excluded(self):
@@ -1377,6 +1378,77 @@ class TestBuildSafeEnv:
         assert "OPENAI_API_KEY" not in result
         assert "DATABASE_URL" not in result
         assert "API_SECRET" not in result
+
+    @pytest.mark.skipif(os.name != "posix", reason="POSIX-specific PATH sanitization")
+    def test_path_literal_pathvar_stripped(self):
+        """Inherited PATH containing a literal ``$PATH`` (#30369) is cleaned up
+        rather than forwarded to subprocesses, where the unexpanded token
+        would silently break basic command lookup."""
+        from tools.mcp_tool import _build_safe_env
+
+        # Mirrors the user-reported PATH structure from issue #30369.
+        bogus_path = "/home/julieta/.local/bin:$PATH:/opt/homebrew/bin"
+        with patch.dict("os.environ", {"PATH": bogus_path}, clear=True):
+            result = _build_safe_env(None)
+
+        parts = result["PATH"].split(os.pathsep)
+        assert "$PATH" not in parts
+        assert "${PATH}" not in parts
+        assert "/home/julieta/.local/bin" in parts
+        assert "/opt/homebrew/bin" in parts
+
+    @pytest.mark.skipif(os.name != "posix", reason="POSIX-specific PATH sanitization")
+    def test_path_empty_and_duplicate_entries_collapsed(self):
+        """PATH with ``::`` and duplicate entries is normalized."""
+        from tools.mcp_tool import _build_safe_env
+
+        messy_path = "/usr/local/bin::/usr/local/bin:/opt/homebrew/bin:"
+        with patch.dict("os.environ", {"PATH": messy_path}, clear=True):
+            result = _build_safe_env(None)
+
+        parts = result["PATH"].split(os.pathsep)
+        assert "" not in parts
+        assert parts.count("/usr/local/bin") == 1
+        assert parts.count("/opt/homebrew/bin") == 1
+
+    @pytest.mark.skipif(os.name != "posix", reason="POSIX-specific PATH sanitization")
+    def test_path_posix_system_dirs_ensured(self):
+        """When the inherited PATH lacks canonical system bin dirs, they are
+        appended so MCP subprocess shell scripts can still find ``cat``,
+        ``env``, ``sh`` and friends (#30369)."""
+        from tools.mcp_tool import _build_safe_env
+
+        with patch.dict("os.environ", {"PATH": "/home/julieta/.local/bin"}, clear=True):
+            result = _build_safe_env(None)
+
+        parts = result["PATH"].split(os.pathsep)
+        assert "/usr/bin" in parts
+        assert "/bin" in parts
+        # User's preference comes first; system dirs are appended.
+        assert parts.index("/home/julieta/.local/bin") < parts.index("/usr/bin")
+
+    @pytest.mark.skipif(os.name != "posix", reason="POSIX-specific PATH sanitization")
+    def test_path_curly_brace_pathvar_stripped(self):
+        """``${PATH}`` form is also stripped, not just bare ``$PATH``."""
+        from tools.mcp_tool import _build_safe_env
+
+        with patch.dict("os.environ", {"PATH": "${PATH}:/opt/bin"}, clear=True):
+            result = _build_safe_env(None)
+
+        parts = result["PATH"].split(os.pathsep)
+        assert "${PATH}" not in parts
+        assert "/opt/bin" in parts
+
+    def test_user_path_override_not_sanitized(self):
+        """User-supplied PATH in server config wins verbatim — the sanitizer
+        only runs against the inherited parent-process PATH so an explicit
+        user override stays a single source of truth."""
+        from tools.mcp_tool import _build_safe_env
+
+        with patch.dict("os.environ", {"PATH": "/usr/bin"}, clear=True):
+            result = _build_safe_env({"PATH": "/custom/bin"})
+
+        assert result["PATH"] == "/custom/bin"
 
 
 # ---------------------------------------------------------------------------

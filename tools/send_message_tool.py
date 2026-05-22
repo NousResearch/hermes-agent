@@ -765,6 +765,8 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
             result = await _send_wecom(pconfig.extra, chat_id, chunk)
         elif platform == Platform.BLUEBUBBLES:
             result = await _send_bluebubbles(pconfig.extra, chat_id, chunk)
+        elif platform == Platform.SENDBLUE:
+            result = await _send_sendblue(pconfig.extra, chat_id, chunk)
         elif platform == Platform.QQBOT:
             result = await _send_qqbot(pconfig, chat_id, chunk)
         elif platform == Platform.YUANBAO:
@@ -1824,6 +1826,38 @@ async def _send_bluebubbles(extra, chat_id, message):
             await adapter.disconnect()
     except Exception as e:
         return _error(f"BlueBubbles send failed: {e}")
+
+
+async def _send_sendblue(extra, chat_id, message):
+    """Send via Sendblue API. Standalone — bypasses adapter.connect() to
+    avoid binding the webhook port already held by the live gateway."""
+    try:
+        from gateway.platforms.sendblue import SendblueAdapter
+        from gateway.config import PlatformConfig
+        from gateway.platforms._http_client_limits import platform_httpx_limits
+    except ImportError:
+        return {"error": "Sendblue adapter not available."}
+    try:
+        pconfig = PlatformConfig(extra=extra)
+        adapter = SendblueAdapter(pconfig)
+        adapter.client = httpx.AsyncClient(
+            timeout=30.0, limits=platform_httpx_limits()
+        )
+        try:
+            result = await adapter.send(chat_id, message)
+            if not result.success:
+                return _error(f"Sendblue send failed: {result.error}")
+            return {
+                "success": True,
+                "platform": "sendblue",
+                "chat_id": chat_id,
+                "message_id": result.message_id,
+            }
+        finally:
+            await adapter.client.aclose()
+            adapter.client = None
+    except Exception as e:
+        return _error(f"Sendblue send failed: {e}")
 
 
 async def _send_feishu(pconfig, chat_id, message, media_files=None, thread_id=None):

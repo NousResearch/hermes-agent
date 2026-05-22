@@ -12044,12 +12044,22 @@ class HermesCLI:
         # on platforms where tirith ships no binary (Windows etc.) — the
         # user can't act on it and pattern-matching guards still run.
         try:
-            from tools.tirith_security import ensure_installed, is_platform_supported
+            from tools.tirith_security import (
+                _load_security_config,
+                ensure_installed,
+                is_platform_supported,
+            )
             tirith_path = ensure_installed(log_failures=False)
             if tirith_path is None and is_platform_supported():
-                security_cfg = self.config.get("security", {}) or {}
-                tirith_enabled = security_cfg.get("tirith_enabled", True)
-                if tirith_enabled:
+                # #29512: route through ``_load_security_config`` so the
+                # documented env-var contract (``TIRITH_ENABLED``,
+                # ``TIRITH_BIN``, ``TIRITH_TIMEOUT``, ``TIRITH_FAIL_OPEN``)
+                # is honoured here too. The previous direct read of
+                # ``self.config["security"]["tirith_enabled"]`` silently
+                # ignored env-var overrides and produced a misleading
+                # "enabled but not available" warning even when the user
+                # had set ``TIRITH_ENABLED=false`` in ``~/.hermes/.env``.
+                if _load_security_config()["tirith_enabled"]:
                     _cprint(f"  {_DIM}⚠ tirith security scanner enabled but not available "
                             f"— command scanning will use pattern matching only{_RST}")
         except Exception:

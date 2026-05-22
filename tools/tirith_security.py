@@ -35,6 +35,7 @@ import time
 import urllib.request
 
 from hermes_constants import get_hermes_home
+from utils import is_truthy_value
 
 logger = logging.getLogger(__name__)
 
@@ -49,10 +50,18 @@ _COSIGN_ISSUER = "https://token.actions.githubusercontent.com"
 # ---------------------------------------------------------------------------
 
 def _env_bool(key: str, default: bool) -> bool:
+    """Truthiness coercion that matches the rest of Hermes.
+
+    Uses ``utils.is_truthy_value`` so an env value of ``on``, ``On``, or
+    ``  true  `` (with stray whitespace from a hand-edited ``~/.hermes/.env``)
+    is honoured the same way as elsewhere in the codebase. An unset env var
+    falls back to *default*; any non-truthy non-empty value (e.g. ``false``,
+    ``0``, ``no``, ``off``, a typo) reads as ``False``.
+    """
     val = os.getenv(key)
     if val is None:
         return default
-    return val.lower() in {"1", "true", "yes"}
+    return is_truthy_value(val, default=False)
 
 
 def _env_int(key: str, default: int) -> int:
@@ -60,13 +69,30 @@ def _env_int(key: str, default: int) -> int:
     if val is None:
         return default
     try:
-        return int(val)
-    except ValueError:
+        return int(val.strip())
+    except (AttributeError, ValueError):
         return default
 
 
 def _load_security_config() -> dict:
-    """Load security settings from config.yaml, with env var overrides."""
+    """Load security settings from config.yaml, with env var overrides.
+
+    Env-var contract (documented in ``hermes_cli/config.py`` and
+    ``website/docs/user-guide/security.md``):
+
+    * ``TIRITH_ENABLED``   — bool (truthy / falsy strings)
+    * ``TIRITH_BIN``       — path to the tirith binary (overrides ``tirith_path``)
+    * ``TIRITH_TIMEOUT``   — integer seconds
+    * ``TIRITH_FAIL_OPEN`` — bool (truthy / falsy strings)
+
+    Resolution order for each key: env var > ``security.<key>`` in
+    ``~/.hermes/config.yaml`` > built-in default. Both the actual scan
+    gate (``check_command_security``) and the install/availability checks
+    (``ensure_installed``) call this helper, so a single source of truth
+    drives every decision — addresses #29512 where ``cli.py``'s startup
+    warning printer reached past this helper into the raw config dict and
+    silently ignored env vars.
+    """
     defaults = {
         "tirith_enabled": True,
         "tirith_path": "tirith",

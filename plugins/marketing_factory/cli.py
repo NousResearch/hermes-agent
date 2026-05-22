@@ -68,6 +68,10 @@ def register_cli(subparser: argparse.ArgumentParser) -> None:
     poll = subs.add_parser("poll", help="One scheduled-poller tick: fire publish on all due drafts across all apps")
     poll.add_argument("--json", action="store_true")
 
+    digest = subs.add_parser("digest", help="Markdown digest of one app's last-N-days activity — share with stakeholders")
+    digest.add_argument("--app", required=True)
+    digest.add_argument("--days", type=int, default=7)
+
     regen = subs.add_parser("regenerate", help="Re-roll a single draft with the latest steering applied (keeps the old draft)")
     regen.add_argument("draft_id")
 
@@ -127,7 +131,7 @@ def register_cli(subparser: argparse.ArgumentParser) -> None:
 def marketing_command(args: argparse.Namespace) -> int:
     sub = getattr(args, "marketing_command", None)
     if not sub:
-        print("usage: hermes marketing-factory {init,status,apps,add-app,update-app,remove-app,campaigns,drafts,approvals,approve,reject,regenerate,schedule,publish-dry-run,poll,enable-poller,disable-poller,advise,audit,export,generate,full-dry-run}")
+        print("usage: hermes marketing-factory {init,status,apps,add-app,update-app,remove-app,campaigns,drafts,approvals,approve,reject,regenerate,schedule,publish-dry-run,poll,enable-poller,disable-poller,advise,digest,audit,export,generate,full-dry-run}")
         return 2
     store = MarketingFactoryStore(getattr(args, "store_path", None))
     pipe = MarketingFactoryPipeline(store)
@@ -197,6 +201,9 @@ def marketing_command(args: argparse.Namespace) -> int:
         if sub == "remove-app":
             result = store.remove_app(args.slug, cascade=not args.no_cascade)
             _print_json(result)
+            return 0
+        if sub == "digest":
+            print(pipe.weekly_digest(args.app, days=args.days))
             return 0
         if sub == "regenerate":
             result = pipe.regenerate_draft(args.draft_id)

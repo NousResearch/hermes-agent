@@ -414,6 +414,50 @@ def test_publish_scheduled_uses_registered_live_connector_when_present(isolate_h
     assert final_draft["status"] == "posted"
 
 
+def test_weekly_digest_renders_markdown_with_expected_sections(isolate_home):
+    """Phase 9: digest produces markdown with activity counts, rejected reasons, steering."""
+    from plugins.marketing_factory.pipeline import MarketingFactoryPipeline
+    from plugins.marketing_factory.store import MarketingFactoryStore
+
+    store = MarketingFactoryStore()
+    pipe = MarketingFactoryPipeline(store)
+    pipe.initialize_samples()
+    gen = pipe.generate_campaign("pupular", days=2)
+    drafts = gen["drafts"]
+    store.set_approval(drafts[0]["id"], "approved", reviewer="tester", reason="crisp opener and CTA")
+    store.set_approval(drafts[1]["id"], "rejected", reviewer="tester", reason="too generic, no specific pet detail")
+
+    md = pipe.weekly_digest("pupular", days=7)
+    assert "# Pupular — weekly digest" in md
+    assert "## Activity" in md
+    assert "Campaigns generated" in md
+    assert "Approved" in md
+    assert "Rejected" in md
+    assert "too generic, no specific pet detail" in md
+    # Steering may or may not exist via the template path; both states are valid renderings
+    assert "Brand steering" in md or "Current brand steering" in md
+
+
+def test_weekly_digest_via_api_endpoint(isolate_home):
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+    from plugins.marketing_factory.dashboard.plugin_api import router
+
+    app = FastAPI()
+    app.include_router(router, prefix="/api/plugins/marketing_factory")
+    client = TestClient(app)
+    client.post("/api/plugins/marketing_factory/init")
+    response = client.get("/api/plugins/marketing_factory/apps/pupular/digest?days=14")
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["app_slug"] == "pupular"
+    assert payload["days"] == 14
+    assert payload["markdown"].startswith("# Pupular")
+    # 404 on unknown slug
+    response_404 = client.get("/api/plugins/marketing_factory/apps/bogus/digest")
+    assert response_404.status_code == 404
+
+
 def test_regenerate_draft_creates_new_draft_preserves_old(isolate_home):
     """Phase 8: regenerate produces a new draft with regenerated_from lineage, leaving the old draft intact."""
     from plugins.marketing_factory.pipeline import MarketingFactoryPipeline

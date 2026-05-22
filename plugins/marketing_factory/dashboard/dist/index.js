@@ -436,16 +436,36 @@
                     h("div", { className: "font-semibold" }, app.name || app.slug),
                     h("div", { className: "mt-1 text-midground" }, app.positioning || app.icp || "No positioning set")
                   ),
-                  h("button", {
-                    type: "button",
-                    disabled: !!busy,
-                    onClick: () => {
-                      const confirmText = window.prompt(`Type the slug (${app.slug}) to DELETE this app and ALL its drafts/campaigns/etc:`);
-                      if (!confirmText || confirmText.trim() !== app.slug) return;
-                      return run(`remove ${app.slug}`, () => fetchJSON(`${API}/apps/${encodeURIComponent(app.slug)}?cascade=true`, { method: "DELETE" }));
-                    },
-                    className: "text-[10px] text-midground/60 hover:text-red-300 underline",
-                  }, "remove")
+                  h("div", { className: "flex flex-col gap-1 items-end" },
+                    h("button", {
+                      type: "button",
+                      disabled: !!busy,
+                      onClick: async () => {
+                        try {
+                          const result = await fetchJSON(`${API}/apps/${encodeURIComponent(app.slug)}/digest?days=7`);
+                          if (navigator.clipboard && navigator.clipboard.writeText) {
+                            await navigator.clipboard.writeText(result.markdown);
+                            alert(`7-day digest for ${app.slug} copied to clipboard.`);
+                          } else {
+                            window.prompt("Copy this markdown digest:", result.markdown);
+                          }
+                        } catch (err) {
+                          alert(`Digest failed: ${err.message || err}`);
+                        }
+                      },
+                      className: "text-[10px] text-midground/60 hover:text-cyan-200 underline",
+                    }, "copy digest"),
+                    h("button", {
+                      type: "button",
+                      disabled: !!busy,
+                      onClick: () => {
+                        const confirmText = window.prompt(`Type the slug (${app.slug}) to DELETE this app and ALL its drafts/campaigns/etc:`);
+                        if (!confirmText || confirmText.trim() !== app.slug) return;
+                        return run(`remove ${app.slug}`, () => fetchJSON(`${API}/apps/${encodeURIComponent(app.slug)}?cascade=true`, { method: "DELETE" }));
+                      },
+                      className: "text-[10px] text-midground/60 hover:text-red-300 underline",
+                    }, "remove")
+                  )
                 )
               ))
             )

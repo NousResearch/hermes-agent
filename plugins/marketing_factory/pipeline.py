@@ -564,6 +564,109 @@ class MarketingFactoryPipeline:
                 approvals.append(self.store.set_approval(draft["id"], "approved", reviewer=reviewer, reason="approved for dry-run scheduling"))
         return approvals
 
+    def weekly_digest(self, app_slug: str, days: int = 7, now: Optional[datetime] = None) -> str:
+        """Markdown digest of one app's activity over the last `days` days.
+
+        Includes campaign + draft counts by status, approved-drafts list
+        with body previews + channel, rejected-drafts list with reasons
+        (so the user can see what the factory's learning), the current
+        steering snapshot, and per-channel/per-route token spend.
+        """
+        app = self.store.require_app(app_slug)
+        cutoff = (now or datetime.now(timezone.utc)) - timedelta(days=days)
+        state = self.store.load()
+
+        def _belongs(record: Dict[str, Any]) -> bool:
+            return record.get("app_slug") == app["slug"]
+
+        def _within_window(record: Dict[str, Any]) -> bool:
+            try:
+                created = datetime.fromisoformat(str(record.get("created_at") or "").replace("Z", "+00:00"))
+            except ValueError:
+                return False
+            if created.tzinfo is None:
+                created = created.replace(tzinfo=timezone.utc)
+            return created >= cutoff
+
+        campaigns = [c for c in state.get("campaigns", {}).values() if _belongs(c) and _within_window(c)]
+        drafts = [d for d in state.get("drafts", {}).values() if _belongs(d) and _within_window(d)]
+
+        status_counts: Dict[str, int] = {}
+        for d in drafts:
+            status_counts[d.get("status", "unknown")] = status_counts.get(d.get("status", "unknown"), 0) + 1
+
+        approved = sorted([d for d in drafts if d.get("status") == "approved"], key=lambda d: d.get("created_at") or "")
+        rejected = sorted([d for d in drafts if d.get("status") == "rejected"], key=lambda d: d.get("created_at") or "")
+        posted = sorted([d for d in drafts if d.get("status") in {"posted", "dry_run_posted"}], key=lambda d: d.get("created_at") or "")
+
+        steering = (state.get("brand_memories", {}).get(app["slug"]) or {}).get("steering") or {}
+        budgets = state.get("budgets") or {}
+        per_app = (budgets.get("per_app_tokens") or {}).get(app["slug"], 0)
+
+        def _truncate(text: str, n: int = 200) -> str:
+            text = (text or "").strip()
+            return text if len(text) <= n else text[:n] + "…"
+
+        lines: List[str] = []
+        lines.append(f"# {app.get('name') or app['slug']} — weekly digest")
+        lines.append("")
+        lines.append(f"_Period: last {days} day(s) (since {cutoff.date().isoformat()} UTC)_")
+        lines.append("")
+        lines.append(f"**Positioning**: {app.get('positioning') or '—'}")
+        lines.append(f"**ICP**: {app.get('icp') or '—'}")
+        lines.append(f"**Channels**: {', '.join(app.get('channels') or []) or '—'}")
+        lines.append("")
+        lines.append("## Activity")
+        lines.append(f"- Campaigns generated: **{len(campaigns)}**")
+        lines.append(f"- Drafts created: **{len(drafts)}**")
+        if status_counts:
+            lines.append("- Status breakdown: " + ", ".join(f"`{status}`: {count}" for status, count in sorted(status_counts.items())))
+        lines.append(f"- Tokens spent on this brand (all-time per current daily window): **{per_app:,}**")
+        lines.append("")
+        if posted:
+            lines.append(f"## Published / dry-run published ({len(posted)})")
+            for d in posted:
+                marker = "🟢 LIVE" if d.get("status") == "posted" else "⚪ dry-run"
+                lines.append(f"- {marker} `{d.get('channel')}` — {_truncate(d.get('body') or '', 220)}")
+            lines.append("")
+        if approved:
+            lines.append(f"## Approved, awaiting schedule/publish ({len(approved)})")
+            for d in approved:
+                lines.append(f"- `{d.get('channel')}` — {_truncate(d.get('body') or '', 220)}")
+            lines.append("")
+        if rejected:
+            lines.append(f"## Rejected — the factory's learning signal ({len(rejected)})")
+            for d in rejected:
+                reason = (state.get("approvals", {}).get(d["id"], {}) or {}).get("reason") or "no reason recorded"
+                lines.append(f"- `{d.get('channel')}` rejected — reason: _{reason}_")
+                lines.append(f"  - Body excerpt: {_truncate(d.get('body') or '', 160)}")
+            lines.append("")
+        if steering:
+            lines.append("## Current brand steering (applied to future generations)")
+            works = steering.get("what_works") or []
+            avoid = steering.get("what_to_avoid") or []
+            tone = steering.get("tone_notes") or []
+            if works:
+                lines.append("**What works:**")
+                lines.extend(f"- {w}" for w in works)
+                lines.append("")
+            if avoid:
+                lines.append("**What to avoid:**")
+                lines.extend(f"- {a}" for a in avoid)
+                lines.append("")
+            if tone:
+                lines.append("**Tone notes:**")
+                lines.extend(f"- {t}" for t in tone)
+                lines.append("")
+        else:
+            lines.append("## Brand steering")
+            lines.append("_No steering yet — approve/reject some drafts (with reasons) to start the learning loop._")
+            lines.append("")
+
+        lines.append("---")
+        lines.append(f"_Generated by Hermes marketing_factory at {(now or datetime.now(timezone.utc)).isoformat()}_")
+        return "\n".join(lines)
+
     def regenerate_draft(self, draft_id: str) -> Dict[str, Any]:
         """Re-run CopyAgent on the same plan item using the latest steering.
 

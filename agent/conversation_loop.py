@@ -989,6 +989,7 @@ def run_conversation(
         copilot_auth_retry_attempted=False
         thinking_sig_retry_attempted = False
         image_shrink_retry_attempted = False
+        multimodal_tool_content_retry_attempted = False
         oauth_1m_beta_retry_attempted = False
         llama_cpp_grammar_retry_attempted = False
         has_retried_429 = False
@@ -2058,6 +2059,31 @@ def run_conversation(
                         logger.info(
                             "image-shrink recovery: no data-URL image parts found "
                             "or shrink didn't reduce size; surfacing original error."
+                        )
+
+                # Multimodal-tool-content recovery: providers that follow
+                # the OpenAI spec strictly (tool message content must be a
+                # string) reject our list-type content with a 400.  Strip
+                # image parts from any list-type tool messages, mark the
+                # (provider, model) as no-list-tool-content for the rest
+                # of this session so future tool results preemptively
+                # downgrade, and retry once.  See issue #27344.
+                if (
+                    classified.reason == FailoverReason.multimodal_tool_content_unsupported
+                    and not multimodal_tool_content_retry_attempted
+                ):
+                    multimodal_tool_content_retry_attempted = True
+                    if agent._try_strip_image_parts_from_tool_messages(api_messages):
+                        agent._vprint(
+                            f"{agent.log_prefix}📐 Provider rejected list-type tool content — "
+                            f"downgraded screenshots to text and retrying...",
+                            force=True,
+                        )
+                        continue
+                    else:
+                        logger.info(
+                            "multimodal-tool-content recovery: no list-type tool "
+                            "messages with image parts found; surfacing original error."
                         )
 
                 # Anthropic OAuth subscription rejected the 1M-context beta

@@ -8305,12 +8305,36 @@ class GatewayRunner:
 
 
     @staticmethod
-    def _gateway_kanban_action_args(tokens: list[str], action: str) -> list[str]:
-        """Return argv after a parsed Kanban action token."""
+    def _gateway_kanban_parse_args(tokens: list[str]):
+        """Parse Kanban argv with the same argparse semantics as /kanban."""
+        if not tokens or tokens[0] in {"help", "--help", "-h", "?"}:
+            return None
+
+        import argparse
+        import contextlib
+        import io
+        from hermes_cli.kanban import build_parser
+
+        wrapper = argparse.ArgumentParser(prog="/kanban-wrap", add_help=False)
+        wrapper.exit_on_error = False  # type: ignore[attr-defined]
+        top_subparsers = wrapper.add_subparsers(dest="_top")
+        kanban_parser = build_parser(top_subparsers)
+        kanban_parser.prog = "/kanban"
+        kanban_parser.exit_on_error = False  # type: ignore[attr-defined]
+        for action in kanban_parser._actions:
+            if isinstance(action, argparse._SubParsersAction):
+                for name, choice in action.choices.items():
+                    choice.prog = f"/kanban {name}"
+                    choice.exit_on_error = False  # type: ignore[attr-defined]
+
         try:
-            return tokens[tokens.index(action) + 1:]
-        except ValueError:
-            return []
+            with (
+                contextlib.redirect_stdout(io.StringIO()),
+                contextlib.redirect_stderr(io.StringIO()),
+            ):
+                return kanban_parser.parse_args(tokens)
+        except (argparse.ArgumentError, SystemExit):
+            return None
 
     @staticmethod
     def _gateway_kanban_is_unassign(profile: str | None) -> bool:
@@ -8318,10 +8342,9 @@ class GatewayRunner:
         return (profile or "").lower() in {"", "none", "-", "null"}
 
     @classmethod
-    def _gateway_kanban_spawn_denial(
-        cls, tokens: list[str], action: str | None
-    ) -> str | None:
+    def _gateway_kanban_spawn_denial(cls, args) -> str | None:
         """Deny gateway Kanban requests that can launch or relaunch profiles."""
+        action = getattr(args, "kanban_action", None)
         if not action:
             return None
 
@@ -8331,34 +8354,20 @@ class GatewayRunner:
                 "profile and is only available from the local CLI"
             )
 
-        action_args = cls._gateway_kanban_action_args(tokens, action)
         if action in {"assign", "reassign"}:
-            profile = action_args[1] if len(action_args) > 1 else None
-            if not cls._gateway_kanban_is_unassign(profile):
+            if not cls._gateway_kanban_is_unassign(getattr(args, "profile", None)):
                 return (
                     "kanban: assigning tasks from the gateway is disabled; "
                     "assign worker profiles from the local CLI"
                 )
             return None
 
-        if action != "create":
-            return None
+        if action == "create" and (getattr(args, "assignee", None) or "").strip():
+            return (
+                "kanban: creating assigned tasks from the gateway is disabled; "
+                "create the task unassigned and assign it from the local CLI"
+            )
 
-        for idx, tok in enumerate(action_args):
-            if tok.startswith("--assignee=") and tok.split("=", 1)[1].strip():
-                return (
-                    "kanban: creating assigned tasks from the gateway is disabled; "
-                    "create the task unassigned and assign it from the local CLI"
-                )
-            if tok == "--assignee":
-                value = ""
-                if idx + 1 < len(action_args):
-                    value = action_args[idx + 1].strip()
-                if value:
-                    return (
-                        "kanban: creating assigned tasks from the gateway is disabled; "
-                        "create the task unassigned and assign it from the local CLI"
-                    )
         return None
 
 
@@ -8392,29 +8401,14 @@ class GatewayRunner:
         except ValueError as exc:
             return f"kanban: invalid arguments: {exc}"
 
-        requested_board = None
-        action = None
-        i = 0
-        while i < len(tokens):
-            tok = tokens[i]
-            if tok == "--board":
-                if i + 1 >= len(tokens):
-                    break
-                requested_board = tokens[i + 1]
-                i += 2
-                continue
-            if tok.startswith("--board="):
-                requested_board = tok.split("=", 1)[1]
-                i += 1
-                continue
-            action = tok
-            break
+        parsed_args = self._gateway_kanban_parse_args(tokens)
+        requested_board = getattr(parsed_args, "board", None) if parsed_args else None
 
-        denial = self._gateway_kanban_spawn_denial(tokens, action)
+        denial = self._gateway_kanban_spawn_denial(parsed_args)
         if denial:
             return denial
 
-        is_create = action == "create"
+        is_create = getattr(parsed_args, "kanban_action", None) == "create"
 
         try:
             output = await asyncio.to_thread(run_slash, text)

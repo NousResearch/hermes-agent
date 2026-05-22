@@ -45,7 +45,10 @@ def _make_runner():
     [
         '/kanban create "do it" --assignee admin',
         '/kanban create "do it" --assignee=admin',
+        '/kanban create "do it" --assign admin',
+        '/kanban create "do it" --assign=admin',
         '/kanban --board ops create "do it" --assignee admin',
+        '/kanban --bo ops create "do it" --assignee admin',
     ],
 )
 async def test_gateway_kanban_denies_create_with_assignee(monkeypatch, text):

@@ -130,99 +130,173 @@ def make_tool_call_id() -> str:
     return f"tc-{uuid.uuid4().hex[:12]}"
 
 
+
+
+def _title_terminal(args: Dict[str, Any]) -> str:
+    cmd = args.get("command", "")
+    if len(cmd) > 80:
+        cmd = cmd[:77] + "..."
+    return f"terminal: {cmd}"
+
+
+def _title_read_file(args: Dict[str, Any]) -> str:
+    return f"read: {args.get('path', '?')}"
+
+
+def _title_write_file(args: Dict[str, Any]) -> str:
+    return f"write: {args.get('path', '?')}"
+
+
+def _title_patch(args: Dict[str, Any]) -> str:
+    mode = args.get("mode", "replace")
+    path = args.get("path", "?")
+    return f"patch ({mode}): {path}"
+
+
+def _title_search_files(args: Dict[str, Any]) -> str:
+    return f"search: {args.get('pattern', '?')}"
+
+
+def _title_web_search(args: Dict[str, Any]) -> str:
+    return f"web search: {args.get('query', '?')}"
+
+
+def _title_web_extract(args: Dict[str, Any]) -> str:
+    urls = args.get("urls", [])
+    if urls:
+        return f"extract: {urls[0]}" + (f" (+{len(urls) - 1})" if len(urls) > 1 else "")
+    return "web extract"
+
+
+def _title_process(args: Dict[str, Any]) -> str:
+    action = str(args.get("action") or "").strip() or "manage"
+    sid = str(args.get("session_id") or "").strip()
+    return f"process {action}: {sid}" if sid else f"process {action}"
+
+
+def _title_delegate_task(args: Dict[str, Any]) -> str:
+    tasks = args.get("tasks")
+    if isinstance(tasks, list) and tasks:
+        return f"delegate batch ({len(tasks)} tasks)"
+    goal = args.get("goal", "")
+    if goal and len(goal) > 60:
+        goal = goal[:57] + "..."
+    return f"delegate: {goal}" if goal else "delegate task"
+
+
+def _title_session_search(args: Dict[str, Any]) -> str:
+    query = str(args.get("query") or "").strip()
+    return f"session search: {query}" if query else "recent sessions"
+
+
+def _title_memory(args: Dict[str, Any]) -> str:
+    action = str(args.get("action") or "manage").strip() or "manage"
+    target = str(args.get("target") or "memory").strip() or "memory"
+    return f"memory {action}: {target}"
+
+
+def _title_execute_code(args: Dict[str, Any]) -> str:
+    code = str(args.get("code") or "").strip()
+    first_line = next((line.strip() for line in code.splitlines() if line.strip()), "")
+    if first_line:
+        if len(first_line) > 70:
+            first_line = first_line[:67] + "..."
+        return f"python: {first_line}"
+    return "python code"
+
+
+def _title_todo(args: Dict[str, Any]) -> str:
+    items = args.get("todos")
+    if isinstance(items, list):
+        return f"todo ({len(items)} item{'s' if len(items) != 1 else ''})"
+    return "todo"
+
+
+def _title_skill_view(args: Dict[str, Any]) -> str:
+    name = str(args.get("name") or "?").strip() or "?"
+    file_path = str(args.get("file_path") or "").strip()
+    suffix = f"/{file_path}" if file_path else ""
+    return f"skill view ({name}{suffix})"
+
+
+def _title_skills_list(args: Dict[str, Any]) -> str:
+    category = str(args.get("category") or "").strip()
+    return f"skills list ({category})" if category else "skills list"
+
+
+def _title_skill_manage(args: Dict[str, Any]) -> str:
+    action = str(args.get("action") or "manage").strip() or "manage"
+    name = str(args.get("name") or "?").strip() or "?"
+    file_path = str(args.get("file_path") or "").strip()
+    target = f"{name}/{file_path}" if file_path else name
+    if len(target) > 64:
+        target = target[:61] + "..."
+    return f"skill {action}: {target}"
+
+
+def _title_browser_navigate(args: Dict[str, Any]) -> str:
+    return f"navigate: {args.get('url', '?')}"
+
+
+def _title_browser_snapshot(args: Dict[str, Any]) -> str:
+    return "browser snapshot"
+
+
+def _title_browser_vision(args: Dict[str, Any]) -> str:
+    return f"browser vision: {str(args.get('question', '?'))[:50]}"
+
+
+def _title_browser_get_images(args: Dict[str, Any]) -> str:
+    return "browser images"
+
+
+def _title_vision_analyze(args: Dict[str, Any]) -> str:
+    return f"analyze image: {str(args.get('question', '?'))[:50]}"
+
+
+def _title_image_generate(args: Dict[str, Any]) -> str:
+    prompt = str(args.get("prompt") or args.get("description") or "").strip()
+    return f"generate image: {prompt[:50]}" if prompt else "generate image"
+
+
+def _title_cronjob(args: Dict[str, Any]) -> str:
+    action = str(args.get("action") or "manage").strip() or "manage"
+    job_id = str(args.get("job_id") or args.get("id") or "").strip()
+    return f"cron {action}: {job_id}" if job_id else f"cron {action}"
+
+
+_TITLE_FORMATTERS = {
+    "terminal": _title_terminal,
+    "read_file": _title_read_file,
+    "write_file": _title_write_file,
+    "patch": _title_patch,
+    "search_files": _title_search_files,
+    "web_search": _title_web_search,
+    "web_extract": _title_web_extract,
+    "process": _title_process,
+    "delegate_task": _title_delegate_task,
+    "session_search": _title_session_search,
+    "memory": _title_memory,
+    "execute_code": _title_execute_code,
+    "todo": _title_todo,
+    "skill_view": _title_skill_view,
+    "skills_list": _title_skills_list,
+    "skill_manage": _title_skill_manage,
+    "browser_navigate": _title_browser_navigate,
+    "browser_snapshot": _title_browser_snapshot,
+    "browser_vision": _title_browser_vision,
+    "browser_get_images": _title_browser_get_images,
+    "vision_analyze": _title_vision_analyze,
+    "image_generate": _title_image_generate,
+    "cronjob": _title_cronjob,
+}
+
+
 def build_tool_title(tool_name: str, args: Dict[str, Any]) -> str:
     """Build a human-readable title for a tool call."""
-    if tool_name == "terminal":
-        cmd = args.get("command", "")
-        if len(cmd) > 80:
-            cmd = cmd[:77] + "..."
-        return f"terminal: {cmd}"
-    if tool_name == "read_file":
-        return f"read: {args.get('path', '?')}"
-    if tool_name == "write_file":
-        return f"write: {args.get('path', '?')}"
-    if tool_name == "patch":
-        mode = args.get("mode", "replace")
-        path = args.get("path", "?")
-        return f"patch ({mode}): {path}"
-    if tool_name == "search_files":
-        return f"search: {args.get('pattern', '?')}"
-    if tool_name == "web_search":
-        return f"web search: {args.get('query', '?')}"
-    if tool_name == "web_extract":
-        urls = args.get("urls", [])
-        if urls:
-            return f"extract: {urls[0]}" + (
-                f" (+{len(urls) - 1})" if len(urls) > 1 else ""
-            )
-        return "web extract"
-    if tool_name == "process":
-        action = str(args.get("action") or "").strip() or "manage"
-        sid = str(args.get("session_id") or "").strip()
-        return f"process {action}: {sid}" if sid else f"process {action}"
-    if tool_name == "delegate_task":
-        tasks = args.get("tasks")
-        if isinstance(tasks, list) and tasks:
-            return f"delegate batch ({len(tasks)} tasks)"
-        goal = args.get("goal", "")
-        if goal and len(goal) > 60:
-            goal = goal[:57] + "..."
-        return f"delegate: {goal}" if goal else "delegate task"
-    if tool_name == "session_search":
-        query = str(args.get("query") or "").strip()
-        return f"session search: {query}" if query else "recent sessions"
-    if tool_name == "memory":
-        action = str(args.get("action") or "manage").strip() or "manage"
-        target = str(args.get("target") or "memory").strip() or "memory"
-        return f"memory {action}: {target}"
-    if tool_name == "execute_code":
-        code = str(args.get("code") or "").strip()
-        first_line = next(
-            (line.strip() for line in code.splitlines() if line.strip()), ""
-        )
-        if first_line:
-            if len(first_line) > 70:
-                first_line = first_line[:67] + "..."
-            return f"python: {first_line}"
-        return "python code"
-    if tool_name == "todo":
-        items = args.get("todos")
-        if isinstance(items, list):
-            return f"todo ({len(items)} item{'s' if len(items) != 1 else ''})"
-        return "todo"
-    if tool_name == "skill_view":
-        name = str(args.get("name") or "?").strip() or "?"
-        file_path = str(args.get("file_path") or "").strip()
-        suffix = f"/{file_path}" if file_path else ""
-        return f"skill view ({name}{suffix})"
-    if tool_name == "skills_list":
-        category = str(args.get("category") or "").strip()
-        return f"skills list ({category})" if category else "skills list"
-    if tool_name == "skill_manage":
-        action = str(args.get("action") or "manage").strip() or "manage"
-        name = str(args.get("name") or "?").strip() or "?"
-        file_path = str(args.get("file_path") or "").strip()
-        target = f"{name}/{file_path}" if file_path else name
-        if len(target) > 64:
-            target = target[:61] + "..."
-        return f"skill {action}: {target}"
-    if tool_name == "browser_navigate":
-        return f"navigate: {args.get('url', '?')}"
-    if tool_name == "browser_snapshot":
-        return "browser snapshot"
-    if tool_name == "browser_vision":
-        return f"browser vision: {str(args.get('question', '?'))[:50]}"
-    if tool_name == "browser_get_images":
-        return "browser images"
-    if tool_name == "vision_analyze":
-        return f"analyze image: {str(args.get('question', '?'))[:50]}"
-    if tool_name == "image_generate":
-        prompt = str(args.get("prompt") or args.get("description") or "").strip()
-        return f"generate image: {prompt[:50]}" if prompt else "generate image"
-    if tool_name == "cronjob":
-        action = str(args.get("action") or "manage").strip() or "manage"
-        job_id = str(args.get("job_id") or args.get("id") or "").strip()
-        return f"cron {action}: {job_id}" if job_id else f"cron {action}"
+    formatter = _TITLE_FORMATTERS.get(tool_name)
+    if formatter:
+        return formatter(args)
     return tool_name
 
 
@@ -540,6 +614,31 @@ def _format_process_result(
     if data.get("success") is False and data.get("error"):
         return f"Process error: {data.get('error')}"
     action = str((args or {}).get("action") or "process").strip() or "process"
+    if isinstance(data.get("processes"), list):
+        processes = data["processes"]
+        lines = [f"Processes: {len(processes)}"]
+        for proc in processes[:20]:
+            if not isinstance(proc, dict):
+                lines.append(f"- {proc}")
+                continue
+            sid = str(proc.get("session_id") or proc.get("id") or "?")
+            status = str(
+                proc.get("status") or ("exited" if proc.get("exited") else "running")
+            )
+            cmd = str(proc.get("command") or "").strip()
+            pid = proc.get("pid")
+            code = proc.get("exit_code")
+            bits = [status]
+            if pid is not None:
+                bits.append(f"pid {pid}")
+            if code is not None:
+                bits.append(f"exit {code}")
+            lines.append(
+                f"- `{sid}` — {', '.join(bits)}" + (f" — {cmd[:120]}" if cmd else "")
+            )
+        if len(processes) > 20:
+            lines.append(f"... {len(processes) - 20} more process(es)")
+        return "\n".join(lines)
 
     processes = data.get("processes")
     if isinstance(processes, list):

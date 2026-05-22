@@ -2970,7 +2970,7 @@ class AIAgent:
                 base_url=self.base_url,
                 api_key=self.api_key,
                 provider=self.provider,
-                config_context_length=getattr(self, "_config_context_length", None),
+                config_context_length=None,
                 custom_providers=_sm_custom_providers,
             )
             self.context_compressor.update_model(
@@ -9474,11 +9474,9 @@ class AIAgent:
                 from agent.model_metadata import get_model_context_length
 
                 fb_context_length = get_model_context_length(
-                    self.model,
-                    base_url=self.base_url,
-                    api_key=self.api_key,
-                    provider=self.provider,
-                    config_context_length=getattr(self, "_config_context_length", None),
+                    self.model, base_url=self.base_url,
+                    api_key=self.api_key, provider=self.provider,
+                    config_context_length=None,
                 )
                 self.context_compressor.update_model(
                     model=self.model,

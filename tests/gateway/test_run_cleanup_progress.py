@@ -12,6 +12,7 @@ Adapters without ``delete_message`` silently no-op.
 
 import asyncio
 import importlib
+import json
 import sys
 import time
 import types
@@ -20,7 +21,8 @@ from types import SimpleNamespace
 import pytest
 
 from gateway.config import Platform, PlatformConfig
-from gateway.platforms.base import BasePlatformAdapter, SendResult
+from gateway.platforms.base import BasePlatformAdapter, MessageEvent, MessageType, SendResult
+from gateway.pulse_voice_events import voice_out_path
 from gateway.session import SessionSource
 
 
@@ -131,6 +133,54 @@ class FailingAgent:
         }
 
 
+class VoiceFinalAgent:
+    """Returns a final assistant answer without emitting interim/progress text."""
+
+    def __init__(self, **kwargs):
+        self.tool_progress_callback = kwargs.get("tool_progress_callback")
+        self.tools = []
+
+    def run_conversation(self, message, conversation_history=None, task_id=None):
+        return {
+            "final_response": "I fixed the voice bridge from the actual assistant answer. Extra Discord-only detail follows.",
+            "messages": [],
+            "api_calls": 1,
+        }
+
+
+class VoiceInterimFinalAgent(VoiceFinalAgent):
+    """Emits interim commentary before returning the real final answer."""
+
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        self.interim_assistant_callback = None
+
+    def run_conversation(self, message, conversation_history=None, task_id=None):
+        if self.interim_assistant_callback is not None:
+            self.interim_assistant_callback("I’m checking the voice path now.", already_streamed=False)
+        return super().run_conversation(message, conversation_history=conversation_history, task_id=task_id)
+
+
+class VoiceMediaFinalAgent:
+    """Returns final text plus a tool MEDIA tag that the gateway appends."""
+
+    def __init__(self, **kwargs):
+        self.tool_progress_callback = kwargs.get("tool_progress_callback")
+        self.tools = []
+
+    def run_conversation(self, message, conversation_history=None, task_id=None):
+        return {
+            "final_response": "Here is the unchanged Discord text.",
+            "messages": [
+                {
+                    "role": "tool",
+                    "content": '{"audio": "MEDIA:/tmp/hermes-voice-regression.mp3"}',
+                }
+            ],
+            "api_calls": 1,
+        }
+
+
 def _make_runner(adapter):
     gateway_run = importlib.import_module("gateway.run")
     GatewayRunner = gateway_run.GatewayRunner
@@ -183,9 +233,206 @@ def _install_fakes(monkeypatch, agent_cls, *, cleanup_on: bool):
     return gateway_run
 
 
+def _make_message_event(source: SessionSource, text: str = "please answer") -> MessageEvent:
+    return MessageEvent(
+        text=text,
+        message_type=MessageType.TEXT,
+        source=source,
+        message_id="discord-msg-1",
+    )
+
+
+async def _deliver_one_discord_turn(monkeypatch, tmp_path, agent_cls):
+    adapter = CleanupCaptureAdapter(platform=Platform.DISCORD)
+    adapter._get_human_delay = lambda: 0
+    runner = _make_runner(adapter)
+    gateway_run = _install_fakes(monkeypatch, agent_cls, cleanup_on=False)
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+
+    source = SessionSource(platform=Platform.DISCORD, chat_id="discord-channel", thread_id="thread-7")
+    session_key = "agent:main:discord:channel:discord-channel:thread-7"
+
+    async def _handler(event):
+        agent_result = await runner._run_agent(
+            message=event.text,
+            context_prompt="",
+            history=[],
+            source=source,
+            session_id="sess-discord",
+            session_key=session_key,
+            event_message_id=event.message_id,
+        )
+        return agent_result["final_response"]
+
+    adapter.set_message_handler(_handler)
+    await adapter._process_message_background(_make_message_event(source), session_key)
+    return adapter
+
+
 # ---------------------------------------------------------------------------
 # Tests
 # ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_voice_events_are_final_answer_only_and_do_not_change_text_response(monkeypatch, tmp_path):
+    """Room voice is emitted once from final_response, never a turn-start canned ack."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    adapter = CleanupCaptureAdapter()
+    runner = _make_runner(adapter)
+    gateway_run = _install_fakes(monkeypatch, VoiceInterimFinalAgent, cleanup_on=False)
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+
+    import gateway.pulse_voice_events as pulse_voice_events
+
+    voice_out_calls = []
+    completion_calls = []
+    original_publish_voice_out = pulse_voice_events.publish_voice_out
+    original_publish_completion_voice_out = pulse_voice_events.publish_completion_voice_out
+
+    def record_voice_out(kind, text, **metadata):
+        voice_out_calls.append({"kind": kind, "text": text, "metadata": metadata})
+        return original_publish_voice_out(kind, text, **metadata)
+
+    def record_completion(final_response, **metadata):
+        completion_calls.append({"final_response": final_response, "metadata": metadata})
+        return original_publish_completion_voice_out(final_response, **metadata)
+
+    monkeypatch.setattr(pulse_voice_events, "publish_voice_out", record_voice_out)
+    # ``record_completion`` delegates to the original function object, so route
+    # that function's global lookup through the spy too. This keeps the test
+    # sensitive to hidden ack/start-of-turn publish_voice_out calls while still
+    # exercising the real completion publisher.
+    monkeypatch.setitem(original_publish_completion_voice_out.__globals__, "publish_voice_out", record_voice_out)
+    monkeypatch.setattr(pulse_voice_events, "publish_completion_voice_out", record_completion)
+
+    source = SessionSource(platform=Platform.TELEGRAM, chat_id="-1001", thread_id="42")
+
+    result = await runner._run_agent(
+        message="please fix voice",
+        context_prompt="",
+        history=[],
+        source=source,
+        session_id="sess-voice",
+        session_key="agent:main:telegram:group:-1001:thread:42",
+        event_message_id="msg-voice-1",
+    )
+
+    final_response = "I fixed the voice bridge from the actual assistant answer. Extra Discord-only detail follows."
+    assert result["final_response"] == final_response
+    assert [message["content"] for message in adapter.sent] == ["I’m checking the voice path now."]
+    assert [call["kind"] for call in voice_out_calls] == ["progress", "completion"]
+    assert all(call["kind"] != "ack" for call in voice_out_calls)
+    final_turn_voice_calls = [
+        call for call in voice_out_calls if call["kind"] in {"ack", "completion", "error", "question"}
+    ]
+    assert [call["kind"] for call in final_turn_voice_calls] == ["completion"]
+    assert final_turn_voice_calls[0]["text"] == "I fixed the voice bridge from the actual assistant answer."
+    assert completion_calls == [
+        {
+            "final_response": final_response,
+            "metadata": {
+                "session_id": "sess-voice",
+                "platform": "telegram",
+                "chat_id": "-1001",
+                "thread_id": "42",
+                "source_message_id": "msg-voice-1",
+            },
+        }
+    ]
+
+    events = [json.loads(line) for line in voice_out_path().read_text(encoding="utf-8").splitlines()]
+    assert [event["kind"] for event in events] == ["progress", "completion"]
+    turn_level_events = [event for event in events if event["kind"] in {"ack", "completion", "error", "question"}]
+    assert [event["kind"] for event in turn_level_events] == ["completion"]
+    assert turn_level_events[0]["text"] == "I fixed the voice bridge from the actual assistant answer."
+    assert turn_level_events[0]["session_id"] == "sess-voice"
+    assert turn_level_events[0]["platform"] == "telegram"
+    assert turn_level_events[0]["chat_id"] == "-1001"
+    assert turn_level_events[0]["thread_id"] == "42"
+    assert turn_level_events[0]["source_message_id"] == "msg-voice-1"
+
+
+@pytest.mark.asyncio
+async def test_discord_final_text_is_preserved_while_voice_event_is_summarized(monkeypatch, tmp_path):
+    """Discord receives the full final text while Pulse gets the concise spoken summary."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+    adapter = await _deliver_one_discord_turn(monkeypatch, tmp_path, VoiceFinalAgent)
+
+    assert adapter.sent == [
+        {
+            "chat_id": "discord-channel",
+            "content": "I fixed the voice bridge from the actual assistant answer. Extra Discord-only detail follows.",
+            "message_id": adapter.sent[0]["message_id"],
+            "metadata": {"thread_id": "thread-7", "notify": True},
+        }
+    ]
+    events = [json.loads(line) for line in voice_out_path().read_text(encoding="utf-8").splitlines()]
+    assert len(events) == 1
+    event = events[0]
+    assert event["kind"] == "completion"
+    assert event["text"] == "I fixed the voice bridge from the actual assistant answer."
+    assert event["text"] != adapter.sent[0]["content"]
+    assert event["source"] == "assistant_final"
+    assert event["derived_from"] == "final_response"
+    assert event["platform"] == "discord"
+    assert event["chat_id"] == "discord-channel"
+    assert event["thread_id"] == "thread-7"
+
+
+@pytest.mark.asyncio
+async def test_discord_text_delivery_unchanged_when_voice_publisher_records_media_appended_response(monkeypatch, tmp_path):
+    """Voice publication observes the post-media final_response, while Discord sends clean text."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    import gateway.pulse_voice_events as pulse_voice_events
+
+    completion_calls = []
+
+    def record_completion(final_response, **metadata):
+        completion_calls.append({"final_response": final_response, "metadata": metadata})
+
+    monkeypatch.setattr(pulse_voice_events, "publish_completion_voice_out", record_completion)
+
+    adapter = await _deliver_one_discord_turn(monkeypatch, tmp_path, VoiceMediaFinalAgent)
+
+    assert completion_calls == [
+        {
+            "final_response": "Here is the unchanged Discord text.\nMEDIA:/tmp/hermes-voice-regression.mp3",
+            "metadata": {
+                "session_id": "sess-discord",
+                "platform": "discord",
+                "chat_id": "discord-channel",
+                "thread_id": "thread-7",
+                "source_message_id": "discord-msg-1",
+            },
+        }
+    ]
+    assert adapter.sent[0]["content"] == "Here is the unchanged Discord text."
+    assert "MEDIA:" not in adapter.sent[0]["content"]
+
+
+@pytest.mark.asyncio
+async def test_discord_text_delivery_survives_completion_voice_publisher_failure(monkeypatch, tmp_path):
+    """Voice publication is best-effort and must not break normal Discord delivery."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    import gateway.pulse_voice_events as pulse_voice_events
+
+    def failing_completion(final_response, **metadata):
+        raise RuntimeError("voice publisher unavailable")
+
+    monkeypatch.setattr(pulse_voice_events, "publish_completion_voice_out", failing_completion)
+
+    adapter = await _deliver_one_discord_turn(monkeypatch, tmp_path, VoiceFinalAgent)
+
+    assert adapter.sent == [
+        {
+            "chat_id": "discord-channel",
+            "content": "I fixed the voice bridge from the actual assistant answer. Extra Discord-only detail follows.",
+            "message_id": adapter.sent[0]["message_id"],
+            "metadata": {"thread_id": "thread-7", "notify": True},
+        }
+    ]
 
 
 @pytest.mark.asyncio

@@ -2146,12 +2146,43 @@ class BasePlatformAdapter(ABC):
             text = f"{caption}\n{text}"
         return await self.send(chat_id=chat_id, content=text, reply_to=reply_to, metadata=metadata)
 
-    def prepare_tts_text(self, text: str) -> str:
-        """Prepare text for TTS. Override to filter tool output, code, etc.
+    def prepare_tts_text(
+        self,
+        text: str,
+        *,
+        chat_id: str | None = None,
+        thread_id: str | None = None,
+        source_message_id: str | None = None,
+        explicit_spoken_request: bool = True,
+        is_private_context: bool = False,
+        output_device: str = "chat_attachment",
+        rule_profile: str = "chat_attachment",
+    ) -> str:
+        """Return policy-approved text for TTS, or ``""`` to suppress speech.
 
-        Default strips markdown formatting and truncates to 4000 chars.
+        ``/voice on|tts`` decides whether auto-TTS is preferred for the chat;
+        this method is the safety gate that decides whether a particular
+        response is safe to synthesize.  It intentionally returns a separate
+        sanitized speech string so the platform text response remains unchanged.
         """
-        return re.sub(r'[*_`#\[\]()]', '', text)[:4000].strip()
+        from gateway.ambient_voice_policy import AmbientVoicePolicy, VoiceContext
+
+        decision = AmbientVoicePolicy().evaluate(
+            str(text or ""),
+            VoiceContext(
+                source="auto_tts_reply",
+                platform=_platform_name(getattr(self, "platform", None)),
+                chat_id=chat_id,
+                thread_id=thread_id,
+                source_message_id=source_message_id,
+                input_modality="voice",
+                output_device=output_device,
+                explicit_spoken_request=explicit_spoken_request,
+                is_private_context=is_private_context,
+                config_scope=rule_profile,
+            ),
+        )
+        return decision.text if decision.allowed and decision.text else ""
 
     async def play_tts(
         self,
@@ -3497,14 +3528,20 @@ class BasePlatformAdapter(ABC):
                         from tools.tts_tool import text_to_speech_tool, check_tts_requirements
                         if check_tts_requirements():
                             import json as _json
-                            speech_text = self.prepare_tts_text(text_content)
-                            if not speech_text:
-                                raise ValueError("Empty text after markdown cleanup")
-                            tts_result_str = await asyncio.to_thread(
-                                text_to_speech_tool, text=speech_text
+                            speech_text = self.prepare_tts_text(
+                                text_content,
+                                chat_id=event.source.chat_id,
+                                thread_id=getattr(event.source, "thread_id", None),
+                                source_message_id=getattr(event, "message_id", None),
                             )
-                            tts_data = _json.loads(tts_result_str)
-                            _tts_path = tts_data.get("file_path")
+                            if not speech_text:
+                                logger.debug("[%s] Auto-TTS suppressed by ambient voice policy", self.name)
+                            else:
+                                tts_result_str = await asyncio.to_thread(
+                                    text_to_speech_tool, text=speech_text
+                                )
+                                tts_data = _json.loads(tts_result_str)
+                                _tts_path = tts_data.get("file_path")
                     except Exception as tts_err:
                         logger.warning("[%s] Auto-TTS failed: %s", self.name, tts_err)
 

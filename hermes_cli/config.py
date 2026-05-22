@@ -1176,6 +1176,19 @@ DEFAULT_CONFIG = {
         },
     },
 
+    "pulse": {
+        "voice": {
+            "final_summary": {
+                "mode": "hybrid",  # deterministic | generated | hybrid | off
+                "timeout_ms": 1000,
+                "max_spoken_chars": 180,
+                "voice_profile": "eon",
+                "fallback": "deterministic_sanitizer",
+                "on_empty": "silence",
+            },
+        },
+    },
+
     "voice": {
         "record_key": "ctrl+b",
         "max_recording_seconds": 120,
@@ -1183,6 +1196,60 @@ DEFAULT_CONFIG = {
         "beep_enabled": True,         # Play record start/stop beeps in CLI voice mode
         "silence_threshold": 200,     # RMS below this = silence (0-32767)
         "silence_duration": 3.0,      # Seconds of silence before auto-stop
+        "ambient_policy": {
+            "enabled": True,
+            "default_context": "living_room_default",
+            "rule_profiles": {
+                "living_room_default": {
+                    "max_seconds": {"ack": 2, "completion": 4, "question": 6, "error": 3, "progress": 2},
+                    "max_chars": 180,
+                    "allow_code": False,
+                    "allow_tool_logs": False,
+                    "allow_raw_paths": False,
+                    "allow_sensitive_topics": False,
+                    "allow_secret_like_text": False,
+                    "require_explicit_for_sensitive_topics": True,
+                    "suppress_errors_with_stack_traces": True,
+                    "one_sentence": True,
+                },
+                "airpods_private": {
+                    "max_seconds": {"ack": 3, "completion": 8, "question": 10, "error": 5, "progress": 3},
+                    "max_chars": 320,
+                    "allow_code": False,
+                    "allow_tool_logs": False,
+                    "allow_raw_paths": False,
+                    "allow_sensitive_topics": "explicit_only",
+                    "allow_secret_like_text": False,
+                    "require_explicit_for_sensitive_topics": True,
+                    "suppress_errors_with_stack_traces": True,
+                    "one_sentence": True,
+                },
+                "chat_attachment": {
+                    "max_seconds": {"ack": 3, "completion": 10, "question": 10, "error": 5, "progress": 3},
+                    "max_chars": 500,
+                    "allow_code": False,
+                    "allow_tool_logs": False,
+                    "allow_raw_paths": False,
+                    "allow_sensitive_topics": "explicit_only",
+                    "allow_secret_like_text": False,
+                    "require_explicit_for_sensitive_topics": True,
+                    "suppress_errors_with_stack_traces": True,
+                    "one_sentence": True,
+                },
+                "discord_voice": {
+                    "max_seconds": {"ack": 2, "completion": 4, "question": 6, "error": 3, "progress": 2},
+                    "max_chars": 180,
+                    "allow_code": False,
+                    "allow_tool_logs": False,
+                    "allow_raw_paths": False,
+                    "allow_sensitive_topics": False,
+                    "allow_secret_like_text": False,
+                    "require_explicit_for_sensitive_topics": True,
+                    "suppress_errors_with_stack_traces": True,
+                    "one_sentence": True,
+                },
+            },
+        },
     },
     
     "human_delay": {

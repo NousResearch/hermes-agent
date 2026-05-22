@@ -16930,6 +16930,11 @@ class GatewayRunner:
                 else:
                     _run_message = message
 
+                # Voice-out is derived from generated assistant output only.
+                # Do not publish canned turn-start acknowledgements here: ambient
+                # room audio should sound like the same agent answering, not a
+                # separate status bot. Generated interim assistant commentary is
+                # handled by _interim_assistant_cb; final answers are published below.
                 _api_run_message = _wrap_current_message_with_observed_context(
                     _run_message,
                     observed_group_context,

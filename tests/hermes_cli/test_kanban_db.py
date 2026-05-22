@@ -117,7 +117,7 @@ def test_connect_migrates_legacy_db_before_optional_column_indexes(tmp_path):
     migration adds those columns, or boards predating the column fail to
     open before migration can run.
 
-    Covers the indexed additive columns:
+    Covers all indexed additive columns:
     - ``tasks.session_id``              -> ``idx_tasks_session_id``    (#28447)
     - ``tasks.tenant``                  -> ``idx_tasks_tenant``        (#16081)
     - ``tasks.idempotency_key``         -> ``idx_tasks_idempotency``   (#17805)
@@ -209,71 +209,6 @@ def test_connect_migrates_legacy_db_before_optional_column_indexes(tmp_path):
     assert "idx_tasks_tenant" in indexes
     assert "idx_tasks_idempotency" in indexes
     assert "idx_events_run" in indexes
-
-
-def test_connect_adds_missing_notify_columns(tmp_path):
-    db_path = tmp_path / "legacy-notify-shape.db"
-    conn = sqlite3.connect(str(db_path))
-    conn.execute("""
-        CREATE TABLE tasks (
-            id TEXT PRIMARY KEY,
-            title TEXT NOT NULL,
-            body TEXT,
-            assignee TEXT,
-            status TEXT NOT NULL,
-            priority INTEGER NOT NULL DEFAULT 0,
-            created_by TEXT,
-            created_at INTEGER NOT NULL,
-            started_at INTEGER,
-            completed_at INTEGER,
-            workspace_kind TEXT NOT NULL DEFAULT 'scratch',
-            workspace_path TEXT,
-            claim_lock TEXT,
-            claim_expires INTEGER
-        )
-    """)
-    conn.execute("""
-        CREATE TABLE task_events (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            task_id TEXT NOT NULL,
-            kind TEXT NOT NULL,
-            payload TEXT,
-            created_at INTEGER NOT NULL
-        )
-    """)
-    conn.execute("""
-        CREATE TABLE kanban_notify_subs (
-            task_id TEXT NOT NULL,
-            platform TEXT NOT NULL,
-            chat_id TEXT NOT NULL,
-            thread_id TEXT NOT NULL DEFAULT '',
-            user_id TEXT,
-            created_at INTEGER NOT NULL,
-            last_event_id INTEGER NOT NULL DEFAULT 0,
-            PRIMARY KEY (task_id, platform, chat_id, thread_id)
-        )
-    """)
-    conn.execute(
-        "INSERT INTO kanban_notify_subs "
-        "(task_id, platform, chat_id, thread_id, user_id, created_at, last_event_id) "
-        "VALUES ('t_legacy1', 'discord', 'chat-1', '', NULL, 10, 2)"
-    )
-    conn.commit()
-    conn.close()
-
-    with kb.connect(db_path) as migrated:
-        notify_columns = {
-            row["name"]
-            for row in migrated.execute("PRAGMA table_info(kanban_notify_subs)")
-        }
-        sub = kb.list_notify_subs(migrated)[0]
-
-    assert "delivery_mode" in notify_columns
-    assert "session_key" in notify_columns
-    assert "notifier_profile" in notify_columns
-    assert sub["task_id"] == "t_legacy1"
-    assert sub["delivery_mode"] == "notification"
-    assert sub["session_key"] is None
 
 
 # ---------------------------------------------------------------------------

@@ -130,8 +130,15 @@ def _dir_listing(path: Path, max_depth: int = 2, _depth: int = 0) -> List[dict]:
 def _find_agents_dir() -> Optional[Path]:
     """Find the custom agents/ directory (local clone, not upstream repo).
 
-    Checks HERMES_REPO/agents/ first, then HERMES_HOME/hermes-agent/agents/.
+    Checks HERMES_AGENTS_DIR env var first (explicit override), then
+    HERMES_REPO/agents/, then HERMES_HOME/hermes-agent/agents/.
     """
+    explicit = os.environ.get("HERMES_AGENTS_DIR")
+    if explicit:
+        p = Path(explicit)
+        if p.is_dir():
+            return p
+
     repo = _get_hermes_repo()
     candidates = [
         repo / "agents",

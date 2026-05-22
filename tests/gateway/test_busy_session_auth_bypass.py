@@ -6,8 +6,9 @@ behavior in _handle_message. Previously, the busy path skipped the auth check en
 allowing unauthorized users to inject text into another user's running session.
 """
 import asyncio
+import threading
 import time
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
@@ -27,12 +28,10 @@ sys.modules.setdefault("telegram.constants", _tg.constants)
 sys.modules.setdefault("telegram.ext", types.ModuleType("telegram.ext"))
 
 from gateway.platforms.base import (
-    BasePlatformAdapter,
     MessageEvent,
     MessageType,
     SessionSource,
     build_session_key,
-    merge_pending_message_event,
 )
 
 
@@ -166,6 +165,40 @@ class TestBusySessionAuthBypass:
         assert result is True
         # The message should be merged into pending
         assert sk in adapter._pending_messages
+        running_agent.interrupt.assert_called_once_with("follow up")
+
+    @pytest.mark.asyncio
+    async def test_interrupt_mode_queues_instead_of_killing_active_delegation(self):
+        """Plain busy follow-ups must not cascade interrupts into subagents."""
+        from gateway.run import GatewayRunner
+
+        runner, sentinel = _make_runner(authorized_users={"user1"})
+        runner._busy_input_mode = "interrupt"
+        adapter = _make_adapter()
+
+        event = _make_event(text="keep this in mind", user_id="user1")
+        sk = build_session_key(event.source)
+
+        child_agent = MagicMock()
+        running_agent = MagicMock()
+        running_agent._active_children = [child_agent]
+        running_agent._active_children_lock = threading.Lock()
+        running_agent.get_activity_summary.return_value = {"current_tool": "delegate_task"}
+        runner._running_agents[sk] = running_agent
+        runner._running_agents_ts[sk] = time.time()
+        runner.adapters[event.source.platform] = adapter
+
+        result = await GatewayRunner._handle_active_session_busy_message(
+            runner, event, sk
+        )
+
+        assert result is True
+        assert adapter._pending_messages[sk].text == "keep this in mind"
+        running_agent.interrupt.assert_not_called()
+        child_agent.interrupt.assert_not_called()
+        sent_content = adapter._send_with_retry.await_args.kwargs["content"]
+        assert "Subagent working" in sent_content
+        assert "queued" in sent_content
 
     @pytest.mark.asyncio
     async def test_unauthorized_user_during_drain_still_blocked(self):

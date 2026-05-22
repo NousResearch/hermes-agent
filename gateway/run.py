@@ -2890,11 +2890,31 @@ class GatewayRunner:
 
         running_agent = self._running_agents.get(session_key)
 
+        has_active_delegation = False
+        if running_agent and running_agent is not _AGENT_PENDING_SENTINEL:
+            try:
+                children_lock = getattr(running_agent, "_active_children_lock", None)
+                active_children = getattr(running_agent, "_active_children", None)
+                if children_lock is not None and isinstance(active_children, (list, tuple, set, dict)):
+                    with children_lock:
+                        has_active_delegation = bool(active_children)
+            except Exception:
+                has_active_delegation = False
+
         # Steer mode: inject mid-run via running_agent.steer() instead of
         # queueing + interrupting.  If the agent isn't running yet
         # (sentinel) or lacks steer(), or the payload is empty, fall back
         # to queue semantics so nothing is lost.
         effective_mode = self._busy_input_mode
+        queued_for_delegation = False
+        if effective_mode == "interrupt" and has_active_delegation:
+            # A conversational message while delegate_task is blocking the parent
+            # should not cascade AIAgent.interrupt() into child agents and destroy
+            # their in-flight work. Explicit cancel commands (/stop, /new) are
+            # handled before this busy-message path and still perform full
+            # interruption; plain follow-ups are replayed after delegation exits.
+            effective_mode = "queue"
+            queued_for_delegation = True
         steered = False
         if effective_mode == "steer":
             steer_text = (event.text or "").strip()
@@ -2976,6 +2996,11 @@ class GatewayRunner:
             message = (
                 f"⏩ Steered into current run{status_detail}. "
                 f"Your message arrives after the next tool call."
+            )
+        elif queued_for_delegation:
+            message = (
+                f"⏳ Subagent working{status_detail} — queued for when it finishes. "
+                f"I'll respond once the current delegated task completes."
             )
         elif is_queue_mode:
             message = (

@@ -206,7 +206,12 @@ KANBAN_GUIDANCE = (
     "files outside it unless the task explicitly asks.\n"
     "3. **Heartbeat on long operations.** Call `kanban_heartbeat(note=...)` "
     "every few minutes during long subprocesses (training, encoding, crawling). "
-    "Skip heartbeats for short tasks.\n"
+    "Skip heartbeats for short tasks. **If your task may run longer than 1 hour, "
+    "you MUST call `kanban_heartbeat` at least once an hour** — the dispatcher "
+    "reclaims tasks running past `kanban.dispatch_stale_timeout_seconds` "
+    "(default 4 hours) when no heartbeat has arrived in the last hour. A "
+    "reclaim re-queues the task as `ready` without penalty (no failure counter "
+    "tick), but you lose your current run's progress.\n"
     "4. **Block on genuine ambiguity.** If you need a human decision you cannot "
     "infer (missing credentials, UX choice, paywalled source, peer output you "
     "need first), call `kanban_block(reason=\"...\")` and stop. Don't guess. "
@@ -216,7 +221,15 @@ KANBAN_GUIDANCE = (
     "artifacts. `metadata` is machine-readable facts "
     "(`{changed_files: [...], tests_run: N, decisions: [...]}`). Downstream "
     "workers read both via their own `kanban_show`. Never put secrets / "
-    "tokens / raw PII in either field — run rows are durable forever.\n"
+    "tokens / raw PII in either field — run rows are durable forever. "
+    "Exception: if your output is a code change that needs human review "
+    "before counting as merged/done (most coding tasks), drop the "
+    "structured metadata (changed_files / tests_run / diff_path) into a "
+    "`kanban_comment` first, then end with "
+    "`kanban_block(reason=\"review-required: <one-line summary>\")` so a "
+    "reviewer can approve+unblock or request changes. Reviewing-then-"
+    "completing is more honest than auto-completing work that still needs "
+    "eyes on it.\n"
     "6. **If follow-up work appears, create it; don't do it.** Use "
     "`kanban_create(title=..., assignee=<right-profile>, parents=[your-task-id])` "
     "to spawn a child task for the appropriate specialist profile instead of "
@@ -260,12 +273,16 @@ TOOL_USE_ENFORCEMENT_GUIDANCE = (
 
 # Model name substrings that trigger tool-use enforcement guidance.
 # Add new patterns here when a model family needs explicit steering.
-TOOL_USE_ENFORCEMENT_MODELS = ("gpt", "codex", "gemini", "gemma", "grok")
+TOOL_USE_ENFORCEMENT_MODELS = ("gpt", "codex", "gemini", "gemma", "grok", "glm", "qwen", "deepseek")
 
 # OpenAI GPT/Codex-specific execution guidance.  Addresses known failure modes
 # where GPT models abandon work on partial results, skip prerequisite lookups,
 # hallucinate instead of using tools, and declare "done" without verification.
 # Inspired by patterns from OpenAI's GPT-5.4 prompting guide & OpenClaw PR #38953.
+# Also applied to xAI Grok — same failure modes in practice (claims completion
+# without tool calls, suggests workarounds instead of using existing tools,
+# replies with plans/suggestions instead of executing). The body is
+# family-agnostic; the OPENAI_ prefix reflects origin, not exclusivity.
 OPENAI_MODEL_EXECUTION_GUIDANCE = (
     "# Execution discipline\n"
     "<tool_persistence>\n"

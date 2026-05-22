@@ -169,7 +169,7 @@ def _extract_attachments(msg: dict) -> List[dict]:
                 url = part.get("url", part.get("source", {}).get("url", ""))
                 if url:
                     attachments.append({"type": "image", "url": url})
-            elif ptype not in ("text",):
+            elif ptype not in {"text",}:
                 # Unknown non-text content type
                 attachments.append({"type": ptype, "data": part})
 
@@ -414,7 +414,7 @@ class EventBridge:
             for msg in messages:
                 ts = _ts_float(msg.get("timestamp", 0))
                 role = msg.get("role", "")
-                if role not in ("user", "assistant"):
+                if role not in {"user", "assistant"}:
                     continue
                 if ts > last_seen:
                     new_messages.append(msg)
@@ -594,7 +594,7 @@ def create_mcp_server(event_bridge: Optional[EventBridge] = None) -> "FastMCP":
         filtered = []
         for msg in all_messages:
             role = msg.get("role", "")
-            if role in ("user", "assistant"):
+            if role in {"user", "assistant"}:
                 content = _extract_message_content(msg)
                 if content:
                     filtered.append({
@@ -847,7 +847,7 @@ def create_mcp_server(event_bridge: Optional[EventBridge] = None) -> "FastMCP":
             id: The approval ID from permissions_list_open
             decision: One of "allow-once", "allow-always", or "deny"
         """
-        if decision not in ("allow-once", "allow-always", "deny"):
+        if decision not in {"allow-once", "allow-always", "deny"}:
             return json.dumps({
                 "error": f"Invalid decision: {decision}. "
                          f"Must be allow-once, allow-always, or deny"

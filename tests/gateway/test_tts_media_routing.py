@@ -8,7 +8,7 @@ only renders as a voice bubble when explicitly flagged) and via
 """
 
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
@@ -106,6 +106,16 @@ async def test_base_adapter_routes_voice_tagged_telegram_ogg_media_tag_to_voice_
     adapter.send_document.assert_not_awaited()
 
 
+def _fake_runner(thread_meta):
+    """Build a fake GatewayRunner-like object with the helper methods needed by
+    _deliver_media_from_response."""
+    runner = SimpleNamespace(
+        _thread_metadata_for_source=lambda source, anchor=None: thread_meta,
+        _reply_anchor_for_event=lambda event: None,
+    )
+    return runner
+
+
 @pytest.mark.asyncio
 async def test_streaming_delivery_routes_telegram_flac_media_tag_to_document_sender():
     event = _event(thread_id="topic-1")
@@ -121,7 +131,7 @@ async def test_streaming_delivery_routes_telegram_flac_media_tag_to_document_sen
     )
 
     await GatewayRunner._deliver_media_from_response(
-        object(),
+        _fake_runner({"thread_id": "topic-1"}),
         "MEDIA:/tmp/speech.flac",
         event,
         adapter,
@@ -150,7 +160,7 @@ async def test_streaming_delivery_routes_non_voice_telegram_ogg_media_tag_to_doc
     )
 
     await GatewayRunner._deliver_media_from_response(
-        object(),
+        _fake_runner({"thread_id": "topic-1"}),
         "MEDIA:/tmp/speech.ogg",
         event,
         adapter,
@@ -181,7 +191,7 @@ async def test_streaming_delivery_routes_telegram_mp3_media_tag_to_voice_sender(
     )
 
     await GatewayRunner._deliver_media_from_response(
-        object(),
+        _fake_runner({"thread_id": "topic-1"}),
         "MEDIA:/tmp/speech.mp3",
         event,
         adapter,

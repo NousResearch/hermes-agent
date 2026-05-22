@@ -210,6 +210,19 @@ class TestFormatMessageBoldItalic:
         assert "*bold*" in result
         assert "_italic_" in result
 
+    def test_reload_mcp_summary_escapes_dynamic_server_names(self, adapter):
+        content = (
+            "🔄 **MCP Servers Reloaded**\n"
+            "♻️ Reconnected: agent_one, tool[beta]\n"
+            "➕ Added: alpha*prod\n"
+            "🔧 3 tool(s) available from 2 server(s)"
+        )
+        result = adapter.format_message(content)
+        assert "*MCP Servers Reloaded*" in result
+        assert "agent\\_one" in result
+        assert "tool\\[beta\\]" in result
+        assert "alpha\\*prod" in result
+
 
 # =========================================================================
 # format_message - headers
@@ -759,6 +772,70 @@ class TestEditMessageStreamingSafety:
             "text": "final **bold**",
         }
 
+    @pytest.mark.asyncio
+    async def test_message_too_long_splits_into_continuations_not_silent_truncation(self):
+        """When edit_message_text exceeds Telegram's 4096 UTF-16 limit, the
+        adapter must split the content across the existing message + new
+        continuation messages so the user gets the full reply.  Previously
+        the adapter best-effort truncated the content with '…' and returned
+        success=True, dropping everything past the truncation boundary
+        (#19537)."""
+        adapter = TelegramAdapter(PlatformConfig(enabled=True, token="fake-token"))
+        adapter._bot = MagicMock()
+        adapter._bot.edit_message_text = AsyncMock()
+        # Continuation sends return monotonically increasing message ids.
+        _next_id = [1000]
+        async def _fake_send(**kwargs):
+            _next_id[0] += 1
+            return SimpleNamespace(message_id=_next_id[0])
+        adapter._bot.send_message = AsyncMock(side_effect=_fake_send)
+
+        # 6000-char content well over the 4096 UTF-16 limit.
+        oversized = "x" * 6000
+        result = await adapter.edit_message("123", "456", oversized, finalize=False)
+
+        # Adapter reports success with continuations populated.
+        assert result.success is True
+        assert result.error is None
+        assert len(result.continuation_message_ids) >= 1, (
+            "expected at least one continuation message"
+        )
+        # The reported message_id is the LAST visible message (the final
+        # continuation), so subsequent edits target the most recent.
+        assert result.message_id == result.continuation_message_ids[-1]
+        # Original message_id (456) was edited with chunk 1.
+        first_edit = adapter._bot.edit_message_text.call_args
+        assert first_edit.kwargs["message_id"] == 456
+        # Continuations were sent threaded as replies for visual grouping.
+        assert adapter._bot.send_message.await_count == len(result.continuation_message_ids)
+
+    @pytest.mark.asyncio
+    async def test_message_too_long_continuations_preserve_topic_metadata(self):
+        """Overflow continuations should stay in the originating Telegram topic."""
+        adapter = TelegramAdapter(PlatformConfig(enabled=True, token="fake-token"))
+        adapter._bot = MagicMock()
+        adapter._bot.edit_message_text = AsyncMock()
+        sent_kwargs = []
+
+        async def _fake_send(**kwargs):
+            sent_kwargs.append(kwargs)
+            return SimpleNamespace(message_id=1000 + len(sent_kwargs))
+
+        adapter._bot.send_message = AsyncMock(side_effect=_fake_send)
+
+        result = await adapter.edit_message(
+            "-100123",
+            "456",
+            "x" * 6000,
+            finalize=False,
+            metadata={"thread_id": "17585"},
+        )
+
+        assert result.success is True
+        assert sent_kwargs, "expected at least one overflow continuation"
+        assert all(kwargs.get("message_thread_id") == 17585 for kwargs in sent_kwargs)
+        assert sent_kwargs[0]["reply_to_message_id"] == 456
+
 # =========================================================================
 # Telegram guest mention gating
 # =========================================================================
@@ -778,6 +855,11 @@ def _guest_test_adapter(*, guest_mode=True, require_mention=True, allowed_chats=
     adapter.config = config
     adapter._bot = SimpleNamespace(id=999, username="hermes_bot")
     adapter._mention_patterns = adapter._compile_mention_patterns()
+    # PR db50af910 added a TELEGRAM_ALLOWED_USERS allowlist gate to
+    # _should_process_message. These tests aren't exercising the auth
+    # gate — they're exercising the guest-mode mention/allowed_chats
+    # logic that runs after — so stub the user authz to always allow.
+    adapter._is_callback_user_authorized = lambda *_a, **_kw: True
     return adapter
 
 

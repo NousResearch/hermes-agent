@@ -39,6 +39,10 @@ if [ "$(id -u)" = "0" ]; then
         # by the mapped user on the host side.
         chown -R hermes:hermes "$HERMES_HOME" 2>/dev/null || \
             echo "Warning: chown failed (rootless container?) — continuing anyway"
+        # The .venv must also be re-chowned when UID is remapped, otherwise
+        # lazy_deps.py cannot install platform packages (discord.py, etc.).
+        chown -R hermes:hermes "$INSTALL_DIR/.venv" 2>/dev/null || \
+            echo "Warning: chown .venv failed (rootless container?) — continuing anyway"
     fi
 
     # Ensure config.yaml is readable by the hermes runtime user even if it was
@@ -56,6 +60,9 @@ fi
 
 # --- Running as hermes from here ---
 source "${INSTALL_DIR}/.venv/bin/activate"
+
+# Stamp install method for detect_install_method()
+echo "docker" > "${HERMES_HOME:=/opt/data}/.install_method" 2>/dev/null || true
 
 # Create essential directory structure.  Cache and platform directories
 # (cache/images, cache/audio, platforms/whatsapp, etc.) are created on

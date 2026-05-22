@@ -24,7 +24,7 @@ If you prefer a real POSIX environment (for the dashboard's embedded terminal, `
 Open **PowerShell** (or Windows Terminal) and run:
 
 ```powershell
-irm https://raw.githubusercontent.com/NousResearch/hermes-agent/main/scripts/install.ps1 | iex
+iex (irm https://raw.githubusercontent.com/NousResearch/hermes-agent/main/scripts/install.ps1)
 ```
 
 No admin rights required. The installer goes to `%LOCALAPPDATA%\hermes\` and adds `hermes` to your **User PATH** — open a new terminal after it finishes.
@@ -38,10 +38,34 @@ No admin rights required. The installer goes to `%LOCALAPPDATA%\hermes\` and add
 | Parameter | Default | Purpose |
 |---|---|---|
 | `-Branch` | `main` | Clone a specific branch (useful for testing PRs) |
+| `-Commit` | unset | Pin install to a specific commit SHA (overrides `-Branch`) |
+| `-Tag` | unset | Pin install to a specific git tag (e.g. `v0.14.0`) |
 | `-NoVenv` | off | Skip venv creation (advanced — you manage Python yourself) |
 | `-SkipSetup` | off | Skip the post-install `hermes setup` wizard |
 | `-HermesHome` | `%LOCALAPPDATA%\hermes` | Override data directory |
 | `-InstallDir` | `%LOCALAPPDATA%\hermes\hermes-agent` | Override code location |
+
+The installer auto-retries flaky git fetches and strips BOM from any downloaded `install.ps1` payload, so a UTF-8 BOM picked up during HTTP transit no longer breaks the `[scriptblock]::Create((irm ...))` form.
+
+### Desktop installer (alternative)
+
+A thin GUI installer is also available — useful if you'd rather double-click an `.exe` than open PowerShell. Download Hermes Desktop, run the installer, and on first launch the GUI calls `install.ps1` under the hood to provision Python (via `uv`), Node, PortableGit, and the rest of the dependency bootstrap described below. After the first run, the desktop app and the PowerShell-installed `hermes` CLI share the same `%LOCALAPPDATA%\hermes\hermes-agent` install and `%USERPROFILE%\.hermes` data directory — switch between the GUI and the CLI freely.
+
+Use the desktop installer when you want a familiar Windows install experience or you're handing Hermes to a non-developer; use the PowerShell one-liner when you're already in a terminal.
+
+### Dependency bootstrap (`dep_ensure`)
+
+On first launch (and on demand when a missing tool is detected), Hermes runs a small Python bootstrapper — `hermes_cli/dep_ensure.py` — that checks for and lazily installs the non-Python dependencies it needs. On Windows, the relevant ones are:
+
+| Dependency | Why Hermes needs it |
+|---|---|
+| **PortableGit** | Provides `bash.exe` for the terminal tool and `git` for in-session clones. Provisioned at install time, not by `dep_ensure`. |
+| **Node.js 22** | Required for the browser tool (`agent-browser`), the TUI's web bridge, and the WhatsApp bridge. |
+| **ffmpeg** | Audio format conversion for TTS / voice messages. |
+| **ripgrep** | Fast file search — falls back to `grep` if unavailable. |
+| **npm packages** | `agent-browser`, Playwright Chromium, and any per-toolset Node deps are installed once at first browser-tool use. |
+
+Each dep has a `shutil.which(...)`-style check; if a binary is missing and the run is interactive, `dep_ensure` offers to install it (deferring to `scripts\install.ps1 -ensure <dep>` for the actual install logic). Non-interactive runs (gateway, cron, headless desktop launches) skip the prompt and surface a clear `this feature needs <dep>` error instead.
 
 ## What the installer actually does
 

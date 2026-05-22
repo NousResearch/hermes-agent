@@ -999,6 +999,88 @@ class TestAnthropicStreamCallbacks:
 
         assert touch_calls.count("receiving stream response") == len(events)
 
+    @patch("run_agent.AIAgent._replace_primary_openai_client")
+    def test_anthropic_stream_parser_valueerror_retries_before_delivery(
+        self, mock_replace, monkeypatch,
+    ):
+        """Malformed Anthropic event-stream frames retry instead of surfacing HTTP None."""
+        from run_agent import AIAgent
+
+        agent = AIAgent(
+            api_key="test-key",
+            base_url="https://api.minimax.io/anthropic",
+            provider="minimax",
+            model="MiniMax-M2.7",
+            quiet_mode=True,
+            skip_context_files=True,
+            skip_memory=True,
+        )
+        agent.api_mode = "anthropic_messages"
+        agent._interrupt_requested = False
+        monkeypatch.setenv("HERMES_STREAM_RETRIES", "1")
+
+        class _BadStream:
+            response = None
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                return False
+
+            def __iter__(self):
+                raise ValueError("expected ident at line 1 column 149")
+
+        final_message = SimpleNamespace(content=[], stop_reason="end_turn")
+        good_stream = MagicMock()
+        good_stream.__enter__ = MagicMock(return_value=good_stream)
+        good_stream.__exit__ = MagicMock(return_value=False)
+        good_stream.__iter__ = MagicMock(return_value=iter([]))
+        good_stream.get_final_message.return_value = final_message
+
+        agent._anthropic_client = MagicMock()
+        agent._anthropic_client.messages.stream.side_effect = [
+            _BadStream(),
+            good_stream,
+        ]
+
+        response = agent._interruptible_streaming_api_call({})
+
+        assert response is final_message
+        assert agent._anthropic_client.messages.stream.call_count == 2
+        assert mock_replace.call_count == 1
+
+    @patch("run_agent.AIAgent._replace_primary_openai_client")
+    def test_generic_anthropic_valueerror_still_propagates_without_stream_retry(
+        self, mock_replace, monkeypatch,
+    ):
+        """Only known provider stream parser ValueErrors are treated as transient."""
+        from run_agent import AIAgent
+
+        agent = AIAgent(
+            api_key="test-key",
+            base_url="https://api.minimax.io/anthropic",
+            provider="minimax",
+            model="MiniMax-M2.7",
+            quiet_mode=True,
+            skip_context_files=True,
+            skip_memory=True,
+        )
+        agent.api_mode = "anthropic_messages"
+        agent._interrupt_requested = False
+        monkeypatch.setenv("HERMES_STREAM_RETRIES", "1")
+
+        agent._anthropic_client = MagicMock()
+        agent._anthropic_client.messages.stream.side_effect = ValueError(
+            "invalid local request shape"
+        )
+
+        with pytest.raises(ValueError, match="invalid local request shape"):
+            agent._interruptible_streaming_api_call({})
+
+        assert agent._anthropic_client.messages.stream.call_count == 1
+        assert mock_replace.call_count == 0
+
 
 class TestPartialToolCallWarning:
     """Regression: when a stream dies mid tool-call argument generation after
@@ -1505,3 +1587,144 @@ class TestCopilotACPStreamingDecision:
 
         assert _use_streaming is True
 
+
+class TestCodexFallbackErrorEvent:
+    """Provider ``error`` SSE frames must surface the real message,
+    not the generic "did not emit a terminal response" RuntimeError.
+
+    xAI emits ``type=error`` as the FIRST frame on the Responses stream
+    when an OAuth account is unsubscribed/exhausted (May 2026
+    SuperGrok rollout).  The SDK helper raises
+    ``RuntimeError("Expected to have received response.created before
+    error")`` which the caller catches and routes to
+    ``_run_codex_create_stream_fallback``.  The fallback then opens a
+    NEW stream that emits the same ``type=error`` frame; before this
+    fix it ignored the event entirely and raised a useless RuntimeError.
+    """
+
+    def _make_agent(self):
+        from run_agent import AIAgent
+        agent = AIAgent(
+            api_key="test-key",
+            base_url="https://api.x.ai/v1",
+            provider="xai-oauth",
+            model="grok-4.3",
+            quiet_mode=True,
+            skip_context_files=True,
+            skip_memory=True,
+        )
+        agent.api_mode = "codex_responses"
+        agent._touch_activity = lambda desc: None
+        return agent
+
+    def test_fallback_raises_synthesized_error_with_xai_subscription_message(self):
+        from run_agent import _StreamErrorEvent
+
+        agent = self._make_agent()
+
+        error_event = SimpleNamespace(
+            type="error",
+            message=(
+                "Forbidden: The caller does not have permission to execute the specified operation. "
+                "'You have either run out of available resources or do not have an active Grok subscription.'"
+            ),
+            code="permission_denied",
+            param=None,
+            sequence_number=1,
+        )
+
+        class _FakeStream:
+            def __iter__(self_inner):
+                return iter([error_event])
+            def close(self_inner):
+                return None
+
+        mock_client = MagicMock()
+        mock_client.responses.create.return_value = _FakeStream()
+
+        with pytest.raises(_StreamErrorEvent) as excinfo:
+            agent._run_codex_create_stream_fallback(
+                {"model": "grok-4.3", "instructions": "hi", "input": []},
+                client=mock_client,
+            )
+
+        exc = excinfo.value
+        assert "active Grok subscription" in str(exc)
+        assert exc.code == "permission_denied"
+        assert isinstance(exc.body, dict)
+        assert exc.body["error"]["message"] == error_event.message
+        # _extract_api_error_context reads .body["error"]["message"] — make sure
+        # the entitlement detector will find the subscription phrase there.
+        assert "active Grok subscription" in exc.body["error"]["message"]
+
+    def test_fallback_dict_event_payload_is_also_handled(self):
+        """Some relays deliver events as plain dicts instead of model
+        objects; the dict branch in the loop must surface them too."""
+        from run_agent import _StreamErrorEvent
+
+        agent = self._make_agent()
+
+        error_event = {
+            "type": "error",
+            "message": "rate_limited",
+            "code": "rate_limit_exceeded",
+        }
+
+        class _FakeStream:
+            def __iter__(self_inner):
+                return iter([error_event])
+            def close(self_inner):
+                return None
+
+        mock_client = MagicMock()
+        mock_client.responses.create.return_value = _FakeStream()
+
+        with pytest.raises(_StreamErrorEvent) as excinfo:
+            agent._run_codex_create_stream_fallback(
+                {"model": "grok-4.3", "instructions": "hi", "input": []},
+                client=mock_client,
+            )
+
+        assert "rate_limited" in str(excinfo.value)
+        assert excinfo.value.code == "rate_limit_exceeded"
+
+    def test_fallback_surfaces_message_useful_to_summarizer(self):
+        """The synthesized exception must be readable by
+        ``_summarize_api_error`` so the user-facing log line shows the
+        real provider message instead of a generic class name."""
+        from run_agent import AIAgent, _StreamErrorEvent
+
+        agent = self._make_agent()
+        exc = _StreamErrorEvent(
+            "You have either run out of available resources or do not have an active Grok subscription.",
+            code="permission_denied",
+        )
+
+        summary = AIAgent._summarize_api_error(exc)
+        assert "active Grok subscription" in summary
+
+    def test_fallback_still_raises_terminal_error_when_no_error_event(self):
+        """Streams that simply end without any terminal event (and no
+        ``error`` frame) must continue to raise the original
+        ``"did not emit a terminal response"`` RuntimeError so callers
+        can distinguish "stream truncated mid-flight" from "provider
+        rejected the call"."""
+        agent = self._make_agent()
+
+        # Empty stream — no events at all
+        class _FakeStream:
+            def __iter__(self_inner):
+                return iter([])
+            def close(self_inner):
+                return None
+
+        mock_client = MagicMock()
+        mock_client.responses.create.return_value = _FakeStream()
+
+        with pytest.raises(RuntimeError) as excinfo:
+            agent._run_codex_create_stream_fallback(
+                {"model": "grok-4.3", "instructions": "hi", "input": []},
+                client=mock_client,
+            )
+
+        assert "did not emit a terminal response" in str(excinfo.value)

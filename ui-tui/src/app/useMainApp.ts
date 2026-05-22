@@ -3,7 +3,7 @@ import { useStore } from '@nanostores/react'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
 import { STARTUP_RESUME_ID } from '../config/env.js'
-import { FULL_RENDER_TAIL_ITEMS, MAX_HISTORY, WHEEL_SCROLL_STEP } from '../config/limits.js'
+import { MAX_HISTORY, WHEEL_SCROLL_STEP } from '../config/limits.js'
 import { SECTION_NAMES, sectionMode } from '../domain/details.js'
 import { attachedImageNotice, imageTokenMeta } from '../domain/messages.js'
 import { fmtCwdBranch, shortCwd } from '../domain/paths.js'
@@ -274,7 +274,6 @@ export function useMainApp(gw: GatewayClient) {
       estimatedMsgHeight(virtualRows[index]!.msg, cols, {
         compact: ui.compact,
         details: detailsVisible,
-        limitHistory: index < virtualRows.length - FULL_RENDER_TAIL_ITEMS,
         userPrompt: ui.theme.brand.prompt,
         withSeparator: virtualRows[index]!.msg.role === 'user' && firstUserIdx >= 0 && index > firstUserIdx
       }),
@@ -375,6 +374,12 @@ export function useMainApp(gw: GatewayClient) {
     // fires.  This leaves kitty keyboard protocol, mouse modes, etc. enabled
     // in the parent shell.  See issue #19194.
     process.exit(0)
+  }, [exit, gw])
+
+  const dieWithCode = useCallback((code: number) => {
+    gw.kill()
+    exit()
+    process.exit(code)
   }, [exit, gw])
 
   const session = useSessionLifecycle({
@@ -643,6 +648,7 @@ export function useMainApp(gw: GatewayClient) {
         session: {
           closeSession: session.closeSession,
           die,
+          dieWithCode,
           guardBusySessionSwitch: session.guardBusySessionSwitch,
           newSession: session.newSession,
           resetVisibleHistory: session.resetVisibleHistory,

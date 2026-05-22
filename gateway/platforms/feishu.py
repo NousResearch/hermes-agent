@@ -428,7 +428,7 @@ RejectReason = Literal[
 
 def _is_bot_sender(sender: Any) -> bool:
     # receive_v1 docs say {user, bot}; accept "app" defensively.
-    return getattr(sender, "sender_type", "") in ("bot", "app")
+    return getattr(sender, "sender_type", "") in {"bot", "app"}
 
 
 def _sender_identity(sender: Any) -> frozenset:
@@ -1300,12 +1300,12 @@ def _run_official_feishu_ws_client(ws_client: Any, adapter: Any) -> None:
         except Exception:
             logger.debug("[Feishu] Failed to apply websocket runtime overrides", exc_info=True)
 
-    async def _connect_with_overrides(*args: Any, **kwargs: Any) -> Any:
+    def _connect_with_overrides(*args: Any, **kwargs: Any) -> Any:
         if adapter._ws_ping_interval is not None and "ping_interval" not in kwargs:
             kwargs["ping_interval"] = adapter._ws_ping_interval
         if adapter._ws_ping_timeout is not None and "ping_timeout" not in kwargs:
             kwargs["ping_timeout"] = adapter._ws_ping_timeout
-        return await original_connect(*args, **kwargs)
+        return original_connect(*args, **kwargs)
 
     def _configure_with_overrides(conf: Any) -> Any:
         if original_configure is None:
@@ -1343,8 +1343,65 @@ def _run_official_feishu_ws_client(ws_client: Any, adapter: Any) -> None:
 
 
 def check_feishu_requirements() -> bool:
-    """Check if Feishu/Lark dependencies are available."""
-    return FEISHU_AVAILABLE
+    """Check if Feishu/Lark dependencies are available.
+
+    Lazy-installs lark-oapi via ``tools.lazy_deps.ensure("platform.feishu")``
+    on first call if not present. Rebinds all module-level globals on success.
+    """
+    if FEISHU_AVAILABLE:
+        return True
+
+    def _import():
+        import lark_oapi as lark
+        from lark_oapi.api.application.v6 import GetApplicationRequest
+        from lark_oapi.api.im.v1 import (
+            CreateFileRequest, CreateFileRequestBody,
+            CreateImageRequest, CreateImageRequestBody,
+            CreateMessageRequest, CreateMessageRequestBody,
+            GetChatRequest, GetMessageRequest, GetMessageResourceRequest,
+            P2ImMessageMessageReadV1,
+            ReplyMessageRequest, ReplyMessageRequestBody,
+            UpdateMessageRequest, UpdateMessageRequestBody,
+        )
+        from lark_oapi.core import AccessTokenType, HttpMethod
+        from lark_oapi.core.const import FEISHU_DOMAIN, LARK_DOMAIN
+        from lark_oapi.core.model import BaseRequest
+        from lark_oapi.event.callback.model.p2_card_action_trigger import (
+            CallBackCard, P2CardActionTriggerResponse,
+        )
+        from lark_oapi.event.dispatcher_handler import EventDispatcherHandler
+        from lark_oapi.ws import Client as FeishuWSClient
+        return {
+            "lark": lark,
+            "GetApplicationRequest": GetApplicationRequest,
+            "CreateFileRequest": CreateFileRequest,
+            "CreateFileRequestBody": CreateFileRequestBody,
+            "CreateImageRequest": CreateImageRequest,
+            "CreateImageRequestBody": CreateImageRequestBody,
+            "CreateMessageRequest": CreateMessageRequest,
+            "CreateMessageRequestBody": CreateMessageRequestBody,
+            "GetChatRequest": GetChatRequest,
+            "GetMessageRequest": GetMessageRequest,
+            "GetMessageResourceRequest": GetMessageResourceRequest,
+            "P2ImMessageMessageReadV1": P2ImMessageMessageReadV1,
+            "ReplyMessageRequest": ReplyMessageRequest,
+            "ReplyMessageRequestBody": ReplyMessageRequestBody,
+            "UpdateMessageRequest": UpdateMessageRequest,
+            "UpdateMessageRequestBody": UpdateMessageRequestBody,
+            "AccessTokenType": AccessTokenType,
+            "HttpMethod": HttpMethod,
+            "FEISHU_DOMAIN": FEISHU_DOMAIN,
+            "LARK_DOMAIN": LARK_DOMAIN,
+            "BaseRequest": BaseRequest,
+            "CallBackCard": CallBackCard,
+            "P2CardActionTriggerResponse": P2CardActionTriggerResponse,
+            "EventDispatcherHandler": EventDispatcherHandler,
+            "FeishuWSClient": FeishuWSClient,
+            "FEISHU_AVAILABLE": True,
+        }
+
+    from tools.lazy_deps import ensure_and_bind
+    return ensure_and_bind("platform.feishu", _import, globals(), prompt=False)
 
 
 class FeishuAdapter(BasePlatformAdapter):
@@ -1428,8 +1485,8 @@ class FeishuAdapter(BasePlatformAdapter):
                     per_chat_require_mention = _to_boolean(rule_cfg.get("require_mention"))
                 group_rules[str(chat_id)] = FeishuGroupRule(
                     policy=str(rule_cfg.get("policy", "open")).strip().lower(),
-                    allowlist=set(str(u).strip() for u in rule_cfg.get("allowlist", []) if str(u).strip()),
-                    blacklist=set(str(u).strip() for u in rule_cfg.get("blacklist", []) if str(u).strip()),
+                    allowlist={str(u).strip() for u in rule_cfg.get("allowlist", []) if str(u).strip()},
+                    blacklist={str(u).strip() for u in rule_cfg.get("blacklist", []) if str(u).strip()},
                     require_mention=per_chat_require_mention,
                 )
 
@@ -1443,7 +1500,7 @@ class FeishuAdapter(BasePlatformAdapter):
         # Env-only so adapter and gateway auth bypass share one source; yaml
         # feishu.allow_bots is bridged to this env var at config load.
         allow_bots = os.getenv("FEISHU_ALLOW_BOTS", "none").strip().lower()
-        if allow_bots not in ("none", "mentions", "all"):
+        if allow_bots not in {"none", "mentions", "all"}:
             logger.warning(
                 "[Feishu] Unknown allow_bots=%r, falling back to 'none'. Valid: none, mentions, all.",
                 allow_bots,
@@ -2216,11 +2273,7 @@ class FeishuAdapter(BasePlatformAdapter):
                     daemon=True,
                 ).start()
             return
-        future = asyncio.run_coroutine_threadsafe(
-            self._handle_message_event_data(data),
-            loop,
-        )
-        future.add_done_callback(self._log_background_failure)
+        self._submit_on_loop(loop, self._handle_message_event_data(data))
 
     def _enqueue_pending_inbound_event(self, data: Any) -> bool:
         """Append an event to the pending-inbound queue.
@@ -2296,16 +2349,12 @@ class FeishuAdapter(BasePlatformAdapter):
                     dispatched = 0
                     requeue: List[Any] = []
                     for event in batch:
-                        try:
-                            fut = asyncio.run_coroutine_threadsafe(
-                                self._handle_message_event_data(event),
-                                loop,
-                            )
-                            fut.add_done_callback(self._log_background_failure)
+                        if self._submit_on_loop(
+                            loop, self._handle_message_event_data(event)
+                        ):
                             dispatched += 1
-                        except RuntimeError:
-                            # Loop closed between check and submit — requeue
-                            # and poll again.
+                        else:
+                            # Loop closed/unavailable — requeue and poll again.
                             requeue.append(event)
                     if requeue:
                         with self._pending_inbound_lock:
@@ -2409,11 +2458,10 @@ class FeishuAdapter(BasePlatformAdapter):
         if not self._loop_accepts_callbacks(loop):
             logger.warning("[Feishu] Dropping drive comment event before adapter loop is ready")
             return
-        future = asyncio.run_coroutine_threadsafe(
-            handle_drive_comment_event(self._client, data, self_open_id=self._bot_open_id),
+        self._submit_on_loop(
             loop,
+            handle_drive_comment_event(self._client, data, self_open_id=self._bot_open_id),
         )
-        future.add_done_callback(self._log_background_failure)
 
     def _on_reaction_event(self, event_type: str, data: Any) -> None:
         """Route user reactions on bot messages as synthetic text events."""
@@ -2441,11 +2489,7 @@ class FeishuAdapter(BasePlatformAdapter):
             or bool(getattr(loop, "is_closed", lambda: False)())
         ):
             return
-        future = asyncio.run_coroutine_threadsafe(
-            self._handle_reaction_event(event_type, data),
-            loop,
-        )
-        future.add_done_callback(self._log_background_failure)
+        self._submit_on_loop(loop, self._handle_reaction_event(event_type, data))
 
     def _on_card_action_trigger(self, data: Any) -> Any:
         """Handle card-action callback from the Feishu SDK (synchronous).
@@ -2491,11 +2535,14 @@ class FeishuAdapter(BasePlatformAdapter):
 
     def _submit_on_loop(self, loop: Any, coro: Any) -> bool:
         """Schedule background work on the adapter loop with shared failure logging."""
-        try:
-            future = asyncio.run_coroutine_threadsafe(coro, loop)
-        except Exception:
-            coro.close()
-            logger.warning("[Feishu] Failed to schedule background callback work", exc_info=True)
+        from agent.async_utils import safe_schedule_threadsafe
+        future = safe_schedule_threadsafe(
+            coro, loop,
+            logger=logger,
+            log_message="[Feishu] Failed to schedule background callback work",
+            log_level=logging.WARNING,
+        )
+        if future is None:
             return False
         future.add_done_callback(self._log_background_failure)
         return True
@@ -2752,7 +2799,7 @@ class FeishuAdapter(BasePlatformAdapter):
     # =========================================================================
 
     def _reactions_enabled(self) -> bool:
-        return os.getenv("FEISHU_REACTIONS", "true").strip().lower() not in ("false", "0", "no")
+        return os.getenv("FEISHU_REACTIONS", "true").strip().lower() not in {"false", "0", "no"}
 
     async def _add_reaction(self, message_id: str, emoji_type: str) -> Optional[str]:
         """Return the reaction_id on success, else None. The id is needed later for deletion."""
@@ -3219,7 +3266,7 @@ class FeishuAdapter(BasePlatformAdapter):
             self._on_bot_added_to_chat(data)
         elif event_type == "im.chat.member.bot.deleted_v1":
             self._on_bot_removed_from_chat(data)
-        elif event_type in ("im.message.reaction.created_v1", "im.message.reaction.deleted_v1"):
+        elif event_type in {"im.message.reaction.created_v1", "im.message.reaction.deleted_v1"}:
             self._on_reaction_event(event_type, data)
         elif event_type == "card.action.trigger":
             self._on_card_action_trigger(data)
@@ -4273,21 +4320,31 @@ class FeishuAdapter(BasePlatformAdapter):
             request = self._build_reply_message_request(effective_reply_to, body)
             return await asyncio.to_thread(self._client.im.v1.message.reply, request)
 
-        body = self._build_create_message_body(
-            receive_id=chat_id,
-            msg_type=msg_type,
-            content=payload,
-            uuid_value=str(uuid.uuid4()),
-        )
-        # Detect whether chat_id is a user open_id (DM) or a chat_id (group).
-        # Feishu API expects receive_id_type="open_id" for user DMs (ou_ prefix)
-        # and receive_id_type="chat_id" for group chats (oc_ prefix, which IS
-        # the chat_id format — see https://open.feishu.cn/document/).
-        if chat_id.startswith("ou_"):
-            receive_id_type = "open_id"
+        # For topic/thread messages that fell back from reply→create, use
+        # thread_id as receive_id so the message lands in the topic instead of
+        # the main chat.
+        _thread_id = (metadata or {}).get("thread_id")
+        if _thread_id:
+            body = self._build_create_message_body(
+                receive_id=_thread_id,
+                msg_type=msg_type,
+                content=payload,
+                uuid_value=str(uuid.uuid4()),
+            )
+            request = self._build_create_message_request("thread_id", body)
         else:
-            receive_id_type = "chat_id"
-        request = self._build_create_message_request(receive_id_type, body)
+            body = self._build_create_message_body(
+                receive_id=chat_id,
+                msg_type=msg_type,
+                content=payload,
+                uuid_value=str(uuid.uuid4()),
+            )
+            # Detect whether chat_id is a user open_id (DM) or a chat_id (group).
+            if chat_id.startswith("ou_"):
+                receive_id_type = "open_id"
+            else:
+                receive_id_type = "chat_id"
+            request = self._build_create_message_request(receive_id_type, body)
         return await asyncio.to_thread(self._client.im.v1.message.create, request)
 
     @staticmethod
@@ -4805,7 +4862,7 @@ def _poll_registration(
 
         # Terminal errors
         error = res.get("error", "")
-        if error in ("access_denied", "expired_token"):
+        if error in {"access_denied", "expired_token"}:
             if poll_count > 0:
                 print()
             logger.warning("[Feishu onboard] Registration %s", error)

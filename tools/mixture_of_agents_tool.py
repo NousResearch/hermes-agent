@@ -54,6 +54,7 @@ from typing import Dict, Any, List, Optional
 from tools.openrouter_client import get_async_client as _get_openrouter_client, check_api_key as check_openrouter_api_key
 from agent.auxiliary_client import extract_content_or_reasoning
 from tools.debug_helpers import DebugSession
+import sys
 
 logger = logging.getLogger(__name__)
 
@@ -451,7 +452,7 @@ if __name__ == "__main__":
         print("❌ OPENROUTER_API_KEY environment variable not set")
         print("Please set your API key: export OPENROUTER_API_KEY='your-key-here'")
         print("Get API key at: https://openrouter.ai/")
-        exit(1)
+        sys.exit(1)
     else:
         print("✅ OpenRouter API key found")
     

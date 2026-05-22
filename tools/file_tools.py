@@ -380,7 +380,7 @@ def _get_file_ops(task_id: str = "default") -> ShellFileOperations:
             logger.info("Creating new %s environment for task %s...", env_type, task_id[:8])
 
             container_config = None
-            if env_type in ("docker", "singularity", "modal", "daytona", "vercel_sandbox"):
+            if env_type in {"docker", "singularity", "modal", "daytona", "vercel_sandbox"}:
                 container_config = {
                     "container_cpu": config.get("container_cpu", 1),
                     "container_memory": config.get("container_memory", 5120),

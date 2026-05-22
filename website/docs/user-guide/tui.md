@@ -50,6 +50,19 @@ The classic CLI remains available as the default. Anything documented in [CLI In
 
 Same [skins](features/skins.md) and [personalities](features/personality.md) apply. Switch mid-session with `/skin ares`, `/personality pirate`, and the UI repaints live. See [Skins & Themes](features/skins.md) for the full list of customizable keys and which ones apply to classic vs TUI — the TUI honors the banner palette, UI colors, prompt glyph/color, session display, completion menu, selection bg, `tool_prefix`, and `help_header`.
 
+### Collapsible banner sections
+
+The TUI startup banner groups runtime info into four collapsible sections, each rendered with a `▸` / `▾` chevron next to the section title:
+
+| Section | Default state |
+|---------|---------------|
+| Tools | Open |
+| Skills | Collapsed |
+| System Prompt | Collapsed |
+| MCP Servers | Collapsed |
+
+Click anywhere on a section header (or its chevron) to toggle it. The Tools list opens by default because it's the most-checked section at session start; Skills, System Prompt, and MCP Servers collapse by default so the banner stays compact even when you've installed dozens of skills or wired up many MCP servers. State is local to the banner instance, so the next launch resets to the defaults.
+
 ## Requirements
 
 - **Node.js** ≥ 20 — the TUI runs as a subprocess launched from the Python CLI. `hermes doctor` verifies this.
@@ -66,7 +79,7 @@ export HERMES_TUI_DIR=/path/to/prebuilt/ui-tui
 hermes --tui
 ```
 
-The directory must contain `dist/entry.js` and an up-to-date `node_modules`.
+The directory must contain `dist/entry.js`.
 
 ## Keybindings
 
@@ -93,7 +106,7 @@ All slash commands work unchanged. A few are TUI-owned — they produce richer o
 | `/usage` | Rich token / cost / context panel |
 | `/agents` (alias `/tasks`) | Observability overlay — live subagent tree with kill/pause controls, per-branch cost / token / file rollups, turn-by-turn history |
 | `/reload` | Re-reads `~/.hermes/.env` into the running TUI process so newly added API keys take effect without a restart |
-| `/mouse` | Toggle mouse tracking on/off at runtime (also persists to `display.mouse_tracking` in `config.yaml`) |
+| `/mouse [on\|off\|toggle\|wheel\|buttons\|all]` | Pick a mouse tracking preset at runtime (also persists to `display.mouse_tracking` in `config.yaml`). `wheel` (1000+1006) keeps scroll-wheel scrolling without the hover events that make tmux spam "No image in clipboard" over the prompt row; `buttons` adds drag-to-select; `all` is the default with hover-driven UI. |
 
 Every other slash command (including installed skills, quick commands, and personality toggles) works identically to the classic CLI. See [Slash Commands Reference](../reference/slash-commands.md).
 
@@ -158,6 +171,9 @@ The status line also shows:
 
 - **Working directory with git branch** — `~/projects/hermes-agent (docs/two-week-gap-sweep)`. The branch suffix updates when you `git checkout` in a side terminal (mtime-cached) so the TUI reflects your actual active branch, not whatever it was at launch.
 - **Per-prompt elapsed time** — `⏱ 12s/3m 45s` while the turn is running (live), frozen to `⏲ 32s / 3m 45s` after the turn completes. First number is time since last user message; second is total session duration. Resets on every new prompt.
+- **`🗜️ N`** — number of times the running session has been auto-compressed. Appears once the first compression fires.
+- **`▶ N`** — number of `/background` tasks currently running in this session. Appears whenever at least one task is in flight.
+- **`⚠ YOLO`** — visible warning whenever YOLO mode is on (`hermes --yolo`, `/yolo`, or `HERMES_YOLO_MODE=1`). The same badge also appears in the startup banner so you cannot launch an auto-approving session without noticing.
 
 ## Configuration
 
@@ -174,7 +190,13 @@ display:
     thinking: expanded       # always open
     tools: expanded          # always open
     activity: collapsed      # opt back IN to the activity panel (hidden by default)
-  mouse_tracking: true       # disable if your terminal conflicts with mouse reporting
+  mouse_tracking: all        # off | wheel | buttons | all (or true/false for back-compat).
+                             #   wheel   — 1000+1006 (scroll + click; no drag, no hover —
+                             #             recommended inside tmux to silence the prompt-row
+                             #             "No image in clipboard" spam from hover events)
+                             #   buttons — adds 1002 for terminal-side drag selection
+                             #   all     — adds 1003 for hover (scrollbar paginate-on-hover,
+                             #             link mouseenter, etc.)
 ```
 
 Runtime toggles:
@@ -214,6 +236,25 @@ existing configs keep working unchanged.
 Sessions are shared between the TUI and the classic CLI — both write to the same `~/.hermes/state.db`. You can start a session in one, resume in the other. The session picker surfaces sessions from both sources, with a source tag.
 
 See [Sessions](sessions.md) for lifecycle, search, compression, and export.
+
+## Attaching to a running gateway
+
+By default the TUI spawns its own in-process gateway, so each TUI instance is self-contained. If you already have a long-lived gateway running (e.g. `hermes gateway run` in tmux, or the systemd / launchd service), you can point the TUI at that gateway instead — the TUI then becomes a thin client and shares state with every other surface (messaging platforms, web dashboard, other TUI sessions) that's attached to the same gateway.
+
+Set the websocket URL via env before launching:
+
+```bash
+export HERMES_TUI_GATEWAY_URL="ws://localhost:8765/api/ws?token=<auth-token>"
+hermes --tui
+```
+
+The token comes from the gateway's API auth configuration (see [API Server](features/api-server.md)). When the env var is set, the TUI:
+
+- Skips spawning a local gateway entirely — no duplicate platform adapters, no port conflicts.
+- Routes every action (slash commands, image attach, browser progress, voice events, …) over the websocket to the shared gateway.
+- Reconnects automatically if the gateway URL rotates (new token) between requests.
+
+This is the same channel the web dashboard's embedded TUI uses (see [Web Dashboard](features/web-dashboard.md#chat)) — one gateway, many clients.
 
 ## Reverting to the classic CLI
 

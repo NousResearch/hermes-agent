@@ -128,6 +128,9 @@ def _normalize_job_record(job: Dict[str, Any]) -> Dict[str, Any]:
         state = "scheduled" if normalized.get("enabled", True) else "paused"
     normalized["state"] = state
 
+    profile = _coerce_job_text(normalized.get("profile")).strip()
+    normalized["profile"] = profile or None
+
     return normalized
 
 
@@ -479,6 +482,30 @@ def _normalize_workdir(workdir: Optional[str]) -> Optional[str]:
     return str(resolved)
 
 
+def _normalize_profile(profile: Optional[str]) -> Optional[str]:
+    """Normalize and validate an optional cron job profile name.
+
+    Empty / None disables per-job profile selection. Otherwise the profile name
+    is canonicalized with the same rules as ``hermes -p`` and must refer to an
+    existing profile at create/update time. ``default`` is the built-in root
+    profile and is always valid.
+    """
+    if profile is None:
+        return None
+    raw = str(profile).strip()
+    if not raw:
+        return None
+
+    from hermes_cli.profiles import normalize_profile_name, resolve_profile_env
+
+    normalized = normalize_profile_name(raw)
+    # resolve_profile_env validates the canonical name and checks that named
+    # profiles exist. Store only the stable profile id, not the filesystem path,
+    # so profile directories can move with the Hermes root.
+    resolve_profile_env(normalized)
+    return normalized
+
+
 def create_job(
     prompt: Optional[str],
     schedule: str,
@@ -495,6 +522,7 @@ def create_job(
     context_from: Optional[Union[str, List[str]]] = None,
     enabled_toolsets: Optional[List[str]] = None,
     workdir: Optional[str] = None,
+    profile: Optional[str] = None,
     no_agent: bool = False,
 ) -> Dict[str, Any]:
     """
@@ -536,6 +564,11 @@ def create_job(
                 With ``no_agent=True``, ``workdir`` is still applied as the
                 script's cwd so relative paths inside the script behave
                 predictably.
+        profile: Optional Hermes profile name. When set, the job runs with
+                that profile's HERMES_HOME so profile-specific config,
+                credentials, scripts, skills, and memory paths resolve
+                consistently. ``default`` selects the root profile; empty /
+                None preserves the scheduler's existing behaviour.
         no_agent: When True, skip the agent entirely — run ``script`` on schedule
                 and deliver its stdout directly. Empty stdout = silent (no
                 delivery). Requires ``script`` to be set. Ideal for classic
@@ -573,6 +606,7 @@ def create_job(
     normalized_toolsets = [str(t).strip() for t in enabled_toolsets if str(t).strip()] if enabled_toolsets else None
     normalized_toolsets = normalized_toolsets or None
     normalized_workdir = _normalize_workdir(workdir)
+    normalized_profile = _normalize_profile(profile)
     normalized_no_agent = bool(no_agent)
 
     # no_agent jobs are meaningless without a script — the script IS the job.
@@ -627,6 +661,7 @@ def create_job(
         "origin": origin,  # Tracks where job was created for "origin" delivery
         "enabled_toolsets": normalized_toolsets,
         "workdir": normalized_workdir,
+        "profile": normalized_profile,
     }
 
     jobs = load_jobs()
@@ -643,6 +678,44 @@ def get_job(job_id: str) -> Optional[Dict[str, Any]]:
         if job["id"] == job_id:
             return _normalize_job_record(job)
     return None
+
+
+class AmbiguousJobReference(LookupError):
+    """Raised when a job name matches more than one job."""
+
+    def __init__(self, ref: str, matches: List[Dict[str, Any]]):
+        self.ref = ref
+        self.matches = matches
+        ids = ", ".join(m["id"] for m in matches)
+        super().__init__(
+            f"Job name '{ref}' is ambiguous — matches {len(matches)} jobs: {ids}. "
+            f"Use the job ID instead."
+        )
+
+
+def resolve_job_ref(ref: str) -> Optional[Dict[str, Any]]:
+    """Resolve a job reference (ID or name) to a job record.
+
+    - Exact ID match wins (works even if a different job's name equals this ID).
+    - Otherwise, case-insensitive name match.
+    - If a name matches more than one job, raises AmbiguousJobReference so the
+      caller can surface the matching IDs rather than silently picking one.
+    """
+    if not ref:
+        return None
+    jobs = load_jobs()
+    for job in jobs:
+        if job["id"] == ref:
+            return _normalize_job_record(job)
+    ref_lower = ref.lower()
+    name_matches = [j for j in jobs if (j.get("name") or "").lower() == ref_lower]
+    if not name_matches:
+        return None
+    if len(name_matches) > 1:
+        raise AmbiguousJobReference(
+            ref, [_normalize_job_record(j) for j in name_matches]
+        )
+    return _normalize_job_record(name_matches[0])
 
 
 def list_jobs(include_disabled: bool = False) -> List[Dict[str, Any]]:
@@ -664,10 +737,19 @@ def update_job(job_id: str, updates: Dict[str, Any]) -> Optional[Dict[str, Any]]
         # None both mean "clear the field" (restore old behaviour).
         if "workdir" in updates:
             _wd = updates["workdir"]
-            if _wd in (None, "", False):
+            if _wd in {None, "", False}:
                 updates["workdir"] = None
             else:
                 updates["workdir"] = _normalize_workdir(_wd)
+
+        # Validate / normalize profile if present in updates.  Empty string or
+        # None both mean "clear the field" (restore old behaviour).
+        if "profile" in updates:
+            _profile = updates["profile"]
+            if _profile is None or _profile == "" or _profile is False:
+                updates["profile"] = None
+            else:
+                updates["profile"] = _normalize_profile(_profile)
 
         updated = _apply_skill_fields({**job, **updates})
         schedule_changed = "schedule" in updates
@@ -702,9 +784,12 @@ def update_job(job_id: str, updates: Dict[str, Any]) -> Optional[Dict[str, Any]]
 
 
 def pause_job(job_id: str, reason: Optional[str] = None) -> Optional[Dict[str, Any]]:
-    """Pause a job without deleting it."""
+    """Pause a job without deleting it. Accepts a job ID or name."""
+    job = resolve_job_ref(job_id)
+    if not job:
+        return None
     return update_job(
-        job_id,
+        job["id"],
         {
             "enabled": False,
             "state": "paused",
@@ -715,14 +800,14 @@ def pause_job(job_id: str, reason: Optional[str] = None) -> Optional[Dict[str, A
 
 
 def resume_job(job_id: str) -> Optional[Dict[str, Any]]:
-    """Resume a paused job and compute the next future run from now."""
-    job = get_job(job_id)
+    """Resume a paused job and compute the next future run from now. Accepts a job ID or name."""
+    job = resolve_job_ref(job_id)
     if not job:
         return None
 
     next_run_at = compute_next_run(job["schedule"])
     return update_job(
-        job_id,
+        job["id"],
         {
             "enabled": True,
             "state": "scheduled",
@@ -734,12 +819,12 @@ def resume_job(job_id: str) -> Optional[Dict[str, Any]]:
 
 
 def trigger_job(job_id: str) -> Optional[Dict[str, Any]]:
-    """Schedule a job to run on the next scheduler tick."""
-    job = get_job(job_id)
+    """Schedule a job to run on the next scheduler tick. Accepts a job ID or name."""
+    job = resolve_job_ref(job_id)
     if not job:
         return None
     return update_job(
-        job_id,
+        job["id"],
         {
             "enabled": True,
             "state": "scheduled",
@@ -751,14 +836,18 @@ def trigger_job(job_id: str) -> Optional[Dict[str, Any]]:
 
 
 def remove_job(job_id: str) -> bool:
-    """Remove a job by ID."""
+    """Remove a job by ID or name."""
+    job = resolve_job_ref(job_id)
+    if not job:
+        return False
+    canonical_id = job["id"]
     jobs = load_jobs()
     original_len = len(jobs)
-    jobs = [j for j in jobs if j["id"] != job_id]
+    jobs = [j for j in jobs if j["id"] != canonical_id]
     if len(jobs) < original_len:
         save_jobs(jobs)
         # Clean up output directory to prevent orphaned dirs accumulating
-        job_output_dir = OUTPUT_DIR / job_id
+        job_output_dir = OUTPUT_DIR / canonical_id
         if job_output_dir.exists():
             shutil.rmtree(job_output_dir)
         return True
@@ -811,7 +900,7 @@ def mark_job_run(job_id: str, success: bool, error: Optional[str] = None,
                 # schedule quietly goes off. See issue #16265.
                 if job["next_run_at"] is None:
                     kind = job.get("schedule", {}).get("kind")
-                    if kind in ("cron", "interval"):
+                    if kind in {"cron", "interval"}:
                         job["state"] = "error"
                         if not job.get("last_error"):
                             job["last_error"] = (
@@ -855,7 +944,7 @@ def advance_next_run(job_id: str) -> bool:
         for job in jobs:
             if job["id"] == job_id:
                 kind = job.get("schedule", {}).get("kind")
-                if kind not in ("cron", "interval"):
+                if kind not in {"cron", "interval"}:
                     return False
                 now = _hermes_now().isoformat()
                 new_next = compute_next_run(job["schedule"], now)
@@ -909,7 +998,7 @@ def _get_due_jobs_locked() -> List[Dict[str, Any]]:
             # next_run_at unset.  Without this branch, such jobs are
             # silently skipped forever; recompute next_run_at from the
             # schedule so they pick up at their next scheduled tick.
-            if not recovered_next and kind in ("cron", "interval"):
+            if not recovered_next and kind in {"cron", "interval"}:
                 recovered_next = compute_next_run(schedule, now.isoformat())
                 if recovered_next:
                     recovery_kind = kind
@@ -940,7 +1029,7 @@ def _get_due_jobs_locked() -> List[Dict[str, Any]]:
             # (gateway was down and missed the window). Fast-forward to
             # the next future occurrence instead of firing a stale run.
             grace = _compute_grace_seconds(schedule)
-            if kind in ("cron", "interval") and (now - next_run_dt).total_seconds() > grace:
+            if kind in {"cron", "interval"} and (now - next_run_dt).total_seconds() > grace:
                 # Job is past its catch-up grace window — this is a stale missed run.
                 # Grace scales with schedule period: daily=2h, hourly=30m, 10min=5m.
                 new_next = compute_next_run(schedule, now.isoformat())
@@ -1082,9 +1171,8 @@ def rewrite_skill_refs(
                         new_skills.append(target)
                 elif name in pruned_set:
                     dropped.append(name)
-                else:
-                    if name not in new_skills:
-                        new_skills.append(name)
+                elif name not in new_skills:
+                    new_skills.append(name)
 
             if not mapped and not dropped:
                 continue

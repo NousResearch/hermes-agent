@@ -721,7 +721,7 @@ def drive_share(args):
         "type": args.type,
         "role": args.role,
     }
-    if args.type in ("user", "group"):
+    if args.type in {"user", "group"}:
         if not args.email:
             print("ERROR: --email is required for type=user or type=group", file=sys.stderr)
             sys.exit(1)

@@ -30,7 +30,14 @@ import os
 from typing import Any, Dict, Optional
 from urllib.parse import quote
 
-import httpx
+# httpx is imported lazily — only the ``_write_summary_via_incoming_webhook``
+# code path actually constructs an ``AsyncClient``. Top-level import here
+# pulled in the entire httpx + httpcore stack (~37 ms, ~15 MB) on every
+# process that triggered plugin discovery, even ones that never instantiate
+# the Teams adapter. ``from __future__ import annotations`` above keeps the
+# ``httpx.AsyncBaseTransport`` parameter annotation valid as a string at
+# runtime; nothing in the codebase calls ``typing.get_type_hints()`` on
+# this class so the annotation never has to resolve to a real symbol.
 
 try:
     from aiohttp import web
@@ -107,6 +114,13 @@ def _parse_bool(value: Any, *, default: bool = False) -> bool:
         if normalized in {"0", "false", "no", "off"}:
             return False
     return default
+
+
+def _coerce_port(value: Any, *, default: int = _DEFAULT_PORT) -> int:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
 
 
 class _StaticAccessTokenProvider:
@@ -199,6 +213,10 @@ class TeamsSummaryWriter:
         payload: Any,
         config: dict[str, Any],
     ) -> dict[str, Any]:
+        # Lazy import — see module-level note. The teams plugin loads on
+        # every CLI invocation as a side effect of plugin discovery, but
+        # 99% of those processes never reach this method.
+        import httpx
         webhook_url = str(config.get("incoming_webhook_url") or "").strip()
         if not webhook_url:
             raise ValueError("TEAMS_INCOMING_WEBHOOK_URL is required for incoming_webhook mode.")
@@ -548,7 +566,7 @@ async def _standalone_send(
         # Per-request timeouts so a slow STS endpoint cannot starve the
         # subsequent activity POST of its budget.
         per_request_timeout = _aiohttp.ClientTimeout(total=15.0)
-        async with _aiohttp.ClientSession() as session:
+        async with _aiohttp.ClientSession(trust_env=True) as session:
             async with session.post(
                 token_url,
                 data={
@@ -612,7 +630,9 @@ class TeamsAdapter(BasePlatformAdapter):
         self._client_id = extra.get("client_id") or os.getenv("TEAMS_CLIENT_ID", "")
         self._client_secret = extra.get("client_secret") or os.getenv("TEAMS_CLIENT_SECRET", "")
         self._tenant_id = extra.get("tenant_id") or os.getenv("TEAMS_TENANT_ID", "")
-        self._port = int(extra.get("port") or os.getenv("TEAMS_PORT", str(_DEFAULT_PORT)))
+        self._port = _coerce_port(
+            extra.get("port") or os.getenv("TEAMS_PORT", str(_DEFAULT_PORT))
+        )
         self._app: Optional["App"] = None
         self._runner: Optional["web.AppRunner"] = None
         self._dedup = MessageDeduplicator(max_size=1000)
@@ -821,7 +841,7 @@ class TeamsAdapter(BasePlatformAdapter):
         # bot silently treated every clicker as authorized — meaning any
         # Teams user who could message the bot could approve dangerous commands.
         allowed_csv = os.getenv("TEAMS_ALLOWED_USERS", "").strip()
-        allow_all = os.getenv("TEAMS_ALLOW_ALL_USERS", "").strip().lower() in ("1", "true", "yes")
+        allow_all = os.getenv("TEAMS_ALLOW_ALL_USERS", "").strip().lower() in {"1", "true", "yes"}
 
         if not allow_all:
             if not allowed_csv:

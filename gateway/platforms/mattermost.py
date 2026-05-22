@@ -249,6 +249,23 @@ class MattermostAdapter(BasePlatformAdapter):
 
         logger.info("Mattermost: disconnected")
 
+
+    async def _resolve_root_id(self, post_id: str) -> str:
+        """Resolve a post_id to the thread root_id for Mattermost.
+
+        Mattermost requires root_id to be the *root* post of a thread.
+        If the post is a reply (has its own root_id), we must use that
+        root_id instead.  Using a reply's own ID as root_id causes
+        "Invalid RootId parameter" errors.
+        """
+        if not post_id:
+            return post_id
+        # Check if this post has a root_id (meaning it's a reply)
+        data = await self._api_get(f"posts/{post_id}")
+        if data and data.get("root_id"):
+            return data["root_id"]
+        return post_id
+
     async def send(
         self,
         chat_id: str,
@@ -271,7 +288,10 @@ class MattermostAdapter(BasePlatformAdapter):
             }
             # Thread support: reply_to is the root post ID.
             if reply_to and self._reply_mode == "thread":
-                payload["root_id"] = reply_to
+                # Ensure root_id points to the thread root, not a reply.
+                # Mattermost rejects non-root post IDs as root_id.
+                resolved_root = await self._resolve_root_id(reply_to)
+                payload["root_id"] = resolved_root
 
             data = await self._api_post("posts", payload)
             if not data or "id" not in data:
@@ -451,7 +471,7 @@ class MattermostAdapter(BasePlatformAdapter):
             "file_ids": [file_id],
         }
         if reply_to and self._reply_mode == "thread":
-            payload["root_id"] = reply_to
+            payload["root_id"] = await self._resolve_root_id(reply_to)
 
         data = await self._api_post("posts", payload)
         if not data or "id" not in data:
@@ -471,9 +491,10 @@ class MattermostAdapter(BasePlatformAdapter):
 
         p = Path(file_path)
         if not p.exists():
-            return await self.send(
-                chat_id, f"{caption or ''}\n(file not found: {file_path})", reply_to
+            logger.warning(
+                "Mattermost: local file not found, skipping: %s", file_path
             )
+            return SendResult(success=True, message_id=None)
 
         fname = file_name or p.name
         ct = mimetypes.guess_type(fname)[0] or "application/octet-stream"
@@ -489,7 +510,7 @@ class MattermostAdapter(BasePlatformAdapter):
             "file_ids": [file_id],
         }
         if reply_to and self._reply_mode == "thread":
-            payload["root_id"] = reply_to
+            payload["root_id"] = await self._resolve_root_id(reply_to)
 
         data = await self._api_post("posts", payload)
         if not data or "id" not in data:
@@ -611,7 +632,7 @@ class MattermostAdapter(BasePlatformAdapter):
                 # succeed on retry — stop reconnecting instead of looping forever.
                 import aiohttp
                 err_str = str(exc).lower()
-                if isinstance(exc, aiohttp.WSServerHandshakeError) and exc.status in (401, 403):
+                if isinstance(exc, aiohttp.WSServerHandshakeError) and exc.status in {401, 403}:
                     logger.error("Mattermost WS auth failed (HTTP %d) — stopping reconnect", exc.status)
                     return
                 if "401" in err_str or "403" in err_str or "unauthorized" in err_str:
@@ -649,21 +670,21 @@ class MattermostAdapter(BasePlatformAdapter):
             if self._closing:
                 return
 
-            if raw_msg.type in (
+            if raw_msg.type in {
                 raw_msg.type.TEXT,
                 raw_msg.type.BINARY,
-            ):
+            }:
                 try:
                     event = json.loads(raw_msg.data)
                 except (json.JSONDecodeError, TypeError):
                     continue
                 await self._handle_ws_event(event)
-            elif raw_msg.type in (
+            elif raw_msg.type in {
                 raw_msg.type.ERROR,
                 raw_msg.type.CLOSE,
                 raw_msg.type.CLOSING,
                 raw_msg.type.CLOSED,
-            ):
+            }:
                 logger.info("Mattermost: WebSocket closed (%s)", raw_msg.type)
                 break
 
@@ -732,7 +753,7 @@ class MattermostAdapter(BasePlatformAdapter):
 
             require_mention = os.getenv(
                 "MATTERMOST_REQUIRE_MENTION", "true"
-            ).lower() not in ("false", "0", "no")
+            ).lower() not in {"false", "0", "no"}
 
             free_channels_raw = os.getenv("MATTERMOST_FREE_RESPONSE_CHANNELS", "")
             free_channels = {ch.strip() for ch in free_channels_raw.split(",") if ch.strip()}

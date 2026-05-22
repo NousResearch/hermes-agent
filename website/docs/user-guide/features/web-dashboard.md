@@ -35,6 +35,9 @@ hermes dashboard --host 0.0.0.0
 
 # Start without opening browser
 hermes dashboard --no-open
+
+# Enable the in-browser Chat tab
+hermes dashboard --tui
 ```
 
 ## Prerequisites
@@ -48,6 +51,8 @@ pip install 'hermes-agent[web,pty]'
 The `web` extra pulls in FastAPI/Uvicorn; `pty` pulls in `ptyprocess` (POSIX) or `pywinpty` (native Windows — note that the embedded TUI itself still requires WSL). `pip install hermes-agent[all]` includes both extras and is the easiest path if you also want messaging/voice/etc.
 
 When you run `hermes dashboard` without the dependencies, it will tell you what to install. If the frontend hasn't been built yet and `npm` is available, it builds automatically on first launch.
+
+The Chat tab is intentionally off for a plain `hermes dashboard` launch. Start the dashboard with `hermes dashboard --tui` or set `HERMES_DASHBOARD_TUI=1` when you want the embedded browser chat pane.
 
 ## Pages
 

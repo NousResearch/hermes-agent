@@ -1002,6 +1002,33 @@ class TestCapabilitiesEndpoint:
             assert data["endpoints"]["run_status"]["path"] == "/v1/runs/{run_id}"
             assert data["endpoints"]["skills"] == {"method": "GET", "path": "/v1/skills"}
             assert data["endpoints"]["toolsets"] == {"method": "GET", "path": "/v1/toolsets"}
+            assert any(command["name"] == "help" for command in data["commands"])
+            assert all("handler" not in command for command in data["commands"])
+
+    @pytest.mark.asyncio
+    async def test_capabilities_include_mobile_command_registry(self, adapter, monkeypatch):
+        expected_commands = [
+            {
+                "name": "joke",
+                "command": "/joke",
+                "summary": "Generate a joke",
+                "description": "Generate a joke",
+                "category": "Creative",
+                "source": "plugin",
+                "plugin": "jokes-plugin",
+            }
+        ]
+        monkeypatch.setattr(
+            "hermes_cli.commands.gateway_command_registry",
+            lambda: list(expected_commands),
+        )
+
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.get("/v1/capabilities")
+            assert resp.status == 200
+            data = await resp.json()
+            assert data["commands"] == expected_commands
 
     @pytest.mark.asyncio
     async def test_capabilities_requires_auth_when_key_configured(self, auth_adapter):

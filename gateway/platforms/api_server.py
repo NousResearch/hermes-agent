@@ -2003,7 +2003,7 @@ class APIServerAdapter(BasePlatformAdapter):
         if auth_err:
             return auth_err
 
-        return web.json_response({
+        payload = {
             "object": "hermes.api_server.capabilities",
             "platform": "hermes-agent",
             "model": self._model_name,
@@ -2070,7 +2070,16 @@ class APIServerAdapter(BasePlatformAdapter):
                 "session_chat": {"method": "POST", "path": "/api/sessions/{session_id}/chat"},
                 "session_chat_stream": {"method": "POST", "path": "/api/sessions/{session_id}/chat/stream"},
             },
-        })
+        }
+        try:
+            from hermes_cli.commands import gateway_command_registry
+
+            payload["commands"] = gateway_command_registry()
+        except Exception as exc:
+            logger.debug("[%s] Command registry unavailable for capabilities: %s", self.name, exc)
+            payload["commands"] = []
+
+        return web.json_response(payload)
 
     async def _handle_skills(self, request: "web.Request") -> "web.Response":
         """GET /v1/skills — list installed skills visible to the API-server agent.

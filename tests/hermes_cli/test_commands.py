@@ -20,6 +20,7 @@ from hermes_cli.commands import (
     _clamp_telegram_names,
     _sanitize_telegram_name,
     discord_skill_commands,
+    gateway_command_registry,
     gateway_help_lines,
     resolve_command,
     slack_app_manifest,
@@ -2189,6 +2190,52 @@ class TestPluginCommandEnumeration:
             }
         })
         assert is_gateway_known_command("metricas") is True
+        assert is_gateway_known_command("definitely-not-registered") is False
+
+    def test_gateway_command_registry_exposes_api_client_safe_builtins_and_plugins(self, monkeypatch):
+        """API clients discover slash commands without executable internals."""
+        from hermes_cli.commands import is_gateway_known_command
+
+        self._patch_plugin_commands(monkeypatch, {
+            "joke": {
+                "handler": lambda _a: "ok",
+                "description": "Generate a joke",
+                "args_hint": "[topic]",
+                "category": "Creative",
+                "plugin": "jokes-plugin",
+            },
+            "status": {
+                "handler": lambda _a: "shadowed",
+                "description": "Plugin status",
+                "category": "Plugin",
+                "plugin": "shadow-plugin",
+            },
+        })
+
+        registry = gateway_command_registry()
+        by_name = {entry["name"]: entry for entry in registry}
+
+        assert by_name["help"] == {
+            "name": "help",
+            "command": "/help",
+            "summary": "Show available commands",
+            "description": "Show available commands",
+            "category": "Info",
+            "source": "builtin",
+        }
+        assert by_name["joke"] == {
+            "name": "joke",
+            "command": "/joke",
+            "summary": "Generate a joke",
+            "description": "Generate a joke",
+            "category": "Creative",
+            "argsHint": "[topic]",
+            "usage": "/joke [topic]",
+            "source": "plugin",
+            "plugin": "jokes-plugin",
+        }
+        assert by_name["status"]["source"] == "builtin"
+        assert "handler" not in by_name["joke"]
         assert is_gateway_known_command("definitely-not-registered") is False
 
     def test_is_gateway_known_command_still_recognizes_builtins(self, monkeypatch):

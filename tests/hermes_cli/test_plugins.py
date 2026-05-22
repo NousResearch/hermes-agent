@@ -1813,6 +1813,7 @@ class TestPluginCommands:
         assert entry["plugin"] == "test-plugin"
         # args_hint defaults to empty string when not passed.
         assert entry["args_hint"] == ""
+        assert entry["category"] == "Plugin"
 
     def test_register_command_with_args_hint(self):
         """args_hint is stored and surfaced for gateway-native UI registration."""
@@ -1829,6 +1830,22 @@ class TestPluginCommands:
 
         entry = mgr._plugin_commands["metricas"]
         assert entry["args_hint"] == "dias:7 formato:json"
+
+    def test_register_command_with_category(self):
+        """category is stored for mobile/API command discovery surfaces."""
+        mgr = PluginManager()
+        manifest = PluginManifest(name="test-plugin", source="user")
+        ctx = PluginContext(manifest, mgr)
+
+        ctx.register_command(
+            "joke",
+            lambda a: a,
+            description="Generate a joke",
+            category="Creative",
+        )
+
+        entry = mgr._plugin_commands["joke"]
+        assert entry["category"] == "Creative"
 
     def test_register_command_args_hint_whitespace_trimmed(self):
         """args_hint leading/trailing whitespace is stripped."""

@@ -532,6 +532,7 @@ class PluginContext:
         handler: Callable,
         description: str = "",
         args_hint: str = "",
+        category: str = "Plugin",
     ) -> None:
         """Register a slash command (e.g. ``/lcm``) available in CLI and gateway sessions.
 
@@ -548,6 +549,9 @@ class PluginContext:
         command picker. Plugin commands without ``args_hint`` register as
         parameterless in Discord and still accept trailing text when invoked
         as free-form chat.
+
+        ``category`` is optional metadata for API and mobile clients that group
+        commands in their own command pickers.
 
         Names conflicting with built-in commands are rejected with a warning.
         """
@@ -577,6 +581,7 @@ class PluginContext:
             "description": description or "Plugin command",
             "plugin": self.manifest.name,
             "args_hint": (args_hint or "").strip(),
+            "category": str(category or "Plugin").strip() or "Plugin",
         }
         logger.debug("Plugin %s registered command: /%s", self.manifest.name, clean)
 

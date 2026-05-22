@@ -21,9 +21,32 @@ import logging
 import threading
 import time
 from pathlib import Path
-from typing import Callable, Dict, List, Optional, Set
+from typing import Callable, Dict, List, Optional, Set, Any
+from dataclasses import dataclass, field
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass
+class ToolMetadata:
+    """Extended metadata for tool introspection, cost analysis, and adaptive exposure.
+
+    ``category`` groups tools by domain (e.g. ``"io"``, ``"network"``,
+    ``"filesystem"``, ``"computation"``, ``"communication"``, ``"ai"``,
+    ``"system"``).
+    ``risk_level`` drives adaptive tool gating in gateway sessions:
+    ``"safe"`` (always shown), ``"destructive"`` (requires approval),
+    ``"network"`` (external calls), ``"expensive"`` (high token cost).
+    ``avg_latency_ms`` and ``error_rate`` are populated by the insights
+    system for runtime adaptive tool selection.
+    """
+    category: str = "general"
+    risk_level: str = "safe"  # safe | destructive | network | expensive
+    avg_latency_ms: Optional[float] = None
+    error_rate: Optional[float] = None
+    requires_env: List[str] = field(default_factory=list)
+    requires_network: bool = False
+    is_destructive: bool = False
 
 
 def _is_registry_register_call(node: ast.AST) -> bool:
@@ -80,12 +103,13 @@ class ToolEntry:
     __slots__ = (
         "name", "toolset", "schema", "handler", "check_fn",
         "requires_env", "is_async", "description", "emoji",
-        "max_result_size_chars", "dynamic_schema_overrides",
+        "max_result_size_chars", "dynamic_schema_overrides", "metadata",
     )
 
     def __init__(self, name, toolset, schema, handler, check_fn,
                  requires_env, is_async, description, emoji,
-                 max_result_size_chars=None, dynamic_schema_overrides=None):
+                 max_result_size_chars=None, dynamic_schema_overrides=None,
+                 metadata=None):
         self.name = name
         self.toolset = toolset
         self.schema = schema
@@ -96,14 +120,8 @@ class ToolEntry:
         self.description = description
         self.emoji = emoji
         self.max_result_size_chars = max_result_size_chars
-        # Optional zero-arg callable returning a dict of schema overrides
-        # applied at get_definitions() time. Use for fields that depend on
-        # runtime config (e.g. delegate_task's description must reflect the
-        # user's current delegation.max_concurrent_children / max_spawn_depth
-        # so the model isn't told the wrong limits). The callable is invoked
-        # on every get_definitions() call; results are merged shallow on top
-        # of the base schema before the {"type": "function", ...} wrap.
         self.dynamic_schema_overrides = dynamic_schema_overrides
+        self.metadata = metadata or ToolMetadata()
 
 
 # ---------------------------------------------------------------------------
@@ -245,6 +263,7 @@ class ToolRegistry:
         max_result_size_chars: int | float | None = None,
         dynamic_schema_overrides: Callable = None,
         override: bool = False,
+        metadata: ToolMetadata = None,
     ):
         """Register a tool.  Called at module-import time by each tool file.
 
@@ -253,6 +272,8 @@ class ToolRegistry:
         default browser tool for a headed-Chrome CDP backend). Without it,
         registrations that would shadow an existing tool from a different
         toolset are rejected to prevent accidental overwrites.
+
+        ``metadata`` provides extended ToolMetadata for introspection.
         """
         with self._lock:
             existing = self._tools.get(name)
@@ -299,6 +320,7 @@ class ToolRegistry:
                 emoji=emoji,
                 max_result_size_chars=max_result_size_chars,
                 dynamic_schema_overrides=dynamic_schema_overrides,
+                metadata=metadata,
             )
             if check_fn and toolset not in self._toolset_checks:
                 self._toolset_checks[toolset] = check_fn

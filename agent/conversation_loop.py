@@ -318,13 +318,9 @@ def run_conversation(
     
     # Reset retry counters and iteration budget at the start of each turn
     # so subagent usage from a previous turn doesn't eat into the next one.
-    agent._invalid_tool_retries = 0
-    agent._invalid_json_retries = 0
-    agent._empty_content_retries = 0
-    agent._incomplete_scratchpad_retries = 0
-    agent._codex_incomplete_retries = 0
-    agent._thinking_prefill_retries = 0
-    agent._post_tool_empty_retried = False
+    from agent.retry_policy import RetryPolicy
+    agent.retry_policy = getattr(agent, "retry_policy", None) or RetryPolicy.for_agent(max_iterations=agent.max_iterations)
+    agent.retry_policy.reset_for_turn()
     agent._last_content_with_tools = None
     agent._last_content_tools_all_housekeeping = False
     agent._mute_post_response = False

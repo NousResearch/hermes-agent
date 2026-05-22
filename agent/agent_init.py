@@ -42,6 +42,7 @@ from agent.model_metadata import (
     query_ollama_num_ctx,
 )
 from agent.process_bootstrap import _install_safe_stdio
+from agent.retry_policy import RetryPolicy
 from agent.subdirectory_hints import SubdirectoryHintTracker
 from agent.think_scrubber import StreamingThinkScrubber
 from agent.tool_guardrails import (
@@ -258,6 +259,15 @@ def init_agent(
     # Shared iteration budget — parent creates, children inherit.
     # Consumed by every LLM turn across parent + all subagents.
     agent.iteration_budget = iteration_budget or IterationBudget(max_iterations)
+    # Retry policy — centralizes circuit breakers, retry counters, failover chain.
+    fallback_chain = []
+    if fallback_model:
+        fb_list = fallback_model if isinstance(fallback_model, list) else [fallback_model]
+        fallback_chain = [dict(fb) for fb in fb_list if isinstance(fb, dict)]
+    agent.retry_policy = RetryPolicy.for_agent(
+        max_iterations=max_iterations,
+        fallback_chain=fallback_chain,
+    )
     agent.tool_delay = tool_delay
     agent.save_trajectories = save_trajectories
     agent.verbose_logging = verbose_logging

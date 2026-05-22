@@ -82,12 +82,14 @@ EXHAUSTED_TTL_DEFAULT_SECONDS = 60 * 60      # 1 hour
 CUSTOM_POOL_PREFIX = "custom:"
 
 
-# Fields that are only round-tripped through JSON — never used for logic as attributes.
-_EXTRA_KEYS = frozenset({
+# Fields that are only round-tripped through JSON — explicitly declared as
+# Optional dataclass fields so to_dict/from_dict can use introspection instead
+# of manual field-list maintenance.
+_EXTRA_FIELDS = (
     "token_type", "scope", "client_id", "portal_base_url", "obtained_at",
     "expires_in", "agent_key_id", "agent_key_expires_in", "agent_key_reused",
     "agent_key_obtained_at", "tls",
-})
+)
 
 
 @dataclass
@@ -114,26 +116,31 @@ class PooledCredential:
     agent_key: Optional[str] = None
     agent_key_expires_at: Optional[str] = None
     request_count: int = 0
-    extra: Dict[str, Any] = None  # type: ignore[assignment]
+    # Round-trip fields (formerly in extra: Dict)
+    token_type: Optional[str] = None
+    scope: Optional[str] = None
+    client_id: Optional[str] = None
+    portal_base_url: Optional[str] = None
+    obtained_at: Optional[str] = None
+    expires_in: Optional[int] = None
+    agent_key_id: Optional[str] = None
+    agent_key_expires_in: Optional[int] = None
+    agent_key_reused: Optional[bool] = None
+    agent_key_obtained_at: Optional[str] = None
+    tls: Optional[Dict[str, Any]] = None
 
     def __post_init__(self):
-        if self.extra is None:
-            self.extra = {}
+        pass
 
-    def __getattr__(self, name: str):
-        if name in _EXTRA_KEYS:
-            return self.extra.get(name)
-        raise AttributeError(f"'{type(self).__name__}' object has no attribute {name!r}")
+    # No __getattr__ needed — all round-trip fields are now real dataclass fields.
 
     @classmethod
     def from_dict(cls, provider: str, payload: Dict[str, Any]) -> "PooledCredential":
-        field_names = {f.name for f in fields(cls) if f.name != "provider"}
-        data = {k: payload.get(k) for k in field_names if k in payload}
+        field_names = {f.name for f in fields(cls)}
+        data = {k: v for k, v in payload.items() if k in field_names}
         # Rehydrated last_status_at may be an ISO string from to_dict() — normalize to float epoch
         if "last_status_at" in data and isinstance(data["last_status_at"], str):
             data["last_status_at"] = _parse_absolute_timestamp(data["last_status_at"])
-        extra = {k: payload[k] for k in _EXTRA_KEYS if k in payload and payload[k] is not None}
-        data["extra"] = extra
         data.setdefault("id", uuid.uuid4().hex[:6])
         data.setdefault("label", payload.get("source", provider))
         data.setdefault("auth_type", AUTH_TYPE_API_KEY)
@@ -153,14 +160,11 @@ class PooledCredential:
         }
         result: Dict[str, Any] = {}
         for field_def in fields(self):
-            if field_def.name in {"provider", "extra"}:
+            if field_def.name == "provider":
                 continue
             value = getattr(self, field_def.name)
             if value is not None or field_def.name in _ALWAYS_EMIT:
                 result[field_def.name] = value
-        for k, v in self.extra.items():
-            if v is not None:
-                result[k] = v
         return result
 
     @property
@@ -660,14 +664,14 @@ class CredentialPool:
                     field_updates["agent_key_expires_at"] = state["agent_key_expires_at"]
                 if state.get("inference_base_url"):
                     field_updates["inference_base_url"] = state["inference_base_url"]
-                extra_updates = dict(entry.extra)
+                # Round-trip fields (formerly in extra dict)
                 for extra_key in ("obtained_at", "expires_in", "agent_key_id",
                                   "agent_key_expires_in", "agent_key_reused",
                                   "agent_key_obtained_at"):
                     val = state.get(extra_key)
                     if val is not None:
-                        extra_updates[extra_key] = val
-                updated = replace(entry, extra=extra_updates, **field_updates)
+                        field_updates[extra_key] = val
+                updated = replace(entry, **field_updates)
                 self._replace_entry(entry, updated)
                 self._persist()
                 return updated
@@ -721,7 +725,7 @@ class CredentialPool:
                     for extra_key in ("obtained_at", "expires_in", "agent_key_id",
                                       "agent_key_expires_in", "agent_key_reused",
                                       "agent_key_obtained_at"):
-                        val = entry.extra.get(extra_key)
+                        val = getattr(entry, extra_key, None)
                         if val is not None:
                             state[extra_key] = val
                     if entry.inference_base_url:
@@ -1417,7 +1421,6 @@ def _upsert_entry(entries: List[PooledCredential], provider: str, source: str, p
 
     existing = entries[existing_idx]
     field_updates = {}
-    extra_updates = {}
     _field_names = {f.name for f in fields(existing)}
     for key, value in payload.items():
         if key in {"id", "priority"} or value is None:
@@ -1427,12 +1430,7 @@ def _upsert_entry(entries: List[PooledCredential], provider: str, source: str, p
         if key in _field_names:
             if getattr(existing, key) != value:
                 field_updates[key] = value
-        elif key in _EXTRA_KEYS:
-            if existing.extra.get(key) != value:
-                extra_updates[key] = value
-    if field_updates or extra_updates:
-        if extra_updates:
-            field_updates["extra"] = {**existing.extra, **extra_updates}
+    if field_updates:
         entries[existing_idx] = replace(existing, **field_updates)
         return True
     return False

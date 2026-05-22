@@ -5,18 +5,21 @@ Starts a stdio MCP server that lets any MCP client (Claude Code, Cursor, Codex,
 etc.) list conversations, read message history, send messages, poll for live
 events, and manage approval requests across all connected platforms.
 
-Matches OpenClaw's 9-tool MCP channel bridge surface:
+Messaging tools (10) — OpenClaw channel bridge surface plus channels_list:
   conversations_list, conversation_get, messages_read, attachments_fetch,
   events_poll, events_wait, messages_send, permissions_list_open,
-  permissions_respond
+  permissions_respond, channels_list
 
-Plus: channels_list (Hermes-specific extra)
+Optional skills/knowledge tools (7) when hermes_skills_mcp is available:
+  skills_list, skills_read, agents_list, agents_get, knowledge_read,
+  learnings_read, artifacts_list
 
 Usage:
     hermes mcp serve
     hermes mcp serve --verbose
+    hermes-mcp-serve          # same; used by .cursor/mcp.json
 
-MCP client config (e.g. claude_desktop_config.json):
+MCP client config (e.g. claude_desktop_config.json or .cursor/mcp.json):
     {
         "mcpServers": {
             "hermes": {

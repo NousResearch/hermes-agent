@@ -488,9 +488,43 @@ Or if you installed Hermes in a specific location:
 }
 ```
 
+#### Cursor
+
+Hermes ships project-level MCP config at `.cursor/mcp.json` in the repo. When you open the **hermes-agent** checkout in Cursor, that file is picked up automatically.
+
+```json
+{
+  "mcpServers": {
+    "hermes": {
+      "command": "${workspaceFolder}/hermes-mcp-serve",
+      "args": []
+    }
+  }
+}
+```
+
+The `hermes-mcp-serve` launcher activates the repo venv and runs `hermes mcp serve`. After `./setup-hermes.sh`, the same script is also on your PATH as `~/.local/bin/hermes-mcp-serve` — use that when your Cursor workspace is **not** the hermes-agent repo:
+
+```json
+{
+  "mcpServers": {
+    "hermes": {
+      "command": "hermes-mcp-serve",
+      "args": []
+    }
+  }
+}
+```
+
+Restart Cursor after changing MCP settings. First connection can take several seconds while the venv starts. Troubleshooting notes live in the repo at `docs/CURSOR_SETUP.md`.
+
 ### Available tools
 
-The MCP server exposes 10 tools, matching OpenClaw's channel bridge surface plus a Hermes-specific channel browser:
+The MCP server exposes **17 tools** when the optional skills module is installed (default in this repo): **10 messaging tools** plus **7 read-only skills/knowledge tools**.
+
+#### Messaging (10 tools)
+
+Matches OpenClaw's channel bridge surface plus a Hermes-specific channel browser:
 
 | Tool | Description |
 |------|-------------|
@@ -504,6 +538,20 @@ The MCP server exposes 10 tools, matching OpenClaw's channel bridge surface plus
 | `channels_list` | List available messaging targets across all platforms. |
 | `permissions_list_open` | List pending approval requests observed during this bridge session. |
 | `permissions_respond` | Allow or deny a pending approval request. |
+
+#### Skills and knowledge (7 tools, read-only)
+
+Registered from `hermes_skills_mcp` when the module is importable (bundled with `hermes-agent` installs). Paths resolve via `HERMES_HOME` and `HERMES_REPO`.
+
+| Tool | Description |
+|------|-------------|
+| `skills_list` | List custom agent `SOUL.md` files and repo skills. |
+| `skills_read` | Read a skill document or agent `SOUL.md`. |
+| `agents_list` | List agents from `AGENT_REGISTRY.json` with status summary. |
+| `agents_get` | Full agent detail: registry entry, heartbeat, files. |
+| `knowledge_read` | Read knowledge-layer artifacts (e.g. `latest_state`). |
+| `learnings_read` | Read `.learnings/` memory tiers. |
+| `artifacts_list` | Browse the `artifacts/` directory tree. |
 
 ### Event system
 

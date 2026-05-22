@@ -1125,7 +1125,18 @@ def init_agent(
     # through _ra().get_tool_definitions()).  Duplicate function names cause
     # 400 errors on providers that enforce unique names (e.g. Xiaomi
     # MiMo via Nous Portal).
-    if agent._memory_manager and agent.tools is not None:
+    #
+    # Respect the platform's enabled_toolsets configuration (#5544):
+    #   enabled_toolsets is None        → no filter, inject (backward compat)
+    #   "memory" in enabled_toolsets    → user opted in, inject
+    #   otherwise (incl. [])            → user excluded memory, skip injection
+    #
+    # Without this gate, `platform_toolsets: telegram: []` still leaks memory
+    # provider tools (fact_store, etc.) into the tool surface — a 10x latency
+    # penalty on local models and a frequent trigger of tool-call loops.
+    if agent._memory_manager and agent.tools is not None and (
+        agent.enabled_toolsets is None or "memory" in agent.enabled_toolsets
+    ):
         _existing_tool_names = {
             t.get("function", {}).get("name")
             for t in agent.tools

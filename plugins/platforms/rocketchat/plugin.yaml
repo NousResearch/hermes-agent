@@ -1,0 +1,48 @@
+name: rocketchat-platform
+label: Rocket.Chat
+kind: platform
+version: 1.0.0
+description: >
+  Rocket.Chat gateway adapter for Hermes Agent.
+  Connects to a self-hosted Rocket.Chat instance via the REST API v1 for
+  outbound traffic and the Realtime (DDP) WebSocket for inbound messages.
+  Uses aiohttp (already a Hermes dependency) — no extra packages needed.
+author: Nous Research, cyb0rgk1tty, meron1122
+requires_env:
+  - name: ROCKETCHAT_URL
+    description: "Server URL (e.g. https://rc.example.com)"
+    prompt: "Rocket.Chat server URL"
+    password: false
+  - name: ROCKETCHAT_TOKEN
+    description: "Personal Access Token (generate with 'Ignore Two Factor')"
+    prompt: "Personal Access Token"
+    password: true
+  - name: ROCKETCHAT_USER_ID
+    description: "Bot user _id (shown at PAT creation)"
+    prompt: "Bot user ID"
+    password: false
+optional_env:
+  - name: ROCKETCHAT_ALLOWED_USERS
+    description: "Comma-separated user IDs allowed to talk to the bot"
+    prompt: "Allowed user IDs (comma-separated)"
+    password: false
+  - name: ROCKETCHAT_ALLOW_ALL_USERS
+    description: "Allow all users to talk to the bot (dev only)"
+    prompt: "Allow all users? (true/false)"
+    password: false
+  - name: ROCKETCHAT_HOME_CHANNEL
+    description: "Room ID for cron / notification delivery"
+    prompt: "Home channel room ID (or empty)"
+    password: false
+  - name: ROCKETCHAT_REQUIRE_MENTION
+    description: "Require @mention in channels (default: true)"
+    prompt: "Require @mention in channels?"
+    password: false
+  - name: ROCKETCHAT_FREE_RESPONSE_CHANNELS
+    description: "Room IDs exempt from mention requirement (comma-separated)"
+    prompt: "Free-response room IDs (comma-separated)"
+    password: false
+  - name: ROCKETCHAT_REPLY_MODE
+    description: "Reply mode: 'thread' for threaded replies, 'off' for flat"
+    prompt: "Reply mode (thread / off)"
+    password: false

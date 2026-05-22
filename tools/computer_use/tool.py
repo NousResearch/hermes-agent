@@ -467,6 +467,12 @@ def _capture_response(cap: CaptureResult, max_elements: int = _DEFAULT_MAX_ELEME
     ]
     if element_index:
         summary_lines.extend(element_index)
+    # Multimodal and AX paths both reference `summary`; build it once up-front
+    # so the aux-vision routing branch (which fires before either path is
+    # selected) has a valid value to hand to _route_capture_through_aux_vision.
+    # The AX path appends the "truncated to N of M" note to summary_lines
+    # below and rebuilds; the multimodal path keeps this version untouched.
+    summary = "\n".join(summary_lines)
 
     if cap.png_b64 and cap.mode != "ax":
         # Decide whether to hand the screenshot to the auxiliary.vision
@@ -492,7 +498,6 @@ def _capture_response(cap: CaptureResult, max_elements: int = _DEFAULT_MAX_ELEME
         # The multimodal response carries the screenshot, not the AX
         # elements array, so a "response truncated to N of M elements"
         # note would be inaccurate — skip it on this branch.
-        summary = "\n".join(summary_lines)
         return {
             "_multimodal": True,
             "content": [

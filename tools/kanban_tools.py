@@ -1147,10 +1147,12 @@ KANBAN_REVIEW_SCHEMA = {
     "name": "kanban_review",
     "description": (
         "Resolve a review-required external-worker handoff from bounded "
-        "evidence. `approve` records the reviewer decision and marks the task "
-        "done. `request_changes` writes a reviewer comment and unblocks the "
-        "task for another worker run. Does not read or replay the full Codex "
-        "session. Orchestrator-only."
+        "evidence. If independent review/test follow-ups were planned, "
+        "`approve` requires those follow-ups to have successful worker "
+        "evidence first, then records the reviewer decision and marks the "
+        "task done. `request_changes` writes a reviewer comment and unblocks "
+        "the task for another worker run. Does not read or replay the full "
+        "Codex session. Orchestrator-only."
     ),
     "parameters": {
         "type": "object",

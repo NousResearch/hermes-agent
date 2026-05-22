@@ -815,6 +815,7 @@ class TaskProgressSnapshot:
     worker_log_tail: Optional[str]
     children: Optional[list[dict[str, Any]]] = None
     child_summary: Optional[dict[str, Any]] = None
+    review_followup_gate: Optional[dict[str, Any]] = None
 
     def to_dict(self) -> dict[str, Any]:
         worker_lane = None
@@ -881,6 +882,7 @@ class TaskProgressSnapshot:
             "worker_log_tail": self.worker_log_tail,
             "children": self.children,
             "child_summary": self.child_summary,
+            "review_followup_gate": self.review_followup_gate,
         }
 
 
@@ -2136,6 +2138,11 @@ def task_progress_snapshot(
         ) if log_tail_bytes else None,
         children=children,
         child_summary=child_summary,
+        review_followup_gate=(
+            review_followup_gate_status(conn, task_id, source_run_id=run.id)
+            if run and review_required
+            else None
+        ),
     )
 
 
@@ -2202,28 +2209,23 @@ def _progress_summary_task_refs(
                 "decomposed_child",
             )
 
-    followup_rows = conn.execute(
-        "SELECT payload FROM task_events WHERE task_id = ? AND kind = ? "
-        "ORDER BY created_at ASC, id ASC",
-        (task_id, "worker_review_followups_planned"),
-    ).fetchall()
-    for row in followup_rows:
-        try:
-            payload = json.loads(row["payload"]) if row["payload"] else None
-        except Exception:
-            payload = None
-        if not isinstance(payload, dict):
-            continue
-        review_task_id = payload.get("review_task_id")
-        test_task_id = payload.get("test_task_id")
-        add(
-            [review_task_id] if isinstance(review_task_id, str) else [],
-            "review_followup",
+    current_run = latest_run(conn, task_id)
+    current_review_required = False
+    if current_run and isinstance(current_run.metadata, dict):
+        review_meta = current_run.metadata.get("review")
+        current_review_required = (
+            isinstance(review_meta, dict) and bool(review_meta.get("required"))
         )
-        add(
-            [test_task_id] if isinstance(test_task_id, str) else [],
-            "test_followup",
+    if current_run and current_review_required:
+        followup_refs = _review_followup_refs(
+            conn,
+            task_id,
+            source_run_id=current_run.id,
         )
+    else:
+        followup_refs = []
+    for ref in followup_refs:
+        add([ref["task_id"]], ref["relationship"])
 
     if not refs:
         add(parent_ids(conn, task_id), "dependency")
@@ -2438,6 +2440,230 @@ def _review_required_snapshot_for_decision(
     if snapshot.run is None or not snapshot.review_required:
         raise ValueError(f"task {task_id} has no review-required worker evidence")
     return snapshot
+
+
+def _review_followup_refs(
+    conn: sqlite3.Connection,
+    task_id: str,
+    *,
+    source_run_id: Optional[int] = None,
+) -> list[dict[str, Any]]:
+    refs: list[dict[str, Any]] = []
+    seen: set[tuple[str, str]] = set()
+    filter_source_run_id = int(source_run_id) if source_run_id is not None else None
+    rows = conn.execute(
+        "SELECT run_id, payload FROM task_events WHERE task_id = ? AND kind = ? "
+        "ORDER BY created_at ASC, id ASC",
+        (task_id, "worker_review_followups_planned"),
+    ).fetchall()
+    for row in rows:
+        try:
+            payload = json.loads(row["payload"]) if row["payload"] else None
+        except Exception:
+            payload = None
+        if not isinstance(payload, dict):
+            continue
+        raw_source_run_id = payload.get("source_run_id")
+        if raw_source_run_id is None:
+            raw_source_run_id = row["run_id"]
+        try:
+            event_source_run_id = (
+                int(raw_source_run_id) if raw_source_run_id is not None else None
+            )
+        except (TypeError, ValueError):
+            event_source_run_id = None
+        if (
+            filter_source_run_id is not None
+            and event_source_run_id != filter_source_run_id
+        ):
+            continue
+        for purpose, relationship, key in (
+            ("review", "review_followup", "review_task_id"),
+            ("test", "test_followup", "test_task_id"),
+        ):
+            followup_task_id = payload.get(key)
+            if not isinstance(followup_task_id, str) or not followup_task_id.strip():
+                continue
+            followup_task_id = followup_task_id.strip()
+            dedupe = (purpose, followup_task_id)
+            if dedupe in seen:
+                continue
+            seen.add(dedupe)
+            refs.append({
+                "purpose": purpose,
+                "relationship": relationship,
+                "task_id": followup_task_id,
+                "source_run_id": event_source_run_id,
+            })
+    return refs
+
+
+def _followup_run_has_success_evidence(run: Optional[Run]) -> bool:
+    if run is None:
+        return False
+    if run.outcome == "completed" and run.status == "done":
+        return True
+    if not isinstance(run.metadata, dict):
+        return False
+    lane_meta = run.metadata.get("worker_lane")
+    if not isinstance(lane_meta, dict):
+        return False
+    if lane_meta.get("exit_code") != 0:
+        return False
+    if lane_meta.get("timed_out") or lane_meta.get("binary_missing"):
+        return False
+    review = run.metadata.get("review")
+    if isinstance(review, dict) and review.get("required"):
+        return True
+    if run.outcome == "completed":
+        return True
+    return False
+
+
+def review_followup_gate_status(
+    conn: sqlite3.Connection,
+    task_id: str,
+    *,
+    source_run_id: Optional[int] = None,
+) -> Optional[dict[str, Any]]:
+    """Return deterministic approval-gate state for planned review/test tasks."""
+    refs = _review_followup_refs(conn, task_id, source_run_id=source_run_id)
+    if not refs:
+        return None
+    items: list[dict[str, Any]] = []
+    missing = 0
+    pending = 0
+    running = 0
+    failed = 0
+    satisfied = 0
+    for ref in refs:
+        followup_task = get_task(conn, ref["task_id"])
+        run = latest_run(conn, ref["task_id"]) if followup_task else None
+        item: dict[str, Any] = {
+            "purpose": ref["purpose"],
+            "relationship": ref["relationship"],
+            "task_id": ref["task_id"],
+            "source_run_id": ref.get("source_run_id"),
+        }
+        if followup_task is None:
+            item["state"] = "missing"
+            item["status"] = "missing"
+            missing += 1
+        else:
+            item.update({
+                "status": followup_task.status,
+                "assignee": followup_task.assignee,
+                "current_run_id": followup_task.current_run_id,
+            })
+            if run is not None:
+                item["run"] = {
+                    "id": run.id,
+                    "status": run.status,
+                    "outcome": run.outcome,
+                    "summary": run.summary,
+                    "ended_at": run.ended_at,
+                }
+                if isinstance(run.metadata, dict):
+                    lane_meta = run.metadata.get("worker_lane")
+                    if isinstance(lane_meta, dict):
+                        item["worker_lane"] = {
+                            "name": lane_meta.get("name"),
+                            "kind": lane_meta.get("kind"),
+                            "exit_code": lane_meta.get("exit_code"),
+                            "timed_out": lane_meta.get("timed_out"),
+                            "binary_missing": lane_meta.get("binary_missing"),
+                        }
+                    verification = run.metadata.get("verification")
+                    if isinstance(verification, dict):
+                        item["verification"] = verification
+            if _followup_run_has_success_evidence(run):
+                item["state"] = "satisfied"
+                satisfied += 1
+            elif followup_task.status == "running":
+                item["state"] = "running"
+                running += 1
+            elif followup_task.status in {"ready", "todo", "scheduled", "triage"}:
+                item["state"] = "pending"
+                pending += 1
+            elif run is not None and (
+                run.outcome in {"crashed", "timed_out", "spawn_failed", "gave_up"}
+                or (
+                    isinstance(run.metadata, dict)
+                    and isinstance(run.metadata.get("worker_lane"), dict)
+                    and (
+                        run.metadata["worker_lane"].get("exit_code") not in {None, 0}
+                        or run.metadata["worker_lane"].get("timed_out")
+                        or run.metadata["worker_lane"].get("binary_missing")
+                    )
+                )
+            ):
+                item["state"] = "failed"
+                failed += 1
+            else:
+                item["state"] = "pending"
+                pending += 1
+        items.append(item)
+    required = len(items)
+    ready = required > 0 and satisfied == required
+    blocking: list[str] = []
+    if missing:
+        blocking.append(f"{missing} missing")
+    if pending:
+        blocking.append(f"{pending} pending")
+    if running:
+        blocking.append(f"{running} running")
+    if failed:
+        blocking.append(f"{failed} failed")
+    if not blocking and not ready:
+        blocking.append("follow-up evidence incomplete")
+    return {
+        "required": required,
+        "ready": ready,
+        "satisfied": satisfied,
+        "pending": pending,
+        "running": running,
+        "failed": failed,
+        "missing": missing,
+        "items": items,
+        "blocking_reasons": blocking,
+    }
+
+
+def _require_review_followup_gate_ready(
+    conn: sqlite3.Connection,
+    task_id: str,
+    *,
+    source_run_id: Optional[int] = None,
+) -> Optional[dict[str, Any]]:
+    gate = review_followup_gate_status(
+        conn,
+        task_id,
+        source_run_id=source_run_id,
+    )
+    if gate is None or gate.get("ready"):
+        return gate
+    reasons = ", ".join(gate.get("blocking_reasons") or ["follow-up evidence incomplete"])
+    raise ValueError(
+        f"review follow-up gate is not satisfied for {task_id}: {reasons}"
+    )
+
+
+def _release_review_followup_dependency_links(
+    conn: sqlite3.Connection,
+    task_id: str,
+    *,
+    source_run_id: Optional[int],
+) -> list[str]:
+    released: list[str] = []
+    refs = _review_followup_refs(conn, task_id, source_run_id=source_run_id)
+    for ref in refs:
+        cur = conn.execute(
+            "DELETE FROM task_links WHERE parent_id = ? AND child_id = ?",
+            (ref["task_id"], task_id),
+        )
+        if cur.rowcount:
+            released.append(ref["task_id"])
+    return released
 
 
 def _metadata_text_lines(value: Any, *, limit: int = 20) -> list[str]:
@@ -2725,11 +2951,20 @@ def review_worker_evidence(
         comment=review_comment or None,
     )
     lane_meta = metadata.get("worker_lane") if isinstance(metadata, dict) else None
+    followup_gate = None
+    if normalized_decision == "approve":
+        followup_gate = _require_review_followup_gate_ready(
+            conn,
+            task_id,
+            source_run_id=source_run_id,
+        )
     event_payload = {
         "reviewer": reviewer_name,
         "source_run_id": source_run_id,
         "worker_lane": lane_meta if isinstance(lane_meta, dict) else None,
     }
+    if followup_gate is not None:
+        event_payload["review_followup_gate"] = followup_gate
     if review_comment:
         event_payload["comment"] = review_comment
 
@@ -2762,6 +2997,22 @@ def review_worker_evidence(
                 event_payload,
                 run_id=source_run_id,
             )
+            released_followups = _release_review_followup_dependency_links(
+                conn,
+                task_id,
+                source_run_id=source_run_id,
+            )
+            if released_followups:
+                _append_event(
+                    conn,
+                    task_id,
+                    "worker_review_followup_gate_released",
+                    {
+                        "source_run_id": source_run_id,
+                        "followup_task_ids": released_followups,
+                    },
+                    run_id=source_run_id,
+                )
             if not _unblock_task_in_txn(
                 conn,
                 task_id,
@@ -2788,6 +3039,13 @@ def review_worker_evidence(
         assert current.run is not None
         if current.run.id != source_run_id:
             raise ValueError(f"task {task_id} review evidence changed")
+        followup_gate = _require_review_followup_gate_ready(
+            conn,
+            task_id,
+            source_run_id=source_run_id,
+        )
+        if followup_gate is not None:
+            event_payload["review_followup_gate"] = followup_gate
         conn.execute(
             "UPDATE task_runs SET metadata = ? WHERE id = ?",
             (json.dumps(metadata, ensure_ascii=False), source_run_id),

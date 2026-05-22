@@ -128,6 +128,7 @@ def test_task_progress_snapshot_surfaces_review_evidence(kanban_home, tmp_path):
     payload = snapshot.to_dict()
     assert payload["worker_lane"]["name"] == "codex-deep"
     assert payload["verification"]["commands"] == ["pytest -q"]
+    assert payload["review_followup_gate"] is None
 
 
 def test_task_progress_snapshot_includes_decomposed_child_workers(kanban_home):
@@ -385,6 +386,174 @@ def test_review_worker_evidence_request_changes_unblocks_with_comment(
     )
 
 
+def _finish_followup_with_worker_evidence(conn, task_id: str, *, lane: str) -> None:
+    task = kb.claim_task(conn, task_id, claimer=f"worker:{lane}")
+    assert task is not None
+    assert kb.block_task(
+        conn,
+        task_id,
+        reason="review-required: Codex completed; Hermes review required",
+        expected_run_id=task.current_run_id,
+        metadata={
+            "worker_lane": {
+                "name": lane,
+                "kind": "codex_cli",
+                "exit_code": 0,
+                "timed_out": False,
+                "binary_missing": False,
+            },
+            "verification": {"commands": ["pytest -q"], "summary": "passed"},
+            "review": {
+                "required": True,
+                "reason": "Codex completed; Hermes review required",
+            },
+        },
+    )
+
+
+def test_review_worker_evidence_approve_requires_planned_followups(
+    kanban_home, tmp_path,
+):
+    metadata = {
+        "worker_lane": {"name": "codex-deep", "kind": "codex_cli", "exit_code": 0},
+        "verification": {"commands": ["pytest -q"], "summary": "passed"},
+        "review": {"required": True, "reason": "Codex completed; Hermes review required"},
+    }
+    with kb.connect() as conn:
+        tid = kb.create_task(
+            conn,
+            title="implementation",
+            assignee="codex-deep",
+            workspace_kind="dir",
+            workspace_path=str(tmp_path),
+        )
+        task = kb.claim_task(conn, tid, claimer="worker:codex-deep")
+        assert task is not None
+        assert kb.block_task(
+            conn,
+            tid,
+            reason="review-required: Codex completed; Hermes review required",
+            expected_run_id=task.current_run_id,
+            metadata=metadata,
+        )
+        plan = kb.plan_review_followups(conn, tid)
+        gate = kb.review_followup_gate_status(conn, tid, source_run_id=task.current_run_id)
+        with pytest.raises(ValueError, match="review follow-up gate is not satisfied"):
+            kb.review_worker_evidence(
+                conn,
+                tid,
+                decision="approve",
+                reviewer="reviewer",
+                summary="too early",
+            )
+        still_blocked = kb.get_task(conn, tid)
+
+        _finish_followup_with_worker_evidence(conn, plan.review_task_id, lane="codex-review")
+        _finish_followup_with_worker_evidence(conn, plan.test_task_id, lane="codex-test")
+        ready_gate = kb.review_followup_gate_status(
+            conn,
+            tid,
+            source_run_id=task.current_run_id,
+        )
+        snapshot = kb.review_worker_evidence(
+            conn,
+            tid,
+            decision="approve",
+            reviewer="reviewer",
+            summary="review/test evidence accepted",
+        )
+        events = kb.list_events(conn, tid)
+
+    assert gate["ready"] is False
+    assert gate["pending"] == 2
+    assert still_blocked.status == "blocked"
+    assert ready_gate["ready"] is True
+    assert ready_gate["satisfied"] == 2
+    assert snapshot.task.status == "done"
+    approved_events = [event for event in events if event.kind == "worker_review_approved"]
+    assert approved_events
+    assert approved_events[-1].payload["review_followup_gate"]["ready"] is True
+
+
+def test_review_followup_gate_uses_current_source_run_only(
+    kanban_home, tmp_path,
+):
+    metadata = {
+        "worker_lane": {"name": "codex-deep", "kind": "codex_cli", "exit_code": 0},
+        "verification": {"commands": ["pytest -q"], "summary": "passed"},
+        "review": {"required": True, "reason": "Codex completed; Hermes review required"},
+    }
+    with kb.connect() as conn:
+        tid = kb.create_task(
+            conn,
+            title="rerun implementation",
+            assignee="codex-deep",
+            workspace_kind="dir",
+            workspace_path=str(tmp_path),
+        )
+        first = kb.claim_task(conn, tid, claimer="worker:codex-deep")
+        assert first is not None
+        assert kb.block_task(
+            conn,
+            tid,
+            reason="review-required: Codex completed; Hermes review required",
+            expected_run_id=first.current_run_id,
+            metadata=metadata,
+        )
+        first_plan = kb.plan_review_followups(conn, tid)
+        _finish_followup_with_worker_evidence(
+            conn,
+            first_plan.review_task_id,
+            lane="codex-review",
+        )
+        _finish_followup_with_worker_evidence(
+            conn,
+            first_plan.test_task_id,
+            lane="codex-test",
+        )
+        assert kb.review_worker_evidence(
+            conn,
+            tid,
+            decision="request_changes",
+            reviewer="reviewer",
+            comment="rerun implementation",
+        ).task.status == "ready"
+        released_progress = kb.task_progress_snapshot(conn, tid, include_children=True)
+
+        second = kb.claim_task(conn, tid, claimer="worker:codex-deep")
+        assert second is not None
+        assert kb.block_task(
+            conn,
+            tid,
+            reason="review-required: Codex completed; Hermes review required",
+            expected_run_id=second.current_run_id,
+            metadata=metadata,
+        )
+        second_plan = kb.plan_review_followups(conn, tid)
+        current_gate = kb.review_followup_gate_status(
+            conn,
+            tid,
+            source_run_id=second.current_run_id,
+        )
+        progress = kb.task_progress_snapshot(conn, tid, include_children=True)
+        events = kb.list_events(conn, tid)
+
+    assert first_plan.review_task_id != second_plan.review_task_id
+    assert released_progress.review_followup_gate is None
+    assert released_progress.child_summary["total"] == 0
+    assert current_gate["ready"] is False
+    assert current_gate["pending"] == 2
+    assert {
+        child["task"]["id"] for child in progress.children
+    } == {second_plan.review_task_id, second_plan.test_task_id}
+    assert any(
+        event.kind == "worker_review_followup_gate_released"
+        and set(event.payload["followup_task_ids"])
+        == {first_plan.review_task_id, first_plan.test_task_id}
+        for event in events
+    )
+
+
 def test_plan_review_followups_creates_independent_review_and_test_tasks(
     kanban_home, tmp_path,
 ):
@@ -476,6 +645,8 @@ def test_plan_review_followups_creates_independent_review_and_test_tasks(
     assert root_snapshot.child_summary["total"] == 2
     assert root_snapshot.child_summary["relationship_counts"]["review_followup"] == 1
     assert root_snapshot.child_summary["relationship_counts"]["test_followup"] == 1
+    assert root_snapshot.review_followup_gate["ready"] is False
+    assert root_snapshot.review_followup_gate["pending"] == 2
     assert repeated.created == []
     assert set(repeated.existing) == {plan.review_task_id, plan.test_task_id}
     assert len([task for task in all_tasks if task.created_by == "hermes-review-planner"]) == 2

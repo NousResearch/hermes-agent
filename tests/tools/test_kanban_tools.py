@@ -578,6 +578,13 @@ def test_plan_review_tool_creates_review_and_test_followups(monkeypatch, worker_
     assert "app.py" in review_task.body
     assert "pytest -q" in test_task.body
 
+    early = json.loads(kt._handle_review({
+        "task_id": tid,
+        "decision": "approve",
+        "summary": "too early",
+    }))
+    assert "review follow-up gate is not satisfied" in early["error"]
+
 
 def test_complete_happy_path(worker_env):
     from tools import kanban_tools as kt

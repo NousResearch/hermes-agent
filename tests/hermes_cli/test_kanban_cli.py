@@ -695,8 +695,15 @@ def test_run_slash_plan_review_json_creates_followups(
     assert "pytest -q" in test_task.body
     assert progress.child_summary["relationship_counts"]["review_followup"] == 1
     assert progress.child_summary["relationship_counts"]["test_followup"] == 1
+    assert progress.review_followup_gate["ready"] is False
+    assert progress.review_followup_gate["pending"] == 2
     assert repeated["created"] == []
     assert set(repeated["existing"]) == {payload["review_task_id"], payload["test_task_id"]}
+
+    out = kc.run_slash(
+        f"review {tid} approve --reviewer ralph --summary 'too early' --json"
+    )
+    assert "review follow-up gate is not satisfied" in out
 
 
 def test_run_slash_worker_lane_request_validates_without_enabling(

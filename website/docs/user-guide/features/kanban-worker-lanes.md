@@ -208,6 +208,8 @@ hermes kanban progress <implementation_task_id> --children --json
 
 This gives the main agent and dashboard a compact view of whether review and test workers are still ready, running, blocked, or done without interrupting any worker process.
 
+Approval is gated once follow-ups are planned. `hermes kanban review <task_id> approve` refuses to mark the implementation task done until every planned follow-up for the current implementation run has successful worker evidence. For the built-in Codex adapter, a follow-up that exits 0 and blocks with `review.required: true` counts as successful evidence: Hermes still reviews the bounded receipt, not the full Codex session. Pending, running, missing, timed out, binary-missing, or nonzero-exit follow-ups block approval with an explicit gate error. `request-changes` remains available at any time and unblocks the implementation task for another worker run.
+
 ## Skill lane intent
 
 Hermes skills can choose an existing lane directly:
@@ -302,9 +304,10 @@ with `decision=approve` or `decision=request_changes`.
 
 `kanban plan-review` creates the independent review/test worker tasks.
 `approve` records the final controller decision and marks the implementation
-task done. `request-changes` records the reviewer comment, emits a review event,
-and unblocks the implementation task so the dispatcher can hand the follow-up
-back to the assigned lane.
+task done only after the planned follow-up gate is satisfied. `request-changes`
+records the reviewer comment, emits a review event, and unblocks the
+implementation task so the dispatcher can hand the follow-up back to the
+assigned lane.
 
 Configured orchestrator/main-agent profiles can use the equivalent tools:
 `kanban_reviews` for the queue, `kanban_progress` for one task's bounded
@@ -359,7 +362,7 @@ So lane authors don't have to reimplement these:
 
 - No full Codex event stream integration yet; progress is parsed from wrapper stdout/stderr.
 - No approval bridge; configure Codex lanes with controlled approval policy.
-- No automatic acceptance gate that requires review/test follow-up tasks to be done before `kanban review approve`; controllers should inspect follow-up evidence before approving.
+- Follow-up gating proves that review/test workers produced successful bounded evidence; it does not yet perform automatic semantic acceptance of large diffs.
 - External lane command shapes are adapter-defined, not model-defined.
 - Review reads Codex artifacts and bounded metadata, not the full Codex session.
 

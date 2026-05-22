@@ -1673,6 +1673,19 @@ def test_plan_review_endpoint_creates_review_and_test_followups(client, tmp_path
     assert "pytest -q" in test_task.body
     assert progress.child_summary["relationship_counts"]["review_followup"] == 1
     assert progress.child_summary["relationship_counts"]["test_followup"] == 1
+    assert progress.review_followup_gate["ready"] is False
+    assert progress.review_followup_gate["pending"] == 2
+
+    early = client.post(
+        f"/api/plugins/kanban/tasks/{tid}/review",
+        json={
+            "decision": "approve",
+            "reviewer": "dashboard-reviewer",
+            "summary": "too early",
+        },
+    )
+    assert early.status_code == 400
+    assert "review follow-up gate is not satisfied" in early.json()["detail"]
 
 
 def test_worker_lane_request_endpoint_validates_without_enabling(client):

@@ -2433,6 +2433,9 @@ _AUX_TASKS: list[tuple[str, str, str]] = [
     ("mcp", "MCP", "MCP tool reasoning"),
     ("title_generation", "Title generation", "session titles"),
     ("skills_hub", "Skills hub", "skills search/install"),
+    ("triage_specifier", "Triage specifier", "kanban spec fleshing"),
+    ("kanban_decomposer", "Kanban decomposer", "task decomposition"),
+    ("profile_describer", "Profile describer", "auto profile descriptions"),
     ("curator", "Curator", "skill-usage review pass"),
 ]
 
@@ -4662,7 +4665,9 @@ def _model_flow_copilot(config, current_model=""):
         source = creds.get("source", "")
     else:
         if source in {"GITHUB_TOKEN", "GH_TOKEN"}:
-            print(f"  GitHub token: {api_key[:8]}... ✓ ({source})")
+            from hermes_cli.env_loader import format_secret_source_suffix
+            bw_suffix = format_secret_source_suffix(source)
+            print(f"  GitHub token: {api_key[:8]}... ✓ ({source}{bw_suffix})")
         elif source == "gh auth token":
             print("  GitHub token: ✓ (from `gh auth token`)")
         else:
@@ -4919,7 +4924,10 @@ def _prompt_api_key(pconfig, existing_key: str, provider_id: str = "") -> tuple:
         return new_key, False
 
     # Already configured — offer K / R / C ────────────────────────────────
-    print(f"  {pconfig.name} API key: {existing_key[:8]}... ✓")
+    from hermes_cli.env_loader import format_secret_source_suffix
+
+    source_suffix = format_secret_source_suffix(key_env) if key_env else ""
+    print(f"  {pconfig.name} API key: {existing_key[:8]}... ✓{source_suffix}")
     if not key_env:
         # Nothing we can rewrite; just acknowledge and move on.
         print()
@@ -5202,7 +5210,9 @@ def _model_flow_bedrock_api_key(config, region, current_model=""):
     # Prompt for API key
     existing_key = get_env_value("AWS_BEARER_TOKEN_BEDROCK") or ""
     if existing_key:
-        print(f"  Bedrock API Key: {existing_key[:12]}... ✓")
+        from hermes_cli.env_loader import format_secret_source_suffix
+        source_suffix = format_secret_source_suffix("AWS_BEARER_TOKEN_BEDROCK")
+        print(f"  Bedrock API Key: {existing_key[:12]}... ✓{source_suffix}")
     else:
         print(f"  Endpoint: {mantle_base_url}")
         print()
@@ -5873,7 +5883,22 @@ def _model_flow_anthropic(config, current_model=""):
     if has_creds:
         # Show what we found
         if existing_key:
-            print(f"  Anthropic credentials: {existing_key[:12]}... ✓")
+            from hermes_cli.env_loader import format_secret_source_suffix
+            from hermes_cli.auth import PROVIDER_REGISTRY
+
+            # Surface which env var supplied the key so users with
+            # Bitwarden see "(from Bitwarden)" — without this, a detected
+            # BSM key looks identical to a key in .env and users assume
+            # nothing is wired up.
+            source_suffix = ""
+            for var in PROVIDER_REGISTRY["anthropic"].api_key_env_vars:
+                if os.getenv(var, "").strip() == existing_key:
+                    source_suffix = format_secret_source_suffix(var)
+                    if source_suffix:
+                        break
+            print(
+                f"  Anthropic credentials: {existing_key[:12]}... ✓{source_suffix}"
+            )
         elif cc_available:
             print("  Claude Code credentials: ✓ (auto-detected)")
         print()

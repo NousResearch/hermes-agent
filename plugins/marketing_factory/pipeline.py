@@ -1,17 +1,34 @@
-"""Deterministic MVP agent pipeline for Marketing Agent Factory.
+"""Agent pipeline for Marketing Agent Factory.
 
-The MVP intentionally avoids real public posting and avoids LLM/API calls. The
-interfaces and records carry model-routing metadata so Claude CLI/OAuth, local
-models, OpenRouter, OpenAI, Anthropic, and posting APIs can be introduced behind
-approval and dry-run gates later.
+Live LLM dispatch (cheap=local Ollama qwen2.5:14b, mid=qwen3:30b, premium=Claude
+CLI/OAuth) is wired behind a feature gate. When LLM dispatch is disabled (tests,
+or `MF_USE_LLM=0`), all agents fall through to the deterministic template path
+they originally shipped with — so the pipeline remains testable and never breaks
+when models are unreachable.
+
+Real public posting is still hard-gated by the PublisherAgent's dry-run-only path.
 """
 
 from __future__ import annotations
 
+import logging
+import os
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional
 
+from plugins.marketing_factory.model_dispatcher import dispatch, dispatch_json
 from plugins.marketing_factory.store import MarketingFactoryStore, utc_now
+
+logger = logging.getLogger(__name__)
+
+
+def _should_use_llm() -> bool:
+    """Live LLM dispatch is opt-out via `MF_USE_LLM=0`, and auto-off inside pytest."""
+    if os.environ.get("MF_USE_LLM") == "0":
+        return False
+    if os.environ.get("PYTEST_CURRENT_TEST"):
+        return False
+    return True
 
 
 PUPULAR_PROFILE: Dict[str, Any] = {
@@ -60,18 +77,72 @@ class BrandBrainAgent:
 
 
 class ResearchAgent:
-    def research(self, app: Dict[str, Any]) -> Dict[str, Any]:
+    def research(self, app: Dict[str, Any], token_ledger: Optional[List[Dict[str, Any]]] = None) -> Dict[str, Any]:
         pillars = app.get("content_pillars") or []
         channels = app.get("channels") or []
-        return {
+
+        base: Dict[str, Any] = {
             "generated_at": utc_now(),
             "agent": "research",
             "model_route": "cheap",
+            "competitors": app.get("competitors", []),
             "trends": [f"{pillar} conversation hooks" for pillar in pillars[:3]],
             "pain_points": _pain_points(app["slug"]),
             "channel_opportunities": {channel: _channel_opportunity(app["slug"], channel) for channel in channels},
-            "competitors": app.get("competitors", []),
+            "llm_used": False,
         }
+
+        if not _should_use_llm():
+            return base
+
+        prompt = (
+            f"Brand: {app['name']} ({app['slug']})\n"
+            f"Positioning: {app.get('positioning')}\n"
+            f"ICP: {app.get('icp')}\n"
+            f"Tone: {app.get('tone')}\n"
+            f"Channels: {', '.join(channels)}\n"
+            f"Content pillars: {', '.join(pillars)}\n"
+            f"Forbidden claims: {', '.join(app.get('forbidden_claims', []))}\n\n"
+            "Produce a single JSON object with EXACTLY these keys:\n"
+            '  "trends": array of 3 short strings (current conversational hooks relevant to this brand)\n'
+            '  "pain_points": array of 3 short strings (real audience pains this brand can address)\n'
+            f'  "channel_opportunities": object mapping each of these channel keys exactly — {channels} — to a one-sentence opportunity for that channel\n'
+            "Constraints: each string under 140 chars; avoid forbidden claims; no markdown; output ONLY valid JSON."
+        )
+        env = dispatch_json(
+            "cheap",
+            prompt,
+            system="You are a marketing research analyst. You produce concise, brand-safe JSON.",
+            max_tokens=600,
+            temperature=0.3,
+        )
+        if token_ledger is not None and env.get("tokens_used"):
+            token_ledger.append({
+                "route": env["route"],
+                "model": env["model"],
+                "tokens": env["tokens_used"],
+                "agent": "research",
+                "channel": None,
+                "elapsed_ms": env.get("elapsed_ms"),
+            })
+        if env.get("fallback_used") or not isinstance(env.get("parsed"), dict):
+            base["llm_error"] = env.get("error")
+            return base
+
+        parsed = env["parsed"]
+        if isinstance(parsed.get("trends"), list) and parsed["trends"]:
+            base["trends"] = [str(t)[:200] for t in parsed["trends"][:5]]
+        if isinstance(parsed.get("pain_points"), list) and parsed["pain_points"]:
+            base["pain_points"] = [str(p)[:200] for p in parsed["pain_points"][:5]]
+        if isinstance(parsed.get("channel_opportunities"), dict) and parsed["channel_opportunities"]:
+            merged = dict(base["channel_opportunities"])
+            for channel, value in parsed["channel_opportunities"].items():
+                if channel in merged and isinstance(value, str):
+                    merged[channel] = value[:300]
+            base["channel_opportunities"] = merged
+        base["llm_used"] = True
+        base["llm_model"] = env.get("model")
+        return base
 
 
 class StrategyAgent:
@@ -102,17 +173,79 @@ class StrategyAgent:
 
 
 class CopyAgent:
-    def draft_for_item(self, app: Dict[str, Any], campaign_id: str, item: Dict[str, Any]) -> Dict[str, Any]:
-        body = _draft_body(app, item)
-        return {
+    PREMIUM_CHANNELS = {"blog", "email", "linkedin"}
+    MID_CHANNELS = {"x", "instagram", "tiktok", "app_store"}
+
+    def _route_for(self, channel: str) -> str:
+        if channel in self.PREMIUM_CHANNELS:
+            return "premium"
+        if channel in self.MID_CHANNELS:
+            return "mid"
+        return "cheap"
+
+    def draft_for_item(
+        self,
+        app: Dict[str, Any],
+        campaign_id: str,
+        item: Dict[str, Any],
+        token_ledger: Optional[List[Dict[str, Any]]] = None,
+    ) -> Dict[str, Any]:
+        channel = item["channel"]
+        route = self._route_for(channel)
+        template_body = _draft_body(app, item)
+        body = template_body
+        llm_used = False
+        llm_model = None
+        llm_error = None
+
+        if _should_use_llm():
+            prompt = _copy_prompt(app, item, channel)
+            env = dispatch(
+                route,
+                prompt,
+                system=(
+                    "You are a senior brand copywriter. Write channel-native copy that strictly "
+                    "respects the brand voice, channel character limits, and forbidden-claim list. "
+                    "Output ONLY the post body — no markdown headers, no preamble, no quotes around the post."
+                ),
+                max_tokens=_max_tokens_for(channel),
+                temperature=0.55,
+            )
+            if token_ledger is not None and env.get("tokens_used"):
+                token_ledger.append({
+                    "route": env["route"],
+                    "model": env["model"],
+                    "tokens": env["tokens_used"],
+                    "agent": "copy",
+                    "channel": channel,
+                    "elapsed_ms": env.get("elapsed_ms"),
+                })
+            if env.get("fallback_used") or not env.get("text"):
+                llm_error = env.get("error") or "empty response"
+            else:
+                candidate = env["text"].strip()
+                candidate = _strip_wrapping_quotes(candidate)
+                if _within_channel_constraints(channel, candidate):
+                    body = candidate
+                    llm_used = True
+                    llm_model = env.get("model")
+                else:
+                    llm_error = f"response violated channel constraints (len={len(candidate)})"
+
+        draft: Dict[str, Any] = {
             "campaign_id": campaign_id,
-            "channel": item["channel"],
-            "content_type": _content_type(item["channel"]),
+            "channel": channel,
+            "content_type": _content_type(channel),
             "body": body,
             "cta": app.get("cta"),
             "assets": _asset_concepts(app, item),
-            "model_route": "mid" if item["channel"] in {"blog", "email", "linkedin"} else "cheap",
+            "model_route": route,
+            "llm_used": llm_used,
+            "llm_model": llm_model,
         }
+        if llm_error:
+            draft["llm_error"] = llm_error
+        return draft
 
 
 class CreativeAgent:
@@ -192,12 +325,13 @@ class MarketingFactoryPipeline:
 
     def generate_campaign(self, app_slug: str, days: int = 7, auto_approve: bool = False) -> Dict[str, Any]:
         app = self.store.require_app(app_slug)
-        research = self.research.research(app)
+        token_ledger: List[Dict[str, Any]] = []
+        research = self.research.research(app, token_ledger=token_ledger)
         campaign_plan = self.strategy.plan_campaign(app, research, days=days)
         campaign = self.store.create_campaign(app["slug"], campaign_plan)
         drafts = []
         for item in campaign["plan"]:
-            raw_draft = self.copy.draft_for_item(app, campaign["id"], item)
+            raw_draft = self.copy.draft_for_item(app, campaign["id"], item, token_ledger=token_ledger)
             raw_draft["scheduled_for"] = item["scheduled_for"]
             enriched = self.creative.add_concepts(app, raw_draft)
             safety = self.review.review(app, enriched)
@@ -208,8 +342,19 @@ class MarketingFactoryPipeline:
                 self.store.set_approval(draft["id"], "approved", reviewer="auto-test", reason="auto approval for dry-run verification only")
                 draft = self.store.get_draft(draft["id"])
             drafts.append(draft)
-        self.store.audit("campaign.generated", app["slug"], {"campaign_id": campaign["id"], "draft_count": len(drafts), "auto_approve": auto_approve})
-        return {"app": app, "campaign": campaign, "drafts": drafts}
+        token_summary = self.store.record_token_usage(app["slug"], campaign["id"], token_ledger) if token_ledger else None
+        self.store.audit(
+            "campaign.generated",
+            app["slug"],
+            {
+                "campaign_id": campaign["id"],
+                "draft_count": len(drafts),
+                "auto_approve": auto_approve,
+                "tokens_used": (token_summary or {}).get("tokens_used", 0),
+                "llm_calls": len(token_ledger),
+            },
+        )
+        return {"app": app, "campaign": campaign, "drafts": drafts, "token_summary": token_summary}
 
     def approve_all_for_app(self, app_slug: str, reviewer: str = "human") -> List[Dict[str, Any]]:
         approvals = []
@@ -257,6 +402,62 @@ def _angle_for(slug: str, pillar: str) -> str:
 
 def _content_type(channel: str) -> str:
     return {"blog": "seo_outline", "email": "email", "linkedin": "linkedin_post", "x": "short_social", "instagram": "visual_caption", "tiktok": "short_script", "app_store": "app_store_copy"}.get(channel, "post")
+
+
+_CHANNEL_GUIDANCE: Dict[str, str] = {
+    "x": "Single X/Twitter post, max 280 chars. Hook in first 8 words. Lowercase ok. No hashtag spam. At most ONE link.",
+    "instagram": "Instagram caption, 1-3 short paragraphs, max 2200 chars. Optional 3-5 niche hashtags on a final line.",
+    "tiktok": "TikTok short script — 6 to 12 spoken seconds. Format as: HOOK | LINE | LINE | CTA. No emojis.",
+    "linkedin": "LinkedIn post, conversational founder voice, 3-6 short paragraphs, max 1300 chars. No hashtag spam.",
+    "blog": "SEO blog OUTLINE: H1 + 3-5 H2 sections + one-sentence intro for each. Max 1500 chars total.",
+    "email": "Plain-text email body, conversational, max 1200 chars. Subject line ON ITS OWN FIRST LINE prefixed 'Subject:'.",
+    "app_store": "App Store promotional text, max 170 chars, conversion-focused.",
+}
+
+
+_CHANNEL_MAX_TOKENS: Dict[str, int] = {
+    "x": 200,
+    "instagram": 700,
+    "tiktok": 250,
+    "linkedin": 600,
+    "blog": 900,
+    "email": 600,
+    "app_store": 140,
+}
+
+
+def _copy_prompt(app: Dict[str, Any], item: Dict[str, Any], channel: str) -> str:
+    link = (app.get("links") or [""])[0]
+    pillar = item.get("pillar") or "brand story"
+    angle = item.get("angle") or _angle_for(app["slug"], pillar)
+    forbidden = app.get("forbidden_claims") or []
+    claims_ok = app.get("claims") or []
+    return (
+        f"Brand: {app['name']}\n"
+        f"Positioning: {app.get('positioning')}\n"
+        f"Audience (ICP): {app.get('icp')}\n"
+        f"Tone: {app.get('tone')}\n"
+        f"Channel: {channel}\n"
+        f"Content pillar today: {pillar}\n"
+        f"Angle: {angle}\n"
+        f"CTA: {app.get('cta')}\n"
+        f"Primary link: {link}\n"
+        f"Approved claims (only use these or paraphrases): {claims_ok}\n"
+        f"Forbidden claims (do NOT make or imply these): {forbidden}\n\n"
+        f"Channel rules: {_CHANNEL_GUIDANCE.get(channel, 'Brand-safe post.')}\n\n"
+        "Write the post body NOW. Output only the body text — no quotes, no preamble, no commentary."
+    )
+
+
+def _max_tokens_for(channel: str) -> int:
+    return _CHANNEL_MAX_TOKENS.get(channel, 400)
+
+
+def _strip_wrapping_quotes(text: str) -> str:
+    text = text.strip()
+    if len(text) >= 2 and text[0] in {'"', "'", "“", "‘"} and text[-1] in {'"', "'", "”", "’"}:
+        return text[1:-1].strip()
+    return text
 
 
 def _draft_body(app: Dict[str, Any], item: Dict[str, Any]) -> str:

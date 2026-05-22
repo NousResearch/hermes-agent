@@ -172,6 +172,7 @@ class MarketingFactoryStore:
             "status": campaign.get("status", "planned"),
             "plan": campaign.get("plan", []),
             "model_route": campaign.get("model_route"),
+            "research_summary": campaign.get("research_summary"),
             "created_at": utc_now(),
             "updated_at": utc_now(),
         }
@@ -205,6 +206,9 @@ class MarketingFactoryStore:
             "model_route": draft.get("model_route", "cheap"),
             "status": draft.get("status", "needs_review"),
             "scheduled_for": draft.get("scheduled_for"),
+            "llm_used": bool(draft.get("llm_used")),
+            "llm_model": draft.get("llm_model"),
+            "llm_error": draft.get("llm_error"),
             "created_at": utc_now(),
             "updated_at": utc_now(),
         }
@@ -313,6 +317,63 @@ class MarketingFactoryStore:
         self._write_state(state)
         self.audit("publish.dry_run", draft["app_slug"], {"draft_id": draft_id, "event_id": event_id, "channel": draft["channel"]})
         return event
+
+    def record_token_usage(
+        self,
+        app_slug: str,
+        campaign_id: Optional[str],
+        ledger_entries: List[Dict[str, Any]],
+    ) -> Dict[str, Any]:
+        """Accumulate per-app / per-channel / per-route token spend into `budgets`.
+
+        `ledger_entries` is a list of `{route, model, tokens, agent, channel, elapsed_ms}` dicts
+        produced by `model_dispatcher.dispatch()`. The store resets daily counters whenever
+        `last_reset_date` does not match today (UTC), so spend tracking is rolling-day.
+        """
+        self.require_app(app_slug)
+        if not ledger_entries:
+            return {"tokens_used": 0, "calls": 0}
+
+        slug = _require_slug(app_slug)
+        state = self.load()
+        budgets = state["budgets"]
+        today = datetime.now(timezone.utc).date().isoformat()
+        if budgets.get("last_reset_date") != today:
+            budgets["last_reset_date"] = today
+            budgets["spent_tokens_today"] = 0
+            budgets["spent_by_route"] = {"cheap": 0, "mid": 0, "premium": 0}
+            budgets["per_app_tokens"] = {}
+            budgets["per_channel_tokens"] = {}
+
+        spent_by_route = budgets.setdefault("spent_by_route", {"cheap": 0, "mid": 0, "premium": 0})
+        per_app = budgets.setdefault("per_app_tokens", {})
+        per_channel = budgets.setdefault("per_channel_tokens", {})
+
+        total = 0
+        for entry in ledger_entries:
+            tokens = int(entry.get("tokens") or 0)
+            if tokens <= 0:
+                continue
+            total += tokens
+            route = entry.get("route") or "unknown"
+            channel = entry.get("channel") or "_none"
+            spent_by_route[route] = spent_by_route.get(route, 0) + tokens
+            per_app[slug] = per_app.get(slug, 0) + tokens
+            per_channel[channel] = per_channel.get(channel, 0) + tokens
+
+        budgets["spent_tokens_today"] = budgets.get("spent_tokens_today", 0) + total
+        self._write_state(state)
+        self.audit(
+            "tokens.recorded",
+            slug,
+            {
+                "campaign_id": campaign_id,
+                "tokens_used": total,
+                "calls": len(ledger_entries),
+                "by_route": {r: sum(e.get("tokens", 0) for e in ledger_entries if e.get("route") == r) for r in {e.get("route") for e in ledger_entries if e.get("route")}},
+            },
+        )
+        return {"tokens_used": total, "calls": len(ledger_entries), "daily_total": budgets["spent_tokens_today"]}
 
     def record_analytics(self, app_slug: str, payload: Dict[str, Any]) -> Dict[str, Any]:
         self.require_app(app_slug)

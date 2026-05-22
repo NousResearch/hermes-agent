@@ -58,10 +58,13 @@ _MEMORY_REVIEW_PROMPT = (
 )
 
 _SKILL_REVIEW_PROMPT = (
-    "Review the conversation above and update the skill library. Be "
-    "ACTIVE — most sessions produce at least one skill update, even if "
-    "small. A pass that does nothing is a missed learning opportunity, "
-    "not a neutral outcome.\n\n"
+    "Review the conversation above and consider whether the skill "
+    "library needs to be updated. Update only when a signal below "
+    "actually fired (#30220) — 'Nothing to save.' is a valid and "
+    "frequent outcome. Saving low-signal entries pollutes the library "
+    "with narrow one-session-one-skill entries the agent then has to "
+    "wade through forever, which is exactly the failure mode the "
+    "preference order below is designed to prevent.\n\n"
     "Target shape of the library: CLASS-LEVEL skills, each with a rich "
     "SKILL.md and a `references/` directory for session-specific detail. "
     "Not a long flat list of narrow one-session-one-skill entries. This "
@@ -153,10 +156,11 @@ _SKILL_REVIEW_PROMPT = (
     "command, config step, env var to set) under an existing setup or "
     "troubleshooting skill — never 'this tool does not work' as a "
     "standalone constraint.\n\n"
-    "'Nothing to save.' is a real option but should NOT be the "
-    "default. If the session ran smoothly with no corrections and "
-    "produced no new technique, just say 'Nothing to save.' and stop. "
-    "Otherwise, act."
+    "'Nothing to save.' is a valid and frequent outcome (#30220). If "
+    "the session ran smoothly with no corrections and produced no new "
+    "durable technique, say 'Nothing to save.' and stop — that is a "
+    "first-class result, not a missed opportunity. Only act when a "
+    "signal above actually fired."
 )
 
 _COMBINED_REVIEW_PROMPT = (

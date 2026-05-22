@@ -4772,7 +4772,8 @@ class TelegramAdapter(BasePlatformAdapter):
         if os.getenv("TELEGRAM_REACTIONS", "false").lower() in {"false", "0", "no"}:
             return False
         source = getattr(event, "source", None) if event is not None else None
-        if getattr(source, "chat_type", None) == "group":
+        chat_type = str(getattr(source, "chat_type", "") or "").strip().lower()
+        if chat_type in {"group", "supergroup", "forum"}:
             return os.getenv("TELEGRAM_GROUP_REACTIONS", "false").lower() not in {"false", "0", "no"}
         return True
 

@@ -14059,6 +14059,7 @@ class GatewayRunner:
         ("compression", "threshold"),
         ("compression", "target_ratio"),
         ("compression", "protect_last_n"),
+        ("compression", "status_messages"),
         ("agent", "disabled_toolsets"),
     )
 

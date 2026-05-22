@@ -441,6 +441,64 @@ class TestPreflightCompression:
         assert "Compacting context" in events[0][1]
         assert events[1] == ("compress", "started")
 
+    def test_compression_status_messages_once_dedupes_started_notice(self, agent):
+        """compression.status_messages='once' emits the compacting notice only once per agent."""
+        events = []
+        agent.status_callback = lambda ev, msg: events.append((ev, msg))
+        agent.compression_status_messages = "once"
+
+        def _fake_compress(messages, current_tokens=None, focus_topic=None):
+            events.append(("compress", "started"))
+            return [{"role": "user", "content": f"{SUMMARY_PREFIX}\nPrevious conversation"}]
+
+        with (
+            patch.object(agent.context_compressor, "compress", side_effect=_fake_compress),
+            patch.object(agent, "_build_system_prompt", return_value="new system prompt"),
+            patch("run_agent.estimate_request_tokens_rough", return_value=42),
+        ):
+            for _ in range(2):
+                agent._compress_context(
+                    [{"role": "user", "content": "hello"}],
+                    "system prompt",
+                    approx_tokens=1234,
+                )
+
+        compacting_notices = [
+            msg for ev, msg in events
+            if ev == "lifecycle" and "Compacting context" in msg
+        ]
+        assert compacting_notices == [
+            "🗜️ Compacting context — summarizing earlier conversation so I can continue..."
+        ]
+        assert events.count(("compress", "started")) == 2
+
+    def test_compression_status_messages_off_suppresses_started_notice(self, agent):
+        """compression.status_messages='off' suppresses non-critical compacting notices."""
+        events = []
+        agent.status_callback = lambda ev, msg: events.append((ev, msg))
+        agent.compression_status_messages = "off"
+
+        def _fake_compress(messages, current_tokens=None, focus_topic=None):
+            events.append(("compress", "started"))
+            return [{"role": "user", "content": f"{SUMMARY_PREFIX}\nPrevious conversation"}]
+
+        with (
+            patch.object(agent.context_compressor, "compress", side_effect=_fake_compress),
+            patch.object(agent, "_build_system_prompt", return_value="new system prompt"),
+            patch("run_agent.estimate_request_tokens_rough", return_value=42),
+        ):
+            agent._compress_context(
+                [{"role": "user", "content": "hello"}],
+                "system prompt",
+                approx_tokens=1234,
+            )
+
+        assert not any(
+            ev == "lifecycle" and "Compacting context" in msg
+            for ev, msg in events
+        )
+        assert events == [("compress", "started")]
+
     def test_preflight_compresses_oversized_history(self, agent):
         """When loaded history exceeds the model's context threshold, compress before API call."""
         agent.compression_enabled = True

@@ -1108,6 +1108,17 @@ def init_agent(
     compression_abort_on_summary_failure = str(
         _compression_cfg.get("abort_on_summary_failure", False)
     ).lower() in {"true", "1", "yes"}
+    compression_status_messages = _compression_cfg.get("status_messages", "all")
+    if isinstance(compression_status_messages, bool):
+        compression_status_messages = "all" if compression_status_messages else "off"
+    else:
+        compression_status_messages = str(compression_status_messages or "all").strip().lower()
+    if compression_status_messages not in {"all", "once", "off"}:
+        _ra().logger.warning(
+            "Invalid compression.status_messages in config.yaml: %r — expected 'all', 'once', or 'off'. Falling back to 'all'.",
+            compression_status_messages,
+        )
+        compression_status_messages = "all"
 
     # Read optional explicit context_length override for the auxiliary
     # compression model. Custom endpoints often cannot report this via
@@ -1325,6 +1336,8 @@ def init_agent(
             abort_on_summary_failure=compression_abort_on_summary_failure,
         )
     agent.compression_enabled = compression_enabled
+    agent.compression_status_messages = compression_status_messages
+    agent._compression_status_messages_seen = set()
 
     # Reject models whose context window is below the minimum required
     # for reliable tool-calling workflows (64K tokens).

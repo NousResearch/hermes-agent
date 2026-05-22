@@ -84,6 +84,7 @@ compression:
   threshold: 0.50            # Fraction of context window (default: 0.50 = 50%)
   target_ratio: 0.20         # How much of threshold to keep as tail (default: 0.20)
   protect_last_n: 20         # Minimum protected tail messages (default: 20)
+  status_messages: all       # Routine compacting notice: all | once | off
 
 # Summarization model/provider configured under auxiliary:
 auxiliary:
@@ -100,6 +101,7 @@ auxiliary:
 | `threshold` | `0.50` | 0.0-1.0 | Compression triggers when prompt tokens ≥ `threshold × context_length` |
 | `target_ratio` | `0.20` | 0.10-0.80 | Controls tail protection token budget: `threshold_tokens × target_ratio` |
 | `protect_last_n` | `20` | ≥1 | Minimum number of recent messages always preserved |
+| `status_messages` | `all` | `all`/`once`/`off` | Controls routine "Compacting context" lifecycle notices; warnings/errors still surface |
 | `protect_first_n` | `3` | (hardcoded) | System prompt + first exchange always preserved |
 
 ### Computed Values (for a 200K context model at defaults)

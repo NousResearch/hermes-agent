@@ -606,6 +606,7 @@ compression:
   target_ratio: 0.20                                # Fraction of threshold to preserve as recent tail
   protect_last_n: 20                                # Min recent messages to keep uncompressed
   hygiene_hard_message_limit: 400                   # Gateway safety valve — see below
+  status_messages: all                              # Routine compacting notice: all | once | off
 
 # The summarization model/provider is configured under auxiliary:
 auxiliary:
@@ -620,6 +621,8 @@ Older configs with `compression.summary_model`, `compression.summary_provider`, 
 :::
 
 `hygiene_hard_message_limit` is a gateway-only **pre-compression safety valve**. Runaway sessions with thousands of messages can hit model context limits before the normal percent-of-context threshold fires; when message count crosses this ceiling, Hermes forces compression regardless of token usage. Default `400` — raise it for platforms where very long sessions are normal, lower it to force more aggressive compression. Editing this value on a running gateway takes effect on the next message (see below).
+
+`status_messages` controls only the routine "Compacting context" lifecycle notice: `all` preserves every notice, `once` emits each compacting notice once per agent/session, and `off` suppresses it. Compression warnings/errors still surface.
 
 :::tip Gateway hot-reload of compression and context length
 As of recent releases, editing `model.context_length` or any `compression.*` key in `config.yaml` on a running gateway takes effect on the next message — no gateway restart, no `/reset`, no session rotation required. The cached-agent signature includes these keys, so the gateway transparently rebuilds the agent when it sees a change. API keys and tool/skill config still require the usual reload paths.

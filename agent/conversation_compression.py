@@ -248,6 +248,39 @@ def replay_compression_warning(agent: Any) -> None:
             pass
 
 
+def _emit_compression_status(agent: Any, message: str) -> None:
+    """Emit the routine compression-start notice according to config.
+
+    ``compression.status_messages`` controls only the non-critical
+    "compacting" lifecycle notice, not warnings/errors. Accepted values:
+    ``all`` (default), ``once``, and ``off``.
+    """
+    raw_mode = getattr(agent, "compression_status_messages", "all")
+    if isinstance(raw_mode, bool):
+        mode = "all" if raw_mode else "off"
+    else:
+        mode = str(raw_mode or "all").strip().lower()
+    if mode not in {"all", "once", "off"}:
+        mode = "all"
+    if mode == "off":
+        return
+    if mode == "once":
+        seen = getattr(agent, "_compression_status_messages_seen", None)
+        if seen is None:
+            seen = set()
+            try:
+                agent._compression_status_messages_seen = seen
+            except Exception:
+                pass
+        if message in seen:
+            return
+        try:
+            seen.add(message)
+        except Exception:
+            pass
+    agent._emit_status(message)
+
+
 def compress_context(
     agent: Any,
     messages: list,
@@ -301,7 +334,8 @@ def compress_context(
         f"{approx_tokens:,}" if approx_tokens else "unknown", agent.model,
         focus_topic,
     )
-    agent._emit_status(
+    _emit_compression_status(
+        agent,
         "🗜️ Compacting context — summarizing earlier conversation so I can continue..."
     )
 

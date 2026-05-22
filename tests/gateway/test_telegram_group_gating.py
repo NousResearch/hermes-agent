@@ -402,9 +402,13 @@ def test_telegram_reactions_skip_group_topics_by_default(monkeypatch):
     monkeypatch.delenv("TELEGRAM_GROUP_REACTIONS", raising=False)
 
     group_event = SimpleNamespace(source=SimpleNamespace(chat_type="group"))
+    supergroup_event = SimpleNamespace(source=SimpleNamespace(chat_type="supergroup"))
+    forum_event = SimpleNamespace(source=SimpleNamespace(chat_type="forum"))
     dm_event = SimpleNamespace(source=SimpleNamespace(chat_type="dm"))
 
     assert adapter._reactions_enabled(group_event) is False
+    assert adapter._reactions_enabled(supergroup_event) is False
+    assert adapter._reactions_enabled(forum_event) is False
     assert adapter._reactions_enabled(dm_event) is True
 
 

@@ -210,11 +210,15 @@ def _sanitize_slug(raw: Any) -> str | None:
 
 
 def render_injection_block(detection: dict[str, Any]) -> str | None:
-    """Render the system-prompt injection block when a turn should route.
+    """Render the FALLBACK system-prompt injection block.
 
-    Returns None when no injection is needed (so the caller can skip
-    appending entirely — keeps the injection cache-friendly when the
-    detector decides nothing).
+    Used when the detector decided to route but the server did NOT
+    auto-execute (low / medium confidence or executor failure). Coach is
+    asked to perform the calls itself. Returns None when no injection is
+    needed.
+
+    For the auto-executed path (high confidence) use
+    `render_already_executed_block` instead.
     """
     if not detection.get("checked"):
         return None
@@ -249,6 +253,128 @@ def render_injection_block(detection: dict[str, Any]) -> str | None:
     return "\n".join(lines)
 
 
+def render_already_executed_block(
+    sub_agent: str,
+    action: str,
+    full_id: str,
+) -> str:
+    """Render the system-prompt block for the server-auto-executed path.
+
+    When the server already called enqueue_action + announce_subagent
+    BEFORE Coach's turn started (S-0518-01 direction C), Coach sees this
+    block. It tells Coach:
+      1. The work is already in `action_queue` and the Slack push went
+         out under the sub-agent prefix.
+      2. Coach MUST NOT re-call enqueue_action or announce_subagent for
+         this turn — that would duplicate state and produce a second
+         Slack message.
+      3. Coach's job this turn is the Coach-voice reply (framing,
+         emotion, follow-up question) only.
+
+    This is the architecture-level enforcement: side effects committed
+    before LLM sees the turn, leaving Coach with one job that doesn't
+    require it to choose between tools.
+    """
+    return "\n".join([
+        "",
+        "**Sub-agent action already executed** "
+        "(server pre-executed the Type-E routing for this turn — backend "
+        "state and the user-visible Slack push are already done):",
+        f"  - `enqueue_action(id=\"{full_id}\", action=\"{action}\", "
+        f"sub_agent=\"{sub_agent}\")` — committed to action_queue.",
+        f"  - `announce_subagent(sub_agent=\"{sub_agent}\", ...)` — "
+        "pushed to the user's Slack DM under the sub-agent prefix.",
+        "",
+        "**Do NOT call either tool again this turn** — both side effects "
+        "are committed; re-calling duplicates state and posts a second "
+        "Slack message. Your job this turn is the Coach-voice reply only: "
+        "brief emotional ack + framing + optional correct-out / "
+        "follow-up question. Do NOT inline the artifact content (no "
+        "cheat-sheet body, no draft text); the sub-agent will deliver "
+        "the artifact separately.",
+    ])
+
+
+def execute_via_helper(
+    user_id: str,
+    detection: dict[str, Any],
+    *,
+    helper_path: str | None = None,
+    timeout_s: float = 10.0,
+) -> dict[str, Any]:
+    """Run the Artemis helper script that calls MCP server handlers.
+
+    Returns:
+      {"ok": True, "enqueue_result": ..., "announce_result": ...}  on success
+      {"ok": False, "stage": "...", "error": "..."}                on failure
+
+    The helper lives at $HERMES_HOME/scripts/execute-detected-action.py
+    (deployed by setup.sh). Failures are not raised — caller inspects
+    the dict and decides whether to fall back to the prompt-only path.
+    """
+    import os
+    import subprocess
+
+    fail = {"ok": False, "stage": "helper", "error": ""}
+
+    if not detection.get("route_to_subagent"):
+        fail["error"] = "detection has route_to_subagent=False"
+        return fail
+    sub_agent = detection.get("sub_agent")
+    action = detection.get("suggested_action")
+    announcement = detection.get("suggested_announcement")
+    id_slug = detection.get("id_slug")
+    if not (sub_agent and action and announcement and id_slug):
+        fail["error"] = "detection missing required slots"
+        return fail
+
+    if helper_path is None:
+        from pathlib import Path
+        hermes_home = os.environ.get("HERMES_HOME") or str(Path.home() / ".hermes")
+        helper_path = str(Path(hermes_home) / "scripts" / "execute-detected-action.py")
+    if not os.path.exists(helper_path):
+        fail["error"] = f"helper not found: {helper_path}"
+        return fail
+
+    payload = json.dumps({
+        "user_id": user_id,
+        "sub_agent": sub_agent,
+        "id_slug": id_slug,
+        "action": action,
+        "announcement": announcement,
+    })
+
+    try:
+        proc = subprocess.run(
+            ["python3", helper_path],
+            input=payload,
+            capture_output=True,
+            text=True,
+            timeout=timeout_s,
+            check=False,
+        )
+    except subprocess.TimeoutExpired:
+        fail["error"] = f"helper timed out after {timeout_s}s"
+        return fail
+    except OSError as e:
+        fail["error"] = f"helper exec failed: {e}"
+        return fail
+
+    raw = (proc.stdout or "").strip()
+    if not raw:
+        fail["error"] = f"helper produced no stdout (rc={proc.returncode}, stderr={proc.stderr[:200]!r})"
+        return fail
+    try:
+        result = json.loads(raw)
+    except json.JSONDecodeError:
+        fail["error"] = f"helper returned non-JSON: {raw[:200]!r}"
+        return fail
+    if not isinstance(result, dict):
+        fail["error"] = f"helper returned non-dict: {raw[:200]!r}"
+        return fail
+    return result
+
+
 def log_result(chat_id: str, detection: dict[str, Any]) -> None:
     """Single structured log line so accuracy is reviewable offline."""
     fields = (
@@ -257,8 +383,10 @@ def log_result(chat_id: str, detection: dict[str, Any]) -> None:
         f"skipped={detection.get('skipped')}",
         f"route={detection.get('route_to_subagent')}",
         f"sub_agent={detection.get('sub_agent')}",
+        f"id_slug={detection.get('id_slug')!r}",
         f"confidence={detection.get('confidence')}",
         f"action={detection.get('suggested_action')!r}",
+        f"announcement={detection.get('suggested_announcement')!r}",
         f"reasoning={detection.get('reasoning')!r}",
     )
     logger.info("turn-intent: %s", " ".join(fields))

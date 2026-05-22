@@ -2386,17 +2386,21 @@ class GatewayRunner:
         # Build the context prompt to inject
         context_prompt = build_session_context_prompt(context, redact_pii=_redact_pii)
 
-        # S-0518-01 direction B — turn intent detector. Runs auxiliary LLM
-        # synchronously to classify whether the user is asking for a
-        # saveable artifact (Type E). If yes, append a routing block to
-        # the system prompt so Coach has an unambiguous cue to enqueue +
-        # announce rather than inline the artifact. Failures are silent.
+        # S-0518-01 direction B+C — turn intent detector.
         #
-        # Skip when a Confirm-leg pending-announcement block is already in
-        # the context (built above by build_session_context_prompt). In
-        # that case the user turn is most likely a Confirm reply to a
-        # prior do-then-tell — running Type-E detection on top would
-        # inject conflicting guidance.
+        # Direction B (R22 partial / R23 failed): auxiliary LLM classifies
+        # the user turn; inject a fallback block telling Coach which tools
+        # to call. Coach occasionally leaked the suggested announcement
+        # text into reply prose instead of routing through announce_subagent.
+        #
+        # Direction C (architecture-level fix): when confidence is "high",
+        # the server pre-executes enqueue_action + announce_subagent via
+        # an Artemis helper script BEFORE Coach's turn starts, then
+        # injects a different block ("already executed — Coach voice
+        # reply only") so Coach physically cannot duplicate or leak.
+        #
+        # Confirm-leg pending-announcement turns short-circuit the whole
+        # detector — those go through consume_announcement.
         try:
             if "Pending sub-agent announcements" in context_prompt:
                 logger.info(
@@ -2407,14 +2411,56 @@ class GatewayRunner:
                 from agent.turn_intent_detector import (
                     detect_turn_intent,
                     render_injection_block,
+                    render_already_executed_block,
+                    execute_via_helper,
                     log_result as _log_turn_intent,
                 )
                 _user_text = getattr(event, "text", "") or ""
                 _detection = detect_turn_intent(_user_text)
                 _log_turn_intent(source.chat_id or "", _detection)
-                _block = render_injection_block(_detection)
-                if _block:
-                    context_prompt = context_prompt + "\n" + _block
+
+                _chat = source.chat_id or "unknown"
+                _conf = (_detection.get("confidence") or "").lower()
+                _route = _detection.get("route_to_subagent")
+                _uid = getattr(source, "user_id", "") or ""
+
+                if _route and _conf == "high" and _uid:
+                    # Direction C — server auto-execute path.
+                    _exec_result = execute_via_helper(_uid, _detection)
+                    if _exec_result.get("ok"):
+                        _full_id = "coach-commit-" + _detection["id_slug"]
+                        _executed_block = render_already_executed_block(
+                            sub_agent=_detection["sub_agent"],
+                            action=_detection["suggested_action"],
+                            full_id=_full_id,
+                        )
+                        context_prompt = context_prompt + "\n" + _executed_block
+                        logger.info(
+                            "turn-intent: chat=%s auto_executed=True "
+                            "sub_agent=%s id=%s",
+                            _chat, _detection["sub_agent"], _full_id,
+                        )
+                    else:
+                        # Executor failed — fall back to prompt-only block.
+                        logger.warning(
+                            "turn-intent: chat=%s auto_execute_failed "
+                            "stage=%s err=%s — falling back to prompt block",
+                            _chat,
+                            _exec_result.get("stage"),
+                            _exec_result.get("error"),
+                        )
+                        _block = render_injection_block(_detection)
+                        if _block:
+                            context_prompt = context_prompt + "\n" + _block
+                else:
+                    # Direction B fallback — Coach decides whether to call.
+                    _block = render_injection_block(_detection)
+                    if _block:
+                        context_prompt = context_prompt + "\n" + _block
+                        logger.info(
+                            "turn-intent: chat=%s injected_block_len=%d",
+                            _chat, len(_block),
+                        )
         except Exception as _tid_err:  # noqa: BLE001
             logger.debug("turn-intent detector failed: %s", _tid_err)
 

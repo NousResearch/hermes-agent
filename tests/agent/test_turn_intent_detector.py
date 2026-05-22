@@ -233,6 +233,122 @@ class TestLogResult:
 # _parse_response — direct
 # =========================================================================
 
+class TestRenderAlreadyExecutedBlock:
+    def test_block_contains_id_action_subagent(self):
+        block = tid.render_already_executed_block(
+            sub_agent="analyst",
+            action="Draft metrics cheat sheet",
+            full_id="coach-commit-metrics-cheat-sheet",
+        )
+        assert "Sub-agent action already executed" in block
+        assert "coach-commit-metrics-cheat-sheet" in block
+        assert "Draft metrics cheat sheet" in block
+        assert "analyst" in block
+        assert "Do NOT call either tool again" in block
+
+
+class TestExecuteViaHelper:
+    def test_helper_not_found_returns_error(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        detection = {
+            "route_to_subagent": True,
+            "sub_agent": "analyst",
+            "suggested_action": "x",
+            "suggested_announcement": "y",
+            "id_slug": "z",
+        }
+        result = tid.execute_via_helper("U", detection)
+        assert result["ok"] is False
+        assert "helper not found" in result["error"]
+
+    def test_route_false_short_circuits(self, tmp_path):
+        result = tid.execute_via_helper(
+            "U",
+            {"route_to_subagent": False},
+            helper_path=str(tmp_path / "does-not-matter"),
+        )
+        assert result["ok"] is False
+        assert "route_to_subagent=False" in result["error"]
+
+    def test_missing_slots_short_circuits(self, tmp_path):
+        result = tid.execute_via_helper(
+            "U",
+            {
+                "route_to_subagent": True,
+                "sub_agent": "analyst",
+                # missing suggested_action
+                "suggested_announcement": "y",
+                "id_slug": "z",
+            },
+            helper_path=str(tmp_path / "x"),
+        )
+        assert result["ok"] is False
+        assert "missing required slots" in result["error"]
+
+    def test_helper_success_returns_ok(self, tmp_path):
+        """Smoke-test with a stub helper script that echoes back ok."""
+        helper = tmp_path / "exec-detected.py"
+        helper.write_text(
+            "#!/usr/bin/env python3\n"
+            "import json, sys\n"
+            "payload = json.loads(sys.stdin.read())\n"
+            "print(json.dumps({'ok': True, 'received': payload['sub_agent']}))\n"
+        )
+        helper.chmod(0o755)
+        detection = {
+            "route_to_subagent": True,
+            "sub_agent": "analyst",
+            "suggested_action": "do x",
+            "suggested_announcement": "Analyst x.",
+            "id_slug": "draft-x",
+        }
+        result = tid.execute_via_helper(
+            "U_TEST", detection, helper_path=str(helper)
+        )
+        assert result["ok"] is True
+        assert result["received"] == "analyst"
+
+    def test_helper_returns_error_passes_through(self, tmp_path):
+        helper = tmp_path / "exec.py"
+        helper.write_text(
+            "#!/usr/bin/env python3\n"
+            "import json\n"
+            "print(json.dumps({'ok': False, 'stage': 'announce', "
+            "'error': 'slack down'}))\n"
+        )
+        helper.chmod(0o755)
+        result = tid.execute_via_helper(
+            "U",
+            {
+                "route_to_subagent": True, "sub_agent": "analyst",
+                "suggested_action": "x", "suggested_announcement": "y",
+                "id_slug": "z",
+            },
+            helper_path=str(helper),
+        )
+        assert result["ok"] is False
+        assert result["stage"] == "announce"
+        assert result["error"] == "slack down"
+
+    def test_helper_non_json_stdout(self, tmp_path):
+        helper = tmp_path / "bad.py"
+        helper.write_text(
+            "#!/usr/bin/env python3\nprint('not json')\n"
+        )
+        helper.chmod(0o755)
+        result = tid.execute_via_helper(
+            "U",
+            {
+                "route_to_subagent": True, "sub_agent": "analyst",
+                "suggested_action": "x", "suggested_announcement": "y",
+                "id_slug": "z",
+            },
+            helper_path=str(helper),
+        )
+        assert result["ok"] is False
+        assert "non-JSON" in result["error"]
+
+
 class TestSanitizeSlug:
     def test_clean_slug_passes_through(self):
         assert tid._sanitize_slug("draft-cover-letter") == "draft-cover-letter"

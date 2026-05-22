@@ -10,9 +10,9 @@ Messaging tools (10) — OpenClaw channel bridge surface plus channels_list:
   events_poll, events_wait, messages_send, permissions_list_open,
   permissions_respond, channels_list
 
-Optional skills/knowledge tools (7) when hermes_skills_mcp is available:
-  skills_list, skills_read, agents_list, agents_get, knowledge_read,
-  learnings_read, artifacts_list
+Optional skills/knowledge tools (8) when hermes_skills_mcp is available:
+  fleet_context_snapshot, skills_list, skills_read, agents_list, agents_get,
+  knowledge_read, learnings_read, artifacts_list
 
 Usage:
     hermes mcp serve
@@ -359,7 +359,8 @@ class EventBridge:
         except OSError:
             sj_mtime = 0.0
 
-        if sj_mtime != self._sessions_json_mtime:
+        sessions_changed = sj_mtime != self._sessions_json_mtime
+        if sessions_changed:
             self._sessions_json_mtime = sj_mtime
             self._cached_sessions_index = _load_sessions_index()
 
@@ -375,7 +376,8 @@ class EventBridge:
         except OSError:
             db_mtime = 0.0
 
-        if db_mtime == self._state_db_mtime and sj_mtime == self._sessions_json_mtime:
+        db_changed = db_mtime != self._state_db_mtime
+        if not db_changed and not sessions_changed:
             return  # Nothing changed since last poll — skip entirely
 
         self._state_db_mtime = db_mtime
@@ -860,8 +862,9 @@ def create_mcp_server(event_bridge: Optional[EventBridge] = None) -> "FastMCP":
         return json.dumps(result, indent=2)
 
     # -- Skills / Knowledge Layer tools ------------------------------------
-    # Registers: skills_list, skills_read, agents_list, agents_get,
-    #            knowledge_read, learnings_read, artifacts_list
+    # Registers: fleet_context_snapshot, skills_list, skills_read,
+    #            agents_list, agents_get, knowledge_read, learnings_read,
+    #            artifacts_list
     try:
         from hermes_skills_mcp import register_skills_tools
         register_skills_tools(mcp)

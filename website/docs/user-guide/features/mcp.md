@@ -562,7 +562,7 @@ Restart Cursor after changing MCP settings. First connection can take several se
 
 ### Available tools
 
-The MCP server exposes **17 tools** when the optional skills module is installed (default in this repo): **10 messaging tools** plus **7 read-only skills/knowledge tools**.
+The MCP server exposes **18 tools** when the optional skills module is installed (default in this repo): **10 messaging tools** plus **8 read-only skills/knowledge tools**.
 
 #### Messaging (10 tools)
 
@@ -581,12 +581,13 @@ Matches OpenClaw's channel bridge surface plus a Hermes-specific channel browser
 | `permissions_list_open` | List pending approval requests observed during this bridge session. |
 | `permissions_respond` | Allow or deny a pending approval request. |
 
-#### Skills and knowledge (7 tools, read-only)
+#### Skills and knowledge (8 tools, read-only)
 
 Registered from `hermes_skills_mcp` when the module is importable (bundled with `hermes-agent` installs). Paths resolve via `HERMES_AGENTS_DIR`, then `HERMES_REPO`, then `HERMES_HOME`. See [Cursor & Hermes](./cursor-hermes.md) for skills-only vs gateway mode and source-of-truth hierarchy.
 
 | Tool | Description |
 |------|-------------|
+| `fleet_context_snapshot` | One bounded bootstrap payload for Cursor/IDE clients: mode, paths, registry summary, stale heartbeats, HOT memory excerpt, latest-state digest, held-spec flags, gateway reachability, missing layers, warnings, and source-of-truth hierarchy reference. |
 | `skills_list` | List custom agent `SOUL.md` files and repo skills. |
 | `skills_read` | Read a skill document or agent `SOUL.md`. |
 | `agents_list` | List agents from `AGENT_REGISTRY.json` with status summary. |
@@ -594,6 +595,14 @@ Registered from `hermes_skills_mcp` when the module is importable (bundled with 
 | `knowledge_read` | Read knowledge-layer artifacts (e.g. `latest_state`). |
 | `learnings_read` | Read `.learnings/` memory tiers. |
 | `artifacts_list` | Browse the `artifacts/` directory tree. |
+
+#### Deferred: `hermes doctor --mcp`
+
+`fleet_context_snapshot` is the runtime primitive. A future `hermes doctor --mcp`
+should stay dependency-light and validate only local setup: venv/import health,
+MCP launcher path, `HERMES_HOME`, `HERMES_REPO`, `HERMES_AGENTS_DIR`, registry
+presence, and read-only gateway reachability. It should print a suggested
+`.cursor/mcp.json` snippet but must not mutate fleet documents.
 
 ### Event system
 

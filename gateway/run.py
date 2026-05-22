@@ -8756,40 +8756,234 @@ class GatewayRunner:
 
         return "\n".join(lines)
 
-    async def _handle_tgtocli_command(self, event: MessageEvent) -> str:
-        """Handle /tgtocli — print CLI resume instructions for Telegram.
+    @staticmethod
+    def _tgtocli_short_text(text: str, fallback: str = "idle Hermes CLI") -> str:
+        """Return a tiny human label for a session/pane without using an LLM."""
+        noisy = (
+            "Welcome to Hermes Agent",
+            "Type your message",
+            "Tip:",
+            "ctx --",
+            "──",
+            "━━",
+            "❯",
+        )
+        for raw in reversed((text or "").splitlines()):
+            line = re.sub(r"[│╰╭╯╮─━┊✦⚕░]+", " ", raw).strip()
+            if not line or any(part in line for part in noisy):
+                continue
+            words = line.split()[:8]
+            if words:
+                label = " ".join(words)
+                return label[:80]
+        return fallback
 
-        Keep this command side-effect free. It should not spawn tmux or try to
-        mutate an already-open CLI; the user chooses where to run the resume.
-        """
+    def _tgtocli_session_label(self, session_id: str) -> str:
+        """Build a tiny human summary plus ID for a Hermes session."""
+        title = None
+        preview = ""
+        if self._session_db:
+            try:
+                title = self._session_db.get_session_title(session_id)
+            except Exception:
+                title = None
+            try:
+                row = self._session_db._get_session_rich_row(session_id)
+                if row:
+                    preview = str(row.get("preview") or "").strip()
+            except Exception:
+                preview = ""
+            if not preview:
+                try:
+                    for msg in reversed(self._session_db.get_messages(session_id)):
+                        if msg.get("role") == "user" and msg.get("content"):
+                            preview = str(msg.get("content") or "").strip()
+                            break
+                except Exception:
+                    preview = ""
+        base = title or self._tgtocli_short_text(preview, fallback="untitled session")
+        return f"{base} (`{session_id}`)"
+
+    def _tgtocli_source_summary(self, session_id: str) -> str:
+        return self._tgtocli_session_label(session_id)
+
+    def _tgtocli_discover_targets(self) -> list[dict[str, str]]:
+        """Find tmux panes that look like open Hermes CLIs."""
+        if not shutil.which("tmux"):
+            return []
+        try:
+            listed = subprocess.run(
+                [
+                    "tmux",
+                    "list-panes",
+                    "-a",
+                    "-F",
+                    "#{session_name}\t#{pane_id}\t#{pane_current_command}\t#{pane_pid}\t#{pane_current_path}",
+                ],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                timeout=5,
+                check=False,
+            )
+        except Exception:
+            return []
+        if listed.returncode != 0:
+            return []
+
+        targets: list[dict[str, str]] = []
+        seen: set[str] = set()
+        for raw in (listed.stdout or "").splitlines():
+            parts = raw.split("\t")
+            if len(parts) < 5:
+                continue
+            name, pane_id, command, pane_pid, cwd = parts[:5]
+            args = ""
+            try:
+                ps = subprocess.run(
+                    ["ps", "-o", "args=", "-p", pane_pid],
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    text=True,
+                    timeout=3,
+                    check=False,
+                )
+                args = (ps.stdout or "").strip()
+            except Exception:
+                args = ""
+            if "hermes" not in " ".join([name, command, args]).lower():
+                continue
+            pane_text = ""
+            try:
+                captured = subprocess.run(
+                    ["tmux", "capture-pane", "-t", pane_id, "-p", "-S", "-80"],
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    text=True,
+                    timeout=5,
+                    check=False,
+                )
+                if captured.returncode == 0:
+                    pane_text = captured.stdout or ""
+            except Exception:
+                pane_text = ""
+
+            resumed = ""
+            match = re.search(r"--resume\s+(\S+)", args)
+            if match:
+                resumed = match.group(1).strip("'\"")
+            label = self._tgtocli_session_label(resumed) if resumed else self._tgtocli_short_text(pane_text)
+            key = pane_id or name
+            if key in seen:
+                continue
+            seen.add(key)
+            targets.append({
+                "kind": "tmux",
+                "name": name,
+                "pane_id": pane_id,
+                "cwd": cwd,
+                "summary": label,
+            })
+        return targets
+
+    def _tgtocli_targets_with_new(self, session_id: str) -> list[dict[str, str]]:
+        short_id = session_id.split("_")[-1][:8] if session_id else "session"
+        safe_short = re.sub(r"[^A-Za-z0-9_-]", "", short_id) or "session"
+        targets = self._tgtocli_discover_targets()
+        targets.append({
+            "kind": "new",
+            "name": f"hermes-tgtocli-{safe_short}",
+            "pane_id": "",
+            "cwd": os.getcwd(),
+            "summary": "new hidden terminal",
+        })
+        return targets
+
+    def _tgtocli_picker_text(self, session_id: str, targets: list[dict[str, str]]) -> str:
+        lines = [
+            "Pick CLI target for Telegram session:",
+            f"TG: {self._tgtocli_source_summary(session_id)}",
+            "",
+        ]
+        for idx, target in enumerate(targets, 1):
+            label = "New tmux CLI" if target.get("kind") == "new" else target.get("name", "tmux CLI")
+            summary = target.get("summary") or "idle Hermes CLI"
+            cwd = target.get("cwd") or ""
+            id_part = f" pane `{target.get('pane_id')}`" if target.get("pane_id") else ""
+            lines.append(f"{idx}. {label}{id_part}")
+            lines.append(f"   {summary}")
+            if cwd:
+                lines.append(f"   {cwd}")
+        lines.extend(["", "Reply: `/tgtocli 1` (or another number)"])
+        return "\n".join(lines)
+
+    def _tgtocli_start_new(self, session_id: str, tmux_name: str) -> tuple[bool, str]:
+        if not shutil.which("tmux"):
+            return False, f"tmux not found. Run: `hermes --resume {session_id}`"
+        resume_cmd = f"hermes --resume {shlex.quote(session_id)}"
+        created = subprocess.run(
+            ["tmux", "new-session", "-d", "-s", tmux_name, resume_cmd],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            timeout=10,
+            check=False,
+        )
+        if created.returncode != 0:
+            err = (created.stderr or created.stdout or "unknown tmux error").strip()
+            return False, f"Could not start tmux CLI: {err}\nRun: `{resume_cmd}`"
+        return True, f"Started new CLI: `{tmux_name}`"
+
+    def _tgtocli_send_to_tmux(self, session_id: str, target: dict[str, str]) -> tuple[bool, str]:
+        pane = target.get("pane_id") or target.get("name") or ""
+        if not pane:
+            return False, "Missing tmux pane target."
+        payload = f"/resume {session_id}"
+        sent = subprocess.run(
+            ["tmux", "send-keys", "-t", pane, payload, "Enter"],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            timeout=5,
+            check=False,
+        )
+        if sent.returncode != 0:
+            err = (sent.stderr or sent.stdout or "unknown tmux error").strip()
+            return False, f"Could not send to `{target.get('name', pane)}`: {err}"
+        return True, f"Sent to `{target.get('name', pane)}`: `{payload}`"
+
+    async def _handle_tgtocli_command(self, event: MessageEvent) -> str:
+        """Handle /tgtocli — choose where Telegram should open in CLI."""
         source = event.source
         if getattr(source, "platform", None) is None or source.platform.value != "telegram":
             return "/tgtocli only works from Telegram. Use `hermes --resume <session_id>` from CLI for other platforms."
 
         session_entry = self.session_store.get_or_create_session(source)
         session_id = str(session_entry.session_id)
-        short_id = session_id.split("_")[-1][:8] if session_id else "session"
-        safe_short = re.sub(r"[^A-Za-z0-9_-]", "", short_id) or "session"
-        tmux_name = f"hermes-tgtocli-{safe_short}"
-        resume_cmd = f"hermes --resume {shlex.quote(session_id)}"
-        tmux_cmd = f"tmux new-session -s {shlex.quote(tmux_name)} {shlex.quote(resume_cmd)}"
+        targets = self._tgtocli_targets_with_new(session_id)
+        arg = event.get_command_args().strip().lower()
+        if not arg or arg in {"list", "help", "?"}:
+            return self._tgtocli_picker_text(session_id, targets)
 
-        title = None
-        if self._session_db:
-            try:
-                title = self._session_db.get_session_title(session_id)
-            except Exception:
-                title = None
-        title_line = f"\nTitle: {title}" if title else ""
+        if arg == "new":
+            index = len(targets)
+        elif arg.isdigit():
+            index = int(arg)
+        else:
+            return self._tgtocli_picker_text(session_id, targets)
+        if index < 1 or index > len(targets):
+            return self._tgtocli_picker_text(session_id, targets)
 
+        target = targets[index - 1]
+        if target.get("kind") == "new":
+            ok, message = self._tgtocli_start_new(session_id, target.get("name") or "hermes-tgtocli")
+        else:
+            ok, message = self._tgtocli_send_to_tmux(session_id, target)
+        status = "DONE" if ok else "GAP"
         return (
-            "Open this Telegram session in CLI manually.\n\n"
-            "Run in a terminal:\n"
-            f"`{resume_cmd}`\n\n"
-            "Optional tmux:\n"
-            f"`{tmux_cmd}`\n\n"
-            "Note: this does not switch an already-open CLI.\n\n"
-            f"Session: `{session_id}`{title_line}"
+            f"{status}: {message}\n"
+            f"TG: {self._tgtocli_source_summary(session_id)}\n"
+            f"Target: {target.get('summary', target.get('name', 'CLI'))}"
         )
 
     async def _handle_agents_command(self, event: MessageEvent) -> str:

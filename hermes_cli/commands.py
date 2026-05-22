@@ -113,8 +113,8 @@ COMMAND_REGISTRY: list[CommandDef] = [
                gateway_only=True, aliases=("set-home",)),
     CommandDef("resume", "Resume a previously-named session", "Session",
                args_hint="[name]"),
-    CommandDef("tgtocli", "Open the current Telegram session in a local tmux CLI", "Session",
-               gateway_only=True),
+    CommandDef("tgtocli", "Transfer Telegram session into a chosen CLI", "Session",
+               gateway_only=True, args_hint="[N|new|list]"),
 
     # Configuration
     CommandDef("sessions", "Browse and resume previous sessions", "Session"),

@@ -116,6 +116,15 @@ class TestResolveCommand:
         assert topic.name == "topic"
         assert "topic" in GATEWAY_KNOWN_COMMANDS
 
+    def test_tgtocli_is_gateway_only_command(self):
+        tgtocli = resolve_command("tgtocli")
+        assert tgtocli is not None
+        assert tgtocli.name == "tgtocli"
+        assert tgtocli.gateway_only is True
+        assert "tgtocli" in GATEWAY_KNOWN_COMMANDS
+        assert "/tgtocli" not in COMMANDS
+        assert "tgtocli" in {name for name, _ in telegram_bot_commands()}
+
     def test_leading_slash_stripped(self):
         assert resolve_command("/help").name == "help"
         assert resolve_command("/bg").name == "background"

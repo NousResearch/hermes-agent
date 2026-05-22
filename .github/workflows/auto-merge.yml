@@ -37,10 +37,10 @@ on:
 concurrency:
   group: >-
     auto-merge-pr-${{
+      (github.event_name == 'workflow_run' &&
+        (github.event.workflow_run.pull_requests[0].number || github.event.workflow_run.id)) ||
       github.event.pull_request.number ||
       github.event.issue.number ||
-      github.event.workflow_run.pull_requests[0].number ||
-      github.event.workflow_run.id ||
       github.run_id
     }}-${{
       (github.event_name == 'pull_request' &&
@@ -193,6 +193,8 @@ jobs:
             const { data: pr } = await github.rest.pulls.get({
               owner, repo, pull_number: prNumber,
             });
+            // workflow_run and issue_comment events can resolve to fork PRs;
+            // event-level guards for these triggers don't carry full PR head metadata.
             if ((context.eventName === 'workflow_run' || context.eventName === 'issue_comment')
                 && pr.head.repo.full_name !== `${owner}/${repo}`) {
               core.info(`PR #${prNumber} is from fork '${pr.head.repo.full_name}' — skipping.`);

@@ -414,6 +414,73 @@ def test_publish_scheduled_uses_registered_live_connector_when_present(isolate_h
     assert final_draft["status"] == "posted"
 
 
+def test_image_gen_attaches_pollinations_url_to_visual_drafts(isolate_home, monkeypatch):
+    """Phase 10: instagram/tiktok/app_store drafts get a Pollinations URL on draft.images."""
+    monkeypatch.setenv("MF_AUTO_IMAGES", "1")
+    from plugins.marketing_factory.pipeline import MarketingFactoryPipeline
+    from plugins.marketing_factory.store import MarketingFactoryStore
+
+    store = MarketingFactoryStore()
+    pipe = MarketingFactoryPipeline(store)
+    pipe.initialize_samples()
+    result = pipe.generate_campaign("pupular", days=3)
+
+    visual = [d for d in result["drafts"] if d["channel"] in {"instagram", "tiktok", "app_store"}]
+    assert visual, "Pupular's 3-day campaign should include a visual-channel draft"
+    for draft in visual:
+        images = draft.get("images") or []
+        assert images, f"Expected images on {draft['channel']} draft"
+        first = images[0]
+        assert first["kind"] == "image_prompt"
+        assert first["url"].startswith("https://image.pollinations.ai/prompt/")
+        assert first["backend"] == "pollinations"
+
+
+def test_image_gen_disabled_via_env_skips_image_attachment(isolate_home, monkeypatch):
+    monkeypatch.setenv("MF_AUTO_IMAGES", "0")
+    from plugins.marketing_factory.pipeline import MarketingFactoryPipeline
+    from plugins.marketing_factory.store import MarketingFactoryStore
+
+    store = MarketingFactoryStore()
+    pipe = MarketingFactoryPipeline(store)
+    pipe.initialize_samples()
+    result = pipe.generate_campaign("pupular", days=2)
+    for draft in result["drafts"]:
+        assert not (draft.get("images") or []), "MF_AUTO_IMAGES=0 should suppress image generation"
+
+
+def test_image_gen_skips_non_visual_channels(isolate_home, monkeypatch):
+    """Phase 10: blog/email/linkedin/x drafts must NOT get auto-generated images."""
+    monkeypatch.setenv("MF_AUTO_IMAGES", "1")
+    from plugins.marketing_factory.pipeline import MarketingFactoryPipeline
+    from plugins.marketing_factory.store import MarketingFactoryStore
+
+    # SetVenue's channels are linkedin/x/blog/email — none are visual.
+    store = MarketingFactoryStore()
+    pipe = MarketingFactoryPipeline(store)
+    pipe.initialize_samples()
+    result = pipe.generate_campaign("setvenue", days=4)
+    for draft in result["drafts"]:
+        assert not (draft.get("images") or []), f"{draft['channel']} should not get auto images"
+
+
+def test_image_gen_url_uses_default_template_when_llm_disabled(isolate_home, monkeypatch):
+    """The pollinations URL must reflect the brand-templated fallback prompt when LLM is off."""
+    monkeypatch.setenv("MF_AUTO_IMAGES", "1")
+    from plugins.marketing_factory.pipeline import ImageGenAgent
+
+    agent = ImageGenAgent()
+    result = agent.generate(
+        app={"slug": "pupular", "name": "Pupular", "positioning": "adopt-a-pet"},
+        item={"channel": "instagram", "pillar": "shelter support"},
+        body="cute caption body for testing",
+    )
+    assert result["url"]
+    assert "pollinations" in result["url"]
+    # Brand-templated fallback should mention pupular's framing
+    assert "adoptable" in result["prompt"].lower() or "pet" in result["prompt"].lower()
+
+
 def test_weekly_digest_renders_markdown_with_expected_sections(isolate_home):
     """Phase 9: digest produces markdown with activity counts, rejected reasons, steering."""
     from plugins.marketing_factory.pipeline import MarketingFactoryPipeline

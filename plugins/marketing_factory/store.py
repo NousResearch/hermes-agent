@@ -304,6 +304,7 @@ class MarketingFactoryStore:
             "llm_model": draft.get("llm_model"),
             "llm_error": draft.get("llm_error"),
             "regenerated_from": draft.get("regenerated_from"),
+            "images": list(draft.get("images") or []),
             "created_at": utc_now(),
             "updated_at": utc_now(),
         }

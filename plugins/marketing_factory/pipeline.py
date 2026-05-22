@@ -189,6 +189,10 @@ class StrategyAgent:
 class CopyAgent:
     PREMIUM_CHANNELS = {"blog", "email", "linkedin"}
     MID_CHANNELS = {"x", "instagram", "tiktok", "app_store"}
+    VISUAL_CHANNELS = {"instagram", "tiktok", "app_store"}
+
+    def __init__(self, image_gen: Optional["ImageGenAgent"] = None) -> None:
+        self.image_gen = image_gen or ImageGenAgent()
 
     def _route_for(self, channel: str) -> str:
         if channel in self.PREMIUM_CHANNELS:
@@ -260,6 +264,11 @@ class CopyAgent:
         }
         if llm_error:
             draft["llm_error"] = llm_error
+        # Auto-generate an image for visual channels.
+        if channel in self.VISUAL_CHANNELS and self.image_gen.is_enabled():
+            image_result = self.image_gen.generate(app, item, body, token_ledger=token_ledger)
+            if image_result.get("url"):
+                draft["images"] = [image_result]
         return draft
 
 
@@ -268,6 +277,97 @@ class CreativeAgent:
         draft = dict(draft)
         draft["creative_concepts"] = _asset_concepts(app, {"pillar": draft.get("content_type", "post"), "channel": draft["channel"]})
         return draft
+
+
+class ImageGenAgent:
+    """Generate an image URL for visual-channel drafts.
+
+    Default backend is Pollinations.ai (free, no auth, wraps Flux/SDXL). Set
+    `MF_IMAGE_BACKEND=disabled` to skip image generation entirely; set to
+    other future-supported backends ("dalle", "local-sdxl") to swap.
+
+    Returns: {kind: "image_prompt", url, prompt, model, fallback_used, error,
+              backend, elapsed_ms}.
+    """
+
+    POLLINATIONS_BASE = "https://image.pollinations.ai/prompt/"
+
+    def __init__(self) -> None:
+        self.backend = os.environ.get("MF_IMAGE_BACKEND", "pollinations").lower()
+
+    def is_enabled(self) -> bool:
+        return self.backend != "disabled" and os.environ.get("MF_AUTO_IMAGES", "1") != "0"
+
+    def generate(
+        self,
+        app: Dict[str, Any],
+        item: Dict[str, Any],
+        body: str,
+        *,
+        token_ledger: Optional[List[Dict[str, Any]]] = None,
+    ) -> Dict[str, Any]:
+        if not self.is_enabled():
+            return {"kind": "image_prompt", "url": None, "prompt": None, "fallback_used": True, "error": "image gen disabled", "backend": self.backend}
+        prompt = self._build_prompt(app, item, body, token_ledger=token_ledger)
+        if self.backend == "pollinations":
+            url = self._pollinations_url(prompt)
+            return {
+                "kind": "image_prompt",
+                "url": url,
+                "prompt": prompt,
+                "model": "flux",
+                "fallback_used": False,
+                "error": None,
+                "backend": "pollinations",
+            }
+        return {"kind": "image_prompt", "url": None, "prompt": prompt, "fallback_used": True, "error": f"unsupported backend: {self.backend}", "backend": self.backend}
+
+    def _build_prompt(
+        self,
+        app: Dict[str, Any],
+        item: Dict[str, Any],
+        body: str,
+        *,
+        token_ledger: Optional[List[Dict[str, Any]]] = None,
+    ) -> str:
+        # Fast deterministic fallback. Used when LLM is off OR when LLM fails.
+        fallback = _default_image_prompt(app, item, body)
+        if not _should_use_llm():
+            return fallback
+        synth_prompt = (
+            f"Brand: {app['name']} ({app.get('positioning')})\n"
+            f"Channel: {item.get('channel')}\n"
+            f"Caption being illustrated: {body[:400]}\n\n"
+            "Write a SINGLE image generation prompt (under 60 words) that would make a great visual for this post. "
+            "Be visual: subject, framing, mood, lighting, color palette. NO references to text overlays or logos. "
+            "No quotes, no preamble — output ONLY the prompt."
+        )
+        env = dispatch(
+            "cheap",
+            synth_prompt,
+            system="You are an art director who writes vivid, concrete image generation prompts.",
+            max_tokens=180,
+            temperature=0.6,
+        )
+        if token_ledger is not None and env.get("tokens_used"):
+            token_ledger.append({
+                "route": env["route"],
+                "model": env["model"],
+                "tokens": env["tokens_used"],
+                "agent": "image_gen",
+                "channel": item.get("channel"),
+                "elapsed_ms": env.get("elapsed_ms"),
+            })
+        if env.get("fallback_used") or not env.get("text"):
+            return fallback
+        return env["text"].strip().strip('"').strip("'")[:400]
+
+    def _pollinations_url(self, prompt: str) -> str:
+        from urllib.parse import quote
+        # Pollinations: GET-based URL is the image itself; no API call required from
+        # this process. The user's browser fetches it directly when rendering.
+        encoded = quote(prompt[:400], safe="")
+        return f"{self.POLLINATIONS_BASE}{encoded}?model=flux&width=1024&height=1024&nologo=true"
 
 
 class ReviewSafetyAgent:
@@ -976,6 +1076,24 @@ def _draft_body(app: Dict[str, Any], item: Dict[str, Any]) -> str:
             f"requests go to hosts, and payment is finalized after host approval. {link}"
         )
     return f"{app['name']} helps {app.get('icp', 'its audience')} with {item['pillar']}. {app.get('cta', '')} {link}".strip()
+
+
+def _default_image_prompt(app: Dict[str, Any], item: Dict[str, Any], body: str) -> str:
+    """Deterministic fallback used when LLM is off or the LLM image-prompt synth fails."""
+    slug = app.get("slug", "")
+    channel = item.get("channel", "post")
+    pillar = item.get("pillar") or "brand story"
+    if slug == "pupular":
+        return (
+            f"A warm, inviting photograph of an adoptable {channel} subject: a real-looking small dog or cat with soft expression, "
+            f"natural daylight, shallow depth of field, hopeful mood. {pillar}. Modern, friendly, brand-safe."
+        )
+    if slug == "setvenue":
+        return (
+            f"A premium architectural photograph of a unique production-friendly venue: warm light, considered composition, "
+            f"sense of space and possibility. {pillar}. Editorial, trustworthy, photo-real."
+        )
+    return f"Brand-safe visual for {app.get('name') or slug} highlighting {pillar} on {channel}; modern, clean, editorial."
 
 
 def _asset_concepts(app: Dict[str, Any], item: Dict[str, Any]) -> List[str]:

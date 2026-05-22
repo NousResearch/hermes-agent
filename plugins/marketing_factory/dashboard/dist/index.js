@@ -380,6 +380,22 @@
               draft.llm_error ? h("div", { className: "mt-2 text-[11px] text-amber-200/90" }, `LLM fallback reason: ${draft.llm_error}`) : null,
               draft.safety && !draft.safety.passed && safetyDetail(draft.safety) ? h("div", { className: "mt-2 text-[11px] text-red-200/90" }, `Safety issues: ${safetyDetail(draft.safety)}`) : null,
               h("p", { className: "mt-3 whitespace-pre-wrap text-sm leading-6" }, draft.body),
+              (Array.isArray(draft.images) && draft.images.length) ? h("div", { className: "mt-3 flex flex-wrap gap-2" },
+                draft.images.filter((img) => img && img.url).map((img, idx) => h("div", {
+                  key: idx,
+                  className: "flex flex-col gap-1",
+                },
+                  h("a", { href: img.url, target: "_blank", rel: "noreferrer" },
+                    h("img", {
+                      src: img.url,
+                      alt: img.prompt || "generated image",
+                      loading: "lazy",
+                      className: "w-32 h-32 rounded-lg border border-midground/20 object-cover",
+                    })
+                  ),
+                  img.prompt ? h("div", { className: "max-w-[8rem] text-[10px] text-midground/60 leading-snug" }, img.prompt.length > 110 ? img.prompt.slice(0, 110) + "…" : img.prompt) : null
+                ))
+              ) : null,
               h("div", { className: "mt-3 flex flex-wrap gap-2" },
                 smallButton("Approve", () => run(`approve ${draft.id}`, () => fetchJSON(`${API}/drafts/${encodeURIComponent(draft.id)}/approve`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ reviewer: "dashboard", reason: "Approved in Marketing Factory dashboard" }) })), !!busy || draft.status !== "needs_review", "primary"),
                 smallButton("Reject", () => {

@@ -4837,7 +4837,7 @@ def refresh_nous_oauth_pure(
             state["refresh_token"] = refreshed.get("refresh_token") or state["refresh_token"]
             state["token_type"] = refreshed.get("token_type") or state.get("token_type") or "Bearer"
             state["scope"] = refreshed.get("scope") or state.get("scope")
-            refreshed_url = _optional_base_url(refreshed.get("inference_base_url"))
+            refreshed_url = _validate_nous_inference_url_from_network(refreshed.get("inference_base_url"))
             if refreshed_url:
                 state["inference_base_url"] = refreshed_url
             state["obtained_at"] = now.isoformat()
@@ -4873,7 +4873,7 @@ def refresh_nous_oauth_pure(
             state["agent_key_expires_in"] = mint_payload.get("expires_in")
             state["agent_key_reused"] = bool(mint_payload.get("reused", False))
             state["agent_key_obtained_at"] = now.isoformat()
-            minted_url = _optional_base_url(mint_payload.get("inference_base_url"))
+            minted_url = _validate_nous_inference_url_from_network(mint_payload.get("inference_base_url"))
             if minted_url:
                 state["inference_base_url"] = minted_url
 
@@ -5151,7 +5151,7 @@ def resolve_nous_runtime_credentials(
                         state["refresh_token"] = refreshed.get("refresh_token") or refresh_token
                         state["token_type"] = refreshed.get("token_type") or state.get("token_type") or "Bearer"
                         state["scope"] = refreshed.get("scope") or state.get("scope")
-                        refreshed_url = _optional_base_url(refreshed.get("inference_base_url"))
+                        refreshed_url = _validate_nous_inference_url_from_network(refreshed.get("inference_base_url"))
                         if refreshed_url:
                             inference_base_url = refreshed_url
                         state["obtained_at"] = now.isoformat()
@@ -5259,7 +5259,7 @@ def resolve_nous_runtime_credentials(
                                 state["refresh_token"] = refreshed.get("refresh_token") or latest_refresh_token
                                 state["token_type"] = refreshed.get("token_type") or state.get("token_type") or "Bearer"
                                 state["scope"] = refreshed.get("scope") or state.get("scope")
-                                refreshed_url = _optional_base_url(refreshed.get("inference_base_url"))
+                                refreshed_url = _validate_nous_inference_url_from_network(refreshed.get("inference_base_url"))
                                 if refreshed_url:
                                     inference_base_url = refreshed_url
                                 state["obtained_at"] = now.isoformat()
@@ -5314,7 +5314,7 @@ def resolve_nous_runtime_credentials(
                 state["agent_key_expires_in"] = mint_payload.get("expires_in")
                 state["agent_key_reused"] = bool(mint_payload.get("reused", False))
                 state["agent_key_obtained_at"] = now.isoformat()
-                minted_url = _optional_base_url(mint_payload.get("inference_base_url"))
+                minted_url = _validate_nous_inference_url_from_network(mint_payload.get("inference_base_url"))
                 if minted_url:
                     inference_base_url = minted_url
                 _oauth_trace(

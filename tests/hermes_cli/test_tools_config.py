@@ -2,12 +2,16 @@
 
 from unittest.mock import patch
 
+import pytest
+
 from hermes_cli.tools_config import (
     _DEFAULT_OFF_TOOLSETS,
     _apply_toolset_change,
     _configure_provider,
+    _reconfigure_provider,
     _get_platform_tools,
     _platform_toolset_summary,
+    _reconfigure_tool,
     _save_platform_tools,
     _toolset_has_keys,
     CONFIGURABLE_TOOLSETS,
@@ -113,6 +117,64 @@ def test_get_platform_tools_homeassistant_toolset_off_for_cron_when_hass_token_m
 
     cron_enabled = _get_platform_tools({}, "cron")
     assert "homeassistant" not in cron_enabled
+
+
+def test_get_platform_tools_expands_composite_when_mixed_with_configurable():
+    """``[hermes-cli, spotify]`` (composite + configurable) must keep the full
+    ``hermes-cli`` toolset alongside the explicit Spotify opt-in. The
+    has_explicit_config branch used to drop ``hermes-cli`` on the floor,
+    leaving sessions with only ``{spotify, kanban}``."""
+    config = {"platform_toolsets": {"cli": ["hermes-cli", "spotify"]}}
+
+    enabled = _get_platform_tools(config, "cli", include_default_mcp_servers=False)
+
+    # Native tools must reappear.
+    for ts in ("terminal", "file", "web", "browser", "memory", "delegation",
+               "code_execution", "todo", "session_search", "skills"):
+        assert ts in enabled, f"{ts} should be enabled when hermes-cli is listed"
+    # User explicitly opted into Spotify — must survive _DEFAULT_OFF_TOOLSETS subtraction.
+    assert "spotify" in enabled
+
+
+def test_get_platform_tools_composite_only_unchanged():
+    """Composite-only config (no configurable in list) must still take the
+    else-branch path and produce the full toolset — guards against the new
+    code accidentally hijacking the composite-only case."""
+    composite_only = _get_platform_tools(
+        {"platform_toolsets": {"cli": ["hermes-cli"]}},
+        "cli",
+        include_default_mcp_servers=False,
+    )
+    default = _get_platform_tools({}, "cli", include_default_mcp_servers=False)
+
+    assert composite_only == default
+
+
+def test_get_platform_tools_configurable_only_no_expansion():
+    """Configurable-only list (no composite) must not pull in unrelated
+    toolsets — guards against the expansion firing when ``composite_tools``
+    is empty."""
+    config = {"platform_toolsets": {"cli": ["terminal", "file"]}}
+
+    enabled = _get_platform_tools(config, "cli", include_default_mcp_servers=False)
+
+    assert "terminal" in enabled
+    assert "file" in enabled
+    # Web shouldn't sneak in via the new expansion path.
+    assert "web" not in enabled
+
+
+def test_get_platform_tools_mixed_does_not_resurrect_default_off():
+    """Expansion must subtract _DEFAULT_OFF_TOOLSETS from the implicit
+    pull-in. Without this, ``hermes-cli`` expansion would re-enable
+    ``moa`` / ``rl`` / ``homeassistant`` for users who never opted in."""
+    config = {"platform_toolsets": {"cli": ["hermes-cli", "terminal"]}}
+
+    enabled = _get_platform_tools(config, "cli", include_default_mcp_servers=False)
+
+    assert "terminal" in enabled
+    assert "moa" not in enabled
+    assert "rl" not in enabled
 
 
 def test_get_platform_tools_preserves_explicit_empty_selection():
@@ -466,6 +528,33 @@ def test_local_browser_provider_is_saved_explicitly(monkeypatch):
     _configure_provider(local_provider, config)
 
     assert config["browser"]["cloud_provider"] == "local"
+
+
+def test_reconfigure_lists_enabled_web_without_existing_provider_config(monkeypatch):
+    config = {"platform_toolsets": {"cli": ["web"]}}
+    seen = {}
+    configured = []
+
+    monkeypatch.setattr(
+        "hermes_cli.tools_config._toolset_has_keys",
+        lambda ts_key, config=None: False,
+    )
+
+    def fake_prompt_choice(question, choices, default=0):
+        seen["choices"] = choices
+        return 0
+
+    monkeypatch.setattr("hermes_cli.tools_config._prompt_choice", fake_prompt_choice)
+    monkeypatch.setattr(
+        "hermes_cli.tools_config._configure_tool_category_for_reconfig",
+        lambda ts_key, cat, config: configured.append(ts_key),
+    )
+    monkeypatch.setattr("hermes_cli.tools_config.save_config", lambda config: None)
+
+    _reconfigure_tool(config)
+
+    assert any("Web Search" in choice for choice in seen["choices"])
+    assert configured == ["web"]
 
 
 def test_first_install_nous_auto_configures_managed_defaults(monkeypatch):
@@ -870,3 +959,27 @@ def test_get_effective_configurable_toolsets_dedupes_bundled_plugins():
     assert len(spotify_rows) == 1, spotify_rows
     # Built-in label wins over the plugin label.
     assert spotify_rows[0][1] == "🎵 Spotify"
+
+
+@pytest.mark.parametrize("provider,config_key,expected", [
+    # managed provider → use_gateway True
+    ({"name": "T", "tts_provider": "elevenlabs", "managed_nous_feature": "tts", "env_vars": []}, "tts", True),
+    ({"name": "B", "browser_provider": "browserbase", "managed_nous_feature": "browser", "env_vars": []}, "browser", True),
+    ({"name": "W", "web_backend": "tavily", "managed_nous_feature": "web", "env_vars": []}, "web", True),
+    # self-hosted provider → use_gateway False
+    ({"name": "T", "tts_provider": "elevenlabs", "env_vars": []}, "tts", False),
+    ({"name": "B", "browser_provider": "browserbase", "env_vars": []}, "browser", False),
+    ({"name": "W", "web_backend": "tavily", "env_vars": []}, "web", False),
+])
+def test_reconfigure_provider_syncs_use_gateway(provider, config_key, expected):
+    config = {}
+    _reconfigure_provider(provider, config)
+    assert config[config_key]["use_gateway"] is expected
+
+
+def test_reconfigure_browser_provider_overwrites_stale_use_gateway():
+    # Switching from managed (use_gateway=True) to self-hosted must clear the stale flag.
+    config = {"browser": {"cloud_provider": "managed-browser", "use_gateway": True}}
+    provider = {"name": "Browserbase", "browser_provider": "browserbase", "env_vars": []}
+    _reconfigure_provider(provider, config)
+    assert config["browser"]["use_gateway"] is False

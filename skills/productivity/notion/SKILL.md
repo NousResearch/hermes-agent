@@ -4,6 +4,7 @@ description: "Notion API via curl: pages, databases, blocks, search."
 version: 1.0.0
 author: community
 license: MIT
+platforms: [linux, macos, windows]
 metadata:
   hermes:
     tags: [Notion, Productivity, Notes, Database, API]

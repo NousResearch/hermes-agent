@@ -76,6 +76,16 @@ jobs:
         run: |
           mkdir -p _site/docs
           cp -r website/build/* _site/docs/
+          # llms.txt / llms-full.txt are also published at the site root
+          # (https://hermes-agent.nousresearch.com/llms.txt) because some
+          # agents and IDE plugins probe the classic root-level path rather
+          # than /docs/llms.txt. Same file, two URLs, one source of truth.
+          if [ -f website/build/llms.txt ]; then
+            cp website/build/llms.txt _site/llms.txt
+          fi
+          if [ -f website/build/llms-full.txt ]; then
+            cp website/build/llms-full.txt _site/llms-full.txt
+          fi
 
       - name: Upload artifact
         uses: actions/upload-pages-artifact@56afc609e74202658d3ffba0e8f6dda462b719fa  # v3

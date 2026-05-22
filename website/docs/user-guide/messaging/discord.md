@@ -462,6 +462,48 @@ display:
   tool_progress_command: true
 ```
 
+## Slash Command Access Control
+
+By default, every allowed user can run every slash command. To split your allowlist into **admins** (full slash command access) and **regular users** (only commands you explicitly enable), add `allow_admin_from` and `user_allowed_commands` to the Discord platform's `extra` block:
+
+```yaml
+gateway:
+  platforms:
+    discord:
+      extra:
+        # Existing user allowlist (unchanged)
+        allow_from:
+          - "123456789012345678"  # admin user ID
+          - "999888777666555444"  # regular user ID
+
+        # NEW — admins get all slash commands (built-in + plugin)
+        allow_admin_from:
+          - "123456789012345678"
+
+        # NEW — non-admin allowed users can only run these slash commands.
+        # /help and /whoami are always allowed so users can see their access.
+        user_allowed_commands:
+          - status
+          - model
+          - history
+
+        # Optional: separate admin / command lists for server channels
+        group_allow_admin_from:
+          - "123456789012345678"
+        group_user_allowed_commands:
+          - status
+```
+
+**Behavior:**
+
+- A user in `allow_admin_from` for a scope (DM or server channel) can run **every** registered slash command — built-in AND plugin-registered — through the live command registry.
+- A user not in `allow_admin_from` can only run commands listed in `user_allowed_commands`, plus the always-allowed floor: `/help` and `/whoami`.
+- Plain chat (non-slash messages) is unaffected. Non-admin users can still talk to the agent normally; they just can't trigger arbitrary commands.
+- **Backward compat:** if `allow_admin_from` is not set for a scope, slash command gating is disabled for that scope. Existing installs keep working with no changes.
+- DM admin status does not imply server-channel admin status. Each scope has its own admin list.
+
+Use `/whoami` to see the active scope, your tier (admin / user / unrestricted), and which slash commands you can run.
+
 ## Interactive Model Picker
 
 Send `/model` with no arguments in a Discord channel to open a dropdown-based model picker:

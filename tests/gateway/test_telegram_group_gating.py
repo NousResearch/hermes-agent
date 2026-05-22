@@ -12,6 +12,8 @@ def _make_adapter(
     ignored_threads=None,
     allow_from=None,
     group_allow_from=None,
+    allowed_chats=None,
+    guest_mode=None,
 ):
     from gateway.platforms.telegram import TelegramAdapter
 
@@ -28,6 +30,10 @@ def _make_adapter(
         extra["allow_from"] = allow_from
     if group_allow_from is not None:
         extra["group_allow_from"] = group_allow_from
+    if allowed_chats is not None:
+        extra["allowed_chats"] = allowed_chats
+    if guest_mode is not None:
+        extra["guest_mode"] = guest_mode
 
     adapter = object.__new__(TelegramAdapter)
     adapter.platform = Platform.TELEGRAM
@@ -150,6 +156,53 @@ def test_free_response_chats_bypass_mention_requirement():
     assert adapter._should_process_message(_group_message("hello everyone", chat_id=-201)) is False
 
 
+def test_guest_mode_allows_only_direct_mentions_outside_allowed_chats():
+    adapter = _make_adapter(
+        require_mention=True,
+        allowed_chats=["-200"],
+        guest_mode=True,
+        mention_patterns=[r"^\s*chompy\b"],
+    )
+
+    mentioned = _group_message(
+        "hi @hermes_bot",
+        chat_id=-201,
+        entities=[_mention_entity("hi @hermes_bot")],
+    )
+    assert adapter._should_process_message(mentioned) is True
+    assert adapter._should_process_message(_group_message("reply", chat_id=-201, reply_to_bot=True)) is False
+    assert adapter._should_process_message(_group_message("chompy status", chat_id=-201)) is False
+    assert adapter._should_process_message(_group_message("hello", chat_id=-201)) is False
+
+
+def test_guest_mode_defaults_to_false_for_allowed_chat_bypass():
+    adapter = _make_adapter(require_mention=True, allowed_chats=["-200"], guest_mode=False)
+
+    mentioned = _group_message(
+        "hi @hermes_bot",
+        chat_id=-201,
+        entities=[_mention_entity("hi @hermes_bot")],
+    )
+    assert adapter._should_process_message(mentioned) is False
+
+
+def test_guest_mode_mention_dropped_in_ignored_thread():
+    """A guest mention in an ignored thread is still dropped — thread gate runs first."""
+    adapter = _make_adapter(
+        require_mention=True,
+        allowed_chats=["-200"],
+        guest_mode=True,
+        ignored_threads=[42],
+    )
+    mentioned = _group_message(
+        "hi @hermes_bot",
+        chat_id=-201,
+        entities=[_mention_entity("hi @hermes_bot")],
+        thread_id=42,
+    )
+    assert adapter._should_process_message(mentioned) is False
+
+
 def test_ignored_threads_drop_group_messages_before_other_gates():
     adapter = _make_adapter(require_mention=False, free_response_chats=["-200"], ignored_threads=[31, "42"])
 
@@ -179,6 +232,7 @@ def test_config_bridges_telegram_group_settings(monkeypatch, tmp_path):
     (hermes_home / "config.yaml").write_text(
         "telegram:\n"
         "  require_mention: true\n"
+        "  guest_mode: true\n"
         "  mention_patterns:\n"
         "    - \"^\\\\s*chompy\\\\b\"\n"
         "  free_response_chats:\n"
@@ -189,14 +243,19 @@ def test_config_bridges_telegram_group_settings(monkeypatch, tmp_path):
     monkeypatch.setenv("HERMES_HOME", str(hermes_home))
     monkeypatch.delenv("TELEGRAM_REQUIRE_MENTION", raising=False)
     monkeypatch.delenv("TELEGRAM_MENTION_PATTERNS", raising=False)
+    monkeypatch.delenv("TELEGRAM_GUEST_MODE", raising=False)
     monkeypatch.delenv("TELEGRAM_FREE_RESPONSE_CHATS", raising=False)
 
     config = load_gateway_config()
 
     assert config is not None
     assert __import__("os").environ["TELEGRAM_REQUIRE_MENTION"] == "true"
+    assert __import__("os").environ["TELEGRAM_GUEST_MODE"] == "true"
     assert json.loads(__import__("os").environ["TELEGRAM_MENTION_PATTERNS"]) == [r"^\s*chompy\b"]
     assert __import__("os").environ["TELEGRAM_FREE_RESPONSE_CHATS"] == "-123"
+    tg_cfg = config.platforms.get(Platform.TELEGRAM)
+    assert tg_cfg is not None
+    assert tg_cfg.extra.get("guest_mode") is True
 
 
 def test_config_bridges_telegram_user_allowlists(monkeypatch, tmp_path):
@@ -259,6 +318,57 @@ def test_group_allow_from_is_enforced_by_gateway_authorization_not_trigger_gate(
     adapter = _make_adapter(group_allow_from=["111"])
 
     assert adapter._should_process_message(_group_message("hello", from_user_id=333)) is True
+
+
+def test_top_level_require_mention_bridges_to_telegram(monkeypatch, tmp_path):
+    """require_mention at the config.yaml top level (alongside group_sessions_per_user)
+    must behave identically to telegram.require_mention: true (#3979).
+    """
+    hermes_home = tmp_path / ".hermes"
+    hermes_home.mkdir()
+    # Intentionally no "telegram:" section — keys are at the top level.
+    (hermes_home / "config.yaml").write_text(
+        "require_mention: true\n"
+        "group_sessions_per_user: true\n",
+        encoding="utf-8",
+    )
+
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    monkeypatch.delenv("TELEGRAM_REQUIRE_MENTION", raising=False)
+
+    config = load_gateway_config()
+
+    assert config is not None
+    assert __import__("os").environ.get("TELEGRAM_REQUIRE_MENTION") == "true"
+
+    # The adapter's extra dict must also carry the setting so that
+    # _telegram_require_mention() works even without the env var.
+    tg_cfg = config.platforms.get(__import__("gateway.config", fromlist=["Platform"]).Platform.TELEGRAM)
+    if tg_cfg is not None:
+        assert tg_cfg.extra.get("require_mention") is True
+
+
+def test_top_level_require_mention_does_not_override_telegram_section(monkeypatch, tmp_path):
+    """When telegram.require_mention is explicitly set, top-level require_mention
+    must not override it (platform-specific config takes precedence).
+    """
+    hermes_home = tmp_path / ".hermes"
+    hermes_home.mkdir()
+    (hermes_home / "config.yaml").write_text(
+        "require_mention: true\n"
+        "telegram:\n"
+        "  require_mention: false\n",
+        encoding="utf-8",
+    )
+
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    monkeypatch.delenv("TELEGRAM_REQUIRE_MENTION", raising=False)
+
+    config = load_gateway_config()
+
+    assert config is not None
+    # The telegram-specific "false" must win over the top-level "true".
+    assert __import__("os").environ.get("TELEGRAM_REQUIRE_MENTION") == "false"
 
 
 def test_config_bridges_telegram_ignored_threads(monkeypatch, tmp_path):

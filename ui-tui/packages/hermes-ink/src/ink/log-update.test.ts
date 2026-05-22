@@ -30,10 +30,10 @@ const paint = (screen: Screen, y: number, text: string) => {
   }
 }
 
-const mkFrame = (screen: Screen, viewportW: number, viewportH: number): Frame => ({
+const mkFrame = (screen: Screen, viewportW: number, viewportH: number, cursorY = 0): Frame => ({
   screen,
   viewport: { width: viewportW, height: viewportH },
-  cursor: { x: 0, y: 0, visible: true }
+  cursor: { x: 0, y: cursorY, visible: true }
 })
 
 const stdoutOnly = (diff: ReturnType<LogUpdate['render']>) =>
@@ -111,5 +111,47 @@ describe('LogUpdate.render diff contract', () => {
 
     expect(stdoutOnly(diff)).toBe('')
     expect(diff.some(p => p.type === 'clearTerminal')).toBe(false)
+  })
+
+  it('ignores main-screen scrollback-only changes instead of resetting repeatedly', () => {
+    const w = 20
+    const viewportH = 5
+    const h = 8
+
+    const prev = mkScreen(w, h)
+    paint(prev, 0, 'timer 1s')
+    paint(prev, 6, 'visible prompt')
+
+    const next = mkScreen(w, h)
+    paint(next, 0, 'timer 2s')
+    paint(next, 6, 'visible prompt')
+    next.damage = { x: 0, y: 0, width: w, height: h }
+
+    const log = new LogUpdate({ isTTY: true, stylePool })
+    const diff = log.render(mkFrame(prev, w, viewportH, h), mkFrame(next, w, viewportH, h), false, false)
+
+    expect(diff.some(p => p.type === 'clearTerminal')).toBe(false)
+    expect(stdoutOnly(diff)).not.toContain('timer2s')
+  })
+
+  it('keeps alt-screen full reset for unreachable scrollback row changes', () => {
+    const w = 20
+    const viewportH = 5
+    const h = 8
+
+    const prev = mkScreen(w, h)
+    paint(prev, 0, 'timer 1s')
+    paint(prev, 6, 'visible prompt')
+
+    const next = mkScreen(w, h)
+    paint(next, 0, 'timer 2s')
+    paint(next, 6, 'visible prompt')
+    next.damage = { x: 0, y: 0, width: w, height: h }
+
+    const log = new LogUpdate({ isTTY: true, stylePool })
+    const diff = log.render(mkFrame(prev, w, viewportH, h), mkFrame(next, w, viewportH, h), true, false)
+
+    expect(diff.some(p => p.type === 'clearTerminal')).toBe(true)
+    expect(stdoutOnly(diff)).toContain('timer2s')
   })
 })

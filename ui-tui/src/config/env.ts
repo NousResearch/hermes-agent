@@ -1,6 +1,8 @@
 const truthy = (v?: string) => /^(?:1|true|yes|on)$/i.test((v ?? '').trim())
 
 export const STARTUP_RESUME_ID = (process.env.HERMES_TUI_RESUME ?? '').trim()
+export const STARTUP_QUERY = (process.env.HERMES_TUI_QUERY ?? '').trim()
+export const STARTUP_IMAGE = (process.env.HERMES_TUI_IMAGE ?? '').trim()
 export const MOUSE_TRACKING = !truthy(process.env.HERMES_TUI_DISABLE_MOUSE)
 export const NO_CONFIRM_DESTRUCTIVE = truthy(process.env.HERMES_TUI_NO_CONFIRM)
 

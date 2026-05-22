@@ -531,6 +531,96 @@ class TestSpawnEnvSanitization:
 
 
 # =========================================================================
+# Popen leak prevention
+# =========================================================================
+
+class TestPopenLeakOnSetupFailure:
+    """Regression for issue #2749: subprocess orphaned when post-Popen setup raises."""
+
+    def test_popen_killed_when_thread_creation_fails(self, registry):
+        """If Thread() raises after Popen, proc must be killed — not orphaned."""
+        killed = []
+
+        proc = MagicMock()
+        proc.pid = 9999
+        proc.stdout = iter([])
+        proc.stdin = MagicMock()
+        proc.poll.return_value = None
+
+        def fake_kill():
+            killed.append(True)
+
+        proc.kill = fake_kill
+        proc.wait = MagicMock()
+
+        def boom(*args, **kwargs):
+            raise RuntimeError("Thread creation failed")
+
+        with patch("tools.process_registry._find_shell", return_value="/bin/bash"), \
+             patch("subprocess.Popen", return_value=proc), \
+             patch("threading.Thread", side_effect=boom), \
+             patch.object(registry, "_write_checkpoint"):
+            with pytest.raises(RuntimeError, match="Thread creation failed"):
+                registry.spawn_local("echo hello", cwd="/tmp")
+
+        assert killed, "proc.kill() must be called when post-Popen setup raises"
+
+    def test_popen_killed_when_write_checkpoint_fails(self, registry):
+        """If _write_checkpoint raises after Popen, proc must still be killed."""
+        killed = []
+
+        proc = MagicMock()
+        proc.pid = 8888
+        proc.stdout = iter([])
+        proc.stdin = MagicMock()
+        proc.poll.return_value = None
+
+        def fake_kill():
+            killed.append(True)
+
+        proc.kill = fake_kill
+        proc.wait = MagicMock()
+
+        fake_thread = MagicMock()
+
+        with patch("tools.process_registry._find_shell", return_value="/bin/bash"), \
+             patch("subprocess.Popen", return_value=proc), \
+             patch("threading.Thread", return_value=fake_thread), \
+             patch.object(registry, "_write_checkpoint", side_effect=OSError("disk full")):
+            with pytest.raises(OSError, match="disk full"):
+                registry.spawn_local("echo hello", cwd="/tmp")
+
+        assert killed, "proc.kill() must be called when _write_checkpoint raises"
+
+    def test_popen_not_killed_on_success(self, registry):
+        """Successful spawn must NOT kill the process."""
+        killed = []
+
+        proc = MagicMock()
+        proc.pid = 7777
+        proc.stdout = iter([])
+        proc.stdin = MagicMock()
+        proc.poll.return_value = None
+
+        def fake_kill():
+            killed.append(True)
+
+        proc.kill = fake_kill
+        proc.wait = MagicMock()
+
+        fake_thread = MagicMock()
+
+        with patch("tools.process_registry._find_shell", return_value="/bin/bash"), \
+             patch("subprocess.Popen", return_value=proc), \
+             patch("threading.Thread", return_value=fake_thread), \
+             patch.object(registry, "_write_checkpoint"):
+            session = registry.spawn_local("echo hello", cwd="/tmp")
+
+        assert not killed, "proc.kill() must NOT be called on successful spawn"
+        assert session.pid == 7777
+
+
+# =========================================================================
 # Checkpoint
 # =========================================================================
 
@@ -728,18 +818,30 @@ class TestKillProcess:
         s.detached = True
         registry._running[s.id] = s
 
-        calls = []
+        terminate_calls = []
 
-        def fake_kill(pid, sig):
-            calls.append((pid, sig))
+        class FakeProcess:
+            def __init__(self, pid):
+                self.pid = pid
+            def children(self, recursive=False):
+                return []
+            def terminate(self):
+                terminate_calls.append(("terminate", self.pid))
+
+        import psutil as _psutil
 
         try:
-            with patch("tools.process_registry.os.kill", side_effect=fake_kill):
+            # Post-#21561: liveness probe routes through
+            # ``ProcessRegistry._is_host_pid_alive`` (→
+            # ``gateway.status._pid_exists``), and the actual kill on POSIX
+            # routes through ``psutil.Process(pid).terminate()``. Neither
+            # touches ``os.kill`` directly. Mock both seams.
+            with patch("gateway.status._pid_exists", return_value=True), \
+                 patch.object(_psutil, "Process", side_effect=lambda pid: FakeProcess(pid)):
                 result = registry.kill_process(s.id)
 
             assert result["status"] == "killed"
-            assert (424242, 0) in calls
-            assert (424242, signal.SIGTERM) in calls
+            assert ("terminate", 424242) in terminate_calls
         finally:
             registry._running.pop(s.id, None)
 

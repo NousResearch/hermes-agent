@@ -284,7 +284,7 @@ class FileSyncManager:
             # Windows: no flock — run without serialization
             self._sync_back_impl()
             return
-        lock_fd = open(lock_path, "w")
+        lock_fd = open(lock_path, "w", encoding="utf-8")
         try:
             fcntl.flock(lock_fd, fcntl.LOCK_EX)
             self._sync_back_impl()

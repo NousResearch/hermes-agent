@@ -6,6 +6,7 @@ reconnects after idle/restart, the ``load_session`` / ``resume_session`` calls
 find the persisted session in the database and restore the full conversation
 history.
 """
+
 from __future__ import annotations
 
 from hermes_constants import get_hermes_home
@@ -26,6 +27,33 @@ from typing import Any, Dict, List, Optional
 logger = logging.getLogger(__name__)
 
 
+def _win_path_to_wsl(path: str) -> str | None:
+    """Convert a Windows drive path to its WSL /mnt/<drive>/... equivalent."""
+    match = re.match(r"^([A-Za-z]):[\\/](.*)$", path)
+    if not match:
+        return None
+    drive = match.group(1).lower()
+    tail = match.group(2).replace("\\", "/")
+    return f"/mnt/{drive}/{tail}"
+
+
+def _translate_acp_cwd(cwd: str) -> str:
+    """Translate Windows ACP cwd values when Hermes itself is running in WSL.
+
+    Windows ACP clients can launch ``hermes acp`` inside WSL while still sending
+    editor workspaces as Windows drive paths such as ``E:\\Projects``. Store
+    and execute against the WSL mount path so agents, tools, and persisted ACP
+    sessions all agree on the usable workspace. Native Linux/macOS keeps the
+    original cwd unchanged.
+    """
+    from hermes_constants import is_wsl
+
+    if not is_wsl():
+        return cwd
+    translated = _win_path_to_wsl(str(cwd))
+    return translated if translated is not None else cwd
+
+
 def _normalize_cwd_for_compare(cwd: str | None) -> str:
     raw = str(cwd or ".").strip()
     if not raw:
@@ -34,11 +62,9 @@ def _normalize_cwd_for_compare(cwd: str | None) -> str:
 
     # Normalize Windows drive paths into the equivalent WSL mount form so
     # ACP history filters match the same workspace across Windows and WSL.
-    match = re.match(r"^([A-Za-z]):[\\/](.*)$", expanded)
-    if match:
-        drive = match.group(1).lower()
-        tail = match.group(2).replace("\\", "/")
-        expanded = f"/mnt/{drive}/{tail}"
+    translated = _win_path_to_wsl(expanded)
+    if translated is not None:
+        expanded = translated
     elif re.match(r"^/mnt/[A-Za-z]/", expanded):
         expanded = f"/mnt/{expanded[5].lower()}/{expanded[7:]}"
 
@@ -96,12 +122,19 @@ def _acp_stderr_print(*args, **kwargs) -> None:
 
 
 def _register_task_cwd(task_id: str, cwd: str) -> None:
-    """Bind a task/session id to the editor's working directory for tools."""
+    """Bind a task/session id to the editor's working directory for tools.
+
+    Zed can launch Hermes from a Windows workspace while the ACP process runs
+    inside WSL. In that case ACP sends cwd as e.g. ``E:\\Projects\\POTI``;
+    local tools need the WSL mount equivalent or subprocess creation fails
+    before the command can run.
+    """
     if not task_id:
         return
     try:
         from tools.terminal_tool import register_task_env_overrides
-        register_task_env_overrides(task_id, {"cwd": cwd})
+
+        register_task_env_overrides(task_id, {"cwd": _translate_acp_cwd(cwd)})
     except Exception:
         logger.debug("Failed to register ACP task cwd override", exc_info=True)
 
@@ -130,6 +163,7 @@ def _clear_task_cwd(task_id: str) -> None:
         return
     try:
         from tools.terminal_tool import clear_task_env_overrides
+
         clear_task_env_overrides(task_id)
     except Exception:
         logger.debug("Failed to clear ACP task cwd override", exc_info=True)
@@ -145,6 +179,11 @@ class SessionState:
     model: str = ""
     history: List[Dict[str, Any]] = field(default_factory=list)
     cancel_event: Any = None  # threading.Event
+    is_running: bool = False
+    queued_prompts: List[str] = field(default_factory=list)
+    runtime_lock: Any = field(default_factory=Lock)
+    current_prompt_text: str = ""
+    interrupted_prompt_text: str = ""
 
 
 class SessionManager:
@@ -175,6 +214,7 @@ class SessionManager:
         """Create a new session with a unique ID and a fresh AIAgent."""
         import threading
 
+        cwd = _translate_acp_cwd(cwd)
         session_id = str(uuid.uuid4())
         agent = self._make_agent(session_id=session_id, cwd=cwd)
         state = SessionState(
@@ -217,6 +257,7 @@ class SessionManager:
         """Deep-copy a session's history into a new session."""
         import threading
 
+        cwd = _translate_acp_cwd(cwd)
         original = self.get_session(session_id)  # checks DB too
         if original is None:
             return None
@@ -242,52 +283,56 @@ class SessionManager:
         logger.info("Forked ACP session %s -> %s", session_id, new_id)
         return state
 
-    def list_sessions(self, cwd: str | None = None) -> List[Dict[str, Any]]:
-        """Return lightweight info dicts for all sessions (memory + database)."""
-        normalized_cwd = _normalize_cwd_for_compare(cwd) if cwd else None
-        db = self._get_db()
-        persisted_rows: dict[str, dict[str, Any]] = {}
-
-        if db is not None:
-            try:
-                for row in db.list_sessions_rich(source="acp", limit=1000):
-                    persisted_rows[str(row["id"])] = dict(row)
-            except Exception:
-                logger.debug("Failed to load ACP sessions from DB", exc_info=True)
-
-        # Collect in-memory sessions first.
+    def _collect_memory_sessions(
+        self,
+        normalized_cwd: str | None,
+        persisted_rows: dict[str, dict[str, Any]],
+    ) -> tuple[list[dict[str, Any]], set[str]]:
+        results = []
         with self._lock:
             seen_ids = set(self._sessions.keys())
-            results = []
             for s in self._sessions.values():
                 history_len = len(s.history)
                 if history_len <= 0:
                     continue
-                if normalized_cwd and _normalize_cwd_for_compare(s.cwd) != normalized_cwd:
+                if (
+                    normalized_cwd
+                    and _normalize_cwd_for_compare(s.cwd) != normalized_cwd
+                ):
                     continue
                 persisted = persisted_rows.get(s.session_id, {})
                 preview = next(
                     (
                         str(msg.get("content") or "").strip()
                         for msg in s.history
-                        if msg.get("role") == "user" and str(msg.get("content") or "").strip()
+                        if msg.get("role") == "user"
+                        and str(msg.get("content") or "").strip()
                     ),
                     persisted.get("preview") or "",
                 )
-                results.append(
-                    {
-                        "session_id": s.session_id,
-                        "cwd": s.cwd,
-                        "model": s.model,
-                        "history_len": history_len,
-                        "title": _build_session_title(persisted.get("title"), preview, s.cwd),
-                        "updated_at": _format_updated_at(
-                            persisted.get("last_active") or persisted.get("started_at") or time.time()
-                        ),
-                    }
-                )
+                results.append({
+                    "session_id": s.session_id,
+                    "cwd": s.cwd,
+                    "model": s.model,
+                    "history_len": history_len,
+                    "title": _build_session_title(
+                        persisted.get("title"), preview, s.cwd
+                    ),
+                    "updated_at": _format_updated_at(
+                        persisted.get("last_active")
+                        or persisted.get("started_at")
+                        or time.time()
+                    ),
+                })
+        return results, seen_ids
 
-        # Merge any persisted sessions not currently in memory.
+    def _collect_persisted_sessions(
+        self,
+        normalized_cwd: str | None,
+        persisted_rows: dict[str, dict[str, Any]],
+        seen_ids: set[str],
+    ) -> list[dict[str, Any]]:
+        results = []
         for sid, row in persisted_rows.items():
             if sid in seen_ids:
                 continue
@@ -302,22 +347,54 @@ class SessionManager:
                     session_cwd = json.loads(mc).get("cwd", ".")
                 except (json.JSONDecodeError, TypeError):
                     pass
-            if normalized_cwd and _normalize_cwd_for_compare(session_cwd) != normalized_cwd:
+            if (
+                normalized_cwd
+                and _normalize_cwd_for_compare(session_cwd) != normalized_cwd
+            ):
                 continue
             results.append({
                 "session_id": sid,
                 "cwd": session_cwd,
                 "model": row.get("model") or "",
                 "history_len": message_count,
-                "title": _build_session_title(row.get("title"), row.get("preview"), session_cwd),
-                "updated_at": _format_updated_at(row.get("last_active") or row.get("started_at")),
+                "title": _build_session_title(
+                    row.get("title"), row.get("preview"), session_cwd
+                ),
+                "updated_at": _format_updated_at(
+                    row.get("last_active") or row.get("started_at")
+                ),
             })
+        return results
 
-        results.sort(key=lambda item: _updated_at_sort_key(item.get("updated_at")), reverse=True)
+    def list_sessions(self, cwd: str | None = None) -> list[dict[str, Any]]:
+        """Return lightweight info dicts for all sessions (memory + database)."""
+        normalized_cwd = _normalize_cwd_for_compare(cwd) if cwd else None
+        db = self._get_db()
+        persisted_rows: dict[str, dict[str, Any]] = {}
+
+        if db is not None:
+            try:
+                for row in db.list_sessions_rich(source="acp", limit=1000):
+                    persisted_rows[str(row["id"])] = dict(row)
+            except Exception:
+                logger.debug("Failed to load ACP sessions from DB", exc_info=True)
+
+        results, seen_ids = self._collect_memory_sessions(
+            normalized_cwd, persisted_rows
+        )
+
+        results.extend(
+            self._collect_persisted_sessions(normalized_cwd, persisted_rows, seen_ids)
+        )
+
+        results.sort(
+            key=lambda item: _updated_at_sort_key(item.get("updated_at")), reverse=True
+        )
         return results
 
     def update_cwd(self, session_id: str, cwd: str) -> Optional[SessionState]:
         """Update the working directory for a session and its tool overrides."""
+        cwd = _translate_acp_cwd(cwd)
         state = self.get_session(session_id)  # checks DB too
         if state is None:
             return None
@@ -374,6 +451,7 @@ class SessionManager:
             return self._db_instance
         try:
             from hermes_state import SessionDB
+
             hermes_home = get_hermes_home()
             self._db_instance = SessionDB(db_path=hermes_home / "state.db")
             return self._db_instance
@@ -427,19 +505,14 @@ class SessionManager:
                 except Exception:
                     logger.debug("Failed to update ACP session metadata", exc_info=True)
 
-            # Replace stored messages with current history.
-            db.clear_messages(state.session_id)
-            for msg in state.history:
-                db.append_message(
-                    session_id=state.session_id,
-                    role=msg.get("role", "user"),
-                    content=msg.get("content"),
-                    tool_name=msg.get("tool_name") or msg.get("name"),
-                    tool_calls=msg.get("tool_calls"),
-                    tool_call_id=msg.get("tool_call_id"),
-                )
+            # Replace stored messages with current history atomically so a
+            # mid-rewrite failure rolls back and the previously persisted
+            # conversation is preserved (salvaged from #13675).
+            db.replace_messages(state.session_id, state.history)
         except Exception:
-            logger.warning("Failed to persist ACP session %s", state.session_id, exc_info=True)
+            logger.warning(
+                "Failed to persist ACP session %s", state.session_id, exc_info=True
+            )
 
     def _restore(self, session_id: str) -> Optional[SessionState]:
         """Load a session from the database into memory, recreating the AIAgent."""
@@ -452,7 +525,9 @@ class SessionManager:
         try:
             row = db.get_session(session_id)
         except Exception:
-            logger.debug("Failed to query DB for ACP session %s", session_id, exc_info=True)
+            logger.debug(
+                "Failed to query DB for ACP session %s", session_id, exc_info=True
+            )
             return None
 
         if row is None:
@@ -485,7 +560,9 @@ class SessionManager:
         try:
             history = db.get_messages_as_conversation(session_id)
         except Exception:
-            logger.warning("Failed to load messages for ACP session %s", session_id, exc_info=True)
+            logger.warning(
+                "Failed to load messages for ACP session %s", session_id, exc_info=True
+            )
             history = []
 
         try:
@@ -498,7 +575,9 @@ class SessionManager:
                 api_mode=restored_api_mode,
             )
         except Exception:
-            logger.warning("Failed to recreate agent for ACP session %s", session_id, exc_info=True)
+            logger.warning(
+                "Failed to recreate agent for ACP session %s", session_id, exc_info=True
+            )
             return None
 
         state = SessionState(
@@ -512,7 +591,9 @@ class SessionManager:
         with self._lock:
             self._sessions[session_id] = state
         _register_task_cwd(session_id, cwd)
-        logger.info("Restored ACP session %s from DB (%d messages)", session_id, len(history))
+        logger.info(
+            "Restored ACP session %s from DB (%d messages)", session_id, len(history)
+        )
         return state
 
     def _delete_persisted(self, session_id: str) -> bool:
@@ -523,7 +604,9 @@ class SessionManager:
         try:
             return db.delete_session(session_id)
         except Exception:
-            logger.debug("Failed to delete ACP session %s from DB", session_id, exc_info=True)
+            logger.debug(
+                "Failed to delete ACP session %s from DB", session_id, exc_info=True
+            )
             return False
 
     # ---- internal -----------------------------------------------------------
@@ -569,23 +652,26 @@ class SessionManager:
             ),
             "quiet_mode": True,
             "session_id": session_id,
+            "session_db": self._get_db(),
             "model": model or default_model,
         }
 
         try:
-            runtime = resolve_runtime_provider(requested=requested_provider or config_provider)
-            kwargs.update(
-                {
-                    "provider": runtime.get("provider"),
-                    "api_mode": api_mode or runtime.get("api_mode"),
-                    "base_url": base_url or runtime.get("base_url"),
-                    "api_key": runtime.get("api_key"),
-                    "command": runtime.get("command"),
-                    "args": list(runtime.get("args") or []),
-                }
+            runtime = resolve_runtime_provider(
+                requested=requested_provider or config_provider
             )
+            kwargs.update({
+                "provider": runtime.get("provider"),
+                "api_mode": api_mode or runtime.get("api_mode"),
+                "base_url": base_url or runtime.get("base_url"),
+                "api_key": runtime.get("api_key"),
+                "command": runtime.get("command"),
+                "args": list(runtime.get("args") or []),
+            })
         except Exception:
-            logger.debug("ACP session falling back to default provider resolution", exc_info=True)
+            logger.debug(
+                "ACP session falling back to default provider resolution", exc_info=True
+            )
 
         _register_task_cwd(session_id, cwd)
         agent = AIAgent(**kwargs)

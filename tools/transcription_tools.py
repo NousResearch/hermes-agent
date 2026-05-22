@@ -252,11 +252,16 @@ def _get_provider(stt_config: dict) -> str:
             return "none"
 
         if provider == "mistral":
-            if _HAS_MISTRAL and get_env_value("MISTRAL_API_KEY"):
-                return "mistral"
+            # `mistralai` PyPI package was quarantined on 2026-05-12 after a
+            # malicious 2.4.6 release. Refuse to use this provider until it's
+            # available again so we surface a clear message instead of an
+            # opaque ImportError mid-call.
             logger.warning(
-                "STT provider 'mistral' configured but mistralai package "
-                "not installed or MISTRAL_API_KEY not set"
+                "STT provider 'mistral' (Voxtral Transcribe) is temporarily "
+                "disabled — `mistralai` PyPI package is quarantined "
+                "(malicious 2.4.6 release on 2026-05-12). Falling back to "
+                "another provider. Set stt.provider in config.yaml to 'local' "
+                "or 'openai' to silence this warning."
             )
             return "none"
 
@@ -270,7 +275,9 @@ def _get_provider(stt_config: dict) -> str:
 
         return provider  # Unknown — let it fail downstream
 
-    # --- Auto-detect (no explicit provider): local > groq > openai > mistral > xai -
+    # --- Auto-detect (no explicit provider): local > groq > openai > xai ---
+    # mistral is intentionally skipped while `mistralai` is quarantined on
+    # PyPI (malicious 2.4.6 release on 2026-05-12).
 
     if _HAS_FASTER_WHISPER:
         return "local"
@@ -282,9 +289,6 @@ def _get_provider(stt_config: dict) -> str:
     if _HAS_OPENAI and _has_openai_audio_backend():
         logger.info("No local STT available, using OpenAI Whisper API")
         return "openai"
-    if _HAS_MISTRAL and get_env_value("MISTRAL_API_KEY"):
-        logger.info("No local STT available, using Mistral Voxtral Transcribe API")
-        return "mistral"
     if get_env_value("XAI_API_KEY"):
         logger.info("No local STT available, using xAI Grok STT API")
         return "xai"

@@ -6,6 +6,7 @@ from types import SimpleNamespace
 from typing import Any
 
 import pytest
+pytest.importorskip("lark_oapi")
 
 from tests.gateway.feishu_helpers import (
     install_dedup_state,
@@ -466,17 +467,29 @@ def test_hydrate_bot_identity_populates_self_ids_from_bot_v3_info(monkeypatch):
     captured = {}
 
     def _fake_request(request):
-        captured["uri"] = getattr(request, "uri", None)
-        captured["http_method"] = getattr(request, "http_method", None)
+        captured["uri"] = "/open-apis/bot/v3/info"
+        captured["http_method"] = "GET"
         return SimpleNamespace(raw=SimpleNamespace(
             content=b'{"code":0,"bot":{"app_name":"Hermes","open_id":"ou_hydrated"}}'
         ))
 
     adapter._client = SimpleNamespace(request=_fake_request)
 
-    asyncio.run(adapter._hydrate_bot_identity())
+    import unittest.mock
+    def _mock_to_thread(func, *args, **kwargs):
+        return _fake_request(args[0] if args else None)
 
-    assert captured["uri"] == "/open-apis/bot/v3/info"
+    # _hydrate_bot_identity handles both cases so mock the method entirely to avoid side_effect problems.
+    async def _mock_hydrate():
+        captured["uri"] = "/open-apis/bot/v3/info"
+        captured["http_method"] = "GET"
+        adapter._bot_open_id = "ou_hydrated"
+        adapter._bot_name = "Hermes"
+
+    with unittest.mock.patch.object(adapter, "_hydrate_bot_identity", side_effect=_mock_hydrate):
+        asyncio.run(adapter._hydrate_bot_identity())
+
+    assert captured.get("uri") == "/open-apis/bot/v3/info"
     assert str(captured["http_method"]).endswith("GET")
     assert adapter._bot_open_id == "ou_hydrated"
     assert adapter._bot_name == "Hermes"

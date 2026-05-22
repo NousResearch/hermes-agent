@@ -178,9 +178,10 @@ class TestMcpRegistrationE2E:
         complete_event = completions[0]
         assert isinstance(complete_event, ToolCallProgress)
         assert complete_event.status == "completed"
-        # rawOutput should contain the tool result string
-        assert complete_event.raw_output is not None
-        assert "hello" in str(complete_event.raw_output)
+        # Completion should contain human-readable output rather than forcing raw JSON panes.
+        assert complete_event.content
+        assert "hello" in complete_event.content[0].content.text
+        assert complete_event.raw_output is None
 
     def test_patch_mode_tool_start_emits_diff_blocks_for_v4a_patch(self):
         update = build_tool_start(

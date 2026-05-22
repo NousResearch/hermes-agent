@@ -814,7 +814,7 @@ def _check_structure(skill_dir: Path) -> List[Finding]:
             ))
 
         # Executable permission on non-script files
-        if ext not in ('.sh', '.bash', '.py', '.rb', '.pl') and f.stat().st_mode & 0o111:
+        if ext not in {'.sh', '.bash', '.py', '.rb', '.pl'} and f.stat().st_mode & 0o111:
             findings.append(Finding(
                 pattern_id="unexpected_executable",
                 severity="medium",
@@ -928,5 +928,5 @@ def _build_summary(name: str, source: str, trust: str, verdict: str, findings: L
     if not findings:
         return f"{name}: clean scan, no threats detected"
 
-    categories = set(f.category for f in findings)
+    categories = {f.category for f in findings}
     return f"{name}: {verdict} — {len(findings)} finding(s) in {', '.join(sorted(categories))}"

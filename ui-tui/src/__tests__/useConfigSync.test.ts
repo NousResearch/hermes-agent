@@ -1,13 +1,15 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { $uiState, resetUiState } from '../app/uiStore.js'
 import {
   applyDisplay,
+  hydrateFullConfig,
   normalizeBusyInputMode,
   normalizeIndicatorStyle,
   normalizeMouseTracking,
   normalizeStatusBar
 } from '../app/useConfigSync.js'
+import type { ParsedVoiceRecordKey } from '../lib/platform.js'
 
 describe('applyDisplay', () => {
   beforeEach(() => {
@@ -290,5 +292,141 @@ describe('applyDisplay → tui_status_indicator', () => {
 
     applyDisplay({ config: { display: { tui_status_indicator: 'rainbow' } } }, setBell)
     expect($uiState.get().indicatorStyle).toBe('kaomoji')
+  })
+})
+
+// Regressions from Copilot review on #19835: the config-hydration path
+// for voice.record_key was untested, so a future regression in the
+// hydration or mtime-reapply wiring would slip past the suite.
+describe('applyDisplay → voice.record_key (#18994)', () => {
+  beforeEach(() => {
+    resetUiState()
+  })
+
+  it('parses voice.record_key and pushes it through the setter', () => {
+    const setBell = vi.fn()
+    const setVoiceRecordKey = vi.fn()
+
+    applyDisplay(
+      { config: { display: {}, voice: { record_key: 'ctrl+space' } } },
+      setBell,
+      setVoiceRecordKey
+    )
+
+    expect(setVoiceRecordKey).toHaveBeenCalledWith(
+      expect.objectContaining({ ch: 'space', mod: 'ctrl', named: 'space', raw: 'ctrl+space' })
+    )
+  })
+
+  it('falls back to the documented default when voice.record_key is missing', () => {
+    const setBell = vi.fn()
+    const setVoiceRecordKey = vi.fn()
+
+    applyDisplay({ config: { display: {} } }, setBell, setVoiceRecordKey)
+
+    expect(setVoiceRecordKey).toHaveBeenCalledWith(
+      expect.objectContaining({ ch: 'b', mod: 'ctrl', raw: 'ctrl+b' })
+    )
+  })
+
+  it('is a no-op when the voice setter is not passed (back-compat)', () => {
+    const setBell = vi.fn()
+
+    // applyDisplay is used in the setVoiceEnabled-less init path too;
+    // omitting the third arg must not throw.
+    expect(() =>
+      applyDisplay({ config: { display: {}, voice: { record_key: 'alt+r' } } }, setBell)
+    ).not.toThrow()
+  })
+
+  it('does not reset voiceRecordKey when cfg is null (transient RPC failure)', () => {
+    const setBell = vi.fn()
+    const setVoiceRecordKey = vi.fn()
+
+    // quietRpc() collapses request failures to null. Resetting the
+    // cached shortcut on every null would clobber a custom binding
+    // after one transient error until the next successful poll
+    // (Copilot round-8 review on #19835).
+    applyDisplay(null, setBell, setVoiceRecordKey)
+
+    expect(setVoiceRecordKey).not.toHaveBeenCalled()
+    // bell is still applied (defaults to false on null), so the setter
+    // runs — we specifically only skip voiceRecordKey.
+    expect(setBell).toHaveBeenCalledWith(false)
+  })
+})
+
+// Round-12 Copilot review regression on #19835: the live mtime-reload
+// path was previously untested, so a regression in the polling/RPC
+// wiring to applyDisplay would only be visible at runtime. The fetch
+// + apply body is now shared as ``hydrateFullConfig()``, exercised
+// directly from both the initial hydration and the poll-tick body.
+describe('hydrateFullConfig', () => {
+  beforeEach(() => {
+    resetUiState()
+  })
+
+  const makeFakeGw = (payload: unknown) =>
+    ({
+      request: vi.fn(() => Promise.resolve(payload)),
+      on: vi.fn(),
+      off: vi.fn()
+    }) as any
+
+  it('re-applies voice.record_key from a fresh config.get full response', async () => {
+    const gw = makeFakeGw({ config: { display: {}, voice: { record_key: 'ctrl+o' } } })
+    const setBell = vi.fn()
+    const setVoiceRecordKey = vi.fn()
+
+    await hydrateFullConfig(gw, setBell, setVoiceRecordKey)
+
+    expect(gw.request).toHaveBeenCalledWith('config.get', { key: 'full' })
+    expect(setVoiceRecordKey).toHaveBeenCalledWith(
+      expect.objectContaining({ ch: 'o', mod: 'ctrl', raw: 'ctrl+o' })
+    )
+    expect(setBell).toHaveBeenCalledWith(false)
+  })
+
+  it('reapplies the latest value on each invocation (mtime-reload semantics)', async () => {
+    const gw = makeFakeGw({ config: { display: {}, voice: { record_key: 'ctrl+b' } } })
+    const setBell = vi.fn()
+    const setVoiceRecordKey = vi.fn()
+
+    await hydrateFullConfig(gw, setBell, setVoiceRecordKey)
+    expect(setVoiceRecordKey).toHaveBeenLastCalledWith(expect.objectContaining({ ch: 'b' }))
+
+    // Simulate a config edit: gw now returns a new shortcut.
+    gw.request = vi.fn(() => Promise.resolve({ config: { display: {}, voice: { record_key: 'alt+space' } } }))
+
+    await hydrateFullConfig(gw, setBell, setVoiceRecordKey)
+    expect(setVoiceRecordKey).toHaveBeenLastCalledWith(
+      expect.objectContaining({ ch: 'space', mod: 'alt', named: 'space' })
+    )
+  })
+
+  it('leaves cached voiceRecordKey untouched when the RPC fails', async () => {
+    const gw = { request: vi.fn(() => Promise.reject(new Error('boom'))), on: vi.fn(), off: vi.fn() } as any
+    const setBell = vi.fn()
+    const setVoiceRecordKey = vi.fn()
+
+    const result = await hydrateFullConfig(gw, setBell, setVoiceRecordKey)
+
+    // quietRpc() swallows the error and returns null; applyDisplay
+    // sees cfg=null and skips the voice setter (Copilot round-8).
+    expect(result).toBeNull()
+    expect(setVoiceRecordKey).not.toHaveBeenCalled()
+    // bell setter still fires — applyDisplay's null-cfg path applies
+    // the documented bell default (false).
+    expect(setBell).toHaveBeenCalledWith(false)
+  })
+
+  it('threads through without a voice setter (back-compat call sites)', async () => {
+    const gw = makeFakeGw({ config: { display: { bell_on_complete: true } } })
+    const setBell = vi.fn()
+
+    // No third arg — applyDisplay must not throw and must still apply
+    // display flags (round-2 / round-8 invariant).
+    await expect(hydrateFullConfig(gw, setBell)).resolves.toBeTruthy()
+    expect(setBell).toHaveBeenCalledWith(true)
   })
 })

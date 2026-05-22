@@ -226,7 +226,13 @@ export class LogUpdate {
       return fullResetSequence_CAUSES_FLICKER(next, 'offscreen', stylePool)
     }
 
-    if (prev.screen.height >= prev.viewport.height && prev.screen.height > 0 && cursorAtBottom && !isGrowing) {
+    if (
+      altScreen &&
+      prev.screen.height >= prev.viewport.height &&
+      prev.screen.height > 0 &&
+      cursorAtBottom &&
+      !isGrowing
+    ) {
       // viewportY = rows in scrollback from content overflow
       // +1 for the row pushed by cursor-restore scroll
       const viewportY = prev.screen.height - prev.viewport.height
@@ -330,8 +336,15 @@ export class LogUpdate {
       }
 
       // If the cell outside the viewport range has changed, we need to reset
-      // because we can't move the cursor there to draw.
+      // because we can't move the cursor there to draw. In main-screen mode,
+      // those rows are already in terminal scrollback and invisible; resetting
+      // on every scrollback-only update can loop when a resize changes the
+      // physical buffer. Shrink-to-visible cases are handled above.
       if (y < viewportY) {
+        if (!altScreen) {
+          return
+        }
+
         needsFullReset = true
         resetTriggerY = y
 

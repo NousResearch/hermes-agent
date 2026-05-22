@@ -56,7 +56,6 @@ class TestCustomProviderModelSwitch:
             "sk-test",
             "https://vllm.example.com/v1",
             timeout=8.0,
-            api_mode=None,
         )
 
     def test_can_switch_to_different_model(self, config_home):
@@ -141,12 +140,18 @@ class TestCustomProviderModelSwitch:
             "api_mode": "anthropic_messages",
         }
 
-        with patch("hermes_cli.models.fetch_api_models", return_value=["claude-3"]), \
+        with patch("hermes_cli.models.fetch_api_models", return_value=["claude-3"]) as mock_fetch, \
              patch.dict("sys.modules", {"simple_term_menu": None}), \
              patch("builtins.input", return_value="1"), \
              patch("builtins.print"):
             _model_flow_named_custom({}, provider_info)
 
+        mock_fetch.assert_called_once_with(
+            "***",
+            "https://proxy.example.com/anthropic",
+            timeout=8.0,
+            api_mode="anthropic_messages",
+        )
         config = yaml.safe_load((config_home / "config.yaml").read_text()) or {}
         model = config.get("model")
         assert isinstance(model, dict)
@@ -215,7 +220,6 @@ class TestCustomProviderModelSwitch:
             "sk-live-example-provider",
             "https://api.example-provider.test/v1",
             timeout=8.0,
-            api_mode=None,
         )
         config = yaml.safe_load(config_path.read_text()) or {}
         assert config["model"]["api_key"] == "${EXAMPLE_PROVIDER_API_KEY}"

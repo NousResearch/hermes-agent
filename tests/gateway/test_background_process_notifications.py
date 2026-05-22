@@ -304,6 +304,40 @@ def test_build_process_event_source_falls_back_to_session_key_chat_type(monkeypa
     assert source.user_name == "Emiliyan"
 
 
+def test_build_process_event_source_uses_cached_live_source_before_session_key_parse(
+    monkeypatch, tmp_path
+):
+    from gateway.session import SessionSource
+
+    runner = _build_runner(monkeypatch, tmp_path, "all")
+    runner._cache_session_source(
+        "agent:main:telegram:group:-100:42",
+        SessionSource(
+            platform=Platform.TELEGRAM,
+            chat_id="-100",
+            chat_type="group",
+            thread_id="42",
+            user_id="proc_owner",
+            user_name="alice",
+        ),
+    )
+
+    source = runner._build_process_event_source(
+        {
+            "session_id": "proc_watch",
+            "session_key": "agent:main:telegram:group:-100:42",
+        }
+    )
+
+    assert source is not None
+    assert source.platform == Platform.TELEGRAM
+    assert source.chat_id == "-100"
+    assert source.chat_type == "group"
+    assert source.thread_id == "42"
+    assert source.user_id == "proc_owner"
+    assert source.user_name == "alice"
+
+
 @pytest.mark.asyncio
 async def test_inject_watch_notification_ignores_foreground_event_source(monkeypatch, tmp_path):
     """Negative test: watch notification must NOT route to the foreground thread."""

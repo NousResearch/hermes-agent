@@ -22,6 +22,23 @@ def test_final_assistant_content_uses_markdown_renderable():
     assert "two" in output
 
 
+def test_final_assistant_content_preserves_windows_hidden_dir_paths():
+    renderable = _render_final_assistant_content(
+        r"D:\Projects\SourceCode\hermes-agent\.ai\skills" + "\\"
+    )
+
+    output = _render_to_text(renderable)
+    assert r"D:\Projects\SourceCode\hermes-agent\.ai\skills" + "\\" in output
+
+
+def test_final_assistant_content_keeps_non_path_markdown_escapes():
+    renderable = _render_final_assistant_content(r"1\. Not an ordered list")
+
+    output = _render_to_text(renderable)
+    assert "1. Not an ordered list" in output
+    assert r"1\." not in output
+
+
 def test_final_assistant_content_strips_ansi_before_markdown_rendering():
     renderable = _render_final_assistant_content("\x1b[31m# Title\x1b[0m")
 
@@ -101,13 +118,36 @@ def test_strip_mode_preserves_table_structure_while_cleaning_cell_markdown():
     )
 
     output = _render_to_text(renderable)
-    assert "| Syntax | Example |" in output
-    assert "|---|---|" in output
-    assert "| Bold | bold |" in output
-    assert "| Strike | strike |" in output
+
+    # Inline cell markdown is stripped (the contract this test enforces).
     assert "**" not in output
     assert "~~" not in output
     assert "`" not in output
+
+    # Cell *content* survives, even if the surrounding whitespace was
+    # rewritten by the wcwidth-aware re-aligner.  Asserting on bare
+    # cell text keeps this test focused on the strip behaviour rather
+    # than snapshotting incidental column padding (which is what the
+    # CJK-alignment fix changes).
+    assert "Syntax" in output
+    assert "Example" in output
+    assert "Bold" in output and "bold" in output
+    assert "Strike" in output and "strike" in output
+
+    # Structural sanity: the table still renders as pipe-bordered rows
+    # (header + divider + 2 body rows).
+    body_rows = [ln for ln in output.splitlines() if ln.strip().startswith("|")]
+    assert len(body_rows) == 4
+
+    # Every rendered table row shares the same pipe column offsets — the
+    # alignment guarantee from realign_markdown_tables.
+    pipe_cols = [
+        [i for i, ch in enumerate(row) if ch == "|"] for row in body_rows
+    ]
+    assert all(p == pipe_cols[0] for p in pipe_cols), (
+        "table rows misaligned after strip-mode rendering:\n"
+        + "\n".join(body_rows)
+    )
 
 
 def test_final_assistant_content_can_leave_markdown_raw():

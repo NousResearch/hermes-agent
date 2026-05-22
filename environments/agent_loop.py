@@ -403,7 +403,7 @@ class HermesAgentLoop:
                                     # Run tool calls in a thread pool so backends that
                                     # use asyncio.run() internally (modal, docker, daytona) get
                                     # a clean event loop instead of deadlocking.
-                                    loop = asyncio.get_event_loop()
+                                    loop = asyncio.get_running_loop()
                                     # Capture current tool_name/args for the lambda
                                     _tn, _ta, _tid = tool_name, args, self.task_id
                                     tool_result = await loop.run_in_executor(

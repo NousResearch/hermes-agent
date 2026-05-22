@@ -1771,6 +1771,69 @@ class TestAdapterBehavior(unittest.TestCase):
         self.assertIn("GIF downgraded to file", caption)
         self.assertIn("look", caption)
 
+    def test_download_remote_document_reads_response_before_httpx_client_closes(self):
+        """#18451 — snapshot Content-Type + body while the httpx.AsyncClient
+        context is still active so pooled connections fully release on
+        exit.  Otherwise the response is only readable because httpx
+        eagerly buffers it; a future refactor to .stream() would silently
+        read-after-close."""
+        from gateway.config import PlatformConfig
+        from gateway.platforms.feishu import FeishuAdapter
+
+        events: list[str] = []
+
+        class _FakeResponse:
+            headers = {"Content-Type": "application/octet-stream"}
+
+            def raise_for_status(self) -> None:
+                events.append("raise_for_status")
+
+            @property
+            def content(self) -> bytes:
+                events.append("content_read")
+                return b"doc-bytes"
+
+        class _FakeAsyncClient:
+            def __init__(self, *_a: object, **_k: object) -> None:
+                pass
+
+            async def __aenter__(self) -> "_FakeAsyncClient":
+                events.append("client_enter")
+                return self
+
+            async def __aexit__(self, *exc: object) -> None:
+                events.append("client_exit")
+
+            async def get(self, *_a: object, **_k: object) -> _FakeResponse:
+                events.append("get")
+                return _FakeResponse()
+
+        with tempfile.TemporaryDirectory() as tmp:
+            with patch.dict(os.environ, {"HERMES_HOME": tmp}, clear=False):
+                adapter = FeishuAdapter(PlatformConfig())
+
+                async def _run() -> tuple[str, str]:
+                    with patch("tools.url_safety.is_safe_url", return_value=True):
+                        with patch("httpx.AsyncClient", _FakeAsyncClient):
+                            with patch(
+                                "gateway.platforms.feishu.cache_document_from_bytes",
+                                return_value="/tmp/cached-doc.bin",
+                            ):
+                                return await adapter._download_remote_document(
+                                    "https://example.com/doc.bin",
+                                    default_ext=".bin",
+                                    preferred_name="doc",
+                                )
+
+                path, filename = asyncio.run(_run())
+
+        self.assertEqual(path, "/tmp/cached-doc.bin")
+        self.assertTrue(filename)
+        # content_read MUST happen before client_exit — otherwise we're
+        # reading response body after the connection pool has been torn
+        # down, which only works by accident (httpx's eager buffering).
+        self.assertLess(events.index("content_read"), events.index("client_exit"))
+
     def test_dedup_state_persists_across_adapter_restart(self):
         from gateway.config import PlatformConfig
         from gateway.platforms.feishu import FeishuAdapter
@@ -1897,6 +1960,45 @@ class TestAdapterBehavior(unittest.TestCase):
 
         self.assertTrue(result.success)
         self.assertEqual(result.message_id, "om_reply")
+        self.assertTrue(captured["request"].request_body.reply_in_thread)
+
+    @patch.dict(os.environ, {}, clear=True)
+    def test_send_uses_metadata_reply_target_for_threaded_feishu_topic(self):
+        from gateway.config import PlatformConfig
+        from gateway.platforms.feishu import FeishuAdapter
+
+        adapter = FeishuAdapter(PlatformConfig())
+        captured = {}
+
+        class _MessageAPI:
+            def reply(self, request):
+                captured["request"] = request
+                return SimpleNamespace(
+                    success=lambda: True,
+                    data=SimpleNamespace(message_id="om_reply"),
+                )
+
+        adapter._client = SimpleNamespace(
+            im=SimpleNamespace(v1=SimpleNamespace(message=_MessageAPI()))
+        )
+
+        async def _direct(func, *args, **kwargs):
+            return func(*args, **kwargs)
+
+        with patch("gateway.platforms.feishu.asyncio.to_thread", side_effect=_direct):
+            result = asyncio.run(
+                adapter.send(
+                    chat_id="oc_chat",
+                    content="status update",
+                    metadata={
+                        "thread_id": "omt-thread",
+                        "reply_to_message_id": "om_trigger",
+                    },
+                )
+            )
+
+        self.assertTrue(result.success)
+        self.assertEqual(captured["request"].message_id, "om_trigger")
         self.assertTrue(captured["request"].request_body.reply_in_thread)
 
     @patch.dict(os.environ, {}, clear=True)
@@ -2754,20 +2856,32 @@ class TestHydrateBotIdentity(unittest.TestCase):
         },
         clear=True,
     )
-    def test_hydration_skipped_when_env_vars_supply_both_fields(self):
+    def test_hydration_refreshes_env_values_when_bot_info_available(self):
         adapter = self._make_adapter()
         adapter._client = Mock()
-        adapter._client.request = Mock()
+        payload = json.dumps(
+            {
+                "code": 0,
+                "bot": {
+                    "bot_name": "Hydrated Hermes",
+                    "open_id": "ou_hydrated",
+                },
+            }
+        ).encode("utf-8")
+        adapter._client.request = Mock(return_value=SimpleNamespace(raw=SimpleNamespace(content=payload)))
 
         asyncio.run(adapter._hydrate_bot_identity())
 
-        adapter._client.request.assert_not_called()
-        self.assertEqual(adapter._bot_open_id, "ou_env")
-        self.assertEqual(adapter._bot_name, "Env Hermes")
+        # PR #16993 semantics: /bot/v3/info probe runs unconditionally
+        # and hydrated values win over env vars so a stale FEISHU_BOT_*
+        # from an old app registration doesn't break @mention gating.
+        adapter._client.request.assert_called_once()
+        self.assertEqual(adapter._bot_open_id, "ou_hydrated")
+        self.assertEqual(adapter._bot_name, "Hydrated Hermes")
 
     @patch.dict(os.environ, {"FEISHU_BOT_OPEN_ID": "ou_env"}, clear=True)
-    def test_hydration_fills_only_missing_fields(self):
-        """Env-var open_id must NOT be overwritten by a different probe value."""
+    def test_hydration_overwrites_stale_env_open_id(self):
+        """A stale env open_id should not break group mention gating after app migration."""
         adapter = self._make_adapter()
         adapter._client = Mock()
         payload = json.dumps(
@@ -2783,8 +2897,26 @@ class TestHydrateBotIdentity(unittest.TestCase):
 
         asyncio.run(adapter._hydrate_bot_identity())
 
-        self.assertEqual(adapter._bot_open_id, "ou_env")  # preserved
+        self.assertEqual(adapter._bot_open_id, "ou_probe_DIFFERENT")
         self.assertEqual(adapter._bot_name, "Hermes Bot")  # filled in
+
+    @patch.dict(
+        os.environ,
+        {
+            "FEISHU_BOT_OPEN_ID": "ou_env",
+            "FEISHU_BOT_NAME": "Env Hermes",
+        },
+        clear=True,
+    )
+    def test_hydration_preserves_env_values_when_bot_info_probe_fails(self):
+        adapter = self._make_adapter()
+        adapter._client = Mock()
+        adapter._client.request = Mock(side_effect=RuntimeError("network down"))
+
+        asyncio.run(adapter._hydrate_bot_identity())
+
+        self.assertEqual(adapter._bot_open_id, "ou_env")
+        self.assertEqual(adapter._bot_name, "Env Hermes")
 
     @patch.dict(os.environ, {}, clear=True)
     def test_hydration_tolerates_probe_failure_and_falls_back_to_app_info(self):
@@ -3103,6 +3235,37 @@ class TestDedupTTL(unittest.TestCase):
         adapter._seen_message_order = ["om_old"]
         with patch.object(adapter, "_persist_seen_message_ids"):
             self.assertFalse(adapter._is_duplicate("om_old"))
+
+    @patch.dict(os.environ, {}, clear=True)
+    def test_load_tolerates_malformed_timestamp_values(self):
+        """Regression #13632 — a non-numeric timestamp in the persisted
+        dedup state must not crash adapter startup.  The bad key is
+        skipped; the rest of the state loads.
+        """
+        import tempfile
+        from gateway.config import PlatformConfig
+        from gateway.platforms.feishu import FeishuAdapter
+
+        with tempfile.TemporaryDirectory() as temp_home:
+            with patch.dict(os.environ, {"HERMES_HOME": temp_home}, clear=True):
+                adapter = FeishuAdapter(PlatformConfig())
+                adapter._dedup_state_path.parent.mkdir(parents=True, exist_ok=True)
+                adapter._dedup_state_path.write_text(
+                    json.dumps(
+                        {
+                            "message_ids": {
+                                "om_good": time.time(),
+                                "om_bad_str": "not-a-timestamp",
+                                "om_bad_null": None,
+                            }
+                        }
+                    ),
+                    encoding="utf-8",
+                )
+                adapter._load_seen_message_ids()
+                assert "om_good" in adapter._seen_message_ids
+                assert "om_bad_str" not in adapter._seen_message_ids
+                assert "om_bad_null" not in adapter._seen_message_ids
 
     @patch.dict(os.environ, {}, clear=True)
     def test_persist_saves_timestamps_as_dict(self):

@@ -4,6 +4,7 @@ import type { MutableRefObject, ReactNode, RefObject, SetStateAction } from 'rea
 import type { PasteEvent } from '../components/textInput.js'
 import type { GatewayClient } from '../gatewayClient.js'
 import type { ImageAttachResponse } from '../gatewayTypes.js'
+import type { ParsedVoiceRecordKey } from '../lib/platform.js'
 import type { RpcResult } from '../lib/rpc.js'
 import type { Theme } from '../theme.js'
 import type {
@@ -189,7 +190,7 @@ export interface InputHandlerActions {
   die: () => void
   dispatchSubmission: (full: string) => void
   guardBusySessionSwitch: (what?: string) => boolean
-  newSession: (msg?: string) => void
+  newSession: (msg?: string, title?: string) => void
   sys: (text: string) => void
 }
 
@@ -210,6 +211,7 @@ export interface InputHandlerContext {
   }
   voice: {
     enabled: boolean
+    recordKey: ParsedVoiceRecordKey
     recording: boolean
     setProcessing: StateSetter<boolean>
     setRecording: StateSetter<boolean>
@@ -230,7 +232,7 @@ export interface GatewayEventHandlerContext {
   session: {
     STARTUP_RESUME_ID: string
     colsRef: MutableRefObject<number>
-    newSession: (msg?: string) => void
+    newSession: (msg?: string, title?: string) => void
     resetSession: () => void
     resumeById: (id: string) => void
     setCatalog: StateSetter<null | SlashCatalog>
@@ -270,12 +272,13 @@ export interface SlashHandlerContext {
     getHistoryItems: () => Msg[]
     getLastUserMsg: () => string
     maybeWarn: (value: unknown) => void
+    setCatalog: StateSetter<null | SlashCatalog>
   }
   session: {
     closeSession: (targetSid?: null | string) => Promise<unknown>
     die: () => void
     guardBusySessionSwitch: (what?: string) => boolean
-    newSession: (msg?: string) => void
+    newSession: (msg?: string, title?: string) => void
     resetVisibleHistory: (info?: null | SessionInfo) => void
     resumeById: (id: string) => void
     setSessionStartedAt: StateSetter<number>
@@ -291,6 +294,7 @@ export interface SlashHandlerContext {
   }
   voice: {
     setVoiceEnabled: StateSetter<boolean>
+    setVoiceRecordKey: (v: ParsedVoiceRecordKey) => void
   }
 }
 
@@ -318,6 +322,7 @@ export interface AppLayoutComposerProps {
   queuedDisplay: string[]
   submit: (value: string) => void
   updateInput: StateSetter<string>
+  voiceRecordKey: ParsedVoiceRecordKey
 }
 
 export interface AppLayoutProgressProps {

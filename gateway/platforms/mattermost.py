@@ -611,7 +611,7 @@ class MattermostAdapter(BasePlatformAdapter):
                 # succeed on retry — stop reconnecting instead of looping forever.
                 import aiohttp
                 err_str = str(exc).lower()
-                if isinstance(exc, aiohttp.WSServerHandshakeError) and exc.status in (401, 403):
+                if isinstance(exc, aiohttp.WSServerHandshakeError) and exc.status in {401, 403}:
                     logger.error("Mattermost WS auth failed (HTTP %d) — stopping reconnect", exc.status)
                     return
                 if "401" in err_str or "403" in err_str or "unauthorized" in err_str:
@@ -649,21 +649,21 @@ class MattermostAdapter(BasePlatformAdapter):
             if self._closing:
                 return
 
-            if raw_msg.type in (
+            if raw_msg.type in {
                 raw_msg.type.TEXT,
                 raw_msg.type.BINARY,
-            ):
+            }:
                 try:
                     event = json.loads(raw_msg.data)
                 except (json.JSONDecodeError, TypeError):
                     continue
                 await self._handle_ws_event(event)
-            elif raw_msg.type in (
+            elif raw_msg.type in {
                 raw_msg.type.ERROR,
                 raw_msg.type.CLOSE,
                 raw_msg.type.CLOSING,
                 raw_msg.type.CLOSED,
-            ):
+            }:
                 logger.info("Mattermost: WebSocket closed (%s)", raw_msg.type)
                 break
 
@@ -706,13 +706,33 @@ class MattermostAdapter(BasePlatformAdapter):
         message_text = post.get("message", "")
 
         # Mention-gating for non-DM channels.
-        # Config (env vars):
-        #   MATTERMOST_REQUIRE_MENTION: Require @mention in channels (default: true)
-        #   MATTERMOST_FREE_RESPONSE_CHANNELS: Channel IDs where bot responds without mention
+        # Config (config.yaml `mattermost.*` with env-var fallback):
+        #   require_mention / MATTERMOST_REQUIRE_MENTION: Require @mention in channels (default: true)
+        #   free_response_channels / MATTERMOST_FREE_RESPONSE_CHANNELS: Channel IDs where bot responds without mention
+        #   allowed_channels / MATTERMOST_ALLOWED_CHANNELS: If set, bot ONLY responds in these channels (whitelist)
         if channel_type_raw != "D":
+            # allowed_channels check (whitelist — must pass before other gating).
+            # When set, messages from channels NOT in this list are silently
+            # ignored, even if @mentioned.  DMs are already excluded above.
+            allowed_raw = self.config.extra.get("allowed_channels") if self.config.extra else None
+            if allowed_raw is None:
+                allowed_raw = os.getenv("MATTERMOST_ALLOWED_CHANNELS", "")
+            if isinstance(allowed_raw, list):
+                allowed_channels = {str(c).strip() for c in allowed_raw if str(c).strip()}
+            else:
+                allowed_channels = {
+                    c.strip() for c in str(allowed_raw).split(",") if c.strip()
+                }
+            if allowed_channels and channel_id not in allowed_channels:
+                logger.debug(
+                    "Mattermost: ignoring message in non-allowed channel: %s",
+                    channel_id,
+                )
+                return
+
             require_mention = os.getenv(
                 "MATTERMOST_REQUIRE_MENTION", "true"
-            ).lower() not in ("false", "0", "no")
+            ).lower() not in {"false", "0", "no"}
 
             free_channels_raw = os.getenv("MATTERMOST_FREE_RESPONSE_CHANNELS", "")
             free_channels = {ch.strip() for ch in free_channels_raw.split(",") if ch.strip()}

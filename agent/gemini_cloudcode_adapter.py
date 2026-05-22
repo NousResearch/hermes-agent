@@ -77,7 +77,7 @@ def _coerce_content_to_text(content: Any) -> str:
                 if p.get("type") == "text" and isinstance(p.get("text"), str):
                     pieces.append(p["text"])
                 # Multimodal (image_url, etc.) — stub for now; log and skip
-                elif p.get("type") in ("image_url", "input_audio"):
+                elif p.get("type") in {"image_url", "input_audio"}:
                     logger.debug("Dropping multimodal part (not yet supported): %s", p.get("type"))
         return "\n".join(pieces)
     return str(content)

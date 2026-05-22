@@ -63,10 +63,7 @@ _XAI_ASPECT_RATIOS = {
 }
 
 # xAI resolutions
-_XAI_RESOLUTIONS = {
-    "1k": "1024",
-    "2k": "2048",
-}
+_XAI_RESOLUTIONS = {"1k", "2k"}
 
 DEFAULT_RESOLUTION = "1k"
 
@@ -177,7 +174,7 @@ class XAIImageGenProvider(ImageGenProvider):
         aspect = resolve_aspect_ratio(aspect_ratio)
         xai_ar = _XAI_ASPECT_RATIOS.get(aspect, "1:1")
         resolution = _resolve_resolution()
-        xai_res = _XAI_RESOLUTIONS.get(resolution, "1024")
+        xai_res = resolution if resolution in _XAI_RESOLUTIONS else DEFAULT_RESOLUTION
 
         payload: Dict[str, Any] = {
             "model": API_MODEL,
@@ -203,11 +200,12 @@ class XAIImageGenProvider(ImageGenProvider):
             )
             response.raise_for_status()
         except requests.HTTPError as exc:
-            status = exc.response.status_code if exc.response else 0
+            response = exc.response
+            status = response.status_code if response is not None else 0
             try:
-                err_msg = exc.response.json().get("error", {}).get("message", exc.response.text[:300])
+                err_msg = response.json().get("error", {}).get("message", response.text[:300])
             except Exception:
-                err_msg = exc.response.text[:300] if exc.response else str(exc)
+                err_msg = response.text[:300] if response is not None else str(exc)
             logger.error("xAI image gen failed (%d): %s", status, err_msg)
             return error_response(
                 error=f"xAI image generation failed ({status}): {err_msg}",

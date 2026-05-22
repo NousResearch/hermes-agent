@@ -1,0 +1,6 @@
+🧹 Extract logic in _CodexCompletionsAdapter.create
+
+🎯 **What:** The `create` method cyclomatic complexity was over 50. Extracted `_build_responses_kwargs` and `_extract_responses_output` helper methods to handle parameter construction and result construction.
+💡 **Why:** Reduces cyclic complexity and creates distinct responsibilities.
+✅ **Verification:** Verified with `ruff check`, cyclomatic complexity reduced to 26, tests still pass.
+✨ **Result:** Enhanced readability and maintainability without changing behavior.

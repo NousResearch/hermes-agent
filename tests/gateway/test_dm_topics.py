@@ -448,7 +448,8 @@ def test_cache_dm_topic_from_message_no_overwrite():
 
 
 def _make_mock_message(chat_id=111, chat_type="private", text="hello", thread_id=None,
-                       user_id=42, user_name="Test User", forum_topic_created=None):
+                       user_id=42, user_name="Test User", forum_topic_created=None,
+                       is_topic_message=None):
     """Create a mock Telegram Message for _build_message_event tests."""
     chat = SimpleNamespace(
         id=chat_id,
@@ -464,11 +465,15 @@ def _make_mock_message(chat_id=111, chat_type="private", text="hello", thread_id
         full_name=user_name,
     )
 
+    if is_topic_message is None:
+        is_topic_message = bool(thread_id) if chat_type == "private" else None
+
     msg = SimpleNamespace(
         chat=chat,
         from_user=user,
         text=text,
         message_thread_id=thread_id,
+        is_topic_message=is_topic_message,
         message_id=1001,
         reply_to_message=None,
         date=None,
@@ -529,6 +534,40 @@ def test_build_message_event_no_auto_skill_without_thread():
     event = adapter._build_message_event(msg, MessageType.TEXT)
 
     assert event.auto_skill is None
+
+
+def test_build_message_event_filters_non_topic_dm_thread_id():
+    """A DM reply-thread id should not be persisted unless Telegram marks it as a topic message."""
+    from gateway.platforms.base import MessageType
+
+    adapter = _make_adapter()
+    msg = _make_mock_message(chat_id=111, thread_id=777, is_topic_message=False)
+    event = adapter._build_message_event(msg, MessageType.TEXT)
+
+    assert event.source.thread_id is None
+    assert event.source.chat_topic is None
+    assert event.auto_skill is None
+
+
+def test_build_message_event_preserves_true_dm_topic_thread_id():
+    """True DM topic messages should keep their thread id for routing."""
+    from gateway.platforms.base import MessageType
+
+    adapter = _make_adapter([
+        {
+            "chat_id": 111,
+            "topics": [
+                {"name": "General", "thread_id": 200},
+            ],
+        }
+    ])
+    adapter._dm_topics["111:General"] = 200
+
+    msg = _make_mock_message(chat_id=111, thread_id=200, is_topic_message=True)
+    event = adapter._build_message_event(msg, MessageType.TEXT)
+
+    assert event.source.thread_id == "200"
+    assert event.source.chat_topic == "General"
 
 
 # ── _build_message_event: group_topics skill binding ──

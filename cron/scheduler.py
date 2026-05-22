@@ -797,6 +797,56 @@ def _get_script_timeout() -> int:
     return _DEFAULT_SCRIPT_TIMEOUT
 
 
+def _load_prompt_file(prompt_file_path: str) -> tuple[bool, str]:
+    """Read a cron job prompt from a file within HERMES_HOME/cron-jobs/.
+
+    Prompt files must reside within HERMES_HOME/cron-jobs/.  Both relative
+    and absolute paths are resolved and validated against this directory to
+    prevent path traversal or absolute-path injection.
+
+    Args:
+        prompt_file_path: Path to the prompt file.  Relative paths are
+            resolved against HERMES_HOME/cron-jobs/.  Absolute and
+            ~-prefixed paths are also validated to stay within that
+            directory.
+
+    Returns:
+        (success, text_or_error) — on failure *text_or_error* contains the
+        error message so the caller can surface it to the LLM.
+    """
+    cron_jobs_dir = _get_hermes_home() / "cron-jobs"
+    cron_jobs_dir.mkdir(parents=True, exist_ok=True)
+    cron_jobs_dir_resolved = cron_jobs_dir.resolve()
+
+    raw = Path(prompt_file_path).expanduser()
+    if raw.is_absolute():
+        path = raw.resolve()
+    else:
+        path = (cron_jobs_dir / raw).resolve()
+
+    # Guard against path traversal, absolute path injection, and symlink
+    # escape — prompt files MUST reside within HERMES_HOME/cron-jobs/.
+    try:
+        path.relative_to(cron_jobs_dir_resolved)
+    except ValueError:
+        return False, (
+            f"Blocked: prompt_file path resolves outside the cron-jobs directory "
+            f"({cron_jobs_dir_resolved}): {prompt_file_path!r}"
+        )
+
+    if not path.exists():
+        return False, f"Prompt file not found: {path}"
+    if not path.is_file():
+        return False, f"Prompt file path is not a file: {path}"
+
+    try:
+        content = path.read_text(encoding="utf-8").strip()
+    except (OSError, UnicodeDecodeError) as exc:
+        return False, f"Failed to read prompt file {path}: {exc}"
+
+    return True, content
+
+
 def _run_job_script(script_path: str) -> tuple[bool, str]:
     """Execute a cron job's data-collection script and capture its output.
 
@@ -959,7 +1009,21 @@ def _build_job_prompt(job: dict, prerun_script: Optional[tuple] = None) -> str:
             result is used for prompt injection. When omitted, the script
             (if any) runs inline as before.
     """
-    prompt = str(job.get("prompt") or "")
+    # prompt_file takes precedence over the inline prompt field when set.
+    prompt_file = (job.get("prompt_file") or "").strip()
+    if prompt_file:
+        ok, file_content = _load_prompt_file(prompt_file)
+        if ok:
+            prompt = file_content
+        else:
+            prompt = (
+                "## Prompt File Error\n"
+                "The configured prompt_file could not be loaded. "
+                "Report this error to the user.\n\n"
+                f"```\n{file_content}\n```\n\n"
+            )
+    else:
+        prompt = str(job.get("prompt") or "")
     skills = job.get("skills")
 
     # Run data-collection script if configured, inject output as context.

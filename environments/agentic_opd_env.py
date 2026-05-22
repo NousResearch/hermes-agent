@@ -62,16 +62,14 @@ from __future__ import annotations
 
 import asyncio
 import copy
-import json
 import logging
-import os
 import random
 import re
 import sys
 import time
 import uuid
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Set, Tuple, Union
+from typing import Any, Dict, List, Optional, Tuple, Union
 
 from pydantic import Field
 
@@ -80,7 +78,7 @@ _repo_root = Path(__file__).resolve().parent.parent
 if str(_repo_root) not in sys.path:
     sys.path.insert(0, str(_repo_root))
 
-from atroposlib.envs.base import ScoredDataGroup, ScoredDataItem
+from atroposlib.envs.base import ScoredDataGroup
 from atroposlib.envs.server_handling.server_manager import APIServerConfig
 from atroposlib.type_definitions import Item
 

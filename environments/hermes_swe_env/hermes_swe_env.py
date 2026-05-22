@@ -33,7 +33,7 @@ import logging
 import sys
 import time
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple, Union
+from typing import Any, Dict, List, Optional, Tuple
 
 # Ensure repo root is on sys.path for imports
 _repo_root = Path(__file__).resolve().parent.parent.parent
@@ -42,9 +42,7 @@ if str(_repo_root) not in sys.path:
 
 from datasets import load_dataset
 
-from atroposlib.envs.base import ScoredDataGroup
 from atroposlib.envs.server_handling.server_manager import APIServerConfig
-from atroposlib.type_definitions import Item
 
 from environments.agent_loop import AgentResult
 from environments.hermes_base_env import HermesAgentBaseEnv, HermesAgentEnvConfig

@@ -1,0 +1,120 @@
+# =============================================================================
+# Hermes Agent 沙箱环境 (docker-compose.sandbox.yml)
+# =============================================================================
+# 一个完全隔离的 Docker 环境，包含：
+#   - hermes-agent (AI Agent 主服务)
+#   - Redis (缓存/消息队列)
+#   - MySQL (关系型数据库)
+#   - PostgreSQL (关系型数据库)
+#
+# 安全特性：
+#   - 所有服务运行在隔离的 bridge 网络中，不暴露到公网
+#   - 数据库默认不映射宿主机端口（避免冲突和暴露）
+#   - hermes-agent 启用 no-new-privileges，限制资源使用
+#   - 不默认挂载 Docker Socket（防止容器逃逸）
+#   - entrypoint 自动 drop root privileges 到 hermes 用户
+#
+# 使用方式：
+#   # 1. 配置环境变量（可选）
+#   cp .env.sandbox.example .env.sandbox
+#   # 2. 启动沙箱
+#   docker compose -f docker-compose.sandbox.yml up -d
+#   # 3. 进入交互式 CLI
+#   docker exec -it hermes-agent hermes chat
+# =============================================================================
+
+name: hermes-sandbox
+
+services:
+  # ---------------------------------------------------------------------------
+  # Hermes Agent — AI Agent 主服务
+  # ---------------------------------------------------------------------------
+  # 注：Redis、MySQL、PostgreSQL 已在宿主机以独立 Docker 容器运行，
+  #     本服务通过 host.docker.internal 连接，无需重复定义。
+  hermes:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: hermes-agent
+    container_name: hermes-agent
+    restart: unless-stopped
+    networks:
+      - hermes-sandbox
+    # 无 depends_on：外部数据库容器已独立运行
+    # 沙箱资源限制
+    deploy:
+      resources:
+        limits:
+          cpus: '2.00'
+          memory: 4G
+        reservations:
+          cpus: '0.50'
+          memory: 512M
+    # 安全加固
+    security_opt:
+      - no-new-privileges:true
+    # 如需更严格的 Linux Capabilities 限制，取消下面注释。
+    # 注意：当前 entrypoint.sh 需要 root 来执行 usermod/groupmod/chown，
+    # 因此 cap_drop: ALL 会与之冲突。如果设置 HERMES_UID=10000（默认值）
+    # 且 volume 权限已正确设置，可直接以非 root 运行。
+    # cap_drop:
+    #   - ALL
+    # cap_add:
+    #   - CHOWN
+    #   - SETGID
+    #   - SETUID
+    #   - DAC_OVERRIDE
+    volumes:
+      # 持久化 hermes 数据目录（配置、会话、日志、技能等）
+      - hermes-data:/opt/data
+      # ⚠️ 以下挂载会降低沙箱隔离级别，仅在需要时开启：
+      #
+      # 1. 宿主机 Docker Socket — 让 hermes 内部的 terminal backend 可以启动 Docker 容器
+      #    安全风险：容器内的 root 可通过 docker.sock 完全控制宿主机 Docker
+      # - /var/run/docker.sock:/var/run/docker.sock:ro
+      #
+      # 2. 宿主机 hermes 配置目录 — 复用已有的 ~/.hermes 配置和 API keys
+      # - ~/.hermes:/opt/data
+    environment:
+      # entrypoint 会使用这些值映射内部 hermes 用户权限，然后 drop privileges
+      - HERMES_UID=${HERMES_UID:-10000}
+      - HERMES_GID=${HERMES_GID:-10000}
+      - HERMES_HOME=/opt/data
+      # 外部数据库连接地址（宿主机的 Docker 容器已通过端口暴露到宿主机）
+      # macOS/Windows Docker Desktop 使用 host.docker.internal
+      # Linux 用户请将 host.docker.internal 替换为宿主机的实际 IP 或容器名
+      - REDIS_URL=redis://host.docker.internal:6379/0
+      - MYSQL_URL=mysql://${MySQL_USER:-hermes}:${MYSQL_PASSWORD:-hermes_pass}@host.docker.internal:3306/hermes
+      - POSTGRES_URL=postgresql://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-hermes_pass}@host.docker.internal:5432/hermes
+      # 如需在沙箱内运行 gateway，取消下面注释并设置 API_SERVER_KEY：
+      # - API_SERVER_HOST=0.0.0.0
+      # - API_SERVER_KEY=${API_SERVER_KEY}
+    # 默认保持运行，方便 docker exec 进入交互
+    # 其他可用命令：
+    #   command: ["gateway", "run"]                          # 运行消息网关
+    #   command: ["dashboard", "--host", "0.0.0.0", "--no-open"]  # 运行 Web 仪表盘
+    #   command: ["hermes", "chat", "-q", "你好"]              # 单次对话
+    command: ["sleep", "infinity"]
+    # 如需暴露 Dashboard（仅建议绑定 127.0.0.1）：
+    # ports:
+    #   - "127.0.0.1:9119:9119"
+    # 如需暴露 Gateway API Server（必须设置 API_SERVER_KEY）：
+    #   - "127.0.0.1:8080:8080"
+
+# =============================================================================
+# 网络配置
+# =============================================================================
+networks:
+  hermes-sandbox:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.25.0.0/16
+    # 内部 DNS 自动解析 compose 服务名
+
+# =============================================================================
+# 持久化卷
+# =============================================================================
+volumes:
+  hermes-data:
+    driver: local

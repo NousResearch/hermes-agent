@@ -1,7 +1,7 @@
 """Tests for the WeCom callback-mode adapter."""
 
 import asyncio
-from xml.etree import ElementTree as ET
+from defusedxml import ElementTree as ET
 
 import pytest
 

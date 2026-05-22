@@ -49,6 +49,15 @@ class TestGuidanceConstants:
         assert "relevant cross-session context exists" in SESSION_SEARCH_GUIDANCE
         assert "recent turns of the current session" not in SESSION_SEARCH_GUIDANCE
 
+    def test_session_search_guidance_requires_reanchoring_for_ambiguous_continuations(self):
+        # For ambiguous continuations ('continue', 'remaining work'), the agent
+        # should re-anchor on the current session/thread before session_search.
+        assert "re-anchor" in SESSION_SEARCH_GUIDANCE
+        assert "current active session" in SESSION_SEARCH_GUIDANCE
+        assert "ambiguous continuations" in SESSION_SEARCH_GUIDANCE
+        # Cross-session recall is still supported
+        assert "cross-session" in SESSION_SEARCH_GUIDANCE
+
 
 # =========================================================================
 # Context injection scanning

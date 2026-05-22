@@ -173,7 +173,12 @@ MEMORY_GUIDANCE = (
 SESSION_SEARCH_GUIDANCE = (
     "When the user references something from a past conversation or you suspect "
     "relevant cross-session context exists, use session_search to recall it before "
-    "asking them to repeat themselves."
+    "asking them to repeat themselves. Treat session_search as cross-session "
+    "history lookup, not as the source of truth for ambiguous continuations in "
+    "the current active session/thread. For requests like 'continue', 'remaining "
+    "work', or 'what were we doing' inside a gateway thread, first re-anchor on "
+    "the active session/thread and inspect current project or board state; only "
+    "use session_search afterward for explicitly historical context."
 )
 
 SKILLS_GUIDANCE = (

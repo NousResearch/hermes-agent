@@ -389,6 +389,9 @@ class CuaDriverBackend(ComputerUseBackend):
             windows = _parse_windows_from_text(raw_text)
 
         if not windows:
+            self._active_pid = None
+            self._active_window_id = None
+            self._last_app = None
             return CaptureResult(mode=mode, width=0, height=0, png_b64=None,
                                  elements=[], app="", window_title="", png_bytes_len=0)
 
@@ -402,6 +405,9 @@ class CuaDriverBackend(ComputerUseBackend):
             app_lower = app.lower()
             filtered = [w for w in windows if app_lower in w["app_name"].lower()]
             if not filtered:
+                self._active_pid = None
+                self._active_window_id = None
+                self._last_app = None
                 return CaptureResult(
                     mode=mode, width=0, height=0, png_b64=None,
                     elements=[], app="",
@@ -677,7 +683,8 @@ class CuaDriverBackend(ComputerUseBackend):
         # Don't silently fall back to the frontmost window when the filter
         # matches nothing — that hides the real failure (often a localized
         # macOS app name mismatch, e.g. caller passed "Calculator" but
-        # list_windows returns "計算機").
+        # list_windows returns "計算機"). Clear any previous active context so
+        # the failed selection cannot be followed by an action on a stale window.
         target = matched[0] if matched else None
         if target:
             self._active_pid = target["pid"]
@@ -688,6 +695,9 @@ class CuaDriverBackend(ComputerUseBackend):
                 message=f"Targeted {target['app_name']} (pid {self._active_pid}, "
                         f"window {self._active_window_id}) without raising window.",
             )
+        self._active_pid = None
+        self._active_window_id = None
+        self._last_app = None
         return ActionResult(ok=False, action="focus_app",
                             message=f"No on-screen window found for app '{app}'.")
 

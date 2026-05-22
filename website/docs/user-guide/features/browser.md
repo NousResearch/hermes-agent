@@ -153,14 +153,16 @@ make up VERSION=135.0.1 RELEASE=beta.24
 # Build the image without starting the default container
 make build
 
-# Start with persistence, VNC live view, and a larger Node heap
+# Start with persistence, VNC live view, and a larger Node heap.
+# Bind host ports to loopback so Camofox, noVNC, and VNC are not exposed
+# on public or LAN interfaces.
 mkdir -p ~/.camofox-docker
 docker run -d \
   --name camofox-browser \
   --restart unless-stopped \
-  -p 9377:9377 \
-  -p 6080:6080 \
-  -p 5901:5900 \
+  -p 127.0.0.1:9377:9377 \
+  -p 127.0.0.1:6080:6080 \
+  -p 127.0.0.1:5901:5900 \
   -e CAMOFOX_PORT=9377 \
   -e ENABLE_VNC=1 \
   -e VNC_BIND=0.0.0.0 \
@@ -170,7 +172,11 @@ docker run -d \
   camofox-browser:135.0.1-aarch64
 ```
 
-With VNC enabled, the browser runs in headed mode and can be watched live in your browser at `http://localhost:6080` (noVNC). You can also connect a native VNC client to `localhost:5901`.
+:::warning
+VNC/noVNC exposes a live, controllable browser session. Keep the published Docker ports bound to `127.0.0.1`, enable VNC authentication if your image supports it, and do not publish these ports on public or LAN interfaces without additional network controls.
+:::
+
+With VNC enabled, the browser runs in headed mode and can be watched live from the Docker host at `http://localhost:6080` (noVNC). You can also connect a native VNC client from the Docker host to `localhost:5901`.
 
 If you already ran `make up`, stop and remove that default container before starting the custom one:
 

@@ -294,7 +294,7 @@ ADD_RESOURCE_SCHEMA = {
     "description": (
         "Add a remote URL or local file/directory to the OpenViking knowledge base. "
         "Remote resources must be public http(s), git, or ssh URLs. "
-        "Local files are uploaded first using OpenViking temp_upload. "
+        "Local files are automatically uploaded to OpenViking before indexing. "
         "The system automatically parses, indexes, and generates summaries."
     ),
     "parameters": {
@@ -872,6 +872,10 @@ class OpenVikingMemoryProvider(MemoryProvider):
         url = args.get("url", "")
         if not url:
             return tool_error("url is required")
+        local_path_error = (
+            "Local filesystem paths are not allowed for viking_add_resource; "
+            "provide a remote URL instead."
+        )
 
         if args.get("to") and args.get("parent"):
             return tool_error("Cannot specify both 'to' and 'parent'")
@@ -896,21 +900,7 @@ class OpenVikingMemoryProvider(MemoryProvider):
         cleanup_path: Optional[Path] = None
         try:
             if source_path is not None:
-                if source_path.exists():
-                    if source_path.is_dir():
-                        payload["source_name"] = source_path.name
-                        cleanup_path = _zip_directory(source_path)
-                        upload_path = cleanup_path
-                    elif source_path.is_file():
-                        payload["source_name"] = source_path.name
-                        upload_path = source_path
-                    else:
-                        return tool_error(f"Unsupported local resource path: {url}")
-                    payload["temp_file_id"] = self._client.upload_temp_file(upload_path)
-                elif _is_local_path_reference(url):
-                    return tool_error(f"Local resource path does not exist: {url}")
-                else:
-                    payload["path"] = url
+                return tool_error(local_path_error)
             else:
                 payload["path"] = url
 

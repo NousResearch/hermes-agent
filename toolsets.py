@@ -377,8 +377,9 @@ TOOLSETS = {
             "browser_vision", "browser_console", "browser_dialog",
             # Planning & memory
             "todo", "memory",
-            # Session history search
-            "session_search",
+            # Cross-session history search is intentionally unavailable by
+            # default for API clients because it can expose other Hermes
+            # frontends' persisted conversations from the shared state DB.
             # Code execution + delegation
             "execute_code", "delegate_task",
             # Cronjob management

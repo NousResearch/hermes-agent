@@ -30,12 +30,13 @@ jobs:
     timeout-minutes: 20
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
         with:
           fetch-depth: 0
+          persist-credentials: false
 
       - name: Setup uv
-        uses: astral-sh/setup-uv@v5
+        uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86
 
       - name: Set up Python 3.11
         run: uv python install 3.11
@@ -52,7 +53,7 @@ jobs:
 
       - name: Upload pre-healthcheck logs
         if: steps.pre_healthcheck.outputs.status == 'fail'
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: pre-healthcheck-logs
           path: .lint-reports/
@@ -84,7 +85,7 @@ jobs:
           fi
 
       - name: Create PR
-        uses: peter-evans/create-pull-request@v6
+        uses: peter-evans/create-pull-request@c5a7806660adbe173f04e3e038b0ccdcd758773c
         if: >
           steps.diff.outputs.has_diff == 'true' &&
           steps.check_pr.outputs.duplicate == 'false' &&

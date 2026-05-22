@@ -455,6 +455,26 @@ class TestShellFileOpsWriteDenied:
         assert result.error is not None
         assert "denied" in result.error.lower()
 
+    def test_write_file_denies_subprocess_home_profile_file(self, tmp_path, monkeypatch):
+        hermes_home = tmp_path / "hermes"
+        profile_home = hermes_home / "home"
+        profile_home.mkdir(parents=True)
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+        class ProfileHomeEnv:
+            cwd = str(tmp_path)
+
+            def execute(self, command, cwd=None, **kwargs):
+                if command == "echo $HOME":
+                    return {"output": str(profile_home), "returncode": 0}
+                raise AssertionError(f"unexpected command after denied write: {command}")
+
+        result = ShellFileOperations(ProfileHomeEnv()).write_file("~/.bash_profile", "echo owned")
+
+        assert result.error is not None
+        assert "denied" in result.error.lower()
+
+
     @pytest.mark.parametrize(
         "path",
         [

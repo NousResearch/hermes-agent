@@ -4448,6 +4448,54 @@ class DiscordAdapter(BasePlatformAdapter):
                     raise Exception(f"HTTP {resp.status}")
                 return await resp.read()
 
+    def _serialize_embeds(self, embeds: list) -> str:
+        """Serialize Discord embeds into markdown-formatted text.
+
+        Converts embed objects (title, description, fields) into a readable
+        text format that can be appended to message content. This makes
+        webhook notifications (GitHub, Railway, etc.) visible to the agent.
+
+        Args:
+            embeds: List of discord.Embed objects from a message
+
+        Returns:
+            Markdown-formatted string with embed content
+        """
+        parts = []
+
+        for embed in embeds:
+            embed_parts = []
+
+            # Add title if present
+            if embed.title:
+                embed_parts.append(f"**{embed.title}**")
+
+            # Add description if present
+            if embed.description:
+                embed_parts.append(embed.description)
+
+            # Add fields if present
+            if embed.fields:
+                for field in embed.fields:
+                    field_text = f"**{field.name}**: {field.value}"
+                    if field.inline:
+                        field_text = f"`{field_text}`"
+                    embed_parts.append(field_text)
+
+            # Add footer if present
+            if embed.footer and embed.footer.text:
+                embed_parts.append(f"— {embed.footer.text}")
+
+            # Add URL as link if present (author URL, title URL, footer icon URLs ignored)
+            if embed.url and embed.title:
+                embed_parts.append(f"[Link]({embed.url})")
+
+            # Combine embed parts with line breaks
+            if embed_parts:
+                parts.append("\n".join(embed_parts))
+
+        return "\n\n".join(parts) if parts else ""
+
     async def _handle_message(self, message: DiscordMessage) -> None:
         """Handle incoming Discord messages."""
         # In server channels (not DMs), require the bot to be @mentioned
@@ -4747,6 +4795,17 @@ class DiscordAdapter(BasePlatformAdapter):
         # Use normalized_content (saved before auto-threading) instead of message.content,
         # to detect /slash commands in channel messages.
         event_text = normalized_content
+
+        # Serialize embeds to make webhook content visible (fixes #26733)
+        embeds = getattr(message, 'embeds', None)
+        if embeds:
+            embeds_text = self._serialize_embeds(embeds)
+            if embeds_text:
+                if event_text:
+                    event_text = f"{event_text}\n\n{embeds_text}"
+                else:
+                    event_text = embeds_text
+
         if pending_text_injection:
             event_text = f"{pending_text_injection}\n\n{event_text}" if event_text else pending_text_injection
 

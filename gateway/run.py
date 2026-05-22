@@ -944,6 +944,8 @@ def _build_media_placeholder(event) -> str:
         mtype = media_types[i] if i < len(media_types) else ""
         if mtype.startswith("image/") or getattr(event, "message_type", None) == MessageType.PHOTO:
             parts.append(f"[User sent an image: {url}]")
+        elif mtype.startswith("video/") or getattr(event, "message_type", None) == MessageType.VIDEO:
+            parts.append(f"[User sent a video: {url}]")
         elif mtype.startswith("audio/"):
             parts.append(f"[User sent audio: {url}]")
         else:
@@ -7686,47 +7688,55 @@ class GatewayRunner:
                 )
                 message_text = f"{_note}\n\n{message_text}"
 
-        if event.media_urls and event.message_type == MessageType.DOCUMENT:
+        if event.media_urls:
             import mimetypes as _mimetypes
             from tools.credential_files import to_agent_visible_cache_path
 
-            _TEXT_EXTENSIONS = {".txt", ".md", ".csv", ".log", ".json", ".xml", ".yaml", ".yml", ".toml", ".ini", ".cfg"}
-            for i, path in enumerate(event.media_urls):
-                mtype = event.media_types[i] if i < len(event.media_types) else ""
-                if mtype in {"", "application/octet-stream"}:
-                    _ext = os.path.splitext(path)[1].lower()
-                    if _ext in _TEXT_EXTENSIONS:
-                        mtype = "text/plain"
-                    else:
+            for idx, path in enumerate(event.media_urls):
+                mtype = event.media_types[idx] if idx < len(event.media_types) else ""
+                if not mtype:
+                    try:
                         guessed, _ = _mimetypes.guess_type(path)
                         if guessed:
                             mtype = guessed
-                if not mtype.startswith(("application/", "text/")):
-                    continue
+                    except Exception:
+                        pass
 
                 basename = os.path.basename(path)
                 parts = basename.split("_", 2)
                 display_name = parts[2] if len(parts) >= 3 else basename
-                display_name = re.sub(r'[^\w.\- ]', '_', display_name)
+                try:
+                    display_name = urllib.parse.unquote(display_name)
+                except Exception:
+                    pass
 
-                # Translate host cache path to in-container path if running under Docker backend.
-                # This ensures the agent receives a path it can open inside its sandbox, as the
+                # Convert host-local cache path to the agent-visible path. In containerized tool environments,
                 # cache directories are auto-mounted at /root/.hermes/cache/* by get_cache_directory_mounts().
                 agent_path = to_agent_visible_cache_path(path)
 
-                if mtype.startswith("text/"):
+                if event.message_type == MessageType.DOCUMENT and mtype.startswith(("application/", "text/")):
+                    if mtype.startswith("text/"):
+                        context_note = (
+                            f"[The user sent a text document: '{display_name}'. "
+                            f"Its content has been included below. "
+                            f"The file is also saved at: {agent_path}]"
+                        )
+                    else:
+                        context_note = (
+                            f"[The user sent a document: '{display_name}'. "
+                            f"The file is saved at: {agent_path}. "
+                            f"Ask the user what they'd like you to do with it.]"
+                        )
+                    message_text = f"{context_note}\n\n{message_text}"
+                    continue
+
+                if mtype.startswith("video/") or event.message_type == MessageType.VIDEO:
                     context_note = (
-                        f"[The user sent a text document: '{display_name}'. "
-                        f"Its content has been included below. "
-                        f"The file is also saved at: {agent_path}]"
-                    )
-                else:
-                    context_note = (
-                        f"[The user sent a document: '{display_name}'. "
+                        f"[The user sent a video: '{display_name}'. "
                         f"The file is saved at: {agent_path}. "
-                        f"Ask the user what they'd like you to do with it.]"
+                        f"You can inspect this path with video/media tools or ask a follow-up question if needed.]"
                     )
-                message_text = f"{context_note}\n\n{message_text}"
+                    message_text = f"{context_note}\n\n{message_text}"
 
         if getattr(event, "reply_to_text", None) and event.reply_to_message_id:
             # Always inject the reply-to pointer — even when the quoted text

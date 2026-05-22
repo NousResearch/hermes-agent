@@ -168,6 +168,18 @@ def _cmd_subscribe(args):
     if args.deliver_chat_id:
         route["deliver_extra"] = {"chat_id": args.deliver_chat_id}
 
+    # Optional per-subscription provider/model override. Persisted in the
+    # subscription JSON; the webhook adapter forwards them on every dispatch
+    # so the agent runs through the requested provider regardless of the
+    # gateway's default (e.g. routing webhooks through openai-codex so
+    # native MCP tools fire over OAuth).
+    sub_provider = (getattr(args, "provider", "") or "").strip()
+    sub_model = (getattr(args, "model", "") or "").strip()
+    if sub_provider:
+        route["provider"] = sub_provider
+    if sub_model:
+        route["model"] = sub_model
+
     subs[name] = route
     _save_subscriptions(subs)
 
@@ -182,6 +194,8 @@ def _cmd_subscribe(args):
     else:
         print("  Events: (all)")
     print(f"  Deliver: {route['deliver']}")
+    if sub_provider or sub_model:
+        print(f"  Override: provider={sub_provider or '(default)'} model={sub_model or '(default)'}")
     if route.get("deliver_only"):
         print("  Mode: direct delivery (no agent, zero LLM cost)")
     if route.get("prompt"):
@@ -214,6 +228,11 @@ def _cmd_list(args):
         print(f"    URL:     {base_url}/webhooks/{name}")
         print(f"    Events:  {events}")
         print(f"    Deliver: {deliver}")
+        if route.get("provider") or route.get("model"):
+            print(
+                f"    Override: provider={route.get('provider') or '(default)'} "
+                f"model={route.get('model') or '(default)'}"
+            )
         print()
 
 

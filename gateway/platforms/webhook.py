@@ -13,6 +13,8 @@ Each route defines:
   - skills: optional list of skills to load for the agent
   - deliver: where to send the response (github_comment, telegram, etc.)
   - deliver_extra: additional delivery config (repo, pr_number, chat_id)
+  - model: optional model name override for this route's agent runs
+  - provider: optional provider override for this route's agent runs
   - deliver_only: if true, skip the agent — the rendered prompt IS the
     message that gets delivered.  Use for external push notifications
     (Supabase, monitoring alerts, inter-agent pings) where zero LLM cost
@@ -558,6 +560,20 @@ class WebhookAdapter(BasePlatformAdapter):
         self._delivery_info_created[session_chat_id] = now
         self._prune_delivery_info(now)
 
+        # Per-subscription provider/model override. When set on the
+        # subscription, the gateway runner installs this as a session-scoped
+        # override before the agent runs, so this webhook's dispatch uses
+        # the requested provider regardless of the global default.
+        provider_override: Optional[Dict[str, Any]] = None
+        sub_provider = (route_config.get("provider") or "").strip()
+        sub_model = (route_config.get("model") or "").strip()
+        if sub_provider or sub_model:
+            provider_override = {}
+            if sub_provider:
+                provider_override["provider"] = sub_provider
+            if sub_model:
+                provider_override["model"] = sub_model
+
         # Build source and event
         source = self.build_source(
             chat_id=session_chat_id,
@@ -572,15 +588,20 @@ class WebhookAdapter(BasePlatformAdapter):
             source=source,
             raw_message=payload,
             message_id=delivery_id,
+            provider_override=provider_override,
         )
 
         logger.info(
-            "[webhook] %s event=%s route=%s prompt_len=%d delivery=%s",
+            "[webhook] %s event=%s route=%s prompt_len=%d delivery=%s%s",
             request.method,
             event_type,
             route_name,
             len(prompt),
             delivery_id,
+            (
+                f" override=provider:{sub_provider or '-'},model:{sub_model or '-'}"
+                if provider_override else ""
+            ),
         )
 
         # Non-blocking — return 202 Accepted immediately

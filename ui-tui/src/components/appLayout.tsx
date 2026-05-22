@@ -9,7 +9,6 @@ import { $uiState } from '../app/uiStore.js'
 import { INLINE_MODE, SHOW_FPS, TERMUX_TUI_MODE } from '../config/env.js'
 import { type TranslationKey, useI18n } from '../i18n/index.js'
 import { pick } from '../lib/text.js'
-import { PLACEHOLDER } from '../content/placeholders.js'
 import {
   COMPOSER_PROMPT_GAP_WIDTH,
   composerPromptWidth,

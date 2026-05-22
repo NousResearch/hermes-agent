@@ -226,8 +226,8 @@ export function ConfirmPrompt({ onCancel, onConfirm, req, t }: ConfirmPromptProp
   const accent = req.danger ? t.color.error : t.color.warn
 
   const rows = [
-    { color: t.color.text, label: req.cancelLabel ?? 'No' },
-    { color: req.danger ? t.color.error : t.color.text, label: req.confirmLabel ?? 'Yes' }
+    { color: t.color.text, label: req.cancelLabel ?? ti('common.no') },
+    { color: req.danger ? t.color.error : t.color.text, label: req.confirmLabel ?? ti('common.yes') }
   ]
 
   return (

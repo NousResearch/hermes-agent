@@ -3,7 +3,7 @@ import { useEffect, useRef } from 'react'
 
 import { resolveDetailsMode, resolveSections } from '../domain/details.js'
 import type { GatewayClient } from '../gatewayClient.js'
-import { normalizeLocale } from '../i18n/index.js'
+import { normalizeLocale, translate } from '../i18n/index.js'
 import type {
   ConfigFullResponse,
   ConfigMtimeResponse,
@@ -24,7 +24,7 @@ import {
   type StatusBarMode
 } from './interfaces.js'
 import { turnController } from './turnController.js'
-import { patchUiState } from './uiStore.js'
+import { getUiState, patchUiState } from './uiStore.js'
 
 const STATUSBAR_ALIAS: Record<string, StatusBarMode> = {
   bottom: 'bottom',
@@ -247,7 +247,7 @@ export function useConfigSync({
         mtimeRef.current = next
 
         quietRpc<ReloadMcpResponse>(gw, 'reload.mcp', { session_id: sid, confirm: true }).then(
-          r => r && turnController.pushActivity('MCP reloaded after config change')
+          r => r && turnController.pushActivity(translate(getUiState().locale, 'sys.mcpReloaded'))
         )
         void hydrateFullConfig(gw, setBellOnComplete, setVoiceRecordKey)
       })

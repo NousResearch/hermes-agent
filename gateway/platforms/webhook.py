@@ -27,13 +27,16 @@ Security:
 """
 
 import asyncio
+import base64
 import hashlib
 import hmac
 import json
 import logging
+import os
 import re
 import subprocess
 import time
+import urllib.parse
 from typing import Any, Dict, List, Optional
 
 try:
@@ -239,6 +242,9 @@ class WebhookAdapter(BasePlatformAdapter):
         if deliver_type == "log":
             logger.info("[webhook] Response for %s: %s", chat_id, content[:200])
             return SendResult(success=True)
+
+        if deliver_type == "dingtalk_robot":
+            return await self._deliver_dingtalk_robot(content, delivery)
 
         if deliver_type == "github_comment":
             return await self._deliver_github_comment(content, delivery)
@@ -697,6 +703,9 @@ class WebhookAdapter(BasePlatformAdapter):
             logger.info("[webhook] direct-deliver log-only: %s", content[:200])
             return SendResult(success=True)
 
+        if deliver_type == "dingtalk_robot":
+            return await self._deliver_dingtalk_robot(content, delivery)
+
         if deliver_type == "github_comment":
             return await self._deliver_github_comment(content, delivery)
 
@@ -705,6 +714,98 @@ class WebhookAdapter(BasePlatformAdapter):
         return await self._deliver_cross_platform(
             deliver_type, content, delivery
         )
+
+    async def _deliver_dingtalk_robot(
+        self, content: str, delivery: dict
+    ) -> SendResult:
+        """Send a webhook response via a fixed DingTalk group robot webhook.
+
+        This is a durable proactive channel for delayed callbacks (for example
+        roombook scheduled booking results).  It intentionally does not use the
+        DingTalk Stream Mode session_webhook cache, which is short-lived.
+        """
+        extra = delivery.get("deliver_extra", {})
+
+        webhook = (extra.get("webhook") or "").strip()
+        webhook_env = (extra.get("webhook_env") or "").strip()
+        if not webhook and webhook_env:
+            webhook = (os.getenv(webhook_env) or "").strip()
+
+        if not webhook:
+            logger.error("[webhook] dingtalk_robot delivery missing webhook")
+            return SendResult(success=False, error="Missing DingTalk robot webhook")
+        if not webhook.startswith("https://oapi.dingtalk.com/robot/send?"):
+            logger.error("[webhook] invalid dingtalk_robot webhook URL")
+            return SendResult(success=False, error="Invalid DingTalk robot webhook URL")
+
+        secret = (extra.get("secret") or "").strip()
+        secret_env = (extra.get("secret_env") or "").strip()
+        if not secret and secret_env:
+            secret = (os.getenv(secret_env) or "").strip()
+
+        url = webhook
+        if secret:
+            timestamp = str(int(time.time() * 1000))
+            string_to_sign = f"{timestamp}\n{secret}"
+            digest = hmac.new(
+                secret.encode("utf-8"),
+                string_to_sign.encode("utf-8"),
+                hashlib.sha256,
+            ).digest()
+            sign = urllib.parse.quote_plus(base64.b64encode(digest).decode("utf-8"))
+            sep = "&" if "?" in webhook else "?"
+            url = f"{webhook}{sep}timestamp={timestamp}&sign={sign}"
+
+        keyword = (extra.get("keyword") or "").strip()
+        message = content.strip()
+        if keyword and keyword not in message:
+            message = f"{keyword}\n{message}"
+
+        # DingTalk custom robot text messages support up to roughly 20 KiB;
+        # keep some margin so formatted callback summaries do not fail.
+        if len(message) > 18000:
+            message = message[:17950] + "\n…(已截断)"
+
+        payload = {"msgtype": "text", "text": {"content": message}}
+
+        try:
+            import aiohttp
+
+            timeout = aiohttp.ClientTimeout(total=15)
+            async with aiohttp.ClientSession(timeout=timeout) as session:
+                async with session.post(url, json=payload) as resp:
+                    body = await resp.text()
+                    if resp.status < 300:
+                        try:
+                            data = json.loads(body) if body else {}
+                        except Exception:
+                            data = {}
+                        errcode = data.get("errcode") if isinstance(data, dict) else None
+                        if errcode in (None, 0):
+                            logger.info("[webhook] dingtalk_robot delivery ok")
+                            return SendResult(success=True)
+                        errmsg = data.get("errmsg", body[:200]) if isinstance(data, dict) else body[:200]
+                        logger.error(
+                            "[webhook] dingtalk_robot delivery rejected errcode=%s errmsg=%s",
+                            errcode,
+                            errmsg,
+                        )
+                        return SendResult(
+                            success=False,
+                            error=f"DingTalk robot rejected message: {errmsg}",
+                        )
+                    logger.error(
+                        "[webhook] dingtalk_robot delivery HTTP %s: %s",
+                        resp.status,
+                        body[:200],
+                    )
+                    return SendResult(
+                        success=False,
+                        error=f"DingTalk robot HTTP {resp.status}",
+                    )
+        except Exception as e:
+            logger.error("[webhook] dingtalk_robot delivery error: %s", e)
+            return SendResult(success=False, error=str(e))
 
     async def _deliver_github_comment(
         self, content: str, delivery: dict

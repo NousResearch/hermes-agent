@@ -435,10 +435,10 @@ def _reset_module_state():
             _sc_mod._SESSION_USER_NAME,
             _sc_mod._SESSION_KEY,
             _sc_mod._SESSION_ID,
-            _sc_mod._CRON_SESSION,
             _sc_mod._CRON_AUTO_DELIVER_PLATFORM,
             _sc_mod._CRON_AUTO_DELIVER_CHAT_ID,
             _sc_mod._CRON_AUTO_DELIVER_THREAD_ID,
+            _sc_mod._CRON_SESSION,
             _sc_mod._TERMINAL_CWD,
         ):
             _cv.set(_sc_mod._UNSET)

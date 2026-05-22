@@ -20,6 +20,11 @@ import type { Msg, Usage } from '../types.js'
 const FACE_TICK_MS = 2500
 const HEART_COLORS = ['#ff5fa2', '#ff4d6d']
 
+// Status strings that should trigger a braille spinner animation when not
+// busy (the FaceTicker handles the busy state).  Matched against the
+// thinking-callback status shown in the status bar.
+const THINKING_RE = /pondering|contemplating|thinking|searching|researching|analysing|analyzing|reasoning|planning|computing|processing|investigating|working|gathering/i
+
 // Keep verb segment width stable so status-bar content to the right doesn't
 // jitter when the ticker rotates between short/long verbs.
 export const VERB_PAD_LEN = VERBS.reduce((max, v) => Math.max(max, v.length), 0) + 1 // + ellipsis
@@ -299,6 +304,26 @@ export function StatusRule({
   const bar = usage.context_max ? ctxBar(pct) : ''
   const leftWidth = Math.max(12, cols - cwdLabel.length - 3)
 
+  // Braille spinner for thinking status (non-busy state).
+  // When the agent is thinking but not in busy-FaceTicker mode, cycle
+  // through braille frames to give visual feedback.
+  const isThinking = !busy && THINKING_RE.test(status)
+  const [spinnerTick, setSpinnerTick] = useState(0)
+
+  useEffect(() => {
+    if (!isThinking) {
+      return
+    }
+
+    const spinner = unicodeSpinners.braille
+    const id = setInterval(() => setSpinnerTick(n => n + 1), Math.max(SPINNER_TICK_MS, spinner.interval))
+    return () => clearInterval(id)
+  }, [isThinking])
+
+  const spinnerFrame = isThinking
+    ? (unicodeSpinners.braille.frames[spinnerTick % unicodeSpinners.braille.frames.length] ?? '⠋')
+    : null
+
   return (
     <Box height={1}>
       <Box flexShrink={1} width={leftWidth}>
@@ -306,6 +331,8 @@ export function StatusRule({
           {'─ '}
           {busy ? (
             <FaceTicker color={statusColor} startedAt={turnStartedAt} />
+          ) : spinnerFrame ? (
+            <Text color={statusColor}>{spinnerFrame} {status}</Text>
           ) : (
             <Text color={statusColor}>{status}</Text>
           )}

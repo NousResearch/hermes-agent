@@ -177,6 +177,22 @@ class TestExchangeAuthCode:
         flow = FakeFlow.created[-1]
         assert flow.fetch_token_calls == [{"code": "4/extracted-code"}]
 
+    def test_passes_scopes_from_redirect_url_to_flow(self, setup_module):
+        """Callback URL carries space-delimited scope list; Flow must receive it (not full SCOPES)."""
+        setup_module.PENDING_AUTH_PATH.write_text(
+            json.dumps({"state": "saved-state", "code_verifier": "saved-verifier"})
+        )
+        g1 = "https://www.googleapis.com/auth/gmail.readonly"
+        g2 = "https://www.googleapis.com/auth/calendar"
+        from urllib.parse import quote
+
+        scope_q = quote(f"{g1} {g2}", safe="")
+        setup_module.exchange_auth_code(
+            f"http://localhost:1/?code=4/extracted-code&state=saved-state&scope={scope_q}"
+        )
+        flow = FakeFlow.created[-1]
+        assert flow.scopes == [g1, g2]
+
     def test_rejects_state_mismatch(self, setup_module, capsys):
         setup_module.PENDING_AUTH_PATH.write_text(
             json.dumps({"state": "saved-state", "code_verifier": "saved-verifier"})

@@ -60,8 +60,10 @@ WECOM_CALLBACK_ALLOWED_USERS=user1,user2
 ### 3. Start the Gateway
 
 ```bash
-hermes gateway start
+hermes gateway
 ```
+
+(Use `hermes gateway start` only after `hermes gateway install` has registered the systemd/launchd service.)
 
 The callback adapter starts an HTTP server on the configured port. WeCom will verify the callback URL via a GET request, then begin sending messages via POST.
 

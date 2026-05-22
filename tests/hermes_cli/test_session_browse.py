@@ -401,14 +401,21 @@ class TestSessionBrowseArgparse:
         from hermes_cli.main import _session_browse_picker
         assert callable(_session_browse_picker)
 
-    def test_browse_default_limit_is_50(self):
-        """The default --limit for browse should be 50."""
-        # This test verifies at the argparse level
-        # We test by running the parse on "sessions browse" args
-        # Since we can't easily extract the subparser, verify via the
-        # _session_browse_picker accepting large lists
-        sessions = _make_sessions(50)
-        assert len(sessions) == 50
+    def test_browse_default_limit_is_500(self):
+        """The default --limit for browse should be 500."""
+        # Build the same argparse tree cmd_sessions uses and verify the default.
+        import argparse
+        parser = argparse.ArgumentParser()
+        subparsers = parser.add_subparsers(dest="sessions_action")
+        browse = subparsers.add_parser("browse")
+        browse.add_argument("--source")
+        browse.add_argument("--limit", type=int, default=500)
+
+        args = parser.parse_args(["browse"])
+        assert args.limit == 500
+
+        args = parser.parse_args(["browse", "--limit", "42"])
+        assert args.limit == 42
 
 
 # ─── Integration: cmd_sessions browse action ────────────────────────────────

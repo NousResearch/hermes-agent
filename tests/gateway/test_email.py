@@ -425,6 +425,91 @@ class TestDispatchMessage(unittest.TestCase):
         self.assertEqual(event.source.user_name, "John Doe")
         self.assertEqual(event.source.chat_type, "dm")
 
+    def test_non_allowlisted_sender_dropped(self):
+        """Senders not in EMAIL_ALLOWED_USERS should be dropped before dispatch."""
+        import asyncio
+        with patch.dict(os.environ, {
+            "EMAIL_ALLOWED_USERS": "hermes@test.com,admin@test.com",
+        }):
+            adapter = self._make_adapter()
+            adapter._message_handler = MagicMock()
+
+            msg_data = {
+                "uid": b"99",
+                "sender_addr": "outsider@evil.com",
+                "sender_name": "Spammer",
+                "subject": "Buy now!!!",
+                "message_id": "<spam@evil.com>",
+                "in_reply_to": "",
+                "body": "Cheap meds",
+                "attachments": [],
+                "date": "",
+            }
+
+            asyncio.run(adapter._dispatch_message(msg_data))
+            # Handler should NOT be called for non-allowlisted sender
+            adapter._message_handler.assert_not_called()
+            # Thread context should NOT be created
+            self.assertNotIn("outsider@evil.com", adapter._thread_context)
+
+    def test_allowlisted_sender_proceeds(self):
+        """Senders in EMAIL_ALLOWED_USERS should proceed to dispatch normally."""
+        import asyncio
+        with patch.dict(os.environ, {
+            "EMAIL_ALLOWED_USERS": "hermes@test.com,admin@test.com",
+        }):
+            adapter = self._make_adapter()
+            captured_events = []
+
+            async def mock_handler(event):
+                captured_events.append(event)
+                return None
+
+            adapter._message_handler = mock_handler
+
+            msg_data = {
+                "uid": b"100",
+                "sender_addr": "admin@test.com",
+                "sender_name": "Admin",
+                "subject": "Important",
+                "message_id": "<msg@test.com>",
+                "in_reply_to": "",
+                "body": "Hello",
+                "attachments": [],
+                "date": "",
+            }
+
+            asyncio.run(adapter._dispatch_message(msg_data))
+            self.assertEqual(len(captured_events), 1)
+            self.assertEqual(captured_events[0].source.chat_id, "admin@test.com")
+
+    def test_empty_allowlist_allows_all(self):
+        """When EMAIL_ALLOWED_USERS is not set, all senders should proceed."""
+        import asyncio
+        with patch.dict(os.environ, {}, clear=False):
+            # Ensure EMAIL_ALLOWED_USERS is not in the env
+            if "EMAIL_ALLOWED_USERS" in os.environ:
+                del os.environ["EMAIL_ALLOWED_USERS"]
+
+            adapter = self._make_adapter()
+            adapter._message_handler = MagicMock()
+
+            msg_data = {
+                "uid": b"101",
+                "sender_addr": "anyone@test.com",
+                "sender_name": "Anyone",
+                "subject": "Hey",
+                "message_id": "<any@test.com>",
+                "in_reply_to": "",
+                "body": "Hi",
+                "attachments": [],
+                "date": "",
+            }
+
+            asyncio.run(adapter._dispatch_message(msg_data))
+            # Handler should be called when no allowlist is configured
+            adapter._message_handler.assert_called()
+
 
 class TestThreadContext(unittest.TestCase):
     """Test email reply threading logic."""
@@ -488,6 +573,7 @@ class TestThreadContext(unittest.TestCase):
             self.assertEqual(send_call["Subject"], "Re: Project question")
             self.assertEqual(send_call["In-Reply-To"], "<original@test.com>")
             self.assertEqual(send_call["References"], "<original@test.com>")
+            self.assertIn("Date", send_call)
 
     def test_reply_does_not_double_re(self):
         """If subject already has Re:, don't add another."""
@@ -519,6 +605,7 @@ class TestThreadContext(unittest.TestCase):
 
             send_call = mock_server.send_message.call_args[0][0]
             self.assertEqual(send_call["Subject"], "Re: Hermes Agent")
+            self.assertIn("Date", send_call)
 
 
 class TestSendMethods(unittest.TestCase):
@@ -889,6 +976,11 @@ class TestSendEmailStandalone(unittest.TestCase):
             self.assertEqual(result["platform"], "email")
             _, kwargs = mock_server.starttls.call_args
             self.assertIsInstance(kwargs["context"], ssl.SSLContext)
+            send_call = mock_server.send_message.call_args[0][0]
+            self.assertEqual(send_call["Subject"], "Hermes Agent")
+            self.assertIn("Date", send_call)
+            self.assertEqual(send_call["To"], "user@test.com")
+            self.assertEqual(send_call["From"], "hermes@test.com")
 
     @patch.dict(os.environ, {
         "EMAIL_ADDRESS": "hermes@test.com",
@@ -1037,6 +1129,81 @@ class TestImapConnectionCleanup(unittest.TestCase):
 
         self.assertEqual(results, [])
         mock_imap.logout.assert_called_once()
+
+
+class TestImapIdExtensionForNetEase(unittest.TestCase):
+    """Regression for #22271: 163/NetEase mailbox requires the RFC 2971
+    IMAP ID command after LOGIN, otherwise it returns ``BYE Unsafe Login``
+    on every UID SEARCH.  We send ID best-effort after every login so that
+    163 works while non-supporting servers stay unaffected.
+    """
+
+    def _make_adapter(self):
+        from gateway.config import PlatformConfig
+        with patch.dict(os.environ, {
+            "EMAIL_ADDRESS": "hermes@163.com",
+            "EMAIL_PASSWORD": "secret",
+            "EMAIL_IMAP_HOST": "imap.163.com",
+            "EMAIL_SMTP_HOST": "smtp.163.com",
+        }):
+            from gateway.platforms.email import EmailAdapter
+            adapter = EmailAdapter(PlatformConfig(enabled=True))
+        return adapter
+
+    def test_connect_sends_imap_id_after_login(self):
+        """connect() must call xatom('ID', ...) after LOGIN for 163 support."""
+        import asyncio
+        adapter = self._make_adapter()
+
+        mock_imap = MagicMock()
+        mock_imap.uid.return_value = ("OK", [b""])
+
+        with patch("imaplib.IMAP4_SSL", return_value=mock_imap), \
+             patch("smtplib.SMTP") as mock_smtp:
+            mock_smtp.return_value = MagicMock()
+            asyncio.run(adapter.connect())
+            adapter._running = False
+            if adapter._poll_task:
+                adapter._poll_task.cancel()
+
+        id_calls = [c for c in mock_imap.xatom.call_args_list if c.args and c.args[0] == "ID"]
+        self.assertTrue(
+            id_calls,
+            "EmailAdapter.connect() must call imap.xatom('ID', ...) after "
+            "LOGIN so 163/NetEase mailbox does not return 'Unsafe Login'.",
+        )
+        payload = id_calls[0].args[1]
+        self.assertIn("hermes-agent", payload)
+
+        names = [c[0] for c in mock_imap.method_calls]
+        self.assertIn("login", names)
+        self.assertLess(names.index("login"), names.index("xatom"))
+
+    def test_fetch_new_messages_sends_imap_id_after_login(self):
+        """_fetch_new_messages must also send ID — it opens its own IMAP session."""
+        adapter = self._make_adapter()
+        mock_imap = MagicMock()
+        mock_imap.uid.return_value = ("OK", [b""])
+
+        with patch("imaplib.IMAP4_SSL", return_value=mock_imap):
+            adapter._fetch_new_messages()
+
+        id_calls = [c for c in mock_imap.xatom.call_args_list if c.args and c.args[0] == "ID"]
+        self.assertTrue(
+            id_calls,
+            "_fetch_new_messages() must call imap.xatom('ID', ...) after "
+            "LOGIN — the polling path opens a fresh IMAP connection.",
+        )
+
+    def test_send_imap_id_swallows_errors_for_non_supporting_servers(self):
+        """Servers that reject ID must not break the connection."""
+        from gateway.platforms.email import _send_imap_id
+
+        mock_imap = MagicMock()
+        mock_imap.xatom.side_effect = Exception("BAD command unknown: ID")
+
+        _send_imap_id(mock_imap)
+        mock_imap.xatom.assert_called_once()
 
 
 if __name__ == "__main__":

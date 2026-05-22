@@ -55,6 +55,9 @@ def _make_runner(session_entry: SessionEntry, *, platform: Platform = Platform.T
     runner._pending_approvals = {}
     runner._session_db = MagicMock()
     runner._session_db.get_session_title.return_value = None
+    # Default: no DB row → /status reports 0 tokens.  Tests that exercise
+    # the populated path override this.
+    runner._session_db.get_session.return_value = None
     runner._reasoning_config = None
     runner._provider_routing = {}
     runner._fallback_model = None
@@ -80,6 +83,14 @@ async def test_status_command_reports_running_agent_without_interrupt(monkeypatc
         total_tokens=321,
     )
     runner = _make_runner(session_entry)
+    # Token total comes from the SQLite SessionDB, not SessionEntry.
+    runner._session_db.get_session.return_value = {
+        "input_tokens": 200,
+        "output_tokens": 121,
+        "cache_read_tokens": 0,
+        "cache_write_tokens": 0,
+        "reasoning_tokens": 0,
+    }
     running_agent = MagicMock()
     runner._running_agents[build_session_key(_make_source())] = running_agent
 
@@ -111,6 +122,56 @@ async def test_status_command_includes_session_title_when_present():
 
     assert "**Session ID:** `sess-1`" in result
     assert "**Title:** My titled session" in result
+
+
+@pytest.mark.asyncio
+async def test_status_command_reads_token_totals_from_session_db():
+    """Regression test for #17158: /status must source token totals from the
+    SQLite SessionDB (where run_agent.py persists them) and sum all component
+    counts, not from SessionEntry (which the agent never writes)."""
+    session_entry = SessionEntry(
+        session_key=build_session_key(_make_source()),
+        session_id="sess-1",
+        created_at=datetime.now(),
+        updated_at=datetime.now(),
+        platform=Platform.TELEGRAM,
+        chat_type="dm",
+        total_tokens=0,  # SessionEntry never gets written to — always 0.
+    )
+    runner = _make_runner(session_entry)
+    runner._session_db.get_session.return_value = {
+        "input_tokens": 1000,
+        "output_tokens": 250,
+        "cache_read_tokens": 500,
+        "cache_write_tokens": 100,
+        "reasoning_tokens": 50,
+    }
+
+    result = await runner._handle_message(_make_event("/status"))
+
+    # 1000 + 250 + 500 + 100 + 50 = 1,900
+    assert "**Tokens:** 1,900" in result
+
+
+@pytest.mark.asyncio
+async def test_status_command_tokens_zero_when_session_db_row_missing():
+    """When the SessionDB has no row for the current session yet (fresh
+    session, no agent calls), /status reports 0 without raising."""
+    session_entry = SessionEntry(
+        session_key=build_session_key(_make_source()),
+        session_id="sess-1",
+        created_at=datetime.now(),
+        updated_at=datetime.now(),
+        platform=Platform.TELEGRAM,
+        chat_type="dm",
+        total_tokens=999,  # This should be ignored.
+    )
+    runner = _make_runner(session_entry)
+    runner._session_db.get_session.return_value = None
+
+    result = await runner._handle_message(_make_event("/status"))
+
+    assert "**Tokens:** 0" in result
 
 
 @pytest.mark.asyncio
@@ -507,3 +568,68 @@ async def test_profile_command_reports_custom_root_profile(monkeypatch, tmp_path
 
     assert "**Profile:** `coder`" in result
     assert f"**Home:** `{profile_home}`" in result
+
+
+@pytest.mark.asyncio
+async def test_post_delivery_callback_generation_snapshot_happens_after_bind():
+    """Regression: the callback_generation snapshot in _process_message_background
+    must happen AFTER the handler runs, not before.
+
+    _hermes_run_generation is set on the interrupt event by
+    GatewayRunner._bind_adapter_run_generation during _handle_message_with_agent.
+    The earlier snapshot-at-task-start always captured None, which bypassed the
+    generation-ownership check in pop_post_delivery_callback and let stale runs
+    fire a fresher run's callbacks.
+    """
+    import asyncio
+    from gateway.platforms.base import BasePlatformAdapter
+
+    source = _make_source()
+    session_key = build_session_key(source)
+    fired = []
+
+    class _ConcreteAdapter(BasePlatformAdapter):
+        platform = Platform.TELEGRAM
+
+        async def connect(self): pass
+        async def disconnect(self): pass
+        async def send(self, chat_id, content, **kwargs): pass
+        async def get_chat_info(self, chat_id): return {}
+
+    adapter = _ConcreteAdapter(
+        PlatformConfig(enabled=True, token="***"), Platform.TELEGRAM
+    )
+
+    async def fake_handler(event):
+        # Simulate what _bind_adapter_run_generation does mid-run.
+        interrupt_event = adapter._active_sessions.get(session_key)
+        setattr(interrupt_event, "_hermes_run_generation", 1)
+        # Stale run registers its callback at generation=1.
+        adapter.register_post_delivery_callback(
+            session_key,
+            lambda: fired.append("older"),
+            generation=1,
+        )
+        # A fresher run overwrites with generation=2 (different dict entry).
+        adapter.register_post_delivery_callback(
+            session_key,
+            lambda: fired.append("newer"),
+            generation=2,
+        )
+        return None
+
+    adapter.set_message_handler(fake_handler)
+    event = MessageEvent(text="hello", source=source, message_id="m1")
+
+    await adapter.handle_message(event)
+    tasks = list(adapter._background_tasks)
+    assert tasks, "expected background task to be created"
+    await asyncio.gather(*tasks)
+
+    # The stale run (generation=1) must NOT fire the fresher run's callback
+    # (generation=2). With the pre-fix code, callback_generation was snapshotted
+    # as None before the handler ran, bypassing the ownership check and firing
+    # "newer" anyway.
+    assert fired == []
+    assert session_key in adapter._post_delivery_callbacks
+    assert adapter._post_delivery_callbacks[session_key][0] == 2

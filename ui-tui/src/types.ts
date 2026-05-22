@@ -2,7 +2,14 @@ export interface ActiveTool {
   context?: string
   id: string
   name: string
+  verboseArgs?: string
   startedAt?: number
+}
+
+export interface TodoItem {
+  content: string
+  id: string
+  status: 'cancelled' | 'completed' | 'in_progress' | 'pending'
 }
 
 export interface ActivityItem {
@@ -10,6 +17,8 @@ export interface ActivityItem {
   text: string
   tone: 'error' | 'info' | 'warn'
 }
+
+export type SubagentStatus = 'completed' | 'error' | 'failed' | 'interrupted' | 'queued' | 'running' | 'timeout'
 
 export interface SubagentProgress {
   apiCalls?: number
@@ -30,7 +39,7 @@ export interface SubagentProgress {
   parentId: null | string
   reasoningTokens?: number
   startedAt?: number
-  status: 'completed' | 'failed' | 'interrupted' | 'queued' | 'running'
+  status: SubagentStatus
   summary?: string
   taskCount: number
   thinking: string[]
@@ -110,6 +119,9 @@ export interface Msg {
   thinkingTokens?: number
   toolTokens?: number
   tools?: string[]
+  todos?: TodoItem[]
+  todoIncomplete?: boolean
+  todoCollapsedByDefault?: boolean
 }
 
 export type Role = 'assistant' | 'system' | 'tool' | 'user'
@@ -133,10 +145,16 @@ export interface McpServerStatus {
 
 export interface SessionInfo {
   cwd?: string
+  fast?: boolean
+  lazy?: boolean
   mcp_servers?: McpServerStatus[]
   model: string
+  profile_name?: string
+  reasoning_effort?: string
   release_date?: string
+  service_tier?: string
   skills: Record<string, string[]>
+  system_prompt?: string
   tools: Record<string, string[]>
   update_behind?: number | null
   update_command?: string
@@ -146,12 +164,15 @@ export interface SessionInfo {
 
 export interface Usage {
   calls: number
+  compressions?: number
   context_max?: number
   context_percent?: number
   context_used?: number
+  cost_status?: string
   cost_usd?: number
   input: number
   output: number
+  reasoning?: number
   total: number
 }
 

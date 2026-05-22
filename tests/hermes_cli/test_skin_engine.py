@@ -100,6 +100,18 @@ class TestBuiltinSkins:
         assert skin.get_color("banner_text") == "#2C1810"
         assert skin.get_color("completion_menu_bg") == "#F5EFE0"
 
+    def test_charizard_skin_has_dark_ember_completion_menu(self):
+        from hermes_cli.skin_engine import load_skin
+
+        skin = load_skin("charizard")
+        assert skin.name == "charizard"
+        assert skin.get_color("banner_dim") == "#C58A45"
+        assert skin.get_color("completion_menu_bg") == "#0B0503"
+        assert skin.get_color("completion_menu_current_bg") == "#4A1B07"
+        assert skin.get_color("completion_menu_meta_bg") == "#120806"
+        assert skin.get_color("completion_menu_meta_current_bg") == "#5A260D"
+        assert skin.get_color("selection_bg") == "#5A260D"
+
     def test_unknown_skin_falls_back_to_default(self):
         from hermes_cli.skin_engine import load_skin
         skin = load_skin("nonexistent_skin_xyz")
@@ -199,6 +211,37 @@ class TestUserSkins:
         # Should inherit defaults for unspecified colors
         assert skin.get_color("banner_border") == "#CD7F32"  # from default
 
+    def test_load_user_skin_invalid_section_types_fall_back_to_defaults(self, tmp_path, monkeypatch):
+        from hermes_cli.skin_engine import load_skin
+
+        skins_dir = tmp_path / "skins"
+        skins_dir.mkdir()
+        import yaml
+
+        (skins_dir / "broken.yaml").write_text(
+            yaml.dump(
+                {
+                    "name": "broken",
+                    "colors": ["not", "a", "mapping"],
+                    "spinner": "invalid",
+                    "branding": ["also", "invalid"],
+                    "tool_emojis": ["invalid"],
+                    "tool_prefix": "!",
+                }
+            ),
+            encoding="utf-8",
+        )
+        monkeypatch.setattr("hermes_cli.skin_engine._skins_dir", lambda: skins_dir)
+
+        skin = load_skin("broken")
+
+        assert skin.name == "broken"
+        assert skin.get_color("banner_title") == "#FFD700"
+        assert skin.get_branding("agent_name") == "Hermes Agent"
+        assert skin.spinner.get("waiting_faces", []) == []
+        assert skin.tool_emojis == {}
+        assert skin.tool_prefix == "!"
+
     def test_list_skins_includes_user_skins(self, tmp_path, monkeypatch):
         from hermes_cli.skin_engine import list_skins
         skins_dir = tmp_path / "skins"
@@ -252,7 +295,7 @@ class TestCliBrandingHelpers:
         from hermes_cli.skin_engine import set_active_skin, get_active_prompt_symbol
 
         set_active_skin("ares")
-        assert get_active_prompt_symbol() == "⚔ ❯ "
+        assert get_active_prompt_symbol() == "⚔ "
 
     def test_active_help_header_ares(self):
         from hermes_cli.skin_engine import set_active_skin, get_active_help_header

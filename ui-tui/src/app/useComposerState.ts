@@ -110,8 +110,18 @@ export function useComposerState({
   const isBlocked = useStore($isBlocked)
   const { querier } = useStdin() as { querier: Parameters<typeof readOsc52Clipboard>[0] }
 
-  const { queueRef, queueEditRef, queuedDisplay, queueEditIdx, enqueue, dequeue, replaceQ, setQueueEdit, syncQueue } =
-    useQueue()
+  const {
+    queueRef,
+    queueEditRef,
+    queuedDisplay,
+    queueEditIdx,
+    enqueue,
+    dequeue,
+    removeQ,
+    replaceQ,
+    setQueueEdit,
+    syncQueue
+  } = useQueue()
 
   const { historyRef, historyIdx, setHistoryIdx, historyDraftRef, pushHistory } = useInputHistory()
   const { completions, compIdx, setCompIdx, compReplace } = useCompletion(input, isBlocked, gw)
@@ -294,6 +304,7 @@ export function useComposerState({
       handleTextPaste,
       openEditor,
       pushHistory,
+      removeQueue: removeQ,
       replaceQueue: replaceQ,
       setCompIdx,
       setHistoryIdx,
@@ -310,6 +321,7 @@ export function useComposerState({
       handleTextPaste,
       openEditor,
       pushHistory,
+      removeQ,
       replaceQ,
       setCompIdx,
       setHistoryIdx,

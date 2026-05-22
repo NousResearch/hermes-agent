@@ -3,6 +3,7 @@ that only manifest at runtime (not in mocked unit tests)."""
 
 import os
 import sys
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
@@ -75,6 +76,11 @@ class TestMaxTurnsResolution:
         cli_obj = _make_cli(env_overrides={"HERMES_MAX_ITERATIONS": "42"})
         assert cli_obj.max_turns == 42
 
+    def test_invalid_env_var_max_turns_falls_back_to_default(self):
+        """Invalid env values should not crash CLI init."""
+        cli_obj = _make_cli(env_overrides={"HERMES_MAX_ITERATIONS": "not-a-number"})
+        assert cli_obj.max_turns == 90
+
     def test_legacy_root_max_turns_is_used_when_agent_key_exists_without_value(self):
         cli_obj = _make_cli(config_overrides={"agent": {}, "max_turns": 77})
         assert cli_obj.max_turns == 77
@@ -93,7 +99,7 @@ class TestVerboseAndToolProgress:
     def test_tool_progress_mode_is_string(self):
         cli = _make_cli()
         assert isinstance(cli.tool_progress_mode, str)
-        assert cli.tool_progress_mode in ("off", "new", "all", "verbose")
+        assert cli.tool_progress_mode in {"off", "new", "all", "verbose"}
 
 
 class TestBusyInputMode:
@@ -123,6 +129,13 @@ class TestBusyInputMode:
         cli.process_command("/queue follow up")
         assert cli._pending_input.get_nowait() == "follow up"
 
+    def test_q_alias_queues_prompt(self):
+        """The /q alias should resolve to /queue, not /quit."""
+        cli = _make_cli()
+        cli._agent_running = False
+        assert cli.process_command("/q follow up") is True
+        assert cli._pending_input.get_nowait() == "follow up"
+
     def test_queue_mode_routes_busy_enter_to_pending(self):
         """In queue mode, Enter while busy should go to _pending_input, not _interrupt_queue."""
         cli = _make_cli(config_overrides={"display": {"busy_input_mode": "queue"}})
@@ -147,6 +160,67 @@ class TestBusyInputMode:
             cli._interrupt_queue.put(text)
         assert cli._interrupt_queue.get_nowait() == "redirect"
         assert cli._pending_input.empty()
+
+
+class TestPromptToolkitTerminalCompatibility:
+    def test_lf_enter_binds_to_submit_handler_posix(self):
+        """Some thin PTYs deliver Enter as LF/c-j instead of CR/enter.
+
+        On a bare local POSIX TTY (no SSH/WSL/WT) we keep c-j → submit so
+        Enter works on thin PTYs (docker exec, certain ssh configurations).
+        On Windows, WSL, SSH sessions, and Windows Terminal we leave c-j
+        unbound here so it can be used as the Ctrl+Enter newline keystroke
+        without conflicting with submit. See issue #22379.
+        """
+        import sys as _sys
+        import os as _os
+        from unittest.mock import patch as _patch
+        from prompt_toolkit.key_binding import KeyBindings
+
+        from cli import _bind_prompt_submit_keys
+
+        def submit_handler(event):
+            return None
+
+        # Bare local POSIX (no SSH/WSL markers): both enter and c-j submit.
+        with _patch.object(_sys, "platform", "linux"), \
+             _patch.dict(_os.environ, {}, clear=True), \
+             _patch("builtins.open", side_effect=OSError("no /proc")):
+            kb = KeyBindings()
+            _bind_prompt_submit_keys(kb, submit_handler)
+            bindings = {tuple(key.value for key in binding.keys): binding.handler for binding in kb.bindings}
+            assert bindings[("c-m",)] is submit_handler
+            assert bindings[("c-j",)] is submit_handler
+
+        # POSIX over SSH: c-j stays free so Ctrl+Enter (sent as LF by
+        # Windows Terminal / Kitty / mintty over SSH) inserts a newline.
+        with _patch.object(_sys, "platform", "linux"), \
+             _patch.dict(_os.environ, {"SSH_CONNECTION": "1.2.3.4 5 6.7.8.9 22"}, clear=True), \
+             _patch("builtins.open", side_effect=OSError("no /proc")):
+            kb = KeyBindings()
+            _bind_prompt_submit_keys(kb, submit_handler)
+            bindings = {tuple(key.value for key in binding.keys): binding.handler for binding in kb.bindings}
+            assert bindings[("c-m",)] is submit_handler
+            assert ("c-j",) not in bindings
+
+        # Windows: only enter submits; c-j is free for the newline binding
+        # added separately in the prompt setup.
+        with _patch.object(_sys, "platform", "win32"):
+            kb = KeyBindings()
+            _bind_prompt_submit_keys(kb, submit_handler)
+            bindings = {tuple(key.value for key in binding.keys): binding.handler for binding in kb.bindings}
+            assert bindings[("c-m",)] is submit_handler
+            assert ("c-j",) not in bindings
+
+    def test_cpr_warning_callback_is_disabled(self):
+        from cli import _disable_prompt_toolkit_cpr_warning
+
+        renderer = SimpleNamespace(cpr_not_supported_callback=lambda: None)
+        app = SimpleNamespace(renderer=renderer)
+
+        _disable_prompt_toolkit_cpr_warning(app)
+
+        assert renderer.cpr_not_supported_callback is None
 
 
 class TestSingleQueryState:
@@ -245,6 +319,89 @@ class TestHistoryDisplay:
         assert "Checking Running Hermes Agent" in output
         assert "Use /resume <session id or title> to continue" in output
 
+    def test_sessions_command_no_args_lists_recent_sessions(self, capsys):
+        """/sessions with no args prints the recent-sessions table (TUI parity).
+
+        Regression test: `sessions` was registered in the central command
+        registry and surfaced by /help and tab-completion, but the classic
+        CLI dispatcher had no elif branch for it, so the canonical name fell
+        through and printed `Unknown command: sessions`.
+        """
+        cli = _make_cli()
+        cli.session_id = "current"
+        cli._session_db = MagicMock()
+        cli._session_db.list_sessions_rich.return_value = [
+            {
+                "id": "20260401_201329_d85961",
+                "title": "Checking Running Hermes Agent",
+                "preview": "check running gateways for hermes agent",
+                "last_active": 0,
+            },
+        ]
+
+        # Drive it through the public dispatcher to also lock in the
+        # process_command wiring, not just the handler in isolation.
+        cli.process_command("/sessions")
+        output = capsys.readouterr().out
+
+        assert "Unknown command" not in output
+        assert "Recent sessions" in output
+        assert "Checking Running Hermes Agent" in output
+        assert "20260401_201329_d85961" in output
+
+    def test_sessions_list_subcommand_lists_recent_sessions(self, capsys):
+        """/sessions list is an explicit alias for the no-arg list view."""
+        cli = _make_cli()
+        cli.session_id = "current"
+        cli._session_db = MagicMock()
+        cli._session_db.list_sessions_rich.return_value = [
+            {
+                "id": "20260401_201329_d85961",
+                "title": "Checking Running Hermes Agent",
+                "preview": "check running gateways for hermes agent",
+                "last_active": 0,
+            },
+        ]
+
+        cli.process_command("/sessions list")
+        output = capsys.readouterr().out
+
+        assert "Unknown command" not in output
+        assert "Recent sessions" in output
+        assert "Checking Running Hermes Agent" in output
+
+    def test_sessions_with_target_delegates_to_resume(self):
+        """/sessions <id_or_title> behaves identically to /resume <id_or_title>.
+
+        We intercept `_handle_resume_command` rather than the full resume
+        machinery (which would otherwise require simulating an entire session
+        switch). The contract under test is the dispatch wiring.
+        """
+        cli = _make_cli()
+        with patch.object(cli, "_handle_resume_command") as mock_resume:
+            cli.process_command("/sessions Checking Running Hermes Agent")
+
+        mock_resume.assert_called_once_with(
+            "/resume Checking Running Hermes Agent"
+        )
+
+    def test_sessions_command_is_dispatched(self):
+        """/sessions must hit _handle_sessions_command, not fall through.
+
+        Direct test that the process_command elif chain routes the canonical
+        name to the handler. Without this wiring, /sessions printed
+        `Unknown command: sessions` even though it was a registered command.
+        """
+        cli = _make_cli()
+        cli._session_db = None  # exercise the no-db path too
+
+        with patch.object(cli, "_handle_sessions_command") as mock_handler:
+            cli.process_command("/sessions")
+
+        mock_handler.assert_called_once()
+        called_with = mock_handler.call_args.args[0]
+        assert called_with.lower().startswith("/sessions")
+
 
 class TestRootLevelProviderOverride:
     """Root-level provider/base_url in config.yaml must NOT override model.provider."""
@@ -296,6 +453,30 @@ class TestRootLevelProviderOverride:
         # Root-level "opencode-go" must NOT leak through
         assert cfg["model"]["provider"] != "opencode-go"
 
+    def test_terminal_vercel_runtime_bridged_to_env(self, tmp_path, monkeypatch):
+        """Classic CLI must expose terminal.vercel_runtime to terminal_tool.py."""
+        import yaml
+
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.delenv("TERMINAL_VERCEL_RUNTIME", raising=False)
+
+        config_path = hermes_home / "config.yaml"
+        config_path.write_text(yaml.safe_dump({
+            "terminal": {
+                "backend": "vercel_sandbox",
+                "vercel_runtime": "python3.13",
+            },
+        }))
+
+        import cli
+        monkeypatch.setattr(cli, "_hermes_home", hermes_home)
+        cfg = cli.load_cli_config()
+
+        assert cfg["terminal"]["vercel_runtime"] == "python3.13"
+        assert os.environ["TERMINAL_VERCEL_RUNTIME"] == "python3.13"
+
     def test_normalize_root_model_keys_moves_to_model(self):
         """_normalize_root_model_keys migrates root keys into model section."""
         from hermes_cli.config import _normalize_root_model_keys
@@ -329,6 +510,49 @@ class TestRootLevelProviderOverride:
         result = _normalize_root_model_keys(config)
         assert result["model"]["provider"] == "correct-provider"
         assert "provider" not in result  # root key still cleaned up
+
+    def test_normalize_root_context_length_migrates_to_model(self):
+        """Root-level context_length is migrated into the model section."""
+        from hermes_cli.config import _normalize_root_model_keys
+
+        config = {
+            "context_length": 128000,
+            "model": {
+                "default": "my-model",
+            },
+        }
+        result = _normalize_root_model_keys(config)
+        assert result["model"]["context_length"] == 128000
+        assert "context_length" not in result  # root key cleaned up
+
+    def test_normalize_root_context_length_does_not_override_existing(self):
+        """Existing model.context_length is not overridden by root-level key."""
+        from hermes_cli.config import _normalize_root_model_keys
+
+        config = {
+            "context_length": 256000,
+            "model": {
+                "default": "my-model",
+                "context_length": 128000,
+            },
+        }
+        result = _normalize_root_model_keys(config)
+        assert result["model"]["context_length"] == 128000  # preserved
+        assert "context_length" not in result  # root key still cleaned up
+
+    def test_normalize_root_context_length_with_string_model(self):
+        """Root-level context_length is migrated even when model is a string."""
+        from hermes_cli.config import _normalize_root_model_keys
+
+        config = {
+            "context_length": 128000,
+            "model": "my-model",
+        }
+        result = _normalize_root_model_keys(config)
+        assert isinstance(result["model"], dict)
+        assert result["model"]["default"] == "my-model"
+        assert result["model"]["context_length"] == 128000
+        assert "context_length" not in result
 
 
 class TestProviderResolution:

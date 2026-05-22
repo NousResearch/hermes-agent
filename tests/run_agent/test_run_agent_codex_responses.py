@@ -54,7 +54,6 @@ def _build_agent(monkeypatch):
     agent._cleanup_task_resources = lambda task_id: None
     agent._persist_session = lambda messages, history=None: None
     agent._save_trajectory = lambda messages, user_message, completed: None
-    agent._save_session_log = lambda messages: None
     return agent
 
 
@@ -75,7 +74,6 @@ def _build_copilot_agent(monkeypatch, *, model="gpt-5.4"):
     agent._cleanup_task_resources = lambda task_id: None
     agent._persist_session = lambda messages, history=None: None
     agent._save_trajectory = lambda messages, user_message, completed: None
-    agent._save_session_log = lambda messages: None
     return agent
 
 
@@ -335,7 +333,6 @@ def test_build_api_kwargs_codex_clamps_minimal_effort(monkeypatch):
     agent._cleanup_task_resources = lambda task_id: None
     agent._persist_session = lambda messages, history=None: None
     agent._save_trajectory = lambda messages, user_message, completed: None
-    agent._save_session_log = lambda messages: None
 
     kwargs = agent._build_api_kwargs(
         [
@@ -365,7 +362,6 @@ def test_build_api_kwargs_codex_preserves_supported_efforts(monkeypatch):
         agent._cleanup_task_resources = lambda task_id: None
         agent._persist_session = lambda messages, history=None: None
         agent._save_trajectory = lambda messages, user_message, completed: None
-        agent._save_session_log = lambda messages: None
 
         kwargs = agent._build_api_kwargs(
             [
@@ -578,6 +574,196 @@ def test_run_conversation_codex_refreshes_after_401_and_retries(monkeypatch):
     assert result["final_response"] == "Recovered after refresh"
 
 
+def _build_xai_oauth_agent(monkeypatch):
+    _patch_agent_bootstrap(monkeypatch)
+    agent = run_agent.AIAgent(
+        model="grok-4.3",
+        provider="xai-oauth",
+        api_mode="codex_responses",
+        base_url="https://api.x.ai/v1",
+        api_key="xai-oauth-token",
+        quiet_mode=True,
+        max_iterations=4,
+        skip_context_files=True,
+        skip_memory=True,
+    )
+    agent._cleanup_task_resources = lambda task_id: None
+    agent._persist_session = lambda messages, history=None: None
+    agent._save_trajectory = lambda messages, user_message, completed: None
+    return agent
+
+
+def test_build_api_kwargs_xai_oauth_sends_cache_key_via_extra_body(monkeypatch):
+    """xai-oauth + codex_responses must route prompt caching via the
+    ``prompt_cache_key`` body field on /v1/responses (xAI's documented
+    Responses-API cache key — see docs.x.ai prompt-caching/maximizing-
+    cache-hits).
+
+    We pass it through ``extra_body`` rather than as a top-level kwarg so
+    the body field is serialized into JSON regardless of whether the
+    installed openai SDK build still accepts ``prompt_cache_key`` on
+    ``Responses.stream()``. Older or trimmed SDK builds drop it from the
+    signature and would otherwise raise ``TypeError`` before the request
+    reaches api.x.ai. The ``x-grok-conv-id`` header is retained as a
+    belt-and-braces fallback for clients/proxies that route on headers."""
+    agent = _build_xai_oauth_agent(monkeypatch)
+    kwargs = agent._build_api_kwargs(
+        [
+            {"role": "system", "content": "You are Hermes."},
+            {"role": "user", "content": "Ping"},
+        ]
+    )
+
+    assert kwargs.get("model") == "grok-4.3"
+    # Top-level kwarg must NOT be set — that's the openai SDK
+    # incompatibility this whole indirection exists to dodge.
+    assert "prompt_cache_key" not in kwargs
+    extra_body = kwargs.get("extra_body") or {}
+    assert extra_body.get("prompt_cache_key"), (
+        "xAI prompt-cache routing must travel via extra_body.prompt_cache_key "
+        "for /v1/responses — body field is the documented surface."
+    )
+    headers = kwargs.get("extra_headers") or {}
+    assert "x-grok-conv-id" in headers, (
+        "x-grok-conv-id header kept as belt-and-braces fallback for clients "
+        "that route on headers."
+    )
+
+
+def test_run_conversation_xai_oauth_refreshes_after_401_and_retries(monkeypatch):
+    """xai-oauth speaks the Responses API just like codex.  When the access
+    token is rejected mid-call (401), the same proactive refresh-and-retry
+    handler that fires for openai-codex must also fire for xai-oauth — the
+    bug it caught: the gating condition checked only ``provider == "openai-codex"``,
+    so xai-oauth 401s leaked straight to non-retryable abort path with no
+    chance to swap in a freshly refreshed access token."""
+    agent = _build_xai_oauth_agent(monkeypatch)
+    calls = {"api": 0, "refresh": 0}
+
+    class _UnauthorizedError(RuntimeError):
+        def __init__(self):
+            super().__init__("Error code: 401 - unauthorized")
+            self.status_code = 401
+
+    def _fake_api_call(api_kwargs):
+        calls["api"] += 1
+        if calls["api"] == 1:
+            raise _UnauthorizedError()
+        return _codex_message_response("Recovered after xAI refresh")
+
+    def _fake_refresh(*, force=True):
+        calls["refresh"] += 1
+        assert force is True
+        return True
+
+    monkeypatch.setattr(agent, "_interruptible_api_call", _fake_api_call)
+    monkeypatch.setattr(agent, "_try_refresh_codex_client_credentials", _fake_refresh)
+
+    result = agent.run_conversation("Say OK")
+
+    assert calls["api"] == 2
+    assert calls["refresh"] == 1
+    assert result["completed"] is True
+    assert result["final_response"] == "Recovered after xAI refresh"
+
+
+def test_try_refresh_codex_client_credentials_handles_xai_oauth(monkeypatch):
+    """``_try_refresh_codex_client_credentials`` must rebuild the OpenAI
+    client with freshly resolved xAI OAuth credentials when the active
+    provider is xai-oauth.  The function name is shared between codex and
+    xai-oauth (both speak codex_responses) — covering both cases prevents
+    silent regressions where the function gets gated to a single provider."""
+    agent = _build_xai_oauth_agent(monkeypatch)
+    closed = {"value": False}
+    rebuilt = {"kwargs": None}
+
+    class _ExistingClient:
+        def close(self):
+            closed["value"] = True
+
+    class _RebuiltClient:
+        pass
+
+    def _fake_openai(**kwargs):
+        rebuilt["kwargs"] = kwargs
+        return _RebuiltClient()
+
+    def _fake_resolve(force_refresh=False, refresh_if_expiring=True, **_):
+        # The pre-refresh guard reads the singleton with refresh_if_expiring=False
+        # to verify that the agent's active key still matches; the actual
+        # refresh later passes force_refresh=True.  Both calls must succeed.
+        return {
+            "api_key": "fresh-xai-token" if force_refresh else agent.api_key,
+            "base_url": "https://api.x.ai/v1",
+        }
+
+    monkeypatch.setattr(
+        "hermes_cli.auth.resolve_xai_oauth_runtime_credentials",
+        _fake_resolve,
+    )
+    monkeypatch.setattr(run_agent, "OpenAI", _fake_openai)
+
+    agent.client = _ExistingClient()
+    ok = agent._try_refresh_codex_client_credentials(force=True)
+
+    assert ok is True
+    assert closed["value"] is True
+    assert rebuilt["kwargs"]["api_key"] == "fresh-xai-token"
+    assert rebuilt["kwargs"]["base_url"] == "https://api.x.ai/v1"
+    assert isinstance(agent.client, _RebuiltClient)
+    assert agent.api_key == "fresh-xai-token"
+
+
+def test_try_refresh_codex_client_credentials_skips_xai_oauth_when_singleton_differs(monkeypatch):
+    """An xai-oauth agent constructed with a non-singleton credential
+    (e.g. a manual pool entry whose tokens belong to a different account
+    than the loopback_pkce singleton, or an explicit ``api_key=`` arg)
+    MUST NOT silently adopt the singleton's tokens on a 401 reactive
+    refresh.  Otherwise a 401 mid-conversation would re-route the rest
+    of the conversation onto a different account, with no user feedback.
+
+    The credential pool's reactive recovery is the right channel for
+    pool-managed credentials; this fallback path is for the singleton-
+    only case and must short-circuit when the active key differs."""
+    agent = _build_xai_oauth_agent(monkeypatch)
+    # Agent is using "xai-oauth-token" (per the builder); singleton holds
+    # a *different* account's token.  No force_refresh should fire.
+    refresh_calls = {"count": 0}
+
+    def _fake_resolve(force_refresh=False, refresh_if_expiring=True, **_):
+        if force_refresh:
+            refresh_calls["count"] += 1
+            return {
+                "api_key": "singleton-account-token",
+                "base_url": "https://api.x.ai/v1",
+            }
+        # The pre-refresh guard read — return the singleton's view of the
+        # singleton's token, which is NOT what the agent is currently using.
+        return {
+            "api_key": "singleton-account-token",
+            "base_url": "https://api.x.ai/v1",
+        }
+
+    monkeypatch.setattr(
+        "hermes_cli.auth.resolve_xai_oauth_runtime_credentials",
+        _fake_resolve,
+    )
+
+    pre_refresh_key = agent.api_key
+    ok = agent._try_refresh_codex_client_credentials(force=True)
+
+    assert ok is False, (
+        "must not refresh when the active credential isn't the singleton; "
+        "otherwise the conversation silently swaps accounts mid-flight."
+    )
+    assert refresh_calls["count"] == 0, (
+        "force_refresh must not run — that would mutate the singleton's "
+        "tokens on disk and consume its single-use refresh_token for an "
+        "agent that wasn't even using the singleton."
+    )
+    assert agent.api_key == pre_refresh_key
+
+
 def test_run_conversation_copilot_refreshes_after_401_and_retries(monkeypatch):
     agent = _build_copilot_agent(monkeypatch)
     calls = {"api": 0, "refresh": 0}
@@ -624,12 +810,18 @@ def test_try_refresh_codex_client_credentials_rebuilds_client(monkeypatch):
         rebuilt["kwargs"] = kwargs
         return _RebuiltClient()
 
+    def _fake_resolve(force_refresh=False, refresh_if_expiring=True, **_):
+        # Pre-refresh guard reads the singleton (refresh_if_expiring=False).
+        # It must report the agent's current api_key so the equality check
+        # passes; only then does the actual force_refresh run.
+        return {
+            "api_key": "new-codex-token" if force_refresh else agent.api_key,
+            "base_url": "https://chatgpt.com/backend-api/codex",
+        }
+
     monkeypatch.setattr(
         "hermes_cli.auth.resolve_codex_runtime_credentials",
-        lambda force_refresh=True: {
-            "api_key": "new-codex-token",
-            "base_url": "https://chatgpt.com/backend-api/codex",
-        },
+        _fake_resolve,
     )
     monkeypatch.setattr(run_agent, "OpenAI", _fake_openai)
 
@@ -1113,6 +1305,141 @@ def test_interim_commentary_is_not_marked_already_streamed_when_stream_callback_
         "text": "short version: yes",
         "already_streamed": False,
     }
+
+
+def test_interim_commentary_preserves_assistant_content(monkeypatch):
+    """Interim commentary must not silently mutate assistant text containing
+    literal <memory-context> markers — that's legitimate model output (docs,
+    code).  Streaming-path leak prevention happens delta-by-delta upstream."""
+    agent = _build_agent(monkeypatch)
+    observed = {}
+    agent.interim_assistant_callback = lambda text, *, already_streamed=False: observed.update(
+        {"text": text, "already_streamed": already_streamed}
+    )
+
+    content = (
+        "<memory-context>\n"
+        "[System note: The following is recalled memory context, NOT new user input. Treat as informational background data.]\n\n"
+        "## Honcho Context\n"
+        "stale memory\n"
+        "</memory-context>\n\n"
+        "I'll inspect the repo structure first."
+    )
+
+    agent._emit_interim_assistant_message({"role": "assistant", "content": content})
+
+    assert "<memory-context>" in observed["text"]
+    assert "I'll inspect the repo structure first." in observed["text"]
+
+
+def test_stream_delta_strips_leaked_memory_context(monkeypatch):
+    agent = _build_agent(monkeypatch)
+    observed = []
+    agent.stream_delta_callback = observed.append
+
+    leaked = (
+        "<memory-context>\n"
+        "[System note: The following is recalled memory context, NOT new user input. Treat as informational background data.]\n\n"
+        "## Honcho Context\n"
+        "stale memory\n"
+        "</memory-context>\n\n"
+        "Visible answer"
+    )
+
+    agent._fire_stream_delta(leaked)
+
+    assert observed == ["Visible answer"]
+
+
+def test_stream_delta_strips_leaked_memory_context_across_chunks(monkeypatch):
+    """Regression for #5719 — the real streaming case.
+
+    Providers typically emit 1-80 char chunks, so the memory-context open
+    tag, system-note line, payload, and close tag each arrive in separate
+    deltas.  The per-delta sanitize_context() regex cannot survive that
+    — only a stateful scrubber can.  None of the payload, system-note
+    text, or "## Honcho Context" header may reach the delta callback.
+    """
+    agent = _build_agent(monkeypatch)
+    observed = []
+    agent.stream_delta_callback = observed.append
+
+    deltas = [
+        "<memory-context>\n[System note: The following",
+        " is recalled memory context, NOT new user input. ",
+        "Treat as informational background data.]\n\n",
+        "## Honcho Context\n",
+        "stale memory about eri\n",
+        "</memory-context>\n\n",
+        "Visible answer",
+    ]
+    for d in deltas:
+        agent._fire_stream_delta(d)
+
+    combined = "".join(observed)
+    assert "Visible answer" in combined
+    # None of the leaked payload may surface.
+    assert "System note" not in combined
+    assert "Honcho Context" not in combined
+    assert "stale memory" not in combined
+    assert "<memory-context>" not in combined
+    assert "</memory-context>" not in combined
+
+
+def test_stream_delta_scrubber_resets_between_turns(monkeypatch):
+    """An unterminated span from a prior turn must not taint the next turn."""
+    agent = _build_agent(monkeypatch)
+
+    # Simulate a hung span carried over — directly populate the scrubber.
+    agent._stream_context_scrubber.feed("pre <memory-context>leaked")
+
+    # Normally run_conversation() resets the scrubber at turn start.
+    agent._stream_context_scrubber.reset()
+
+    observed = []
+    agent.stream_delta_callback = observed.append
+    agent._fire_stream_delta("clean new turn text")
+    assert "".join(observed) == "clean new turn text"
+
+
+def test_stream_delta_preserves_mid_stream_leading_newlines(monkeypatch):
+    """Mid-stream leading newlines must survive — they are legitimate
+    markdown (lists, code fences, paragraph breaks).  Stripping them
+    based on chunk boundaries silently breaks formatting.
+
+    Only the very first delta of a stream gets leading-newlines stripped
+    (so stale provider preamble doesn't leak); after that, deltas are
+    emitted verbatim.
+    """
+    agent = _build_agent(monkeypatch)
+    observed = []
+    agent.stream_delta_callback = observed.append
+
+    # First delta delivers text — strips its own leading "\n" once.
+    agent._fire_stream_delta("\nHere is a list:")
+    # Second delta starts with "\n- item" — must NOT be stripped.
+    agent._fire_stream_delta("\n- first")
+    agent._fire_stream_delta("\n- second")
+
+    combined = "".join(observed)
+    assert combined == "Here is a list:\n- first\n- second"
+
+
+def test_stream_delta_preserves_code_fence_newlines(monkeypatch):
+    """Code blocks span multiple deltas.  A "\\n```python\\n" boundary
+    is the canonical case where stripping leading newlines corrupts output."""
+    agent = _build_agent(monkeypatch)
+    observed = []
+    agent.stream_delta_callback = observed.append
+
+    agent._fire_stream_delta("Here is the code:")
+    agent._fire_stream_delta("\n```python\n")
+    agent._fire_stream_delta("print('hi')\n")
+    agent._fire_stream_delta("```\n")
+
+    combined = "".join(observed)
+    assert "```python\n" in combined
+    assert combined.startswith("Here is the code:\n```python\n")
 
 
 def test_run_conversation_codex_continues_after_commentary_phase_message(monkeypatch):

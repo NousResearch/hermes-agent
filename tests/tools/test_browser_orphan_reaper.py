@@ -81,19 +81,18 @@ class TestReapOrphanedBrowserSessions:
         d = _make_socket_dir(fake_tmpdir, "h_orphan12345", pid=12345)
 
         kill_calls = []
-        original_kill = os.kill
 
         def mock_kill(pid, sig):
             kill_calls.append((pid, sig))
-            if sig == 0:
-                return  # pretend process exists
             # Don't actually kill anything
 
-        with patch("os.kill", side_effect=mock_kill):
+        # Post-#21561 the liveness probe goes through
+        # ``gateway.status._pid_exists`` (which wraps ``psutil.pid_exists``
+        # so it's safe on Windows — ``os.kill(pid, 0)`` is bpo-14484).
+        with patch("gateway.status._pid_exists", return_value=True), \
+             patch("os.kill", side_effect=mock_kill):
             _reap_orphaned_browser_sessions()
 
-        # Should have checked existence (sig 0) then killed (SIGTERM)
-        assert (12345, 0) in kill_calls
         assert (12345, signal.SIGTERM) in kill_calls
 
     def test_tracked_session_is_not_reaped(self, fake_tmpdir):
@@ -120,21 +119,31 @@ class TestReapOrphanedBrowserSessions:
         # Dir should still exist
         assert d.exists()
 
-    def test_permission_error_on_kill_check_skips(self, fake_tmpdir):
-        """If we can't check the PID (PermissionError), skip it."""
+    def test_alive_legacy_daemon_is_reaped(self, fake_tmpdir):
+        """Alive, untracked, legacy (no owner_pid) daemon is reaped.
+
+        Post-#21561 the liveness probe goes through
+        ``gateway.status._pid_exists`` (which wraps ``psutil.pid_exists``
+        because ``os.kill(pid, 0)`` is a footgun on Windows — bpo-14484).
+        With no owner_pid file and no tracked-name entry, the reaper
+        SIGTERMs the daemon and removes its socket dir regardless of
+        whether SIGTERM succeeded (best-effort semantics).
+        """
         from tools.browser_tool import _reap_orphaned_browser_sessions
 
         d = _make_socket_dir(fake_tmpdir, "h_perm1234567", pid=12345)
 
-        def mock_kill(pid, sig):
-            if sig == 0:
-                raise PermissionError("not our process")
+        sigterm_calls = []
 
-        with patch("os.kill", side_effect=mock_kill):
+        def mock_kill(pid, sig):
+            sigterm_calls.append((pid, sig))
+
+        with patch("gateway.status._pid_exists", return_value=True), \
+             patch("os.kill", side_effect=mock_kill):
             _reap_orphaned_browser_sessions()
 
-        # Dir should still exist (we didn't touch someone else's process)
-        assert d.exists()
+        assert (12345, signal.SIGTERM) in sigterm_calls
+        assert not d.exists()
 
     def test_cdp_sessions_are_also_reaped(self, fake_tmpdir):
         """CDP sessions (cdp_ prefix) are also scanned."""
@@ -196,19 +205,13 @@ class TestOwnerPidCrossProcess:
 
         def mock_kill(pid, sig):
             kill_calls.append((pid, sig))
-            if pid == os.getpid() and sig == 0:
-                return  # real existence check: owner alive
-            if sig == 0:
-                return  # pretend daemon exists too
-            # Don't actually kill anything
 
-        with patch("os.kill", side_effect=mock_kill):
+        # Owner alive → reaper skips without ever probing the daemon.
+        with patch("gateway.status._pid_exists", return_value=True), \
+             patch("os.kill", side_effect=mock_kill):
             _reap_orphaned_browser_sessions()
 
-        # We should have checked the owner (sig 0) but never tried to kill
-        # the daemon.
         assert (12345, signal.SIGTERM) not in kill_calls
-        # Dir should still exist
         assert d.exists()
 
     def test_dead_owner_triggers_reap(self, fake_tmpdir):
@@ -224,20 +227,15 @@ class TestOwnerPidCrossProcess:
 
         def mock_kill(pid, sig):
             kill_calls.append((pid, sig))
-            if pid == 999999999 and sig == 0:
-                raise ProcessLookupError  # owner dead
-            if pid == 12345 and sig == 0:
-                return  # daemon still alive
-            # SIGTERM to daemon — noop in test
 
-        with patch("os.kill", side_effect=mock_kill):
+        # Owner 999999999 dead, daemon 12345 alive.
+        pid_alive = {999999999: False, 12345: True}
+        with patch("gateway.status._pid_exists",
+                   side_effect=lambda pid: pid_alive.get(int(pid), False)), \
+             patch("os.kill", side_effect=mock_kill):
             _reap_orphaned_browser_sessions()
 
-        # Owner checked (returned dead), daemon checked (alive), daemon killed
-        assert (999999999, 0) in kill_calls
-        assert (12345, 0) in kill_calls
         assert (12345, signal.SIGTERM) in kill_calls
-        # Dir cleaned up
         assert not d.exists()
 
     def test_corrupt_owner_pid_falls_back_to_legacy(self, fake_tmpdir):
@@ -258,7 +256,8 @@ class TestOwnerPidCrossProcess:
         def mock_kill(pid, sig):
             kill_calls.append((pid, sig))
 
-        with patch("os.kill", side_effect=mock_kill):
+        with patch("gateway.status._pid_exists", return_value=True), \
+             patch("os.kill", side_effect=mock_kill):
             _reap_orphaned_browser_sessions()
 
         # Legacy path took over → tracked → not reaped
@@ -266,10 +265,12 @@ class TestOwnerPidCrossProcess:
         assert d.exists()
 
     def test_owner_pid_permission_error_treated_as_alive(self, fake_tmpdir):
-        """If os.kill(owner, 0) raises PermissionError, treat owner as alive.
+        """Owner PID owned by another user → treat as alive.
 
-        PermissionError means the PID exists but is owned by a different user —
-        we must not assume the owner is dead (could kill someone else's daemon).
+        Post-#21561 this is handled inside ``gateway.status._pid_exists``
+        (via psutil's ``OpenProcess`` returning ``ERROR_ACCESS_DENIED`` on
+        Windows, or via the POSIX fallback's ``except PermissionError``
+        branch). Exposed to callers as ``alive=True``.
         """
         from tools.browser_tool import _reap_orphaned_browser_sessions
 
@@ -281,13 +282,13 @@ class TestOwnerPidCrossProcess:
 
         def mock_kill(pid, sig):
             kill_calls.append((pid, sig))
-            if pid == 22222 and sig == 0:
-                raise PermissionError("not our user")
 
-        with patch("os.kill", side_effect=mock_kill):
+        # Owner 22222 reported alive (PermissionError collapses to True
+        # inside _pid_exists). Daemon never probed, never SIGTERMed.
+        with patch("gateway.status._pid_exists", return_value=True), \
+             patch("os.kill", side_effect=mock_kill):
             _reap_orphaned_browser_sessions()
 
-        # Must NOT have tried to kill the daemon
         assert (12345, signal.SIGTERM) not in kill_calls
         assert d.exists()
 
@@ -354,6 +355,7 @@ class TestOwnerPidCrossProcess:
         monkeypatch.setattr(
             bt, "_requires_real_termux_browser_install", lambda *a: False
         )
+        monkeypatch.setattr(bt, "_chromium_installed", lambda: True)
         monkeypatch.setattr(
             bt, "_get_session_info",
             lambda task_id: {"session_name": session_name},

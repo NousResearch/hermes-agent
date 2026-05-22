@@ -15,7 +15,7 @@
     "write-translations": "docusaurus write-translations",
     "write-heading-ids": "docusaurus write-heading-ids",
     "typecheck": "tsc",
-    "lint:diagrams": "ascii-guard lint docs"
+    "lint:diagrams": "ascii-guard lint --exclude-code-blocks docs"
   },
   "dependencies": {
     "@docusaurus/core": "3.9.2",

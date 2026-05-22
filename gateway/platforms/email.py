@@ -28,9 +28,10 @@ from email.header import decode_header
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from email.mime.base import MIMEBase
+from email.utils import formatdate
 from email import encoders
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 from gateway.platforms.base import (
     BasePlatformAdapter,
@@ -53,7 +54,7 @@ _NOREPLY_PATTERNS = (
 # RFC headers that indicate bulk/automated mail
 _AUTOMATED_HEADERS = {
     "Auto-Submitted": lambda v: v.lower() != "no",
-    "Precedence": lambda v: v.lower() in ("bulk", "list", "junk"),
+    "Precedence": lambda v: v.lower() in {"bulk", "list", "junk"},
     "X-Auto-Response-Suppress": lambda v: bool(v),
     "List-Unsubscribe": lambda v: bool(v),
 }
@@ -63,6 +64,29 @@ MAX_MESSAGE_LENGTH = 50_000
 
 # Supported image extensions for inline detection
 _IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".gif", ".webp"}
+
+def _send_imap_id(imap: "imaplib.IMAP4") -> None:
+    """Send RFC 2971 IMAP ID command identifying this client.
+
+    Required by 163/NetEase mailbox after LOGIN: without it, every UID
+    SEARCH/FETCH returns ``BYE Unsafe Login`` and disconnects.  Other
+    IMAP servers either honor it silently or reject the unknown command;
+    we swallow failures so non-supporting servers keep working.
+    """
+    try:
+        try:
+            from hermes_cli import __version__ as _hermes_version
+        except Exception:  # noqa: BLE001 — keep ID best-effort if import fails
+            _hermes_version = "0"
+        imap.xatom(
+            "ID",
+            f'("name" "hermes-agent" "version" "{_hermes_version}" '
+            '"vendor" "NousResearch" '
+            '"support-email" "noreply@nousresearch.com")',
+        )
+    except Exception as e:  # noqa: BLE001 — best-effort, never fatal
+        logger.debug("[Email] IMAP ID command not accepted: %s", e)
+
 
 def _is_automated_sender(address: str, headers: dict) -> bool:
     """Return True if this email is from an automated/noreply source."""
@@ -179,7 +203,7 @@ def _extract_attachments(
             continue
         # Skip text/plain and text/html body parts
         content_type = part.get_content_type()
-        if content_type in ("text/plain", "text/html") and "attachment" not in disposition:
+        if content_type in {"text/plain", "text/html"} and "attachment" not in disposition:
             continue
 
         filename = part.get_filename()
@@ -275,6 +299,7 @@ class EmailAdapter(BasePlatformAdapter):
             # Test IMAP connection
             imap = imaplib.IMAP4_SSL(self._imap_host, self._imap_port, timeout=30)
             imap.login(self._address, self._password)
+            _send_imap_id(imap)
             # Mark all existing messages as seen so we only process new ones
             imap.select("INBOX")
             status, data = imap.uid("search", None, "ALL")
@@ -343,6 +368,7 @@ class EmailAdapter(BasePlatformAdapter):
             imap = imaplib.IMAP4_SSL(self._imap_host, self._imap_port, timeout=30)
             try:
                 imap.login(self._address, self._password)
+                _send_imap_id(imap)
                 imap.select("INBOX")
 
                 status, data = imap.uid("search", None, "UNSEEN")
@@ -414,6 +440,18 @@ class EmailAdapter(BasePlatformAdapter):
         if _is_automated_sender(sender_addr, {}):
             logger.debug("[Email] Dropping automated sender at dispatch: %s", sender_addr)
             return
+
+        # Skip senders not in EMAIL_ALLOWED_USERS — prevents the adapter
+        # from creating a MessageEvent (and thus thread context) for senders
+        # that the gateway will never authorize.  Without this early guard,
+        # a race between dispatch and authorization can result in the adapter
+        # sending a reply even though the handler returned None.
+        allowed_raw = os.getenv("EMAIL_ALLOWED_USERS", "").strip()
+        if allowed_raw:
+            allowed = {addr.strip().lower() for addr in allowed_raw.split(",") if addr.strip()}
+            if sender_addr.lower() not in allowed:
+                logger.debug("[Email] Dropping non-allowlisted sender at dispatch: %s", sender_addr)
+                return
 
         subject = msg_data["subject"]
         body = msg_data["body"].strip()
@@ -504,6 +542,7 @@ class EmailAdapter(BasePlatformAdapter):
             msg["In-Reply-To"] = original_msg_id
             msg["References"] = original_msg_id
 
+        msg["Date"] = formatdate(localtime=True)
         msg_id = f"<hermes-{uuid.uuid4().hex[:12]}@{self._address.split('@')[1]}>"
         msg["Message-ID"] = msg_id
 
@@ -537,6 +576,113 @@ class EmailAdapter(BasePlatformAdapter):
         text = caption or ""
         text += f"\n\nImage: {image_url}"
         return await self.send(chat_id, text.strip(), reply_to)
+
+    async def send_multiple_images(
+        self,
+        chat_id: str,
+        images: List[Tuple[str, str]],
+        metadata: Optional[Dict[str, Any]] = None,
+        human_delay: float = 0.0,
+    ) -> None:
+        """Send a batch of images as a single email with multiple MIME attachments.
+
+        Local files are attached directly. URL images have their URL
+        appended to the body (email adapter does not download remote
+        images). No hard cap — email clients handle dozens of
+        attachments fine, subject to SMTP message size limits.
+        """
+        if not images:
+            return
+
+        from urllib.parse import unquote as _unquote
+
+        body_parts: List[str] = []
+        local_paths: List[str] = []
+        for image_url, alt_text in images:
+            if alt_text:
+                body_parts.append(alt_text)
+            if image_url.startswith("file://"):
+                local_path = _unquote(image_url[7:])
+                if Path(local_path).exists():
+                    local_paths.append(local_path)
+                else:
+                    logger.warning("[Email] Skipping missing image: %s", local_path)
+            else:
+                # Remote URLs just get linked in the body (parity with send_image)
+                body_parts.append(f"Image: {image_url}")
+
+        if not local_paths and not body_parts:
+            return
+
+        body = "\n\n".join(body_parts)
+
+        try:
+            loop = asyncio.get_running_loop()
+            await loop.run_in_executor(
+                None,
+                self._send_email_with_attachments,
+                chat_id,
+                body,
+                local_paths,
+            )
+        except Exception as e:
+            logger.error("[Email] Multi-image send failed, falling back: %s", e, exc_info=True)
+            await super().send_multiple_images(chat_id, images, metadata, human_delay)
+
+    def _send_email_with_attachments(
+        self,
+        to_addr: str,
+        body: str,
+        file_paths: List[str],
+    ) -> str:
+        """Send an email with multiple file attachments via SMTP."""
+        msg = MIMEMultipart()
+        msg["From"] = self._address
+        msg["To"] = to_addr
+
+        ctx = self._thread_context.get(to_addr, {})
+        subject = ctx.get("subject", "Hermes Agent")
+        if not subject.startswith("Re:"):
+            subject = f"Re: {subject}"
+        msg["Subject"] = subject
+
+        original_msg_id = ctx.get("message_id")
+        if original_msg_id:
+            msg["In-Reply-To"] = original_msg_id
+            msg["References"] = original_msg_id
+
+        msg["Date"] = formatdate(localtime=True)
+        msg_id = f"<hermes-{uuid.uuid4().hex[:12]}@{self._address.split('@')[1]}>"
+        msg["Message-ID"] = msg_id
+
+        if body:
+            msg.attach(MIMEText(body, "plain", "utf-8"))
+
+        for file_path in file_paths:
+            p = Path(file_path)
+            try:
+                with open(p, "rb") as f:
+                    part = MIMEBase("application", "octet-stream")
+                    part.set_payload(f.read())
+                    encoders.encode_base64(part)
+                    part.add_header("Content-Disposition", f"attachment; filename={p.name}")
+                    msg.attach(part)
+            except Exception as e:
+                logger.warning("[Email] Failed to attach %s: %s", file_path, e)
+
+        smtp = smtplib.SMTP(self._smtp_host, self._smtp_port, timeout=30)
+        try:
+            smtp.starttls(context=ssl.create_default_context())
+            smtp.login(self._address, self._password)
+            smtp.send_message(msg)
+        finally:
+            try:
+                smtp.quit()
+            except Exception:
+                smtp.close()
+
+        logger.info("[Email] Sent multi-attachment email to %s (%d files)", to_addr, len(file_paths))
+        return msg_id
 
     async def send_document(
         self,
@@ -586,6 +732,7 @@ class EmailAdapter(BasePlatformAdapter):
             msg["In-Reply-To"] = original_msg_id
             msg["References"] = original_msg_id
 
+        msg["Date"] = formatdate(localtime=True)
         msg_id = f"<hermes-{uuid.uuid4().hex[:12]}@{self._address.split('@')[1]}>"
         msg["Message-ID"] = msg_id
 

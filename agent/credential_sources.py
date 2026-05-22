@@ -47,7 +47,6 @@ from __future__ import annotations
 
 import os
 from dataclasses import dataclass, field
-from pathlib import Path
 from typing import Callable, List, Optional
 
 
@@ -253,6 +252,44 @@ def _remove_nous_device_code(provider: str, removed) -> RemovalResult:
     return result
 
 
+def _remove_minimax_oauth(provider: str, removed) -> RemovalResult:
+    """MiniMax OAuth lives in auth.json providers.minimax-oauth — clear it.
+
+    Same pattern as Nous: single-source OAuth state with refresh tokens.
+    Suppression of the `oauth` source ensures the pool reseed path
+    (_seed_from_singletons) doesn't instantly undo the removal.
+    """
+    result = RemovalResult()
+    if _clear_auth_store_provider(provider):
+        result.cleaned.append(f"Cleared {provider} OAuth tokens from auth store")
+    return result
+
+
+def _remove_xai_oauth_loopback_pkce(provider: str, removed) -> RemovalResult:
+    """xAI OAuth tokens live in auth.json providers.xai-oauth — clear them.
+
+    Without this step, ``hermes auth remove xai-oauth <N>`` silently undoes
+    itself: the central dispatcher only removes the in-memory pool entry,
+    leaves ``providers.xai-oauth`` in auth.json intact, and on the next
+    ``load_pool("xai-oauth")`` call ``_seed_from_singletons`` re-seeds the
+    entry from the still-present singleton — credentials reappear with no
+    user feedback. Clearing the singleton in step with the suppression set
+    by the central dispatcher makes the removal stick.
+
+    Belt-and-braces against the manual entry path: ``hermes auth add
+    xai-oauth`` produces a ``manual:xai_pkce`` entry whose removal step
+    falls through to "unregistered → nothing to clean up" (correct —
+    manual entries are pool-only).
+    """
+    result = RemovalResult()
+    if _clear_auth_store_provider(provider):
+        result.cleaned.append(f"Cleared {provider} OAuth tokens from auth store")
+    result.hints.append(
+        "Run `hermes model` → xAI Grok OAuth (SuperGrok Subscription) to re-authenticate if needed."
+    )
+    return result
+
+
 def _remove_codex_device_code(provider: str, removed) -> RemovalResult:
     """Codex tokens live in TWO places: our auth store AND ~/.codex/auth.json.
 
@@ -386,9 +423,19 @@ def _register_all_sources() -> None:
         description="auth.json providers.openai-codex + ~/.codex/auth.json",
     ))
     register(RemovalStep(
+        provider="xai-oauth", source_id="loopback_pkce",
+        remove_fn=_remove_xai_oauth_loopback_pkce,
+        description="auth.json providers.xai-oauth",
+    ))
+    register(RemovalStep(
         provider="qwen-oauth", source_id="qwen-cli",
         remove_fn=_remove_qwen_cli,
         description="~/.qwen/oauth_creds.json",
+    ))
+    register(RemovalStep(
+        provider="minimax-oauth", source_id="oauth",
+        remove_fn=_remove_minimax_oauth,
+        description="auth.json providers.minimax-oauth",
     ))
     register(RemovalStep(
         provider="*", source_id="config:",

@@ -23,6 +23,8 @@ This starts a local web server and opens `http://127.0.0.1:9119` in your browser
 | `--port` | `9119` | Port to run the web server on |
 | `--host` | `127.0.0.1` | Bind address |
 | `--no-open` | — | Don't auto-open the browser |
+| `--insecure` | off | Allow binding to non-localhost hosts (**DANGEROUS** — exposes API keys on the network; pair with a firewall and strong auth) |
+| `--tui` | off | Expose the in-browser Chat tab (embedded `hermes --tui` via PTY/WebSocket). Alternatively set `HERMES_DASHBOARD_TUI=1`. |
 
 ```bash
 # Custom port
@@ -33,6 +35,9 @@ hermes dashboard --host 0.0.0.0
 
 # Start without opening browser
 hermes dashboard --no-open
+
+# Enable the in-browser Chat tab
+hermes dashboard --tui
 ```
 
 ## Prerequisites
@@ -46,6 +51,8 @@ pip install 'hermes-agent[web,pty]'
 The `web` extra pulls in FastAPI/Uvicorn; `pty` pulls in `ptyprocess` (POSIX) or `pywinpty` (native Windows — note that the embedded TUI itself still requires WSL). `pip install hermes-agent[all]` includes both extras and is the easiest path if you also want messaging/voice/etc.
 
 When you run `hermes dashboard` without the dependencies, it will tell you what to install. If the frontend hasn't been built yet and `npm` is available, it builds automatically on first launch.
+
+The Chat tab is intentionally off for a plain `hermes dashboard` launch. Start the dashboard with `hermes dashboard --tui` or set `HERMES_DASHBOARD_TUI=1` when you want the embedded browser chat pane.
 
 ## Pages
 
@@ -78,7 +85,7 @@ The **Chat** tab embeds the full Hermes TUI (the same interface you get from `he
 
 - Node.js (same requirement as `hermes --tui`; the TUI bundle is built on first launch)
 - `ptyprocess` — installed by the `pty` extra (`pip install 'hermes-agent[web,pty]'`, or `[all]` covers both)
-- POSIX kernel (Linux, macOS, or WSL). Native Windows Python is not supported — use WSL.
+- POSIX kernel (Linux, macOS, or WSL2).  The `/chat` terminal pane specifically needs a POSIX PTY — native Windows Python has no equivalent, so on a native Windows install the rest of the dashboard (sessions, jobs, metrics, config editor) works but the `/chat` tab will show a banner telling you to use WSL2 for that feature.
 
 Close the browser tab and the PTY is reaped cleanly on the server. Re-opening spawns a fresh session.
 
@@ -332,6 +339,7 @@ Built-in themes:
 | Theme | Character |
 |-------|-----------|
 | **Hermes Teal** (`default`) | Dark teal + cream, system fonts, comfortable spacing |
+| **Hermes Teal (Large)** (`default-large`) | Same as default with 18px text and roomier spacing |
 | **Midnight** (`midnight`) | Deep blue-violet, Inter + JetBrains Mono |
 | **Ember** (`ember`) | Warm crimson + bronze, Spectral serif + IBM Plex Mono |
 | **Mono** (`mono`) | Grayscale, IBM Plex, compact |

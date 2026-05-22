@@ -943,3 +943,91 @@ class TestPinnedGuard:
                        side_effect=RuntimeError("sidecar broken")):
                 result = _delete_skill("my-skill")
         assert result["success"] is True
+
+
+class TestDeleteSkillCronGuard:
+    """_delete_skill must block archival inside the curator fork when a live
+    cron job still references the skill, and allow it in all other contexts."""
+
+    def _in_curator_fork(self):
+        """Context manager that activates the background-review context var.
+
+        All imports are resolved at call time (not deferred into finally) so
+        a missing symbol never raises inside cleanup and corrupts test state.
+        """
+        from contextlib import contextmanager
+        from tools.skill_provenance import (
+            set_current_write_origin,
+            reset_current_write_origin,
+            BACKGROUND_REVIEW,
+        )
+
+        @contextmanager
+        def _ctx():
+            token = set_current_write_origin(BACKGROUND_REVIEW)
+            try:
+                yield
+            finally:
+                reset_current_write_origin(token)
+
+        return _ctx()
+
+    def test_delete_blocked_when_cron_references_skill_in_curator_fork(self, tmp_path):
+        """Curator fork must not archive a skill referenced by an active cron job."""
+        with _skill_dir(tmp_path), \
+             patch("cron.jobs.get_active_skill_refs", return_value={"my-skill"}), \
+             self._in_curator_fork():
+            _create_skill("my-skill", VALID_SKILL_CONTENT)
+            result = _delete_skill("my-skill")
+        assert result["success"] is False
+        assert "active cron job" in result["error"]
+        assert (tmp_path / "my-skill" / "SKILL.md").exists()
+
+    def test_delete_allowed_when_skill_not_in_cron_refs_in_curator_fork(self, tmp_path):
+        """Curator fork must allow archiving a skill no cron job references."""
+        with _skill_dir(tmp_path), \
+             patch("cron.jobs.get_active_skill_refs", return_value={"other-skill"}), \
+             self._in_curator_fork():
+            _create_skill("my-skill", VALID_SKILL_CONTENT)
+            result = _delete_skill("my-skill")
+        assert result["success"] is True
+
+    def test_delete_not_blocked_outside_curator_fork_even_if_cron_references_skill(self, tmp_path):
+        """Manual user-directed delete must never be blocked by the cron guard."""
+        with _skill_dir(tmp_path), \
+             patch("cron.jobs.get_active_skill_refs", return_value={"my-skill"}):
+            _create_skill("my-skill", VALID_SKILL_CONTENT)
+            # is_background_review() returns False when not in curator fork
+            result = _delete_skill("my-skill")
+        assert result["success"] is True
+
+    def test_cron_store_error_returns_structured_failure_in_curator_fork(self, tmp_path):
+        """When get_active_skill_refs raises, _delete_skill must return a
+        structured error dict — not propagate the exception uncaught from a
+        tool handler, which would produce an opaque failure for the agent.
+        The raw exception is logged server-side; the error message returned to
+        the caller is generic to avoid leaking internal paths or store layout."""
+        with _skill_dir(tmp_path), \
+             patch("cron.jobs.get_active_skill_refs",
+                   side_effect=RuntimeError("disk error")), \
+             self._in_curator_fork():
+            _create_skill("my-skill", VALID_SKILL_CONTENT)
+            result = _delete_skill("my-skill")
+        assert result["success"] is False
+        assert "cron store error" in result["error"]
+        assert "disk error" not in result["error"]  # internal detail must not leak
+
+    def test_missing_symbol_in_cron_module_is_fail_closed_in_curator_fork(self, tmp_path, monkeypatch):
+        """If cron.jobs IS installed but get_active_skill_refs is missing (partial
+        upgrade), the import raises plain ImportError with e.name=='cron.jobs'.
+        The guard must treat this as fail-closed, not as 'cron not installed'."""
+        import sys, types, cron
+
+        fake_mod = types.ModuleType("cron.jobs")  # no get_active_skill_refs attribute
+        monkeypatch.setitem(sys.modules, "cron.jobs", fake_mod)
+        monkeypatch.setattr(cron, "jobs", fake_mod, raising=False)  # restore parent attr too
+        with _skill_dir(tmp_path), self._in_curator_fork():
+            _create_skill("my-skill", VALID_SKILL_CONTENT)
+            result = _delete_skill("my-skill")
+        assert result["success"] is False
+        assert "cron import error" in result["error"]

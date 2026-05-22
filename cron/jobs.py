@@ -17,7 +17,7 @@ import uuid
 from datetime import datetime, timedelta
 from pathlib import Path
 from hermes_constants import get_hermes_home
-from typing import Optional, Dict, List, Any, Union
+from typing import Optional, Dict, List, Any, Set, Union
 
 logger = logging.getLogger(__name__)
 
@@ -53,7 +53,14 @@ def _normalize_skill_list(skill: Optional[str] = None, skills: Optional[Any] = N
     elif isinstance(skills, str):
         raw_items = [skills]
     else:
-        raw_items = list(skills)
+        try:
+            raw_items = list(skills)
+        except TypeError:
+            logger.warning(
+                "cron: job has non-iterable 'skills' field (%s) — falling back to 'skill'; repair jobs.json",
+                type(skills).__name__,
+            )
+            raw_items = [skill] if skill else []
 
     normalized: List[str] = []
     for item in raw_items:
@@ -724,6 +731,19 @@ def list_jobs(include_disabled: bool = False) -> List[Dict[str, Any]]:
     if not include_disabled:
         jobs = [j for j in jobs if j.get("enabled", True)]
     return jobs
+
+
+def get_active_skill_refs() -> Set[str]:
+    """Return skill names referenced by any enabled cron job.
+
+    Used by the curator to protect skills from archival when a live
+    scheduled job still depends on them.
+    """
+    skills: Set[str] = set()
+    for job in list_jobs(include_disabled=False):
+        for name in _normalize_skill_list(job.get("skill"), job.get("skills")):
+            skills.add(name)
+    return skills
 
 
 def update_job(job_id: str, updates: Dict[str, Any]) -> Optional[Dict[str, Any]]:

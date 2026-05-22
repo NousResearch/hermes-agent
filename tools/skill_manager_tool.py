@@ -574,6 +574,59 @@ def _delete_skill(name: str, absorbed_into: Optional[str] = None) -> Dict[str, A
     if pinned_err:
         return {"success": False, "error": pinned_err}
 
+    # Curator-fork-only guard: refuse to delete a skill still referenced by an
+    # active cron job.  ModuleNotFoundError = not installed (skip).
+    # Other Exception = cron present but broken (fail-closed).
+    from tools.skill_provenance import is_background_review
+    if is_background_review():
+        _get_refs = None
+        try:
+            from cron.jobs import get_active_skill_refs as _get_refs
+        except Exception as e:
+            # Only skip the guard when cron is genuinely absent.
+            # ModuleNotFoundError with e.name in ("cron","cron.jobs") = not installed.
+            # All other errors (broken dep, plain ImportError for missing symbol, etc.)
+            # are fail-closed — mirror: curator._load_cron_protected.
+            if isinstance(e, ModuleNotFoundError) and getattr(e, "name", None) in ("cron", "cron.jobs"):
+                pass  # cron not installed — no active jobs, guard not needed
+            else:
+                logger.warning(
+                    "skill_manager: cron.jobs failed to import for '%s': %s",
+                    name, e, exc_info=True,
+                )
+                return {
+                    "success": False,
+                    "error": (
+                        f"Cannot verify cron job references for '{name}' "
+                        "(cron import error — see server logs). "
+                        "Resolve the cron issue and retry."
+                    ),
+                }
+        if _get_refs is not None:
+            try:
+                _active_refs = _get_refs()
+            except Exception as e:
+                logger.warning(
+                    "skill_manager: cron ref check failed for '%s': %s",
+                    name, e, exc_info=True,
+                )
+                return {
+                    "success": False,
+                    "error": (
+                        f"Cannot verify cron job references for '{name}' "
+                        "(cron store error — see server logs). "
+                        "Resolve the cron store issue and retry."
+                    ),
+                }
+            if name in _active_refs:
+                return {
+                    "success": False,
+                    "error": (
+                        f"Cannot delete '{name}': an active cron job references this skill. "
+                        "Remove or update the cron job first, then retry."
+                    ),
+                }
+
     # Validate absorbed_into target when declared non-empty
     if absorbed_into is not None and isinstance(absorbed_into, str) and absorbed_into.strip():
         target_name = absorbed_into.strip()

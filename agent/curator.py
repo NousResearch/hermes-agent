@@ -253,10 +253,71 @@ def should_run_now(now: Optional[datetime] = None) -> bool:
 # Automatic state transitions (pure function, no LLM)
 # ---------------------------------------------------------------------------
 
-def apply_automatic_transitions(now: Optional[datetime] = None) -> Dict[str, int]:
+def _load_cron_protected() -> Optional[Set[str]]:
+    """Return skill names referenced by enabled cron jobs, or None on error.
+
+    Empty set  — no protected skills (cron absent, or installed with no
+                 enabled jobs that reference a skill).
+    None       — cron store unreadable; caller must skip auto-archive
+                 transitions (fail-closed) rather than proceed unprotected.
+    """
+    try:
+        from cron.jobs import get_active_skill_refs
+    except ModuleNotFoundError as e:
+        if getattr(e, "name", None) in ("cron", "cron.jobs"):
+            return set()  # cron subsystem not installed — no jobs exist
+        # A dependency *inside* cron.jobs is missing — treat as broken, fail-closed.
+        logger.warning(
+            "curator: cron.jobs failed to import — "
+            "auto-archive transitions will be skipped this run: %s", e,
+            exc_info=True,
+        )
+        return None
+    except ImportError as e:
+        # Plain ImportError (not ModuleNotFoundError) means the module IS present but the
+        # symbol is missing — e.g., "cannot import name 'get_active_skill_refs'" from an
+        # older cron module.  e.name == "cron.jobs" in this case too, so we cannot rely on
+        # e.name alone; we must treat any plain ImportError as fail-closed.
+        logger.warning(
+            "curator: cron.jobs failed to import — "
+            "auto-archive transitions will be skipped this run: %s", e,
+            exc_info=True,
+        )
+        return None
+    except Exception as e:
+        # cron.jobs exists but failed to import (init-time RuntimeError, etc.)
+        logger.warning(
+            "curator: cron.jobs failed to import — "
+            "auto-archive transitions will be skipped this run: %s", e,
+            exc_info=True,
+        )
+        return None  # fail-closed
+    try:
+        return get_active_skill_refs()
+    except Exception as e:
+        logger.warning(
+            "curator: could not read cron job skill refs — "
+            "auto-archive transitions will be skipped this run: %s", e,
+            exc_info=True,
+        )
+        return None
+
+
+def apply_automatic_transitions(
+    now: Optional[datetime] = None,
+    cron_protected: Optional[Set[str]] = None,
+) -> Dict[str, int]:
     """Walk every agent-created skill and move active/stale/archived based on
     the latest real activity timestamp. Pinned skills are never touched.
-    Returns a counter dict describing what changed."""
+    Returns a counter dict describing what changed.
+
+    Args:
+        cron_protected: pre-computed set of skill names referenced by active
+            cron jobs.  When *None* (standalone or test use), the set is
+            fetched internally.  Pass an explicit value from
+            ``run_curator_review`` so both the pure phase and the LLM
+            candidate list operate on the same snapshot.
+    """
     from tools import skill_usage as _u
 
     if now is None:
@@ -264,12 +325,19 @@ def apply_automatic_transitions(now: Optional[datetime] = None) -> Dict[str, int
     stale_cutoff = now - timedelta(days=get_stale_after_days())
     archive_cutoff = now - timedelta(days=get_archive_after_days())
 
+    if cron_protected is None:
+        cron_protected = _load_cron_protected()
+        if cron_protected is None:
+            return {"marked_stale": 0, "archived": 0, "reactivated": 0, "checked": 0}
+
     counts = {"marked_stale": 0, "archived": 0, "reactivated": 0, "checked": 0}
 
     for row in _u.agent_created_report():
         counts["checked"] += 1
         name = row["name"]
         if row.get("pinned"):
+            continue
+        if name in cron_protected:
             continue
 
         last_activity = _parse_iso(row.get("last_activity_at"))
@@ -348,11 +416,14 @@ CURATOR_REVIEW_PROMPT = (
     "into ~/.hermes/skills/.archive/) is the maximum destructive action. "
     "Archives are recoverable; deletion is not.\n"
     "3. DO NOT touch skills shown as pinned=yes. Skip them entirely.\n"
-    "4. DO NOT use usage counters as a reason to skip consolidation. The "
+    "4. DO NOT touch skills listed under 'Cron-protected skills' below. "
+    "Active scheduled jobs depend on them; archiving would break those "
+    "jobs silently at next run time.\n"
+    "5. DO NOT use usage counters as a reason to skip consolidation. The "
     "counters are new and often mostly zero. Judge overlap on CONTENT, "
     "not on use_count. 'use=0' is not evidence a skill is valuable; it's "
     "absence of evidence either way.\n"
-    "5. DO NOT reject consolidation on the grounds that 'each skill has "
+    "6. DO NOT reject consolidation on the grounds that 'each skill has "
     "a distinct trigger'. Pairwise distinctness is the wrong bar. The "
     "right bar is: 'would a human maintainer write this as N separate "
     "skills, or as one skill with N labeled subsections?' When the "
@@ -1346,12 +1417,38 @@ def _render_report_markdown(p: Dict[str, Any]) -> str:
 # Orchestrator — spawn a forked AIAgent for the LLM review pass
 # ---------------------------------------------------------------------------
 
-def _render_candidate_list() -> str:
-    """Human/agent-readable list of agent-created skills with usage stats."""
+def _render_candidate_list(cron_protected: Optional[Set[str]] = None) -> str:
+    """Human/agent-readable list of agent-created skills with usage stats.
+
+    Args:
+        cron_protected: pre-computed set from ``_load_cron_protected()``.
+            When *None*, fetched internally (standalone / dry-run use).
+    """
     rows = skill_usage.agent_created_report()
     if not rows:
         return "No agent-created skills to review."
-    lines = [f"Agent-created skills ({len(rows)}):\n"]
+
+    if cron_protected is None:
+        cron_protected = _load_cron_protected()
+
+    lines = []
+
+    if cron_protected is None:
+        lines.append(
+            "⚠ Cron-protection guard unavailable (cron store error). "
+            "Do NOT archive any skill this run — cron job dependencies cannot be verified."
+        )
+        lines.append("")
+        cron_protected = set()
+
+    protected_names = sorted(cron_protected)
+    if protected_names:
+        lines.append("Cron-protected skills (do not archive — active jobs reference these):")
+        for name in protected_names:
+            lines.append(f"- {name}")
+        lines.append("")
+
+    lines.append(f"Agent-created skills ({len(rows)}):\n")
     for r in rows:
         lines.append(
             f"- {r['name']}  "
@@ -1390,6 +1487,9 @@ def run_curator_review(
     can read what the curator WOULD have done.
     """
     start = datetime.now(timezone.utc)
+    # None = cron store present but unreadable; auto-archive transitions are
+    # skipped below.  See _load_cron_protected() for the full contract.
+    cron_protected = _load_cron_protected()
     if dry_run:
         # Count candidates without mutating state.
         try:
@@ -1418,7 +1518,10 @@ def run_curator_review(
                     pass
         except Exception as e:
             logger.debug("Curator pre-run snapshot failed: %s", e, exc_info=True)
-        counts = apply_automatic_transitions(now=start)
+        if cron_protected is not None:
+            counts = apply_automatic_transitions(now=start, cron_protected=cron_protected)
+        else:
+            counts = {"checked": 0, "marked_stale": 0, "archived": 0, "reactivated": 0}
 
     auto_summary_parts = []
     if counts["marked_stale"]:
@@ -1453,7 +1556,7 @@ def run_curator_review(
 
         llm_meta: Dict[str, Any] = {}
         try:
-            candidate_list = _render_candidate_list()
+            candidate_list = _render_candidate_list(cron_protected=cron_protected)
             if "No agent-created skills" in candidate_list:
                 final_summary = f"{prefix}{auto_summary}; llm: skipped (no candidates)"
                 llm_meta = {
@@ -1705,6 +1808,13 @@ def _run_llm_review(prompt: str) -> Dict[str, Any]:
             skip_context_files=True,
             skip_memory=True,
         )
+        # Mark this fork as a background review so tool-layer guards (e.g.
+        # the cron-protection check in _delete_skill()) activate correctly.
+        # conversation_loop.py reads _memory_write_origin and calls
+        # set_current_write_origin() at the start of run_conversation(),
+        # which sets the ContextVar that is_background_review() reads.
+        from tools.skill_provenance import BACKGROUND_REVIEW
+        review_agent._memory_write_origin = BACKGROUND_REVIEW
         # Disable recursive nudges — the curator must never spawn its own review.
         review_agent._memory_nudge_interval = 0
         review_agent._skill_nudge_interval = 0

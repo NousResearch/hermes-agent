@@ -24,6 +24,7 @@ from cron.jobs import (
     advance_next_run,
     get_due_jobs,
     save_job_output,
+    get_active_skill_refs,
 )
 
 
@@ -953,3 +954,53 @@ class TestSaveJobOutput:
         assert output_file.exists()
         assert output_file.read_text() == "# Results\nEverything ok."
         assert "test123" in str(output_file)
+
+
+class TestGetActiveSkillRefs:
+    """get_active_skill_refs must return skill names from ENABLED jobs only."""
+
+    def test_calls_list_jobs_with_disabled_excluded(self, tmp_cron_dir):
+        """Pins the mechanism: must call list_jobs(include_disabled=False).
+        If the argument is ever changed to True, disabled-job skills would
+        appear in the protected set and block the curator from archiving them."""
+        with patch("cron.jobs.list_jobs", return_value=[]) as mock_list:
+            get_active_skill_refs()
+        mock_list.assert_called_once_with(include_disabled=False)
+
+    def test_returns_skills_from_enabled_jobs(self, tmp_cron_dir):
+        create_job(prompt="Daily report", schedule="every 1h", skills=["daily-report"])
+        refs = get_active_skill_refs()
+        assert "daily-report" in refs
+
+    def test_excludes_skills_from_disabled_jobs(self, tmp_cron_dir):
+        """A disabled job must NOT contribute its skill to the protected set.
+        This is the core correctness invariant for cron-protection (issue #29912):
+        disabling a cron job should unprotect its skill so the curator can archive it."""
+        job = create_job(prompt="Off job", schedule="every 1h", skills=["archived-skill"])
+        update_job(job["id"], {"enabled": False})
+        refs = get_active_skill_refs()
+        assert "archived-skill" not in refs
+
+    def test_returns_empty_when_no_jobs_reference_skills(self, tmp_cron_dir):
+        create_job(prompt="No skill job", schedule="every 1h")
+        refs = get_active_skill_refs()
+        assert refs == set()
+
+    def test_returns_empty_when_no_jobs_exist(self, tmp_cron_dir):
+        assert get_active_skill_refs() == set()
+
+    def test_deduplicates_skill_refs_across_jobs(self, tmp_cron_dir):
+        create_job(prompt="Job A", schedule="every 1h", skills=["shared-skill"])
+        create_job(prompt="Job B", schedule="every 2h", skills=["shared-skill"])
+        refs = get_active_skill_refs()
+        assert refs == {"shared-skill"}
+
+    def test_non_iterable_skills_falls_back_to_legacy_skill(self, caplog):
+        """Corrupted 'skills' field (non-iterable) must not drop the legacy 'skill' value."""
+        import logging
+        bad_job = {"skill": "fallback-skill", "skills": 42}
+        with patch("cron.jobs.list_jobs", return_value=[bad_job]), \
+             caplog.at_level(logging.WARNING, logger="cron.jobs"):
+            refs = get_active_skill_refs()
+        assert "fallback-skill" in refs
+        assert any("non-iterable" in r.message for r in caplog.records)

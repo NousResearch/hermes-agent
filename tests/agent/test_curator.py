@@ -208,6 +208,144 @@ def test_pinned_skill_is_never_touched(curator_env):
     assert rec["pinned"] is True
 
 
+def test_cron_referenced_skill_is_not_archived(curator_env, monkeypatch):
+    """A skill past archive_cutoff must not be archived when an active cron
+    job still references it. Regression for GitHub issue #29912."""
+    c = curator_env["curator"]
+    u = curator_env["usage"]
+    skills_dir = curator_env["home"] / "skills"
+    skill_dir = _write_skill(skills_dir, "daily-report")
+
+    super_old = (datetime.now(timezone.utc) - timedelta(days=120)).isoformat()
+    data = u.load_usage()
+    data["daily-report"] = u._empty_record()
+    data["daily-report"]["created_by"] = "agent"
+    data["daily-report"]["last_used_at"] = super_old
+    data["daily-report"]["created_at"] = super_old
+    u.save_usage(data)
+
+    # Patch the module attribute directly: apply_automatic_transitions() uses
+    # a lazy "from cron.jobs import get_active_skill_refs" inside the body of
+    # _load_cron_protected(), so patching the module attribute is the correct
+    # intercept point. If that import is ever hoisted to module level, this
+    # test will need to patch agent.curator.get_active_skill_refs instead.
+    import cron.jobs as cron_jobs
+    monkeypatch.setattr(cron_jobs, "get_active_skill_refs", lambda: {"daily-report"})
+
+    counts = c.apply_automatic_transitions()
+
+    assert counts["archived"] == 0
+    assert skill_dir.exists(), "cron-protected skill should not be moved to .archive/"
+
+
+def test_load_cron_protected_returns_empty_when_cron_unavailable(curator_env, monkeypatch):
+    """When the cron module is not installed, _load_cron_protected must return
+    an empty set silently — missing cron support is not a fatal error."""
+    import sys
+    c = curator_env["curator"]
+    # Use a meta_path finder that raises ModuleNotFoundError consistently across all
+    # Python versions.  (sys.modules[key]=None raises plain ImportError on Python 3.11
+    # but ModuleNotFoundError on 3.12+; after the isinstance fix, plain ImportError is
+    # treated as fail-closed — so we need a technique that always gives ModuleNotFoundError.)
+    monkeypatch.delitem(sys.modules, "cron.jobs", raising=False)
+
+    class _BlockCronJobs:
+        def find_spec(self, fullname, path, target=None):
+            if fullname == "cron.jobs":
+                raise ModuleNotFoundError("No module named 'cron.jobs'", name="cron.jobs")
+
+    blocker = _BlockCronJobs()
+    sys.meta_path.insert(0, blocker)
+    try:
+        result = c._load_cron_protected()
+    finally:
+        sys.meta_path.remove(blocker)
+        # Do NOT reimport cron.jobs here: doing so would update sys.modules["cron"].jobs
+        # to a fresh module object while monkeypatch restores sys.modules["cron.jobs"]
+        # to the original, causing a split that breaks later tests that do
+        # `import cron.jobs as cron_jobs` (which reads the package attribute, not sys.modules).
+
+    assert result == set()
+
+
+def test_load_cron_protected_returns_none_when_symbol_missing(
+    curator_env, monkeypatch, caplog
+):
+    """When cron.jobs IS installed but get_active_skill_refs doesn't exist (partial
+    upgrade / older module), the import raises plain ImportError with e.name=='cron.jobs'.
+    _load_cron_protected must NOT treat this as 'module absent' — it must fail-closed."""
+    import sys, logging, types
+
+    c = curator_env["curator"]
+
+    # Inject a fake cron.jobs module without get_active_skill_refs.
+    import cron
+    fake_mod = types.ModuleType("cron.jobs")
+    monkeypatch.setitem(sys.modules, "cron.jobs", fake_mod)
+    monkeypatch.setattr(cron, "jobs", fake_mod, raising=False)  # restore parent attr too
+
+    with caplog.at_level(logging.WARNING, logger="agent.curator"):
+        result = c._load_cron_protected()
+
+    assert result is None, "missing symbol should be fail-closed, not treated as absent"
+    assert any("auto-archive transitions will be skipped" in rec.message for rec in caplog.records)
+
+
+def test_load_cron_protected_returns_none_and_warns_on_runtime_error(
+    curator_env, monkeypatch, caplog
+):
+    """When get_active_skill_refs() raises a runtime error, _load_cron_protected
+    must return None (not an empty set) and emit a WARNING.  Callers treat None
+    as fail-closed: skip auto-archive transitions rather than proceed unprotected."""
+    import logging
+    import cron.jobs as cron_jobs
+
+    c = curator_env["curator"]
+
+    def _raise():
+        raise RuntimeError("disk error")
+
+    monkeypatch.setattr(cron_jobs, "get_active_skill_refs", _raise)
+
+    with caplog.at_level(logging.WARNING, logger="agent.curator"):
+        result = c._load_cron_protected()
+
+    assert result is None
+    assert any("auto-archive transitions will be skipped" in rec.message for rec in caplog.records)
+
+
+def test_apply_automatic_transitions_skips_when_cron_store_raises(
+    curator_env, monkeypatch
+):
+    """When apply_automatic_transitions fetches cron_protected internally and
+    get_active_skill_refs raises, it must return zero counts (fail-closed) rather
+    than archiving skills whose cron dependency cannot be verified."""
+    import cron.jobs as cron_jobs
+
+    c = curator_env["curator"]
+    u = curator_env["usage"]
+    skills_dir = curator_env["home"] / "skills"
+    skill_dir = _write_skill(skills_dir, "old-skill")
+
+    super_old = (datetime.now(timezone.utc) - timedelta(days=120)).isoformat()
+    data = u.load_usage()
+    data["old-skill"] = u._empty_record()
+    data["old-skill"]["created_by"] = "agent"
+    data["old-skill"]["last_used_at"] = super_old
+    data["old-skill"]["created_at"] = super_old
+    u.save_usage(data)
+
+    def _raise():
+        raise RuntimeError("io error")
+
+    monkeypatch.setattr(cron_jobs, "get_active_skill_refs", _raise)
+
+    counts = c.apply_automatic_transitions()
+
+    assert counts == {"marked_stale": 0, "archived": 0, "reactivated": 0, "checked": 0}
+    assert skill_dir.exists(), "skill must not be archived when cron store is unreadable"
+
+
 def test_stale_skill_reactivates_on_recent_use(curator_env):
     c = curator_env["curator"]
     u = curator_env["usage"]

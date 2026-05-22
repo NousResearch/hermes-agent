@@ -11,6 +11,7 @@ class SignalIntelligenceQuickActionsTest {
         val actionsById = SIGNAL_INTELLIGENCE_QUICK_ACTIONS.associateBy { it.id }
 
         assertEquals("signal_awareness_report", actionsById.getValue("signal_overview").diagnosticAction)
+        assertEquals("agent_signal_evidence_report", actionsById.getValue("signal_evidence").diagnosticAction)
         assertEquals("agent_environment_report", actionsById.getValue("agent_environment").diagnosticAction)
         assertEquals("agent_observation_report", actionsById.getValue("agent_observation").diagnosticAction)
         assertEquals("agent_card_manifest_report", actionsById.getValue("card_manifest").diagnosticAction)
@@ -29,6 +30,7 @@ class SignalIntelligenceQuickActionsTest {
         assertEquals("Runtime Backend", actionsById.getValue("runtime_backend").label)
         assertEquals("Backend Risk", actionsById.getValue("backend_risk").label)
         assertEquals("Inference Fit", actionsById.getValue("inference_compatibility").label)
+        assertEquals("Evidence Bundle", actionsById.getValue("signal_evidence").label)
         assertEquals("Agent Observation", actionsById.getValue("agent_observation").label)
         assertEquals("Card Manifest", actionsById.getValue("card_manifest").label)
         assertEquals("Radio Signals", actionsById.getValue("radio_limits").label)

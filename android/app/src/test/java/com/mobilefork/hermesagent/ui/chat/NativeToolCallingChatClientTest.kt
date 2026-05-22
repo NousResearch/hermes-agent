@@ -113,6 +113,16 @@ class NativeToolCallingChatClientTest {
     }
 
     @Test
+    fun extractsExplicitSignalEvidenceDiagnosticQuickActionArguments() {
+        val parsed = NativeToolCallingChatClient.extractExplicitAndroidDiagnosticsArguments(
+            "Run android_device_diagnostics_tool action=agent_signal_evidence_report",
+        )
+
+        requireNotNull(parsed)
+        assertEquals("agent_signal_evidence_report", parsed.getString("action"))
+    }
+
+    @Test
     fun extractsExplicitAgentCardManifestDiagnosticQuickActionArguments() {
         val parsed = NativeToolCallingChatClient.extractExplicitAndroidDiagnosticsArguments(
             "Run android_device_diagnostics_tool action=agent_card_manifest_report",
@@ -922,6 +932,60 @@ class NativeToolCallingChatClientTest {
         assertEquals("MediaTek and non-Adreno fallback policy", first.getString("label"))
         assertEquals("gpu_backend_risk_report", first.getString("tool_action"))
         assertEquals("gpu_backend_risk_matrix", first.getString("graph_type"))
+    }
+
+    @Test
+    fun compactsSignalEvidenceReportWithoutDroppingEvidenceRows() {
+        val rows = JSONArray()
+        repeat(18) { index ->
+            rows.put(
+                JSONObject()
+                    .put("category", "signal_evidence")
+                    .put("label", if (index == 0) "Wi-Fi AP and channel evidence" else "Signal evidence row $index")
+                    .put("ready", index < 9)
+                    .put("value_label", if (index == 0) "3 AP(s), 3 graph row(s)" else "evidence value $index")
+                    .put("detail", "Detailed signal evidence row $index with Wi-Fi Bluetooth motion radio and local inference context.")
+                    .put("recommendation", "Use agent_signal_evidence_report before explaining what Gemma can currently view.")
+                    .put("tool_action", if (index == 0) "wifi_channel_graph" else "agent_signal_evidence_report")
+                    .put("graph_type", if (index == 0) "wifi_channel_graph" else "signal_evidence_matrix")
+                    .put("evidence_key", if (index == 0) "wifi_ap_channel" else "evidence_$index"),
+            )
+        }
+        val routes = JSONArray().put(
+            JSONObject()
+                .put("category", "signal_evidence_route")
+                .put("label", "Open signal evidence bundle")
+                .put("ready", true)
+                .put("value_label", "agent_signal_evidence_report")
+                .put("tool_action", "agent_signal_evidence_report"),
+        )
+        val result = JSONObject()
+            .put("success", true)
+            .put("action", "agent_signal_evidence_report")
+            .put("signal_evidence_count", 18)
+            .put("ready_signal_evidence_count", 9)
+            .put("signal_evidence_route_count", 1)
+            .put("signal_evidence_graph_type_count", 3)
+            .put("signal_evidence_matrix", rows)
+            .put("signal_evidence_routes", routes)
+            .put("signal_evidence_graph_types", JSONArray().put("signal_evidence_matrix").put("wifi_channel_graph").put("local_inference_compatibility_matrix"))
+            .put("cards", JSONArray().put(JSONObject().put("title", "Signal Evidence Bundle").put("body", "18 rows")))
+            .toString()
+
+        val parsed = JSONObject(NativeToolContextCompressor.compactToolResult(result))
+        val matrix = parsed.getJSONObject("signal_evidence_matrix")
+        val first = matrix.getJSONArray("items").getJSONObject(0)
+
+        assertTrue(parsed.getBoolean("_hermes_context_compressed"))
+        assertEquals(18, parsed.getInt("signal_evidence_count"))
+        assertEquals(9, parsed.getInt("ready_signal_evidence_count"))
+        assertEquals(1, parsed.getInt("signal_evidence_route_count"))
+        assertEquals(3, parsed.getInt("signal_evidence_graph_type_count"))
+        assertEquals("array", matrix.getString("type"))
+        assertEquals("Wi-Fi AP and channel evidence", first.getString("label"))
+        assertEquals("wifi_channel_graph", first.getString("tool_action"))
+        assertEquals("wifi_channel_graph", first.getString("graph_type"))
+        assertEquals("wifi_ap_channel", first.getString("evidence_key"))
     }
 
     @Test

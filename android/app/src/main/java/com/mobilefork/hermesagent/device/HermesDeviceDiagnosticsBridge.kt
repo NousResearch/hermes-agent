@@ -121,6 +121,8 @@ object HermesDeviceDiagnosticsBridge {
                 devicePerformanceReportJson(appContext).toString()
             "signal_awareness_report", "nearby_signal_report", "rf_sensor_fusion_report", "ambient_context_report" ->
                 signalAwarenessReportJson(appContext).toString()
+            "agent_signal_evidence_report", "signal_evidence_bundle", "current_signal_evidence", "gemma_signal_evidence" ->
+                agentSignalEvidenceReportJson(appContext).toString()
             "agent_observation_report", "agent_signal_dashboard", "gemma_observation_report", "multimodal_signal_dashboard" ->
                 agentObservationReportJson(appContext).toString()
             "agent_card_manifest_report", "card_manifest_report", "diagnostic_card_manifest", "graph_card_manifest" ->
@@ -2442,6 +2444,91 @@ object HermesDeviceDiagnosticsBridge {
             )
     }
 
+    fun agentSignalEvidenceReportJson(context: Context): JSONObject {
+        val appContext = context.applicationContext
+        val wifiReport = wifiAnalyzerReportJson(appContext, JSONObject().put("refresh", false))
+        val bluetoothReport = bluetoothAnalyzerReportJson(appContext, JSONObject().put("refresh", false))
+        val sensorReport = sensorAnalyzerReportJson(appContext, JSONObject().put("include_snapshot", false))
+        val radioReport = radioSignalStatusJson(appContext)
+        val signalReport = signalAwarenessReportJson(appContext)
+        val backendRiskReport = gpuBackendRiskReportJson(appContext)
+        val inferenceReport = localInferenceCompatibilityReportJson(appContext)
+        val evidenceRows = agentSignalEvidenceRows(
+            wifiReport = wifiReport,
+            bluetoothReport = bluetoothReport,
+            sensorReport = sensorReport,
+            radioReport = radioReport,
+            signalReport = signalReport,
+            backendRiskReport = backendRiskReport,
+            inferenceReport = inferenceReport,
+        )
+        val routeRows = agentSignalEvidenceRouteRows()
+        val graphTypes = signalEvidenceGraphTypes()
+        return JSONObject()
+            .put("success", true)
+            .put("action", "agent_signal_evidence_report")
+            .put("report_scope", "Compact Gemma-readable evidence bundle for what Hermes can currently view across Wi-Fi, Bluetooth, motion sensors, AM/FM/RF boundaries, and local inference readiness.")
+            .put("source_report_actions", signalEvidenceSourceActions())
+            .put("wifi_evidence_summary", observationSummaryJson(wifiReport, "wifi_analyzer_report"))
+            .put("bluetooth_evidence_summary", observationSummaryJson(bluetoothReport, "bluetooth_analyzer_report"))
+            .put("sensor_evidence_summary", observationSummaryJson(sensorReport, "sensor_analyzer_report"))
+            .put("radio_evidence_summary", observationSummaryJson(radioReport, "radio_signal_status"))
+            .put("signal_awareness_evidence_summary", observationSummaryJson(signalReport, "signal_awareness_report"))
+            .put("backend_risk_evidence_summary", observationSummaryJson(backendRiskReport, "gpu_backend_risk_report"))
+            .put("local_inference_evidence_summary", observationSummaryJson(inferenceReport, "local_inference_compatibility_report"))
+            .put("signal_evidence_matrix", evidenceRows)
+            .put("signal_evidence_routes", routeRows)
+            .put("signal_evidence_graph_types", graphTypes)
+            .put("signal_evidence_count", evidenceRows.length())
+            .put("ready_signal_evidence_count", countReadyRows(evidenceRows))
+            .put("signal_evidence_route_count", routeRows.length())
+            .put("signal_evidence_graph_type_count", graphTypes.length())
+            .put(
+                "gemma_observation_directives",
+                JSONArray()
+                    .put("Read signal_evidence_matrix before answering what Hermes can currently view from nearby signals, motion sensors, radio limits, or local inference readiness.")
+                    .put("Treat analyzer summaries as passive evidence; request refresh=true only when the user needs live Wi-Fi, Bluetooth, or motion samples.")
+                    .put("Use signal_evidence_routes and signal_evidence_graph_types to open the exact expandable card before turning evidence into a user-facing explanation.")
+                    .put("Use local_inference_compatibility_report evidence before promising Gemma 4 multimodal or non-Adreno local acceleration behavior."),
+            )
+            .put(
+                "cards",
+                JSONArray()
+                    .put(
+                        graphCard(
+                            title = "Signal Evidence Bundle",
+                            body = "${evidenceRows.length()} evidence row(s) fusing Wi-Fi AP/channel graphs, Bluetooth proximity/history, motion sensors, AM/FM/RF boundaries, and local inference compatibility.",
+                            graphType = "signal_evidence_matrix",
+                            rows = evidenceRows,
+                        ),
+                    )
+                    .put(
+                        graphCard(
+                            title = "Signal Evidence Routes",
+                            body = "${routeRows.length()} route row(s) for opening the right analyzer, graph, or scorecard behind the current evidence.",
+                            graphType = "signal_evidence_routes",
+                            rows = routeRows,
+                        ),
+                    )
+                    .put(
+                        graphCard(
+                            title = "Local Inference Compatibility",
+                            body = "${inferenceReport.optInt("local_inference_compatibility_count", 0)} local inference compatibility row(s) backing Gemma-readable signal reasoning.",
+                            graphType = "local_inference_compatibility_matrix",
+                            rows = inferenceReport.optJSONArray("local_inference_compatibility_matrix") ?: JSONArray(),
+                        ),
+                    )
+                    .put(
+                        graphCard(
+                            title = "Signal Awareness",
+                            body = "${signalReport.optInt("signal_awareness_count", 0)} cross-signal context row(s) backing the evidence bundle.",
+                            graphType = "signal_awareness_matrix",
+                            rows = signalReport.optJSONArray("signal_awareness_matrix") ?: JSONArray(),
+                        ),
+                    ),
+            )
+    }
+
     fun agentCardManifestReportJson(context: Context): JSONObject {
         val appContext = context.applicationContext
         val wifiReport = wifiAnalyzerReportJson(appContext, JSONObject().put("refresh", false))
@@ -3162,6 +3249,334 @@ object HermesDeviceDiagnosticsBridge {
                 ),
             )
     }
+
+    private fun agentSignalEvidenceRows(
+        wifiReport: JSONObject,
+        bluetoothReport: JSONObject,
+        sensorReport: JSONObject,
+        radioReport: JSONObject,
+        signalReport: JSONObject,
+        backendRiskReport: JSONObject,
+        inferenceReport: JSONObject,
+    ): JSONArray {
+        val wifiNetworkCount = wifiReport.optInt("total_scan_result_count", wifiReport.optJSONArray("wifi_networks")?.length() ?: 0)
+        val wifiChannelGraphCount = wifiReport.optInt("wifi_channel_graph_count", wifiReport.optJSONArray("wifi_channel_graph")?.length() ?: 0)
+        val wifiChannelRatingCount = wifiReport.optJSONArray("wifi_channel_ratings")?.length() ?: 0
+        val wifiBandCoverageCount = wifiReport.optInt("wifi_band_coverage_count", wifiReport.optJSONArray("wifi_band_coverage")?.length() ?: 0)
+        val wifiHistoryCount = wifiReport.optJSONArray("wifi_signal_history")?.length() ?: 0
+        val bluetoothDeviceCount = bluetoothReport.optInt("bluetooth_device_count", bluetoothReport.optJSONArray("bluetooth_devices")?.length() ?: 0)
+        val bluetoothMetadataCount = bluetoothReport.optInt("bluetooth_metadata_count", bluetoothReport.optJSONArray("bluetooth_metadata_summary")?.length() ?: 0)
+        val bluetoothHistoryCount = bluetoothReport.optInt("bluetooth_signal_history_count", bluetoothReport.optJSONArray("bluetooth_signal_history")?.length() ?: 0)
+        val sensorCapabilityCount = sensorReport.optInt("sensor_capability_count", sensorReport.optJSONArray("sensor_capabilities")?.length() ?: 0)
+        val motionHistoryCount = sensorReport.optInt("motion_sensor_history_count", sensorReport.optJSONArray("motion_sensor_history")?.length() ?: 0)
+        val motionPoseCount = sensorReport.optInt("motion_pose_estimate_count", sensorReport.optJSONArray("motion_pose_estimates")?.length() ?: 0)
+        val radioBandCount = radioReport.optInt("radio_band_plan_count", radioReport.optJSONArray("radio_bands")?.length() ?: 0)
+        val radioGraphReady = radioReport.optBoolean("radio_signal_graph_bridge_ready", false) ||
+            radioReport.optBoolean("am_fm_public_android_scan_supported", false)
+        val signalAwarenessCount = signalReport.optInt("signal_awareness_count", signalReport.optJSONArray("signal_awareness_matrix")?.length() ?: 0)
+        val signalConstraintCount = signalReport.optInt("signal_constraint_count", signalReport.optJSONArray("signal_constraint_matrix")?.length() ?: 0)
+        val backendRiskCount = backendRiskReport.optInt("gpu_backend_risk_count", backendRiskReport.optJSONArray("gpu_backend_risk_matrix")?.length() ?: 0)
+        val highBackendRiskCount = backendRiskReport.optInt("high_gpu_backend_risk_count", 0)
+        val backendRiskLevel = backendRiskReport.optString("gpu_backend_risk_level").ifBlank { "unknown" }
+        val compatibilityScore = inferenceReport.optInt("local_inference_compatibility_score", 0)
+        val compatibilityLevel = inferenceReport.optString("local_inference_compatibility_level").ifBlank { "unknown" }
+        val compatibilityCount = inferenceReport.optInt("local_inference_compatibility_count", inferenceReport.optJSONArray("local_inference_compatibility_matrix")?.length() ?: 0)
+        val compatibilityReadyCount = inferenceReport.optInt("ready_local_inference_compatibility_count", 0)
+        val wifiReady = wifiReport.optBoolean("success", false) && (wifiNetworkCount > 0 || wifiBandCoverageCount > 0 || wifiChannelGraphCount > 0)
+        val bluetoothReady = bluetoothReport.optBoolean("success", false) && (bluetoothDeviceCount > 0 || bluetoothMetadataCount > 0 || bluetoothHistoryCount > 0)
+        val sensorReady = sensorReport.optBoolean("sensor_service_available", false) || sensorCapabilityCount > 0 || motionHistoryCount > 0 || motionPoseCount > 0
+        val radioReady = radioBandCount > 0
+        val inferenceReady = inferenceReport.optBoolean("success", false) && compatibilityCount > 0
+        val readyDomainCount = listOf(wifiReady, bluetoothReady, sensorReady, radioReady, inferenceReady).count { it }
+        val sourceActions = signalEvidenceSourceActions()
+        val graphTypes = signalEvidenceGraphTypes()
+
+        return JSONArray()
+            .put(
+                capabilityRow(
+                    category = "signal_evidence",
+                    label = "Current signal evidence bundle",
+                    ready = readyDomainCount > 0,
+                    valueLabel = "$readyDomainCount/5 evidence domain(s)",
+                    detail = "Bundles passive Wi-Fi, Bluetooth, motion sensor, AM/FM/RF boundary, and local inference compatibility evidence for Gemma before natural-language reasoning.",
+                    recommendation = "Read this bundle first when the user asks what Hermes can currently view or infer from nearby signals and phone context.",
+                    fraction = (readyDomainCount / 5f).coerceIn(0.25f, 0.95f),
+                    extra = JSONObject()
+                        .put("evidence_key", "current_signal_bundle")
+                        .put("source_actions", sourceActions)
+                        .put("card_graph_types", graphTypes),
+                ),
+            )
+            .put(
+                capabilityRow(
+                    category = "signal_evidence_wifi",
+                    label = "Wi-Fi AP and channel evidence",
+                    ready = wifiReady,
+                    valueLabel = "$wifiNetworkCount AP(s), $wifiChannelGraphCount graph row(s)",
+                    detail = "$wifiChannelRatingCount channel rating row(s), $wifiBandCoverageCount band coverage row(s), and $wifiHistoryCount cached RSSI history row(s) are available for WiFiAnalyzer-style cards.",
+                    recommendation = "Open Wi-Fi Analyzer or channel graph cards before explaining placement, overlap, roaming, security, vendor/OUI, or channel congestion.",
+                    fraction = when {
+                        wifiNetworkCount > 0 && wifiChannelGraphCount > 0 -> 0.95f
+                        wifiBandCoverageCount > 0 || wifiChannelRatingCount > 0 -> 0.8f
+                        wifiReport.optBoolean("success", false) -> 0.55f
+                        else -> 0.25f
+                    },
+                    extra = JSONObject()
+                        .put("evidence_key", "wifi_ap_channel")
+                        .put("tool_action", "wifi_analyzer_report")
+                        .put("graph_type", "wifi_channel_graph")
+                        .put("source_actions", JSONArray().put("wifi_analyzer_report").put("wifi_channel_graph").put("wifi_channel_rating").put("wifi_channel_utilization"))
+                        .put("card_graph_types", JSONArray().put("wifi_channel_graph").put("wifi_channel_rating").put("wifi_channel_utilization").put("wifi_band_coverage").put("wifi_signal_history"))
+                        .put("wifi_network_count", wifiNetworkCount)
+                        .put("wifi_channel_graph_count", wifiChannelGraphCount)
+                        .put("wifi_channel_rating_count", wifiChannelRatingCount),
+                ),
+            )
+            .put(
+                capabilityRow(
+                    category = "signal_evidence_bluetooth",
+                    label = "Bluetooth proximity evidence",
+                    ready = bluetoothReady,
+                    valueLabel = "$bluetoothDeviceCount device(s), $bluetoothHistoryCount trend row(s)",
+                    detail = "$bluetoothMetadataCount metadata row(s), ${bluetoothReport.optInt("bluetooth_service_label_count", 0)} service label(s), and ${bluetoothReport.optInt("bluetooth_manufacturer_name_count", 0)} manufacturer label(s) are available for nearby-device cards.",
+                    recommendation = "Open Bluetooth Analyzer or signal history cards before explaining proximity, beacons, paired inventory, service identity, or manufacturer context.",
+                    fraction = when {
+                        bluetoothDeviceCount > 0 && bluetoothMetadataCount > 0 -> 0.95f
+                        bluetoothHistoryCount > 0 -> 0.75f
+                        bluetoothReport.optBoolean("success", false) -> 0.55f
+                        else -> 0.25f
+                    },
+                    extra = JSONObject()
+                        .put("evidence_key", "bluetooth_proximity")
+                        .put("tool_action", "bluetooth_analyzer_report")
+                        .put("graph_type", "bluetooth_signal_history")
+                        .put("source_actions", JSONArray().put("bluetooth_analyzer_report").put("bluetooth_scan").put("bluetooth_signal_history"))
+                        .put("card_graph_types", JSONArray().put("bluetooth_metadata_summary").put("bluetooth_signal_history").put("bluetooth_rssi"))
+                        .put("bluetooth_device_count", bluetoothDeviceCount)
+                        .put("bluetooth_metadata_count", bluetoothMetadataCount)
+                        .put("bluetooth_signal_history_count", bluetoothHistoryCount),
+                ),
+            )
+            .put(
+                capabilityRow(
+                    category = "signal_evidence_motion",
+                    label = "Motion and sensor evidence",
+                    ready = sensorReady,
+                    valueLabel = "$sensorCapabilityCount sensor row(s), $motionPoseCount pose row(s)",
+                    detail = "$motionHistoryCount cached IMU trend row(s) can bind Wi-Fi or Bluetooth changes to phone movement, heading, acceleration, orientation, and pocket/desk state.",
+                    recommendation = "Open Sensor Analyzer, motion history, or motion pose cards before attributing signal changes to distance or movement.",
+                    fraction = when {
+                        motionPoseCount > 0 -> 0.95f
+                        sensorCapabilityCount > 0 -> 0.8f
+                        motionHistoryCount > 0 -> 0.7f
+                        else -> 0.3f
+                    },
+                    extra = JSONObject()
+                        .put("evidence_key", "motion_sensor_context")
+                        .put("tool_action", "sensor_analyzer_report")
+                        .put("graph_type", "motion_pose_estimate")
+                        .put("source_actions", JSONArray().put("sensor_analyzer_report").put("motion_pose").put("motion_sensor_history").put("sensor_snapshot"))
+                        .put("card_graph_types", JSONArray().put("sensor_capability").put("motion_sensor_history").put("motion_pose_estimate"))
+                        .put("sensor_capability_count", sensorCapabilityCount)
+                        .put("motion_sensor_history_count", motionHistoryCount)
+                        .put("motion_pose_estimate_count", motionPoseCount),
+                ),
+            )
+            .put(
+                capabilityRow(
+                    category = "signal_evidence_radio",
+                    label = "AM/FM and RF boundary evidence",
+                    ready = radioReady,
+                    valueLabel = "$radioBandCount band row(s)",
+                    detail = "Radio graph bridge ready=$radioGraphReady, external SDR required=${radioReport.optBoolean("requires_external_sdr_for_broad_rf", true)}, signal constraints=$signalConstraintCount.",
+                    recommendation = "Open radio cards to distinguish public Wi-Fi/Bluetooth signal access from vendor AM/FM tuner or external SDR requirements.",
+                    fraction = if (radioReady) 0.85f else 0.25f,
+                    extra = JSONObject()
+                        .put("evidence_key", "radio_rf_boundary")
+                        .put("tool_action", "radio_signal_status")
+                        .put("graph_type", "radio_signal_graph")
+                        .put("source_actions", JSONArray().put("radio_signal_status").put("radio_signal_graph").put("signal_capability_status"))
+                        .put("card_graph_types", JSONArray().put("radio_signal_graph").put("radio_frequency_capability").put("radio_signal_constraint_matrix"))
+                        .put("radio_band_plan_count", radioBandCount)
+                        .put("radio_signal_graph_bridge_ready", radioGraphReady)
+                        .put("radio_signal_constraint_count", signalConstraintCount),
+                ),
+            )
+            .put(
+                capabilityRow(
+                    category = "signal_evidence_inference",
+                    label = "Local inference readiness evidence",
+                    ready = inferenceReady,
+                    valueLabel = "$compatibilityLevel score $compatibilityScore",
+                    detail = "$compatibilityReadyCount/$compatibilityCount compatibility row(s) ready; backend risk is $backendRiskLevel with $highBackendRiskCount high-risk row(s) across $backendRiskCount backend risk row(s).",
+                    recommendation = "Open Local Inference Compatibility and GPU Backend Risk before claiming offline Gemma 4 multimodal readiness, especially on MediaTek, Mali, PowerVR, Xclipse, or other non-Adreno phones.",
+                    fraction = if (compatibilityCount > 0) (compatibilityScore / 100f).coerceIn(0.15f, 0.95f) else 0.25f,
+                    extra = JSONObject()
+                        .put("evidence_key", "local_inference_readiness")
+                        .put("tool_action", "local_inference_compatibility_report")
+                        .put("graph_type", "local_inference_compatibility_matrix")
+                        .put("source_actions", JSONArray().put("local_inference_compatibility_report").put("gpu_backend_risk_report").put("soc_compatibility_report").put("local_backend_runtime_report").put("device_performance_report"))
+                        .put("card_graph_types", JSONArray().put("local_inference_compatibility_matrix").put("gpu_backend_risk_matrix").put("runtime_backend_matrix").put("soc_backend_matrix").put("runtime_stability_matrix"))
+                        .put("local_inference_compatibility_score", compatibilityScore)
+                        .put("local_inference_compatibility_level", compatibilityLevel)
+                        .put("gpu_backend_risk_level", backendRiskLevel),
+                ),
+            )
+            .put(
+                capabilityRow(
+                    category = "signal_evidence_policy",
+                    label = "Permission and refresh evidence",
+                    ready = signalAwarenessCount > 0,
+                    valueLabel = "$signalAwarenessCount awareness row(s)",
+                    detail = "Signal-awareness rows expose permission gates, cached histories, scan throttling, external-radio constraints, and passive-vs-live refresh policy.",
+                    recommendation = "Use this row before requesting active Wi-Fi, Bluetooth, or sensor refreshes; use cached evidence when Android permissions or throttling block live scans.",
+                    fraction = if (signalAwarenessCount > 0) 0.85f else 0.35f,
+                    extra = JSONObject()
+                        .put("evidence_key", "permission_refresh_policy")
+                        .put("tool_action", "signal_awareness_report")
+                        .put("graph_type", "signal_constraint_matrix")
+                        .put("source_actions", JSONArray().put("signal_awareness_report").put("wifi_analyzer_report").put("bluetooth_analyzer_report").put("sensor_analyzer_report"))
+                        .put("card_graph_types", JSONArray().put("signal_awareness_matrix").put("signal_workflow_routes").put("signal_constraint_matrix"))
+                        .put("signal_awareness_count", signalAwarenessCount)
+                        .put("signal_constraint_count", signalConstraintCount),
+                ),
+            )
+            .put(
+                capabilityRow(
+                    category = "signal_evidence_route",
+                    label = "Evidence drill-down route",
+                    ready = true,
+                    valueLabel = "source cards",
+                    detail = "Routes expose the exact analyzer, graph, scorecard, and manifest actions behind this evidence bundle.",
+                    recommendation = "Use signal_evidence_routes when the answer needs an expandable card instead of a text-only summary.",
+                    fraction = 0.9f,
+                    extra = JSONObject()
+                        .put("evidence_key", "source_card_drill_down")
+                        .put("tool_action", "agent_signal_evidence_report")
+                        .put("graph_type", "signal_evidence_routes")
+                        .put("source_actions", sourceActions)
+                        .put("card_graph_types", graphTypes),
+                ),
+            )
+    }
+
+    private fun agentSignalEvidenceRouteRows(): JSONArray {
+        return JSONArray()
+            .put(
+                capabilityRow(
+                    category = "signal_evidence_route",
+                    label = "Open signal evidence bundle",
+                    ready = true,
+                    valueLabel = "agent_signal_evidence_report",
+                    detail = "Use for the compact current-evidence view across Wi-Fi, Bluetooth, sensors, radio boundaries, and local inference compatibility.",
+                    recommendation = "Run first for user questions about what Hermes or Gemma can currently view from nearby signals.",
+                    fraction = 0.95f,
+                    extra = JSONObject().put("tool_action", "agent_signal_evidence_report"),
+                ),
+            )
+            .put(
+                capabilityRow(
+                    category = "signal_evidence_route",
+                    label = "Open Wi-Fi graph evidence",
+                    ready = true,
+                    valueLabel = "wifi_channel_graph",
+                    detail = "Use for AP channel envelopes, RSSI, overlap pressure, channel widths, bands, and WiFiAnalyzer-style graph rows.",
+                    recommendation = "Use refresh=false first, refresh=true only when the user needs current live scan evidence.",
+                    fraction = 0.9f,
+                    extra = JSONObject().put("tool_action", "wifi_channel_graph"),
+                ),
+            )
+            .put(
+                capabilityRow(
+                    category = "signal_evidence_route",
+                    label = "Open Bluetooth proximity evidence",
+                    ready = true,
+                    valueLabel = "bluetooth_analyzer_report",
+                    detail = "Use for paired/nearby devices, RSSI history, service UUID labels, manufacturer metadata, and proximity cards.",
+                    recommendation = "Use bluetooth_signal_history after scans when movement or trend evidence matters.",
+                    fraction = 0.9f,
+                    extra = JSONObject().put("tool_action", "bluetooth_analyzer_report"),
+                ),
+            )
+            .put(
+                capabilityRow(
+                    category = "signal_evidence_route",
+                    label = "Open motion pose evidence",
+                    ready = true,
+                    valueLabel = "motion_pose",
+                    detail = "Use for heading, tilt, angular velocity, acceleration state, and motion-aware signal interpretation.",
+                    recommendation = "Prefer bounded sampling with only needed sensor_types when current pose matters.",
+                    fraction = 0.9f,
+                    extra = JSONObject().put("tool_action", "motion_pose"),
+                ),
+            )
+            .put(
+                capabilityRow(
+                    category = "signal_evidence_route",
+                    label = "Open radio boundary evidence",
+                    ready = true,
+                    valueLabel = "radio_signal_graph",
+                    detail = "Use for AM/FM band plan, signal graph schemas, receiver profiles, and external SDR/vendor bridge constraints.",
+                    recommendation = "Keep AM/FM or broad RF claims behind public API, vendor, or external hardware evidence.",
+                    fraction = 0.85f,
+                    extra = JSONObject().put("tool_action", "radio_signal_graph"),
+                ),
+            )
+            .put(
+                capabilityRow(
+                    category = "signal_evidence_route",
+                    label = "Open local inference evidence",
+                    ready = true,
+                    valueLabel = "local_inference_compatibility_report",
+                    detail = "Use for Gemma 4/LiteRT/GGUF readiness, MediaTek/non-Adreno compatibility, backend risk, runtime health, and thermal/memory guardrails.",
+                    recommendation = "Run before promising offline multimodal or local GPU behavior on the phone.",
+                    fraction = 0.9f,
+                    extra = JSONObject().put("tool_action", "local_inference_compatibility_report"),
+                ),
+            )
+            .put(
+                capabilityRow(
+                    category = "signal_evidence_route",
+                    label = "Open card manifest evidence",
+                    ready = true,
+                    valueLabel = "agent_card_manifest_report",
+                    detail = "Use for graph_type, source_action, refresh_policy, and permission_gate fields for each expandable top card.",
+                    recommendation = "Open when Gemma needs to choose the exact card behind a signal-evidence explanation.",
+                    fraction = 0.9f,
+                    extra = JSONObject().put("tool_action", "agent_card_manifest_report"),
+                ),
+            )
+    }
+
+    private fun signalEvidenceSourceActions(): JSONArray = JSONArray()
+        .put("wifi_analyzer_report")
+        .put("wifi_channel_graph")
+        .put("bluetooth_analyzer_report")
+        .put("bluetooth_signal_history")
+        .put("sensor_analyzer_report")
+        .put("motion_pose")
+        .put("radio_signal_status")
+        .put("radio_signal_graph")
+        .put("signal_awareness_report")
+        .put("gpu_backend_risk_report")
+        .put("local_inference_compatibility_report")
+        .put("agent_card_manifest_report")
+
+    private fun signalEvidenceGraphTypes(): JSONArray = JSONArray()
+        .put("signal_evidence_matrix")
+        .put("signal_evidence_routes")
+        .put("wifi_channel_graph")
+        .put("wifi_channel_rating")
+        .put("wifi_channel_utilization")
+        .put("bluetooth_signal_history")
+        .put("motion_pose_estimate")
+        .put("motion_sensor_history")
+        .put("radio_signal_graph")
+        .put("radio_frequency_capability")
+        .put("signal_awareness_matrix")
+        .put("signal_constraint_matrix")
+        .put("gpu_backend_risk_matrix")
+        .put("local_inference_compatibility_matrix")
 
     private fun agentObservationRouteRows(): JSONArray {
         return JSONArray()
@@ -11011,6 +11426,7 @@ object HermesDeviceDiagnosticsBridge {
         "local_inference_compatibility_report",
         "device_performance_report",
         "signal_awareness_report",
+        "agent_signal_evidence_report",
         "agent_observation_report",
         "agent_card_manifest_report",
         "agent_environment_report",

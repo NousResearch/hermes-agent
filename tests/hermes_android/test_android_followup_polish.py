@@ -296,6 +296,41 @@ def test_android_diagnostics_exposes_agent_observation_dashboard_for_gemma_signa
     assert 'action=agent_card_manifest_report' in quick_actions
 
 
+def test_android_diagnostics_exposes_signal_evidence_bundle_for_gemma_visible_current_context():
+    diagnostics_bridge = (REPO_ROOT / "android/app/src/main/java/com/mobilefork/hermesagent/device/HermesDeviceDiagnosticsBridge.kt").read_text(encoding="utf-8")
+    chat_client = (REPO_ROOT / "android/app/src/main/java/com/mobilefork/hermesagent/ui/chat/NativeToolCallingChatClient.kt").read_text(encoding="utf-8")
+    diagnostic_cards = (REPO_ROOT / "android/app/src/main/java/com/mobilefork/hermesagent/ui/chat/DiagnosticCards.kt").read_text(encoding="utf-8")
+    quick_actions = (REPO_ROOT / "android/app/src/main/java/com/mobilefork/hermesagent/ui/chat/SignalIntelligenceQuickActions.kt").read_text(encoding="utf-8")
+
+    assert '"agent_signal_evidence_report"' in diagnostics_bridge
+    assert '"signal_evidence_bundle"' in diagnostics_bridge
+    assert 'agentSignalEvidenceReportJson(appContext)' in diagnostics_bridge
+    assert 'fun agentSignalEvidenceReportJson(context: Context): JSONObject' in diagnostics_bridge
+    assert 'agentSignalEvidenceRows(' in diagnostics_bridge
+    assert 'agentSignalEvidenceRouteRows()' in diagnostics_bridge
+    assert 'signalEvidenceSourceActions()' in diagnostics_bridge
+    assert 'signalEvidenceGraphTypes()' in diagnostics_bridge
+    assert '"signal_evidence_matrix"' in diagnostics_bridge
+    assert '"signal_evidence_routes"' in diagnostics_bridge
+    assert '"signal_evidence_graph_types"' in diagnostics_bridge
+    assert 'Signal Evidence Bundle' in diagnostics_bridge
+    assert 'Wi-Fi AP and channel evidence' in diagnostics_bridge
+    assert 'Bluetooth proximity evidence' in diagnostics_bridge
+    assert 'Motion and sensor evidence' in diagnostics_bridge
+    assert 'AM/FM and RF boundary evidence' in diagnostics_bridge
+    assert 'Local inference readiness evidence' in diagnostics_bridge
+    assert 'Permission and refresh evidence' in diagnostics_bridge
+    assert 'local_inference_compatibility_report' in diagnostics_bridge
+    assert 'agent_signal_evidence_report' in chat_client
+    assert 'signal_evidence_bundle' in chat_client
+    assert '"signal_evidence_matrix"' in chat_client
+    assert '"signal_evidence_routes"' in chat_client
+    assert '"signal_evidence_graph_types"' in chat_client
+    assert '"signal_evidence_matrix", "signal_evidence_routes"' in diagnostic_cards
+    assert 'id = "signal_evidence"' in quick_actions
+    assert 'action=agent_signal_evidence_report' in quick_actions
+
+
 def test_android_diagnostics_exposes_signal_awareness_report_for_cross_signal_cards():
     diagnostics_bridge = (REPO_ROOT / "android/app/src/main/java/com/mobilefork/hermesagent/device/HermesDeviceDiagnosticsBridge.kt").read_text(encoding="utf-8")
     chat_client = (REPO_ROOT / "android/app/src/main/java/com/mobilefork/hermesagent/ui/chat/NativeToolCallingChatClient.kt").read_text(encoding="utf-8")

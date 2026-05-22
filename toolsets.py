@@ -50,7 +50,7 @@ _HERMES_CORE_TOOLS = [
     # Text-to-speech
     "text_to_speech",
     # Planning & memory
-    "todo", "memory",
+    "todo", "set_goal", "memory",
     # NOTE: the desktop Project tools (project_list/create/switch) are
     # deliberately NOT here. They only make sense where a GUI can follow the
     # move, so they live in the `project` toolset and are enabled solely by the
@@ -200,7 +200,13 @@ TOOLSETS = {
     
     "todo": {
         "description": "Task planning and tracking for multi-step work",
-        "tools": ["todo"],
+        "tools": ["todo", "set_goal"],
+        "includes": []
+    },
+
+    "goal": {
+        "description": "Activate or replace the current session's standing /goal from agent-generated text",
+        "tools": ["set_goal"],
         "includes": []
     },
     

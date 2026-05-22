@@ -1,0 +1,8 @@
+{
+  "label": "消息平台",
+  "position": 3,
+  "link": {
+    "type": "generated-index",
+    "description": "配置并连接不同的消息平台（Telegram、Slack、WeChat 等）。"
+  }
+}

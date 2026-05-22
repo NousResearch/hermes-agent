@@ -1,0 +1,8 @@
+{
+  "label": "指南与教程",
+  "position": 5,
+  "link": {
+    "type": "generated-index",
+    "description": "实用教程与示例，帮助你完成常见任务与集成。"
+  }
+}

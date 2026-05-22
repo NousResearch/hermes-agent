@@ -1,0 +1,8 @@
+{
+  "label": "使用 Hermes",
+  "position": 2,
+  "link": {
+    "type": "generated-index",
+    "description": "如何在本地和不同平台上运行与配置 Hermes。"
+  }
+}

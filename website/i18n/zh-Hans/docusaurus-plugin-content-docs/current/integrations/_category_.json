@@ -1,0 +1,8 @@
+{
+  "label": "集成",
+  "position": 6,
+  "link": {
+    "type": "generated-index",
+    "description": "第三方集成与提供者配置指南。"
+  }
+}

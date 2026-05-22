@@ -1,0 +1,230 @@
+{
+  "version.label": {
+    "message": "下一版",
+    "description": "The label for version current"
+  },
+  "sidebar.docs.category.Getting Started": {
+    "message": "入门",
+    "description": "The label for category 'Getting Started' in sidebar 'docs'"
+  },
+  "sidebar.docs.category.Using Hermes": {
+    "message": "使用 Hermes",
+    "description": "The label for category 'Using Hermes' in sidebar 'docs'"
+  },
+  "sidebar.docs.category.Features": {
+    "message": "功能",
+    "description": "The label for category 'Features' in sidebar 'docs'"
+  },
+  "sidebar.docs.category.Core": {
+    "message": "核心",
+    "description": "The label for category 'Core' in sidebar 'docs'"
+  },
+  "sidebar.docs.category.Automation": {
+    "message": "自动化",
+    "description": "The label for category 'Automation' in sidebar 'docs'"
+  },
+  "sidebar.docs.category.Media & Web": {
+    "message": "多媒体与网页",
+    "description": "The label for category 'Media & Web' in sidebar 'docs'"
+  },
+  "sidebar.docs.category.Management": {
+    "message": "管理",
+    "description": "The label for category 'Management' in sidebar 'docs'"
+  },
+  "sidebar.docs.category.Advanced": {
+    "message": "高级",
+    "description": "The label for category 'Advanced' in sidebar 'docs'"
+  },
+  "sidebar.docs.category.Skills": {
+    "message": "技能",
+    "description": "The label for category 'Skills' in sidebar 'docs'"
+  },
+  "sidebar.docs.category.Bundled": {
+    "message": "内置",
+    "description": "The label for category 'Bundled' in sidebar 'docs'"
+  },
+  "sidebar.docs.category.skills-bundled-apple": {
+    "message": "苹果",
+    "description": "The label for category 'apple' in sidebar 'docs'"
+  },
+  "sidebar.docs.category.skills-bundled-autonomous-ai-agents": {
+    "message": "自主 AI 智能体",
+    "description": "The label for category 'autonomous-ai-agents' in sidebar 'docs'"
+  },
+  "sidebar.docs.category.skills-bundled-creative": {
+    "message": "创意",
+    "description": "The label for category 'creative' in sidebar 'docs'"
+  },
+  "sidebar.docs.category.skills-bundled-data-science": {
+    "message": "数据科学",
+    "description": "The label for category 'data-science' in sidebar 'docs'"
+  },
+  "sidebar.docs.category.skills-bundled-devops": {
+    "message": "运维",
+    "description": "The label for category 'devops' in sidebar 'docs'"
+  },
+  "sidebar.docs.category.skills-bundled-dogfood": {
+    "message": "自用",
+    "description": "The label for category 'dogfood' in sidebar 'docs'"
+  },
+  "sidebar.docs.category.skills-bundled-email": {
+    "message": "邮件",
+    "description": "The label for category 'email' in sidebar 'docs'"
+  },
+  "sidebar.docs.category.skills-bundled-gaming": {
+    "message": "游戏",
+    "description": "The label for category 'gaming' in sidebar 'docs'"
+  },
+  "sidebar.docs.category.skills-bundled-github": {
+    "message": "GitHub",
+    "description": "The label for category 'github' in sidebar 'docs'"
+  },
+  "sidebar.docs.category.skills-bundled-mcp": {
+    "message": "MCP",
+    "description": "The label for category 'mcp' in sidebar 'docs'"
+  },
+  "sidebar.docs.category.skills-bundled-media": {
+    "message": "媒体",
+    "description": "The label for category 'media' in sidebar 'docs'"
+  },
+  "sidebar.docs.category.skills-bundled-mlops": {
+    "message": "MLOps",
+    "description": "The label for category 'mlops' in sidebar 'docs'"
+  },
+  "sidebar.docs.category.skills-bundled-note-taking": {
+    "message": "笔记",
+    "description": "The label for category 'note-taking' in sidebar 'docs'"
+  },
+  "sidebar.docs.category.skills-bundled-productivity": {
+    "message": "效率",
+    "description": "The label for category 'productivity' in sidebar 'docs'"
+  },
+  "sidebar.docs.category.skills-bundled-red-teaming": {
+    "message": "红队",
+    "description": "The label for category 'red-teaming' in sidebar 'docs'"
+  },
+  "sidebar.docs.category.skills-bundled-research": {
+    "message": "研究",
+    "description": "The label for category 'research' in sidebar 'docs'"
+  },
+  "sidebar.docs.category.skills-bundled-smart-home": {
+    "message": "智能家居",
+    "description": "The label for category 'smart-home' in sidebar 'docs'"
+  },
+  "sidebar.docs.category.skills-bundled-social-media": {
+    "message": "社交媒体",
+    "description": "The label for category 'social-media' in sidebar 'docs'"
+  },
+  "sidebar.docs.category.skills-bundled-software-development": {
+    "message": "软件开发",
+    "description": "The label for category 'software-development' in sidebar 'docs'"
+  },
+  "sidebar.docs.category.skills-bundled-yuanbao": {
+    "message": "元宝",
+    "description": "The label for category 'yuanbao' in sidebar 'docs'"
+  },
+  "sidebar.docs.category.Optional": {
+    "message": "可选",
+    "description": "The label for category 'Optional' in sidebar 'docs'"
+  },
+  "sidebar.docs.category.skills-optional-autonomous-ai-agents": {
+    "message": "自主 AI 智能体",
+    "description": "The label for category 'autonomous-ai-agents' in sidebar 'docs'"
+  },
+  "sidebar.docs.category.skills-optional-blockchain": {
+    "message": "区块链",
+    "description": "The label for category 'blockchain' in sidebar 'docs'"
+  },
+  "sidebar.docs.category.skills-optional-communication": {
+    "message": "通信",
+    "description": "The label for category 'communication' in sidebar 'docs'"
+  },
+  "sidebar.docs.category.skills-optional-creative": {
+    "message": "创意",
+    "description": "The label for category 'creative' in sidebar 'docs'"
+  },
+  "sidebar.docs.category.skills-optional-devops": {
+    "message": "运维",
+    "description": "The label for category 'devops' in sidebar 'docs'"
+  },
+  "sidebar.docs.category.skills-optional-dogfood": {
+    "message": "自用",
+    "description": "The label for category 'dogfood' in sidebar 'docs'"
+  },
+  "sidebar.docs.category.skills-optional-email": {
+    "message": "邮件",
+    "description": "The label for category 'email' in sidebar 'docs'"
+  },
+  "sidebar.docs.category.skills-optional-finance": {
+    "message": "金融",
+    "description": "The label for category 'finance' in sidebar 'docs'"
+  },
+  "sidebar.docs.category.skills-optional-health": {
+    "message": "健康",
+    "description": "The label for category 'health' in sidebar 'docs'"
+  },
+  "sidebar.docs.category.skills-optional-mcp": {
+    "message": "MCP",
+    "description": "The label for category 'mcp' in sidebar 'docs'"
+  },
+  "sidebar.docs.category.skills-optional-migration": {
+    "message": "迁移",
+    "description": "The label for category 'migration' in sidebar 'docs'"
+  },
+  "sidebar.docs.category.skills-optional-mlops": {
+    "message": "MLOps",
+    "description": "The label for category 'mlops' in sidebar 'docs'"
+  },
+  "sidebar.docs.category.skills-optional-productivity": {
+    "message": "效率",
+    "description": "The label for category 'productivity' in sidebar 'docs'"
+  },
+  "sidebar.docs.category.skills-optional-research": {
+    "message": "研究",
+    "description": "The label for category 'research' in sidebar 'docs'"
+  },
+  "sidebar.docs.category.skills-optional-security": {
+    "message": "安全",
+    "description": "The label for category 'security' in sidebar 'docs'"
+  },
+  "sidebar.docs.category.skills-optional-software-development": {
+    "message": "软件开发",
+    "description": "The label for category 'software-development' in sidebar 'docs'"
+  },
+  "sidebar.docs.category.skills-optional-web-development": {
+    "message": "Web 开发",
+    "description": "The label for category 'web-development' in sidebar 'docs'"
+  },
+  "sidebar.docs.category.Messaging Platforms": {
+    "message": "消息平台",
+    "description": "The label for category 'Messaging Platforms' in sidebar 'docs'"
+  },
+  "sidebar.docs.category.Integrations": {
+    "message": "集成",
+    "description": "The label for category 'Integrations' in sidebar 'docs'"
+  },
+  "sidebar.docs.category.Guides & Tutorials": {
+    "message": "指南与教程",
+    "description": "The label for category 'Guides & Tutorials' in sidebar 'docs'"
+  },
+  "sidebar.docs.category.Developer Guide": {
+    "message": "开发者指南",
+    "description": "The label for category 'Developer Guide' in sidebar 'docs'"
+  },
+  "sidebar.docs.category.Architecture": {
+    "message": "架构",
+    "description": "The label for category 'Architecture' in sidebar 'docs'"
+  },
+  "sidebar.docs.category.Extending": {
+    "message": "扩展",
+    "description": "The label for category 'Extending' in sidebar 'docs'"
+  },
+  "sidebar.docs.category.Internals": {
+    "message": "内部",
+    "description": "The label for category 'Internals' in sidebar 'docs'"
+  },
+  "sidebar.docs.category.Reference": {
+    "message": "参考",
+    "description": "The label for category 'Reference' in sidebar 'docs'"
+  }
+}

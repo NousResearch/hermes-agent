@@ -1,0 +1,8 @@
+{
+  "label": "入门",
+  "position": 1,
+  "link": {
+    "type": "generated-index",
+    "description": "开始使用 Hermes 的快速入门与安装说明。"
+  }
+}

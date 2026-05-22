@@ -30,7 +30,7 @@ const config: Config = {
         label: 'English',
       },
       'zh-Hans': {
-        label: '简体中文',
+        label: '简体中文(87.5%)',
         htmlLang: 'zh-Hans',
       },
       ko: {

@@ -1,0 +1,54 @@
+{
+  "link.title.Docs": {
+    "message": "文档",
+    "description": "The title of the footer links column with title=Docs in the footer"
+  },
+  "link.item.label.Getting Started": {
+    "message": "快速入门",
+    "description": "The label of footer link with label=Getting Started linking to /getting-started/quickstart"
+  },
+  "link.item.label.User Guide": {
+    "message": "用户指南",
+    "description": "The label of footer link with label=User Guide linking to /user-guide/cli"
+  },
+  "link.item.label.Developer Guide": {
+    "message": "开发者指南",
+    "description": "The label of footer link with label=Developer Guide linking to /developer-guide/architecture"
+  },
+  "link.item.label.Reference": {
+    "message": "参考",
+    "description": "The label of footer link with label=Reference linking to /reference/cli-commands"
+  },
+  "link.title.Community": {
+    "message": "社区",
+    "description": "The title of the footer links column with title=Community in the footer"
+  },
+  "link.item.label.Discord": {
+    "message": "Discord",
+    "description": "The label of footer link with label=Discord linking to https://discord.gg/NousResearch"
+  },
+  "link.item.label.GitHub Discussions": {
+    "message": "GitHub 讨论",
+    "description": "The label of footer link with label=GitHub Discussions linking to https://github.com/NousResearch/hermes-agent/discussions"
+  },
+  "link.item.label.Skills Hub": {
+    "message": "技能中心",
+    "description": "The label of footer link with label=Skills Hub linking to https://agentskills.io"
+  },
+  "link.title.More": {
+    "message": "更多",
+    "description": "The title of the footer links column with title=More in the footer"
+  },
+  "link.item.label.GitHub": {
+    "message": "GitHub",
+    "description": "The label of footer link with label=GitHub linking to https://github.com/NousResearch/hermes-agent"
+  },
+  "link.item.label.Nous Research": {
+    "message": "Nous Research",
+    "description": "The label of footer link with label=Nous Research linking to https://nousresearch.com"
+  },
+  "copyright": {
+    "message": "由 <a href=\"https://nousresearch.com\">Nous Research</a> 构建 · MIT 许可证 · 2026",
+    "description": "The footer copyright"
+  }
+}

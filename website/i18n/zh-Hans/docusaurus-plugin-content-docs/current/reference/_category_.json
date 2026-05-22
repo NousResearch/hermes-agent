@@ -1,0 +1,8 @@
+{
+  "label": "参考",
+  "position": 8,
+  "link": {
+    "type": "generated-index",
+    "description": "命令、配置与工具的参考手册。"
+  }
+}

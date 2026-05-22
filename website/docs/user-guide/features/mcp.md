@@ -134,10 +134,14 @@ For well-known MCP servers, `hermes mcp add` accepts a `--preset` flag that fill
 | Preset | What it wires up |
 |---|---|
 | `codex` | The Codex CLI's MCP server (`codex mcp-server` over stdio). Requires the `codex` CLI on PATH. |
+| `codegraph` | The CodeGraph local code-intelligence MCP server (`codegraph serve --mcp` over stdio). Requires the `codegraph` CLI on PATH. |
 
 ```bash
 # Add Codex CLI as an MCP server in one line
 hermes mcp add codex --preset codex
+
+# Add CodeGraph code-intelligence tools in one line
+hermes mcp add codegraph --preset codegraph
 ```
 
 That writes the equivalent of:
@@ -147,6 +151,9 @@ mcp_servers:
   codex:
     command: "codex"
     args: ["mcp-server"]
+  codegraph:
+    command: "codegraph"
+    args: ["serve", "--mcp"]
 ```
 
 You can pick any local name (`hermes mcp add my-codex --preset codex` is fine); the preset only provides the `command`/`args` defaults.

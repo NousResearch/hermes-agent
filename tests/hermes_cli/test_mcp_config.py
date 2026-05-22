@@ -332,6 +332,36 @@ class TestMcpAdd:
         out = capsys.readouterr().out
         assert "only supported for stdio MCP servers" in out
 
+    def test_add_codegraph_preset_fills_transport(self, tmp_path, capsys, monkeypatch):
+        """The built-in codegraph preset starts the local CodeGraph MCP server."""
+        fake_tools = [FakeTool("codegraph_context", "Build context for a task")]
+
+        def mock_probe(name, config, **kw):
+            assert name == "codegraph"
+            assert config["command"] == "codegraph"
+            assert config["args"] == ["serve", "--mcp"]
+            assert "env" not in config
+            return [(t.name, t.description) for t in fake_tools]
+
+        monkeypatch.setattr(
+            "hermes_cli.mcp_config._probe_single_server", mock_probe
+        )
+        monkeypatch.setattr("builtins.input", lambda _: "")
+
+        from hermes_cli.mcp_config import cmd_mcp_add
+        from hermes_cli.config import read_raw_config
+
+        cmd_mcp_add(_make_args(name="codegraph", preset="codegraph"))
+        out = capsys.readouterr().out
+        assert "Saved" in out
+
+        config = read_raw_config()
+        srv = config["mcp_servers"]["codegraph"]
+        assert srv["command"] == "codegraph"
+        assert srv["args"] == ["serve", "--mcp"]
+        assert srv["enabled"] is True
+        assert "env" not in srv
+
     def test_add_preset_fills_transport(self, tmp_path, capsys, monkeypatch):
         """A preset fills in command/args when no explicit transport given."""
         monkeypatch.setattr(

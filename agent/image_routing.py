@@ -46,84 +46,6 @@ logger = logging.getLogger(__name__)
 _VALID_MODES = frozenset({"auto", "native", "text"})
 
 
-# Strict YAML/JSON boolean coercion for capability overrides.
-#
-# ``bool("false")`` is True in Python because non-empty strings are truthy, so
-# a user writing ``supports_vision: "false"`` (quoted — a common YAML mistake)
-# would silently enable native vision routing on a model that can't actually
-# handle it. Accept only the values YAML 1.1 / 1.2 treat as booleans, plus
-# real ``bool`` and integer 0/1. Anything else returns None so the caller
-# falls through to models.dev rather than honouring garbage.
-_TRUE_TOKENS = frozenset({"true", "yes", "on", "1"})
-_FALSE_TOKENS = frozenset({"false", "no", "off", "0"})
-
-
-def _coerce_capability_bool(raw: Any) -> Optional[bool]:
-    """Return True/False for recognised boolean values, None otherwise."""
-    if isinstance(raw, bool):
-        return raw
-    if isinstance(raw, int):
-        if raw in (0, 1):
-            return bool(raw)
-        return None
-    if isinstance(raw, str):
-        s = raw.strip().lower()
-        if s in _TRUE_TOKENS:
-            return True
-        if s in _FALSE_TOKENS:
-            return False
-    return None
-
-
-def _supports_vision_override(
-    cfg: Optional[Dict[str, Any]],
-    provider: str,
-    model: str,
-) -> Optional[bool]:
-    """Resolve user-declared vision capability from config.yaml.
-
-    Resolution order, first hit wins:
-      1. ``model.supports_vision`` (top-level shortcut for the active model)
-      2. ``providers.<provider>.models.<model>.supports_vision``
-         (named custom providers — ``provider`` may be the runtime-resolved
-         value ``"custom"`` and/or the user-declared name under
-         ``model.provider``; both are tried)
-
-    Returns None when no override is set, so the caller falls through to
-    models.dev. Returns False explicitly only when the user wrote a
-    recognised boolean false token.
-    """
-    if not isinstance(cfg, dict):
-        return None
-
-    # 1. Top-level shortcut
-    model_cfg_raw = cfg.get("model")
-    model_cfg: Dict[str, Any] = model_cfg_raw if isinstance(model_cfg_raw, dict) else {}
-    top = _coerce_capability_bool(model_cfg.get("supports_vision"))
-    if top is not None:
-        return top
-
-    # 2. Per-provider, per-model. Named custom providers (e.g. "my-vllm")
-    # get rewritten to provider="custom" at runtime
-    # (hermes_cli/runtime_provider.py:_resolve_named_custom_runtime), so the
-    # config still holds the user-declared name under model.provider. Try
-    # both as candidate provider keys.
-    config_provider = str(model_cfg.get("provider") or "").strip()
-    providers_raw = cfg.get("providers")
-    providers_cfg: Dict[str, Any] = providers_raw if isinstance(providers_raw, dict) else {}
-    for p in dict.fromkeys(filter(None, (provider, config_provider))):
-        entry_raw = providers_cfg.get(p)
-        entry: Dict[str, Any] = entry_raw if isinstance(entry_raw, dict) else {}
-        models_raw = entry.get("models")
-        models_cfg: Dict[str, Any] = models_raw if isinstance(models_raw, dict) else {}
-        per_model_raw = models_cfg.get(model)
-        per_model: Dict[str, Any] = per_model_raw if isinstance(per_model_raw, dict) else {}
-        coerced = _coerce_capability_bool(per_model.get("supports_vision"))
-        if coerced is not None:
-            return coerced
-    return None
-
-
 def _coerce_mode(raw: Any) -> str:
     """Normalize a config value into one of the valid modes."""
     if not isinstance(raw, str):
@@ -159,20 +81,8 @@ def _explicit_aux_vision_override(cfg: Optional[Dict[str, Any]]) -> bool:
     return True
 
 
-def _lookup_supports_vision(
-    provider: str,
-    model: str,
-    cfg: Optional[Dict[str, Any]] = None,
-) -> Optional[bool]:
-    """Return True/False if we can resolve caps, None if unknown.
-
-    Consults the user's ``supports_vision`` override in config.yaml first
-    (so custom/local models declared as vision-capable don't fall through to
-    text routing in ``auto`` mode), then falls back to models.dev.
-    """
-    override = _supports_vision_override(cfg, provider, model)
-    if override is not None:
-        return override
+def _lookup_supports_vision(provider: str, model: str) -> Optional[bool]:
+    """Return True/False if we can resolve caps, None if unknown."""
     if not provider or not model:
         return None
     try:
@@ -213,7 +123,7 @@ def decide_image_input_mode(
     if _explicit_aux_vision_override(cfg):
         return "text"
 
-    supports = _lookup_supports_vision(provider, model, cfg)
+    supports = _lookup_supports_vision(provider, model)
     if supports is True:
         return "native"
     return "text"
@@ -349,12 +259,54 @@ def build_native_content_parts(
     image_parts: List[Dict[str, Any]] = []
     attached_paths: List[str] = []
 
+    import os
+    import tempfile
+    import httpx
+
     for raw_path in image_paths:
         p = Path(raw_path)
+        is_temp_file = False
+        if str(raw_path).startswith(("http://", "https://")):
+            try:
+                resp = httpx.get(str(raw_path), follow_redirects=True, timeout=15.0)
+                if resp.status_code == 200:
+                    suffix = ""
+                    ctype = resp.headers.get("Content-Type", "")
+                    if "png" in ctype:
+                        suffix = ".png"
+                    elif "jpeg" in ctype or "jpg" in ctype:
+                        suffix = ".jpg"
+                    elif "webp" in ctype:
+                        suffix = ".webp"
+                    elif "gif" in ctype:
+                        suffix = ".gif"
+                    else:
+                        ext = os.path.splitext(str(raw_path).split("?")[0])[1].lower()
+                        if ext in {".png", ".jpg", ".jpeg", ".gif", ".webp"}:
+                            suffix = ext
+                    
+                    fd, temp_path_str = tempfile.mkstemp(suffix=suffix)
+                    with os.fdopen(fd, "wb") as tmp_f:
+                        tmp_f.write(resp.content)
+                    p = Path(temp_path_str)
+                    is_temp_file = True
+                else:
+                    skipped.append(str(raw_path))
+                    continue
+            except Exception as exc:
+                logger.warning("image_routing: failed to download remote image %s — %s", raw_path, exc)
+                skipped.append(str(raw_path))
+                continue
+
         if not p.exists() or not p.is_file():
             skipped.append(str(raw_path))
             continue
         data_url = _file_to_data_url(p)
+        if is_temp_file:
+            try:
+                p.unlink()
+            except Exception:
+                pass
         if not data_url:
             skipped.append(str(raw_path))
             continue

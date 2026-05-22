@@ -2807,7 +2807,7 @@ class TestAdapterBehavior(unittest.TestCase):
         rows = payload["zh_cn"]["content"]
         self.assertEqual(
             rows,
-            [[{"tag": "md", "text": "---\n1. 第一项\n<u>下划线</u>\n~~删除线~~"}]],
+            [[{"tag": "md", "text": "\n1. 第一项\n<u>下划线</u>\n<s>删除线</s>"}]],
         )
 
 

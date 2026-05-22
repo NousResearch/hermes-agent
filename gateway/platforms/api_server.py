@@ -1041,6 +1041,81 @@ class APIServerAdapter(BasePlatformAdapter):
 
         return _on_approval
 
+    def _make_chat_clarify_callback_nonstreaming(self):
+        """Create a clarify callback for non-streaming chat completions.
+
+        Blocks the agent thread until the user replies via POST
+        /v1/runs/chat/input or timeout. No SSE events are pushed.
+        """
+        import threading
+
+        timeout = self._get_api_timeout("clarify_timeout", 120)
+
+        def _callback(question: str, choices: list | None = None) -> str:
+            logger.info(
+                "[api_server] Clarify required (non-streaming): %s",
+                question[:120],
+            )
+
+            event = threading.Event()
+            result_container: dict = {"response": ""}
+            self._pending_inputs["chat"] = {"event": event, "result": result_container}
+
+            if event.wait(timeout=timeout):
+                return result_container.get("response", "")
+            else:
+                self._pending_inputs.pop("chat", None)
+                return "用户超时未回复。请根据上下文自行判断并继续执行。"
+        return _callback
+
+    def _make_chat_approval_notify_nonstreaming(self, session_key: str):
+        """Create an approval notification callback for non-streaming chat completions.
+
+        Uses the gateway approval queue system to block until the user
+        responds via POST /v1/runs/chat/approve or timeout.
+        """
+        from tools.approval import register_gateway_notify, unregister_gateway_notify
+
+        def _on_approval(approval_data: dict):
+            """Called from the agent thread when approval is needed."""
+            import uuid
+            import threading
+
+            approval_id = str(uuid.uuid4())
+            options = _get_approval_options()
+            timeout = self._get_api_timeout("approval_timeout", 120)
+
+            logger.info(
+                "[api_server] Approval required (non-streaming): %s [%s]",
+                approval_data.get("command", ""),
+                approval_id[:8],
+            )
+
+            event = threading.Event()
+            result_container: dict = {"action": "deny"}
+            self._pending_approvals[approval_id] = {
+                "session_key": session_key,
+                "event": event,
+                "result": result_container,
+            }
+
+            if event.wait(timeout=timeout):
+                action = result_container.get("action", "deny")
+            else:
+                action = "deny"
+                logger.warning(
+                    "[api_server] Approval timed out: %s [%s]",
+                    approval_data.get("command", ""),
+                    approval_id[:8],
+                )
+
+            self._pending_approvals.pop(approval_id, None)
+            # Resolve via the approval system
+            from tools.approval import resolve_gateway_approval
+            resolve_gateway_approval(session_key, str(action))
+
+        return _on_approval
+
     # ------------------------------------------------------------------
     # Agent creation helper
     # ------------------------------------------------------------------
@@ -1116,7 +1191,6 @@ class APIServerAdapter(BasePlatformAdapter):
             tool_complete_callback=tool_complete_callback,
             session_db=self._ensure_session_db(),
             fallback_model=fallback_model,
-            reasoning_config=reasoning_config,
             gateway_session_key=gateway_session_key,
             request_overrides=params_overrides or None,
         )
@@ -1527,16 +1601,55 @@ class APIServerAdapter(BasePlatformAdapter):
             )
 
         # Non-streaming: run the agent (with optional Idempotency-Key)
+        # Build a unique session key for this chat request so the
+        # gateway approval system can route correctly.
+        chat_session_key = f"api:{session_id}"
+
+        # Set session context for approval mechanism.
+        # CRITICAL: contextvars do NOT propagate across executor threads.
+        # We must also set HERMES_SESSION_KEY in os.environ as a fallback.
+        from gateway.session_context import set_session_vars, clear_session_vars
+        _sess_tokens = set_session_vars(platform="api_server", session_key=chat_session_key)
+
+        # Save and set env vars for cross-thread propagation
+        _prev_session_key = os.environ.get("HERMES_SESSION_KEY", "")
+        _prev_gateway_session = os.environ.get("HERMES_GATEWAY_SESSION", "")
+        os.environ["HERMES_SESSION_KEY"] = chat_session_key
+        if not _prev_gateway_session:
+            os.environ["HERMES_GATEWAY_SESSION"] = "1"
+
+        # Clarify callback — blocks agent thread, logs (no SSE in non-streaming)
+        chat_clarify_cb = self._make_chat_clarify_callback_nonstreaming()
+
+        # Approval notification callback — bridges to gateway approval queue
+        chat_approval_notify = self._make_chat_approval_notify_nonstreaming(chat_session_key)
+
+        from tools.approval import register_gateway_notify, set_current_session_key
+        _approval_token = set_current_session_key(chat_session_key)
+        register_gateway_notify(chat_session_key, chat_approval_notify)
+
         async def _compute_completion():
-            return await self._run_agent(
-                user_message=user_message,
-                conversation_history=history,
-                ephemeral_system_prompt=system_prompt,
-                session_id=session_id,
-                model_override=model_name,
-                params_overrides=overrides,
-                gateway_session_key=gateway_session_key,
-            )
+            try:
+                return await self._run_agent(
+                    user_message=user_message,
+                    conversation_history=history,
+                    ephemeral_system_prompt=system_prompt,
+                    session_id=session_id,
+                    model_override=model_name,
+                    params_overrides=overrides,
+                    gateway_session_key=gateway_session_key,
+                    clarify_callback=chat_clarify_cb,
+                    tool_start_callback=lambda *a, **k: None,  # no-op in non-streaming
+                    tool_complete_callback=lambda *a, **k: None,  # no-op in non-streaming
+                )
+            finally:
+                # Cleanup session context and env vars
+                clear_session_vars(_sess_tokens)
+                os.environ["HERMES_SESSION_KEY"] = _prev_session_key
+                if not _prev_gateway_session:
+                    os.environ.pop("HERMES_GATEWAY_SESSION", None)
+                from tools.approval import unregister_gateway_notify
+                unregister_gateway_notify(chat_session_key)
 
         idempotency_key = request.headers.get("Idempotency-Key")
         if idempotency_key:
@@ -1796,6 +1909,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 usage = agent_usage or usage
             except Exception as exc:
                 logger.warning("Agent task %s failed, usage data lost: %s", completion_id, exc)
+                result = None
 
             # Auto-generate session title after first exchange (non-blocking)
             if session_id and self._session_db:
@@ -3388,6 +3502,7 @@ class APIServerAdapter(BasePlatformAdapter):
         gateway_session_key: Optional[str] = None,
         x_user_token: Optional[str] = None,
         params_overrides: Optional[Dict[str, Any]] = None,
+        model_override: Optional[str] = None,
     ) -> tuple:
         """
         Create an agent and run a conversation in a thread executor.
@@ -4025,10 +4140,10 @@ class APIServerAdapter(BasePlatformAdapter):
         return web.json_response({"ok": True, "response": response})
 
     async def _handle_chat_approve(self, request: "web.Request") -> "web.Response":
-        """POST /v1/runs/chat/approve — approve/deny a dangerous command.
+        """POST /v1/runs/chat/approve — approve/deny a pending approval request.
 
-        Resolves the oldest pending approval for the session via the
-        gateway approval queue mechanism.
+        Handles both streaming (via gateway approval queue) and non-streaming
+        (via threading.Event) modes.
         """
         auth_err = self._check_auth(request)
         if auth_err:
@@ -4053,17 +4168,33 @@ class APIServerAdapter(BasePlatformAdapter):
                 status=400,
             )
 
-        # Resolve via approval_id mapping
-        mapping = self._pending_approvals.pop(approval_id, None)
-        if mapping:
-            session_key = mapping["session_key"]
+        # Check pending approvals — support both streaming and non-streaming modes
+        pending = self._pending_approvals.get(approval_id)
+        if not pending:
+            return web.json_response(
+                {"error": {"message": "Approval not found or already resolved", "type": "invalid_request_error"}},
+                status=404,
+            )
+
+        session_key = pending.get("session_key", "")
+
+        # Non-streaming mode: has threading event + result container
+        if "event" in pending and "result" in pending:
+            pending["result"]["action"] = action
+            pending["event"].set()
+            self._pending_approvals.pop(approval_id, None)
+            return web.json_response({"ok": True, "action": action})
+
+        # Streaming mode: resolve via gateway approval queue
+        self._pending_approvals.pop(approval_id, None)
+        if session_key:
             from tools.approval import resolve_gateway_approval
             count = resolve_gateway_approval(session_key, action)
             if count > 0:
                 return web.json_response({"ok": True, "resolved": count})
 
         return web.json_response(
-            {"error": {"message": "Approval not found or already resolved", "type": "invalid_request_error"}},
+            {"error": {"message": "Approval already resolved", "type": "invalid_request_error"}},
             status=404,
         )
 

@@ -58,23 +58,65 @@ TOOL_KIND_MAP: Dict[str, ToolKind] = {
 
 _POLISHED_TOOLS = {
     # Core operator loop
-    "todo", "memory", "session_search", "delegate_task",
+    "todo",
+    "memory",
+    "session_search",
+    "delegate_task",
     # Files / execution
-    "read_file", "write_file", "patch", "search_files", "terminal", "process", "execute_code",
+    "read_file",
+    "write_file",
+    "patch",
+    "search_files",
+    "terminal",
+    "process",
+    "execute_code",
     # Skills / web / browser / media
-    "skill_view", "skills_list", "skill_manage", "web_search", "web_extract",
-    "browser_navigate", "browser_click", "browser_type", "browser_press", "browser_scroll",
-    "browser_back", "browser_snapshot", "browser_console", "browser_get_images", "browser_vision",
-    "vision_analyze", "image_generate", "text_to_speech",
+    "skill_view",
+    "skills_list",
+    "skill_manage",
+    "web_search",
+    "web_extract",
+    "browser_navigate",
+    "browser_click",
+    "browser_type",
+    "browser_press",
+    "browser_scroll",
+    "browser_back",
+    "browser_snapshot",
+    "browser_console",
+    "browser_get_images",
+    "browser_vision",
+    "vision_analyze",
+    "image_generate",
+    "text_to_speech",
     # Schedulers / platform integrations
-    "cronjob", "send_message", "clarify", "discord", "discord_admin",
-    "ha_list_entities", "ha_get_state", "ha_list_services", "ha_call_service",
-    "feishu_doc_read", "feishu_drive_list_comments", "feishu_drive_list_comment_replies",
-    "feishu_drive_reply_comment", "feishu_drive_add_comment",
-    "kanban_create", "kanban_show", "kanban_comment", "kanban_complete",
-    "kanban_block", "kanban_link", "kanban_heartbeat",
-    "yb_query_group_info", "yb_query_group_members", "yb_search_sticker",
-    "yb_send_dm", "yb_send_sticker", "mixture_of_agents",
+    "cronjob",
+    "send_message",
+    "clarify",
+    "discord",
+    "discord_admin",
+    "ha_list_entities",
+    "ha_get_state",
+    "ha_list_services",
+    "ha_call_service",
+    "feishu_doc_read",
+    "feishu_drive_list_comments",
+    "feishu_drive_list_comment_replies",
+    "feishu_drive_reply_comment",
+    "feishu_drive_add_comment",
+    "kanban_create",
+    "kanban_show",
+    "kanban_comment",
+    "kanban_complete",
+    "kanban_block",
+    "kanban_link",
+    "kanban_heartbeat",
+    "yb_query_group_info",
+    "yb_query_group_members",
+    "yb_search_sticker",
+    "yb_send_dm",
+    "yb_send_sticker",
+    "mixture_of_agents",
 }
 
 
@@ -110,7 +152,9 @@ def build_tool_title(tool_name: str, args: Dict[str, Any]) -> str:
     if tool_name == "web_extract":
         urls = args.get("urls", [])
         if urls:
-            return f"extract: {urls[0]}" + (f" (+{len(urls)-1})" if len(urls) > 1 else "")
+            return f"extract: {urls[0]}" + (
+                f" (+{len(urls) - 1})" if len(urls) > 1 else ""
+            )
         return "web extract"
     if tool_name == "process":
         action = str(args.get("action") or "").strip() or "manage"
@@ -133,7 +177,9 @@ def build_tool_title(tool_name: str, args: Dict[str, Any]) -> str:
         return f"memory {action}: {target}"
     if tool_name == "execute_code":
         code = str(args.get("code") or "").strip()
-        first_line = next((line.strip() for line in code.splitlines() if line.strip()), "")
+        first_line = next(
+            (line.strip() for line in code.splitlines() if line.strip()), ""
+        )
         if first_line:
             if len(first_line) > 70:
                 first_line = first_line[:67] + "..."
@@ -247,7 +293,9 @@ def _format_todo_result(result: Optional[str]) -> Optional[str]:
     return "\n".join(lines)
 
 
-def _format_read_file_result(result: Optional[str], args: Optional[Dict[str, Any]]) -> Optional[str]:
+def _format_read_file_result(
+    result: Optional[str], args: Optional[Dict[str, Any]]
+) -> Optional[str]:
     data = _json_loads_maybe(result)
     if not isinstance(data, dict):
         return None
@@ -296,7 +344,9 @@ def _format_search_files_result(result: Optional[str]) -> Optional[str]:
             lines.append(f"- {match}")
             continue
 
-        path = str(match.get("path") or match.get("file") or match.get("filename") or "?")
+        path = str(
+            match.get("path") or match.get("file") or match.get("filename") or "?"
+        )
         line = match.get("line") or match.get("line_number")
         content = str(match.get("content") or match.get("text") or "").strip()
         loc = f"{path}:{line}" if line else path
@@ -320,7 +370,9 @@ def _format_execute_code_result(result: Optional[str]) -> Optional[str]:
     output = str(data.get("output") or "")
     error = str(data.get("error") or "")
     exit_code = data.get("exit_code")
-    parts = [f"Exit code: {exit_code}" if exit_code is not None else "Execution complete"]
+    parts = [
+        f"Exit code: {exit_code}" if exit_code is not None else "Execution complete"
+    ]
     if output:
         parts.extend(["", "Output:", output])
     if error:
@@ -351,9 +403,16 @@ def _format_skill_view_result(result: Optional[str]) -> Optional[str]:
     file_path = str(data.get("file") or data.get("path") or "SKILL.md")
     description = str(data.get("description") or "").strip()
     content = str(data.get("content") or "")
-    linked = data.get("linked_files") if isinstance(data.get("linked_files"), dict) else None
+    linked = (
+        data.get("linked_files") if isinstance(data.get("linked_files"), dict) else None
+    )
 
-    lines = ["**Skill loaded**", "", f"- **Name:** `{name}`", f"- **File:** `{file_path}`"]
+    lines = [
+        "**Skill loaded**",
+        "",
+        f"- **Name:** `{name}`",
+        f"- **File:** `{file_path}`",
+    ]
     if description:
         lines.append(f"- **Description:** {description}")
     if content:
@@ -374,14 +433,23 @@ def _format_skill_view_result(result: Optional[str]) -> Optional[str]:
     return "\n".join(lines)
 
 
-def _format_skill_manage_result(result: Optional[str], args: Optional[Dict[str, Any]]) -> Optional[str]:
+def _format_skill_manage_result(
+    result: Optional[str], args: Optional[Dict[str, Any]]
+) -> Optional[str]:
     data = _json_loads_maybe(result)
     if not isinstance(data, dict):
         return None
 
     action = str((args or {}).get("action") or "manage").strip() or "manage"
-    name = str((args or {}).get("name") or data.get("name") or "skill").strip() or "skill"
-    file_path = str((args or {}).get("file_path") or data.get("file_path") or "SKILL.md").strip() or "SKILL.md"
+    name = (
+        str((args or {}).get("name") or data.get("name") or "skill").strip() or "skill"
+    )
+    file_path = (
+        str(
+            (args or {}).get("file_path") or data.get("file_path") or "SKILL.md"
+        ).strip()
+        or "SKILL.md"
+    )
     success = data.get("success")
     status = "✅ Skill updated" if success is not False else "✗ Skill update failed"
 
@@ -408,7 +476,11 @@ def _format_web_search_result(result: Optional[str]) -> Optional[str]:
     data = _json_loads_maybe(result)
     if not isinstance(data, dict):
         return None
-    web = data.get("data", {}).get("web") if isinstance(data.get("data"), dict) else data.get("web")
+    web = (
+        data.get("data", {}).get("web")
+        if isinstance(data.get("data"), dict)
+        else data.get("web")
+    )
     if not isinstance(web, list):
         return None
     lines = [f"Web results: {len(web)}"]
@@ -445,17 +517,23 @@ def _format_web_extract_result(result: Optional[str]) -> Optional[str]:
         url = str(item.get("url") or "").strip()
         title = str(item.get("title") or url or "Untitled").strip()
         failures.append(
-            f"- {title}" + (f" — {url}" if url and url != title else "") + f"\n  Error: {_truncate_text(error, limit=500)}"
+            f"- {title}"
+            + (f" — {url}" if url and url != title else "")
+            + f"\n  Error: {_truncate_text(error, limit=500)}"
         )
 
     if not failures:
         return None
-    lines = [f"Web extract failed for {len(failures)} URL{'s' if len(failures) != 1 else ''}"]
+    lines = [
+        f"Web extract failed for {len(failures)} URL{'s' if len(failures) != 1 else ''}"
+    ]
     lines.extend(failures)
     return "\n".join(lines)
 
 
-def _format_process_result(result: Optional[str], args: Optional[Dict[str, Any]]) -> Optional[str]:
+def _format_process_result(
+    result: Optional[str], args: Optional[Dict[str, Any]]
+) -> Optional[str]:
     data = _json_loads_maybe(result)
     if not isinstance(data, dict):
         return result if isinstance(result, str) and result.strip() else None
@@ -470,7 +548,9 @@ def _format_process_result(result: Optional[str], args: Optional[Dict[str, Any]]
                 lines.append(f"- {proc}")
                 continue
             sid = str(proc.get("session_id") or proc.get("id") or "?")
-            status = str(proc.get("status") or ("exited" if proc.get("exited") else "running"))
+            status = str(
+                proc.get("status") or ("exited" if proc.get("exited") else "running")
+            )
             cmd = str(proc.get("command") or "").strip()
             pid = proc.get("pid")
             code = proc.get("exit_code")
@@ -479,7 +559,9 @@ def _format_process_result(result: Optional[str], args: Optional[Dict[str, Any]]
                 bits.append(f"pid {pid}")
             if code is not None:
                 bits.append(f"exit {code}")
-            lines.append(f"- `{sid}` — {', '.join(bits)}" + (f" — {cmd[:120]}" if cmd else ""))
+            lines.append(
+                f"- `{sid}` — {', '.join(bits)}" + (f" — {cmd[:120]}" if cmd else "")
+            )
         if len(processes) > 20:
             lines.append(f"... {len(processes) - 20} more process(es)")
         return "\n".join(lines)
@@ -487,10 +569,21 @@ def _format_process_result(result: Optional[str], args: Optional[Dict[str, Any]]
     status = str(data.get("status") or data.get("state") or action).strip()
     sid = str(data.get("session_id") or (args or {}).get("session_id") or "").strip()
     lines = [f"Process {action}: {status}" + (f" (`{sid}`)" if sid else "")]
-    for key, label in (("command", "Command"), ("pid", "PID"), ("exit_code", "Exit code"), ("returncode", "Exit code"), ("lines", "Lines")):
+    for key, label in (
+        ("command", "Command"),
+        ("pid", "PID"),
+        ("exit_code", "Exit code"),
+        ("returncode", "Exit code"),
+        ("lines", "Lines"),
+    ):
         if data.get(key) is not None:
             lines.append(f"- **{label}:** {data.get(key)}")
-    output = data.get("output") or data.get("new_output") or data.get("log") or data.get("stdout")
+    output = (
+        data.get("output")
+        or data.get("new_output")
+        or data.get("log")
+        or data.get("stdout")
+    )
     error = data.get("error") or data.get("stderr")
     if output:
         lines.extend(["", "Output:", _truncate_text(str(output), limit=5000)])
@@ -500,6 +593,49 @@ def _format_process_result(result: Optional[str], args: Optional[Dict[str, Any]]
     if msg and not output and not error:
         lines.append(str(msg))
     return _truncate_text("\n".join(lines), limit=7000)
+
+
+def _format_delegate_task_item(item: dict) -> list[str]:
+    lines = []
+    icon = {
+        "completed": "✅",
+        "failed": "✗",
+        "error": "✗",
+        "timeout": "⏱",
+        "interrupted": "⚠",
+    }
+    idx = item.get("task_index")
+    status = str(item.get("status") or "unknown")
+    model = item.get("model")
+    dur = item.get("duration_seconds")
+    role = item.get("_child_role")
+    header = f"{icon.get(status, '•')} Task {idx + 1 if isinstance(idx, int) else '?'}: {status}"
+    bits = []
+    if model:
+        bits.append(str(model))
+    if role:
+        bits.append(f"role={role}")
+    if dur is not None:
+        bits.append(f"{dur}s")
+    if bits:
+        header += " (" + ", ".join(bits) + ")"
+    lines.extend(["", header])
+    summary = str(item.get("summary") or "").strip()
+    error = str(item.get("error") or "").strip()
+    if summary:
+        lines.append(_truncate_text(summary, limit=1200))
+    if error:
+        lines.append("Error: " + _truncate_text(error, limit=800))
+    trace = item.get("tool_trace")
+    if isinstance(trace, list) and trace:
+        names = [str(t.get("tool") or "?") for t in trace if isinstance(t, dict)]
+        if names:
+            lines.append(
+                "Tools: "
+                + ", ".join(names[:12])
+                + (f" (+{len(names) - 12})" if len(names) > 12 else "")
+            )
+    return lines
 
 
 def _format_delegate_result(result: Optional[str]) -> Optional[str]:
@@ -512,39 +648,15 @@ def _format_delegate_result(result: Optional[str]) -> Optional[str]:
     if not isinstance(results, list):
         return None
     total = data.get("total_duration_seconds")
-    lines = [f"Delegation results: {len(results)} task{'s' if len(results) != 1 else ''}" + (f" in {total}s" if total is not None else "")]
-    icon = {"completed": "✅", "failed": "✗", "error": "✗", "timeout": "⏱", "interrupted": "⚠"}
+    lines = [
+        f"Delegation results: {len(results)} task{'s' if len(results) != 1 else ''}"
+        + (f" in {total}s" if total is not None else "")
+    ]
     for item in results:
         if not isinstance(item, dict):
             lines.append(f"- {item}")
             continue
-        idx = item.get("task_index")
-        status = str(item.get("status") or "unknown")
-        model = item.get("model")
-        dur = item.get("duration_seconds")
-        role = item.get("_child_role")
-        header = f"{icon.get(status, '•')} Task {idx + 1 if isinstance(idx, int) else '?'}: {status}"
-        bits = []
-        if model:
-            bits.append(str(model))
-        if role:
-            bits.append(f"role={role}")
-        if dur is not None:
-            bits.append(f"{dur}s")
-        if bits:
-            header += " (" + ", ".join(bits) + ")"
-        lines.extend(["", header])
-        summary = str(item.get("summary") or "").strip()
-        error = str(item.get("error") or "").strip()
-        if summary:
-            lines.append(_truncate_text(summary, limit=1200))
-        if error:
-            lines.append("Error: " + _truncate_text(error, limit=800))
-        trace = item.get("tool_trace")
-        if isinstance(trace, list) and trace:
-            names = [str(t.get("tool") or "?") for t in trace if isinstance(t, dict)]
-            if names:
-                lines.append("Tools: " + ", ".join(names[:12]) + (f" (+{len(names)-12})" if len(names) > 12 else ""))
+        lines.extend(_format_delegate_task_item(item))
     return _truncate_text("\n".join(lines), limit=8000)
 
 
@@ -559,7 +671,11 @@ def _format_session_search_result(result: Optional[str]) -> Optional[str]:
         return None
     mode = data.get("mode") or "search"
     query = data.get("query")
-    lines = ["Recent sessions" if mode == "recent" else f"Session search results" + (f" for `{query}`" if query else "")]
+    lines = [
+        "Recent sessions"
+        if mode == "recent"
+        else f"Session search results" + (f" for `{query}`" if query else "")
+    ]
     if not results:
         lines.append(str(data.get("message") or "No matching sessions found."))
         return "\n".join(lines)
@@ -568,10 +684,16 @@ def _format_session_search_result(result: Optional[str]) -> Optional[str]:
             continue
         sid = str(item.get("session_id") or "?")
         title = str(item.get("title") or item.get("when") or "Untitled session").strip()
-        when = str(item.get("last_active") or item.get("started_at") or item.get("when") or "").strip()
+        when = str(
+            item.get("last_active") or item.get("started_at") or item.get("when") or ""
+        ).strip()
         count = item.get("message_count")
         source = str(item.get("source") or "").strip()
-        meta = ", ".join(str(x) for x in [when, source, f"{count} msgs" if count is not None else ""] if x)
+        meta = ", ".join(
+            str(x)
+            for x in [when, source, f"{count} msgs" if count is not None else ""]
+            if x
+        )
         lines.append(f"- **{title}** (`{sid}`)" + (f" — {meta}" if meta else ""))
         summary = str(item.get("summary") or item.get("preview") or "").strip()
         if summary:
@@ -579,14 +701,19 @@ def _format_session_search_result(result: Optional[str]) -> Optional[str]:
     return _truncate_text("\n".join(lines), limit=7000)
 
 
-def _format_memory_result(result: Optional[str], args: Optional[Dict[str, Any]]) -> Optional[str]:
+def _format_memory_result(
+    result: Optional[str], args: Optional[Dict[str, Any]]
+) -> Optional[str]:
     data = _json_loads_maybe(result)
     if not isinstance(data, dict):
         return None
     action = str((args or {}).get("action") or "memory").strip() or "memory"
     target = str(data.get("target") or (args or {}).get("target") or "memory")
     if data.get("success") is False:
-        lines = [f"✗ Memory {action} failed ({target})", str(data.get("error") or "unknown error")]
+        lines = [
+            f"✗ Memory {action} failed ({target})",
+            str(data.get("error") or "unknown error"),
+        ]
         matches = data.get("matches")
         if isinstance(matches, list) and matches:
             lines.append("Matches:")
@@ -600,18 +727,24 @@ def _format_memory_result(result: Optional[str], args: Optional[Dict[str, Any]])
     if data.get("usage"):
         lines.append(f"Usage: {data.get('usage')}")
     # Avoid dumping all memory entries into ACP UI; show only the explicit new value preview.
-    preview = str((args or {}).get("content") or (args or {}).get("old_text") or "").strip()
+    preview = str(
+        (args or {}).get("content") or (args or {}).get("old_text") or ""
+    ).strip()
     if preview:
         lines.append("Preview: " + _truncate_text(preview, limit=300))
     return "\n".join(lines)
 
 
-def _format_edit_result(tool_name: str, result: Optional[str], args: Optional[Dict[str, Any]]) -> Optional[str]:
+def _format_edit_result(
+    tool_name: str, result: Optional[str], args: Optional[Dict[str, Any]]
+) -> Optional[str]:
     data = _json_loads_maybe(result)
     path = str((args or {}).get("path") or "file").strip()
     if isinstance(data, dict):
         if data.get("success") is False or data.get("error"):
-            return f"{tool_name} failed for {path}: {data.get('error', 'unknown error')}"
+            return (
+                f"{tool_name} failed for {path}: {data.get('error', 'unknown error')}"
+            )
         message = str(data.get("message") or "").strip()
         replacements = data.get("replacements") or data.get("replacement_count")
         lines = [f"✅ {tool_name} completed" + (f" for `{path}`" if path else "")]
@@ -629,7 +762,9 @@ def _format_edit_result(tool_name: str, result: Optional[str], args: Optional[Di
     return f"✅ {tool_name} completed" + (f" for `{path}`" if path else "")
 
 
-def _format_browser_result(tool_name: str, result: Optional[str], args: Optional[Dict[str, Any]]) -> Optional[str]:
+def _format_browser_result(
+    tool_name: str, result: Optional[str], args: Optional[Dict[str, Any]]
+) -> Optional[str]:
     data = _json_loads_maybe(result)
     if not isinstance(data, dict):
         return result if isinstance(result, str) and result.strip() else None
@@ -646,7 +781,14 @@ def _format_browser_result(tool_name: str, result: Optional[str], args: Optional
                     lines.append(f"- {alt or 'image'}" + (f" — {url}" if url else ""))
             return _truncate_text("\n".join(lines), limit=5000)
     title = str(data.get("title") or data.get("url") or data.get("status") or tool_name)
-    text = str(data.get("text") or data.get("content") or data.get("snapshot") or data.get("analysis") or data.get("message") or "").strip()
+    text = str(
+        data.get("text")
+        or data.get("content")
+        or data.get("snapshot")
+        or data.get("analysis")
+        or data.get("message")
+        or ""
+    ).strip()
     lines = [title]
     if data.get("url") and data.get("url") != title:
         lines.append(str(data.get("url")))
@@ -655,20 +797,34 @@ def _format_browser_result(tool_name: str, result: Optional[str], args: Optional
     return _truncate_text("\n".join(lines), limit=7000)
 
 
-def _format_media_or_cron_result(tool_name: str, result: Optional[str]) -> Optional[str]:
+def _format_media_or_cron_result(
+    tool_name: str, result: Optional[str]
+) -> Optional[str]:
     data = _json_loads_maybe(result)
     if not isinstance(data, dict):
         return result if isinstance(result, str) and result.strip() else None
     if data.get("success") is False or data.get("error"):
         return f"{tool_name} failed: {data.get('error', 'unknown error')}"
     lines = [f"✅ {tool_name} completed"]
-    for key in ("file_path", "path", "url", "image_url", "job_id", "id", "status", "message", "next_run"):
+    for key in (
+        "file_path",
+        "path",
+        "url",
+        "image_url",
+        "job_id",
+        "id",
+        "status",
+        "message",
+        "next_run",
+    ):
         if data.get(key):
             lines.append(f"- **{key}:** {data.get(key)}")
     return "\n".join(lines)
 
 
-def _format_generic_structured_result(tool_name: str, result: Optional[str]) -> Optional[str]:
+def _format_generic_structured_result(
+    tool_name: str, result: Optional[str]
+) -> Optional[str]:
     data = _json_loads_maybe(result)
     if not isinstance(data, (dict, list)):
         return result if isinstance(result, str) and result.strip() else None
@@ -681,10 +837,28 @@ def _format_generic_structured_result(tool_name: str, result: Optional[str]) -> 
     if data.get("success") is False or data.get("error"):
         return f"{tool_name} failed: {data.get('error', 'unknown error')}"
 
-    lines = [f"✅ {tool_name} completed" if data.get("success") is True else f"{tool_name} result"]
+    lines = [
+        f"✅ {tool_name} completed"
+        if data.get("success") is True
+        else f"{tool_name} result"
+    ]
     priority_keys = (
-        "message", "status", "id", "task_id", "issue_id", "title", "name", "entity_id",
-        "state", "service", "url", "path", "file_path", "count", "total", "next_run",
+        "message",
+        "status",
+        "id",
+        "task_id",
+        "issue_id",
+        "title",
+        "name",
+        "entity_id",
+        "state",
+        "service",
+        "url",
+        "path",
+        "file_path",
+        "count",
+        "total",
+        "next_run",
     )
     seen = set()
     for key in priority_keys:
@@ -733,10 +907,18 @@ def _build_polished_completion_content(
         "skill_manage": lambda: _format_skill_manage_result(result, function_args),
         "web_search": lambda: _format_web_search_result(result),
         "web_extract": lambda: _format_web_extract_result(result),
-        "browser_navigate": lambda: _format_browser_result(tool_name, result, function_args),
-        "browser_snapshot": lambda: _format_browser_result(tool_name, result, function_args),
-        "browser_vision": lambda: _format_browser_result(tool_name, result, function_args),
-        "browser_get_images": lambda: _format_browser_result(tool_name, result, function_args),
+        "browser_navigate": lambda: _format_browser_result(
+            tool_name, result, function_args
+        ),
+        "browser_snapshot": lambda: _format_browser_result(
+            tool_name, result, function_args
+        ),
+        "browser_vision": lambda: _format_browser_result(
+            tool_name, result, function_args
+        ),
+        "browser_get_images": lambda: _format_browser_result(
+            tool_name, result, function_args
+        ),
         "vision_analyze": lambda: _format_media_or_cron_result(tool_name, result),
         "image_generate": lambda: _format_media_or_cron_result(tool_name, result),
         "cronjob": lambda: _format_media_or_cron_result(tool_name, result),
@@ -769,8 +951,12 @@ def _build_patch_mode_content(patch_text: str) -> List[Any]:
                 old_chunks: list[str] = []
                 new_chunks: list[str] = []
                 for hunk in op.hunks:
-                    old_lines = [line.content for line in hunk.lines if line.prefix in {" ", "-"}]
-                    new_lines = [line.content for line in hunk.lines if line.prefix in {" ", "+"}]
+                    old_lines = [
+                        line.content for line in hunk.lines if line.prefix in {" ", "-"}
+                    ]
+                    new_lines = [
+                        line.content for line in hunk.lines if line.prefix in {" ", "+"}
+                    ]
                     if old_lines or new_lines:
                         old_chunks.append("\n".join(old_lines))
                         new_chunks.append("\n".join(new_lines))
@@ -788,7 +974,12 @@ def _build_patch_mode_content(patch_text: str) -> List[Any]:
                 continue
 
             if op.operation == OperationType.ADD:
-                added_lines = [line.content for hunk in op.hunks for line in hunk.lines if line.prefix == "+"]
+                added_lines = [
+                    line.content
+                    for hunk in op.hunks
+                    for line in hunk.lines
+                    if line.prefix == "+"
+                ]
                 content.append(
                     acp.tool_diff_content(
                         path=op.file_path,
@@ -809,7 +1000,9 @@ def _build_patch_mode_content(patch_text: str) -> List[Any]:
 
             if op.operation == OperationType.MOVE:
                 content.append(
-                    acp.tool_content(acp.text_block(f"Move file: {op.file_path} -> {op.new_path}"))
+                    acp.tool_content(
+                        acp.text_block(f"Move file: {op.file_path} -> {op.new_path}")
+                    )
                 )
 
         return content or [acp.tool_content(acp.text_block(patch_text))]
@@ -839,7 +1032,11 @@ def _parse_unified_diff_content(diff_text: str) -> List[Any]:
         nonlocal current_old_path, current_new_path, old_lines, new_lines
         if current_old_path is None and current_new_path is None:
             return
-        path = current_new_path if current_new_path and current_new_path != "/dev/null" else current_old_path
+        path = (
+            current_new_path
+            if current_new_path and current_new_path != "/dev/null"
+            else current_old_path
+        )
         if not path or path == "/dev/null":
             current_old_path = None
             current_new_path = None
@@ -893,7 +1090,9 @@ def _build_tool_complete_content(
     """Build structured ACP completion content, falling back to plain text."""
     display_result = result or ""
     if len(display_result) > 5000:
-        display_result = display_result[:4900] + f"\n... ({len(result)} chars total, truncated)"
+        display_result = (
+            display_result[:4900] + f"\n... ({len(result)} chars total, truncated)"
+        )
 
     if tool_name in {"write_file", "patch", "skill_manage"}:
         try:
@@ -912,7 +1111,9 @@ def _build_tool_complete_content(
         except Exception:
             pass
 
-    polished_content = _build_polished_completion_content(tool_name, result, function_args)
+    polished_content = _build_polished_completion_content(
+        tool_name, result, function_args
+    )
     if polished_content:
         return polished_content
 
@@ -945,7 +1146,11 @@ def build_tool_start(
             patch_text = arguments.get("patch", "")
             content = _build_patch_mode_content(patch_text)
         return acp.start_tool_call(
-            tool_call_id, title, kind=kind, content=content, locations=locations,
+            tool_call_id,
+            title,
+            kind=kind,
+            content=content,
+            locations=locations,
         )
 
     if tool_name == "write_file":
@@ -953,14 +1158,22 @@ def build_tool_start(
         file_content = arguments.get("content", "")
         content = [acp.tool_diff_content(path=path, new_text=file_content)]
         return acp.start_tool_call(
-            tool_call_id, title, kind=kind, content=content, locations=locations,
+            tool_call_id,
+            title,
+            kind=kind,
+            content=content,
+            locations=locations,
         )
 
     if tool_name == "terminal":
         command = arguments.get("command", "")
         content = [_text(f"$ {command}")]
         return acp.start_tool_call(
-            tool_call_id, title, kind=kind, content=content, locations=locations,
+            tool_call_id,
+            title,
+            kind=kind,
+            content=content,
+            locations=locations,
         )
 
     if tool_name == "read_file":
@@ -968,7 +1181,11 @@ def build_tool_start(
         # "Reading ..." content block makes Zed render an unhelpful Output
         # section before the real file contents arrive on completion.
         return acp.start_tool_call(
-            tool_call_id, title, kind=kind, content=None, locations=locations,
+            tool_call_id,
+            title,
+            kind=kind,
+            content=None,
+            locations=locations,
         )
 
     if tool_name == "search_files":
@@ -978,7 +1195,11 @@ def build_tool_start(
         where = f" in {search_path}" if search_path else ""
         content = [_text(f"Searching for '{pattern}' ({target}){where}")]
         return acp.start_tool_call(
-            tool_call_id, title, kind=kind, content=content, locations=locations,
+            tool_call_id,
+            title,
+            kind=kind,
+            content=content,
+            locations=locations,
         )
 
     if tool_name == "todo":
@@ -987,14 +1208,20 @@ def build_tool_start(
             preview_lines = ["Updating todo list", ""]
             for item in items[:8]:
                 if isinstance(item, dict):
-                    preview_lines.append(f"- {item.get('status', 'pending')}: {item.get('content', item.get('id', ''))}")
+                    preview_lines.append(
+                        f"- {item.get('status', 'pending')}: {item.get('content', item.get('id', ''))}"
+                    )
             if len(items) > 8:
                 preview_lines.append(f"... {len(items) - 8} more")
             content = [_text("\n".join(preview_lines))]
         else:
             content = [_text("Reading todo list")]
         return acp.start_tool_call(
-            tool_call_id, title, kind=kind, content=content, locations=locations,
+            tool_call_id,
+            title,
+            kind=kind,
+            content=content,
+            locations=locations,
         )
 
     if tool_name == "skill_view":
@@ -1002,7 +1229,11 @@ def build_tool_start(
         file_path = str(arguments.get("file_path") or "SKILL.md").strip() or "SKILL.md"
         content = [_text(f"Loading skill '{name}' ({file_path})")]
         return acp.start_tool_call(
-            tool_call_id, title, kind=kind, content=content, locations=locations,
+            tool_call_id,
+            title,
+            kind=kind,
+            content=content,
+            locations=locations,
         )
 
     if tool_name == "skill_manage":
@@ -1014,7 +1245,9 @@ def build_tool_start(
         if action == "patch":
             old = str(arguments.get("old_string") or "")
             new = str(arguments.get("new_string") or "")
-            content = [acp.tool_diff_content(path=path, old_text=old or None, new_text=new)]
+            content = [
+                acp.tool_diff_content(path=path, old_text=old or None, new_text=new)
+            ]
         elif action in {"edit", "create"}:
             content = [
                 acp.tool_diff_content(
@@ -1034,32 +1267,62 @@ def build_tool_start(
             target = str(arguments.get("file_path") or file_path or name)
             content = [_text(f"Removing {target} from skill '{name}'")]
         else:
-            content = [_text(f"Running skill_manage action '{action}' on skill '{name}' ({file_path})")]
+            content = [
+                _text(
+                    f"Running skill_manage action '{action}' on skill '{name}' ({file_path})"
+                )
+            ]
 
         return acp.start_tool_call(
-            tool_call_id, title, kind=kind, content=content, locations=locations,
+            tool_call_id,
+            title,
+            kind=kind,
+            content=content,
+            locations=locations,
         )
 
     if tool_name == "execute_code":
         code = str(arguments.get("code") or "").strip()
-        preview = code[:1200] + (f"\n... ({len(code)} chars total, truncated)" if len(code) > 1200 else "")
-        content = [_text(f"Running Python helper script:\n\n```python\n{preview}\n```" if preview else "Running Python helper script")]
+        preview = code[:1200] + (
+            f"\n... ({len(code)} chars total, truncated)" if len(code) > 1200 else ""
+        )
+        content = [
+            _text(
+                f"Running Python helper script:\n\n```python\n{preview}\n```"
+                if preview
+                else "Running Python helper script"
+            )
+        ]
         return acp.start_tool_call(
-            tool_call_id, title, kind=kind, content=content, locations=locations,
+            tool_call_id,
+            title,
+            kind=kind,
+            content=content,
+            locations=locations,
         )
 
     if tool_name == "web_search":
         query = str(arguments.get("query") or "").strip()
-        content = [_text(f"Searching the web for: {query}" if query else "Searching the web")]
+        content = [
+            _text(f"Searching the web for: {query}" if query else "Searching the web")
+        ]
         return acp.start_tool_call(
-            tool_call_id, title, kind=kind, content=content, locations=locations,
+            tool_call_id,
+            title,
+            kind=kind,
+            content=content,
+            locations=locations,
         )
 
     if tool_name == "web_extract":
         # The title identifies the URL(s). Avoid a duplicate content block so
         # Zed renders this like read_file: compact start, concise completion.
         return acp.start_tool_call(
-            tool_call_id, title, kind=kind, content=None, locations=locations,
+            tool_call_id,
+            title,
+            kind=kind,
+            content=None,
+            locations=locations,
         )
 
     if tool_name == "process":
@@ -1071,7 +1334,11 @@ def build_tool_start(
             text += "\nInput: " + _truncate_text(data_preview, limit=500)
         content = [_text(text)]
         return acp.start_tool_call(
-            tool_call_id, title, kind=kind, content=content, locations=locations,
+            tool_call_id,
+            title,
+            kind=kind,
+            content=content,
+            locations=locations,
         )
 
     if tool_name == "delegate_task":
@@ -1082,34 +1349,63 @@ def build_tool_start(
                 if isinstance(task, dict):
                     goal = str(task.get("goal") or "").strip()
                     role = str(task.get("role") or "").strip()
-                    lines.append(f"{i}. " + _truncate_text(goal, limit=160) + (f" ({role})" if role else ""))
+                    lines.append(
+                        f"{i}. "
+                        + _truncate_text(goal, limit=160)
+                        + (f" ({role})" if role else "")
+                    )
             if len(tasks) > 8:
                 lines.append(f"... {len(tasks) - 8} more")
             content = [_text("\n".join(lines))]
         else:
             goal = str(arguments.get("goal") or "").strip()
-            content = [_text("Delegating task" + (f":\n{_truncate_text(goal, limit=800)}" if goal else ""))]
+            content = [
+                _text(
+                    "Delegating task"
+                    + (f":\n{_truncate_text(goal, limit=800)}" if goal else "")
+                )
+            ]
         return acp.start_tool_call(
-            tool_call_id, title, kind=kind, content=content, locations=locations,
+            tool_call_id,
+            title,
+            kind=kind,
+            content=content,
+            locations=locations,
         )
 
     if tool_name == "session_search":
         query = str(arguments.get("query") or "").strip()
-        content = [_text(f"Searching past sessions for: {query}" if query else "Loading recent sessions")]
+        content = [
+            _text(
+                f"Searching past sessions for: {query}"
+                if query
+                else "Loading recent sessions"
+            )
+        ]
         return acp.start_tool_call(
-            tool_call_id, title, kind=kind, content=content, locations=locations,
+            tool_call_id,
+            title,
+            kind=kind,
+            content=content,
+            locations=locations,
         )
 
     if tool_name == "memory":
         action = str(arguments.get("action") or "manage").strip() or "manage"
         target = str(arguments.get("target") or "memory").strip() or "memory"
-        preview = str(arguments.get("content") or arguments.get("old_text") or "").strip()
+        preview = str(
+            arguments.get("content") or arguments.get("old_text") or ""
+        ).strip()
         text = f"Memory {action} ({target})"
         if preview:
             text += "\nPreview: " + _truncate_text(preview, limit=500)
         content = [_text(text)]
         return acp.start_tool_call(
-            tool_call_id, title, kind=kind, content=content, locations=locations,
+            tool_call_id,
+            title,
+            kind=kind,
+            content=content,
+            locations=locations,
         )
 
     if tool_name in _POLISHED_TOOLS:
@@ -1119,18 +1415,27 @@ def build_tool_start(
             args_text = str(arguments)
         content = [_text(_truncate_text(args_text, limit=1200))]
         return acp.start_tool_call(
-            tool_call_id, title, kind=kind, content=content, locations=locations,
+            tool_call_id,
+            title,
+            kind=kind,
+            content=content,
+            locations=locations,
         )
 
     # Generic fallback
     import json
+
     try:
         args_text = json.dumps(arguments, indent=2, default=str)
     except (TypeError, ValueError):
         args_text = str(arguments)
     content = [acp.tool_content(acp.text_block(args_text))]
     return acp.start_tool_call(
-        tool_call_id, title, kind=kind, content=content, locations=locations,
+        tool_call_id,
+        title,
+        kind=kind,
+        content=content,
+        locations=locations,
         raw_input=None if tool_name in _POLISHED_TOOLS else arguments,
     )
 

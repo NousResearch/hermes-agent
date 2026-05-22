@@ -1038,6 +1038,7 @@ class HermesDeviceDiagnosticsBridgeTest {
         assertTrue(result.getJSONArray("diagnostics_actions").toString().contains("local_backend_runtime_report"))
         assertTrue(result.getJSONArray("diagnostics_actions").toString().contains("device_performance_report"))
         assertTrue(result.getJSONArray("diagnostics_actions").toString().contains("gpu_backend_risk_report"))
+        assertTrue(result.getJSONArray("diagnostics_actions").toString().contains("local_inference_compatibility_report"))
         assertTrue(result.getJSONArray("diagnostics_actions").toString().contains("radio_signal_status"))
         assertTrue(result.getJSONArray("diagnostics_actions").toString().contains("radio_signal_graph"))
         assertTrue(result.getJSONArray("diagnostics_actions").toString().contains("radio_analyzer_report"))
@@ -1189,6 +1190,45 @@ class HermesDeviceDiagnosticsBridgeTest {
         assertTrue(result.getJSONArray("cards").toString().contains("Backend Risk Routes"))
         assertTrue(result.getInt("gpu_backend_risk_count") >= 8)
         assertTrue(result.getInt("gpu_backend_risk_route_count") >= 5)
+    }
+
+    @Test
+    fun localInferenceCompatibilityReportFusesSocRuntimeRiskAndValidation() {
+        val result = HermesDeviceDiagnosticsBridge.localInferenceCompatibilityReportJson(context)
+        val rows = result.getJSONArray("local_inference_compatibility_matrix")
+        val labels = buildSet {
+            for (index in 0 until rows.length()) add(rows.getJSONObject(index).getString("label"))
+        }
+        val text = rows.toString()
+
+        assertTrue(result.getBoolean("success"))
+        assertEquals("local_inference_compatibility_report", result.getString("action"))
+        assertTrue(result.getJSONArray("source_report_actions").toString().contains("soc_compatibility_report"))
+        assertTrue(result.getJSONArray("source_report_actions").toString().contains("gpu_backend_risk_report"))
+        assertTrue(result.has("android_device_identity"))
+        assertTrue(result.has("soc_profile"))
+        assertTrue(result.has("device_performance_profile"))
+        assertTrue(result.has("preferred_local_model"))
+        assertTrue(result.has("current_local_backend"))
+        assertTrue(result.has("litert_runtime_health"))
+        assertTrue(result.has("gpu_backend_risk_matrix"))
+        assertTrue(result.has("local_inference_compatibility_score"))
+        assertTrue(result.has("local_inference_compatibility_level"))
+        assertTrue(labels.contains("SOC and GPU family coverage"))
+        assertTrue(labels.contains("Live accelerator acceptance"))
+        assertTrue(labels.contains("Model artifact fit"))
+        assertTrue(labels.contains("Thermal memory and power runway"))
+        assertTrue(labels.contains("MediaTek and non-Adreno fallback policy"))
+        assertTrue(labels.contains("Phone validation scope"))
+        assertTrue(labels.contains("Agent drill-down route"))
+        assertTrue(text.contains("local_backend_runtime_report"))
+        assertTrue(text.contains("device_performance_report"))
+        assertTrue(text.contains("gpu_backend_risk_report"))
+        assertTrue(result.getJSONArray("cards").toString().contains("Local Inference Compatibility"))
+        assertTrue(result.getJSONArray("cards").toString().contains("GPU Backend Risk"))
+        assertTrue(result.getJSONArray("gemma_observation_directives").toString().contains("local_inference_compatibility_matrix"))
+        assertTrue(result.getInt("local_inference_compatibility_count") >= 7)
+        assertTrue(result.getInt("ready_local_inference_compatibility_count") >= 3)
     }
 
     @Test

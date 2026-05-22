@@ -354,6 +354,12 @@ def test_android_diagnostics_exposes_soc_compatibility_report_for_backend_policy
     assert 'devicePerformanceMatrixRows(performanceProfile, socProfile)' in diagnostics_bridge
     assert '"gpu_backend_risk_report"' in diagnostics_bridge
     assert 'gpuBackendRiskReportJson(appContext)' in diagnostics_bridge
+    assert '"local_inference_compatibility_report"' in diagnostics_bridge
+    assert 'localInferenceCompatibilityReportJson(appContext)' in diagnostics_bridge
+    assert 'localInferenceCompatibilityRows(' in diagnostics_bridge
+    assert '"local_inference_compatibility_matrix"' in diagnostics_bridge
+    assert '"local_inference_compatibility_score"' in diagnostics_bridge
+    assert 'MediaTek and non-Adreno fallback policy' in diagnostics_bridge
     assert 'gpuBackendRiskMatrixRows(' in diagnostics_bridge
     assert 'gpuBackendRiskRouteRows(' in diagnostics_bridge
     assert '"gpu_backend_risk_matrix"' in diagnostics_bridge
@@ -382,6 +388,7 @@ def test_android_diagnostics_exposes_soc_compatibility_report_for_backend_policy
     assert 'local_backend_runtime_report' in chat_client
     assert 'soc_compatibility_report' in chat_client
     assert 'gpu_backend_risk_report' in chat_client
+    assert 'local_inference_compatibility_report' in chat_client
     assert 'device_performance_report' in chat_client
     assert '"runtime_backend_matrix"' in chat_client
     assert '"runtime_stability_matrix"' in chat_client
@@ -390,12 +397,16 @@ def test_android_diagnostics_exposes_soc_compatibility_report_for_backend_policy
     assert '"soc_backend_constraint_matrix"' in chat_client
     assert '"gpu_backend_risk_matrix"' in chat_client
     assert '"gpu_backend_risk_routes"' in chat_client
+    assert '"local_inference_compatibility_matrix"' in chat_client
     assert '"gpu_backend_risk_matrix", "gpu_backend_risk_routes",' in diagnostic_cards
+    assert '"local_inference_compatibility_matrix",' in diagnostic_cards
     assert '"runtime_backend_matrix", "runtime_stability_matrix" -> capabilityMatrixRow(row)' in diagnostic_cards
     assert 'id = "runtime_backend"' in quick_actions
     assert 'id = "runtime_stability"' in quick_actions
     assert 'id = "soc_compatibility"' in quick_actions
     assert 'id = "backend_risk"' in quick_actions
+    assert 'id = "inference_compatibility"' in quick_actions
+    assert 'action=local_inference_compatibility_report' in quick_actions
 
 
 def test_litert_proxy_exposes_in_process_current_health_for_runtime_cards():

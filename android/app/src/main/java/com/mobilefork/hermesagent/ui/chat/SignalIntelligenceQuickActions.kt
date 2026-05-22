@@ -54,6 +54,13 @@ val SIGNAL_INTELLIGENCE_QUICK_ACTIONS = listOf(
         iconRes = R.drawable.ic_action_cog,
     ),
     SignalIntelligenceQuickAction(
+        id = "inference_compatibility",
+        label = "Inference Fit",
+        diagnosticAction = "local_inference_compatibility_report",
+        prompt = "Run android_device_diagnostics_tool action=local_inference_compatibility_report",
+        iconRes = R.drawable.ic_action_cog,
+    ),
+    SignalIntelligenceQuickAction(
         id = "runtime_backend",
         label = "Runtime Backend",
         diagnosticAction = "local_backend_runtime_report",

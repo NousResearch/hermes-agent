@@ -103,6 +103,16 @@ class NativeToolCallingChatClientTest {
     }
 
     @Test
+    fun extractsExplicitLocalInferenceCompatibilityDiagnosticQuickActionArguments() {
+        val parsed = NativeToolCallingChatClient.extractExplicitAndroidDiagnosticsArguments(
+            "Run android_device_diagnostics_tool action=local_inference_compatibility_report",
+        )
+
+        requireNotNull(parsed)
+        assertEquals("local_inference_compatibility_report", parsed.getString("action"))
+    }
+
+    @Test
     fun extractsExplicitAgentCardManifestDiagnosticQuickActionArguments() {
         val parsed = NativeToolCallingChatClient.extractExplicitAndroidDiagnosticsArguments(
             "Run android_device_diagnostics_tool action=agent_card_manifest_report",
@@ -870,6 +880,48 @@ class NativeToolCallingChatClientTest {
         assertEquals("accelerator_acceptance", first.getString("runtime_signal"))
         assertEquals("local_backend_runtime_report", first.getString("tool_action"))
         assertEquals("Route GPU backend risk triage", routes.getJSONObject(0).getString("label"))
+    }
+
+    @Test
+    fun compactsLocalInferenceCompatibilityReportWithoutDroppingScorecardRows() {
+        val rows = JSONArray()
+        repeat(18) { index ->
+            rows.put(
+                JSONObject()
+                    .put("category", "local_inference_compatibility")
+                    .put("label", if (index == 0) "MediaTek and non-Adreno fallback policy" else "Compatibility row $index")
+                    .put("ready", index < 10)
+                    .put("value_label", if (index == 0) "non-Adreno path visible" else "scorecard value $index")
+                    .put("detail", "Detailed local inference compatibility row $index with MediaTek Mali PowerVR fallback context.")
+                    .put("recommendation", "Use local_inference_compatibility_report before local acceleration claims.")
+                    .put("tool_action", if (index == 0) "gpu_backend_risk_report" else "soc_compatibility_report")
+                    .put("graph_type", if (index == 0) "gpu_backend_risk_matrix" else "soc_backend_matrix"),
+            )
+        }
+        val result = JSONObject()
+            .put("success", true)
+            .put("action", "local_inference_compatibility_report")
+            .put("local_inference_compatibility_score", 74)
+            .put("local_inference_compatibility_level", "watch")
+            .put("local_inference_compatibility_count", 18)
+            .put("ready_local_inference_compatibility_count", 10)
+            .put("local_inference_compatibility_matrix", rows)
+            .put("cards", JSONArray().put(JSONObject().put("title", "Local Inference Compatibility").put("body", "18 rows")))
+            .toString()
+
+        val parsed = JSONObject(NativeToolContextCompressor.compactToolResult(result))
+        val matrix = parsed.getJSONObject("local_inference_compatibility_matrix")
+        val first = matrix.getJSONArray("items").getJSONObject(0)
+
+        assertTrue(parsed.getBoolean("_hermes_context_compressed"))
+        assertEquals(74, parsed.getInt("local_inference_compatibility_score"))
+        assertEquals("watch", parsed.getString("local_inference_compatibility_level"))
+        assertEquals(18, parsed.getInt("local_inference_compatibility_count"))
+        assertEquals(10, parsed.getInt("ready_local_inference_compatibility_count"))
+        assertEquals("array", matrix.getString("type"))
+        assertEquals("MediaTek and non-Adreno fallback policy", first.getString("label"))
+        assertEquals("gpu_backend_risk_report", first.getString("tool_action"))
+        assertEquals("gpu_backend_risk_matrix", first.getString("graph_type"))
     }
 
     @Test

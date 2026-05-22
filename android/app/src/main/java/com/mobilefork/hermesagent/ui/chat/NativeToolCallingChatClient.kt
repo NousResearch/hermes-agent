@@ -1254,9 +1254,9 @@ class NativeToolCallingChatClient(
             .put(
                 functionSpec(
                     name = "android_device_diagnostics_tool",
-                    description = "Inspect resource-heavy apps, storage/memory status, nearby Wi-Fi signals, filterable Wi-Fi Analyzer readiness/scan-policy reports, channel ratings, inferred channel utilization/occupancy, access-point detail/export rows, AP semantic/risk labels, band coverage, signal history, vendor/OUI metadata and filter facets, Bluetooth Analyzer readiness/scan-policy reports, nearby Bluetooth devices plus service UUID labels/manufacturer names/proximity metadata, Bluetooth RSSI history/trends, Sensor Analyzer readiness/sampling-policy reports, accelerometer/gyroscope/ambient sensor snapshots, motion sensor history/trends, fused motion pose/heading/angular-motion/acceleration estimates, camera capability, overlay status, passive local backend runtime health, GPU/backend risk matrices, thermal/memory/power runtime stability guardrails, SOC/GPU compatibility and backend-policy reports, Gemma-visible agent observation dashboards with fused signal-context matrices, direct diagnostic card manifests, Kai-style agent environment parity/readiness, cross-signal awareness routes, tool catalog, radio analyzer AM/FM band-plan rows, AM/FM signal graph rows, receiver profile schemas for vendor AM/FM and external SDR bridges, vendor radio hints, Wi-Fi/Bluetooth radio routes, external SDR constraints, RF/AM/FM hardware limits, and phone preflight readiness for TikTok/Instagram/Gmail end-to-end work.",
+                    description = "Inspect resource-heavy apps, storage/memory status, nearby Wi-Fi signals, filterable Wi-Fi Analyzer readiness/scan-policy reports, channel ratings, inferred channel utilization/occupancy, access-point detail/export rows, AP semantic/risk labels, band coverage, signal history, vendor/OUI metadata and filter facets, Bluetooth Analyzer readiness/scan-policy reports, nearby Bluetooth devices plus service UUID labels/manufacturer names/proximity metadata, Bluetooth RSSI history/trends, Sensor Analyzer readiness/sampling-policy reports, accelerometer/gyroscope/ambient sensor snapshots, motion sensor history/trends, fused motion pose/heading/angular-motion/acceleration estimates, camera capability, overlay status, passive local backend runtime health, GPU/backend risk matrices, local inference compatibility scorecards, thermal/memory/power runtime stability guardrails, SOC/GPU compatibility and backend-policy reports, Gemma-visible agent observation dashboards with fused signal-context matrices, direct diagnostic card manifests, Kai-style agent environment parity/readiness, cross-signal awareness routes, tool catalog, radio analyzer AM/FM band-plan rows, AM/FM signal graph rows, receiver profile schemas for vendor AM/FM and external SDR bridges, vendor radio hints, Wi-Fi/Bluetooth radio routes, external SDR constraints, RF/AM/FM hardware limits, and phone preflight readiness for TikTok/Instagram/Gmail end-to-end work.",
                     properties = JSONObject()
-                        .put("action", stringProp("status, top_apps, wifi_scan, wifi_filtered_scan, wifi_analyzer_report, wifi_channel_graph, wifi_channel_rating, wifi_channel_utilization, wifi_ap_details, wifi_export, bluetooth_scan, bluetooth_analyzer_report, bluetooth_signal_history, sensor_analyzer_report, motion_sensor_history, motion_pose, sensor_snapshot, camera_status, radio_signal_status, radio_signal_graph, radio_analyzer_report, signal_capability_status, local_backend_runtime_report, soc_compatibility_report, gpu_backend_risk_report, device_performance_report, signal_awareness_report, agent_observation_report, agent_card_manifest_report, agent_environment_report, social_gmail_goal_preflight, show_active_overlay, tool_catalog, open_usage_access_settings, open_camera_permission_settings."))
+                        .put("action", stringProp("status, top_apps, wifi_scan, wifi_filtered_scan, wifi_analyzer_report, wifi_channel_graph, wifi_channel_rating, wifi_channel_utilization, wifi_ap_details, wifi_export, bluetooth_scan, bluetooth_analyzer_report, bluetooth_signal_history, sensor_analyzer_report, motion_sensor_history, motion_pose, sensor_snapshot, camera_status, radio_signal_status, radio_signal_graph, radio_analyzer_report, signal_capability_status, local_backend_runtime_report, soc_compatibility_report, gpu_backend_risk_report, local_inference_compatibility_report, device_performance_report, signal_awareness_report, agent_observation_report, agent_card_manifest_report, agent_environment_report, social_gmail_goal_preflight, show_active_overlay, tool_catalog, open_usage_access_settings, open_camera_permission_settings."))
                         .put("limit", intProp("Maximum rows for top apps, Wi-Fi networks, or Bluetooth devices. Defaults to 5."))
                         .put("detail_limit", intProp("Maximum Wi-Fi access-point detail/export rows. Defaults to limit, or the Wi-Fi max for wifi_ap_details/wifi_export."))
                         .put("export_format", stringProp("Wi-Fi export format for wifi_export: json, csv, or both."))
@@ -3206,6 +3206,10 @@ class NativeToolCallingChatClient(
             "local_backend_runtime_report",
             "soc_compatibility_report",
             "gpu_backend_risk_report",
+            "local_inference_compatibility_report",
+            "mediatek_inference_compatibility_report",
+            "non_adreno_compatibility_report",
+            "local_model_compatibility_scorecard",
             "device_performance_report",
             "signal_awareness_report",
             "agent_observation_report",
@@ -3644,6 +3648,10 @@ internal object NativeToolContextCompressor {
                 "gpu_backend_risk_route_count",
                 "gpu_backend_risk_level",
                 "gpu_backend_risk_score",
+                "local_inference_compatibility_score",
+                "local_inference_compatibility_level",
+                "local_inference_compatibility_count",
+                "ready_local_inference_compatibility_count",
                 "camera_count",
                 "sensor_count",
                 "sensor_catalog_count",
@@ -3769,6 +3777,7 @@ internal object NativeToolContextCompressor {
         "soc_backend_constraint_matrix",
         "gpu_backend_risk_matrix",
         "gpu_backend_risk_routes",
+        "local_inference_compatibility_matrix",
         "cached_wifi_signal_history",
         "cached_bluetooth_signal_history",
         "cached_motion_sensor_history",

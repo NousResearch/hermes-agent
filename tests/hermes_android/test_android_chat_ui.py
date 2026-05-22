@@ -73,6 +73,7 @@ def test_signal_intelligence_quick_actions_launch_direct_diagnostic_cards():
         "agent_environment_report",
         "soc_compatibility_report",
         "gpu_backend_risk_report",
+        "local_inference_compatibility_report",
         "wifi_analyzer_report",
         "wifi_scan",
         "wifi_channel_utilization",
@@ -93,6 +94,7 @@ def test_signal_intelligence_quick_actions_launch_direct_diagnostic_cards():
     assert 'id = "agent_observation"' in actions
     assert 'id = "soc_compatibility"' in actions
     assert 'id = "backend_risk"' in actions
+    assert 'id = "inference_compatibility"' in actions
     assert 'id = "wifi_occupancy"' in actions
     assert 'id = "bluetooth_analyzer"' in actions
     assert 'id = "bluetooth_history"' in actions

@@ -1441,6 +1441,10 @@ DEFAULT_CONFIG = {
     "approvals": {
         "mode": "manual",
         "timeout": 60,
+        # How long gateway users have to click the approval buttons before
+        # they expire (seconds). Applies to Discord, Telegram, Slack, and
+        # any other platform with button-based exec-approval views.
+        "gateway_timeout": 300,
         "cron_mode": "deny",
         # When true, /reload-mcp asks the user to confirm before rebuilding
         # the MCP tool set for the active session.  Reloading invalidates

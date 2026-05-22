@@ -4030,12 +4030,16 @@ class DiscordAdapter(BasePlatformAdapter):
         self, chat_id: str, command: str, session_key: str,
         description: str = "dangerous command",
         metadata: Optional[dict] = None,
+        timeout: Optional[int] = None,
     ) -> SendResult:
         """
         Send a button-based exec approval prompt for a dangerous command.
 
         The buttons call ``resolve_gateway_approval()`` to unblock the waiting
         agent thread — this replaces the text-based ``/approve`` flow on Discord.
+
+        If *timeout* is not provided, reads ``approvals.gateway_timeout`` from
+        config (default 300 seconds).
         """
         if not self._client or not DISCORD_AVAILABLE:
             return SendResult(success=False, error="Not connected")
@@ -4049,6 +4053,16 @@ class DiscordAdapter(BasePlatformAdapter):
             channel = self._client.get_channel(int(target_id))
             if not channel:
                 channel = await self._client.fetch_channel(int(target_id))
+
+            # Resolve approval timeout: explicit parameter wins, else read
+            # approvals.gateway_timeout from config (default 300 seconds).
+            if timeout is None:
+                try:
+                    from tools.approval import _get_approval_config
+                    timeout = int(_get_approval_config().get("gateway_timeout", 300))
+                except (ValueError, TypeError, ImportError):
+                    timeout = 300
+            timeout = max(timeout, 0)  # 0 = no timeout (discord.py treats 0 as None)
 
             # Discord embed description limit is 4096; show full command up to that
             max_desc = 4088
@@ -4064,6 +4078,7 @@ class DiscordAdapter(BasePlatformAdapter):
                 session_key=session_key,
                 allowed_user_ids=self._allowed_user_ids,
                 allowed_role_ids=self._allowed_role_ids,
+                timeout=timeout,
             )
 
             msg = await channel.send(embed=embed, view=view)
@@ -5010,7 +5025,8 @@ def _define_discord_view_classes() -> None:
         Shows four buttons: Allow Once, Allow Session, Always Allow, Deny.
         Clicking a button calls ``resolve_gateway_approval()`` to unblock the
         waiting agent thread — the same mechanism as the text ``/approve`` flow.
-        Only users in the allowed list can click.  Times out after 5 minutes.
+        Only users in the allowed list can click.  Times out after
+        the configured ``approvals.gateway_timeout`` (default 5 minutes).
         """
 
         def __init__(
@@ -5018,8 +5034,9 @@ def _define_discord_view_classes() -> None:
             session_key: str,
             allowed_user_ids: set,
             allowed_role_ids: Optional[set] = None,
+            timeout: int = 300,
         ):
-            super().__init__(timeout=300)  # 5-minute timeout
+            super().__init__(timeout=timeout)  # configurable via approvals.gateway_timeout
             self.session_key = session_key
             self.allowed_user_ids = allowed_user_ids
             self.allowed_role_ids = allowed_role_ids or set()
@@ -5098,10 +5115,22 @@ def _define_discord_view_classes() -> None:
             await self._resolve(interaction, "deny", discord.Color.red(), "Denied")
 
         async def on_timeout(self):
-            """Handle view timeout -- disable buttons and mark as expired."""
+            """Handle view timeout — disable buttons and edit the message."""
             self.resolved = True
             for child in self.children:
                 child.disabled = True
+            # Attempt to edit the message to show it expired. If the message
+            # was deleted or the bot lacks permission, silently skip.
+            try:
+                msg = self.message
+                if msg is not None:
+                    embed = msg.embeds[0] if msg.embeds else None
+                    if embed:
+                        embed.color = discord.Color.light_grey()
+                        embed.set_footer(text="⌛ This approval prompt has expired.")
+                    await msg.edit(embed=embed, view=self)
+            except Exception:
+                pass
 
     class SlashConfirmView(discord.ui.View):
         """Three-button view for generic slash-command confirmations.
@@ -5118,7 +5147,7 @@ def _define_discord_view_classes() -> None:
         ``tools.slash_confirm.resolve(session_key, confirm_id, choice)``
         which runs the handler the runner stored for this ``session_key``.
         Only users in the adapter's allowlist can click.  Times out after
-        5 minutes (matches the gateway primitive's timeout).
+        ``approvals.gateway_timeout`` (default 5 minutes).
         """
 
         def __init__(
@@ -5127,8 +5156,9 @@ def _define_discord_view_classes() -> None:
             confirm_id: str,
             allowed_user_ids: set,
             allowed_role_ids: Optional[set] = None,
+            timeout: int = 300,
         ):
-            super().__init__(timeout=300)
+            super().__init__(timeout=timeout)
             self.session_key = session_key
             self.confirm_id = confirm_id
             self.allowed_user_ids = allowed_user_ids
@@ -5203,9 +5233,20 @@ def _define_discord_view_classes() -> None:
             await self._resolve(interaction, "cancel", discord.Color.greyple(), "Cancelled")
 
         async def on_timeout(self):
+            """Handle view timeout — disable buttons and edit the message."""
             self.resolved = True
             for child in self.children:
                 child.disabled = True
+            try:
+                msg = self.message
+                if msg is not None:
+                    embed = msg.embeds[0] if msg.embeds else None
+                    if embed:
+                        embed.color = discord.Color.light_grey()
+                        embed.set_footer(text="⌛ This prompt has expired.")
+                    await msg.edit(embed=embed, view=self)
+            except Exception:
+                pass
 
     class UpdatePromptView(discord.ui.View):
         """Interactive Yes/No buttons for ``hermes update`` prompts.

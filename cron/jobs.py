@@ -410,15 +410,25 @@ def load_jobs() -> List[Dict[str, Any]]:
     try:
         with open(JOBS_FILE, 'r', encoding='utf-8') as f:
             data = json.load(f)
+            # Accept both {"jobs": [...]} and bare [...] formats.
+            # Bare lists can appear from older versions, distribution installs,
+            # or snapshot restores. Auto-repair to canonical format.
+            if isinstance(data, list):
+                logger.warning("Auto-repaired jobs.json (bare list → {\"jobs\": [...]})")
+                save_jobs(data)
+                return data
             return data.get("jobs", [])
     except json.JSONDecodeError:
         # Retry with strict=False to handle bare control chars in string values
         try:
             with open(JOBS_FILE, 'r', encoding='utf-8') as f:
                 data = json.loads(f.read(), strict=False)
-                jobs = data.get("jobs", [])
+                if isinstance(data, list):
+                    jobs = data
+                else:
+                    jobs = data.get("jobs", [])
                 if jobs:
-                    # Auto-repair: rewrite with proper escaping
+                    # Auto-repair: rewrite with proper escaping and canonical format
                     save_jobs(jobs)
                     logger.warning("Auto-repaired jobs.json (had invalid control characters)")
                 return jobs

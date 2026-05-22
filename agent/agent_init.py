@@ -71,6 +71,71 @@ def _ra():
     return run_agent
 
 
+def _normalized_custom_base_url(value: Any) -> str:
+    if not isinstance(value, str):
+        return ""
+    return value.strip().rstrip("/")
+
+
+def _custom_provider_model_matches(agent_model: str, entry: Dict[str, Any]) -> bool:
+    provider_model = str(entry.get("model", "") or "").strip().lower()
+    if not provider_model:
+        return True
+    return provider_model == str(agent_model or "").strip().lower()
+
+
+def _custom_provider_extra_body_for_agent(
+    *,
+    provider: str,
+    model: str,
+    base_url: str,
+    custom_providers: List[Dict[str, Any]],
+) -> Optional[Dict[str, Any]]:
+    if (provider or "").strip().lower() != "custom":
+        return None
+
+    target_url = _normalized_custom_base_url(base_url)
+    if not target_url:
+        return None
+
+    fallback: Optional[Dict[str, Any]] = None
+    for entry in custom_providers or []:
+        if not isinstance(entry, dict):
+            continue
+        if _normalized_custom_base_url(entry.get("base_url")) != target_url:
+            continue
+        extra_body = entry.get("extra_body")
+        if not isinstance(extra_body, dict) or not extra_body:
+            continue
+        provider_model = str(entry.get("model", "") or "").strip()
+        if provider_model:
+            if _custom_provider_model_matches(model, entry):
+                return dict(extra_body)
+        elif fallback is None:
+            fallback = dict(extra_body)
+
+    return fallback
+
+
+def _merge_custom_provider_extra_body(agent, custom_providers: List[Dict[str, Any]]) -> None:
+    extra_body = _custom_provider_extra_body_for_agent(
+        provider=agent.provider,
+        model=agent.model,
+        base_url=agent.base_url,
+        custom_providers=custom_providers,
+    )
+    if not extra_body:
+        return
+
+    overrides = dict(getattr(agent, "request_overrides", {}) or {})
+    merged_extra_body = dict(extra_body)
+    existing_extra_body = overrides.get("extra_body")
+    if isinstance(existing_extra_body, dict):
+        merged_extra_body.update(existing_extra_body)
+    overrides["extra_body"] = merged_extra_body
+    agent.request_overrides = overrides
+
+
 def init_agent(
     agent,
     base_url: str = None,
@@ -1060,7 +1125,18 @@ def init_agent(
     # through _ra().get_tool_definitions()).  Duplicate function names cause
     # 400 errors on providers that enforce unique names (e.g. Xiaomi
     # MiMo via Nous Portal).
-    if agent._memory_manager and agent.tools is not None:
+    #
+    # Respect the platform's enabled_toolsets configuration (#5544):
+    #   enabled_toolsets is None        → no filter, inject (backward compat)
+    #   "memory" in enabled_toolsets    → user opted in, inject
+    #   otherwise (incl. [])            → user excluded memory, skip injection
+    #
+    # Without this gate, `platform_toolsets: telegram: []` still leaks memory
+    # provider tools (fact_store, etc.) into the tool surface — a 10x latency
+    # penalty on local models and a frequent trigger of tool-call loops.
+    if agent._memory_manager and agent.tools is not None and (
+        agent.enabled_toolsets is None or "memory" in agent.enabled_toolsets
+    ):
         _existing_tool_names = {
             t.get("function", {}).get("name")
             for t in agent.tools
@@ -1213,6 +1289,7 @@ def init_agent(
     # Store for reuse by _check_compression_model_feasibility (auxiliary
     # compression model context-length detection needs the same list).
     agent._custom_providers = _custom_providers
+    _merge_custom_provider_extra_body(agent, _custom_providers)
 
     # Check custom_providers per-model context_length
     if _config_context_length is None and _custom_providers:
@@ -1369,8 +1446,22 @@ def init_agent(
     # errors. Even with the cache fix, dedup is the right defense
     # against plugin paths that may register the same schemas via
     # ctx.register_tool(). Mirrors the memory tools dedup above.
+    #
+    # Respect the platform's enabled_toolsets configuration (#5544):
+    # context engine tools follow the same gating pattern as memory
+    # provider tools — without the gate, `platform_toolsets: telegram: []`
+    # would still leak lcm_* tools into the tool surface and incur the
+    # same local-model latency penalty.
     agent._context_engine_tool_names: set = set()
-    if hasattr(agent, "context_compressor") and agent.context_compressor and agent.tools is not None:
+    if (
+        hasattr(agent, "context_compressor")
+        and agent.context_compressor
+        and agent.tools is not None
+        and (
+            agent.enabled_toolsets is None
+            or "context_engine" in agent.enabled_toolsets
+        )
+    ):
         _existing_tool_names = {
             t.get("function", {}).get("name")
             for t in agent.tools

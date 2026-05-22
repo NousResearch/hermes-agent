@@ -75,9 +75,197 @@ class TestCodeGeneration:
             code = store.generate_code("telegram", "user1", "Alice")
             pending = store.list_pending("telegram")
         assert len(pending) == 1
-        assert pending[0]["code"] == code
+        # list_pending no longer returns the original code — it returns a
+        # truncated hash prefix.  Verify the metadata is correct instead.
         assert pending[0]["user_id"] == "user1"
         assert pending[0]["user_name"] == "Alice"
+        # The code field is now a hash prefix, not the original plaintext code
+        assert pending[0]["code"] != code
+
+
+# ---------------------------------------------------------------------------
+# Hashed storage
+# ---------------------------------------------------------------------------
+
+
+class TestHashedStorage:
+    def test_pending_file_contains_hash_and_salt(self, tmp_path):
+        """Stored entries must have 'hash' and 'salt', never the plaintext code."""
+        with patch("gateway.pairing.PAIRING_DIR", tmp_path):
+            store = PairingStore()
+            code = store.generate_code("telegram", "user1", "Alice")
+            raw = json.loads(
+                (tmp_path / "telegram-pending.json").read_text(encoding="utf-8")
+            )
+
+        assert len(raw) == 1
+        entry = next(iter(raw.values()))
+        # Must have hash and salt fields
+        assert "hash" in entry
+        assert "salt" in entry
+        # Hash must be a valid hex SHA-256 digest (64 hex chars)
+        assert len(entry["hash"]) == 64
+        assert all(c in "0123456789abcdef" for c in entry["hash"])
+        # Salt must be a valid hex string (32 hex chars for 16 bytes)
+        assert len(entry["salt"]) == 32
+        assert all(c in "0123456789abcdef" for c in entry["salt"])
+        # The plaintext code must NOT appear as a key or value anywhere
+        assert code not in raw  # not a key
+        for key, val in raw.items():
+            assert code != key
+            for field_val in val.values():
+                if isinstance(field_val, str):
+                    assert field_val != code
+
+    def test_plaintext_code_not_stored(self, tmp_path):
+        """The raw JSON file must not contain the plaintext code anywhere."""
+        with patch("gateway.pairing.PAIRING_DIR", tmp_path):
+            store = PairingStore()
+            code = store.generate_code("telegram", "user1")
+            raw_text = (tmp_path / "telegram-pending.json").read_text(encoding="utf-8")
+        assert code not in raw_text
+
+    def test_valid_code_verifies_against_hash(self, tmp_path):
+        """approve_code with the correct code should succeed."""
+        with patch("gateway.pairing.PAIRING_DIR", tmp_path):
+            store = PairingStore()
+            code = store.generate_code("telegram", "user1", "Bob")
+            result = store.approve_code("telegram", code)
+        assert result is not None
+        assert result["user_id"] == "user1"
+        assert result["user_name"] == "Bob"
+
+    def test_invalid_code_rejected(self, tmp_path):
+        """approve_code with a wrong code should fail."""
+        with patch("gateway.pairing.PAIRING_DIR", tmp_path):
+            store = PairingStore()
+            store.generate_code("telegram", "user1")
+            result = store.approve_code("telegram", "ZZZZZZZZ")
+        assert result is None
+
+    def test_different_salts_per_entry(self, tmp_path):
+        """Each pending entry should have a unique salt."""
+        with patch("gateway.pairing.PAIRING_DIR", tmp_path):
+            store = PairingStore()
+            store.generate_code("telegram", "user0")
+            store.generate_code("telegram", "user1")
+            store.generate_code("telegram", "user2")
+            raw = json.loads(
+                (tmp_path / "telegram-pending.json").read_text(encoding="utf-8")
+            )
+        salts = [entry["salt"] for entry in raw.values()]
+        assert len(set(salts)) == 3  # all unique
+
+    def test_hash_code_static_method(self, tmp_path):
+        """_hash_code should be deterministic for the same code+salt."""
+        salt = os.urandom(16)
+        h1 = PairingStore._hash_code("ABCD1234", salt)
+        h2 = PairingStore._hash_code("ABCD1234", salt)
+        assert h1 == h2
+        # Different salt should produce a different hash
+        salt2 = os.urandom(16)
+        h3 = PairingStore._hash_code("ABCD1234", salt2)
+        assert h3 != h1
+
+
+class TestLegacyPendingFileCompat:
+    """Defensive coverage for pre-hash pending.json on upgraded installs.
+
+    Existing user installs may have a pending.json written by the old
+    code (plaintext code as key, no hash/salt fields). The new
+    approve_code / list_pending / _cleanup_expired must not crash on
+    those entries — they should be ignored and aged out at TTL.
+    """
+
+    @staticmethod
+    def _write_legacy(tmp_path, code="ABCD1234", created_at=None):
+        """Write a pre-hash pending.json with plaintext code as the key."""
+        import time as _time
+        if created_at is None:
+            created_at = _time.time()
+        legacy = {
+            code: {
+                "user_id": "legacy-user",
+                "user_name": "Legacy",
+                "created_at": created_at,
+            }
+        }
+        (tmp_path / "telegram-pending.json").write_text(
+            json.dumps(legacy), encoding="utf-8"
+        )
+
+    def test_approve_code_ignores_legacy_entries(self, tmp_path):
+        """A valid old-format code must NOT silently approve under the new schema."""
+        with patch("gateway.pairing.PAIRING_DIR", tmp_path):
+            self._write_legacy(tmp_path, code="LEGACY01")
+            store = PairingStore()
+            # The plaintext "code" used to be the key — under the new schema
+            # it's not even looked at, and there's no hash/salt to verify.
+            # Result: approve_code returns None, the legacy entry is left
+            # alone (gets pruned by _cleanup_expired at TTL).
+            result = store.approve_code("telegram", "LEGACY01")
+            assert result is None
+            # Approved list must be empty
+            assert store.is_approved("telegram", "legacy-user") is False
+
+    def test_list_pending_handles_legacy_entries(self, tmp_path):
+        """list_pending must not KeyError on a missing 'hash' field."""
+        with patch("gateway.pairing.PAIRING_DIR", tmp_path):
+            self._write_legacy(tmp_path)
+            store = PairingStore()
+            pending = store.list_pending("telegram")
+        assert len(pending) == 1
+        assert pending[0]["user_id"] == "legacy-user"
+        assert pending[0]["code"] == "legacy"  # placeholder
+
+    def test_cleanup_expired_removes_legacy_at_ttl(self, tmp_path):
+        """Legacy entries past CODE_TTL must still get pruned."""
+        import time as _time
+        with patch("gateway.pairing.PAIRING_DIR", tmp_path):
+            self._write_legacy(
+                tmp_path,
+                code="LEGACY99",
+                created_at=_time.time() - CODE_TTL_SECONDS - 1,
+            )
+            store = PairingStore()
+            store._cleanup_expired("telegram")
+            raw = json.loads(
+                (tmp_path / "telegram-pending.json").read_text(encoding="utf-8")
+            )
+        assert raw == {}
+
+    def test_cleanup_expired_handles_malformed_entries(self, tmp_path):
+        """Non-dict / missing-created_at entries get evicted, not crashed on."""
+        with patch("gateway.pairing.PAIRING_DIR", tmp_path):
+            (tmp_path / "telegram-pending.json").write_text(
+                json.dumps({
+                    "broken1": "not a dict",
+                    "broken2": {"user_id": "x"},  # no created_at
+                    "broken3": {"created_at": "not a number"},
+                }),
+                encoding="utf-8",
+            )
+            store = PairingStore()
+            store._cleanup_expired("telegram")
+            raw = json.loads(
+                (tmp_path / "telegram-pending.json").read_text(encoding="utf-8")
+            )
+        assert raw == {}
+
+    def test_approve_code_skips_malformed_entries(self, tmp_path):
+        """Malformed entries must not crash approve_code's hash loop."""
+        import time as _time
+        with patch("gateway.pairing.PAIRING_DIR", tmp_path):
+            (tmp_path / "telegram-pending.json").write_text(
+                json.dumps({
+                    "broken": {"user_id": "x", "created_at": _time.time(),
+                               "salt": "not-hex", "hash": "doesntmatter"},
+                }),
+                encoding="utf-8",
+            )
+            store = PairingStore()
+            # Approving with any code must just return None, not crash.
+            assert store.approve_code("telegram", "ABCD1234") is None
 
 
 # ---------------------------------------------------------------------------
@@ -238,6 +426,42 @@ class TestLockout:
             code = store.generate_code("telegram", "newuser")
         assert code is None
 
+    def test_lockout_blocks_code_approval(self, tmp_path):
+        """Regression guard for #10195: lockout must also gate approve_code.
+
+        Prior to the fix, 5 failed approvals set the lockout flag but
+        approve_code() never consulted it — so any valid code already
+        in `pending` (or a later lucky guess) still got accepted,
+        nullifying the brute-force protection.
+        """
+        with patch("gateway.pairing.PAIRING_DIR", tmp_path):
+            store = PairingStore()
+            # Generate a valid code before triggering the lockout.
+            valid_code = store.generate_code("telegram", "attacker", "Attacker")
+            assert valid_code is not None
+
+            # Trigger the lockout with wrong codes.
+            for _ in range(MAX_FAILED_ATTEMPTS):
+                assert store.approve_code("telegram", "WRONGCODE") is None
+            assert store._is_locked_out("telegram") is True
+
+            # The valid code must be rejected while the lockout is active,
+            # and the user must NOT land in the approved list.
+            result = store.approve_code("telegram", valid_code)
+            assert result is None
+            assert store.is_approved("telegram", "attacker") is False
+
+            # Simulate lockout expiry — the valid code is still in pending
+            # (we didn't pop it) and must now approve normally.
+            limits = store._load_json(store._rate_limit_path())
+            limits["_lockout:telegram"] = time.time() - 1
+            store._save_json(store._rate_limit_path(), limits)
+
+            result = store.approve_code("telegram", valid_code)
+            assert result is not None
+            assert result["user_id"] == "attacker"
+            assert store.is_approved("telegram", "attacker") is True
+
     def test_lockout_expires(self, tmp_path):
         with patch("gateway.pairing.PAIRING_DIR", tmp_path):
             store = PairingStore()
@@ -264,9 +488,10 @@ class TestCodeExpiry:
             store = PairingStore()
             code = store.generate_code("telegram", "user1")
 
-            # Manually expire the code
+            # Manually expire all pending entries
             pending = store._load_json(store._pending_path("telegram"))
-            pending[code]["created_at"] = time.time() - CODE_TTL_SECONDS - 1
+            for entry_id in pending:
+                pending[entry_id]["created_at"] = time.time() - CODE_TTL_SECONDS - 1
             store._save_json(store._pending_path("telegram"), pending)
 
             # Cleanup happens on next operation
@@ -278,9 +503,10 @@ class TestCodeExpiry:
             store = PairingStore()
             code = store.generate_code("telegram", "user1")
 
-            # Expire it
+            # Expire all entries
             pending = store._load_json(store._pending_path("telegram"))
-            pending[code]["created_at"] = time.time() - CODE_TTL_SECONDS - 1
+            for entry_id in pending:
+                pending[entry_id]["created_at"] = time.time() - CODE_TTL_SECONDS - 1
             store._save_json(store._pending_path("telegram"), pending)
 
             result = store.approve_code("telegram", code)

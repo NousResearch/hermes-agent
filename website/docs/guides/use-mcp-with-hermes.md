@@ -109,6 +109,81 @@ mcp_servers:
 
 This is usually the best default for sensitive systems.
 
+## WSL2: bridge Hermes in WSL to Windows Chrome
+
+This is the practical setup when:
+
+- Hermes runs inside WSL2
+- the browser you want to control is your normal signed-in Chrome on Windows
+- `/browser connect` is awkward or unreliable from WSL
+
+In this setup, Hermes does **not** connect to Chrome directly. Instead:
+
+- Hermes runs in WSL
+- Hermes starts a local stdio MCP server
+- that MCP server is launched through Windows interop (`cmd.exe` or `powershell.exe`)
+- the MCP server attaches to your live Windows Chrome session
+
+Mental model:
+
+```text
+Hermes (WSL) -> MCP stdio bridge -> Windows Chrome
+```
+
+### Why this mode is useful
+
+- you keep your real Windows browser profile, cookies, and logins
+- Hermes stays in its supported Unix environment (WSL2)
+- browser control is exposed as MCP tools instead of relying on Hermes core browser transport
+
+### Recommended server
+
+Use `chrome-devtools-mcp`.
+
+If your Windows Chrome already has live remote debugging enabled from `chrome://inspect/#remote-debugging`, add it like this from WSL:
+
+```bash
+hermes mcp add chrome-devtools-win --command cmd.exe --args /c npx -y chrome-devtools-mcp@latest --autoConnect --no-usage-statistics
+```
+
+After saving the server:
+
+```bash
+hermes mcp test chrome-devtools-win
+```
+
+Then start a fresh Hermes session or run:
+
+```text
+/reload-mcp
+```
+
+### Typical prompt
+
+Once loaded, Hermes can use the MCP-prefixed browser tools directly. For example:
+
+```text
+调用 MCP 工具 mcp_chrome_devtools_win_list_pages，列出当前浏览器标签页。
+```
+
+### When `/browser connect` is the wrong tool
+
+If Hermes runs in WSL and Chrome runs on Windows, `/browser connect` may fail even though Chrome is open and debuggable.
+
+Common reasons:
+
+- WSL cannot reach the same host-local endpoint Chrome exposes to Windows tools
+- newer Chrome live-debugging flows are not the same as a classic `ws://localhost:9222`
+- the browser is easier to attach to from a Windows-side helper like `chrome-devtools-mcp`
+
+In those cases, keep `/browser connect` for same-environment setups and use MCP for WSL-to-Windows browser bridging.
+
+### Known pitfalls
+
+- Start Hermes from a Windows-mounted path like `/mnt/c/Users/<you>` or `/mnt/c/workspace/...` when using Windows stdio executables through MCP.
+- If you start Hermes from `/root` or `/home/...`, Windows may emit a `UNC` current-directory warning before the MCP server starts.
+- If `chrome-devtools-mcp --autoConnect` times out while enumerating pages, reduce background/frozen tabs in Chrome and retry.
+
 ### Example: blacklist dangerous actions
 
 ```yaml

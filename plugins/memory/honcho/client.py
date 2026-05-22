@@ -21,6 +21,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from hermes_constants import get_hermes_home
+from hermes_cli.profiles import _get_default_hermes_home
 from typing import Any, TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -46,7 +47,7 @@ def resolve_active_host() -> str:
     try:
         from hermes_cli.profiles import get_active_profile_name
         profile = get_active_profile_name()
-        if profile and profile not in ("default", "custom"):
+        if profile and profile not in {"default", "custom"}:
             return f"{HOST}.{profile}"
     except Exception:
         pass
@@ -73,7 +74,7 @@ def resolve_config_path() -> Path:
         return local_path
 
     # Default profile's config — host blocks accumulate here via setup/clone
-    default_path = Path.home() / ".hermes" / "honcho.json"
+    default_path = _get_default_hermes_home() / "honcho.json"
     if default_path != local_path and default_path.exists():
         return default_path
 
@@ -652,7 +653,7 @@ class HonchoClientConfig:
             return base
 
         # per-directory: one Honcho session per working directory (default)
-        if self.session_strategy in ("per-directory", "per-session"):
+        if self.session_strategy in {"per-directory", "per-session"}:
             base = Path(cwd).name
             if self.session_peer_prefix and self.peer_name:
                 return f"{self.peer_name}-{base}"
@@ -687,12 +688,28 @@ def get_honcho_client(config: HonchoClientConfig | None = None) -> Honcho:
             "For local instances, set HONCHO_BASE_URL instead."
         )
 
+    # Lazy-install the honcho SDK on demand. ensure() honors
+    # security.allow_lazy_installs (default true). On failure we surface
+    # the original ImportError-shape message so existing callers still get
+    # the "go run hermes honcho setup" hint they used to.
+    try:
+        from tools.lazy_deps import FeatureUnavailable, ensure as _lazy_ensure
+        _lazy_ensure("memory.honcho", prompt=False)
+    except ImportError:
+        # lazy_deps module missing — fall through to the raw import below.
+        pass
+    except Exception:
+        # FeatureUnavailable or unexpected error. Don't crash here; let the
+        # actual import attempt produce the canonical error message.
+        pass
+
     try:
         from honcho import Honcho
     except ImportError:
         raise ImportError(
             "honcho-ai is required for Honcho integration. "
-            "Install it with: pip install honcho-ai"
+            "Install it with: pip install honcho-ai  "
+            "(or run `hermes honcho setup` to configure)."
         )
 
     # Allow config.yaml honcho.base_url to override the SDK's environment

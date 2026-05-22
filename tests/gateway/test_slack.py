@@ -231,6 +231,55 @@ class TestSlackConnectCleanup:
         mock_release.assert_called_once_with("slack-app-token", "xapp-fake")
         assert adapter._platform_lock_identity is None
 
+    @pytest.mark.asyncio
+    async def test_reconnect_closes_previous_handler_to_prevent_zombie_socket(self):
+        """Regression for #18980: calling connect() on an adapter that already has
+        a live handler (e.g. during a gateway restart) must close the old
+        AsyncSocketModeHandler before creating a new one.  Without this guard,
+        the old Socket Mode websocket stays alive and both connections dispatch
+        every Slack event, producing double responses — the same bug that
+        affected DiscordAdapter (#18187).
+        """
+        config = PlatformConfig(enabled=True, token="xoxb-fake")
+        adapter = SlackAdapter(config)
+
+        # Simulate state left over from a prior connect() call.
+        first_handler = AsyncMock()
+        first_handler.close_async = AsyncMock()
+        adapter._handler = first_handler
+
+        mock_app = MagicMock()
+        def _noop_decorator(event_type):
+            def decorator(fn): return fn
+            return decorator
+        mock_app.event = _noop_decorator
+        mock_app.command = _noop_decorator
+        mock_app.action = _noop_decorator
+        mock_app.client = AsyncMock()
+
+        mock_web_client = AsyncMock()
+        mock_web_client.auth_test = AsyncMock(return_value={
+            "user_id": "U_BOT",
+            "user": "testbot",
+            "team_id": "T_FAKE",
+            "team": "FakeTeam",
+        })
+
+        second_handler = MagicMock()
+
+        with patch.object(_slack_mod, "AsyncApp", return_value=mock_app), \
+             patch.object(_slack_mod, "AsyncWebClient", return_value=mock_web_client), \
+             patch.object(_slack_mod, "AsyncSocketModeHandler", return_value=second_handler), \
+             patch.dict(os.environ, {"SLACK_APP_TOKEN": "xapp-fake"}), \
+             patch("gateway.status.acquire_scoped_lock", return_value=(True, None)), \
+             patch("gateway.status.release_scoped_lock"), \
+             patch("asyncio.create_task"):
+            result = await adapter.connect()
+
+        assert result is True
+        first_handler.close_async.assert_awaited_once_with()
+        assert adapter._handler is second_handler
+
 
 # ---------------------------------------------------------------------------
 # TestSlackProxyBehavior
@@ -643,8 +692,96 @@ class TestSendVideo:
 
 
 # ---------------------------------------------------------------------------
+# TestBangPrefixCommands
+# ---------------------------------------------------------------------------
+
+
+class TestBangPrefixCommands:
+    """``!cmd`` is rewritten to ``/cmd`` so commands work inside Slack threads.
+
+    Slack natively rejects slash commands invoked from a thread reply
+    ("/queue is not supported in threads. Sorry!"). Typing ``!queue`` as a
+    plain text reply hits the message event pipeline instead, and the
+    adapter rewrites the leading ``!`` to ``/`` for any known gateway
+    command before downstream processing.
+    """
+
+    def _make_event(self, text, thread_ts=None, channel_type="im", channel="D123"):
+        evt = {
+            "text": text,
+            "user": "U_USER",
+            "channel": channel,
+            "channel_type": channel_type,
+            "ts": "1234567890.000001",
+        }
+        if thread_ts:
+            evt["thread_ts"] = thread_ts
+        return evt
+
+    @pytest.mark.asyncio
+    async def test_bang_known_command_is_rewritten_to_slash(self, adapter):
+        """``!queue`` → ``/queue`` and tagged as COMMAND."""
+        await adapter._handle_slack_message(self._make_event("!queue"))
+
+        adapter.handle_message.assert_called_once()
+        msg_event = adapter.handle_message.call_args[0][0]
+        assert msg_event.text.startswith("/queue")
+        assert msg_event.message_type == MessageType.COMMAND
+
+    @pytest.mark.asyncio
+    async def test_bang_command_with_args_preserved(self, adapter):
+        """``!model gpt-5.4`` → ``/model gpt-5.4``."""
+        await adapter._handle_slack_message(self._make_event("!model gpt-5.4"))
+
+        msg_event = adapter.handle_message.call_args[0][0]
+        assert msg_event.text.startswith("/model gpt-5.4")
+        assert msg_event.message_type == MessageType.COMMAND
+
+    @pytest.mark.asyncio
+    async def test_bang_works_inside_thread(self, adapter):
+        """The whole point: ``!stop`` inside a thread reply dispatches."""
+        evt = self._make_event("!stop", thread_ts="1111111111.000001")
+        await adapter._handle_slack_message(evt)
+
+        msg_event = adapter.handle_message.call_args[0][0]
+        assert msg_event.text.startswith("/stop")
+        assert msg_event.message_type == MessageType.COMMAND
+        # thread_id is preserved on the source so the reply lands in the
+        # same thread.
+        assert msg_event.source.thread_id == "1111111111.000001"
+
+    @pytest.mark.asyncio
+    async def test_bang_unknown_token_passes_through_unchanged(self, adapter):
+        """``!nice work`` is just a casual message — must NOT be rewritten."""
+        await adapter._handle_slack_message(self._make_event("!nice work"))
+
+        msg_event = adapter.handle_message.call_args[0][0]
+        assert msg_event.text == "!nice work"
+        assert msg_event.message_type != MessageType.COMMAND
+
+    @pytest.mark.asyncio
+    async def test_bang_with_bot_suffix_resolves(self, adapter):
+        """``!stop@hermes`` matches the get_command() ``@suffix`` stripping."""
+        await adapter._handle_slack_message(self._make_event("!stop@hermes"))
+
+        msg_event = adapter.handle_message.call_args[0][0]
+        assert msg_event.text.startswith("/stop@hermes")
+        assert msg_event.message_type == MessageType.COMMAND
+
+    @pytest.mark.asyncio
+    async def test_plain_slash_still_works(self, adapter):
+        """Sanity check — ``/queue`` (top-level channel/DM) still dispatches."""
+        await adapter._handle_slack_message(self._make_event("/queue"))
+
+        msg_event = adapter.handle_message.call_args[0][0]
+        assert msg_event.text.startswith("/queue")
+        assert msg_event.message_type == MessageType.COMMAND
+
+
+# ---------------------------------------------------------------------------
 # TestIncomingDocumentHandling
 # ---------------------------------------------------------------------------
+
 
 class TestIncomingDocumentHandling:
     def _make_event(self, files=None, text="hello", channel_type="im", blocks=None, attachments=None):

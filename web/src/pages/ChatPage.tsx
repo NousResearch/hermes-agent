@@ -24,6 +24,7 @@ import { Terminal } from "@xterm/xterm";
 import "@xterm/xterm/css/xterm.css";
 import { Button } from "@nous-research/ui/ui/components/button";
 import { Typography } from "@/components/NouiTypography";
+import { HERMES_BASE_PATH } from "@/lib/api";
 import { cn } from "@/lib/utils";
 import { Copy, PanelRight, X } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
@@ -33,6 +34,7 @@ import { useSearchParams } from "react-router-dom";
 import { ChatSidebar } from "@/components/ChatSidebar";
 import { usePageHeader } from "@/contexts/usePageHeader";
 import { useI18n } from "@/i18n";
+import { api } from "@/lib/api";
 import { PluginSlot } from "@/plugins";
 
 function buildWsUrl(
@@ -43,7 +45,7 @@ function buildWsUrl(
   const proto = window.location.protocol === "https:" ? "wss:" : "ws:";
   const qs = new URLSearchParams({ token, channel });
   if (resume) qs.set("resume", resume);
-  return `${proto}//${window.location.host}/api/pty?${qs.toString()}`;
+  return `${proto}//${window.location.host}${HERMES_BASE_PATH}/api/pty?${qs.toString()}`;
 }
 
 // Channel id ties this chat tab's PTY child (publisher) to its sidebar
@@ -111,7 +113,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
   // the moment `isActive` flips back to true (display:none → display:flex
   // collapses the host's box, so ResizeObserver never fires on return).
   const syncMetricsRef = useRef<(() => void) | null>(null);
-  const [searchParams] = useSearchParams();
+  const [searchParams, setSearchParams] = useSearchParams();
   // Lazy-init: the missing-token check happens at construction so the effect
   // body doesn't have to setState (React 19's set-state-in-effect rule).
   const [banner, setBanner] = useState<string | null>(() =>
@@ -147,8 +149,39 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
       : false,
   );
 
-  const resumeRef = useRef<string | null>(searchParams.get("resume"));
-  const channel = useMemo(() => generateChannelId(), []);
+  // The dashboard keeps ChatPage mounted persistently so the PTY survives tab
+  // switches. That is great for ordinary /chat navigation, but it means query
+  // param changes do NOT remount the component. Resume-in-chat from the
+  // Sessions page relies on `/chat?resume=<id>` changing at runtime, so we must
+  // treat the current resume target as part of the PTY identity and rebuild the
+  // terminal session when it changes.
+  const resumeParam = searchParams.get("resume");
+  const channel = useMemo(() => generateChannelId(), [resumeParam]);
+
+  useEffect(() => {
+    if (!resumeParam) return;
+
+    let cancelled = false;
+
+    api
+      .getSessionLatestDescendant(resumeParam)
+      .then((res) => {
+        if (cancelled || !res.session_id || res.session_id === resumeParam) {
+          return;
+        }
+
+        const next = new URLSearchParams(searchParams);
+        next.set("resume", res.session_id);
+        setSearchParams(next, { replace: true });
+      })
+      .catch(() => {
+        // Best-effort: old servers or missing sessions should not block chat.
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [resumeParam, searchParams, setSearchParams]);
 
   useEffect(() => {
     const mql = window.matchMedia("(max-width: 1023px)");
@@ -254,7 +287,20 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
       fontWeight: "400",
       fontWeightBold: "700",
       macOptionIsMeta: true,
-      scrollback: 0,
+      // Hold Option (Alt on Linux/Windows) to force native text selection
+      // even when the inner Hermes TUI has enabled xterm mouse-events
+      // mode (CSI ?1000h family). Without this, click-and-drag in the
+      // chat canvas selects nothing and Cmd+C falls back to copying the
+      // entire visible buffer, which is rarely what the user wants.
+      // See #25720.
+      macOptionClickForcesSelection: true,
+      // Right-click selects the word under the pointer. xterm.js default
+      // is false; enabling it gives users a single-action selection
+      // path on top of the modifier-based bypass above.
+      rightClickSelectsWord: true,
+      // Browser-embedded chat runs the TUI in inline mode. Keep transcript
+      // history in xterm.js so the browser wheel can scroll it directly.
+      scrollback: 5000,
       theme: TERMINAL_THEME,
     });
     termRef.current = term;
@@ -298,7 +344,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
           // original keydown event's activation. Log to aid debugging.
           console.warn("[dashboard clipboard] OSC 52 write failed:", err.message);
         });
-      } catch (e) {
+      } catch {
         console.warn("[dashboard clipboard] malformed OSC 52 payload");
       }
       return true;
@@ -356,6 +402,22 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
     const fit = new FitAddon();
     fitRef.current = fit;
     term.loadAddon(fit);
+
+    // Dashboard chat should scroll the browser-side transcript, not send
+    // mouse-wheel protocol bytes through the PTY.
+    term.attachCustomWheelEventHandler((ev) => {
+      const delta = ev.deltaY;
+      if (!delta) {
+        return false;
+      }
+
+      const step = Math.max(1, Math.round(Math.abs(delta) / 50));
+      term.scrollLines(delta > 0 ? step : -step);
+
+      ev.preventDefault();
+      ev.stopPropagation();
+      return false;
+    });
 
     const unicode11 = new Unicode11Addon();
     term.loadAddon(unicode11);
@@ -463,7 +525,6 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
 
     window.addEventListener("resize", scheduleSyncTerminalMetrics);
     window.visualViewport?.addEventListener("resize", scheduleSyncTerminalMetrics);
-    window.visualViewport?.addEventListener("scroll", scheduleSyncTerminalMetrics);
     scheduleHostSync();
     requestAnimationFrame(() => scheduleHostSync());
 
@@ -484,7 +545,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
     });
 
     // WebSocket
-    const url = buildWsUrl(token, resumeRef.current, channel);
+    const url = buildWsUrl(token, resumeParam, channel);
     const ws = new WebSocket(url);
     ws.binaryType = "arraybuffer";
     wsRef.current = ws;
@@ -530,53 +591,27 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
       term.write("\r\n\x1b[90m[session ended]\x1b[0m\r\n");
     };
 
-    // Keystrokes + mouse events → PTY, with cell-level dedup for motion.
+    // Keystrokes → PTY.
     //
-    // Ink enables `\x1b[?1003h` (any-motion tracking), which asks the
-    // terminal to report every mouse-move as an SGR mouse event even with
-    // no button held.  xterm.js happily emits one report per pixel of
-    // mouse motion; without deduping, a casual mouse-over floods Ink with
-    // hundreds of redraw-triggering reports and the UI goes laggy
-    // (scrolling stutters, clicks land on stale positions by the time
-    // Ink finishes processing the motion backlog).
+    // IMPORTANT:
+    // The embedded web chat has occasionally surfaced stray letters/digits
+    // in the input line after a turn completes. The most likely culprit is
+    // browser-side terminal control traffic being forwarded back into the
+    // PTY as if it were user text. SGR mouse tracking is the highest-risk
+    // path here: xterm.js emits raw CSI reports (`\x1b[<...`) that look like
+    // ordinary bytes to the backend.
     //
-    // We keep track of the last cell we reported a motion for.  Press,
-    // release, and wheel events always pass through; motion events only
-    // pass through if the cell changed.  Parsing is cheap — SGR reports
-    // are short literal strings.
+    // For the browser embed we prefer input stability over terminal-style
+    // mouse reporting, so we drop SGR mouse reports entirely instead of
+    // forwarding them into Hermes. Keyboard input, paste, and resize still
+    // behave normally.
     // eslint-disable-next-line no-control-regex -- intentional ESC byte in xterm SGR mouse report parser
     const SGR_MOUSE_RE = /^\x1b\[<(\d+);(\d+);(\d+)([Mm])$/;
-    let lastMotionCell = { col: -1, row: -1 };
-    let lastMotionCb = -1;
     const onDataDisposable = term.onData((data) => {
       if (ws.readyState !== WebSocket.OPEN) return;
 
-      const m = SGR_MOUSE_RE.exec(data);
-      if (m) {
-        const cb = parseInt(m[1], 10);
-        const col = parseInt(m[2], 10);
-        const row = parseInt(m[3], 10);
-        const released = m[4] === "m";
-        // Motion events have bit 0x20 (32) set in the button code.
-        // Wheel events have bit 0x40 (64); always forward wheel.
-        const isMotion = (cb & 0x20) !== 0 && (cb & 0x40) === 0;
-        const isWheel = (cb & 0x40) !== 0;
-        if (isMotion && !isWheel && !released) {
-          if (
-            col === lastMotionCell.col &&
-            row === lastMotionCell.row &&
-            cb === lastMotionCb
-          ) {
-            return; // same cell + same button state; skip redundant report
-          }
-          lastMotionCell = { col, row };
-          lastMotionCb = cb;
-        } else {
-          // Non-motion event (press, release, wheel) — reset dedup state
-          // so the next motion after this always reports.
-          lastMotionCell = { col: -1, row: -1 };
-          lastMotionCb = -1;
-        }
+      if (SGR_MOUSE_RE.test(data)) {
+        return;
       }
 
       ws.send(data);
@@ -601,10 +636,6 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
         "resize",
         scheduleSyncTerminalMetrics,
       );
-      window.visualViewport?.removeEventListener(
-        "scroll",
-        scheduleSyncTerminalMetrics,
-      );
       ro.disconnect();
       if (hostSyncRaf) cancelAnimationFrame(hostSyncRaf);
       if (settleRaf1) cancelAnimationFrame(settleRaf1);
@@ -619,7 +650,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
         copyResetRef.current = null;
       }
     };
-  }, [channel]);
+  }, [channel, resumeParam]);
 
   // When the user returns to the chat tab (isActive: false → true), the
   // terminal host just transitioned from display:none to display:flex.
@@ -814,9 +845,9 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
             id="chat-side-panel"
             role="complementary"
             aria-label={modelToolsLabel}
-            className="flex min-h-0 shrink-0 flex-col lg:h-full lg:w-80"
+            className="flex min-h-0 shrink-0 flex-col overflow-hidden lg:h-full lg:w-80"
           >
-            <div className="min-h-0 flex-1 overflow-y-auto overflow-x-hidden">
+            <div className="min-h-0 flex-1 overflow-hidden">
               <ChatSidebar channel={channel} />
             </div>
           </div>

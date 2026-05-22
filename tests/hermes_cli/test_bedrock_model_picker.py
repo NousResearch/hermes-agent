@@ -17,6 +17,8 @@ All Bedrock API calls are mocked — no real AWS credentials needed.
 """
 
 import os
+from contextlib import contextmanager
+from types import ModuleType
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -25,6 +27,19 @@ import pytest
 # ---------------------------------------------------------------------------
 # Shared helpers / fixtures
 # ---------------------------------------------------------------------------
+
+
+
+@contextmanager
+def _mock_botocore_session(*, return_value=None):
+    """Patch botocore.session even when botocore is not installed."""
+    botocore_mod = ModuleType("botocore")
+    session_mod = ModuleType("botocore.session")
+    session_mod.get_session = MagicMock(return_value=return_value)
+    botocore_mod.session = session_mod
+    with patch.dict("sys.modules", {"botocore": botocore_mod, "botocore.session": session_mod}):
+        yield session_mod.get_session
+
 
 _EU_MODELS = [
     {"id": "eu.anthropic.claude-sonnet-4-6-20250514-v1:0", "name": "Claude Sonnet 4.6 (EU)", "provider": "inference-profile"},
@@ -203,6 +218,30 @@ class TestListAuthenticatedProvidersBedrock:
         bedrock = next((p for p in providers if p["slug"] == "bedrock"), None)
         assert bedrock is None, "bedrock should NOT appear when AWS credentials are absent"
 
+    def test_non_bedrock_picker_does_not_probe_full_aws_chain(self, monkeypatch):
+        """Non-Bedrock provider discovery must not touch boto3's full credential chain."""
+        from hermes_cli.model_switch import list_authenticated_providers
+
+        monkeypatch.delenv("AWS_PROFILE", raising=False)
+        monkeypatch.delenv("AWS_ACCESS_KEY_ID", raising=False)
+        monkeypatch.delenv("AWS_SECRET_ACCESS_KEY", raising=False)
+        monkeypatch.delenv("AWS_BEARER_TOKEN_BEDROCK", raising=False)
+        monkeypatch.delenv("AWS_WEB_IDENTITY_TOKEN_FILE", raising=False)
+        monkeypatch.delenv("AWS_CONTAINER_CREDENTIALS_RELATIVE_URI", raising=False)
+        monkeypatch.delenv("AWS_CONTAINER_CREDENTIALS_FULL_URI", raising=False)
+
+        calls = {"has_aws_credentials": 0}
+
+        def _has_aws_credentials():
+            calls["has_aws_credentials"] += 1
+            return False
+
+        with patch("agent.bedrock_adapter.has_aws_credentials", side_effect=_has_aws_credentials):
+            providers = list_authenticated_providers(current_provider="openrouter", max_models=0)
+
+        assert calls["has_aws_credentials"] == 0
+        assert all(p["slug"] != "bedrock" for p in providers)
+
     def test_bedrock_falls_back_to_curated_when_discovery_fails(self, monkeypatch):
         """When discover_bedrock_models() raises, fall back to curated list without crashing."""
         from hermes_cli.model_switch import list_authenticated_providers
@@ -252,7 +291,7 @@ class TestBedrockRegionRouting:
 
         with patch("agent.bedrock_adapter.has_aws_credentials", return_value=True), \
              patch("agent.bedrock_adapter.discover_bedrock_models", side_effect=_mock_discover), \
-             patch("botocore.session.get_session", return_value=mock_session):
+             _mock_botocore_session(return_value=mock_session):
             providers = list_authenticated_providers(current_provider="bedrock")
 
         bedrock = next((p for p in providers if p["slug"] == "bedrock"), None)
@@ -286,7 +325,7 @@ class TestBedrockRegionRouting:
         mock_session = MagicMock()
         mock_session.get_config_variable.return_value = "eu-central-1"
 
-        with patch("botocore.session.get_session", return_value=mock_session):
+        with _mock_botocore_session(return_value=mock_session):
             region = resolve_bedrock_region()
 
         assert region == "us-west-2", "env var should override botocore profile"

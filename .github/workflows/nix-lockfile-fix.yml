@@ -185,7 +185,7 @@ jobs:
       # before the ~minute of nix build work.
       - name: Mark sticky as running
         if: steps.resolve.outputs.pr != ''
-        uses: marocchino/sticky-pull-request-comment@52423e01640425a022ef5fd42c6fb5f633a02728  # v2.9.1
+        uses: marocchino/sticky-pull-request-comment@0ea0beb66eb9baf113663a64ec522f60e49231c0  # v3.0.4
         with:
           header: nix-lockfile-check
           number: ${{ steps.resolve.outputs.pr }}
@@ -222,7 +222,7 @@ jobs:
 
       - name: Update sticky (applied)
         if: steps.apply.outputs.changed == 'true' && steps.resolve.outputs.pr != ''
-        uses: marocchino/sticky-pull-request-comment@52423e01640425a022ef5fd42c6fb5f633a02728  # v2.9.1
+        uses: marocchino/sticky-pull-request-comment@0ea0beb66eb9baf113663a64ec522f60e49231c0  # v3.0.4
         with:
           header: nix-lockfile-check
           number: ${{ steps.resolve.outputs.pr }}
@@ -233,7 +233,7 @@ jobs:
 
       - name: Update sticky (already current)
         if: steps.apply.outputs.changed == 'false' && steps.resolve.outputs.pr != ''
-        uses: marocchino/sticky-pull-request-comment@52423e01640425a022ef5fd42c6fb5f633a02728  # v2.9.1
+        uses: marocchino/sticky-pull-request-comment@0ea0beb66eb9baf113663a64ec522f60e49231c0  # v3.0.4
         with:
           header: nix-lockfile-check
           number: ${{ steps.resolve.outputs.pr }}
@@ -244,7 +244,7 @@ jobs:
 
       - name: Update sticky (failed)
         if: failure() && steps.resolve.outputs.pr != ''
-        uses: marocchino/sticky-pull-request-comment@52423e01640425a022ef5fd42c6fb5f633a02728  # v2.9.1
+        uses: marocchino/sticky-pull-request-comment@0ea0beb66eb9baf113663a64ec522f60e49231c0  # v3.0.4
         with:
           header: nix-lockfile-check
           number: ${{ steps.resolve.outputs.pr }}

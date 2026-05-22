@@ -70,7 +70,7 @@ jobs:
 
       - name: Post sticky PR comment (stale hashes)
         if: steps.hash_check.outputs.stale == 'true' && github.event_name == 'pull_request'
-        uses: marocchino/sticky-pull-request-comment@52423e01640425a022ef5fd42c6fb5f633a02728  # v2.9.1
+        uses: marocchino/sticky-pull-request-comment@0ea0beb66eb9baf113663a64ec522f60e49231c0  # v3.0.4
         with:
           header: nix-lockfile-check
           message: |
@@ -97,7 +97,7 @@ jobs:
           runner.os == 'Linux' &&
           (steps.hash_check.outputs.stale == 'false' ||
            (steps.flake.outcome == 'success' && steps.build.outcome == 'success'))
-        uses: marocchino/sticky-pull-request-comment@52423e01640425a022ef5fd42c6fb5f633a02728  # v2.9.1
+        uses: marocchino/sticky-pull-request-comment@0ea0beb66eb9baf113663a64ec522f60e49231c0  # v3.0.4
         with:
           header: nix-lockfile-check
           delete: true

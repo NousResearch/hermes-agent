@@ -185,12 +185,11 @@ class SpritesEnvironment(BaseEnvironment):
             if self._sprite is None:
                 return
 
-            if self._sync_manager:
-                logger.info("Sprites: syncing files from sprite...")
-                try:
-                    self._sync_manager.sync_back()
-                except Exception as e:
-                    logger.warning("Sprites: sync_back failed: %s", e)
+            # No sync_back: the Sprite's persistent ext4 filesystem IS the
+            # authoritative store. Files the agent touched stay in the Sprite
+            # and are visible again on the next session that resumes by the
+            # same task_id. (For ephemeral runs with persistent=False, the
+            # Sprite is intentionally deleted with its filesystem.)
 
             try:
                 if self._persistent:

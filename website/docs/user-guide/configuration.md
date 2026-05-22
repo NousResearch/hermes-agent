@@ -299,7 +299,9 @@ pip install 'hermes-agent[sprites]'
 
 **Persistence:** With `container_persistent: true`, `cleanup()` leaves the Sprite running so the next session can resume against the same filesystem and live VM. With `persistent: false`, the Sprite is deleted on cleanup. Sprites also support server-side checkpoints exposed by the SDK (`sprite.create_checkpoint`, `sprite.restore_checkpoint`), but Hermes does not invoke them automatically — manage checkpoints via the `sprite-env` CLI if needed.
 
-**Credential files:** Hermes pushes `~/.hermes/` credentials/skills/cache into the Sprite at startup via the Sprite filesystem API. Files modified by the agent inside the Sprite are **not** synced back to the host on cleanup (see _Remote-to-Host File Sync_ — sync_back is unsupported on this backend).
+**Credential files:** Hermes pushes `~/.hermes/` credentials/skills/cache into the Sprite at startup via the Sprite filesystem API.
+
+**No sync-back, by design:** Unlike SSH/Modal/Daytona, this backend does **not** copy the agent's files back to the host on cleanup. The Sprite's persistent ext4 filesystem _is_ the authoritative store — anything the agent writes stays inside the Sprite and is visible again the next time Hermes resumes that `task_id`. If you opt out of persistence (`container_persistent: false`), the Sprite is deleted along with its filesystem; treat that mode as intentionally ephemeral.
 
 ### Singularity/Apptainer Backend
 
@@ -339,6 +341,8 @@ When in doubt, set `terminal.backend` back to `local` and verify that commands r
 ### Remote-to-Host File Sync on Teardown
 
 For the **SSH**, **Modal**, and **Daytona** backends (anywhere the agent's working tree lives on a different machine than the host running Hermes), Hermes tracks files the agent touched inside the remote sandbox and, on session teardown / sandbox cleanup, **syncs the modified files back to the host** under `~/.hermes/cache/remote-syncs/<session-id>/`.
+
+The **Sprites** backend deliberately opts out of this flow — its persistent ext4 filesystem is the authoritative store, so files survive in the Sprite itself across sessions rather than being copied back to the host. See the [Sprites Backend](#sprites-backend) section for details.
 
 - Triggers on: session close, `/new`, `/reset`, gateway message timeout, `delegate_task` subagent completion when the child used a remote backend.
 - Covers the whole tree the agent modified, not just files it explicitly opened. Additions, edits, and deletions are all captured.

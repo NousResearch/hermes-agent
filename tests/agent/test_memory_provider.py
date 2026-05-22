@@ -100,11 +100,16 @@ class TestMemoryProviderABC:
         """Classes missing get_tool_schemas cannot be instantiated."""
         class MissingToolSchemasProvider(MemoryProvider):
             @property
-            def name(self): return "missing"
-            def is_available(self): return True
-            def initialize(self, session_id, **kwargs): pass
+            def name(self):
+                return "missing"
 
-        with pytest.raises(TypeError, match="MissingToolSchemasProvider"):
+            def is_available(self):
+                return True
+
+            def initialize(self, session_id, **kwargs):
+                return None
+
+        with pytest.raises(TypeError, match="get_tool_schemas"):
             MissingToolSchemasProvider()
 
     def test_get_tool_schemas_returns_value(self):

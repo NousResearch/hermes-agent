@@ -603,8 +603,13 @@ def _lightpanda_fallback_reason(engine: str, command: str, result: Dict[str, Any
     if command not in _FALLBACK_ELIGIBLE:
         return None
 
-    # Explicit failure
+    # Explicit failure. Do not retry failed navigation with Chrome: a failed
+    # Lightpanda ``open`` often means there is no useful current URL to copy
+    # into the temporary Chrome session, so the fallback just adds another
+    # bounded/slow failure path (or minutes-long stall on sandboxed hosts).
     if not result.get("success"):
+        if command == "open":
+            return None
         error = str(result.get("error") or "command failed").strip()
         return f"Lightpanda {command!r} failed ({error}); retried with Chrome."
 

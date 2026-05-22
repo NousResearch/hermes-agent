@@ -152,17 +152,28 @@ class TestNeedsLightpandaFallback:
         assert _needs_lightpanda_fallback("chrome", "open", result) is False
         assert _needs_lightpanda_fallback("auto", "open", result) is False
 
-    def test_failed_command_triggers_fallback(self):
+    def test_failed_open_does_not_trigger_fallback(self):
         from tools.browser_tool import _needs_lightpanda_fallback
         result = {"success": False, "error": "page.goto: Timeout"}
-        assert _needs_lightpanda_fallback("lightpanda", "open", result) is True
+        assert _needs_lightpanda_fallback("lightpanda", "open", result) is False
 
-    def test_failed_command_reason_is_user_visible(self):
+    def test_failed_open_reason_is_none(self):
         from tools.browser_tool import _lightpanda_fallback_reason
         result = {"success": False, "error": "page.goto: Timeout"}
         reason = _lightpanda_fallback_reason("lightpanda", "open", result)
+        assert reason is None
+
+    def test_failed_non_navigation_command_triggers_fallback(self):
+        from tools.browser_tool import _needs_lightpanda_fallback
+        result = {"success": False, "error": "protocol timeout"}
+        assert _needs_lightpanda_fallback("lightpanda", "click", result) is True
+
+    def test_failed_non_navigation_command_reason_is_user_visible(self):
+        from tools.browser_tool import _lightpanda_fallback_reason
+        result = {"success": False, "error": "protocol timeout"}
+        reason = _lightpanda_fallback_reason("lightpanda", "click", result)
         assert reason is not None
-        assert "page.goto: Timeout" in reason
+        assert "protocol timeout" in reason
         assert "retried with Chrome" in reason
 
     def test_empty_snapshot_triggers_fallback(self):
@@ -589,6 +600,43 @@ class TestEngineOverride:
         assert "--engine" in captured_cmds[0]
         engine_idx = captured_cmds[0].index("--engine")
         assert captured_cmds[0][engine_idx + 1] == "lightpanda"
+
+    @patch("tools.browser_tool._get_session_info")
+    @patch("tools.browser_tool._find_agent_browser", return_value="/usr/bin/agent-browser")
+    @patch("tools.browser_tool._is_local_mode", return_value=True)
+    @patch("tools.browser_tool._chromium_installed", return_value=True)
+    @patch("tools.browser_tool._get_cloud_provider", return_value=None)
+    @patch("tools.browser_tool._get_cdp_override", return_value="")
+    @patch("tools.browser_tool._is_camofox_mode", return_value=False)
+    def test_lightpanda_open_timeout_returns_without_chrome_fallback(
+        self, _camofox, _cdp, _cloud, _chromium, _local, _find, _session
+    ):
+        """A failed Lightpanda open should not launch the slow Chrome fallback path."""
+        import subprocess
+        import tools.browser_tool as bt
+
+        bt._cached_browser_engine = "lightpanda"
+        bt._browser_engine_resolved = True
+        _session.return_value = {"session_name": "test-sess"}
+
+        mock_proc = MagicMock()
+        mock_proc.wait.side_effect = subprocess.TimeoutExpired(["agent-browser"], 1)
+        mock_proc.kill.return_value = None
+        mock_proc.returncode = None
+
+        with patch("subprocess.Popen", return_value=mock_proc), \
+             patch("os.open", return_value=99), \
+             patch("os.close"), \
+             patch("os.unlink"), \
+             patch("os.makedirs"), \
+             patch("tools.interrupt.is_interrupted", return_value=False), \
+             patch("tools.browser_tool._write_owner_pid"), \
+             patch("tools.browser_tool._run_chrome_fallback_command") as fallback:
+            result = bt._run_browser_command("task1", "open", ["https://example.com"], timeout=1)
+
+        assert result["success"] is False
+        assert "timed out" in result["error"]
+        fallback.assert_not_called()
 
     def test_hybrid_local_sidecar_injects_engine_even_with_cloud_provider(self):
         """A task::local sidecar is local even when global cloud config exists."""

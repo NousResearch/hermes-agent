@@ -12,6 +12,7 @@ import pytest
 from agent.transports.codex_event_projector import (
     CodexEventProjector,
     ProjectionResult,
+    _MAX_EXEC_OUTPUT,
     _deterministic_call_id,
     _format_tool_args,
 )
@@ -123,6 +124,54 @@ class TestCommandExecutionProjection:
         a = p1.project(COMMAND_EXEC_COMPLETED).messages
         b = p2.project(COMMAND_EXEC_COMPLETED).messages
         assert a[0]["tool_calls"][0]["id"] == b[0]["tool_calls"][0]["id"]
+
+
+class TestCommandExecutionOutputCap:
+    """`commandExecution.aggregatedOutput` is unbounded in codex — the
+    projector must cap it so a wide grep/find can't dump hundreds of KB
+    into the context window (the other tool-result paths already truncate)."""
+
+    @staticmethod
+    def _exec_notif(output: str, exit_code: int = 0) -> dict:
+        return {
+            "method": "item/completed",
+            "params": {"item": {
+                "type": "commandExecution", "id": "cap-test",
+                "command": "grep -rn x .", "cwd": "/tmp",
+                "aggregatedOutput": output, "exitCode": exit_code,
+            }},
+        }
+
+    def test_huge_output_is_capped(self) -> None:
+        huge = "x" * 500_000
+        tool = CodexEventProjector().project(self._exec_notif(huge)).messages[1]
+        assert len(tool["content"]) < len(huge) // 10
+        assert "truncated" in tool["content"]
+
+    def test_small_output_passes_through_unchanged(self) -> None:
+        small = "hello world\n"
+        tool = CodexEventProjector().project(self._exec_notif(small)).messages[1]
+        assert tool["content"] == small
+
+    def test_output_exactly_at_cap_not_truncated(self) -> None:
+        exact = "x" * _MAX_EXEC_OUTPUT
+        tool = CodexEventProjector().project(self._exec_notif(exact)).messages[1]
+        assert tool["content"] == exact
+
+    def test_truncation_marker_reports_original_size(self) -> None:
+        content = CodexEventProjector().project(
+            self._exec_notif("y" * 100_000)
+        ).messages[1]["content"]
+        assert "truncated" in content
+        assert "100000" in content  # original length surfaced to the agent
+
+    def test_exit_annotation_survives_truncation(self) -> None:
+        # Non-zero exit prepends `[exit N]`; truncation keeps the head, so the
+        # annotation must remain visible to the agent.
+        content = CodexEventProjector().project(
+            self._exec_notif("z" * 100_000, exit_code=2)
+        ).messages[1]["content"]
+        assert content.startswith("[exit 2]")
 
 
 class TestAgentMessageProjection:

@@ -33,6 +33,14 @@ import json
 from dataclasses import dataclass, field
 from typing import Any, Optional
 
+# Cap for projected `commandExecution` output. Codex's `aggregatedOutput` is
+# unbounded — a wide grep/find can dump hundreds of KB straight into the model
+# context window. The mcp/dynamic/opaque projections below already truncate
+# their results; the exec path was missing the same guard. ~10k chars keeps a
+# useful head of the output without blowing up the window — and matches the
+# order of magnitude of the other projections' caps ([:4000]/[:1500]).
+_MAX_EXEC_OUTPUT = 10000
+
 
 def _deterministic_call_id(item_type: str, item_id: str) -> str:
     """Stable id for tool_call message correlation.
@@ -166,6 +174,13 @@ class CodexEventProjector:
         exit_code = item.get("exitCode")
         if exit_code is not None and exit_code != 0:
             output = f"[exit {exit_code}]\n{output}"
+        if len(output) > _MAX_EXEC_OUTPUT:
+            total = len(output)
+            output = (
+                output[:_MAX_EXEC_OUTPUT]
+                + f"\n\n[... output truncated: {total} chars total, "
+                f"capped at {_MAX_EXEC_OUTPUT} ]"
+            )
         tool_msg = {
             "role": "tool",
             "tool_call_id": call_id,

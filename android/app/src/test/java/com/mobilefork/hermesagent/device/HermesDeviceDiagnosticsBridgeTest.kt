@@ -1410,6 +1410,51 @@ class HermesDeviceDiagnosticsBridgeTest {
     }
 
     @Test
+    fun filtersBluetoothRowsForAgentCardsByServiceManufacturerProximityAndRssi() {
+        val devices = JSONArray()
+            .put(
+                JSONObject()
+                    .put("device_name", "Heart Strap")
+                    .put("advertised_name", "Hermes Heart")
+                    .put("address", "AA:BB:CC:00:11:22")
+                    .put("device_type", "le")
+                    .put("device_category", "wearable_health")
+                    .put("rssi_dbm", -48)
+                    .put("proximity_label", "near")
+                    .put("service_uuids", JSONArray().put("0000180d-0000-1000-8000-00805f9b34fb"))
+                    .put("service_labels", JSONArray().put("Heart Rate"))
+                    .put("manufacturer_ids", JSONArray().put("0x004C"))
+                    .put("manufacturer_names", JSONArray().put("Apple"))
+                    .put("semantic_context", "services=Heart Rate | manufacturers=Apple"),
+            )
+            .put(
+                JSONObject()
+                    .put("device_name", "Speaker")
+                    .put("address", "AA:BB:CC:00:11:33")
+                    .put("device_type", "classic")
+                    .put("device_category", "audio")
+                    .put("rssi_dbm", -77)
+                    .put("proximity_label", "far")
+                    .put("service_labels", JSONArray().put("Audio Sink"))
+                    .put("manufacturer_names", JSONArray().put("Sony")),
+            )
+
+        val filtered = HermesDeviceDiagnosticsBridge.bluetoothFilteredDeviceRows(
+            devices,
+            JSONObject()
+                .put("filter_bluetooth_service", "Heart Rate")
+                .put("filter_bluetooth_manufacturer", "Apple")
+                .put("filter_bluetooth_proximity", "near")
+                .put("filter_bluetooth_category", "wearable")
+                .put("min_rssi_dbm", -60),
+        )
+
+        assertEquals(1, filtered.length())
+        assertEquals("Heart Strap", filtered.getJSONObject(0).getString("device_name"))
+        assertEquals("near", filtered.getJSONObject(0).getString("proximity_label"))
+    }
+
+    @Test
     fun signalAwarenessReportFusesWirelessRadioSensorsAndSocContext() {
         val result = HermesDeviceDiagnosticsBridge.signalAwarenessReportJson(context)
         val awareness = result.getJSONArray("signal_awareness_matrix")

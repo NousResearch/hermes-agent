@@ -329,7 +329,7 @@ def test_android_diagnostics_exposes_signal_evidence_bundle_for_gemma_visible_cu
     assert 'wifiDiagnosticArguments("wifi_channel_rating", userText)' in chat_client
     assert 'wifiDiagnosticArguments("wifi_export", userText)' in chat_client
     assert 'wifiDiagnosticArguments("wifi_ap_details", userText)' in chat_client
-    assert 'diagnosticArguments("bluetooth_scan", "refresh" to false)' in chat_client
+    assert 'bluetoothDiagnosticArguments("bluetooth_scan", userText)' in chat_client
     assert '"motion_sensor_history"' in chat_client
     assert '"sensor_types" to "accelerometer,gyroscope,linear_acceleration,rotation_vector"' in chat_client
     assert 'diagnosticArguments("radio_signal_graph")' in chat_client
@@ -558,6 +558,11 @@ def test_android_diagnostics_exposes_bluetooth_analyzer_report_for_readiness_and
     assert 'bluetoothAnalyzerFeatureRows(' in diagnostics_bridge
     assert 'bluetoothAnalyzerWorkflowRows(' in diagnostics_bridge
     assert 'bluetoothScanPolicyRows(' in diagnostics_bridge
+    assert 'bluetoothScanFilterSpec(' in diagnostics_bridge
+    assert 'bluetoothFilteredDeviceRowsForSpec(' in diagnostics_bridge
+    assert '"applied_bluetooth_filters"' in diagnostics_bridge
+    assert '"bluetooth_filter_application"' in diagnostics_bridge
+    assert '"available_bluetooth_analyzer_filters"' in diagnostics_bridge
     assert 'bluetoothServiceUuidLabel(' in diagnostics_bridge
     assert 'bluetoothManufacturerIdLabel(' in diagnostics_bridge
     assert '"service_labels"' in diagnostics_bridge
@@ -584,9 +589,14 @@ def test_android_diagnostics_exposes_bluetooth_analyzer_report_for_readiness_and
     assert '"bluetooth_analyzer_workflow_routes"' in chat_client
     assert '"bluetooth_scan_policy_matrix"' in chat_client
     assert '"bluetooth_scan_control"' in chat_client
+    assert 'bluetoothDiagnosticArguments("bluetooth_scan", userText)' in chat_client
+    assert '"filter_bluetooth_service"' in chat_client
+    assert '"filter_bluetooth_manufacturer"' in chat_client
+    assert '"filter_bluetooth_proximity"' in chat_client
     assert 'Wi-Fi or Bluetooth scan mode for direct signal actions' in chat_client
     assert '"bluetooth_signal_history" -> bluetoothSignalHistoryRow(row)' in diagnostic_cards
     assert '"bluetooth_analyzer_feature_matrix", "bluetooth_analyzer_workflow_routes", "bluetooth_scan_policy_matrix"' in diagnostic_cards
+    assert '"bluetooth_filter_application"' in diagnostic_cards
     assert 'capabilityMatrixRow(row)' in diagnostic_cards
 
 

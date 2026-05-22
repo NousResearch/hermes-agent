@@ -158,6 +158,7 @@ private fun graphRows(graphType: String?, rows: JSONArray): List<DiagnosticGraph
                 "wifi_analyzer_feature_matrix", "wifi_analyzer_workflow_routes", "wifi_scan_policy_matrix",
                 "wifi_filter_application",
                 "bluetooth_analyzer_feature_matrix", "bluetooth_analyzer_workflow_routes", "bluetooth_scan_policy_matrix",
+                "bluetooth_filter_application",
                 "sensor_analyzer_feature_matrix", "sensor_analyzer_workflow_routes", "sensor_sampling_policy_matrix",
                 "signal_awareness_matrix", "signal_workflow_routes", "signal_constraint_matrix",
                 "radio_signal_feature_matrix", "radio_signal_workflow_routes", "radio_signal_constraint_matrix",

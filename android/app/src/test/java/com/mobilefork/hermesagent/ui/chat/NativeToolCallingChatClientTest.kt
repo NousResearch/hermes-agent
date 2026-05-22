@@ -169,6 +169,21 @@ class NativeToolCallingChatClientTest {
     }
 
     @Test
+    fun extractsImplicitBluetoothAnalyzerFiltersAndPauseResumeArguments() {
+        val parsed = NativeToolCallingChatClient.extractImplicitAndroidDiagnosticsArguments(
+            "Show nearby Bluetooth devices service Heart Rate with manufacturer Apple and near proximity using a fresh scan.",
+        )
+
+        requireNotNull(parsed)
+        assertEquals("bluetooth_scan", parsed.getString("action"))
+        assertTrue(parsed.getBoolean("refresh"))
+        assertEquals("resumed", parsed.getString("scan_mode"))
+        assertEquals("Heart Rate", parsed.getString("filter_bluetooth_service"))
+        assertEquals("Apple", parsed.getString("filter_bluetooth_manufacturer"))
+        assertEquals("near", parsed.getString("filter_bluetooth_proximity"))
+    }
+
+    @Test
     fun extractsImplicitWifiAnalyzerFiltersExportAndPauseResumeArguments() {
         val export = NativeToolCallingChatClient.extractImplicitAndroidDiagnosticsArguments(
             "Export WPA3 5GHz Wi-Fi access point details as CSV while paused.",

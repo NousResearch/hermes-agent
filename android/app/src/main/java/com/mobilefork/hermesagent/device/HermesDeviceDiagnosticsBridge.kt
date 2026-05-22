@@ -724,18 +724,27 @@ object HermesDeviceDiagnosticsBridge {
                 }
             }
         }
-        val devices = JSONArray()
+        val allDevices = JSONArray()
         rows.values
             .sortedWith(compareByDescending<JSONObject> { it.optInt("rssi_dbm", Int.MIN_VALUE) }.thenBy { it.optString("device_name") })
-            .take(limit)
-            .forEachIndexed { index, row -> devices.put(row.put("rank", index + 1)) }
+            .forEach { row -> allDevices.put(row) }
+        val filterSpec = bluetoothScanFilterSpec(arguments)
+        val filteredDeviceRows = bluetoothFilteredDeviceRowsForSpec(allDevices, filterSpec)
+        val devices = JSONArray()
+        for (index in 0 until minOf(filteredDeviceRows.length(), limit)) {
+            devices.put(filteredDeviceRows.getJSONObject(index).put("rank", index + 1))
+        }
+        val filterSummary = bluetoothFilterSummaryJson(filterSpec, allDevices.length(), filteredDeviceRows.length())
+        val filterRows = bluetoothFilterApplicationRows(filterSpec, allDevices.length(), filteredDeviceRows.length())
+        val availableAnalyzerFilters = bluetoothAnalyzerFilterSummaryJson(allDevices)
+        val filteredAnalyzerFilters = bluetoothAnalyzerFilterSummaryJson(filteredDeviceRows)
         val metadataSummary = bluetoothMetadataSummaryRows(devices)
         val serviceUuidCount = bluetoothDistinctStringCount(devices, "service_uuids")
         val serviceLabelCount = bluetoothDistinctStringCount(devices, "service_labels")
         val manufacturerIdCount = bluetoothDistinctStringCount(devices, "manufacturer_ids")
         val manufacturerNameCount = bluetoothDistinctStringCount(devices, "manufacturer_names")
         val observedAtMs = System.currentTimeMillis()
-        val historyStore = updateBluetoothSignalHistory(appContext, devices, observedAtMs)
+        val historyStore = updateBluetoothSignalHistory(appContext, allDevices, observedAtMs)
         val signalHistory = bluetoothSignalHistoryRowsFromStore(historyStore)
         return JSONObject()
             .put("success", true)
@@ -747,7 +756,12 @@ object HermesDeviceDiagnosticsBridge {
             .put("bluetooth_scan_control", bluetoothScanControlJson(scanMode, requestedRefresh, refresh, refreshAccepted))
             .put("scan_error", scanError ?: JSONObject.NULL)
             .put("bluetooth_enabled", runCatching { adapter.isEnabled }.getOrDefault(false))
+            .put("bluetooth_total_device_count", allDevices.length())
             .put("bluetooth_device_count", devices.length())
+            .put("bluetooth_filter_active", filterSpec.active)
+            .put("bluetooth_active_filter_count", filterSpec.activeFilterCount)
+            .put("applied_bluetooth_filter_count", filterRows.length())
+            .put("bluetooth_filter_summary", filterSummary)
             .put("bluetooth_metadata_count", metadataSummary.length())
             .put("bluetooth_service_uuid_count", serviceUuidCount)
             .put("bluetooth_service_label_count", serviceLabelCount)
@@ -757,10 +771,25 @@ object HermesDeviceDiagnosticsBridge {
             .put("bluetooth_scan_permission_status", permissionStatus)
             .put("bluetooth_devices", devices)
             .put("bluetooth_metadata_summary", metadataSummary)
+            .put("bluetooth_analyzer_filters", availableAnalyzerFilters)
+            .put("available_bluetooth_analyzer_filters", availableAnalyzerFilters)
+            .put("filtered_bluetooth_analyzer_filters", filteredAnalyzerFilters)
+            .put("applied_bluetooth_filters", filterRows)
             .put("bluetooth_signal_history", signalHistory)
             .put(
                 "cards",
-                JSONArray()
+                JSONArray().also { cards ->
+                    if (filterSpec.active) {
+                        cards.put(
+                            graphCard(
+                                title = "Bluetooth Applied Filters",
+                                body = "${filteredDeviceRows.length()} of ${allDevices.length()} Bluetooth row(s) matched the requested nearby-device filter(s).",
+                                graphType = "bluetooth_filter_application",
+                                rows = filterRows,
+                            ),
+                        )
+                    }
+                }
                     .put(
                         graphCard(
                             title = "Bluetooth Nearby",
@@ -808,6 +837,12 @@ object HermesDeviceDiagnosticsBridge {
         val scanSucceeded = scanResult?.optBoolean("success", false) == true
         val devices = scanResult?.optJSONArray("bluetooth_devices") ?: JSONArray()
         val metadataSummary = scanResult?.optJSONArray("bluetooth_metadata_summary") ?: JSONArray()
+        val filters = scanResult?.optJSONArray("bluetooth_analyzer_filters") ?: JSONArray()
+        val availableFilters = scanResult?.optJSONArray("available_bluetooth_analyzer_filters") ?: filters
+        val filteredFilters = scanResult?.optJSONArray("filtered_bluetooth_analyzer_filters") ?: filters
+        val appliedFilters = scanResult?.optJSONArray("applied_bluetooth_filters") ?: JSONArray()
+        val filterSummary = scanResult?.optJSONObject("bluetooth_filter_summary")
+            ?: bluetoothFilterSummaryJson(bluetoothScanFilterSpec(arguments), devices.length(), devices.length())
         val cachedHistory = scanResult?.optJSONArray("bluetooth_signal_history")
             ?: bluetoothSignalHistoryRowsFromStore(readBluetoothSignalHistory(appContext))
         val serviceUuidCount = scanResult?.optInt("bluetooth_service_uuid_count", bluetoothDistinctStringCount(devices, "service_uuids"))
@@ -913,11 +948,19 @@ object HermesDeviceDiagnosticsBridge {
             .put("bluetooth_scan_control", scanControl)
             .put("bluetooth_devices", devices)
             .put("bluetooth_metadata_summary", metadataSummary)
+            .put("bluetooth_analyzer_filters", filters)
+            .put("available_bluetooth_analyzer_filters", availableFilters)
+            .put("filtered_bluetooth_analyzer_filters", filteredFilters)
+            .put("applied_bluetooth_filters", appliedFilters)
+            .put("bluetooth_filter_summary", filterSummary)
+            .put("bluetooth_filter_active", filterSummary.optBoolean("active", false))
             .put("bluetooth_signal_history", cachedHistory)
             .put("bluetooth_analyzer_feature_matrix", featureRows)
             .put("bluetooth_analyzer_workflow_routes", routeRows)
             .put("bluetooth_scan_policy_matrix", policyRows)
             .put("bluetooth_device_count", devices.length())
+            .put("bluetooth_total_device_count", scanResult?.optInt("bluetooth_total_device_count", devices.length()) ?: devices.length())
+            .put("applied_bluetooth_filter_count", appliedFilters.length())
             .put("bluetooth_metadata_count", metadataSummary.length())
             .put("bluetooth_service_uuid_count", serviceUuidCount)
             .put("bluetooth_service_label_count", serviceLabelCount)
@@ -5648,12 +5691,12 @@ object HermesDeviceDiagnosticsBridge {
                 builtInAndroidSource = bluetoothSupported,
                 accessPath = "bluetooth_scan, bluetooth_signal_history",
                 reason = if (bluetoothSupported) {
-                    "Android exposes nearby Bluetooth/BLE identity, service UUID, manufacturer, RSSI, and proximity metadata with the right permissions."
+                    "Android exposes nearby Bluetooth/BLE identity, service UUID, manufacturer, RSSI, proximity metadata, and analyzer filters with the right permissions."
                 } else {
                     "This device does not declare Bluetooth support."
                 },
-                agentUsage = "Route to Bluetooth Analyzer cards for device proximity, service UUID labels, manufacturer names, and RSSI trend rows.",
-                metadataFields = listOf("name", "address", "rssi_dbm", "service_uuids", "manufacturer_ids", "proximity_label"),
+                agentUsage = "Route to Bluetooth Analyzer cards for filtered device proximity, service UUID labels, manufacturer names, and RSSI trend rows.",
+                metadataFields = listOf("name", "address", "rssi_dbm", "service_uuids", "manufacturer_ids", "proximity_label", "applied_bluetooth_filters"),
             ),
         )
         .put(
@@ -5807,12 +5850,12 @@ object HermesDeviceDiagnosticsBridge {
                 accessPath = "bluetooth_scan, bluetooth_signal_history",
                 scanState = if (bluetoothSupported) "public_android_metadata_route" else "no_bluetooth_feature",
                 reason = if (bluetoothSupported) {
-                    "Android exposes nearby Bluetooth/BLE identity, service UUID, manufacturer, RSSI, and history metadata with permissions."
+                    "Android exposes nearby Bluetooth/BLE identity, service UUID, manufacturer, RSSI, history metadata, and filter facets with permissions."
                 } else {
                     "This device does not declare Bluetooth support."
                 },
                 recommendation = "Use Bluetooth Analyzer cards for 2.4 GHz proximity and identity context rather than raw channel sweeps.",
-                stationFields = listOf("device_name", "address", "rssi_dbm", "service_uuids", "manufacturer_ids", "proximity_label", "scan_timestamp_ms"),
+                stationFields = listOf("device_name", "address", "rssi_dbm", "service_uuids", "manufacturer_ids", "proximity_label", "applied_bluetooth_filters", "scan_timestamp_ms"),
                 sampleFields = listOf("rssi_dbm", "average_rssi_dbm", "trend_db", "service_labels", "manufacturer_names"),
             ),
         )
@@ -7576,7 +7619,7 @@ object HermesDeviceDiagnosticsBridge {
                     .put(toolJson("list_tasks", "Kai-compatible alias for listing saved Hermes Android automation task records.", "limit"))
                     .put(toolJson("cancel_task", "Kai-compatible alias for deleting a saved Hermes Android automation by task_id.", "task_id"))
                     .put(toolJson("android_automation_tool", "Run/open/create saved automations, watcher tasks, overlays, notifications, widgets, Tasker-style triggers, Kai-compatible scheduled task aliases, and secret-free app settings export/import.", "action, trigger, task_id, data_uri, bundle_json, settings_json"))
-                    .put(toolJson("android_device_diagnostics_tool", "Inspect resource-heavy apps, Wi-Fi signals/channel graph envelopes/channel ratings/AP detail and export rows/vendor OUI/filter facets plus active Wi-Fi band/security/signal/SSID/RSSI filters, Bluetooth nearby devices/service UUID labels/manufacturer names/proximity/history, camera, sensors, SOC compatibility, overlay, Gemma-visible signal evidence bundles and agent observation dashboards, radio/RF capability limits, Kai-style agent environment parity, and the social/Gmail end-to-end phone preflight.", "action, limit, detail_limit, export_format, scan_mode, refresh, filter_band, filter_security, filter_signal, filter_ssid, min_rssi_dbm, max_rssi_dbm, sensor_types, timeout_ms"))
+                    .put(toolJson("android_device_diagnostics_tool", "Inspect resource-heavy apps, Wi-Fi signals/channel graph envelopes/channel ratings/AP detail and export rows/vendor OUI/filter facets plus active Wi-Fi band/security/signal/SSID/RSSI filters, Bluetooth nearby devices/service UUID labels/manufacturer names/proximity/history/filter facets, camera, sensors, SOC compatibility, overlay, Gemma-visible signal evidence bundles and agent observation dashboards, radio/RF capability limits, Kai-style agent environment parity, and the social/Gmail end-to-end phone preflight.", "action, limit, detail_limit, export_format, scan_mode, refresh, filter_band, filter_security, filter_signal, filter_ssid, min_rssi_dbm, max_rssi_dbm, filter_device_name, filter_bluetooth_service, filter_bluetooth_manufacturer, filter_bluetooth_category, filter_bluetooth_proximity, sensor_types, timeout_ms"))
                     .put(toolJson("hindsight_memory_tool", "Retain, recall, reflect, and promote local Hindsight-style memories with tags, entities, keywords, recency, reinforcement, and reusable prompt context.", "action, content, query, tags, category")),
             )
             .put("diagnostics_actions", JSONArray(ACTIONS))
@@ -8297,6 +8340,250 @@ object HermesDeviceDiagnosticsBridge {
             )
             .take(MAX_BLUETOOTH_HISTORY_ROWS)
         return JSONArray().also { array -> rows.forEach(array::put) }
+    }
+
+    internal fun bluetoothFilteredDeviceRows(devices: JSONArray, arguments: JSONObject): JSONArray {
+        return bluetoothFilteredDeviceRowsForSpec(devices, bluetoothScanFilterSpec(arguments))
+    }
+
+    private fun bluetoothScanFilterSpec(arguments: JSONObject): BluetoothScanFilterSpec {
+        return BluetoothScanFilterSpec(
+            deviceNameQuery = jsonStringArgument(
+                arguments,
+                "filter_device_name",
+                "filter_bluetooth_name",
+                "device_name_filter",
+                "bluetooth_name",
+                "name",
+            ).orEmpty(),
+            addressQuery = jsonStringArgument(
+                arguments,
+                "filter_bluetooth_address",
+                "filter_address",
+                "address_filter",
+                "bluetooth_address",
+                "address",
+            ).orEmpty(),
+            serviceQuery = jsonStringArgument(
+                arguments,
+                "filter_bluetooth_service",
+                "filter_service",
+                "service_filter",
+                "service_uuid",
+                "service_label",
+            ).orEmpty(),
+            manufacturerQuery = jsonStringArgument(
+                arguments,
+                "filter_bluetooth_manufacturer",
+                "filter_manufacturer",
+                "manufacturer_filter",
+                "manufacturer_id",
+                "manufacturer_name",
+            ).orEmpty(),
+            categoryQuery = jsonStringArgument(
+                arguments,
+                "filter_bluetooth_category",
+                "filter_category",
+                "category_filter",
+                "device_category",
+            ).orEmpty(),
+            proximityLabels = jsonStringListArgument(
+                arguments,
+                "filter_bluetooth_proximity",
+                "filter_proximity",
+                "proximity_filter",
+                "proximity_label",
+            ).mapNotNull(::normalizedBluetoothProximityFilter).toCollection(linkedSetOf()),
+            minRssiDbm = intArgument(arguments, "min_rssi_dbm", "rssi_min_dbm", "minimum_rssi_dbm", "min_signal_dbm"),
+            maxRssiDbm = intArgument(arguments, "max_rssi_dbm", "rssi_max_dbm", "maximum_rssi_dbm", "max_signal_dbm"),
+        )
+    }
+
+    private fun bluetoothFilteredDeviceRowsForSpec(devices: JSONArray, filterSpec: BluetoothScanFilterSpec): JSONArray {
+        if (!filterSpec.active) return devices
+        return JSONArray().also { filtered ->
+            for (index in 0 until devices.length()) {
+                val row = devices.optJSONObject(index) ?: continue
+                if (bluetoothDeviceMatchesFilterSpec(row, filterSpec)) filtered.put(row)
+            }
+        }
+    }
+
+    private fun bluetoothDeviceMatchesFilterSpec(row: JSONObject, filterSpec: BluetoothScanFilterSpec): Boolean {
+        if (!bluetoothFilterTextMatches(
+                filterSpec.deviceNameQuery,
+                row.optString("device_name"),
+                row.optString("advertised_name"),
+            )
+        ) {
+            return false
+        }
+        if (!bluetoothFilterTextMatches(filterSpec.addressQuery, row.optString("address"))) {
+            return false
+        }
+        if (!bluetoothFilterTextMatches(
+                filterSpec.serviceQuery,
+                row.optString("semantic_context"),
+                *jsonStringList(row, "service_uuids").toTypedArray(),
+                *jsonStringList(row, "service_labels").toTypedArray(),
+                *jsonStringList(row, "service_data_uuids").toTypedArray(),
+                *jsonStringList(row, "service_data_labels").toTypedArray(),
+            )
+        ) {
+            return false
+        }
+        if (!bluetoothFilterTextMatches(
+                filterSpec.manufacturerQuery,
+                row.optString("semantic_context"),
+                *jsonStringList(row, "manufacturer_ids").toTypedArray(),
+                *jsonStringList(row, "manufacturer_names").toTypedArray(),
+            )
+        ) {
+            return false
+        }
+        if (!bluetoothFilterTextMatches(
+                filterSpec.categoryQuery,
+                row.optString("device_category"),
+                row.optString("device_type"),
+                row.optString("device_class"),
+                row.optString("major_device_class"),
+            )
+        ) {
+            return false
+        }
+
+        val rssiDbm = jsonIntOrNull(row, "rssi_dbm")
+        val proximityLabel = row.optString("proximity_label").ifBlank { rssiDbm?.let(::bluetoothProximityLabel).orEmpty() }
+        if (filterSpec.proximityLabels.isNotEmpty() && proximityLabel !in filterSpec.proximityLabels) return false
+        filterSpec.minRssiDbm?.let { minRssi -> if (rssiDbm == null || rssiDbm < minRssi) return false }
+        filterSpec.maxRssiDbm?.let { maxRssi -> if (rssiDbm == null || rssiDbm > maxRssi) return false }
+
+        return true
+    }
+
+    private fun bluetoothFilterSummaryJson(filterSpec: BluetoothScanFilterSpec, totalDeviceCount: Int, matchedDeviceCount: Int): JSONObject {
+        return JSONObject()
+            .put("active", filterSpec.active)
+            .put("active_filter_count", filterSpec.activeFilterCount)
+            .put("total_device_count", totalDeviceCount)
+            .put("matched_device_count", matchedDeviceCount)
+            .put("match_fraction", if (totalDeviceCount > 0) matchedDeviceCount.toDouble() / totalDeviceCount else 0.0)
+            .put("requested_filters", bluetoothRequestedFilterJson(filterSpec))
+            .put(
+                "agent_usage",
+                "Use these filters before answering Bluetooth questions that name a device, address, service UUID/label, manufacturer, category, proximity bucket, or RSSI threshold.",
+            )
+    }
+
+    private fun bluetoothFilterApplicationRows(filterSpec: BluetoothScanFilterSpec, totalDeviceCount: Int, matchedDeviceCount: Int): JSONArray {
+        if (!filterSpec.active) return JSONArray()
+        val rows = JSONArray()
+        fun addRow(key: String, label: String, valueLabel: String, detail: String) {
+            rows.put(
+                JSONObject()
+                    .put("category", "bluetooth_filter")
+                    .put("filter_key", key)
+                    .put("label", label)
+                    .put("ready", matchedDeviceCount > 0)
+                    .put("value_label", valueLabel)
+                    .put("detail", "$detail Matched $matchedDeviceCount of $totalDeviceCount Bluetooth row(s).")
+                    .put(
+                        "recommendation",
+                        if (matchedDeviceCount > 0) {
+                            "Use the filtered Bluetooth cards for the user's narrowed question, while keeping total device count visible for context."
+                        } else {
+                            "No Bluetooth rows matched this filter; relax the filter or request a resumed scan before concluding the device is absent."
+                        },
+                    )
+                    .put("fraction", if (totalDeviceCount > 0) (matchedDeviceCount.toFloat() / totalDeviceCount).coerceIn(0.05f, 1f) else 0.05f),
+            )
+        }
+        if (filterSpec.deviceNameQuery.isNotBlank()) addRow("device_name", "Device name contains", filterSpec.deviceNameQuery, "Included rows whose device or advertised name contains this text.")
+        if (filterSpec.addressQuery.isNotBlank()) addRow("address", "Address contains", filterSpec.addressQuery, "Included rows whose Bluetooth address contains this text.")
+        if (filterSpec.serviceQuery.isNotBlank()) addRow("service", "Service contains", filterSpec.serviceQuery, "Included rows whose service UUID, service label, service-data UUID, or semantic context contains this text.")
+        if (filterSpec.manufacturerQuery.isNotBlank()) addRow("manufacturer", "Manufacturer contains", filterSpec.manufacturerQuery, "Included rows whose manufacturer ID, manufacturer name, or semantic context contains this text.")
+        if (filterSpec.categoryQuery.isNotBlank()) addRow("category", "Category contains", filterSpec.categoryQuery, "Included rows whose Android class, device type, or category contains this text.")
+        if (filterSpec.proximityLabels.isNotEmpty()) addRow("proximity", "Proximity filter", filterSpec.proximityLabels.joinToString(", "), "Included rows in the selected proximity bucket(s).")
+        filterSpec.minRssiDbm?.let { addRow("min_rssi_dbm", "Minimum RSSI", "$it dBm", "Included Bluetooth rows at or above $it dBm.") }
+        filterSpec.maxRssiDbm?.let { addRow("max_rssi_dbm", "Maximum RSSI", "$it dBm", "Included Bluetooth rows at or below $it dBm.") }
+        return rows
+    }
+
+    private fun bluetoothRequestedFilterJson(filterSpec: BluetoothScanFilterSpec): JSONObject {
+        return JSONObject()
+            .put("device_name_query", if (filterSpec.deviceNameQuery.isBlank()) JSONObject.NULL else filterSpec.deviceNameQuery)
+            .put("address_query", if (filterSpec.addressQuery.isBlank()) JSONObject.NULL else filterSpec.addressQuery)
+            .put("service_query", if (filterSpec.serviceQuery.isBlank()) JSONObject.NULL else filterSpec.serviceQuery)
+            .put("manufacturer_query", if (filterSpec.manufacturerQuery.isBlank()) JSONObject.NULL else filterSpec.manufacturerQuery)
+            .put("category_query", if (filterSpec.categoryQuery.isBlank()) JSONObject.NULL else filterSpec.categoryQuery)
+            .put("proximity_labels", JSONArray(filterSpec.proximityLabels.toList()))
+            .put("min_rssi_dbm", filterSpec.minRssiDbm ?: JSONObject.NULL)
+            .put("max_rssi_dbm", filterSpec.maxRssiDbm ?: JSONObject.NULL)
+    }
+
+    private fun bluetoothAnalyzerFilterSummaryJson(devices: JSONArray): JSONArray {
+        val facets = linkedMapOf<String, BluetoothFilterFacetAccumulator>()
+        fun addFacet(filterKey: String, label: String, row: JSONObject) {
+            if (label.isBlank() || label == "unknown") return
+            val key = "$filterKey|$label"
+            val accumulator = facets.getOrPut(key) { BluetoothFilterFacetAccumulator(filterKey = filterKey, label = label) }
+            accumulator.count += 1
+            jsonIntOrNull(row, "rssi_dbm")?.let { rssi ->
+                accumulator.strongestRssiDbm = maxOf(accumulator.strongestRssiDbm ?: rssi, rssi)
+            }
+        }
+        for (index in 0 until devices.length()) {
+            val row = devices.optJSONObject(index) ?: continue
+            addFacet("category", row.optString("device_category"), row)
+            addFacet("proximity", row.optString("proximity_label"), row)
+            jsonStringList(row, "service_labels").forEach { addFacet("service", it, row) }
+            jsonStringList(row, "manufacturer_names").forEach { addFacet("manufacturer", it, row) }
+        }
+        val rows = facets.values
+            .sortedWith(
+                compareBy<BluetoothFilterFacetAccumulator> { bluetoothFilterFacetSortKey(it.filterKey) }
+                    .thenByDescending { it.count }
+                    .thenBy { it.label },
+            )
+            .take(MAX_BLUETOOTH_METADATA_SUMMARY_ROWS)
+            .map { accumulator ->
+                JSONObject()
+                    .put("category", "bluetooth_filter_facet")
+                    .put("filter_key", accumulator.filterKey)
+                    .put("label", accumulator.label)
+                    .put("count", accumulator.count)
+                    .put("strongest_rssi_dbm", accumulator.strongestRssiDbm ?: JSONObject.NULL)
+                    .put(
+                        "recommendation",
+                        "Use filter_${if (accumulator.filterKey == "category") "bluetooth_category" else "bluetooth_${accumulator.filterKey}"}=${accumulator.label} to narrow Bluetooth cards before explaining nearby-device evidence.",
+                    )
+            }
+        return JSONArray().also { array -> rows.forEach(array::put) }
+    }
+
+    private fun normalizedBluetoothProximityFilter(value: String): String? {
+        val normalized = value.trim().lowercase(Locale.US).replace("_", " ")
+        if (normalized.isBlank() || normalized in setOf("all", "any", "*")) return null
+        return when {
+            normalized in setOf("immediate", "very near", "very close") -> "immediate"
+            normalized in setOf("near", "close", "strong") -> "near"
+            normalized in setOf("room", "medium", "moderate") -> "room"
+            normalized in setOf("far", "distant", "weak") -> "far"
+            else -> normalized
+        }
+    }
+
+    private fun bluetoothFilterTextMatches(query: String, vararg values: String): Boolean {
+        if (query.isBlank()) return true
+        return values.any { value -> value.contains(query, ignoreCase = true) }
+    }
+
+    private fun bluetoothFilterFacetSortKey(filterKey: String): Int = when (filterKey) {
+        "proximity" -> 0
+        "category" -> 1
+        "service" -> 2
+        "manufacturer" -> 3
+        else -> 4
     }
 
     internal fun mergeMotionSensorHistory(existing: JSONObject, samples: JSONArray, observedAtMs: Long): JSONObject {
@@ -11369,6 +11656,38 @@ object HermesDeviceDiagnosticsBridge {
         val active: Boolean
             get() = activeFilterCount > 0
     }
+
+    private data class BluetoothScanFilterSpec(
+        val deviceNameQuery: String = "",
+        val addressQuery: String = "",
+        val serviceQuery: String = "",
+        val manufacturerQuery: String = "",
+        val categoryQuery: String = "",
+        val proximityLabels: Set<String> = emptySet(),
+        val minRssiDbm: Int? = null,
+        val maxRssiDbm: Int? = null,
+    ) {
+        val activeFilterCount: Int
+            get() = listOf(
+                deviceNameQuery.isNotBlank(),
+                addressQuery.isNotBlank(),
+                serviceQuery.isNotBlank(),
+                manufacturerQuery.isNotBlank(),
+                categoryQuery.isNotBlank(),
+                proximityLabels.isNotEmpty(),
+                minRssiDbm != null,
+                maxRssiDbm != null,
+            ).count { it }
+        val active: Boolean
+            get() = activeFilterCount > 0
+    }
+
+    private data class BluetoothFilterFacetAccumulator(
+        val filterKey: String,
+        val label: String,
+        var count: Int = 0,
+        var strongestRssiDbm: Int? = null,
+    )
 
     internal data class WifiChannelMeasurement(
         val channel: Int,

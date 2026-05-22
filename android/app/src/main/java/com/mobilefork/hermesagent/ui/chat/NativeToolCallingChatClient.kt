@@ -1298,6 +1298,12 @@ class NativeToolCallingChatClient(
                         .put("filter_vendor", stringProp("Optional case-insensitive substring filter for local Wi-Fi OUI/vendor label."))
                         .put("min_rssi_dbm", intProp("Optional Wi-Fi RSSI lower bound in dBm, for example -65 keeps APs at or above -65 dBm."))
                         .put("max_rssi_dbm", intProp("Optional Wi-Fi RSSI upper bound in dBm."))
+                        .put("filter_device_name", stringProp("Optional Bluetooth device-name or advertised-name substring filter."))
+                        .put("filter_bluetooth_address", stringProp("Optional Bluetooth address substring filter."))
+                        .put("filter_bluetooth_service", stringProp("Optional Bluetooth service UUID, service label, or service-data substring filter."))
+                        .put("filter_bluetooth_manufacturer", stringProp("Optional Bluetooth manufacturer ID or manufacturer-name substring filter."))
+                        .put("filter_bluetooth_category", stringProp("Optional Bluetooth device category/class/type substring filter such as wearable, audio, beacon, or HID."))
+                        .put("filter_bluetooth_proximity", stringProp("Optional Bluetooth proximity bucket filter: immediate, near, room, or far."))
                         .put("include_hidden", boolProp("For Wi-Fi filters, false excludes hidden SSID rows from returned cards."))
                         .put("hidden_only", boolProp("For Wi-Fi filters, true returns only hidden SSID rows."))
                         .put("include_snapshot", boolProp("For sensor_analyzer_report, include a bounded one-shot sensor snapshot; default is passive readiness and policy rows only."))
@@ -3274,11 +3280,11 @@ class NativeToolCallingChatClient(
                 lower.containsAny("nearby wifi", "nearby wi-fi", "scan wifi", "scan wi-fi", "wifi networks", "wi-fi networks", "access points nearby", "nearby access points") ->
                     wifiDiagnosticArguments("wifi_scan", userText)
                 lower.containsAny("bluetooth history", "bluetooth trend", "bluetooth trends", "bluetooth rssi history", "ble history", "ble trend", "rssi trend") ->
-                    diagnosticArguments("bluetooth_signal_history", "refresh" to false)
+                    bluetoothDiagnosticArguments("bluetooth_signal_history", userText)
                 lower.containsAny("bluetooth analyzer", "bluetooth readiness", "bluetooth scan policy", "analyze bluetooth", "analyze ble") ->
-                    diagnosticArguments("bluetooth_analyzer_report", "refresh" to false)
-                lower.containsAny("nearby bluetooth", "nearby ble", "scan bluetooth", "scan ble", "bluetooth devices", "ble devices", "bluetooth scanner", "ble scanner") ->
-                    diagnosticArguments("bluetooth_scan", "refresh" to false)
+                    bluetoothDiagnosticArguments("bluetooth_analyzer_report", userText)
+                lower.containsAny("nearby bluetooth", "nearby ble", "scan bluetooth", "scan ble", "bluetooth devices", "ble devices", "bluetooth scanner", "ble scanner", "bluetooth filter", "ble filter") ->
+                    bluetoothDiagnosticArguments("bluetooth_scan", userText)
                 lower.containsAny("motion history", "motion trend", "motion trends", "imu history", "imu trend", "accelerometer history", "gyroscope history") ->
                     diagnosticArguments(
                         "motion_sensor_history",
@@ -3385,6 +3391,54 @@ class NativeToolCallingChatClient(
             }
         }
 
+        private fun bluetoothDiagnosticArguments(action: String, userText: String): JSONObject {
+            val lower = userText.lowercase()
+            val pairs = mutableListOf<Pair<String, Any>>()
+            val scanMode = when {
+                lower.containsAny("paused", "pause scanning", "pause scan", "cached", "reuse cached", "without refresh", "no refresh") -> "paused"
+                lower.containsAny("resumed", "resume scanning", "resume scan", "fresh scan", "new scan", "refresh scan", "live scan") -> "resumed"
+                else -> null
+            }
+            pairs += "refresh" to (scanMode == "resumed" && action != "bluetooth_analyzer_report")
+            scanMode?.let { pairs += "scan_mode" to it }
+
+            bluetoothTextFilter(userText, "name", "filter_device_name")?.let { pairs += "filter_device_name" to it }
+            bluetoothTextFilter(userText, "device", "filter_device_name")?.let { pairs += "filter_device_name" to it }
+            bluetoothTextFilter(userText, "address", "filter_bluetooth_address")?.let { pairs += "filter_bluetooth_address" to it }
+            bluetoothTextFilter(userText, "service", "filter_bluetooth_service")?.let { pairs += "filter_bluetooth_service" to it }
+            bluetoothTextFilter(userText, "manufacturer", "filter_bluetooth_manufacturer")?.let { pairs += "filter_bluetooth_manufacturer" to it }
+            bluetoothTextFilter(userText, "category", "filter_bluetooth_category")?.let { pairs += "filter_bluetooth_category" to it }
+
+            val proximityFilters = buildList {
+                if (lower.containsAny("immediate proximity", "very close bluetooth", "very close ble", "immediate devices")) add("immediate")
+                if (lower.containsAny("near proximity", "near bluetooth only", "near ble only", "close bluetooth devices", "close ble devices")) add("near")
+                if (lower.containsAny("room proximity", "room bluetooth", "room ble", "moderate bluetooth", "moderate ble")) add("room")
+                if (lower.containsAny("far proximity", "far bluetooth", "far ble", "weak bluetooth", "weak ble")) add("far")
+            }.distinct()
+            if (proximityFilters.isNotEmpty()) pairs += "filter_bluetooth_proximity" to proximityFilters.joinToString(",")
+
+            return diagnosticArguments(action, *pairs.toTypedArray())
+        }
+
+        private fun bluetoothTextFilter(userText: String, key: String, argumentName: String): String? {
+            val pattern = Regex("""(?i)\b$key\s*(?:contains|named|name|label|id|=|:)?\s*["']?([A-Za-z0-9_.:-]+(?: [A-Za-z0-9_.:-]+){0,3})["']?(?=\s+(?:with|while|as|and|on|from|using|paused|resumed|fresh|cached|scan|devices|device|bluetooth|ble|nearby|history|trend|proximity|filter)|[.!?]|$)""")
+            val rawValue = pattern.find(userText)
+                ?.groupValues
+                ?.getOrNull(1)
+                ?.trim()
+                ?.trim('"', '\'')
+                ?: return null
+            val value = Regex("""(?i)\s+\b(with|while|as|and|on|from|using|paused|resumed|fresh|cached|scan|devices|device|bluetooth|ble|nearby|history|trend|proximity|filter)\b.*$""")
+                .replace(rawValue, "")
+                .trim()
+                .trimEnd('.', ',', ';')
+                .takeIf { it.isNotBlank() }
+                ?: return null
+            return value.takeIf {
+                it.lowercase() !in setOf("filter", "filters", "device", "devices", "bluetooth", "ble", "nearby", argumentName)
+            }
+        }
+
         private fun diagnosticArguments(action: String, vararg pairs: Pair<String, Any>): JSONObject {
             return JSONObject().put("action", action).apply {
                 pairs.forEach { (key, value) -> put(key, value) }
@@ -3478,6 +3532,12 @@ class NativeToolCallingChatClient(
             "filter_ssid",
             "filter_bssid",
             "filter_vendor",
+            "filter_device_name",
+            "filter_bluetooth_address",
+            "filter_bluetooth_service",
+            "filter_bluetooth_manufacturer",
+            "filter_bluetooth_category",
+            "filter_bluetooth_proximity",
             "sensor_types",
         )
         private val DIAGNOSTIC_BOOLEAN_REGEXES = DIAGNOSTIC_BOOLEAN_ARGUMENTS.associateWith { key ->
@@ -3902,6 +3962,9 @@ internal object NativeToolContextCompressor {
                 "sensor_analyzer_workflow_route_count",
                 "sensor_sampling_policy_count",
                 "bluetooth_device_count",
+                "bluetooth_total_device_count",
+                "bluetooth_active_filter_count",
+                "applied_bluetooth_filter_count",
                 "bluetooth_metadata_count",
                 "bluetooth_service_uuid_count",
                 "bluetooth_service_label_count",
@@ -4018,10 +4081,15 @@ internal object NativeToolContextCompressor {
         "ai_experience_elevation_plan",
         "bluetooth_devices",
         "bluetooth_metadata_summary",
+        "bluetooth_analyzer_filters",
+        "available_bluetooth_analyzer_filters",
+        "filtered_bluetooth_analyzer_filters",
+        "applied_bluetooth_filters",
         "bluetooth_signal_history",
         "bluetooth_analyzer_feature_matrix",
         "bluetooth_analyzer_workflow_routes",
         "bluetooth_scan_policy_matrix",
+        "bluetooth_filter_application",
         "radio_bands",
         "radio_receiver_profiles",
         "radio_signal_graph_rows",

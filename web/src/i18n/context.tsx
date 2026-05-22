@@ -39,8 +39,7 @@ const TRANSLATIONS: Record<Locale, Translations> = {
 };
 
 // Display metadata for the language picker — endonym (native name) so users
-// recognize their language even if they don't speak the current UI language,
-// plus a flag-icons sprite (ISO 3166-1 alpha-2) for visual scanning.
+// recognize their language even if they don't speak the current UI language.
 // Exposed as a constant so the LanguageSwitcher and any future settings page
 // can share the same list.
 export const LOCALE_META: Record<Locale, { name: string; flagCountryCode: string }> = {

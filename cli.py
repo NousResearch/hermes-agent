@@ -10221,6 +10221,7 @@ class HermesCLI:
             self._voice_processing = True
 
         submitted = False
+        transcription_failed = False
         wav_path = None
         try:
             if self._voice_recorder is None:
@@ -10269,18 +10270,24 @@ class HermesCLI:
             else:
                 error = result.get("error", "Unknown error")
                 _cprint(f"\n{_DIM}Transcription failed: {error}{_RST}")
+                transcription_failed = True
 
         except Exception as e:
             _cprint(f"\n{_DIM}Voice processing error: {e}{_RST}")
+            transcription_failed = wav_path is not None
         finally:
             with self._voice_lock:
                 self._voice_processing = False
             if hasattr(self, '_app') and self._app:
                 self._app.invalidate()
-            # Clean up temp file
+            # Clean up temp file unless transcription failed. On failure, keep
+            # the source recording so long dictation is not lost.
             try:
                 if wav_path and os.path.isfile(wav_path):
-                    os.unlink(wav_path)
+                    if transcription_failed:
+                        _cprint(f"{_DIM}Recording preserved at: {wav_path}{_RST}")
+                    else:
+                        os.unlink(wav_path)
             except Exception:
                 pass
 

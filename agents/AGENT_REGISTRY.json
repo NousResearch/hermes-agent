@@ -1,0 +1,280 @@
+{
+  "aact_trial_ingest": {
+    "description": "bulk historical trial ingest, normalization, deltas",
+    "lane": "A",
+    "tier": 2,
+    "authority": "observe_only",
+    "status": "active",
+    "cron": "weekly",
+    "dependencies": []
+  },
+  "biotech_news_digest": {
+    "description": "generate and email biotech news briefs 3x daily",
+    "lane": "B",
+    "tier": 2,
+    "authority": "write_artifacts",
+    "status": "active",
+    "cron": "daily_after_production",
+    "dependencies": ["herald"]
+  },
+  "calibration": {
+    "description": "ruleset evaluator, evidence accumulator, promotion recommender",
+    "lane": "B",
+    "tier": 3,
+    "authority": "observe_and_propose",
+    "status": "active",
+    "cron": "weekly",
+    "dependencies": ["calibration_evidence", "ic_health_monitor"]
+  },
+  "calibration_evidence": {
+    "description": "read-only evidence builder on resolved events",
+    "lane": "B",
+    "tier": 2,
+    "authority": "observe_only",
+    "status": "active",
+    "cron": "weekly",
+    "dependencies": ["postmortem", "crt_resolution_watcher"]
+  },
+  "catalyst_delta": {
+    "description": "detect new, changed, or reclassified catalyst events",
+    "lane": "B",
+    "tier": 2,
+    "authority": "write_artifacts",
+    "status": "active",
+    "cron": "18:20 daily",
+    "dependencies": []
+  },
+  "crt_resolution_watcher": {
+    "description": "monitor for new CRT resolutions, update join tables",
+    "lane": "B",
+    "tier": 3,
+    "authority": "mutate_data",
+    "status": "active",
+    "cron": "18:00 daily",
+    "dependencies": []
+  },
+  "ctgov_poller": {
+    "description": "clinical trial status monitor, detect transitions",
+    "lane": "A",
+    "tier": 2,
+    "authority": "write_artifacts",
+    "status": "active",
+    "cron": "14:30 daily",
+    "dependencies": []
+  },
+  "data_auditor": {
+    "description": "read-only judge monitoring data input integrity",
+    "lane": "B",
+    "tier": 0,
+    "authority": "observe_only",
+    "status": "active",
+    "cron": "daily_after_production",
+    "dependencies": []
+  },
+  "earnings_calendar_sync": {
+    "description": "fetch and keep work calendar in sync with earnings",
+    "lane": "A",
+    "tier": 1,
+    "authority": "write_artifacts",
+    "status": "active",
+    "cron": "daily_premarket",
+    "dependencies": []
+  },
+  "event_analyst": {
+    "description": "event-resolution pattern analyst, synthesize lessons",
+    "lane": "B",
+    "tier": 2,
+    "authority": "observe_only",
+    "status": "active",
+    "cron": "Friday 18:55",
+    "dependencies": ["postmortem", "crt_resolution_watcher"]
+  },
+  "fleet_steward": {
+    "description": "control-plane agent, fleet health and dispatch",
+    "lane": "C",
+    "tier": 1,
+    "authority": "observe_and_propose",
+    "status": "active",
+    "cron": "daily_after_production",
+    "dependencies": ["ops_supervisor"]
+  },
+  "grok_biotech_watch": {
+    "description": "watchlist-scoped Grok/xAI search monitor",
+    "lane": "B",
+    "tier": 2,
+    "authority": "write_artifacts",
+    "status": "active",
+    "cron": "intraday",
+    "dependencies": []
+  },
+  "herald": {
+    "description": "biotech news collection, classification, and digests",
+    "lane": "A",
+    "tier": 2,
+    "authority": "write_artifacts",
+    "status": "active",
+    "cron": "14:35 daily",
+    "dependencies": []
+  },
+  "ic_health_monitor": {
+    "description": "signal health watchdog, detect IC degradation",
+    "lane": "B",
+    "tier": 3,
+    "authority": "observe_only",
+    "status": "active",
+    "cron": "daily_after_production",
+    "dependencies": []
+  },
+  "intraday_mover_watch": {
+    "description": "real-time intraday mover monitor, price and IV moves",
+    "lane": "B",
+    "tier": 2,
+    "authority": "write_artifacts",
+    "status": "active",
+    "cron": "intraday",
+    "dependencies": []
+  },
+  "ops": {
+    "description": "production operator and health monitor — Duty Officer",
+    "lane": "C",
+    "tier": 0,
+    "authority": "observe_and_propose",
+    "status": "active",
+    "cron": "17:00 daily",
+    "dependencies": ["ops_supervisor", "sentinel"]
+  },
+  "ops_supervisor": {
+    "description": "daily ops triage — heartbeat anomalies to severity verdict",
+    "lane": "C",
+    "tier": 0,
+    "authority": "observe_only",
+    "status": "active",
+    "cron": "daily_after_production",
+    "dependencies": []
+  },
+  "options_watch": {
+    "description": "post-packet options surface monitor",
+    "lane": "B",
+    "tier": 2,
+    "authority": "write_artifacts",
+    "status": "active",
+    "cron": "18:40 daily",
+    "dependencies": ["catalyst_delta"]
+  },
+  "policy_shadow_watch": {
+    "description": "hold-discipline and policy-comparison monitor",
+    "lane": "B",
+    "tier": 2,
+    "authority": "observe_only",
+    "status": "active",
+    "cron": "daily_after_production",
+    "dependencies": ["shadow_monitor"]
+  },
+  "postmortem": {
+    "description": "event-resolution evidence capture agent",
+    "lane": "B",
+    "tier": 2,
+    "authority": "write_artifacts",
+    "status": "active",
+    "cron": "18:35 daily",
+    "dependencies": ["crt_resolution_watcher"]
+  },
+  "price_action_watch": {
+    "description": "stock and options big-move monitor",
+    "lane": "B",
+    "tier": 2,
+    "authority": "write_artifacts",
+    "status": "active",
+    "cron": "18:30 daily",
+    "dependencies": []
+  },
+  "production_qa": {
+    "description": "daily post-production codebase reviewer — Inspector",
+    "lane": "C",
+    "tier": 0,
+    "authority": "observe_and_propose",
+    "status": "active",
+    "cron": "daily_after_production",
+    "dependencies": []
+  },
+  "qa": {
+    "description": "regression-triage and failure classifier",
+    "lane": "C",
+    "tier": 0,
+    "authority": "observe_only",
+    "status": "active",
+    "cron": "daily_after_production",
+    "dependencies": []
+  },
+  "review_queue_steward": {
+    "description": "triage daily review queue into immediate vs monitor",
+    "lane": "C",
+    "tier": 1,
+    "authority": "observe_only",
+    "status": "active",
+    "cron": "18:50 daily",
+    "dependencies": ["catalyst_delta", "price_action_watch", "options_watch"]
+  },
+  "sentinel": {
+    "description": "post-promotion health sentinel, drift monitor",
+    "lane": "C",
+    "tier": 0,
+    "authority": "observe_and_propose",
+    "status": "active",
+    "cron": "17:15 daily",
+    "dependencies": []
+  },
+  "shadow_monitor": {
+    "description": "shadow portfolio performance monitor",
+    "lane": "B",
+    "tier": 2,
+    "authority": "observe_only",
+    "status": "active",
+    "cron": "daily_after_production",
+    "dependencies": []
+  },
+  "universe_maintenance": {
+    "description": "read-only monitor for universe health",
+    "lane": "A",
+    "tier": 1,
+    "authority": "observe_only",
+    "status": "active",
+    "cron": "weekly",
+    "dependencies": []
+  },
+  "bioshort_watch": {
+    "description": "hedge governance monitor, consumer of artifacts",
+    "lane": "B",
+    "tier": 2,
+    "authority": "observe_only",
+    "status": "deprecated",
+    "cron": null,
+    "suppressed": true,
+    "retired": false,
+    "dependencies": [],
+    "notes": "SUPPRESSED_ORPHANED_UPSTREAM 2026-05-06. Upstream producer biotech_hedge_report stale. Reactivation requires separate spec."
+  },
+  "company_news_ingest": {
+    "description": "guaranteed company press release coverage via polling",
+    "lane": "B",
+    "tier": 2,
+    "authority": "write_artifacts",
+    "status": "deprecated",
+    "cron": null,
+    "suppressed": false,
+    "retired": true,
+    "dependencies": [],
+    "notes": "RETIRED 2026-05-06. Replaced by herald (canonical news ingest agent)."
+  },
+  "shadow_watch": {
+    "description": "merged shadow portfolio + policy comparison read-only judge",
+    "lane": "B",
+    "tier": 2,
+    "authority": "observe_only",
+    "status": "shadow",
+    "cron": null,
+    "suppressed": true,
+    "dependencies": ["shadow_monitor", "policy_shadow_watch"],
+    "notes": "SUPPRESSED PLACEHOLDER. Intended successor of shadow_monitor + policy_shadow_watch. Not wired into cron. Activate after: cron entry added, memory-write verified, artifact_paths confirmed."
+  }
+}

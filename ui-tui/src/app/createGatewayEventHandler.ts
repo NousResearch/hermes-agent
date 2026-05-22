@@ -491,13 +491,13 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
 
       case 'reasoning.delta':
         if (ev.payload?.text) {
-          turnController.recordReasoningDelta(ev.payload.text)
+          turnController.recordReasoningDelta(ev.payload.text, Boolean(ev.payload.verbose))
         }
 
         return
 
       case 'reasoning.available':
-        turnController.recordReasoningAvailable(String(ev.payload?.text ?? ''))
+        turnController.recordReasoningAvailable(String(ev.payload?.text ?? ''), Boolean(ev.payload?.verbose))
 
         return
 
@@ -517,12 +517,18 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
 
       case 'tool.start':
         turnController.recordTodos(ev.payload.todos)
-        turnController.recordToolStart(ev.payload.tool_id, ev.payload.name ?? 'tool', ev.payload.context ?? '')
+        turnController.recordToolStart(
+          ev.payload.tool_id,
+          ev.payload.name ?? 'tool',
+          ev.payload.context ?? '',
+          ev.payload.args_text ? stripAnsi(String(ev.payload.args_text)) : undefined
+        )
 
         return
       case 'tool.complete': {
         const inlineDiffText =
           ev.payload.inline_diff && getUiState().inlineDiffs ? stripAnsi(String(ev.payload.inline_diff)).trim() : ''
+        const resultText = ev.payload.result_text ? stripAnsi(String(ev.payload.result_text)) : undefined
 
         if (inlineDiffText) {
           turnController.recordInlineDiffToolComplete(
@@ -530,7 +536,8 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
             ev.payload.tool_id,
             ev.payload.name,
             ev.payload.error,
-            ev.payload.duration_s
+            ev.payload.duration_s,
+            resultText
           )
         } else {
           turnController.recordToolComplete(
@@ -539,7 +546,8 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
             ev.payload.error,
             ev.payload.summary,
             ev.payload.duration_s,
-            ev.payload.todos
+            ev.payload.todos,
+            resultText
           )
         }
 

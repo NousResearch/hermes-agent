@@ -972,6 +972,55 @@ class TestNewEndpoints:
             "top_skills": [],
         }
 
+    def test_analytics_models_excludes_zero_usage_ghost_sessions(self):
+        """Models dashboard should ignore sessions that never made an API call."""
+        from hermes_state import SessionDB
+
+        db = SessionDB()
+        try:
+            db.create_session(
+                session_id="ghost-model-session",
+                source="feishu",
+                model="MiniMax-M2.7-highspeed",
+            )
+            db.create_session(
+                session_id="api-call-only-session",
+                source="gateway",
+                model="api-call-only-model",
+            )
+            db.update_token_counts(
+                "api-call-only-session",
+                input_tokens=0,
+                output_tokens=0,
+                billing_provider="custom",
+                api_call_count=1,
+            )
+            db.create_session(
+                session_id="used-model-session",
+                source="cli",
+                model="gpt-5.5",
+            )
+            db.update_token_counts(
+                "used-model-session",
+                input_tokens=120,
+                output_tokens=45,
+                billing_provider="custom",
+                api_call_count=1,
+            )
+        finally:
+            db.close()
+
+        resp = self.client.get("/api/analytics/models?days=7")
+        assert resp.status_code == 200
+
+        data = resp.json()
+        models = {(entry["model"], entry["provider"]) for entry in data["models"]}
+        assert ("gpt-5.5", "custom") in models
+        assert ("api-call-only-model", "custom") in models
+        assert not any(entry["model"] == "MiniMax-M2.7-highspeed" for entry in data["models"])
+        assert data["totals"]["distinct_models"] == 2
+        assert data["totals"]["total_api_calls"] == 2
+
     def test_analytics_usage_includes_skill_breakdown(self):
         from hermes_state import SessionDB
 

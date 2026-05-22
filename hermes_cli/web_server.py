@@ -3173,12 +3173,22 @@ async def get_models_analytics(days: int = 30):
     try:
         cutoff = time.time() - (days * 86400)
 
-        cur = db._conn.execute("""
+        usage_predicate = """
+            (
+                COALESCE(api_call_count, 0) > 0 OR
+                COALESCE(input_tokens, 0) + COALESCE(output_tokens, 0) +
+                COALESCE(cache_read_tokens, 0) + COALESCE(cache_write_tokens, 0) +
+                COALESCE(reasoning_tokens, 0) > 0
+            )
+        """
+
+        cur = db._conn.execute(f"""
             SELECT model,
                    billing_provider,
                    SUM(input_tokens) as input_tokens,
                    SUM(output_tokens) as output_tokens,
                    SUM(cache_read_tokens) as cache_read_tokens,
+                   SUM(cache_write_tokens) as cache_write_tokens,
                    SUM(reasoning_tokens) as reasoning_tokens,
                    COALESCE(SUM(estimated_cost_usd), 0) as estimated_cost,
                    COALESCE(SUM(actual_cost_usd), 0) as actual_cost,
@@ -3186,10 +3196,14 @@ async def get_models_analytics(days: int = 30):
                    SUM(COALESCE(api_call_count, 0)) as api_calls,
                    SUM(tool_call_count) as tool_calls,
                    MAX(started_at) as last_used_at,
-                   AVG(input_tokens + output_tokens) as avg_tokens_per_session
-            FROM sessions WHERE started_at > ? AND model IS NOT NULL AND model != ''
+                   AVG(input_tokens + output_tokens + cache_read_tokens + cache_write_tokens + reasoning_tokens) as avg_tokens_per_session
+            FROM sessions
+            WHERE started_at > ?
+              AND model IS NOT NULL
+              AND model != ''
+              AND {usage_predicate}
             GROUP BY model, billing_provider
-            ORDER BY SUM(input_tokens) + SUM(output_tokens) DESC
+            ORDER BY SUM(input_tokens) + SUM(output_tokens) + SUM(cache_read_tokens) + SUM(cache_write_tokens) + SUM(reasoning_tokens) DESC
         """, (cutoff,))
         rows = [dict(r) for r in cur.fetchall()]
 
@@ -3219,6 +3233,7 @@ async def get_models_analytics(days: int = 30):
                 "input_tokens": row["input_tokens"],
                 "output_tokens": row["output_tokens"],
                 "cache_read_tokens": row["cache_read_tokens"],
+                "cache_write_tokens": row["cache_write_tokens"],
                 "reasoning_tokens": row["reasoning_tokens"],
                 "estimated_cost": row["estimated_cost"],
                 "actual_cost": row["actual_cost"],
@@ -3230,17 +3245,22 @@ async def get_models_analytics(days: int = 30):
                 "capabilities": caps,
             })
 
-        totals_cur = db._conn.execute("""
+        totals_cur = db._conn.execute(f"""
             SELECT COUNT(DISTINCT model) as distinct_models,
                    SUM(input_tokens) as total_input,
                    SUM(output_tokens) as total_output,
                    SUM(cache_read_tokens) as total_cache_read,
+                   SUM(cache_write_tokens) as total_cache_write,
                    SUM(reasoning_tokens) as total_reasoning,
                    COALESCE(SUM(estimated_cost_usd), 0) as total_estimated_cost,
                    COALESCE(SUM(actual_cost_usd), 0) as total_actual_cost,
                    COUNT(*) as total_sessions,
                    SUM(COALESCE(api_call_count, 0)) as total_api_calls
-            FROM sessions WHERE started_at > ? AND model IS NOT NULL AND model != ''
+            FROM sessions
+            WHERE started_at > ?
+              AND model IS NOT NULL
+              AND model != ''
+              AND {usage_predicate}
         """, (cutoff,))
         totals = dict(totals_cur.fetchone())
 

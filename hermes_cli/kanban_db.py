@@ -989,10 +989,40 @@ def _validate_sqlite_header(path: Path) -> None:
         return
     try:
         with path.open("rb") as handle:
-            head = handle.read(64)
+            head = handle.read(100)
     except OSError:
         return
     if head.startswith(_SQLITE_HEADER):
+        if stat.st_size < 100:
+            raise sqlite3.DatabaseError(
+                "truncated SQLite file for "
+                f"{path}: size_bytes={stat.st_size} shorter than 100-byte header"
+            )
+        raw_page_size = int.from_bytes(head[16:18], "big")
+        page_size = 65536 if raw_page_size == 1 else raw_page_size
+        valid_page_size = page_size in {512, 1024, 2048, 4096, 8192, 16384, 32768, 65536}
+        if not valid_page_size:
+            raise sqlite3.DatabaseError(
+                "file is not a database: invalid SQLite page size for "
+                f"{path}; page_size={raw_page_size}; first_32={head[:32].hex(' ')}"
+            )
+        actual_pages, remainder = divmod(stat.st_size, page_size)
+        if remainder:
+            raise sqlite3.DatabaseError(
+                "truncated SQLite file for "
+                f"{path}: size_bytes={stat.st_size} is not a multiple of "
+                f"page_size={page_size}; remainder={remainder}"
+            )
+        header_pages = int.from_bytes(head[28:32], "big")
+        change_counter = int.from_bytes(head[24:28], "big")
+        version_valid_for = int.from_bytes(head[92:96], "big")
+        if header_pages and change_counter == version_valid_for and header_pages > actual_pages:
+            raise sqlite3.DatabaseError(
+                "truncated SQLite file for "
+                f"{path}: header_pages={header_pages} actual_pages={actual_pages} "
+                f"missing_pages={header_pages - actual_pages} page_size={page_size} "
+                f"size_bytes={stat.st_size}"
+            )
         return
     signature = ""
     if head.startswith(b"SQLit") and _looks_like_tls_record_at(head, 5):

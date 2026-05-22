@@ -69,6 +69,35 @@ def test_connect_rejects_tls_record_in_sqlite_header(tmp_path, monkeypatch):
     assert "53 51 4c 69 74 17 03 03 00 13" in msg
 
 
+def test_connect_rejects_truncated_sqlite_file_before_wal_setup(tmp_path, monkeypatch):
+    """Kanban should identify file-size/page-count truncation explicitly."""
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.delenv("HERMES_KANBAN_DB", raising=False)
+    monkeypatch.delenv("HERMES_KANBAN_HOME", raising=False)
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+
+    truncated = home / "kanban.db"
+    with sqlite3.connect(truncated) as conn:
+        conn.execute("CREATE TABLE t(x TEXT)")
+        conn.execute("INSERT INTO t VALUES ('ok')")
+
+    data = bytearray(truncated.read_bytes())
+    page_size = int.from_bytes(data[16:18], "big")
+    actual_pages = len(data) // page_size
+    data[28:32] = (actual_pages + 2).to_bytes(4, "big")
+    truncated.write_bytes(data)
+
+    with pytest.raises(sqlite3.DatabaseError) as exc_info:
+        kb.connect(board="default")
+
+    msg = str(exc_info.value)
+    assert "truncated SQLite file" in msg
+    assert f"header_pages={actual_pages + 2}" in msg
+    assert f"actual_pages={actual_pages}" in msg
+
+
 def test_connect_migrates_legacy_db_before_optional_column_indexes(tmp_path):
     """Legacy DBs missing additive indexed columns must migrate cleanly.
 

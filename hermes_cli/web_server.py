@@ -3314,6 +3314,39 @@ def _ws_client_is_allowed(ws: "WebSocket") -> bool:
         return True
     return client_host in _LOOPBACK_HOSTS
 
+
+def _ws_host_origin_is_allowed(ws: "WebSocket") -> bool:
+    """Apply the dashboard Host/Origin guard to WebSocket upgrades.
+
+    FastAPI HTTP middleware does not run for WebSocket routes, so the
+    DNS-rebinding Host check used for normal dashboard HTTP requests must be
+    repeated here before accepting the upgrade.  Browsers also send an Origin
+    header on WebSocket handshakes; when present, require it to target the
+    same bound dashboard host.
+    """
+    bound_host = getattr(app.state, "bound_host", None)
+    if not bound_host:
+        return True
+
+    host_header = ws.headers.get("host", "")
+    if not _is_accepted_host(host_header, bound_host):
+        return False
+
+    origin = ws.headers.get("origin", "")
+    if not origin:
+        return True
+
+    parsed = urllib.parse.urlparse(origin)
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+        return False
+
+    return _is_accepted_host(parsed.netloc, bound_host)
+
+
+def _ws_request_is_allowed(ws: "WebSocket") -> bool:
+    """Return True when the WebSocket upgrade matches dashboard boundaries."""
+    return _ws_host_origin_is_allowed(ws) and _ws_client_is_allowed(ws)
+
 # Per-channel subscriber registry used by /api/pub (PTY-side gateway → dashboard)
 # and /api/events (dashboard → browser sidebar).  Keyed by an opaque channel id
 # the chat tab generates on mount; entries auto-evict when the last subscriber
@@ -3415,7 +3448,7 @@ async def pty_ws(ws: WebSocket) -> None:
         await ws.close(code=4401)
         return
 
-    if not _ws_client_is_allowed(ws):
+    if not _ws_request_is_allowed(ws):
         await ws.close(code=4403)
         return
 
@@ -3534,7 +3567,7 @@ async def gateway_ws(ws: WebSocket) -> None:
         await ws.close(code=4401)
         return
 
-    if not _ws_client_is_allowed(ws):
+    if not _ws_request_is_allowed(ws):
         await ws.close(code=4403)
         return
 
@@ -3566,7 +3599,7 @@ async def pub_ws(ws: WebSocket) -> None:
         await ws.close(code=4401)
         return
 
-    if not _ws_client_is_allowed(ws):
+    if not _ws_request_is_allowed(ws):
         await ws.close(code=4403)
         return
 
@@ -3595,7 +3628,7 @@ async def events_ws(ws: WebSocket) -> None:
         await ws.close(code=4401)
         return
 
-    if not _ws_client_is_allowed(ws):
+    if not _ws_request_is_allowed(ws):
         await ws.close(code=4403)
         return
 

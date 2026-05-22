@@ -364,6 +364,34 @@ def test_termux_fast_cli_launch_version_skips_update_check(monkeypatch, main_mod
     assert captured == [False]
 
 
+def test_termux_ultrafast_version_runs_before_heavy_startup(
+    monkeypatch, capsys, main_mod
+):
+    monkeypatch.setenv("TERMUX_VERSION", "1")
+    monkeypatch.delenv("HERMES_TERMUX_DISABLE_FAST_CLI", raising=False)
+    monkeypatch.setattr(sys, "argv", ["hermes", "--version"])
+
+    assert main_mod._try_termux_ultrafast_version() is True
+
+    out = capsys.readouterr().out
+    assert "Hermes Agent v" in out
+    assert "Project:" in out
+    assert "Python:" in out
+    assert "OpenAI SDK:" in out
+
+
+def test_read_openai_version_fast(monkeypatch, tmp_path, main_mod):
+    package_dir = tmp_path / "openai"
+    package_dir.mkdir()
+    (package_dir / "_version.py").write_text(
+        '__version__ = "9.8.7"  # x-release-please-version\n',
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(sys, "path", [str(tmp_path)])
+
+    assert main_mod._read_openai_version_fast() == "9.8.7"
+
+
 def test_termux_fast_cli_launch_skips_help(monkeypatch, main_mod):
     monkeypatch.setenv("TERMUX_VERSION", "1")
     monkeypatch.delenv("HERMES_TUI", raising=False)

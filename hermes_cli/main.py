@@ -61,12 +61,76 @@ try:
 except ModuleNotFoundError:
     pass
 
+import os
+import sys
+
+
+def _is_termux_startup_environment_fast() -> bool:
+    """Tiny Termux check for pre-import startup shortcuts."""
+    prefix = os.environ.get("PREFIX", "")
+    return bool(
+        os.environ.get("TERMUX_VERSION")
+        or "com.termux/files/usr" in prefix
+        or prefix.startswith("/data/data/com.termux/")
+    )
+
+
+def _is_termux_fast_version_argv(argv: list[str]) -> bool:
+    return argv in (["--version"], ["-V"], ["version"])
+
+
+def _read_openai_version_fast() -> str | None:
+    """Read OpenAI SDK version without importing ``importlib.metadata``."""
+    for base in sys.path:
+        if not base:
+            base = os.getcwd()
+        version_file = os.path.join(base, "openai", "_version.py")
+        try:
+            with open(version_file, encoding="utf-8") as handle:
+                for line in handle:
+                    stripped = line.strip()
+                    if not stripped.startswith("__version__"):
+                        continue
+                    _key, _sep, value = stripped.partition("=")
+                    value = value.split("#", 1)[0].strip().strip("\"'")
+                    return value or None
+        except OSError:
+            continue
+    return None
+
+
+def _print_fast_version_info() -> None:
+    from hermes_cli import __release_date__, __version__
+
+    project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), os.pardir))
+    print(f"Hermes Agent v{__version__} ({__release_date__})")
+    print(f"Project: {project_root}")
+    print(f"Python: {sys.version.split()[0]}")
+
+    openai_version = _read_openai_version_fast()
+    print(f"OpenAI SDK: {openai_version}" if openai_version else "OpenAI SDK: Not installed")
+
+
+def _try_termux_ultrafast_version() -> bool:
+    """Handle ``hermes --version`` before config/logging imports on Termux."""
+    if os.environ.get("HERMES_TERMUX_DISABLE_FAST_CLI") == "1":
+        return False
+    if not _is_termux_startup_environment_fast():
+        return False
+    if not _is_termux_fast_version_argv(sys.argv[1:]):
+        return False
+
+    _print_fast_version_info()
+    return True
+
+
+if _try_termux_ultrafast_version():
+    raise SystemExit(0)
+
 import argparse
 import json
-import os
 import shutil
 import subprocess
-import sys
 from pathlib import Path
 from typing import Optional
 
@@ -10740,10 +10804,6 @@ def _set_chat_arg_defaults(args) -> None:
     ]:
         if not hasattr(args, attr):
             setattr(args, attr, default)
-
-
-def _is_termux_fast_version_argv(argv: list[str]) -> bool:
-    return argv in (["--version"], ["-V"], ["version"])
 
 
 def _try_termux_fast_cli_launch() -> bool:

@@ -13,6 +13,10 @@ import os
 import random
 import re
 import socket as _socket
+
+# Slash-command name boundary: one or more ASCII [a-z0-9_-] chars.
+# Used to split "/cmd中文" into cmd + "中文" when there is no space.
+_ASCII_CMD_RE: re.Pattern[str] = re.compile(r"[a-z][a-z0-9_-]*")
 import subprocess
 import sys
 import uuid
@@ -1010,13 +1014,38 @@ class MessageEvent:
         # Reject file paths: valid command names never contain /
         if raw and "/" in raw:
             return None
+        # ASCII prefix fallback: when the user types "/cmd中文" without a
+        # space, *split()* keeps the whole thing as one token.  Command
+        # names are strictly ASCII, so extract the leading ASCII run.
+        if raw and not raw.isascii():
+            m = _ASCII_CMD_RE.match(raw)
+            raw = m.group(0) if m else None
         return raw
-    
+
     def get_command_args(self) -> str:
         """Get the arguments after a command."""
         if not self.is_command():
             return self.text
         parts = self.text.split(maxsplit=1)
+        first = parts[0] if parts else ""
+        cmd_name = self.get_command() or ""
+        # Detect sticky args: command name followed by non-space chars
+        # (e.g. "/queue中文" → cmd="queue", sticky="中文")
+        if cmd_name and not first[len(cmd_name) + 1 :].startswith((" ", "\t")):
+            sticky = first[len(cmd_name) + 1 :]  # +1 for leading "/"
+            # Strip @bot mention from sticky text
+            # e.g. "@bot如果" → "如果", "@bot如果test" → "如果test"
+            if sticky.startswith("@"):
+                m_at = re.match(r"@[a-z0-9_]+", sticky)
+                if m_at:
+                    sticky = sticky[m_at.end() :]
+                elif " " in sticky:
+                    sticky = sticky[sticky.index(" ") + 1 :]
+                else:
+                    sticky = ""
+            if sticky:
+                rest = parts[1] if len(parts) > 1 else ""
+                return (sticky + " " + rest).strip() if rest else sticky
         args = parts[1] if len(parts) > 1 else ""
         # iOS auto-corrects -- to — (em dash) and - to – (en dash)
         args = args.replace("\u2014\u2014", "--").replace("\u2014", "--").replace("\u2013", "-")

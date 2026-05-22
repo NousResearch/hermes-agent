@@ -897,18 +897,6 @@ def test_create_watch_with_invalid_session_key_fails(worker_env):
     assert "watched child bad key" not in titles
 
 
-def test_create_rejects_legacy_watch_flag(worker_env):
-    from tools import kanban_tools as kt
-    out = kt._handle_create({
-        "title": "watched child legacy flag",
-        "assignee": "peer",
-        "watch": True,
-    })
-    d = json.loads(out)
-    assert "error" in d
-    assert "unexpected argument 'watch'; use watcher_session_key" in d.get("error", "")
-
-
 def test_create_rejects_no_title(worker_env):
     from tools import kanban_tools as kt
     assert json.loads(kt._handle_create({"assignee": "x"})).get("error")

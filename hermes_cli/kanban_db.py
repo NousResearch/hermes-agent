@@ -1414,6 +1414,116 @@ def _add_column_if_missing(
         raise
 
 
+def _rebuild_notify_subs_table_if_needed(conn: sqlite3.Connection) -> bool:
+    """Repair legacy/corrupted ``kanban_notify_subs`` tables in place."""
+    row = conn.execute(
+        "SELECT sql FROM sqlite_master WHERE type='table' AND name='kanban_notify_subs'"
+    ).fetchone()
+    if row is None:
+        return False
+
+    table_sql = str(row["sql"] or "")
+    info_rows = list(conn.execute("PRAGMA table_info(kanban_notify_subs)"))
+    pk_cols = [
+        r["name"]
+        for r in sorted(info_rows, key=lambda r: int(r["pk"] or 0))
+        if int(r["pk"] or 0) > 0
+    ]
+    expected_pk_cols = [
+        "task_id", "platform", "chat_id", "thread_id", "delivery_mode", "session_key"
+    ]
+    legacy_default_message = "DEFAULT 'message'" in table_sql or 'DEFAULT "message"' in table_sql
+    legacy_pk_shape = pk_cols != expected_pk_cols
+    invalid_rows = conn.execute(
+        """
+        SELECT COUNT(*)
+          FROM kanban_notify_subs
+         WHERE typeof(task_id) != 'text'
+            OR trim(task_id) = ''
+            OR typeof(platform) != 'text'
+            OR trim(platform) = ''
+            OR chat_id IS NULL
+            OR typeof(chat_id) != 'text'
+            OR trim(chat_id) = ''
+            OR created_at IS NULL
+            OR typeof(created_at) NOT IN ('integer', 'real')
+            OR lower(trim(COALESCE(CAST(delivery_mode AS TEXT), 'message'))) NOT IN ('message', 'notification', 'session_event')
+            OR (
+                lower(trim(COALESCE(CAST(delivery_mode AS TEXT), 'message'))) = 'session_event'
+                AND trim(COALESCE(CAST(session_key AS TEXT), '')) = ''
+            )
+        """
+    ).fetchone()[0]
+
+    if not (legacy_default_message or legacy_pk_shape or invalid_rows):
+        return False
+
+    conn.execute("ALTER TABLE kanban_notify_subs RENAME TO kanban_notify_subs__legacy")
+    conn.execute(
+        """
+        CREATE TABLE kanban_notify_subs (
+            task_id          TEXT NOT NULL,
+            platform         TEXT NOT NULL,
+            chat_id          TEXT NOT NULL,
+            thread_id        TEXT NOT NULL DEFAULT '',
+            user_id          TEXT,
+            delivery_mode    TEXT NOT NULL DEFAULT 'notification',
+            session_key      TEXT,
+            last_event_id    INTEGER NOT NULL DEFAULT 0,
+            created_at       INTEGER NOT NULL,
+            notifier_profile TEXT,
+            PRIMARY KEY (task_id, platform, chat_id, thread_id, delivery_mode, session_key)
+        )
+        """
+    )
+    conn.execute(
+        """
+        INSERT OR IGNORE INTO kanban_notify_subs (
+            task_id, platform, chat_id, thread_id, user_id,
+            delivery_mode, session_key, last_event_id, created_at, notifier_profile
+        )
+        SELECT
+            trim(CAST(task_id AS TEXT)),
+            lower(trim(CAST(platform AS TEXT))),
+            trim(CAST(chat_id AS TEXT)),
+            trim(COALESCE(CAST(thread_id AS TEXT), '')),
+            NULLIF(trim(COALESCE(CAST(user_id AS TEXT), '')), ''),
+            CASE lower(trim(COALESCE(CAST(delivery_mode AS TEXT), 'message')))
+                WHEN 'message' THEN 'notification'
+                WHEN 'session_event' THEN 'session_event'
+                ELSE 'notification'
+            END,
+            CASE
+                WHEN lower(trim(COALESCE(CAST(delivery_mode AS TEXT), 'message'))) = 'session_event'
+                THEN NULLIF(trim(COALESCE(CAST(session_key AS TEXT), '')), '')
+                ELSE ''
+            END,
+            CAST(COALESCE(last_event_id, 0) AS INTEGER),
+            CAST(created_at AS INTEGER),
+            NULLIF(trim(COALESCE(CAST(notifier_profile AS TEXT), '')), '')
+        FROM kanban_notify_subs__legacy
+        WHERE typeof(task_id) = 'text'
+          AND trim(task_id) != ''
+          AND typeof(platform) = 'text'
+          AND trim(platform) != ''
+          AND chat_id IS NOT NULL
+          AND typeof(chat_id) = 'text'
+          AND trim(chat_id) != ''
+          AND created_at IS NOT NULL
+          AND typeof(created_at) IN ('integer', 'real')
+          AND lower(trim(COALESCE(CAST(delivery_mode AS TEXT), 'message'))) IN ('message', 'notification', 'session_event')
+          AND (
+                lower(trim(COALESCE(CAST(delivery_mode AS TEXT), 'message'))) != 'session_event'
+                OR trim(COALESCE(CAST(session_key AS TEXT), '')) != ''
+          )
+        """
+    )
+    conn.execute("DROP TABLE kanban_notify_subs__legacy")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_notify_task ON kanban_notify_subs(task_id)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_watchers_session ON kanban_notify_subs(session_key)")
+    return True
+
+
 def _migrate_add_optional_columns(conn: sqlite3.Connection) -> None:
     """Add columns that were introduced after v1 release to legacy DBs.
 
@@ -1571,6 +1681,7 @@ def _migrate_add_optional_columns(conn: sqlite3.Connection) -> None:
             _add_column_if_missing(
                 conn, "kanban_notify_subs", "session_key", "session_key TEXT"
             )
+        _rebuild_notify_subs_table_if_needed(conn)
         # Same ordering rule as the additive indexes above: legacy
         # ``kanban_notify_subs`` rows may predate ``session_key``, so create
         # the index only after the migration adds the column.

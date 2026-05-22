@@ -213,6 +213,86 @@ def test_connect_migrates_legacy_db_before_optional_column_indexes(tmp_path):
     assert "idx_watchers_session" in indexes
 
 
+def test_connect_rebuilds_legacy_notify_table_shape_and_normalizes_message_mode(tmp_path):
+    db_path = tmp_path / "legacy-notify-shape.db"
+    conn = sqlite3.connect(str(db_path))
+    conn.execute("""
+        CREATE TABLE tasks (
+            id TEXT PRIMARY KEY,
+            title TEXT NOT NULL,
+            body TEXT,
+            assignee TEXT,
+            status TEXT NOT NULL,
+            priority INTEGER NOT NULL DEFAULT 0,
+            created_by TEXT,
+            created_at INTEGER NOT NULL,
+            started_at INTEGER,
+            completed_at INTEGER,
+            workspace_kind TEXT NOT NULL DEFAULT 'scratch',
+            workspace_path TEXT,
+            claim_lock TEXT,
+            claim_expires INTEGER
+        )
+    """)
+    conn.execute("""
+        CREATE TABLE task_events (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            task_id TEXT NOT NULL,
+            kind TEXT NOT NULL,
+            payload TEXT,
+            created_at INTEGER NOT NULL
+        )
+    """)
+    conn.execute("""
+        CREATE TABLE kanban_notify_subs (
+            task_id TEXT NOT NULL,
+            platform TEXT NOT NULL,
+            chat_id TEXT NOT NULL,
+            thread_id TEXT NOT NULL DEFAULT '',
+            user_id TEXT,
+            created_at INTEGER NOT NULL,
+            last_event_id INTEGER NOT NULL DEFAULT 0,
+            notifier_profile TEXT,
+            delivery_mode TEXT NOT NULL DEFAULT 'message',
+            session_key TEXT,
+            PRIMARY KEY (task_id, platform, chat_id, thread_id)
+        )
+    """)
+    conn.execute(
+        "INSERT INTO kanban_notify_subs "
+        "(task_id, platform, chat_id, thread_id, user_id, created_at, last_event_id, notifier_profile, delivery_mode, session_key) "
+        "VALUES ('t_legacy1', 'discord', 'chat-1', '', NULL, 10, 2, NULL, 'message', NULL)"
+    )
+    conn.execute(
+        "INSERT INTO kanban_notify_subs "
+        "(task_id, platform, chat_id, thread_id, user_id, created_at, last_event_id, notifier_profile, delivery_mode, session_key) "
+        "VALUES ('t_legacy2', 'discord', 'chat-2', 'thread-2', NULL, 20, 3, 'main', 'session_event', 'agent:main:discord:thread:chat-2:thread-2')"
+    )
+    conn.commit()
+    conn.close()
+
+    with kb.connect(db_path) as migrated:
+        info_rows = list(migrated.execute("PRAGMA table_info(kanban_notify_subs)"))
+        pk_cols = [
+            row["name"]
+            for row in sorted(info_rows, key=lambda row: int(row["pk"] or 0))
+            if int(row["pk"] or 0) > 0
+        ]
+        subs = sorted(kb.list_notify_subs(migrated), key=lambda row: row["task_id"])
+        integrity = [row[0] for row in migrated.execute("PRAGMA integrity_check")]
+
+    assert pk_cols == [
+        "task_id", "platform", "chat_id", "thread_id", "delivery_mode", "session_key"
+    ]
+    assert integrity == ["ok"]
+    assert subs[0]["task_id"] == "t_legacy1"
+    assert subs[0]["delivery_mode"] == "notification"
+    assert subs[0]["session_key"] == ""
+    assert subs[1]["task_id"] == "t_legacy2"
+    assert subs[1]["delivery_mode"] == "session_event"
+    assert subs[1]["session_key"] == "agent:main:discord:thread:chat-2:thread-2"
+
+
 # ---------------------------------------------------------------------------
 # Task creation + status inference
 # ---------------------------------------------------------------------------

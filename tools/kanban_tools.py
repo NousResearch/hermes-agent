@@ -668,10 +668,6 @@ def _handle_create(args: dict, **kw) -> str:
     idempotency_key = args.get("idempotency_key")
     max_runtime_seconds = args.get("max_runtime_seconds")
     initial_status = args.get("initial_status") or "running"
-    if "watch" in args:
-        return tool_error(
-            "kanban_create: unexpected argument 'watch'; use watcher_session_key"
-        )
     watcher_session_key = args.get("watcher_session_key")
     skills = args.get("skills")
     if isinstance(skills, str):

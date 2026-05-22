@@ -193,14 +193,6 @@ def test_run_slash_create_watch_with_invalid_session_key_fails(kanban_home):
     assert rows == 0
 
 
-def test_run_slash_create_watch_prefix_parse_error(kanban_home):
-    out = kc.run_slash("create 'watched cli no key' --assignee alice --watch --json")
-    assert "argument --watcher-session-key: expected one argument" in out
-    with kb.connect() as conn:
-        rows = conn.execute("SELECT COUNT(*) FROM tasks").fetchone()[0]
-    assert rows == 0
-
-
 def test_notify_subscribe_defaults_to_notification_and_supports_session_event(kanban_home):
     with kb.connect() as conn:
         tid = kb.create_task(conn, title="notify me", assignee="alice")

@@ -526,6 +526,58 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
     )
     p_verify.add_argument("--json", action="store_true")
 
+    # --- advance-acceptance ---
+    p_advance = sub.add_parser(
+        "advance-acceptance",
+        help="Advance review/test/verify/approve workflow to the next safe point",
+    )
+    p_advance.add_argument("task_id")
+    p_advance.add_argument("--review-assignee", default="codex-review")
+    p_advance.add_argument("--test-assignee", default="codex-test")
+    p_advance.add_argument(
+        "--no-dispatch",
+        action="store_true",
+        help="Create follow-ups but do not dispatch external workers",
+    )
+    p_advance.add_argument(
+        "--dispatch-max",
+        type=int,
+        default=None,
+        metavar="N",
+        help="Cap scoped follow-up worker spawns",
+    )
+    p_advance.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="With dispatch enabled, report follow-up spawns without claiming tasks",
+    )
+    p_advance.add_argument(
+        "--no-verify",
+        action="store_true",
+        help="Do not run configured Hermes acceptance checks",
+    )
+    p_advance.add_argument(
+        "--no-approve",
+        action="store_true",
+        help="Stop before approving even if all gates are satisfied",
+    )
+    p_advance.add_argument(
+        "--reviewer",
+        default=None,
+        help="Reviewer/controller name for planned tasks and approval",
+    )
+    p_advance.add_argument(
+        "--summary",
+        default=None,
+        help="Approval summary when the workflow reaches approve",
+    )
+    p_advance.add_argument(
+        "--result",
+        default=None,
+        help="Task result when the workflow reaches approve",
+    )
+    p_advance.add_argument("--json", action="store_true")
+
     # --- reviews ---
     p_reviews = sub.add_parser(
         "reviews",
@@ -1123,6 +1175,7 @@ def kanban_command(args: argparse.Namespace) -> int:
         "progress": _cmd_progress,
         "acceptance": _cmd_acceptance,
         "verify": _cmd_verify,
+        "advance-acceptance": _cmd_advance_acceptance,
         "reviews":  _cmd_reviews,
         "review":   _cmd_review,
         "plan-review": _cmd_plan_review,
@@ -2179,6 +2232,43 @@ def _cmd_verify(args: argparse.Namespace) -> int:
         )
         for reason in gate.get("blocking_reasons") or []:
             print(f"    - {reason}")
+    return 0
+
+
+def _cmd_advance_acceptance(args: argparse.Namespace) -> int:
+    reviewer = getattr(args, "reviewer", None) or _profile_author()
+    try:
+        with kb.connect() as conn:
+            payload = kb.advance_acceptance_workflow(
+                conn,
+                args.task_id,
+                review_assignee=getattr(args, "review_assignee", None),
+                test_assignee=getattr(args, "test_assignee", None),
+                dispatch=not bool(getattr(args, "no_dispatch", False)),
+                dry_run=bool(getattr(args, "dry_run", False)),
+                dispatch_max=getattr(args, "dispatch_max", None),
+                verify=not bool(getattr(args, "no_verify", False)),
+                approve=not bool(getattr(args, "no_approve", False)),
+                reviewer=reviewer,
+                summary=getattr(args, "summary", None),
+                result=getattr(args, "result", None),
+            )
+    except ValueError as exc:
+        print(f"kanban advance-acceptance: {exc}", file=sys.stderr)
+        return 2
+    if getattr(args, "json", False):
+        print(json.dumps(payload, indent=2, ensure_ascii=False))
+        return 0
+    final = payload.get("final") or {}
+    print(f"Advanced acceptance for {args.task_id}:")
+    if not payload.get("steps"):
+        print("  - no action")
+    for step in payload.get("steps") or []:
+        print(f"  - {step.get('kind')}")
+    print(f"  recommended_action: {final.get('recommended_action')}")
+    print(f"  approval_allowed:   {final.get('approval_allowed')}")
+    impl_task = ((final.get("implementation") or {}).get("task") or {})
+    print(f"  status:             {impl_task.get('status', '-')}")
     return 0
 
 

@@ -249,6 +249,30 @@ GET /api/plugins/kanban/tasks/<task_id>/acceptance
 
 This snapshot combines implementation evidence, planned review/test follow-up evidence, the follow-up gate, Hermes-run acceptance check results, `approval_allowed`, `request_changes_allowed`, and a deterministic `recommended_action`. It is still bounded evidence; it does not replay full external-worker sessions.
 
+Controllers can also advance the whole acceptance workflow one safe step at a time:
+
+```bash
+hermes kanban advance-acceptance <implementation_task_id> --json
+```
+
+The command reads the same acceptance snapshot and then performs only the next
+deterministic control-plane action:
+
+- plan missing review/test follow-up tasks;
+- optionally run one dispatcher pass scoped only to those follow-ups;
+- return if implementation, review, or test workers are still running;
+- run configured Hermes acceptance checks once worker evidence is ready;
+- approve the implementation task only when every gate passes.
+
+It never waits for, signals, or replays a running Codex worker. Use
+`--no-dispatch`, `--dispatch-max`, `--dry-run`, `--no-verify`, or
+`--no-approve` to stop at a specific boundary. The Python tool equivalent is
+`kanban_advance_acceptance`, and the dashboard/API route is:
+
+```text
+POST /api/plugins/kanban/tasks/<task_id>/advance-acceptance
+```
+
 ## Skill lane intent
 
 Hermes skills can choose an existing lane directly:
@@ -312,10 +336,12 @@ Progress queries should read Kanban state, events, logs, and run metadata:
 
 - `hermes kanban progress <task_id> --json`
 - `hermes kanban acceptance <task_id> --json`
+- `hermes kanban advance-acceptance <task_id> --json`
 - `hermes kanban progress <goal_or_root_task_id> --children --json`
 - `hermes kanban reviews --json`
 - `GET /api/plugins/kanban/tasks/<task_id>/progress`
 - `GET /api/plugins/kanban/tasks/<task_id>/acceptance`
+- `POST /api/plugins/kanban/tasks/<task_id>/advance-acceptance`
 - `GET /api/plugins/kanban/tasks/<task_id>/progress?children=true`
 - `GET /api/plugins/kanban/reviews`
 - `hermes kanban show <task_id>`
@@ -356,8 +382,10 @@ Configured orchestrator/main-agent profiles can use the equivalent tools:
 snapshot, `kanban_acceptance` for implementation plus review/test evidence,
 `kanban_verify` to run configured deterministic Hermes-side checks,
 `kanban_plan_review` to create and optionally dispatch independent review/test
-follow-ups, and `kanban_review` to approve or request changes. These tools are
-orchestrator-only; dispatcher-spawned Codex workers do not see them.
+follow-ups, `kanban_advance_acceptance` to move the control-plane workflow to
+the next safe boundary, and `kanban_review` to approve or request changes.
+These tools are orchestrator-only; dispatcher-spawned Codex workers do not see
+them.
 
 Pass `include_children=true` to `kanban_progress` when the task is a goal/root
 task and the controller needs a compact status roll-up without interrupting

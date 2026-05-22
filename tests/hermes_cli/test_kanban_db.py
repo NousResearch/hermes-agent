@@ -834,6 +834,126 @@ def test_acceptance_check_failure_blocks_approval(kanban_home, tmp_path):
     assert acceptance["approval_allowed"] is False
 
 
+def test_advance_acceptance_workflow_plans_and_dispatches_followups(
+    kanban_home,
+    tmp_path,
+    all_assignees_spawnable,
+):
+    metadata = {
+        "worker_lane": {"name": "codex-deep", "kind": "codex_cli", "exit_code": 0},
+        "verification": {"commands": ["pytest -q"], "summary": "passed"},
+        "review": {"required": True, "reason": "Codex completed; Hermes review required"},
+    }
+    with kb.connect() as conn:
+        tid = kb.create_task(
+            conn,
+            title="advance plans followups",
+            assignee="codex-deep",
+            workspace_kind="dir",
+            workspace_path=str(tmp_path),
+        )
+        task = kb.claim_task(conn, tid, claimer="worker:codex-deep")
+        assert task is not None
+        assert kb.block_task(
+            conn,
+            tid,
+            reason="review-required: Codex completed; Hermes review required",
+            expected_run_id=task.current_run_id,
+            metadata=metadata,
+        )
+        payload = kb.advance_acceptance_workflow(
+            conn,
+            tid,
+            reviewer="controller",
+            dispatch=True,
+            dry_run=True,
+        )
+        progress = kb.task_progress_snapshot(conn, tid, include_children=True)
+
+    assert [step["kind"] for step in payload["steps"]] == [
+        "plan_review_followups",
+        "dispatch_followups",
+    ]
+    spawned = payload["steps"][1]["dispatch"]["spawned"]
+    assert {item["task_id"] for item in spawned} == {
+        payload["steps"][0]["plan"]["review_task_id"],
+        payload["steps"][0]["plan"]["test_task_id"],
+    }
+    assert payload["final"]["recommended_action"] == "wait_for_followups"
+    assert progress.review_followup_gate["pending"] == 2
+    assert progress.review_followup_gate["running"] == 0
+
+
+def test_advance_acceptance_workflow_runs_checks_and_approves(
+    kanban_home,
+    tmp_path,
+):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    (workspace / "ok.txt").write_text("ok\n", encoding="utf-8")
+    (kanban_home / "config.yaml").write_text(
+        "kanban:\n"
+        "  acceptance_checks:\n"
+        "    exact-file:\n"
+        "      argv: [python3, -c, \"from pathlib import Path; "
+        "assert Path('ok.txt').read_text() == 'ok\\\\n'\"]\n",
+        encoding="utf-8",
+    )
+    metadata = {
+        "worker_lane": {"name": "codex-deep", "kind": "codex_cli", "exit_code": 0},
+        "verification": {"commands": ["pytest -q"], "summary": "passed"},
+        "review": {"required": True, "reason": "Codex completed; Hermes review required"},
+    }
+    with kb.connect() as conn:
+        tid = kb.create_task(
+            conn,
+            title="advance approves",
+            assignee="codex-deep",
+            workspace_kind="dir",
+            workspace_path=str(workspace),
+        )
+        task = kb.claim_task(conn, tid, claimer="worker:codex-deep")
+        assert task is not None
+        assert kb.block_task(
+            conn,
+            tid,
+            reason="review-required: Codex completed; Hermes review required",
+            expected_run_id=task.current_run_id,
+            metadata=metadata,
+        )
+        plan = kb.plan_review_followups(conn, tid)
+        _finish_followup_with_worker_evidence(
+            conn,
+            plan.review_task_id,
+            lane="codex-review",
+            verdict="approve",
+        )
+        _finish_followup_with_worker_evidence(
+            conn,
+            plan.test_task_id,
+            lane="codex-test",
+            verdict="pass",
+        )
+        payload = kb.advance_acceptance_workflow(
+            conn,
+            tid,
+            reviewer="controller",
+            summary="accepted by workflow",
+        )
+        final = kb.get_task(conn, tid)
+        events = kb.list_events(conn, tid)
+
+    assert [step["kind"] for step in payload["steps"]] == [
+        "run_acceptance_checks",
+        "approve",
+    ]
+    assert payload["steps"][0]["verify"]["acceptance_check_gate"]["ready"] is True
+    assert final.status == "done"
+    assert payload["final"]["recommended_action"] == "done"
+    assert any(event.kind == "acceptance_check_completed" for event in events)
+    assert any(event.kind == "worker_review_approved" for event in events)
+
+
 def test_task_acceptance_snapshot_summarizes_followup_evidence(
     kanban_home, tmp_path,
 ):

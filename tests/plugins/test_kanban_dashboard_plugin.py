@@ -1811,6 +1811,76 @@ def test_verify_endpoint_runs_configured_acceptance_check(
     assert acceptance.json()["acceptance_check_gate"]["ready"] is True
 
 
+def test_advance_acceptance_endpoint_dry_run_plans_scoped_followups(
+    client,
+    tmp_path,
+    monkeypatch,
+):
+    from hermes_cli import kanban_db as kb
+    from hermes_cli import profiles
+
+    monkeypatch.setattr(profiles, "profile_exists", lambda name: True)
+    metadata = {
+        "worker_lane": {"name": "codex-deep", "kind": "codex_cli", "exit_code": 0},
+        "verification": {"commands": ["pytest -q"], "summary": "passed"},
+        "review": {"required": True, "reason": "Codex completed; Hermes review required"},
+    }
+    conn = kb.connect()
+    try:
+        tid = kb.create_task(
+            conn,
+            title="advance acceptance via api",
+            assignee="codex-deep",
+            workspace_kind="dir",
+            workspace_path=str(tmp_path),
+        )
+        unrelated = kb.create_task(
+            conn,
+            title="unrelated",
+            assignee="alice",
+            workspace_kind="dir",
+            workspace_path=str(tmp_path),
+        )
+        task = kb.claim_task(conn, tid, claimer="worker:codex-deep")
+        assert task is not None
+        assert kb.block_task(
+            conn,
+            tid,
+            reason="review-required: Codex completed; Hermes review required",
+            expected_run_id=task.current_run_id,
+            metadata=metadata,
+        )
+    finally:
+        conn.close()
+
+    response = client.post(
+        f"/api/plugins/kanban/tasks/{tid}/advance-acceptance",
+        json={"dry_run": True},
+    )
+
+    assert response.status_code == 200, response.text
+    data = response.json()
+    plan = data["steps"][0]["plan"]
+    spawned_ids = {item["task_id"] for item in data["steps"][1]["dispatch"]["spawned"]}
+    conn = kb.connect()
+    try:
+        unrelated_task = kb.get_task(conn, unrelated)
+        review_task = kb.get_task(conn, plan["review_task_id"])
+        test_task = kb.get_task(conn, plan["test_task_id"])
+    finally:
+        conn.close()
+
+    assert [step["kind"] for step in data["steps"]] == [
+        "plan_review_followups",
+        "dispatch_followups",
+    ]
+    assert spawned_ids == {plan["review_task_id"], plan["test_task_id"]}
+    assert unrelated_task.status == "ready"
+    assert review_task.status == "ready"
+    assert test_task.status == "ready"
+    assert data["final"]["recommended_action"] == "wait_for_followups"
+
+
 def test_worker_lane_request_endpoint_validates_without_enabling(client):
     from hermes_cli.worker_lanes import clear_worker_lanes, get_worker_lane
 

@@ -715,6 +715,19 @@ class VerifyTaskBody(BaseModel):
     source_run_id: Optional[int] = Field(default=None, ge=1)
 
 
+class AdvanceAcceptanceBody(BaseModel):
+    review_assignee: Optional[str] = "codex-review"
+    test_assignee: Optional[str] = "codex-test"
+    dispatch: bool = True
+    dry_run: bool = False
+    dispatch_max: Optional[int] = Field(default=None, ge=1, le=64)
+    verify: bool = True
+    approve: bool = True
+    reviewer: Optional[str] = None
+    summary: Optional[str] = None
+    result: Optional[str] = None
+
+
 class WorkerLaneRequestBody(BaseModel):
     worker_lane_request: dict[str, Any] = Field(
         ...,
@@ -813,6 +826,40 @@ def verify_task_acceptance(
                 task_id,
                 check_names=payload.checks,
                 source_run_id=payload.source_run_id,
+            )
+        except ValueError as exc:
+            msg = str(exc)
+            status_code = 404 if msg.startswith("unknown task ") else 400
+            raise HTTPException(status_code=status_code, detail=msg)
+    finally:
+        conn.close()
+
+
+@router.post("/tasks/{task_id}/advance-acceptance")
+def advance_task_acceptance(
+    task_id: str,
+    payload: AdvanceAcceptanceBody,
+    board: Optional[str] = Query(None),
+):
+    """Advance review/test/verify/approval workflow to the next safe point."""
+    board = _resolve_board(board)
+    conn = _conn(board=board)
+    try:
+        try:
+            return kanban_db.advance_acceptance_workflow(
+                conn,
+                task_id,
+                review_assignee=payload.review_assignee or "codex-review",
+                test_assignee=payload.test_assignee or "codex-test",
+                dispatch=payload.dispatch,
+                dry_run=payload.dry_run,
+                dispatch_max=payload.dispatch_max,
+                verify=payload.verify,
+                approve=payload.approve,
+                reviewer=payload.reviewer or "dashboard",
+                summary=payload.summary,
+                result=payload.result,
+                board=board,
             )
         except ValueError as exc:
             msg = str(exc)

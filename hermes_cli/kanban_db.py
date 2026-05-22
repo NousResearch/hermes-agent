@@ -3221,7 +3221,231 @@ def task_acceptance_snapshot(
                 "verification summaries, and optional log tails"
             ),
         },
-}
+    }
+
+
+def advance_acceptance_workflow(
+    conn: sqlite3.Connection,
+    task_id: str,
+    *,
+    review_assignee: Optional[str] = "codex-review",
+    test_assignee: Optional[str] = "codex-test",
+    dispatch: bool = True,
+    dry_run: bool = False,
+    dispatch_max: Optional[int] = None,
+    verify: bool = True,
+    approve: bool = True,
+    reviewer: str = "hermes-controller",
+    summary: Optional[str] = None,
+    result: Optional[str] = None,
+    board: Optional[str] = None,
+) -> dict[str, Any]:
+    """Advance a review-required external-worker task to the next safe point.
+
+    This is the deterministic control-plane workflow for implementation tasks
+    handed off by external coding lanes. It never waits for or interrupts a
+    running worker. Instead it performs only immediately-safe steps:
+
+    * create missing review/test follow-up tasks;
+    * optionally run a scoped dispatcher pass for pending follow-ups;
+    * run configured Hermes acceptance checks once review/test evidence is
+      ready;
+    * approve when every configured gate is satisfied.
+    """
+
+    steps: list[dict[str, Any]] = []
+    initial = task_acceptance_snapshot(conn, task_id, board=board)
+    if initial is None:
+        raise ValueError(f"unknown task {task_id}")
+
+    def _current() -> dict[str, Any]:
+        current = task_acceptance_snapshot(conn, task_id, board=board)
+        if current is None:
+            raise ValueError(f"unknown task {task_id}")
+        return current
+
+    snapshot = initial
+    implementation = snapshot.get("implementation") or {}
+    implementation_task = implementation.get("task") or {}
+    if implementation_task.get("status") == "done":
+        return {
+            "task_id": task_id,
+            "steps": steps,
+            "initial": initial,
+            "final": snapshot,
+            "advanced": False,
+        }
+    if implementation_task.get("status") == "running":
+        steps.append({
+            "kind": "wait_for_implementation",
+            "reason": "implementation worker is still running",
+        })
+        return {
+            "task_id": task_id,
+            "steps": steps,
+            "initial": initial,
+            "final": snapshot,
+            "advanced": False,
+        }
+    if not (implementation.get("review_required") or snapshot.get("request_changes_allowed")):
+        steps.append({
+            "kind": "inspect_task",
+            "reason": "task is not waiting on review-required worker evidence",
+        })
+        return {
+            "task_id": task_id,
+            "steps": steps,
+            "initial": initial,
+            "final": snapshot,
+            "advanced": False,
+        }
+
+    source_run_id = snapshot.get("source_run_id")
+    if snapshot.get("recommended_action") == "plan_review_followups":
+        plan = plan_review_followups(
+            conn,
+            task_id,
+            review_assignee=review_assignee,
+            test_assignee=test_assignee,
+            include_review=bool(review_assignee),
+            include_test=bool(test_assignee),
+            created_by=reviewer or "hermes-controller",
+            board=board,
+        )
+        steps.append({"kind": "plan_review_followups", "plan": plan.to_dict()})
+        followup_ids = [
+            tid for tid in (plan.review_task_id, plan.test_task_id) if tid
+        ]
+        if dispatch and followup_ids:
+            dispatch_result = dispatch_once(
+                conn,
+                dry_run=dry_run,
+                max_spawn=dispatch_max,
+                only_task_ids=followup_ids,
+                board=board,
+            )
+            steps.append({
+                "kind": "dispatch_followups",
+                "dispatch": dispatch_result.to_dict(),
+            })
+        snapshot = _current()
+        # Follow-up workers run asynchronously. Stop here unless the gate is
+        # already satisfied because tests or non-spawning flows finished them
+        # before this call returned.
+        gate = snapshot.get("review_followup_gate")
+        if gate and not gate.get("ready"):
+            return {
+                "task_id": task_id,
+                "steps": steps,
+                "initial": initial,
+                "final": snapshot,
+                "advanced": bool(steps),
+            }
+
+    gate = snapshot.get("review_followup_gate")
+    if gate and not gate.get("ready"):
+        if gate.get("failed"):
+            steps.append({
+                "kind": "blocked",
+                "reason": "review/test follow-up gate failed",
+                "review_followup_gate": gate,
+            })
+            return {
+                "task_id": task_id,
+                "steps": steps,
+                "initial": initial,
+                "final": snapshot,
+                "advanced": bool(steps),
+            }
+        if dispatch:
+            followup_ids = [
+                item.get("task_id")
+                for item in gate.get("items") or []
+                if item.get("task_id")
+                and item.get("state") in {"pending", "missing"}
+            ]
+            followup_ids = [str(tid) for tid in followup_ids if tid]
+            if followup_ids:
+                dispatch_result = dispatch_once(
+                    conn,
+                    dry_run=dry_run,
+                    max_spawn=dispatch_max,
+                    only_task_ids=followup_ids,
+                    board=board,
+                )
+                steps.append({
+                    "kind": "dispatch_followups",
+                    "dispatch": dispatch_result.to_dict(),
+                })
+                snapshot = _current()
+        if (snapshot.get("review_followup_gate") or {}).get("ready") is not True:
+            return {
+                "task_id": task_id,
+                "steps": steps,
+                "initial": initial,
+                "final": snapshot,
+                "advanced": bool(steps),
+            }
+
+    acceptance_gate = snapshot.get("acceptance_check_gate")
+    if acceptance_gate and not acceptance_gate.get("ready"):
+        if acceptance_gate.get("failed"):
+            steps.append({
+                "kind": "blocked",
+                "reason": "Hermes acceptance check gate failed",
+                "acceptance_check_gate": acceptance_gate,
+            })
+            return {
+                "task_id": task_id,
+                "steps": steps,
+                "initial": initial,
+                "final": snapshot,
+                "advanced": bool(steps),
+            }
+        if verify:
+            verify_payload = run_acceptance_checks(
+                conn,
+                task_id,
+                source_run_id=(
+                    int(source_run_id) if source_run_id is not None else None
+                ),
+            )
+            steps.append({
+                "kind": "run_acceptance_checks",
+                "verify": verify_payload,
+            })
+            snapshot = _current()
+        if (snapshot.get("acceptance_check_gate") or {}).get("ready") is not True:
+            return {
+                "task_id": task_id,
+                "steps": steps,
+                "initial": initial,
+                "final": snapshot,
+                "advanced": bool(steps),
+            }
+
+    if snapshot.get("approval_allowed") and approve:
+        reviewed = review_worker_evidence(
+            conn,
+            task_id,
+            decision="approve",
+            reviewer=reviewer or "hermes-controller",
+            result=result,
+            summary=summary or "external worker evidence accepted",
+        )
+        steps.append({
+            "kind": "approve",
+            "snapshot": reviewed.to_dict(),
+        })
+        snapshot = _current()
+
+    return {
+        "task_id": task_id,
+        "steps": steps,
+        "initial": initial,
+        "final": snapshot,
+        "advanced": bool(steps),
+    }
 
 
 def _require_acceptance_check_gate_ready(

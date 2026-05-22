@@ -547,6 +547,64 @@ def _handle_verify(args: dict, **kw) -> str:
         return tool_error(f"kanban_verify: {e}")
 
 
+def _handle_advance_acceptance(args: dict, **kw) -> str:
+    """Advance review/test/verify/approval workflow to the next safe point."""
+    guard = _require_orchestrator_tool("kanban_advance_acceptance")
+    if guard:
+        return guard
+    tid = args.get("task_id")
+    if not tid:
+        return tool_error("task_id is required")
+    dispatch, dispatch_error = _parse_bool_arg(args, "dispatch", default=True)
+    if dispatch_error:
+        return tool_error(dispatch_error)
+    dry_run, dry_run_error = _parse_bool_arg(args, "dry_run", default=False)
+    if dry_run_error:
+        return tool_error(dry_run_error)
+    verify, verify_error = _parse_bool_arg(args, "verify", default=True)
+    if verify_error:
+        return tool_error(verify_error)
+    approve, approve_error = _parse_bool_arg(args, "approve", default=True)
+    if approve_error:
+        return tool_error(approve_error)
+    dispatch_max, dispatch_max_error = _parse_positive_int_arg(
+        args,
+        "dispatch_max",
+        default=None,
+        maximum=64,
+    )
+    if dispatch_max_error:
+        return tool_error(dispatch_max_error)
+    reviewer = args.get("reviewer") or os.environ.get("HERMES_PROFILE") or "agent"
+    board = args.get("board")
+    try:
+        kb, conn = _connect(board=board)
+        try:
+            payload = kb.advance_acceptance_workflow(
+                conn,
+                str(tid),
+                review_assignee=args.get("review_assignee") or "codex-review",
+                test_assignee=args.get("test_assignee") or "codex-test",
+                dispatch=dispatch,
+                dry_run=dry_run,
+                dispatch_max=dispatch_max,
+                verify=verify,
+                approve=approve,
+                reviewer=str(reviewer),
+                summary=args.get("summary"),
+                result=args.get("result"),
+                board=board,
+            )
+            return json.dumps(payload)
+        finally:
+            conn.close()
+    except ValueError as e:
+        return tool_error(f"kanban_advance_acceptance: {e}")
+    except Exception as e:
+        logger.exception("kanban_advance_acceptance failed")
+        return tool_error(f"kanban_advance_acceptance: {e}")
+
+
 def _handle_reviews(args: dict, **kw) -> str:
     """List review-required external-worker evidence snapshots."""
     guard = _require_orchestrator_tool("kanban_reviews")
@@ -1296,6 +1354,72 @@ KANBAN_VERIFY_SCHEMA = {
     },
 }
 
+KANBAN_ADVANCE_ACCEPTANCE_SCHEMA = {
+    "name": "kanban_advance_acceptance",
+    "description": (
+        "Advance a review-required external-worker implementation task to "
+        "the next safe control-plane point: plan review/test follow-ups, "
+        "optionally dispatch only those follow-ups, run configured Hermes "
+        "acceptance checks when worker evidence is ready, and approve when "
+        "all gates pass. It never waits for or interrupts running workers "
+        "and never replays the full external-worker session. Orchestrator-only."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "task_id": {
+                "type": "string",
+                "description": "Implementation task id to advance.",
+            },
+            "review_assignee": {
+                "type": "string",
+                "description": "Review worker lane. Default codex-review.",
+            },
+            "test_assignee": {
+                "type": "string",
+                "description": "Test worker lane. Default codex-test.",
+            },
+            "dispatch": {
+                "type": "boolean",
+                "description": "Whether to run a scoped dispatcher pass. Default true.",
+            },
+            "dry_run": {
+                "type": "boolean",
+                "description": (
+                    "With dispatch=true, report follow-up spawns without "
+                    "claiming tasks. Default false."
+                ),
+            },
+            "dispatch_max": {
+                "type": "integer",
+                "description": "Scoped follow-up spawn cap. Max 64.",
+            },
+            "verify": {
+                "type": "boolean",
+                "description": "Whether to run configured acceptance checks. Default true.",
+            },
+            "approve": {
+                "type": "boolean",
+                "description": "Whether to approve when all gates pass. Default true.",
+            },
+            "reviewer": {
+                "type": "string",
+                "description": "Controller/reviewer identity.",
+            },
+            "summary": {
+                "type": "string",
+                "description": "Approval summary if the task reaches approve.",
+            },
+            "result": {
+                "type": "string",
+                "description": "Task result if the task reaches approve.",
+            },
+            "board": _board_schema_prop(),
+        },
+        "required": ["task_id"],
+    },
+}
+
 KANBAN_REVIEWS_SCHEMA = {
     "name": "kanban_reviews",
     "description": (
@@ -1830,6 +1954,15 @@ registry.register(
     handler=_handle_verify,
     check_fn=_check_kanban_orchestrator_mode,
     emoji="🧪",
+)
+
+registry.register(
+    name="kanban_advance_acceptance",
+    toolset="kanban",
+    schema=KANBAN_ADVANCE_ACCEPTANCE_SCHEMA,
+    handler=_handle_advance_acceptance,
+    check_fn=_check_kanban_orchestrator_mode,
+    emoji="⏭",
 )
 
 registry.register(

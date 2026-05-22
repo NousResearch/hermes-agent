@@ -114,12 +114,13 @@ def test_worker_with_kanban_toolset_still_hides_board_routing(monkeypatch, tmp_p
         "kanban_progress",
         "kanban_acceptance",
         "kanban_verify",
+        "kanban_advance_acceptance",
         "kanban_reviews",
         "kanban_review",
         "kanban_plan_review",
     }.isdisjoint(kanban), (
         f"Board-routing tools leaked into worker schema: "
-        f"{kanban & {'kanban_list', 'kanban_unblock', 'kanban_progress', 'kanban_acceptance', 'kanban_verify', 'kanban_reviews', 'kanban_review', 'kanban_plan_review'}}"
+        f"{kanban & {'kanban_list', 'kanban_unblock', 'kanban_progress', 'kanban_acceptance', 'kanban_verify', 'kanban_advance_acceptance', 'kanban_reviews', 'kanban_review', 'kanban_plan_review'}}"
     )
 
 
@@ -144,6 +145,7 @@ def test_kanban_tools_visible_with_toolset_config(monkeypatch, tmp_path):
         "kanban_progress",
         "kanban_acceptance",
         "kanban_verify",
+        "kanban_advance_acceptance",
         "kanban_reviews",
         "kanban_review",
         "kanban_plan_review",
@@ -711,6 +713,76 @@ def test_verify_tool_runs_configured_acceptance_check(
 
     assert payload["checks"][0]["passed"] is True
     assert acceptance["acceptance_check_gate"]["ready"] is True
+
+
+def test_advance_acceptance_tool_dry_run_plans_scoped_followups(
+    monkeypatch,
+    worker_env,
+    tmp_path,
+):
+    monkeypatch.delenv("HERMES_KANBAN_TASK", raising=False)
+    from hermes_cli import kanban_db as kb
+    from hermes_cli import profiles
+    from tools import kanban_tools as kt
+
+    monkeypatch.setattr(profiles, "profile_exists", lambda name: True)
+    metadata = {
+        "worker_lane": {"name": "codex-deep", "kind": "codex_cli", "exit_code": 0},
+        "verification": {"commands": ["pytest -q"], "summary": "passed"},
+        "review": {"required": True, "reason": "Codex completed; Hermes review required"},
+    }
+    conn = kb.connect()
+    try:
+        tid = kb.create_task(
+            conn,
+            title="tool advance acceptance",
+            assignee="codex-deep",
+            workspace_kind="dir",
+            workspace_path=str(tmp_path),
+        )
+        unrelated = kb.create_task(
+            conn,
+            title="unrelated",
+            assignee="alice",
+            workspace_kind="dir",
+            workspace_path=str(tmp_path),
+        )
+        task = kb.claim_task(conn, tid, claimer="worker:codex-deep")
+        assert task is not None
+        assert kb.block_task(
+            conn,
+            tid,
+            reason="review-required: Codex completed; Hermes review required",
+            expected_run_id=task.current_run_id,
+            metadata=metadata,
+        )
+    finally:
+        conn.close()
+
+    out = kt._handle_advance_acceptance({
+        "task_id": tid,
+        "dry_run": True,
+    })
+    d = json.loads(out)
+    plan = d["steps"][0]["plan"]
+    spawned_ids = {item["task_id"] for item in d["steps"][1]["dispatch"]["spawned"]}
+
+    conn = kb.connect()
+    try:
+        unrelated_task = kb.get_task(conn, unrelated)
+        review_task = kb.get_task(conn, plan["review_task_id"])
+        test_task = kb.get_task(conn, plan["test_task_id"])
+    finally:
+        conn.close()
+
+    assert [step["kind"] for step in d["steps"]] == [
+        "plan_review_followups",
+        "dispatch_followups",
+    ]
+    assert spawned_ids == {plan["review_task_id"], plan["test_task_id"]}
+    assert unrelated_task.status == "ready"
+    assert review_task.status == "ready"
+    assert test_task.status == "ready"
 
 
 def test_complete_happy_path(worker_env):

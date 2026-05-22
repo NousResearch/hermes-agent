@@ -220,7 +220,9 @@ class PairingStore:
 
         Verification: the user-provided code is hashed with each stored
         entry's salt and compared to the stored hash using constant-time
-        comparison.
+        comparison. Pre-hash entries (legacy plaintext-key format from
+        pre-upgrade pending.json files) are silently ignored — they get
+        pruned at TTL by ``_cleanup_expired``.
         """
         with self._lock:
             self._cleanup_expired(platform)
@@ -236,11 +238,23 @@ class PairingStore:
 
             pending = self._load_json(self._pending_path(platform))
 
-            # Find the entry whose hash matches the provided code
+            # Find the entry whose hash matches the provided code.
+            # Tolerate legacy plaintext-key entries (no salt/hash) and
+            # malformed entries — skip them rather than KeyError, so an
+            # in-place upgrade across an existing pending.json doesn't
+            # crash on the first approve call. Legacy entries get pruned
+            # at their TTL by _cleanup_expired.
             matched_key = None
             matched_entry = None
             for entry_id, entry in pending.items():
-                salt = bytes.fromhex(entry["salt"])
+                if not isinstance(entry, dict):
+                    continue
+                if "salt" not in entry or "hash" not in entry:
+                    continue
+                try:
+                    salt = bytes.fromhex(entry["salt"])
+                except ValueError:
+                    continue
                 candidate_hash = self._hash_code(code, salt)
                 if secrets.compare_digest(candidate_hash, entry["hash"]):
                     matched_key = entry_id
@@ -268,7 +282,9 @@ class PairingStore:
 
         Codes are stored hashed — the ``code`` field is replaced with the
         first 8 hex characters of the hash so admins can distinguish entries
-        without revealing the original code.
+        without revealing the original code. Legacy plaintext-key entries
+        (pre-hash format) are shown with a "legacy" placeholder so admins
+        can see them age out without crashing on a missing ``hash`` field.
         """
         results = []
         platforms = [platform] if platform else self._all_platforms("pending")
@@ -276,11 +292,18 @@ class PairingStore:
             self._cleanup_expired(p)
             pending = self._load_json(self._pending_path(p))
             for entry_id, info in pending.items():
-                age_min = int((time.time() - info["created_at"]) / 60)
+                if not isinstance(info, dict):
+                    continue
+                created_at = info.get("created_at")
+                if not isinstance(created_at, (int, float)):
+                    continue
+                age_min = int((time.time() - created_at) / 60)
+                hash_val = info.get("hash")
+                code_display = hash_val[:8] if isinstance(hash_val, str) else "legacy"
                 results.append({
                     "platform": p,
-                    "code": info["hash"][:8],
-                    "user_id": info["user_id"],
+                    "code": code_display,
+                    "user_id": info.get("user_id", ""),
                     "user_name": info.get("user_name", ""),
                     "age_minutes": age_min,
                 })
@@ -337,14 +360,26 @@ class PairingStore:
     # ----- Cleanup -----
 
     def _cleanup_expired(self, platform: str) -> None:
-        """Remove expired pending codes."""
+        """Remove expired pending codes.
+
+        Tolerant of malformed / legacy entries — anything without a numeric
+        ``created_at`` is treated as expired (it's effectively unusable
+        with the new hash-keyed schema anyway).
+        """
         path = self._pending_path(platform)
         pending = self._load_json(path)
         now = time.time()
-        expired = [
-            entry_id for entry_id, info in pending.items()
-            if (now - info["created_at"]) > CODE_TTL_SECONDS
-        ]
+        expired = []
+        for entry_id, info in pending.items():
+            if not isinstance(info, dict):
+                expired.append(entry_id)
+                continue
+            created_at = info.get("created_at")
+            if not isinstance(created_at, (int, float)):
+                expired.append(entry_id)
+                continue
+            if (now - created_at) > CODE_TTL_SECONDS:
+                expired.append(entry_id)
         if expired:
             for entry_id in expired:
                 del pending[entry_id]

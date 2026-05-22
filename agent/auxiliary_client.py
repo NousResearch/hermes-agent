@@ -3270,7 +3270,13 @@ def resolve_provider_client(
     # ── Custom endpoint (OPENAI_BASE_URL + OPENAI_API_KEY) ───────────
     if provider == "custom":
         if explicit_base_url:
-            custom_base = _to_openai_base_url(explicit_base_url).strip()
+            # anthropic_messages mode: keep the original /anthropic base URL so
+            # the Anthropic SDK appends /v1/messages correctly.  Rewriting to /v1
+            # would produce /v1/v1/messages (404).  Only rewrite for OpenAI-wire paths.
+            if api_mode == "anthropic_messages":
+                custom_base = explicit_base_url.strip().rstrip("/")
+            else:
+                custom_base = _to_openai_base_url(explicit_base_url).strip()
             custom_key = (
                 (explicit_api_key or "").strip()
                 or os.getenv("OPENAI_API_KEY", "").strip()

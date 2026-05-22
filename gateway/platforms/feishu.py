@@ -137,7 +137,7 @@ from gateway.platforms.base import (
     cache_document_from_bytes,
     cache_image_from_url,
     cache_audio_from_bytes,
-cache_image_from_bytes,
+    cache_image_from_bytes,
 )
 from gateway.platforms.feishu_cardkit import cardkit_available as _cardkit_available
 from gateway.platforms.feishu_streaming_card import StreamingCardController
@@ -1787,10 +1787,20 @@ class FeishuAdapter(BasePlatformAdapter):
 
         # -- Streaming card path --
         if self._streaming_card_enabled and _cardkit_available():
-            # Finalize any previous streaming card for this chat
             prev_ctrl = self._streaming_card_controllers.get(chat_id)
-            if prev_ctrl and not prev_ctrl.is_completed:
-                await prev_ctrl.finalize(formatted)
+            if prev_ctrl and not prev_ctrl.is_failed and prev_ctrl.card_id:
+                # A streaming card already exists for this chat.  Append
+                # content to it instead of creating a separate card, so the
+                # user sees one continuous card across segment breaks.
+                ok = await prev_ctrl.stream_chunk(formatted)
+                if ok:
+                    # Return the existing card's message_id so that
+                    # stream_consumer keeps editing the same message.
+                    return SendResult(success=True, message_id=prev_ctrl.message_id or "")
+                # Streaming failed — mark controller as failed so we fall
+                # through to the normal post path.
+                logger.warning("[Feishu] Streaming card reuse failed, falling back to post")
+
             # Create a new streaming card controller
             ctrl = StreamingCardController(self._client, adapter_name=self.name)
             msg_id = await ctrl.start(
@@ -1868,12 +1878,15 @@ class FeishuAdapter(BasePlatformAdapter):
         if self._streaming_card_enabled and _cardkit_available():
             ctrl = self._streaming_card_controllers.get(chat_id)
             if ctrl and not ctrl.is_failed:
-                ok = await ctrl.stream_chunk(content, finalize=finalize)
-                if finalize:
-                    # Clean up completed controller
-                    self._streaming_card_controllers.pop(chat_id, None)
-                    logger.debug("[Feishu] Streaming card finalized (edit): %s", ctrl.card_id)
-                if ok or finalize:
+                # Always stream_chunk, never finalize here.  This keeps the
+                # card alive across segment breaks (tool boundaries) so the
+                # user sees one continuous card for the entire reply.
+                # The card is finalized when:
+                #   (a) stream_chunk fails (controller becomes failed)
+                #   (b) send() is called with a new user message
+                #       (prev_ctrl is completed/failed → finalize + new card)
+                ok = await ctrl.stream_chunk(content, finalize=False)
+                if ok:
                     return SendResult(success=True, message_id=ctrl.message_id or message_id)
                 # Fall through to normal edit on failure
                 logger.warning("[Feishu] Streaming card edit failed, falling back to IM update")

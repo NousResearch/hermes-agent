@@ -77,6 +77,10 @@ class StreamingCardController:
         self._dirty: bool = False
         self._flush_task: Optional[asyncio.Task] = None
 
+        # Auto-finalize timer:  closes the streaming card after a period of
+        # inactivity so the blinking cursor does not stay forever.
+        self._idle_finalize_task: Optional[asyncio.Task] = None
+
         # Error tracking — if cardkit operations fail, we degrade gracefully
         # rather than blocking the entire response pipeline.
         self._failed: bool = False
@@ -213,6 +217,13 @@ class StreamingCardController:
 
         self._accumulated_text = text
         self._dirty = True
+        logger.info(
+            "[%s] stream_chunk: len=%d dirty=%s",
+            self._adapter_name, len(text), self._dirty,
+        )
+
+        # Reset idle-finalize timer on every new chunk
+        self._reset_idle_finalize()
 
         # Throttle check
         now = time.monotonic()
@@ -245,6 +256,36 @@ class StreamingCardController:
         if self._dirty and self._phase == _Phase.STREAMING:
             await self._flush()
 
+    # ------------------------------------------------------------------
+    # Idle auto-finalize
+    # ------------------------------------------------------------------
+
+    _IDLE_FINALIZE_SECONDS = 10  # close card after 10s of no updates
+
+    def _reset_idle_finalize(self) -> None:
+        """Cancel any pending idle-finalize and reschedule."""
+        if self._idle_finalize_task and not self._idle_finalize_task.done():
+            self._idle_finalize_task.cancel()
+        self._idle_finalize_task = asyncio.ensure_future(
+            self._auto_finalize(self._IDLE_FINALIZE_SECONDS)
+        )
+
+    async def _auto_finalize(self, delay: float) -> None:
+        """Finalize the card after ``delay`` seconds of silence."""
+        try:
+            await asyncio.sleep(delay)
+        except asyncio.CancelledError:
+            return
+        if self._phase == _Phase.STREAMING and not self._failed:
+            logger.info(
+                "[%s] Auto-finalizing streaming card after %.0fs idle: card_id=%s",
+                self._adapter_name, delay, self._card_id,
+            )
+            try:
+                await self._do_finalize(self._accumulated_text)
+            except Exception as exc:
+                logger.warning("[%s] Auto-finalize error: %s", self._adapter_name, exc)
+
     async def _flush(self) -> bool:
         """Push the current accumulated text to the card element."""
         if not self._card_id or not self._dirty:
@@ -254,6 +295,11 @@ class StreamingCardController:
         self._last_flush_time = time.monotonic()
         seq = self._sequence
         self._sequence += 1
+        text = self._accumulated_text
+        logger.info(
+            "[%s] _flush: seq=%d len=%d text[-50:]=%s",
+            self._adapter_name, seq, len(text), text[-50:] if len(text) > 50 else text,
+        )
 
         ok = await stream_card_content(
             self._client,
@@ -279,6 +325,12 @@ class StreamingCardController:
 
         self._accumulated_text = text
         self._dirty = False
+
+        logger.info(
+            "[%s] _do_finalize: seq=%d len=%d text[-50:]=%s",
+            self._adapter_name, self._sequence, len(text),
+            text[-50:] if len(text) > 50 else text,
+        )
 
         # Cancel any pending delayed flush
         if self._flush_task and not self._flush_task.done():

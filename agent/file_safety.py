@@ -16,9 +16,19 @@ def _hermes_home_path() -> Path:
         return Path(os.path.expanduser("~/.hermes"))
 
 
+def _hermes_root_path() -> Path:
+    """Resolve the Hermes root dir (always the parent of any profile, never per-profile)."""
+    try:
+        from hermes_constants import get_default_hermes_root  # local import to avoid cycles
+        return get_default_hermes_root()
+    except Exception:
+        return Path(os.path.expanduser("~/.hermes"))
+
+
 def build_write_denied_paths(home: str) -> set[str]:
     """Return exact sensitive paths that must never be written."""
     hermes_home = _hermes_home_path()
+    hermes_root = _hermes_root_path()
     return {
         os.path.realpath(p)
         for p in [
@@ -26,7 +36,11 @@ def build_write_denied_paths(home: str) -> set[str]:
             os.path.join(home, ".ssh", "id_rsa"),
             os.path.join(home, ".ssh", "id_ed25519"),
             os.path.join(home, ".ssh", "config"),
+            # Active profile .env (or top-level .env when not in profile mode).
             str(hermes_home / ".env"),
+            # Top-level .env, even when running under a profile — overwriting it
+            # leaks credentials across every profile that inherits from root (#15981).
+            str(hermes_root / ".env"),
             os.path.join(home, ".bashrc"),
             os.path.join(home, ".zshrc"),
             os.path.join(home, ".profile"),
@@ -82,6 +96,37 @@ def is_write_denied(path: str) -> bool:
     for prefix in build_write_denied_prefixes(home):
         if resolved.startswith(prefix):
             return True
+
+    # Hermes control-plane files: block both the ACTIVE profile's view
+    # (hermes_home) AND the global root view. Without the root pass, a
+    # profile-mode session leaves <root>/auth.json + <root>/config.yaml
+    # writable — letting a prompt-injected write_file overwrite the global
+    # files that every profile inherits from (same shape as #15981).
+    control_file_names = ("auth.json", "config.yaml", "webhook_subscriptions.json")
+    mcp_tokens_dir_name = "mcp-tokens"
+
+    hermes_dirs = []
+    for base in (_hermes_home_path(), _hermes_root_path()):
+        try:
+            real = os.path.realpath(base)
+            if real not in hermes_dirs:
+                hermes_dirs.append(real)
+        except Exception:
+            continue
+
+    for base_real in hermes_dirs:
+        for name in control_file_names:
+            try:
+                if resolved == os.path.realpath(os.path.join(base_real, name)):
+                    return True
+            except Exception:
+                continue
+        try:
+            mcp_real = os.path.realpath(os.path.join(base_real, mcp_tokens_dir_name))
+            if resolved == mcp_real or resolved.startswith(mcp_real + os.sep):
+                return True
+        except Exception:
+            pass
 
     safe_root = get_safe_write_root()
     if safe_root and not (resolved == safe_root or resolved.startswith(safe_root + os.sep)):

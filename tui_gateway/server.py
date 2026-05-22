@@ -287,6 +287,9 @@ def _finalize_session(session: dict | None, end_reason: str = "tui_close") -> No
     if not session or session.get("_finalized"):
         return
     session["_finalized"] = True
+    stop_event = session.get("_notif_stop")
+    if stop_event is not None:
+        stop_event.set()
 
     agent = session.get("agent")
     lock = session.get("history_lock")
@@ -579,6 +582,7 @@ def _start_agent_build(sid: str, session: dict) -> None:
                 pass
 
             _wire_callbacks(sid)
+            _sessions[sid]["_notif_stop"] = _start_notification_poller(sid, _sessions[sid])
             _notify_session_boundary("on_session_reset", key)
 
             info = _session_info(agent)
@@ -660,7 +664,7 @@ def _load_cfg() -> dict:
             if _cfg_cache is not None and _cfg_mtime == mtime and _cfg_path == p:
                 return copy.deepcopy(_cfg_cache)
         if p.exists():
-            with open(p) as f:
+            with open(p, encoding="utf-8") as f:
                 data = yaml.safe_load(f) or {}
         else:
             data = {}
@@ -679,7 +683,7 @@ def _save_cfg(cfg: dict):
     import yaml
 
     path = _hermes_home / "config.yaml"
-    with open(path, "w") as f:
+    with open(path, "w", encoding="utf-8") as f:
         yaml.safe_dump(cfg, f)
     with _cfg_lock:
         _cfg_cache = copy.deepcopy(cfg)
@@ -841,19 +845,50 @@ def _coerce_statusbar(raw) -> str:
     return "top"
 
 
-def _display_mouse_tracking(display: dict) -> bool:
-    """Return canonical display.mouse_tracking with legacy tui_mouse fallback."""
+_MOUSE_TRACKING_ALIASES = {
+    "0": "off",
+    "1": "all",
+    "all": "all",
+    "any": "all",
+    "button": "buttons",
+    "buttons": "buttons",
+    "click": "buttons",
+    "false": "off",
+    "full": "all",
+    "no": "off",
+    "off": "off",
+    "on": "all",
+    "scroll": "wheel",
+    "true": "all",
+    "wheel": "wheel",
+    "yes": "all",
+}
+
+
+def _display_mouse_tracking(display: dict) -> str:
+    """Resolve display.mouse_tracking to one of ``off|wheel|buttons|all``.
+
+    Boolean values keep their legacy meaning (``True`` → ``all``, ``False`` →
+    ``off``). The ``wheel`` preset (DEC 1000+1006) is the tmux-friendly
+    subset — wheel + click only, no hover events to trigger prompt-row
+    clipboard probes. Legacy ``tui_mouse`` is honored only when
+    ``mouse_tracking`` is absent.
+    """
     if not isinstance(display, dict):
-        return True
+        return "all"
     if "mouse_tracking" in display:
         raw = display.get("mouse_tracking")
     else:
         raw = display.get("tui_mouse", True)
     if raw is False or raw == 0:
-        return False
+        return "off"
+    if raw is True or raw is None:
+        return "all"
+    if isinstance(raw, (int, float)):
+        return "all"
     if isinstance(raw, str):
-        return raw.strip().lower() not in {"0", "false", "no", "off"}
-    return True
+        return _MOUSE_TRACKING_ALIASES.get(raw.strip().lower(), "all")
+    return "all"
 
 
 def _load_reasoning_config() -> dict | None:
@@ -1026,6 +1061,10 @@ def _session_tool_progress_mode(sid: str) -> str:
     return str(_sessions.get(sid, {}).get("tool_progress_mode", "all") or "all")
 
 
+def _session_verbose(sid: str) -> bool:
+    return _session_tool_progress_mode(sid) == "verbose"
+
+
 def _tool_progress_enabled(sid: str) -> bool:
     return _session_tool_progress_mode(sid) != "off"
 
@@ -1083,7 +1122,16 @@ def _apply_model_switch(sid: str, session: dict, raw_input: str) -> dict:
         current_provider = str(runtime.get("provider", "") or "")
         current_model = _resolve_model()
         current_base_url = str(runtime.get("base_url", "") or "")
-        current_api_key = str(runtime.get("api_key", "") or "")
+        # Preserve a callable api_key (Azure Foundry Entra ID bearer
+        # provider) unchanged — ``str(...)`` would produce
+        # ``"<function ...>"`` and poison downstream switch_model
+        # validation. Match the agent-present branch's behavior at the
+        # top of this block.
+        _runtime_key = runtime.get("api_key", "")
+        if callable(_runtime_key) and not isinstance(_runtime_key, str):
+            current_api_key = _runtime_key
+        else:
+            current_api_key = str(_runtime_key or "")
 
     # Load user-defined providers so switch_model can resolve named custom
     # endpoints (e.g. "ollama-launch") and validate against saved model lists.
@@ -1280,6 +1328,7 @@ def _get_usage(agent) -> dict:
         "output": g("session_output_tokens", "session_completion_tokens"),
         "cache_read": g("session_cache_read_tokens"),
         "cache_write": g("session_cache_write_tokens"),
+        "reasoning": g("session_reasoning_tokens"),
         "prompt": g("session_prompt_tokens"),
         "completion": g("session_completion_tokens"),
         "total": g("session_total_tokens"),
@@ -1361,6 +1410,15 @@ def _probe_config_health(cfg: dict) -> str:
     return " ".join(warnings).strip()
 
 
+def _current_profile_name() -> str:
+    try:
+        from hermes_cli.profiles import get_active_profile_name
+
+        return get_active_profile_name() or "default"
+    except Exception:
+        return "default"
+
+
 def _session_info(agent) -> dict:
     reasoning_config = getattr(agent, "reasoning_config", None)
     reasoning_effort = ""
@@ -1377,12 +1435,13 @@ def _session_info(agent) -> dict:
         "fast": service_tier == "priority",
         "tools": {},
         "skills": {},
-        "cwd": os.getcwd(),
+        "cwd": os.getenv("TERMINAL_CWD", os.getcwd()),
         "version": "",
         "release_date": "",
         "update_behind": None,
         "update_command": "",
         "usage": _get_usage(agent),
+        "profile_name": _current_profile_name(),
     }
     try:
         from hermes_cli import __version__, __release_date__
@@ -1435,6 +1494,74 @@ def _tool_ctx(name: str, args: dict) -> str:
         return build_tool_preview(name, args, max_len=80) or ""
     except Exception:
         return ""
+
+
+_TUI_VERBOSE_TEXT_MAX_CHARS = 16_000
+_TUI_VERBOSE_TEXT_MAX_LINES = 240
+
+
+def _cap_tui_verbose_text(text: str) -> str:
+    if (
+        len(text) <= _TUI_VERBOSE_TEXT_MAX_CHARS
+        and text.count("\n") < _TUI_VERBOSE_TEXT_MAX_LINES
+    ):
+        return text
+
+    idx = len(text)
+    start = 0
+    for _ in range(_TUI_VERBOSE_TEXT_MAX_LINES):
+        idx = text.rfind("\n", 0, idx)
+        if idx < 0:
+            start = 0
+            break
+        start = idx + 1
+
+    line_start = start
+    start = max(line_start, len(text) - _TUI_VERBOSE_TEXT_MAX_CHARS)
+    if start > line_start:
+        next_break = text.find("\n", start)
+        if 0 <= next_break < len(text) - 1:
+            start = next_break + 1
+
+    tail = text[start:].lstrip()
+    omitted_chars = max(0, len(text) - len(tail))
+    omitted_lines = text[:start].count("\n")
+    if omitted_lines:
+        label = (
+            "[showing verbose tail; omitted "
+            f"{omitted_lines} lines / {omitted_chars} chars]\n"
+        )
+    else:
+        label = f"[showing verbose tail; omitted {omitted_chars} chars]\n"
+    return f"{label}{tail}"
+
+
+def _redact_tui_verbose_text(text: str) -> str:
+    try:
+        from agent.redact import redact_sensitive_text
+
+        redacted = redact_sensitive_text(str(text), force=True)
+    except Exception:
+        return ""
+    return _cap_tui_verbose_text(redacted)
+
+
+def _tool_args_text(args: dict) -> str:
+    try:
+        raw = json.dumps(args or {}, indent=2, ensure_ascii=False, default=str)
+    except Exception:
+        raw = str(args or {})
+    return _redact_tui_verbose_text(raw)
+
+
+def _tool_result_text(result: object) -> str:
+    try:
+        from agent.tool_dispatch_helpers import _multimodal_text_summary
+
+        raw = _multimodal_text_summary(result)
+    except Exception:
+        raw = str(result)
+    return _redact_tui_verbose_text(raw)
 
 
 def _fmt_tool_duration(seconds: float | None) -> str:
@@ -1498,13 +1625,18 @@ def _on_tool_start(sid: str, tool_call_id: str, name: str, args: dict):
             pass
         session.setdefault("tool_started_at", {})[tool_call_id] = time.time()
     if _tool_progress_enabled(sid):
+        payload = {
+            "tool_id": tool_call_id,
+            "name": name,
+            "context": _tool_ctx(name, args),
+        }
+        if _session_verbose(sid):
+            args_text = _tool_args_text(args)
+            if args_text:
+                payload["args_text"] = args_text
         # tool.complete is the source of truth for todos (full list from the
         # tool result). args.todos here may be a partial merge update.
-        _emit(
-            "tool.start",
-            sid,
-            {"tool_id": tool_call_id, "name": name, "context": _tool_ctx(name, args)},
-        )
+        _emit("tool.start", sid, payload)
 
 
 def _on_tool_complete(sid: str, tool_call_id: str, name: str, args: dict, result: str):
@@ -1521,6 +1653,10 @@ def _on_tool_complete(sid: str, tool_call_id: str, name: str, args: dict, result
     summary = _tool_summary(name, result, duration_s)
     if summary:
         payload["summary"] = summary
+    if _session_verbose(sid):
+        result_text = _tool_result_text(result)
+        if result_text:
+            payload["result_text"] = result_text
     if name == "todo":
         try:
             data = json.loads(result)
@@ -1560,7 +1696,10 @@ def _on_tool_progress(
         _emit("tool.progress", sid, {"name": name, "preview": preview or ""})
         return
     if event_type == "reasoning.available" and preview:
-        _emit("reasoning.available", sid, {"text": str(preview)})
+        payload: dict[str, object] = {"text": str(preview)}
+        if _session_verbose(sid):
+            payload["verbose"] = True
+        _emit("reasoning.available", sid, payload)
         return
     if event_type.startswith("subagent."):
         payload = {
@@ -1623,27 +1762,31 @@ def _on_tool_progress(
 
 
 def _agent_cbs(sid: str) -> dict:
-    return dict(
-        tool_start_callback=lambda tc_id, name, args: _on_tool_start(
+    return {
+        "tool_start_callback": lambda tc_id, name, args: _on_tool_start(
             sid, tc_id, name, args
         ),
-        tool_complete_callback=lambda tc_id, name, args, result: _on_tool_complete(
+        "tool_complete_callback": lambda tc_id, name, args, result: _on_tool_complete(
             sid, tc_id, name, args, result
         ),
-        tool_progress_callback=lambda event_type, name=None, preview=None, args=None, **kwargs: _on_tool_progress(
+        "tool_progress_callback": lambda event_type, name=None, preview=None, args=None, **kwargs: _on_tool_progress(
             sid, event_type, name, preview, args, **kwargs
         ),
-        tool_gen_callback=lambda name: _tool_progress_enabled(sid)
+        "tool_gen_callback": lambda name: _tool_progress_enabled(sid)
         and _emit("tool.generating", sid, {"name": name}),
-        thinking_callback=lambda text: _emit("thinking.delta", sid, {"text": text}),
-        reasoning_callback=lambda text: _emit("reasoning.delta", sid, {"text": text}),
-        status_callback=lambda kind, text=None: _status_update(
+        "thinking_callback": lambda text: _emit("thinking.delta", sid, {"text": text}),
+        "reasoning_callback": lambda text: _emit(
+            "reasoning.delta",
+            sid,
+            {"text": text, **({"verbose": True} if _session_verbose(sid) else {})},
+        ),
+        "status_callback": lambda kind, text=None: _status_update(
             sid, str(kind), None if text is None else str(text)
         ),
-        clarify_callback=lambda q, c: _block(
+        "clarify_callback": lambda q, c: _block(
             "clarify.request", sid, {"question": q, "choices": c}
         ),
-    )
+    }
 
 
 def _wire_callbacks(sid: str):
@@ -1705,7 +1848,7 @@ def _available_personalities(cfg: dict | None = None) -> dict:
 def _validate_personality(value: str, cfg: dict | None = None) -> tuple[str, str]:
     raw = str(value or "").strip()
     name = raw.lower()
-    if not name or name in ("none", "default", "neutral"):
+    if not name or name in {"none", "default", "neutral"}:
         return "", ""
 
     personalities = _available_personalities(cfg)
@@ -1725,21 +1868,46 @@ def _validate_personality(value: str, cfg: dict | None = None) -> tuple[str, str
 def _apply_personality_to_session(
     sid: str, session: dict, new_prompt: str
 ) -> tuple[bool, dict | None]:
+    """Apply a personality change to an existing session without resetting history.
+
+    Updates the agent's ephemeral system prompt in-place so the new personality
+    takes effect on the next turn.  The cached base system prompt is left intact
+    (ephemeral_system_prompt is appended at API-call time, not baked into the
+    cache), which preserves prompt-cache hits.
+
+    Also injects a system-role marker into the conversation history so the model
+    knows to pivot its style from this point forward (without this, LLMs tend to
+    continue the tone established by earlier messages in the transcript).
+
+    Returns (history_reset, info) — history_reset is always False since we
+    preserve the conversation.
+    """
     if not session:
         return False, None
 
-    try:
-        info = _reset_session_agent(sid, session)
-        return True, info
-    except Exception:
-        if session.get("agent"):
-            agent = session["agent"]
-            agent.ephemeral_system_prompt = new_prompt or None
-            agent._cached_system_prompt = None
-            info = _session_info(agent)
-            _emit("session.info", sid, info)
-            return False, info
-        return False, None
+    agent = session.get("agent")
+    if agent:
+        agent.ephemeral_system_prompt = new_prompt or None
+        # Inject a pivot marker into history so the model sees the change point.
+        # This prevents it from pattern-matching its prior style.
+        if new_prompt:
+            marker = (
+                "[System: The user has changed the assistant's personality. "
+                "From this point forward, adopt the following persona and respond "
+                f"accordingly: {new_prompt}]"
+            )
+        else:
+            marker = (
+                "[System: The user has cleared the personality overlay. "
+                "From this point forward, respond in your normal default style.]"
+            )
+        with session["history_lock"]:
+            session["history"].append({"role": "user", "content": marker})
+            session["history_version"] = int(session.get("history_version", 0)) + 1
+        info = _session_info(agent)
+        _emit("session.info", sid, info)
+        return False, info
+    return False, None
 
 
 def _cfg_max_turns(cfg: dict, default: int) -> int:
@@ -1791,6 +1959,7 @@ def _background_agent_kwargs(agent, task_id: str) -> dict:
             agent, "provider_require_parameters", False
         ),
         "provider_data_collection": getattr(agent, "provider_data_collection", None),
+        "openrouter_min_coding_score": getattr(agent, "openrouter_min_coding_score", None),
         "session_id": task_id,
         "reasoning_config": getattr(agent, "reasoning_config", None)
         or _load_reasoning_config(),
@@ -1928,6 +2097,7 @@ def _init_session(sid: str, key: str, agent, history: list, cols: int = 80):
         # session startup resilient).
         pass
     _wire_callbacks(sid)
+    _sessions[sid]["_notif_stop"] = _start_notification_poller(sid, _sessions[sid])
     _notify_session_boundary("on_session_reset", key)
     _emit("session.info", sid, _session_info(agent))
 
@@ -2026,7 +2196,7 @@ def _history_to_messages(history: list[dict]) -> list[dict]:
         if not isinstance(m, dict):
             continue
         role = m.get("role")
-        if role not in ("user", "assistant", "tool", "system"):
+        if role not in {"user", "assistant", "tool", "system"}:
             continue
         content_text = _content_display_text(m.get("content"))
         if role == "assistant" and m.get("tool_calls"):
@@ -2113,6 +2283,7 @@ def _(rid, params: dict) -> dict:
                 "skills": {},
                 "cwd": os.getenv("TERMINAL_CWD", os.getcwd()),
                 "lazy": True,
+                "profile_name": _current_profile_name(),
             },
         },
     )
@@ -2469,7 +2640,7 @@ def _(rid, params: dict) -> dict:
     removed = 0
     with session["history_lock"]:
         history = session.get("history", [])
-        while history and history[-1].get("role") in ("assistant", "tool"):
+        while history and history[-1].get("role") in {"assistant", "tool"}:
             history.pop()
             removed += 1
         if history and history[-1].get("role") == "user":
@@ -2587,7 +2758,7 @@ def _(rid, params: dict) -> dict:
         f"hermes_conversation_{_time.strftime('%Y%m%d_%H%M%S')}.json"
     )
     try:
-        with open(filename, "w") as f:
+        with open(filename, "w", encoding="utf-8") as f:
             json.dump(
                 {
                     "model": getattr(session["agent"], "model", ""),
@@ -3000,6 +3171,105 @@ def _(rid, params: dict) -> dict:
     return _ok(rid, {"status": "streaming"})
 
 
+def _notification_poller_loop(
+    stop_event: threading.Event, sid: str, session: dict
+) -> None:
+    """Poll completion_queue and dispatch notifications autonomously.
+
+    Runs in a daemon thread started by _init_session(). Emits a
+    status.update (kind=process) for user visibility, then chains an
+    agent turn via _run_prompt_submit if the session is idle.
+
+    NOTE: The completion_queue is global (one per process). If multiple
+    TUI sessions coexist, whichever poller wakes first grabs the event,
+    even if the process was started by a different session. This matches
+    CLI/gateway behavior (single session per process).
+    """
+    from tools.process_registry import process_registry, format_process_notification
+
+    while not stop_event.is_set() and not session.get("_finalized"):
+        try:
+            evt = process_registry.completion_queue.get(timeout=0.5)
+        except Exception:
+            continue
+
+        _evt_sid = evt.get("session_id", "")
+        if evt.get("type") == "completion" and process_registry.is_completion_consumed(_evt_sid):
+            continue
+
+        text = format_process_notification(evt)
+        if not text:
+            continue
+
+        _emit("status.update", sid, {"kind": "process", "text": text})
+
+        with session["history_lock"]:
+            if session.get("running"):
+                process_registry.completion_queue.put(evt)
+                continue
+            session["running"] = True
+
+        rid = f"__notif__{int(time.time() * 1000)}"
+        try:
+            _emit("message.start", sid)
+            _run_prompt_submit(rid, sid, session, text)
+        except Exception as exc:
+            print(
+                f"[tui_gateway] notification poller dispatch failed: "
+                f"{type(exc).__name__}: {exc}",
+                file=sys.stderr,
+            )
+            with session["history_lock"]:
+                session["running"] = False
+
+    # Drain any remaining events after stop signal (process all pending
+    # before exiting so nothing is lost on shutdown).
+    while not process_registry.completion_queue.empty():
+        try:
+            evt = process_registry.completion_queue.get_nowait()
+        except Exception:
+            break
+        _evt_sid = evt.get("session_id", "")
+        if evt.get("type") == "completion" and process_registry.is_completion_consumed(_evt_sid):
+            continue
+        text = format_process_notification(evt)
+        if not text:
+            continue
+
+        _emit("status.update", sid, {"kind": "process", "text": text})
+
+        with session["history_lock"]:
+            if session.get("running"):
+                process_registry.completion_queue.put(evt)
+                break
+            session["running"] = True
+
+        rid = f"__notif__{int(time.time() * 1000)}"
+        try:
+            _emit("message.start", sid)
+            _run_prompt_submit(rid, sid, session, text)
+        except Exception as exc:
+            print(
+                f"[tui_gateway] notification poller dispatch failed: "
+                f"{type(exc).__name__}: {exc}",
+                file=sys.stderr,
+            )
+            with session["history_lock"]:
+                session["running"] = False
+
+
+def _start_notification_poller(sid: str, session: dict) -> threading.Event:
+    """Start the background notification poller for a TUI session."""
+    stop = threading.Event()
+    t = threading.Thread(
+        target=_notification_poller_loop,
+        args=(stop, sid, session),
+        daemon=True,
+    )
+    t.start()
+    return stop
+
+
 def _run_prompt_submit(rid, sid: str, session: dict, text: Any) -> None:
     with session["history_lock"]:
         history = list(session["history"])
@@ -3358,6 +3628,36 @@ def _run_prompt_submit(rid, sid: str, session: dict, text: Any) -> None:
                 with session["history_lock"]:
                     session["running"] = False
 
+        # Drain completion notifications that arrived during this turn.
+        # The background poller handles between-turn delivery; this is
+        # the safety net for events that arrived mid-turn.
+        try:
+            from tools.process_registry import process_registry
+
+            for _evt, synth in process_registry.drain_notifications():
+                with session["history_lock"]:
+                    if session.get("running"):
+                        process_registry.completion_queue.put(_evt)
+                        break
+                    session["running"] = True
+                try:
+                    _emit("message.start", sid)
+                    _run_prompt_submit(rid, sid, session, synth)
+                except Exception as _n_exc:
+                    print(
+                        f"[tui_gateway] completion notification dispatch failed: "
+                        f"{type(_n_exc).__name__}: {_n_exc}",
+                        file=sys.stderr,
+                    )
+                    with session["history_lock"]:
+                        session["running"] = False
+        except Exception as _drain_exc:
+            print(
+                f"[tui_gateway] completion queue drain failed: "
+                f"{type(_drain_exc).__name__}: {_drain_exc}",
+                file=sys.stderr,
+            )
+
     threading.Thread(target=run, daemon=True).start()
 
 
@@ -3641,7 +3941,7 @@ def _(rid, params: dict) -> dict:
                 {"key": key, "value": "fast" if current_fast else "normal"},
             )
 
-        if raw in ("", "toggle"):
+        if raw in {"", "toggle"}:
             nv = "normal" if current_fast else "fast"
         elif raw in {"fast", "on"}:
             nv = "fast"
@@ -3689,7 +3989,7 @@ def _(rid, params: dict) -> dict:
 
     if key == "busy":
         raw = str(value or "").strip().lower()
-        if raw in ("", "status"):
+        if raw in {"", "status"}:
             return _ok(rid, {"key": key, "value": _load_busy_input_mode()})
         if raw not in {"queue", "steer", "interrupt"}:
             return _err(rid, 4002, f"unknown busy mode: {value}")
@@ -3754,7 +4054,7 @@ def _(rid, params: dict) -> dict:
             from hermes_constants import parse_reasoning_effort
 
             arg = str(value or "").strip().lower()
-            if arg in ("show", "on"):
+            if arg in {"show", "on"}:
                 cfg = _load_cfg()
                 display = (
                     cfg.get("display") if isinstance(cfg.get("display"), dict) else {}
@@ -3772,7 +4072,7 @@ def _(rid, params: dict) -> dict:
                 if session:
                     session["show_reasoning"] = True
                 return _ok(rid, {"key": key, "value": "show"})
-            if arg in ("hide", "off"):
+            if arg in {"hide", "off"}:
                 cfg = _load_cfg()
                 display = (
                     cfg.get("display") if isinstance(cfg.get("display"), dict) else {}
@@ -3867,7 +4167,7 @@ def _(rid, params: dict) -> dict:
         cfg0 = _load_cfg()
         d0 = cfg0.get("display") if isinstance(cfg0.get("display"), dict) else {}
         cur_b = bool(d0.get("tui_compact", False))
-        if raw in ("", "toggle"):
+        if raw in {"", "toggle"}:
             nv_b = not cur_b
         elif raw == "on":
             nv_b = True
@@ -3884,7 +4184,7 @@ def _(rid, params: dict) -> dict:
         d0 = display if isinstance(display, dict) else {}
         current = _coerce_statusbar(d0.get("tui_statusbar", "top"))
 
-        if raw in ("", "toggle"):
+        if raw in {"", "toggle"}:
             nv = "top" if current == "off" else "off"
         elif raw == "on":
             nv = "top"
@@ -3897,22 +4197,25 @@ def _(rid, params: dict) -> dict:
         return _ok(rid, {"key": key, "value": nv})
 
     if key == "mouse":
-        raw = str(value or "").strip().lower()
+        # Explicit None check rather than `value or ""` so falsy non-string
+        # inputs (0, False) reach the alias map as themselves — both map to
+        # 'off' via _MOUSE_TRACKING_ALIASES — instead of being collapsed to
+        # '' and triggering the toggle path. The slash command always passes
+        # a string, but programmatic JSON-RPC callers may send booleans.
+        raw = ("" if value is None else str(value)).strip().lower()
         cfg = _load_cfg()
         display = cfg.get("display") if isinstance(cfg.get("display"), dict) else {}
         current = _display_mouse_tracking(display)
 
-        if raw in ("", "toggle"):
-            nv = not current
-        elif raw == "on":
-            nv = True
-        elif raw == "off":
-            nv = False
+        if raw in {"", "toggle"}:
+            nv = "all" if current == "off" else "off"
+        elif raw in _MOUSE_TRACKING_ALIASES:
+            nv = _MOUSE_TRACKING_ALIASES[raw]
         else:
             return _err(rid, 4002, f"unknown mouse value: {value}")
 
         _write_config_key("display.mouse_tracking", nv)
-        return _ok(rid, {"key": key, "value": "on" if nv else "off"})
+        return _ok(rid, {"key": key, "value": nv})
 
     if key == "indicator":
         # Use an explicit None check rather than `value or ""` so falsy
@@ -3928,7 +4231,7 @@ def _(rid, params: dict) -> dict:
         _write_config_key("display.tui_status_indicator", raw)
         return _ok(rid, {"key": key, "value": raw})
 
-    if key in ("prompt", "personality", "skin"):
+    if key in {"prompt", "personality", "skin"}:
         try:
             cfg = _load_cfg()
             if key == "prompt":
@@ -4085,8 +4388,7 @@ def _(rid, params: dict) -> dict:
         return _ok(rid, {"value": _coerce_statusbar(raw)})
     if key == "mouse":
         display = _load_cfg().get("display")
-        on = _display_mouse_tracking(display)
-        return _ok(rid, {"value": "on" if on else "off"})
+        return _ok(rid, {"value": _display_mouse_tracking(display)})
     if key == "mtime":
         cfg_path = _hermes_home / "config.yaml"
         try:
@@ -4212,7 +4514,6 @@ _TUI_HIDDEN: frozenset[str] = frozenset(
     {
         "sethome",
         "set-home",
-        "update",
         "commands",
         "approve",
         "deny",
@@ -4222,7 +4523,11 @@ _TUI_HIDDEN: frozenset[str] = frozenset(
 _TUI_EXTRA: list[tuple[str, str, str]] = [
     ("/compact", "Toggle compact display mode", "TUI"),
     ("/logs", "Show recent gateway log lines", "TUI"),
-    ("/mouse", "Toggle mouse/wheel tracking [on|off|toggle]", "TUI"),
+    (
+        "/mouse",
+        "Set mouse tracking preset [on|off|toggle|wheel|buttons|all]",
+        "TUI",
+    ),
 ]
 
 # Commands that queue messages onto _pending_input in the CLI.
@@ -4491,7 +4796,7 @@ def _(rid, params: dict) -> dict:
     # In the TUI the slash worker subprocess has no reader for that queue,
     # so we handle them here and return a structured payload.
 
-    if name in ("queue", "q"):
+    if name in {"queue", "q"}:
         if not arg:
             return _err(rid, 4004, "usage: /queue <prompt>")
         return _ok(rid, {"type": "send", "message": arg})
@@ -4590,7 +4895,7 @@ def _(rid, params: dict) -> dict:
                     ),
                 },
             )
-        if lower in ("clear", "stop", "done"):
+        if lower in {"clear", "stop", "done"}:
             had = mgr.has_goal()
             mgr.clear()
             return _ok(
@@ -4621,7 +4926,7 @@ def _(rid, params: dict) -> dict:
             {"type": "send", "notice": notice, "message": state.goal},
         )
 
-    if name in ("snapshot", "snap"):
+    if name in {"snapshot", "snap"}:
         subcommand = arg.split(maxsplit=1)[0].lower() if arg else ""
         if subcommand in {"restore", "rewind"}:
             return _ok(
@@ -4866,7 +5171,7 @@ def _(rid, params: dict) -> dict:
         # Accept both `@folder:path` and the bare `@folder` form so the user
         # sees directory listings as soon as they finish typing the keyword,
         # without first accepting the static `@folder:` hint.
-        if is_context and query in ("file", "folder"):
+        if is_context and query in {"file", "folder"}:
             prefix_tag, path_part = query, ""
         elif is_context and query.startswith(("file:", "folder:")):
             prefix_tag, _, tail = query.partition(":")
@@ -5065,9 +5370,11 @@ def _(rid, params: dict) -> dict:
         from prompt_toolkit.formatted_text import to_plain_text
 
         from agent.skill_commands import get_skill_commands
+        from agent.skill_bundles import get_skill_bundles
 
         completer = SlashCommandCompleter(
-            skill_commands_provider=lambda: get_skill_commands()
+            skill_commands_provider=lambda: get_skill_commands(),
+            skill_bundles_provider=lambda: get_skill_bundles(),
         )
         doc = Document(text, len(text))
         items = [
@@ -5098,7 +5405,7 @@ def _(rid, params: dict) -> dict:
             {
                 "text": "/mouse",
                 "display": "/mouse",
-                "meta": "Toggle mouse/wheel tracking [on|off|toggle]",
+                "meta": "Set mouse tracking preset [on|off|toggle|wheel|buttons|all]",
             },
         ]
         for extra in extras:
@@ -5128,94 +5435,37 @@ def _(rid, params: dict) -> dict:
 @method("model.options")
 def _(rid, params: dict) -> dict:
     try:
-        from hermes_cli.model_switch import list_authenticated_providers
-        from hermes_cli.models import CANONICAL_PROVIDERS, _PROVIDER_LABELS
+        from hermes_cli.inventory import build_models_payload, load_picker_context
 
         session = _sessions.get(params.get("session_id", ""))
         agent = session.get("agent") if session else None
-        cfg = _load_cfg()
-        current_provider = getattr(agent, "provider", "") or ""
-        current_model = getattr(agent, "model", "") or _resolve_model()
-        current_base_url = getattr(agent, "base_url", "") or ""
-        # list_authenticated_providers already populates each provider's
-        # "models" with the curated list (same source as `hermes model` and
-        # classic CLI's /model picker). Do NOT overwrite with live
-        # provider_model_ids() — that bypasses curation and pulls in
-        # non-agentic models (e.g. Nous /models returns ~400 IDs including
-        # TTS, embeddings, rerankers, image/video generators).
-        user_provs = (
-            cfg.get("providers") if isinstance(cfg.get("providers"), dict) else {}
+        # Layer agent-session state on top of disk config — once an agent
+        # is spawned, IT owns the live provider/model/base_url. Empty
+        # agent attributes must NOT clobber disk config (with_overrides
+        # is truthy-only).
+        ctx = load_picker_context().with_overrides(
+            current_provider=getattr(agent, "provider", "") if agent else "",
+            current_model=(
+                (getattr(agent, "model", "") if agent else "") or _resolve_model()
+            ),
+            current_base_url=getattr(agent, "base_url", "") if agent else "",
         )
-        custom_provs = (
-            cfg.get("custom_providers")
-            if isinstance(cfg.get("custom_providers"), list)
-            else []
-        )
-        authenticated = list_authenticated_providers(
-            current_provider=current_provider,
-            current_base_url=current_base_url,
-            current_model=current_model,
-            user_providers=user_provs,
-            custom_providers=custom_provs,
+        # picker_hints + canonical_order produce the TUI's required shape:
+        # `authenticated`/`auth_type`/`key_env`/`warning` per row, in
+        # CANONICAL_PROVIDERS declaration order. include_unconfigured=True
+        # so the picker can show the full provider universe (with the
+        # setup-hint warning attached) instead of only authed rows.
+        # Curated model lists are preserved — list_authenticated_providers
+        # populates `models` from the curated catalog, not provider_model_ids
+        # (which would pull non-agentic models like TTS/embeddings/etc.).
+        payload = build_models_payload(
+            ctx,
+            include_unconfigured=True,
+            picker_hints=True,
+            canonical_order=True,
             max_models=50,
         )
-
-        # Mark authenticated providers and build lookup by slug
-        authed_map: dict = {}
-        authed_extra: list = []  # user-defined/custom not in CANONICAL_PROVIDERS
-        canonical_slugs = {e.slug for e in CANONICAL_PROVIDERS}
-        for p in authenticated:
-            p["authenticated"] = True
-            authed_map[p["slug"]] = p
-            if p["slug"] not in canonical_slugs:
-                authed_extra.append(p)
-
-        # Build final list in CANONICAL_PROVIDERS order, merging auth data
-        from hermes_cli.auth import PROVIDER_REGISTRY as _auth_reg
-
-        ordered: list = []
-        for entry in CANONICAL_PROVIDERS:
-            if entry.slug in authed_map:
-                ordered.append(authed_map[entry.slug])
-            else:
-                pconfig = _auth_reg.get(entry.slug)
-                auth_type = pconfig.auth_type if pconfig else "api_key"
-                key_env = (
-                    pconfig.api_key_env_vars[0]
-                    if (pconfig and pconfig.api_key_env_vars)
-                    else ""
-                )
-                if auth_type == "api_key" and key_env:
-                    warning = f"paste {key_env} to activate"
-                else:
-                    warning = f"run `hermes model` to configure ({auth_type})"
-                ordered.append(
-                    {
-                        "slug": entry.slug,
-                        "name": _PROVIDER_LABELS.get(entry.slug, entry.label),
-                        "is_current": entry.slug == current_provider,
-                        "is_user_defined": False,
-                        "models": [],
-                        "total_models": 0,
-                        "source": "built-in",
-                        "authenticated": False,
-                        "auth_type": auth_type,
-                        "key_env": key_env,
-                        "warning": warning,
-                    }
-                )
-
-        # Append user-defined/custom providers not in canonical list
-        ordered.extend(authed_extra)
-
-        return _ok(
-            rid,
-            {
-                "providers": ordered,
-                "model": current_model,
-                "provider": current_provider,
-            },
-        )
+        return _ok(rid, payload)
     except Exception as e:
         return _err(rid, 5033, str(e))
 
@@ -5234,7 +5484,7 @@ def _(rid, params: dict) -> dict:
     try:
         from hermes_cli.auth import PROVIDER_REGISTRY
         from hermes_cli.config import is_managed, save_env_value
-        from hermes_cli.model_switch import list_authenticated_providers
+        from hermes_cli.inventory import build_models_payload, load_picker_context
 
         slug = (params.get("slug") or "").strip()
         api_key = (params.get("api_key") or "").strip()
@@ -5260,43 +5510,32 @@ def _(rid, params: dict) -> dict:
         # Save the key to ~/.hermes/.env
         env_var = pconfig.api_key_env_vars[0]
         save_env_value(env_var, api_key)
-        # Also set in current process so list_authenticated_providers sees it
+        # Also set in current process so the refreshed inventory sees it.
         import os
 
         os.environ[env_var] = api_key
 
-        # Refresh provider data
-        cfg = _load_cfg()
+        # Refresh provider data via the shared inventory builder so this
+        # surface stays in lock-step with model.options + dashboard
+        # /api/model/options. picker_hints=True ensures the returned row
+        # carries `authenticated` for the TUI frontend.
         session = _sessions.get(params.get("session_id", ""))
         agent = session.get("agent") if session else None
-        current_provider = getattr(agent, "provider", "") or ""
-        current_model = getattr(agent, "model", "") or _resolve_model()
-        current_base_url = getattr(agent, "base_url", "") or ""
-
-        providers = list_authenticated_providers(
-            current_provider=current_provider,
-            current_base_url=current_base_url,
-            current_model=current_model,
-            user_providers=(
-                cfg.get("providers") if isinstance(cfg.get("providers"), dict) else {}
+        ctx = load_picker_context().with_overrides(
+            current_provider=getattr(agent, "provider", "") if agent else "",
+            current_model=(
+                (getattr(agent, "model", "") if agent else "") or _resolve_model()
             ),
-            custom_providers=(
-                cfg.get("custom_providers")
-                if isinstance(cfg.get("custom_providers"), list)
-                else []
-            ),
-            max_models=50,
+            current_base_url=getattr(agent, "base_url", "") if agent else "",
         )
-
-        # Find the newly-authenticated provider
-        provider_data = None
-        for p in providers:
-            if p["slug"] == slug:
-                provider_data = p
-                break
-
-        if not provider_data:
-            # Key was saved but provider didn't appear — still return success
+        payload = build_models_payload(
+            ctx, picker_hints=True, max_models=50,
+        )
+        provider_data = next(
+            (p for p in payload["providers"] if p["slug"] == slug), None
+        )
+        if provider_data is None:
+            # Key was saved but provider didn't appear — still return success.
             provider_data = {
                 "slug": slug,
                 "name": pconfig.name,
@@ -5305,7 +5544,8 @@ def _(rid, params: dict) -> dict:
                 "total_models": 0,
                 "authenticated": True,
             }
-
+        # picker_hints sets `authenticated` from the row state, but the
+        # synthetic fallback above doesn't go through that path.
         provider_data["authenticated"] = True
         return _ok(rid, {"provider": provider_data})
     except Exception as e:
@@ -5610,7 +5850,7 @@ def _(rid, params: dict) -> dict:
 
         return _ok(rid, payload)
 
-    if action in ("on", "off"):
+    if action in {"on", "off"}:
         enabled = action == "on"
         # Runtime-only flag (CLI parity) — no _write_config_key, so the
         # next TUI launch starts with voice OFF instead of auto-REC from a
@@ -5843,7 +6083,7 @@ def _(rid, params: dict) -> dict:
                 removed = 0
                 with session["history_lock"]:
                     history = session.get("history", [])
-                    while history and history[-1].get("role") in ("assistant", "tool"):
+                    while history and history[-1].get("role") in {"assistant", "tool"}:
                         history.pop()
                         removed += 1
                     if history and history[-1].get("role") == "user":
@@ -5972,17 +6212,17 @@ def _failure_messages(url: str, port: int, system: str) -> list[str]:
 
     command = manual_chrome_debug_command(port, system)
     hint = (
-        ["Start Chrome with remote debugging, then retry /browser connect:", command]
+        ["Start a Chromium-family browser with remote debugging, then retry /browser connect:", command]
         if command
         else [
-            "No Chrome/Chromium executable was found in this environment.",
-            f"Install one or start Chrome with --remote-debugging-port={port}, then retry /browser connect.",
+            "No supported Chromium-family browser executable was found in this environment.",
+            f"Install one or start a Chromium-family browser with --remote-debugging-port={port}, then retry /browser connect.",
         ]
     )
     return [
-        f"Chrome is not reachable at {url}.",
+        f"Browser CDP is not reachable at {url}.",
         *hint,
-        "Browser not connected — start Chrome with remote debugging and retry /browser connect",
+        "Browser not connected — start a Chromium-family browser with remote debugging and retry /browser connect",
     ]
 
 
@@ -6068,7 +6308,7 @@ def _browser_connect(rid, params: dict) -> dict:
                 from hermes_cli.browser_connect import try_launch_chrome_debug
 
                 announce(
-                    "Chrome isn't running with remote debugging — attempting to launch..."
+                    "Chromium-family browser isn't running with remote debugging — attempting to launch..."
                 )
 
                 if try_launch_chrome_debug(port, system):
@@ -6079,7 +6319,7 @@ def _browser_connect(rid, params: dict) -> dict:
                             break
 
                 if ok:
-                    announce(f"Chrome launched and listening on port {port}")
+                    announce(f"Chromium-family browser launched and listening on port {port}")
                 else:
                     for line in _failure_messages(url, port, system)[1:]:
                         announce(line, level="error")
@@ -6089,7 +6329,7 @@ def _browser_connect(rid, params: dict) -> dict:
             elif not ok:
                 return _err(rid, 5031, f"could not reach browser CDP at {url}")
             elif _is_default_local_cdp(parsed):
-                announce(f"Chrome is already listening on port {port}")
+                announce(f"Chromium-family browser is already listening on port {port}")
 
         normalized = _normalize_cdp_url(parsed)
 
@@ -6401,7 +6641,7 @@ def _(rid, params: dict) -> dict:
                     )
                 ),
             )
-        if action in ("remove", "pause", "resume"):
+        if action in {"remove", "pause", "resume"}:
             return _ok(rid, json.loads(cronjob(action=action, job_id=jid)))
         return _err(rid, 4016, f"unknown cron action: {action}")
     except Exception as e:

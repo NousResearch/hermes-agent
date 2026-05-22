@@ -44,7 +44,7 @@ def _simulate_config_bridge(cfg: dict, initial_env: dict | None = None):
                 val = terminal_cfg[cfg_key]
                 # Skip cwd placeholder values — don't overwrite already-resolved
                 # TERMINAL_CWD.  Mirrors the fix in gateway/run.py.
-                if cfg_key == "cwd" and str(val) in (".", "auto", "cwd"):
+                if cfg_key == "cwd" and str(val) in {".", "auto", "cwd"}:
                     continue
                 # Expand shell tilde so subprocess.Popen never receives a literal
                 # "~/" which the kernel rejects.
@@ -70,7 +70,7 @@ def _simulate_config_bridge(cfg: dict, initial_env: dict | None = None):
 
     # --- Replicate lines 144-147: MESSAGING_CWD fallback ---
     configured_cwd = env.get("TERMINAL_CWD", "")
-    if not configured_cwd or configured_cwd in (".", "auto", "cwd"):
+    if not configured_cwd or configured_cwd in {".", "auto", "cwd"}:
         messaging_cwd = env.get("MESSAGING_CWD") or "/root"  # Path.home() for root
         env["TERMINAL_CWD"] = messaging_cwd
 

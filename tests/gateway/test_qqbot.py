@@ -4,6 +4,7 @@ import asyncio
 import json
 import os
 import sys
+from types import SimpleNamespace
 from unittest import mock
 
 import pytest
@@ -578,6 +579,7 @@ class TestWaitForReconnection:
         async def reconnect_after_delay():
             await asyncio.sleep(0.3)
             adapter._running = True
+            adapter._ws = SimpleNamespace(closed=False)
 
         asyncio.get_event_loop().create_task(reconnect_after_delay())
 
@@ -603,6 +605,7 @@ class TestWaitForReconnection:
         """send() should not wait when already connected."""
         adapter = self._make_adapter(app_id="a", client_secret="b")
         adapter._running = True
+        adapter._ws = SimpleNamespace(closed=False)
         adapter._http_client = mock.MagicMock()
 
         async def fake_api_request(*args, **kwargs):
@@ -1073,7 +1076,7 @@ class TestBuildApprovalKeyboard:
             parsed = parse_approval_button_data(btn.action.data)
             assert parsed is not None
             assert parsed[0] == session_key
-            assert parsed[1] in ("allow-once", "allow-always", "deny")
+            assert parsed[1] in {"allow-once", "allow-always", "deny"}
 
 
 class TestBuildUpdatePromptKeyboard:

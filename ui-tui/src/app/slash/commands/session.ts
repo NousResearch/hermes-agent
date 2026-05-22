@@ -93,6 +93,19 @@ export const sessionCommands: SlashCommand[] = [
   },
 
   {
+    help: 'browse and resume previous sessions',
+    name: 'sessions',
+    run: (arg, ctx) => {
+      if (ctx.session.guardBusySessionSwitch('switch sessions')) {
+        return
+      }
+      if (!arg.trim()) {
+        return patchOverlayState({ picker: true })
+      }
+    }
+  },
+
+  {
     help: 'attach an image',
     name: 'image',
     run: (arg, ctx) => {
@@ -109,7 +122,7 @@ export const sessionCommands: SlashCommand[] = [
   },
 
   {
-    help: 'switch or reset personality (history reset on set)',
+    help: 'switch personality for this session',
     name: 'personality',
     run: (arg, ctx) => {
       if (!arg) {
@@ -199,7 +212,6 @@ export const sessionCommands: SlashCommand[] = [
           void ctx.session.closeSession(prevSid)
           patchUiState({ sid: r.session_id })
           ctx.session.setSessionStartedAt(Date.now())
-          ctx.transcript.setHistoryItems([])
           ctx.transcript.sys(`branched → ${r.title ?? ''}`)
         })
       )

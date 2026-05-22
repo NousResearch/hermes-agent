@@ -239,7 +239,7 @@ class ChunkedUploader:
         :raises UploadFileTooLargeError: When the file exceeds the platform limit.
         :raises RuntimeError: On other API or I/O failures.
         """
-        if chat_type not in ("c2c", "group"):
+        if chat_type not in {"c2c", "group"}:
             raise ValueError(
                 f"ChunkedUploader: unsupported chat_type {chat_type!r}"
             )
@@ -592,8 +592,7 @@ async def _run_with_concurrency(
     concurrency: int,
 ) -> None:
     """Run a list of thunks with a bounded number in flight at once."""
-    if concurrency < 1:
-        concurrency = 1
+    concurrency = max(concurrency, 1)
     sem = asyncio.Semaphore(concurrency)
 
     async def _wrap(thunk: Callable[[], Awaitable[None]]) -> None:

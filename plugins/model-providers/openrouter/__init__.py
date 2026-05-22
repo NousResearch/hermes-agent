@@ -46,6 +46,23 @@ class OpenRouterProfile(ProviderProfile):
         prefs = context.get("provider_preferences")
         if prefs:
             body["provider"] = prefs
+
+        # Pareto Code router — model-gated. The plugins block is only
+        # meaningful for openrouter/pareto-code; sending it on any other
+        # model has no documented effect and would be confusing in logs.
+        # See: https://openrouter.ai/docs/guides/routing/routers/pareto-router
+        model = (context.get("model") or "")
+        if model == "openrouter/pareto-code":
+            score = context.get("openrouter_min_coding_score")
+            if score is not None and score != "":
+                try:
+                    score_f = float(score)
+                except (TypeError, ValueError):
+                    score_f = None
+                if score_f is not None and 0.0 <= score_f <= 1.0:
+                    body["plugins"] = [
+                        {"id": "pareto-router", "min_coding_score": score_f}
+                    ]
         return body
 
     def build_api_kwargs_extras(
@@ -53,16 +70,28 @@ class OpenRouterProfile(ProviderProfile):
         *,
         reasoning_config: dict | None = None,
         supports_reasoning: bool = False,
+        model: str | None = None,
+        session_id: str | None = None,
         **context: Any,
     ) -> tuple[dict[str, Any], dict[str, Any]]:
-        """OpenRouter passes the full reasoning_config dict as extra_body.reasoning."""
+        """OpenRouter passes the full reasoning_config dict as extra_body.reasoning.
+
+        For xAI Grok models routed through OpenRouter, attach the
+        ``x-grok-conv-id`` header so that xAI's prompt cache stays pinned to
+        the same backend server across turns.
+        """
         extra_body: dict[str, Any] = {}
         if supports_reasoning:
             if reasoning_config is not None:
                 extra_body["reasoning"] = dict(reasoning_config)
             else:
                 extra_body["reasoning"] = {"enabled": True, "effort": "medium"}
-        return extra_body, {}
+
+        extra_headers: dict[str, Any] = {}
+        if session_id and model and model.startswith(("x-ai/grok-", "xai/grok-")):
+            extra_headers["x-grok-conv-id"] = session_id
+
+        return extra_body, {"extra_headers": extra_headers} if extra_headers else {}
 
 
 openrouter = OpenRouterProfile(

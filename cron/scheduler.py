@@ -14,8 +14,10 @@ import contextvars
 import json
 import logging
 import os
+import shutil
 import subprocess
 import sys
+from contextlib import contextmanager
 
 # fcntl is Unix-only; on Windows use msvcrt for file locking
 try:
@@ -35,6 +37,7 @@ from typing import List, Optional
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from hermes_constants import get_hermes_home
+from hermes_cli._subprocess_compat import windows_hide_flags
 from hermes_cli.config import load_config, _expand_env_vars
 from hermes_time import now as _hermes_now
 
@@ -110,6 +113,7 @@ _HOME_TARGET_ENV_VARS = {
     "weixin": "WEIXIN_HOME_CHANNEL",
     "bluebubbles": "BLUEBUBBLES_HOME_CHANNEL",
     "qqbot": "QQBOT_HOME_CHANNEL",
+    "whatsapp": "WHATSAPP_HOME_CHANNEL",
 }
 
 # Legacy env var names kept for back-compat.  Each entry is the current
@@ -141,6 +145,71 @@ def _get_lock_paths() -> tuple[Path, Path]:
     hermes_home = _get_hermes_home()
     lock_dir = hermes_home / "cron"
     return lock_dir, lock_dir / ".tick.lock"
+
+
+@contextmanager
+def _job_profile_context(job_id: str, profile: Optional[str]):
+    """Temporarily run a job under a specific Hermes profile.
+
+    Cron jobs are stored and scheduled by the profile running the scheduler, but
+    an individual job can opt into a different runtime profile. While active,
+    the scheduler's test/override hook and a context-local Hermes home override
+    both point at the resolved profile directory so _get_hermes_home(),
+    .env/config loading, script resolution, AIAgent construction, and downstream
+    get_hermes_home() callers agree on the same home.
+
+    Some existing provider/config paths still load profile .env values through
+    os.environ, so profile jobs also snapshot and restore the process
+    environment on exit. tick() runs profile jobs sequentially to keep that
+    temporary mutation isolated from other scheduled jobs.
+    """
+    raw_profile = str(profile or "").strip()
+    if not raw_profile:
+        yield None
+        return
+
+    global _hermes_home
+    prior_override = _hermes_home
+    env_snapshot = os.environ.copy()
+
+    from hermes_cli.profiles import normalize_profile_name, resolve_profile_env
+    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+
+    normalized_profile = normalize_profile_name(raw_profile)
+    try:
+        profile_home = Path(resolve_profile_env(normalized_profile)).resolve()
+    except (FileNotFoundError, ValueError) as exc:
+        logger.warning(
+            "Job '%s': configured profile %r no longer valid (%s) — "
+            "falling back to scheduler default",
+            job_id, raw_profile, exc,
+        )
+        yield None
+        return
+
+    override_token = None
+    try:
+        override_token = set_hermes_home_override(profile_home)
+        _hermes_home = profile_home
+        logger.info(
+            "Job '%s': using Hermes profile '%s' (%s)",
+            job_id,
+            normalized_profile,
+            profile_home,
+        )
+        yield normalized_profile
+    finally:
+        _hermes_home = prior_override
+        if override_token is not None:
+            reset_hermes_home_override(override_token)
+        # Delta-based restore: remove added keys, restore changed keys.
+        # Avoids a brief window where other threads see an empty env.
+        added = set(os.environ.keys()) - set(env_snapshot.keys())
+        for k in added:
+            os.environ.pop(k, None)
+        for k, v in env_snapshot.items():
+            if os.environ.get(k) != v:
+                os.environ[k] = v
 
 
 def _resolve_origin(job: dict) -> Optional[dict]:
@@ -224,10 +293,23 @@ def _get_home_target_chat_id(platform_name: str) -> str:
 
 
 def _get_home_target_thread_id(platform_name: str) -> Optional[str]:
-    """Return the optional thread/topic ID for a platform home target."""
+    """Return the optional thread/topic ID for a platform home target.
+
+    Telegram-only override: ``TELEGRAM_CRON_THREAD_ID`` takes precedence over
+    ``TELEGRAM_HOME_CHANNEL_THREAD_ID`` for cron delivery. When topic mode is
+    enabled, deliveries that land in the root DM (thread_id unset) end up in
+    the system-only lobby where the user cannot reply — the gateway returns
+    the lobby reminder and drops ``reply_to_message_id`` (#24409). Pointing
+    cron at a dedicated topic via this env var lets replies work as expected
+    without changing the lobby invariant.
+    """
     env_var = _resolve_home_env_var(platform_name)
     if not env_var:
         return None
+    if platform_name.lower() == "telegram":
+        cron_thread = os.getenv("TELEGRAM_CRON_THREAD_ID", "").strip()
+        if cron_thread:
+            return cron_thread
     value = os.getenv(f"{env_var}_THREAD_ID", "").strip()
     if not value:
         legacy = _LEGACY_HOME_TARGET_ENV_VARS.get(env_var)
@@ -360,12 +442,52 @@ def _normalize_deliver_value(deliver) -> str:
     return str(deliver)
 
 
+# Routing intent tokens — resolved at fire time, not create time, so a
+# job created before Telegram was wired up will pick up Telegram once it
+# comes online.  ``all`` expands into the set of connected platforms
+# (those with a configured home chat_id) in _expand_routing_tokens.
+_ROUTING_TOKENS = frozenset({"all"})
+
+
+def _expand_routing_tokens(part: str) -> List[str]:
+    """Expand a routing-intent token to concrete platform names.
+
+    ``all`` expands to every platform in ``_iter_home_target_platforms()``
+    that has a configured home chat_id right now.  Unknown / non-token
+    values pass through unchanged as a single-element list, so the caller
+    can treat every token uniformly.
+    """
+    token = part.lower()
+    if token not in _ROUTING_TOKENS:
+        return [part]
+    expanded: List[str] = []
+    for platform_name in _iter_home_target_platforms():
+        if _get_home_target_chat_id(platform_name):
+            expanded.append(platform_name)
+    return expanded
+
+
 def _resolve_delivery_targets(job: dict) -> List[dict]:
-    """Resolve all concrete auto-delivery targets for a cron job (supports comma-separated deliver)."""
+    """Resolve all concrete auto-delivery targets for a cron job.
+
+    Accepts the legacy comma-separated ``deliver`` string plus the
+    ``all`` routing-intent token, which expands to every platform with
+    a configured home channel.  Tokens may be combined with explicit
+    targets: ``origin,all`` and ``all,telegram:-100:17`` both work.
+    Duplicate (platform, chat_id, thread_id) tuples are collapsed by the
+    existing dedup pass.
+    """
     deliver = _normalize_deliver_value(job.get("deliver", "local"))
     if deliver == "local":
         return []
-    parts = [p.strip() for p in deliver.split(",") if p.strip()]
+
+    raw_parts = [p.strip() for p in deliver.split(",") if p.strip()]
+
+    # Expand routing intents.
+    parts: List[str] = []
+    for raw in raw_parts:
+        parts.extend(_expand_routing_tokens(raw))
+
     seen = set()
     targets = []
     for part in parts:
@@ -422,7 +544,14 @@ def _send_media_via_adapter(
             else:
                 coro = adapter.send_document(chat_id=chat_id, file_path=media_path, metadata=metadata)
 
-            future = asyncio.run_coroutine_threadsafe(coro, loop)
+            from agent.async_utils import safe_schedule_threadsafe
+            future = safe_schedule_threadsafe(coro, loop)
+            if future is None:
+                logger.warning(
+                    "Job '%s': cannot send media %s, gateway loop unavailable",
+                    job.get("id", "?"), media_path,
+                )
+                return
             try:
                 result = future.result(timeout=30)
             except TimeoutError:
@@ -543,22 +672,39 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
                 text_to_send = cleaned_delivery_content.strip()
                 adapter_ok = True
                 if text_to_send:
-                    future = asyncio.run_coroutine_threadsafe(
+                    from agent.async_utils import safe_schedule_threadsafe
+                    future = safe_schedule_threadsafe(
                         runtime_adapter.send(chat_id, text_to_send, metadata=send_metadata),
                         loop,
                     )
-                    try:
-                        send_result = future.result(timeout=60)
-                    except TimeoutError:
-                        future.cancel()
-                        raise
-                    if send_result and not getattr(send_result, "success", True):
-                        err = getattr(send_result, "error", "unknown")
-                        logger.warning(
-                            "Job '%s': live adapter send to %s:%s failed (%s), falling back to standalone",
-                            job["id"], platform_name, chat_id, err,
-                        )
-                        adapter_ok = False  # fall through to standalone path
+                    if future is None:
+                        adapter_ok = False
+                    else:
+                        try:
+                            send_result = future.result(timeout=60)
+                        except TimeoutError:
+                            future.cancel()
+                            raise
+                        if send_result and not getattr(send_result, "success", True):
+                            err = getattr(send_result, "error", "unknown")
+                            logger.warning(
+                                "Job '%s': live adapter send to %s:%s failed (%s), falling back to standalone",
+                                job["id"], platform_name, chat_id, err,
+                            )
+                            adapter_ok = False  # fall through to standalone path
+                        elif (
+                            send_result
+                            and thread_id
+                            and getattr(send_result, "raw_response", None)
+                            and send_result.raw_response.get("thread_fallback")
+                        ):
+                            requested_thread_id = send_result.raw_response.get("requested_thread_id") or thread_id
+                            msg = (
+                                f"configured thread_id {requested_thread_id} for "
+                                f"{platform_name}:{chat_id} was not found; delivered without thread_id"
+                            )
+                            logger.warning("Job '%s': %s", job["id"], msg)
+                            delivery_errors.append(msg)
 
                 # Send extracted media files as native attachments via the live adapter
                 if adapter_ok and media_files:
@@ -679,8 +825,6 @@ def _run_job_script(script_path: str) -> tuple[bool, str]:
         (success, output) — on failure *output* contains the error message so the
         LLM can report the problem to the user.
     """
-    from hermes_constants import get_hermes_home
-
     scripts_dir = _get_hermes_home() / "scripts"
     scripts_dir.mkdir(parents=True, exist_ok=True)
     scripts_dir_resolved = scripts_dir.resolve()
@@ -713,18 +857,46 @@ def _run_job_script(script_path: str) -> tuple[bool, str]:
     # shebang: the scripts dir is trusted, but keeping the interpreter
     # choice explicit here keeps the allowed surface small and auditable.
     suffix = path.suffix.lower()
-    if suffix in (".sh", ".bash"):
-        argv = ["/bin/bash", str(path)]
+    if suffix in {".sh", ".bash"}:
+        # Resolve bash dynamically so Windows (Git Bash) and Linux/macOS
+        # all work.  On native Windows without Git for Windows installed
+        # shutil.which returns None — fall back to a clear error rather
+        # than a FileNotFoundError with a confusing "[WinError 2]"
+        # traceback.
+        _bash = shutil.which("bash") or (
+            "/bin/bash" if os.path.isfile("/bin/bash") else None
+        )
+        if _bash is None:
+            return False, (
+                f"Cannot run .sh/.bash script {path.name!r}: bash not found on PATH. "
+                "On Windows, install Git for Windows (which ships Git Bash) "
+                "or rewrite the script as Python (.py)."
+            )
+        argv = [_bash, str(path)]
     else:
         argv = [sys.executable, str(path)]
 
+    run_env = os.environ.copy()
+    run_env["HERMES_HOME"] = str(_get_hermes_home())
     try:
+        from hermes_constants import get_subprocess_home
+
+        profile_home = get_subprocess_home()
+        if profile_home:
+            run_env["HOME"] = profile_home
+    except Exception:
+        pass
+
+    try:
+        popen_kwargs = {"creationflags": windows_hide_flags()} if sys.platform == "win32" else {}
         result = subprocess.run(
             argv,
             capture_output=True,
             text=True,
             timeout=script_timeout,
             cwd=str(path.parent),
+            env=run_env,
+            **popen_kwargs,
         )
         stdout = (result.stdout or "").strip()
         stderr = (result.stderr or "").strip()
@@ -790,7 +962,7 @@ def _build_job_prompt(job: dict, prerun_script: Optional[tuple] = None) -> str:
             result is used for prompt injection. When omitted, the script
             (if any) runs inline as before.
     """
-    prompt = job.get("prompt", "")
+    prompt = str(job.get("prompt") or "")
     skills = job.get("skills")
 
     # Run data-collection script if configured, inject output as context.
@@ -878,6 +1050,8 @@ def _build_job_prompt(job: dict, prerun_script: Optional[tuple] = None) -> str:
     if skills is None:
         legacy = job.get("skill")
         skills = [legacy] if legacy else []
+    elif isinstance(skills, str):
+        skills = [skills]
 
     skill_names = [str(name).strip() for name in skills if str(name).strip()]
     if not skill_names:
@@ -889,7 +1063,12 @@ def _build_job_prompt(job: dict, prerun_script: Optional[tuple] = None) -> str:
     parts = []
     skipped: list[str] = []
     for skill_name in skill_names:
-        loaded = json.loads(skill_view(skill_name))
+        try:
+            loaded = json.loads(skill_view(skill_name))
+        except (json.JSONDecodeError, TypeError):
+            logger.warning("Cron job '%s': skill '%s' returned invalid JSON, skipping", job.get("name", job.get("id")), skill_name)
+            skipped.append(skill_name)
+            continue
         if not loaded.get("success"):
             error = loaded.get("error") or f"Failed to load skill '{skill_name}'"
             logger.warning("Cron job '%s': skill not found, skipping — %s", job.get("name", job.get("id")), error)
@@ -953,6 +1132,13 @@ def _scan_assembled_cron_prompt(assembled: str, job: dict) -> str:
 
 
 def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
+    """Execute a single cron job, applying any per-job profile override."""
+    job_id = job["id"]
+    with _job_profile_context(job_id, job.get("profile")):
+        return _run_job_impl(job)
+
+
+def _run_job_impl(job: dict) -> tuple[bool, str, str, Optional[str]]:
     """
     Execute a single cron job.
     
@@ -960,7 +1146,7 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
         Tuple of (success, full_output_doc, final_response, error_message)
     """
     job_id = job["id"]
-    job_name = job["name"]
+    job_name = str(job.get("name") or job.get("prompt") or job_id or "cron job")
 
     # ---------------------------------------------------------------
     # no_agent short-circuit — the script IS the job, no LLM involvement.
@@ -1149,10 +1335,31 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
     # don't clobber each other's targets (os.environ is process-global).
     from gateway.session_context import set_session_vars, clear_session_vars, _VAR_MAP
 
+    # Cron execution is an internal scheduler context, not a live inbound
+    # gateway message. Do not seed HERMES_SESSION_* contextvars from the
+    # stored ``origin`` (which is delivery routing metadata, not a sender
+    # identity). Several tool consumers branch on these vars during job
+    # execution and would otherwise behave as if a real user from the
+    # origin chat was driving the agent:
+    #   - tools/terminal_tool.py: background-process notification routing
+    #     (notify_on_complete / watch_patterns) reads HERMES_SESSION_PLATFORM
+    #     and HERMES_SESSION_CHAT_ID to populate watcher_platform / chat_id,
+    #     which would route completion notifications to the origin chat
+    #     instead of via HERMES_CRON_AUTO_DELIVER_* below.
+    #   - tools/tts_tool.py: picks Opus vs MP3 based on
+    #     HERMES_SESSION_PLATFORM == "telegram".
+    #   - tools/skills_tool.py + agent/prompt_builder.py: per-platform
+    #     skill-disable lists and the system-prompt cache key both consume
+    #     HERMES_SESSION_PLATFORM.
+    #   - tools/send_message_tool.py: mirror source labelling and the
+    #     send_message gate read HERMES_SESSION_PLATFORM.
+    # Cron output delivery itself reads job["origin"] directly via
+    # _resolve_origin(job) and the HERMES_CRON_AUTO_DELIVER_* vars set
+    # below, so clearing HERMES_SESSION_* here does not affect delivery.
     _ctx_tokens = set_session_vars(
-        platform=origin["platform"] if origin else "",
-        chat_id=str(origin["chat_id"]) if origin else "",
-        chat_name=origin.get("chat_name", "") if origin else "",
+        platform="",
+        chat_id="",
+        chat_name="",
     )
     _cron_delivery_vars = (
         "HERMES_CRON_AUTO_DELIVER_PLATFORM",
@@ -1168,8 +1375,9 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
     #     .cursorrules from the job's project dir, AND
     #   - the terminal, file, and code-exec tools run commands from there.
     #
-    # tick() serializes workdir-jobs outside the parallel pool, so mutating
-    # os.environ["TERMINAL_CWD"] here is safe for those jobs.  For workdir-less
+    # tick() serializes jobs that mutate process-global runtime state (workdir
+    # and/or profile jobs) outside the parallel pool, so mutating
+    # os.environ["TERMINAL_CWD"] here is safe for those jobs. For workdir-less
     # jobs we leave TERMINAL_CWD untouched — preserves the original behaviour
     # (skip_context_files=True, tools use whatever cwd the scheduler has).
     _job_workdir = (job.get("workdir") or "").strip() or None
@@ -1213,7 +1421,7 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
             import yaml
             _cfg_path = str(_get_hermes_home() / "config.yaml")
             if os.path.exists(_cfg_path):
-                with open(_cfg_path) as _f:
+                with open(_cfg_path, encoding="utf-8") as _f:
                     _cfg = yaml.safe_load(_f) or {}
                 _cfg = _expand_env_vars(_cfg)
                 _model_cfg = _cfg.get("model", {})
@@ -1361,6 +1569,7 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
             providers_ignored=pr.get("ignore"),
             providers_order=pr.get("order"),
             provider_sort=pr.get("sort"),
+            openrouter_min_coding_score=(_cfg.get("openrouter") or {}).get("min_coding_score"),
             enabled_toolsets=_resolve_cron_enabled_toolsets(job, _cfg),
             disabled_toolsets=["cronjob", "messaging", "clarify"],
             quiet_mode=True,
@@ -1596,7 +1805,7 @@ def tick(verbose: bool = True, adapters=None, loop=None) -> int:
     # Cross-platform file locking: fcntl on Unix, msvcrt on Windows
     lock_fd = None
     try:
-        lock_fd = open(lock_file, "w")
+        lock_fd = open(lock_file, "w", encoding="utf-8")
         if fcntl:
             fcntl.flock(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
         elif msvcrt:
@@ -1662,7 +1871,10 @@ def tick(verbose: bool = True, adapters=None, loop=None) -> int:
                 # If the agent responded with [SILENT], skip delivery (but
                 # output is already saved above).  Failed jobs always deliver.
                 deliver_content = final_response if success else f"⚠️ Cron job '{job.get('name', job['id'])}' failed:\n{error}"
-                should_deliver = bool(deliver_content)
+                # Treat whitespace-only final responses the same as empty
+                # responses: do not deliver a blank message, and let the
+                # empty-response guard below mark the run as a soft failure.
+                should_deliver = bool(deliver_content.strip())
                 if should_deliver and success and SILENT_MARKER in deliver_content.strip().upper():
                     logger.info("Job '%s': agent returned %s — skipping delivery", job["id"], SILENT_MARKER)
                     should_deliver = False
@@ -1678,7 +1890,7 @@ def tick(verbose: bool = True, adapters=None, loop=None) -> int:
                 # Treat empty final_response as a soft failure so last_status
                 # is not "ok" — the agent ran but produced nothing useful.
                 # (issue #8585)
-                if success and not final_response:
+                if success and not final_response.strip():
                     success = False
                     error = "Agent completed but produced empty response (model error, timeout, or misconfiguration)"
 
@@ -1690,17 +1902,26 @@ def tick(verbose: bool = True, adapters=None, loop=None) -> int:
                 mark_job_run(job["id"], False, str(e))
                 return False
 
-        # Partition due jobs: those with a per-job workdir mutate
-        # os.environ["TERMINAL_CWD"] inside run_job, which is process-global —
-        # so they MUST run sequentially to avoid corrupting each other.  Jobs
-        # without a workdir leave env untouched and stay parallel-safe.
-        workdir_jobs = [j for j in due_jobs if (j.get("workdir") or "").strip()]
-        parallel_jobs = [j for j in due_jobs if not (j.get("workdir") or "").strip()]
+        # Partition due jobs: jobs with a per-job workdir and/or profile touch
+        # process-global runtime state inside run_job. Workdir jobs temporarily
+        # set os.environ["TERMINAL_CWD"]; profile jobs use a context-local
+        # Hermes home override, scheduler _hermes_home hook, and temporary
+        # profile .env load into os.environ with snapshot/restore. They MUST run
+        # sequentially to avoid corrupting each other. Jobs without either field
+        # stay parallel-safe.
+        sequential_jobs = [
+            j for j in due_jobs
+            if (j.get("workdir") or "").strip() or (j.get("profile") or "").strip()
+        ]
+        parallel_jobs = [
+            j for j in due_jobs
+            if not ((j.get("workdir") or "").strip() or (j.get("profile") or "").strip())
+        ]
 
         _results: list = []
 
-        # Sequential pass for workdir jobs.
-        for job in workdir_jobs:
+        # Sequential pass for env/context-mutating jobs.
+        for job in sequential_jobs:
             _ctx = contextvars.copy_context()
             _results.append(_ctx.run(_process_job, job))
 
@@ -1711,7 +1932,12 @@ def tick(verbose: bool = True, adapters=None, loop=None) -> int:
                 for job in parallel_jobs:
                     _ctx = contextvars.copy_context()
                     _futures.append(_tick_pool.submit(_ctx.run, _process_job, job))
-                _results.extend(f.result() for f in _futures)
+                for f in concurrent.futures.as_completed(_futures, timeout=600):
+                    try:
+                        _results.append(f.result())
+                    except Exception as exc:
+                        logger.error("Parallel cron job future failed: %s", exc)
+                        _results.append(False)
 
         # Best-effort sweep of MCP stdio subprocesses that survived their
         # session teardown during this tick.  Runs AFTER every job has
@@ -1727,7 +1953,10 @@ def tick(verbose: bool = True, adapters=None, loop=None) -> int:
         return sum(_results)
     finally:
         if fcntl:
-            fcntl.flock(lock_fd, fcntl.LOCK_UN)
+            try:
+                fcntl.flock(lock_fd, fcntl.LOCK_UN)
+            except (OSError, IOError):
+                pass
         elif msvcrt:
             try:
                 msvcrt.locking(lock_fd.fileno(), msvcrt.LK_UNLCK, 1)

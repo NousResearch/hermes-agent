@@ -19,6 +19,7 @@ GitHub auth setup: HTTPS tokens, SSH keys, gh CLI login.
 | Version | `1.1.0` |
 | Author | Hermes Agent |
 | License | MIT |
+| Platforms | linux, macos, windows |
 | Tags | `GitHub`, `Authentication`, `Git`, `gh-cli`, `SSH`, `Setup` |
 | Related skills | [`github-pr-workflow`](/docs/user-guide/skills/bundled/github/github-github-pr-workflow), [`github-code-review`](/docs/user-guide/skills/bundled/github/github-github-code-review), [`github-issues`](/docs/user-guide/skills/bundled/github/github-github-issues), [`github-repo-management`](/docs/user-guide/skills/bundled/github/github-github-repo-management) |
 

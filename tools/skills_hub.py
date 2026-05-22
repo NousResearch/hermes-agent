@@ -26,8 +26,9 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
 from hermes_constants import get_hermes_home
+from agent.skill_utils import is_excluded_skill_path
 from typing import Any, Dict, List, Optional, Tuple, Union
-from urllib.parse import urlparse, urlunparse
+from urllib.parse import urljoin, urlparse, urlunparse
 
 import httpx
 import yaml
@@ -35,6 +36,8 @@ import yaml
 from tools.skills_guard import (
     ScanResult, content_hash, TRUSTED_REPOS,
 )
+from tools.url_safety import is_safe_url
+from tools.website_policy import check_website_access
 
 logger = logging.getLogger(__name__)
 
@@ -54,6 +57,9 @@ INDEX_CACHE_DIR = HUB_DIR / "index-cache"
 
 # Cache duration for remote index fetches
 INDEX_CACHE_TTL = 3600  # 1 hour
+
+_REDIRECT_STATUS_CODES = {301, 302, 303, 307, 308}
+_MAX_SKILL_FETCH_REDIRECTS = 5
 
 
 # ---------------------------------------------------------------------------
@@ -96,7 +102,7 @@ def _normalize_bundle_path(path_value: str, *, field_name: str, allow_nested: bo
 
     normalized = raw.replace("\\", "/")
     path = PurePosixPath(normalized)
-    parts = [part for part in path.parts if part not in ("", ".")]
+    parts = [part for part in path.parts if part not in {"", "."}]
 
     if normalized.startswith("/") or path.is_absolute():
         raise ValueError(f"Unsafe {field_name}: {path_value}")
@@ -116,6 +122,43 @@ def _validate_skill_name(name: str) -> str:
 
 def _validate_category_name(category: str) -> str:
     return _normalize_bundle_path(category, field_name="category", allow_nested=False)
+
+
+def _guarded_http_get(url: str, *, timeout: int = 20) -> Optional[httpx.Response]:
+    """Fetch a URL with SSRF and redirect-target validation."""
+    current_url = url
+
+    for _ in range(_MAX_SKILL_FETCH_REDIRECTS + 1):
+        if not is_safe_url(current_url):
+            logger.warning("Blocked unsafe Skills Hub URL: %s", current_url)
+            return None
+
+        blocked = check_website_access(current_url)
+        if blocked:
+            logger.info(
+                "Blocked Skills Hub fetch for %s by rule %s",
+                blocked["host"],
+                blocked["rule"],
+            )
+            return None
+
+        try:
+            resp = httpx.get(current_url, timeout=timeout, follow_redirects=False)
+        except httpx.HTTPError as exc:
+            logger.debug("Skills Hub fetch failed for %s: %s", current_url, exc)
+            return None
+
+        if resp.status_code in _REDIRECT_STATUS_CODES:
+            location = getattr(resp, "headers", {}).get("location")
+            if not location:
+                return None
+            current_url = urljoin(current_url, location)
+            continue
+
+        return resp
+
+    logger.warning("Skills Hub fetch exceeded redirect limit for %s", url)
+    return None
 
 
 def _validate_bundle_rel_path(rel_path: str) -> str:
@@ -219,7 +262,7 @@ class GitHubAuth:
             key_file = Path(key_path)
             if not key_file.exists():
                 return None
-            private_key = key_file.read_text()
+            private_key = key_file.read_text(encoding="utf-8")
 
             now = int(time.time())
             payload = {
@@ -287,6 +330,7 @@ class GitHubSource(SkillSource):
     DEFAULT_TAPS = [
         {"repo": "openai/skills", "path": "skills/"},
         {"repo": "anthropics/skills", "path": "skills/"},
+        {"repo": "huggingface/skills", "path": "skills/"},
         {"repo": "VoltAgent/awesome-agent-skills", "path": "skills/"},
         {"repo": "garrytan/gstack", "path": ""},
         {"repo": "MiniMax-AI/cli", "path": "skill/"},
@@ -336,14 +380,16 @@ class GitHubSource(SkillSource):
                 logger.debug(f"Failed to search {tap['repo']}: {e}")
                 continue
 
-        # Deduplicate by name, preferring higher trust levels
+        # Deduplicate by identifier, preferring higher trust levels.
+        # identifier is unique per skill; name is not (two configured taps can
+        # publish skills with the same name but different identifiers).
         _trust_rank = {"builtin": 2, "trusted": 1, "community": 0}
         seen = {}
         for r in results:
-            if r.name not in seen:
-                seen[r.name] = r
-            elif _trust_rank.get(r.trust_level, 0) > _trust_rank.get(seen[r.name].trust_level, 0):
-                seen[r.name] = r
+            if r.identifier not in seen:
+                seen[r.identifier] = r
+            elif _trust_rank.get(r.trust_level, 0) > _trust_rank.get(seen[r.identifier].trust_level, 0):
+                seen[r.identifier] = r
         results = list(seen.values())
 
         return results[:limit]
@@ -887,12 +933,12 @@ class WellKnownSkillSource(SkillSource):
         if isinstance(cached, dict) and isinstance(cached.get("skills"), list):
             return cached
 
+        resp = _guarded_http_get(index_url, timeout=20)
+        if resp is None or resp.status_code != 200:
+            return None
         try:
-            resp = httpx.get(index_url, timeout=20, follow_redirects=True)
-            if resp.status_code != 200:
-                return None
             data = resp.json()
-        except (httpx.HTTPError, json.JSONDecodeError):
+        except json.JSONDecodeError:
             return None
 
         skills = data.get("skills", []) if isinstance(data, dict) else []
@@ -918,12 +964,9 @@ class WellKnownSkillSource(SkillSource):
 
     @staticmethod
     def _fetch_text(url: str) -> Optional[str]:
-        try:
-            resp = httpx.get(url, timeout=20, follow_redirects=True)
-            if resp.status_code == 200:
-                return resp.text
-        except httpx.HTTPError:
-            return None
+        resp = _guarded_http_get(url, timeout=20)
+        if resp is not None and resp.status_code == 200:
+            return resp.text
         return None
 
     @staticmethod
@@ -1045,13 +1088,9 @@ class UrlSource(SkillSource):
 
     @staticmethod
     def _fetch_text(url: str) -> Optional[str]:
-        try:
-            resp = httpx.get(url, timeout=20, follow_redirects=True)
-            if resp.status_code == 200:
-                return resp.text
-        except httpx.HTTPError as exc:
-            logger.debug("UrlSource fetch failed for %s: %s", url, exc)
-            return None
+        resp = _guarded_http_get(url, timeout=20)
+        if resp is not None and resp.status_code == 200:
+            return resp.text
         return None
 
     # Skill names must look like identifiers: lowercase letters/digits with
@@ -1380,7 +1419,7 @@ class SkillsShSource(SkillSource):
                         dir_name = entry["name"]
                         if dir_name.startswith((".", "_")):
                             continue
-                        if dir_name in ("skills", ".agents", ".claude"):
+                        if dir_name in {"skills", ".agents", ".claude"}:
                             continue  # already tried
                         # Try direct: repo/dir/skill_token
                         direct_id = f"{repo}/{dir_name}/{skill_token}"
@@ -2051,12 +2090,9 @@ class ClawHubSource(SkillSource):
         return files
 
     def _fetch_text(self, url: str) -> Optional[str]:
-        try:
-            resp = httpx.get(url, timeout=20)
-            if resp.status_code == 200:
-                return resp.text
-        except httpx.HTTPError:
-            return None
+        resp = _guarded_http_get(url, timeout=20)
+        if resp is not None and resp.status_code == 200:
+            return resp.text
         return None
 
 
@@ -2318,6 +2354,181 @@ class LobeHubSource(SkillSource):
 
 
 # ---------------------------------------------------------------------------
+# browse.sh source adapter
+# ---------------------------------------------------------------------------
+
+
+class BrowseShSource(SkillSource):
+    """Discover and install site-specific browser automation skills from browse.sh.
+
+    browse.sh (https://browse.sh) is Browserbase's catalog of 200+ SKILL.md files
+    that describe how to automate specific websites (Airbnb, Amazon, arXiv, etc.).
+    The catalog lives at ``/api/skills`` and each skill's actual SKILL.md content
+    is fetched via ``/api/skills/{slug}`` which returns a ``skillMdUrl`` field
+    pointing at a CDN-hosted blob — the catalog's ``sourceUrl`` field is a GitHub
+    HTML URL whose underlying repository is not always public, so it cannot be
+    relied on for content fetch.
+    """
+
+    CATALOG_URL = "https://browse.sh/api/skills"
+    SKILL_DETAIL_URL = "https://browse.sh/api/skills/{slug}"
+    _CACHE_KEY = "browse_sh_catalog"
+
+    def source_id(self) -> str:
+        return "browse-sh"
+
+    def trust_level_for(self, identifier: str) -> str:
+        return "community"
+
+    def _fetch_catalog(self) -> List[Dict]:
+        cached = _read_index_cache(self._CACHE_KEY)
+        if cached is not None:
+            return cached
+        try:
+            resp = httpx.get(self.CATALOG_URL, timeout=20)
+            if resp.status_code != 200:
+                return []
+            data = resp.json()
+        except (httpx.HTTPError, json.JSONDecodeError):
+            return []
+        skills = data.get("skills", []) if isinstance(data, dict) else []
+        if isinstance(skills, list):
+            _write_index_cache(self._CACHE_KEY, skills)
+        return skills if isinstance(skills, list) else []
+
+    def _item_to_meta(self, item: Dict) -> Optional[SkillMeta]:
+        slug = item.get("slug", "")
+        name = item.get("name", "")
+        title = item.get("title", name)
+        description = item.get("description", title)
+        if not slug or not name:
+            return None
+        if len(description) > 1024:
+            description = description[:1021] + "..."
+        return SkillMeta(
+            name=name,
+            description=description,
+            source="browse-sh",
+            identifier=f"browse-sh/{slug}",
+            trust_level="community",
+            tags=item.get("tags", []),
+            extra={
+                "slug": slug,
+                "hostname": item.get("hostname", ""),
+                "category": item.get("category", ""),
+                "source_url": item.get("sourceUrl", ""),
+                "recommended_method": item.get("recommendedMethod", ""),
+                "proxies": item.get("proxies", False),
+                "install_count": item.get("installCount", 0),
+            },
+        )
+
+    def search(self, query: str, limit: int = 10) -> List[SkillMeta]:
+        catalog = self._fetch_catalog()
+        query_lower = query.lower()
+        results = []
+        for item in catalog:
+            text = " ".join([
+                item.get("name", ""),
+                item.get("title", ""),
+                item.get("description", ""),
+                item.get("hostname", ""),
+                item.get("category", ""),
+                " ".join(item.get("tags", [])),
+            ]).lower()
+            if not query_lower or query_lower in text:
+                meta = self._item_to_meta(item)
+                if meta:
+                    results.append(meta)
+            if len(results) >= limit:
+                break
+        return results
+
+    def inspect(self, identifier: str) -> Optional[SkillMeta]:
+        slug = self._slug_from_identifier(identifier)
+        if not slug:
+            return None
+        catalog = self._fetch_catalog()
+        for item in catalog:
+            if item.get("slug") == slug:
+                return self._item_to_meta(item)
+        return None
+
+    def fetch(self, identifier: str) -> Optional[SkillBundle]:
+        slug = self._slug_from_identifier(identifier)
+        if not slug:
+            return None
+        catalog = self._fetch_catalog()
+        item = next((i for i in catalog if i.get("slug") == slug), None)
+        if not item:
+            return None
+
+        # Resolve the actual SKILL.md content URL via the per-skill detail
+        # endpoint, which returns a ``skillMdUrl`` (CDN blob). The catalog's
+        # ``sourceUrl`` is a GitHub HTML link whose underlying repo is not
+        # reliably public, so we don't use it for content.
+        md_url = self._resolve_skill_md_url(slug, item)
+        if not md_url:
+            return None
+        try:
+            resp = httpx.get(md_url, timeout=20, follow_redirects=True)
+            if resp.status_code != 200:
+                return None
+            content = resp.text
+        except httpx.HTTPError:
+            return None
+
+        meta = self._item_to_meta(item)
+        name = meta.name if meta else slug.split("/")[-1]
+        return SkillBundle(
+            name=name,
+            files={"SKILL.md": content},
+            source="browse-sh",
+            identifier=identifier,
+            trust_level="community",
+            metadata={
+                "slug": slug,
+                "hostname": item.get("hostname", ""),
+                "source_url": item.get("sourceUrl", ""),
+                "skill_md_url": md_url,
+            },
+        )
+
+    def _resolve_skill_md_url(self, slug: str, item: Dict) -> Optional[str]:
+        """Resolve the SKILL.md content URL for a slug.
+
+        Primary path: hit ``/api/skills/{slug}`` and read ``skillMdUrl``.
+        Fallback: if the catalog item already has a ``raw.githubusercontent.com``
+        ``sourceUrl`` (some entries may), use it directly.
+        """
+        try:
+            detail = httpx.get(
+                self.SKILL_DETAIL_URL.format(slug=slug),
+                timeout=20,
+                follow_redirects=True,
+            )
+            if detail.status_code == 200:
+                data = detail.json()
+                if isinstance(data, dict):
+                    md_url = data.get("skillMdUrl")
+                    if isinstance(md_url, str) and md_url.startswith("http"):
+                        return md_url
+        except (httpx.HTTPError, json.JSONDecodeError):
+            pass
+
+        source_url = item.get("sourceUrl", "") if isinstance(item, dict) else ""
+        if source_url and "raw.githubusercontent.com" in source_url:
+            return source_url
+        return None
+
+    def _slug_from_identifier(self, identifier: str) -> str:
+        """Extract slug from identifier like 'browse-sh/airbnb.com/search-listings-abc'."""
+        if identifier.startswith("browse-sh/"):
+            return identifier[len("browse-sh/"):]
+        return identifier
+
+
+# ---------------------------------------------------------------------------
 # Official optional skills source adapter
 # ---------------------------------------------------------------------------
 
@@ -2429,6 +2640,8 @@ class OptionalSkillSource(SkillSource):
         if not self._optional_dir.is_dir():
             return None
         for skill_md in self._optional_dir.rglob("SKILL.md"):
+            if is_excluded_skill_path(skill_md):
+                continue
             if skill_md.parent.name == name:
                 return skill_md.parent
         return None
@@ -2440,10 +2653,9 @@ class OptionalSkillSource(SkillSource):
 
         results: List[SkillMeta] = []
         for skill_md in sorted(self._optional_dir.rglob("SKILL.md")):
-            parent = skill_md.parent
-            rel_parts = parent.relative_to(self._optional_dir).parts
-            if any(part.startswith(".") for part in rel_parts):
+            if is_excluded_skill_path(skill_md):
                 continue
+            parent = skill_md.parent
 
             try:
                 content = skill_md.read_text(encoding="utf-8")
@@ -2667,7 +2879,7 @@ def append_audit_log(action: str, skill_name: str, source: str,
         parts.append(extra)
     line = " ".join(parts) + "\n"
     try:
-        with open(AUDIT_LOG, "a") as f:
+        with open(AUDIT_LOG, "a", encoding="utf-8") as f:
             f.write(line)
     except OSError as e:
         logger.debug("Could not write audit log: %s", e)
@@ -3110,6 +3322,7 @@ def create_source_router(auth: Optional[GitHubAuth] = None) -> List[SkillSource]
         ClawHubSource(),
         ClaudeMarketplaceSource(auth=auth),
         LobeHubSource(),
+        BrowseShSource(),   # browse.sh: 169+ site-specific browser automation skills
     ]
 
     return sources
@@ -3216,14 +3429,17 @@ def unified_search(query: str, sources: List[SkillSource],
         overall_timeout=30,
     )
 
-    # Deduplicate by name, preferring higher trust levels
+    # Deduplicate by identifier, preferring higher trust levels.
+    # identifier is always unique per skill (e.g. "browse-sh/airbnb.com/search-listings-ddgioa").
+    # Using name would incorrectly collapse browse-sh skills from different sites that share
+    # the same task name (e.g. "search-listings" from Airbnb and Booking.com).
     _TRUST_RANK = {"builtin": 2, "trusted": 1, "community": 0}
     seen: Dict[str, SkillMeta] = {}
     for r in all_results:
-        if r.name not in seen:
-            seen[r.name] = r
-        elif _TRUST_RANK.get(r.trust_level, 0) > _TRUST_RANK.get(seen[r.name].trust_level, 0):
-            seen[r.name] = r
+        if r.identifier not in seen:
+            seen[r.identifier] = r
+        elif _TRUST_RANK.get(r.trust_level, 0) > _TRUST_RANK.get(seen[r.identifier].trust_level, 0):
+            seen[r.identifier] = r
     deduped = list(seen.values())
 
     return deduped[:limit]

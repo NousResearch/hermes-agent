@@ -81,7 +81,7 @@ _TIER_MINIMAL = {
 
 _PLATFORM_DEFAULTS: dict[str, dict[str, Any]] = {
     # Tier 1 — full edit support, personal/team use
-    "telegram":    _TIER_HIGH,
+    "telegram":    {**_TIER_HIGH, "tool_progress": "new"},
     "discord":     _TIER_HIGH,
 
     # Tier 2 — edit support, often customer/workspace channels
@@ -190,13 +190,13 @@ def _normalise(setting: str, value: Any) -> Any:
         if value is True:
             return "all"
         return str(value).lower()
-    if setting in ("show_reasoning", "streaming"):
+    if setting in {"show_reasoning", "streaming"}:
         if isinstance(value, str):
-            return value.lower() in ("true", "1", "yes", "on")
+            return value.lower() in {"true", "1", "yes", "on"}
         return bool(value)
     if setting == "cleanup_progress":
         if isinstance(value, str):
-            return value.lower() in ("true", "1", "yes", "on")
+            return value.lower() in {"true", "1", "yes", "on"}
         return bool(value)
     if setting == "tool_preview_length":
         try:

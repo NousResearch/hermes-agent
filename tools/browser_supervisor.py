@@ -709,14 +709,7 @@ class CDPSupervisor:
             await self._install_dialog_bridge(self._page_session_id)
 
     def _is_local_cdp(self) -> bool:
-        """Skip dialog bridge for local Chrome — native dialogs work fine.
-
-        The bridge overrides alert/confirm/prompt with sync XHRs intercepted
-        via Fetch domain. On local CDP connections the Fetch interception may
-        not reliably capture the XHR, and native Page.javascriptDialogOpening
-        events work correctly — so we skip the bridge and let native dialogs
-        fire normally.
-        """
+        """Return True if CDP URL targets localhost or a loopback address."""
         return (
             "localhost" in self.cdp_url
             or "127.0.0.1" in self.cdp_url

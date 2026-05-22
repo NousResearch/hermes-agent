@@ -2657,7 +2657,7 @@ class HermesCLI:
         )
         # busy_input_mode: "interrupt" (Enter interrupts current run),
         # "queue" (Enter queues for next turn), or "steer" (Enter injects
-        # mid-run via /steer, arriving after the next tool call).
+        # mid-run via /steer, arriving before the next tool call).
         _bim = str(CLI_CONFIG["display"].get("busy_input_mode", "interrupt")).strip().lower()
         if _bim == "queue":
             self.busy_input_mode = "queue"
@@ -8125,7 +8125,7 @@ class HermesCLI:
                 else:
                     _cprint(f"  Queued: {payload[:80]}{'...' if len(payload) > 80 else ''}")
         elif canonical == "steer":
-            # Inject a message after the next tool call without interrupting.
+            # Inject a message before the next tool call without interrupting.
             # If the agent is actively running, push the text into the agent's
             # pending_steer slot — the drain hook in _execute_tool_calls_*
             # will append it to the next tool result's content. If no agent
@@ -8141,7 +8141,7 @@ class HermesCLI:
                     _cprint(f"  Steer failed: {exc}")
                 else:
                     if accepted:
-                        _cprint(f"  ⏩ Steer queued — arrives after the next tool call: {payload[:80]}{'...' if len(payload) > 80 else ''}")
+                        _cprint(f"  ⏩ Steer queued — arrives before the next tool call: {payload[:80]}{'...' if len(payload) > 80 else ''}")
                     else:
                         _cprint("  Steer rejected (empty payload).")
             else:
@@ -9229,7 +9229,7 @@ class HermesCLI:
             if arg == "queue":
                 behavior = "Enter will queue follow-up input while Hermes is busy."
             elif arg == "steer":
-                behavior = "Enter will steer your message into the current run (after the next tool call)."
+                behavior = "Enter will steer your message into the current run (before the next tool call)."
             else:
                 behavior = "Enter will interrupt the current run while Hermes is busy."
             _cprint(f"  {_ACCENT}✓ Busy input mode set to '{arg}' (saved to config){_RST}")

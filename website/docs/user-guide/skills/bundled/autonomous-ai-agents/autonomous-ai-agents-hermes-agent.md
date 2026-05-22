@@ -264,7 +264,7 @@ The registry of record is `hermes_cli/commands.py` — every consumer
 /snapshot [sub]      Create or restore state snapshots of Hermes config/state (CLI)
 /background <prompt> Run prompt in background
 /queue <prompt>      Queue for next turn
-/steer <prompt>      Inject a message after the next tool call without interrupting
+/steer <prompt>      Inject a message before the next tool call without interrupting
 /agents (/tasks)     Show active agents and running tasks
 /resume [name]       Resume a named session
 /goal [text|sub]     Set a standing goal Hermes works on across turns until achieved

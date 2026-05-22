@@ -336,7 +336,7 @@ TIPS = [
     "The skills quarantine at ~/.hermes/skills/.hub/quarantine/ holds skills pending security review.",
 
     # --- Advanced Slash Commands ---
-    '/steer <prompt> injects a note after the next tool call — nudge direction mid-task without interrupting.',
+    '/steer <prompt> injects a note before the next tool call — nudge direction mid-task without interrupting.',
     '/goal <text> sets a standing Ralph-loop objective — Hermes auto-continues turn after turn until a judge says done.',
     '/snapshot create [label] saves a full state snapshot of Hermes config; /snapshot restore <id> reverts later.',
     '/copy [N] copies the last assistant response to your clipboard, or the Nth-from-last with a number.',

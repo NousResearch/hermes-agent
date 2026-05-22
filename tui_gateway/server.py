@@ -4759,7 +4759,7 @@ def _(rid, params: dict) -> dict:
                         rid,
                         {
                             "type": "exec",
-                            "output": f"⏩ Steer queued — arrives after the next tool call: {arg[:80]}{'...' if len(arg) > 80 else ''}",
+                            "output": f"⏩ Steer queued — arrives before the next tool call: {arg[:80]}{'...' if len(arg) > 80 else ''}",
                         },
                     )
             except Exception:

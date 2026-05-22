@@ -40,6 +40,16 @@ def _clean_env(monkeypatch):
         "ANTHROPIC_API_KEY", "ANTHROPIC_TOKEN", "CLAUDE_CODE_OAUTH_TOKEN",
     ):
         monkeypatch.delenv(key, raising=False)
+    # Module-level unhealthy cache (10-min TTL) leaks between tests;
+    # earlier tests that call _mark_provider_unhealthy() poison the
+    # cache for later ones, causing _resolve_auto to skip providers
+    # that the test patched to return valid clients.
+    import agent.auxiliary_client as _aux_mod
+    _aux_mod._aux_unhealthy_until.clear()
+    _aux_mod._aux_unhealthy_logged_at.clear()
+    yield
+    _aux_mod._aux_unhealthy_until.clear()
+    _aux_mod._aux_unhealthy_logged_at.clear()
 
 
 @pytest.fixture
@@ -460,6 +470,17 @@ class TestExpiredCodexFallback:
         """With expired Codex + OpenRouter key, OpenRouter should win (1st in chain)."""
         import base64
         import time as _time
+
+        # Belt-and-suspenders: _try_openrouter marks openrouter unhealthy
+        # when OPENROUTER_API_KEY is absent (which the preceding test in
+        # this class exercises).  The file-level _clean_env autouse fixture
+        # clears the cache, but fixture ordering with the conftest
+        # _hermetic_environment autouse can leave a narrow window where
+        # the mark reappears.  Explicitly clear here so this test is
+        # independent of run order.
+        import agent.auxiliary_client as _aux_mod
+        _aux_mod._aux_unhealthy_until.clear()
+        _aux_mod._aux_unhealthy_logged_at.clear()
 
         header = base64.urlsafe_b64encode(b'{"alg":"RS256","typ":"JWT"}').rstrip(b"=").decode()
         payload_data = json.dumps({"exp": int(_time.time()) - 3600}).encode()
@@ -1046,6 +1067,20 @@ class TestGetProviderChain:
 
 class TestTryPaymentFallback:
     """_try_payment_fallback skips the failed provider and tries alternatives."""
+
+    @pytest.fixture(autouse=True)
+    def _clear_unhealthy_cache(self):
+        """Earlier tests in this file call _mark_provider_unhealthy() which
+        pollutes the module-level ``_aux_unhealthy_until`` dict (10-min TTL).
+        Without this cleanup the fallback chain skips providers we've patched
+        to return valid clients — the patched function is never called.
+        """
+        from agent.auxiliary_client import _aux_unhealthy_until, _aux_unhealthy_logged_at
+        _aux_unhealthy_until.clear()
+        _aux_unhealthy_logged_at.clear()
+        yield
+        _aux_unhealthy_until.clear()
+        _aux_unhealthy_logged_at.clear()
 
     def test_skips_failed_provider(self):
         mock_client = MagicMock()

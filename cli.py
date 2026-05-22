@@ -10224,6 +10224,7 @@ class HermesCLI:
             self._voice_processing = True
 
         submitted = False
+        transcription_failed = False
         wav_path = None
         try:
             if self._voice_recorder is None:
@@ -10272,18 +10273,24 @@ class HermesCLI:
             else:
                 error = result.get("error", "Unknown error")
                 _cprint(f"\n{_DIM}Transcription failed: {error}{_RST}")
+                transcription_failed = True
 
         except Exception as e:
             _cprint(f"\n{_DIM}Voice processing error: {e}{_RST}")
+            transcription_failed = wav_path is not None
         finally:
             with self._voice_lock:
                 self._voice_processing = False
             if hasattr(self, '_app') and self._app:
                 self._app.invalidate()
-            # Clean up temp file
+            # Clean up temp file unless transcription failed. On failure, keep
+            # the source recording so long dictation is not lost.
             try:
                 if wav_path and os.path.isfile(wav_path):
-                    os.unlink(wav_path)
+                    if transcription_failed:
+                        _cprint(f"{_DIM}Recording preserved at: {wav_path}{_RST}")
+                    else:
+                        os.unlink(wav_path)
             except Exception:
                 pass
 
@@ -14426,13 +14433,54 @@ def main(
             # Only print the final response and parseable session info.
             cli.tool_progress_mode = "off"
             if cli._ensure_runtime_credentials():
-                effective_query = query
+                effective_query: Any = query
                 if single_query_images:
-                    effective_query = cli._preprocess_images_with_vision(
-                        query,
-                        single_query_images,
-                        announce=False,
-                    )
+                    # Honour the same image-routing decision used by the
+                    # interactive path. With a vision-capable model (incl.
+                    # custom-provider models declared via
+                    # `model.supports_vision: true`), attach images natively
+                    # as image_url content parts. Otherwise fall back to the
+                    # text-pipeline (vision_analyze pre-description).
+                    _img_mode = "text"
+                    _build_parts = None
+                    try:
+                        from agent.image_routing import (
+                            build_native_content_parts as _build_parts,  # noqa: F811
+                        )
+                        from agent.image_routing import decide_image_input_mode
+                        from hermes_cli.config import load_config
+
+                        _img_mode = decide_image_input_mode(
+                            (cli.provider or "").strip(),
+                            (cli.model or "").strip(),
+                            load_config(),
+                        )
+                    except Exception:
+                        _img_mode = "text"
+
+                    if _img_mode == "native" and _build_parts is not None:
+                        try:
+                            _parts, _skipped = _build_parts(
+                                query if isinstance(query, str) else "",
+                                [str(p) for p in single_query_images],
+                            )
+                            if any(p.get("type") == "image_url" for p in _parts):
+                                effective_query = _parts
+                            else:
+                                # All images unreadable — text fallback.
+                                effective_query = cli._preprocess_images_with_vision(
+                                    query, single_query_images, announce=False,
+                                )
+                        except Exception:
+                            effective_query = cli._preprocess_images_with_vision(
+                                query, single_query_images, announce=False,
+                            )
+                    else:
+                        effective_query = cli._preprocess_images_with_vision(
+                            query,
+                            single_query_images,
+                            announce=False,
+                        )
                 turn_route = cli._resolve_turn_agent_config(effective_query)
                 if turn_route["signature"] != cli._active_agent_route_signature:
                     cli.agent = None

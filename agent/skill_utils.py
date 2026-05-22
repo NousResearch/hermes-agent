@@ -12,7 +12,7 @@ import sys
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Set, Tuple
 
-from hermes_constants import get_config_path, get_skills_dir
+from hermes_constants import get_config_path, get_skills_dir, is_termux
 
 logger = logging.getLogger(__name__)
 
@@ -24,7 +24,43 @@ PLATFORM_MAP = {
     "windows": "win32",
 }
 
-EXCLUDED_SKILL_DIRS = frozenset((".git", ".github", ".hub", ".archive"))
+EXCLUDED_SKILL_DIRS = frozenset(
+    (
+        ".git",
+        ".github",
+        ".hub",
+        ".archive",
+        ".venv",
+        "venv",
+        "node_modules",
+        "site-packages",
+        "__pycache__",
+        ".tox",
+        ".nox",
+        ".pytest_cache",
+        ".mypy_cache",
+        ".ruff_cache",
+    )
+)
+
+
+def is_excluded_skill_path(path) -> bool:
+    """True if any component of *path* is in EXCLUDED_SKILL_DIRS.
+
+    Use this on every SKILL.md path produced by ``rglob`` to prune
+    dependency, virtualenv, VCS, and cache directories. Centralising the
+    check here keeps every skill-scanning site in sync with the shared
+    exclusion set.
+
+    Accepts a Path or string.
+    """
+    try:
+        parts = path.parts  # Path
+    except AttributeError:
+        from pathlib import PurePath
+        parts = PurePath(str(path)).parts
+    return any(part in EXCLUDED_SKILL_DIRS for part in parts)
+
 
 # ── Lazy YAML loader ─────────────────────────────────────────────────────
 
@@ -100,6 +136,14 @@ def skill_matches_platform(frontmatter: Dict[str, Any]) -> bool:
 
     If the field is absent or empty the skill is compatible with **all**
     platforms (backward-compatible default).
+
+    Termux note: on Termux/Android, ``sys.platform`` is ``"linux"`` on
+    older Pythons but became ``"android"`` on Python 3.13+. Termux is a
+    Linux userland riding on the Android kernel, so skills tagged
+    ``linux`` are treated as compatible in Termux regardless of which
+    ``sys.platform`` value Python reports. Individual Linux commands
+    inside a skill may still misbehave (no systemd, BusyBox utils, no
+    apt/dnf, etc.) but that is on the skill, not on platform gating.
     """
     platforms = frontmatter.get("platforms")
     if not platforms:
@@ -107,10 +151,20 @@ def skill_matches_platform(frontmatter: Dict[str, Any]) -> bool:
     if not isinstance(platforms, list):
         platforms = [platforms]
     current = sys.platform
+    running_in_termux = is_termux()
     for platform in platforms:
         normalized = str(platform).lower().strip()
         mapped = PLATFORM_MAP.get(normalized, normalized)
         if current.startswith(mapped):
+            return True
+        # Termux runs a Linux userland on Android. Accept linux-tagged
+        # skills regardless of whether sys.platform is "linux" (pre-3.13
+        # Termux) or "android" (Python 3.13+ Termux, and any other
+        # Android runtime).
+        if running_in_termux and mapped == "linux":
+            return True
+        # Explicit termux/android tags match a Termux session too.
+        if running_in_termux and mapped in ("termux", "android"):
             return True
     return False
 
@@ -478,7 +532,8 @@ def extract_skill_description(frontmatter: Dict[str, Any]) -> str:
 def iter_skill_index_files(skills_dir: Path, filename: str):
     """Walk skills_dir yielding sorted paths matching *filename*.
 
-    Excludes ``.git``, ``.github``, ``.hub``, ``.archive`` directories.
+    Excludes Hermes metadata, VCS, virtualenv/dependency, and cache
+    directories so dependencies cannot register nested skills.
     """
     matches = []
     for root, dirs, files in os.walk(skills_dir, followlinks=True):

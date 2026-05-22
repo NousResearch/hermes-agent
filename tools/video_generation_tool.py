@@ -42,9 +42,12 @@ the tool surface stable as new providers ship with different capabilities.
 
 from __future__ import annotations
 
+import base64
 import json
 import logging
-from typing import Any, Dict, List, Optional
+import mimetypes
+from pathlib import Path
+from typing import Any, Dict, List, Optional, Tuple
 
 from agent.video_gen_provider import (
     COMMON_ASPECT_RATIOS,
@@ -307,10 +310,60 @@ def _normalize_reference_images(value: Any) -> Optional[List[str]]:
     return out or None
 
 
+def _resolve_video_image_ref(value: str) -> Tuple[Optional[str], Optional[str]]:
+    """Normalize an image reference into something a video provider accepts.
+
+    Video backends (xAI Grok Imagine, FAL) require the source image as an
+    HTTPS URL or a base64 data URL. Agents routinely pass a *local file path*
+    instead — typically an image generated earlier in the same session — and
+    the provider call then fails with "image_url must be an HTTPS URL or a
+    base64 data URL". Detect a local path and inline the file as a base64
+    data URL so image-to-video works.
+
+    Returns ``(resolved_value, error)``; on success ``error`` is ``None``.
+    """
+    v = (value or "").strip()
+    if not v:
+        return None, None
+    if v.lower().startswith(("https://", "http://", "data:")):
+        return v, None
+    # Anything else is treated as a local filesystem path.
+    path = Path(v).expanduser()
+    if not path.is_file():
+        return None, f"image not found at path: {v}"
+    try:
+        raw = path.read_bytes()
+    except Exception as exc:  # pragma: no cover - filesystem edge
+        return None, f"could not read image file {v}: {exc}"
+    if not raw:
+        return None, f"image file is empty: {v}"
+    mime = mimetypes.guess_type(str(path))[0] or "image/jpeg"
+    b64 = base64.b64encode(raw).decode("ascii")
+    return f"data:{mime};base64,{b64}", None
+
+
 def _handle_video_generate(args: Dict[str, Any], **_kw: Any) -> str:
     prompt = (args.get("prompt") or "").strip()
     image_url = (args.get("image_url") or "").strip() or None
     reference_image_urls = _normalize_reference_images(args.get("reference_image_urls"))
+
+    # Inline local file paths as base64 data URLs — video providers only
+    # accept HTTPS or data: URLs, and agents commonly pass a path to an image
+    # generated earlier in the session (the recurring "image_url must be an
+    # HTTPS URL or a base64 data URL" failure).
+    if image_url:
+        image_url, ref_err = _resolve_video_image_ref(image_url)
+        if ref_err:
+            return tool_error(f"image_url: {ref_err}")
+    if reference_image_urls:
+        resolved_refs: List[str] = []
+        for ref in reference_image_urls:
+            resolved, ref_err = _resolve_video_image_ref(ref)
+            if ref_err:
+                return tool_error(f"reference_image_urls: {ref_err}")
+            if resolved:
+                resolved_refs.append(resolved)
+        reference_image_urls = resolved_refs or None
     duration = _coerce_int(args.get("duration"))
     aspect_ratio = (args.get("aspect_ratio") or DEFAULT_ASPECT_RATIO).strip() or DEFAULT_ASPECT_RATIO
     resolution = (args.get("resolution") or DEFAULT_RESOLUTION).strip() or DEFAULT_RESOLUTION

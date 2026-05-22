@@ -945,26 +945,42 @@ class HermesACPAgent(acp.Agent):
             or ""
         ).strip()
 
-    async def _replay_text_message(
-        self,
-        message: dict[str, Any],
-        role: str,
-        _send: Any,
-    ) -> bool:
+    async def _send_history_update(self, session_id: str, update: Any) -> bool:
+        """Send an ACP history update to the client."""
+        if not self._conn:
+            return False
+        try:
+            await self._conn.session_update(session_id=session_id, update=update)
+            return True
+        except Exception:
+            logger.warning(
+                "Failed to replay ACP history for session %s",
+                session_id,
+                exc_info=True,
+            )
+            return False
+
+    async def _replay_message_text(self, message: dict[str, Any], role: str, session_id: str) -> bool:
+        """Replay text chunk for a user or assistant history message."""
         text = self._history_message_text(message)
         if text:
             update = self._history_message_update(role=role, text=text)
-            if update is not None and not await _send(update):
+            if update is not None and not await self._send_history_update(session_id, update):
                 return False
         return True
 
-    async def _replay_tool_calls(
+    async def _replay_assistant_tools(
         self,
         message: dict[str, Any],
+        session_id: str,
         active_tool_calls: dict[str, tuple[str, dict[str, Any]]],
-        _send: Any,
     ) -> bool:
-        for tool_call in message.get("tool_calls", []):
+        """Replay tool start updates from an assistant history message."""
+        tool_calls = message.get("tool_calls")
+        if not isinstance(tool_calls, list):
+            return True
+
+        for tool_call in tool_calls:
             if not isinstance(tool_call, dict):
                 continue
             tool_call_id = self._history_tool_call_id(tool_call)
@@ -972,33 +988,37 @@ class HermesACPAgent(acp.Agent):
                 continue
             tool_name, args = self._history_tool_call_name_args(tool_call)
             active_tool_calls[tool_call_id] = (tool_name, args)
-            if not await _send(build_tool_start(tool_call_id, tool_name, args)):
+            if not await self._send_history_update(
+                session_id, build_tool_start(tool_call_id, tool_name, args)
+            ):
                 return False
         return True
 
-    async def _replay_tool_response(
+    async def _replay_tool_result(
         self,
         message: dict[str, Any],
+        session_id: str,
         active_tool_calls: dict[str, tuple[str, dict[str, Any]]],
-        _send: Any,
     ) -> bool:
+        """Replay tool complete updates from a tool history message."""
         tool_call_id = str(message.get("tool_call_id") or "").strip()
         tool_name = str(message.get("tool_name") or "").strip()
         function_args: dict[str, Any] | None = None
+
         if tool_call_id in active_tool_calls:
             tool_name, function_args = active_tool_calls.pop(tool_call_id)
+
         if not tool_call_id or not tool_name:
             return True
-        result = message.get("content")
-        return await _send(
-            build_tool_complete(
-                tool_call_id,
-                tool_name,
-                result=result if isinstance(result, str) else None,
-                function_args=function_args,
-            )
-        )
 
+        result = message.get("content")
+        update = build_tool_complete(
+            tool_call_id,
+            tool_name,
+            result=result if isinstance(result, str) else None,
+            function_args=function_args,
+        )
+        return await self._send_history_update(session_id, update)
 
     async def _replay_session_history(self, state: SessionState) -> None:
         """Send persisted user/assistant history to clients during session/load.
@@ -1014,36 +1034,21 @@ class HermesACPAgent(acp.Agent):
 
         active_tool_calls: dict[str, tuple[str, dict[str, Any]]] = {}
 
-        async def _send(update: Any) -> bool:
-            try:
-                await self._conn.session_update(
-                    session_id=state.session_id, update=update
-                )
-                return True
-            except Exception:
-                logger.warning(
-                    "Failed to replay ACP history for session %s",
-                    state.session_id,
-                    exc_info=True,
-                )
-                return False
-
         for message in state.history:
             role = str(message.get("role") or "")
 
             if role in {"user", "assistant"}:
-                if not await self._replay_text_message(message, role, _send):
+                if not await self._replay_message_text(message, role, state.session_id):
                     return
 
-            if role == "assistant" and isinstance(message.get("tool_calls"), list):
-                if not await self._replay_tool_calls(message, active_tool_calls, _send):
+            if role == "assistant":
+                if not await self._replay_assistant_tools(message, state.session_id, active_tool_calls):
                     return
                 continue
 
             if role == "tool":
-                if not await self._replay_tool_response(message, active_tool_calls, _send):
+                if not await self._replay_tool_result(message, state.session_id, active_tool_calls):
                     return
-
     async def new_session(
         self,
         cwd: str,

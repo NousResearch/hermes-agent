@@ -9,8 +9,12 @@ Enable it with:
 hermes plugins enable observability/nemo_flow
 ```
 
-The plugin fails open when `nemo-flow` is not installed. It targets the public
-Python API available in NeMo-Flow `0.2.0`.
+The plugin fails open when `nemo-flow` is not installed. Install and test it
+against the pinned NeMo-Flow 0.2 package:
+
+```bash
+pip install "nemo-flow==0.2"
+```
 
 Useful local export settings:
 

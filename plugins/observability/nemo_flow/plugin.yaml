@@ -1,6 +1,6 @@
 name: nemo_flow
 version: "0.1.0"
-description: "Optional NeMo-Flow observability for Hermes. Emits Hermes middleware hooks as NeMo-Flow scopes, LLM spans, tool spans, marks, ATOF, and ATIF when the optional nemo-flow package is installed."
+description: "Optional NeMo-Flow observability for Hermes. Emits Hermes middleware hooks as NeMo-Flow scopes, LLM spans, tool spans, marks, ATOF, and ATIF when the optional nemo-flow==0.2 package is installed."
 author: NousResearch
 hooks:
   - on_session_start

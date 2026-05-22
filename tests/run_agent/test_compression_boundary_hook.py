@@ -147,6 +147,10 @@ class TestCompressionBoundaryHook:
             compressor.last_prompt_tokens = 0
             compressor.last_completion_tokens = 0
             compressor._last_summary_error = None
+            # PR #28117 added a post-compress abort branch that short-circuits
+            # before the session-id rotation we assert on. MagicMock attrs
+            # are truthy by default, so pin this explicitly.
+            compressor._last_compress_aborted = False
             agent.context_compressor = compressor
 
             agent._compress_context(
@@ -181,6 +185,10 @@ class TestCompressionBoundaryHook:
             compressor.last_prompt_tokens = 0
             compressor.last_completion_tokens = 0
             compressor._last_summary_error = None
+            # PR #28117 added a post-compress abort branch that short-circuits
+            # before the session-id rotation we assert on. MagicMock attrs
+            # are truthy by default, so pin this explicitly.
+            compressor._last_compress_aborted = False
             agent.context_compressor = compressor
 
             agent._compress_context(

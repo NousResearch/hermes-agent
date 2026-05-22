@@ -109,7 +109,14 @@ def test_expanded_activity_rows_show_every_agent_visible_diagnostic_card():
     diagnostic_cards = (REPO_ROOT / "android/app/src/main/java/com/mobilefork/hermesagent/ui/chat/DiagnosticCards.kt").read_text(encoding="utf-8")
 
     assert "COLLAPSED_ACTIVITY_DIAGNOSTIC_CARD_LIMIT = 3" in diagnostic_cards
-    assert "return if (expanded) cards else cards.take(COLLAPSED_ACTIVITY_DIAGNOSTIC_CARD_LIMIT)" in diagnostic_cards
+    assert "if (expanded) return cards" in diagnostic_cards
+    assert "diagnosticCardPreviewPriority" in diagnostic_cards
+    assert ".sortedWith(" in diagnostic_cards
+    assert '"wifi_channel_graph"' in diagnostic_cards
+    assert '"bluetooth_rssi"' in diagnostic_cards
+    assert '"radio_signal_graph"' in diagnostic_cards
+    assert '"motion_sensor_history"' in diagnostic_cards
+    assert '"soc_backend_matrix"' in diagnostic_cards
     assert "hiddenDiagnosticCardCountForActivityPreview(" in diagnostic_cards
     assert "diagnosticCards.take(3)" not in chat_screen
     assert "visibleDiagnosticCards.forEach" in chat_screen

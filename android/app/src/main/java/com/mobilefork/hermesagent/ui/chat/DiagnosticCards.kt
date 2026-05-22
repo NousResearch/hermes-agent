@@ -26,7 +26,15 @@ internal fun diagnosticCardsForActivityPreview(
     cards: List<DiagnosticCardSummary>,
     expanded: Boolean,
 ): List<DiagnosticCardSummary> {
-    return if (expanded) cards else cards.take(COLLAPSED_ACTIVITY_DIAGNOSTIC_CARD_LIMIT)
+    if (expanded) return cards
+    return cards
+        .withIndex()
+        .sortedWith(
+            compareBy<IndexedValue<DiagnosticCardSummary>> { diagnosticCardPreviewPriority(it.value) }
+                .thenBy { it.index },
+        )
+        .take(COLLAPSED_ACTIVITY_DIAGNOSTIC_CARD_LIMIT)
+        .map { it.value }
 }
 
 internal fun hiddenDiagnosticCardCountForActivityPreview(
@@ -67,6 +75,52 @@ internal fun extractDiagnosticCards(content: String): List<DiagnosticCardSummary
                 ),
             )
         }
+    }
+}
+
+internal fun diagnosticCardPreviewPriority(card: DiagnosticCardSummary): Int {
+    return when (card.graphType) {
+        "signal_evidence_matrix",
+        "agent_signal_context_matrix",
+        "signal_awareness_matrix" -> 0
+        "wifi_channel_strength",
+        "wifi_access_point_detail",
+        "wifi_access_point_semantics",
+        "wifi_channel_graph",
+        "wifi_channel_rating",
+        "wifi_channel_utilization",
+        "wifi_band_coverage",
+        "wifi_vendor_summary",
+        "wifi_security_summary",
+        "wifi_channel_width_summary",
+        "wifi_standard_summary",
+        "wifi_signal_history" -> 1
+        "bluetooth_rssi",
+        "bluetooth_metadata_summary",
+        "bluetooth_signal_history" -> 2
+        "radio_frequency_capability",
+        "radio_signal_graph",
+        "radio_receiver_profile" -> 3
+        "sensor_vector",
+        "motion_sensor_history",
+        "motion_pose_estimate",
+        "sensor_capability" -> 4
+        "soc_backend_matrix",
+        "soc_backend_policy_routes",
+        "soc_backend_constraint_matrix",
+        "gpu_backend_risk_matrix",
+        "gpu_backend_risk_routes",
+        "local_inference_compatibility_matrix",
+        "runtime_backend_matrix",
+        "runtime_stability_matrix" -> 5
+        "agent_capability_matrix",
+        "kai_parity_matrix",
+        "agent_workflow_readiness",
+        "kai_operations_matrix",
+        "agent_observation_matrix",
+        "agent_observation_routes",
+        "agent_card_manifest" -> 6
+        else -> 10
     }
 }
 

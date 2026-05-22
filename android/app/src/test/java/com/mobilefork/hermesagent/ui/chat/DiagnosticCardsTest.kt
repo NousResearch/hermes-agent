@@ -27,6 +27,54 @@ class DiagnosticCardsTest {
     }
 
     @Test
+    fun activityPreviewPromotesGraphableSignalCardsWhenCollapsed() {
+        val cards = listOf(
+            DiagnosticCardSummary(
+                title = "Tool Catalog",
+                body = "Generic tool inventory.",
+                graphType = "agent_card_manifest",
+            ),
+            DiagnosticCardSummary(
+                title = "Workflow Routes",
+                body = "Route matrix.",
+                graphType = "signal_workflow_routes",
+            ),
+            DiagnosticCardSummary(
+                title = "SOC Compatibility",
+                body = "SOC backend rows.",
+                graphType = "soc_backend_matrix",
+            ),
+            DiagnosticCardSummary(
+                title = "Wi-Fi Channel Graph",
+                body = "Wi-Fi channel envelopes.",
+                graphType = "wifi_channel_graph",
+            ),
+            DiagnosticCardSummary(
+                title = "Bluetooth Nearby",
+                body = "Nearby Bluetooth RSSI.",
+                graphType = "bluetooth_rssi",
+            ),
+            DiagnosticCardSummary(
+                title = "AM/FM Signal Graph",
+                body = "Radio samples.",
+                graphType = "radio_signal_graph",
+            ),
+        )
+
+        val collapsed = diagnosticCardsForActivityPreview(cards, expanded = false)
+
+        assertEquals(
+            listOf("Wi-Fi Channel Graph", "Bluetooth Nearby", "AM/FM Signal Graph"),
+            collapsed.map { it.title },
+        )
+        assertEquals(cards, diagnosticCardsForActivityPreview(cards, expanded = true))
+        assertEquals(1, diagnosticCardPreviewPriority(cards[3]))
+        assertEquals(2, diagnosticCardPreviewPriority(cards[4]))
+        assertEquals(3, diagnosticCardPreviewPriority(cards[5]))
+        assertTrue(diagnosticCardPreviewPriority(cards[0]) > diagnosticCardPreviewPriority(cards[3]))
+    }
+
+    @Test
     fun parsesWifiGraphRowsForExpandableSignalCards() {
         val content = JSONObject()
             .put(

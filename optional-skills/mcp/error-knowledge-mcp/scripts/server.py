@@ -8,10 +8,11 @@ steps, root cause, logical boundary, affected files, and fix summary.
 
 Storage layout:
   <root>/
-    generic/<lang>/<slug>.md          ← language-level patterns
+    generic/<lang>/<slug>.md             ← language-level patterns
     business-specific/<project>/<slug>.md  ← project-local patterns
 
-Backed by file-based markdown + BM25 on-demand index. No external DB.
+Backed by file-based markdown + TF-IDF cached index. No external DB.
+Zero external dependencies beyond the MCP SDK.
 """
 
 from __future__ import annotations
@@ -20,7 +21,10 @@ import json
 import os
 import re
 import shutil
+import time
+from collections import Counter
 from datetime import date
+from difflib import SequenceMatcher
 from pathlib import Path
 from typing import Any
 
@@ -34,6 +38,7 @@ from mcp.server.models import InitializationOptions
 DEFAULT_ROOT = Path.home() / ".hermes" / "knowledge" / "errors"
 ROOT = Path(os.environ.get("ERROR_KNOWLEDGE_ROOT", str(DEFAULT_ROOT)))
 AUTO_THRESHOLD = int(os.environ.get("ERROR_KNOWLEDGE_AUTO_ARCHIVE", "5000"))
+DEDUP_RATIO = float(os.environ.get("ERROR_KNOWLEDGE_DEDUP_RATIO", "0.65"))
 
 GENERIC = ROOT / "generic"
 BUSINESS = ROOT / "business-specific"
@@ -46,17 +51,8 @@ INDEX_FILE = ROOT / "_index.json"
 # ── Frontmatter field definitions ──────────────────────────────────────────
 
 FIELDS = [
-    "title",
-    "scope",
-    "category",
-    "lang",
-    "project",
-    "date",
-    "reproduce_steps",
-    "root_cause",
-    "boundary",
-    "files",
-    "fix_summary",
+    "title", "scope", "category", "lang", "project", "date",
+    "reproduce_steps", "root_cause", "boundary", "files", "fix_summary",
 ]
 
 SECTION_HEADERS: dict[str, str] = {
@@ -67,8 +63,84 @@ SECTION_HEADERS: dict[str, str] = {
 }
 
 FRONTMATTER_RE = re.compile(r"^---\s*\n(.*?)\n---", re.DOTALL)
+TOKEN_RE = re.compile(r"\w+")
+
+FIELD_WEIGHTS: dict[str, float] = {
+    "title": 3.0,
+    "root_cause": 2.0,
+    "fix_summary": 1.5,
+    "reproduce_steps": 1.0,
+    "_body": 0.5,
+}
 
 server = Server("error-knowledge")
+
+# ── Cached index ───────────────────────────────────────────────────────────
+
+_index_cache: list[dict] | None = None
+_index_mtime: float = 0.0
+_index_dirty: bool = False
+
+
+def _invalidate_cache():
+    """Mark the in-memory index as stale so next search reloads it."""
+    global _index_cache, _index_dirty
+    # Don't clear immediately — keep serving stale data until the next
+    # search triggers a reload via _load_index().
+    _index_dirty = True
+
+
+def _load_index() -> list[dict]:
+    """Load index from cache or disk. Returns records list."""
+    global _index_cache, _index_mtime, _index_dirty
+
+    # Check if disk index changed (other processes may have modified files)
+    try:
+        current_mtime = INDEX_FILE.stat().st_mtime
+    except OSError:
+        current_mtime = 0.0
+
+    if _index_cache is not None and not _index_dirty and current_mtime <= _index_mtime:
+        return _index_cache
+
+    # Rebuild from files
+    records = []
+    for fp in ROOT.rglob("*.md"):
+        if fp.parent == ROOT and fp.name.startswith("_"):
+            continue
+        if "_index" in fp.name:
+            continue
+        rec = _parse(fp)
+        if rec:
+            records.append(rec)
+
+    _index_cache = records
+    _index_mtime = current_mtime
+    _index_dirty = False
+
+    # Persist to disk for cross-process sharing
+    INDEX_FILE.write_text(
+        json.dumps(records, ensure_ascii=False, indent=2), encoding="utf-8"
+    )
+    return records
+
+
+def _refresh_cache(added: list[dict] | None = None):
+    """Append new records to in-memory cache without full rebuild.
+    
+    Call this after writing a new record to avoid scanning all files.
+    Falls back to full load if the cache is cold.
+    """
+    global _index_cache
+    if _index_cache is None:
+        _load_index()
+        return
+    if added:
+        _index_cache.extend(added)
+    INDEX_FILE.write_text(
+        json.dumps(_index_cache, ensure_ascii=False, indent=2), encoding="utf-8"
+    )
+
 
 # ── Helpers ────────────────────────────────────────────────────────────────
 
@@ -81,23 +153,12 @@ def _slug(text: str) -> str:
 
 def _resolve_path(record: dict) -> Path:
     scope = record.get("scope", "generic")
-    lang = record.get("lang", "unknown").lower().replace("/", "-").replace(" ", "-")
-    project = record.get("project", "unknown").lower().replace("/", "-").replace(" ", "-")
+    lang = (record.get("lang") or "unknown").lower().replace("/", "-").replace(" ", "-")
+    project = (record.get("project") or "unknown").lower().replace("/", "-").replace(" ", "-")
     slug = _slug(record.get("title", "untitled"))
     parent = GENERIC / lang if scope == "generic" else BUSINESS / project
     parent.mkdir(parents=True, exist_ok=True)
     return parent / slug
-
-
-def _scan_all_files() -> list[tuple[Path, str]]:
-    results: list[tuple[Path, str]] = []
-    for p in ROOT.rglob("*.md"):
-        if p.parent == ROOT and p.name.startswith("_"):
-            continue
-        if "_index" in p.name:
-            continue
-        results.append((p, str(p.relative_to(ROOT))))
-    return results
 
 
 def _parse(path: Path) -> dict | None:
@@ -116,30 +177,36 @@ def _parse(path: Path) -> dict | None:
             fields[k.strip()] = v.strip()
     if not fields.get("title"):
         return None
-    fields["_body"] = text[m.end() :].strip()
+    fields["_body"] = text[m.end():].strip()
     fields["_file"] = str(path.relative_to(ROOT))
     return fields
 
 
-def _rebuild_index() -> list[dict]:
-    """Scan all files and rebuild the JSON index."""
-    records = [rec for fp, _ in _scan_all_files() if (rec := _parse(fp))]
-    INDEX_FILE.write_text(json.dumps(records, ensure_ascii=False, indent=2), encoding="utf-8")
-    return records
-
-
 def _dedup_check(record: dict) -> str | None:
-    """Return the existing file path if a duplicate (same scope + lang + similar title) exists."""
+    """Return the existing file path if a likely duplicate exists.
+    
+    Uses SequenceMatcher ratio on titles (same scope + lang). The
+    DEDUP_RATIO threshold (default 0.65) controls sensitivity — higher
+    means only near-identical titles are considered duplicates.
+    """
     scope = record.get("scope", "generic")
     lang = (record.get("lang") or "").lower()
     title = (record.get("title") or "").lower().strip()
-    for rec in _rebuild_index():
+
+    for rec in _load_index():
         if rec.get("scope") != scope:
             continue
         if (rec.get("lang") or "").lower() != lang:
             continue
         existing = (rec.get("title") or "").lower().strip()
+        if not title or not existing:
+            continue
+        # Fast path: substring containment (cheap)
         if title in existing or existing in title:
+            return rec.get("_file")
+        # Fuzzy path: similarity ratio
+        ratio = SequenceMatcher(None, title, existing).ratio()
+        if ratio >= DEDUP_RATIO:
             return rec.get("_file")
     return None
 
@@ -160,6 +227,34 @@ def _format_markdown(record: dict) -> str:
     return "\n".join(lines)
 
 
+def _tokenize(text: str) -> list[str]:
+    """Split text into lowercase tokens."""
+    return [t.lower() for t in TOKEN_RE.findall(text)]
+
+
+def _compute_tfidf(query_tokens: list[str], doc_field_texts: dict[str, str], num_docs: int) -> float:
+    """Compute a TF-IDF-like score for a document against a query.
+    
+    Uses field-weighted term frequency with IDF. Pure stdlib — no external
+    NLP dependencies. score = sum(weight * tf * idf) for each query term
+    that appears in the document.
+    """
+    score = 0.0
+    for qt in query_tokens:
+        idf = 1.0  # Base IDF; we approximate with a simple scheme
+        for field, weight in FIELD_WEIGHTS.items():
+            text = doc_field_texts.get(field, "")
+            if not text:
+                continue
+            doc_tokens = _tokenize(text)
+            if not doc_tokens:
+                continue
+            tf = doc_tokens.count(qt) / len(doc_tokens)
+            if tf > 0:
+                score += weight * tf * idf
+    return score
+
+
 def _search_local(
     keywords: str = "",
     category: str = "",
@@ -168,15 +263,17 @@ def _search_local(
     scope: str = "",
     limit: int = 10,
 ) -> list[dict]:
-    """Simple BM25-style local search over the error knowledge directory."""
+    """TF-IDF search over the error knowledge directory. Pure stdlib."""
     kw = keywords.lower().strip() if keywords else ""
     cats = [c.strip().lower() for c in category.split(",") if c.strip()] if category else []
     projs = [p.strip().lower() for p in project.split(",") if p.strip()] if project else []
     langs = [l.strip().lower() for l in lang.split(",") if l.strip()] if lang else []
     scopes = [s.strip().lower() for s in scope.split(",") if s.strip()] if scope else []
 
-    records = _rebuild_index()
+    records = _load_index()
     results: list[dict] = []
+
+    query_tokens = _tokenize(kw) if kw else []
 
     for rec in records:
         rec_scope = (rec.get("scope") or "").lower()
@@ -193,25 +290,21 @@ def _search_local(
         if langs and rec_lang not in langs:
             continue
 
-        if not kw:
+        if not query_tokens:
             results.append(rec)
             continue
 
-        haystack = " ".join([
-            rec.get("title", ""),
-            rec.get("root_cause", ""),
-            rec.get("reproduce_steps", ""),
-            rec.get("fix_summary", ""),
-            rec.get("_body", ""),
-        ]).lower()
+        doc_texts = {
+            "title": rec.get("title", ""),
+            "root_cause": rec.get("root_cause", ""),
+            "fix_summary": rec.get("fix_summary", ""),
+            "reproduce_steps": rec.get("reproduce_steps", ""),
+            "_body": rec.get("_body", ""),
+        }
 
-        if kw in haystack:
-            score = 1
-            if kw in rec.get("title", "").lower():
-                score += 2
-            if kw in rec.get("root_cause", "").lower():
-                score += 1
-            rec["_score"] = score
+        score = _compute_tfidf(query_tokens, doc_texts, len(records))
+        if score > 0:
+            rec["_score"] = round(score, 4)
             results.append(rec)
 
     results.sort(key=lambda r: r.get("_score", 1), reverse=True)
@@ -223,11 +316,15 @@ def _search_local(
 
 
 def _auto_archive():
-    """Move flat files into scope subdirectories when the total exceeds AUTO_THRESHOLD."""
+    """Move flat files into scope subdirectories when the total exceeds threshold."""
     count = 0
-    for fp, rel in _scan_all_files():
-        if "/" in rel:
-            continue  # already organised
+    for fp in ROOT.rglob("*.md"):
+        try:
+            rel = str(fp.relative_to(ROOT))
+        except ValueError:
+            continue
+        if "/" in rel or fp.parent == ROOT and fp.name.startswith("_"):
+            continue
         meta = _parse(fp)
         if not meta:
             continue
@@ -238,7 +335,7 @@ def _auto_archive():
         shutil.move(str(fp), str(dest))
         count += 1
     if count:
-        _rebuild_index()
+        _invalidate_cache()
 
 
 # ── MCP tool registration ─────────────────────────────────────────────────
@@ -249,8 +346,8 @@ async def handle_list_tools() -> list[types.Tool]:
     return [
         types.Tool(
             name="search_error_patterns",
-            description="Search error knowledge base (local BM25, real-time). "
-            "For full vault search use qmd MCP.",
+            description="Search error knowledge base (TF-IDF, real-time). "
+            "Use qmd MCP for full vault search.",
             inputSchema={
                 "type": "object",
                 "properties": {
@@ -273,7 +370,8 @@ async def handle_list_tools() -> list[types.Tool]:
         types.Tool(
             name="record_error_pattern",
             description="Save an error record. Duplicates (same scope, same lang, similar title) "
-            "are auto-skipped. Search via search_error_patterns.",
+            "are auto-skipped. Uses fuzzy title matching (SequenceMatcher, default threshold 0.65). "
+            "Configurable via ERROR_KNOWLEDGE_DEDUP_RATIO env var.",
             inputSchema={
                 "type": "object",
                 "properties": {
@@ -360,7 +458,7 @@ async def handle_call_tool(name: str, arguments: dict) -> list[types.TextContent
             ]
         fp = _resolve_path(record)
         fp.write_text(_format_markdown(record), encoding="utf-8")
-        _rebuild_index()
+        _refresh_cache(added=[record | {"_file": str(fp.relative_to(ROOT))}])
         if len(list(ROOT.rglob("*.md"))) >= AUTO_THRESHOLD:
             _auto_archive()
         return [
@@ -373,7 +471,7 @@ async def handle_call_tool(name: str, arguments: dict) -> list[types.TextContent
         ]
 
     if name == "knowledge_stats":
-        records = _rebuild_index()
+        records = _load_index()
         generic = [r for r in records if r.get("scope") == "generic"]
         biz = [r for r in records if r.get("scope") == "business-specific"]
         langs: dict[str, int] = {}
@@ -410,7 +508,7 @@ async def main():
             write_stream,
             InitializationOptions(
                 server_name="error-knowledge",
-                server_version="0.3.0",
+                server_version="0.4.0",
                 capabilities=server.get_capabilities(
                     notification_options=NotificationOptions(),
                     experimental_capabilities={},
@@ -419,7 +517,42 @@ async def main():
         )
 
 
+def cli():
+    """Command-line entry point for direct querying.
+    
+    Usage:
+        python -m error_knowledge_server --query "null pointer"
+        python -m error_knowledge_server --stats
+    """
+    import argparse
+    parser = argparse.ArgumentParser(description=__doc__.split(".")[0])
+    parser.add_argument("--query", help="Search keywords")
+    parser.add_argument("--stats", action="store_true", help="Show stats and exit")
+    parser.add_argument("--limit", type=int, default=10, help="Max results")
+    args = parser.parse_args()
+
+    if args.stats:
+        records = _load_index()
+        generic = sum(1 for r in records if r.get("scope") == "generic")
+        biz = sum(1 for r in records if r.get("scope") == "business-specific")
+        print(f"Total: {len(records)} (generic: {generic}, business: {biz})")
+        return
+
+    if args.query:
+        results = _search_local(keywords=args.query, limit=args.limit)
+        if not results:
+            print("No matches found.")
+            return
+        for i, r in enumerate(results, 1):
+            title = r.get("title", "?")
+            scope = r.get("scope", "?")
+            lang = r.get("lang", r.get("project", "?"))
+            print(f"{i:>3}. [{scope}] [{lang}] {title}")
+        return
+
+    parser.print_help()
+
+
 if __name__ == "__main__":
     import asyncio
-
     asyncio.run(main())

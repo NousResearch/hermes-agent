@@ -513,9 +513,14 @@ class HermesACPAgent(acp.Agent):
         value: key for key, value in _MODE_TO_EDIT_APPROVAL_POLICY.items()
     }
 
-    def __init__(self, session_manager: SessionManager | None = None):
+    def __init__(
+        self,
+        session_manager: SessionManager | None = None,
+        *,
+        skills: str | list[str] | tuple[str, ...] | None = None,
+    ):
         super().__init__()
-        self.session_manager = session_manager or SessionManager()
+        self.session_manager = session_manager or SessionManager(skills=skills)
         self._conn: Optional[acp.Client] = None
 
     # ---- Connection lifecycle -----------------------------------------------

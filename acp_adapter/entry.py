@@ -209,7 +209,11 @@ def _run_setup_browser(assume_yes: bool = False) -> int:
         return 1
 
 
-def main(argv: list[str] | None = None) -> None:
+def main(
+    argv: list[str] | None = None,
+    *,
+    skills: str | list[str] | tuple[str, ...] | None = None,
+) -> None:
     """Entry point: load env, configure logging, run the ACP agent."""
     args = _parse_args(argv)
     if args.version:
@@ -252,7 +256,7 @@ def main(argv: list[str] | None = None) -> None:
     except Exception:
         logger.debug("MCP tool discovery failed at ACP startup", exc_info=True)
 
-    agent = HermesACPAgent()
+    agent = HermesACPAgent(skills=skills)
     try:
         asyncio.run(acp.run_agent(agent, use_unstable_protocol=True))
     except KeyboardInterrupt:

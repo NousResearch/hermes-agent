@@ -23,6 +23,28 @@ def test_main_enables_unstable_protocol(monkeypatch):
     assert calls["kwargs"]["use_unstable_protocol"] is True
 
 
+def test_main_passes_startup_skills_to_agent(monkeypatch):
+    calls = {}
+
+    class FakeACPAgent:
+        def __init__(self, **kwargs):
+            calls["agent_kwargs"] = kwargs
+
+    async def fake_run_agent(agent, **kwargs):
+        calls["agent"] = agent
+        calls["run_kwargs"] = kwargs
+
+    monkeypatch.setattr(entry, "_setup_logging", lambda: None)
+    monkeypatch.setattr(entry, "_load_env", lambda: None)
+    monkeypatch.setattr("acp_adapter.server.HermesACPAgent", FakeACPAgent)
+    monkeypatch.setattr(acp, "run_agent", fake_run_agent)
+
+    entry.main([], skills=["alpha,beta", "gamma"])
+
+    assert calls["agent_kwargs"]["skills"] == ["alpha,beta", "gamma"]
+    assert calls["run_kwargs"]["use_unstable_protocol"] is True
+
+
 def test_main_version_prints_without_starting_server(monkeypatch, capsys):
     monkeypatch.setattr(entry, "_setup_logging", lambda: (_ for _ in ()).throw(AssertionError("started server")))
 

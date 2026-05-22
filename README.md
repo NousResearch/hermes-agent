@@ -28,6 +28,41 @@ Use any model you want — [Nous Portal](https://portal.nousresearch.com), [Open
 
 ---
 
+## Aurelius OS Buildout
+
+<p align="center">
+  <a href="docs/plans/2026-05-22-aurelius-os-multi-user-buildout.md"><img src="https://img.shields.io/badge/Plan-Aurelius%20OS-8B0000?style=for-the-badge" alt="Aurelius OS plan"></a>
+  <img src="https://img.shields.io/badge/Status-Ready%20for%20review-FFD700?style=for-the-badge" alt="Ready for review">
+  <img src="https://img.shields.io/badge/Mode-PRs%20before%20updates-5865F2?style=for-the-badge" alt="PRs before updates">
+</p>
+
+Hermes is also the base layer for **Aurelius OS**: a shared, multi-person command system for profiles, Discord planning, local memory, device orchestration, and approval-driven agents.
+
+| Pillar | What Aurelius Adds |
+|---|---|
+| **Profiles** | Sam, Ethan, Cy, shared project, task, and recurring-job identities with separate memory and model policy. |
+| **Memory fabric** | Hermes memory, Honcho, OpenBrain, local transcripts, and NAS archives routed by privacy scope. |
+| **Discord operations** | Meeting capture, call summaries, timelines, candidate tickets, and readiness notifications. |
+| **Visible work** | Conversations and whiteboards become reviewed tickets before agents start changing code. |
+| **Device network** | Tailscale-connected Macs, phones, laptops, local models, and tools show up as schedulable nodes. |
+| **Human approval** | GitHub branches, tests, and PRs remain the gate for shared behavior changes. |
+
+```mermaid
+flowchart LR
+    Discord["Discord calls + chat"] --> Capture["Capture pack"]
+    Whiteboard["Excalidraw board"] --> Capture
+    Capture --> Memory["Shared memory fabric"]
+    Memory --> Questions["Grill-me question loop"]
+    Questions --> Tickets["Reviewed tickets"]
+    Tickets --> Profiles["Person + task profiles"]
+    Profiles --> Agents["Hermes agents"]
+    Agents --> PRs["GitHub PRs"]
+```
+
+Read the full plan: **[Aurelius OS Multi-User Buildout](docs/plans/2026-05-22-aurelius-os-multi-user-buildout.md)**.
+
+---
+
 ## Quick Install
 
 ### Linux, macOS, WSL2, Termux

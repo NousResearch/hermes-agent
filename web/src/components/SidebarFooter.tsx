@@ -3,7 +3,7 @@ import { useSidebarStatus } from "@/hooks/useSidebarStatus";
 import { cn } from "@/lib/utils";
 import { useI18n } from "@/i18n";
 
-export function SidebarFooter() {
+export function SidebarFooter({ collapsed = false }: { collapsed?: boolean }) {
   const status = useSidebarStatus();
   const { t } = useI18n();
 
@@ -13,6 +13,7 @@ export function SidebarFooter() {
         "flex shrink-0 items-center justify-between gap-2",
         "px-5 py-2.5",
         "border-t border-current/10",
+        collapsed && "lg:hidden",
       )}
     >
       <Typography

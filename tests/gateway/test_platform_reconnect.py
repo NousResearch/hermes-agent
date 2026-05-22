@@ -150,6 +150,13 @@ class TestStartupPlatformIsolation:
         with pytest.raises(TimeoutError, match="telegram connect timed out"):
             await runner._connect_adapter_with_timeout(adapter, Platform.TELEGRAM)
 
+    def test_platform_connect_timeout_default_matches_retry_budget(self, monkeypatch):
+        """Default startup guard should cover Telegram's slow fallback retry path."""
+        monkeypatch.delenv("HERMES_GATEWAY_PLATFORM_CONNECT_TIMEOUT", raising=False)
+        runner = _make_runner()
+
+        assert runner._platform_connect_timeout_secs() == 90.0
+
 
 class TestStartupFailureQueuing:
     """Verify that failed platforms are queued during startup."""

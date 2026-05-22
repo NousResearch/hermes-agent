@@ -41,6 +41,7 @@ Payment / credit exhaustion fallback:
 """
 
 import json
+import ipaddress
 import logging
 import os
 import threading
@@ -508,6 +509,23 @@ def _to_openai_base_url(base_url: str) -> str:
         logger.debug("Auxiliary client: rewrote Kimi base URL %s → %s", url, rewritten)
         return rewritten
     return url
+
+
+def _is_probably_local_model_endpoint(base_url: str) -> bool:
+    """Return True for local/private model endpoints that commonly omit API keys."""
+    try:
+        host = (urlparse(str(base_url or "")).hostname or "").strip().lower()
+    except Exception:
+        return False
+    if not host:
+        return False
+    if host in {"localhost", "host.docker.internal"} or host.endswith(".local"):
+        return True
+    try:
+        address = ipaddress.ip_address(host)
+    except ValueError:
+        return False
+    return bool(address.is_loopback or address.is_private or address.is_link_local)
 
 
 def _select_pool_entry(provider: str) -> Tuple[bool, Optional[Any]]:
@@ -3355,12 +3373,22 @@ def resolve_provider_client(
                 custom_key = os.getenv(custom_key_env, "").strip()
             custom_key = custom_key or "no-key-required"
             if custom_key == "no-key-required":
-                logger.warning(
-                    "resolve_provider_client: named custom provider %r has no resolvable "
-                    "api_key — request will be sent with placeholder no-key-required "
-                    "and will 401 on auth-required endpoints",
-                    custom_entry.get("name") or provider,
-                )
+                local_endpoint = _is_probably_local_model_endpoint(custom_base)
+                provider_name = custom_entry.get("name") or provider
+                if local_endpoint:
+                    logger.debug(
+                        "resolve_provider_client: named custom provider %r has no "
+                        "resolvable api_key; using placeholder no-key-required for "
+                        "local/private endpoint",
+                        provider_name,
+                    )
+                else:
+                    logger.warning(
+                        "resolve_provider_client: named custom provider %r has no "
+                        "resolvable api_key; using placeholder no-key-required "
+                        "which auth-required endpoints may reject",
+                        provider_name,
+                    )
             # An explicit per-task api_mode override (from _resolve_task_provider_model)
             # wins; otherwise fall back to what the provider entry declared.
             entry_api_mode = (api_mode or custom_entry.get("api_mode") or "").strip()

@@ -207,6 +207,7 @@ async def test_start_gateway_replace_force_uses_terminate_pid(monkeypatch, tmp_p
         lambda **kwargs: 0,
     )
     monkeypatch.setattr("gateway.status.terminate_pid", lambda pid, force=False: calls.append((pid, force)))
+    monkeypatch.setattr("gateway.status._pid_exists", lambda pid: True)
     monkeypatch.setattr("gateway.run.os.getpid", lambda: 100)
     monkeypatch.setattr("gateway.run.os.kill", lambda pid, sig: None)
     monkeypatch.setattr("time.sleep", lambda _: None)
@@ -285,6 +286,7 @@ async def test_start_gateway_replace_writes_takeover_marker_before_sigterm(
     )
     monkeypatch.setattr("gateway.status.write_takeover_marker", record_write_marker)
     monkeypatch.setattr("gateway.status.terminate_pid", record_terminate)
+    monkeypatch.setattr("gateway.status._pid_exists", lambda pid: False)
     monkeypatch.setattr("gateway.run.os.getpid", lambda: 100)
     # Simulate old process exiting on first check so we don't loop into force-kill
     monkeypatch.setattr(

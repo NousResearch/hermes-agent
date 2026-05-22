@@ -150,6 +150,14 @@ def apply_wal_with_fallback(
     """
     try:
         conn.execute("PRAGMA journal_mode=WAL")
+        # synchronous=FULL ensures WAL frames are flushed to disk before
+        # the write transaction returns.  The default (NORMAL) in WAL mode
+        # is fast but vulnerable to OS-level process kills (SIGTERM/SIGKILL)
+        # mid-write, which can corrupt the database on busy systems — see
+        # issue #30636.  The performance cost is minimal for typical gateway
+        # write patterns (< 100 writes/sec) and eliminates the corruption
+        # window that launchd's aggressive SIGKILL creates.
+        conn.execute("PRAGMA synchronous=FULL")
         return "wal"
     except sqlite3.OperationalError as exc:
         msg = str(exc).lower()
@@ -449,15 +457,23 @@ class SessionDB:
     def close(self):
         """Close the database connection.
 
-        Attempts a PASSIVE WAL checkpoint first so that exiting processes
-        help keep the WAL file from growing unbounded.
+        Attempts a TRUNCATE WAL checkpoint first so that exiting processes
+        flush the WAL back into the main DB file.  TRUNCATE is stronger than
+        PASSIVE — it blocks until all committed WAL frames are written to the
+        database file and then truncates the WAL to zero bytes.  This prevents
+        the corruption scenario described in issue #30636 where SIGTERM under
+        high load leaves uncheckpointed WAL pages behind.
         """
         with self._lock:
             if self._conn:
                 try:
-                    self._conn.execute("PRAGMA wal_checkpoint(PASSIVE)")
+                    self._conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
                 except Exception:
-                    pass
+                    # Fallback to PASSIVE if TRUNCATE fails (e.g. active readers)
+                    try:
+                        self._conn.execute("PRAGMA wal_checkpoint(PASSIVE)")
+                    except Exception:
+                        pass
                 self._conn.close()
                 self._conn = None
 

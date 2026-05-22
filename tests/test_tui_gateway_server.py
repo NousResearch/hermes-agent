@@ -5,6 +5,7 @@ import threading
 import time
 import types
 from pathlib import Path
+from typing import Any
 from unittest.mock import patch
 
 from tui_gateway import server
@@ -595,6 +596,103 @@ def test_history_to_messages_renders_multimodal_content():
         {"role": "user", "text": "look here\n[image]"},
         {"role": "assistant", "text": "saw it"},
     ]
+
+
+def test_session_branch_target_clones_stored_session(monkeypatch):
+    captured: dict[str, Any] = {"created": [], "messages": []}
+
+    class FakeDB:
+        def get_session(self, target):
+            return {"id": target} if target in {"active", "stored"} else None
+
+        def get_session_title(self, target):
+            return {"active": "Active", "stored": "Stored"}.get(target)
+
+        def get_next_title_in_lineage(self, title):
+            return f"{title} #2"
+
+        def create_session(self, key, source, **kwargs):
+            captured["created"].append((key, source, kwargs))
+            return key
+
+        def append_message(self, **kwargs):
+            captured["messages"].append(kwargs)
+
+        def set_session_title(self, key, title):
+            captured["title"] = (key, title)
+            return True
+
+        def end_session(self, target, end_reason):
+            captured["ended"] = (target, end_reason)
+
+        def get_messages_as_conversation(self, target, include_ancestors=False):
+            captured.setdefault("history_calls", []).append((target, include_ancestors))
+            if target == "stored":
+                return [
+                    {"role": "user", "content": "stored prompt"},
+                    {"role": "assistant", "content": "stored answer"},
+                ]
+            return [{"role": "user", "content": "active prompt"}]
+
+    monkeypatch.setattr(server, "_sessions", {"sid": {"session_key": "active"}})
+    monkeypatch.setattr(server, "_get_db", lambda: FakeDB())
+    monkeypatch.setattr(server, "_new_session_key", lambda: "branch-key")
+    monkeypatch.setattr(server, "_set_session_context", lambda target: [])
+    monkeypatch.setattr(server, "_clear_session_context", lambda tokens: None)
+    monkeypatch.setattr(
+        server,
+        "_make_agent",
+        lambda *args, **kwargs: types.SimpleNamespace(model="test"),
+    )
+    monkeypatch.setattr(
+        server,
+        "_session_info",
+        lambda agent: {"model": "test", "tools": {}, "skills": {}},
+    )
+    monkeypatch.setattr(
+        server,
+        "_init_session",
+        lambda sid, key, agent, history, cols=80: captured.update(
+            init=(sid, key, history, cols)
+        ),
+    )
+
+    resp = server.handle_request(
+        {
+            "id": "1",
+            "method": "session.branch_target",
+            "params": {"session_id": "stored", "cols": 101},
+        }
+    )
+
+    assert resp is not None
+    assert "result" in resp, resp.get("error")
+    assert resp["result"]["resumed"] == "branch-key"
+    assert resp["result"]["parent"] == "stored"
+    assert resp["result"]["messages"] == [
+        {"role": "user", "text": "stored prompt"},
+        {"role": "assistant", "text": "stored answer"},
+    ]
+    assert captured["created"] == [
+        (
+            "branch-key",
+            "tui",
+            {"model": server._resolve_model(), "parent_session_id": "stored"},
+        )
+    ]
+    assert captured["messages"] == [
+        {"session_id": "branch-key", "role": "user", "content": "stored prompt"},
+        {"session_id": "branch-key", "role": "assistant", "content": "stored answer"},
+    ]
+    assert captured["ended"] == ("stored", "branched")
+    assert captured["init"][1:] == (
+        "branch-key",
+        [
+            {"role": "user", "content": "stored prompt"},
+            {"role": "assistant", "content": "stored answer"},
+        ],
+        101,
+    )
 
 
 def test_session_resume_uses_parent_lineage_for_display(monkeypatch):

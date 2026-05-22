@@ -148,6 +148,7 @@ _LONG_HANDLERS = frozenset(
         "browser.manage",
         "cli.exec",
         "session.branch",
+        "session.branch_target",
         "session.compress",
         "session.resume",
         "shell.exec",
@@ -2801,6 +2802,27 @@ def _(rid, params: dict) -> dict:
     return _ok(rid, {"closed": True})
 
 
+def _branch_from_history(db, parent: str, history: list[dict], name: str = ""):
+    if not history:
+        raise ValueError("nothing to branch — source session has no messages")
+    key = _new_session_key()
+    current = db.get_session_title(parent) or "branch"
+    title = name or (
+        db.get_next_title_in_lineage(current)
+        if hasattr(db, "get_next_title_in_lineage")
+        else f"{current} (branch)"
+    )
+    db.create_session(key, source="tui", model=_resolve_model(), parent_session_id=parent)
+    for msg in history:
+        db.append_message(
+            session_id=key,
+            role=msg.get("role", "user"),
+            content=msg.get("content"),
+        )
+    db.set_session_title(key, title)
+    return key, title
+
+
 @method("session.branch")
 def _(rid, params: dict) -> dict:
     session, err = _sess(params, rid)
@@ -2812,30 +2834,12 @@ def _(rid, params: dict) -> dict:
     old_key = session["session_key"]
     with session["history_lock"]:
         history = [dict(msg) for msg in session.get("history", [])]
-    if not history:
-        return _err(rid, 4008, "nothing to branch — send a message first")
-    new_key = _new_session_key()
-    branch_name = params.get("name", "")
     try:
-        if branch_name:
-            title = branch_name
-        else:
-            current = db.get_session_title(old_key) or "branch"
-            title = (
-                db.get_next_title_in_lineage(current)
-                if hasattr(db, "get_next_title_in_lineage")
-                else f"{current} (branch)"
-            )
-        db.create_session(
-            new_key, source="tui", model=_resolve_model(), parent_session_id=old_key
+        new_key, title = _branch_from_history(
+            db, old_key, history, params.get("name", "")
         )
-        for msg in history:
-            db.append_message(
-                session_id=new_key,
-                role=msg.get("role", "user"),
-                content=msg.get("content"),
-            )
-        db.set_session_title(new_key, title)
+    except ValueError as e:
+        return _err(rid, 4008, str(e).replace("source session has no messages", "send a message first"))
     except Exception as e:
         return _err(rid, 5008, f"branch failed: {e}")
     new_sid = uuid.uuid4().hex[:8]
@@ -2851,6 +2855,49 @@ def _(rid, params: dict) -> dict:
     except Exception as e:
         return _err(rid, 5000, f"agent init failed on branch: {e}")
     return _ok(rid, {"session_id": new_sid, "title": title, "parent": old_key})
+
+
+@method("session.branch_target")
+def _(rid, params: dict) -> dict:
+    target = params.get("session_id", "")
+    if not target:
+        return _err(rid, 4006, "session_id required")
+    db = _get_db()
+    if db is None:
+        return _db_unavailable_error(rid, code=5008)
+    if not db.get_session(target):
+        return _err(rid, 4007, "session not found")
+    history = db.get_messages_as_conversation(target)
+    try:
+        key, title = _branch_from_history(db, target, history, params.get("name", ""))
+        if hasattr(db, "end_session"):
+            db.end_session(target, "branched")
+    except ValueError as e:
+        return _err(rid, 4008, str(e))
+    except Exception as e:
+        return _err(rid, 5008, f"branch failed: {e}")
+    sid = uuid.uuid4().hex[:8]
+    try:
+        tokens = _set_session_context(key)
+        try:
+            agent = _make_agent(sid, key, session_id=key)
+        finally:
+            _clear_session_context(tokens)
+        _init_session(sid, key, agent, list(history), cols=int(params.get("cols", 80)))
+    except Exception as e:
+        return _err(rid, 5000, f"agent init failed on branch: {e}")
+    return _ok(
+        rid,
+        {
+            "session_id": sid,
+            "title": title,
+            "parent": target,
+            "resumed": key,
+            "message_count": len(history),
+            "messages": _history_to_messages(history),
+            "info": _session_info(agent),
+        },
+    )
 
 
 @method("session.interrupt")

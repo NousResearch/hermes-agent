@@ -53,7 +53,10 @@ def _normalize_skill_list(skill: Optional[str] = None, skills: Optional[Any] = N
     elif isinstance(skills, str):
         raw_items = [skills]
     else:
-        raw_items = list(skills)
+        try:
+            raw_items = list(skills)
+        except TypeError:
+            raw_items = []
 
     normalized: List[str] = []
     for item in raw_items:

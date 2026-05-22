@@ -1803,6 +1803,9 @@ def _run_llm_review(prompt: str) -> Dict[str, Any]:
             skip_context_files=True,
             skip_memory=True,
         )
+        # Mark this fork as a background review so tool-layer guards (e.g.
+        # the cron-protection check in _delete_skill()) activate correctly.
+        review_agent._memory_write_origin = "background_review"
         # Disable recursive nudges — the curator must never spawn its own review.
         review_agent._memory_nudge_interval = 0
         review_agent._skill_nudge_interval = 0

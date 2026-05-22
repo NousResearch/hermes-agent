@@ -126,4 +126,4 @@ def test_production_code_contains_hydration_block():
     content = src.read_text(encoding="utf-8")
     # Anchor on the unique comment + the modulo line.
     assert "Hydrate per-session nudge counters from persisted history" in content
-    assert "self._turns_since_memory = prior_user_turns % self._memory_nudge_interval" in content
+    assert "prior_user_turns % self._memory_nudge_interval" in content

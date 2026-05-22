@@ -34,6 +34,7 @@ const DIM_OFF = `${ESC}[22m`
 const FWD_DEL_RE = new RegExp(`${ESC}\\[3(?:[~$^]|;)`)
 const PRINTABLE = /^[ -~\u00a0-\uffff]+$/
 const BRACKET_PASTE = new RegExp(`${ESC}?\\[20[01]~`, 'g')
+const KEY_BURST_MS = 16
 const MULTI_CLICK_MS = 500
 
 const invert = (s: string) => INV + s + INV_OFF
@@ -400,10 +401,7 @@ export function TextInput({
   const selRef = useRef<null | { end: number; start: number }>(null)
   const vRef = useRef(value)
   const self = useRef(false)
-  const pasteBuf = useRef('')
-  const pasteEnd = useRef<null | number>(null)
-  const pasteTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
-  const pastePos = useRef(0)
+  const keyBurstTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
   const editVersionRef = useRef(0)
   const parentChangeTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
   const pendingParentValue = useRef<string | null>(null)
@@ -536,8 +534,8 @@ export function TextInput({
 
   useEffect(
     () => () => {
-      if (pasteTimer.current) {
-        clearTimeout(pasteTimer.current)
+      if (keyBurstTimer.current) {
+        clearTimeout(keyBurstTimer.current)
       }
 
       if (parentChangeTimer.current) {
@@ -695,21 +693,26 @@ export function TextInput({
     return !!h
   }
 
-  const flushPaste = () => {
-    const text = pasteBuf.current
-    const at = pastePos.current
-    const end = pasteEnd.current ?? at
-    pasteBuf.current = ''
-    pasteEnd.current = null
-    pasteTimer.current = null
+  const flushKeyBurst = () => {
+    if (keyBurstTimer.current) {
+      clearTimeout(keyBurstTimer.current)
+      keyBurstTimer.current = null
+    }
 
-    if (!text) {
+    flushParentChange()
+  }
+
+  const scheduleKeyBurstCommit = (next: string, nextCur: number) => {
+    commit(next, nextCur, true, false, false)
+
+    if (keyBurstTimer.current) {
       return
     }
 
-    if (!emitPaste({ cursor: at, text, value: vRef.current }) && PRINTABLE.test(text)) {
-      commit(vRef.current.slice(0, at) + text + vRef.current.slice(end), at + text.length)
-    }
+    keyBurstTimer.current = setTimeout(() => {
+      keyBurstTimer.current = null
+      flushParentChange()
+    }, KEY_BURST_MS)
   }
 
   const clearSel = () => {
@@ -850,6 +853,8 @@ export function TextInput({
       // follow-up on #19835). The pass-through predicate is a no-op for
       // ordinary typing and plain paste when voice is unbound to 'v'.
       if (shouldPassThroughToGlobalHandler(inp, k, voiceRecordKey)) {
+        flushKeyBurst()
+
         return
       }
 
@@ -859,6 +864,8 @@ export function TextInput({
         eventRaw === '\x16' ||
         (isMac && isActionMod(k) && inp.toLowerCase() === 'v')
       ) {
+        flushKeyBurst()
+
         if (cbPaste.current) {
           return void emitPaste({ cursor: curRef.current, hotkey: true, text: '', value: vRef.current })
         }
@@ -875,6 +882,8 @@ export function TextInput({
       }
 
       if (isMac && isActionMod(k) && inp.toLowerCase() === 'c') {
+        flushKeyBurst()
+
         const range = selRange()
 
         if (range) {
@@ -887,6 +896,8 @@ export function TextInput({
       }
 
       if (k.upArrow || k.downArrow) {
+        flushKeyBurst()
+
         const next = lineNav(vRef.current, curRef.current, k.upArrow ? -1 : 1)
 
         if (next !== null) {
@@ -899,11 +910,11 @@ export function TextInput({
       }
 
       if (k.return) {
+        flushKeyBurst()
+
         if (k.shift || k.ctrl || (isMac ? isActionMod(k) : k.meta)) {
-          flushParentChange()
           commit(ins(vRef.current, curRef.current, '\n'), curRef.current + 1)
         } else {
-          flushParentChange()
           cbSubmit.current?.(vRef.current)
         }
 
@@ -921,6 +932,11 @@ export function TextInput({
       const actionDeleteWord = (mod && inp === 'w') || isMacActionFallback(k, inp, 'w')
       const range = selRange()
       const delFwd = k.delete || fwdDel.current
+      const isPrintableInput = (event.keypress.isPasted || inp.length > 0) && PRINTABLE.test(inp.replace(BRACKET_PASTE, ''))
+
+      if (!isPrintableInput) {
+        flushKeyBurst()
+      }
 
       if (mod && inp === 'z') {
         return swap(undo, redo)
@@ -1050,18 +1066,19 @@ export function TextInput({
         }
 
         if (text.length > 1 || text.includes('\n')) {
-          if (!pasteBuf.current) {
-            pastePos.current = range ? range.start : c
-            pasteEnd.current = range ? range.end : pastePos.current
+          if (!PRINTABLE.test(text)) {
+            return
           }
 
-          pasteBuf.current += text
-
-          if (pasteTimer.current) {
-            clearTimeout(pasteTimer.current)
+          if (range) {
+            v = v.slice(0, range.start) + text + v.slice(range.end)
+            c = range.start + text.length
+          } else {
+            v = v.slice(0, c) + text + v.slice(c)
+            c += text.length
           }
 
-          pasteTimer.current = setTimeout(flushPaste, 50)
+          scheduleKeyBurstCommit(v, c)
 
           return
         }

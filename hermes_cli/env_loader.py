@@ -21,6 +21,44 @@ _CREDENTIAL_SUFFIXES = ("_API_KEY", "_TOKEN", "_SECRET", "_KEY")
 # tests) don't spam the same warning multiple times.
 _WARNED_KEYS: set[str] = set()
 
+# Map of env-var name → source label ("bitwarden", etc.) for credentials
+# that were injected by an external secret source during load_hermes_dotenv().
+# Used by setup / `hermes model` flows to label detected credentials so
+# users understand WHERE a key came from when their .env doesn't contain it
+# directly (otherwise the "credentials detected ✓" line looks identical to
+# the .env case and they don't know Bitwarden is wired up).
+_SECRET_SOURCES: dict[str, str] = {}
+
+
+def get_secret_source(env_var: str) -> str | None:
+    """Return the label of the secret source that supplied ``env_var``, if any.
+
+    Returns ``"bitwarden"`` for keys pulled from Bitwarden Secrets Manager
+    during the current process's ``load_hermes_dotenv()`` call.  Returns
+    ``None`` for keys that came from ``.env``, the shell environment, or
+    aren't tracked.
+    """
+    return _SECRET_SOURCES.get(env_var)
+
+
+def format_secret_source_suffix(env_var: str) -> str:
+    """Return a human-readable suffix like ``" (from Bitwarden)"`` or ``""``.
+
+    Use this when printing a detected credential so the user can see where
+    it came from.  Empty string when the credential came from ``.env`` or
+    the shell — those are the implicit / "default" cases users already
+    understand.
+    """
+    source = get_secret_source(env_var)
+    if not source:
+        return ""
+    if source == "bitwarden":
+        return " (from Bitwarden)"
+    # Generic fallback — future-proofing for additional secret sources
+    # (e.g. 1Password, HashiCorp Vault) without having to update every
+    # call site.
+    return f" (from {source})"
+
 
 def _format_offending_chars(value: str, limit: int = 3) -> str:
     """Return a compact 'U+XXXX ('c'), ...' summary of non-ASCII codepoints."""
@@ -213,6 +251,12 @@ def _apply_external_secret_sources(home_path: Path) -> None:
         # and might have the same copy-paste corruption as a manually
         # edited .env (see #6843).
         _sanitize_loaded_credentials()
+        # Remember where these came from so the setup / `hermes model`
+        # flows can label detected credentials with "(from Bitwarden)" —
+        # otherwise users see "credentials ✓" with no hint that the value
+        # came from BSM rather than .env.
+        for name in result.applied:
+            _SECRET_SOURCES[name] = "bitwarden"
         print(
             f"  Bitwarden Secrets Manager: applied {len(result.applied)} "
             f"secret{'s' if len(result.applied) != 1 else ''} "

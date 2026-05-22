@@ -1014,6 +1014,12 @@ def load_gateway_config() -> GatewayConfig:
                         "disable_topic_auto_rename",
                         telegram_cfg["disable_topic_auto_rename"],
                     )
+                # Bridge custom Telegram runtime-only settings into
+                # gateway.platforms.telegram.extra so the adapter can read them.
+                if "inbox_auto_topic" in telegram_cfg:
+                    _tg_plat = platforms_data.setdefault(Platform.TELEGRAM.value, {})
+                    _tg_extra = _tg_plat.setdefault("extra", {})
+                    _tg_extra.setdefault("inbox_auto_topic", telegram_cfg["inbox_auto_topic"])
                 # Prefer telegram.require_mention; fall back to the top-level shorthand.
                 _effective_rm = telegram_cfg.get("require_mention", yaml_cfg.get("require_mention"))
                 if _effective_rm is not None and not os.getenv("TELEGRAM_REQUIRE_MENTION"):

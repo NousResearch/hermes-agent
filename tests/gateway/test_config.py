@@ -454,6 +454,31 @@ class TestLoadGatewayConfig:
             "789": "Creative writing",
         }
 
+    def test_bridges_telegram_inbox_auto_topic_from_config_yaml(self, tmp_path, monkeypatch):
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        config_path = hermes_home / "config.yaml"
+        config_path.write_text(
+            "telegram:\n"
+            "  inbox_auto_topic:\n"
+            "    enabled: true\n"
+            "    chat_id: -1001234567\n"
+            "    source_thread_id: 1\n"
+            "    topic_prefix: cw\n",
+            encoding="utf-8",
+        )
+
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+        config = load_gateway_config()
+
+        assert config.platforms[Platform.TELEGRAM].extra["inbox_auto_topic"] == {
+            "enabled": True,
+            "chat_id": -1001234567,
+            "source_thread_id": 1,
+            "topic_prefix": "cw",
+        }
+
     def test_bridges_slack_channel_prompts_from_config_yaml(self, tmp_path, monkeypatch):
         hermes_home = tmp_path / ".hermes"
         hermes_home.mkdir()

@@ -4466,6 +4466,98 @@ class TelegramAdapter(BasePlatformAdapter):
         cleaned = re.sub(rf"(?i)@{username}\b[,:\-]*\s*", "", text).strip()
         return cleaned or text
 
+    def _inbox_auto_topic_config(self) -> Dict[str, Any]:
+        """Return Telegram forum Inbox auto-topic routing config."""
+        raw = self.config.extra.get("inbox_auto_topic") or {}
+        return raw if isinstance(raw, dict) else {}
+
+    def _is_inbox_auto_topic_message(self, message) -> bool:
+        """True when a group/forum message should spawn a fresh work topic."""
+        cfg = self._inbox_auto_topic_config()
+        if not cfg.get("enabled", False):
+            return False
+        chat = getattr(message, "chat", None)
+        if not chat or not getattr(chat, "is_forum", False):
+            return False
+        configured_chat_id = cfg.get("chat_id")
+        if configured_chat_id is not None and str(configured_chat_id) != str(getattr(chat, "id", "")):
+            return False
+        source_thread_id = str(cfg.get("source_thread_id", self._GENERAL_TOPIC_THREAD_ID))
+        thread_id = getattr(message, "message_thread_id", None)
+        message_thread_id = str(thread_id) if thread_id is not None else self._GENERAL_TOPIC_THREAD_ID
+        return message_thread_id == source_thread_id
+
+    def _title_for_inbox_auto_topic(self, text: str, message_id: Optional[int] = None) -> str:
+        """Derive a compact Telegram topic name from the user's Inbox request."""
+        cfg = self._inbox_auto_topic_config()
+        prefix = str(cfg.get("topic_prefix", "")).strip()
+        # Collapse markdown/code punctuation to keep the topic list readable.
+        title = re.sub(r"\s+", " ", (text or "").strip())
+        title = re.sub(r"[`*_~#>\[\](){}|]", "", title).strip(" -–—:;,.!?\t\n")
+        if not title:
+            title = f"Request {message_id}" if message_id is not None else "New request"
+        max_len = int(cfg.get("max_title_length", 80) or 80)
+        max_len = max(16, min(max_len, 128))
+        reserved = len(prefix) + (1 if prefix else 0)
+        title = title[: max_len - reserved].rstrip()
+        return f"{prefix} {title}".strip()[:128] or "New request"
+
+    async def _create_inbox_auto_topic(self, message) -> Optional[int]:
+        """Create a fresh Telegram forum topic for an Inbox request."""
+        if not self._bot:
+            return None
+        chat = getattr(message, "chat", None)
+        if not chat:
+            return None
+        title = self._title_for_inbox_auto_topic(getattr(message, "text", ""), getattr(message, "message_id", None))
+        cfg = self._inbox_auto_topic_config()
+        kwargs: Dict[str, Any] = {"chat_id": int(chat.id), "name": title}
+        if cfg.get("icon_color") is not None:
+            kwargs["icon_color"] = cfg.get("icon_color")
+        if cfg.get("icon_custom_emoji_id"):
+            kwargs["icon_custom_emoji_id"] = cfg.get("icon_custom_emoji_id")
+        try:
+            topic = await self._bot.create_forum_topic(**kwargs)
+        except Exception as first_err:
+            # Telegram rejects duplicate topic names. Retry once with the source
+            # message id so two similar Inbox requests still get distinct lanes.
+            if "topic_name_duplicate" not in str(first_err).lower():
+                logger.warning("[%s] Inbox auto-topic creation failed: %s", self.name, first_err)
+                return None
+            suffix = f" #{getattr(message, 'message_id', '')}"
+            kwargs["name"] = (title[: max(1, 128 - len(suffix))].rstrip() + suffix)[:128]
+            try:
+                topic = await self._bot.create_forum_topic(**kwargs)
+            except Exception as second_err:
+                logger.warning("[%s] Inbox auto-topic duplicate retry failed: %s", self.name, second_err)
+                return None
+        thread_id = getattr(topic, "message_thread_id", None)
+        logger.info(
+            "[%s] Inbox auto-topic created in chat %s: %s -> thread_id=%s",
+            self.name,
+            getattr(chat, "id", None),
+            kwargs.get("name"),
+            thread_id,
+        )
+        return int(thread_id) if thread_id is not None else None
+
+    async def _route_inbox_message_to_new_topic(self, event: MessageEvent) -> MessageEvent:
+        """Rewrite an Inbox MessageEvent so the agent works in a new topic."""
+        message = event.raw_message
+        if not message or not self._is_inbox_auto_topic_message(message):
+            return event
+        new_thread_id = await self._create_inbox_auto_topic(message)
+        if not new_thread_id:
+            return event
+        event.source.thread_id = str(new_thread_id)
+        event.source.chat_topic = self._title_for_inbox_auto_topic(
+            getattr(message, "text", ""), getattr(message, "message_id", None)
+        )
+        # Do not reply to the Inbox message itself; topic metadata is enough for
+        # Telegram forum routing and keeps the response inside the new topic.
+        event.reply_to_message_id = None
+        return event
+
     def _should_process_message(self, message: Message, *, is_command: bool = False) -> bool:
         """Apply Telegram group trigger rules.
 
@@ -4595,6 +4687,7 @@ class TelegramAdapter(BasePlatformAdapter):
 
         event = self._build_message_event(msg, MessageType.TEXT, update_id=update.update_id)
         event.text = self._clean_bot_trigger_text(event.text)
+        event = await self._route_inbox_message_to_new_topic(event)
         self._enqueue_text_event(event)
 
     async def _handle_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:

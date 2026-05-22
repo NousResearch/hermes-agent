@@ -1,41 +1,26 @@
 #!/bin/bash
 # Railway-compatible entrypoint for Hermes Agent
-# Railway assigns a dynamic PORT via $PORT env var
-# This script routes that port to hermes gateway
+# Runs BOTH gateway (background) + Web Dashboard (foreground on $PORT)
 
 set -e
 
 HERMES_HOME="${HERMES_HOME:-/opt/data}"
 INSTALL_DIR="/opt/hermes"
-
-# Use Railway's PORT, fall back to 8642 (hermes gateway default)
-PORT="${PORT:-8642}"
+PORT="${PORT:-8080}"
 
 # --- Privilege dropping via gosu ---
 if [ "$(id -u)" = "0" ]; then
     if [ -n "$HERMES_UID" ] && [ "$HERMES_UID" != "$(id -u hermes)" ]; then
-        echo "Changing hermes UID to $HERMES_UID"
         usermod -u "$HERMES_UID" hermes
     fi
-
     if [ -n "$HERMES_GID" ] && [ "$HERMES_GID" != "$(id -g hermes)" ]; then
-        echo "Changing hermes GID to $HERMES_GID"
         groupmod -o -g "$HERMES_GID" hermes 2>/dev/null || true
     fi
 
     actual_hermes_uid=$(id -u hermes)
-    needs_chown=false
-    if [ -n "$HERMES_UID" ] && [ "$HERMES_UID" != "10000" ]; then
-        needs_chown=true
-    elif [ "$(stat -c %u "$HERMES_HOME" 2>/dev/null)" != "$actual_hermes_uid" ]; then
-        needs_chown=true
-    fi
-    if [ "$needs_chown" = true ]; then
-        echo "Fixing ownership of $HERMES_HOME to hermes ($actual_hermes_uid)"
-        chown -R hermes:hermes "$HERMES_HOME" 2>/dev/null || \
-            echo "Warning: chown failed (rootless container?) — continuing anyway"
-        chown -R hermes:hermes "$INSTALL_DIR/.venv" 2>/dev/null || \
-            echo "Warning: chown .venv failed (rootless container?) — continuing anyway"
+    if [ "$(stat -c %u "$HERMES_HOME" 2>/dev/null)" != "$actual_hermes_uid" ]; then
+        chown -R hermes:hermes "$HERMES_HOME" 2>/dev/null || true
+        chown -R hermes:hermes "$INSTALL_DIR/.venv" 2>/dev/null || true
     fi
 
     if [ -f "$HERMES_HOME/config.yaml" ]; then
@@ -47,26 +32,17 @@ if [ "$(id -u)" = "0" ]; then
     exec gosu hermes "$0" "$@"
 fi
 
-# --- Running as hermes from here ---
+# --- Running as hermes ---
 source "${INSTALL_DIR}/.venv/bin/activate"
 
-echo "docker" > "${HERMES_HOME:=/opt/data}/.install_method" 2>/dev/null || true
+echo "docker" > "${HERMES_HOME}/.install_method" 2>/dev/null || true
 
-# Create essential directory structure
 mkdir -p "$HERMES_HOME"/{cron,sessions,logs,hooks,memories,skills,skins,plans,workspace,home}
 
 # Bootstrap config files
-if [ ! -f "$HERMES_HOME/.env" ]; then
-    cp "$INSTALL_DIR/.env.example" "$HERMES_HOME/.env"
-fi
-
-if [ ! -f "$HERMES_HOME/config.yaml" ]; then
-    cp "$INSTALL_DIR/cli-config.yaml.example" "$HERMES_HOME/config.yaml"
-fi
-
-if [ ! -f "$HERMES_HOME/SOUL.md" ]; then
-    cp "$INSTALL_DIR/docker/SOUL.md" "$HERMES_HOME/SOUL.md"
-fi
+[ ! -f "$HERMES_HOME/.env" ] && cp "$INSTALL_DIR/.env.example" "$HERMES_HOME/.env"
+[ ! -f "$HERMES_HOME/config.yaml" ] && cp "$INSTALL_DIR/cli-config.yaml.example" "$HERMES_HOME/config.yaml"
+[ ! -f "$HERMES_HOME/SOUL.md" ] && cp "$INSTALL_DIR/docker/SOUL.md" "$HERMES_HOME/SOUL.md"
 
 if [ ! -f "$HERMES_HOME/auth.json" ] && [ -n "$HERMES_AUTH_JSON_BOOTSTRAP" ]; then
     printf '%s' "$HERMES_AUTH_JSON_BOOTSTRAP" > "$HERMES_HOME/auth.json"
@@ -80,12 +56,18 @@ fi
 
 echo "═══════════════════════════════════════════════════════════"
 echo "Hermes Agent on Railway"
-echo "Listening on PORT: $PORT"
+echo "Dashboard: $PORT  |  Gateway running in background"
 echo "═══════════════════════════════════════════════════════════"
 
-# Start hermes gateway
-# Use environment variables for the internal API server (more reliable than CLI flags in current Hermes versions)
-export API_SERVER_HOST=0.0.0.0
-export API_SERVER_PORT="$PORT"
+# Start Gateway in background (for Telegram/Discord/etc)
+hermes gateway run > "$HERMES_HOME/logs/gateway.log" 2>&1 &
 
-exec hermes gateway run
+# Small delay so gateway initializes
+sleep 2
+
+# Start Web Dashboard in foreground on Railway's assigned port
+exec hermes dashboard \
+    --host 0.0.0.0 \
+    --port "$PORT" \
+    --insecure \
+    --no-open

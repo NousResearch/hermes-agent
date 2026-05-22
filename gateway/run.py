@@ -15119,6 +15119,56 @@ class GatewayRunner:
                 unregister_gateway_notify,
             )
 
+            def _discord_approval_auth_callback(interaction) -> bool:
+                """Authorize Discord approval buttons with gateway-level auth."""
+                user = getattr(interaction, "user", None)
+                user_id = str(getattr(user, "id", "") or "")
+                if not user_id:
+                    return False
+
+                # Preserve Discord's role-aware component gate; GatewayRunner's
+                # text-path shortcut trusts role pre-filtering that button
+                # interactions do not pass through.
+                adapter_auth = getattr(_status_adapter, "_is_allowed_user", None)
+                if callable(adapter_auth):
+                    try:
+                        guild = getattr(interaction, "guild", None)
+                        is_dm = guild is None
+                        discord_policy = any(
+                            os.getenv(name, "").strip()
+                            for name in ("DISCORD_ALLOWED_USERS", "DISCORD_ALLOWED_ROLES")
+                        )
+                        if adapter_auth(user_id, user, guild=guild, is_dm=is_dm):
+                            if discord_policy:
+                                return True
+                            # Without a Discord-specific policy, adapter_auth
+                            # preserves legacy allow-all. Defer to gateway
+                            # policy so GATEWAY_ALLOWED_USERS and pairing are
+                            # not bypassed by shared-channel button clicks.
+                    except Exception as exc:
+                        logger.warning("Discord exec approval adapter auth failed: %s", exc)
+                        return False
+
+                if os.getenv("DISCORD_ALLOW_ALL_USERS", "").lower().strip() in {"true", "1", "yes"}:
+                    return True
+
+                global_allowlist = os.getenv("GATEWAY_ALLOWED_USERS", "").strip()
+                if global_allowlist:
+                    allowed_ids = {uid.strip() for uid in global_allowlist.split(",") if uid.strip()}
+                    if "*" in allowed_ids or user_id in allowed_ids:
+                        return True
+
+                try:
+                    if self.pairing_store.is_approved("discord", user_id):
+                        return True
+                except Exception as exc:
+                    logger.warning("Discord exec approval pairing auth failed: %s", exc)
+                    return False
+
+                # Match the normal gateway default: no allowlists means users
+                # must opt in with GATEWAY_ALLOW_ALL_USERS.
+                return os.getenv("GATEWAY_ALLOW_ALL_USERS", "").lower().strip() in {"true", "1", "yes"}
+
             def _approval_notify_sync(approval_data: dict) -> None:
                 """Send the approval request to the user from the agent thread.
 
@@ -15144,13 +15194,17 @@ class GatewayRunner:
                 # false positives from MagicMock auto-attribute creation in tests.
                 if getattr(type(_status_adapter), "send_exec_approval", None) is not None:
                     try:
+                        _approval_metadata = dict(_status_thread_metadata or {})
+                        _approval_metadata["approval_id"] = approval_data.get("approval_id")
+                        if source.platform == Platform.DISCORD:
+                            _approval_metadata["approval_auth_callback"] = _discord_approval_auth_callback
                         _approval_result = asyncio.run_coroutine_threadsafe(
                             _status_adapter.send_exec_approval(
                                 chat_id=_status_chat_id,
                                 command=cmd,
                                 session_key=_approval_session_key,
                                 description=desc,
-                                metadata=_status_thread_metadata,
+                                metadata=_approval_metadata,
                             ),
                             _loop_for_step,
                         ).result(timeout=15)

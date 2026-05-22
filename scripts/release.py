@@ -1060,6 +1060,7 @@ AUTHOR_MAP = {
     "my.vesper.nine@gmail.com": "kevin-ho",  # salvage: PR #15488 author @kevin-ho
     "noreply@paperclip.ing": "Paperclip",  # co-author only
     "teknium@hermes-agent": "teknium1",
+    "hermes-agent@users.noreply.github.com": "BROCCOLO1D",
     "web3blind@gmail.com": "web3blind",
     "ztzheng@163.com": "chengoak",  # PR #17467
     "24110240104@m.fudan.edu.cn": "YuShu",  # co-author only

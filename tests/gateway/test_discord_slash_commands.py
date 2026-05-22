@@ -158,6 +158,24 @@ async def test_registers_native_restart_slash_command(adapter):
     )
 
 
+@pytest.mark.asyncio
+async def test_registers_feed_image_test_slash_command(adapter):
+    adapter._handle_feed_image_test_slash = AsyncMock()
+    adapter._register_slash_commands()
+
+    assert "feed-image-test" in adapter._client.tree.commands
+
+    interaction = SimpleNamespace()
+    image = SimpleNamespace(filename="source.png", content_type="image/png")
+    await adapter._client.tree.commands["feed-image-test"](interaction, image=image, prompt="test prompt")
+
+    adapter._handle_feed_image_test_slash.assert_awaited_once_with(
+        interaction,
+        image,
+        "test prompt",
+    )
+
+
 # ------------------------------------------------------------------
 # Auto-registration from COMMAND_REGISTRY
 # ------------------------------------------------------------------

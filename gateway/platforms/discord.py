@@ -3076,6 +3076,18 @@ class DiscordAdapter(BasePlatformAdapter):
         async def slash_background(interaction: discord.Interaction, prompt: str):
             await self._run_simple_slash(interaction, f"/background {prompt}", "Background task started~")
 
+        @tree.command(name="feed-image-test", description="Test Fanhearts feed-image transform with an uploaded image")
+        @discord.app_commands.describe(
+            image="Image file to transform",
+            prompt="Optional extra instruction for the transform",
+        )
+        async def slash_feed_image_test(
+            interaction: discord.Interaction,
+            image: discord.Attachment,
+            prompt: str = "",
+        ):
+            await self._handle_feed_image_test_slash(interaction, image, prompt)
+
         # ── Auto-register any gateway-available commands not yet on the tree ──
         # This ensures new commands added to COMMAND_REGISTRY in
         # hermes_cli/commands.py automatically appear as Discord slash
@@ -3471,6 +3483,83 @@ class DiscordAdapter(BasePlatformAdapter):
             raw_message=interaction,
             channel_prompt=self._resolve_channel_prompt(channel_id, parent_id or None),
         )
+
+    async def _handle_feed_image_test_slash(
+        self,
+        interaction: Any,
+        image: Any,
+        prompt: str = "",
+    ) -> None:
+        """Run a one-off Fanhearts feed-image transform from a Discord slash upload."""
+        if not await self._check_slash_authorization(interaction, "/feed-image-test"):
+            return
+
+        content_type = (getattr(image, "content_type", "") or "").lower()
+        filename = getattr(image, "filename", "") or "input.png"
+        suffix = os.path.splitext(filename)[1].lower()
+        if content_type:
+            ext = "." + content_type.split("/", 1)[-1].split(";", 1)[0]
+        else:
+            ext = suffix
+        if ext == ".jpg":
+            ext = ".jpeg"
+        if ext not in {".jpeg", ".png", ".webp", ".gif"}:
+            ext = ".png"
+
+        if content_type and not content_type.startswith("image/"):
+            await interaction.response.send_message(
+                "이미지 파일만 처리할 수 있어요. PNG/JPG/WebP 이미지를 첨부해 주세요.",
+                ephemeral=True,
+            )
+            return
+        if not content_type and suffix not in {".jpg", ".jpeg", ".png", ".webp", ".gif"}:
+            await interaction.response.send_message(
+                "이미지 파일만 처리할 수 있어요. PNG/JPG/WebP 이미지를 첨부해 주세요.",
+                ephemeral=True,
+            )
+            return
+
+        await interaction.response.defer(thinking=True)
+
+        try:
+            from gateway import feed_images
+
+            if discord is None:
+                raise RuntimeError("discord.py is not available")
+
+            input_path = await self._cache_discord_image(image, ext)
+            output_root = _Path(tempfile.gettempdir()) / "hermes-feed-image-test" / str(
+                getattr(interaction, "id", int(time.time() * 1000))
+            )
+            transform_prompt = feed_images.build_transform_prompt(_Path(input_path), prompt or "")
+
+            def _generate() -> tuple[Any, Any]:
+                return feed_images.generate_with_codex_oauth_image(
+                    _Path(input_path),
+                    transform_prompt,
+                    output_root,
+                )
+
+            loop = asyncio.get_running_loop()
+            output_path, output_url = await loop.run_in_executor(None, _generate)
+
+            if output_path and _Path(output_path).exists():
+                with _Path(output_path).open("rb") as fh:
+                    file = discord.File(fh, filename="feed-image-test-result.png")
+                    await interaction.followup.send(
+                        "변환 완료: `feed-image-test` 결과입니다.",
+                        file=file,
+                    )
+                return
+            if output_url:
+                await interaction.followup.send(
+                    f"변환 완료: `feed-image-test` 결과입니다.\n{output_url}"
+                )
+                return
+            await interaction.followup.send("변환은 완료됐지만 결과 이미지를 찾지 못했어요.")
+        except Exception as exc:
+            logger.warning("[Discord] /feed-image-test failed: %s", exc, exc_info=True)
+            await interaction.followup.send(f"feed-image-test 처리 실패: {exc}")
 
     # ------------------------------------------------------------------
     # Thread creation helpers

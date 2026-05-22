@@ -2,7 +2,7 @@
 
 Three safety valves adapted from OpenHuman's tokenjuice Rust crate:
   1. PASSTHROUGH_BYTES — outputs shorter than this are kept verbatim.
-  2. PASSTHROUGH_COMMANDS — file-inspection tools (cat/tail/head/bat) never compressed.
+  2. PASSTHROUGH_COMMANDS — file-inspection tools (read_file/cat/tail/head/bat) never compressed.
   3. MIN_COMPRESSION_RATIO — LLM-summarised text that gained < 5% savings is
      discarded in favour of the original (summarisation cost without benefit).
 
@@ -17,9 +17,9 @@ from typing import Any, Dict, FrozenSet, List
 # Outputs shorter than this (chars) are always kept verbatim.
 TOKENJUICE_PASSTHROUGH_BYTES: int = 240
 
-# Commands whose output is never compressed — file-content inspection tools.
+# Tools/commands whose output is never compressed — file-content inspection.
 TOKENJUICE_PASSTHROUGH_COMMANDS: FrozenSet[str] = frozenset({
-    "cat", "tail", "head", "bat", "batcat",
+    "read_file", "cat", "tail", "head", "bat", "batcat",
 })
 
 # If the summarised text is >= this fraction of the original length,
@@ -72,8 +72,8 @@ def should_passthrough(msg: Dict[str, Any], tool_name: str = "", tool_args: str 
 
     Applies two gates:
       Gate 1: content length < TOKENJUICE_PASSTHROUGH_BYTES
-      Gate 2: the executed command is in TOKENJUICE_PASSTHROUGH_COMMANDS
-              (cat/tail/head/bat/batcat — file-inspection tools)
+      Gate 2: the tool or executed command is in TOKENJUICE_PASSTHROUGH_COMMANDS
+              (read_file/cat/tail/head/bat/batcat — file-inspection tools)
 
     Args:
         msg: The tool_result message dict.
@@ -87,7 +87,10 @@ def should_passthrough(msg: Dict[str, Any], tool_name: str = "", tool_args: str 
     if _content_char_count(msg) < TOKENJUICE_PASSTHROUGH_BYTES:
         return True
 
-    # Gate 2 — never-compress commands
+    # Gate 2 — never-compress file inspection tools/commands
+    if tool_name in TOKENJUICE_PASSTHROUGH_COMMANDS:
+        return True
+
     if tool_name == "terminal":
         cmd = _extract_tool_command_args(tool_args)
         if cmd and cmd in TOKENJUICE_PASSTHROUGH_COMMANDS:

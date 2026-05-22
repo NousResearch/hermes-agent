@@ -166,6 +166,92 @@ def _gateway_provider_error_reply(text: str) -> str:
     )
 
 
+def _parse_modelroute_args(raw_args: str) -> tuple[str, str]:
+    """Parse `/modelroute <task_class> <message>` arguments."""
+    parts = str(raw_args or "").strip().split(maxsplit=1)
+    if len(parts) != 2 or not parts[0].strip() or not parts[1].strip():
+        raise ValueError("Usage: /modelroute <task_class> <prompt>")
+    return parts[0].strip(), parts[1].strip()
+
+
+def _format_modelroute_result(payload: Dict[str, Any]) -> str:
+    """Render selected-route dispatch output for operator-facing chat."""
+    telemetry = payload.get("telemetry") if isinstance(payload, dict) else {}
+    if not isinstance(telemetry, dict):
+        telemetry = {}
+    ok = bool(payload.get("ok")) if isinstance(payload, dict) else False
+    selected_model = str(payload.get("selected_model") or "unknown")
+    transport = str(payload.get("transport") or "unknown")
+    elapsed = telemetry.get("elapsed_sec")
+    fallback = "true" if telemetry.get("fallback_used") else "false"
+    task_class = str(telemetry.get("task_class") or payload.get("task_class") or "unknown")
+    evidence = str(telemetry.get("evidence") or "")
+    lines = [
+        "MODEL_ROUTE_TELEMETRY",
+        f"status={'ok' if ok else 'blocked_exact'}",
+        f"task_class={task_class}",
+        f"selected_model={selected_model}",
+        f"transport={transport}",
+        f"fallback_used={fallback}",
+    ]
+    if elapsed is not None:
+        lines.append(f"elapsed_sec={elapsed}")
+    if evidence:
+        lines.append(f"evidence={evidence}")
+    if not ok:
+        lines.append(f"blocker={payload.get('blocker') or 'model_route_dispatch_failed'}")
+    text = str(payload.get("text") or "").strip()
+    if text:
+        lines.extend(["", text])
+    return "\n".join(lines)
+
+
+def _find_modelroute_repo_root() -> Path:
+    """Find the GodMode workspace that owns the route selector scripts."""
+    env_root = os.getenv("HERMES_MODEL_ROUTE_REPO_ROOT", "").strip()
+    candidates = []
+    if env_root:
+        candidates.append(Path(env_root).expanduser())
+    here = Path(__file__).resolve()
+    candidates.extend([Path.cwd(), *here.parents, Path("/Users/agentmoney/godmode-workspace")])
+    for candidate in candidates:
+        script = candidate / "scripts" / "runtime" / "run_selected_model_route.py"
+        policy = candidate / "runtime" / "configs" / "model-route-policy.yaml"
+        if script.exists() and policy.exists():
+            return candidate.resolve()
+    raise FileNotFoundError("model_route_repo_root_not_found")
+
+
+async def _run_modelroute_subprocess(task_class: str, message: str) -> Dict[str, Any]:
+    """Call the workspace route dispatcher without shell expansion."""
+    repo_root = _find_modelroute_repo_root()
+    script = repo_root / "scripts" / "runtime" / "run_selected_model_route.py"
+    proc = await asyncio.create_subprocess_exec(
+        sys.executable,
+        str(script),
+        "--repo-root",
+        str(repo_root),
+        "--task-class",
+        task_class,
+        "--message",
+        message,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+        cwd=str(repo_root),
+    )
+    stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=360)
+    out = stdout.decode("utf-8", errors="replace").strip()
+    err = stderr.decode("utf-8", errors="replace").strip()
+    try:
+        payload = json.loads(out) if out else {}
+    except json.JSONDecodeError:
+        payload = {}
+    if proc.returncode != 0:
+        payload.setdefault("ok", False)
+        payload.setdefault("blocker", err or out or f"model_route_dispatch_exit_{proc.returncode}")
+    return payload
+
+
 _GATEWAY_PROVIDER_ERROR_SHAPE_RE = re.compile(
     r"^\s*(\W*\s*)?("
     r"api\s+(?:call\s+)?failed"
@@ -7219,6 +7305,9 @@ class GatewayRunner:
         if canonical == "model":
             return await self._handle_model_command(event)
 
+        if canonical == "modelroute":
+            return await self._handle_modelroute_command(event)
+
         if canonical == "codex-runtime":
             return await self._handle_codex_runtime_command(event)
 
@@ -9859,6 +9948,36 @@ class GatewayRunner:
             getattr(getattr(event, "source", None), "platform", None),
         )
 
+    async def _dispatch_modelroute(self, *, task_class: str, message: str) -> Dict[str, Any]:
+        """Dispatch one prompt through the evidence-backed external route selector."""
+        return await _run_modelroute_subprocess(task_class, message)
+
+    async def _handle_modelroute_command(self, event: MessageEvent) -> str:
+        """Handle /modelroute: explicit selected-route dispatch with telemetry."""
+        try:
+            task_class, message = _parse_modelroute_args(event.get_command_args())
+        except ValueError as exc:
+            return str(exc)
+        try:
+            result = await self._dispatch_modelroute(task_class=task_class, message=message)
+        except asyncio.TimeoutError:
+            result = {
+                "ok": False,
+                "selected_model": "unknown",
+                "transport": "unknown",
+                "blocker": "model_route_dispatch_timeout_360s",
+                "telemetry": {"task_class": task_class, "fallback_used": False},
+            }
+        except Exception as exc:
+            result = {
+                "ok": False,
+                "selected_model": "unknown",
+                "transport": "unknown",
+                "blocker": f"model_route_dispatch_exception:{type(exc).__name__}",
+                "telemetry": {"task_class": task_class, "fallback_used": False},
+            }
+        return _format_modelroute_result(result)
+
     async def _handle_model_command(self, event: MessageEvent) -> Optional[str]:
         """Handle /model command — switch model for this session.
 
@@ -10225,12 +10344,13 @@ class GatewayRunner:
         Same surface as the CLI handler in cli.py:
             /codex-runtime                  — show current state
             /codex-runtime auto             — Hermes default runtime
-            /codex-runtime codex_app_server — codex subprocess runtime
+            /codex-runtime codex_app_server — delegated Codex worker runtime available
             /codex-runtime on / off         — synonyms
 
         On change, the cached agent for this session is evicted so the next
-        message creates a fresh AIAgent with the new api_mode wired in
-        (avoids prompt-cache invalidation mid-session)."""
+        message creates a fresh AIAgent. Operator turns still stay on the
+        Hermes runtime loop unless an explicit worker-delegation context is
+        active."""
         from hermes_cli import codex_runtime_switch as crs
 
         raw_args = event.get_command_args().strip() if event else ""

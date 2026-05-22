@@ -776,8 +776,11 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
             from hermes_cli.model_normalize import normalize_model_for_provider
 
             fb_model = normalize_model_for_provider(fb_model, fb_provider)
-        except Exception:
-            pass
+        except Exception as _norm_err:
+            logger.warning(
+                "Could not normalize fallback model %r for provider %r: %s",
+                fb_model, fb_provider, _norm_err,
+            )
 
         # Determine api_mode from provider / base URL / model
         fb_api_mode = "chat_completions"

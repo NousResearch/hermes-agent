@@ -4807,6 +4807,18 @@ def _check_non_ascii_credential(key: str, value: str) -> str:
     return sanitized
 
 
+def _quote_env_value(value: str) -> str:
+    """Double-quote a .env value when it contains characters that
+    python-dotenv would misinterpret (``#`` as inline comment,
+    leading/trailing whitespace, embedded quotes, etc.).
+    """
+    # Characters that require quoting per python-dotenv's parser.
+    if any(c in value for c in ('#', '"', "'", ' ', '\t')):
+        escaped = value.replace('\\', '\\\\').replace('"', '\\"')
+        return f'"{escaped}"'
+    return value
+
+
 def save_env_value(key: str, value: str):
     """Save or update a value in ~/.hermes/.env."""
     if is_managed():
@@ -4836,7 +4848,7 @@ def save_env_value(key: str, value: str):
     found = False
     for i, line in enumerate(lines):
         if line.strip().startswith(f"{key}="):
-            lines[i] = f"{key}={value}\n"
+            lines[i] = f"{key}={_quote_env_value(value)}\n"
             found = True
             break
 
@@ -4844,7 +4856,7 @@ def save_env_value(key: str, value: str):
         # Ensure there's a newline at the end of the file before appending
         if lines and not lines[-1].endswith("\n"):
             lines[-1] += "\n"
-        lines.append(f"{key}={value}\n")
+        lines.append(f"{key}={_quote_env_value(value)}\n")
     
     fd, tmp_path = tempfile.mkstemp(dir=str(env_path.parent), suffix='.tmp', prefix='.env_')
     # Preserve original permissions so Docker volume mounts aren't clobbered.

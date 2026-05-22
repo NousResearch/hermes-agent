@@ -1706,7 +1706,13 @@ def list_authenticated_providers(
             # - Without an api_key AND no explicit models, fall through to
             #   live discovery so bare-endpoint custom providers (local
             #   llama.cpp / Ollama servers) still appear populated.
-            should_probe = bool(api_url) and (bool(api_key) or not grp["models"])
+            # Redacted/dummy API keys in saved/test config ("***", "ollama")
+            # are not usable credentials.  If the user already declared models
+            # for that endpoint, keep that explicit list instead of probing a
+            # live local Ollama/OpenAI-compatible server and leaking host state
+            # into the picker.
+            probe_key = api_key and api_key not in {"***", "ollama"}
+            should_probe = bool(api_url) and (bool(probe_key) or not grp["models"])
             if should_probe:
                 try:
                     from hermes_cli.models import fetch_api_models

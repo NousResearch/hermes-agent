@@ -4560,7 +4560,9 @@ class GatewayRunner:
             except Exception:
                 return None
             if not chat_id:
-                pconf = self.config.platforms.get(plat)
+                runner_config = getattr(self, "config", None)
+                platforms_config = getattr(runner_config, "platforms", {}) or {}
+                pconf = platforms_config.get(plat)
                 home = pconf.home_channel if pconf else None
                 if not home:
                     return None
@@ -4834,20 +4836,29 @@ class GatewayRunner:
             boards = kb_module.list_boards(include_archived=False)
         except Exception:
             boards = [kb_module.read_board_metadata(kb_module.DEFAULT_BOARD)]
+        seen_db_paths: set[str] = set()
         for board_meta in boards:
             slug = board_meta.get("slug") or kb_module.DEFAULT_BOARD
+            try:
+                db_path = Path(board_meta.get("db_path") or kb_module.kanban_db_path(board=slug))
+                db_key = str(db_path.expanduser().resolve(strict=False))
+            except Exception:
+                db_key = str(board_meta.get("db_path") or slug)
+            if db_key in seen_db_paths:
+                continue
+            seen_db_paths.add(db_key)
             try:
                 conn = kb_module.connect(board=slug)
             except Exception:
                 continue
             try:
-                try:
-                    kb_module.init_db(board=slug)  # idempotent; handles first-run
-                except Exception:
-                    pass
                 subs = kb_module.list_notify_subs(conn)
                 for sub in subs:
-                    cursor, events = kb_module.unseen_events_for_sub(
+                    sub_profile = str(sub.get("notifier_profile") or "").strip()
+                    notifier_profile = str(getattr(self, "_kanban_notifier_profile", None) or "").strip()
+                    if notifier_profile and sub_profile and sub_profile != notifier_profile:
+                        continue
+                    old_cursor, cursor, events = kb_module.claim_unseen_events_for_sub(
                         conn,
                         task_id=sub["task_id"],
                         platform=sub["platform"],
@@ -4860,6 +4871,7 @@ class GatewayRunner:
                     task = kb_module.get_task(conn, sub["task_id"])
                     deliveries.append({
                         "sub": sub,
+                        "old_cursor": old_cursor,
                         "cursor": cursor,
                         "events": events,
                         "task": task,

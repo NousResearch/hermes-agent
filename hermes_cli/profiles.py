@@ -343,6 +343,23 @@ def check_alias_collision(name: str) -> Optional[str]:
                         return None  # it's our wrapper, safe to overwrite
                 except Exception:
                     pass
+            # During profile restore/import, tests and sandboxed restores may
+            # monkeypatch Path.home() to a target home while the process PATH
+            # still contains the operator's real ~/.local/bin. A command found
+            # in that *other* home-local wrapper dir cannot be overwritten here;
+            # ignore it so restored profiles still get wrappers in the target
+            # home. Non-user-bin commands (/usr/bin, project venvs, etc.) remain
+            # protected as collisions.
+            try:
+                existing = Path(existing_path)
+                if (
+                    existing.parent.name == "bin"
+                    and existing.parent.parent.name == ".local"
+                    and existing.parent != wrapper_dir
+                ):
+                    return None
+            except Exception:
+                pass
             return f"'{canon}' conflicts with an existing command ({existing_path})"
     except (FileNotFoundError, subprocess.TimeoutExpired):
         pass

@@ -1,5 +1,6 @@
 import json
 import os
+import queue
 import sys
 import threading
 import time
@@ -401,10 +402,9 @@ def test_load_enabled_toolsets_rejects_disabled_mcp_env(monkeypatch, capsys):
         config_mod, "load_config", lambda: {"platform_toolsets": {"cli": ["memory"]}}
     )
 
-    # Sorted: ["kanban", "memory"]. `kanban` is auto-recovered by
-    # _get_platform_tools because it's a non-configurable platform toolset
-    # whose tools live in hermes-cli's universe (see toolsets.py).
-    assert server._load_enabled_toolsets() == ["kanban", "memory"]
+    # Invalid/disabled env entries fall back to configured CLI toolsets.
+    # `kanban` is configurable/default-off, so it is not auto-recovered.
+    assert server._load_enabled_toolsets() == ["memory"]
     err = capsys.readouterr().err
     assert "ignoring disabled MCP servers" in err
     assert "mcp-off" in err
@@ -425,7 +425,7 @@ def test_load_enabled_toolsets_falls_back_when_tui_env_invalid(monkeypatch, caps
         config_mod, "load_config", lambda: {"platform_toolsets": {"cli": ["memory"]}}
     )
 
-    assert server._load_enabled_toolsets() == ["kanban", "memory"]
+    assert server._load_enabled_toolsets() == ["memory"]
     assert "using configured CLI toolsets" in capsys.readouterr().err
 
 
@@ -4658,6 +4658,8 @@ def test_notification_poller_delivers_completion(monkeypatch):
     """Poller picks up completion events and triggers agent turns."""
     from tools.process_registry import process_registry
 
+    monkeypatch.setattr(process_registry, "completion_queue", queue.Queue())
+
     turns = []
     emitted = []
 
@@ -4721,6 +4723,8 @@ def test_notification_poller_skips_consumed(monkeypatch):
     """Already-consumed completions are not dispatched by the poller."""
     from tools.process_registry import process_registry
 
+    monkeypatch.setattr(process_registry, "completion_queue", queue.Queue())
+
     turns = []
 
     class _Agent:
@@ -4769,6 +4773,8 @@ def test_notification_poller_skips_consumed(monkeypatch):
 def test_notification_poller_requeues_when_busy(monkeypatch):
     """When the agent is busy, the poller requeues the event."""
     from tools.process_registry import process_registry
+
+    monkeypatch.setattr(process_registry, "completion_queue", queue.Queue())
 
     emitted = []
 

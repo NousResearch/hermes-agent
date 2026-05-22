@@ -203,7 +203,8 @@ class TestFindAgentBrowser:
              patch(
                  "tools.browser_tool._discover_homebrew_node_dirs",
                  return_value=[],
-             ):
+             ), \
+             patch("hermes_cli.dep_ensure.ensure_dependency", return_value=False):
             with pytest.raises(FileNotFoundError, match="agent-browser CLI not found"):
                 _find_agent_browser()
 

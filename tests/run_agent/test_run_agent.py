@@ -5699,6 +5699,13 @@ class TestMaxTokensParam:
         result = agent._max_tokens_param(4096)
         assert result == {"max_tokens": 4096}
 
+    def test_returns_max_completion_tokens_for_enterprise_copilot(self, agent):
+        """Enterprise Copilot endpoints (api.<tenant>.githubcopilot.com) must
+        share the same max_tokens behavior as the default endpoint."""
+        agent.base_url = "https://api.enterprise.githubcopilot.com"
+        result = agent._max_tokens_param(4096)
+        assert result == {"max_completion_tokens": 4096}
+
 
 class TestGpt5ApiModeRouting:
     """Verify provider-specific GPT-5 API-mode routing."""

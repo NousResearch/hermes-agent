@@ -4472,8 +4472,7 @@ _SECURITY_COMMENT = """
 # responses before the model or user ever sees them. Set redact_secrets
 # to false to disable (e.g. when developing the redactor itself).
 # tirith pre-exec scanning is enabled by default when the tirith binary
-# is available. Configure via security.tirith_* keys or env vars
-# (TIRITH_ENABLED, TIRITH_BIN, TIRITH_TIMEOUT, TIRITH_FAIL_OPEN).
+# is available. Configure via the security.tirith_* keys below.
 #
 # security:
 #   redact_secrets: true

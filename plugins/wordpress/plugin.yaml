@@ -1,0 +1,14 @@
+name: wordpress
+version: "0.1.0"
+description: "WordPress editorial operations via the official REST API."
+author: NousResearch
+kind: standalone
+provides_tools:
+  - wp_site_info
+  - wp_post_list
+  - wp_post_get
+  - wp_post_create
+  - wp_post_update
+requires_env:
+  - WORDPRESS_USERNAME
+  - WORDPRESS_APP_PASSWORD

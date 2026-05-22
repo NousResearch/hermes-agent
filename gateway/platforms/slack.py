@@ -1925,6 +1925,11 @@ class SlackAdapter(BasePlatformAdapter):
             or assistant_meta.get("team_id", "")
         )
 
+        # File-upload events sometimes omit team_id. Resolve from the channel
+        # workspace cache so multi-workspace token lookup uses the right bot.
+        if not team_id and channel_id in self._channel_team:
+            team_id = self._channel_team[channel_id]
+
         # Track which workspace owns this channel
         if team_id and channel_id:
             self._channel_team[channel_id] = team_id

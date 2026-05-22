@@ -2325,7 +2325,34 @@ class TestPtyWebSocket:
 
             with self.client.websocket_connect(pub_path) as pub:
                 pub.send_text('{"type":"tool.start","payload":{"tool_id":"t1"}}')
-                received = sub.receive_text()
+                # Yield control so the server-side broadcast handler can
+                # process the frame.  TestClient runs the ASGI app in a
+                # background thread; a small sleep gives that thread time
+                # to call _broadcast_event before we start blocking on
+                # receive_text().  Without this, under heavy CI load the
+                # receive can race the broadcast and hang until
+                # pytest-timeout kills us.
+                import queue, threading
+                recv_q: queue.Queue = queue.Queue()
+
+                def _recv():
+                    try:
+                        recv_q.put(sub.receive_text())
+                    except Exception as exc:
+                        recv_q.put(exc)
+
+                t = threading.Thread(target=_recv, daemon=True)
+                t.start()
+                try:
+                    received = recv_q.get(timeout=10.0)
+                except queue.Empty:
+                    raise AssertionError(
+                        "broadcast not received within 10s — server likely "
+                        "dropped the frame silently (see _broadcast_event "
+                        "except Exception: pass)"
+                    )
+                if isinstance(received, Exception):
+                    raise received
 
         assert "tool.start" in received
         assert '"tool_id":"t1"' in received

@@ -105,6 +105,38 @@ def _validate_image_url(url: str) -> bool:
     return True
 
 
+def _data_url_to_temp_file(image_url: str) -> Optional[Path]:
+    """Decode a base64 ``data:`` URL into a temp image file.
+
+    Agents routinely hand vision tools an inlined base64 image — e.g. one
+    just produced by ``image_generate`` and QA'd in the same turn. Without
+    this those calls are rejected as an "invalid image source". Returns the
+    temp file path, or None if the value isn't a usable data URL.
+    """
+    if not image_url.startswith("data:"):
+        return None
+    try:
+        header, _, b64 = image_url.partition(",")
+        if not b64.strip():
+            return None
+        raw = base64.b64decode(b64.strip(), validate=False)
+        if not raw:
+            return None
+        ext = "png"
+        if "image/" in header:
+            ext = header.split("image/", 1)[1].split(";", 1)[0].strip() or "png"
+            if ext == "jpeg":
+                ext = "jpg"
+        temp_dir = get_hermes_dir("cache/vision", "temp_vision_images")
+        temp_dir.mkdir(parents=True, exist_ok=True)
+        path = temp_dir / f"temp_image_{uuid.uuid4()}.{ext}"
+        path.write_bytes(raw)
+        return path
+    except Exception as exc:
+        logger.warning("vision: failed to decode data URL: %s", exc)
+        return None
+
+
 def _detect_image_mime_type(image_path: Path) -> Optional[str]:
     """Return a MIME type when the file looks like a supported image."""
     with image_path.open("rb") as f:
@@ -564,7 +596,11 @@ async def _vision_analyze_native(
             resolved_url = resolved_url[len("file://"):]
         local_path = Path(os.path.expanduser(resolved_url))
 
-        if local_path.is_file():
+        data_url_path = _data_url_to_temp_file(resolved_url)
+        if data_url_path is not None:
+            temp_image_path = data_url_path
+            should_cleanup = True
+        elif local_path.is_file():
             temp_image_path = local_path
             should_cleanup = False
         elif _validate_image_url(image_url):
@@ -702,7 +738,12 @@ async def vision_analyze_tool(
         if resolved_url.startswith("file://"):
             resolved_url = resolved_url[len("file://"):]
         local_path = Path(os.path.expanduser(resolved_url))
-        if local_path.is_file():
+        data_url_path = _data_url_to_temp_file(resolved_url)
+        if data_url_path is not None:
+            logger.info("Decoded inline base64 image for vision analysis")
+            temp_image_path = data_url_path
+            should_cleanup = True
+        elif local_path.is_file():
             # Local file path (e.g. from platform image cache) -- skip download
             logger.info("Using local image file: %s", image_url)
             temp_image_path = local_path

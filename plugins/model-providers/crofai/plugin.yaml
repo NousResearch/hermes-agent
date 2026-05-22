@@ -1,0 +1,5 @@
+name: crofai-provider
+kind: model-provider
+version: 1.0.0
+description: CrofAI — multi-model OpenAI-compatible API (DeepSeek, Kimi, GLM, Qwen, MiMo, etc.)
+author: CrofAI

@@ -564,6 +564,121 @@ class MarketingFactoryPipeline:
                 approvals.append(self.store.set_approval(draft["id"], "approved", reviewer=reviewer, reason="approved for dry-run scheduling"))
         return approvals
 
+    def advise(self, now: Optional[datetime] = None) -> Dict[str, Any]:
+        """Run a set of health checks and return actionable items.
+
+        Each item: {severity, app_slug?, message, action}. Severity is
+        "warning" (likely a misconfiguration the user should fix) or "info"
+        (background observation that's not urgent but worth knowing).
+
+        Healthy state → items=[], healthy=True.
+        """
+        from plugins.marketing_factory import connectors as _connectors
+
+        now_dt = now or datetime.now(timezone.utc)
+        state = self.store.load()
+        items: List[Dict[str, Any]] = []
+
+        # Check 1: channel_modes says "live" but no real connector registered.
+        for app in state.get("apps", {}).values():
+            modes = app.get("channel_modes") or {}
+            for channel, mode in modes.items():
+                if mode != "live":
+                    continue
+                if _connectors.get_live_connector(channel) is None:
+                    items.append({
+                        "severity": "warning",
+                        "app_slug": app["slug"],
+                        "message": f"{app['slug']}.{channel} is set to live but no connector is registered — publish_scheduled will silently fall back to dry_run.",
+                        "action": f"Wire connectors/{channel}_stub.py and register it in connectors/__init__.py, or flip {channel} back to dry_run.",
+                    })
+
+        # Check 2: app with no campaign in 7+ days.
+        seven_days_ago = now_dt - timedelta(days=7)
+        campaigns_by_app: Dict[str, datetime] = {}
+        for camp in state.get("campaigns", {}).values():
+            try:
+                created = datetime.fromisoformat(str(camp.get("created_at") or "").replace("Z", "+00:00"))
+            except ValueError:
+                continue
+            if created.tzinfo is None:
+                created = created.replace(tzinfo=timezone.utc)
+            existing = campaigns_by_app.get(camp.get("app_slug"))
+            if existing is None or created > existing:
+                campaigns_by_app[camp.get("app_slug")] = created
+        for slug, app in state.get("apps", {}).items():
+            last_camp = campaigns_by_app.get(slug)
+            if last_camp is None:
+                items.append({
+                    "severity": "info",
+                    "app_slug": slug,
+                    "message": f"{slug} has never had a campaign generated.",
+                    "action": f"`hermes marketing-factory generate --app {slug} --days 7` to seed the dry-run queue.",
+                })
+            elif last_camp < seven_days_ago:
+                items.append({
+                    "severity": "info",
+                    "app_slug": slug,
+                    "message": f"{slug}'s most recent campaign is {(now_dt - last_camp).days} day(s) old.",
+                    "action": f"`hermes marketing-factory generate --app {slug} --days 7` to refresh the dry-run queue.",
+                })
+
+        # Check 3: pending-approval queue backing up.
+        pending_by_app: Dict[str, int] = {}
+        for draft in state.get("drafts", {}).values():
+            if draft.get("status") == "needs_review":
+                pending_by_app[draft["app_slug"]] = pending_by_app.get(draft["app_slug"], 0) + 1
+        for slug, count in pending_by_app.items():
+            if count >= 14:
+                items.append({
+                    "severity": "warning",
+                    "app_slug": slug,
+                    "message": f"{slug} has {count} drafts pending review.",
+                    "action": "Open /marketing-factory dashboard and clear the queue (bulk approve, or reject with reasons for steering).",
+                })
+
+        # Check 4: token spend approaching daily cap.
+        budgets = state.get("budgets") or {}
+        daily_cap = budgets.get("daily_tokens") or 0
+        spent = budgets.get("spent_tokens_today") or 0
+        if daily_cap and spent >= int(daily_cap * 0.8):
+            pct = round(100 * spent / daily_cap)
+            items.append({
+                "severity": "warning" if pct >= 90 else "info",
+                "app_slug": None,
+                "message": f"Daily token spend at {pct}% of cap ({spent:,} / {daily_cap:,}).",
+                "action": "Bump daily_tokens in state.budgets or pause new generation until tomorrow (UTC).",
+            })
+
+        # Check 5: scheduled poller hasn't ticked recently.
+        poll_state = state.get("poll") or {}
+        last_poll_str = poll_state.get("last_poll_at")
+        any_schedules = bool(state.get("schedules"))
+        if last_poll_str:
+            try:
+                last_poll = datetime.fromisoformat(str(last_poll_str).replace("Z", "+00:00"))
+                if last_poll.tzinfo is None:
+                    last_poll = last_poll.replace(tzinfo=timezone.utc)
+                if any_schedules and (now_dt - last_poll) > timedelta(hours=2):
+                    minutes_since = int((now_dt - last_poll).total_seconds() / 60)
+                    items.append({
+                        "severity": "warning",
+                        "app_slug": None,
+                        "message": f"Scheduled poller has not ticked in {minutes_since} minutes (last: {last_poll_str}).",
+                        "action": "Check `hermes cron list` for the marketing-factory-poll job, or run `hermes marketing-factory enable-poller` to (re)install it.",
+                    })
+            except ValueError:
+                pass
+        elif any_schedules:
+            items.append({
+                "severity": "info",
+                "app_slug": None,
+                "message": "There are scheduled drafts but the poller has never ticked.",
+                "action": "Run `hermes marketing-factory enable-poller` to install the autonomous loop.",
+            })
+
+        return {"items": items, "healthy": not items, "checked_at": now_dt.isoformat()}
+
     def poll(self, now: Optional[datetime] = None) -> Dict[str, Any]:
         """One tick of the scheduled poller. Walks every app, fires
         `publish_scheduled(due_only=True)`, records the result on

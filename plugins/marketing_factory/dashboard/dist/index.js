@@ -267,6 +267,30 @@
       error ? h("div", { className: "rounded-xl border border-red-400/30 bg-red-500/10 p-3 text-sm text-red-100", role: "alert" }, error) : null,
       busy ? h("div", { className: "rounded-xl border border-cyan-300/20 bg-cyan-300/10 p-3 text-sm text-cyan-100" }, `Working: ${busy}…`) : null,
 
+      (() => {
+        const advisor = data?.advisor;
+        if (!advisor || advisor.healthy) return null;
+        const items = advisor.items || [];
+        const warnings = items.filter((item) => item.severity === "warning");
+        const headerTone = warnings.length ? "border-amber-300/40 bg-amber-300/10 text-amber-100" : "border-blue-300/30 bg-blue-300/5 text-blue-100";
+        return h("div", { className: cx("rounded-xl border p-3 text-sm", headerTone) },
+          h("div", { className: "flex flex-wrap items-baseline gap-2" },
+            h("span", { className: "font-semibold" }, `${items.length} advisor item${items.length === 1 ? "" : "s"}`),
+            warnings.length ? h("span", { className: "text-xs uppercase tracking-[0.16em]" }, `${warnings.length} warning${warnings.length === 1 ? "" : "s"}`) : null
+          ),
+          h("ul", { className: "mt-2 flex flex-col gap-2 text-xs" },
+            items.map((item, idx) => h("li", { key: idx, className: "rounded-lg border border-midground/15 bg-background/40 p-2" },
+              h("div", { className: "flex flex-wrap items-baseline gap-2" },
+                h("span", { className: cx("inline-flex rounded-full border px-2 py-0.5 text-[10px] uppercase tracking-[0.14em]", item.severity === "warning" ? "border-amber-300/40 text-amber-200" : "border-blue-300/30 text-blue-200") }, item.severity),
+                item.app_slug ? h("span", { className: "text-midground/70" }, item.app_slug) : null,
+                h("span", null, item.message)
+              ),
+              h("div", { className: "mt-1 text-midground/70" }, `→ ${item.action}`)
+            ))
+          )
+        );
+      })(),
+
       h("div", { className: "grid gap-3 sm:grid-cols-2 lg:grid-cols-5" },
         h(Stat, { label: "Apps", value: data?.summary?.apps }),
         h(Stat, { label: "Campaigns", value: data?.summary?.campaigns }),

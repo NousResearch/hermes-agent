@@ -68,6 +68,9 @@ def register_cli(subparser: argparse.ArgumentParser) -> None:
     poll = subs.add_parser("poll", help="One scheduled-poller tick: fire publish on all due drafts across all apps")
     poll.add_argument("--json", action="store_true")
 
+    advise = subs.add_parser("advise", help="Run health checks against the factory and print actionable items")
+    advise.add_argument("--json", action="store_true")
+
     enable_poller = subs.add_parser("enable-poller", help="Register a Hermes cron job that runs `marketing-factory poll` on a recurring interval")
     enable_poller.add_argument("--interval", default="5m", help="How often to poll (e.g. 1m, 5m, 1h). Default: 5m.")
     enable_poller.add_argument("--name", default="marketing-factory-poll", help="Cron job display name")
@@ -121,7 +124,7 @@ def register_cli(subparser: argparse.ArgumentParser) -> None:
 def marketing_command(args: argparse.Namespace) -> int:
     sub = getattr(args, "marketing_command", None)
     if not sub:
-        print("usage: hermes marketing-factory {init,status,apps,add-app,update-app,remove-app,campaigns,drafts,approvals,approve,reject,schedule,publish-dry-run,poll,enable-poller,disable-poller,audit,export,generate,full-dry-run}")
+        print("usage: hermes marketing-factory {init,status,apps,add-app,update-app,remove-app,campaigns,drafts,approvals,approve,reject,schedule,publish-dry-run,poll,enable-poller,disable-poller,advise,audit,export,generate,full-dry-run}")
         return 2
     store = MarketingFactoryStore(getattr(args, "store_path", None))
     pipe = MarketingFactoryPipeline(store)
@@ -191,6 +194,21 @@ def marketing_command(args: argparse.Namespace) -> int:
         if sub == "remove-app":
             result = store.remove_app(args.slug, cascade=not args.no_cascade)
             _print_json(result)
+            return 0
+        if sub == "advise":
+            result = pipe.advise()
+            if args.json:
+                _print_json(result)
+            else:
+                if result["healthy"]:
+                    print("OK: no advisor items.")
+                else:
+                    print(f"{len(result['items'])} advisor item(s):")
+                    for item in result["items"]:
+                        prefix = f"[{item['severity'].upper()}]"
+                        scope = f" {item['app_slug']}" if item.get("app_slug") else ""
+                        print(f"  {prefix}{scope}: {item['message']}")
+                        print(f"      → {item['action']}")
             return 0
         if sub == "enable-poller":
             from hermes_constants import get_hermes_home

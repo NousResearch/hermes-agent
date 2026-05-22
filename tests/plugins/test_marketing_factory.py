@@ -414,6 +414,91 @@ def test_publish_scheduled_uses_registered_live_connector_when_present(isolate_h
     assert final_draft["status"] == "posted"
 
 
+def test_advise_returns_empty_for_fresh_factory(isolate_home):
+    """Phase 7: fresh init triggers only `info` items for never-generated apps; healthy=False but no warnings."""
+    from plugins.marketing_factory.pipeline import MarketingFactoryPipeline
+    from plugins.marketing_factory.store import MarketingFactoryStore
+
+    store = MarketingFactoryStore()
+    pipe = MarketingFactoryPipeline(store)
+    pipe.initialize_samples()
+    result = pipe.advise()
+    # Both seeded apps will trigger the "never had a campaign" info item, but no warnings.
+    warnings = [item for item in result["items"] if item["severity"] == "warning"]
+    assert warnings == []
+    assert {item["app_slug"] for item in result["items"]} == {"pupular", "setvenue"}
+
+
+def test_advise_warns_on_live_channel_without_connector(isolate_home):
+    from plugins.marketing_factory.pipeline import MarketingFactoryPipeline
+    from plugins.marketing_factory.store import MarketingFactoryStore
+
+    store = MarketingFactoryStore()
+    pipe = MarketingFactoryPipeline(store)
+    pipe.initialize_samples()
+    store.set_channel_mode("pupular", "x", "live", reviewer="tester")
+
+    result = pipe.advise()
+    live_warnings = [item for item in result["items"] if item["severity"] == "warning" and "live" in item["message"]]
+    assert live_warnings, "Expected a warning about live channel without connector"
+    assert any("x" in w["message"] for w in live_warnings)
+
+
+def test_advise_warns_when_pending_queue_exceeds_threshold(isolate_home):
+    from plugins.marketing_factory.pipeline import MarketingFactoryPipeline
+    from plugins.marketing_factory.store import MarketingFactoryStore
+
+    store = MarketingFactoryStore()
+    pipe = MarketingFactoryPipeline(store)
+    pipe.initialize_samples()
+    # Generate 15 days = 15 drafts pending review
+    pipe.generate_campaign("pupular", days=15)
+
+    result = pipe.advise()
+    pending_warnings = [item for item in result["items"] if "pending" in item["message"].lower()]
+    assert pending_warnings, "Expected a warning about backed-up pending queue"
+    assert pending_warnings[0]["severity"] == "warning"
+    assert pending_warnings[0]["app_slug"] == "pupular"
+
+
+def test_advise_warns_when_poller_stale_and_schedules_exist(isolate_home):
+    from datetime import datetime, timedelta, timezone
+    from plugins.marketing_factory.pipeline import MarketingFactoryPipeline
+    from plugins.marketing_factory.store import MarketingFactoryStore
+
+    store = MarketingFactoryStore()
+    pipe = MarketingFactoryPipeline(store)
+    pipe.initialize_samples()
+    gen = pipe.generate_campaign("pupular", days=1)
+    store.set_approval(gen["drafts"][0]["id"], "approved", reviewer="tester")
+    pipe.scheduler.schedule_approved(store, app_slug="pupular")
+    # Backdate last_poll_at by 3 hours
+    state = store.load()
+    state["poll"] = {"last_poll_at": (datetime.now(timezone.utc) - timedelta(hours=3)).isoformat(), "last_poll_fired": 0, "last_poll_due": 0, "total_polls": 1}
+    store._write_state(state)
+
+    result = pipe.advise()
+    poller_warnings = [item for item in result["items"] if "poller" in item["message"].lower() and item["severity"] == "warning"]
+    assert poller_warnings, "Expected a warning about stale poller"
+
+
+def test_advise_via_api_endpoint_returns_items(isolate_home):
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+    from plugins.marketing_factory.dashboard.plugin_api import router
+
+    app = FastAPI()
+    app.include_router(router, prefix="/api/plugins/marketing_factory")
+    client = TestClient(app)
+    client.post("/api/plugins/marketing_factory/init")
+    response = client.get("/api/plugins/marketing_factory/advise")
+    assert response.status_code == 200
+    payload = response.json()
+    assert "items" in payload
+    assert "healthy" in payload
+    assert "checked_at" in payload
+
+
 def test_add_app_via_api_creates_new_brand_profile(isolate_home):
     """Phase 6 / multi-tenant: POST /apps lets us add Wingman/Hardline/etc without editing Python."""
     from fastapi import FastAPI

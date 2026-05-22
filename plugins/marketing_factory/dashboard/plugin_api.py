@@ -92,6 +92,7 @@ def _overview(store: MarketingFactoryStore) -> Dict[str, Any]:
     schedules = store.list_schedules()
     audit = store.list_audit(limit=25)
     state = store.load()
+    advisor = _pipe(store).advise()
     return {
         "summary": store.summary(),
         "apps": apps,
@@ -105,6 +106,7 @@ def _overview(store: MarketingFactoryStore) -> Dict[str, Any]:
         "draft_status_counts": _status_counts(drafts),
         "audit": audit,
         "next_action": _next_action(store.summary(), drafts, schedules),
+        "advisor": advisor,
     }
 
 
@@ -279,6 +281,13 @@ async def delete_app(app_slug: str, cascade: bool = True):
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     return {"result": result, "overview": _overview(store)}
+
+
+@router.get("/advise")
+async def advise():
+    store = _store()
+    result = _pipe(store).advise()
+    return result
 
 
 @router.post("/poll")

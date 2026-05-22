@@ -4338,6 +4338,12 @@ class SlackAdapter(BasePlatformAdapter):
         if not channel_id:
             channel_id = assistant_meta.get("channel_id", "")
         team_id = outer_team_id or assistant_meta.get("team_id", "")
+
+        # File-upload events sometimes omit team_id. Resolve from the channel
+        # workspace cache so multi-workspace token lookup uses the right bot.
+        if not team_id and channel_id in self._channel_team:
+            team_id = self._channel_team[channel_id]
+
         agent_context = self._agent_view_context_for_event(
             event, str(team_id or ""), str(user_id or "")
         )

@@ -2104,6 +2104,33 @@ class TestIncomingDocumentHandling:
         assert msg_event.media_types == ["application/pdf"]
 
     @pytest.mark.asyncio
+    async def test_uses_cached_channel_team_for_file_events_without_team_id(self, adapter):
+        """File events use the channel workspace cache when Slack omits team_id."""
+        content = b"Hello from workspace two"
+        adapter._channel_team["D123"] = "T_SECOND"
+
+        with patch.object(adapter, "_download_slack_file_bytes", new_callable=AsyncMock) as dl:
+            dl.return_value = content
+            event = self._make_event(
+                text="summarize this",
+                files=[{
+                    "mimetype": "text/plain",
+                    "name": "workspace-two.txt",
+                    "url_private_download": "https://files.slack.com/workspace-two.txt",
+                    "size": len(content),
+                }],
+            )
+            assert "team" not in event
+            assert "team_id" not in event
+
+            await adapter._handle_slack_message(event)
+
+        dl.assert_awaited_once()
+        assert dl.await_args.kwargs["team_id"] == "T_SECOND"
+        msg_event = adapter.handle_message.call_args[0][0]
+        assert "Hello from workspace two" in msg_event.text
+
+    @pytest.mark.asyncio
     async def test_txt_document_injects_content(self, adapter):
         """A .txt file under 100KB should have its content injected into event text."""
         content = b"Hello from a text file"

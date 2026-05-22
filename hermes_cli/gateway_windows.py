@@ -365,7 +365,9 @@ def _write_task_script() -> Path:
 
     content = _build_gateway_cmd_script(python_path, working_dir, hermes_home, profile_arg)
     script_path = get_task_script_path()
-    script_path.write_text(content, encoding="utf-8", newline="")
+    tmp = script_path.with_suffix(".tmp")
+    tmp.write_text(content, encoding="utf-8", newline="")
+    tmp.replace(script_path)
     return script_path
 
 
@@ -436,7 +438,9 @@ def _install_startup_entry(script_path: Path) -> Path:
     """Write the Startup-folder fallback launcher. Returns its path."""
     entry = get_startup_entry_path()
     entry.parent.mkdir(parents=True, exist_ok=True)
-    entry.write_text(_build_startup_launcher(script_path), encoding="utf-8", newline="")
+    tmp = entry.with_suffix(".tmp")
+    tmp.write_text(_build_startup_launcher(script_path), encoding="utf-8", newline="")
+    tmp.replace(entry)
     return entry
 
 

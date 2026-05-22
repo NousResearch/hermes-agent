@@ -12254,10 +12254,10 @@ Examples:
     )
 
     sessions_export = sessions_subparsers.add_parser(
-        "export", help="Export sessions to a JSONL file"
+        "export", help="Export sessions to a JSONL or HTML file"
     )
     sessions_export.add_argument(
-        "output", help="Output JSONL file path (use - for stdout)"
+        "output", help="Output JSONL or HTML file path (use - for stdout)"
     )
     sessions_export.add_argument("--source", help="Filter by source")
     sessions_export.add_argument("--session-id", help="Export a specific session")
@@ -12364,6 +12364,17 @@ Examples:
                 if not data:
                     print(f"Session '{args.session_id}' not found.")
                     return
+
+                # HTML Export
+                if args.output.lower().endswith((".html", ".htm")):
+                    from hermes_cli.session_export_html import generate_html_export
+
+                    content = generate_html_export(data)
+                    with open(args.output, "w", encoding="utf-8") as f:
+                        f.write(content)
+                    print(f"Exported 1 session to {args.output} (HTML)")
+                    return
+
                 line = _json.dumps(data, ensure_ascii=False) + "\n"
                 if args.output == "-":
 
@@ -12374,8 +12385,18 @@ Examples:
                     print(f"Exported 1 session to {args.output}")
             else:
                 sessions = db.export_all(source=args.source)
-                if args.output == "-":
 
+                # HTML Export for all sessions
+                if args.output.lower().endswith((".html", ".htm")):
+                    from hermes_cli.session_export_html import generate_multi_session_html_export
+
+                    content = generate_multi_session_html_export(sessions)
+                    with open(args.output, "w", encoding="utf-8") as f:
+                        f.write(content)
+                    print(f"Exported {len(sessions)} sessions to {args.output} (HTML)")
+                    return
+
+                if args.output == "-":
                     for s in sessions:
                         sys.stdout.write(_json.dumps(s, ensure_ascii=False) + "\n")
                 else:

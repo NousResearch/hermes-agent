@@ -48,7 +48,7 @@ logger = logging.getLogger(__name__)
 PINNED_CUA_DRIVER_VERSION = os.environ.get("HERMES_CUA_DRIVER_VERSION", "0.5.0")
 
 _CUA_DRIVER_CMD = os.environ.get("HERMES_CUA_DRIVER_CMD", "cua-driver")
-_CUA_DRIVER_ARGS = ["mcp"]  # stdio MCP transport
+_CUA_DRIVER_ARGS = ["mcp", "--no-daemon-relaunch"]  # stdio MCP transport (in-process, terminal has TCC)
 
 # Regex to parse list_windows text output lines:
 #   "- AppName (pid 12345) "Title" [window_id: 67890]"
@@ -286,7 +286,18 @@ class _CuaDriverSession:
 
     def call_tool(self, name: str, args: Dict[str, Any], timeout: float = 30.0) -> Dict[str, Any]:
         self._require_started()
-        return self._bridge.run(self._call_tool_async(name, args), timeout=timeout)
+        try:
+            return self._bridge.run(self._call_tool_async(name, args), timeout=timeout)
+        except Exception as exc:
+            # cua-driver stdio subprocess may exit between turns (it is not a
+            # long-lived daemon). Tear down and reconnect once, then retry.
+            logger.warning("cua-driver tool call failed (%s %s), reconnecting: %s", name, args, exc)
+            try:
+                self.stop()
+            except Exception:
+                pass
+            self.start()
+            return self._bridge.run(self._call_tool_async(name, args), timeout=timeout)
 
 
 def _extract_tool_result(mcp_result: Any) -> Dict[str, Any]:

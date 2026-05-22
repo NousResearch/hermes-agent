@@ -11,10 +11,15 @@ downloading from PR #4588 (YuhangLin).
 import asyncio
 import json
 import logging
+import mimetypes
 import os
 import re
+import shutil
+import subprocess
+import tempfile
 import uuid
 from collections import OrderedDict
+from dataclasses import dataclass
 from datetime import datetime
 from typing import Any, Dict, List, Optional
 from urllib.parse import quote
@@ -77,6 +82,14 @@ _EMAIL_RE = re.compile(r"[\w.+-]+@[\w-]+\.[\w.]+")
 _GUID_CACHE_SIZE = 500  # LRU cap for resolved chat-GUID lookups
 
 
+@dataclass(frozen=True)
+class _PreparedAttachment:
+    path: str
+    filename: str
+    content_type: str
+    cleanup: bool = False
+
+
 def _redact(text: str) -> str:
     """Redact phone numbers and emails from log output."""
     text = _PHONE_RE.sub("[REDACTED]", text)
@@ -106,10 +119,27 @@ def _normalize_server_url(raw: str) -> str:
     return value.rstrip("/")
 
 
+def _attachment_content_type(filename: str, is_audio_message: bool = False) -> str:
+    """Return a useful multipart content type for BlueBubbles uploads."""
+    ext = os.path.splitext(filename)[1].lower()
+    if ext == ".caf":
+        return "audio/x-caf"
+    if ext == ".mp3":
+        return "audio/mpeg"
+    if is_audio_message and ext in {".m4a", ".aac"}:
+        return "audio/mp4"
+    if is_audio_message and ext == ".wav":
+        return "audio/wav"
+    guessed, _ = mimetypes.guess_type(filename)
+    if guessed:
+        return guessed
+    return "application/octet-stream"
+
 
 
 
 # ---------------------------------------------------------------------------
+
 # Adapter
 # ---------------------------------------------------------------------------
 
@@ -563,6 +593,103 @@ class BlueBubblesAdapter(BasePlatformAdapter):
     # Media sending (outbound)
     # ------------------------------------------------------------------
 
+    def _convert_audio_to_caf(self, audio_path: str) -> Optional[str]:
+        """Transcode audio to mono 24 kHz CAF for iMessage voice bubbles."""
+        tmp = tempfile.NamedTemporaryFile(
+            prefix="hermes-bluebubbles-voice-", suffix=".caf", delete=False
+        )
+        tmp_path = tmp.name
+        tmp.close()
+
+        ffmpeg = shutil.which("ffmpeg")
+        afconvert = shutil.which("afconvert")
+        commands: List[List[str]] = []
+        if ffmpeg:
+            commands.append([
+                ffmpeg,
+                "-y",
+                "-i",
+                audio_path,
+                "-vn",
+                "-ac",
+                "1",
+                "-ar",
+                "24000",
+                "-c:a",
+                "opus",
+                "-f",
+                "caf",
+                tmp_path,
+            ])
+        if afconvert:
+            commands.append([
+                afconvert,
+                "-f",
+                "caff",
+                "-d",
+                "opus",
+                "-c",
+                "1",
+                "-r",
+                "24000",
+                audio_path,
+                tmp_path,
+            ])
+
+        for cmd in commands:
+            try:
+                subprocess.run(
+                    cmd,
+                    check=True,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                    timeout=60,
+                )
+                if os.path.isfile(tmp_path) and os.path.getsize(tmp_path) > 0:
+                    return tmp_path
+            except Exception as exc:
+                logger.debug("BlueBubbles CAF transcode failed with %s: %s", cmd[0], exc)
+
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
+        return None
+
+    def _prepare_voice_attachment(
+        self, file_path: str, filename: Optional[str] = None
+    ) -> _PreparedAttachment:
+        """Prepare an outbound voice attachment using BlueBubbles/iMessage hints."""
+        requested_name = filename or os.path.basename(file_path)
+        ext = os.path.splitext(requested_name)[1].lower()
+        if ext == ".caf":
+            return _PreparedAttachment(
+                path=file_path,
+                filename=requested_name or "Audio Message.caf",
+                content_type="audio/x-caf",
+            )
+        if ext == ".mp3":
+            return _PreparedAttachment(
+                path=file_path,
+                filename=requested_name or "Audio Message.mp3",
+                content_type="audio/mpeg",
+            )
+
+        converted = self._convert_audio_to_caf(file_path)
+        if converted:
+            return _PreparedAttachment(
+                path=converted,
+                filename="Audio Message.caf",
+                content_type="audio/x-caf",
+                cleanup=True,
+            )
+
+        return _PreparedAttachment(
+            path=file_path,
+            filename=requested_name,
+            content_type=_attachment_content_type(requested_name, is_audio_message=True),
+        )
+
     async def _send_attachment(
         self,
         chat_id: str,
@@ -581,17 +708,27 @@ class BlueBubblesAdapter(BasePlatformAdapter):
         if not guid:
             return SendResult(success=False, error=f"Chat not found: {chat_id}")
 
-        fname = filename or os.path.basename(file_path)
+        prepared = (
+            self._prepare_voice_attachment(file_path, filename)
+            if is_audio_message
+            else _PreparedAttachment(
+                path=file_path,
+                filename=filename or os.path.basename(file_path),
+                content_type=_attachment_content_type(filename or os.path.basename(file_path)),
+            )
+        )
         try:
-            with open(file_path, "rb") as f:
-                files = {"attachment": (fname, f, "application/octet-stream")}
+            with open(prepared.path, "rb") as f:
+                files = {"attachment": (prepared.filename, f, prepared.content_type)}
                 data: Dict[str, str] = {
                     "chatGuid": guid,
-                    "name": fname,
+                    "name": prepared.filename,
                     "tempGuid": uuid.uuid4().hex,
                 }
                 if is_audio_message:
                     data["isAudioMessage"] = "true"
+                    if self._private_api_enabled and self._helper_connected:
+                        data["method"] = "private-api"
                 res = await self.client.post(
                     self._api_url("/api/v1/message/attachment"),
                     files=files,
@@ -616,6 +753,12 @@ class BlueBubblesAdapter(BasePlatformAdapter):
             )
         except Exception as e:
             return SendResult(success=False, error=str(e))
+        finally:
+            if prepared.cleanup:
+                try:
+                    os.unlink(prepared.path)
+                except OSError:
+                    pass
 
     async def send_image(
         self,

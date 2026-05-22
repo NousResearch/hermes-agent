@@ -10,6 +10,12 @@ from gateway.config import Platform, PlatformConfig
 def _make_adapter(monkeypatch, **extra):
     monkeypatch.setenv("BLUEBUBBLES_SERVER_URL", "http://localhost:1234")
     monkeypatch.setenv("BLUEBUBBLES_PASSWORD", "secret")
+    if "webhook_host" not in extra:
+        monkeypatch.delenv("BLUEBUBBLES_WEBHOOK_HOST", raising=False)
+    if "webhook_port" not in extra:
+        monkeypatch.delenv("BLUEBUBBLES_WEBHOOK_PORT", raising=False)
+    if "webhook_path" not in extra:
+        monkeypatch.delenv("BLUEBUBBLES_WEBHOOK_PATH", raising=False)
     from gateway.platforms.bluebubbles import BlueBubblesAdapter
 
     cfg = PlatformConfig(
@@ -650,6 +656,82 @@ class TestBlueBubblesAttachmentDownload:
             adapter._download_attachment("att-guid", {"mimeType": "image/png"})
         )
         assert result is None
+
+
+class TestBlueBubblesVoiceSend:
+    @pytest.mark.asyncio
+    async def test_send_voice_uploads_caf_as_private_api_audio_message(self, monkeypatch, tmp_path):
+        adapter = _make_adapter(monkeypatch)
+        adapter._private_api_enabled = True
+        adapter._helper_connected = True
+        audio_path = tmp_path / "Audio Message.caf"
+        audio_path.write_bytes(b"caffake")
+
+        async def fake_resolve_chat_guid(chat_id):
+            return "iMessage;-;user@example.com"
+
+        captured = {}
+
+        async def fake_post(self, url, *, files, data, timeout):
+            captured["url"] = url
+            captured["files"] = files
+            captured["data"] = data
+            captured["timeout"] = timeout
+
+            class R:
+                def raise_for_status(self):
+                    pass
+
+                def json(self):
+                    return {"status": 200, "data": {"guid": "out-guid"}}
+
+            return R()
+
+        adapter.client = type("MockClient", (), {"post": fake_post})()
+        monkeypatch.setattr(adapter, "_resolve_chat_guid", fake_resolve_chat_guid)
+
+        result = await adapter.send_voice("user@example.com", str(audio_path))
+
+        assert result.success is True
+        assert captured["data"]["isAudioMessage"] == "true"
+        assert captured["data"]["method"] == "private-api"
+        assert captured["files"]["attachment"][0] == "Audio Message.caf"
+        assert captured["files"]["attachment"][2] == "audio/x-caf"
+
+    def test_prepare_voice_attachment_transcodes_non_caf_audio_to_caf(self, monkeypatch, tmp_path):
+        adapter = _make_adapter(monkeypatch)
+        source = tmp_path / "voice.m4a"
+        source.write_bytes(b"m4afake")
+
+        monkeypatch.setattr(
+            "gateway.platforms.bluebubbles.shutil.which",
+            lambda name: "/usr/bin/ffmpeg" if name == "ffmpeg" else None,
+        )
+
+        calls = []
+
+        def fake_run(cmd, **kwargs):
+            calls.append(cmd)
+            output = cmd[-1]
+            with open(output, "wb") as f:
+                f.write(b"caffake")
+
+            class Completed:
+                returncode = 0
+
+            return Completed()
+
+        monkeypatch.setattr("gateway.platforms.bluebubbles.subprocess.run", fake_run)
+
+        prepared = adapter._prepare_voice_attachment(str(source), None)
+
+        assert prepared.path.endswith(".caf")
+        assert prepared.filename == "Audio Message.caf"
+        assert prepared.content_type == "audio/x-caf"
+        assert prepared.cleanup is True
+        assert calls
+        assert "-ar" in calls[0]
+        assert "24000" in calls[0]
 
 
 # ---------------------------------------------------------------------------

@@ -77,7 +77,12 @@ class BrandBrainAgent:
 
 
 class ResearchAgent:
-    def research(self, app: Dict[str, Any], token_ledger: Optional[List[Dict[str, Any]]] = None) -> Dict[str, Any]:
+    def research(
+        self,
+        app: Dict[str, Any],
+        token_ledger: Optional[List[Dict[str, Any]]] = None,
+        steering: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
         pillars = app.get("content_pillars") or []
         channels = app.get("channels") or []
 
@@ -90,11 +95,13 @@ class ResearchAgent:
             "pain_points": _pain_points(app["slug"]),
             "channel_opportunities": {channel: _channel_opportunity(app["slug"], channel) for channel in channels},
             "llm_used": False,
+            "steering_applied": bool(steering),
         }
 
         if not _should_use_llm():
             return base
 
+        steering_block = _format_steering_for_prompt(steering)
         prompt = (
             f"Brand: {app['name']} ({app['slug']})\n"
             f"Positioning: {app.get('positioning')}\n"
@@ -102,8 +109,9 @@ class ResearchAgent:
             f"Tone: {app.get('tone')}\n"
             f"Channels: {', '.join(channels)}\n"
             f"Content pillars: {', '.join(pillars)}\n"
-            f"Forbidden claims: {', '.join(app.get('forbidden_claims', []))}\n\n"
-            "Produce a single JSON object with EXACTLY these keys:\n"
+            f"Forbidden claims: {', '.join(app.get('forbidden_claims', []))}\n"
+            + (f"\n{steering_block}\n" if steering_block else "")
+            + "\nProduce a single JSON object with EXACTLY these keys:\n"
             '  "trends": array of 3 short strings (current conversational hooks relevant to this brand)\n'
             '  "pain_points": array of 3 short strings (real audience pains this brand can address)\n'
             f'  "channel_opportunities": object mapping each of these channel keys exactly — {channels} — to a one-sentence opportunity for that channel\n'
@@ -189,6 +197,7 @@ class CopyAgent:
         campaign_id: str,
         item: Dict[str, Any],
         token_ledger: Optional[List[Dict[str, Any]]] = None,
+        steering: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         channel = item["channel"]
         route = self._route_for(channel)
@@ -199,7 +208,7 @@ class CopyAgent:
         llm_error = None
 
         if _should_use_llm():
-            prompt = _copy_prompt(app, item, channel)
+            prompt = _copy_prompt(app, item, channel, steering=steering)
             env = dispatch(
                 route,
                 prompt,
@@ -305,6 +314,128 @@ class AnalyticsAgent:
         return store.record_analytics(app_slug, {"source": "dry_run", "summary": summary, "learning": summary})
 
 
+class BrandMemoryAgent:
+    """Distills approve/reject history into a steering blob the other agents read.
+
+    Cached on `brand_memories[slug].steering`; the store invalidates it on every
+    new approval/rejection so the next campaign generation re-summarizes.
+    """
+
+    MIN_LEARNINGS_TO_SUMMARIZE = 2
+
+    def get_steering(
+        self,
+        store: MarketingFactoryStore,
+        app_slug: str,
+        token_ledger: Optional[List[Dict[str, Any]]] = None,
+    ) -> Optional[Dict[str, Any]]:
+        state = store.load()
+        memories = (state.get("brand_memories") or {}).get(app_slug) or {}
+        cached = memories.get("steering")
+        if cached:
+            return cached
+
+        learnings = [
+            entry for entry in (memories.get("learnings") or [])
+            if isinstance(entry, dict) and entry.get("kind") in {"draft_approved", "draft_rejected"}
+        ]
+        if len(learnings) < self.MIN_LEARNINGS_TO_SUMMARIZE:
+            return None
+
+        steering = self._fallback_steering(learnings)
+        if _should_use_llm():
+            llm_steering = self._llm_steering(app_slug, learnings, token_ledger=token_ledger)
+            if llm_steering is not None:
+                steering = llm_steering
+
+        return store.write_steering(app_slug, steering)
+
+    def _fallback_steering(self, learnings: List[Dict[str, Any]]) -> Dict[str, Any]:
+        approved = [e for e in learnings if e.get("kind") == "draft_approved"]
+        rejected = [e for e in learnings if e.get("kind") == "draft_rejected"]
+        return {
+            "generated_at": utc_now(),
+            "method": "fallback",
+            "what_works": [f"{e.get('channel')}: {e.get('reason') or 'approved'}" for e in approved[-3:]],
+            "what_to_avoid": [f"{e.get('channel')}: {e.get('reason') or 'rejected'}" for e in rejected[-3:]],
+            "tone_notes": [],
+            "approved_count": len(approved),
+            "rejected_count": len(rejected),
+        }
+
+    def _llm_steering(
+        self,
+        app_slug: str,
+        learnings: List[Dict[str, Any]],
+        token_ledger: Optional[List[Dict[str, Any]]] = None,
+    ) -> Optional[Dict[str, Any]]:
+        recent = learnings[-25:]
+        bullets = "\n".join(
+            f"- [{e.get('kind','?').upper()}] channel={e.get('channel')} reason={e.get('reason')!r} excerpt={e.get('excerpt')!r}"
+            for e in recent
+        )
+        prompt = (
+            f"You are reviewing the prior approve/reject decisions for brand `{app_slug}` to "
+            "extract steering signal for future copy generation.\n\n"
+            f"Recent decisions ({len(recent)}):\n{bullets}\n\n"
+            "Produce a single JSON object with these keys ONLY:\n"
+            '  "what_works": array of up to 3 short strings — patterns the reviewer approves\n'
+            '  "what_to_avoid": array of up to 3 short strings — patterns the reviewer rejects\n'
+            '  "tone_notes": array of up to 2 short strings — voice/tone observations\n'
+            "Each string under 140 chars. No markdown. JSON only."
+        )
+        env = dispatch_json(
+            "cheap",
+            prompt,
+            system="You distill reviewer feedback into concise steering hints for marketing copy.",
+            max_tokens=500,
+            temperature=0.2,
+        )
+        if token_ledger is not None and env.get("tokens_used"):
+            token_ledger.append({
+                "route": env["route"],
+                "model": env["model"],
+                "tokens": env["tokens_used"],
+                "agent": "brand_memory",
+                "channel": None,
+                "elapsed_ms": env.get("elapsed_ms"),
+            })
+        parsed = env.get("parsed")
+        if env.get("fallback_used") or not isinstance(parsed, dict):
+            return None
+        return {
+            "generated_at": utc_now(),
+            "method": "llm",
+            "model": env.get("model"),
+            "what_works": [str(x)[:200] for x in (parsed.get("what_works") or [])[:5]],
+            "what_to_avoid": [str(x)[:200] for x in (parsed.get("what_to_avoid") or [])[:5]],
+            "tone_notes": [str(x)[:200] for x in (parsed.get("tone_notes") or [])[:5]],
+            "approved_count": sum(1 for e in learnings if e.get("kind") == "draft_approved"),
+            "rejected_count": sum(1 for e in learnings if e.get("kind") == "draft_rejected"),
+        }
+
+
+def _format_steering_for_prompt(steering: Optional[Dict[str, Any]]) -> str:
+    if not steering:
+        return ""
+    works = steering.get("what_works") or []
+    avoid = steering.get("what_to_avoid") or []
+    tone = steering.get("tone_notes") or []
+    if not (works or avoid or tone):
+        return ""
+    lines = ["Prior reviewer feedback to honor:"]
+    if works:
+        lines.append("  WHAT WORKS (do more of this):")
+        lines.extend(f"    - {w}" for w in works)
+    if avoid:
+        lines.append("  WHAT TO AVOID (reviewer rejected these patterns):")
+        lines.extend(f"    - {a}" for a in avoid)
+    if tone:
+        lines.append("  TONE NOTES:")
+        lines.extend(f"    - {t}" for t in tone)
+    return "\n".join(lines)
+
+
 class MarketingFactoryPipeline:
     def __init__(self, store: Optional[MarketingFactoryStore] = None):
         self.store = store or MarketingFactoryStore()
@@ -317,6 +448,7 @@ class MarketingFactoryPipeline:
         self.scheduler = SchedulerAgent()
         self.publisher = PublisherAgent()
         self.analytics = AnalyticsAgent()
+        self.brand_memory = BrandMemoryAgent()
 
     def initialize_samples(self) -> Dict[str, Any]:
         self.store.initialize()
@@ -326,12 +458,13 @@ class MarketingFactoryPipeline:
     def generate_campaign(self, app_slug: str, days: int = 7, auto_approve: bool = False) -> Dict[str, Any]:
         app = self.store.require_app(app_slug)
         token_ledger: List[Dict[str, Any]] = []
-        research = self.research.research(app, token_ledger=token_ledger)
+        steering = self.brand_memory.get_steering(self.store, app["slug"], token_ledger=token_ledger)
+        research = self.research.research(app, token_ledger=token_ledger, steering=steering)
         campaign_plan = self.strategy.plan_campaign(app, research, days=days)
         campaign = self.store.create_campaign(app["slug"], campaign_plan)
         drafts = []
         for item in campaign["plan"]:
-            raw_draft = self.copy.draft_for_item(app, campaign["id"], item, token_ledger=token_ledger)
+            raw_draft = self.copy.draft_for_item(app, campaign["id"], item, token_ledger=token_ledger, steering=steering)
             raw_draft["scheduled_for"] = item["scheduled_for"]
             enriched = self.creative.add_concepts(app, raw_draft)
             safety = self.review.review(app, enriched)
@@ -426,12 +559,13 @@ _CHANNEL_MAX_TOKENS: Dict[str, int] = {
 }
 
 
-def _copy_prompt(app: Dict[str, Any], item: Dict[str, Any], channel: str) -> str:
+def _copy_prompt(app: Dict[str, Any], item: Dict[str, Any], channel: str, steering: Optional[Dict[str, Any]] = None) -> str:
     link = (app.get("links") or [""])[0]
     pillar = item.get("pillar") or "brand story"
     angle = item.get("angle") or _angle_for(app["slug"], pillar)
     forbidden = app.get("forbidden_claims") or []
     claims_ok = app.get("claims") or []
+    steering_block = _format_steering_for_prompt(steering)
     return (
         f"Brand: {app['name']}\n"
         f"Positioning: {app.get('positioning')}\n"
@@ -443,8 +577,9 @@ def _copy_prompt(app: Dict[str, Any], item: Dict[str, Any], channel: str) -> str
         f"CTA: {app.get('cta')}\n"
         f"Primary link: {link}\n"
         f"Approved claims (only use these or paraphrases): {claims_ok}\n"
-        f"Forbidden claims (do NOT make or imply these): {forbidden}\n\n"
-        f"Channel rules: {_CHANNEL_GUIDANCE.get(channel, 'Brand-safe post.')}\n\n"
+        f"Forbidden claims (do NOT make or imply these): {forbidden}\n"
+        + (f"\n{steering_block}\n" if steering_block else "")
+        + f"\nChannel rules: {_CHANNEL_GUIDANCE.get(channel, 'Brand-safe post.')}\n\n"
         "Write the post body NOW. Output only the body text — no quotes, no preamble, no commentary."
     )
 

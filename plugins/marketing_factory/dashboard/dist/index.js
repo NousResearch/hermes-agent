@@ -284,7 +284,11 @@
               h("p", { className: "mt-3 whitespace-pre-wrap text-sm leading-6" }, draft.body),
               h("div", { className: "mt-3 flex flex-wrap gap-2" },
                 smallButton("Approve", () => run(`approve ${draft.id}`, () => fetchJSON(`${API}/drafts/${encodeURIComponent(draft.id)}/approve`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ reviewer: "dashboard", reason: "Approved in Marketing Factory dashboard" }) })), !!busy || draft.status !== "needs_review", "primary"),
-                smallButton("Reject", () => run(`reject ${draft.id}`, () => fetchJSON(`${API}/drafts/${encodeURIComponent(draft.id)}/reject`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ reviewer: "dashboard", reason: "Rejected in Marketing Factory dashboard" }) })), !!busy || draft.status !== "needs_review", "danger"),
+                smallButton("Reject", () => {
+                  const reason = window.prompt("Why are you rejecting this draft? Specific feedback steers future generations.\n\n(Leave blank to cancel.)");
+                  if (!reason || !reason.trim()) return;
+                  return run(`reject ${draft.id}`, () => fetchJSON(`${API}/drafts/${encodeURIComponent(draft.id)}/reject`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ reviewer: "dashboard", reason: reason.trim() }) }));
+                }, !!busy || draft.status !== "needs_review", "danger"),
                 smallButton("Schedule", () => run(`schedule ${draft.id}`, () => fetchJSON(`${API}/drafts/${encodeURIComponent(draft.id)}/schedule`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({}) })), !!busy || draft.status !== "approved"),
                 smallButton("Dry-run", () => run(`dry-run ${draft.id}`, () => fetchJSON(`${API}/drafts/${encodeURIComponent(draft.id)}/publish-dry-run`, { method: "POST" })), !!busy || draft.status !== "scheduled")
               )

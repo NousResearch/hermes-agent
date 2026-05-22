@@ -239,6 +239,51 @@ def test_dashboard_api_overview_and_dry_run_actions(isolate_home):
     assert published.json()["overview"]["summary"]["dry_run_publish_events"] == 1
 
 
+def test_approval_writes_structured_brand_memory_and_invalidates_steering(isolate_home):
+    """Phase 3: every approve/reject must capture a structured memory entry and
+    invalidate any cached steering so the next campaign re-summarizes."""
+    from plugins.marketing_factory.pipeline import MarketingFactoryPipeline
+    from plugins.marketing_factory.store import MarketingFactoryStore
+
+    store = MarketingFactoryStore()
+    pipe = MarketingFactoryPipeline(store)
+    pipe.initialize_samples()
+
+    generated = pipe.generate_campaign("pupular", days=2)
+    drafts = generated["drafts"]
+    assert len(drafts) == 2
+
+    store.set_approval(drafts[0]["id"], "approved", reviewer="tester", reason="crisp and on-brand")
+    store.set_approval(drafts[1]["id"], "rejected", reviewer="tester", reason="too generic for tiktok")
+
+    state = store.load()
+    learnings = state["brand_memories"]["pupular"]["learnings"]
+    kinds = [entry.get("kind") for entry in learnings if isinstance(entry, dict)]
+    assert "draft_approved" in kinds
+    assert "draft_rejected" in kinds
+
+    structured = [entry for entry in learnings if entry.get("kind") in {"draft_approved", "draft_rejected"}]
+    assert all(entry.get("reason") and entry.get("excerpt") for entry in structured)
+    assert all(entry.get("channel") for entry in structured)
+
+    # Trigger steering (template path because PYTEST_CURRENT_TEST is set), persist it,
+    # then prove a subsequent approval invalidates the cache.
+    steering = pipe.brand_memory.get_steering(store, "pupular")
+    assert steering is not None
+    assert steering["method"] == "fallback"
+    assert steering["approved_count"] == 1
+    assert steering["rejected_count"] == 1
+    assert state["brand_memories"]["pupular"].get("steering") is None  # we used pre-write state above
+
+    after_state = store.load()
+    assert after_state["brand_memories"]["pupular"].get("steering") is not None
+
+    new_campaign = pipe.generate_campaign("pupular", days=1)
+    store.set_approval(new_campaign["drafts"][0]["id"], "rejected", reviewer="tester", reason="off-tone")
+    final_state = store.load()
+    assert final_state["brand_memories"]["pupular"].get("steering") is None
+
+
 def test_dashboard_bulk_approve_and_reject_endpoints(isolate_home):
     from fastapi import FastAPI
     from fastapi.testclient import TestClient

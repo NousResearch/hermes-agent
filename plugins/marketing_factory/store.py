@@ -255,6 +255,31 @@ class MarketingFactoryStore:
         draft["updated_at"] = utc_now()
         approval = state["approvals"].setdefault(draft_id, {"draft_id": draft_id, "app_slug": draft["app_slug"]})
         approval.update({"status": status, "reviewer": reviewer, "reason": reason, "updated_at": utc_now()})
+
+        # Phase 3: capture every approve/reject as a structured brand-memory entry so
+        # the steering loop has real signal to summarize. Generic learnings like
+        # "campaign generated N drafts" are NOT useful — these are.
+        body = draft.get("body") or ""
+        excerpt = (body[:300] + ("…" if len(body) > 300 else ""))
+        memory_entry = {
+            "created_at": utc_now(),
+            "kind": f"draft_{status}",
+            "draft_id": draft_id,
+            "channel": draft.get("channel"),
+            "model_route": draft.get("model_route"),
+            "llm_used": bool(draft.get("llm_used")),
+            "llm_model": draft.get("llm_model"),
+            "reason": reason or ("approved" if status == "approved" else "rejected"),
+            "reviewer": reviewer,
+            "excerpt": excerpt,
+            "text": f"{status.upper()} ({draft.get('channel')}): {reason or 'no reason given'} — excerpt: {excerpt}",
+        }
+        memories = state["brand_memories"].setdefault(draft["app_slug"], {"learnings": [], "summaries": []})
+        memories.setdefault("learnings", []).append(memory_entry)
+        # New learning landed; invalidate the cached steering summary so the next
+        # campaign generation triggers a re-summarize.
+        memories.pop("steering", None)
+
         self._write_state(state)
         self.audit(f"draft.{status}", draft["app_slug"], {"draft_id": draft_id, "reviewer": reviewer, "reason": reason})
         return approval
@@ -317,6 +342,21 @@ class MarketingFactoryStore:
         self._write_state(state)
         self.audit("publish.dry_run", draft["app_slug"], {"draft_id": draft_id, "event_id": event_id, "channel": draft["channel"]})
         return event
+
+    def write_steering(self, app_slug: str, steering: Dict[str, Any]) -> Dict[str, Any]:
+        """Persist a per-app steering blob into `brand_memories[slug].steering`."""
+        self.require_app(app_slug)
+        slug = _require_slug(app_slug)
+        state = self.load()
+        memories = state.setdefault("brand_memories", {}).setdefault(slug, {"learnings": [], "summaries": []})
+        memories["steering"] = deepcopy(steering)
+        self._write_state(state)
+        self.audit("steering.summarized", slug, {
+            "method": steering.get("method"),
+            "approved_count": steering.get("approved_count"),
+            "rejected_count": steering.get("rejected_count"),
+        })
+        return memories["steering"]
 
     def record_token_usage(
         self,

@@ -10,6 +10,7 @@ reasoning configuration, temperature handling, and extra_body assembly.
 """
 
 import copy
+import re
 from typing import Any, Dict, List, Optional
 
 from agent.lmstudio_reasoning import resolve_lmstudio_effort
@@ -127,7 +128,30 @@ class ChatCompletionsTransport(ProviderTransport):
           ``Extra inputs are not permitted, field: 'messages[N].tool_name'``.
           Permissive providers (OpenRouter, MiniMax) silently ignore the
           field, which masked the bug for months.
+        - Reasoning fields on assistant messages: ``reasoning_content``,
+          ``reasoning``, and ``reasoning_details``. OpenAI reasoning models
+          (gpt-5.5, o1, o3), DeepSeek-R1 (via Anthropic-format adapter), and
+          Moonshot Kimi emit these alongside ``content`` in responses. When
+          conversation history is replayed to non-reasoning chat-completions
+          providers (Groq llama-3.3, Anthropic-on-OpenRouter, Ollama, etc.),
+          those providers reject with HTTP 400 ``property "reasoning_content"
+          is unsupported``. Stripping at the transport keeps cross-provider
+          fallback chains working without surfacing reasoning-only fields.
+        - Inline ``<think>...</think>`` and ``<reasoning>...</reasoning>``
+          blocks in assistant message ``content`` — DeepSeek-R1 served via
+          Ollama emits chain-of-thought as inline tags rather than the
+          ``reasoning_content`` field. Stripping here keeps history clean
+          and avoids confusing downstream models with prior CoT exhaust.
         """
+        _THINK_RE = re.compile(r"<think>.*?</think>\s*", re.DOTALL | re.IGNORECASE)
+        _REASON_TAG_RE = re.compile(r"<reasoning>.*?</reasoning>\s*", re.DOTALL | re.IGNORECASE)
+        _REASONING_KEYS = ("reasoning_content", "reasoning", "reasoning_details")
+
+        def _has_inline_reasoning(s: Any) -> bool:
+            if not isinstance(s, str):
+                return False
+            return "<think>" in s or "<reasoning>" in s
+
         needs_sanitize = False
         for msg in messages:
             if not isinstance(msg, dict):
@@ -139,6 +163,20 @@ class ChatCompletionsTransport(ProviderTransport):
             ):
                 needs_sanitize = True
                 break
+            if any(k in msg for k in _REASONING_KEYS):
+                needs_sanitize = True
+                break
+            content = msg.get("content")
+            if isinstance(content, str) and _has_inline_reasoning(content):
+                needs_sanitize = True
+                break
+            if isinstance(content, list):
+                if any(
+                    isinstance(part, dict) and _has_inline_reasoning(part.get("text"))
+                    for part in content
+                ):
+                    needs_sanitize = True
+                    break
             tool_calls = msg.get("tool_calls")
             if isinstance(tool_calls, list):
                 for tc in tool_calls:
@@ -160,6 +198,19 @@ class ChatCompletionsTransport(ProviderTransport):
             msg.pop("codex_reasoning_items", None)
             msg.pop("codex_message_items", None)
             msg.pop("tool_name", None)
+            for k in _REASONING_KEYS:
+                msg.pop(k, None)
+            content = msg.get("content")
+            if isinstance(content, str):
+                stripped = _THINK_RE.sub("", content)
+                stripped = _REASON_TAG_RE.sub("", stripped).strip()
+                msg["content"] = stripped
+            elif isinstance(content, list):
+                for part in content:
+                    if isinstance(part, dict) and isinstance(part.get("text"), str):
+                        t = _THINK_RE.sub("", part["text"])
+                        t = _REASON_TAG_RE.sub("", t).strip()
+                        part["text"] = t
             tool_calls = msg.get("tool_calls")
             if isinstance(tool_calls, list):
                 for tc in tool_calls:

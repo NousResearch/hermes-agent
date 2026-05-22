@@ -10,7 +10,10 @@ reasoning configuration, temperature handling, and extra_body assembly.
 """
 
 import copy
+import logging
 from typing import Any, Dict, List, Optional
+
+logger = logging.getLogger(__name__)
 
 from agent.lmstudio_reasoning import resolve_lmstudio_effort
 from agent.moonshot_schema import is_moonshot_model, sanitize_moonshot_tools
@@ -518,6 +521,32 @@ class ChatCompletionsTransport(ProviderTransport):
 
         if extra_body:
             api_kwargs["extra_body"] = extra_body
+
+        # System-message guard (#29871): ensure persona/identity content reaches API.
+        # When a provider's hooks silently strip the role="system" message
+        # (known with some Ollama Cloud variants), re-inject from original input
+        # so SOUL.md is never lost mid-flight.
+        _had_system = (
+            len(params.get("messages", [])) > 0
+            and isinstance(params["messages"][0], dict)
+            and params["messages"][0].get("role") == "system"
+        )
+        _has_system = (
+            len(api_kwargs.get("messages", [])) > 0
+            and isinstance(api_kwargs["messages"][0], dict)
+            and api_kwargs["messages"][0].get("role") == "system"
+        )
+        if _had_system and not _has_system:
+            logger.debug(
+                "System-message guard (%s): profile/hooks stripped system role. "
+                "Re-injecting from input (input_msgs=%d, output_msgs=%d).",
+                profile.name,
+                len(params["messages"]),
+                len(api_kwargs["messages"]),
+            )
+            api_kwargs["messages"] = [
+                {"role": "system", "content": params["messages"][0]["content"]}
+            ] + api_kwargs["messages"]
 
         return api_kwargs
 

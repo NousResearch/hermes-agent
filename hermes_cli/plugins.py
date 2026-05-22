@@ -640,6 +640,44 @@ class PluginContext:
             self.manifest.name, provider.name,
         )
 
+    # -- TTS provider registration -------------------------------------------
+
+    def register_tts_provider(self, provider) -> None:
+        """Register a text-to-speech backend.
+
+        ``provider`` must be an instance of
+        :class:`agent.tts_provider.TTSProvider`. The ``provider.name``
+        attribute is what ``tts.provider`` in ``config.yaml`` matches
+        against when routing ``text_to_speech`` tool calls — **but
+        only when**:
+
+        1. ``provider.name`` is NOT a built-in TTS provider name
+           (``edge``, ``openai``, ``elevenlabs``, …). Built-ins always
+           win — the registry rejects shadowing names with a warning.
+        2. There is NO ``tts.providers.<name>: type: command`` entry
+           with the same name. Command-providers (PR #17843) win on
+           name collision because config is more local than plugin
+           install.
+
+        Coexists with the command-provider registry rather than
+        replacing it — see issue #30398 for the full design rationale.
+        """
+        from agent.tts_provider import TTSProvider
+        from agent.tts_registry import register_provider as _register_tts_provider
+
+        if not isinstance(provider, TTSProvider):
+            logger.warning(
+                "Plugin '%s' tried to register a TTS provider that does "
+                "not inherit from TTSProvider. Ignoring.",
+                self.manifest.name,
+            )
+            return
+        _register_tts_provider(provider)
+        logger.info(
+            "Plugin '%s' registered TTS provider: %s",
+            self.manifest.name, provider.name,
+        )
+
     # -- platform adapter registration ---------------------------------------
 
     def register_platform(

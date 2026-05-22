@@ -1032,9 +1032,9 @@ READ_FILE_SCHEMA = {
     "parameters": {
         "type": "object",
         "properties": {
-            "path": {"type": "string", "description": "Path to the file to read (absolute, relative, or ~/path)"},
+            "path": {"oneOf": [{"type": "string"}, {"type": "array", "items": {"type": "string"}}], "description": "Path to the file to read, or an array of paths to read multiple files at once (absolute, relative, or ~/path)"},
             "offset": {"type": "integer", "description": "Line number to start reading from (1-indexed, default: 1)", "default": 1, "minimum": 1},
-            "limit": {"type": "integer", "description": "Maximum number of lines to read (default: 500, max: 2000)", "default": 500, "maximum": 2000}
+            "limit": {"type": "integer", "description": "Maximum number of lines to read per file (default: 500, max: 2000)", "default": 500, "maximum": 2000}
         },
         "required": ["path"]
     }
@@ -1121,7 +1121,40 @@ SEARCH_FILES_SCHEMA = {
 
 def _handle_read_file(args, **kw):
     tid = kw.get("task_id") or "default"
-    return read_file_tool(path=args.get("path", ""), offset=args.get("offset", 1), limit=args.get("limit", 500), task_id=tid)
+    paths = args.get("path", "")
+    offset = args.get("offset", 1)
+    limit = args.get("limit", 500)
+
+    if isinstance(paths, list):
+        # Batch read: multiple paths in one call
+        results = []
+        batch_errors = []
+        for p in paths:
+            r = read_file_tool(path=p, offset=offset, limit=limit, task_id=tid)
+            results.append({"path": p, "content": r})
+        # Check if ALL failed
+        all_errors = all(
+            isinstance(r["content"], str)
+            and r["content"].startswith('{"error"')
+            for r in results
+        )
+        if all_errors:
+            # Return the first error if everything failed
+            return results[0]["content"]
+        # Combine all results
+        combined = "--- batch_read results ---\n"
+        for r in results:
+            try:
+                parsed = json.loads(r["content"])
+                if "error" in parsed:
+                    combined += f"\n## {r['path']}\nERROR: {parsed['error']}\n"
+                else:
+                    combined += f"\n## {r['path']}\n{parsed.get('content', r['content'])}\n"
+            except (json.JSONDecodeError, TypeError):
+                combined += f"\n## {r['path']}\n{r['content']}\n"
+        return combined
+
+    return read_file_tool(path=paths, offset=offset, limit=limit, task_id=tid)
 
 
 def _handle_write_file(args, **kw):
@@ -1170,3 +1203,88 @@ registry.register(name="read_file", toolset="file", schema=READ_FILE_SCHEMA, han
 registry.register(name="write_file", toolset="file", schema=WRITE_FILE_SCHEMA, handler=_handle_write_file, check_fn=_check_file_reqs, emoji="✍️", max_result_size_chars=100_000)
 registry.register(name="patch", toolset="file", schema=PATCH_SCHEMA, handler=_handle_patch, check_fn=_check_file_reqs, emoji="🔧", max_result_size_chars=100_000)
 registry.register(name="search_files", toolset="file", schema=SEARCH_FILES_SCHEMA, handler=_handle_search_files, check_fn=_check_file_reqs, emoji="🔎", max_result_size_chars=100_000)
+# grep_and_read: search then automatically read matching file snippets
+# Registers after read_file so it's available when discover_builtin_tools() iterates.
+GREP_AND_READ_SCHEMA = {
+    "name": "grep_and_read",
+    "description": "Search file contents and automatically read the matching snippets. Combines search_files + read_file into one call — saves a round-trip. Returns the matching lines with file context for each match.",
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "pattern": {"type": "string", "description": "Regex pattern to search for"},
+            "path": {"type": "string", "description": "Directory or file to search in (default: current working directory)", "default": "."},
+            "file_glob": {"type": "string", "description": "Filter files by glob pattern (e.g., '*.py' to only search Python files)"},
+            "limit": {"type": "integer", "description": "Maximum number of matches to return (default: 10, max: 30)", "default": 10, "maximum": 30},
+            "context": {"type": "integer", "description": "Number of context lines before and after each match (default: 3)", "default": 3}
+        },
+        "required": ["pattern"]
+    }
+}
+
+def _handle_grep_and_read(args, **kw):
+    import traceback
+    tid = kw.get("task_id") or "default"
+    pattern = args.get("pattern", "")
+    path = args.get("path", ".")
+    file_glob = args.get("file_glob")
+    limit = args.get("limit", 10)
+    context = args.get("context", 3)
+
+    # Step 1: search
+    search_result = search_tool(
+        pattern=pattern, target="content", path=path,
+        file_glob=file_glob, limit=limit, offset=0,
+        output_mode="content", context=context, task_id=tid
+    )
+    try:
+        parsed = json.loads(search_result)
+        if "error" in parsed:
+            return search_result
+        if "matches" not in parsed or not parsed["matches"]:
+            return json.dumps({"matches": [], "message": f"No matches found for pattern '{pattern}'"})
+        matches = parsed["matches"]
+    except (json.JSONDecodeError, TypeError):
+        return search_result
+
+    # Step 2: read matching files for context
+    read_files = set()
+    for match in matches:
+        if isinstance(match, dict) and "path" in match:
+            read_files.add(match["path"])
+        elif isinstance(match, str) and ":" in match:
+            fp = match.split(":")[0].strip()
+            if fp:
+                read_files.add(fp)
+
+    file_contents = {}
+    for fp in list(read_files)[:5]:  # max 5 files
+        try:
+            fr = _get_file_ops(tid).read_file(str(fp), 1, context * 4 + 10)
+            if fr and fr.content:
+                file_contents[fp] = fr.content
+        except Exception:
+            pass
+
+    # Combine results
+    combined = f"--- grep_and_read: '{pattern}' ---\n"
+    combined += f"Found {len(matches)} matches in {len(read_files)} files\n\n"
+
+    for match in matches[:limit]:
+        if isinstance(match, dict):
+            fp = match.get("path", "?")
+            line = match.get("line", "?")
+            content = match.get("content", "")
+            combined += f"{fp}:{line}: {content}\n"
+        elif isinstance(match, str):
+            combined += f"{match}\n"
+
+    if file_contents:
+        combined += "\n--- file snippets ---\n"
+        for fp, content in file_contents.items():
+            combined += f"\n## {fp}\n{content}\n"
+
+    return combined
+
+registry.register(name="grep_and_read", toolset="file", schema=GREP_AND_READ_SCHEMA,
+                   handler=_handle_grep_and_read, check_fn=_check_file_reqs,
+                   emoji="🔎📖", max_result_size_chars=100_000)

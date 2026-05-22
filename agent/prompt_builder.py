@@ -268,7 +268,13 @@ TOOL_USE_ENFORCEMENT_GUIDANCE = (
     "the task, use them instead of telling the user what you would do.\n"
     "Every response should either (a) contain tool calls that make progress, or "
     "(b) deliver a final result to the user. Responses that only describe intentions "
-    "without acting are not acceptable."
+    "without acting are not acceptable.\n"
+    "# Batch execution\n"
+    "You can and SHOULD emit MULTIPLE tool calls in a single response when they are "
+    "independent of each other. For example: reading three files at once, searching "
+    "multiple patterns, or checking several files simultaneously. The read_file tool "
+    "accepts either a single path or an array of paths for batch reading. Every time "
+    "you batch tools together you save one round-trip.\n"
 )
 
 # Model name substrings that trigger tool-use enforcement guidance.

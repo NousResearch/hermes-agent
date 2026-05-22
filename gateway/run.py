@@ -4520,7 +4520,10 @@ class GatewayRunner:
             logger.warning("kanban notifier: kanban_db not importable; notifier disabled")
             return
 
-        TERMINAL_KINDS = ("completed", "blocked", "gave_up", "crashed", "timed_out")
+        # Notify on start + terminal/intervention states. Keep this compact:
+        # `claimed` is the first reliable "worker started" event; we skip
+        # `spawned` to avoid duplicate running pings for the same attempt.
+        TERMINAL_KINDS = ("claimed", "heartbeat", "completed", "blocked", "gave_up", "crashed", "timed_out")
         # Subscriptions are removed only when the task reaches a truly final
         # status (done / archived). We used to also unsub on any terminal
         # event kind (gave_up / crashed / timed_out / blocked), but that
@@ -4686,7 +4689,29 @@ class GatewayRunner:
                         # chat subscribes to many tasks) legible at a glance.
                         who = (task.assignee if task and task.assignee else None)
                         tag = f"@{who} " if who else ""
-                        if kind == "completed":
+                        if kind == "claimed":
+                            run_id = ""
+                            if ev.payload and ev.payload.get("run_id"):
+                                run_id = f" / run #{ev.payload.get('run_id')}"
+                            msg = (
+                                "▶ **KANBAN: СТАРТ**\n"
+                                f"Агент: {tag.strip() or 'не назначен'}\n"
+                                f"Задача: `{sub['task_id']}`{run_id}\n"
+                                "Статус: **В РАБОТЕ**\n"
+                                f"Название: {title}"
+                            )
+                        elif kind == "heartbeat":
+                            note = "обновление прогресса"
+                            if ev.payload and ev.payload.get("note"):
+                                note = str(ev.payload["note"]).strip()[:220]
+                            msg = (
+                                "💓 **KANBAN: ПРОГРЕСС**\n"
+                                f"Агент: {tag.strip() or 'не назначен'}\n"
+                                f"Задача: `{sub['task_id']}`\n"
+                                "Статус: **В РАБОТЕ**\n"
+                                f"Сейчас: {note}"
+                            )
+                        elif kind == "completed":
                             # Prefer the run's summary (the worker's
                             # intentional human-facing handoff, carried
                             # in the event payload), then fall back to
@@ -4697,40 +4722,64 @@ class GatewayRunner:
                             if ev.payload and ev.payload.get("summary"):
                                 payload_summary = str(ev.payload["summary"])
                             if payload_summary:
-                                h = payload_summary.strip().splitlines()[0][:200]
-                                handoff = f"\n{h}"
+                                handoff = payload_summary.strip().splitlines()[0][:260]
                             elif task and task.result:
-                                r = task.result.strip().splitlines()[0][:160]
-                                handoff = f"\n{r}"
+                                handoff = task.result.strip().splitlines()[0][:220]
+                            if not handoff:
+                                handoff = "завершено; summary не указан"
                             msg = (
-                                f"✔ {tag}Kanban {sub['task_id']} done"
-                                f" — {title}{handoff}"
+                                "✅ **KANBAN: ГОТОВО**\n"
+                                f"Агент: {tag.strip() or 'не назначен'}\n"
+                                f"Задача: `{sub['task_id']}`\n"
+                                "Статус: **ГОТОВО**\n"
+                                f"Название: {title}\n"
+                                f"Результат: {handoff}"
                             )
                         elif kind == "blocked":
-                            reason = ""
+                            reason = "нужна проверка оператора"
                             if ev.payload and ev.payload.get("reason"):
-                                reason = f": {str(ev.payload['reason'])[:160]}"
-                            msg = f"⏸ {tag}Kanban {sub['task_id']} blocked{reason}"
-                        elif kind == "gave_up":
-                            err = ""
-                            if ev.payload and ev.payload.get("error"):
-                                err = f"\n{str(ev.payload['error'])[:200]}"
+                                reason = str(ev.payload["reason"]).strip()[:260]
                             msg = (
-                                f"✖ {tag}Kanban {sub['task_id']} gave up "
-                                f"after repeated spawn failures{err}"
+                                "⏸ **KANBAN: ОСТАНОВЛЕНО**\n"
+                                f"Агент: {tag.strip() or 'не назначен'}\n"
+                                f"Задача: `{sub['task_id']}`\n"
+                                "Статус: **ЗАБЛОКИРОВАНО — НЕ ГОТОВО**\n"
+                                f"Название: {title}\n"
+                                f"Причина: {reason}\n"
+                                "Дальше: Harvey/Vitaliy проверяет, затем разблокировка или новая задача на доработку."
+                            )
+                        elif kind == "gave_up":
+                            err = "повторные ошибки запуска"
+                            if ev.payload and ev.payload.get("error"):
+                                err = str(ev.payload["error"]).strip()[:260]
+                            msg = (
+                                "✖ **KANBAN: СБОЙ**\n"
+                                f"Агент: {tag.strip() or 'не назначен'}\n"
+                                f"Задача: `{sub['task_id']}`\n"
+                                "Статус: **СБОЙ — НЕ ГОТОВО**\n"
+                                f"Название: {title}\n"
+                                f"Ошибка: {err}"
                             )
                         elif kind == "crashed":
                             msg = (
-                                f"✖ {tag}Kanban {sub['task_id']} worker crashed "
-                                f"(pid gone); dispatcher will retry"
+                                "✖ **KANBAN: КРАШ**\n"
+                                f"Агент: {tag.strip() or 'не назначен'}\n"
+                                f"Задача: `{sub['task_id']}`\n"
+                                "Статус: **КРАШ — ОЖИДАЕТСЯ ПОВТОР**\n"
+                                f"Название: {title}\n"
+                                "Причина: процесс worker исчез."
                             )
                         elif kind == "timed_out":
                             limit = 0
                             if ev.payload and ev.payload.get("limit_seconds"):
                                 limit = int(ev.payload["limit_seconds"])
                             msg = (
-                                f"⏱ {tag}Kanban {sub['task_id']} timed out "
-                                f"(max_runtime={limit}s); will retry"
+                                "⏱ **KANBAN: ТАЙМАУТ**\n"
+                                f"Агент: {tag.strip() or 'не назначен'}\n"
+                                f"Задача: `{sub['task_id']}`\n"
+                                "Статус: **ТАЙМАУТ — ОЖИДАЕТСЯ ПОВТОР**\n"
+                                f"Название: {title}\n"
+                                f"Лимит: {limit}s"
                             )
                         else:
                             continue
@@ -6438,6 +6487,19 @@ class GatewayRunner:
         # are system-generated and must skip user authorization.
         is_internal = bool(getattr(event, "internal", False))
 
+        if not is_internal:
+            try:
+                from agent.profile_policy import check_inbound_event
+                check_inbound_event(event)
+            except Exception as _policy_exc:
+                logger.warning(
+                    "profile_policy inbound block: %s platform=%s chat=%s",
+                    _policy_exc,
+                    source.platform.value if source.platform else "unknown",
+                    source.chat_id or "unknown",
+                )
+                return None
+
         # Fire pre_gateway_dispatch plugin hook for user-originated messages.
         # Plugins receive the MessageEvent and may return a dict influencing flow:
         #   {"action": "skip",    "reason": ...}    -> drop (no reply, plugin handled)
@@ -7727,6 +7789,10 @@ class GatewayRunner:
                         f"Ask the user what they'd like you to do with it.]"
                     )
                 message_text = f"{context_note}\n\n{message_text}"
+
+        if getattr(event, "forwarded_from_name", None):
+            forward_label = str(event.forwarded_from_name)[:200]
+            message_text = f'[Forwarded from: "{forward_label}"]\n\n{message_text}'
 
         if getattr(event, "reply_to_text", None) and event.reply_to_message_id:
             # Always inject the reply-to pointer — even when the quoted text
@@ -9345,83 +9411,238 @@ class GatewayRunner:
         return output or t("gateway.kanban.no_output")
 
     async def _handle_status_command(self, event: MessageEvent) -> str:
-        """Handle /status command."""
+        """Handle /status and /info with a compact operational snapshot."""
         source = event.source
         session_entry = self.session_store.get_or_create_session(source)
-
-        connected_platforms = [p.value for p in self.adapters.keys()]
-
-        # Check if there's an active agent
         session_key = session_entry.session_key
-        is_running = session_key in self._running_agents
 
-        # Count pending /queue follow-ups (slot + overflow).
+        running_agents = getattr(self, "_running_agents", {}) or {}
+        is_running = session_key in running_agents
+        agent = running_agents.get(session_key)
+        if not agent or agent is _AGENT_PENDING_SENTINEL:
+            _cache_lock = getattr(self, "_agent_cache_lock", None)
+            _cache = getattr(self, "_agent_cache", None)
+            if _cache_lock and _cache is not None:
+                try:
+                    with _cache_lock:
+                        cached = _cache.get(session_key)
+                        if cached:
+                            agent = cached[0]
+                except Exception:
+                    agent = None
+
         adapter = self.adapters.get(source.platform) if source else None
         queue_depth = self._queue_depth(session_key, adapter=adapter)
+        connected_platforms = [p.value for p in self.adapters.keys()]
 
         title = None
-        # Pull token totals from the SQLite session DB rather than the
-        # in-memory SessionStore.  The agent's per-turn token deltas are
-        # persisted into sessions_db (run_agent.py), not into SessionEntry,
-        # so session_entry.total_tokens is always 0.  SessionDB is the
-        # single source of truth; reading it here keeps /status accurate
-        # without duplicating token writes into two stores.
-        db_total_tokens = 0
+        row: dict[str, Any] = {}
         if self._session_db:
             try:
                 title = self._session_db.get_session_title(session_entry.session_id)
             except Exception:
                 title = None
             try:
-                row = self._session_db.get_session(session_entry.session_id)
-                if row:
-                    db_total_tokens = (
-                        (row.get("input_tokens") or 0)
-                        + (row.get("output_tokens") or 0)
-                        + (row.get("cache_read_tokens") or 0)
-                        + (row.get("cache_write_tokens") or 0)
-                        + (row.get("reasoning_tokens") or 0)
-                    )
+                row = self._session_db.get_session(session_entry.session_id) or {}
             except Exception:
-                db_total_tokens = 0
+                row = {}
+
+        def _as_int(value: Any) -> int:
+            if isinstance(value, bool):
+                return int(value)
+            if isinstance(value, (int, float)):
+                return int(value)
+            if isinstance(value, str) and value.strip().isdigit():
+                return int(value.strip())
+            return 0
+
+        def _int_value(name: str, *, attr: str | None = None) -> int:
+            if agent and agent is not _AGENT_PENDING_SENTINEL and attr:
+                value = _as_int(getattr(agent, attr, 0))
+                if value:
+                    return value
+            return _as_int(row.get(name))
+
+        input_tokens = _int_value("input_tokens", attr="session_input_tokens")
+        output_tokens = _int_value("output_tokens", attr="session_output_tokens")
+        cache_read = _int_value("cache_read_tokens", attr="session_cache_read_tokens")
+        cache_write = _int_value("cache_write_tokens", attr="session_cache_write_tokens")
+        reasoning_tokens = _int_value("reasoning_tokens", attr="session_reasoning_tokens")
+        total_tokens = input_tokens + output_tokens + cache_read + cache_write + reasoning_tokens
+        api_calls = _int_value("api_call_count", attr="session_api_calls")
+
+        def _as_text(value: Any) -> str | None:
+            if isinstance(value, str):
+                cleaned = value.strip()
+                return cleaned or None
+            return None
+
+        model = _as_text(getattr(agent, "model", None)) if agent and agent is not _AGENT_PENDING_SENTINEL else None
+        provider = _as_text(getattr(agent, "provider", None)) if agent and agent is not _AGENT_PENDING_SENTINEL else None
+        base_url = _as_text(getattr(agent, "base_url", None)) if agent and agent is not _AGENT_PENDING_SENTINEL else None
+        api_key = _as_text(getattr(agent, "api_key", None)) if agent and agent is not _AGENT_PENDING_SENTINEL else None
+        model = model or _as_text(row.get("model"))
+        provider = provider or _as_text(row.get("billing_provider"))
+        base_url = base_url or _as_text(row.get("billing_base_url"))
+        if not model or not provider:
+            try:
+                resolved_model, runtime = self._resolve_session_agent_runtime(source=source)
+                model = model or resolved_model
+                provider = provider or runtime.get("provider")
+                base_url = base_url or runtime.get("base_url")
+                api_key = api_key or runtime.get("api_key")
+            except Exception:
+                model = model or _resolve_gateway_model()
+        provider = provider or "openrouter"
+
+        context_tokens = 0
+        context_length = 0
+        compactions = 0
+        compression_threshold_tokens = 0
+        compression_threshold_percent = 0.0
+        compressor = getattr(agent, "context_compressor", None) if agent and agent is not _AGENT_PENDING_SENTINEL else None
+        active_context_tokens = 0
+        if compressor:
+            active_context_tokens = int(getattr(compressor, "last_prompt_tokens", 0) or 0)
+            context_length = int(getattr(compressor, "context_length", 0) or 0)
+            compactions = int(getattr(compressor, "compression_count", 0) or 0)
+            compression_threshold_tokens = int(getattr(compressor, "threshold_tokens", 0) or 0)
+            compression_threshold_percent = float(getattr(compressor, "threshold_percent", 0.0) or 0.0)
+        # Context is the active prompt/window size that drives auto-compact,
+        # not cumulative API usage.  A gateway /status command can run while
+        # the live compressor is idle/stale, so fall back to the per-session
+        # last prompt snapshot persisted by the previous agent turn.
+        context_tokens = active_context_tokens
+        if not context_tokens:
+            context_tokens = _as_int(getattr(session_entry, "last_prompt_tokens", 0))
+        if not context_tokens:
+            context_tokens = _int_value("prompt_tokens", attr="session_prompt_tokens")
+        if not context_length:
+            try:
+                from agent.model_metadata import get_model_context_length
+                context_length = int(get_model_context_length(
+                    model or "",
+                    base_url=base_url or "",
+                    api_key=api_key or "",
+                    provider=provider or "",
+                ) or 0)
+            except Exception:
+                context_length = 0
+        if not compression_threshold_tokens and context_length:
+            try:
+                compression_cfg = (_load_gateway_config().get("compression") or {})
+                compression_threshold_percent = float(compression_cfg.get("threshold") or 0.5)
+                compression_threshold_tokens = int(context_length * compression_threshold_percent)
+            except Exception:
+                compression_threshold_percent = 0.0
+                compression_threshold_tokens = 0
+        context_pct = round((context_tokens / context_length) * 100) if context_length else 0
+        threshold_pct = round(compression_threshold_percent * 100) if compression_threshold_percent else 0
+        remaining_to_compact = max(0, compression_threshold_tokens - context_tokens) if compression_threshold_tokens else 0
+
+        reasoning_label = "default"
+        try:
+            reasoning_cfg = self._resolve_session_reasoning_config(source=source) or {}
+            reasoning_label = str(reasoning_cfg.get("effort") or reasoning_cfg.get("reasoning_effort") or "default")
+        except Exception:
+            pass
+        try:
+            if getattr(self, "_show_reasoning", False):
+                reasoning_label += " · shown"
+            else:
+                reasoning_label += " · hidden"
+        except Exception:
+            pass
+
+        history = []
+        try:
+            history = self.session_store.load_transcript(session_entry.session_id) or []
+        except Exception:
+            history = []
+        user_turns = sum(1 for m in history if m.get("role") == "user")
+        assistant_turns = sum(1 for m in history if m.get("role") == "assistant")
+
+        running_process_count = 0
+        try:
+            from tools.process_registry import process_registry
+            running_process_count = len([
+                p for p in process_registry.list_sessions()
+                if p.get("status") == "running"
+            ])
+        except Exception:
+            running_process_count = 0
+
+        background_tasks = 0
+        try:
+            background_tasks = len([
+                task for task in (getattr(self, "_background_tasks", set()) or set())
+                if hasattr(task, "done") and not task.done()
+            ])
+        except Exception:
+            background_tasks = 0
+
+        account_lines: list[str] = []
+        account_unavailable_reason = "not reported by provider"
+        if provider:
+            try:
+                account_snapshot = await asyncio.to_thread(
+                    fetch_account_usage,
+                    provider,
+                    base_url=base_url,
+                    api_key=api_key,
+                )
+            except Exception as exc:
+                account_snapshot = None
+                account_unavailable_reason = str(exc) or exc.__class__.__name__
+            if account_snapshot:
+                rendered = render_account_usage_lines(account_snapshot, markdown=True)
+                account_lines = rendered[1:4] if len(rendered) > 1 else rendered[:3]
+                if not account_lines and getattr(account_snapshot, "unavailable_reason", None):
+                    account_unavailable_reason = str(account_snapshot.unavailable_reason)
+            if not account_lines:
+                account_lines = [
+                    f"Provider: {provider or 'unknown'}",
+                    f"Unavailable: {account_unavailable_reason}",
+                ]
+
+        def _fmt_tokens(value: int) -> str:
+            return f"{int(value):,}"
+
+        cache_basis = input_tokens + cache_read
+        cache_pct = round((cache_read / cache_basis) * 100) if cache_basis else 0
+        active_bits = ["running ⚡" if is_running else "idle"]
+        if queue_depth:
+            active_bits.append(f"queue {queue_depth}")
+        if running_process_count:
+            active_bits.append(f"processes {running_process_count}")
+        if background_tasks:
+            active_bits.append(f"background {background_tasks}")
 
         lines = [
-            t("gateway.status.header"),
-            "",
-            t("gateway.status.session_id", session_id=session_entry.session_id),
+            "📊 **Hermes /info**",
+            f"🆔 Session: `{session_entry.session_id}`",
         ]
         if title:
-            lines.append(t("gateway.status.title", title=title))
+            lines.append(f"🏷 Title: **{title}**")
         lines.extend([
-            t("gateway.status.created", timestamp=session_entry.created_at.strftime('%Y-%m-%d %H:%M')),
-            t("gateway.status.last_activity", timestamp=session_entry.updated_at.strftime('%Y-%m-%d %H:%M')),
-            t("gateway.status.tokens", tokens=f"{db_total_tokens:,}"),
-            t("gateway.status.agent_running", state=t("gateway.status.state_yes") if is_running else t("gateway.status.state_no")),
+            f"🤖 Model: `{model or 'unknown'}`",
+            f"🔌 Provider: `{provider or 'unknown'}`",
+            f"🧠 Reasoning: {reasoning_label}",
+            f"🪟 Context: {_fmt_tokens(context_tokens)} / {_fmt_tokens(context_length)} ({context_pct}%)",
+            f"🧹 Auto-compact: {_fmt_tokens(compression_threshold_tokens)} ({threshold_pct}%)",
+            f"⏳ To compact: {_fmt_tokens(remaining_to_compact)}",
+            f"💬 Turns: {user_turns} user / {assistant_turns} assistant",
+            f"📦 Compactions: {compactions}",
+            f"🔢 Tokens: {_fmt_tokens(total_tokens)} total · in {_fmt_tokens(input_tokens)} · out {_fmt_tokens(output_tokens)} · reasoning {_fmt_tokens(reasoning_tokens)}",
+            f"💾 Cache: {cache_pct}% hit · read {_fmt_tokens(cache_read)} · written {_fmt_tokens(cache_write)}",
+            f"🏃 Active: {', '.join(active_bits)}",
+            f"📡 Platforms: {', '.join(connected_platforms) or 'none'}",
+            f"🕒 Updated: {session_entry.updated_at.strftime('%Y-%m-%d %H:%M')}",
         ])
-        if queue_depth:
-            lines.append(t("gateway.status.queued", count=queue_depth))
-        lines.extend([
-            "",
-            t("gateway.status.platforms", platforms=', '.join(connected_platforms)),
-        ])
-
-        # Session recap — what was this session ABOUT? Pure local compute,
-        # no LLM call, no prompt-cache impact. Useful when juggling multiple
-        # gateway sessions and you want a one-glance reminder of where this
-        # one left off. Inspired by Claude Code 2.1.114's /recap.
-        try:
-            from hermes_cli.session_recap import build_recap
-            history = self.session_store.load_transcript(session_entry.session_id)
-            recap = build_recap(
-                history,
-                session_title=title,
-                session_id=session_entry.session_id,
-                platform=source.platform.value if source else None,
-            )
-            if recap:
-                lines.extend(["", recap])
-        except Exception as exc:  # pragma: no cover — defensive
-            logger.debug("build_recap failed in /status: %s", exc)
+        if api_calls:
+            lines.append(f"📞 API calls: {api_calls}")
+        lines.extend(["", "📈 **Account limits**"])
+        lines.extend(account_lines)
 
         return "\n".join(lines)
 

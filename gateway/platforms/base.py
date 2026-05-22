@@ -972,6 +972,11 @@ class MessageEvent:
     # Reply context
     reply_to_message_id: Optional[str] = None
     reply_to_text: Optional[str] = None  # Text of the replied-to message (for context injection)
+
+    # Forwarded-message attribution (Telegram forward origin, etc.).
+    forwarded_from_name: Optional[str] = None
+    forwarded_from_id: Optional[str] = None
+    forwarded_from_type: Optional[str] = None
     
     # Auto-loaded skill(s) for topic/channel bindings (e.g., Telegram DM Topics,
     # Discord channel_skill_bindings).  A single name or ordered list.
@@ -3248,13 +3253,27 @@ class BasePlatformAdapter(ABC):
                         _thread_metadata["notify"] = True
                     else:
                         _thread_metadata = {"notify": True}
-                    result = await self._send_with_retry(
-                        chat_id=event.source.chat_id,
-                        content=text_content,
-                        reply_to=_reply_anchor,
-                        metadata=_thread_metadata,
-                    )
-                    _record_delivery(result)
+                    try:
+                        from agent.profile_policy import check_outbound
+                        check_outbound(
+                            self.platform.value if hasattr(self.platform, "value") else str(self.platform),
+                            str(event.source.chat_id),
+                            text_content,
+                            kind="text",
+                        )
+                    except Exception as _policy_exc:
+                        logger.warning("[%s] profile_policy outbound text block: %s", self.name, _policy_exc)
+                        text_content = ""
+                        result = None
+                    else:
+                        result = await self._send_with_retry(
+                            chat_id=event.source.chat_id,
+                            content=text_content,
+                            reply_to=_reply_anchor,
+                            metadata=_thread_metadata,
+                        )
+                    if result is not None:
+                        _record_delivery(result)
 
                     # Schedule auto-deletion of system-notice replies.
                     # Detached so the handler returns immediately; errors
@@ -3262,6 +3281,7 @@ class BasePlatformAdapter(ABC):
                     if (
                         _ephemeral_ttl
                         and _ephemeral_ttl > 0
+                        and result is not None
                         and result.success
                         and result.message_id
                     ):
@@ -3278,6 +3298,14 @@ class BasePlatformAdapter(ABC):
                 if images:
                     logger.info("[%s] Extracted %d image(s) to send as attachments", self.name, len(images))
                     try:
+                        from agent.profile_policy import check_outbound
+                        for _img in images:
+                            check_outbound(
+                                self.platform.value if hasattr(self.platform, "value") else str(self.platform),
+                                str(event.source.chat_id),
+                                str(_img[0] if isinstance(_img, (tuple, list)) and _img else _img),
+                                kind="media",
+                            )
                         await self.send_multiple_images(
                             chat_id=event.source.chat_id,
                             images=images,
@@ -3319,6 +3347,14 @@ class BasePlatformAdapter(ABC):
 
                 if _image_paths:
                     try:
+                        from agent.profile_policy import check_outbound
+                        for _path in _image_paths:
+                            check_outbound(
+                                self.platform.value if hasattr(self.platform, "value") else str(self.platform),
+                                str(event.source.chat_id),
+                                str(_path),
+                                kind="media",
+                            )
                         _batch = [(f"file://{_quote(p)}", "") for p in _image_paths]
                         await self.send_multiple_images(
                             chat_id=event.source.chat_id,
@@ -3333,6 +3369,13 @@ class BasePlatformAdapter(ABC):
                     if human_delay > 0:
                         await asyncio.sleep(human_delay)
                     try:
+                        from agent.profile_policy import check_outbound
+                        check_outbound(
+                            self.platform.value if hasattr(self.platform, "value") else str(self.platform),
+                            str(event.source.chat_id),
+                            str(media_path),
+                            kind="media",
+                        )
                         ext = Path(media_path).suffix.lower()
                         if should_send_media_as_audio(self.platform, ext, is_voice=is_voice):
                             media_result = await self.send_voice(
@@ -3363,6 +3406,13 @@ class BasePlatformAdapter(ABC):
                     if human_delay > 0:
                         await asyncio.sleep(human_delay)
                     try:
+                        from agent.profile_policy import check_outbound
+                        check_outbound(
+                            self.platform.value if hasattr(self.platform, "value") else str(self.platform),
+                            str(event.source.chat_id),
+                            str(file_path),
+                            kind="media",
+                        )
                         ext = Path(file_path).suffix.lower()
                         if ext in _VIDEO_EXTS:
                             await self.send_video(

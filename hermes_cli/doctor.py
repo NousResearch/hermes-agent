@@ -105,6 +105,29 @@ def _has_provider_env_config(content: str) -> bool:
     return any(key in content for key in _PROVIDER_ENV_HINTS)
 
 
+def _active_model_oauth_auth_detail() -> str | None:
+    """Return a non-secret auth detail when the active model uses OAuth.
+
+    A profile can be fully usable without API keys in .env when its active
+    provider is OAuth-backed (for example openai-codex).  Doctor should not
+    turn that healthy state into a blocking "configure API keys" issue.
+    """
+    try:
+        import yaml as _yaml
+        cfg = _yaml.safe_load((HERMES_HOME / "config.yaml").read_text(encoding="utf-8")) or {}
+        provider = str((cfg.get("model") or {}).get("provider") or "").strip().lower()
+    except Exception:
+        provider = ""
+    if provider == "openai-codex":
+        try:
+            from hermes_cli.auth import get_codex_auth_status
+            if (get_codex_auth_status() or {}).get("logged_in"):
+                return "OpenAI Codex OAuth configured"
+        except Exception:
+            return None
+    return None
+
+
 def _honcho_is_configured_for_doctor() -> bool:
     """Return True when Honcho is configured, even if this process has no active session."""
     try:
@@ -496,8 +519,12 @@ def run_doctor(args):
         if _has_provider_env_config(content):
             check_ok("API key or custom endpoint configured")
         else:
-            check_warn(f"No API key found in {_DHH}/.env")
-            issues.append("Run 'hermes setup' to configure API keys")
+            oauth_detail = _active_model_oauth_auth_detail()
+            if oauth_detail:
+                check_ok("API key not required for active provider", f"({oauth_detail})")
+            else:
+                check_warn(f"No API key found in {_DHH}/.env")
+                issues.append("Run 'hermes setup' to configure API keys")
     else:
         # Also check project root as fallback
         fallback_env = PROJECT_ROOT / '.env'

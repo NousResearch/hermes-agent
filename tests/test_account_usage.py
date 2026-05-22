@@ -95,6 +95,91 @@ def test_fetch_account_usage_codex(monkeypatch):
     assert "Credits balance: $12.50" in snapshot.details
 
 
+def test_fetch_account_usage_codex_uses_cached_reset_when_live_usage_fails(monkeypatch, tmp_path):
+    monkeypatch.setattr("agent.account_usage.get_hermes_home", lambda: str(tmp_path))
+    monkeypatch.setattr(
+        "agent.account_usage.resolve_codex_runtime_credentials",
+        lambda refresh_if_expiring=True: {
+            "provider": "openai-codex",
+            "base_url": "https://chatgpt.com/backend-api/codex",
+            "api_key": "access-token",
+        },
+    )
+    monkeypatch.setattr(
+        "agent.account_usage._read_codex_tokens",
+        lambda: {"tokens": {"account_id": "acct_123"}},
+    )
+    monkeypatch.setattr(
+        "agent.account_usage.httpx.Client",
+        lambda timeout=15.0: _Client(
+            {
+                "plan_type": "plus",
+                "rate_limit": {
+                    "primary_window": {
+                        "used_percent": 99,
+                        "reset_at": 1_900_000_000,
+                    },
+                    "secondary_window": {
+                        "used_percent": 35,
+                        "reset_at": 1_900_500_000,
+                    },
+                },
+            }
+        ),
+    )
+    live_snapshot = fetch_account_usage("openai-codex")
+    assert live_snapshot is not None
+    assert live_snapshot.windows[0].reset_at == datetime.fromtimestamp(1_900_000_000, tz=timezone.utc)
+
+    class _FailingClient:
+        def __init__(self, timeout=15.0):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def get(self, url, headers=None):
+            raise RuntimeError("usage API exhausted")
+
+    monkeypatch.setattr("agent.account_usage.httpx.Client", _FailingClient)
+
+    cached_snapshot = fetch_account_usage("openai-codex")
+
+    assert cached_snapshot is not None
+    assert cached_snapshot.plan == "Plus"
+    assert cached_snapshot.windows[0].label == "Session"
+    assert cached_snapshot.windows[0].used_percent == 99.0
+    assert cached_snapshot.windows[0].reset_at == datetime.fromtimestamp(1_900_000_000, tz=timezone.utc)
+    rendered = render_account_usage_lines(cached_snapshot)
+    assert any("Session: 1% remaining (99% used)" in line for line in rendered)
+    assert any("resets" in line for line in rendered)
+    assert any("Last live usage check unavailable: usage API exhausted" in line for line in rendered)
+
+
+def test_render_account_usage_lines_shows_exhausted_window_reset():
+    snapshot = AccountUsageSnapshot(
+        provider="openai-codex",
+        source="usage_api",
+        fetched_at=datetime.now(timezone.utc),
+        plan="Plus",
+        windows=(
+            AccountUsageWindow(
+                label="Session",
+                used_percent=100,
+                reset_at=datetime.fromtimestamp(1_900_000_000, tz=timezone.utc),
+            ),
+        ),
+    )
+
+    lines = render_account_usage_lines(snapshot)
+
+    assert any("Session: 0% remaining (100% used)" in line for line in lines)
+    assert any("resets" in line for line in lines)
+
+
 def test_render_account_usage_lines_includes_reset_and_provider():
     snapshot = AccountUsageSnapshot(
         provider="openai-codex",

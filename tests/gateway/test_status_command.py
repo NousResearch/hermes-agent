@@ -23,11 +23,14 @@ def _make_source(platform: Platform = Platform.TELEGRAM) -> SessionSource:
 
 
 def _make_event(text: str, *, platform: Platform = Platform.TELEGRAM) -> MessageEvent:
-    return MessageEvent(
+    event = MessageEvent(
         text=text,
         source=_make_source(platform),
         message_id="m1",
     )
+    # Unit tests exercise command routing, not live profile-policy guards.
+    event.internal = True
+    return event
 
 
 def _make_runner(session_entry: SessionEntry, *, platform: Platform = Platform.TELEGRAM):
@@ -96,12 +99,135 @@ async def test_status_command_reports_running_agent_without_interrupt(monkeypatc
 
     result = await runner._handle_message(_make_event("/status"))
 
-    assert "**Session ID:** `sess-1`" in result
-    assert "**Tokens:** 321" in result
-    assert "**Agent Running:** Yes ⚡" in result
-    assert "**Title:**" not in result
+    assert "🆔 Session: `sess-1`" in result
+    assert "🔢 Tokens: 321 total" in result
+    assert "🏃 Active: running ⚡" in result
+    assert "🏷 Title:" not in result
     running_agent.interrupt.assert_not_called()
     assert runner._pending_messages == {}
+
+
+@pytest.mark.asyncio
+async def test_info_alias_routes_to_status_command():
+    session_entry = SessionEntry(
+        session_key=build_session_key(_make_source()),
+        session_id="sess-info",
+        created_at=datetime.now(),
+        updated_at=datetime.now(),
+        platform=Platform.TELEGRAM,
+        chat_type="dm",
+        total_tokens=0,
+    )
+    runner = _make_runner(session_entry)
+
+    result = await runner._handle_message(_make_event("/info"))
+
+    assert "📊 **Hermes /info**" in result
+    assert "🆔 Session: `sess-info`" in result
+
+
+@pytest.mark.asyncio
+async def test_status_command_always_shows_account_limits_when_unavailable(monkeypatch):
+    session_entry = SessionEntry(
+        session_key=build_session_key(_make_source()),
+        session_id="sess-limits",
+        created_at=datetime.now(),
+        updated_at=datetime.now(),
+        platform=Platform.TELEGRAM,
+        chat_type="dm",
+        total_tokens=0,
+    )
+    runner = _make_runner(session_entry)
+    monkeypatch.setattr("gateway.run.fetch_account_usage", lambda *args, **kwargs: None)
+
+    result = await runner._handle_message(_make_event("/status"))
+
+    assert "📈 **Account limits**" in result
+    assert "Provider:" in result
+    assert "Unavailable:" in result
+
+
+@pytest.mark.asyncio
+async def test_status_command_shows_auto_compact_threshold(monkeypatch):
+    session_key = build_session_key(_make_source())
+    session_entry = SessionEntry(
+        session_key=session_key,
+        session_id="sess-threshold",
+        created_at=datetime.now(),
+        updated_at=datetime.now(),
+        platform=Platform.TELEGRAM,
+        chat_type="dm",
+        total_tokens=0,
+    )
+    runner = _make_runner(session_entry)
+    monkeypatch.setattr("gateway.run.fetch_account_usage", lambda *args, **kwargs: None)
+    running_agent = SimpleNamespace(
+        model="gpt-5.5",
+        provider="openai-codex",
+        base_url="https://chatgpt.com/backend-api/codex/",
+        api_key="test-key",
+        context_compressor=SimpleNamespace(
+            last_prompt_tokens=129_257,
+            context_length=272_000,
+            threshold_tokens=231_200,
+            threshold_percent=0.85,
+            compression_count=1,
+        ),
+        session_prompt_tokens=345_678,
+        interrupt=MagicMock(),
+    )
+    runner._running_agents[session_key] = running_agent
+
+    result = await runner._handle_message(_make_event("/status"))
+
+    assert "🪟 Context: 129,257 / 272,000 (48%)" in result
+    assert "🧹 Auto-compact: 231,200 (85%)" in result
+    assert "⏳ To compact: 101,943" in result
+    assert "📦 Compactions: 1" in result
+
+
+@pytest.mark.asyncio
+async def test_status_command_falls_back_to_session_last_prompt_tokens(monkeypatch):
+    """Idle /status has no live compressor; Context should show the last
+    active prompt/window snapshot that drives auto-compact, not cumulative API
+    usage from persisted input/cache counters.
+    """
+    session_entry = SessionEntry(
+        session_key=build_session_key(_make_source()),
+        session_id="sess-context-db",
+        created_at=datetime.now(),
+        updated_at=datetime.now(),
+        platform=Platform.TELEGRAM,
+        chat_type="dm",
+        total_tokens=0,
+        last_prompt_tokens=75_278,
+    )
+    runner = _make_runner(session_entry)
+    monkeypatch.setattr("gateway.run.fetch_account_usage", lambda *args, **kwargs: None)
+    runner._session_db.get_session.return_value = {
+        "input_tokens": 100_000,
+        "output_tokens": 10_000,
+        "cache_read_tokens": 50_000,
+        "cache_write_tokens": 25_000,
+        "reasoning_tokens": 5_000,
+        "billing_provider": "test-provider",
+        "billing_base_url": "https://example.invalid",
+        "model": "test-model",
+    }
+    monkeypatch.setattr(
+        "agent.model_metadata.get_model_context_length",
+        lambda *args, **kwargs: 200_000,
+    )
+    monkeypatch.setattr(
+        "gateway.run._load_gateway_config",
+        lambda: {"compression": {"threshold": 0.5}},
+    )
+
+    result = await runner._handle_message(_make_event("/status"))
+
+    assert "🪟 Context: 75,278 / 200,000 (38%)" in result
+    assert "⏳ To compact: 24,722" in result
+    assert "🔢 Tokens: 190,000 total" in result
 
 
 @pytest.mark.asyncio
@@ -120,8 +246,8 @@ async def test_status_command_includes_session_title_when_present():
 
     result = await runner._handle_message(_make_event("/status"))
 
-    assert "**Session ID:** `sess-1`" in result
-    assert "**Title:** My titled session" in result
+    assert "🆔 Session: `sess-1`" in result
+    assert "🏷 Title: **My titled session**" in result
 
 
 @pytest.mark.asyncio
@@ -150,7 +276,7 @@ async def test_status_command_reads_token_totals_from_session_db():
     result = await runner._handle_message(_make_event("/status"))
 
     # 1000 + 250 + 500 + 100 + 50 = 1,900
-    assert "**Tokens:** 1,900" in result
+    assert "🔢 Tokens: 1,900 total" in result
 
 
 @pytest.mark.asyncio
@@ -171,7 +297,7 @@ async def test_status_command_tokens_zero_when_session_db_row_missing():
 
     result = await runner._handle_message(_make_event("/status"))
 
-    assert "**Tokens:** 0" in result
+    assert "🔢 Tokens: 0 total" in result
 
 
 @pytest.mark.asyncio

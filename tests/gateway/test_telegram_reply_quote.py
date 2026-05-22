@@ -46,6 +46,10 @@ def _make_message(
     reply_to_caption=None,
     reply_to_id=42,
     quote_text=None,
+    forward_origin=None,
+    forward_from=None,
+    forward_sender_name=None,
+    forward_from_chat=None,
 ):
     chat = SimpleNamespace(id=111, type="private", title=None, full_name="Alice")
     user = SimpleNamespace(id=42, full_name="Alice")
@@ -72,6 +76,10 @@ def _make_message(
         quote=quote,
         date=None,
         forum_topic_created=None,
+        forward_origin=forward_origin,
+        forward_from=forward_from,
+        forward_sender_name=forward_sender_name,
+        forward_from_chat=forward_from_chat,
     )
 
 
@@ -142,3 +150,44 @@ def test_empty_quote_text_falls_back_to_full_reply():
     event = adapter._build_message_event(msg, MessageType.TEXT)
 
     assert event.reply_to_text == "Prior message body"
+
+
+def test_forward_origin_user_is_exposed_on_event():
+    from gateway.platforms.base import MessageType
+
+    adapter = _make_adapter()
+    forwarded_user = SimpleNamespace(id=777, full_name="Hefa", username="hefa_bot")
+    origin = SimpleNamespace(sender_user=forwarded_user)
+    msg = _make_message(text="GitHub checked", forward_origin=origin)
+
+    event = adapter._build_message_event(msg, MessageType.TEXT)
+
+    assert event.forwarded_from_name == "Hefa"
+    assert event.forwarded_from_id == "777"
+    assert event.forwarded_from_type == "user"
+
+
+def test_forward_origin_hidden_user_is_exposed_on_event():
+    from gateway.platforms.base import MessageType
+
+    adapter = _make_adapter()
+    origin = SimpleNamespace(sender_user_name="Hefa")
+    msg = _make_message(text="status", forward_origin=origin)
+
+    event = adapter._build_message_event(msg, MessageType.TEXT)
+
+    assert event.forwarded_from_name == "Hefa"
+    assert event.forwarded_from_id is None
+    assert event.forwarded_from_type == "hidden_user"
+
+
+def test_legacy_forward_sender_name_is_exposed_on_event():
+    from gateway.platforms.base import MessageType
+
+    adapter = _make_adapter()
+    msg = _make_message(text="legacy", forward_sender_name="Hefa")
+
+    event = adapter._build_message_event(msg, MessageType.TEXT)
+
+    assert event.forwarded_from_name == "Hefa"
+    assert event.forwarded_from_type == "hidden_user"

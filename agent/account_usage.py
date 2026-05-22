@@ -2,12 +2,15 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import Any, Optional
+import json
+from pathlib import Path
+from typing import Any, Mapping, Optional
 
 import httpx
 
 from agent.anthropic_adapter import _is_oauth_token, resolve_anthropic_token
-from hermes_cli.auth import _read_codex_tokens, resolve_codex_runtime_credentials
+from hermes_constants import get_hermes_home
+from hermes_cli.auth import _read_codex_tokens, get_codex_auth_status, resolve_codex_runtime_credentials
 from hermes_cli.runtime_provider import resolve_runtime_provider
 
 
@@ -85,6 +88,94 @@ def _format_reset(dt: Optional[datetime]) -> str:
     return f"{rel} ({local_dt.strftime('%Y-%m-%d %H:%M %Z')})"
 
 
+def _account_usage_cache_path(provider: str) -> Path:
+    safe_provider = str(provider or "unknown").replace("/", "_").replace(" ", "_")
+    return Path(get_hermes_home()) / "cache" / "account_usage" / f"{safe_provider}.json"
+
+
+def _snapshot_to_cache(snapshot: AccountUsageSnapshot) -> dict[str, Any]:
+    return {
+        "provider": snapshot.provider,
+        "source": snapshot.source,
+        "fetched_at": snapshot.fetched_at.isoformat(),
+        "title": snapshot.title,
+        "plan": snapshot.plan,
+        "windows": [
+            {
+                "label": window.label,
+                "used_percent": window.used_percent,
+                "reset_at": window.reset_at.isoformat() if window.reset_at else None,
+                "detail": window.detail,
+            }
+            for window in snapshot.windows
+        ],
+        "details": list(snapshot.details),
+    }
+
+
+def _snapshot_from_cache(
+    data: dict[str, Any],
+    *,
+    unavailable_reason: Optional[str] = None,
+) -> Optional[AccountUsageSnapshot]:
+    fetched_at = _parse_dt(data.get("fetched_at"))
+    if not fetched_at:
+        return None
+    windows: list[AccountUsageWindow] = []
+    for raw in data.get("windows") or []:
+        if not isinstance(raw, dict):
+            continue
+        used_raw = raw.get("used_percent")
+        windows.append(
+            AccountUsageWindow(
+                label=str(raw.get("label") or "Limit"),
+                used_percent=float(used_raw) if used_raw is not None else None,
+                reset_at=_parse_dt(raw.get("reset_at")),
+                detail=raw.get("detail"),
+            )
+        )
+    if not windows and not data.get("details"):
+        return None
+    details = tuple(str(item) for item in (data.get("details") or []) if item)
+    if unavailable_reason:
+        details = (*details, f"Last live usage check unavailable: {unavailable_reason}")
+    return AccountUsageSnapshot(
+        provider=str(data.get("provider") or "openai-codex"),
+        source=str(data.get("source") or "usage_api_cache"),
+        fetched_at=fetched_at,
+        title=str(data.get("title") or "Account limits"),
+        plan=data.get("plan"),
+        windows=tuple(windows),
+        details=details,
+    )
+
+
+def _write_account_usage_cache(snapshot: AccountUsageSnapshot) -> None:
+    try:
+        path = _account_usage_cache_path(snapshot.provider)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(_snapshot_to_cache(snapshot), ensure_ascii=False, indent=2), encoding="utf-8")
+    except Exception:
+        return
+
+
+def _read_account_usage_cache(
+    provider: str,
+    *,
+    unavailable_reason: Optional[str] = None,
+) -> Optional[AccountUsageSnapshot]:
+    try:
+        path = _account_usage_cache_path(provider)
+        if not path.exists():
+            return None
+        data = json.loads(path.read_text(encoding="utf-8"))
+        if not isinstance(data, dict):
+            return None
+        return _snapshot_from_cache(data, unavailable_reason=unavailable_reason)
+    except Exception:
+        return None
+
+
 def render_account_usage_lines(snapshot: Optional[AccountUsageSnapshot], *, markdown: bool = False) -> list[str]:
     if not snapshot:
         return []
@@ -125,10 +216,25 @@ def _resolve_codex_usage_url(base_url: str) -> str:
 
 
 def _fetch_codex_account_usage() -> Optional[AccountUsageSnapshot]:
-    creds = resolve_codex_runtime_credentials(refresh_if_expiring=True)
-    token_data = _read_codex_tokens()
-    tokens = token_data.get("tokens") or {}
-    account_id = str(tokens.get("account_id", "") or "").strip() or None
+    account_id = None
+    try:
+        creds = resolve_codex_runtime_credentials(refresh_if_expiring=True)
+        token_data = _read_codex_tokens()
+        tokens = token_data.get("tokens") or {}
+        account_id = str(tokens.get("account_id", "") or "").strip() or None
+    except Exception:
+        # Profile setups commonly keep Codex credentials only in the credential
+        # pool.  The active agent can use those credentials, so account usage
+        # must use the same status/pool fallback instead of reporting
+        # "not reported by provider".
+        status = get_codex_auth_status()
+        api_key = str(status.get("api_key", "") or "").strip()
+        if not api_key:
+            return None
+        creds = {
+            "api_key": api_key,
+            "base_url": status.get("base_url") or "",
+        }
     headers = {
         "Authorization": f"Bearer {creds['api_key']}",
         "Accept": "application/json",
@@ -233,6 +339,16 @@ def _fetch_anthropic_account_usage() -> Optional[AccountUsageSnapshot]:
     )
 
 
+def _coerce_float_header(headers: Mapping[str, str], name: str) -> Optional[float]:
+    value = headers.get(name) or headers.get(name.lower()) or headers.get(name.title())
+    if value in {None, ""}:
+        return None
+    try:
+        return float(str(value).strip())
+    except Exception:
+        return None
+
+
 def _fetch_openrouter_account_usage(base_url: Optional[str], api_key: Optional[str]) -> Optional[AccountUsageSnapshot]:
     runtime = resolve_runtime_provider(
         requested="openrouter",
@@ -305,6 +421,76 @@ def _fetch_openrouter_account_usage(base_url: Optional[str], api_key: Optional[s
     )
 
 
+def _fetch_xai_oauth_account_usage() -> Optional[AccountUsageSnapshot]:
+    try:
+        from agent.credential_pool import load_pool
+
+        pool = load_pool("xai-oauth")
+        if not pool or not pool.has_credentials():
+            return None
+        entry = pool.peek()
+        if not entry:
+            return None
+        token = str(getattr(entry, "access_token", "") or getattr(entry, "runtime_api_key", "") or "").strip()
+        if not token:
+            return None
+        base_url = str(getattr(entry, "base_url", "") or "https://api.x.ai/v1").strip().rstrip("/")
+    except Exception:
+        return None
+
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "Accept": "application/json",
+        "Content-Type": "application/json",
+    }
+    # xAI currently exposes rate-limit counters on inference responses, not on
+    # the lightweight /models endpoint. Keep the probe tiny; response usage is
+    # ignored except for optional diagnostics.
+    payload = {
+        "model": "grok-4.3-latest",
+        "messages": [{"role": "user", "content": "OK"}],
+        "max_tokens": 1,
+    }
+    with httpx.Client(timeout=15.0) as client:
+        response = client.post(f"{base_url}/chat/completions", headers=headers, json=payload)
+        response.raise_for_status()
+    resp_headers = {str(k).lower(): str(v) for k, v in response.headers.items()}
+    req_limit = _coerce_float_header(resp_headers, "x-ratelimit-limit-requests")
+    req_remaining = _coerce_float_header(resp_headers, "x-ratelimit-remaining-requests")
+    tok_limit = _coerce_float_header(resp_headers, "x-ratelimit-limit-tokens")
+    tok_remaining = _coerce_float_header(resp_headers, "x-ratelimit-remaining-tokens")
+    windows: list[AccountUsageWindow] = []
+    details: list[str] = []
+    if req_limit:
+        detail = f"Request rate-limit header: {int(req_limit):,}"
+        if req_remaining is not None:
+            detail += f"; remaining header currently reports {int(req_remaining):,}"
+        details.append(detail)
+    if tok_limit:
+        detail = f"Token rate-limit header: {int(tok_limit):,}"
+        if tok_remaining is not None:
+            detail += f"; remaining header currently reports {int(tok_remaining):,}"
+        details.append(detail)
+    details.append("Note: xAI OAuth currently reports rate-limit headers, not reliable account consumption; observed remaining counters can stay static across calls.")
+    usage = None
+    try:
+        usage = (response.json() or {}).get("usage") or {}
+    except Exception:
+        usage = {}
+    cached = (((usage or {}).get("prompt_tokens_details") or {}).get("cached_tokens"))
+    if isinstance(cached, (int, float)):
+        details.append(f"Probe cache read: {int(cached):,} tokens")
+    return AccountUsageSnapshot(
+        provider="xai-oauth",
+        source="inference_rate_limit_headers",
+        fetched_at=_utc_now(),
+        plan="SuperGrok OAuth",
+        windows=tuple(windows),
+        details=tuple(details),
+        unavailable_reason=None if details else "xAI did not return rate-limit headers",
+    )
+
+
 def fetch_account_usage(
     provider: Optional[str],
     *,
@@ -315,12 +501,23 @@ def fetch_account_usage(
     if normalized in {"", "auto", "custom"}:
         return None
     try:
+        snapshot: Optional[AccountUsageSnapshot]
         if normalized == "openai-codex":
-            return _fetch_codex_account_usage()
-        if normalized == "anthropic":
-            return _fetch_anthropic_account_usage()
-        if normalized == "openrouter":
-            return _fetch_openrouter_account_usage(base_url, api_key)
-    except Exception:
-        return None
-    return None
+            snapshot = _fetch_codex_account_usage()
+        elif normalized == "anthropic":
+            snapshot = _fetch_anthropic_account_usage()
+        elif normalized == "openrouter":
+            snapshot = _fetch_openrouter_account_usage(base_url, api_key)
+        elif normalized == "xai-oauth":
+            snapshot = _fetch_xai_oauth_account_usage()
+        else:
+            snapshot = None
+        if snapshot:
+            _write_account_usage_cache(snapshot)
+            return snapshot
+        return _read_account_usage_cache(normalized, unavailable_reason="not reported by provider")
+    except Exception as exc:
+        return _read_account_usage_cache(
+            normalized,
+            unavailable_reason=str(exc) or exc.__class__.__name__,
+        )

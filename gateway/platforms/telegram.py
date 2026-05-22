@@ -5427,6 +5427,66 @@ class TelegramAdapter(BasePlatformAdapter):
                 self.name, cache_key, thread_id,
             )
 
+    @staticmethod
+    def _user_display_name(user: Any) -> Optional[str]:
+        if not user:
+            return None
+        full_name = getattr(user, "full_name", None)
+        if full_name:
+            return str(full_name)
+        first = getattr(user, "first_name", None)
+        last = getattr(user, "last_name", None)
+        name = " ".join(str(part) for part in (first, last) if part)
+        if name:
+            return name
+        username = getattr(user, "username", None)
+        return f"@{username}" if username else None
+
+    @classmethod
+    def _extract_forward_origin(cls, message: Message) -> Dict[str, Optional[str]]:
+        """Return Telegram forwarded-message attribution when Bot API exposes it."""
+        origin = getattr(message, "forward_origin", None)
+        if origin is not None:
+            sender_user = getattr(origin, "sender_user", None)
+            if sender_user is not None:
+                return {
+                    "name": cls._user_display_name(sender_user),
+                    "id": str(getattr(sender_user, "id", "")) or None,
+                    "type": "user",
+                }
+            sender_user_name = getattr(origin, "sender_user_name", None)
+            if sender_user_name:
+                return {"name": str(sender_user_name), "id": None, "type": "hidden_user"}
+            chat = getattr(origin, "chat", None) or getattr(origin, "sender_chat", None)
+            if chat is not None:
+                return {
+                    "name": getattr(chat, "title", None) or getattr(chat, "full_name", None) or str(getattr(chat, "id", "")),
+                    "id": str(getattr(chat, "id", "")) or None,
+                    "type": "chat",
+                }
+            author_signature = getattr(origin, "author_signature", None)
+            if author_signature:
+                return {"name": str(author_signature), "id": None, "type": "author_signature"}
+
+        forward_from = getattr(message, "forward_from", None)
+        if forward_from is not None:
+            return {
+                "name": cls._user_display_name(forward_from),
+                "id": str(getattr(forward_from, "id", "")) or None,
+                "type": "user",
+            }
+        forward_sender_name = getattr(message, "forward_sender_name", None)
+        if forward_sender_name:
+            return {"name": str(forward_sender_name), "id": None, "type": "hidden_user"}
+        forward_from_chat = getattr(message, "forward_from_chat", None)
+        if forward_from_chat is not None:
+            return {
+                "name": getattr(forward_from_chat, "title", None) or getattr(forward_from_chat, "full_name", None) or str(getattr(forward_from_chat, "id", "")),
+                "id": str(getattr(forward_from_chat, "id", "")) or None,
+                "type": "chat",
+            }
+        return {"name": None, "id": None, "type": None}
+
     def _build_message_event(
         self,
         message: Message,
@@ -5562,6 +5622,8 @@ class TelegramAdapter(BasePlatformAdapter):
             _chat_id_str if thread_id_str else None,
         )
 
+        forward_origin = self._extract_forward_origin(message)
+
         return MessageEvent(
             text=message.text or "",
             message_type=msg_type,
@@ -5571,6 +5633,9 @@ class TelegramAdapter(BasePlatformAdapter):
             platform_update_id=update_id,
             reply_to_message_id=reply_to_id,
             reply_to_text=reply_to_text,
+            forwarded_from_name=forward_origin.get("name"),
+            forwarded_from_id=forward_origin.get("id"),
+            forwarded_from_type=forward_origin.get("type"),
             auto_skill=topic_skill,
             channel_prompt=_channel_prompt,
             timestamp=message.date,

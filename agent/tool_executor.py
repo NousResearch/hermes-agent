@@ -100,8 +100,15 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
         if not isinstance(function_args, dict):
             function_args = {}
 
+        profile_policy_block = None
+        try:
+            from agent.profile_policy import check_tool_call
+            check_tool_call(function_name, function_args)
+        except Exception as exc:
+            profile_policy_block = f"Profile policy blocked {function_name}: {exc}"
+
         # Checkpoint for file-mutating tools
-        if function_name in {"write_file", "patch"} and agent._checkpoint_mgr.enabled:
+        if profile_policy_block is None and function_name in {"write_file", "patch"} and agent._checkpoint_mgr.enabled:
             try:
                 file_path = function_args.get("path", "")
                 if file_path:
@@ -111,7 +118,7 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
                 pass
 
         # Checkpoint before destructive terminal commands
-        if function_name == "terminal" and agent._checkpoint_mgr.enabled:
+        if profile_policy_block is None and function_name == "terminal" and agent._checkpoint_mgr.enabled:
             try:
                 cmd = function_args.get("command", "")
                 if _is_destructive_command(cmd):
@@ -124,15 +131,20 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
 
         block_result = None
         blocked_by_guardrail = False
-        try:
-            from hermes_cli.plugins import get_pre_tool_call_block_message
-            block_message = get_pre_tool_call_block_message(
-                function_name, function_args, task_id=effective_task_id or "",
-            )
-        except Exception:
+        if profile_policy_block is None:
+            try:
+                from hermes_cli.plugins import get_pre_tool_call_block_message
+                block_message = get_pre_tool_call_block_message(
+                    function_name, function_args, task_id=effective_task_id or "",
+                )
+            except Exception:
+                block_message = None
+        else:
             block_message = None
 
-        if block_message is not None:
+        if profile_policy_block is not None:
+            block_result = json.dumps({"error": profile_policy_block}, ensure_ascii=False)
+        elif block_message is not None:
             block_result = json.dumps({"error": block_message}, ensure_ascii=False)
         else:
             guardrail_decision = agent._tool_guardrails.before_call(function_name, function_args)
@@ -496,23 +508,31 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
         if not isinstance(function_args, dict):
             function_args = {}
 
+        _profile_policy_block: Optional[str] = None
+        try:
+            from agent.profile_policy import check_tool_call
+            check_tool_call(function_name, function_args)
+        except Exception as exc:
+            _profile_policy_block = f"Profile policy blocked {function_name}: {exc}"
+
         # Check plugin hooks for a block directive before executing.
         _block_msg: Optional[str] = None
-        try:
-            from hermes_cli.plugins import get_pre_tool_call_block_message
-            _block_msg = get_pre_tool_call_block_message(
-                function_name, function_args, task_id=effective_task_id or "",
-            )
-        except Exception:
-            pass
+        if _profile_policy_block is None:
+            try:
+                from hermes_cli.plugins import get_pre_tool_call_block_message
+                _block_msg = get_pre_tool_call_block_message(
+                    function_name, function_args, task_id=effective_task_id or "",
+                )
+            except Exception:
+                pass
 
         _guardrail_block_decision: ToolGuardrailDecision | None = None
-        if _block_msg is None:
+        if _profile_policy_block is None and _block_msg is None:
             guardrail_decision = agent._tool_guardrails.before_call(function_name, function_args)
             if not guardrail_decision.allows_execution:
                 _guardrail_block_decision = guardrail_decision
 
-        _execution_blocked = _block_msg is not None or _guardrail_block_decision is not None
+        _execution_blocked = _profile_policy_block is not None or _block_msg is not None or _guardrail_block_decision is not None
 
         if _execution_blocked:
             # Tool blocked by plugin or guardrail policy — skip counters,
@@ -586,7 +606,10 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
 
         tool_start_time = time.time()
 
-        if _block_msg is not None:
+        if _profile_policy_block is not None:
+            function_result = json.dumps({"error": _profile_policy_block}, ensure_ascii=False)
+            tool_duration = 0.0
+        elif _block_msg is not None:
             # Tool blocked by plugin policy — return error without executing.
             function_result = json.dumps({"error": _block_msg}, ensure_ascii=False)
             tool_duration = 0.0

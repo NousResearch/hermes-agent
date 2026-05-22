@@ -1048,7 +1048,10 @@ def connect(
             # See hermes_state._WAL_INCOMPAT_MARKERS for detection logic.
             from hermes_state import apply_wal_with_fallback
             apply_wal_with_fallback(conn, db_label=f"kanban.db ({path.name})")
-            conn.execute("PRAGMA synchronous=NORMAL")
+            # Kanban is a durable coordination board, not a high-throughput cache.
+            # Use FULL durability so gateway/worker crashes or forced restarts are
+            # less likely to leave a malformed board after in-flight writes.
+            conn.execute("PRAGMA synchronous=FULL")
             conn.execute("PRAGMA foreign_keys=ON")
             needs_init = resolved not in _INITIALIZED_PATHS
             if needs_init:

@@ -130,10 +130,12 @@ _DEEPSEEK_REASONER_KEYWORDS: frozenset[str] = frozenset({
 })
 
 _DEEPSEEK_CANONICAL_MODELS: frozenset[str] = frozenset({
-    "deepseek-chat",       # V3 on DeepSeek direct and most aggregators
-    "deepseek-reasoner",   # R1-family reasoning model
-    "deepseek-v4-pro",     # V4 Pro — first-class model ID
-    "deepseek-v4-flash",   # V4 Flash — first-class model ID
+    "deepseek-chat",             # V3 on DeepSeek direct and most aggregators
+    "deepseek-reasoner",         # R1-family reasoning model
+    "deepseek-v4-pro",           # V4 Pro — first-class model ID
+    "deepseek-v4-pro[1m]",       # V4 Pro — 1M context window variant
+    "deepseek-v4-flash",         # V4 Flash — first-class model ID
+    "deepseek-v4-flash[1m]",     # V4 Flash — 1M context window variant
 })
 
 # First-class V-series IDs (``deepseek-v4-pro``, ``deepseek-v4-flash``,
@@ -142,7 +144,7 @@ _DEEPSEEK_CANONICAL_MODELS: frozenset[str] = frozenset({
 # ``provider: DeepSeek`` / ``model: deepseek-v4-flash-20260423`` when called
 # with ``model=deepseek/deepseek-v4-flash``, so these names are not aliases
 # of ``deepseek-chat`` and must not be folded into it.
-_DEEPSEEK_V_SERIES_RE = re.compile(r"^deepseek-v\d+([-.].+)?$")
+_DEEPSEEK_V_SERIES_RE = re.compile(r"^deepseek-v\d+.*$")
 
 
 def _normalize_for_deepseek(model_name: str) -> str:

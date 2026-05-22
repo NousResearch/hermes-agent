@@ -1652,7 +1652,15 @@ def convert_messages_to_anthropic(
             continue
 
         if role == "assistant":
-            blocks = _extract_preserved_thinking_blocks(m)
+            # For DeepSeek /anthropic endpoints, skip extracting signed
+            # thinking blocks from reasoning_details.  Those blocks carry
+            # Anthropic-proprietary signatures that DeepSeek cannot validate
+            # — they get stripped later in the thinking-block management pass,
+            # leaving no thinking block at all.  Instead, let the
+            # reasoning_content path (below) create unsigned blocks that
+            # DeepSeek accepts.
+            _skip_signed_thinking = _is_deepseek_anthropic_endpoint(base_url)
+            blocks = [] if _skip_signed_thinking else _extract_preserved_thinking_blocks(m)
             if content:
                 if isinstance(content, list):
                     converted_content = _convert_content_to_anthropic(content)

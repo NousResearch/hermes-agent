@@ -1,5 +1,4 @@
 FROM ghcr.io/astral-sh/uv:0.11.6-python3.13-trixie@sha256:b3c543b6c4f23a5f2df22866bd7857e5d304b67a564f4feab6ac22044dde719b AS uv_source
-FROM tianon/gosu:1.19-trixie@sha256:3b176695959c71e123eb390d427efc665eeb561b1540e82679c15e992006b8b9 AS gosu_source
 FROM debian:13.4
 
 # Disable Python stdout buffering to ensure logs are printed immediately
@@ -38,7 +37,6 @@ RUN tar -C / -Jxpf /tmp/s6-overlay-noarch.tar.xz && \
 # Non-root user for runtime; UID can be overridden via HERMES_UID at runtime
 RUN useradd -u 10000 -m -d /opt/data hermes
 
-COPY --chmod=0755 --from=gosu_source /gosu /usr/local/bin/
 COPY --chmod=0755 --from=uv_source /usr/local/bin/uv /usr/local/bin/uvx /usr/local/bin/
 
 WORKDIR /opt/hermes
@@ -121,8 +119,10 @@ RUN cd web && npm run build && \
 USER root
 RUN chmod -R a+rX /opt/hermes && \
     chown -R hermes:hermes /opt/hermes/.venv /opt/hermes/ui-tui /opt/hermes/node_modules
-# Start as root so the entrypoint can usermod/groupmod + gosu.
-# If HERMES_UID is unset, the entrypoint drops to the default hermes user (10000).
+# Start as root so the s6-overlay stage2 hook can usermod/groupmod and chown
+# the data volume. Each supervised service then drops to the hermes user via
+# `s6-setuidgid hermes` in its run script. If HERMES_UID is unset, services
+# run as the default hermes user (UID 10000).
 
 # ---------- Link hermes-agent itself (editable) ----------
 # Deps are already installed in the cached layer above; `--no-deps` makes
@@ -138,8 +138,8 @@ RUN uv pip install --no-cache-dir --no-deps -e "."
 COPY docker/s6-rc.d/ /etc/s6-overlay/s6-rc.d/
 
 # stage2-hook handles UID/GID remap, volume chown, config seeding,
-# skills sync — all the work the old entrypoint.sh did between
-# gosu-drop and `exec hermes`. Wired in as cont-init.d/01- so it
+# skills sync — all the work the old entrypoint.sh did before
+# `exec hermes`. Wired in as cont-init.d/01- so it
 # runs before user services start.
 #
 # 02-reconcile-profiles re-creates per-profile gateway s6 service

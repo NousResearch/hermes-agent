@@ -24,11 +24,10 @@ ignored:
   # expensive layer-cached step we want isolated, and merging them
   # would invalidate the cache for trivial changes.
   - DL3059
-  # Last USER should not be root. The entrypoint is responsible for
-  # gosu-dropping to the hermes user; running as root is required so
-  # usermod/groupmod can remap UIDs per HERMES_UID at runtime. Phase 2
-  # of the s6-overlay migration preserves this contract — /init runs
-  # as root, individual services drop via s6-setuidgid.
+  # Last USER should not be root. /init (s6-overlay) runs as root so the
+  # stage2 hook can usermod/groupmod and chown the data volume per
+  # HERMES_UID at runtime; each supervised service then drops to the
+  # hermes user via `s6-setuidgid`.
   - DL3002
 
 # Require explicit base-image pins (SHA256) — we already do this.

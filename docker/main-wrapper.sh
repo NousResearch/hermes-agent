@@ -9,8 +9,8 @@
 #   first arg is an executable    → exec it directly (sleep, bash, sh, …)
 #   first arg is anything else    → exec `hermes <args>` (subcommand passthrough)
 #
-# We drop to the hermes user via `s6-setuidgid` — running as that
-# user matches the pre-s6 contract (gosu drop).
+# We drop to the hermes user via `s6-setuidgid` so the supervised
+# workload runs unprivileged (UID 10000 by default).
 set -e
 
 cd /opt/data

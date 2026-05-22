@@ -385,18 +385,19 @@ def test_normalize_env_dict_rejects_complex_values():
     assert result == {"GOOD": "string"}
 
 
-def test_security_args_include_setuid_setgid_for_gosu_drop(monkeypatch):
+def test_security_args_include_setuid_setgid_for_privdrop(monkeypatch):
     """The default (run_as_host_user=False) invocation must include SETUID and
-    SETGID caps so the image entrypoint can drop from root to the non-root
-    `hermes` user via gosu.
+    SETGID caps so the image's init can drop from root to a non-root user
+    (e.g. via ``s6-setuidgid`` in the bundled Hermes image, or ``gosu``/``su``
+    in user-provided images).
 
-    Without these caps gosu exits with
-    ``error: failed switching to 'hermes': operation not permitted``
-    and the container exits immediately (exit 1) before running any work.
+    Without these caps the privilege-drop helper fails with
+    ``operation not permitted`` and the container exits immediately (exit 1)
+    before running any work.
 
-    `no-new-privileges` is kept, so gosu still cannot escalate back to root
-    after the drop — the drop is a one-way transition performed before the
-    `no_new_privs` bit is enforced on the exec boundary.
+    ``no-new-privileges`` is kept, so the dropped process still cannot
+    escalate back to root after the drop — the drop is a one-way transition
+    performed before the ``no_new_privs`` bit is enforced on the exec boundary.
     """
     monkeypatch.setattr(docker_env, "find_docker", lambda: "/usr/bin/docker")
     calls = _mock_subprocess_run(monkeypatch)
@@ -412,8 +413,8 @@ def test_security_args_include_setuid_setgid_for_gosu_drop(monkeypatch):
         for i, flag in enumerate(run_args[:-1])
         if flag == "--cap-add"
     }
-    assert "SETUID" in added, "SETUID cap missing — gosu drop in entrypoint will fail"
-    assert "SETGID" in added, "SETGID cap missing — gosu drop in entrypoint will fail"
+    assert "SETUID" in added, "SETUID cap missing — image privilege-drop will fail"
+    assert "SETGID" in added, "SETGID cap missing — image privilege-drop will fail"
 
 
 # ── run_as_host_user tests ────────────────────────────────────────
@@ -441,8 +442,9 @@ def test_run_as_host_user_passes_uid_gid(monkeypatch):
 
 
 def test_run_as_host_user_drops_setuid_setgid_caps(monkeypatch):
-    """When --user is passed, the container never needs gosu, so SETUID/SETGID
-    caps are omitted for a tighter security posture."""
+    """When --user is passed, the container already starts unprivileged and
+    never needs a privilege drop, so SETUID/SETGID caps are omitted for a
+    tighter security posture."""
     monkeypatch.setattr(docker_env, "find_docker", lambda: "/usr/bin/docker")
     monkeypatch.setattr(docker_env.os, "getuid", lambda: 1000, raising=False)
     monkeypatch.setattr(docker_env.os, "getgid", lambda: 1000, raising=False)
@@ -459,10 +461,10 @@ def test_run_as_host_user_drops_setuid_setgid_caps(monkeypatch):
         if flag == "--cap-add"
     }
     assert "SETUID" not in added, (
-        "SETUID cap should be dropped when running as host user — no gosu drop is needed"
+        "SETUID cap should be dropped when running as host user — no privilege drop is needed"
     )
     assert "SETGID" not in added, (
-        "SETGID cap should be dropped when running as host user — no gosu drop is needed"
+        "SETGID cap should be dropped when running as host user — no privilege drop is needed"
     )
     # Core non-privilege-drop caps must still be there (pip/npm/apt need them).
     assert "DAC_OVERRIDE" in added

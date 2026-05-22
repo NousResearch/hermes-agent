@@ -30,6 +30,14 @@ describe('enhanced keyboard modifier parsing', () => {
     expect(modifyOtherShiftEnter.input).toBe('')
   })
 
+  it('treats raw LF as Ctrl+Enter for terminal text newline keybinds', () => {
+    const rawLf = new InputEvent(parseOne('\n'))
+
+    expect(rawLf.key.return).toBe(true)
+    expect(rawLf.key.ctrl).toBe(true)
+    expect(rawLf.input).toBe('')
+  })
+
   it('preserves Cmd as super for kitty keyboard CSI-u sequences', () => {
     const parsed = parseOne('\u001b[99;9u')
     const event = new InputEvent(parsed)

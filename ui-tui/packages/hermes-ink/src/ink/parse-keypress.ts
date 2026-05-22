@@ -807,6 +807,13 @@ function parseKeypress(s: string = ''): ParsedKey {
   if (s === '\r' || s === '\n') {
     key.raw = undefined
     key.name = 'return'
+
+    // Ghostty keybinds like `shift+enter=text:\n` inject a raw LF. Treat it
+    // as Ctrl+Return so the Hermes composer inserts a newline instead of
+    // submitting, while plain Enter (CR) keeps its submit behavior.
+    if (s === '\n') {
+      key.ctrl = true
+    }
   } else if (s === '\t') {
     key.name = 'tab'
   } else if (s === '\b' || s === '\x1b\b') {

@@ -8029,6 +8029,24 @@ class HermesCLI:
         elif canonical == "skills":
             with self._busy_command(self._slow_command_status(cmd_original)):
                 self._handle_skills_command(cmd_original)
+        elif canonical == "ukrainereport":
+            skill_key = "/ukrainereport"
+            if skill_key not in get_skill_commands():
+                scan_skill_commands()
+            msg = build_skill_invocation_message(
+                skill_key,
+                "",
+                task_id=self.session_id,
+            )
+            if msg:
+                print("\n⚡ Loading skill: ukrainereport")
+                if hasattr(self, '_pending_input'):
+                    self._pending_input.put(msg)
+            else:
+                ChatConsole().print(
+                    "[bold red]Failed to load ukrainereport skill. "
+                    "Install or reload the ukrainereport skill, then try again.[/]"
+                )
         elif canonical == "platforms":
             self._show_gateway_status()
         elif canonical == "status":

@@ -165,6 +165,8 @@ COMMAND_REGISTRY: list[CommandDef] = [
     CommandDef("skills", "Search, install, inspect, or manage skills",
                "Tools & Skills", cli_only=True,
                subcommands=("search", "browse", "inspect", "install")),
+    CommandDef("ukrainereport", "Run the Ukraine-Russia X-only report workflow",
+               "Tools & Skills", cli_only=True),
     CommandDef("bundles", "List skill bundles (aliases /<name> for multiple skills)",
                "Tools & Skills"),
     CommandDef("cron", "Manage scheduled tasks", "Tools & Skills",

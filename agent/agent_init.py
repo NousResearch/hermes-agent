@@ -32,6 +32,7 @@ from typing import Any, Dict, List, Optional
 from urllib.parse import urlparse, parse_qs, urlunparse
 
 from agent.context_compressor import ContextCompressor
+from agent.events import NullAgentEventSink
 from agent.iteration_budget import IterationBudget
 from agent.memory_manager import StreamingContextScrubber
 from agent.model_metadata import (
@@ -168,6 +169,7 @@ def init_agent(
     tool_progress_callback: callable = None,
     tool_start_callback: callable = None,
     tool_complete_callback: callable = None,
+    event_sink=None,
     thinking_callback: callable = None,
     reasoning_callback: callable = None,
     clarify_callback: callable = None,
@@ -231,6 +233,7 @@ def init_agent(
             None or empty = let OpenRouter pick the strongest available coder.
         session_id (str): Pre-generated session ID for logging (optional, auto-generated if not provided)
         tool_progress_callback (callable): Callback function(tool_name, args_preview) for progress notifications
+        event_sink: Optional AgentEventSink for structured run/tool events. Defaults to a no-op sink.
         clarify_callback (callable): Callback function(question, choices) -> str for interactive user questions.
             Provided by the platform layer (CLI or gateway). If None, the clarify tool returns an error.
         max_tokens (int): Maximum tokens for model responses (optional, uses model default if not set)
@@ -392,6 +395,7 @@ def init_agent(
     agent.tool_progress_callback = tool_progress_callback
     agent.tool_start_callback = tool_start_callback
     agent.tool_complete_callback = tool_complete_callback
+    agent.event_sink = event_sink if event_sink is not None else NullAgentEventSink()
     agent.suppress_status_output = False
     agent.thinking_callback = thinking_callback
     agent.reasoning_callback = reasoning_callback

@@ -378,6 +378,7 @@ class AIAgent:
         tool_progress_callback: callable = None,
         tool_start_callback: callable = None,
         tool_complete_callback: callable = None,
+        event_sink=None,
         thinking_callback: callable = None,
         reasoning_callback: callable = None,
         clarify_callback: callable = None,
@@ -447,6 +448,7 @@ class AIAgent:
             tool_progress_callback=tool_progress_callback,
             tool_start_callback=tool_start_callback,
             tool_complete_callback=tool_complete_callback,
+            event_sink=event_sink,
             thinking_callback=thinking_callback,
             reasoning_callback=reasoning_callback,
             clarify_callback=clarify_callback,
@@ -3905,7 +3907,42 @@ class AIAgent:
     ) -> Dict[str, Any]:
         """Forwarder — see ``agent.conversation_loop.run_conversation``."""
         from agent.conversation_loop import run_conversation
-        return run_conversation(self, user_message, system_message, conversation_history, task_id, stream_callback, persist_user_message)
+        from agent.events import (
+            emit_assistant_message,
+            emit_run_cancelled,
+            emit_run_done,
+            emit_run_error,
+            emit_run_status,
+        )
+
+        emit_run_status(self, "thinking", "Agent is thinking.")
+        try:
+            result = run_conversation(
+                self,
+                user_message,
+                system_message,
+                conversation_history,
+                task_id,
+                stream_callback,
+                persist_user_message,
+            )
+        except Exception as exc:
+            emit_run_error(self, exc)
+            raise
+
+        if result.get("interrupted"):
+            emit_run_cancelled(self, str(result.get("interrupt_message") or "Agent run cancelled."))
+            return result
+
+        final_response = result.get("final_response")
+        if result.get("failed") or (result.get("error") and not final_response):
+            emit_run_error(self, result.get("error") or "Agent run failed.")
+            return result
+
+        if final_response is not None:
+            emit_assistant_message(self, final_response)
+        emit_run_done(self)
+        return result
 
     def chat(self, message: str, stream_callback: Optional[callable] = None) -> str:
         """

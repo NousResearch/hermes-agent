@@ -187,6 +187,18 @@ TOOLSETS = {
         "tools": ["read_file", "write_file", "patch", "search_files"],
         "includes": []
     },
+
+    "arcane": {
+        "description": "Arcane workspace tools for chat artifacts, session metadata, files, and snapshots",
+        "tools": [
+            "arcane_list_files",
+            "arcane_read_file",
+            "arcane_write_file",
+            "arcane_create_snapshot",
+            "arcane_get_session",
+        ],
+        "includes": [],
+    },
     
     "tts": {
         "description": "Text-to-speech: convert text to audio with Edge TTS (free), ElevenLabs, OpenAI, or xAI",
@@ -525,6 +537,12 @@ TOOLSETS = {
         "description": "Webhook toolset - receive and process external webhook events",
         "tools": _HERMES_CORE_TOOLS,
         "includes": []
+    },
+
+    "hermes-arcane": {
+        "description": "Arcane chat and artifact workspace toolset - default Hermes tools plus Arcane workspace tools",
+        "tools": _HERMES_CORE_TOOLS,
+        "includes": ["arcane"],
     },
 
     "hermes-gateway": {

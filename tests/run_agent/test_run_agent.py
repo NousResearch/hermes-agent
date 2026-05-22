@@ -29,6 +29,14 @@ from agent.prompt_builder import DEFAULT_AGENT_IDENTITY
 # ---------------------------------------------------------------------------
 
 
+class CaptureEventSink:
+    def __init__(self):
+        self.events = []
+
+    def emit(self, event):
+        self.events.append(event)
+
+
 def _make_tool_defs(*names: str) -> list:
     """Build minimal tool definition list accepted by AIAgent.__init__."""
     return [
@@ -151,6 +159,51 @@ def test_aiagent_reuses_existing_errors_log_handler():
             root_logger.addHandler(handler)
 
 
+def test_aiagent_event_sink_defaults_to_noop():
+    from agent.events import NullAgentEventSink
+
+    with (
+        patch(
+            "run_agent.get_tool_definitions",
+            return_value=_make_tool_defs("web_search"),
+        ),
+        patch("run_agent.check_toolset_requirements", return_value={}),
+        patch("run_agent.OpenAI"),
+    ):
+        agent = AIAgent(
+            api_key="test-k...7890",
+            base_url="https://openrouter.ai/api/v1",
+            quiet_mode=True,
+            skip_context_files=True,
+            skip_memory=True,
+        )
+
+    assert isinstance(agent.event_sink, NullAgentEventSink)
+
+
+def test_aiagent_accepts_custom_event_sink():
+    sink = CaptureEventSink()
+
+    with (
+        patch(
+            "run_agent.get_tool_definitions",
+            return_value=_make_tool_defs("web_search"),
+        ),
+        patch("run_agent.check_toolset_requirements", return_value={}),
+        patch("run_agent.OpenAI"),
+    ):
+        agent = AIAgent(
+            api_key="test-k...7890",
+            base_url="https://openrouter.ai/api/v1",
+            quiet_mode=True,
+            skip_context_files=True,
+            skip_memory=True,
+            event_sink=sink,
+        )
+
+    assert agent.event_sink is sink
+
+
 class TestProviderModelNormalization:
     def test_aiagent_strips_matching_native_provider_prefix(self):
         with (
@@ -249,6 +302,100 @@ def _mock_response(
     else:
         resp.usage = None
     return resp
+
+
+def test_run_conversation_emits_lifecycle_events(agent, monkeypatch):
+    sink = CaptureEventSink()
+    agent.event_sink = sink
+
+    def fake_run_conversation(agent_obj, *args, **kwargs):
+        return {
+            "final_response": "Done from Hermes",
+            "messages": [{"role": "assistant", "content": "Done from Hermes"}],
+            "api_calls": 1,
+            "completed": True,
+        }
+
+    import agent.conversation_loop as conversation_loop
+
+    monkeypatch.setattr(conversation_loop, "run_conversation", fake_run_conversation)
+
+    result = agent.run_conversation("hello")
+
+    assert result["final_response"] == "Done from Hermes"
+    assert [event["type"] for event in sink.events] == [
+        "run.status",
+        "assistant.message",
+        "run.done",
+    ]
+    assert sink.events[0]["status"] == "thinking"
+    assert sink.events[1]["content"] == "Done from Hermes"
+
+
+def test_run_conversation_emits_error_event_on_exception(agent, monkeypatch):
+    sink = CaptureEventSink()
+    agent.event_sink = sink
+
+    def fake_run_conversation(agent_obj, *args, **kwargs):
+        raise RuntimeError("provider token=secret failed")
+
+    import agent.conversation_loop as conversation_loop
+
+    monkeypatch.setattr(conversation_loop, "run_conversation", fake_run_conversation)
+
+    with pytest.raises(RuntimeError):
+        agent.run_conversation("hello")
+
+    assert [event["type"] for event in sink.events] == ["run.status", "run.error"]
+    assert "secret" not in json.dumps(sink.events[1])
+
+
+def test_sequential_tool_dispatch_emits_tool_lifecycle_events(agent, monkeypatch):
+    sink = CaptureEventSink()
+    agent.event_sink = sink
+    monkeypatch.setattr(run_agent, "handle_function_call", lambda *args, **kwargs: json.dumps({"ok": True, "value": "ready"}))
+
+    messages = []
+    assistant_message = _mock_assistant_msg(
+        content="",
+        tool_calls=[
+            _mock_tool_call(
+                name="web_search",
+                arguments=json.dumps({"query": "arcane", "api_key": "secret-value"}),
+                call_id="call_123",
+            )
+        ],
+    )
+
+    agent._execute_tool_calls_sequential(assistant_message, messages, "task-1")
+
+    assert [event["type"] for event in sink.events] == ["tool.call.started", "tool.call.completed"]
+    assert sink.events[0]["toolCallId"] == "call_123"
+    assert sink.events[0]["name"] == "web_search"
+    assert sink.events[0]["args"]["api_key"] == "[redacted]"
+    assert sink.events[1]["durationMs"] >= 0
+    assert sink.events[1]["resultPreview"] == '{"ok": true, "value": "ready"}'
+    assert messages[-1]["tool_call_id"] == "call_123"
+    assert messages[-1]["content"] == '{"ok": true, "value": "ready"}'
+
+
+def test_sequential_tool_dispatch_emits_failed_tool_event(agent, monkeypatch):
+    sink = CaptureEventSink()
+    agent.event_sink = sink
+    monkeypatch.setattr(run_agent, "handle_function_call", lambda *args, **kwargs: json.dumps({"error": "not found"}))
+
+    messages = []
+    assistant_message = _mock_assistant_msg(
+        content="",
+        tool_calls=[_mock_tool_call(name="web_search", arguments="{}", call_id="call_fail")],
+    )
+
+    agent._execute_tool_calls_sequential(assistant_message, messages, "task-1")
+
+    assert [event["type"] for event in sink.events] == ["tool.call.started", "tool.call.failed"]
+    assert sink.events[1]["toolCallId"] == "call_fail"
+    assert sink.events[1]["error"] == '{"error": "not found"}'
+    assert messages[-1]["content"] == '{"error": "not found"}'
 
 
 # ===================================================================

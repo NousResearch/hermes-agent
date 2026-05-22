@@ -347,38 +347,53 @@ OPENAI_MODEL_EXECUTION_GUIDANCE = (
 # Teaches the LLM to batch multiple independent operations into a single
 # unified tool call, drastically reducing turn count.
 BATCH_EXECUTION_GUIDANCE = (
-    "# Efficient tool usage\\n"
-    "<tool_batching>\\n"
-    "You have 6 unified tools instead of 33 individual ones. Each unified tool "
-    "can batch MULTIPLE operations in a single call. This is much more efficient.\\n"
-    "\\n"
-    "Batching rules:\\n"
-    "- **filesystem**: Read multiple files in one call: "
-    'data={"operations": [{"type": "read", "paths": ["a.py", "b.py"]}]}\\n'
-    "- **research**: Search + extract in one call: "
-    'data={"operations": [{"type": "search", "query": "..."}, '
-    '{"type": "extract", "urls": ["..."]}]}\\n'
-    "- **system**: Batch memory saves, todo updates, etc.\\n"
-    "- **browser**: Navigate + snapshot in one call: "
-    'data={"operations": [{"type": "navigate", "url": "..."}, '
-    '{"type": "snapshot"}]}\\n'
-    "\\n"
-    "<prefer_execute_code>\\n"
-    "For ANY multi-step operation that would require 3+ individual tool calls, "
-    "use the `code` tool with type: python instead. "
-    "Inside execute_code (type: python) you can call internal tool functions "
-    "programmatically (read_file, write_file, web_search, terminal, etc.) — "
-    "much more efficient than sequential tool calls.\\n"
-    "\\n"
-    "Examples of what to batch via code tool:\\n"
-    "- Search files, read matches, analyze results\\n"
-    "- Read multiple files, extract patterns, compute statistics\\n"
-    "- Run commands, capture output, process results\\n"
-    "\\n"
-    "For 1-2 simple operations, use the unified tools directly. "
-    "For anything more complex, use type: python (execute_code).\\n"
-    "</prefer_execute_code>\\n"
-    "</tool_batching>"
+    "# Efficient tool usage\n"
+    "<tool_batching_strict>\n"
+    "CRITICAL RULE: Every response MUST call as many tools as possible in "
+    "a SINGLE turn. A response that calls only 1 tool when 3+ are needed "
+    "is a FAILURE. Batch all independent operations together.\n"
+    "\n"
+    "<example_batch>\n"
+    'Need to read 3 files? Call filesystem once with paths=[a,b,c]. '
+    'Need to search AND read? Call filesystem once with operations=['
+    '{"type":"search","pattern":"..."}, {"type":"read","paths":[...]}]. '
+    'Need to search web AND read a file? Call research("search") AND '
+    'filesystem("read") in the SAME response — both will run in parallel.\n'
+    "</example_batch>\n"
+    "\n"
+    "<plan_and_execute>\n"
+    "For any task requiring 3+ steps:\n"
+    "1. FIRST (1st response): Scout — gather all information you need "
+    "(read files, search web, examine structure). Batch all scouting "
+    "operations into ONE response. Do NOT spread them across turns.\n"
+    "2. SECOND (2nd response): Plan — write a complete plan as a comment. "
+    "Then execute the ENTIRE plan in one `code` tool call with "
+    'type:"python". Inside execute_code, import from hermes_tools:\n'
+    "   from hermes_tools import read_file, write_file, search_files, terminal\n"
+    "   data = read_file(path='a.py')\n"
+    "   result = search_files(pattern='class', path='src/')\n"
+    "3. FINAL (3rd response): Verify and summarize results.\n"
+    "</plan_and_execute>\n"
+    "\n"
+    "<aggressive_concurrency>\n"
+    "You may call MULTIPLE unified tools in the same response:\n"
+    '- research({"type":"search","query":"..."}) + '
+    'filesystem({"type":"read","paths":["a.py"]}) — parallel!\n'
+    '- browser({"type":"navigate","url":"..."}) + '
+    'browser({"type":"snapshot"}) — batched browser!\n'
+    '- code({"type":"shell","command":"..."}) + '
+    'filesystem({"type":"read","paths":["out.log"]}) — check command output!\n'
+    "The tool executor runs all of them concurrently. Take advantage.\n"
+    "</aggressive_concurrency>\n"
+    "\n"
+    "<never_waste_turns>\n"
+    "- NEVER say 'Let me check...' then wait. Just CALL the tool.\n"
+    "- NEVER respond with a plan when you could execute it. EXECUTE NOW.\n"
+    "- NEVER spread independent reads across turns. Batch them.\n"
+    "- NEVER stop before the task is complete. If more work remains, "
+    "call another tool. Do not summarize mid-task.\n"
+    "</never_waste_turns>\n"
+    "</tool_batching_strict>"
 )
 
 # Gemini/Gemma-specific operational guidance, adapted from OpenCode's gemini.txt.
@@ -394,9 +409,9 @@ GOOGLE_MODEL_OPERATIONAL_GUIDANCE = (
     "package.json, requirements.txt, Cargo.toml, etc. before importing.\n"
     "- **Conciseness:** Keep explanatory text brief — a few sentences, not "
     "paragraphs. Focus on actions and results over narration.\n"
-    "- **Parallel tool calls:** When you need to perform multiple independent "
-    "operations (e.g. reading several files), make all the tool calls in a "
-    "single response rather than sequentially.\n"
+    "- **Parallel tool calls:** You MUST call all independent tools in a single "
+    "response. Reading 3 files? Call filesystem once with a paths array. "
+    "Searching AND reading? Batch them. NEVER spread across turns.\n"
     "- **Non-interactive commands:** Use flags like -y, --yes, --non-interactive "
     "to prevent CLI tools from hanging on prompts.\n"
     "- **Keep going:** Work autonomously until the task is fully resolved. "

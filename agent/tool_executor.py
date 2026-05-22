@@ -37,6 +37,22 @@ from agent.tool_dispatch_helpers import (
     _append_subdir_hint_to_multimodal,
     make_tool_result_message,
 )
+
+
+# ── Tool result truncation ──────────────────────────────────────────────
+# Prevents a single large tool result from bloating the conversation.
+_TOOL_RESULT_MAX_CHARS = 50_000  # ~12-18K tokens
+
+
+def _truncate_tool_result(tool_name: str, content: Any) -> Any:
+    """Truncate oversized string tool results to protect context window."""
+    if not isinstance(content, str) or len(content) <= _TOOL_RESULT_MAX_CHARS:
+        return content
+    footer = (
+        f"\n\n... [truncated {len(content):,} → {_TOOL_RESULT_MAX_CHARS:,} chars. "
+        f"Use `filesystem` with offset to read specific sections]"
+    )
+    return content[:_TOOL_RESULT_MAX_CHARS] + footer
 from tools.terminal_tool import (
     _get_approval_callback,
     _get_sudo_password_callback,
@@ -443,6 +459,10 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
         # image tool result never poisons canonical session history.
         # String results pass through unchanged.
         _tool_content = agent._tool_result_content_for_active_model(name, function_result)
+        # ── Truncate oversized tool results ──────────────────────
+        # Prevents a single read_file of a megabyte file from bloating
+        # the conversation and triggering compression on every turn.
+        _tool_content = _truncate_tool_result(name, _tool_content)
         messages.append(make_tool_result_message(name, _tool_content, tc.id))
 
         # ── Per-tool /steer drain ───────────────────────────────────
@@ -858,6 +878,8 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
         # Unwrap _multimodal dicts to an OpenAI-style content list
         # (see parallel path for rationale). String results pass through.
         _tool_content = agent._tool_result_content_for_active_model(function_name, function_result)
+        # ── Truncate oversized tool results ──────────────────────
+        _tool_content = _truncate_tool_result(function_name, _tool_content)
         messages.append(make_tool_result_message(function_name, _tool_content, tool_call.id))
 
         # ── Per-tool /steer drain ───────────────────────────────────

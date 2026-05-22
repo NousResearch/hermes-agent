@@ -3391,7 +3391,7 @@ async def _broadcast_event(channel: str, payload: str) -> None:
         except Exception:
             # Subscriber went away mid-send; the /api/events finally clause
             # will remove it from the registry on its next iteration.
-            pass
+            _log.warning("broadcast send failed for subscriber on %s", channel, exc_info=True)
 
 
 def _channel_or_close_code(ws: WebSocket) -> Optional[str]:

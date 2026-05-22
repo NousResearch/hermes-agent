@@ -97,6 +97,37 @@ def is_write_denied(path: str) -> bool:
         if resolved.startswith(prefix):
             return True
 
+    # Hermes control-plane files: block both the ACTIVE profile's view
+    # (hermes_home) AND the global root view. Without the root pass, a
+    # profile-mode session leaves <root>/auth.json + <root>/config.yaml
+    # writable — letting a prompt-injected write_file overwrite the global
+    # files that every profile inherits from (same shape as #15981).
+    control_file_names = ("auth.json", "config.yaml", "webhook_subscriptions.json")
+    mcp_tokens_dir_name = "mcp-tokens"
+
+    hermes_dirs = []
+    for base in (_hermes_home_path(), _hermes_root_path()):
+        try:
+            real = os.path.realpath(base)
+            if real not in hermes_dirs:
+                hermes_dirs.append(real)
+        except Exception:
+            continue
+
+    for base_real in hermes_dirs:
+        for name in control_file_names:
+            try:
+                if resolved == os.path.realpath(os.path.join(base_real, name)):
+                    return True
+            except Exception:
+                continue
+        try:
+            mcp_real = os.path.realpath(os.path.join(base_real, mcp_tokens_dir_name))
+            if resolved == mcp_real or resolved.startswith(mcp_real + os.sep):
+                return True
+        except Exception:
+            pass
+
     safe_root = get_safe_write_root()
     if safe_root and not (resolved == safe_root or resolved.startswith(safe_root + os.sep)):
         return True

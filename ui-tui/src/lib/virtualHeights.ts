@@ -1,6 +1,7 @@
 import type { Msg } from '../types.js'
 
-import { boundedHistoryRenderText } from './text.js'
+import { TERMUX_TUI_MODE } from '../config/env.js'
+import { transcriptBodyWidth } from './inputMetrics.js'
 
 const hashText = (text: string) => {
   let h = 5381
@@ -29,16 +30,56 @@ export const messageHeightKey = (msg: Msg) => {
   ].join(':')
 }
 
-export const wrappedLines = (text: string, width: number) => {
-  const w = Math.max(1, width)
+// Hard cap on rows the estimator will count. Each row above this is
+// invisible to the estimator (gets clipped to MAX_ESTIMATE_LINES), but
+// post-mount Yoga measurement converges to the real height on first
+// render. Without this, a long assistant turn (10k+ chars) costs O(text)
+// per offset rebuild × every uncached item — cold-mounting a 1000-row
+// transcript becomes a multi-million-char wrap walk that blocks the UI.
+//
+// 800 covers any realistic assistant message (the prior history-clip
+// ceiling was 16 lines, then full text — this is the sane middle).
+const MAX_ESTIMATE_LINES = 800
 
-  return text.split('\n').reduce((n, line) => n + Math.max(1, Math.ceil(line.length / w)), 0)
+export const wrappedLines = (text: string, width: number, maxLines: number = MAX_ESTIMATE_LINES) => {
+  const w = Math.max(1, width)
+  // Worst case: every cell is its own row at width=1, plus a small
+  // slack for the trailing partial line. Walking past this byte budget
+  // cannot increase n any further once n is already past maxLines, so
+  // bail. Saves O(text) walks on multi-megabyte single-line messages.
+  const budget = Math.min(text.length, maxLines * w + maxLines)
+  let n = 0
+  let start = 0
+
+  for (let i = 0; i <= budget; i++) {
+    if (i === text.length || i === budget || text.charCodeAt(i) === 10) {
+      const rows = Math.max(1, Math.ceil((i - start) / w))
+      n += rows >= maxLines - n ? maxLines - n : rows
+      start = i + 1
+
+      if (n >= maxLines) {
+        return maxLines
+      }
+    }
+  }
+
+  return n
 }
 
 export const estimatedMsgHeight = (
   msg: Msg,
   cols: number,
-  { compact, details, limitHistory = false }: { compact: boolean; details: boolean; limitHistory?: boolean }
+  {
+    compact,
+    details,
+    userPrompt = '',
+    withSeparator = false
+  }: {
+    compact: boolean
+    details: boolean
+    userPrompt?: string
+    withSeparator?: boolean
+  }
 ) => {
   if (msg.kind === 'intro') {
     return msg.info?.version ? 9 : 5
@@ -56,12 +97,17 @@ export const estimatedMsgHeight = (
     return Math.max(2, msg.todos.length + 2)
   }
 
-  const bodyWidth = Math.max(20, cols - 5)
-  const text = msg.role === 'assistant' && limitHistory ? boundedHistoryRenderText(msg.text) : msg.text
+  const bodyWidth = transcriptBodyWidth(cols, msg.role, userPrompt, TERMUX_TUI_MODE)
+  const text = msg.text
   let h = wrappedLines(text || ' ', bodyWidth)
 
   if (!compact && msg.role === 'assistant') {
-    h += Math.min(6, (text.match(/\n\s*\n/g) ?? []).length)
+    // Paragraph gaps add up to 6 extra rows of breathing room. Slice
+    // first so the regex never walks more than the first ~16k chars of
+    // a giant assistant message — post-mount Yoga measurement converges
+    // to the real height regardless of how the estimate undercounts.
+    const scan = text.length > 16_000 ? text.slice(0, 16_000) : text
+    h += Math.min(6, (scan.match(/\n\s*\n/g) ?? []).length)
   }
 
   if (details) {
@@ -72,6 +118,13 @@ export const estimatedMsgHeight = (
     h += 2
   } else if (msg.kind === 'slash') {
     h++
+  }
+
+  // Inter-turn separator above non-first user messages (1 rule row + 1
+  // top-margin row). The render-side gate is in appLayout.tsx; we trust
+  // the caller to pass `withSeparator` only when it matches that gate.
+  if (withSeparator) {
+    h += 2
   }
 
   return Math.max(1, h)

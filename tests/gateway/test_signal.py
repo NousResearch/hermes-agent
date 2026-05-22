@@ -1794,3 +1794,162 @@ class TestSignalContentlessEnvelope:
 
         assert "event" in captured, "Normal message should NOT be skipped"
         assert captured["event"].text == "hello world"
+
+
+# ---------------------------------------------------------------------------
+# Envelope handling — group routing (legacy groupInfo vs modern groupV2)
+# ---------------------------------------------------------------------------
+
+class TestSignalGroupV2Routing:
+    """Regression coverage for groupV2 envelope handling.
+
+    signal-cli's JSON-RPC ``subscribeReceive`` envelope shape has drifted across
+    versions: some forward the underlying libsignal V2 envelope as
+    ``dataMessage.groupV2.id`` while older / normalized paths still use
+    ``dataMessage.groupInfo.groupId``. The adapter must read groupV2 first and
+    fall back to groupInfo so V2-only groups aren't misrouted as DMs.
+
+    Ported from qwibitai/nanoclaw#1962 (V2 adapter improvements).
+    """
+
+    def _base_envelope(self, data_message: dict) -> dict:
+        return {
+            "envelope": {
+                "sourceNumber": "+15559998888",
+                "sourceUuid": "uuid-sender",
+                "sourceName": "Alice",
+                "timestamp": 1700000000000,
+                "dataMessage": data_message,
+            }
+        }
+
+    @pytest.mark.asyncio
+    async def test_group_v2_id_routes_as_group(self, monkeypatch):
+        adapter = _make_signal_adapter(monkeypatch, group_allowed="*")
+        captured = []
+
+        async def _capture(event):
+            captured.append(event)
+
+        adapter.handle_message = _capture
+
+        env = self._base_envelope({
+            "message": "hello v2",
+            "groupV2": {"id": "v2group=="},
+        })
+
+        await adapter._handle_envelope(env)
+
+        assert len(captured) == 1
+        assert captured[0].source.chat_id == "group:v2group=="
+        assert captured[0].source.chat_type == "group"
+        assert captured[0].text == "hello v2"
+
+    @pytest.mark.asyncio
+    async def test_legacy_group_info_still_works(self, monkeypatch):
+        adapter = _make_signal_adapter(monkeypatch, group_allowed="*")
+        captured = []
+
+        async def _capture(event):
+            captured.append(event)
+
+        adapter.handle_message = _capture
+
+        env = self._base_envelope({
+            "message": "hello v1",
+            "groupInfo": {"groupId": "legacy=="},
+        })
+
+        await adapter._handle_envelope(env)
+
+        assert len(captured) == 1
+        assert captured[0].source.chat_id == "group:legacy=="
+        assert captured[0].source.chat_type == "group"
+
+    @pytest.mark.asyncio
+    async def test_group_v2_preferred_over_group_info(self, monkeypatch):
+        """When both fields are present, groupV2 wins — it's the authoritative V2 id."""
+        adapter = _make_signal_adapter(monkeypatch, group_allowed="*")
+        captured = []
+
+        async def _capture(event):
+            captured.append(event)
+
+        adapter.handle_message = _capture
+
+        env = self._base_envelope({
+            "message": "hello",
+            "groupV2": {"id": "v2=="},
+            "groupInfo": {"groupId": "v1=="},
+        })
+
+        await adapter._handle_envelope(env)
+
+        assert len(captured) == 1
+        assert captured[0].source.chat_id == "group:v2=="
+
+    @pytest.mark.asyncio
+    async def test_no_group_fields_routes_as_dm(self, monkeypatch):
+        adapter = _make_signal_adapter(monkeypatch)
+        captured = []
+
+        async def _capture(event):
+            captured.append(event)
+
+        adapter.handle_message = _capture
+
+        env = self._base_envelope({"message": "direct message"})
+
+        await adapter._handle_envelope(env)
+
+        assert len(captured) == 1
+        assert captured[0].source.chat_type == "dm"
+        assert captured[0].source.chat_id == "+15559998888"
+
+    @pytest.mark.asyncio
+    async def test_group_v2_respects_allowlist(self, monkeypatch):
+        """V2 group ids flow through the same SIGNAL_GROUP_ALLOWED_USERS filter."""
+        adapter = _make_signal_adapter(monkeypatch, group_allowed="allowed-v2==")
+        captured = []
+
+        async def _capture(event):
+            captured.append(event)
+
+        adapter.handle_message = _capture
+
+        # Blocked group (not in allowlist)
+        await adapter._handle_envelope(self._base_envelope({
+            "message": "blocked",
+            "groupV2": {"id": "blocked-v2=="},
+        }))
+        assert len(captured) == 0
+
+        # Allowed group
+        await adapter._handle_envelope(self._base_envelope({
+            "message": "allowed",
+            "groupV2": {"id": "allowed-v2=="},
+        }))
+        assert len(captured) == 1
+        assert captured[0].source.chat_id == "group:allowed-v2=="
+
+    @pytest.mark.asyncio
+    async def test_malformed_group_fields_fall_through_to_dm(self, monkeypatch):
+        """Non-dict groupV2 / groupInfo shouldn't crash — treat as DM."""
+        adapter = _make_signal_adapter(monkeypatch)
+        captured = []
+
+        async def _capture(event):
+            captured.append(event)
+
+        adapter.handle_message = _capture
+
+        env = self._base_envelope({
+            "message": "malformed",
+            "groupV2": "not-a-dict",
+            "groupInfo": 42,
+        })
+
+        await adapter._handle_envelope(env)
+
+        assert len(captured) == 1
+        assert captured[0].source.chat_type == "dm"

@@ -327,7 +327,11 @@ function SubagentAccordion({
   const aggregate = node.aggregate
 
   const statusTone: 'dim' | 'error' | 'warn' =
-    item.status === 'failed' ? 'error' : item.status === 'interrupted' ? 'warn' : 'dim'
+    item.status === 'error' || item.status === 'failed'
+      ? 'error'
+      : item.status === 'interrupted' || item.status === 'timeout'
+        ? 'warn'
+        : 'dim'
 
   const prefix = item.taskCount > 1 ? `[${item.index + 1}/${item.taskCount}] ` : ''
   const goalLabel = item.goal || `Subagent ${item.index + 1}`
@@ -852,7 +856,16 @@ export const ToolTrail = memo(function ToolTrail({
       color: t.color.text,
       key: tool.id,
       label,
-      details: [],
+      details: tool.verboseArgs
+        ? [
+            {
+              color: t.color.muted,
+              content: `Args:\n${boundedLiveRenderText(tool.verboseArgs)}`,
+              dimColor: true,
+              key: `${tool.id}-args`
+            }
+          ]
+        : [],
       content: (
         <>
           <Spinner color={t.color.accent} variant="tool" /> {label}

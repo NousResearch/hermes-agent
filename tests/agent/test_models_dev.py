@@ -201,6 +201,102 @@ class TestFetchModelsDev:
         mock_get.assert_not_called()
         assert result == SAMPLE_REGISTRY
 
+    @patch("agent.models_dev.requests.get")
+    def test_fresh_disk_cache_skips_network(self, mock_get):
+        """When in-mem cache is empty but disk cache exists and is fresh by
+        mtime (< TTL), fetch_models_dev returns disk data without ever
+        making the network call.
+
+        This is the cold-start fast path: every fresh process previously
+        paid ~500 ms re-fetching a registry that was already on disk
+        from an earlier run.
+        """
+        import agent.models_dev as md
+        # Empty in-mem cache so stage 1 doesn't short-circuit.
+        md._models_dev_cache = {}
+        md._models_dev_cache_time = 0
+
+        with patch.object(md, "_disk_cache_age_seconds", return_value=60.0), \
+             patch.object(md, "_load_disk_cache", return_value=SAMPLE_REGISTRY):
+            result = fetch_models_dev()
+
+        # The whole point: no network call.
+        mock_get.assert_not_called()
+        assert "anthropic" in result
+        # In-mem cache populated so subsequent calls within the same
+        # process stay on stage 1.
+        assert md._models_dev_cache == SAMPLE_REGISTRY
+
+    @patch("agent.models_dev.requests.get")
+    def test_stale_disk_cache_falls_through_to_network(self, mock_get):
+        """When the disk cache is OLDER than TTL, we must hit the network
+        (and only fall back to the stale disk data if network fails)."""
+        import agent.models_dev as md
+        md._models_dev_cache = {}
+        md._models_dev_cache_time = 0
+
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.json.return_value = SAMPLE_REGISTRY
+        mock_resp.raise_for_status = MagicMock()
+        mock_get.return_value = mock_resp
+
+        # Disk cache exists but is older than the TTL — must NOT short-circuit.
+        with patch.object(md, "_disk_cache_age_seconds",
+                          return_value=md._MODELS_DEV_CACHE_TTL + 60), \
+             patch.object(md, "_load_disk_cache", return_value=SAMPLE_REGISTRY), \
+             patch.object(md, "_save_disk_cache"):
+            result = fetch_models_dev()
+
+        mock_get.assert_called_once()
+        assert "anthropic" in result
+
+    @patch("agent.models_dev.requests.get")
+    def test_force_refresh_skips_disk_cache(self, mock_get):
+        """force_refresh=True bypasses BOTH the in-mem cache AND the
+        disk-cache fast path. Used by ``hermes config refresh`` and
+        anywhere else the user explicitly asked for fresh data.
+        """
+        import agent.models_dev as md
+        md._models_dev_cache = {}
+        md._models_dev_cache_time = 0
+
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.json.return_value = SAMPLE_REGISTRY
+        mock_resp.raise_for_status = MagicMock()
+        mock_get.return_value = mock_resp
+
+        # Disk cache is fresh, but force_refresh must override it.
+        with patch.object(md, "_disk_cache_age_seconds", return_value=60.0), \
+             patch.object(md, "_load_disk_cache", return_value=SAMPLE_REGISTRY), \
+             patch.object(md, "_save_disk_cache"):
+            result = fetch_models_dev(force_refresh=True)
+
+        mock_get.assert_called_once()
+        assert "anthropic" in result
+
+    @patch("agent.models_dev.requests.get")
+    def test_missing_disk_cache_falls_through_to_network(self, mock_get):
+        """If the disk cache file doesn't exist (first-ever run, or it
+        was deleted), fall through cleanly to network."""
+        import agent.models_dev as md
+        md._models_dev_cache = {}
+        md._models_dev_cache_time = 0
+
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.json.return_value = SAMPLE_REGISTRY
+        mock_resp.raise_for_status = MagicMock()
+        mock_get.return_value = mock_resp
+
+        with patch.object(md, "_disk_cache_age_seconds", return_value=None), \
+             patch.object(md, "_save_disk_cache"):
+            result = fetch_models_dev()
+
+        mock_get.assert_called_once()
+        assert "anthropic" in result
+
 
 # ---------------------------------------------------------------------------
 # get_model_capabilities — vision via modalities.input
@@ -223,6 +319,13 @@ CAPS_REGISTRY = {
                 "tool_call": True,
                 "limit": {"context": 32000, "output": 8192},
             },
+            "text-only-with-stale-attachment": {
+                "id": "text-only-with-stale-attachment",
+                "attachment": True,
+                "tool_call": True,
+                "modalities": {"input": ["text"]},
+                "limit": {"context": 128000, "output": 8192},
+            },
         },
     },
     "anthropic": {
@@ -243,7 +346,7 @@ class TestGetModelCapabilities:
     """Tests for get_model_capabilities vision detection."""
 
     def test_vision_from_attachment_flag(self):
-        """Models with attachment=True should report supports_vision=True."""
+        """Models with attachment=True and no modalities should report supports_vision=True."""
         with patch("agent.models_dev.fetch_models_dev", return_value=CAPS_REGISTRY):
             caps = get_model_capabilities("anthropic", "claude-sonnet-4")
         assert caps is not None
@@ -256,6 +359,13 @@ class TestGetModelCapabilities:
             caps = get_model_capabilities("google", "gemma-4-31b-it")
         assert caps is not None
         assert caps.supports_vision is True
+
+    def test_text_only_modalities_override_stale_attachment_flag(self):
+        """Text-only modalities must win over stale attachment=True metadata."""
+        with patch("agent.models_dev.fetch_models_dev", return_value=CAPS_REGISTRY):
+            caps = get_model_capabilities("google", "text-only-with-stale-attachment")
+        assert caps is not None
+        assert caps.supports_vision is False
 
     def test_no_vision_without_attachment_or_modalities(self):
         """Models with neither attachment nor image modality should be non-vision."""

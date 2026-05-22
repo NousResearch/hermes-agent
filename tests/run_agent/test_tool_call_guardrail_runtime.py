@@ -153,6 +153,37 @@ def test_sequential_after_call_appends_guidance_to_tool_result_without_extra_mes
     assert "repeated_exact_failure_warning" in messages[0]["content"]
 
 
+def test_same_tool_failure_warning_tells_model_to_recover_with_tools():
+    agent = _make_agent("terminal")
+    guardrails = getattr(agent, "_tool_guardrails")
+    guardrails.after_call(
+        "terminal",
+        {"command": "bad-1"},
+        json.dumps({"exit_code": 1}),
+        failed=True,
+    )
+    guardrails.after_call(
+        "terminal",
+        {"command": "bad-2"},
+        json.dumps({"exit_code": 1}),
+        failed=True,
+    )
+    tc = _mock_tool_call("terminal", json.dumps({"command": "bad-3"}), "c-recover")
+    msg = SimpleNamespace(content="", tool_calls=[tc])
+    messages = []
+
+    with patch("run_agent.handle_function_call", return_value=json.dumps({"exit_code": 1})):
+        agent._execute_tool_calls_sequential(msg, messages, "task-1")
+
+    content = messages[0]["content"]
+    assert "same_tool_failure_warning" in content
+    assert "Do not switch to text-only replies" in content
+    assert "keep using tools" in content
+    assert "pwd && ls -la" in content
+    assert "absolute path" in content
+    assert "different tool" in content
+
+
 def test_config_enabled_hard_stop_concurrent_path_does_not_submit_blocked_calls_and_preserves_result_order():
     agent = _make_agent("web_search", config=_hard_stop_config())
     blocked_args = {"query": "blocked"}

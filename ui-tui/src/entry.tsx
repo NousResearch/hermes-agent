@@ -5,10 +5,12 @@ import './lib/forceTruecolor.js'
 
 import type { FrameEvent } from '@hermes/ink'
 
+import { TERMUX_TUI_MODE } from './config/env.js'
 import { GatewayClient } from './gatewayClient.js'
 import { setupGracefulExit } from './lib/gracefulExit.js'
 import { formatBytes, type HeapDumpResult, performHeapDump } from './lib/memory.js'
 import { type MemorySnapshot, startMemoryMonitor } from './lib/memoryMonitor.js'
+import { openExternalUrl } from './lib/openExternalUrl.js'
 import { resetTerminalModes } from './lib/terminalModes.js'
 
 if (!process.stdin.isTTY) {
@@ -19,6 +21,15 @@ if (!process.stdin.isTTY) {
 // Start from a clean slate. If a previous TUI crashed or was kill -9'd, the
 // terminal tab can still have mouse/focus/paste modes enabled.
 resetTerminalModes()
+
+// Desktop terminals benefit from a clean startup slate because the TUI usually
+// runs in AlternateScreen. On Termux we keep prior output intact so users can
+// review/copy earlier assistant replies after reopening the app.
+if (TERMUX_TUI_MODE) {
+  process.stdout.write('\n')
+} else {
+  process.stdout.write('\x1b[2J\x1b[H\x1b[3J')
+}
 
 const gw = new GatewayClient()
 
@@ -79,4 +90,14 @@ const onFrame =
       }
     : undefined
 
-ink.render(<App gw={gw} />, { exitOnCtrlC: false, onFrame })
+ink.render(<App gw={gw} />, {
+  exitOnCtrlC: false,
+  onFrame,
+  // Open URLs in the user's default browser when a link cell is clicked.
+  // The TUI's mouse tracking captures click events before Terminal.app's
+  // own URL detection can fire, so without this hook clicks on `<Link>`
+  // do nothing in any terminal where mouseTracking is on.
+  onHyperlinkClick: url => {
+    openExternalUrl(url)
+  }
+})

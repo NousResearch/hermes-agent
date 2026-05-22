@@ -142,6 +142,24 @@ class TestBedrockNormalize:
         assert len(nr.tool_calls) == 1
         assert nr.tool_calls[0].name == "terminal"
 
+    def test_raw_reasoning_content_response(self, transport):
+        raw = {
+            "output": {
+                "message": {
+                    "role": "assistant",
+                    "content": [
+                        {"reasoningContent": {"text": "Let me think..."}},
+                        {"text": "Answer."},
+                    ],
+                }
+            },
+            "stopReason": "end_turn",
+            "usage": {"inputTokens": 10, "outputTokens": 5, "totalTokens": 15},
+        }
+        nr = transport.normalize_response(raw)
+        assert nr.reasoning == "Let me think..."
+        assert nr.content == "Answer."
+
     def test_already_normalized_response(self, transport):
         """Test normalize_response handles already-normalized SimpleNamespace (from dispatch site)."""
         pre_normalized = SimpleNamespace(

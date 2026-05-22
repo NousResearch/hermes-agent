@@ -4,6 +4,7 @@ description: "Pixel art w/ era palettes (NES, Game Boy, PICO-8)."
 version: 2.0.0
 author: dodo-reach
 license: MIT
+platforms: [linux, macos, windows]
 metadata:
   hermes:
     tags: [creative, pixel-art, arcade, snes, nes, gameboy, retro, image, video]

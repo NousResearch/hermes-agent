@@ -6,6 +6,7 @@ can invoke skills via /skill-name commands.
 
 import json
 import logging
+import os
 import re
 from pathlib import Path
 from typing import Any, Dict, Optional
@@ -20,9 +21,34 @@ from agent.skill_preprocessing import (
 logger = logging.getLogger(__name__)
 
 _skill_commands: Dict[str, Dict[str, Any]] = {}
+_skill_commands_platform: Optional[str] = None
 # Patterns for sanitizing skill names into clean hyphen-separated slugs.
 _SKILL_INVALID_CHARS = re.compile(r"[^a-z0-9-]")
 _SKILL_MULTI_HYPHEN = re.compile(r"-{2,}")
+
+
+def _resolve_skill_commands_platform() -> Optional[str]:
+    """Return the current platform scope used for disabled-skill filtering.
+
+    Used to detect when the active platform has shifted so
+    :func:`get_skill_commands` can drop a stale cache that was populated
+    for a different platform's ``skills.platform_disabled`` view (#14536).
+
+    Resolves from (in order) ``HERMES_PLATFORM`` env var and
+    ``HERMES_SESSION_PLATFORM`` from the gateway session context. Returns
+    ``None`` when no platform scope is active (e.g. classic CLI, RL
+    rollouts, standalone scripts).
+    """
+    try:
+        from gateway.session_context import get_session_env
+
+        resolved_platform = (
+            os.getenv("HERMES_PLATFORM")
+            or get_session_env("HERMES_SESSION_PLATFORM")
+        )
+    except Exception:
+        resolved_platform = os.getenv("HERMES_PLATFORM")
+    return resolved_platform or None
 
 def _load_skill_payload(skill_identifier: str, task_id: str | None = None) -> tuple[dict[str, Any], Path | None, str] | None:
     """Load a skill by name/path and return (loaded_payload, skill_dir, display_name)."""
@@ -32,13 +58,35 @@ def _load_skill_payload(skill_identifier: str, task_id: str | None = None) -> tu
 
     try:
         from tools.skills_tool import SKILLS_DIR, skill_view
+        from agent.skill_utils import get_external_skills_dirs
 
         identifier_path = Path(raw_identifier).expanduser()
         if identifier_path.is_absolute():
+            normalized = None
+            trusted_roots = [SKILLS_DIR]
             try:
-                normalized = str(identifier_path.resolve().relative_to(SKILLS_DIR.resolve()))
+                trusted_roots.extend(get_external_skills_dirs())
             except Exception:
-                normalized = raw_identifier
+                pass
+
+            # Prefer the lexical path under a trusted skill root before
+            # resolving symlinks.  Slash-command discovery can legitimately
+            # find a skill via ~/.hermes/skills/<name> where <name> is a
+            # symlink to a checked-out skill elsewhere.  Resolving first turns
+            # that trusted visible path into an arbitrary absolute path that
+            # skill_view() refuses to load.
+            for root in trusted_roots:
+                try:
+                    normalized = str(identifier_path.relative_to(root))
+                    break
+                except ValueError:
+                    continue
+
+            if normalized is None:
+                try:
+                    normalized = str(identifier_path.resolve().relative_to(SKILLS_DIR.resolve()))
+                except Exception:
+                    normalized = raw_identifier
         else:
             normalized = raw_identifier.lstrip("/")
 
@@ -218,7 +266,8 @@ def scan_skill_commands() -> Dict[str, Dict[str, Any]]:
     Returns:
         Dict mapping "/skill-name" to {name, description, skill_md_path, skill_dir}.
     """
-    global _skill_commands
+    global _skill_commands, _skill_commands_platform
+    _skill_commands_platform = _resolve_skill_commands_platform()
     _skill_commands = {}
     try:
         from tools.skills_tool import SKILLS_DIR, _parse_frontmatter, skill_matches_platform, _get_disabled_skill_names
@@ -234,7 +283,7 @@ def scan_skill_commands() -> Dict[str, Dict[str, Any]]:
 
         for scan_dir in dirs_to_scan:
             for skill_md in iter_skill_index_files(scan_dir, "SKILL.md"):
-                if any(part in ('.git', '.github', '.hub', '.archive') for part in skill_md.parts):
+                if any(part in {'.git', '.github', '.hub', '.archive'} for part in skill_md.parts):
                     continue
                 try:
                     content = skill_md.read_text(encoding='utf-8')
@@ -278,8 +327,16 @@ def scan_skill_commands() -> Dict[str, Dict[str, Any]]:
 
 
 def get_skill_commands() -> Dict[str, Dict[str, Any]]:
-    """Return the current skill commands mapping (scan first if empty)."""
-    if not _skill_commands:
+    """Return the current skill commands mapping (scan first if empty).
+
+    Rescans when the active platform scope changes (e.g. a gateway
+    process serving Telegram and Discord concurrently) so each platform
+    sees its own ``skills.platform_disabled`` view (#14536).
+    """
+    if (
+        not _skill_commands
+        or _skill_commands_platform != _resolve_skill_commands_platform()
+    ):
         scan_skill_commands()
     return _skill_commands
 
@@ -390,7 +447,7 @@ def build_skill_invocation_message(
 
     loaded = _load_skill_payload(skill_info["skill_dir"], task_id=task_id)
     if not loaded:
-        return f"[Failed to load skill: {skill_info['name']}]"
+        return None
 
     loaded_skill, skill_dir, skill_name = loaded
 

@@ -25,3 +25,7 @@ ui-tui/packages/hermes-ink/dist/
 
 # Runtime data (bind-mounted at /opt/data; must not leak into build context)
 data/
+
+# Compose/profile runtime state (bind-mounted; avoid ownership/secret issues)
+hermes-config/
+runtime/

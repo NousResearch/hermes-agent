@@ -16,8 +16,17 @@ from typing import Any, Dict, Optional
 logger = logging.getLogger(__name__)
 
 
-def load_restart_drain_timeout() -> float:
-    """Load graceful gateway restart/stop drain timeout in seconds."""
+def load_restart_drain_timeout(
+    config_path: Optional[str] = None,
+) -> float:
+    """Load graceful gateway restart/stop drain timeout in seconds.
+
+    Args:
+        config_path: Optional explicit config path.  When provided (e.g. by
+            the GatewayRunner delegation stub), this path is used instead
+            of ``get_config_path()``.  Test fixtures monkeypatch the module-level
+            ``_hermes_home`` in ``gateway/run.py``, so the stub forwards it here.
+    """
     from gateway.restart import (
         DEFAULT_GATEWAY_RESTART_DRAIN_TIMEOUT,
         parse_restart_drain_timeout,
@@ -28,9 +37,11 @@ def load_restart_drain_timeout() -> float:
         try:
             import yaml as _y
 
-            from hermes_cli.config import _hermes_home, cfg_get
+            from hermes_cli.config import cfg_get, get_config_path
 
-            cfg_path = _hermes_home / "config.yaml"
+            from pathlib import Path as _Path
+
+            cfg_path = _Path(config_path) if config_path else get_config_path()
             if cfg_path.exists():
                 with open(cfg_path, encoding="utf-8") as _f:
                     cfg = _y.safe_load(_f) or {}
@@ -280,6 +291,7 @@ async def shutdown_stop(
     restart: bool = False,
     detached_restart: bool = False,
     service_restart: bool = False,
+    hermes_home: Optional[str] = None,
 ) -> None:
     """Stop the gateway and disconnect all adapters."""
     if restart:
@@ -290,10 +302,10 @@ async def shutdown_stop(
         await runner._stop_task
         return
 
-    _AGENT_PENDING_SENTINEL = object()
+    _hermes_home = hermes_home
 
     from gateway.restart import GATEWAY_SERVICE_RESTART_EXIT_CODE
-    from hermes_cli.config import _hermes_home
+    from gateway.run import _AGENT_PENDING_SENTINEL
 
     async def _stop_impl() -> None:
         def _kill_tool_subprocesses(phase: str) -> None:
@@ -565,17 +577,21 @@ async def wait_for_shutdown(runner: Any) -> None:
 
 
 def snapshot_running_agents(runner: Any) -> Dict[str, Any]:
+    from gateway.run import _AGENT_PENDING_SENTINEL
+
     return {
         session_key: agent
         for session_key, agent in runner._running_agents.items()
-        if agent is not object()  # _AGENT_PENDING_SENTINEL-compatible check
+        if agent is not _AGENT_PENDING_SENTINEL
     }
 
 
 def running_agent_count(runner: Any) -> int:
+    from gateway.run import _AGENT_PENDING_SENTINEL
+
     return sum(
         1 for agent in runner._running_agents.values()
-        if agent is not object()
+        if agent is not _AGENT_PENDING_SENTINEL
     )
 
 

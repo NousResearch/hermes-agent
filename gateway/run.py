@@ -2630,10 +2630,11 @@ class GatewayRunner:
         return "interrupt"
 
     @staticmethod
-    def _load_restart_drain_timeout() -> float:
+    def _load_restart_drain_timeout(config_path: Optional[str] = None) -> float:
         """Load graceful gateway restart/stop drain timeout in seconds."""
         from gateway.shutdown import load_restart_drain_timeout
-        return load_restart_drain_timeout()
+
+        return load_restart_drain_timeout(config_path=config_path or str(_hermes_home / "config.yaml"))
 
     @staticmethod
     def _load_background_notifications_mode() -> str:
@@ -4278,11 +4279,13 @@ class GatewayRunner:
     ) -> None:
         """Stop the gateway and disconnect all adapters."""
         from gateway.shutdown import shutdown_stop
+
         return await shutdown_stop(
             self,
             restart=restart,
             detached_restart=detached_restart,
             service_restart=service_restart,
+            hermes_home=_hermes_home,
         )
 
     async def wait_for_shutdown(self) -> None:

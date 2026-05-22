@@ -1911,20 +1911,24 @@ def convert_messages_to_anthropic(
 
         if _preserve_unsigned_thinking:
             # Kimi's /coding and DeepSeek's /anthropic endpoints both enable
-            # thinking server-side and require unsigned thinking blocks on
-            # replayed assistant tool-call messages.  Strip signed Anthropic
-            # blocks (neither upstream can validate Anthropic signatures) but
-            # preserve the unsigned ones we synthesised from reasoning_content.
+            # thinking server-side and require thinking blocks to round-trip on
+            # replayed assistant tool-call messages.  Preserve ALL thinking
+            # blocks here — both providers may sign their own blocks, and
+            # stripping them causes HTTP 400 ("thinking must be passed back").
+            # Anthropic-signed blocks from cross-provider conversation history
+            # are rare; if they cause a 400, the error classifier catches
+            # "signature"+"thinking" errors as retryable (FailoverReason.
+            # thinking_signature) and strips them on retry.
             new_content = []
             for b in m["content"]:
                 if not isinstance(b, dict) or b.get("type") not in _THINKING_TYPES:
                     new_content.append(b)
                     continue
-                if b.get("signature") or b.get("data"):
-                    # Anthropic-signed block — upstream can't validate, strip
+                if b.get("data"):
+                    # redacted_thinking data payload — Anthropic-proprietary,
+                    # neither DeepSeek nor Kimi support this block type
                     continue
-                # Unsigned thinking (synthesised from reasoning_content) —
-                # keep it: the upstream needs it for message-history validation.
+                # Preserve: the upstream needs it for message-history validation.
                 new_content.append(b)
             m["content"] = new_content or [{"type": "text", "text": "(empty)"}]
         elif _is_third_party or idx != last_assistant_idx:

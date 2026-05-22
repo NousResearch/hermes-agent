@@ -454,6 +454,22 @@ def classify_api_error(
             should_compress=False,
         )
 
+    # DeepSeek /anthropic thinking block missing (400).
+    # DeepSeek's endpoint requires thinking blocks to round-trip on replayed
+    # assistant tool-call messages when thinking mode is enabled.  The error
+    # message does NOT contain "signature" so it misses the
+    # thinking_signature check above.  See hermes-agent#16748.
+    if (
+        status_code == 400
+        and "thinking" in error_msg
+        and ("passed back" in error_msg or "must be passed" in error_msg)
+    ):
+        return _result(
+            FailoverReason.thinking_signature,
+            retryable=True,
+            should_compress=False,
+        )
+
     # Anthropic long-context tier gate (429 "extra usage" + "long context")
     if (
         status_code == 429

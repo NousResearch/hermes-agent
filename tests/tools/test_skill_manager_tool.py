@@ -1017,23 +1017,16 @@ class TestDeleteSkillCronGuard:
         assert "cron store error" in result["error"]
         assert "disk error" not in result["error"]  # internal detail must not leak
 
-    def test_missing_symbol_in_cron_module_is_fail_closed_in_curator_fork(self, tmp_path):
+    def test_missing_symbol_in_cron_module_is_fail_closed_in_curator_fork(self, tmp_path, monkeypatch):
         """If cron.jobs IS installed but get_active_skill_refs is missing (partial
         upgrade), the import raises plain ImportError with e.name=='cron.jobs'.
         The guard must treat this as fail-closed, not as 'cron not installed'."""
         import sys, types
 
         fake_mod = types.ModuleType("cron.jobs")  # no get_active_skill_refs attribute
+        monkeypatch.setitem(sys.modules, "cron.jobs", fake_mod)
         with _skill_dir(tmp_path), self._in_curator_fork():
             _create_skill("my-skill", VALID_SKILL_CONTENT)
-            saved = sys.modules.get("cron.jobs")
-            sys.modules["cron.jobs"] = fake_mod
-            try:
-                result = _delete_skill("my-skill")
-            finally:
-                if saved is not None:
-                    sys.modules["cron.jobs"] = saved
-                else:
-                    sys.modules.pop("cron.jobs", None)
+            result = _delete_skill("my-skill")
         assert result["success"] is False
         assert "cron import error" in result["error"]

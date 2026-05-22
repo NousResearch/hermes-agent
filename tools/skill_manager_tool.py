@@ -582,11 +582,14 @@ def _delete_skill(name: str, absorbed_into: Optional[str] = None) -> Dict[str, A
         _get_refs = None
         try:
             from cron.jobs import get_active_skill_refs as _get_refs
-        except ModuleNotFoundError as e:
-            if getattr(e, "name", None) in ("cron", "cron.jobs"):
+        except Exception as e:
+            # Only skip the guard when cron is genuinely absent.
+            # ModuleNotFoundError with e.name in ("cron","cron.jobs") = not installed.
+            # All other errors (broken dep, plain ImportError for missing symbol, etc.)
+            # are fail-closed — mirror: curator._load_cron_protected.
+            if isinstance(e, ModuleNotFoundError) and getattr(e, "name", None) in ("cron", "cron.jobs"):
                 pass  # cron not installed — no active jobs, guard not needed
             else:
-                # A dependency *inside* cron.jobs is missing — fail-closed.
                 logger.warning(
                     "skill_manager: cron.jobs failed to import for '%s': %s",
                     name, e, exc_info=True,
@@ -599,37 +602,6 @@ def _delete_skill(name: str, absorbed_into: Optional[str] = None) -> Dict[str, A
                         "Resolve the cron issue and retry."
                     ),
                 }
-        except ImportError as e:
-            # Plain ImportError (not ModuleNotFoundError) — module IS present but symbol
-            # is missing (e.g., older cron module without get_active_skill_refs).
-            # e.name == "cron.jobs" in this case too, so we cannot use e.name alone;
-            # treat any plain ImportError as fail-closed.  Mirror: curator._load_cron_protected.
-            logger.warning(
-                "skill_manager: cron.jobs failed to import for '%s': %s",
-                name, e, exc_info=True,
-            )
-            return {
-                "success": False,
-                "error": (
-                    f"Cannot verify cron job references for '{name}' "
-                    "(cron import error — see server logs). "
-                    "Resolve the cron issue and retry."
-                ),
-            }
-        except Exception as e:
-            # cron.jobs exists but failed to import (init-time error, etc.)
-            logger.warning(
-                "skill_manager: cron.jobs failed to import for '%s': %s",
-                name, e, exc_info=True,
-            )
-            return {
-                "success": False,
-                "error": (
-                    f"Cannot verify cron job references for '{name}' "
-                    "(cron import error — see server logs). "
-                    "Resolve the cron issue and retry."
-                ),
-            }
         if _get_refs is not None:
             try:
                 _active_refs = _get_refs()

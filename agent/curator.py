@@ -269,6 +269,7 @@ def _load_cron_protected() -> Optional[Set[str]]:
         logger.warning(
             "curator: cron.jobs failed to import — "
             "auto-archive transitions will be skipped this run: %s", e,
+            exc_info=True,
         )
         return None
     except ImportError as e:
@@ -279,6 +280,7 @@ def _load_cron_protected() -> Optional[Set[str]]:
         logger.warning(
             "curator: cron.jobs failed to import — "
             "auto-archive transitions will be skipped this run: %s", e,
+            exc_info=True,
         )
         return None
     except Exception as e:
@@ -286,6 +288,7 @@ def _load_cron_protected() -> Optional[Set[str]]:
         logger.warning(
             "curator: cron.jobs failed to import — "
             "auto-archive transitions will be skipped this run: %s", e,
+            exc_info=True,
         )
         return None  # fail-closed
     try:
@@ -294,6 +297,7 @@ def _load_cron_protected() -> Optional[Set[str]]:
         logger.warning(
             "curator: could not read cron job skill refs — "
             "auto-archive transitions will be skipped this run: %s", e,
+            exc_info=True,
         )
         return None
 
@@ -1805,7 +1809,9 @@ def _run_llm_review(prompt: str) -> Dict[str, Any]:
         )
         # Mark this fork as a background review so tool-layer guards (e.g.
         # the cron-protection check in _delete_skill()) activate correctly.
-        review_agent._memory_write_origin = "background_review"
+        # Use the canonical constant so this stays in sync with is_background_review().
+        from tools.skill_provenance import BACKGROUND_REVIEW
+        review_agent._memory_write_origin = BACKGROUND_REVIEW
         # Disable recursive nudges — the curator must never spawn its own review.
         review_agent._memory_nudge_interval = 0
         review_agent._skill_nudge_interval = 0

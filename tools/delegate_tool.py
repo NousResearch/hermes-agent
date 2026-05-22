@@ -1017,6 +1017,17 @@ def _build_child_agent(
 
         child_thinking_cb = _child_thinking
 
+    # A task spawn must see the current on-disk profile/skill guidance, not a
+    # stale index held by a long-running parent gateway/CLI process.  SOUL.md is
+    # read by the child AIAgent via load_soul_identity=True below, and clearing
+    # the skills prompt caches forces SKILL.md metadata to be revalidated before
+    # the child system prompt is assembled.
+    try:
+        from agent.prompt_builder import clear_skills_system_prompt_cache
+        clear_skills_system_prompt_cache(clear_snapshot=True)
+    except Exception as exc:
+        logger.debug("Could not refresh prompt inputs before subagent spawn: %s", exc)
+
     # Resolve effective credentials: config override > parent inherit
     effective_model = model or parent_agent.model
     effective_provider = override_provider or getattr(parent_agent, "provider", None)
@@ -1122,6 +1133,7 @@ def _build_child_agent(
         log_prefix=f"[subagent-{task_index}]",
         platform=parent_agent.platform,
         skip_context_files=True,
+        load_soul_identity=True,
         skip_memory=True,
         clarify_callback=None,
         thinking_callback=child_thinking_cb,

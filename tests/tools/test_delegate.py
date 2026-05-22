@@ -369,6 +369,49 @@ class TestDelegateTask(unittest.TestCase):
             self.assertEqual(kwargs["provider"], parent.provider)
             self.assertEqual(kwargs["api_mode"], parent.api_mode)
 
+    def test_child_spawn_loads_soul_identity_even_when_project_context_skipped(self):
+        parent = _make_mock_parent(depth=0)
+
+        with patch("run_agent.AIAgent") as MockAgent:
+            mock_child = MagicMock()
+            MockAgent.return_value = mock_child
+
+            _build_child_agent(
+                task_index=0,
+                goal="Use current profile identity",
+                context=None,
+                toolsets=None,
+                model=None,
+                max_iterations=10,
+                parent_agent=parent,
+                task_count=1,
+            )
+
+        _, kwargs = MockAgent.call_args
+        self.assertTrue(kwargs["skip_context_files"])
+        self.assertTrue(kwargs["load_soul_identity"])
+
+    def test_child_spawn_refreshes_skill_prompt_cache_before_agent_construction(self):
+        parent = _make_mock_parent(depth=0)
+
+        with patch("agent.prompt_builder.clear_skills_system_prompt_cache") as clear_cache, \
+             patch("run_agent.AIAgent") as MockAgent:
+            mock_child = MagicMock()
+            MockAgent.return_value = mock_child
+
+            _build_child_agent(
+                task_index=0,
+                goal="Use current skill index",
+                context=None,
+                toolsets=None,
+                model=None,
+                max_iterations=10,
+                parent_agent=parent,
+                task_count=1,
+            )
+
+        clear_cache.assert_called_once_with(clear_snapshot=True)
+
     def test_child_inherits_parent_print_fn(self):
         parent = _make_mock_parent(depth=0)
         sink = MagicMock()

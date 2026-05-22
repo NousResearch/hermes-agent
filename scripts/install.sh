@@ -1089,13 +1089,28 @@ install_deps() {
         if [ "$need_build_tools" = true ]; then
             log_info "Some build tools may be needed for Python packages..."
             if command -v sudo &> /dev/null; then
+                # Preflight: detect pending apt autoremove which can cause interactive prompts
+                # and hang the installer on Debian/Ubuntu. See issue #30558.
                 if sudo -n true 2>/dev/null; then
+                    if sudo apt-get -s autoremove 2>/dev/null | grep -q "^Remv"; then
+                        log_error "apt has pending packages to autoremove which may cause interactive prompts."
+                        log_info "Run: sudo apt-get autoremove -y"
+                        log_info "Then re-run this installer."
+                        exit 1
+                    fi
                     sudo DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=a apt-get update -qq && sudo DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=a apt-get install -y -qq build-essential python3-dev libffi-dev >/dev/null 2>&1 || true
                     log_success "Build tools installed"
                 else
                     log_info "sudo is needed ONLY to install build tools (build-essential, python3-dev, libffi-dev) via apt."
                     log_info "Hermes Agent itself does not require or retain root access."
                     if prompt_yes_no "Install build tools?" "yes"; then
+                        # Preflight for interactive sudo path as well
+                        if sudo apt-get -s autoremove 2>/dev/null | grep -q "^Remv"; then
+                            log_error "apt has pending packages to autoremove which may cause interactive prompts."
+                            log_info "Run: sudo apt-get autoremove -y"
+                            log_info "Then re-run this installer."
+                            exit 1
+                        fi
                         sudo DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=a apt-get update -qq && sudo DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=a apt-get install -y -qq build-essential python3-dev libffi-dev >/dev/null 2>&1 || true
                         log_success "Build tools installed"
                     fi

@@ -338,9 +338,47 @@ OPENAI_MODEL_EXECUTION_GUIDANCE = (
     "- If required context is missing, do NOT guess or hallucinate an answer.\n"
     "- Use the appropriate lookup tool when missing information is retrievable "
     "(search_files, web_search, read_file, etc.).\n"
-    "- Ask a clarifying question only when the information cannot be retrieved by tools.\n"
-    "- If you must proceed with incomplete information, label assumptions explicitly.\n"
+    "Ask a clarifying question only when the information cannot be retrieved by tools.\\n"
+    "- If you must proceed with incomplete information, label assumptions explicitly.\\n"
     "</missing_context>"
+)
+
+# ── Unified tool batch execution guidance ─────────────────────────────────
+# Teaches the LLM to batch multiple independent operations into a single
+# unified tool call, drastically reducing turn count.
+BATCH_EXECUTION_GUIDANCE = (
+    "# Efficient tool usage\\n"
+    "<tool_batching>\\n"
+    "You have 6 unified tools instead of 33 individual ones. Each unified tool "
+    "can batch MULTIPLE operations in a single call. This is much more efficient.\\n"
+    "\\n"
+    "Batching rules:\\n"
+    "- **filesystem**: Read multiple files in one call: "
+    'data={"operations": [{"type": "read", "paths": ["a.py", "b.py"]}]}\\n'
+    "- **research**: Search + extract in one call: "
+    'data={"operations": [{"type": "search", "query": "..."}, '
+    '{"type": "extract", "urls": ["..."]}]}\\n'
+    "- **system**: Batch memory saves, todo updates, etc.\\n"
+    "- **browser**: Navigate + snapshot in one call: "
+    'data={"operations": [{"type": "navigate", "url": "..."}, '
+    '{"type": "snapshot"}]}\\n'
+    "\\n"
+    "<prefer_execute_code>\\n"
+    "For ANY multi-step operation that would require 3+ individual tool calls, "
+    "use the `code` tool with type: python instead. "
+    "Inside execute_code (type: python) you can call internal tool functions "
+    "programmatically (read_file, write_file, web_search, terminal, etc.) — "
+    "much more efficient than sequential tool calls.\\n"
+    "\\n"
+    "Examples of what to batch via code tool:\\n"
+    "- Search files, read matches, analyze results\\n"
+    "- Read multiple files, extract patterns, compute statistics\\n"
+    "- Run commands, capture output, process results\\n"
+    "\\n"
+    "For 1-2 simple operations, use the unified tools directly. "
+    "For anything more complex, use type: python (execute_code).\\n"
+    "</prefer_execute_code>\\n"
+    "</tool_batching>"
 )
 
 # Gemini/Gemma-specific operational guidance, adapted from OpenCode's gemini.txt.

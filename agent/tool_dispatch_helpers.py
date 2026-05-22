@@ -42,6 +42,7 @@ _NEVER_PARALLEL_TOOLS = frozenset({"clarify"})
 
 # Read-only tools with no shared mutable session state.
 _PARALLEL_SAFE_TOOLS = frozenset({
+    # Individual tools (legacy — kept for backward compat)
     "ha_get_state",
     "ha_list_entities",
     "ha_list_services",
@@ -53,6 +54,14 @@ _PARALLEL_SAFE_TOOLS = frozenset({
     "vision_analyze",
     "web_extract",
     "web_search",
+    # Unified tools — each handler manages internal parallelism.
+    # The agent loop runs MULTIPLE unified tools concurrently.
+    "research",
+    "filesystem",
+    "code",
+    "system",
+    "media",
+    "browser",
 })
 
 # File tools can run concurrently when they target independent paths.

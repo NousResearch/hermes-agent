@@ -28,47 +28,29 @@ from typing import List, Dict, Any, Set, Optional
 
 # Shared tool list for CLI and all messaging platform toolsets.
 # Edit this once to update all platforms simultaneously.
+# ---------------------------------------------------------------------------
+# Unified tools — 6 high-level tools replace the 33 individual tools below.
+# Each accepts a structured ``data`` dict and can batch multiple operations
+# in a single tool call, dramatically reducing turn count.
+#
+# Individual tool files (*.py in tools/) still exist for internal dispatch
+# (execute_code sandbox, etc.) but are no longer exposed to the LLM.
+# ---------------------------------------------------------------------------
 _HERMES_CORE_TOOLS = [
-    # Web
-    "web_search", "web_extract",
-    # Terminal + process management
-    "terminal", "process",
-    # File manipulation
-    "read_file", "write_file", "patch", "search_files",
-    # Vision + image generation
-    "vision_analyze", "image_generate",
-    # Skills
-    "skills_list", "skill_view", "skill_manage",
-    # Browser automation
-    "browser_navigate", "browser_snapshot", "browser_click",
-    "browser_type", "browser_scroll", "browser_back",
-    "browser_press", "browser_get_images",
-    "browser_vision", "browser_console", "browser_cdp", "browser_dialog",
-    # Text-to-speech
-    "text_to_speech",
-    # Planning & memory
-    "todo", "memory",
-    # Session history search
-    "session_search",
-    # Clarifying questions
-    "clarify",
-    # Code execution + delegation
-    "execute_code", "delegate_task",
-    # Cronjob management
-    "cronjob",
-    # Cross-platform messaging (gated on gateway running via check_fn)
-    "send_message",
-    # Home Assistant smart home control (gated on HASS_TOKEN via check_fn)
+    "research",      # web_search + web_extract
+    "filesystem",    # read_file + write_file + patch + search_files
+    "code",          # execute_code + terminal + process + delegate_task
+    "system",        # cronjob + memory + todo + session_search + clarify
+                     #   + send_message + skill_view/skill_manage/skills_list
+    "media",         # vision_analyze + image_generate + text_to_speech
+    "browser",       # browser_navigate/click/type/scroll/snapshot/back/...
+    # Gated tools — kept separate because they have check_fn requirements
+    # (HASS_TOKEN, kanban env, cua-driver). They register independently.
     "ha_list_entities", "ha_get_state", "ha_list_services", "ha_call_service",
-    # Kanban multi-agent coordination — only in schema when the agent is
-    # spawned as a kanban worker (HERMES_KANBAN_TASK env set) or the current
-    # profile explicitly enables the kanban toolset. Gated via check_fn in
-    # tools/kanban_tools.py.
     "kanban_show", "kanban_list",
     "kanban_complete", "kanban_block", "kanban_heartbeat",
     "kanban_comment", "kanban_create", "kanban_link",
     "kanban_unblock",
-    # Computer use (macOS, gated on cua-driver being installed via check_fn)
     "computer_use",
 ]
 
@@ -78,14 +60,14 @@ _HERMES_CORE_TOOLS = [
 TOOLSETS = {
     # Basic toolsets - individual tool categories
     "web": {
-        "description": "Web research and content extraction tools",
-        "tools": ["web_search", "web_extract"],
-        "includes": []  # No other toolsets included
+        "description": "Web research tool — search the web and extract page content",
+        "tools": ["research"],
+        "includes": []
     },
     
     "search": {
         "description": "Web search only (no content extraction/scraping)",
-        "tools": ["web_search"],
+        "tools": ["research"],  # LLM should use research with type: search
         "includes": []
     },
 
@@ -102,7 +84,7 @@ TOOLSETS = {
     
     "vision": {
         "description": "Image analysis and vision tools",
-        "tools": ["vision_analyze"],
+        "tools": ["media"],
         "includes": []
     },
 
@@ -114,7 +96,7 @@ TOOLSETS = {
     
     "image_gen": {
         "description": "Creative generation tools (images)",
-        "tools": ["image_generate"],
+        "tools": ["media"],
         "includes": []
     },
 
@@ -141,7 +123,7 @@ TOOLSETS = {
 
     "terminal": {
         "description": "Terminal/command execution and process management tools",
-        "tools": ["terminal", "process"],
+        "tools": ["code"],
         "includes": []
     },
     
@@ -153,80 +135,74 @@ TOOLSETS = {
     
     "skills": {
         "description": "Access, create, edit, and manage skill documents with specialized instructions and knowledge",
-        "tools": ["skills_list", "skill_view", "skill_manage"],
+        "tools": ["system"],
         "includes": []
     },
     
     "browser": {
-        "description": "Browser automation for web interaction (navigate, click, type, scroll, iframes, hold-click) with web search for finding URLs",
-        "tools": [
-            "browser_navigate", "browser_snapshot", "browser_click",
-            "browser_type", "browser_scroll", "browser_back",
-            "browser_press", "browser_get_images",
-            "browser_vision", "browser_console", "browser_cdp",
-            "browser_dialog", "web_search"
-        ],
+        "description": "Browser automation for web interaction (navigate, click, type, scroll, snapshots, screenshots)",
+        "tools": ["browser"],
         "includes": []
     },
     
     "cronjob": {
         "description": "Cronjob management tool - create, list, update, pause, resume, remove, and trigger scheduled tasks",
-        "tools": ["cronjob"],
+        "tools": ["system"],
         "includes": []
     },
     
     "messaging": {
         "description": "Cross-platform messaging: send messages to Telegram, Discord, Slack, SMS, etc.",
-        "tools": ["send_message"],
+        "tools": ["system"],
         "includes": []
     },
 
     
     "file": {
-        "description": "File manipulation tools: read, write, patch (with fuzzy matching), and search (content + files)",
-        "tools": ["read_file", "write_file", "patch", "search_files"],
+        "description": "File manipulation tools: read, write, patch (with fuzzy matching), and search (content + files) — all in a single filesystem tool",
+        "tools": ["filesystem"],
         "includes": []
     },
     
     "tts": {
-        "description": "Text-to-speech: convert text to audio with Edge TTS (free), ElevenLabs, OpenAI, or xAI",
-        "tools": ["text_to_speech"],
+        "description": "Text-to-speech: convert text to audio via the media tool",
+        "tools": ["media"],
         "includes": []
     },
     
     "todo": {
-        "description": "Task planning and tracking for multi-step work",
-        "tools": ["todo"],
+        "description": "Task planning and tracking via the system tool",
+        "tools": ["system"],
         "includes": []
     },
     
     "memory": {
-        "description": "Persistent memory across sessions (personal notes + user profile)",
-        "tools": ["memory"],
+        "description": "Persistent memory across sessions via the system tool",
+        "tools": ["system"],
         "includes": []
     },
     
     "session_search": {
-        "description": "Search and recall past conversations with summarization",
-        "tools": ["session_search"],
+        "description": "Search and recall past conversations via the system tool",
+        "tools": ["system"],
         "includes": []
     },
     
     "clarify": {
-        "description": "Ask the user clarifying questions (multiple-choice or open-ended)",
-        "tools": ["clarify"],
+        "description": "Ask the user clarifying questions via the system tool",
+        "tools": ["system"],
         "includes": []
     },
     
     "code_execution": {
-        "description": "Run Python scripts that call tools programmatically (reduces LLM round trips)",
-        "tools": ["execute_code"],
+        "description": "Run Python scripts that call tools programmatically (reduces LLM round trips) — via the code tool",
+        "tools": ["code"],
         "includes": []
     },
     
     "delegation": {
-        "description": "Spawn subagents with isolated context for complex subtasks",
-        "tools": ["delegate_task"],
+        "description": "Spawn subagents with isolated context for complex subtasks — via the code tool",
+        "tools": ["code"],
         "includes": []
     },
 
@@ -311,7 +287,7 @@ TOOLSETS = {
     
     "debugging": {
         "description": "Debugging and troubleshooting toolkit",
-        "tools": ["terminal", "process"],
+        "tools": ["code"],
         "includes": ["web", "file"]  # For searching error messages and solutions, and file operations
     },
     
@@ -331,15 +307,13 @@ TOOLSETS = {
     "hermes-acp": {
         "description": "Editor integration (VS Code, Zed, JetBrains) — coding-focused tools without messaging, audio, or clarify UI",
         "tools": [
-            "web_search", "web_extract",
-            "terminal", "process",
-            "read_file", "write_file", "patch", "search_files",
-            "vision_analyze",
+            "research",
+            "code",
+            "filesystem",
+            "media",
+            "system",
+            "browser",
             "skills_list", "skill_view", "skill_manage",
-            "browser_navigate", "browser_snapshot", "browser_click",
-            "browser_type", "browser_scroll", "browser_back",
-            "browser_press", "browser_get_images",
-            "browser_vision", "browser_console", "browser_cdp", "browser_dialog",
             "todo", "memory",
             "session_search",
             "execute_code", "delegate_task",
@@ -350,21 +324,15 @@ TOOLSETS = {
     "hermes-api-server": {
         "description": "OpenAI-compatible API server — full agent tools accessible via HTTP (no interactive UI tools like clarify or send_message)",
         "tools": [
-            # Web
-            "web_search", "web_extract",
-            # Terminal + process management
-            "terminal", "process",
-            # File manipulation
-            "read_file", "write_file", "patch", "search_files",
-            # Vision + image generation
-            "vision_analyze", "image_generate",
-            # Skills
+            # Unified tools
+            "research",
+            "code",
+            "filesystem",
+            "media",
+            "system",
+            "browser",
+            # Skills (kept separate for granular control)
             "skills_list", "skill_view", "skill_manage",
-            # Browser automation
-            "browser_navigate", "browser_snapshot", "browser_click",
-            "browser_type", "browser_scroll", "browser_back",
-            "browser_press", "browser_get_images",
-            "browser_vision", "browser_console", "browser_cdp", "browser_dialog",
             # Planning & memory
             "todo", "memory",
             # Session history search
@@ -373,9 +341,8 @@ TOOLSETS = {
             "execute_code", "delegate_task",
             # Cronjob management
             "cronjob",
-            # Home Assistant smart home control (gated on HASS_TOKEN via check_fn)
+            # Home Assistant
             "ha_list_entities", "ha_get_state", "ha_list_services", "ha_call_service",
-
         ],
         "includes": []
     },

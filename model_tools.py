@@ -179,6 +179,10 @@ def _run_async(coro):
 
 discover_builtin_tools()
 
+# Import unified tools — they register via registry.register() inside a loop,
+# so the AST-based discovery above doesn't detect them. Import explicitly.
+import tools.unified_tools  # noqa: F401 — registers 6 unified tools
+
 # MCP tool discovery (external MCP servers from config) used to run here as
 # a module-level side effect.  It was removed because discover_mcp_tools()
 # internally uses a blocking future.result(timeout=120) wait, and the

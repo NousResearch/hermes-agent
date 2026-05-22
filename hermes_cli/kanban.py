@@ -16,7 +16,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import logging
 import os
 import shlex
 import sys
@@ -30,8 +29,6 @@ from hermes_cli.kanban_watch_subscriptions import (
 )
 from hermes_cli import kanban_swarm as ks
 from hermes_cli.profiles import get_active_profile_name, get_profile_dir, seed_profile_skills
-
-logger = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------

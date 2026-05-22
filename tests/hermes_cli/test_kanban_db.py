@@ -1906,7 +1906,7 @@ def test_add_notify_sub_defaults_to_notification(kanban_home):
         subs = kb.list_notify_subs(conn, tid)
     assert len(subs) == 1
     assert subs[0]["delivery_mode"] == "notification"
-    assert subs[0]["session_key"] == ""
+    assert subs[0]["session_key"] is None
 
 
 def test_set_and_clear_task_watcher_round_trip(kanban_home):

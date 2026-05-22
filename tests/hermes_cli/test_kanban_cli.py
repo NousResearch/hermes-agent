@@ -206,7 +206,7 @@ def test_notify_subscribe_defaults_to_notification_and_supports_session_event(ka
         subs = kb.list_notify_subs(conn, tid)
     assert len(subs) == 1
     assert subs[0]["delivery_mode"] == "notification"
-    assert subs[0]["session_key"] == ""
+    assert subs[0]["session_key"] is None
 
     out = kc.run_slash(
         f"notify-subscribe {tid} --platform discord --chat-id room-2 "

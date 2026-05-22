@@ -302,6 +302,9 @@ def _build_gateway_cmd_script(
     The script:
       - cd's into the project directory
       - exports HERMES_HOME, PYTHONIOENCODING, VIRTUAL_ENV
+      - on uv-managed venvs (per ``_resolve_detached_python``), also exports
+        PYTHONPATH so the base ``pythonw.exe`` can import the venv's
+        ``site-packages``
       - invokes ``pythonw -m hermes_cli.main [--profile X] gateway run``
         directly so the wrapper cmd.exe exits without a visible gateway console
 
@@ -322,7 +325,11 @@ def _build_gateway_cmd_script(
     pythonw_path, venv_dir, extra_pythonpath = _resolve_detached_python(python_path)
     lines.append(f'set "VIRTUAL_ENV={venv_dir.resolve()}"')
     if extra_pythonpath:
-        pythonpath_value = os.pathsep.join([working_dir, *extra_pythonpath])
+        # The emitted ``.cmd`` is consumed by cmd.exe on Windows, so use the
+        # Windows path separator literally rather than ``os.pathsep`` — the
+        # latter would yield ``:`` if this script were ever generated off
+        # Windows (e.g. cross-platform build tooling or unit tests).
+        pythonpath_value = ";".join([working_dir, *extra_pythonpath])
         lines.append(f'set "PYTHONPATH={pythonpath_value}"')
 
     prog_args = [pythonw_path, "-m", "hermes_cli.main"]

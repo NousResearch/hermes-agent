@@ -108,7 +108,10 @@ def test_build_gateway_cmd_script_uses_base_pythonw_for_uv_venv_launcher(monkeyp
         line for line in content.splitlines() if line.startswith('set "PYTHONPATH=')
     )
     pythonpath_value = pythonpath_line.split("=", 1)[1].rstrip('"')
-    pythonpath_entries = pythonpath_value.split(gateway_windows.os.pathsep)
+    # The generated script is Windows-targeted, so its PYTHONPATH always
+    # uses ``;`` as the separator regardless of the host OS running this
+    # test. Use the literal Windows separator instead of os.pathsep.
+    pythonpath_entries = pythonpath_value.split(";")
     assert str(project) in pythonpath_entries
     assert str(site_packages) in pythonpath_entries
     assert "gateway run" in content

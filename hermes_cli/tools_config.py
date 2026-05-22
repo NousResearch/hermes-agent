@@ -482,6 +482,11 @@ TOOLSET_ENV_REQUIREMENTS = {
 # ─── Post-Setup Hooks ─────────────────────────────────────────────────────────
 
 
+def _cua_driver_cmd() -> str:
+    """Return the cua-driver executable name/path, honoring non-empty overrides."""
+    return os.environ.get("HERMES_CUA_DRIVER_CMD", "").strip() or "cua-driver"
+
+
 def _pip_install(
     args: List[str],
     *,
@@ -550,6 +555,55 @@ def _pip_install(
     )
 
 
+
+def _check_cua_driver_asset_for_arch() -> bool:
+    """Check whether the latest CUA release ships an asset for this architecture.
+
+    Returns True if the asset likely exists (or if we cannot determine it).
+    Returns False and prints a warning when the asset is confirmed missing,
+    so callers can skip the install attempt and avoid a raw 404.
+    """
+    import platform as _plat
+    import urllib.request
+
+    machine = _plat.machine()  # "x86_64" or "arm64"
+    if machine == "arm64":
+        # arm64 (Apple Silicon) assets are always published.
+        return True
+
+    # x86_64 / Intel — probe the latest release for an architecture-specific
+    # asset before falling through to the upstream installer.
+    api_url = (
+        "https://api.github.com/repos/trycua/cua/releases/latest"
+    )
+    try:
+        req = urllib.request.Request(api_url, headers={"Accept": "application/vnd.github+json"})
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            release = _json.loads(resp.read().decode())
+        tag = release.get("tag_name", "")
+        assets = release.get("assets", [])
+        arch_names = {"x86_64", "amd64"}
+        has_asset = any(
+            any(a in a_info.get("name", "").lower() for a in arch_names)
+            for a_info in assets
+        )
+        if not has_asset:
+            _print_warning(
+                f"    Latest CUA release ({tag}) has no Intel (x86_64) asset."
+            )
+            _print_info(
+                "    CUA Driver currently only ships Apple Silicon builds."
+            )
+            _print_info(
+                "    See: https://github.com/trycua/cua/issues/1493"
+            )
+            return False
+    except Exception:
+        # Network / API failure — proceed and let the installer handle it.
+        pass
+    return True
+
+
 def install_cua_driver(upgrade: bool = False) -> bool:
     """Install or refresh the cua-driver binary used by Computer Use.
 
@@ -579,7 +633,8 @@ def install_cua_driver(upgrade: bool = False) -> bool:
         _print_warning("    Computer Use (cua-driver) is macOS-only; skipping.")
         return False
 
-    binary = shutil.which("cua-driver")
+    driver_cmd = _cua_driver_cmd()
+    binary = shutil.which(driver_cmd)
 
     # Not installed → fresh install path (only when caller asked for it).
     if not binary and not upgrade:
@@ -587,18 +642,20 @@ def install_cua_driver(upgrade: bool = False) -> bool:
             _print_warning("    curl not found — install manually:")
             _print_info("      https://github.com/trycua/cua/blob/main/libs/cua-driver/README.md")
             return False
+        if not _check_cua_driver_asset_for_arch():
+            return False
         return _run_cua_driver_installer(label="Installing")
 
     # Already installed and caller didn't ask to upgrade → just confirm.
     if binary and not upgrade:
         try:
             version = subprocess.run(
-                ["cua-driver", "--version"],
+                [driver_cmd, "--version"],
                 capture_output=True, text=True, timeout=5,
             ).stdout.strip()
-            _print_success(f"    cua-driver already installed: {version or 'unknown version'}")
+            _print_success(f"    {driver_cmd} already installed: {version or 'unknown version'}")
         except Exception:
-            _print_success("    cua-driver already installed.")
+            _print_success(f"    {driver_cmd} already installed.")
         _print_info("    Grant macOS permissions if not done yet:")
         _print_info("      System Settings > Privacy & Security > Accessibility")
         _print_info("      System Settings > Privacy & Security > Screen Recording")
@@ -609,11 +666,14 @@ def install_cua_driver(upgrade: bool = False) -> bool:
         _print_warning("    curl not found — cannot refresh cua-driver.")
         return bool(binary)
 
+    if not _check_cua_driver_asset_for_arch():
+        return bool(binary)
+
     if binary:
         # Show before/after version when we have a baseline. Best-effort.
         try:
             before = subprocess.run(
-                ["cua-driver", "--version"],
+                [driver_cmd, "--version"],
                 capture_output=True, text=True, timeout=5,
             ).stdout.strip()
         except Exception:
@@ -625,13 +685,13 @@ def install_cua_driver(upgrade: bool = False) -> bool:
     if ok and before:
         try:
             after = subprocess.run(
-                ["cua-driver", "--version"],
+                [driver_cmd, "--version"],
                 capture_output=True, text=True, timeout=5,
             ).stdout.strip()
             if after and after != before:
-                _print_success(f"    cua-driver upgraded: {before} → {after}")
+                _print_success(f"    {driver_cmd} upgraded: {before} → {after}")
             elif after:
-                _print_info(f"    cua-driver up to date: {after}")
+                _print_info(f"    {driver_cmd} up to date: {after}")
         except Exception:
             pass
     return ok
@@ -655,11 +715,12 @@ def _run_cua_driver_installer(label: str = "Installing", verbose: bool = True) -
         _print_info(f"    {label} cua-driver (macOS background computer-use)...")
     else:
         _print_info(f"    {label} cua-driver...")
+    driver_cmd = _cua_driver_cmd()
     try:
         result = subprocess.run(install_cmd, shell=True, timeout=300)
-        if result.returncode == 0 and shutil.which("cua-driver"):
+        if result.returncode == 0 and shutil.which(driver_cmd):
             if verbose:
-                _print_success("    cua-driver installed.")
+                _print_success(f"    {driver_cmd} installed.")
                 _print_info("    IMPORTANT — grant macOS permissions now:")
                 _print_info("      System Settings > Privacy & Security > Accessibility")
                 _print_info("      System Settings > Privacy & Security > Screen Recording")
@@ -1751,7 +1812,7 @@ _POST_SETUP_INSTALLED: dict = {
     # entry when (a) the post_setup is the ONLY install side-effect for
     # a no-key provider, and (b) an installed-state check is cheap and
     # doesn't trigger a heavy import.
-    "cua_driver": lambda: bool(shutil.which("cua-driver")),
+    "cua_driver": lambda: bool(shutil.which(_cua_driver_cmd())),
 }
 
 

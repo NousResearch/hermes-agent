@@ -316,6 +316,42 @@ class TestMessageStorage:
         assert conv[0] == {"role": "user", "content": "Hello"}
         assert conv[1] == {"role": "assistant", "content": "Hi!"}
 
+    def test_platform_message_id_round_trips(self, db):
+        """Platform-side message ids (yuanbao msg_id, telegram update_id, …)
+        survive append → get_messages_as_conversation under the
+        ``message_id`` key so platform recall flows can match by exact id."""
+        db.create_session(session_id="s_pmi", source="yuanbao")
+        db.append_message(
+            "s_pmi",
+            role="user",
+            content="hi",
+            platform_message_id="abc-123",
+        )
+        db.append_message("s_pmi", role="assistant", content="hello")
+
+        conv = db.get_messages_as_conversation("s_pmi")
+        user_msg = next(m for m in conv if m["role"] == "user")
+        assistant_msg = next(m for m in conv if m["role"] == "assistant")
+        assert user_msg.get("message_id") == "abc-123"
+        # Assistant row had no platform id — must not gain one spuriously.
+        assert "message_id" not in assistant_msg
+
+    def test_replace_messages_preserves_platform_message_id(self, db):
+        """``rewrite_transcript`` (which goes through replace_messages) must
+        keep the platform_message_id round-trip working for /retry, /undo,
+        /compress and yuanbao's recall rewrite path."""
+        db.create_session(session_id="s_rep", source="yuanbao")
+        db.replace_messages(
+            "s_rep",
+            [
+                {"role": "user", "content": "x", "message_id": "ext-1"},
+                {"role": "assistant", "content": "y"},
+            ],
+        )
+        conv = db.get_messages_as_conversation("s_rep")
+        assert next(m for m in conv if m["role"] == "user").get("message_id") == "ext-1"
+        assert "message_id" not in next(m for m in conv if m["role"] == "assistant")
+
     def test_get_messages_as_conversation_includes_ancestor_chain(self, db):
         db.create_session("root", "tui")
         db.append_message("root", role="user", content="first prompt")
@@ -1462,9 +1498,10 @@ class TestSchemaInit:
         assert "schema_version" in tables
 
     def test_schema_version(self, db):
+        from hermes_state import SCHEMA_VERSION
         cursor = db._conn.execute("SELECT version FROM schema_version")
         version = cursor.fetchone()[0]
-        assert version == 11
+        assert version == SCHEMA_VERSION
 
     def test_title_column_exists(self, db):
         """Verify the title column was created in the sessions table."""
@@ -1760,8 +1797,9 @@ class TestSchemaInit:
         migrated_db = SessionDB(db_path=db_path)
 
         # Verify migration
+        from hermes_state import SCHEMA_VERSION
         cursor = migrated_db._conn.execute("SELECT version FROM schema_version")
-        assert cursor.fetchone()[0] == 11
+        assert cursor.fetchone()[0] == SCHEMA_VERSION
 
         # Verify title column exists and is NULL for existing sessions
         session = migrated_db.get_session("existing")
@@ -2952,11 +2990,12 @@ class TestFTS5ToolCallMigration:
             assert len(session_db.search_messages("LEGACYARG")) == 1, \
                 "v11 migration must backfill tool_calls JSON into FTS"
             # schema_version bumped
+            from hermes_state import SCHEMA_VERSION
             row = session_db._conn.execute(
                 "SELECT version FROM schema_version LIMIT 1"
             ).fetchone()
             version = row["version"] if hasattr(row, "keys") else row[0]
-            assert version == 11
+            assert version == SCHEMA_VERSION
         finally:
             session_db.close()
 

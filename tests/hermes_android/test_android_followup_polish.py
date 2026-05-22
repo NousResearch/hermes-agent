@@ -324,6 +324,14 @@ def test_android_diagnostics_exposes_signal_evidence_bundle_for_gemma_visible_cu
     assert 'agent_signal_evidence_report' in chat_client
     assert 'signal_evidence_bundle' in chat_client
     assert 'extractImplicitSignalEvidenceArguments(userText)' in chat_client
+    assert 'extractImplicitAndroidDiagnosticsArguments(userText)' in chat_client
+    assert 'fun extractImplicitAndroidDiagnosticsArguments(userText: String): JSONObject?' in chat_client
+    assert 'diagnosticArguments("wifi_channel_rating", "refresh" to false)' in chat_client
+    assert 'diagnosticArguments("bluetooth_scan", "refresh" to false)' in chat_client
+    assert '"motion_sensor_history"' in chat_client
+    assert '"sensor_types" to "accelerometer,gyroscope,linear_acceleration,rotation_vector"' in chat_client
+    assert 'diagnosticArguments("radio_signal_graph")' in chat_client
+    assert 'diagnosticArguments("soc_compatibility_report")' in chat_client
     assert 'what Hermes/Gemma can see from nearby signals' in chat_client
     assert 'first call android_device_diagnostics_tool action=agent_signal_evidence_report' in chat_client
     assert '"signal_evidence_matrix"' in chat_client

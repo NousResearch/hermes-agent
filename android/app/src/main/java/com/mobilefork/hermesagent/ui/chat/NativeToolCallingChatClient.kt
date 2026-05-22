@@ -204,6 +204,20 @@ class NativeToolCallingChatClient(
             )
         }
 
+        extractImplicitAndroidDiagnosticsArguments(userText)?.let { arguments ->
+            val toolResult = executeAndroidDeviceDiagnosticsTool(
+                ToolCall(
+                    id = "direct_${UUID.randomUUID()}",
+                    name = "android_device_diagnostics_tool",
+                    arguments = arguments,
+                )
+            )
+            return Result(
+                content = toolCompletionReply(toolResult),
+                executedToolCalls = 1,
+            )
+        }
+
         val command = extractExactTerminalCommand(userText) ?: return null
         val toolResult = executeTerminalTool(
             ToolCall(
@@ -3235,6 +3249,64 @@ class NativeToolCallingChatClient(
                 JSONObject().put("action", "agent_signal_evidence_report")
             } else {
                 null
+            }
+        }
+
+        internal fun extractImplicitAndroidDiagnosticsArguments(userText: String): JSONObject? {
+            val lower = userText.lowercase()
+            if (lower.contains("screen") && !lower.containsAny("wifi", "wi-fi", "bluetooth", "ble", "radio", "rf", "sensor", "motion", "soc", "mediatek")) {
+                return null
+            }
+            return when {
+                lower.containsAny("best wifi channel", "best wi-fi channel", "channel rating", "rate wifi", "rate wi-fi", "wifi congestion", "wi-fi congestion") ->
+                    diagnosticArguments("wifi_channel_rating", "refresh" to false)
+                lower.containsAny("wifi utilization", "wi-fi utilization", "wifi occupancy", "wi-fi occupancy", "wifi interference", "wi-fi interference", "wifi spectrum", "wi-fi spectrum") ->
+                    diagnosticArguments("wifi_channel_utilization", "refresh" to false)
+                lower.containsAny("wifi graph", "wi-fi graph", "wifi channel graph", "wi-fi channel graph", "wifi channel strength", "wi-fi channel strength") ->
+                    diagnosticArguments("wifi_channel_graph", "refresh" to false)
+                lower.containsAny("wifi analyzer", "wi-fi analyzer", "analyze wifi", "analyze wi-fi", "wifi readiness", "wi-fi readiness", "wifi scan policy", "wi-fi scan policy") ->
+                    diagnosticArguments("wifi_analyzer_report", "refresh" to false)
+                lower.containsAny("nearby wifi", "nearby wi-fi", "scan wifi", "scan wi-fi", "wifi networks", "wi-fi networks", "access points nearby", "nearby access points") ->
+                    diagnosticArguments("wifi_scan", "refresh" to false)
+                lower.containsAny("bluetooth history", "bluetooth trend", "bluetooth trends", "bluetooth rssi history", "ble history", "ble trend", "rssi trend") ->
+                    diagnosticArguments("bluetooth_signal_history", "refresh" to false)
+                lower.containsAny("bluetooth analyzer", "bluetooth readiness", "bluetooth scan policy", "analyze bluetooth", "analyze ble") ->
+                    diagnosticArguments("bluetooth_analyzer_report", "refresh" to false)
+                lower.containsAny("nearby bluetooth", "nearby ble", "scan bluetooth", "scan ble", "bluetooth devices", "ble devices", "bluetooth scanner", "ble scanner") ->
+                    diagnosticArguments("bluetooth_scan", "refresh" to false)
+                lower.containsAny("motion history", "motion trend", "motion trends", "imu history", "imu trend", "accelerometer history", "gyroscope history") ->
+                    diagnosticArguments(
+                        "motion_sensor_history",
+                        "sample" to true,
+                        "sensor_types" to "accelerometer,gyroscope,linear_acceleration,rotation_vector",
+                    )
+                lower.containsAny("motion pose", "pose estimate", "heading estimate", "fused pose", "orientation estimate") ->
+                    diagnosticArguments(
+                        "motion_pose",
+                        "sample" to true,
+                        "sensor_types" to "accelerometer,magnetic_field,gyroscope,rotation_vector",
+                    )
+                lower.containsAny("sensor analyzer", "sensor readiness", "sensor sampling policy", "sensor metadata", "sensor capability", "accelerometer", "gyroscope", "gyrometer") ->
+                    diagnosticArguments("sensor_analyzer_report", "include_snapshot" to false)
+                lower.containsAny("radio graph", "rf graph", "fm graph", "am graph", "am/fm graph", "am fm graph", "signal graph") ->
+                    diagnosticArguments("radio_signal_graph")
+                lower.containsAny("fm radio", "am radio", "am/fm radio", "am fm radio", "radio signals", "rf signals", "radio scanner", "radio scan", "broadcast radio") ->
+                    diagnosticArguments("radio_signal_status")
+                lower.containsAny("gpu backend risk", "backend risk", "accelerator risk", "non adreno backend", "mali backend", "powervr backend", "xclipse backend") ->
+                    diagnosticArguments("gpu_backend_risk_report")
+                lower.containsAny("local inference compatibility", "inference compatibility", "model compatibility", "inference fit", "litert compatibility", "gemma compatibility", "will gemma run", "can gemma run") ->
+                    diagnosticArguments("local_inference_compatibility_report")
+                lower.containsAny("mediatek compatibility", "mediatek", "dimensity", "helio", "soc compatibility", "soc backend", "mali", "powervr", "non snapdragon", "non-snapdragon") ->
+                    diagnosticArguments("soc_compatibility_report")
+                else -> null
+            }
+        }
+
+        private fun String.containsAny(vararg needles: String): Boolean = needles.any { it in this }
+
+        private fun diagnosticArguments(action: String, vararg pairs: Pair<String, Any>): JSONObject {
+            return JSONObject().put("action", action).apply {
+                pairs.forEach { (key, value) -> put(key, value) }
             }
         }
 

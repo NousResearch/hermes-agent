@@ -142,6 +142,33 @@ class NativeToolCallingChatClientTest {
     }
 
     @Test
+    fun extractsImplicitDomainDiagnosticsForSignalHardwareQuestions() {
+        assertEquals(
+            "wifi_channel_rating",
+            NativeToolCallingChatClient.extractImplicitAndroidDiagnosticsArguments("Rate the best Wi-Fi channel for the nearby APs.")?.getString("action"),
+        )
+        assertEquals(
+            "bluetooth_scan",
+            NativeToolCallingChatClient.extractImplicitAndroidDiagnosticsArguments("Show nearby Bluetooth devices and BLE beacons.")?.getString("action"),
+        )
+        assertEquals(
+            "motion_sensor_history",
+            NativeToolCallingChatClient.extractImplicitAndroidDiagnosticsArguments("Show accelerometer history and gyroscope trends.")?.getString("action"),
+        )
+        assertEquals(
+            "radio_signal_graph",
+            NativeToolCallingChatClient.extractImplicitAndroidDiagnosticsArguments("Show the AM/FM radio graph.")?.getString("action"),
+        )
+        assertEquals(
+            "soc_compatibility_report",
+            NativeToolCallingChatClient.extractImplicitAndroidDiagnosticsArguments("Will this MediaTek Dimensity phone work without Snapdragon assumptions?")?.getString("action"),
+        )
+        assertNull(
+            NativeToolCallingChatClient.extractImplicitAndroidDiagnosticsArguments("What can you see on the screen?"),
+        )
+    }
+
+    @Test
     fun extractsExplicitAgentCardManifestDiagnosticQuickActionArguments() {
         val parsed = NativeToolCallingChatClient.extractExplicitAndroidDiagnosticsArguments(
             "Run android_device_diagnostics_tool action=agent_card_manifest_report",

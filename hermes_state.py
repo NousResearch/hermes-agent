@@ -218,6 +218,11 @@ CREATE TABLE IF NOT EXISTS sessions (
     handoff_state TEXT,
     handoff_platform TEXT,
     handoff_error TEXT,
+    -- Live state tracking for external consumers (Hermes Pet bridge, etc.)
+    live_state TEXT,
+    live_state_updated_at REAL,
+    current_tool_name TEXT,
+    live_state_detail TEXT,
     FOREIGN KEY (parent_session_id) REFERENCES sessions(id)
 );
 
@@ -745,6 +750,43 @@ class SessionDB:
                 (time.time(), end_reason, session_id),
             )
         self._execute_write(_do)
+
+    def set_session_live_state(
+        self,
+        session_id: str,
+        live_state: str,
+        tool_name: Optional[str] = None,
+        detail: Optional[str] = None,
+    ) -> None:
+        """Update live execution state for a session.
+
+        Best-effort: failures are logged at DEBUG level and never raised.
+        Columns are auto-reconciled by _init_schema() on connect, so older
+        DBs without live_state columns are tolerated (UPDATE is a no-op).
+
+        Allowed live_state values:
+            listening, thinking, tool_running, waiting_for_jack,
+            done, error, idle, unknown
+        """
+        if not session_id:
+            return
+        try:
+            def _do(conn):
+                conn.execute(
+                    """UPDATE sessions SET
+                       live_state = ?,
+                       live_state_updated_at = ?,
+                       current_tool_name = ?,
+                       live_state_detail = ?
+                       WHERE id = ?""",
+                    (live_state, time.time(), tool_name, detail, session_id),
+                )
+            self._execute_write(_do)
+        except Exception as exc:
+            logger.debug(
+                "set_session_live_state(%s, %s): %s",
+                session_id, live_state, exc,
+            )
 
     def reopen_session(self, session_id: str) -> None:
         """Clear ended_at/end_reason so a session can be resumed."""

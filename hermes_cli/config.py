@@ -977,6 +977,13 @@ DEFAULT_CONFIG = {
     # Web dashboard settings
     "dashboard": {
         "theme": "default",  # Dashboard visual theme: "default", "midnight", "ember", "mono", "cyberpunk", "rose"
+        # Additional WebSocket peer hosts/IPs/CIDRs accepted for /api/pty,
+        # /api/ws, /api/pub, and /api/events when bound to loopback. Use this
+        # for trusted local/reverse-proxy peers that connect to the dashboard
+        # on behalf of a browser. Defaults remain loopback-only.
+        "trusted_proxy_hosts": [],
+        # Backward-compatible alias for trusted_proxy_hosts.
+        "allowed_ws_clients": [],
         # Hide the token/cost analytics surfaces (Analytics page, token bars and
         # cost figures on the Models page) by default.  The numbers shown there
         # are a local debug estimate: they only count successful main-agent

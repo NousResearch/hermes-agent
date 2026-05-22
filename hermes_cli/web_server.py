@@ -12,6 +12,7 @@ Usage:
 import asyncio
 import hmac
 import importlib.util
+import ipaddress
 import json
 import logging
 import os
@@ -159,6 +160,45 @@ _LOOPBACK_HOST_VALUES: frozenset = frozenset({
 })
 
 
+def _normalize_host_value(value: Any) -> str:
+    """Normalize a configured Host/client value for comparisons."""
+    if value is None:
+        return ""
+    h = str(value).strip().lower()
+    if not h:
+        return ""
+    if h.startswith("["):
+        close = h.find("]")
+        return h[1:close] if close != -1 else h.strip("[]")
+    return h.rsplit(":", 1)[0] if ":" in h and h.count(":") == 1 else h
+
+
+def _configured_dashboard_values(*keys: str) -> frozenset[str]:
+    """Read dashboard security allow-list values from app.state or config.yaml."""
+    configured = getattr(app.state, "dashboard_security", None)
+    if configured is None:
+        try:
+            config = load_config()
+        except Exception:
+            config = {}
+        dashboard = config.get("dashboard", {}) if isinstance(config, dict) else {}
+    else:
+        dashboard = configured if isinstance(configured, dict) else {}
+
+    values: set[str] = set()
+    for key in keys:
+        raw = dashboard.get(key, []) if isinstance(dashboard, dict) else []
+        if isinstance(raw, (str, int, float)):
+            raw = [raw]
+        if not isinstance(raw, list):
+            continue
+        for item in raw:
+            normalized = _normalize_host_value(item)
+            if normalized:
+                values.add(normalized)
+    return frozenset(values)
+
+
 def _is_accepted_host(host_header: str, bound_host: str) -> bool:
     """True if the Host header targets the interface we bound to.
 
@@ -298,6 +338,14 @@ _SCHEMA_OVERRIDES: Dict[str, Dict[str, Any]] = {
         "type": "select",
         "description": "Web dashboard visual theme",
         "options": ["default", "midnight", "ember", "mono", "cyberpunk", "rose"],
+    },
+    "dashboard.trusted_proxy_hosts": {
+        "type": "list",
+        "description": "Extra trusted WebSocket peer hosts/IPs/CIDRs for dashboard chat reverse proxies",
+    },
+    "dashboard.allowed_ws_clients": {
+        "type": "list",
+        "description": "Alias for dashboard.trusted_proxy_hosts",
     },
     "display.resume_display": {
         "type": "select",
@@ -3155,6 +3203,47 @@ _VALID_CHANNEL_RE = re.compile(r"^[A-Za-z0-9._-]{1,128}$")
 _LOOPBACK_HOSTS = frozenset({"127.0.0.1", "::1", "localhost", "testclient"})
 
 
+def _trusted_ws_client_values() -> frozenset[str]:
+    return _LOOPBACK_HOSTS | _configured_dashboard_values(
+        "trusted_proxy_hosts",
+        "allowed_ws_clients",
+    )
+
+
+def _host_matches_configured_client(client_host: str, allowed: frozenset[str]) -> bool:
+    """Match a WebSocket peer host against exact values or configured CIDRs."""
+    client = _normalize_host_value(client_host)
+    if client in allowed:
+        return True
+    try:
+        client_ip = ipaddress.ip_address(client)
+    except ValueError:
+        return False
+    for value in allowed:
+        if "/" not in value:
+            continue
+        try:
+            if client_ip in ipaddress.ip_network(value, strict=False):
+                return True
+        except ValueError:
+            continue
+    return False
+
+
+def _ws_host_or_origin_value_is_allowed(value: str) -> bool:
+    """Validate WebSocket Host/Origin against bind target or WS proxy config."""
+    if not value:
+        return False
+    host = _normalize_host_value(value)
+    bound_host = getattr(app.state, "bound_host", "127.0.0.1")
+    if bound_host in {"0.0.0.0", "::"}:
+        return True
+    bound_lc = str(bound_host).lower()
+    if bound_lc in _LOOPBACK_HOST_VALUES:
+        return _host_matches_configured_client(host, _trusted_ws_client_values())
+    return host == bound_lc
+
+
 def _is_public_bind() -> bool:
     """True when bound to all-interfaces (operator used --insecure)."""
     return getattr(app.state, "bound_host", "") in {"0.0.0.0", "::"}
@@ -3171,7 +3260,34 @@ def _ws_client_is_allowed(ws: "WebSocket") -> bool:
     client_host = ws.client.host if ws.client else ""
     if not client_host:
         return True
-    return client_host in _LOOPBACK_HOSTS
+    return _host_matches_configured_client(client_host, _trusted_ws_client_values())
+
+
+def _ws_host_header_is_allowed(ws: "WebSocket") -> bool:
+    """Apply Host-header validation to WebSocket upgrades."""
+    bound_host = getattr(app.state, "bound_host", None)
+    if not bound_host:
+        return True
+    return _ws_host_or_origin_value_is_allowed(ws.headers.get("host", ""))
+
+
+def _ws_origin_is_allowed(ws: "WebSocket") -> bool:
+    """Reject browser WS upgrades from untrusted dashboard origins.
+
+    Non-browser clients (like the local PTY sidecar publisher) may omit Origin;
+    keep accepting those after token + client checks.
+    """
+    origin = ws.headers.get("origin", "")
+    if not origin:
+        return True
+    parsed = urllib.parse.urlparse(origin)
+    if parsed.scheme not in ("http", "https") or not parsed.netloc:
+        return False
+    return _ws_host_or_origin_value_is_allowed(parsed.netloc)
+
+
+def _ws_request_is_allowed(ws: "WebSocket") -> bool:
+    return _ws_host_header_is_allowed(ws) and _ws_origin_is_allowed(ws) and _ws_client_is_allowed(ws)
 
 # Per-channel subscriber registry used by /api/pub (PTY-side gateway → dashboard)
 # and /api/events (dashboard → browser sidebar).  Keyed by an opaque channel id
@@ -3273,7 +3389,7 @@ async def pty_ws(ws: WebSocket) -> None:
         await ws.close(code=4401)
         return
 
-    if not _ws_client_is_allowed(ws):
+    if not _ws_request_is_allowed(ws):
         await ws.close(code=4403)
         return
 
@@ -3392,7 +3508,7 @@ async def gateway_ws(ws: WebSocket) -> None:
         await ws.close(code=4401)
         return
 
-    if not _ws_client_is_allowed(ws):
+    if not _ws_request_is_allowed(ws):
         await ws.close(code=4403)
         return
 
@@ -3424,7 +3540,7 @@ async def pub_ws(ws: WebSocket) -> None:
         await ws.close(code=4401)
         return
 
-    if not _ws_client_is_allowed(ws):
+    if not _ws_request_is_allowed(ws):
         await ws.close(code=4403)
         return
 
@@ -3453,7 +3569,7 @@ async def events_ws(ws: WebSocket) -> None:
         await ws.close(code=4401)
         return
 
-    if not _ws_client_is_allowed(ws):
+    if not _ws_request_is_allowed(ws):
         await ws.close(code=4403)
         return
 
@@ -4401,6 +4517,11 @@ def start_server(
     # PTY child uses to publish events to the dashboard sidebar.
     app.state.bound_host = host
     app.state.bound_port = port
+    try:
+        dashboard_cfg = load_config().get("dashboard", {})
+    except Exception:
+        dashboard_cfg = {}
+    app.state.dashboard_security = dashboard_cfg if isinstance(dashboard_cfg, dict) else {}
 
     if open_browser:
         import webbrowser

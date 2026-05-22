@@ -2052,6 +2052,49 @@ class TestDashboardPluginManifestExtensions:
 
 
 # ---------------------------------------------------------------------------
+# Dashboard WebSocket reverse-proxy security config
+# ---------------------------------------------------------------------------
+
+
+class TestDashboardWebSocketSecurity:
+    def test_ws_client_accepts_configured_trusted_proxy_hosts_and_cidrs(self, monkeypatch):
+        import hermes_cli.web_server as ws
+
+        monkeypatch.setattr(
+            ws.app.state,
+            "dashboard_security",
+            {"trusted_proxy_hosts": ["100.74.145.64", "fd7a:115c:a1e0::/48"]},
+            raising=False,
+        )
+        allowed = ws._trusted_ws_client_values()
+        assert ws._host_matches_configured_client("100.74.145.64", allowed)
+        assert ws._host_matches_configured_client("fd7a:115c:a1e0::123", allowed)
+        assert not ws._host_matches_configured_client("100.74.145.65", allowed)
+
+    def test_ws_origin_defaults_remain_loopback_only(self, monkeypatch):
+        import hermes_cli.web_server as ws
+
+        monkeypatch.setattr(ws.app.state, "bound_host", "127.0.0.1", raising=False)
+        monkeypatch.setattr(ws.app.state, "dashboard_security", {}, raising=False)
+        assert ws._ws_host_or_origin_value_is_allowed("localhost:9119")
+        assert ws._ws_host_or_origin_value_is_allowed("127.0.0.1:9119")
+        assert not ws._ws_host_or_origin_value_is_allowed("evil.test")
+
+    def test_ws_origin_accepts_configured_proxy_hostname(self, monkeypatch):
+        import hermes_cli.web_server as ws
+
+        monkeypatch.setattr(ws.app.state, "bound_host", "127.0.0.1", raising=False)
+        monkeypatch.setattr(
+            ws.app.state,
+            "dashboard_security",
+            {"trusted_proxy_hosts": ["proxy.tailnet.example.ts.net"]},
+            raising=False,
+        )
+        assert ws._ws_host_or_origin_value_is_allowed("proxy.tailnet.example.ts.net:9119")
+        assert not ws._ws_host_or_origin_value_is_allowed("evil.test")
+
+
+# ---------------------------------------------------------------------------
 # /api/pty WebSocket — terminal bridge for the dashboard "Chat" tab.
 #
 # These tests drive the endpoint with a tiny fake command (typically ``cat``
@@ -2126,6 +2169,51 @@ class TestPtyWebSocket:
             with self.client.websocket_connect(self._url(token="wrong")):
                 pass
         assert exc.value.code == 4401
+
+    def test_rejects_untrusted_browser_origin(self, monkeypatch):
+        monkeypatch.setattr(
+            self.ws_module,
+            "_resolve_chat_argv",
+            lambda resume=None, sidecar_url=None: (["/bin/cat"], None, None),
+        )
+        monkeypatch.setattr(self.ws_module.app.state, "bound_host", "127.0.0.1", raising=False)
+        monkeypatch.setattr(self.ws_module.app.state, "dashboard_security", {}, raising=False)
+        from starlette.websockets import WebSocketDisconnect
+
+        with pytest.raises(WebSocketDisconnect) as exc:
+            with self.client.websocket_connect(
+                self._url(),
+                headers={"host": "127.0.0.1:9119", "origin": "https://evil.test"},
+            ):
+                pass
+        assert exc.value.code == 4403
+
+    def test_accepts_configured_proxy_origin(self, monkeypatch):
+        monkeypatch.setattr(
+            self.ws_module,
+            "_resolve_chat_argv",
+            lambda resume=None, sidecar_url=None: (
+                ["/bin/sh", "-c", "printf proxy-origin-ok"],
+                None,
+                None,
+            ),
+        )
+        monkeypatch.setattr(self.ws_module.app.state, "bound_host", "127.0.0.1", raising=False)
+        monkeypatch.setattr(
+            self.ws_module.app.state,
+            "dashboard_security",
+            {"trusted_proxy_hosts": ["proxy.tailnet.example.ts.net"]},
+            raising=False,
+        )
+
+        with self.client.websocket_connect(
+            self._url(),
+            headers={
+                "host": "proxy.tailnet.example.ts.net:9119",
+                "origin": "https://proxy.tailnet.example.ts.net:9119",
+            },
+        ) as conn:
+            assert b"proxy-origin-ok" in conn.receive_bytes()
 
     def test_streams_child_stdout_to_client(self, monkeypatch):
         monkeypatch.setattr(
@@ -2270,7 +2358,10 @@ class TestPtyWebSocket:
             self.ws_module.app.state, "bound_port", 9119, raising=False
         )
 
-        with self.client.websocket_connect(self._url(channel="abc-123")) as conn:
+        with self.client.websocket_connect(
+            self._url(channel="abc-123"),
+            headers={"host": "127.0.0.1:9119"},
+        ) as conn:
             try:
                 conn.receive_bytes()
             except Exception:

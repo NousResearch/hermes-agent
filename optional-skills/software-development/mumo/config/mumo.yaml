@@ -1,0 +1,23 @@
+# Add this block to ~/.hermes/config.yaml under the mcp_servers key.
+# If you already have mcp_servers configured, merge mumo as a sibling entry.
+# After saving, fully exit and restart Hermes — /reload-mcp is unreliable across versions.
+
+mcp_servers:
+  mumo:
+    url: "https://mumo.chat/api/mcp"
+    headers:
+      Authorization: "Bearer mmo_live_YOUR_KEY_HERE"
+    connect_timeout: 60
+    timeout: 180
+    supports_parallel_tool_calls: true
+    tools:
+      include:
+        - create_deliberation
+        - wait_for_round
+        - append_round
+        - get_session
+        - list_sessions
+        - list_models
+        - get_credit
+      resources: false
+      prompts: false

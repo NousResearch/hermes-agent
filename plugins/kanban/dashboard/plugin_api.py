@@ -723,6 +723,7 @@ class AdvanceAcceptanceBody(BaseModel):
     dispatch_max: Optional[int] = Field(default=None, ge=1, le=64)
     verify: bool = True
     approve: bool = True
+    request_changes_on_failure: bool = True
     reviewer: Optional[str] = None
     summary: Optional[str] = None
     result: Optional[str] = None
@@ -860,6 +861,7 @@ def advance_task_acceptance(
                 dispatch_max=payload.dispatch_max,
                 verify=payload.verify,
                 approve=payload.approve,
+                request_changes_on_failure=payload.request_changes_on_failure,
                 reviewer=payload.reviewer or "dashboard",
                 summary=payload.summary,
                 result=payload.result,
@@ -894,6 +896,7 @@ def advance_goal_acceptance(
                 dispatch_max=payload.dispatch_max,
                 verify=payload.verify,
                 approve=payload.approve,
+                request_changes_on_failure=payload.request_changes_on_failure,
                 reviewer=payload.reviewer or "dashboard",
                 summary=payload.summary,
                 result=payload.result,

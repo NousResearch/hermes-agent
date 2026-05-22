@@ -572,6 +572,14 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
         help="Stop before approving even if all gates are satisfied",
     )
     p_advance.add_argument(
+        "--no-request-changes",
+        action="store_true",
+        help=(
+            "When review/test or acceptance gates fail, report the blocked "
+            "gate instead of requesting changes on the implementation task"
+        ),
+    )
+    p_advance.add_argument(
         "--reviewer",
         default=None,
         help="Reviewer/controller name for planned tasks and approval",
@@ -622,6 +630,14 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
         "--no-approve",
         action="store_true",
         help="Stop before approving children or completing the root",
+    )
+    p_advance_goal.add_argument(
+        "--no-request-changes",
+        action="store_true",
+        help=(
+            "When child review/test or acceptance gates fail, report the "
+            "blocked gate instead of requesting changes"
+        ),
     )
     p_advance_goal.add_argument(
         "--reviewer",
@@ -2339,6 +2355,9 @@ def _cmd_advance_acceptance(args: argparse.Namespace) -> int:
                 dispatch_max=getattr(args, "dispatch_max", None),
                 verify=not bool(getattr(args, "no_verify", False)),
                 approve=not bool(getattr(args, "no_approve", False)),
+                request_changes_on_failure=not bool(
+                    getattr(args, "no_request_changes", False)
+                ),
                 reviewer=reviewer,
                 summary=getattr(args, "summary", None),
                 result=getattr(args, "result", None),
@@ -2376,6 +2395,9 @@ def _cmd_advance_goal(args: argparse.Namespace) -> int:
                 dispatch_max=getattr(args, "dispatch_max", None),
                 verify=not bool(getattr(args, "no_verify", False)),
                 approve=not bool(getattr(args, "no_approve", False)),
+                request_changes_on_failure=not bool(
+                    getattr(args, "no_request_changes", False)
+                ),
                 reviewer=reviewer,
                 summary=getattr(args, "summary", None),
                 result=getattr(args, "result", None),

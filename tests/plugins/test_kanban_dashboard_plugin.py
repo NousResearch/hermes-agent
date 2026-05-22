@@ -1881,6 +1881,85 @@ def test_advance_acceptance_endpoint_dry_run_plans_scoped_followups(
     assert data["final"]["recommended_action"] == "wait_for_followups"
 
 
+def test_advance_acceptance_endpoint_can_disable_request_changes(
+    client,
+    tmp_path,
+):
+    from hermes_cli import kanban_db as kb
+
+    metadata = {
+        "worker_lane": {"name": "codex-deep", "kind": "codex_cli", "exit_code": 0},
+        "verification": {"commands": ["pytest -q"], "summary": "passed"},
+        "review": {"required": True, "reason": "Codex completed; Hermes review required"},
+    }
+    conn = kb.connect()
+    try:
+        tid = kb.create_task(
+            conn,
+            title="api no request changes",
+            assignee="codex-deep",
+            workspace_kind="dir",
+            workspace_path=str(tmp_path),
+        )
+        task = kb.claim_task(conn, tid, claimer="worker:codex-deep")
+        assert task is not None
+        assert kb.block_task(
+            conn,
+            tid,
+            reason="review-required: Codex completed; Hermes review required",
+            expected_run_id=task.current_run_id,
+            metadata=metadata,
+        )
+        plan = kb.plan_review_followups(conn, tid)
+        review = kb.claim_task(conn, plan.review_task_id, claimer="worker:codex-review")
+        assert review is not None
+        assert kb.block_task(
+            conn,
+            plan.review_task_id,
+            reason="review-required: Codex completed; Hermes review required",
+            expected_run_id=review.current_run_id,
+            metadata={
+                "worker_lane": {"name": "codex-review", "kind": "codex_cli", "exit_code": 0},
+                "verification": {"summary": "Verdict: request_changes"},
+                "review": {"required": True},
+            },
+        )
+        test = kb.claim_task(conn, plan.test_task_id, claimer="worker:codex-test")
+        assert test is not None
+        assert kb.block_task(
+            conn,
+            plan.test_task_id,
+            reason="review-required: Codex completed; Hermes review required",
+            expected_run_id=test.current_run_id,
+            metadata={
+                "worker_lane": {"name": "codex-test", "kind": "codex_cli", "exit_code": 0},
+                "verification": {"summary": "Verdict: pass"},
+                "review": {"required": True},
+            },
+        )
+    finally:
+        conn.close()
+
+    response = client.post(
+        f"/api/plugins/kanban/tasks/{tid}/advance-acceptance",
+        json={"dispatch": False, "request_changes_on_failure": False},
+    )
+
+    assert response.status_code == 200, response.text
+    data = response.json()
+    conn = kb.connect()
+    try:
+        task_after = kb.get_task(conn, tid)
+        comments = kb.list_comments(conn, tid)
+    finally:
+        conn.close()
+
+    assert data["steps"][0]["kind"] == "blocked"
+    assert data["steps"][0]["review_followup_gate"]["failed"] == 1
+    assert task_after.status == "blocked"
+    assert comments == []
+
+
 def test_advance_goal_endpoint_dry_run_dispatches_goal_children(
     client,
     tmp_path,

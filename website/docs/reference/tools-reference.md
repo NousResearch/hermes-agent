@@ -125,7 +125,8 @@ Registered when the agent is either (a) spawned by the kanban dispatcher (`HERME
 | `kanban_show` | Show the active kanban task assigned to this worker (title, description, comments, dependencies). | `HERMES_KANBAN_TASK` or `kanban` toolset |
 | `kanban_list` | List board tasks with filters. Orchestrator-only; hidden from dispatcher-spawned task workers. | profile with `kanban` toolset |
 | `kanban_progress` | Read one task's latest worker progress, heartbeat, bounded evidence, and optional log tail without interrupting the worker. Orchestrator-only. | profile with `kanban` toolset |
-| `kanban_advance_goal` | Advance a decomposed goal/root task across child dispatch, review/test/acceptance, and root completion without interrupting workers. Orchestrator-only. | profile with `kanban` toolset |
+| `kanban_advance_acceptance` | Advance a review-required external-worker task across review/test follow-ups, deterministic acceptance checks, bounded request-changes feedback for failed gates, and approval without interrupting workers. Orchestrator-only. | profile with `kanban` toolset |
+| `kanban_advance_goal` | Advance a decomposed goal/root task across child dispatch, review/test/acceptance, bounded request-changes feedback for failed child gates, and root completion without interrupting workers. Orchestrator-only. | profile with `kanban` toolset |
 | `kanban_reviews` | List review-required external-worker evidence snapshots. Orchestrator-only. | profile with `kanban` toolset |
 | `kanban_review` | Approve bounded worker evidence or request changes, without reading the full worker session. Orchestrator-only. | profile with `kanban` toolset |
 | `kanban_complete` | Mark the current task done with a structured handoff payload (results, artifacts, follow-ups). | `HERMES_KANBAN_TASK` or `kanban` toolset |

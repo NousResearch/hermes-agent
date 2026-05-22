@@ -108,6 +108,7 @@ _IS_WINDOWS = sys.platform == "win32"
 # long single-call MCP workflows.
 DEFAULT_CLAIM_TTL_SECONDS = 15 * 60
 ACCEPTANCE_CHECK_OUTPUT_TAIL_BYTES = 16 * 1024
+REQUEST_CHANGES_FEEDBACK_BYTES = 12 * 1024
 ACCEPTANCE_CHECK_DEFAULT_TIMEOUT_SECONDS = 300
 ACCEPTANCE_CHECK_MAX_TIMEOUT_SECONDS = 3600
 _ACCEPTANCE_CHECK_ID_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,63}$")
@@ -3235,6 +3236,7 @@ def advance_acceptance_workflow(
     dispatch_max: Optional[int] = None,
     verify: bool = True,
     approve: bool = True,
+    request_changes_on_failure: bool = True,
     reviewer: str = "hermes-controller",
     summary: Optional[str] = None,
     result: Optional[str] = None,
@@ -3250,6 +3252,8 @@ def advance_acceptance_workflow(
     * optionally run a scoped dispatcher pass for pending follow-ups;
     * run configured Hermes acceptance checks once review/test evidence is
       ready;
+    * request changes when review/test or acceptance gates deterministically
+      fail;
     * approve when every configured gate is satisfied.
     """
 
@@ -3301,6 +3305,29 @@ def advance_acceptance_workflow(
         }
 
     source_run_id = snapshot.get("source_run_id")
+
+    def _request_changes_for_failed_gate(
+        *,
+        reason: str,
+        gate_key: str,
+        gate: dict[str, Any],
+        comment: str,
+    ) -> dict[str, Any]:
+        reviewed = review_worker_evidence(
+            conn,
+            task_id,
+            decision="request_changes",
+            reviewer=reviewer or "hermes-controller",
+            comment=comment,
+        )
+        steps.append({
+            "kind": "request_changes",
+            "reason": reason,
+            gate_key: gate,
+            "snapshot": reviewed.to_dict(),
+        })
+        return _current()
+
     if snapshot.get("recommended_action") == "plan_review_followups":
         plan = plan_review_followups(
             conn,
@@ -3345,6 +3372,20 @@ def advance_acceptance_workflow(
     gate = snapshot.get("review_followup_gate")
     if gate and not gate.get("ready"):
         if gate.get("failed"):
+            if request_changes_on_failure:
+                snapshot = _request_changes_for_failed_gate(
+                    reason="review/test follow-up gate failed",
+                    gate_key="review_followup_gate",
+                    gate=gate,
+                    comment=_review_followup_failure_comment(gate),
+                )
+                return {
+                    "task_id": task_id,
+                    "steps": steps,
+                    "initial": initial,
+                    "final": snapshot,
+                    "advanced": bool(steps),
+                }
             steps.append({
                 "kind": "blocked",
                 "reason": "review/test follow-up gate failed",
@@ -3378,7 +3419,35 @@ def advance_acceptance_workflow(
                     "dispatch": dispatch_result.to_dict(),
                 })
                 snapshot = _current()
-        if (snapshot.get("review_followup_gate") or {}).get("ready") is not True:
+        gate = snapshot.get("review_followup_gate") or {}
+        if gate.get("failed"):
+            if request_changes_on_failure:
+                snapshot = _request_changes_for_failed_gate(
+                    reason="review/test follow-up gate failed",
+                    gate_key="review_followup_gate",
+                    gate=gate,
+                    comment=_review_followup_failure_comment(gate),
+                )
+                return {
+                    "task_id": task_id,
+                    "steps": steps,
+                    "initial": initial,
+                    "final": snapshot,
+                    "advanced": bool(steps),
+                }
+            steps.append({
+                "kind": "blocked",
+                "reason": "review/test follow-up gate failed",
+                "review_followup_gate": gate,
+            })
+            return {
+                "task_id": task_id,
+                "steps": steps,
+                "initial": initial,
+                "final": snapshot,
+                "advanced": bool(steps),
+            }
+        if gate.get("ready") is not True:
             return {
                 "task_id": task_id,
                 "steps": steps,
@@ -3390,6 +3459,20 @@ def advance_acceptance_workflow(
     acceptance_gate = snapshot.get("acceptance_check_gate")
     if acceptance_gate and not acceptance_gate.get("ready"):
         if acceptance_gate.get("failed"):
+            if request_changes_on_failure:
+                snapshot = _request_changes_for_failed_gate(
+                    reason="Hermes acceptance check gate failed",
+                    gate_key="acceptance_check_gate",
+                    gate=acceptance_gate,
+                    comment=_acceptance_check_failure_comment(acceptance_gate),
+                )
+                return {
+                    "task_id": task_id,
+                    "steps": steps,
+                    "initial": initial,
+                    "final": snapshot,
+                    "advanced": bool(steps),
+                }
             steps.append({
                 "kind": "blocked",
                 "reason": "Hermes acceptance check gate failed",
@@ -3415,7 +3498,35 @@ def advance_acceptance_workflow(
                 "verify": verify_payload,
             })
             snapshot = _current()
-        if (snapshot.get("acceptance_check_gate") or {}).get("ready") is not True:
+        acceptance_gate = snapshot.get("acceptance_check_gate") or {}
+        if acceptance_gate.get("failed"):
+            if request_changes_on_failure:
+                snapshot = _request_changes_for_failed_gate(
+                    reason="Hermes acceptance check gate failed",
+                    gate_key="acceptance_check_gate",
+                    gate=acceptance_gate,
+                    comment=_acceptance_check_failure_comment(acceptance_gate),
+                )
+                return {
+                    "task_id": task_id,
+                    "steps": steps,
+                    "initial": initial,
+                    "final": snapshot,
+                    "advanced": bool(steps),
+                }
+            steps.append({
+                "kind": "blocked",
+                "reason": "Hermes acceptance check gate failed",
+                "acceptance_check_gate": acceptance_gate,
+            })
+            return {
+                "task_id": task_id,
+                "steps": steps,
+                "initial": initial,
+                "final": snapshot,
+                "advanced": bool(steps),
+            }
+        if acceptance_gate.get("ready") is not True:
             return {
                 "task_id": task_id,
                 "steps": steps,
@@ -3484,6 +3595,7 @@ def advance_goal_acceptance_workflow(
     dispatch_max: Optional[int] = None,
     verify: bool = True,
     approve: bool = True,
+    request_changes_on_failure: bool = True,
     reviewer: str = "hermes-controller",
     summary: Optional[str] = None,
     result: Optional[str] = None,
@@ -3595,6 +3707,7 @@ def advance_goal_acceptance_workflow(
             dispatch_max=remaining,
             verify=verify,
             approve=approve,
+            request_changes_on_failure=request_changes_on_failure,
             reviewer=reviewer,
             summary=summary,
             result=result,
@@ -3762,6 +3875,114 @@ def _metadata_text_lines(value: Any, *, limit: int = 20) -> list[str]:
     if isinstance(value, str) and value.strip():
         return [line[:400] for line in value.strip().splitlines()[:limit]]
     return []
+
+
+def _review_followup_failure_comment(gate: dict[str, Any]) -> str:
+    """Build bounded feedback for a failed independent review/test gate."""
+    lines = [
+        "Review/test follow-up gate failed for the current implementation run.",
+        "Hermes is requesting changes using bounded follow-up evidence; it is not replaying full worker sessions.",
+        "",
+        "Failed follow-ups:",
+    ]
+    failed_items = [
+        item for item in (gate.get("items") or [])
+        if isinstance(item, dict) and item.get("state") == "failed"
+    ]
+    if not failed_items:
+        reasons = ", ".join(str(r) for r in (gate.get("blocking_reasons") or []))
+        lines.append(f"- gate failed: {reasons or 'follow-up evidence incomplete'}")
+    for item in failed_items[:8]:
+        purpose = item.get("purpose") or "follow-up"
+        task_id = item.get("task_id") or "-"
+        lines.append(f"- {purpose} task {task_id}: {item.get('failure_reason') or 'failed'}")
+        lines.append(f"  status: {item.get('status') or '-'}")
+        lines.append(f"  verdict: {item.get('verdict') or '-'}")
+        lane = item.get("worker_lane")
+        if isinstance(lane, dict):
+            lines.append(
+                "  worker_lane: "
+                f"{lane.get('name') or '-'} "
+                f"kind={lane.get('kind') or '-'} "
+                f"exit={lane.get('exit_code')} "
+                f"timed_out={bool(lane.get('timed_out'))} "
+                f"binary_missing={bool(lane.get('binary_missing'))}"
+            )
+        run = item.get("run")
+        if isinstance(run, dict):
+            lines.append(
+                "  run: "
+                f"id={run.get('id') or '-'} "
+                f"status={run.get('status') or '-'} "
+                f"outcome={run.get('outcome') or '-'}"
+            )
+            for line in _metadata_text_lines(run.get("summary"), limit=3):
+                lines.append(f"  run_summary: {line}")
+        verification = item.get("verification")
+        if isinstance(verification, dict):
+            commands = _metadata_text_lines(verification.get("commands"), limit=4)
+            if commands:
+                lines.append("  verification_commands:")
+                lines.extend(f"    - {line}" for line in commands)
+            summary_lines = _metadata_text_lines(verification.get("summary"), limit=8)
+            if summary_lines:
+                lines.append("  verification_summary:")
+                lines.extend(f"    {line}" for line in summary_lines)
+    return _bounded_text(
+        "\n".join(lines).strip(),
+        max_bytes=REQUEST_CHANGES_FEEDBACK_BYTES,
+    )
+
+
+def _acceptance_check_failure_comment(gate: dict[str, Any]) -> str:
+    """Build bounded feedback for failed or missing Hermes acceptance checks."""
+    lines = [
+        "Hermes acceptance check gate failed for the current implementation run.",
+        "Hermes is requesting changes using deterministic check output tails only.",
+        "",
+        "Failed or missing checks:",
+    ]
+    failed_items = [
+        item for item in (gate.get("items") or [])
+        if isinstance(item, dict) and item.get("state") in {"failed", "missing"}
+    ]
+    if not failed_items:
+        reasons = ", ".join(str(r) for r in (gate.get("blocking_reasons") or []))
+        lines.append(f"- gate failed: {reasons or 'acceptance checks incomplete'}")
+    for item in failed_items[:8]:
+        name = item.get("name") or "acceptance-check"
+        state = item.get("state") or "failed"
+        lines.append(f"- {name}: {state}")
+        if item.get("failure_reason"):
+            lines.append(f"  reason: {item.get('failure_reason')}")
+        description = item.get("description")
+        if description:
+            lines.append(f"  description: {str(description)[:400]}")
+        argv_lines = _metadata_text_lines(item.get("argv"), limit=8)
+        if argv_lines:
+            lines.append("  argv:")
+            lines.extend(f"    - {line}" for line in argv_lines)
+        run = item.get("run")
+        if isinstance(run, dict):
+            lines.append(
+                "  result: "
+                f"exit={run.get('exit_code')} "
+                f"timed_out={bool(run.get('timed_out'))} "
+                f"passed={bool(run.get('passed'))}"
+            )
+            if run.get("error"):
+                lines.append(f"  error: {str(run.get('error'))[:400]}")
+            for key in ("stdout_tail", "stderr_tail"):
+                tail_lines = _metadata_text_lines(run.get(key), limit=12)
+                if tail_lines:
+                    lines.append(f"  {key}:")
+                    lines.extend(f"    {line}" for line in tail_lines)
+            if run.get("output_truncated"):
+                lines.append("  output_truncated: true")
+    return _bounded_text(
+        "\n".join(lines).strip(),
+        max_bytes=REQUEST_CHANGES_FEEDBACK_BYTES,
+    )
 
 
 def _review_followup_body(

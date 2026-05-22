@@ -954,6 +954,208 @@ def test_advance_acceptance_workflow_runs_checks_and_approves(
     assert any(event.kind == "worker_review_approved" for event in events)
 
 
+def test_advance_acceptance_workflow_requests_changes_on_failed_followup(
+    kanban_home,
+    tmp_path,
+):
+    metadata = {
+        "worker_lane": {"name": "codex-deep", "kind": "codex_cli", "exit_code": 0},
+        "verification": {"commands": ["pytest -q"], "summary": "passed"},
+        "review": {"required": True, "reason": "Codex completed; Hermes review required"},
+    }
+    with kb.connect() as conn:
+        tid = kb.create_task(
+            conn,
+            title="advance requests changes from failed review",
+            assignee="codex-deep",
+            workspace_kind="dir",
+            workspace_path=str(tmp_path),
+        )
+        task = kb.claim_task(conn, tid, claimer="worker:codex-deep")
+        assert task is not None
+        source_run_id = task.current_run_id
+        assert kb.block_task(
+            conn,
+            tid,
+            reason="review-required: Codex completed; Hermes review required",
+            expected_run_id=source_run_id,
+            metadata=metadata,
+        )
+        plan = kb.plan_review_followups(conn, tid)
+        _finish_followup_with_worker_evidence(
+            conn,
+            plan.review_task_id,
+            lane="codex-review",
+            verdict="request_changes",
+        )
+        _finish_followup_with_worker_evidence(
+            conn,
+            plan.test_task_id,
+            lane="codex-test",
+            verdict="pass",
+        )
+
+        payload = kb.advance_acceptance_workflow(
+            conn,
+            tid,
+            reviewer="controller",
+            dispatch=False,
+        )
+        task_after = kb.get_task(conn, tid)
+        source_run = kb.list_runs(conn, tid)[0]
+        comments = kb.list_comments(conn, tid)
+        events = kb.list_events(conn, tid)
+        parents_after = kb.parent_ids(conn, tid)
+
+    assert [step["kind"] for step in payload["steps"]] == ["request_changes"]
+    assert payload["steps"][0]["review_followup_gate"]["failed"] == 1
+    assert task_after.status == "ready"
+    assert task_after.current_run_id is None
+    assert source_run.metadata["review"]["decision"] == "changes_requested"
+    assert comments[-1].author == "controller"
+    assert "Review/test follow-up gate failed" in comments[-1].body
+    assert "verdict: request_changes" in comments[-1].body
+    assert "worker_lane: codex-review" in comments[-1].body
+    assert plan.review_task_id not in parents_after
+    assert plan.test_task_id not in parents_after
+    assert any(event.kind == "worker_review_changes_requested" for event in events)
+    assert any(
+        event.kind == "worker_review_followup_gate_released"
+        and event.run_id == source_run_id
+        for event in events
+    )
+    assert payload["final"]["recommended_action"] == "wait_for_implementation"
+
+
+def test_advance_acceptance_workflow_can_leave_failed_followup_blocked(
+    kanban_home,
+    tmp_path,
+):
+    metadata = {
+        "worker_lane": {"name": "codex-deep", "kind": "codex_cli", "exit_code": 0},
+        "verification": {"commands": ["pytest -q"], "summary": "passed"},
+        "review": {"required": True, "reason": "Codex completed; Hermes review required"},
+    }
+    with kb.connect() as conn:
+        tid = kb.create_task(
+            conn,
+            title="advance reports failed review gate",
+            assignee="codex-deep",
+            workspace_kind="dir",
+            workspace_path=str(tmp_path),
+        )
+        task = kb.claim_task(conn, tid, claimer="worker:codex-deep")
+        assert task is not None
+        assert kb.block_task(
+            conn,
+            tid,
+            reason="review-required: Codex completed; Hermes review required",
+            expected_run_id=task.current_run_id,
+            metadata=metadata,
+        )
+        plan = kb.plan_review_followups(conn, tid)
+        _finish_followup_with_worker_evidence(
+            conn,
+            plan.review_task_id,
+            lane="codex-review",
+            verdict="request_changes",
+        )
+        _finish_followup_with_worker_evidence(
+            conn,
+            plan.test_task_id,
+            lane="codex-test",
+            verdict="pass",
+        )
+
+        payload = kb.advance_acceptance_workflow(
+            conn,
+            tid,
+            reviewer="controller",
+            dispatch=False,
+            request_changes_on_failure=False,
+        )
+        task_after = kb.get_task(conn, tid)
+        comments = kb.list_comments(conn, tid)
+
+    assert [step["kind"] for step in payload["steps"]] == ["blocked"]
+    assert payload["steps"][0]["review_followup_gate"]["failed"] == 1
+    assert task_after.status == "blocked"
+    assert comments == []
+
+
+def test_advance_acceptance_workflow_requests_changes_on_failed_acceptance_check(
+    kanban_home,
+    tmp_path,
+):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    (kanban_home / "config.yaml").write_text(
+        "kanban:\n"
+        "  acceptance_checks:\n"
+        "    failing-check:\n"
+        "      argv: [python3, -c, \"import sys; print('nope'); sys.exit(7)\"]\n"
+        "      timeout_seconds: 10\n",
+        encoding="utf-8",
+    )
+    metadata = {
+        "worker_lane": {"name": "codex-deep", "kind": "codex_cli", "exit_code": 0},
+        "verification": {"commands": ["pytest -q"], "summary": "passed"},
+        "review": {"required": True, "reason": "Codex completed; Hermes review required"},
+    }
+    with kb.connect() as conn:
+        tid = kb.create_task(
+            conn,
+            title="advance requests changes from failed acceptance",
+            assignee="codex-deep",
+            workspace_kind="dir",
+            workspace_path=str(workspace),
+        )
+        task = kb.claim_task(conn, tid, claimer="worker:codex-deep")
+        assert task is not None
+        assert kb.block_task(
+            conn,
+            tid,
+            reason="review-required: Codex completed; Hermes review required",
+            expected_run_id=task.current_run_id,
+            metadata=metadata,
+        )
+        plan = kb.plan_review_followups(conn, tid)
+        _finish_followup_with_worker_evidence(
+            conn,
+            plan.review_task_id,
+            lane="codex-review",
+            verdict="approve",
+        )
+        _finish_followup_with_worker_evidence(
+            conn,
+            plan.test_task_id,
+            lane="codex-test",
+            verdict="pass",
+        )
+
+        payload = kb.advance_acceptance_workflow(
+            conn,
+            tid,
+            reviewer="controller",
+            dispatch=False,
+        )
+        task_after = kb.get_task(conn, tid)
+        comments = kb.list_comments(conn, tid)
+        events = kb.list_events(conn, tid)
+
+    assert [step["kind"] for step in payload["steps"]] == [
+        "run_acceptance_checks",
+        "request_changes",
+    ]
+    assert task_after.status == "ready"
+    assert "Hermes acceptance check gate failed" in comments[-1].body
+    assert "failing-check: failed" in comments[-1].body
+    assert "exit=7" in comments[-1].body
+    assert "nope" in comments[-1].body
+    assert any(event.kind == "worker_review_changes_requested" for event in events)
+    assert payload["final"]["recommended_action"] == "wait_for_implementation"
+
+
 def test_advance_goal_acceptance_advances_child_followups_and_completes_root(
     kanban_home,
     tmp_path,
@@ -1045,6 +1247,88 @@ def test_advance_goal_acceptance_advances_child_followups_and_completes_root(
     assert second["final"]["task"]["status"] == "done"
     assert second["incomplete_children"] == []
     assert any(event.kind == "goal_acceptance_advanced" for event in events)
+
+
+def test_advance_goal_acceptance_requests_changes_for_failed_child_followup(
+    kanban_home,
+    tmp_path,
+):
+    metadata = {
+        "worker_lane": {"name": "codex-deep", "kind": "codex_cli", "exit_code": 0},
+        "verification": {"commands": ["pytest -q"], "summary": "passed"},
+        "review": {"required": True, "reason": "Codex completed; Hermes review required"},
+    }
+    with kb.connect() as conn:
+        root = kb.create_task(
+            conn,
+            title="goal root with failed child review",
+            workspace_kind="dir",
+            workspace_path=str(tmp_path),
+            triage=True,
+        )
+        child_ids = kb.decompose_triage_task(
+            conn,
+            root,
+            root_assignee="orchestrator",
+            children=[{"title": "implement", "assignee": "codex-deep"}],
+            author="planner",
+        )
+        assert child_ids is not None
+        child = child_ids[0]
+        claimed = kb.claim_task(conn, child, claimer="worker:codex-deep")
+        assert claimed is not None
+        assert kb.block_task(
+            conn,
+            child,
+            reason="review-required: Codex completed; Hermes review required",
+            expected_run_id=claimed.current_run_id,
+            metadata=metadata,
+        )
+
+        first = kb.advance_goal_acceptance_workflow(
+            conn,
+            root,
+            reviewer="controller",
+            dispatch=False,
+        )
+        plan = first["child_advances"][0]["advance"]["steps"][0]["plan"]
+        _finish_followup_with_worker_evidence(
+            conn,
+            plan["review_task_id"],
+            lane="codex-review",
+            verdict="request_changes",
+        )
+        _finish_followup_with_worker_evidence(
+            conn,
+            plan["test_task_id"],
+            lane="codex-test",
+            verdict="pass",
+        )
+
+        second = kb.advance_goal_acceptance_workflow(
+            conn,
+            root,
+            reviewer="controller",
+            dispatch=False,
+        )
+        root_task = kb.get_task(conn, root)
+        child_task = kb.get_task(conn, child)
+        comments = kb.list_comments(conn, child)
+
+    assert second["child_advances"][0]["advance"]["steps"][0]["kind"] == "request_changes"
+    assert second["steps"][0]["kind"] == "advance_child_acceptance"
+    assert second["steps"][0]["recommended_action"] == "wait_for_implementation"
+    assert root_task.status == "todo"
+    assert child_task.status == "ready"
+    assert second["incomplete_children"] == [
+        {
+            "task_id": child,
+            "status": "ready",
+            "relationship": "decomposed_child",
+            "review_required": False,
+        }
+    ]
+    assert "Review/test follow-up gate failed" in comments[-1].body
 
 
 def test_task_acceptance_snapshot_summarizes_followup_evidence(

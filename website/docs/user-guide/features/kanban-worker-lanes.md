@@ -262,11 +262,19 @@ deterministic control-plane action:
 - optionally run one dispatcher pass scoped only to those follow-ups;
 - return if implementation, review, or test workers are still running;
 - run configured Hermes acceptance checks once worker evidence is ready;
+- request changes with bounded failure evidence when a review/test or
+  acceptance gate deterministically fails;
 - approve the implementation task only when every gate passes.
 
 It never waits for, signals, or replays a running Codex worker. Use
 `--no-dispatch`, `--dispatch-max`, `--dry-run`, `--no-verify`, or
-`--no-approve` to stop at a specific boundary. The Python tool equivalent is
+`--no-approve` to stop at a specific boundary. Failed gates default to
+`request-changes`, which writes a reviewer comment containing only bounded
+follow-up verdicts, worker metadata, verification summaries, and deterministic
+check output tails, then unblocks the implementation for another worker run.
+Use `--no-request-changes` or API/tool
+`request_changes_on_failure=false` when a controller wants to inspect the
+failed gate without mutating task state. The Python tool equivalent is
 `kanban_advance_acceptance`, and the dashboard/API route is:
 
 ```text
@@ -282,8 +290,11 @@ hermes kanban advance-goal <goal_or_root_task_id> --json
 `advance-goal` reads the root's child progress without interrupting workers,
 dispatches only ready child tasks for that root, advances any review-required
 child through the same review/test/acceptance workflow, and completes the root
-only after all related child tasks are `done` or `archived`. The tool/API
-equivalents are `kanban_advance_goal` and:
+only after all related child tasks are `done` or `archived`. If a child
+follow-up or acceptance gate fails, the default behavior is the same bounded
+`request-changes` feedback on that child, leaving the root incomplete until the
+child is rerun and accepted. The tool/API equivalents are
+`kanban_advance_goal` and:
 
 ```text
 POST /api/plugins/kanban/tasks/<task_id>/advance-goal
@@ -468,7 +479,7 @@ So lane authors don't have to reimplement these:
 
 - No full Codex event stream integration yet; progress is parsed from wrapper stdout/stderr.
 - No approval bridge; configure Codex lanes with controlled approval policy.
-- Follow-up gating understands simple structured verdicts (`approve` for review, `pass` for test), and Hermes can run configured deterministic acceptance commands, but it does not yet perform automatic semantic acceptance of large diffs beyond that bounded evidence.
+- Follow-up gating understands simple structured verdicts (`approve` for review, `pass` for test), and Hermes can run configured deterministic acceptance commands. Failed gates can be fed back as bounded `request-changes` comments, but Hermes does not yet perform automatic semantic acceptance of large diffs beyond those external-worker verdicts and deterministic checks.
 - External lane command shapes are adapter-defined, not model-defined.
 - Review reads Codex artifacts and bounded metadata, not the full Codex session.
 

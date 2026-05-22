@@ -567,6 +567,13 @@ def _handle_advance_acceptance(args: dict, **kw) -> str:
     approve, approve_error = _parse_bool_arg(args, "approve", default=True)
     if approve_error:
         return tool_error(approve_error)
+    request_changes_on_failure, request_changes_error = _parse_bool_arg(
+        args,
+        "request_changes_on_failure",
+        default=True,
+    )
+    if request_changes_error:
+        return tool_error(request_changes_error)
     dispatch_max, dispatch_max_error = _parse_positive_int_arg(
         args,
         "dispatch_max",
@@ -590,6 +597,7 @@ def _handle_advance_acceptance(args: dict, **kw) -> str:
                 dispatch_max=dispatch_max,
                 verify=verify,
                 approve=approve,
+                request_changes_on_failure=request_changes_on_failure,
                 reviewer=str(reviewer),
                 summary=args.get("summary"),
                 result=args.get("result"),
@@ -625,6 +633,13 @@ def _handle_advance_goal(args: dict, **kw) -> str:
     approve, approve_error = _parse_bool_arg(args, "approve", default=True)
     if approve_error:
         return tool_error(approve_error)
+    request_changes_on_failure, request_changes_error = _parse_bool_arg(
+        args,
+        "request_changes_on_failure",
+        default=True,
+    )
+    if request_changes_error:
+        return tool_error(request_changes_error)
     dispatch_max, dispatch_max_error = _parse_positive_int_arg(
         args,
         "dispatch_max",
@@ -648,6 +663,7 @@ def _handle_advance_goal(args: dict, **kw) -> str:
                 dispatch_max=dispatch_max,
                 verify=verify,
                 approve=approve,
+                request_changes_on_failure=request_changes_on_failure,
                 reviewer=str(reviewer),
                 summary=args.get("summary"),
                 result=args.get("result"),
@@ -1460,6 +1476,14 @@ KANBAN_ADVANCE_ACCEPTANCE_SCHEMA = {
                 "type": "boolean",
                 "description": "Whether to approve when all gates pass. Default true.",
             },
+            "request_changes_on_failure": {
+                "type": "boolean",
+                "description": (
+                    "Whether failed review/test or acceptance gates should "
+                    "request bounded changes on the implementation task. "
+                    "Default true."
+                ),
+            },
             "reviewer": {
                 "type": "string",
                 "description": "Controller/reviewer identity.",
@@ -1520,6 +1544,14 @@ KANBAN_ADVANCE_GOAL_SCHEMA = {
             "approve": {
                 "type": "boolean",
                 "description": "Whether to approve child evidence and complete the root when gates pass.",
+            },
+            "request_changes_on_failure": {
+                "type": "boolean",
+                "description": (
+                    "Whether failed child review/test or acceptance gates "
+                    "should request bounded changes on the child task. "
+                    "Default true."
+                ),
             },
             "reviewer": {
                 "type": "string",

@@ -181,6 +181,66 @@ async def test_session_chat_loads_history_and_preserves_session_headers(auth_ada
 
 
 @pytest.mark.asyncio
+async def test_session_chat_accepts_multimodal_message(auth_adapter, session_db):
+    session_id = session_db.create_session("image-session", "api_server")
+    image_payload = [
+        {"type": "input_text", "text": "What's in this image?"},
+        {"type": "input_image", "image_url": "data:image/png;base64,AAAA"},
+    ]
+    expected_user_message = [
+        {"type": "text", "text": "What's in this image?"},
+        {"type": "image_url", "image_url": {"url": "data:image/png;base64,AAAA"}},
+    ]
+
+    mock_run = AsyncMock(return_value=({"final_response": "A cat.", "session_id": session_id}, {"total_tokens": 4}))
+    app = _create_session_app(auth_adapter)
+    with patch.object(auth_adapter, "_run_agent", mock_run):
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.post(
+                f"/api/sessions/{session_id}/chat",
+                json={"message": image_payload},
+                headers={"Authorization": "Bearer sk-test"},
+            )
+            assert resp.status == 200, await resp.text()
+
+    _, kwargs = mock_run.call_args
+    assert kwargs["user_message"] == expected_user_message
+
+
+@pytest.mark.asyncio
+async def test_session_chat_stream_accepts_multimodal_message(adapter, session_db):
+    session_id = session_db.create_session("image-stream-session", "api_server")
+    image_payload = [
+        {"type": "input_text", "text": "What's in this image?"},
+        {"type": "input_image", "image_url": "data:image/png;base64,AAAA"},
+    ]
+    expected_user_message = [
+        {"type": "text", "text": "What's in this image?"},
+        {"type": "image_url", "image_url": {"url": "data:image/png;base64,AAAA"}},
+    ]
+    captured_kwargs = {}
+
+    async def fake_run(**kwargs):
+        captured_kwargs.update(kwargs)
+        kwargs["stream_delta_callback"]("A cat.")
+        return {"final_response": "A cat.", "session_id": session_id}, {"total_tokens": 4}
+
+    app = _create_session_app(adapter)
+    with patch.object(adapter, "_run_agent", side_effect=fake_run):
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.post(
+                f"/api/sessions/{session_id}/chat/stream",
+                json={"message": image_payload},
+            )
+            assert resp.status == 200, await resp.text()
+            assert resp.headers["Content-Type"].startswith("text/event-stream")
+            body = await resp.text()
+
+    assert "event: assistant.completed" in body
+    assert captured_kwargs["user_message"] == expected_user_message
+
+
+@pytest.mark.asyncio
 async def test_session_chat_stream_emits_lifecycle_events_and_keepalive_safe_shape(adapter, session_db):
     session_id = session_db.create_session("stream-session", "api_server")
     session_db.set_session_title(session_id, "Stream")

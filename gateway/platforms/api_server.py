@@ -319,6 +319,20 @@ def _multimodal_validation_error(exc: ValueError, *, param: str) -> "web.Respons
     )
 
 
+def _session_chat_user_message(body: Dict[str, Any], *, param: str = "message") -> tuple[Any, Optional["web.Response"]]:
+    """Parse and normalize session chat ``message`` / ``input`` like chat completions."""
+    user_message = body.get("message") or body.get("input")
+    if not _content_has_visible_payload(user_message):
+        return None, web.json_response(
+            _openai_error("Missing 'message' field", code="missing_message"),
+            status=400,
+        )
+    try:
+        return _normalize_multimodal_content(user_message), None
+    except ValueError as exc:
+        return None, _multimodal_validation_error(exc, param=param)
+
+
 def check_api_server_requirements() -> bool:
     """Check if API server dependencies are available."""
     return AIOHTTP_AVAILABLE
@@ -1483,9 +1497,9 @@ class APIServerAdapter(BasePlatformAdapter):
         body, err = await self._read_json_body(request)
         if err:
             return err
-        user_message = body.get("message") or body.get("input")
-        if not _content_has_visible_payload(user_message):
-            return web.json_response(_openai_error("Missing 'message' field", code="missing_message"), status=400)
+        user_message, err = _session_chat_user_message(body)
+        if err is not None:
+            return err
         system_prompt = body.get("system_message") or body.get("instructions")
         if system_prompt is not None and not isinstance(system_prompt, str):
             return web.json_response(_openai_error("system_message must be a string", code="invalid_system_message"), status=400)
@@ -1527,9 +1541,9 @@ class APIServerAdapter(BasePlatformAdapter):
         body, err = await self._read_json_body(request)
         if err:
             return err
-        user_message = body.get("message") or body.get("input")
-        if not _content_has_visible_payload(user_message):
-            return web.json_response(_openai_error("Missing 'message' field", code="missing_message"), status=400)
+        user_message, err = _session_chat_user_message(body)
+        if err is not None:
+            return err
         system_prompt = body.get("system_message") or body.get("instructions")
         if system_prompt is not None and not isinstance(system_prompt, str):
             return web.json_response(_openai_error("system_message must be a string", code="invalid_system_message"), status=400)

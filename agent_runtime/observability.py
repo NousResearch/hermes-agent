@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import os
 import sqlite3
 import subprocess
 import time
+from pathlib import Path
 from typing import Any, Mapping
 
 from . import db
@@ -36,6 +38,21 @@ def _alert(severity: str, code: str, message: str, **extra: Any) -> dict[str, An
     return payload
 
 
+def _systemctl_user_env(environ: Mapping[str, str] | None = None) -> dict[str, str]:
+    """Return a minimal env that can reach the user systemd bus when possible."""
+    base = dict(environ if environ is not None else os.environ)
+    if base.get("XDG_RUNTIME_DIR"):
+        return base
+    try:
+        uid = os.getuid()
+    except AttributeError:  # pragma: no cover - non-POSIX fallback
+        return base
+    candidate = Path(f"/run/user/{uid}")
+    if candidate.is_dir():
+        base["XDG_RUNTIME_DIR"] = str(candidate)
+    return base
+
+
 def probe_runtime_service(service_name: str = _SERVICE_NAME) -> dict[str, str]:
     """Probe the user systemd runtime service with fixed argv only.
 
@@ -61,6 +78,7 @@ def probe_runtime_service(service_name: str = _SERVICE_NAME) -> dict[str, str]:
             text=True,
             check=False,
             timeout=10,
+            env=_systemctl_user_env(),
         )
     except Exception as exc:  # pragma: no cover - environment-specific
         return {"ActiveState": "unknown", "SubState": "unknown", "NRestarts": "0", "probe_error": str(exc)}

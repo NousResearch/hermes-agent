@@ -112,6 +112,31 @@ def test_health_snapshot_redacts_secret_like_lease_owner():
     assert "token=[REDACTED]" in encoded
 
 
+def test_probe_runtime_service_supplies_root_user_bus_when_env_missing(monkeypatch):
+    from agent_runtime import observability
+
+    calls = []
+
+    class Result:
+        returncode = 0
+        stdout = "ActiveState=active\nSubState=running\nNRestarts=0\n"
+        stderr = ""
+
+    def fake_run(argv, *, capture_output, text, check, timeout, env=None):
+        calls.append({"argv": argv, "env": dict(env or {})})
+        return Result()
+
+    monkeypatch.delenv("XDG_RUNTIME_DIR", raising=False)
+    monkeypatch.setattr(os, "getuid", lambda: 0)
+    monkeypatch.setattr(Path, "is_dir", lambda self: str(self) == "/run/user/0")
+    monkeypatch.setattr(observability.subprocess, "run", fake_run)
+
+    status = observability.probe_runtime_service()
+
+    assert status["ActiveState"] == "active"
+    assert calls[0]["env"]["XDG_RUNTIME_DIR"] == "/run/user/0"
+
+
 def test_health_snapshot_alerts_on_inactive_service_and_stale_lease_without_mutating_db():
     from agent_runtime import db, observability
 

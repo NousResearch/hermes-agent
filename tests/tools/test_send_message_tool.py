@@ -26,6 +26,31 @@ def _reset_signal_scheduler():
     yield
     _reset_scheduler()
 
+
+@pytest.fixture(autouse=True)
+def _reset_cron_auto_delivery_contextvars():
+    """Keep cron-run ContextVars from leaking in from scheduler tests.
+
+    Some scheduler tests call run_job() directly in the pytest task context;
+    run_job() correctly clears cron auto-delivery ContextVars at teardown, but
+    an explicitly cleared ContextVar intentionally suppresses os.environ
+    fallback. send_message tests still exercise the fallback path directly, so
+    each test starts those vars from the never-set sentinel.
+    """
+    from gateway.session_context import _UNSET, _VAR_MAP
+
+    var_names = (
+        "HERMES_CRON_AUTO_DELIVER_PLATFORM",
+        "HERMES_CRON_AUTO_DELIVER_CHAT_ID",
+        "HERMES_CRON_AUTO_DELIVER_THREAD_ID",
+    )
+    tokens = [_VAR_MAP[name].set(_UNSET) for name in var_names]
+    try:
+        yield
+    finally:
+        for name, token in zip(var_names, tokens):
+            _VAR_MAP[name].reset(token)
+
 from gateway.config import Platform
 from tools.send_message_tool import (
     _is_telegram_thread_not_found,

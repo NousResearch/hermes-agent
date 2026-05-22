@@ -391,6 +391,25 @@ def _image_block_to_openai_part(block: ImageContentBlock) -> dict[str, Any] | No
     return {"type": "image_url", "image_url": {"url": url}}
 
 
+def _convert_block_to_parts(
+    block: TextContentBlock
+    | ImageContentBlock
+    | AudioContentBlock
+    | ResourceContentBlock
+    | EmbeddedResourceContentBlock,
+) -> list[dict[str, Any]]:
+    """Convert a single ACP content block into one or more OpenAI-style parts."""
+    if isinstance(block, TextContentBlock):
+        return [{"type": "text", "text": block.text}] if getattr(block, "text", None) else []
+    if isinstance(block, ImageContentBlock):
+        part = _image_block_to_openai_part(block)
+        return [part] if part else []
+    if isinstance(block, ResourceContentBlock):
+        return _resource_link_to_parts(block)
+    if isinstance(block, EmbeddedResourceContentBlock):
+        return _embedded_resource_to_parts(block)
+    return []
+
 def _content_blocks_to_openai_user_content(
     prompt: list[
         TextContentBlock
@@ -405,30 +424,10 @@ def _content_blocks_to_openai_user_content(
     text_parts: list[str] = []
 
     for block in prompt:
-        if isinstance(block, TextContentBlock):
-            if block.text:
-                parts.append({"type": "text", "text": block.text})
-                text_parts.append(block.text)
-            continue
-        if isinstance(block, ImageContentBlock):
-            image_part = _image_block_to_openai_part(block)
-            if image_part is not None:
-                parts.append(image_part)
-            continue
-        if isinstance(block, ResourceContentBlock):
-            resource_parts = _resource_link_to_parts(block)
-            for part in resource_parts:
-                parts.append(part)
-                if part.get("type") == "text":
-                    text_parts.append(part["text"])
-            continue
-        if isinstance(block, EmbeddedResourceContentBlock):
-            resource_parts = _embedded_resource_to_parts(block)
-            for part in resource_parts:
-                parts.append(part)
-                if part.get("type") == "text":
-                    text_parts.append(part["text"])
-            continue
+        for part in _convert_block_to_parts(block):
+            parts.append(part)
+            if part.get("type") == "text":
+                text_parts.append(part["text"])
 
     if not parts:
         return _extract_text(prompt)

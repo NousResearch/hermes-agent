@@ -34,6 +34,7 @@ from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Set, Tuple
 
 from hermes_constants import get_hermes_home
+from agent.skill_utils import is_excluded_skill_path
 
 logger = logging.getLogger(__name__)
 
@@ -236,13 +237,12 @@ def list_agent_created_skill_names() -> List[str]:
     names: List[str] = []
     # Top-level SKILL.md files (flat layout) AND nested category/skill/SKILL.md
     for skill_md in base.rglob("SKILL.md"):
-        # Skip anything under .archive or .hub
+        # Skip Hermes metadata, VCS, virtualenv/dependency, and cache dirs
+        if is_excluded_skill_path(skill_md):
+            continue
         try:
             rel = skill_md.relative_to(base)
         except ValueError:
-            continue
-        parts = rel.parts
-        if parts and (parts[0].startswith(".") or parts[0] == "node_modules"):
             continue
         name = _read_skill_name(skill_md, fallback=skill_md.parent.name)
         if name in off_limits:
@@ -577,11 +577,7 @@ def _find_skill_dir(skill_name: str) -> Optional[Path]:
     if not base.exists():
         return None
     for skill_md in base.rglob("SKILL.md"):
-        try:
-            rel = skill_md.relative_to(base)
-        except ValueError:
-            continue
-        if rel.parts and rel.parts[0].startswith("."):
+        if is_excluded_skill_path(skill_md):
             continue
         if _read_skill_name(skill_md, fallback=skill_md.parent.name) == skill_name:
             return skill_md.parent

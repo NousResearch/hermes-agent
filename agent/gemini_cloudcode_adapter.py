@@ -873,10 +873,40 @@ def _gemini_http_error(response: httpx.Response) -> CodeAssistError:
         if retry_delay_seconds is not None:
             message += f" Google suggests retrying in {retry_delay_seconds:g}s."
     elif status == 429 and err_status == "RESOURCE_EXHAUSTED":
-        message = (
-            f"Gemini quota exhausted ({err_message or 'RESOURCE_EXHAUSTED'}). "
-            f"Check /gquota for remaining daily requests."
-        )
+        # Detect whether Google applied a free-tier bucket (limit=0) to the
+        # request — a distinct failure mode from per-minute TPM/RPM exhaustion.
+        # The signal comes from structured ErrorInfo metadata when present, or
+        # from the raw message string for endpoints that don't include it.
+        _metric = str(error_metadata.get("metric") or "")
+        _limit = str(error_metadata.get("limit") or "")
+        if not _metric:
+            _msg_lower = err_message.lower()
+            _mi = _msg_lower.find("metric:")
+            if _mi >= 0:
+                _metric = err_message[_mi + len("metric:"):].split(",")[0].strip()
+        if not _limit and ", limit: 0," in err_message:
+            _limit = "0"
+        _is_free_tier_zero = "free_tier_" in _metric and _limit == "0"
+
+        if _is_free_tier_zero:
+            _model_str = model_hint or str(error_metadata.get("model") or "")
+            message = (
+                f"Google applied free-tier quota (limit=0) for "
+                f"{_model_str or 'this model'} (metric: {_metric}). "
+                f"The Code Assist backend is routing to a free-tier bucket "
+                f"regardless of your subscription; setting "
+                f"HERMES_GEMINI_PROJECT_ID does not change this routing. "
+                f"Workarounds: switch to gemini-3.x-flash-lite-preview or "
+                f"gemini-2.5-flash (non-zero free-tier allowances), or add a "
+                f"Google AI Studio API key (GOOGLE_API_KEY) as a "
+                f"fallback_providers entry."
+            )
+        else:
+            message = (
+                f"Gemini quota exhausted ({err_message or 'RESOURCE_EXHAUSTED'}). "
+                f"/gquota shows daily limits only — per-minute TPM/RPM limits "
+                f"are separate and may be hit even when daily quota is available."
+            )
         if retry_delay_seconds is not None:
             message += f" Retry suggested in {retry_delay_seconds:g}s."
     elif status == 404:

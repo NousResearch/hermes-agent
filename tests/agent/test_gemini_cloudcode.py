@@ -1027,6 +1027,63 @@ class TestGeminiHttpErrorParsing:
         assert err.code == "code_assist_rate_limited"
         message = str(err)
         assert "quota" in message.lower()
+        # Message must clarify that /gquota shows daily limits, not per-minute.
+        assert "per-minute" in message.lower() or "daily" in message.lower()
+
+    def test_free_tier_zero_limit_from_metadata(self):
+        """free_tier_* metric + limit=0 in ErrorInfo metadata → specific guidance."""
+        from agent.gemini_cloudcode_adapter import _gemini_http_error
+
+        body = {
+            "error": {
+                "code": 429,
+                "message": (
+                    "Quota exceeded for metric: "
+                    "generate_content_free_tier_input_token_count, "
+                    "limit: 0, model: gemini-3.1-pro"
+                ),
+                "status": "RESOURCE_EXHAUSTED",
+                "details": [
+                    {
+                        "@type": "type.googleapis.com/google.rpc.ErrorInfo",
+                        "reason": "RATE_LIMIT_EXCEEDED",
+                        "metadata": {
+                            "metric": "generate_content_free_tier_input_token_count",
+                            "limit": "0",
+                            "model": "gemini-3.1-pro",
+                        },
+                    }
+                ],
+            }
+        }
+        err = _gemini_http_error(self._fake_response(429, body))
+        assert err.status_code == 429
+        assert err.code == "code_assist_rate_limited"
+        message = str(err)
+        assert "free-tier" in message.lower()
+        assert "limit=0" in message or "limit: 0" in message.lower()
+        assert "HERMES_GEMINI_PROJECT_ID" in message
+
+    def test_free_tier_zero_limit_from_raw_message(self):
+        """free_tier_* + limit: 0 detected from raw message when no ErrorInfo."""
+        from agent.gemini_cloudcode_adapter import _gemini_http_error
+
+        body = {
+            "error": {
+                "code": 429,
+                "message": (
+                    "Quota exceeded for metric: "
+                    "generate_content_free_tier_requests, "
+                    "limit: 0, model: gemini-3.1-flash"
+                ),
+                "status": "RESOURCE_EXHAUSTED",
+            }
+        }
+        err = _gemini_http_error(self._fake_response(429, body))
+        assert err.status_code == 429
+        message = str(err)
+        assert "free-tier" in message.lower()
+        assert "HERMES_GEMINI_PROJECT_ID" in message
 
     def test_404_model_not_found_produces_model_retired_message(self):
         from agent.gemini_cloudcode_adapter import _gemini_http_error

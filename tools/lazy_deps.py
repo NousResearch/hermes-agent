@@ -26,9 +26,11 @@ Security model:
 
 * **Venv-scoped only.** Installs target ``sys.executable`` in the active
   venv. We never touch the system Python.
-* **PyPI by package name only.** Specs may be ``"package>=1.0,<2"`` etc.
-  We do NOT support ``--index-url`` overrides, ``git+https://``, file:
-  paths, or any other input that could be hijacked by a malicious config.
+* **PyPI by package name by default.** Specs may be ``"package>=1.0,<2"`` etc.
+  Direct Git references are rejected except for explicitly vetted,
+  commit-pinned public GitHub dependencies that appear in :data:`LAZY_DEPS`.
+  We do NOT support ``--index-url`` overrides, file: paths, or any other
+  input that could be hijacked by a malicious config.
 * **Allowlist.** Only specs that appear in :data:`LAZY_DEPS` can be
   installed via this path. A typo in feature name doesn't get the user
   install-anything semantics.
@@ -118,6 +120,10 @@ LAZY_DEPS: dict[str, tuple[str, ...]] = {
     # ─── Memory providers ──────────────────────────────────────────────────
     "memory.honcho": ("honcho-ai==2.0.1",),
     "memory.hindsight": ("hindsight-client==0.6.1",),
+    "memory.llm_wiki": (
+        "qdrant-client==1.16.1",
+        "vector-core @ git+https://github.com/michaelkrauty/vector-core.git@551056769b66d35c56dbc48475785fbb646afbef",
+    ),
 
     # ─── Messaging platforms (lazy-installable on demand) ──────────────────
     "platform.telegram": ("python-telegram-bot[webhooks]==22.6",),
@@ -183,6 +189,11 @@ _SAFE_SPEC = re.compile(
     r"$"
 )
 
+_SAFE_DIRECT_GIT_SPEC = re.compile(
+    r"^vector-core @ git\+https://github\.com/michaelkrauty/vector-core\.git@"
+    r"[0-9a-f]{40}$"
+)
+
 
 class FeatureUnavailable(RuntimeError):
     """A lazily-installable feature is missing and cannot be made available.
@@ -238,11 +249,13 @@ def _allow_lazy_installs() -> bool:
 
 
 def _spec_is_safe(spec: str) -> bool:
-    """Reject pip specs that contain URLs, paths, or shell metacharacters."""
+    """Reject pip specs that contain unvetted URLs, paths, or shell metacharacters."""
     if not spec or len(spec) > 200:
         return False
     if any(ch in spec for ch in (";", "|", "&", "`", "$", "\n", "\r", "\t", "\\")):
         return False
+    if _SAFE_DIRECT_GIT_SPEC.match(spec):
+        return True
     if spec.startswith(("-", "/", ".")) or "://" in spec or "@" in spec:
         return False
     return bool(_SAFE_SPEC.match(spec))
@@ -265,6 +278,9 @@ def _specifier_from_spec(spec: str) -> str:
     ``"mautrix[encryption]>=0.20,<1"`` → ``">=0.20,<1"``
     ``"package"`` → ``""`` (no version constraint)
     """
+    if _SAFE_DIRECT_GIT_SPEC.match(spec):
+        return ""
+
     # Strip the package name + optional [extras] block.
     m = re.match(r"^[A-Za-z0-9_][A-Za-z0-9_.\-]*(?:\[[A-Za-z0-9_,\-]+\])?", spec)
     if not m:

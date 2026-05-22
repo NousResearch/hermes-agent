@@ -191,6 +191,37 @@ ALL_TOOL_SCHEMAS = [PROFILE_SCHEMA, SEARCH_SCHEMA, REASONING_SCHEMA, CONTEXT_SCH
 class HonchoMemoryProvider(MemoryProvider):
     """Honcho AI-native memory with dialectic Q&A and persistent user modeling."""
 
+    # Auto-injected Honcho context must be a high-signal briefing, not a raw
+    # observation dump. Event lines like "user sent '[scorch]'" are useful for
+    # diagnostics via honcho_context(), but when injected into the prompt they
+    # are easy for the model to misattribute as current user discourse.
+    _MAX_SUMMARY_CHARS = 1800
+    _MAX_REPRESENTATION_LINES = 48
+    _MAX_CARD_LINES = 32
+    _MAX_AI_LINES = 24
+    _MAX_SECTION_CHARS = 4200
+    _MAX_CLAIM_CHARS = 420
+    _EPHEMERAL_OBSERVATION_RE = re.compile(
+        r"^\[\d{4}-\d{2}-\d{2}[^\]]*\]\s+On\s+.+?\b(?:"
+        r"sent(?:\s+(?:a|the)\s+message|\s+the\s+text|\s+a\s+message)?|"
+        r"said|told|asked|ran|restarted|waited|pasted|provided|shared|"
+        r"looked like|continued|uploaded|clicked|typed"
+        r")\b",
+        re.IGNORECASE,
+    )
+    _LOW_VALUE_OBSERVATION_RE = re.compile(
+        r"\b(?:system note|previous turn|gateway restart|conversation history below|"
+        r"message with no text content|sent the text\s+\"?\[scorch\]|"
+        r"containing a system note|interrupted by a gateway restart|"
+        r"explicit observations?|message event|turn event)\b",
+        re.IGNORECASE,
+    )
+    _LOW_CONFIDENCE_OBSERVATION_RE = re.compile(
+        r"\b(?:likely|probably|appears? to|seems? to|may be|might be|"
+        r"could be|inferred|suggests?|indicates? that .* may)\b",
+        re.IGNORECASE,
+    )
+
     def __init__(self):
         self._manager = None   # HonchoSessionManager
         self._config = None    # HonchoClientConfig
@@ -472,27 +503,139 @@ class HonchoMemoryProvider(MemoryProvider):
         # Session summary — session-scoped context, placed first for relevance
         summary = ctx.get("summary", "")
         if summary:
-            parts.append(f"## Session Summary\n{summary}")
+            summary = self._clip_text(str(summary), self._MAX_SUMMARY_CHARS)
+            if summary:
+                parts.append(f"## Session Summary\n{summary}")
 
         rep = ctx.get("representation", "")
         if rep:
-            parts.append(f"## User Representation\n{rep}")
+            rep = self._clean_injected_section(
+                str(rep), max_lines=self._MAX_REPRESENTATION_LINES
+            )
+            if rep:
+                parts.append(f"## User Representation\n{rep}")
 
         card = ctx.get("card", "")
         if card:
-            parts.append(f"## User Peer Card\n{card}")
+            card = self._clean_injected_section(str(card), max_lines=self._MAX_CARD_LINES)
+            if card:
+                parts.append(f"## User Peer Card\n{card}")
 
         ai_rep = ctx.get("ai_representation", "")
         if ai_rep:
-            parts.append(f"## AI Self-Representation\n{ai_rep}")
+            ai_rep = self._clean_injected_section(
+                str(ai_rep), max_lines=self._MAX_AI_LINES
+            )
+            if ai_rep:
+                parts.append(f"## AI Self-Representation\n{ai_rep}")
 
         ai_card = ctx.get("ai_card", "")
         if ai_card:
-            parts.append(f"## AI Identity Card\n{ai_card}")
+            ai_card = self._clean_injected_section(
+                str(ai_card), max_lines=self._MAX_AI_LINES
+            )
+            if ai_card:
+                parts.append(f"## AI Identity Card\n{ai_card}")
 
         if not parts:
             return ""
         return "\n\n".join(parts)
+
+    @classmethod
+    def _clean_injected_section(cls, text: str, *, max_lines: int) -> str:
+        """Deduplicate and filter Honcho text before automatic prompt injection.
+
+        This is intentionally conservative and only applies to auto-injected
+        prompt context. Tool calls like honcho_context()/honcho_search() still
+        expose raw Honcho output for debugging and cleanup.
+        """
+        lines: list[str] = []
+        seen: set[str] = set()
+        skipped = 0
+        emitted_chars = 0
+
+        for claim in cls._iter_injected_claims(text):
+            if cls._should_drop_injected_line(claim):
+                skipped += 1
+                continue
+            claim = cls._clip_text(claim, cls._MAX_CLAIM_CHARS)
+            if not claim:
+                continue
+            key = cls._dedupe_key(claim)
+            if key in seen:
+                skipped += 1
+                continue
+            next_chars = emitted_chars + len(claim) + (1 if lines else 0)
+            if next_chars > cls._MAX_SECTION_CHARS:
+                skipped += 1
+                break
+            seen.add(key)
+            lines.append(claim)
+            emitted_chars = next_chars
+            if len(lines) >= max_lines:
+                break
+
+        if skipped:
+            logger.debug(
+                "Honcho injected context filtered %d low-value/duplicate claims", skipped
+            )
+        return "\n".join(lines)
+
+    @classmethod
+    def _iter_injected_claims(cls, text: str):
+        """Yield Honcho claims even when the backend returns one giant line.
+
+        Honcho context sometimes arrives as a paragraph containing many timestamped
+        observations. Line-only filtering misses that shape, so split at timestamp
+        boundaries and, for still-long chunks, sentence boundaries.
+        """
+        for raw_line in (text or "").splitlines():
+            line = raw_line.strip()
+            if not line:
+                continue
+            expanded = re.sub(
+                r"\s+(?=\[\d{4}-\d{2}-\d{2}[^\]]*\]\s+)", "\n", line
+            )
+            for chunk in expanded.splitlines():
+                chunk = chunk.strip()
+                if not chunk:
+                    continue
+                if len(chunk) <= cls._MAX_CLAIM_CHARS * 2:
+                    yield chunk
+                    continue
+                for sentence in re.split(r"(?<=[.!?])\s+", chunk):
+                    sentence = sentence.strip()
+                    if sentence:
+                        yield sentence
+
+    @classmethod
+    def _should_drop_injected_line(cls, line: str) -> bool:
+        if cls._LOW_VALUE_OBSERVATION_RE.search(line):
+            return True
+        if cls._LOW_CONFIDENCE_OBSERVATION_RE.search(line):
+            return True
+        if cls._EPHEMERAL_OBSERVATION_RE.search(line):
+            return True
+        return False
+
+    @staticmethod
+    def _dedupe_key(line: str) -> str:
+        key = re.sub(r"^\[\d{4}-\d{2}-\d{2}[^\]]*\]\s+", "", line)
+        key = re.sub(r"^On\s+.+?\bat\s+\d{1,2}:\d{2}:\d{2},\s+", "", key, flags=re.IGNORECASE)
+        key = re.sub(r"\b\d{15,20}\b", "<id>", key)
+        key = re.sub(r"\s+", " ", key).strip().lower()
+        return key
+
+    @staticmethod
+    def _clip_text(text: str, max_chars: int) -> str:
+        text = (text or "").strip()
+        if not text or max_chars <= 0 or len(text) <= max_chars:
+            return text
+        clipped = text[:max_chars]
+        boundary = max(clipped.rfind("\n"), clipped.rfind(". "), clipped.rfind(" "))
+        if boundary > max_chars * 0.75:
+            clipped = clipped[:boundary]
+        return clipped.rstrip() + " …"
 
     def system_prompt_block(self) -> str:
         """Return system prompt text, adapted by recall_mode.

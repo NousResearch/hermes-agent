@@ -827,6 +827,90 @@ class TestMemoryContextFencing:
         assert combined.index("weather") < fence_start
 
 
+class TestHonchoInjectedContextGuard:
+    """Honcho auto-injection should not dump ephemeral observation logs."""
+
+    def test_filters_event_observations_and_keeps_durable_facts(self):
+        from plugins.memory.honcho import HonchoMemoryProvider
+
+        provider = HonchoMemoryProvider()
+        ctx = {
+            "representation": "\n".join([
+                "## Explicit Observations",
+                "[2026-05-21 01:08:15] On May 21, 2026 at 01:08:15, test-user sent the text \"[scorch]\".",
+                "[2026-05-21 02:11:11] On May 21, 2026 at 02:11:11, test-user said they ran the command `systemctl --user restart hermes-gateway.service`.",
+                "[2026-05-21 00:49:26] test-user prefers clean results with no scratchpad.",
+                "[2026-05-21 01:15:59] test-user prefers clean results with no scratchpad.",
+            ])
+        }
+
+        result = provider._format_first_turn_context(ctx)
+
+        assert "## User Representation" in result
+        assert "prefers clean results with no scratchpad" in result
+        assert "sent the text" not in result
+        assert "systemctl --user restart" not in result
+        assert result.count("prefers clean results with no scratchpad") == 1
+
+    def test_caps_injected_representation_lines(self):
+        from plugins.memory.honcho import HonchoMemoryProvider
+
+        provider = HonchoMemoryProvider()
+        ctx = {
+            "representation": "\n".join(
+                f"[2026-05-21 00:49:26] test-user durable fact {i}."
+                for i in range(80)
+            )
+        }
+
+        result = provider._format_first_turn_context(ctx)
+
+        assert "durable fact 0" in result
+        assert "durable fact 47" in result
+        assert "durable fact 48" not in result
+
+    def test_splits_giant_single_line_observation_dump(self):
+        from plugins.memory.honcho import HonchoMemoryProvider
+
+        provider = HonchoMemoryProvider()
+        giant_line = " ".join([
+            "## Explicit Observations",
+            "[2026-05-21 00:00:00] On May 21, 2026 at 00:00:00, test-user sent the text \"[scorch]\".",
+            "[2026-05-21 00:01:00] test-user prefers blunt, clean/no-scratchpad results.",
+            "[2026-05-21 00:02:00] test-user prefers blunt, clean/no-scratchpad results.",
+            "[2026-05-21 00:03:00] test-user is likely a developer/system administrator/technical lead.",
+            "[2026-05-21 00:04:00] test-user wants Hermes to be a reliable long-term memory system.",
+        ])
+        ctx = {"representation": giant_line}
+
+        result = provider._format_first_turn_context(ctx)
+
+        assert "prefers blunt, clean/no-scratchpad results" in result
+        assert result.count("prefers blunt, clean/no-scratchpad results") == 1
+        assert "reliable long-term memory system" in result
+        assert "sent the text" not in result
+        assert "likely a developer" not in result
+        assert "Explicit Observations" not in result
+
+    def test_caps_injected_section_by_characters(self):
+        from plugins.memory.honcho import HonchoMemoryProvider
+
+        provider = HonchoMemoryProvider()
+        ctx = {
+            "representation": "\n".join(
+                f"[2026-05-21 00:{i:02d}:00] durable claim {i}: " + ("x" * 180)
+                for i in range(60)
+            )
+        }
+
+        result = provider._format_first_turn_context(ctx)
+        injected = result.split("## User Representation\n", 1)[1]
+
+        assert len(injected) <= provider._MAX_SECTION_CHARS
+        assert "durable claim 0" in injected
+        assert "durable claim 59" not in injected
+
+
 # ---------------------------------------------------------------------------
 # AIAgent.commit_memory_session — routes to MemoryManager.on_session_end
 # ---------------------------------------------------------------------------
@@ -1012,6 +1096,79 @@ class TestOnMemoryWriteBridge:
         mgr.on_memory_write("add", "user", "test")
         # Good provider still received the call despite bad provider crashing
         assert good.memory_writes == [("add", "user", "test")]
+
+
+class TestAIAgentMemoryProviderContext:
+    def test_explicit_agent_context_reaches_memory_provider(self, tmp_path):
+        from run_agent import AIAgent
+
+        provider = FakeMemoryProvider("context-provider")
+        cfg = {"memory": {"provider": "context-provider"}}
+
+        with patch("run_agent.OpenAI"), \
+            patch("hermes_cli.config.load_config", return_value=cfg), \
+            patch("agent.agent_init.get_hermes_home", return_value=tmp_path), \
+            patch("plugins.memory.load_memory_provider", return_value=provider):
+            AIAgent(
+                api_key="key",
+                base_url="https://openrouter.ai/api/v1",
+                model="test/model",
+                quiet_mode=True,
+                skip_context_files=True,
+                skip_memory=False,
+                platform="cron",
+                agent_context="cron",
+            )
+
+        assert provider.initialized is True
+        assert provider._init_kwargs["agent_context"] == "cron"
+        assert provider._init_kwargs["platform"] == "cron"
+
+    def test_agent_context_env_fallback_reaches_memory_provider(self, tmp_path, monkeypatch):
+        from run_agent import AIAgent
+
+        provider = FakeMemoryProvider("context-provider")
+        cfg = {"memory": {"provider": "context-provider"}}
+        monkeypatch.setenv("HERMES_AGENT_CONTEXT", "batch")
+
+        with patch("run_agent.OpenAI"), \
+            patch("hermes_cli.config.load_config", return_value=cfg), \
+            patch("agent.agent_init.get_hermes_home", return_value=tmp_path), \
+            patch("plugins.memory.load_memory_provider", return_value=provider):
+            AIAgent(
+                api_key="key",
+                base_url="https://openrouter.ai/api/v1",
+                model="test/model",
+                quiet_mode=True,
+                skip_context_files=True,
+                skip_memory=False,
+                platform="cli",
+            )
+
+        assert provider._init_kwargs["agent_context"] == "batch"
+
+    def test_cli_platform_defaults_to_primary_agent_context(self, tmp_path, monkeypatch):
+        from run_agent import AIAgent
+
+        provider = FakeMemoryProvider("context-provider")
+        cfg = {"memory": {"provider": "context-provider"}}
+        monkeypatch.delenv("HERMES_AGENT_CONTEXT", raising=False)
+
+        with patch("run_agent.OpenAI"), \
+            patch("hermes_cli.config.load_config", return_value=cfg), \
+            patch("agent.agent_init.get_hermes_home", return_value=tmp_path), \
+            patch("plugins.memory.load_memory_provider", return_value=provider):
+            AIAgent(
+                api_key="key",
+                base_url="https://openrouter.ai/api/v1",
+                model="test/model",
+                quiet_mode=True,
+                skip_context_files=True,
+                skip_memory=False,
+                platform="cli",
+            )
+
+        assert provider._init_kwargs["agent_context"] == "primary"
 
 
 class TestHonchoCadenceTracking:

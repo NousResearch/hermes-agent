@@ -69,6 +69,15 @@ class TestSpecSafety:
         assert not ld._spec_is_safe(spec), \
             f"expected {spec!r} to be rejected"
 
+    def test_vetted_vector_core_git_spec_is_allowed_for_llm_wiki(self):
+        specs = ld.feature_specs("memory.llm_wiki")
+        vector_specs = [spec for spec in specs if spec.startswith("vector-core @ git+")]
+
+        assert len(vector_specs) == 1
+        assert ld._spec_is_safe(vector_specs[0])
+        assert "github.com/michaelkrauty/vector-core.git" in vector_specs[0]
+        assert vector_specs[0].rsplit("@", 1)[-1]
+
 
 # ---------------------------------------------------------------------------
 # Allowlist enforcement

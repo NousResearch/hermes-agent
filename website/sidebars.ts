@@ -53,6 +53,7 @@ const sidebars: SidebarsConfig = {
             'user-guide/features/curator',
             'user-guide/features/memory',
             'user-guide/features/memory-providers',
+            'user-guide/features/llm-wiki-memory',
             'user-guide/features/context-files',
             'user-guide/features/context-references',
             'user-guide/features/personality',

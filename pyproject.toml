@@ -80,6 +80,10 @@ modal = ["modal==1.3.4"]
 daytona = ["daytona==0.155.0"]
 vercel = ["vercel==0.5.7"]
 hindsight = ["hindsight-client==0.6.1"]
+llm-wiki = [
+  "qdrant-client==1.16.1",
+  "vector-core @ git+https://github.com/michaelkrauty/vector-core.git@551056769b66d35c56dbc48475785fbb646afbef",
+]
 dev = ["debugpy==1.8.20", "pytest==9.0.2", "pytest-asyncio==1.3.0", "pytest-xdist==3.8.0", "pytest-split==0.11.0", "mcp==1.26.0", "ty==0.0.21", "ruff==0.15.10"]
 messaging = ["python-telegram-bot[webhooks]==22.6", "discord.py[voice]==2.7.1", "aiohttp==3.13.3", "brotlicffi==1.2.0.1", "slack-bolt==1.27.0", "slack-sdk==3.40.1", "qrcode==7.4.2"]
 cron = []  # croniter is now a core dependency; this extra kept for back-compat
@@ -206,6 +210,13 @@ all = [
 hermes = "hermes_cli.main:main"
 hermes-agent = "run_agent:main"
 hermes-acp = "acp_adapter.entry:main"
+hermes-wiki-eval = "hermes_wiki.eval:main"
+hermes-wiki-propose = "hermes_wiki.proposals:main"
+hermes-wiki-proposals = "hermes_wiki.proposal_lifecycle:main"
+hermes-wiki-maintenance = "hermes_wiki.maintenance:main"
+hermes-wiki-introspect = "hermes_wiki.retrieval_introspection:main"
+hermes-wiki-caretaker = "hermes_wiki.caretaker:main"
+hermes-wiki-caretaker-propose = "hermes_wiki.caretaker_orchestrator:main"
 
 [tool.setuptools]
 py-modules = ["run_agent", "model_tools", "toolsets", "batch_runner", "trajectory_compressor", "toolset_distributions", "cli", "hermes_bootstrap", "hermes_constants", "hermes_state", "hermes_time", "hermes_logging", "utils"]
@@ -213,9 +224,10 @@ py-modules = ["run_agent", "model_tools", "toolsets", "batch_runner", "trajector
 [tool.setuptools.package-data]
 hermes_cli = ["web_dist/**/*", "tui_dist/**/*", "scripts/install.sh", "scripts/install.ps1"]
 gateway = ["assets/**/*"]
+plugins = ["**/plugin.yaml", "**/README.md"]
 
 [tool.setuptools.packages.find]
-include = ["agent", "agent.*", "tools", "tools.*", "hermes_cli", "gateway", "gateway.*", "tui_gateway", "tui_gateway.*", "cron", "acp_adapter", "plugins", "plugins.*", "providers", "providers.*"]
+include = ["agent", "agent.*", "tools", "tools.*", "hermes_cli", "gateway", "gateway.*", "tui_gateway", "tui_gateway.*", "cron", "acp_adapter", "plugins", "plugins.*", "providers", "providers.*", "hermes_wiki", "hermes_wiki.*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

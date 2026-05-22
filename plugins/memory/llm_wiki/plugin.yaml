@@ -1,0 +1,6 @@
+name: llm_wiki
+version: 0.1.0
+description: "LLM Wiki — source-backed durable memory provider for Hermes."
+requires_env: []
+hooks:
+  - prefetch

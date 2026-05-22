@@ -137,6 +137,7 @@ def init_agent(
     checkpoint_max_total_size_mb: int = 500,
     checkpoint_max_file_size_mb: int = 10,
     pass_session_id: bool = False,
+    agent_context: str | None = None,
 ):
     """
     Initialize the AI Agent.
@@ -199,6 +200,7 @@ def init_agent(
     agent.quiet_mode = quiet_mode
     agent.ephemeral_system_prompt = ephemeral_system_prompt
     agent.platform = platform  # "cli", "telegram", "discord", "whatsapp", etc.
+    agent.agent_context = (agent_context or os.environ.get("HERMES_AGENT_CONTEXT") or "primary").strip() or "primary"
     agent._user_id = user_id  # Platform user identifier (gateway sessions)
     agent._user_name = user_name
     agent._chat_id = chat_id
@@ -988,7 +990,7 @@ def init_agent(
                         "session_id": agent.session_id,
                         "platform": platform or "cli",
                         "hermes_home": str(get_hermes_home()),
-                        "agent_context": "primary",
+                        "agent_context": getattr(agent, "agent_context", None) or "primary",
                     }
                     # Thread session title for memory provider scoping
                     # (e.g. honcho uses this to derive chat-scoped session keys)

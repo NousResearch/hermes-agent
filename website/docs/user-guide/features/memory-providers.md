@@ -1,12 +1,12 @@
 ---
 sidebar_position: 4
 title: "Memory Providers"
-description: "External memory provider plugins — Honcho, OpenViking, Mem0, Hindsight, Holographic, RetainDB, ByteRover, Supermemory"
+description: "External memory provider plugins — LLM Wiki, Honcho, OpenViking, Mem0, Hindsight, Holographic, RetainDB, ByteRover, Supermemory"
 ---
 
 # Memory Providers
 
-Hermes Agent ships with 8 external memory provider plugins that give the agent persistent, cross-session knowledge beyond the built-in MEMORY.md and USER.md. Only **one** external provider can be active at a time — the built-in memory is always active alongside it.
+Hermes Agent ships with external memory provider plugins that give the agent persistent, cross-session knowledge beyond the built-in MEMORY.md and USER.md. Only **one** external provider can be active at a time — the built-in memory is always active alongside it.
 
 ## Quick Start
 
@@ -22,7 +22,7 @@ Or set manually in `~/.hermes/config.yaml`:
 
 ```yaml
 memory:
-  provider: openviking   # or honcho, mem0, hindsight, holographic, retaindb, byterover, supermemory
+  provider: llm_wiki     # or honcho, openviking, mem0, hindsight, holographic, retaindb, byterover, supermemory
 ```
 
 ## How It Works
@@ -39,6 +39,58 @@ When a memory provider is active, Hermes automatically:
 The built-in memory (MEMORY.md / USER.md) continues to work exactly as before. The external provider is additive.
 
 ## Available Providers
+
+### LLM Wiki
+
+Local-first, source-backed durable memory stored as an inspectable Markdown wiki with semantic search. Unlike providers that automatically canonize every conversation turn, LLM Wiki is intentionally **read-first and curated**: it exposes bounded, cited retrieval and explicit ingestion tools while keeping raw session history, logs, and durable knowledge separate.
+
+| | |
+|---|---|
+| **Best for** | Inspectable long-term knowledge, architecture notes, policy, project memory, open-source/local-first setups |
+| **Requires** | `qdrant-client` extra, a Qdrant endpoint, and OpenAI-compatible embedding/LLM endpoints for search/query |
+| **Data storage** | Local Markdown wiki + Qdrant vector collection |
+| **Cost** | Free/local if using local endpoints; depends on configured embedding/LLM services |
+
+**Tools (8):** `wiki_status`, `wiki_orient`, `wiki_search`, `wiki_read`, `wiki_query`, `wiki_lint`, `wiki_ingest`, `wiki_reindex`
+
+**Runtime behavior:**
+
+- Adds only a tiny system-prompt note that wiki memory exists.
+- Uses bounded, cited prefetch instead of dumping the whole wiki into context.
+- `sync_turn()` is a no-op: conversations are not automatically converted into durable wiki facts.
+- `wiki_query` defaults to read-only (`file_result=false`, `log_query=false`).
+- `wiki_lint` defaults to non-mutating (`write_log=false`).
+- `wiki_ingest` defaults to `dry_run=true`.
+- Durable writes such as actual ingest/reindex are blocked outside the primary agent context, so cron jobs, subagents, batch jobs, and compression paths do not mutate canonical memory by accident.
+
+**Setup Wizard:**
+
+```bash
+hermes memory setup        # select "llm_wiki"
+```
+
+**Manual config:**
+
+```yaml
+memory:
+  provider: llm_wiki
+
+wiki:
+  path: ~/.hermes/wiki/personal
+  name: personal
+  embedding:
+    url: http://localhost:22222
+    model: Qwen3-Embedding-8B
+    dim: 4096
+  vector_store:
+    url: http://localhost:6333
+    collection_prefix: hermes_wiki
+  llm:
+    url: http://localhost:8011/v1
+    model: gpt-5.5
+```
+
+Use LLM Wiki when you want memory that can be inspected, edited, linted, backed up, and cited like documentation. See the dedicated [LLM Wiki Memory](./llm-wiki-memory) guide for setup, operations, and troubleshooting. Use session search for chronological recall of past conversations; use built-in MEMORY.md / USER.md for tiny boot-critical facts.
 
 ### Honcho
 

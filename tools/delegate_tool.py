@@ -1121,6 +1121,7 @@ def _build_child_agent(
         ephemeral_system_prompt=child_prompt,
         log_prefix=f"[subagent-{task_index}]",
         platform=parent_agent.platform,
+        agent_context="subagent",
         skip_context_files=True,
         skip_memory=True,
         clarify_callback=None,

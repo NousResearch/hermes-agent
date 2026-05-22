@@ -1794,6 +1794,7 @@ def cmd_chat(args):
         "max_turns": getattr(args, "max_turns", None),
         "ignore_rules": getattr(args, "ignore_rules", False),
         "ignore_user_config": getattr(args, "ignore_user_config", False),
+        "compact": getattr(args, "compact", False),
     }
     # Filter out None values
     kwargs = {k: v for k, v in kwargs.items() if v is not None}
@@ -10859,7 +10860,17 @@ def _try_termux_fast_cli_launch() -> bool:
 
     if args.command in {None, "chat"}:
         _set_chat_arg_defaults(args)
-        _prepare_agent_startup(args)
+        interactive_prompt = not getattr(args, "query", None) and not getattr(args, "image", None)
+        if interactive_prompt:
+            # Bare Termux CLI should reach the prompt first and do agent-only
+            # discovery on the first submitted turn instead of before input.
+            setattr(args, "compact", True)
+            os.environ["HERMES_DEFER_AGENT_STARTUP"] = "1"
+            os.environ["HERMES_FAST_STARTUP_BANNER"] = "1"
+            if getattr(args, "accept_hooks", False):
+                os.environ["HERMES_ACCEPT_HOOKS"] = "1"
+        else:
+            _prepare_agent_startup(args)
         cmd_chat(args)
         return True
 

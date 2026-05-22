@@ -9208,6 +9208,14 @@ def main():
         "message. Zero LLM cost. Requires --deliver to be a real target "
         "(not 'log').",
     )
+    wh_sub.add_argument(
+        "--stable-session",
+        action="store_true",
+        help=(
+            "Keep the route on one continuous Hermes session across deliveries. "
+            "Use for conversational reply threads that may continue across turns."
+        ),
+    )
 
     webhook_subparsers.add_parser(
         "list", aliases=["ls"], help="List all dynamic subscriptions"

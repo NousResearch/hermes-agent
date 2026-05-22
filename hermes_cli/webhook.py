@@ -168,6 +168,9 @@ def _cmd_subscribe(args):
     if args.deliver_chat_id:
         route["deliver_extra"] = {"chat_id": args.deliver_chat_id}
 
+    if getattr(args, "stable_session", False):
+        route["stable_session"] = True
+
     subs[name] = route
     _save_subscriptions(subs)
 
@@ -184,6 +187,8 @@ def _cmd_subscribe(args):
     print(f"  Deliver: {route['deliver']}")
     if route.get("deliver_only"):
         print("  Mode: direct delivery (no agent, zero LLM cost)")
+    if route.get("stable_session"):
+        print("  Session: stable (one continuous chat per route)")
     if route.get("prompt"):
         prompt_preview = route["prompt"][:80] + ("..." if len(route["prompt"]) > 80 else "")
         label = "Message" if route.get("deliver_only") else "Prompt"
@@ -207,6 +212,8 @@ def _cmd_list(args):
         deliver = route.get("deliver", "log")
         if route.get("deliver_only"):
             deliver = f"{deliver} (direct — no agent)"
+        if route.get("stable_session"):
+            deliver = f"{deliver} (stable session)"
         desc = route.get("description", "")
         print(f"  ◆ {name}")
         if desc:

@@ -21,8 +21,13 @@ Design:
 - replace/remove use short unique substring matching (not full text or IDs)
 - Behavioral guidance lives in the tool schema description
 - Frozen snapshot pattern: system prompt is stable, tool responses show live state
-- Entries can carry an optional metadata tag: [c:2026-05-22][r:3][s:user]
-  Auto-pruning uses tag data to score and evict low-value entries.
+|- Entries can carry an optional metadata tag for scoring/eviction:
+|    [260522|t]      ← created 2026-05-22, source=tool (default)
+|    [260522|3|u]    ← ref_count=3, source=user
+|    [260522|a]      ← source=auto
+|  Field encoding: YYMMDD[|count][|source]  (1 bracket pair, pipe-separated)
+|  Source codes: u(user), t(tool), a(auto), x(archive)
+|  Auto-pruning uses tag data to score and evict low-value entries.
 """
 
 from __future__ import annotations

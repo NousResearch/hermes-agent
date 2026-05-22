@@ -87,25 +87,10 @@ class TestResolveDeliveryTarget:
             "thread_id": "17585",
         }
 
-    @pytest.mark.parametrize(
-        ("platform", "env_var", "chat_id"),
-        [
-            ("matrix", "MATRIX_HOME_ROOM", "!bot-room:example.org"),
-            ("signal", "SIGNAL_HOME_CHANNEL", "+15551234567"),
-            ("mattermost", "MATTERMOST_HOME_CHANNEL", "team-town-square"),
-            ("sms", "SMS_HOME_CHANNEL", "+15557654321"),
-            ("email", "EMAIL_HOME_ADDRESS", "home@example.com"),
-            ("dingtalk", "DINGTALK_HOME_CHANNEL", "cidNNN"),
-            ("feishu", "FEISHU_HOME_CHANNEL", "oc_home"),
-            ("wecom", "WECOM_HOME_CHANNEL", "wecom-home"),
-            ("weixin", "WEIXIN_HOME_CHANNEL", "wxid_home"),
-            ("qqbot", "QQ_HOME_CHANNEL", "group-openid-home"),
-        ],
-    )
-    def test_origin_delivery_without_origin_falls_back_to_supported_home_channels(
-        self, monkeypatch, platform, env_var, chat_id
+    def test_origin_delivery_without_origin_stays_local_even_with_home_channels(
+        self, monkeypatch
     ):
-        for fallback_env in (
+        for env_var in (
             "MATRIX_HOME_ROOM",
             "MATRIX_HOME_CHANNEL",
             "TELEGRAM_HOME_CHANNEL",
@@ -122,14 +107,9 @@ class TestResolveDeliveryTarget:
             "WEIXIN_HOME_CHANNEL",
             "QQ_HOME_CHANNEL",
         ):
-            monkeypatch.delenv(fallback_env, raising=False)
-        monkeypatch.setenv(env_var, chat_id)
+            monkeypatch.setenv(env_var, f"configured-{env_var.lower()}")
 
-        assert _resolve_delivery_target({"deliver": "origin"}) == {
-            "platform": platform,
-            "chat_id": chat_id,
-            "thread_id": None,
-        }
+        assert _resolve_delivery_target({"deliver": "origin"}) is None
 
     def test_bare_matrix_delivery_uses_matrix_home_room(self, monkeypatch):
         monkeypatch.delenv("MATRIX_HOME_CHANNEL", raising=False)

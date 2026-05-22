@@ -140,3 +140,58 @@ async def test_prepare_inbound_message_text_transcribes_queued_voice_event():
     assert result is not None
     assert "queued voice transcript" in result
     assert "voice message" in result.lower()
+    assert runner._voice_transcript_echo_by_session["agent:main:telegram:dm:123"] == [
+        "queued voice transcript"
+    ]
+
+
+def test_voice_transcript_echo_prefixes_final_reply_once():
+    from gateway.run import _prefix_voice_transcript_echo
+
+    result = _prefix_voice_transcript_echo(
+        "Done — I wired it in.",
+        ["Yeah, let's definitely wire this into the durable version."],
+    )
+
+    assert result.startswith(
+        "🎙️ You said: \"Yeah, let's definitely wire this into the durable version.\""
+    )
+    assert result.endswith("Done — I wired it in.")
+
+    assert _prefix_voice_transcript_echo(result, ["duplicate"]) == result
+
+
+@pytest.mark.asyncio
+async def test_prepare_inbound_message_text_does_not_echo_audio_attachment_transcript():
+    from gateway.run import GatewayRunner
+
+    runner = GatewayRunner.__new__(GatewayRunner)
+    runner.config = GatewayConfig(stt_enabled=True)
+    runner.adapters = {}
+    runner._model = "test-model"
+    runner._base_url = ""
+    runner._has_setup_skill = lambda: False
+    runner._voice_transcript_echo_by_session = {}
+
+    source = SessionSource(
+        platform=Platform.TELEGRAM,
+        chat_id="123",
+        chat_type="dm",
+    )
+    event = MessageEvent(
+        text="",
+        message_type=MessageType.AUDIO,
+        source=source,
+        media_urls=["/tmp/audio-file.mp3"],
+        media_types=["audio/mpeg"],
+    )
+
+    result = await runner._prepare_inbound_message_text(
+        event=event,
+        source=source,
+        history=[],
+    )
+
+    assert result is not None
+    assert "audio file attachment" in result
+    assert runner._voice_transcript_echo_by_session == {}

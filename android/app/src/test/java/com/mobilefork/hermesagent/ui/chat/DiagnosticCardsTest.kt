@@ -71,6 +71,53 @@ class DiagnosticCardsTest {
     }
 
     @Test
+    fun parsesWifiChannelGraphRowsForExpandableSignalCards() {
+        val content = JSONObject()
+            .put(
+                "cards",
+                JSONArray().put(
+                    JSONObject()
+                        .put("title", "Wi-Fi Channel Graph")
+                        .put("body", "Channel envelopes.")
+                        .put("graph_type", "wifi_channel_graph")
+                        .put(
+                            "rows",
+                            JSONArray().put(
+                                JSONObject()
+                                    .put("display_ssid", "HermesWide")
+                                    .put("ssid", "HermesWide")
+                                    .put("rssi_dbm", -38)
+                                    .put("frequency_mhz", 5180)
+                                    .put("channel", 36)
+                                    .put("band", "5GHz")
+                                    .put("channel_width", "80MHz")
+                                    .put("channel_span_start", 28)
+                                    .put("channel_span_end", 44)
+                                    .put("overlap_pressure_score", 61)
+                                    .put("overlap_network_count", 2)
+                                    .put("overlap_sample_ssids", JSONArray().put("HermesNarrow").put("LabAP"))
+                                    .put("security_mode", "WPA3")
+                                    .put("bssid_vendor", "Apple"),
+                            ),
+                        ),
+                ),
+            )
+            .toString()
+
+        val row = extractDiagnosticCards(content).single().rows.single()
+
+        assertEquals("HermesWide", row.label)
+        assertEquals("-38 dBm", row.valueLabel)
+        assertTrue(row.detail.contains("5GHz ch 36"))
+        assertTrue(row.detail.contains("span 28-44"))
+        assertTrue(row.detail.contains("80MHz"))
+        assertTrue(row.detail.contains("61% overlap pressure"))
+        assertTrue(row.detail.contains("2 overlaps"))
+        assertTrue(row.detail.contains("near HermesNarrow, LabAP"))
+        assertTrue(row.fraction > 0.8f)
+    }
+
+    @Test
     fun parsesBluetoothRowsEvenWhenOnlyPairedMetadataIsAvailable() {
         val content = JSONObject()
             .put(

@@ -134,6 +134,71 @@ class HermesDeviceDiagnosticsBridgeTest {
     }
 
     @Test
+    fun buildsWifiChannelGraphRowsWithWidthSpansAndOverlapPressure() {
+        val networks = JSONArray()
+            .put(
+                JSONObject()
+                    .put("ssid", "HermesWide")
+                    .put("display_ssid", "HermesWide")
+                    .put("bssid", "AC:BC:32:12:34:56")
+                    .put("bssid_vendor", "Apple")
+                    .put("rssi_dbm", -36)
+                    .put("frequency_mhz", 5180)
+                    .put("channel", 36)
+                    .put("band", "5GHz")
+                    .put("channel_width", "80MHz")
+                    .put("channel_width_mhz", 80)
+                    .put("security_mode", "WPA3")
+                    .put("estimated_distance_meters", 1.1),
+            )
+            .put(
+                JSONObject()
+                    .put("ssid", "HermesNarrow")
+                    .put("display_ssid", "HermesNarrow")
+                    .put("bssid", "AC:BC:32:65:43:21")
+                    .put("rssi_dbm", -50)
+                    .put("frequency_mhz", 5200)
+                    .put("channel", 40)
+                    .put("band", "5GHz")
+                    .put("channel_width", "20MHz")
+                    .put("channel_width_mhz", 20)
+                    .put("security_mode", "WPA2"),
+            )
+            .put(
+                JSONObject()
+                    .put("ssid", "FarLab")
+                    .put("display_ssid", "FarLab")
+                    .put("bssid", "DA:A1:19:11:22:33")
+                    .put("rssi_dbm", -74)
+                    .put("frequency_mhz", 5745)
+                    .put("channel", 149)
+                    .put("band", "5GHz")
+                    .put("channel_width", "40MHz")
+                    .put("channel_width_mhz", 40)
+                    .put("security_mode", "WPA2"),
+            )
+
+        val rows = HermesDeviceDiagnosticsBridge.wifiChannelGraphRows(networks)
+        val primary = (0 until rows.length())
+            .map { rows.getJSONObject(it) }
+            .first { it.getString("display_ssid") == "HermesWide" }
+
+        assertEquals(3, rows.length())
+        assertEquals("5GHz", primary.getString("band"))
+        assertEquals(36, primary.getInt("channel"))
+        assertEquals("channel_width_envelope", primary.getString("graph_shape"))
+        assertTrue(primary.getInt("graph_width_channels") > 1)
+        assertTrue(primary.getInt("channel_span_start") < 36)
+        assertTrue(primary.getInt("channel_span_end") > 36)
+        assertTrue(primary.getInt("frequency_span_start_mhz") < 5180)
+        assertTrue(primary.getInt("frequency_span_end_mhz") > 5180)
+        assertTrue(primary.getInt("overlap_network_count") >= 1)
+        assertTrue(primary.getInt("overlap_pressure_score") > 0)
+        assertTrue(primary.getJSONArray("overlap_sample_ssids").toString().contains("HermesNarrow"))
+        assertTrue(primary.getString("recommendation").contains("overlap") || primary.getString("recommendation").contains("Clear"))
+    }
+
+    @Test
     fun enrichesWifiRowsWithVendorSecurityAndFilterFacets() {
         assertEquals("AC:BC:32", HermesDeviceDiagnosticsBridge.wifiBssidOui("ac:bc:32:12:34:56"))
         assertEquals("Apple", HermesDeviceDiagnosticsBridge.wifiOuiVendorLabel("AC:BC:32"))

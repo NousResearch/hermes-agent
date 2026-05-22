@@ -113,6 +113,18 @@ class NativeToolCallingChatClientTest {
     }
 
     @Test
+    fun extractsExplicitWifiChannelGraphDiagnosticQuickActionArguments() {
+        val parsed = NativeToolCallingChatClient.extractExplicitAndroidDiagnosticsArguments(
+            "Run android_device_diagnostics_tool action=wifi_channel_graph refresh=false scan_mode=paused",
+        )
+
+        requireNotNull(parsed)
+        assertEquals("wifi_channel_graph", parsed.getString("action"))
+        assertFalse(parsed.getBoolean("refresh"))
+        assertEquals("paused", parsed.getString("scan_mode"))
+    }
+
+    @Test
     fun extractsExplicitBluetoothSignalHistoryDiagnosticQuickActionArguments() {
         val parsed = NativeToolCallingChatClient.extractExplicitAndroidDiagnosticsArguments(
             "Run android_device_diagnostics_tool action=bluetooth_signal_history refresh=false scan_mode=paused",
@@ -237,6 +249,35 @@ class NativeToolCallingChatClientTest {
                     .put("recommendation", "Crowded channel."),
             )
         }
+        val channelGraph = JSONArray()
+        repeat(20) { index ->
+            channelGraph.put(
+                JSONObject()
+                    .put("rank", index + 1)
+                    .put("display_ssid", "Graph-$index")
+                    .put("ssid", "Graph-$index")
+                    .put("bssid", "AC:BC:32:AA:00:$index")
+                    .put("band", "5GHz")
+                    .put("channel", 36 + index)
+                    .put("graph_x_channel", 36 + index)
+                    .put("rssi_dbm", -32 - index)
+                    .put("graph_y_dbm", -32 - index)
+                    .put("channel_width", "80MHz")
+                    .put("channel_width_mhz", 80)
+                    .put("graph_width_channels", 17)
+                    .put("channel_span_start", 28 + index)
+                    .put("channel_span_end", 44 + index)
+                    .put("frequency_span_start_mhz", 5140 + (index * 5))
+                    .put("frequency_span_end_mhz", 5220 + (index * 5))
+                    .put("overlap_network_count", index + 1)
+                    .put("same_channel_network_count", index)
+                    .put("overlap_pressure_score", 80 - index)
+                    .put("overlap_sample_ssids", JSONArray().put("Graph-peer-$index"))
+                    .put("graph_shape", "channel_width_envelope")
+                    .put("security_mode", "WPA2")
+                    .put("bssid_vendor", "Apple"),
+            )
+        }
         val accessPointDetails = JSONArray()
         repeat(20) { index ->
             accessPointDetails.put(
@@ -292,6 +333,7 @@ class NativeToolCallingChatClientTest {
             .put("wifi_access_point_detail_count", 20)
             .put("wifi_access_point_semantic_count", 20)
             .put("wifi_band_coverage_count", 1)
+            .put("wifi_channel_graph_count", 20)
             .put("wifi_channel_utilization_count", 20)
             .put("wifi_security_summary_count", 1)
             .put("wifi_width_summary_count", 1)
@@ -301,6 +343,7 @@ class NativeToolCallingChatClientTest {
             .put("wifi_access_point_semantics", accessPointSemantics)
             .put("wifi_access_point_export", JSONObject().put("format", "json").put("row_count", 20).put("json_array_key", "wifi_access_point_details"))
             .put("wifi_channel_ratings", channelRatings)
+            .put("wifi_channel_graph", channelGraph)
             .put("wifi_channel_utilization", channelUtilization)
             .put(
                 "wifi_vendor_summary",
@@ -348,6 +391,7 @@ class NativeToolCallingChatClientTest {
         val wifiDetails = parsed.getJSONObject("wifi_access_point_details")
         val wifiSemantics = parsed.getJSONObject("wifi_access_point_semantics")
         val wifiRatings = parsed.getJSONObject("wifi_channel_ratings")
+        val wifiGraph = parsed.getJSONObject("wifi_channel_graph")
         val wifiUtilization = parsed.getJSONObject("wifi_channel_utilization")
         val compactedBandCoverage = parsed.getJSONArray("wifi_band_coverage")
         val vendorSummary = parsed.getJSONArray("wifi_vendor_summary")
@@ -362,6 +406,7 @@ class NativeToolCallingChatClientTest {
         assertEquals(20, parsed.getInt("wifi_access_point_detail_count"))
         assertEquals(20, parsed.getInt("wifi_access_point_semantic_count"))
         assertEquals(1, parsed.getInt("wifi_band_coverage_count"))
+        assertEquals(20, parsed.getInt("wifi_channel_graph_count"))
         assertEquals(20, parsed.getInt("wifi_channel_utilization_count"))
         assertEquals("array", wifiNetworks.getString("type"))
         assertEquals(60, wifiNetworks.getInt("original_count"))
@@ -380,6 +425,11 @@ class NativeToolCallingChatClientTest {
         assertEquals("array", wifiRatings.getString("type"))
         assertEquals(20, wifiRatings.getInt("original_count"))
         assertEquals(1, wifiRatings.getJSONArray("items").getJSONObject(0).getInt("channel"))
+        assertEquals("array", wifiGraph.getString("type"))
+        assertEquals(20, wifiGraph.getInt("original_count"))
+        assertEquals("channel_width_envelope", wifiGraph.getJSONArray("items").getJSONObject(0).getString("graph_shape"))
+        assertEquals(17, wifiGraph.getJSONArray("items").getJSONObject(0).getInt("graph_width_channels"))
+        assertEquals(80, wifiGraph.getJSONArray("items").getJSONObject(0).getInt("overlap_pressure_score"))
         assertEquals("array", wifiUtilization.getString("type"))
         assertEquals(20, wifiUtilization.getInt("original_count"))
         assertEquals(90, wifiUtilization.getJSONArray("items").getJSONObject(0).getInt("channel_pressure_score"))

@@ -362,6 +362,7 @@ def test_android_diagnostics_exposes_wifi_analyzer_report_for_readiness_and_scan
     workflow = (REPO_ROOT / ".github/workflows/android.yml").read_text(encoding="utf-8")
 
     assert '"wifi_analyzer_report"' in diagnostics_bridge
+    assert '"wifi_channel_graph"' in diagnostics_bridge
     assert '"wifi_channel_utilization"' in diagnostics_bridge
     assert 'wifiAnalyzerReportJson(appContext' in diagnostics_bridge
     assert 'wifiFilteredNetworkRows(' in diagnostics_bridge
@@ -370,6 +371,8 @@ def test_android_diagnostics_exposes_wifi_analyzer_report_for_readiness_and_scan
     assert '"wifi_filter_application"' in diagnostics_bridge
     assert '"filtered_wifi_analyzer_filters"' in diagnostics_bridge
     assert 'wifiAnalyzerFeatureRows(' in diagnostics_bridge
+    assert 'wifiChannelGraphRows(' in diagnostics_bridge
+    assert '"Wi-Fi Channel Graph"' in diagnostics_bridge
     assert 'wifiChannelUtilizationRowsForNetworks(' in diagnostics_bridge
     assert 'wifiAccessPointSemanticRows(' in diagnostics_bridge
     assert 'wifiBandCoverageRows(' in diagnostics_bridge
@@ -379,6 +382,7 @@ def test_android_diagnostics_exposes_wifi_analyzer_report_for_readiness_and_scan
     assert '"wifi_analyzer_workflow_routes"' in diagnostics_bridge
     assert '"wifi_scan_policy_matrix"' in diagnostics_bridge
     assert '"wifi_scan_control"' in diagnostics_bridge
+    assert '"wifi_channel_graph_count"' in diagnostics_bridge
     assert 'scan_mode=paused' in diagnostics_bridge
     assert 'scan_mode=resumed' in diagnostics_bridge
     assert 'Pause/resume scan control' in diagnostics_bridge
@@ -387,11 +391,13 @@ def test_android_diagnostics_exposes_wifi_analyzer_report_for_readiness_and_scan
     assert '"wifi_access_point_semantics"' in diagnostics_bridge
     assert '"wifi_band_coverage"' in diagnostics_bridge
     assert 'WiFiAnalyzer-style readiness' in diagnostics_bridge
+    assert 'Channel signal graph' in diagnostics_bridge
     assert 'Channel utilization occupancy' in diagnostics_bridge
     assert 'Agent AP semantic and risk labels' in diagnostics_bridge
     assert 'Band coverage and 2.4/5/6GHz visibility' in diagnostics_bridge
     assert 'wifi_analyzer_report' in chat_client
     assert 'wifi_filtered_scan' in chat_client
+    assert 'wifi_channel_graph' in chat_client
     assert '"filter_band"' in chat_client
     assert '"filter_security"' in chat_client
     assert '"filter_signal"' in chat_client
@@ -402,6 +408,7 @@ def test_android_diagnostics_exposes_wifi_analyzer_report_for_readiness_and_scan
     assert 'wifi_channel_utilization' in chat_client
     assert '"wifi_analyzer_feature_matrix"' in chat_client
     assert '"wifi_channel_utilization"' in chat_client
+    assert '"wifi_channel_graph"' in chat_client
     assert '"wifi_access_point_semantics"' in chat_client
     assert '"wifi_band_coverage"' in chat_client
     assert '"wifi_analyzer_workflow_routes"' in chat_client
@@ -409,6 +416,7 @@ def test_android_diagnostics_exposes_wifi_analyzer_report_for_readiness_and_scan
     assert '"wifi_scan_control"' in chat_client
     assert '"scan_mode"' in chat_client
     assert 'Wi-Fi or Bluetooth scan mode for direct signal actions' in chat_client
+    assert '"wifi_channel_graph" -> wifiChannelGraphRow(row)' in diagnostic_cards
     assert '"wifi_channel_utilization" -> wifiChannelUtilizationRow(row)' in diagnostic_cards
     assert '"wifi_access_point_semantics" -> wifiAccessPointSemanticRow(row)' in diagnostic_cards
     assert '"wifi_band_coverage" -> wifiBandCoverageRow(row)' in diagnostic_cards

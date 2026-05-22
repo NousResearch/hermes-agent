@@ -78,6 +78,7 @@ private fun graphRows(graphType: String?, rows: JSONArray): List<DiagnosticGraph
                 "wifi_channel_strength" -> wifiRow(row)
                 "wifi_access_point_detail" -> wifiAccessPointDetailRow(row)
                 "wifi_access_point_semantics" -> wifiAccessPointSemanticRow(row)
+                "wifi_channel_graph" -> wifiChannelGraphRow(row)
                 "wifi_channel_rating" -> wifiChannelRatingRow(row)
                 "wifi_channel_utilization" -> wifiChannelUtilizationRow(row)
                 "wifi_band_coverage" -> wifiBandCoverageRow(row)
@@ -189,6 +190,36 @@ private fun wifiAccessPointSemanticRow(row: JSONObject): DiagnosticGraphRow? {
             "unknown_security" -> 0.7f
             else -> rssi?.let(::dbmFraction) ?: 0.45f
         },
+    )
+}
+
+private fun wifiChannelGraphRow(row: JSONObject): DiagnosticGraphRow? {
+    val channel = row.optNumber("channel")?.toInt() ?: return null
+    val rssi = row.optNumber("rssi_dbm")?.toInt() ?: row.optNumber("graph_y_dbm")?.toInt() ?: return null
+    val ssid = row.optString("display_ssid").takeIf { it.isNotBlank() }
+        ?: row.optString("ssid").takeIf { it.isNotBlank() }
+        ?: row.optString("bssid").ifBlank { "Wi-Fi AP" }
+    val band = row.optString("band").ifBlank { "Wi-Fi" }
+    val spanStart = row.optNumber("channel_span_start")?.toInt()
+    val spanEnd = row.optNumber("channel_span_end")?.toInt()
+    val pressure = row.optNumber("overlap_pressure_score")?.toInt()
+    val overlapCount = row.optNumber("overlap_network_count")?.toInt()
+    val detail = listOfNotNull(
+        "$band ch $channel",
+        spanStart?.let { start -> spanEnd?.let { end -> "span $start-$end" } },
+        row.optNumber("frequency_mhz")?.toInt()?.let { "$it MHz" },
+        row.optString("channel_width").takeIf { it.isNotBlank() && it != "unknown" },
+        pressure?.let { "$it% overlap pressure" },
+        overlapCount?.let { "$it overlaps" },
+        row.optString("security_mode").takeIf { it.isNotBlank() },
+        row.optString("bssid_vendor").takeIf { it.isNotBlank() && it != "Unknown vendor" },
+        joinJsonStrings(row.optJSONArray("overlap_sample_ssids"), 3).takeIf { it.isNotBlank() }?.let { "near $it" },
+    ).joinToString(" | ")
+    return DiagnosticGraphRow(
+        label = ssid,
+        valueLabel = "$rssi dBm",
+        detail = detail.ifBlank { "Wi-Fi channel graph envelope" },
+        fraction = dbmFraction(rssi),
     )
 }
 

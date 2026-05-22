@@ -1247,13 +1247,13 @@ class NativeToolCallingChatClient(
                     name = "android_device_diagnostics_tool",
                     description = "Inspect resource-heavy apps, storage/memory status, nearby Wi-Fi signals, filterable Wi-Fi Analyzer readiness/scan-policy reports, channel ratings, inferred channel utilization/occupancy, access-point detail/export rows, AP semantic/risk labels, band coverage, signal history, vendor/OUI metadata and filter facets, Bluetooth Analyzer readiness/scan-policy reports, nearby Bluetooth devices plus service UUID labels/manufacturer names/proximity metadata, Bluetooth RSSI history/trends, Sensor Analyzer readiness/sampling-policy reports, accelerometer/gyroscope/ambient sensor snapshots, motion sensor history/trends, fused motion pose/heading/angular-motion/acceleration estimates, camera capability, overlay status, passive local backend runtime health, thermal/memory/power runtime stability guardrails, SOC/GPU compatibility and backend-policy reports, Gemma-visible agent observation dashboards with fused signal-context matrices, Kai-style agent environment parity/readiness, cross-signal awareness routes, tool catalog, radio analyzer AM/FM band-plan rows, receiver profile schemas for vendor AM/FM and external SDR bridges, vendor radio hints, Wi-Fi/Bluetooth radio routes, external SDR constraints, RF/AM/FM hardware limits, and phone preflight readiness for TikTok/Instagram/Gmail end-to-end work.",
                     properties = JSONObject()
-                        .put("action", stringProp("status, top_apps, wifi_scan, wifi_filtered_scan, wifi_analyzer_report, wifi_channel_rating, wifi_channel_utilization, wifi_ap_details, wifi_export, bluetooth_scan, bluetooth_analyzer_report, bluetooth_signal_history, sensor_analyzer_report, motion_sensor_history, motion_pose, sensor_snapshot, camera_status, radio_signal_status, radio_analyzer_report, signal_capability_status, local_backend_runtime_report, soc_compatibility_report, device_performance_report, signal_awareness_report, agent_observation_report, agent_environment_report, social_gmail_goal_preflight, show_active_overlay, tool_catalog, open_usage_access_settings, open_camera_permission_settings."))
+                        .put("action", stringProp("status, top_apps, wifi_scan, wifi_filtered_scan, wifi_analyzer_report, wifi_channel_graph, wifi_channel_rating, wifi_channel_utilization, wifi_ap_details, wifi_export, bluetooth_scan, bluetooth_analyzer_report, bluetooth_signal_history, sensor_analyzer_report, motion_sensor_history, motion_pose, sensor_snapshot, camera_status, radio_signal_status, radio_analyzer_report, signal_capability_status, local_backend_runtime_report, soc_compatibility_report, device_performance_report, signal_awareness_report, agent_observation_report, agent_environment_report, social_gmail_goal_preflight, show_active_overlay, tool_catalog, open_usage_access_settings, open_camera_permission_settings."))
                         .put("limit", intProp("Maximum rows for top apps, Wi-Fi networks, or Bluetooth devices. Defaults to 5."))
                         .put("detail_limit", intProp("Maximum Wi-Fi access-point detail/export rows. Defaults to limit, or the Wi-Fi max for wifi_ap_details/wifi_export."))
                         .put("export_format", stringProp("Wi-Fi export format for wifi_export: json, csv, or both."))
                         .put("scan_mode", stringProp("Wi-Fi or Bluetooth scan mode for direct signal actions: auto, paused, or resumed. Paused reuses cached rows/history; resumed requests a fresh Android scan or BLE sample."))
                         .put("refresh", boolProp("For wifi_scan, wifi_export, wifi_ap_details, bluetooth_scan, bluetooth_signal_history, motion_sensor_history, or motion_pose, request Android to refresh scan/sensor results before reading available results; analyzer reports stay passive."))
-                        .put("filter_band", stringProp("Optional Wi-Fi filter for wifi_scan, wifi_filtered_scan, wifi_analyzer_report, wifi_ap_details, wifi_channel_rating, wifi_channel_utilization, or wifi_export. Accepts 2.4GHz, 5GHz, 6GHz, or comma-separated values."))
+                        .put("filter_band", stringProp("Optional Wi-Fi filter for wifi_scan, wifi_filtered_scan, wifi_analyzer_report, wifi_ap_details, wifi_channel_graph, wifi_channel_rating, wifi_channel_utilization, or wifi_export. Accepts 2.4GHz, 5GHz, 6GHz, or comma-separated values."))
                         .put("filter_security", stringProp("Optional Wi-Fi security filter such as WPA3, WPA2, Enhanced Open, Open, WEP, or comma-separated values."))
                         .put("filter_signal", stringProp("Optional Wi-Fi signal quality filter: excellent, good, fair, or weak."))
                         .put("filter_ssid", stringProp("Optional case-insensitive substring filter for Wi-Fi SSID/display SSID."))
@@ -2995,10 +2995,10 @@ class NativeToolCallingChatClient(
         ): String {
             val baseContent = if (toolsEnabled) {
                 "You are Hermes running inside the native Android app. " +
-                    "Use tools for real files, shell commands, Android UI, settings, Shizuku/Sui, diagnostics, sensor sampling/range/resolution/power metadata, motion history, fused pose/orientation estimates, and local backend runtime health, camera capability checks, Wi-Fi analysis/channel ratings/channel utilization/signal history, Bluetooth Analyzer readiness/scan-policy reports plus nearby scans/service labels/manufacturer names, radio analyzer checks for AM/FM band-plan boundaries, vendor broadcast-radio hints, receiver profile schemas, Wi-Fi/Bluetooth radio routes, external SDR constraints, resource summaries, secret-free app settings backup/restore, Kai-style custom agent persona/system prompt, or Tasker-style automation. " +
+                    "Use tools for real files, shell commands, Android UI, settings, Shizuku/Sui, diagnostics, sensor sampling/range/resolution/power metadata, motion history, fused pose/orientation estimates, and local backend runtime health, camera capability checks, Wi-Fi analysis/channel graph envelopes/channel ratings/channel utilization/signal history, Bluetooth Analyzer readiness/scan-policy reports plus nearby scans/service labels/manufacturer names, radio analyzer checks for AM/FM band-plan boundaries, vendor broadcast-radio hints, receiver profile schemas, Wi-Fi/Bluetooth radio routes, external SDR constraints, resource summaries, secret-free app settings backup/restore, Kai-style custom agent persona/system prompt, or Tasker-style automation. " +
                     "When writing multiline text, prefer file_write_tool so multiline content is written exactly; file_write_tool can only write inside the Hermes app workspace. " +
                     "For HTML/browser work: write the file with file_write_tool, then call android_automation_tool action=open_uri with data_uri set to the workspace filename. " +
-                    "Use android_device_diagnostics_tool for top memory/storage apps, Wi-Fi signals/channel ratings/channel utilization/signal history, filterable Wi-Fi Analyzer readiness/scan-policy reports, Bluetooth Analyzer readiness/scan-policy reports and nearby devices with service UUID labels/manufacturer names, camera/sensor status plus accelerometer/gyroscope hardware metadata, motion trend history, fused pose/heading/acceleration estimates, active overlays, tool catalog, Gemma-visible agent observation dashboards, Kai-style agent environment reports, cross-signal awareness reports, local runtime backend health, thermal/memory/power runtime stability guardrails, SOC compatibility/backend reports for MediaTek/Mali/PowerVR and non-Snapdragon devices, AM/FM and broader radio signal route reports, receiver profile schemas, RF capability limits, or phone preflight checks before TikTok/Instagram/Gmail work. " +
+                    "Use android_device_diagnostics_tool for top memory/storage apps, Wi-Fi signals/channel graph envelopes/channel ratings/channel utilization/signal history, filterable Wi-Fi Analyzer readiness/scan-policy reports, Bluetooth Analyzer readiness/scan-policy reports and nearby devices with service UUID labels/manufacturer names, camera/sensor status plus accelerometer/gyroscope hardware metadata, motion trend history, fused pose/heading/acceleration estimates, active overlays, tool catalog, Gemma-visible agent observation dashboards, Kai-style agent environment reports, cross-signal awareness reports, local runtime backend health, thermal/memory/power runtime stability guardrails, SOC compatibility/backend reports for MediaTek/Mali/PowerVR and non-Snapdragon devices, AM/FM and broader radio signal route reports, receiver profile schemas, RF capability limits, or phone preflight checks before TikTok/Instagram/Gmail work. " +
                     "Use hindsight_memory_tool to retain, recall, reflect, and inspect promoted durable local memories before or after complex work. " +
                     "Report missing Android permissions honestly. Keep replies brief."
             } else {
@@ -3097,6 +3097,7 @@ class NativeToolCallingChatClient(
             "wifi_scan",
             "wifi_filtered_scan",
             "wifi_analyzer_report",
+            "wifi_channel_graph",
             "wifi_channel_rating",
             "wifi_channel_utilization",
             "wifi_ap_details",
@@ -3499,6 +3500,7 @@ internal object NativeToolContextCompressor {
                 "wifi_access_point_detail_count",
                 "wifi_access_point_semantic_count",
                 "wifi_band_coverage_count",
+                "wifi_channel_graph_count",
                 "wifi_channel_utilization_count",
                 "wifi_security_summary_count",
                 "wifi_width_summary_count",
@@ -3620,6 +3622,7 @@ internal object NativeToolContextCompressor {
         "wifi_networks",
         "wifi_access_point_details",
         "wifi_access_point_semantics",
+        "wifi_channel_graph",
         "wifi_channel_ratings",
         "wifi_channel_utilization",
         "recommended_wifi_channels",
@@ -3789,8 +3792,20 @@ internal object NativeToolContextCompressor {
         "signal_quality",
         "frequency_mhz",
         "channel",
+        "graph_x_channel",
+        "graph_y_dbm",
         "channel_width",
         "channel_width_mhz",
+        "graph_width_channels",
+        "channel_span_start",
+        "channel_span_end",
+        "frequency_span_start_mhz",
+        "frequency_span_end_mhz",
+        "overlap_network_count",
+        "same_channel_network_count",
+        "overlap_pressure_score",
+        "overlap_sample_ssids",
+        "graph_shape",
         "wifi_standard",
         "security_mode",
         "semantic_label",

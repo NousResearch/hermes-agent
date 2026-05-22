@@ -145,7 +145,7 @@ def skill_matches_platform(frontmatter: Dict[str, Any]) -> bool:
     inside a skill may still misbehave (no systemd, BusyBox utils, no
     apt/dnf, etc.) but that is on the skill, not on platform gating.
     """
-    platforms = frontmatter.get("platforms")
+    platforms = frontmatter.get("platforms") or frontmatter.get("metadata", {}).get("platforms")
     if not platforms:
         return True
     if not isinstance(platforms, list):

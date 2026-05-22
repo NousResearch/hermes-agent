@@ -926,7 +926,7 @@ def _build_snapshot_entry(
         category = "general"
         skill_name = skill_file.parent.name
 
-    platforms = frontmatter.get("platforms") or []
+    platforms = frontmatter.get("platforms") or frontmatter.get("metadata", {}).get("platforms") or []
     if isinstance(platforms, str):
         platforms = [platforms]
 

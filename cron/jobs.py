@@ -57,10 +57,10 @@ def _normalize_skill_list(skill: Optional[str] = None, skills: Optional[Any] = N
             raw_items = list(skills)
         except TypeError:
             logger.warning(
-                "cron: job has non-iterable 'skills' field (%s) — skipping entry; repair jobs.json",
+                "cron: job has non-iterable 'skills' field (%s) — falling back to 'skill'; repair jobs.json",
                 type(skills).__name__,
             )
-            raw_items = []
+            raw_items = [skill] if skill else []
 
     normalized: List[str] = []
     for item in raw_items:

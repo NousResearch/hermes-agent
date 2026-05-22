@@ -13,6 +13,8 @@ from gateway.whatsapp_identity import canonical_whatsapp_identifier
 
 SCHEMA_VERSION = 1
 
+_QUERYABLE_RECORD_KINDS = {"message_record", "conversation_record"}
+
 _APPEND_LOCK = threading.Lock()
 _SEQUENCE_LOCK = threading.Lock()
 _SEQUENCE_COUNTER = 0
@@ -47,7 +49,9 @@ def parse_whatsapp_event_datetime(value: Any) -> datetime | None:
         except ValueError:
             pass
         try:
-            return datetime.fromisoformat(text.replace("Z", "+00:00")).astimezone(timezone.utc)
+            return datetime.fromisoformat(text.replace("Z", "+00:00")).astimezone(
+                timezone.utc
+            )
         except ValueError:
             return None
     return None
@@ -116,22 +120,94 @@ def append_whatsapp_record(
     return path
 
 
+def _has_destination_scope(
+    *,
+    conversation_key: str | None,
+    destination_key: str | None,
+    group_chat_id: str | None,
+    dm_counterparty_id: str | None,
+) -> bool:
+    return any(
+        isinstance(value, str) and bool(value.strip())
+        for value in (
+            conversation_key,
+            destination_key,
+            group_chat_id,
+            dm_counterparty_id,
+        )
+    )
+
+
+def _iter_overlapping_partition_dates(
+    start_at_utc: datetime, end_at_utc: datetime
+) -> list[date]:
+    if start_at_utc >= end_at_utc:
+        return []
+
+    current_day = start_at_utc.date()
+    last_overlap_day = (end_at_utc - timedelta(microseconds=1)).date()
+    partition_dates: list[date] = []
+
+    while current_day <= last_overlap_day:
+        partition_dates.append(current_day)
+        current_day += timedelta(days=1)
+
+    return partition_dates
+
+
+def _is_queryable_record(record: dict[str, Any]) -> bool:
+    record_kind = record.get("record_kind")
+    if record_kind is None:
+        return True
+    return record_kind in _QUERYABLE_RECORD_KINDS
+
+
+def _record_sequence_value(record: dict[str, Any]) -> int:
+    try:
+        return int(record.get("record_sequence") or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
+def _matches_exact_filter(
+    record: dict[str, Any], field_name: str, expected: str | None
+) -> bool:
+    if expected is None:
+        return True
+    return record.get(field_name) == expected
+
+
 def query_whatsapp_records(
     start_at_utc: datetime,
     end_at_utc: datetime,
     *,
     base_dir: Path | None = None,
+    conversation_key: str | None = None,
     destination_key: str | None = None,
+    destination_context_type: str | None = None,
+    group_chat_id: str | None = None,
+    dm_counterparty_id: str | None = None,
+    direction: str | None = None,
 ) -> list[dict[str, Any]]:
     start = start_at_utc.astimezone(timezone.utc)
     end = end_at_utc.astimezone(timezone.utc)
-    current_day: date = start.date()
-    end_day: date = end.date()
-    results: list[dict[str, Any]] = []
+
+    if not _has_destination_scope(
+        conversation_key=conversation_key,
+        destination_key=destination_key,
+        group_chat_id=group_chat_id,
+        dm_counterparty_id=dm_counterparty_id,
+    ):
+        raise ValueError(
+            "query_whatsapp_records requires at least one destination scope: "
+            "conversation_key, destination_key, group_chat_id, or dm_counterparty_id"
+        )
+
+    results: list[tuple[datetime, int, dict[str, Any]]] = []
     store_dir = get_whatsapp_record_store_dir(base_dir)
 
-    while current_day <= end_day:
-        path = store_dir / f"{current_day.isoformat()}.jsonl"
+    for partition_day in _iter_overlapping_partition_dates(start, end):
+        path = store_dir / f"{partition_day.isoformat()}.jsonl"
         if path.exists():
             with path.open("r", encoding="utf-8") as handle:
                 for line in handle:
@@ -139,22 +215,49 @@ def query_whatsapp_records(
                     if not line:
                         continue
                     record = json.loads(line)
-                    if destination_key and record.get("destination_key") != destination_key:
+
+                    if not _is_queryable_record(record):
                         continue
-                    effective = parse_whatsapp_event_datetime(record.get("effective_event_at_utc"))
+
+                    if not _matches_exact_filter(
+                        record, "conversation_key", conversation_key
+                    ):
+                        continue
+                    if not _matches_exact_filter(
+                        record, "destination_key", destination_key
+                    ):
+                        continue
+                    if not _matches_exact_filter(
+                        record,
+                        "destination_context_type",
+                        destination_context_type,
+                    ):
+                        continue
+                    if not _matches_exact_filter(
+                        record, "group_chat_id", group_chat_id
+                    ):
+                        continue
+                    if not _matches_exact_filter(
+                        record,
+                        "dm_counterparty_id",
+                        dm_counterparty_id,
+                    ):
+                        continue
+                    if not _matches_exact_filter(record, "direction", direction):
+                        continue
+
+                    effective = parse_whatsapp_event_datetime(
+                        record.get("effective_event_at_utc")
+                    )
                     if effective is None:
                         continue
-                    if start <= effective <= end:
-                        results.append(record)
-        current_day += timedelta(days=1)
+                    if not (start <= effective < end):
+                        continue
 
-    results.sort(
-        key=lambda record: (
-            record.get("effective_event_at_utc") or "",
-            int(record.get("record_sequence") or 0),
-        )
-    )
-    return results
+                    results.append((effective, _record_sequence_value(record), record))
+
+    results.sort(key=lambda item: (item[0], item[1]))
+    return [record for _, _, record in results]
 
 
 __all__ = [

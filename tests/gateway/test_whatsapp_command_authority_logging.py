@@ -38,7 +38,9 @@ def _source(*, chat_id: str, user_id: str, chat_type: str = "dm") -> SessionSour
 
 
 @pytest.mark.asyncio
-async def test_external_whatsapp_slash_message_stays_conversational_and_is_logged(tmp_path, monkeypatch):
+async def test_external_whatsapp_slash_message_stays_conversational_and_is_logged(
+    tmp_path, monkeypatch
+):
     hermes_home = tmp_path / ".hermes"
     monkeypatch.setenv("HERMES_HOME", str(hermes_home))
 
@@ -57,16 +59,14 @@ async def test_external_whatsapp_slash_message_stays_conversational_and_is_logge
         "_build_message_event",
         AsyncMock(return_value=raw_event),
     ):
-        event = await adapter._build_message_event(
-            {
-                "chatId": "18885550000@s.whatsapp.net",
-                "senderId": "18885550000@lid",
-                "senderName": "Lead",
-                "body": "/status please",
-                "messageId": "inbound-1",
-                "timestamp": 1_717_324_800,
-            }
-        )
+        event = await adapter._build_message_event({
+            "chatId": "18885550000@s.whatsapp.net",
+            "senderId": "18885550000@lid",
+            "senderName": "Lead",
+            "body": "/status please",
+            "messageId": "inbound-1",
+            "timestamp": 1_717_324_800,
+        })
 
     assert event is raw_event
     assert event.participant_role == "external_party"
@@ -78,6 +78,7 @@ async def test_external_whatsapp_slash_message_stays_conversational_and_is_logge
     records = query_whatsapp_records(
         datetime(2024, 1, 1, tzinfo=timezone.utc),
         datetime(2025, 1, 1, tzinfo=timezone.utc),
+        dm_counterparty_id="18885550000",
     )
     assert len(records) == 1
     record = records[0]
@@ -94,12 +95,18 @@ async def test_external_whatsapp_slash_message_stays_conversational_and_is_logge
 
 
 @pytest.mark.asyncio
-async def test_owner_whatsapp_message_remains_command_capable_via_canonical_identifier(tmp_path, monkeypatch):
+async def test_owner_whatsapp_message_remains_command_capable_via_canonical_identifier(
+    tmp_path, monkeypatch
+):
     hermes_home = tmp_path / ".hermes"
     session_dir = hermes_home / "whatsapp" / "session"
     session_dir.mkdir(parents=True)
-    (session_dir / "lid-mapping-15551234567.json").write_text('"999999999999999"', encoding="utf-8")
-    (session_dir / "lid-mapping-999999999999999_reverse.json").write_text('"15551234567"', encoding="utf-8")
+    (session_dir / "lid-mapping-15551234567.json").write_text(
+        '"999999999999999"', encoding="utf-8"
+    )
+    (session_dir / "lid-mapping-999999999999999_reverse.json").write_text(
+        '"15551234567"', encoding="utf-8"
+    )
     monkeypatch.setenv("HERMES_HOME", str(hermes_home))
 
     adapter = _whatsapp_plugin.WhatsAppPluginAdapter(
@@ -117,15 +124,13 @@ async def test_owner_whatsapp_message_remains_command_capable_via_canonical_iden
         "_build_message_event",
         AsyncMock(return_value=raw_event),
     ):
-        event = await adapter._build_message_event(
-            {
-                "chatId": "999999999999999@lid",
-                "senderId": "999999999999999@lid",
-                "body": "/new",
-                "messageId": "owner-1",
-                "timestamp": 1_717_324_801,
-            }
-        )
+        event = await adapter._build_message_event({
+            "chatId": "999999999999999@lid",
+            "senderId": "999999999999999@lid",
+            "body": "/new",
+            "messageId": "owner-1",
+            "timestamp": 1_717_324_801,
+        })
 
     assert event.participant_role == "owner_operator"
     assert event.message_classification == "command_capable"
@@ -135,6 +140,7 @@ async def test_owner_whatsapp_message_remains_command_capable_via_canonical_iden
     records = query_whatsapp_records(
         datetime(2024, 1, 1, tzinfo=timezone.utc),
         datetime(2025, 1, 1, tzinfo=timezone.utc),
+        dm_counterparty_id="15551234567",
     )
     assert records[0]["participant_role"] == "owner_operator"
     assert records[0]["destination_key"] == "whatsapp:dm:15551234567"
@@ -142,7 +148,9 @@ async def test_owner_whatsapp_message_remains_command_capable_via_canonical_iden
 
 
 @pytest.mark.asyncio
-async def test_outbound_send_appends_agent_record_with_dispatch_group_and_destination(tmp_path, monkeypatch):
+async def test_outbound_send_appends_agent_record_with_dispatch_group_and_destination(
+    tmp_path, monkeypatch
+):
     hermes_home = tmp_path / ".hermes"
     monkeypatch.setenv("HERMES_HOME", str(hermes_home))
 
@@ -191,6 +199,7 @@ async def test_outbound_send_appends_agent_record_with_dispatch_group_and_destin
     records = query_whatsapp_records(
         datetime.now(timezone.utc) - timedelta(days=1),
         datetime.now(timezone.utc) + timedelta(days=1),
+        destination_key="whatsapp:dm:18885550000",
     )
     assert len(records) == 2
     assert {record["dispatch_group_sequence"] for record in records} == {1, 2}
@@ -204,7 +213,9 @@ async def test_outbound_send_appends_agent_record_with_dispatch_group_and_destin
         assert record["destination_target_id"] == "18885550000"
 
 
-def test_query_whatsapp_records_scans_overlapping_daily_partitions_only(tmp_path, monkeypatch):
+def test_query_whatsapp_records_scans_overlapping_daily_partitions_only(
+    tmp_path, monkeypatch
+):
     hermes_home = tmp_path / ".hermes"
     monkeypatch.setenv("HERMES_HOME", str(hermes_home))
 
@@ -229,6 +240,7 @@ def test_query_whatsapp_records_scans_overlapping_daily_partitions_only(tmp_path
     records = query_whatsapp_records(
         start,
         datetime(2024, 6, 2, 0, 1, tzinfo=timezone.utc),
+        destination_key="whatsapp:dm:1",
     )
 
     assert [record["effective_event_at_utc"] for record in records] == [

@@ -2521,6 +2521,12 @@ DEFAULT_CONFIG = {
         # same task/profile (spawn_failed, timed_out, or crashed). Reassignment
         # resets the streak for the new profile.
         "failure_limit": 2,
+        # Respawn guard toggles. These defer re-spawn for specific "probably
+        # don't launch another worker yet" conditions without fully blocking
+        # the task. Shared-PR sequential lanes may want active_pr=false.
+        "respawn_guard": {
+            "active_pr": True,
+        },
         # Worker stdout/stderr logs rotate at spawn time. Defaults preserve
         # the historical 2 MiB + one-backup behavior; long-running workers can
         # raise these to keep more early failure evidence.

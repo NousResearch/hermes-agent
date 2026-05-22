@@ -1905,6 +1905,21 @@ def test_respawn_guard_active_pr_in_comment(kanban_home):
     assert reason == "active_pr"
 
 
+def test_respawn_guard_active_pr_disabled_via_config(kanban_home, monkeypatch):
+    """The active_pr guard can be disabled for shared-PR sequential lanes."""
+
+    monkeypatch.setattr(kb, "_respawn_guard_enabled", lambda name, default=True: False)
+
+    with kb.connect() as conn:
+        t = kb.create_task(conn, title="has-pr", assignee="alice")
+        kb.add_comment(
+            conn, t, "worker",
+            "PR created: https://github.com/totemx-AI/subsidysmart/pull/42",
+        )
+        reason = kb.check_respawn_guard(conn, t)
+    assert reason is None
+
+
 def test_respawn_guard_old_pr_comment_not_guarded(kanban_home):
     """A GitHub PR URL in a comment older than the PR window does not block."""
     with kb.connect() as conn:
@@ -2013,6 +2028,29 @@ def test_dispatch_respawn_guard_skips_active_pr(
     assert t not in res.auto_blocked
     with kb.connect() as conn:
         assert kb.get_task(conn, t).status == "ready"
+
+
+def test_dispatch_respawn_guard_active_pr_disabled_allows_spawn(
+    kanban_home, all_assignees_spawnable, monkeypatch
+):
+    """Disabling the active_pr guard lets shared-PR lanes continue spawning."""
+    monkeypatch.setattr(kb, "_respawn_guard_enabled", lambda name, default=True: False)
+    spawned_ids = []
+
+    def fake_spawn(task, workspace):
+        spawned_ids.append(task.id)
+
+    with kb.connect() as conn:
+        t = kb.create_task(conn, title="has-pr", assignee="alice")
+        kb.add_comment(
+            conn, t, "worker",
+            "Opened https://github.com/totemx-AI/subsidysmart/pull/99",
+        )
+        res = kb.dispatch_once(conn, spawn_fn=fake_spawn)
+
+    assert (t, "active_pr") not in res.respawn_guarded
+    assert t in spawned_ids
+    assert t not in res.auto_blocked
 
 
 def test_dispatch_respawn_guard_dry_run_no_auto_block(

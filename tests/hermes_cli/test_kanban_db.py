@@ -3082,3 +3082,109 @@ def test_init_db_allows_missing_then_healthy(tmp_path):
     with kb.connect(db_path=db_path) as conn:
         tasks = kb.list_tasks(conn)
     assert [t.title for t in tasks] == ["keeps"]
+
+
+# ---------------------------------------------------------------------------
+# First-use tip for scratch workspaces
+# ---------------------------------------------------------------------------
+
+def test_maybe_emit_scratch_tip_fires_once_per_install(kanban_home, caplog):
+    """First scratch workspace materialization warns + emits an event.
+
+    Subsequent scratch workspaces on the SAME install stay silent — the
+    sentinel file under kanban_home() flips after the first emit.
+    """
+    import logging
+
+    with kb.connect() as conn:
+        t1 = kb.create_task(conn, title="first scratch")
+        t2 = kb.create_task(conn, title="second scratch")
+
+    # Sentinel must not exist yet on a fresh install.
+    assert not kb._scratch_tip_shown()
+
+    with caplog.at_level(logging.WARNING, logger="hermes_cli.kanban_db"):
+        with kb.connect() as conn:
+            kb._maybe_emit_scratch_tip(conn, t1, "scratch")
+
+    # Sentinel is now set.
+    assert kb._scratch_tip_shown()
+    assert kb._scratch_tip_sentinel_path().exists()
+
+    # Warning was logged exactly once.
+    tip_records = [
+        r for r in caplog.records
+        if "scratch workspaces are ephemeral" in r.getMessage()
+    ]
+    assert len(tip_records) == 1, (
+        f"Expected exactly one tip warning, got {len(tip_records)}: "
+        f"{[r.getMessage() for r in tip_records]!r}"
+    )
+
+    # An event row was appended on the first task.
+    with kb.connect() as conn:
+        events = conn.execute(
+            "SELECT kind FROM task_events WHERE task_id = ? ORDER BY id",
+            (t1,),
+        ).fetchall()
+    kinds = [e["kind"] for e in events]
+    assert "tip_scratch_workspace" in kinds, (
+        f"Expected tip_scratch_workspace event on first scratch task; "
+        f"got {kinds!r}"
+    )
+
+    # Second scratch materialization on the same install stays silent.
+    caplog.clear()
+    with caplog.at_level(logging.WARNING, logger="hermes_cli.kanban_db"):
+        with kb.connect() as conn:
+            kb._maybe_emit_scratch_tip(conn, t2, "scratch")
+    tip_records2 = [
+        r for r in caplog.records
+        if "scratch workspaces are ephemeral" in r.getMessage()
+    ]
+    assert tip_records2 == [], (
+        f"Tip should not re-fire after sentinel is set; got "
+        f"{[r.getMessage() for r in tip_records2]!r}"
+    )
+    with kb.connect() as conn:
+        events2 = conn.execute(
+            "SELECT kind FROM task_events WHERE task_id = ? ORDER BY id",
+            (t2,),
+        ).fetchall()
+    assert "tip_scratch_workspace" not in [e["kind"] for e in events2], (
+        "Tip event should not be appended for subsequent scratch tasks."
+    )
+
+
+def test_maybe_emit_scratch_tip_skips_non_scratch_workspaces(kanban_home, caplog):
+    """worktree/dir workspaces are preserved on completion and must not
+    trigger the scratch-cleanup tip."""
+    import logging
+
+    with kb.connect() as conn:
+        t_wt = kb.create_task(conn, title="worktree task")
+        t_dir = kb.create_task(conn, title="dir task")
+
+    assert not kb._scratch_tip_shown()
+
+    with caplog.at_level(logging.WARNING, logger="hermes_cli.kanban_db"):
+        with kb.connect() as conn:
+            kb._maybe_emit_scratch_tip(conn, t_wt, "worktree")
+            kb._maybe_emit_scratch_tip(conn, t_dir, "dir")
+
+    # Sentinel stays unset — these workspaces are preserved by design,
+    # so the warning is irrelevant for them and we save the one-shot
+    # for a real scratch user.
+    assert not kb._scratch_tip_shown()
+    tip_records = [
+        r for r in caplog.records
+        if "scratch workspaces are ephemeral" in r.getMessage()
+    ]
+    assert tip_records == []
+    with kb.connect() as conn:
+        for tid in (t_wt, t_dir):
+            events = conn.execute(
+                "SELECT kind FROM task_events WHERE task_id = ?", (tid,),
+            ).fetchall()
+            assert "tip_scratch_workspace" not in [e["kind"] for e in events]
+

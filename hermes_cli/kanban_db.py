@@ -1186,6 +1186,31 @@ def _cross_process_init_lock(path: Path):
             handle.close()
 
 
+class _WalSafeConnection(sqlite3.Connection):
+    """Connection subclass that checkpoints WAL before close to release
+    WAL file descriptors immediately.
+
+    Long-running processes (gateway kanban dispatcher, notifier) open a
+    new kanban connection every tick.  In WAL mode SQLite defers cleanup
+    of WAL/shm file descriptors, causing a slow FD leak that eventually
+    hits the process limit and triggers cascading failures (``too many
+    open files``, ``unable to open database file``).
+
+    Calling ``PRAGMA wal_checkpoint(TRUNCATE)`` before each close forces
+    SQLite to consolidate the WAL and release its file descriptors so
+    the FD count stays flat.  See issue #30799.
+    """
+
+    def close(self) -> None:
+        try:
+            self.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+        except sqlite3.ProgrammingError:
+            pass  # already closed
+        except sqlite3.OperationalError:
+            pass  # network FS / detached -- close without checkpoint
+        super().close()
+
+
 def _looks_like_tls_record_at(data: bytes, offset: int) -> bool:
     """Return True for a TLS record header at ``data[offset:]``."""
     if len(data) < offset + 5:
@@ -1405,7 +1430,16 @@ def connect(
         # via _INITIALIZED_PATHS so it only runs once per process per path.
         _guard_existing_db_is_healthy(path)
         resolved = str(path.resolve())
-        conn = _sqlite_connect(path)
+        # Use _WalSafeConnection to checkpoint WAL before close, preventing the
+        # slow FD leak from deferred WAL/shm cleanup in long-running processes.
+        busy_timeout_ms = _resolve_busy_timeout_ms()
+        conn = sqlite3.connect(
+            str(path),
+            isolation_level=None,
+            timeout=busy_timeout_ms / 1000.0,
+            factory=_WalSafeConnection,
+        )
+        conn.execute(f"PRAGMA busy_timeout={busy_timeout_ms}")
         try:
             conn.row_factory = sqlite3.Row
             with _INIT_LOCK:

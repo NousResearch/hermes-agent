@@ -15,9 +15,13 @@
 #     keys; exposing it on LAN without auth is unsafe. If you want remote
 #     access, use an SSH tunnel or put it behind a reverse proxy that
 #     adds authentication — do NOT pass --insecure --host 0.0.0.0.
-#   - If you override entrypoint, keep /opt/hermes/docker/entrypoint.sh in
-#     the command chain. It drops root to the hermes user before gateway
-#     files such as gateway.lock are created.
+#   - If you override entrypoint, keep `/init` as the first command in
+#     the chain (or let docker use the image's default ENTRYPOINT,
+#     which is `["/init", "/opt/hermes/docker/main-wrapper.sh"]`).
+#     `/init` is s6-overlay's PID 1 — it runs the cont-init.d scripts
+#     (chown, profile reconcile, dashboard toggle) and sets up the
+#     supervision tree before any service starts. Bypassing it skips
+#     all of that setup and the gateway will not work correctly.
 #   - The gateway's API server is off unless you uncomment API_SERVER_KEY
 #     and API_SERVER_HOST. See docs/user-guide/api-server.md before doing
 #     this on an internet-facing host.

@@ -27,6 +27,48 @@ def _make_store(tmp_path):
         return PairingStore()
 
 
+class TestSplitPairingDirMigration:
+    def test_merges_new_approved_into_active_legacy_dir(self, tmp_path):
+        home = tmp_path / "home"
+        legacy = home / "pairing"
+        new = home / "platforms" / "pairing"
+        legacy.mkdir(parents=True)
+        new.mkdir(parents=True)
+        (new / "feishu-approved.json").write_text(json.dumps({
+            "ou_user": {"user_name": "Alice", "approved_at": 123.0}
+        }))
+
+        with patch("gateway.pairing.PAIRING_DIR", legacy), patch("gateway.pairing.get_hermes_home", return_value=home):
+            store = PairingStore()
+            assert store.is_approved("feishu", "ou_user") is True
+
+        migrated = json.loads((legacy / "feishu-approved.json").read_text())
+        assert "ou_user" in migrated
+
+    def test_active_entries_win_when_merging_split_dirs(self, tmp_path):
+        home = tmp_path / "home"
+        legacy = home / "pairing"
+        new = home / "platforms" / "pairing"
+        legacy.mkdir(parents=True)
+        new.mkdir(parents=True)
+        (legacy / "feishu-approved.json").write_text(json.dumps({
+            "ou_user": {"user_name": "Active", "approved_at": 2.0}
+        }))
+        (new / "feishu-approved.json").write_text(json.dumps({
+            "ou_user": {"user_name": "Inactive", "approved_at": 1.0},
+            "ou_other": {"user_name": "Other", "approved_at": 1.0},
+        }))
+
+        with patch("gateway.pairing.PAIRING_DIR", legacy), patch("gateway.pairing.get_hermes_home", return_value=home):
+            store = PairingStore()
+            assert store.is_approved("feishu", "ou_user") is True
+            assert store.is_approved("feishu", "ou_other") is True
+
+        migrated = json.loads((legacy / "feishu-approved.json").read_text())
+        assert migrated["ou_user"]["user_name"] == "Active"
+        assert migrated["ou_other"]["user_name"] == "Other"
+
+
 # ---------------------------------------------------------------------------
 # _secure_write
 # ---------------------------------------------------------------------------

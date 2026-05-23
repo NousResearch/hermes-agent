@@ -962,7 +962,7 @@ _AGENT_PENDING_SENTINEL = object()
 
 def _configured_gateway_provider(config: dict | None = None) -> str:
     """Return the gateway's requested provider with CLI-compatible precedence."""
-    cfg = config if isinstance(config, dict) else _load_gateway_config()
+    cfg = config if isinstance(config, dict) else _load_gateway_runtime_config()
     config_provider = ""
     model_cfg = cfg.get("model", {})
     if isinstance(model_cfg, dict):
@@ -2294,15 +2294,7 @@ class GatewayRunner:
                 list(self._session_model_overrides.keys())[:5] if self._session_model_overrides else "[]",
             )
 
-        model_cfg = user_config.get("model", {}) if isinstance(user_config, dict) else {}
-        requested_provider = ""
-        if isinstance(model_cfg, dict):
-            requested_provider = str(model_cfg.get("provider") or "").strip()
-
-        runtime_kwargs = _resolve_runtime_agent_kwargs(
-            requested_provider=requested_provider or None,
-            config=user_config,
-        )
+        runtime_kwargs = _resolve_runtime_agent_kwargs()
         runtime_model = runtime_kwargs.pop("model", None)
         if runtime_model:
             logger.info(

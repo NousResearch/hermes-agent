@@ -1,0 +1,8 @@
+[package]
+name = "jcode-tool-hermes"
+version = "0.1.0"
+edition = "2024"
+description = "Standalone jcode-side client for the Hermes service bridge."
+license = "MIT"
+
+[dependencies]

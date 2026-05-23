@@ -1,0 +1,50 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://hermes-agent.local/contracts/jcode_bridge/v1/run_json.schema.json",
+  "title": "jcode run --json payload",
+  "description": "Final object emitted by wrapper-oriented jcode run --json.",
+  "type": "object",
+  "x-bridge-contract-version": "jcode-bridge.v1",
+  "anyOf": [
+    {
+      "required": ["text"]
+    },
+    {
+      "required": ["final_response"]
+    },
+    {
+      "required": ["response"]
+    },
+    {
+      "required": ["content"]
+    }
+  ],
+  "properties": {
+    "text": {
+      "type": "string"
+    },
+    "final_response": {
+      "type": "string"
+    },
+    "response": {
+      "type": "string"
+    },
+    "content": {
+      "type": "string"
+    },
+    "session_id": {
+      "type": "string"
+    },
+    "provider": {
+      "type": "string"
+    },
+    "model": {
+      "type": "string"
+    },
+    "usage": {
+      "type": "object",
+      "additionalProperties": true
+    }
+  },
+  "additionalProperties": true
+}

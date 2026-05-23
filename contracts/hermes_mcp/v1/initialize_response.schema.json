@@ -1,0 +1,50 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://hermes.local/contracts/hermes_mcp/v1/initialize_response.schema.json",
+  "title": "Hermes MCP initialize response",
+  "x-bridge-contract-version": "hermes-mcp.v1",
+  "type": "object",
+  "required": ["jsonrpc", "id", "result"],
+  "properties": {
+    "jsonrpc": {
+      "const": "2.0"
+    },
+    "id": {
+      "type": ["integer", "string", "null"]
+    },
+    "result": {
+      "type": "object",
+      "required": ["protocolVersion", "capabilities", "serverInfo"],
+      "properties": {
+        "protocolVersion": {
+          "type": "string"
+        },
+        "capabilities": {
+          "type": "object",
+          "required": ["tools"],
+          "properties": {
+            "tools": {
+              "type": "object"
+            }
+          },
+          "additionalProperties": true
+        },
+        "serverInfo": {
+          "type": "object",
+          "required": ["name", "version"],
+          "properties": {
+            "name": {
+              "type": "string"
+            },
+            "version": {
+              "type": "string"
+            }
+          },
+          "additionalProperties": true
+        }
+      },
+      "additionalProperties": true
+    }
+  },
+  "additionalProperties": true
+}

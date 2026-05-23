@@ -1,0 +1,99 @@
+{
+  "jsonrpc": "2.0",
+  "id": 2,
+  "result": {
+    "tools": [
+      {
+        "name": "hermes_tool",
+        "description": "Call an allowlisted Hermes service through the hermes-service.v1 contract.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "tool": {
+              "type": "string",
+              "enum": ["web_search", "web_extract", "session_search", "memory"]
+            },
+            "args": {
+              "type": "object"
+            }
+          },
+          "required": ["tool", "args"]
+        }
+      },
+      {
+        "name": "hermes_web_search",
+        "description": "Search the web with Hermes' configured web provider.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "query": {
+              "type": "string"
+            },
+            "limit": {
+              "type": "integer"
+            }
+          },
+          "required": ["query"]
+        }
+      },
+      {
+        "name": "hermes_web_extract",
+        "description": "Extract page content with Hermes' configured web provider.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "url": {
+              "type": "string"
+            },
+            "urls": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            }
+          }
+        }
+      },
+      {
+        "name": "hermes_session_search",
+        "description": "Search Hermes session history.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "query": {
+              "type": "string"
+            },
+            "limit": {
+              "type": "integer"
+            }
+          },
+          "required": ["query"]
+        }
+      },
+      {
+        "name": "hermes_memory",
+        "description": "Read or update Hermes persistent memory.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "action": {
+              "type": "string",
+              "enum": ["add", "replace", "remove"]
+            },
+            "target": {
+              "type": "string",
+              "enum": ["memory", "user"]
+            },
+            "content": {
+              "type": "string"
+            },
+            "old_text": {
+              "type": "string"
+            }
+          },
+          "required": ["action", "target"]
+        }
+      }
+    ]
+  }
+}

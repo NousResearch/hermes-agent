@@ -1,0 +1,4 @@
+{"type":"start","session_id":"session_test"}
+{"type":"text_delta","text":"O"}
+{"type":"text_delta","text":"K"}
+{"type":"done","session_id":"session_test","text":"OK","usage":{"input_tokens":12,"output_tokens":1}}

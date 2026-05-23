@@ -1,0 +1,48 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://hermes-agent.local/contracts/jcode_bridge/v1/run_ndjson_stream.schema.json",
+  "title": "jcode run --ndjson stream",
+  "description": "Array of JSON objects parsed from jcode run --ndjson output lines.",
+  "type": "array",
+  "x-bridge-contract-version": "jcode-bridge.v1",
+  "minItems": 1,
+  "items": {
+    "$ref": "run_ndjson_event.schema.json"
+  },
+  "contains": {
+    "type": "object",
+    "required": ["type"],
+    "properties": {
+      "type": {
+        "const": "done"
+      },
+      "text": {
+        "type": "string"
+      },
+      "final_response": {
+        "type": "string"
+      },
+      "response": {
+        "type": "string"
+      },
+      "content": {
+        "type": "string"
+      }
+    },
+    "anyOf": [
+      {
+        "required": ["text"]
+      },
+      {
+        "required": ["final_response"]
+      },
+      {
+        "required": ["response"]
+      },
+      {
+        "required": ["content"]
+      }
+    ],
+    "additionalProperties": true
+  }
+}

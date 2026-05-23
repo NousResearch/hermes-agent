@@ -1,0 +1,41 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://hermes-agent.local/contracts/hermes_service/v1/service_request.schema.json",
+  "title": "Hermes service request",
+  "description": "Newline-JSON request from jcode to a local Hermes service bridge.",
+  "type": "object",
+  "x-bridge-contract-version": "hermes-service.v1",
+  "required": ["type", "tool", "args"],
+  "properties": {
+    "type": {
+      "const": "hermes_service_request"
+    },
+    "id": {
+      "type": ["string", "integer"]
+    },
+    "tool": {
+      "type": "string",
+      "minLength": 1
+    },
+    "args": {
+      "type": "object",
+      "additionalProperties": true
+    },
+    "task_id": {
+      "type": "string"
+    },
+    "session_id": {
+      "type": "string"
+    },
+    "confirm_outbound_human_contact": {
+      "type": "boolean"
+    },
+    "confirm_sensitive_person_data": {
+      "type": "boolean"
+    },
+    "safety_override_reason": {
+      "type": "string"
+    }
+  },
+  "additionalProperties": true
+}

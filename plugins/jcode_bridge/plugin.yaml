@@ -1,0 +1,11 @@
+name: jcode_bridge
+version: 0.1.0
+description: "Run jcode as a local sidecar from Hermes without forking either upstream."
+author: NousResearch
+kind: standalone
+provides_tools:
+  - jcode_run
+  - jcode_status
+  - jcode_contract_check
+hooks:
+  - pre_gateway_dispatch

@@ -1,0 +1,10 @@
+{
+  "type": "hermes_service_request",
+  "id": "req_1",
+  "tool": "web_search",
+  "args": {
+    "query": "Hermes agent jcode bridge",
+    "limit": 3
+  },
+  "session_id": "jcode-session-1"
+}

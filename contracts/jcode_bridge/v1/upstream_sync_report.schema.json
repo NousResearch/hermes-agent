@@ -1,0 +1,207 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://hermes-agent.local/contracts/jcode_bridge/v1/upstream_sync_report.schema.json",
+  "title": "Hermes jcode upstream sync report",
+  "description": "JSON report emitted by scripts/jcode_bridge_upstream_report.py.",
+  "type": "object",
+  "x-bridge-contract-version": "jcode-bridge.v1",
+  "required": [
+    "generated_at",
+    "report_version",
+    "repos",
+    "graphify",
+    "bridge_contract",
+    "hermes_service_contract",
+    "success",
+    "recommendations"
+  ],
+  "properties": {
+    "generated_at": {
+      "type": "string"
+    },
+    "report_version": {
+      "const": "hermes-jcode-upstream-sync.v1"
+    },
+    "success": {
+      "type": "boolean"
+    },
+    "recommendations": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "repos": {
+      "type": "object",
+      "required": ["hermes", "jcode"],
+      "properties": {
+        "hermes": {
+          "$ref": "#/$defs/repo_state"
+        },
+        "jcode": {
+          "$ref": "#/$defs/repo_state"
+        }
+      },
+      "additionalProperties": true
+    },
+    "graphify": {
+      "type": "object",
+      "required": ["hermes", "jcode"],
+      "properties": {
+        "hermes": {
+          "$ref": "#/$defs/graph_state"
+        },
+        "jcode": {
+          "$ref": "#/$defs/graph_state"
+        }
+      },
+      "additionalProperties": true
+    },
+    "bridge_contract": {
+      "type": "object",
+      "required": ["success", "contract_version", "checks"],
+      "properties": {
+        "success": {
+          "type": "boolean"
+        },
+        "contract_version": {
+          "const": "jcode-bridge.v1"
+        },
+        "fixture_dir": {
+          "type": "string"
+        },
+        "schema_dir": {
+          "type": "string"
+        },
+        "checks": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/check"
+          }
+        }
+      },
+      "additionalProperties": true
+    },
+    "hermes_service_contract": {
+      "type": "object",
+      "required": ["success", "contract_version", "checks"],
+      "properties": {
+        "success": {
+          "type": "boolean"
+        },
+        "contract_version": {
+          "const": "hermes-service.v1"
+        },
+        "fixture_dir": {
+          "type": "string"
+        },
+        "schema_dir": {
+          "type": "string"
+        },
+        "checks": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/check"
+          }
+        }
+      },
+      "additionalProperties": true
+    },
+    "bridge_smoke": {
+      "type": "object",
+      "additionalProperties": true
+    }
+  },
+  "$defs": {
+    "repo_state": {
+      "type": "object",
+      "required": ["path", "exists"],
+      "properties": {
+        "path": {
+          "type": "string"
+        },
+        "exists": {
+          "type": "boolean"
+        },
+        "commit": {
+          "type": ["string", "null"]
+        },
+        "branch": {
+          "type": ["string", "null"]
+        },
+        "dirty": {
+          "type": ["boolean", "null"]
+        },
+        "status_count": {
+          "type": ["integer", "null"]
+        },
+        "status_sample": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "additionalProperties": true
+    },
+    "artifact": {
+      "type": "object",
+      "required": ["path", "exists"],
+      "properties": {
+        "path": {
+          "type": "string"
+        },
+        "exists": {
+          "type": "boolean"
+        },
+        "size_bytes": {
+          "type": "integer"
+        },
+        "mtime_utc": {
+          "type": "string"
+        },
+        "sha256": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": true
+    },
+    "graph_state": {
+      "type": "object",
+      "required": ["report", "graph_json", "summary"],
+      "properties": {
+        "report": {
+          "$ref": "#/$defs/artifact"
+        },
+        "graph_json": {
+          "$ref": "#/$defs/artifact"
+        },
+        "summary": {
+          "type": "object",
+          "additionalProperties": true
+        }
+      },
+      "additionalProperties": true
+    },
+    "check": {
+      "type": "object",
+      "required": ["name", "ok"],
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "ok": {
+          "type": "boolean"
+        },
+        "errors": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "additionalProperties": true
+    }
+  },
+  "additionalProperties": true
+}

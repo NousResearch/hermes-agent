@@ -1,0 +1,42 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://hermes-agent.local/contracts/jcode_bridge/v1/debug_response.schema.json",
+  "title": "jcode debug socket response",
+  "description": "Newline-JSON response returned by a jcode debug socket.",
+  "x-bridge-contract-version": "jcode-bridge.v1",
+  "oneOf": [
+    {
+      "type": "object",
+      "required": ["type", "ok"],
+      "properties": {
+        "type": {
+          "const": "debug_response"
+        },
+        "ok": {
+          "type": "boolean"
+        },
+        "output": {
+          "type": "string"
+        },
+        "message": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": true
+    },
+    {
+      "type": "object",
+      "required": ["type", "message"],
+      "properties": {
+        "type": {
+          "const": "error"
+        },
+        "message": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "additionalProperties": true
+    }
+  ]
+}

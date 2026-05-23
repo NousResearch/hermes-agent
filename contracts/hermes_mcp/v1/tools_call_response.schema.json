@@ -1,0 +1,44 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://hermes.local/contracts/hermes_mcp/v1/tools_call_response.schema.json",
+  "title": "Hermes MCP tools/call response",
+  "x-bridge-contract-version": "hermes-mcp.v1",
+  "type": "object",
+  "required": ["jsonrpc", "id", "result"],
+  "properties": {
+    "jsonrpc": {
+      "const": "2.0"
+    },
+    "id": {
+      "type": ["integer", "string", "null"]
+    },
+    "result": {
+      "type": "object",
+      "required": ["content", "isError"],
+      "properties": {
+        "isError": {
+          "type": "boolean"
+        },
+        "content": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["type", "text"],
+            "properties": {
+              "type": {
+                "const": "text"
+              },
+              "text": {
+                "type": "string",
+                "description": "JSON-encoded hermes-service.v1 response."
+              }
+            },
+            "additionalProperties": true
+          }
+        }
+      },
+      "additionalProperties": true
+    }
+  },
+  "additionalProperties": true
+}

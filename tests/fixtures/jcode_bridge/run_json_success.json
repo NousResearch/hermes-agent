@@ -1,0 +1,12 @@
+{
+  "session_id": "session_test",
+  "provider": "OpenAI",
+  "model": "gpt-test",
+  "text": "OK",
+  "usage": {
+    "input_tokens": 12,
+    "output_tokens": 1,
+    "cache_read_input_tokens": 0,
+    "cache_creation_input_tokens": null
+  }
+}

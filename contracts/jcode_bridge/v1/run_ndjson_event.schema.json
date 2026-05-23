@@ -1,0 +1,65 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://hermes-agent.local/contracts/jcode_bridge/v1/run_ndjson_event.schema.json",
+  "title": "jcode run --ndjson event",
+  "description": "Single JSON object parsed from one jcode run --ndjson output line.",
+  "type": "object",
+  "x-bridge-contract-version": "jcode-bridge.v1",
+  "required": ["type"],
+  "properties": {
+    "type": {
+      "type": "string",
+      "minLength": 1
+    },
+    "text": {
+      "type": "string"
+    },
+    "final_response": {
+      "type": "string"
+    },
+    "response": {
+      "type": "string"
+    },
+    "content": {
+      "type": "string"
+    },
+    "session_id": {
+      "type": "string"
+    },
+    "provider": {
+      "type": "string"
+    },
+    "model": {
+      "type": "string"
+    },
+    "usage": {
+      "type": "object",
+      "additionalProperties": true
+    }
+  },
+  "if": {
+    "properties": {
+      "type": {
+        "const": "done"
+      }
+    },
+    "required": ["type"]
+  },
+  "then": {
+    "anyOf": [
+      {
+        "required": ["text"]
+      },
+      {
+        "required": ["final_response"]
+      },
+      {
+        "required": ["response"]
+      },
+      {
+        "required": ["content"]
+      }
+    ]
+  },
+  "additionalProperties": true
+}

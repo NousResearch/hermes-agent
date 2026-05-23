@@ -1,0 +1,16 @@
+{
+  "type": "hermes_service_response",
+  "contract_version": "hermes-service.v1",
+  "id": "req_2",
+  "ok": false,
+  "tool": "send_message",
+  "error": "Hermes service safety confirmation required",
+  "requires_confirmation": true,
+  "risk_types": [
+    "outbound_human_contact"
+  ],
+  "confirmation_fields": [
+    "confirm_outbound_human_contact"
+  ],
+  "duration_ms": 0
+}

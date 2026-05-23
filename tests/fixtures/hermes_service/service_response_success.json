@@ -1,0 +1,11 @@
+{
+  "type": "hermes_service_response",
+  "contract_version": "hermes-service.v1",
+  "id": "req_1",
+  "ok": true,
+  "tool": "web_search",
+  "result": {
+    "results": []
+  },
+  "duration_ms": 4
+}

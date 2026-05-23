@@ -1,0 +1,67 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://hermes-agent.local/contracts/hermes_service/v1/service_response.schema.json",
+  "title": "Hermes service response",
+  "description": "Newline-JSON response from a local Hermes service bridge to jcode.",
+  "type": "object",
+  "x-bridge-contract-version": "hermes-service.v1",
+  "required": ["type", "contract_version", "ok"],
+  "properties": {
+    "type": {
+      "const": "hermes_service_response"
+    },
+    "contract_version": {
+      "const": "hermes-service.v1"
+    },
+    "id": {
+      "type": ["string", "integer", "null"]
+    },
+    "ok": {
+      "type": "boolean"
+    },
+    "tool": {
+      "type": "string"
+    },
+    "result": true,
+    "error": {
+      "type": "string"
+    },
+    "duration_ms": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "requires_confirmation": {
+      "type": "boolean"
+    },
+    "risk_types": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "confirmation_fields": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "contract_errors": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    }
+  },
+  "if": {
+    "properties": {
+      "ok": {
+        "const": false
+      }
+    },
+    "required": ["ok"]
+  },
+  "then": {
+    "required": ["error"]
+  },
+  "additionalProperties": true
+}

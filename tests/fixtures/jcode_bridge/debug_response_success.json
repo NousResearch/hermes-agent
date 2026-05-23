@@ -1,0 +1,6 @@
+{
+  "type": "debug_response",
+  "id": 1,
+  "ok": true,
+  "output": "socket echo"
+}

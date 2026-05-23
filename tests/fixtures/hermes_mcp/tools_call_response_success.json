@@ -1,0 +1,13 @@
+{
+  "jsonrpc": "2.0",
+  "id": 3,
+  "result": {
+    "content": [
+      {
+        "type": "text",
+        "text": "{\"contract_version\":\"hermes-service.v1\",\"id\":\"mcp:3\",\"ok\":true,\"result\":{\"args\":{\"limit\":2,\"query\":\"bridge\"},\"mock\":true,\"request_id\":\"mcp:3\",\"tool\":\"web_search\"},\"tool\":\"web_search\",\"type\":\"hermes_service_response\"}"
+      }
+    ],
+    "isError": false
+  }
+}

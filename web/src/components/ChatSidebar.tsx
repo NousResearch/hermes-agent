@@ -106,16 +106,15 @@ export function ChatSidebar({
   const [profileOpen, setProfileOpen] = useState(false);
   const [activeProfile, setActiveProfile] = useState<string>("default");
 
-  // Fetch profiles and active profile on mount
+  // Fetch active profile on mount — session.info events override this once PTY boots.
   useEffect(() => {
-    if (!chatByAgentProfile) return;
     api
       .getAgentMetrics()
       .then((metrics) => {
         setActiveProfile(metrics.active_profile ?? "default");
       })
       .catch(() => {});
-  }, [chatByAgentProfile]);
+  }, []);
 
   useEffect(() => {
     let cancelled = false;
@@ -367,6 +366,26 @@ export function ChatSidebar({
         className,
       )}
     >
+      {/* ACTIVE PROFILE — PTY-ground-truth profile name from session.info events.
+          Always visible first. Shows "default" if PTY hasn't emitted yet. */}
+      <Card className="flex items-center justify-between gap-2 px-3 py-2">
+        <div className="min-w-0">
+          <div className="text-display text-xs tracking-wider text-text-tertiary">
+            active profile
+          </div>
+          <Button
+            ghost
+            size="sm"
+            disabled
+            className="self-start min-w-0 px-0 py-0 normal-case tracking-normal text-sm font-medium"
+            title={activeProfile}
+          >
+            <Crown className="mr-1 h-3 w-3 text-amber-400" />
+            <span className="truncate">{activeProfile}</span>
+          </Button>
+        </div>
+      </Card>
+
       <Card className="flex items-center justify-between gap-2 px-3 py-2">
         <div className="min-w-0">
           <div className="text-display text-xs tracking-wider text-text-tertiary">
@@ -393,7 +412,8 @@ export function ChatSidebar({
         <Badge tone={STATE_TONE[state]}>{STATE_LABEL[state]}</Badge>
       </Card>
 
-      {/* Agent Profile selector — gated by dashboard.chat_by_agent_profile */}
+      {/* Agent Profile selector — gated by dashboard.chat_by_agent_profile.
+          Opens ProfilePickerDialog to switch the active profile. */}
       {chatByAgentProfile && (
         <Card className="flex items-center justify-between gap-2 px-3 py-2">
           <div className="min-w-0">
@@ -406,10 +426,9 @@ export function ChatSidebar({
               onClick={() => setProfileOpen(true)}
               suffix={<ChevronDown className="text-text-secondary" />}
               className="self-start min-w-0 px-0 py-0 normal-case tracking-normal text-sm font-medium hover:underline"
-              title={activeProfile}
+              title="switch agent profile"
             >
-              <Crown className="mr-1 h-3 w-3 text-amber-400" />
-              <span className="truncate">{activeProfile}</span>
+              <span className="truncate">switch profile</span>
             </Button>
           </div>
         </Card>

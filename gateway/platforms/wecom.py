@@ -1211,15 +1211,18 @@ class WeComAdapter(BasePlatformAdapter):
         return response
 
     async def _send_reply_markdown(self, reply_req_id: str, content: str) -> Dict[str, Any]:
-        response = await self._send_reply_request(
-            reply_req_id,
-            {
-                "msgtype": "markdown",
-                "markdown": {"content": content[:self.MAX_MESSAGE_LENGTH]},
-            },
-        )
-        self._raise_for_wecom_error(response, "send reply markdown")
-        return response
+        responses = []
+        for chunk in self.truncate_message(content, self.MAX_MESSAGE_LENGTH):
+            response = await self._send_reply_request(
+                reply_req_id,
+                {
+                    "msgtype": "markdown",
+                    "markdown": {"content": chunk},
+                },
+            )
+            self._raise_for_wecom_error(response, "send reply markdown")
+            responses.append(response)
+        return self._collapse_chunk_responses(responses)
 
     async def _send_reply_media_message(
         self,
@@ -1355,14 +1358,7 @@ class WeComAdapter(BasePlatformAdapter):
             if reply_req_id:
                 response = await self._send_reply_markdown(reply_req_id, content)
             else:
-                response = await self._send_request(
-                    APP_CMD_SEND,
-                    {
-                        "chatid": chat_id,
-                        "msgtype": "markdown",
-                        "markdown": {"content": content[:self.MAX_MESSAGE_LENGTH]},
-                    },
-                )
+                response = await self._send_proactive_markdown(chat_id, content)
         except asyncio.TimeoutError:
             return SendResult(success=False, error="Timeout sending message to WeCom")
         except Exception as exc:
@@ -1378,6 +1374,34 @@ class WeComAdapter(BasePlatformAdapter):
             message_id=self._payload_req_id(response) or uuid.uuid4().hex[:12],
             raw_response=response,
         )
+
+    async def _send_proactive_markdown(self, chat_id: str, content: str) -> Dict[str, Any]:
+        responses = []
+        for chunk in self.truncate_message(content, self.MAX_MESSAGE_LENGTH):
+            response = await self._send_request(
+                APP_CMD_SEND,
+                {
+                    "chatid": chat_id,
+                    "msgtype": "markdown",
+                    "markdown": {"content": chunk},
+                },
+            )
+            self._raise_for_wecom_error(response, "send markdown")
+            responses.append(response)
+        return self._collapse_chunk_responses(responses)
+
+    @staticmethod
+    def _collapse_chunk_responses(responses: List[Dict[str, Any]]) -> Dict[str, Any]:
+        if not responses:
+            return {"errcode": 0}
+        if len(responses) == 1:
+            return responses[0]
+        last = responses[-1]
+        return {
+            "errcode": 0,
+            "headers": last.get("headers", {}),
+            "chunks": responses,
+        }
 
     async def send_image(
         self,

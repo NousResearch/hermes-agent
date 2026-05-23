@@ -187,6 +187,30 @@ class TestWeComReplyMode:
         assert args[1]["markdown"]["content"] == "hello from reply"
 
     @pytest.mark.asyncio
+    async def test_send_splits_long_passive_reply_markdown(self):
+        from gateway.platforms.wecom import WeComAdapter
+
+        adapter = WeComAdapter(PlatformConfig(enabled=True))
+        adapter.MAX_MESSAGE_LENGTH = 40
+        adapter._reply_req_ids["msg-1"] = "req-1"
+        adapter._send_reply_request = AsyncMock(
+            return_value={"headers": {"req_id": "req-1"}, "errcode": 0}
+        )
+        content = ("alpha " * 12) + "omega"
+
+        result = await adapter.send("chat-123", content, reply_to="msg-1")
+
+        assert result.success is True
+        assert adapter._send_reply_request.await_count > 1
+        chunks = [
+            call.args[1]["markdown"]["content"]
+            for call in adapter._send_reply_request.await_args_list
+        ]
+        assert all(len(chunk) <= adapter.MAX_MESSAGE_LENGTH for chunk in chunks)
+        assert any("omega" in chunk for chunk in chunks)
+        assert result.raw_response["chunks"]
+
+    @pytest.mark.asyncio
     async def test_send_image_file_uses_passive_reply_media_when_reply_context_exists(self):
         from gateway.platforms.wecom import WeComAdapter
 
@@ -489,6 +513,30 @@ class TestSend:
                 "markdown": {"content": "Hello WeCom"},
             },
         )
+
+    @pytest.mark.asyncio
+    async def test_send_splits_long_proactive_markdown(self):
+        from gateway.platforms.wecom import APP_CMD_SEND, WeComAdapter
+
+        adapter = WeComAdapter(PlatformConfig(enabled=True))
+        adapter.MAX_MESSAGE_LENGTH = 40
+        adapter._send_request = AsyncMock(
+            return_value={"headers": {"req_id": "req-1"}, "errcode": 0}
+        )
+        content = ("alpha " * 12) + "omega"
+
+        result = await adapter.send("chat-123", content)
+
+        assert result.success is True
+        assert adapter._send_request.await_count > 1
+        chunks = [
+            call.args[1]["markdown"]["content"]
+            for call in adapter._send_request.await_args_list
+        ]
+        assert {call.args[0] for call in adapter._send_request.await_args_list} == {APP_CMD_SEND}
+        assert all(len(chunk) <= adapter.MAX_MESSAGE_LENGTH for chunk in chunks)
+        assert any("omega" in chunk for chunk in chunks)
+        assert result.raw_response["chunks"]
 
     @pytest.mark.asyncio
     async def test_send_reports_wecom_errors(self):
@@ -830,4 +878,3 @@ class TestWeComZombieSessionFix:
         adapter._send_request.assert_awaited_once()
         cmd = adapter._send_request.await_args.args[0]
         assert cmd == APP_CMD_SEND
-

@@ -1592,6 +1592,7 @@ name = "hermes-agent"
 version = "0.14.0"
 source = { editable = "." }
 dependencies = [
+    { name = "aiofiles" },
     { name = "croniter" },
     { name = "fire" },
     { name = "httpx", extra = ["socks"] },
@@ -1617,11 +1618,22 @@ acp = [
 all = [
     { name = "agent-client-protocol" },
     { name = "aiohttp" },
+    { name = "aiohttp-socks", marker = "sys_platform == 'linux'" },
+    { name = "aiosqlite", marker = "sys_platform == 'linux'" },
+    { name = "alibabacloud-dingtalk" },
+    { name = "asyncpg", marker = "sys_platform == 'linux'" },
+    { name = "boto3" },
+    { name = "daytona" },
     { name = "debugpy" },
     { name = "fastapi" },
+    { name = "faster-whisper" },
     { name = "google-api-python-client" },
     { name = "google-auth-httplib2" },
     { name = "google-auth-oauthlib" },
+    { name = "honcho-ai" },
+    { name = "lark-oapi" },
+    { name = "markdown", marker = "sys_platform == 'linux'" },
+    { name = "mautrix", extra = ["encryption"], marker = "sys_platform == 'linux'" },
     { name = "mcp" },
     { name = "ptyprocess", marker = "sys_platform != 'win32'" },
     { name = "pytest" },
@@ -1779,6 +1791,7 @@ youtube = [
 [package.metadata]
 requires-dist = [
     { name = "agent-client-protocol", marker = "extra == 'acp'", specifier = "==0.9.0" },
+    { name = "aiofiles", specifier = ">=24.1.0" },
     { name = "aiohttp", marker = "extra == 'homeassistant'", specifier = "==3.13.3" },
     { name = "aiohttp", marker = "extra == 'messaging'", specifier = "==3.13.3" },
     { name = "aiohttp", marker = "extra == 'slack'", specifier = "==3.13.3" },

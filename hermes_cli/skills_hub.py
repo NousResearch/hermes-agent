@@ -1319,8 +1319,9 @@ def do_snapshot_import(input_path: str, force: bool = False,
 # CLI argparse entry point
 # ---------------------------------------------------------------------------
 
-def skills_command(args) -> None:
+def skills_command(args, console: Optional[Console] = None) -> None:
     """Router for `hermes skills <subcommand>` — called from hermes_cli/main.py."""
+    c = console or _console
     action = getattr(args, "skills_action", None)
 
     if action == "browse":
@@ -1337,7 +1338,19 @@ def skills_command(args) -> None:
         do_list(
             source_filter=args.source,
             enabled_only=getattr(args, "enabled_only", False),
+            console=c,
         )
+    elif action == "recommend":
+        from hermes_cli.skill_recommend import recommend_skills, render_recommendations
+
+        min_score = None if getattr(args, "no_min_score", False) else getattr(args, "min_score", 0.04)
+        payload = recommend_skills(
+            args.query,
+            top_k=getattr(args, "top_k", 3),
+            min_score=min_score,
+            wrapper_path=getattr(args, "wrapper", None),
+        )
+        c.print(render_recommendations(payload, show_scores=getattr(args, "show_scores", False)))
     elif action == "check":
         do_check(name=getattr(args, "name", None))
     elif action == "update":
@@ -1371,7 +1384,7 @@ def skills_command(args) -> None:
             return
         do_tap(tap_action, repo=repo)
     else:
-        _console.print("Usage: hermes skills [browse|search|install|inspect|list|check|update|audit|uninstall|reset|publish|snapshot|tap]\n")
+        _console.print("Usage: hermes skills [browse|search|recommend|install|inspect|list|check|update|audit|uninstall|reset|publish|snapshot|tap]\n")
         _console.print("Run 'hermes skills <command> --help' for details.\n")
 
 

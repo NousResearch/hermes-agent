@@ -800,7 +800,7 @@ def generate_multi_session_html_export(sessions: List[Dict[str, Any]]) -> str:
         system_html = ""
         if system_prompt:
             system_html = f'''
-            <div class="system-prompt-section">
+            <div class="system-prompt-section active">
                 <div class="system-prompt-header">
                     {ICON_CHEVRON_RIGHT.replace('class="', 'class="chevron ')}
                     {ICON_SHIELD} System Prompt (Persona)

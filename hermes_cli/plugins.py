@@ -193,6 +193,35 @@ def _get_disabled_plugins() -> set:
         return set()
 
 
+def is_platform_plugin_disabled(platform_name: str) -> bool:
+    """Return True when the bundled plugin for *platform_name* is disabled.
+
+    Resolves the two key forms a user might have in their
+    ``plugins.disabled`` list:
+
+    * ``platforms/<name>`` — the path-derived registry key the loader
+      uses (and what ``hermes plugins list`` shows / what
+      ``hermes plugins disable`` writes). Introduced by #30736.
+    * ``<name>-platform`` — the legacy ``manifest.name`` form. Kept for
+      back-compat with any user who hand-edited their config before the
+      key alignment landed.
+
+    Used by the gateway runtime so it can skip platforms whose plugin
+    was explicitly disabled without spamming an ERROR per startup and
+    without queueing the platform for endless reconnect attempts
+    (#30736).
+    """
+    if not isinstance(platform_name, str) or not platform_name:
+        return False
+    disabled = _get_disabled_plugins()
+    if not disabled:
+        return False
+    return (
+        f"platforms/{platform_name}" in disabled
+        or f"{platform_name}-platform" in disabled
+    )
+
+
 def _get_enabled_plugins() -> Optional[set]:
     """Read the enabled-plugins allow-list from config.yaml.
 
@@ -815,26 +844,26 @@ class PluginManager:
         #
         #   - flat: ``plugins/disk-cleanup/plugin.yaml`` (standalone)
         #   - category: ``plugins/image_gen/openai/plugin.yaml`` (backend)
+        #   - category: ``plugins/platforms/discord/plugin.yaml`` (platform)
         #
         # ``memory/``, ``context_engine/``, and ``model-providers/`` are
         # skipped at the top level — they have their own discovery systems
-        # (plugins/memory/__init__.py, providers/__init__.py). ``platforms/``
-        # is a category holding platform adapters (scanned one level deeper
-        # below).
+        # (plugins/memory/__init__.py, providers/__init__.py). ``platforms``
+        # is intentionally NOT skipped so the recursive scanner picks it up
+        # as a category and produces path-derived keys
+        # (``platforms/discord``, ``platforms/teams``, …) that match what
+        # ``hermes plugins list`` and ``hermes plugins disable <key>`` show
+        # the user. Without that match, the user-facing disable command
+        # silently fails to disable bundled platform plugins (#30736).
         repo_plugins = get_bundled_plugins_dir()
         logger.debug("Scanning bundled plugins: %s", repo_plugins)
         bundled = self._scan_directory(
             repo_plugins,
             source="bundled",
-            skip_names={"memory", "context_engine", "platforms", "model-providers"},
+            skip_names={"memory", "context_engine", "model-providers"},
         )
-        logger.debug("  bundled (top-level): %d manifest(s)", len(bundled))
+        logger.debug("  bundled (incl. platforms): %d manifest(s)", len(bundled))
         manifests.extend(bundled)
-        bundled_platforms = self._scan_directory(
-            repo_plugins / "platforms", source="bundled"
-        )
-        logger.debug("  bundled/platforms: %d manifest(s)", len(bundled_platforms))
-        manifests.extend(bundled_platforms)
 
         # 2. User plugins (~/.hermes/plugins/)
         user_dir = get_hermes_home() / "plugins"

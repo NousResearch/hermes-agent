@@ -1,6 +1,6 @@
 """Tests for the Phase 4 s6 hooks in hermes_cli.profiles.
 
-Specifically: _allocate_gateway_port, _maybe_register_gateway_service,
+Specifically: _maybe_register_gateway_service,
 _maybe_unregister_gateway_service. The integration with
 create_profile and delete_profile is covered indirectly by the
 existing TestCreateProfile and TestDeleteProfile classes in
@@ -14,40 +14,9 @@ from typing import Any
 import pytest
 
 from hermes_cli.profiles import (
-    _allocate_gateway_port,
     _maybe_register_gateway_service,
     _maybe_unregister_gateway_service,
 )
-
-
-# ---------------------------------------------------------------------------
-# _allocate_gateway_port
-# ---------------------------------------------------------------------------
-
-
-def test_allocate_gateway_port_is_deterministic() -> None:
-    """Same profile name → same port across calls. This matters because
-    a profile's gateway must come back up on the same port across
-    container restarts."""
-    a = _allocate_gateway_port("coder")
-    b = _allocate_gateway_port("coder")
-    assert a == b
-
-
-def test_allocate_gateway_port_in_advertised_range() -> None:
-    """[9200, 9800) — the window the helper's docstring promises."""
-    for name in ("a", "b", "coder", "assistant", "very-long-profile-name-here"):
-        port = _allocate_gateway_port(name)
-        assert 9200 <= port < 9800, f"{name} got {port}"
-
-
-def test_allocate_gateway_port_distributes_across_range() -> None:
-    """Sanity check: ports for ~100 random-ish names should land in
-    enough distinct buckets that the distribution is plausibly uniform.
-    Catches accidental hash truncation that would collapse the range."""
-    ports = {_allocate_gateway_port(f"profile-{i}") for i in range(100)}
-    # 100 inputs mapped into 600 slots — expect at least ~60 distinct.
-    assert len(ports) >= 60, f"Only {len(ports)} distinct ports across 100 names"
 
 
 # ---------------------------------------------------------------------------
@@ -74,7 +43,7 @@ class _S6Manager:
     kind = "s6"
 
     def __init__(self) -> None:
-        self.registered: list[tuple[str, int]] = []
+        self.registered: list[str] = []
         self.unregistered: list[str] = []
         self.raise_on_register: Exception | None = None
         self.raise_on_unregister: Exception | None = None
@@ -83,12 +52,12 @@ class _S6Manager:
         return True
 
     def register_profile_gateway(
-        self, profile: str, *, port: int,
+        self, profile: str, *,
         extra_env: dict[str, str] | None = None,
     ) -> None:
         if self.raise_on_register is not None:
             raise self.raise_on_register
-        self.registered.append((profile, port))
+        self.registered.append(profile)
 
     def unregister_profile_gateway(self, profile: str) -> None:
         if self.raise_on_unregister is not None:
@@ -111,10 +80,7 @@ def test_register_calls_through_on_s6(monkeypatch: pytest.MonkeyPatch) -> None:
         "hermes_cli.service_manager.get_service_manager", lambda: mgr,
     )
     _maybe_register_gateway_service("coder")
-    assert len(mgr.registered) == 1
-    profile, port = mgr.registered[0]
-    assert profile == "coder"
-    assert 9200 <= port < 9800
+    assert mgr.registered == ["coder"]
 
 
 def test_register_swallows_duplicate_value_error(

@@ -977,26 +977,6 @@ def delete_profile(name: str, yes: bool = False) -> Path:
     return profile_dir
 
 
-def _allocate_gateway_port(profile_name: str) -> int:
-    """Deterministic port allocation for a profile's s6-supervised gateway.
-
-    Phase 4 of the s6-overlay supervision plan. Ports live in
-    [9200, 9800) — a 600-port window starting just past the dashboard
-    default (9119). Allocation is deterministic via SHA-256 of the
-    profile name so the same profile always gets the same port across
-    container restarts.
-
-    Collision probability is small (~1/600 per pair of profiles); if
-    it happens the gateway will fail to bind with a clear OSError and
-    the caller can set ``HERMES_GATEWAY_PORT`` to override. The
-    Phase 4 plan accepts this rather than carrying explicit allocator
-    state in the persistent volume.
-    """
-    import hashlib
-    h = int(hashlib.sha256(profile_name.encode()).hexdigest()[:8], 16)
-    return 9200 + (h % 600)
-
-
 def _maybe_register_gateway_service(profile_name: str) -> None:
     """Register a profile's gateway with s6 inside the container.
 
@@ -1004,11 +984,16 @@ def _maybe_register_gateway_service(profile_name: str) -> None:
     ``NotImplementedError`` on ``register_profile_gateway`` and the
     existing per-profile unit-generation paths handle lifecycle.
 
-    Best-effort: any error (no backend detected, port collision, s6
-    not yet ready, etc.) is logged and swallowed so profile creation
-    doesn't fail because the s6 supervision tree is in a weird state.
-    The user can re-register manually later via the gateway start
-    command, which goes through the same dispatch path.
+    Best-effort: any error (no backend detected, s6 not yet ready,
+    etc.) is logged and swallowed so profile creation doesn't fail
+    because the s6 supervision tree is in a weird state. The user
+    can re-register manually later via the gateway start command,
+    which goes through the same dispatch path.
+
+    Port selection is governed by the profile's ``config.yaml``
+    (``[gateway] port = …``) — there is no Python-side allocator
+    (PR #30136 review item I5 retired the SHA-256-derived range
+    [9200, 9800) because it was dead code through the entire stack).
     """
     try:
         from hermes_cli.service_manager import get_service_manager
@@ -1017,9 +1002,8 @@ def _maybe_register_gateway_service(profile_name: str) -> None:
         return  # no backend on this host — nothing to do
     if not mgr.supports_runtime_registration():
         return  # host backend; no-op
-    port = _allocate_gateway_port(profile_name)
     try:
-        mgr.register_profile_gateway(profile_name, port=port)
+        mgr.register_profile_gateway(profile_name)
     except ValueError:
         # Already registered (e.g. the container-boot reconciler ran
         # first and brought up a stale slot). That's fine.

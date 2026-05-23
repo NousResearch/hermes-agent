@@ -76,7 +76,6 @@ class ServiceManager(Protocol):
         self,
         profile: str,
         *,
-        port: int,
         extra_env: dict[str, str] | None = None,
     ) -> None: ...
     def unregister_profile_gateway(self, profile: str) -> None: ...
@@ -175,7 +174,6 @@ class _RegistrationUnsupportedMixin:
         self,
         profile: str,
         *,
-        port: int,
         extra_env: dict[str, str] | None = None,
     ) -> None:
         raise NotImplementedError(
@@ -421,7 +419,6 @@ class S6ServiceManager:
     @staticmethod
     def _render_run_script(
         profile: str,
-        port: int,
         extra_env: dict[str, str],
     ) -> str:
         """Generate the run script for a profile-gateway s6 service.
@@ -446,16 +443,15 @@ class S6ServiceManager:
         would instead look up ``$HERMES_HOME/profiles/default/`` — a
         completely different (and almost always nonexistent) profile.
 
-        Note: the ``port`` parameter is accepted for API parity with
-        :meth:`register_profile_gateway` but is currently ignored — the
-        gateway picks its bind port from the profile's config.yaml
-        (``[gateway] port = ...``). A future signature change may carry
-        it through as an ``HERMES_GATEWAY_PORT`` env var; until then,
-        the in-config value wins and the constructor's ``port`` arg
-        is essentially documentation for "what port the profile would
-        use if we wired it through". See Phase 4 Task 4.1 for the
-        deterministic allocator and the SHA-256-derived range
-        [9200, 9800).
+        Port selection: the gateway picks its bind port from the
+        profile's ``config.yaml`` (``[gateway] port = ...``) — that
+        is the single source of truth. Previously this method took a
+        ``port`` parameter that was passed in but never substituted
+        into the rendered script (it was carried in for "API parity"
+        with a deterministic SHA-256 allocator in
+        ``hermes_cli.profiles._allocate_gateway_port``). PR #30136
+        review item I5 retired both the allocator and the parameter
+        because they were dead code through the entire stack.
         """
         import shlex
         lines = [
@@ -592,7 +588,6 @@ class S6ServiceManager:
         self,
         profile: str,
         *,
-        port: int,
         extra_env: dict[str, str] | None = None,
     ) -> None:
         """Create the s6 service directory for a profile gateway.
@@ -629,7 +624,7 @@ class S6ServiceManager:
         try:
             (tmp_dir / "type").write_text("longrun\n")
 
-            run_script = self._render_run_script(profile, port, extra_env or {})
+            run_script = self._render_run_script(profile, extra_env or {})
             run_path = tmp_dir / "run"
             run_path.write_text(run_script)
             run_path.chmod(0o755)

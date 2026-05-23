@@ -198,7 +198,7 @@ def _register_service(scandir: Path, profile: str, *, start: bool) -> None:
     # env can set it via the profile's config.yaml (which the gateway
     # itself loads).
     run = service_dir / "run"
-    run.write_text(S6ServiceManager._render_run_script(profile, port=0, extra_env={}))
+    run.write_text(S6ServiceManager._render_run_script(profile, extra_env={}))
     run.chmod(0o755)
 
     # Persistent log rotation (OQ8-C).

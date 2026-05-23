@@ -550,12 +550,117 @@ def test_s6_lifecycle_dispatches_to_s6_svc(
 ) -> None:
     from hermes_cli.service_manager import S6ServiceManager
     mgr = S6ServiceManager(scandir=s6_scandir)
+    # _run_svc now verifies the slot exists before invoking s6-svc, so
+    # we have to pre-seed the dir. In real use the slot is created by
+    # register_profile_gateway or the cont-init.d reconciler.
+    (s6_scandir / "gateway-coder").mkdir()
     mgr.start("gateway-coder")
     mgr.stop("gateway-coder")
     mgr.restart("gateway-coder")
 
     flags = [c[1] for c in fake_subprocess_run if c[0] == "s6-svc"]
     assert flags == ["-u", "-d", "-t"]
+
+
+# ---------------------------------------------------------------------------
+# Lifecycle errors — friendly messages, not raw CalledProcessError
+# ---------------------------------------------------------------------------
+
+
+def test_lifecycle_raises_gateway_not_registered_for_missing_slot(
+    s6_scandir, fake_subprocess_run,
+) -> None:
+    """When the service slot doesn't exist, the lifecycle methods
+    must raise GatewayNotRegisteredError BEFORE invoking s6-svc, so
+    the user sees a clear 'no such gateway' message instead of an
+    opaque CalledProcessError stacktrace."""
+    from hermes_cli.service_manager import (
+        GatewayNotRegisteredError,
+        S6ServiceManager,
+    )
+
+    mgr = S6ServiceManager(scandir=s6_scandir)
+    # No gateway-typo/ directory exists — slot is missing.
+    with pytest.raises(GatewayNotRegisteredError) as excinfo:
+        mgr.start("gateway-typo")
+    assert excinfo.value.profile == "typo"
+    assert excinfo.value.service == "gateway-typo"
+    msg = str(excinfo.value)
+    assert "'typo'" in msg
+    assert "hermes profile create typo" in msg
+    # And critically: s6-svc was NOT invoked.
+    assert not any(c[0] == "s6-svc" for c in fake_subprocess_run)
+
+
+@pytest.mark.parametrize("action,method_name", [
+    ("start", "start"),
+    ("stop", "stop"),
+    ("restart", "restart"),
+])
+def test_all_lifecycle_methods_check_for_missing_slot(
+    s6_scandir,
+    fake_subprocess_run,
+    action: str,
+    method_name: str,
+) -> None:
+    """start/stop/restart all check for missing slots the same way."""
+    from hermes_cli.service_manager import (
+        GatewayNotRegisteredError,
+        S6ServiceManager,
+    )
+
+    mgr = S6ServiceManager(scandir=s6_scandir)
+    with pytest.raises(GatewayNotRegisteredError):
+        getattr(mgr, method_name)("gateway-absent")
+
+
+def test_gateway_not_registered_unprefixed_service_name(s6_scandir) -> None:
+    """If the caller passes a name without the 'gateway-' prefix (the
+    Protocol allows arbitrary service names), the error still carries
+    that name verbatim as the 'profile' so error messages don't
+    accidentally strip user-provided text."""
+    from hermes_cli.service_manager import (
+        GatewayNotRegisteredError,
+        S6ServiceManager,
+    )
+
+    mgr = S6ServiceManager(scandir=s6_scandir)
+    with pytest.raises(GatewayNotRegisteredError) as excinfo:
+        mgr.start("not-prefixed")
+    assert excinfo.value.profile == "not-prefixed"
+
+
+def test_lifecycle_raises_s6_command_error_on_subprocess_failure(
+    s6_scandir, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """When s6-svc itself fails (non-zero exit) — e.g. EACCES on the
+    supervise control FIFO — the lifecycle methods translate the
+    CalledProcessError into a named S6CommandError carrying the
+    return code and stderr."""
+    import subprocess as _sp
+    from hermes_cli.service_manager import S6CommandError, S6ServiceManager
+
+    # Pre-create the slot so we reach the s6-svc call.
+    (s6_scandir / "gateway-coder").mkdir()
+
+    def _fail(cmd, **kw):
+        raise _sp.CalledProcessError(
+            returncode=111,
+            cmd=cmd,
+            stderr="s6-svc: fatal: unable to control supervise/control: "
+                   "Permission denied\n",
+        )
+    monkeypatch.setattr("subprocess.run", _fail)
+
+    mgr = S6ServiceManager(scandir=s6_scandir)
+    with pytest.raises(S6CommandError) as excinfo:
+        mgr.start("gateway-coder")
+    assert excinfo.value.service == "gateway-coder"
+    assert excinfo.value.action == "start"
+    assert excinfo.value.returncode == 111
+    assert "Permission denied" in excinfo.value.stderr
+    assert "Permission denied" in str(excinfo.value)
+    assert "rc=111" in str(excinfo.value)
 
 
 def test_s6_is_running_parses_svstat(

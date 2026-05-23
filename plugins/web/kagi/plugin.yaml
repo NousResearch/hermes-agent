@@ -1,0 +1,7 @@
+name: web-kagi
+version: 1.0.0
+description: "Kagi web search via session-cookie-backed /html/search endpoint. Set KAGI_SESSION in ~/.hermes/.env."
+author: iacore
+kind: backend
+provides_web_providers:
+  - kagi

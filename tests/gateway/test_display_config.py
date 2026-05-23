@@ -41,9 +41,9 @@ class TestResolveDisplaySetting:
 
         # Empty config — should get built-in defaults
         config = {}
-        # Telegram tier_high override: "new" (not "all") to reduce edit
-        # pressure during streaming on Telegram's ~1 edit/s flood envelope.
-        assert resolve_display_setting(config, "telegram", "tool_progress") == "new"
+        # Telegram is a mobile inbox by default — final-answer-first unless
+        # explicitly configured otherwise.
+        assert resolve_display_setting(config, "telegram", "tool_progress") == "off"
         # Email defaults to tier_minimal → "off"
         assert resolve_display_setting(config, "email", "tool_progress") == "off"
 
@@ -180,12 +180,11 @@ class TestPlatformDefaults:
     """Built-in defaults reflect platform capability tiers."""
 
     def test_high_tier_platforms(self):
-        """Discord defaults to 'all' tool progress; Telegram is in tier_high
-        but overrides tool_progress to 'new' (less edit pressure)."""
+        """Discord defaults to 'all'; Telegram defaults quiet for mobile."""
         from gateway.display_config import resolve_display_setting
 
-        # Telegram: tier_high member with tool_progress="new" override.
-        assert resolve_display_setting({}, "telegram", "tool_progress") == "new"
+        # Telegram: tier_high transport, but quiet mobile default.
+        assert resolve_display_setting({}, "telegram", "tool_progress") == "off"
         # Discord: pure tier_high.
         assert resolve_display_setting({}, "discord", "tool_progress") == "all"
 
@@ -228,6 +227,36 @@ class TestPlatformDefaults:
         from gateway.display_config import resolve_display_setting
 
         assert resolve_display_setting({}, "telegram", "streaming") is None
+
+    def test_telegram_mobile_chatter_defaults_off(self):
+        """Telegram suppresses operational chat noise unless opted in."""
+        from gateway.display_config import resolve_display_setting
+
+        assert resolve_display_setting({}, "telegram", "interim_assistant_messages") is False
+        assert resolve_display_setting({}, "telegram", "long_running_notifications") is False
+        assert resolve_display_setting({}, "telegram", "busy_ack_detail") is False
+        assert resolve_display_setting({}, "discord", "interim_assistant_messages") is True
+        assert resolve_display_setting({}, "discord", "long_running_notifications") is True
+        assert resolve_display_setting({}, "discord", "busy_ack_detail") is True
+
+    def test_telegram_mobile_chatter_can_opt_in(self):
+        """Per-platform config can re-enable Telegram status chatter."""
+        from gateway.display_config import resolve_display_setting
+
+        config = {
+            "display": {
+                "platforms": {
+                    "telegram": {
+                        "interim_assistant_messages": True,
+                        "long_running_notifications": "yes",
+                        "busy_ack_detail": "on",
+                    }
+                }
+            }
+        }
+        assert resolve_display_setting(config, "telegram", "interim_assistant_messages") is True
+        assert resolve_display_setting(config, "telegram", "long_running_notifications") is True
+        assert resolve_display_setting(config, "telegram", "busy_ack_detail") is True
 
 
 # ---------------------------------------------------------------------------

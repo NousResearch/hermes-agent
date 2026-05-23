@@ -18,6 +18,7 @@ Usage:
   python google_api.py sheets update SHEET_ID RANGE --values '[[...]]'
   python google_api.py sheets append SHEET_ID RANGE --values '[[...]]'
   python google_api.py docs get DOC_ID
+  python google_api.py tasks list [--max 50] [--show-completed] [--show-hidden]
 """
 
 import argparse
@@ -51,6 +52,7 @@ SCOPES = [
     "https://www.googleapis.com/auth/contacts.readonly",
     "https://www.googleapis.com/auth/spreadsheets",
     "https://www.googleapis.com/auth/documents",
+    "https://www.googleapis.com/auth/tasks.readonly",
 ]
 
 
@@ -1043,6 +1045,73 @@ def _docs_insert_text(doc_id: str, text: str, index: int) -> None:
 
 
 # =========================================================================
+# Tasks
+# =========================================================================
+
+
+def _tasks_format_due(due: str) -> str:
+    """Google Tasks stores due as an RFC 3339 timestamp but only the date part is meaningful."""
+    if not due:
+        return ""
+    return due.split("T", 1)[0]
+
+
+def _tasks_list_via_gws(args):
+    lists = _run_gws(["tasks", "tasklists", "list"]).get("items", []) or []
+    items = []
+    for tl in lists:
+        result = _run_gws(
+            ["tasks", "tasks", "list"],
+            params={
+                "tasklist": tl["id"],
+                "maxResults": args.max,
+                "showCompleted": args.show_completed,
+                "showHidden": args.show_hidden,
+            },
+        )
+        for t in result.get("items", []) or []:
+            if not args.show_completed and t.get("status") == "completed":
+                continue
+            items.append({
+                "title": t.get("title", ""),
+                "list": tl.get("title", ""),
+                "status": "✅" if t.get("status") == "completed" else "⬜",
+                "due": _tasks_format_due(t.get("due", "")),
+                "notes": t.get("notes", "") or "",
+            })
+    return items
+
+
+def _tasks_list_via_python(args):
+    service = build_service("tasks", "v1")
+    lists = service.tasklists().list().execute().get("items", []) or []
+    items = []
+    for tl in lists:
+        result = service.tasks().list(
+            tasklist=tl["id"],
+            maxResults=args.max,
+            showCompleted=args.show_completed,
+            showHidden=args.show_hidden,
+        ).execute()
+        for t in result.get("items", []) or []:
+            if not args.show_completed and t.get("status") == "completed":
+                continue
+            items.append({
+                "title": t.get("title", ""),
+                "list": tl.get("title", ""),
+                "status": "✅" if t.get("status") == "completed" else "⬜",
+                "due": _tasks_format_due(t.get("due", "")),
+                "notes": t.get("notes", "") or "",
+            })
+    return items
+
+
+def tasks_list(args):
+    items = _tasks_list_via_gws(args) if _gws_binary() else _tasks_list_via_python(args)
+    print(json.dumps(items, indent=2, ensure_ascii=False))
+
+
+# =========================================================================
 # CLI parser
 # =========================================================================
 
@@ -1212,6 +1281,16 @@ def main():
     p.add_argument("doc_id")
     p.add_argument("--text", required=True, help="Text to append to the end of the document")
     p.set_defaults(func=docs_append)
+
+    # --- Tasks ---
+    tasks = sub.add_parser("tasks")
+    tasks_sub = tasks.add_subparsers(dest="action", required=True)
+
+    p = tasks_sub.add_parser("list")
+    p.add_argument("--max", type=int, default=50, help="Max tasks per task list (default 50)")
+    p.add_argument("--show-completed", action="store_true", help="Include completed tasks")
+    p.add_argument("--show-hidden", action="store_true", help="Include hidden tasks")
+    p.set_defaults(func=tasks_list)
 
     args = parser.parse_args()
     args.func(args)

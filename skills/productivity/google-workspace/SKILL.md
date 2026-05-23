@@ -286,6 +286,25 @@ $GAPI docs create --title "Draft" --body "First paragraph..."
 $GAPI docs append DOC_ID --text "Additional content to append"
 ```
 
+### Tasks
+
+```bash
+# List open tasks across all task lists (default 50 per list)
+$GAPI tasks list --max 50
+
+# Include completed tasks
+$GAPI tasks list --max 50 --show-completed
+
+# Include hidden tasks
+$GAPI tasks list --max 50 --show-hidden
+```
+
+Output: `[{title, list, status, due, notes}]` where `status` is `⬜` (open) or `✅`
+(completed) and `due` is `YYYY-MM-DD` (Tasks only stores the date part).
+
+For creating, updating, or completing tasks, call the Google Tasks API directly
+via `curl` — `google_api.py` exposes the `list` operation only.
+
 ## Output Format
 
 All commands return JSON. Parse with `jq` or read directly. Key fields:
@@ -307,6 +326,7 @@ All commands return JSON. Parse with `jq` or read directly. Key fields:
 - **Sheets create**: `{status: "created", spreadsheetId, title, spreadsheetUrl}`
 - **Docs create**: `{status: "created", documentId, title, url}`
 - **Docs append**: `{status: "appended", documentId, inserted_at, characters}`
+- **Tasks list**: `[{title, list, status, due, notes}]` (status `⬜`/`✅`, due `YYYY-MM-DD`)
 
 ## Rules
 

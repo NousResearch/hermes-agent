@@ -234,3 +234,87 @@ def test_api_get_credentials_refresh_persists_authorized_user_type(api_module, m
     assert isinstance(creds, FakeCredentials)
     assert saved["token"] == "ya29.refreshed"
     assert saved["type"] == "authorized_user"
+
+
+def _tasks_capture(captured):
+    """Side-effect factory: respond to tasklists/list and tasks/list gws calls."""
+
+    def run(cmd, **kwargs):
+        captured.setdefault("cmds", []).append(cmd)
+        if "tasklists" in cmd:
+            return MagicMock(returncode=0, stdout=json.dumps({
+                "items": [{"id": "list-1", "title": "My Tasks"}],
+            }), stderr="")
+        return MagicMock(returncode=0, stdout=json.dumps({
+            "items": [
+                {"title": "open task", "status": "needsAction",
+                 "due": "2026-06-01T00:00:00.000Z", "notes": "note"},
+                {"title": "done task", "status": "completed",
+                 "due": "2026-05-20T00:00:00.000Z", "notes": ""},
+            ],
+        }), stderr="")
+
+    return run
+
+
+def test_api_tasks_list_invokes_gws_with_correct_commands(api_module):
+    """tasks_list calls _run_gws for tasklists.list then tasks.list per list."""
+    captured = {}
+    args = api_module.argparse.Namespace(
+        max=50, show_completed=False, show_hidden=False, func=api_module.tasks_list,
+    )
+
+    with patch.object(api_module.subprocess, "run", side_effect=_tasks_capture(captured)):
+        api_module.tasks_list(args)
+
+    cmds = captured["cmds"]
+    assert len(cmds) == 2
+    # First call: list of task lists
+    assert cmds[0][0] == "/usr/bin/gws"
+    assert "tasks" in cmds[0] and "tasklists" in cmds[0] and "list" in cmds[0]
+    # Second call: tasks within the list, with showCompleted/showHidden flags
+    assert "tasks" in cmds[1] and "list" in cmds[1]
+    params_idx = cmds[1].index("--params")
+    params = json.loads(cmds[1][params_idx + 1])
+    assert params["tasklist"] == "list-1"
+    assert params["maxResults"] == 50
+    assert params["showCompleted"] is False
+    assert params["showHidden"] is False
+
+
+def test_api_tasks_list_formats_output_and_filters_completed(api_module, capsys):
+    """tasks_list emits the documented shape and drops completed items by default."""
+    captured = {}
+    args = api_module.argparse.Namespace(
+        max=50, show_completed=False, show_hidden=False, func=api_module.tasks_list,
+    )
+
+    with patch.object(api_module.subprocess, "run", side_effect=_tasks_capture(captured)):
+        api_module.tasks_list(args)
+
+    output = json.loads(capsys.readouterr().out)
+    assert output == [{
+        "title": "open task",
+        "list": "My Tasks",
+        "status": "⬜",
+        "due": "2026-06-01",
+        "notes": "note",
+    }]
+
+
+def test_api_tasks_list_includes_completed_when_requested(api_module, capsys):
+    """--show-completed passes the flag and keeps completed items in output."""
+    captured = {}
+    args = api_module.argparse.Namespace(
+        max=50, show_completed=True, show_hidden=False, func=api_module.tasks_list,
+    )
+
+    with patch.object(api_module.subprocess, "run", side_effect=_tasks_capture(captured)):
+        api_module.tasks_list(args)
+
+    params = json.loads(captured["cmds"][1][captured["cmds"][1].index("--params") + 1])
+    assert params["showCompleted"] is True
+
+    output = json.loads(capsys.readouterr().out)
+    statuses = sorted({row["status"] for row in output})
+    assert statuses == ["✅", "⬜"]

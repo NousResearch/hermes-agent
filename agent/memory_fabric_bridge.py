@@ -2445,7 +2445,7 @@ def _openclaw_memory_client_status() -> dict[str, Any]:
         "manifest_exists": manifest_path.exists(),
         "plugin_enabled": bool(entry.get("enabled")) if isinstance(entry, dict) else False,
         "conversation_access_allowed": bool(entry.get("hooks", {}).get("allowConversationAccess")) if isinstance(entry, dict) and isinstance(entry.get("hooks"), dict) else False,
-        "auto_precheck_enabled": bool(plugin_config.get("autoPrecheckEnabled")) if isinstance(plugin_config, dict) else False,
+        "auto_precheck_enabled": plugin_config.get("autoPrecheckEnabled") is not False if isinstance(plugin_config, dict) else False,
         "auto_precheck_agent_profiles": sorted(profiles.keys()) if isinstance(profiles, dict) else [],
         "external_auto_precheck_allowed_channels": allowed_channels if isinstance(allowed_channels, list) else [],
         "external_auto_precheck_default": "blocked",

@@ -63,6 +63,66 @@ def test_memory_bridge_status_includes_graph_and_policy_surfaces():
     assert result["policy"]["writes_are_proposal_only"] is True
 
 
+def test_openclaw_memory_status_matches_plugin_auto_precheck_default(tmp_path, monkeypatch):
+    openclaw_dir = tmp_path / ".openclaw"
+    extension_dir = openclaw_dir / "extensions" / "hermes-memory"
+    extension_dir.mkdir(parents=True)
+    (extension_dir / "index.ts").write_text("export default {};\n", encoding="utf-8")
+    (extension_dir / "openclaw.plugin.json").write_text("{}", encoding="utf-8")
+    (openclaw_dir / "openclaw.json").write_text(
+        json.dumps(
+            {
+                "plugins": {
+                    "entries": {
+                        "hermes-memory": {
+                            "enabled": True,
+                            "config": {},
+                            "hooks": {"allowConversationAccess": True},
+                        }
+                    }
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("HOME", str(tmp_path))
+
+    result = memory_fabric_bridge._openclaw_memory_client_status()
+
+    assert result["auto_precheck_enabled"] is True
+    assert result["ready"] is True
+
+
+def test_openclaw_memory_status_respects_explicit_auto_precheck_false(tmp_path, monkeypatch):
+    openclaw_dir = tmp_path / ".openclaw"
+    extension_dir = openclaw_dir / "extensions" / "hermes-memory"
+    extension_dir.mkdir(parents=True)
+    (extension_dir / "index.ts").write_text("export default {};\n", encoding="utf-8")
+    (extension_dir / "openclaw.plugin.json").write_text("{}", encoding="utf-8")
+    (openclaw_dir / "openclaw.json").write_text(
+        json.dumps(
+            {
+                "plugins": {
+                    "entries": {
+                        "hermes-memory": {
+                            "enabled": True,
+                            "config": {"autoPrecheckEnabled": False},
+                            "hooks": {"allowConversationAccess": True},
+                        }
+                    }
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("HOME", str(tmp_path))
+
+    result = memory_fabric_bridge._openclaw_memory_client_status()
+
+    assert result["auto_precheck_enabled"] is False
+    assert result["ready"] is True
+
+
 def test_memory_federation_gate_blocks_direct_writes():
     result = memory_federation_gate(
         client="codex",

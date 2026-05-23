@@ -871,3 +871,322 @@ class MattermostAdapter(BasePlatformAdapter):
         await self.handle_message(msg_event)
 
 
+
+
+# ---------------------------------------------------------------------------
+# Plugin standalone-send (out-of-process cron delivery via Mattermost REST)
+# ---------------------------------------------------------------------------
+
+
+async def _standalone_send(
+    pconfig,
+    chat_id: str,
+    message: str,
+    *,
+    thread_id: Optional[str] = None,
+    media_files: Optional[list] = None,
+    force_document: bool = False,
+) -> Dict[str, Any]:
+    """Send via the Mattermost v4 REST API without a live gateway adapter.
+
+    Used by ``tools/send_message_tool._send_via_adapter`` when the gateway
+    runner is not in this process (typical for cron jobs running out-of-process).
+    Reads ``MATTERMOST_TOKEN`` from ``pconfig.token`` (set by the gateway
+    config loader from env) and falls back to the ``MATTERMOST_TOKEN`` env
+    var.  Server URL comes from ``pconfig.extra["url"]`` (set by the YAML
+    bridge / env loader) or the ``MATTERMOST_URL`` env var.
+
+    Thread replies (Mattermost CRT) are supported via the ``root_id`` field
+    on the ``POST /posts`` payload — pass ``thread_id`` when threading is
+    desired.  ``media_files`` are uploaded via ``POST /files``
+    (multipart/form-data), then their returned ``file_id`` values are
+    attached to the post.
+
+    ``force_document`` is accepted for signature parity with other
+    standalone senders but unused — Mattermost stores every uploaded file
+    as a generic attachment regardless.
+    """
+    try:
+        import aiohttp
+    except ImportError:
+        return {"error": "aiohttp not installed. Run: pip install aiohttp"}
+
+    base_url = (
+        (getattr(pconfig, "extra", {}) or {}).get("url")
+        or os.getenv("MATTERMOST_URL", "")
+    ).rstrip("/")
+    token = (getattr(pconfig, "token", None) or os.getenv("MATTERMOST_TOKEN", "")).strip()
+    if not base_url or not token:
+        return {
+            "error": (
+                "Mattermost standalone send: MATTERMOST_URL and "
+                "MATTERMOST_TOKEN must both be set"
+            )
+        }
+
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "Content-Type": "application/json",
+    }
+    upload_headers = {"Authorization": f"Bearer {token}"}
+
+    media_files = media_files or []
+
+    try:
+        # Resolve proxy + session kwargs once so a single ClientSession can
+        # cover the optional file uploads + final post.
+        from gateway.platforms.base import resolve_proxy_url, proxy_kwargs_for_aiohttp
+        _proxy = resolve_proxy_url(platform_env_var="MATTERMOST_PROXY")
+        _sess_kw, _req_kw = proxy_kwargs_for_aiohttp(_proxy)
+
+        async with aiohttp.ClientSession(
+            timeout=aiohttp.ClientTimeout(total=60),
+            **_sess_kw,
+        ) as session:
+            # 1. Upload media (if any) and collect file_ids.
+            file_ids: List[str] = []
+            for media in media_files:
+                file_path = media.get("path") if isinstance(media, dict) else media
+                if not file_path or not os.path.exists(file_path):
+                    continue
+                form = aiohttp.FormData()
+                # Mattermost requires channel_id on file uploads so the
+                # server can attribute them.
+                form.add_field("channel_id", chat_id)
+                with open(file_path, "rb") as fh:
+                    form.add_field(
+                        "files",
+                        fh.read(),
+                        filename=os.path.basename(file_path),
+                    )
+                async with session.post(
+                    f"{base_url}/api/v4/files",
+                    data=form,
+                    headers=upload_headers,
+                    **_req_kw,
+                ) as upload_resp:
+                    if upload_resp.status not in {200, 201}:
+                        body = await upload_resp.text()
+                        return {
+                            "error": (
+                                f"Mattermost file upload failed "
+                                f"({upload_resp.status}): {body[:400]}"
+                            )
+                        }
+                    upload_data = await upload_resp.json()
+                    for info in upload_data.get("file_infos", []):
+                        if info.get("id"):
+                            file_ids.append(info["id"])
+
+            # 2. Post the message (with thread root + attached file_ids).
+            payload: Dict[str, Any] = {
+                "channel_id": chat_id,
+                "message": message,
+            }
+            if thread_id:
+                payload["root_id"] = thread_id
+            if file_ids:
+                payload["file_ids"] = file_ids
+            async with session.post(
+                f"{base_url}/api/v4/posts",
+                headers=headers,
+                json=payload,
+                **_req_kw,
+            ) as resp:
+                if resp.status not in {200, 201}:
+                    body = await resp.text()
+                    return {
+                        "error": (
+                            f"Mattermost API error ({resp.status}): "
+                            f"{body[:400]}"
+                        )
+                    }
+                data = await resp.json()
+            return {
+                "success": True,
+                "platform": "mattermost",
+                "chat_id": chat_id,
+                "message_id": data.get("id"),
+            }
+    except aiohttp.ClientError as exc:
+        return {"error": f"Mattermost send failed (network): {exc}"}
+    except Exception as exc:  # noqa: BLE001
+        return {"error": f"Mattermost send failed: {exc}"}
+
+
+# ---------------------------------------------------------------------------
+# Interactive setup wizard
+# ---------------------------------------------------------------------------
+
+
+def interactive_setup() -> None:
+    """Guide the user through Mattermost bot setup.
+
+    Mirrors Discord/Teams' ``interactive_setup`` shape: lazy-imports CLI
+    helpers so the plugin's import surface stays small, prompts for the
+    server URL + bot token, captures an allowlist, and offers to set a
+    home channel.  Replaces the central
+    ``hermes_cli/setup.py::_setup_mattermost`` function this migration
+    removes.
+    """
+    from hermes_cli.config import get_env_value, save_env_value
+    from hermes_cli.cli_output import (
+        prompt,
+        prompt_yes_no,
+        print_header,
+        print_info,
+        print_success,
+    )
+
+    print_header("Mattermost")
+    existing = get_env_value("MATTERMOST_TOKEN")
+    if existing:
+        print_info("Mattermost: already configured")
+        if not prompt_yes_no("Reconfigure Mattermost?", False):
+            return
+
+    print_info("Works with any self-hosted Mattermost instance.")
+    print_info("   1. In Mattermost: Integrations → Bot Accounts → Add Bot Account")
+    print_info("   2. Copy the bot token")
+    print()
+    mm_url = prompt("Mattermost server URL (e.g. https://mm.example.com)")
+    if mm_url:
+        save_env_value("MATTERMOST_URL", mm_url.rstrip("/"))
+    token = prompt("Bot token", password=True)
+    if not token:
+        return
+    save_env_value("MATTERMOST_TOKEN", token)
+    print_success("Mattermost token saved")
+
+    print()
+    print_info("🔒 Security: Restrict who can use your bot")
+    print_info("   To find your user ID: click your avatar → Profile")
+    print_info("   or use the API: GET /api/v4/users/me")
+    print()
+    allowed_users = prompt("Allowed user IDs (comma-separated, leave empty for open access)")
+    if allowed_users:
+        save_env_value("MATTERMOST_ALLOWED_USERS", allowed_users.replace(" ", ""))
+        print_success("Mattermost allowlist configured")
+    else:
+        print_info("⚠️  No allowlist set - anyone who can message the bot can use it!")
+
+    print()
+    print_info("📬 Home Channel: where Hermes delivers cron job results and notifications.")
+    print_info("   To get a channel ID: click channel name → View Info → copy the ID")
+    print_info("   You can also set this later by typing /set-home in a Mattermost channel.")
+    home_channel = prompt("Home channel ID (leave empty to set later with /set-home)")
+    if home_channel:
+        save_env_value("MATTERMOST_HOME_CHANNEL", home_channel)
+    print_info("   Open config in your editor:  hermes config edit")
+
+
+# ---------------------------------------------------------------------------
+# YAML → env config bridge (apply_yaml_config_fn, #25443)
+# ---------------------------------------------------------------------------
+
+
+def _apply_yaml_config(yaml_cfg: dict, mattermost_cfg: dict) -> dict | None:
+    """Translate ``config.yaml`` ``mattermost:`` keys into env vars.
+
+    Implements the ``apply_yaml_config_fn`` contract (#24836 / #25443).
+    Mirrors the legacy ``mattermost_cfg`` block that used to live in
+    ``gateway/config.py::load_gateway_config()`` before this migration.
+
+    The MattermostAdapter reads its runtime configuration via
+    ``os.getenv()`` for ``MATTERMOST_REQUIRE_MENTION``,
+    ``MATTERMOST_FREE_RESPONSE_CHANNELS``, and
+    ``MATTERMOST_ALLOWED_CHANNELS``.  Rather than rewrite those call sites
+    to read from ``PlatformConfig.extra``, this hook keeps the env-driven
+    model and merely owns the YAML→env translation here, next to the
+    adapter that consumes it.
+
+    Env vars take precedence over YAML — every assignment is guarded
+    by ``not os.getenv(...)`` so an explicit env var survives a config.yaml
+    update.  Returns ``None`` because no extras are seeded into
+    ``PlatformConfig.extra`` directly (everything flows through env).
+    """
+    if "require_mention" in mattermost_cfg and not os.getenv("MATTERMOST_REQUIRE_MENTION"):
+        os.environ["MATTERMOST_REQUIRE_MENTION"] = str(mattermost_cfg["require_mention"]).lower()
+    frc = mattermost_cfg.get("free_response_channels")
+    if frc is not None and not os.getenv("MATTERMOST_FREE_RESPONSE_CHANNELS"):
+        if isinstance(frc, list):
+            frc = ",".join(str(v) for v in frc)
+        os.environ["MATTERMOST_FREE_RESPONSE_CHANNELS"] = str(frc)
+    # allowed_channels: if set, bot ONLY responds in these channels (whitelist)
+    ac = mattermost_cfg.get("allowed_channels")
+    if ac is not None and not os.getenv("MATTERMOST_ALLOWED_CHANNELS"):
+        if isinstance(ac, list):
+            ac = ",".join(str(v) for v in ac)
+        os.environ["MATTERMOST_ALLOWED_CHANNELS"] = str(ac)
+    return None  # all settings flow through env; nothing to merge into extras
+
+
+# ---------------------------------------------------------------------------
+# is_connected probe
+# ---------------------------------------------------------------------------
+
+
+def _is_connected(config) -> bool:
+    """Mattermost is considered connected when BOTH MATTERMOST_TOKEN and
+    MATTERMOST_URL are set.
+
+    Looks up via ``hermes_cli.gateway.get_env_value`` at call time (not via
+    the plugin's own bound import) so tests that patch
+    ``gateway_mod.get_env_value`` can suppress ambient env vars.  Matches
+    what the legacy connected-platforms check did before this migration.
+    """
+    import hermes_cli.gateway as gateway_mod
+    return bool(
+        (gateway_mod.get_env_value("MATTERMOST_TOKEN") or "").strip()
+        and (gateway_mod.get_env_value("MATTERMOST_URL") or "").strip()
+    )
+
+
+# ---------------------------------------------------------------------------
+# Plugin registration entry point
+# ---------------------------------------------------------------------------
+
+
+def _build_adapter(config):
+    """Factory wrapper that constructs MattermostAdapter from a PlatformConfig."""
+    return MattermostAdapter(config)
+
+
+def register(ctx) -> None:
+    """Plugin entry point — called by the Hermes plugin system."""
+    ctx.register_platform(
+        name="mattermost",
+        label="Mattermost",
+        adapter_factory=_build_adapter,
+        check_fn=check_mattermost_requirements,
+        is_connected=_is_connected,
+        required_env=["MATTERMOST_URL", "MATTERMOST_TOKEN"],
+        install_hint="pip install aiohttp",
+        # Interactive setup wizard — replaces the central
+        # hermes_cli/setup.py::_setup_mattermost function.
+        setup_fn=interactive_setup,
+        # YAML→env config bridge — owns the translation of
+        # ``config.yaml`` ``mattermost:`` keys (require_mention,
+        # free_response_channels, allowed_channels) into ``MATTERMOST_*``
+        # env vars that the adapter reads via ``os.getenv()``.  Replaces
+        # the hardcoded block that used to live in ``gateway/config.py``.
+        # Hook contract: #24836 / #25443.
+        apply_yaml_config_fn=_apply_yaml_config,
+        # Auth env vars for _is_user_authorized() integration.
+        allowed_users_env="MATTERMOST_ALLOWED_USERS",
+        allow_all_env="MATTERMOST_ALLOW_ALL_USERS",
+        # Cron home-channel delivery.
+        cron_deliver_env_var="MATTERMOST_HOME_CHANNEL",
+        # Out-of-process cron delivery via Mattermost REST API.  Without
+        # this hook, ``deliver=mattermost`` cron jobs fail with "No live
+        # adapter" when cron runs separately from the gateway.  Mirrors
+        # the Discord / Teams pattern.
+        standalone_sender_fn=_standalone_send,
+        # Mattermost practical post-length limit (server default is 16383
+        # but 4000 is the readable threshold the adapter has used since
+        # day one).
+        max_message_length=MAX_POST_LENGTH,
+        # Display
+        emoji="💬",
+        allow_update_command=True,
+    )

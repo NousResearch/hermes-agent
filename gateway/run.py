@@ -1005,6 +1005,10 @@ except Exception as _bootstrap_exc:
 # Gateway runs in quiet mode - suppress debug output and use cwd directly (no temp dirs)
 os.environ["HERMES_QUIET"] = "1"
 
+# Mark that we are inside the gateway process — used by `hermes gateway stop/restart`
+# to refuse self-targeting calls that would kill the agent's own runtime.
+os.environ["HERMES_IN_GATEWAY"] = "1"
+
 # Enable interactive exec approval for dangerous commands on messaging platforms
 os.environ["HERMES_EXEC_ASK"] = "1"
 

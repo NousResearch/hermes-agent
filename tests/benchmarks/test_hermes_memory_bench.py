@@ -216,3 +216,38 @@ def test_memory_human_approval_token_issuance_dry_run_smoke_case_requires_final_
     assert case["evidence"]["writes_operation_ledger"] is False
     assert case["evidence"]["writes_token_files"] is False
     assert case["evidence"]["writes_approval_audit"] is False
+
+
+def test_memory_human_approval_token_write_lock_gate_smoke_case_is_final_confirmation_eligible_without_token_writes():
+    report = run_benchmark("smoke")
+    case = next(
+        case
+        for case in report["cases"]
+        if case["dimension"] == "memory_human_approval_token_write_lock_gate"
+    )
+
+    gate = case["evidence"]["human_approval_token_write_lock_gate_candidates"][0]
+    assert case["actual_answer"] == "eligible_for_final_human_confirmation"
+    assert gate["gate_validation"] == {"valid": True, "errors": []}
+    assert gate["gate_status"] == "eligible_for_final_human_confirmation"
+    assert gate["lock_reason"] is None
+    assert gate["approval_token_record_preview"]["preview_only"] is True
+    assert gate["approval_token_record_preview"]["token_issued"] is False
+    assert gate["approval_token_record_preview"]["persisted"] is False
+    assert gate["approval_audit_record_preview"]["preview_only"] is True
+    assert gate["approval_audit_record_preview"]["created_operation_event"] is False
+    assert gate["token_target_paths_preview"]["preview_only"] is True
+    assert gate["token_target_paths_preview"]["writes_token_files"] is False
+    assert gate["token_target_paths_preview"]["writes_approval_audit"] is False
+    assert gate["proposal_record_preview"]["written"] is False
+    assert gate["operation_ledger_preview"]["written"] is False
+    assert gate["operation_ledger_preview"]["created_operation_event"] is False
+    assert case["evidence"]["token_issued"] is False
+    assert case["evidence"]["persisted_approval"] is False
+    assert case["evidence"]["approved"] is False
+    assert case["evidence"]["created_real_proposal"] is False
+    assert case["evidence"]["created_operation_event"] is False
+    assert case["evidence"]["writes_proposal_files"] is False
+    assert case["evidence"]["writes_operation_ledger"] is False
+    assert case["evidence"]["writes_token_files"] is False
+    assert case["evidence"]["writes_approval_audit"] is False

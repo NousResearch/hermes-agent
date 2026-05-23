@@ -1,6 +1,6 @@
-"""Tests for _normalize_chat_content in the API server adapter."""
+"""Tests for content normalization in the API server adapter."""
 
-from gateway.platforms.api_server import _normalize_chat_content
+from gateway.platforms.api_server import _normalize_chat_content, _normalize_multimodal_content
 
 
 class TestNormalizeChatContent:
@@ -85,3 +85,60 @@ class TestNormalizeChatContent:
 
     def test_empty_list_returns_empty(self):
         assert _normalize_chat_content([]) == ""
+
+
+class TestNormalizeMultimodalContent:
+    """Multimodal normalization preserves safe image filename metadata."""
+
+    def test_image_filename_injected_before_image_part(self):
+        content = [
+            {"type": "text", "text": "make listing"},
+            {
+                "type": "image_url",
+                "filename": "D22946.jpg",
+                "image_url": {"url": "https://example.com/D22946.jpg", "detail": "high"},
+            },
+        ]
+
+        result = _normalize_multimodal_content(content)
+
+        assert result == [
+            {"type": "text", "text": "make listing"},
+            {"type": "text", "text": "Attached image filename: D22946.jpg"},
+            {"type": "image_url", "image_url": {"url": "https://example.com/D22946.jpg", "detail": "high"}},
+        ]
+
+    def test_input_image_nested_filename_supported(self):
+        content = [
+            {
+                "type": "input_image",
+                "image_url": {"url": "data:image/png;base64,abc123", "name": "D22947_3strip.png"},
+            },
+        ]
+
+        result = _normalize_multimodal_content(content)
+
+        assert result[0] == {"type": "text", "text": "Attached image filename: D22947_3strip.png"}
+        assert result[1]["type"] == "image_url"
+        assert result[1]["image_url"]["url"] == "data:image/png;base64,abc123"
+
+    def test_filename_metadata_is_basename_sanitized(self):
+        content = [
+            {
+                "type": "image_url",
+                "file_name": "/Users/Matt/Pictures/D22948\n.jpg",
+                "image_url": "https://example.com/img.png",
+            },
+        ]
+
+        result = _normalize_multimodal_content(content)
+
+        assert result[0] == {"type": "text", "text": "Attached image filename: D22948 .jpg"}
+        assert "Users" not in result[0]["text"]
+
+    def test_image_without_filename_preserves_existing_shape(self):
+        content = [{"type": "image_url", "image_url": {"url": "https://example.com/img.png"}}]
+
+        assert _normalize_multimodal_content(content) == [
+            {"type": "image_url", "image_url": {"url": "https://example.com/img.png"}}
+        ]

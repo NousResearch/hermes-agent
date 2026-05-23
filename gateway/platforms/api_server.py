@@ -165,6 +165,39 @@ def _normalize_chat_content(
 _TEXT_PART_TYPES = frozenset({"text", "input_text", "output_text"})
 _IMAGE_PART_TYPES = frozenset({"image_url", "input_image"})
 _FILE_PART_TYPES = frozenset({"file", "input_file"})
+_IMAGE_FILENAME_KEYS = ("filename", "file_name", "name")
+_MAX_ATTACHMENT_FILENAME_LENGTH = 255
+
+
+def _safe_attachment_filename(value: Any) -> str:
+    """Return a safe display filename from client-supplied image metadata."""
+    if not isinstance(value, str):
+        return ""
+    candidate = value.strip().replace("\x00", "")
+    if not candidate:
+        return ""
+    # Clients should send a basename, but browsers/native apps sometimes leak a
+    # full local path. Keep only the final component so agent context gets the
+    # useful SKU-ish filename without exposing local directory structure.
+    candidate = re.split(r"[/\\]+", candidate)[-1].strip()
+    if not candidate or candidate in {".", ".."}:
+        return ""
+    # Keep this as boring text. No control characters, no huge prompt payloads.
+    candidate = re.sub(r"[\r\n\t]+", " ", candidate)
+    candidate = re.sub(r"\s+", " ", candidate).strip()
+    return candidate[:_MAX_ATTACHMENT_FILENAME_LENGTH]
+
+
+def _extract_image_filename(part: Dict[str, Any], image_ref: Any) -> str:
+    """Extract optional image filename metadata from common OpenAI-compatible shapes."""
+    for source in (part, image_ref if isinstance(image_ref, dict) else None):
+        if not isinstance(source, dict):
+            continue
+        for key in _IMAGE_FILENAME_KEYS:
+            filename = _safe_attachment_filename(source.get(key))
+            if filename:
+                return filename
+    return ""
 
 
 def _normalize_multimodal_content(content: Any) -> Any:
@@ -252,6 +285,10 @@ def _normalize_multimodal_content(content: Any) -> Any:
                 raise ValueError(
                     "invalid_image_url:Image inputs must use http(s) URLs or data:image/... URLs."
                 )
+            filename = _extract_image_filename(part, image_ref)
+            if filename:
+                normalized_parts.append({"type": "text", "text": f"Attached image filename: {filename}"})
+                text_accum_len += len(filename) + len("Attached image filename: ")
             image_part: Dict[str, Any] = {"type": "image_url", "image_url": {"url": url_value}}
             if detail is not None:
                 if not isinstance(detail, str) or not detail.strip():

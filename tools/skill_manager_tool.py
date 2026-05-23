@@ -107,6 +107,36 @@ def _check_identifier(value: str, label: str, invalid: str) -> Optional[str]:
     return None if VALID_NAME_RE.match(value) else invalid
 
 
+def _discover_skill_subdirs(skill_dir: Path) -> set[str]:
+    """Scan a skill directory and return names of subdirectories that
+    contain discoverable content files — for linked_files discovery.
+
+    This is used for read-side discovery only. Write validation still
+    uses ALLOWED_SUBDIRS for safety.
+    """
+    seen: set[str] = set()
+    if not skill_dir.exists():
+        return seen
+    try:
+        for entry in skill_dir.iterdir():
+            if not entry.is_dir() or entry.name.startswith("."):
+                continue
+            for f in entry.rglob("*"):
+                if f.is_file() and f.suffix in {
+                    ".md", ".py", ".sh", ".bash", ".yaml", ".yml",
+                    ".json", ".js", ".ts", ".rb", ".tex", ".txt",
+                }:
+                    seen.add(entry.name)
+                    break
+    except PermissionError:
+        pass
+    return seen
+
+
+# =============================================================================
+# Validation helpers
+# =============================================================================
+
 def _validate_name(name: str) -> Optional[str]:
     if not name:
         return "Skill name is required."
@@ -559,10 +589,18 @@ def _remove_file(name: str, file_path: str) -> Dict[str, Any]:
         return guard
     target, err = _resolve_supporting_file(skill_dir, file_path)
     if err:
-        return err
-    if not target.exists():  # list what IS there so the model can pick the right path
-        available = [str(f.relative_to(skill_dir)) for subdir in ALLOWED_SUBDIRS
-                     if (skill_dir / subdir).exists() for f in (skill_dir / subdir).rglob("*") if f.is_file()]
+        return _err(err)
+    if not target.exists():
+        # List what's actually there for the model to see — include
+        # any custom subdirectories discovered in the skill tree.
+        available = []
+        found_subdirs = _discover_skill_subdirs(skill_dir)
+        for subdir in found_subdirs | ALLOWED_SUBDIRS:
+            d = skill_dir / subdir
+            if d.exists():
+                for f in d.rglob("*"):
+                    if f.is_file():
+                        available.append(str(f.relative_to(skill_dir)))
         return _err(f"File '{file_path}' not found in skill '{name}'.", available_files=available or None)
     if read_guard := _background_review_read_before_write_guard(name, target, "remove_file", file_path):
         return read_guard

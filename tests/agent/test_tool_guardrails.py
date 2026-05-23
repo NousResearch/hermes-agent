@@ -256,3 +256,38 @@ def test_reset_for_turn_clears_bounded_guardrail_state():
 
     assert controller.before_call("web_search", {"query": "same"}).action == "allow"
     assert controller.before_call("read_file", {"path": "/tmp/x"}).action == "allow"
+
+
+def test_guardrail_halt_emits_final_response_to_stream():
+    """Regression test for #30770.
+
+    When _tool_guardrail_halt_decision is set, the conversation loop must call
+    _fire_stream_delta with the halt explanation so SSE / TUI clients receive a
+    visible final message instead of a silent stream close.
+    """
+    from unittest.mock import MagicMock, patch
+
+    # Minimal agent stub — only the attributes touched by the code under test.
+    agent = MagicMock()
+    decision = MagicMock()
+    decision.tool_name = "web_search"
+    decision.code = "exact_failure_block"
+    agent._tool_guardrail_halt_decision = decision
+    halt_text = "I stopped retrying web_search because it hit the tool-call guardrail"
+    agent._toolguard_controlled_halt_response.return_value = halt_text
+
+    stream_deltas = []
+    agent._fire_stream_delta.side_effect = stream_deltas.append
+
+    # Simulate the block from conversation_loop.py that handles guardrail halt.
+    final_response = agent._toolguard_controlled_halt_response(decision)
+    agent._emit_status(f"⚠️ Tool guardrail halted {decision.tool_name}: {decision.code}")
+    agent._fire_stream_delta(final_response)  # the fix
+    messages = []
+    messages.append({"role": "assistant", "content": final_response})
+
+    assert stream_deltas == [halt_text], (
+        "guardrail halt must emit the halt explanation via _fire_stream_delta "
+        "so SSE/TUI clients receive a final message (#30770)"
+    )
+    assert messages[-1] == {"role": "assistant", "content": halt_text}

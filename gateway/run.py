@@ -6877,15 +6877,13 @@ class GatewayRunner:
                     )
                 message_text = f"{context_note}\n\n{message_text}"
 
+        reply_prefix = ""
         if getattr(event, "reply_to_text", None) and event.reply_to_message_id:
-            # Always inject the reply-to pointer — even when the quoted text
-            # already appears in history. The prefix isn't deduplication, it's
-            # disambiguation: it tells the agent *which* prior message the user
-            # is referencing. History can contain the same or similar text
-            # multiple times, and without an explicit pointer the agent has to
-            # guess (or answer for both subjects). Token overhead is minimal.
+            # Always preserve the reply-to pointer for disambiguation, but keep
+            # the platform-controlled quote inert by adding it only after
+            # current-turn @ context references have been expanded.
             reply_snippet = event.reply_to_text[:500]
-            message_text = f'[Replying to: "{reply_snippet}"]\n\n{message_text}'
+            reply_prefix = f'[Replying to: "{reply_snippet}"]\n\n'
 
         if "@" in message_text:
             try:
@@ -6928,6 +6926,9 @@ class GatewayRunner:
                     message_text = _ctx_result.message
             except Exception as exc:
                 logger.debug("@ context reference expansion failed: %s", exc)
+
+        if reply_prefix:
+            message_text = f"{reply_prefix}{message_text}"
 
         return message_text
 

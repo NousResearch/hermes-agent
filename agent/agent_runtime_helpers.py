@@ -617,9 +617,28 @@ def recover_with_credential_pool(
         # existing entitlement keyword set in ``_is_entitlement_failure``.
         # Any 403 against ``xai-oauth`` is treated as entitlement here so
         # the refresh loop can't spin in those cases either.
+        #
+        # Exception (#29344): xAI's ``[WKE=unauthenticated:...]`` suffix and
+        # the ``OAuth2 access token could not be validated`` phrasing are
+        # xAI's authoritative "this is a stale token, not entitlement"
+        # signal.  When either fires we must NOT apply the catch-all
+        # override — refresh is the recoverable path for these bodies, and
+        # blanket-classifying them as entitlement was the bug that left
+        # long-running TUI sessions stuck on stale tokens until the user
+        # exited and reopened.
         is_entitlement = agent._is_entitlement_failure(error_context, status_code)
         if not is_entitlement and status_code == 403 and (agent.provider or "") == "xai-oauth":
-            is_entitlement = True
+            _disambiguator_haystack = " ".join(
+                str(error_context.get(k) or "").lower()
+                for k in ("message", "reason", "code", "error")
+                if isinstance(error_context, dict)
+            )
+            _is_xai_auth_failure = (
+                "[wke=unauthenticated:" in _disambiguator_haystack
+                or "oauth2 access token could not be validated" in _disambiguator_haystack
+            )
+            if not _is_xai_auth_failure:
+                is_entitlement = True
         if is_entitlement:
             _ra().logger.info(
                 "Credential %s — entitlement-shaped 403 from %s; "

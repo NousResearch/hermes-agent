@@ -6530,12 +6530,83 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             except Exception as e:
                 logger.debug("Failed interrupting agent during shutdown: %s", e)
 
+    def _lifecycle_override_target(self, platform: Platform) -> Optional[str]:
+        """Return this platform's configured lifecycle-override chat id, or None.
+
+        When set, every lifecycle notification (startup / post-restart /
+        shutdown) for the platform is routed to this single chat instead of
+        the active-session sources and the home channel. Honors
+        ``gateway_restart_notification=False`` (which suppresses lifecycle
+        pings entirely) and only applies to enabled platforms.
+        """
+        cfg = self.config.platforms.get(platform)
+        if cfg is None or not cfg.enabled:
+            return None
+        if not cfg.gateway_restart_notification:
+            return None
+        target = getattr(cfg, "gateway_restart_notification_channel", None)
+        return target or None
+
+    async def _send_lifecycle_override_notification(
+        self, platform: Platform, adapter: Any, msg: str,
+    ) -> bool:
+        """Deliver ONE lifecycle notification to a platform's override channel.
+
+        Returns True only when the adapter confirms delivery (SendResult is
+        not reported as ``success=False``). On any failure the caller should
+        fall back to the normal per-session / home-channel delivery rather
+        than silently claiming the notification landed.
+
+        The configured value is used verbatim as the chat id and is NOT split
+        on ':' — platform ids such as Matrix room ids ("!room:example.org")
+        contain colons and must survive intact. Thread/topic targeting is not
+        encoded in this string; the override points at a channel/room directly.
+        """
+        target = self._lifecycle_override_target(platform)
+        if not target or adapter is None:
+            return False
+        # No thread component: mirror the home-channel no-thread send path.
+        meta = _non_conversational_metadata(platform=platform)
+        try:
+            if meta:
+                result = await adapter.send(target, msg, metadata=meta)
+            else:
+                result = await adapter.send(target, msg)
+        except Exception as e:
+            logger.debug(
+                "Override lifecycle notification raised for %s: %s",
+                platform.value, e,
+            )
+            return False
+        if result is not None and getattr(result, "success", True) is False:
+            logger.warning(
+                "Override lifecycle notification to %s (%s) not delivered: %s",
+                platform.value, target,
+                getattr(result, "error", "send returned success=False"),
+            )
+            return False
+        logger.info(
+            "Lifecycle notification routed to override channel for %s: %s",
+            platform.value, target,
+        )
+        return True
+
     async def _notify_active_sessions_of_shutdown(self) -> None:
         """Send shutdown/restart notifications to active chats and home channels.
 
         Called at the very start of stop() — adapters are still connected so
         messages can be delivered. Best-effort: individual send failures are
         logged and swallowed so they never block the shutdown sequence.
+
+        Per-platform override: when a platform's
+        ``gateway_restart_notification_channel`` is set and the override send
+        succeeds, BOTH the per-session loop and the home-channel broadcast are
+        skipped FOR THAT PLATFORM and a single notification lands in the
+        override chat instead. Used to keep restart pings out of end-user
+        channels (where active sessions live during normal work) and route
+        them to an ops-only channel instead. If the override send fails
+        (SendResult.success is False), the platform falls back to the normal
+        per-session / home-channel delivery.
         """
         active = self._snapshot_running_agents()
         restart_source = self._restart_command_source if self._restart_requested else None
@@ -6548,6 +6619,19 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             else "Your current task will be interrupted."
         )
         msg = f"⚠️ Gateway {action} — {hint}"
+
+        # Per-platform override: if a platform has a configured lifecycle
+        # override channel, send ONE notification there and skip BOTH the
+        # per-session loop and the home-channel broadcast below for that
+        # platform. Delivery is confirmed via SendResult.success — a platform
+        # is only added to override_sent_platforms when the send actually
+        # landed, so a failed override send falls back to the normal
+        # per-session / home-channel delivery instead of silently dropping
+        # the notification.
+        override_sent_platforms: set[str] = set()
+        for platform, adapter in list(self.adapters.items()):
+            if await self._send_lifecycle_override_notification(platform, adapter, msg):
+                override_sent_platforms.add(platform.value)
 
         notified: set[tuple[str, str, Optional[str]]] = set()
         for session_key in active:
@@ -6600,6 +6684,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         "Shutdown notification suppressed for active session: %s has gateway_restart_notification=false",
                         platform_str,
                     )
+                    continue
+
+                # If this platform has an override channel configured, the
+                # single override notification was already sent above — skip
+                # the per-session loop to avoid double-pinging.
+                if platform_str in override_sent_platforms:
                     continue
 
                 reply_to_message_id = getattr(source, "message_id", None) if source is not None else None
@@ -6679,6 +6769,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # ``RuntimeError: dictionary changed size during iteration`` —
         # observed in a user report during gateway shutdown.
         for platform, adapter in list(self.adapters.items()):
+            # A configured lifecycle override already received the single
+            # shutdown notification for this platform above — don't also
+            # broadcast to the home channel.
+            if platform.value in override_sent_platforms:
+                continue
+
             home = self.config.get_home_channel(platform)
             if not home or not home.chat_id:
                 continue
@@ -17031,6 +17127,17 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 )
                 return None
 
+            # Route to the lifecycle override channel when configured — the
+            # "gateway restarted" ping goes there instead of the originating
+            # chat. Only skip the in-chat notify when the override actually
+            # delivered; otherwise fall through to the normal path.
+            if await self._send_lifecycle_override_notification(
+                platform,
+                adapter,
+                "♻ Gateway restarted successfully. Your session continues.",
+            ):
+                return None
+
             metadata = self._thread_metadata_for_target(
                 platform,
                 chat_id,
@@ -17085,6 +17192,13 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         message = "♻️ Gateway online — Hermes is back and ready."
 
         for platform, adapter in self.adapters.items():
+            # Route the "gateway online" ping to the lifecycle override
+            # channel when configured, instead of the home channel.
+            if await self._send_lifecycle_override_notification(
+                platform, adapter, message,
+            ):
+                continue
+
             home = self.config.get_home_channel(platform)
             if not home or not home.chat_id:
                 continue

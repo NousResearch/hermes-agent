@@ -1,10 +1,11 @@
-"""AI image generation with character reference立绘 via Codex gpt-image-2.
+"""AI image generation with character reference立绘.
 
-Sends a text scene prompt + N character reference portraits to OpenAI's
-gpt-image-2 model through the existing Codex/ChatGPT OAuth pipeline (no
-new API key needed). The model uses the references for visual anchoring
-so generated characters look like their canonical立绘 rather than the
-model's invented furry/anthro defaults.
+Sends a text scene prompt + N character reference portraits to an
+OpenAI-compatible Responses API endpoint (configured via the standard
+``OPENAI_API_KEY`` and ``OPENAI_BASE_URL`` env vars), which delegates to
+the ``gpt-image-2`` image-generation tool. The model uses the references
+for visual anchoring so generated characters look like their canonical
+立绘 rather than the model's invented furry/anthro defaults.
 
 Reference立绘 live as PNG files under ``~/.hermes/characters/``, keyed by
 short name (e.g. ``grantley.png``, ``algo.png``). Callers select 0-4
@@ -13,18 +14,21 @@ them, and includes them as ``input_image`` content blocks alongside the
 prompt.
 
 Built for the 格兰每日说说 cron job: composes the daily QZone 说说's
-companion image. Slow (~3-5 min per call); not for high-frequency use.
-The streaming Codex Responses API sometimes drops mid-generation, so the
-tool wraps each call in a 3-attempt retry.
+companion image. Slow (~2-5 min per call). The streaming Responses API
+sometimes drops mid-generation, so the tool wraps each call in a 3-attempt
+retry.
+
+The endpoint is whatever ``OPENAI_BASE_URL`` points at (defaults to
+``api.openai.com``). Works against the real OpenAI API or any OpenAI-
+compatible proxy that supports the Responses API with the ``image_generation``
+tool — e.g. ``https://api.cornna.xyz/v1``.
 """
 
 import base64
-import importlib.util
 import json
 import logging
 import os
 import time
-from pathlib import Path
 
 from tools.registry import registry, tool_error
 
@@ -49,8 +53,21 @@ CHARACTER_KEYS = {
 _CHARACTER_DIR = os.path.expanduser("~/.hermes/characters")
 _OUTPUT_DIR = os.path.expanduser("~/.hermes/cache/images")
 
-# Codex Responses streams sometimes drop mid-generation with an "incomplete
-# chunked read"; retry transient failures a few times before giving up.
+# The Responses-API host model that calls the image_generation tool. The
+# actual image work is done by ``IMAGE_MODEL``; this chat model is the
+# wrapper that issues the tool call.
+CHAT_MODEL = "gpt-5.5"
+IMAGE_MODEL = "gpt-image-2"
+
+_DEFAULT_BASE_URL = "https://api.openai.com/v1"
+
+_INSTRUCTIONS = (
+    "You are an assistant that must fulfill image generation requests by "
+    "using the image_generation tool when provided."
+)
+
+# Streams sometimes drop mid-generation with an "incomplete chunked read";
+# retry transient failures a few times before giving up.
 _MAX_ATTEMPTS = 3
 _RETRY_SLEEP_SECONDS = 8
 
@@ -67,19 +84,20 @@ _MAX_REFS = 4
 
 
 # ---------------------------------------------------------------------------
-# Codex plugin loader
+# OpenAI client (lazy)
 # ---------------------------------------------------------------------------
 
-def _load_codex_plugin():
-    """Load the openai-codex image plugin module (its dir has a hyphen)."""
-    here = Path(__file__).resolve().parent  # tools/
-    plugin_path = here.parent / "plugins" / "image_gen" / "openai-codex" / "__init__.py"
-    if not plugin_path.is_file():
-        raise RuntimeError(f"openai-codex plugin not found at {plugin_path}")
-    spec = importlib.util.spec_from_file_location("openai_codex_plugin", str(plugin_path))
-    mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
-    return mod
+def _build_client():
+    """Build an OpenAI client for image-gen requests, or None if unconfigured."""
+    api_key = os.environ.get("OPENAI_API_KEY", "").strip()
+    if not api_key:
+        return None
+    base_url = (os.environ.get("OPENAI_BASE_URL") or _DEFAULT_BASE_URL).strip().rstrip("/")
+    try:
+        import openai  # noqa: PLC0415 — optional dep, fail clean
+    except ImportError:
+        return None
+    return openai.OpenAI(api_key=api_key, base_url=base_url)
 
 
 # ---------------------------------------------------------------------------
@@ -92,8 +110,8 @@ def _load_ref_data_url(name: str) -> str:
     path = os.path.join(_CHARACTER_DIR, filename)
     if not os.path.isfile(path):
         raise FileNotFoundError(
-            f"character立绘 missing on disk: {path}. Run the character-setup "
-            "step (upload PNGs to ~/.hermes/characters/) before requesting refs."
+            f"character立绘 missing on disk: {path}. Upload PNGs to "
+            "~/.hermes/characters/ before requesting refs."
         )
     with open(path, "rb") as f:
         b64 = base64.b64encode(f.read()).decode("ascii")
@@ -119,26 +137,20 @@ def _resolve_characters(names):
 
 
 # ---------------------------------------------------------------------------
-# Codex streaming call (one attempt)
+# Responses streaming call (one attempt)
 # ---------------------------------------------------------------------------
 
-def _generate_once(codex, content, size: str, quality: str) -> str | None:
+def _generate_once(client, content, size: str, quality: str) -> str | None:
     """One streaming attempt — returns the result image as base64, or None."""
-    client = codex._build_codex_client()
-    if client is None:
-        raise RuntimeError(
-            "Could not initialize Codex image client — run `hermes auth codex` to sign in."
-        )
-
     image_b64 = None
     with client.responses.stream(
-        model=codex._CODEX_CHAT_MODEL,
+        model=CHAT_MODEL,
         store=False,
-        instructions=codex._CODEX_INSTRUCTIONS,
+        instructions=_INSTRUCTIONS,
         input=[{"type": "message", "role": "user", "content": content}],
         tools=[{
             "type": "image_generation",
-            "model": codex.API_MODEL,
+            "model": IMAGE_MODEL,
             "size": size,
             "quality": quality,
             "output_format": "png",
@@ -206,10 +218,13 @@ def _handle_image_with_refs(args, **kw) -> str:
     size = _SIZES.get(aspect_ratio, _SIZES["square"])
     quality = "medium"
 
-    try:
-        codex = _load_codex_plugin()
-    except Exception as e:  # noqa: BLE001 — surface one clear message
-        return tool_error(f"image_with_refs: cannot load Codex backend ({e})")
+    client = _build_client()
+    if client is None:
+        return tool_error(
+            "image_with_refs: no OpenAI client — set OPENAI_API_KEY (and "
+            "optionally OPENAI_BASE_URL) and ensure the `openai` package is "
+            "installed."
+        )
 
     # Build the user content: instruction + scene prompt, then ref images.
     intro = (
@@ -255,7 +270,7 @@ def _handle_image_with_refs(args, **kw) -> str:
     for attempt in range(_MAX_ATTEMPTS):
         t0 = time.time()
         try:
-            img_b64 = _generate_once(codex, content, size, quality)
+            img_b64 = _generate_once(client, content, size, quality)
             dt = time.time() - t0
             if img_b64:
                 logger.info(
@@ -294,7 +309,7 @@ def _handle_image_with_refs(args, **kw) -> str:
         "size": size,
         "quality": quality,
         "characters": characters,
-        "model": "gpt-image-2-medium",
+        "model": f"{IMAGE_MODEL}-{quality}",
     }, ensure_ascii=False)
 
 
@@ -303,15 +318,10 @@ def _handle_image_with_refs(args, **kw) -> str:
 # ---------------------------------------------------------------------------
 
 def _check_image_with_refs_available() -> bool:
-    """Available when Codex OAuth is configured AND character立绘 dir exists."""
+    """Available when OPENAI_API_KEY is set AND character立绘 dir exists."""
     if not os.path.isdir(_CHARACTER_DIR):
         return False
-    try:
-        codex = _load_codex_plugin()
-        token = codex._read_codex_access_token()
-        return bool(token)
-    except Exception:  # noqa: BLE001 — keep availability checks quiet
-        return False
+    return bool(os.environ.get("OPENAI_API_KEY", "").strip())
 
 
 # ---------------------------------------------------------------------------
@@ -326,7 +336,7 @@ IMAGE_WITH_REFS_SCHEMA = {
         "named character's立绘 is sent as a visual reference so the "
         "generated image matches their species, fur, eyes, and clothing — "
         "much better likeness than text-only image generation. Returns a "
-        "local PNG path. Slow (~3-5 min per call, includes auto-retry); "
+        "local PNG path. Slow (~2-5 min per call, includes auto-retry); "
         "use for daily 说说 companion images, not high-frequency generation."
     ),
     "parameters": {
@@ -375,6 +385,6 @@ registry.register(
     schema=IMAGE_WITH_REFS_SCHEMA,
     handler=_handle_image_with_refs,
     check_fn=_check_image_with_refs_available,
-    requires_env=[],
+    requires_env=["OPENAI_API_KEY"],
     emoji="🎨",
 )

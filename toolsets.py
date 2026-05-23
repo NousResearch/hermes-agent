@@ -68,6 +68,9 @@ _HERMES_CORE_TOOLS = [
     "kanban_complete", "kanban_block", "kanban_heartbeat",
     "kanban_comment", "kanban_create", "kanban_link",
     "kanban_unblock",
+    # Markdown ideas (gated on ideas toolset via tools/ideas_tools.py)
+    "ideas_list", "ideas_boards", "ideas_show", "ideas_create", "ideas_update",
+    "ideas_delete", "ideas_convert",
     # Computer use (macOS, gated on cua-driver being installed via check_fn)
     "computer_use",
 ]
@@ -258,6 +261,19 @@ TOOLSETS = {
         "includes": [],
     },
 
+    "ideas": {
+        "description": (
+            "Markdown idea drafts scoped by Kanban board slug — stored under "
+            "~/.hermes/ideas. Create and edit rough ideas before promoting "
+            "them to Kanban tasks with ideas_convert."
+        ),
+        "tools": [
+            "ideas_list", "ideas_boards", "ideas_show", "ideas_create", "ideas_update",
+            "ideas_delete", "ideas_convert",
+        ],
+        "includes": [],
+    },
+
     "discord": {
         "description": "Discord read and participate tools (fetch messages, search members, create threads)",
         "tools": ["discord"],
@@ -383,7 +399,7 @@ TOOLSETS = {
     "hermes-cli": {
         "description": "Full interactive CLI toolset - all default tools plus cronjob management",
         "tools": _HERMES_CORE_TOOLS,
-        "includes": []
+        "includes": ["ideas"],
     },
 
     "hermes-cron": {
@@ -394,13 +410,13 @@ TOOLSETS = {
         # the user explicitly enables them.
         "description": "Default cron toolset - same core tools as hermes-cli; gated by `hermes tools`",
         "tools": _HERMES_CORE_TOOLS,
-        "includes": []
+        "includes": ["ideas"],
     },
 
     "hermes-telegram": {
         "description": "Telegram bot toolset - full access for personal use (terminal has safety checks)",
         "tools": _HERMES_CORE_TOOLS,
-        "includes": []
+        "includes": ["ideas"],
     },
     
     "hermes-discord": {
@@ -409,13 +425,13 @@ TOOLSETS = {
             "discord",
             "discord_admin",
         ],
-        "includes": []
+        "includes": ["ideas"],
     },
     
     "hermes-whatsapp": {
         "description": "WhatsApp bot toolset - similar to Telegram (personal messaging, more trusted)",
         "tools": _HERMES_CORE_TOOLS,
-        "includes": []
+        "includes": ["ideas"],
     },
     
     "hermes-slack": {

@@ -8016,6 +8016,21 @@ class HermesCLI:
         except Exception as exc:
             print(f"(._.) curator: {exc}")
 
+    def _handle_ideas_command(self, cmd: str):
+        """Handle ``/ideas …`` via the shared ideas CLI."""
+        from hermes_cli.ideas import run_slash
+
+        rest = cmd.strip()
+        if rest.startswith("/"):
+            rest = rest.lstrip("/")
+        if rest.startswith("ideas"):
+            rest = rest[len("ideas"):].lstrip()
+        try:
+            output = run_slash(rest)
+        except Exception as exc:
+            output = f"(._.) ideas error: {exc}"
+        print(output)
+
     def _handle_kanban_command(self, cmd: str):
         """Handle the /kanban command — delegate to the shared kanban CLI.
 
@@ -8322,6 +8337,8 @@ class HermesCLI:
             self._handle_curator_command(cmd_original)
         elif canonical == "kanban":
             self._handle_kanban_command(cmd_original)
+        elif canonical == "ideas":
+            self._handle_ideas_command(cmd_original)
         elif canonical == "skills":
             with self._busy_command(self._slow_command_status(cmd_original)):
                 self._handle_skills_command(cmd_original)

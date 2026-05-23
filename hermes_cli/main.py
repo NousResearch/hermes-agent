@@ -6135,6 +6135,13 @@ def cmd_kanban(args):
     return kanban_command(args)
 
 
+def cmd_ideas(args):
+    """Markdown idea drafts."""
+    from hermes_cli.ideas import ideas_command
+
+    return ideas_command(args)
+
+
 def cmd_hooks(args):
     """Shell-hook inspection and management."""
     from hermes_cli.hooks import hooks_command
@@ -10646,7 +10653,7 @@ _BUILTIN_SUBCOMMANDS = frozenset(
         "computer-use",
         "config", "cron", "curator", "dashboard", "debug", "doctor",
         "dump", "fallback", "gateway", "hooks", "import", "insights",
-        "kanban", "login", "logout", "logs", "lsp", "mcp", "memory", "migrate",
+        "ideas", "kanban", "login", "logout", "logs", "lsp", "mcp", "memory", "migrate",
         "model", "pairing", "plugins", "postinstall", "profile", "proxy",
         "send", "sessions", "setup",
         "skills", "slack", "status", "tools", "uninstall", "update",
@@ -11866,6 +11873,14 @@ def main():
 
     kanban_parser = _build_kanban_parser(subparsers)
     kanban_parser.set_defaults(func=cmd_kanban)
+
+    # =========================================================================
+    # ideas command — markdown idea drafts
+    # =========================================================================
+    from hermes_cli.ideas import build_parser as _build_ideas_parser
+
+    ideas_parser = _build_ideas_parser(subparsers)
+    ideas_parser.set_defaults(func=cmd_ideas)
 
     # =========================================================================
     # hooks command — shell-hook inspection and management

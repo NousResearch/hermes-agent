@@ -6901,6 +6901,9 @@ class GatewayRunner:
             if _cmd_def_inner and _cmd_def_inner.name == "kanban":
                 return await self._handle_kanban_command(event)
 
+            if _cmd_def_inner and _cmd_def_inner.name == "ideas":
+                return await self._handle_ideas_command(event)
+
             # /goal is safe mid-run for status/pause/clear (inspection and
             # control-plane only — doesn't interrupt the running turn).
             # Setting a new goal text mid-run is rejected with the same
@@ -7224,6 +7227,9 @@ class GatewayRunner:
 
         if canonical == "kanban":
             return await self._handle_kanban_command(event)
+
+        if canonical == "ideas":
+            return await self._handle_ideas_command(event)
 
         if canonical == "retry":
             return await self._handle_retry_command(event)
@@ -9340,6 +9346,26 @@ class GatewayRunner:
         if len(output) > 3800:
             output = output[:3800] + "\n" + t("gateway.kanban.truncated_suffix")
         return output or t("gateway.kanban.no_output")
+
+    async def _handle_ideas_command(self, event: MessageEvent) -> str:
+        """Handle ``/ideas`` — delegate to the shared ideas CLI."""
+        import asyncio
+        from hermes_cli.ideas import run_slash
+
+        text = (event.text or "").strip()
+        if text.startswith("/"):
+            text = text.lstrip("/")
+        if text.startswith("ideas"):
+            text = text[len("ideas"):].lstrip()
+
+        try:
+            output = await asyncio.to_thread(run_slash, text)
+        except Exception as exc:  # pragma: no cover - defensive
+            return f"(._.) ideas error: {exc}"
+
+        if len(output) > 3800:
+            output = output[:3800] + "\n… (truncated)"
+        return output or "(done)"
 
     async def _handle_status_command(self, event: MessageEvent) -> str:
         """Handle /status command."""

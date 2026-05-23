@@ -6932,8 +6932,8 @@ def _update_via_zip(args):
     )
 
     print("→ Downloading latest version...")
+    tmp_dir = tempfile.mkdtemp(prefix="hermes-update-")
     try:
-        tmp_dir = tempfile.mkdtemp(prefix="hermes-update-")
         zip_path = os.path.join(tmp_dir, f"hermes-agent-{branch}.zip")
         urlretrieve(zip_url, zip_path)
 
@@ -6980,12 +6980,11 @@ def _update_via_zip(args):
 
         print(f"✓ Updated {update_count} items from ZIP")
 
-        # Cleanup
-        shutil.rmtree(tmp_dir, ignore_errors=True)
-
     except Exception as e:
         print(f"✗ ZIP update failed: {e}")
         sys.exit(1)
+    finally:
+        shutil.rmtree(tmp_dir, ignore_errors=True)
 
     # Clear stale bytecode after ZIP extraction
     removed = _clear_bytecode_cache(PROJECT_ROOT)

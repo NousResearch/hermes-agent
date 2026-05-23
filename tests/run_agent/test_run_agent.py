@@ -2713,6 +2713,110 @@ class TestRunConversation:
         assert any(msg.get("role") == "user" and msg.get("content") == "search something" for msg in pre_request_calls[0]["request_messages"])
         assert all("usage" in c and "response" in c and "assistant_message" in c for c in post_request_calls)
 
+    def test_pre_api_request_model_override_switches_full_runtime(self, agent):
+        self._setup_agent(agent)
+        agent.model = "old-model"
+        agent.provider = "openrouter"
+        agent.base_url = "https://openrouter.ai/api/v1"
+        agent.api_key = "old-key"
+        agent.api_mode = "chat_completions"
+        agent._client_kwargs = {"api_key": "old-key", "base_url": agent.base_url}
+        response = _mock_response(content="Routed answer", finish_reason="stop")
+
+        api_calls = []
+
+        def _fake_api_call(api_kwargs):
+            api_calls.append(api_kwargs)
+            return response
+
+        def _fake_hook(name, **kwargs):
+            if name == "pre_api_request":
+                return [{
+                    "model": "new-model",
+                    "provider": "new-provider",
+                    "base_url": "https://new.example/v1",
+                }]
+            return []
+
+        with (
+            patch("hermes_cli.plugins.invoke_hook", side_effect=_fake_hook),
+            patch("hermes_cli.runtime_provider.resolve_runtime_provider", return_value={
+                "provider": "new-provider",
+                "api_mode": "chat_completions",
+                "base_url": "https://new.example/v1",
+                "api_key": "new-key",
+                "source": "test",
+            }) as mock_resolve_runtime,
+            patch.object(agent, "_interruptible_api_call", side_effect=_fake_api_call),
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+            patch.object(agent, "_create_openai_client", return_value=MagicMock()),
+        ):
+            result = agent.run_conversation("route this")
+
+        assert result["final_response"] == "Routed answer"
+        mock_resolve_runtime.assert_called_once_with(
+            requested="new-provider",
+            explicit_base_url="https://new.example/v1",
+            target_model="new-model",
+        )
+        assert agent.model == "new-model"
+        assert agent.provider == "new-provider"
+        assert agent.base_url == "https://new.example/v1"
+        assert agent.api_key == "new-key"
+        assert agent.api_mode == "chat_completions"
+        assert agent._client_kwargs["api_key"] == "new-key"
+        assert agent._client_kwargs["base_url"] == "https://new.example/v1"
+        assert api_calls[0]["model"] == "new-model"
+
+    def test_pre_api_request_override_allows_empty_runtime_key_and_base_url(self, agent):
+        self._setup_agent(agent)
+        agent.model = "old-model"
+        agent.provider = "openrouter"
+        agent.base_url = "https://openrouter.ai/api/v1"
+        agent.api_key = "old-key"
+        agent.api_mode = "chat_completions"
+        agent._client_kwargs = {"api_key": "old-key", "base_url": agent.base_url}
+        response = _mock_response(content="Local answer", finish_reason="stop")
+
+        api_calls = []
+
+        def _fake_api_call(api_kwargs):
+            api_calls.append(api_kwargs)
+            return response
+
+        def _fake_hook(name, **kwargs):
+            if name == "pre_api_request":
+                return [{"model": "local-model", "provider": "local-noauth"}]
+            return []
+
+        with (
+            patch("hermes_cli.plugins.invoke_hook", side_effect=_fake_hook),
+            patch("hermes_cli.runtime_provider.resolve_runtime_provider", return_value={
+                "provider": "local-noauth",
+                "api_mode": "chat_completions",
+                "base_url": "",
+                "api_key": "",
+                "source": "test",
+            }),
+            patch.object(agent, "_interruptible_api_call", side_effect=_fake_api_call),
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+            patch.object(agent, "_create_openai_client", return_value=MagicMock()),
+        ):
+            result = agent.run_conversation("route local")
+
+        assert result["final_response"] == "Local answer"
+        assert agent.model == "local-model"
+        assert agent.provider == "local-noauth"
+        assert agent.base_url == ""
+        assert agent.api_key == ""
+        assert agent._client_kwargs["api_key"] == ""
+        assert agent._client_kwargs["base_url"] == ""
+        assert api_calls[0]["model"] == "local-model"
+
     def test_content_with_tool_calls_stays_silent_for_non_cli_quiet_mode(self, agent):
         self._setup_agent(agent)
         agent.platform = None

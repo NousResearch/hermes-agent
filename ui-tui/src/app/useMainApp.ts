@@ -233,6 +233,12 @@ export function useMainApp(gw: GatewayClient) {
     return next
   }, [])
 
+  // Wrapped row heights are width-dependent. Cached layout outlives a resize
+  // and lands sticky-scroll at the stale max, cutting off the tail. The
+  // hook's "scale heights by oldCols/newCols" path is too approximate for
+  // mixed markdown — we deliberately remount every row so yoga re-measures
+  // off live geometry. Cost: per-row local state (e.g. systemOpen toggles)
+  // resets on resize; small UX hit for a hard correctness win.
   const virtualRows = useMemo<TranscriptRow[]>(
     () => historyItems.map((msg, index) => ({ index, key: `${messageId(msg)}:c${cols}`, msg })),
     [cols, historyItems, messageId]
@@ -424,18 +430,18 @@ export function useMainApp(gw: GatewayClient) {
 
     let timer: ReturnType<typeof setTimeout> | undefined
 
-    // Resize reflows wrapped lines; if the user was pinned to the tail we need
-    // to re-snap once React has remeasured. virtualRows is keyed on cols so
-    // every column change forces a fresh measurement pass before this fires.
+    // Resize reflows wrapped lines; if the user is still pinned to the tail
+    // we need to re-snap once React has remeasured. virtualRows is keyed on
+    // cols so every column change forces a fresh measurement pass before
+    // this timer fires. Re-check isSticky() inside the timeout — a manual
+    // scroll during the 100ms window otherwise yanks the user back to tail.
     const onResize = () => {
-      const wasSticky = scrollRef.current?.isSticky() ?? false
-
       clearTimeout(timer)
       timer = setTimeout(() => {
         timer = undefined
 
-        if (wasSticky) {
-          scrollRef.current?.scrollToBottom()
+        if (scrollRef.current?.isSticky()) {
+          scrollRef.current.scrollToBottom()
         }
 
         void rpc<TerminalResizeResponse>('terminal.resize', { cols: stdout.columns ?? 80, session_id: ui.sid })

@@ -84,7 +84,15 @@ The entrypoint starts `hermes dashboard` in the background (running as the non-r
 By default, the dashboard stays on loopback to avoid exposing the unauthenticated web surface over the network. To publish it intentionally, set `HERMES_DASHBOARD_HOST=0.0.0.0` and configure your own trusted network boundary/reverse proxy. In that case you must explicitly add `--insecure` behavior by passing host/flags in your command path (the entrypoint no longer auto-enables insecure mode).
 
 :::note
-The dashboard side-process is **not supervised** — if it crashes, it stays down until the container restarts. Running it as a separate container is not supported: the dashboard's gateway-liveness detection requires a shared PID namespace with the gateway process.
+The dashboard runs as a supervised s6 service inside the container. If
+the dashboard process crashes, s6-overlay restarts it automatically
+after a short backoff — you'll see a new PID without needing to
+restart the container. Logs and crash output are visible via
+`docker logs <container>` (s6 forwards service stdout/stderr there).
+
+Running the dashboard as a separate container is not supported: its
+gateway-liveness detection requires a shared PID namespace with the
+gateway process.
 :::
 
 ## Running interactively (CLI chat)

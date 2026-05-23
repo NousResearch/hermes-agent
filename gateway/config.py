@@ -74,6 +74,26 @@ def _normalize_notice_delivery(value: Any, default: str = "public") -> str:
     return default
 
 
+def _qq_indexed_credential_indexes() -> list[int]:
+    """Return numeric suffixes for QQ_APP_ID_N / QQ_CLIENT_SECRET_N env pairs."""
+    indexes: set[int] = set()
+    for key in os.environ:
+        for prefix in ("QQ_APP_ID_", "QQ_CLIENT_SECRET_"):
+            if key.startswith(prefix):
+                suffix = key[len(prefix):]
+                if suffix.isdigit():
+                    indexes.add(int(suffix))
+    return sorted(indexes)
+
+
+def _qq_indexed_credentials_present() -> bool:
+    """True if at least one complete indexed QQ credential pair is present."""
+    for idx in _qq_indexed_credential_indexes():
+        if os.getenv(f"QQ_APP_ID_{idx}") and os.getenv(f"QQ_CLIENT_SECRET_{idx}"):
+            return True
+    return False
+
+
 def _ensure_platform_extra_dict(platforms_data: dict, name: str) -> tuple[dict, dict]:
     """Get-or-create ``platforms_data[name]`` and its nested ``extra`` dict.
 
@@ -436,7 +456,9 @@ _PLATFORM_CONNECTED_CHECKERS: dict[Platform, Callable[[PlatformConfig], bool]] =
         cfg.extra.get("server_url") and cfg.extra.get("password")
     ),
     Platform.QQBOT: lambda cfg: bool(
-        cfg.extra.get("app_id") and cfg.extra.get("client_secret")
+        (cfg.extra.get("app_id") and cfg.extra.get("client_secret"))
+        or (os.getenv("QQ_APP_ID") and os.getenv("QQ_CLIENT_SECRET"))
+        or _qq_indexed_credentials_present()
     ),
     Platform.YUANBAO: lambda cfg: bool(
         cfg.extra.get("app_id") and cfg.extra.get("app_secret")
@@ -1695,7 +1717,8 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
     # QQ (Official Bot API v2)
     qq_app_id = os.getenv("QQ_APP_ID")
     qq_client_secret = os.getenv("QQ_CLIENT_SECRET")
-    if qq_app_id or qq_client_secret:
+    qq_indexed_present = _qq_indexed_credentials_present()
+    if qq_app_id or qq_client_secret or qq_indexed_present:
         if Platform.QQBOT not in config.platforms:
             config.platforms[Platform.QQBOT] = PlatformConfig()
         config.platforms[Platform.QQBOT].enabled = True

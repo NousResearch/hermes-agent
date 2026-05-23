@@ -6267,11 +6267,14 @@ class GatewayRunner:
             return BlueBubblesAdapter(config)
 
         elif platform == Platform.QQBOT:
-            from gateway.platforms.qqbot import QQAdapter, check_qq_requirements
+            from gateway.platforms.qqbot import QQMultiAdapter, check_qq_requirements, has_any_qq_credentials
             if not check_qq_requirements():
-                logger.warning("QQBot: aiohttp/httpx missing or QQ_APP_ID/QQ_CLIENT_SECRET not configured")
+                logger.warning("QQBot: aiohttp/httpx missing")
                 return None
-            return QQAdapter(config)
+            if not has_any_qq_credentials(config):
+                logger.warning("QQBot: QQ_APP_ID/QQ_CLIENT_SECRET or QQ_APP_ID_N/QQ_CLIENT_SECRET_N not configured")
+                return None
+            return QQMultiAdapter(config)
 
         elif platform == Platform.YUANBAO:
             from gateway.platforms.yuanbao import YuanbaoAdapter, WEBSOCKETS_AVAILABLE

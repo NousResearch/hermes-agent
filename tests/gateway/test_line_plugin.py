@@ -8,8 +8,9 @@ Covers the seven synthesis areas from the PR review:
 4. inbound dedup via webhookEventId
 5. RequestCache state machine (PENDING → READY → DELIVERED, ERROR)
 6. Markdown stripping with URL preservation + LINE-sized chunking
-7. send routing: reply token preferred → push fallback → batched at 5/call
-8. register() metadata + standalone_send shape
+7. inbound media download limits
+8. send routing: reply token preferred → push fallback → batched at 5/call
+9. register() metadata + standalone_send shape
 """
 
 from __future__ import annotations
@@ -46,6 +47,7 @@ validate_config = _line.validate_config
 _standalone_send = _line._standalone_send
 _env_enablement = _line._env_enablement
 _MessageDeduplicator = _line._MessageDeduplicator
+_LineClient = _line._LineClient
 
 
 # ---------------------------------------------------------------------------
@@ -298,8 +300,107 @@ class TestMarkdownAndChunking:
 
 
 # ---------------------------------------------------------------------------
-# 7. Send routing (reply -> push fallback, batching, system-bypass)
+# 7. Inbound media download limits
 # ---------------------------------------------------------------------------
+
+
+class TestInboundMediaLimits:
+
+    class _FakeContent:
+        def __init__(self, chunks):
+            self._chunks = chunks
+
+        def iter_chunked(self, _size):
+            async def _gen():
+                for chunk in self._chunks:
+                    yield chunk
+            return _gen()
+
+    class _FakeResponse:
+        def __init__(self, *, status=200, headers=None, chunks=()):
+            self.status = status
+            self.headers = headers or {}
+            self.content = TestInboundMediaLimits._FakeContent(chunks)
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return False
+
+        async def read(self):  # pragma: no cover - guard against regressions
+            raise AssertionError("fetch_content must stream with an explicit byte cap")
+
+    class _FakeSession:
+        response = None
+
+        def __init__(self, *args, **kwargs):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return False
+
+        def get(self, *args, **kwargs):
+            return self.response
+
+    def test_fetch_content_rejects_oversized_content_length(self, monkeypatch):
+        import aiohttp
+
+        self._FakeSession.response = self._FakeResponse(
+            headers={"Content-Length": "11"},
+            chunks=[b"unused"],
+        )
+        monkeypatch.setattr(aiohttp, "ClientSession", self._FakeSession)
+
+        with pytest.raises(RuntimeError, match="too large"):
+            asyncio.run(_LineClient("tok").fetch_content("mid", max_bytes=10))
+
+    def test_fetch_content_rejects_chunked_body_over_limit(self, monkeypatch):
+        import aiohttp
+
+        self._FakeSession.response = self._FakeResponse(
+            headers={},
+            chunks=[b"12345", b"67890", b"x"],
+        )
+        monkeypatch.setattr(aiohttp, "ClientSession", self._FakeSession)
+
+        with pytest.raises(RuntimeError, match="exceeds 10"):
+            asyncio.run(_LineClient("tok").fetch_content("mid", max_bytes=10))
+
+    def test_download_media_uses_per_type_cap(self, monkeypatch):
+        from gateway.config import PlatformConfig
+
+        calls = []
+
+        class _FakeClient:
+            async def fetch_content(self, message_id, max_bytes):
+                calls.append((message_id, max_bytes))
+                return b"img"
+
+        cfg = PlatformConfig(
+            enabled=True,
+            extra={
+                "channel_access_token": "tok",
+                "channel_secret": "sec",
+            },
+        )
+        ad = LineAdapter(cfg)
+        ad._client = _FakeClient()
+        monkeypatch.setattr(
+            _line, "cache_image_from_bytes", lambda data, ext: f"cached{ext}"
+        )
+
+        assert asyncio.run(ad._download_media("mid", "image")) == "cached.jpg"
+        assert calls == [("mid", _line.LINE_IMAGE_MAX_BYTES)]
+
+
+# ---------------------------------------------------------------------------
+# 8. Send routing (reply -> push fallback, batching, system-bypass)
+# ---------------------------------------------------------------------------
+
 
 class TestSendRouting:
 
@@ -308,10 +409,13 @@ class TestSendRouting:
         monkeypatch.delenv("LINE_CHANNEL_ACCESS_TOKEN", raising=False)
         monkeypatch.delenv("LINE_CHANNEL_SECRET", raising=False)
         from gateway.config import PlatformConfig
-        cfg = PlatformConfig(enabled=True, extra={
-            "channel_access_token": "tok",
-            "channel_secret": "sec",
-        })
+        cfg = PlatformConfig(
+            enabled=True,
+            extra={
+                "channel_access_token": "tok",
+                "channel_secret": "sec",
+            },
+        )
         ad = LineAdapter(cfg)
         ad._client = MagicMock()
         ad._client.reply = AsyncMock()
@@ -453,10 +557,13 @@ class TestRegister:
         ctx = self._FakeCtx()
         register(ctx)
         from gateway.config import PlatformConfig
-        cfg = PlatformConfig(enabled=True, extra={
-            "channel_access_token": "tok",
-            "channel_secret": "sec",
-        })
+        cfg = PlatformConfig(
+            enabled=True,
+            extra={
+                "channel_access_token": "tok",
+                "channel_secret": "sec",
+            },
+        )
         ad = ctx.kwargs["adapter_factory"](cfg)
         assert isinstance(ad, LineAdapter)
 

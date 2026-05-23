@@ -1657,6 +1657,44 @@ def test_specify_happy_path(client, monkeypatch):
     assert "**Goal**" in (detail["body"] or "")
 
 
+def test_specify_endpoint_explicit_board_does_not_mutate_env(client, monkeypatch):
+    import json as jsonlib
+
+    kb.create_board("alpha")
+    kb.create_board("beta")
+    with kb.connect(board="alpha") as conn:
+        alpha_id = kb.create_task(conn, title="alpha one-liner", triage=True)
+    with kb.connect(board="beta") as conn:
+        beta_id = kb.create_task(conn, title="beta one-liner", triage=True)
+
+    monkeypatch.setenv("HERMES_KANBAN_BOARD", "beta")
+    _patch_specifier_response(
+        monkeypatch,
+        content=jsonlib.dumps(
+            {"title": "Alpha polished", "body": "**Goal**\nAlpha only."}
+        ),
+    )
+
+    r = client.post(
+        f"/api/plugins/kanban/tasks/{alpha_id}/specify",
+        params={"board": "alpha"},
+        json={"author": "ui-tester"},
+    )
+    assert r.status_code == 200
+    body = r.json()
+    assert body["ok"] is True
+    assert body["task_id"] == alpha_id
+    assert os.environ.get("HERMES_KANBAN_BOARD") == "beta"
+
+    with kb.connect(board="alpha") as conn:
+        alpha_task = kb.get_task(conn, alpha_id)
+    with kb.connect(board="beta") as conn:
+        beta_task = kb.get_task(conn, beta_id)
+    assert alpha_task.status == "ready"
+    assert alpha_task.title == "Alpha polished"
+    assert beta_task.status == "triage"
+    assert beta_task.title == "beta one-liner"
+
 def test_specify_non_triage_returns_ok_false_not_http_error(client, monkeypatch):
     """The endpoint intentionally returns ``{ok: false, reason: ...}`` for
     "task not in triage" rather than a 4xx — the dashboard renders the

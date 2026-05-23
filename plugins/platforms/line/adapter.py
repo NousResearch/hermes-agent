@@ -132,7 +132,9 @@ DEFAULT_INTERRUPTED_TEXT = "Run was interrupted before completion."
 # Media defaults
 MEDIA_TOKEN_TTL_SECONDS = 1800  # 30 minutes; LINE caches the URL aggressively
 LINE_IMAGE_MAX_BYTES = 10 * 1024 * 1024  # 10 MB per LINE docs
-LINE_AV_MAX_BYTES = 200 * 1024 * 1024  # 200 MB for voice/video
+LINE_AV_MAX_BYTES = 25 * 1024 * 1024  # 25 MB; LINE allows 200 MB but cap to limit RAM per download
+LINE_FILE_MAX_BYTES = 25 * 1024 * 1024  # 25 MB; cap inbound file downloads to limit RAM per download
+LINE_CONTENT_CHUNK_BYTES = 64 * 1024
 
 # A 1×1 transparent PNG used as fallback video preview thumbnail when no
 # explicit preview is supplied — LINE requires ``previewImageUrl`` for
@@ -488,16 +490,39 @@ class _LineClient:
         except Exception as exc:  # best-effort; never raise
             logger.debug("LINE loading indicator failed: %s", exc)
 
-    async def fetch_content(self, message_id: str) -> bytes:
-        """Download an inbound media message's binary content."""
+    async def fetch_content(
+        self, message_id: str, max_bytes: int = LINE_FILE_MAX_BYTES
+    ) -> bytes:
+        """Download an inbound media message's binary content within a byte cap."""
         import aiohttp
+
+        if max_bytes <= 0:
+            raise ValueError("max_bytes must be positive")
+
         url = LINE_CONTENT_URL_FMT.format(message_id=message_id)
         timeout = aiohttp.ClientTimeout(total=30.0)
         async with aiohttp.ClientSession(timeout=timeout) as session:
             async with session.get(url, headers={"Authorization": f"Bearer {self._token}"}) as resp:
                 if resp.status >= 400:
                     raise RuntimeError(f"LINE content {resp.status}")
-                return await resp.read()
+
+                content_length = resp.headers.get("Content-Length")
+                if content_length:
+                    try:
+                        declared_size = int(content_length)
+                    except ValueError:
+                        declared_size = None
+                    if declared_size is not None and declared_size > max_bytes:
+                        raise RuntimeError(
+                            f"LINE content too large: {declared_size} bytes exceeds {max_bytes}"
+                        )
+
+                data = bytearray()
+                async for chunk in resp.content.iter_chunked(LINE_CONTENT_CHUNK_BYTES):
+                    if len(data) + len(chunk) > max_bytes:
+                        raise RuntimeError(f"LINE content exceeds {max_bytes} bytes")
+                    data.extend(chunk)
+                return bytes(data)
 
     async def get_bot_user_id(self) -> Optional[str]:
         """Fetch this channel's own userId so we can filter self-messages."""
@@ -523,6 +548,14 @@ def _text_message(text: str) -> Dict[str, Any]:
     if len(text) > LINE_PER_BUBBLE_CHARS:
         text = text[: LINE_PER_BUBBLE_CHARS - 1] + "…"
     return {"type": "text", "text": text}
+
+
+def _inbound_media_max_bytes(msg_type: str) -> int:
+    if msg_type == "image":
+        return LINE_IMAGE_MAX_BYTES
+    if msg_type in ("audio", "video"):
+        return LINE_AV_MAX_BYTES
+    return LINE_FILE_MAX_BYTES
 
 
 def _image_message(original_url: str, preview_url: Optional[str] = None) -> Dict[str, Any]:
@@ -1041,8 +1074,9 @@ class LineAdapter(BasePlatformAdapter):
     async def _download_media(self, message_id: str, msg_type: str) -> Optional[str]:
         if not self._client or not message_id:
             return None
+        max_bytes = _inbound_media_max_bytes(msg_type)
         try:
-            data = await self._client.fetch_content(message_id)
+            data = await self._client.fetch_content(message_id, max_bytes=max_bytes)
         except Exception as exc:
             logger.warning("LINE: failed to fetch %s content for %s: %s", msg_type, message_id, exc)
             return None

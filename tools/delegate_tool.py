@@ -19,6 +19,7 @@ never the child's intermediate tool calls or reasoning.
 import enum
 import json
 import logging
+import contextvars
 
 logger = logging.getLogger(__name__)
 import os
@@ -30,7 +31,7 @@ from concurrent.futures import (
 )
 from typing import Any, Dict, List, Optional
 
-from toolsets import TOOLSETS
+from toolsets import TOOLSETS, resolve_toolset
 from tools import file_state
 from tools.terminal_tool import set_approval_callback as _set_subagent_approval_cb
 from utils import base_url_hostname, is_truthy_value
@@ -462,8 +463,24 @@ def _is_mcp_toolset_name(name: str) -> bool:
     return bool(target and str(target).startswith("mcp-"))
 
 
+def _toolset_has_blocked_tools(toolset_name: str) -> bool:
+    """Return True when a toolset would grant any delegated-blocked tool."""
+    try:
+        return bool(set(resolve_toolset(toolset_name)) & DELEGATE_BLOCKED_TOOLS)
+    except Exception:
+        return False
+
+
+def _blocked_toolsets_for_role(role: str) -> List[str]:
+    """Return toolsets to subtract from the child after enabled resolution."""
+    blocked = ["clarify", "memory", "code_execution", "messaging"]
+    if role != "orchestrator":
+        blocked.append("delegation")
+    return blocked
+
+
 def _expand_parent_toolsets(parent_toolsets: set) -> set:
-    """Expand composite toolsets so individual toolset names are recognized.
+    """Expand composite toolsets so individual safe toolset names are recognized.
 
     When a parent uses a composite toolset like ``hermes-cli`` (which bundles
     all core tools), the child may request individual toolsets such as ``web``
@@ -471,8 +488,11 @@ def _expand_parent_toolsets(parent_toolsets: set) -> set:
     because ``"web" != "hermes-cli"``.
 
     This helper collects the tool names from each parent toolset, then adds
-    the names of any individual toolsets whose tools are a *subset* of the
-    parent's available tools.  The original parent toolset names are preserved.
+    the names of individual toolsets whose tools are a subset of the parent's
+    available tools. Toolsets that would grant delegated-blocked tools are not
+    expanded into the accepted set; those tools are subtracted again at child
+    construction time as a defense in depth for composite parent toolsets.
+    The original parent toolset names are preserved.
     """
     parent_tool_names: set = set()
     for ts_name in parent_toolsets:
@@ -485,7 +505,7 @@ def _expand_parent_toolsets(parent_toolsets: set) -> set:
 
     expanded = set(parent_toolsets)
     for ts_name, ts_def in TOOLSETS.items():
-        if ts_name in expanded:
+        if ts_name in expanded or _toolset_has_blocked_tools(ts_name):
             continue
         ts_tools = ts_def.get("tools", [])
         if ts_tools and set(ts_tools).issubset(parent_tool_names):
@@ -644,8 +664,14 @@ def _resolve_workspace_hint(parent_agent) -> Optional[str]:
     teaching subagents a fake container path while still helping them avoid
     guessing `/workspace/...` for local repo tasks.
     """
+    try:
+        from gateway.session_context import get_terminal_cwd
+        session_cwd = get_terminal_cwd()
+    except ImportError:
+        session_cwd = os.getenv("TERMINAL_CWD")
+
     candidates = [
-        os.getenv("TERMINAL_CWD"),
+        session_cwd,
         getattr(
             getattr(parent_agent, "_subdirectory_hints", None), "working_dir", None
         ),
@@ -665,14 +691,17 @@ def _resolve_workspace_hint(parent_agent) -> Optional[str]:
 
 
 def _strip_blocked_tools(toolsets: List[str]) -> List[str]:
-    """Remove toolsets that contain only blocked tools."""
-    blocked_toolset_names = {
-        "delegation",
-        "clarify",
-        "memory",
-        "code_execution",
-    }
-    return [t for t in toolsets if t not in blocked_toolset_names]
+    """Remove toolsets that contain only delegated-blocked tools."""
+    kept = []
+    for toolset_name in toolsets:
+        try:
+            resolved_tools = set(resolve_toolset(toolset_name))
+        except Exception:
+            resolved_tools = set()
+        if resolved_tools and resolved_tools.issubset(DELEGATE_BLOCKED_TOOLS):
+            continue
+        kept.append(toolset_name)
+    return kept
 
 
 def _build_child_progress_callback(
@@ -1117,6 +1146,7 @@ def _build_child_agent(
         provider_sort=child_provider_sort,
         openrouter_min_coding_score=child_openrouter_min_coding_score,
         tool_progress_callback=child_progress_cb,
+        disabled_toolsets=_blocked_toolsets_for_role(effective_role),
         iteration_budget=None,  # fresh budget per subagent
     )
     child._print_fn = getattr(parent_agent, "_print_fn", None)
@@ -1493,7 +1523,8 @@ def _run_single_child(
                 task_id=child_task_id,
             )
 
-        _child_future = _timeout_executor.submit(_run_with_thread_capture)
+        _ctx = contextvars.copy_context()
+        _child_future = _timeout_executor.submit(_ctx.run, _run_with_thread_capture)
         try:
             result = _child_future.result(timeout=child_timeout)
         except Exception as _timeout_exc:

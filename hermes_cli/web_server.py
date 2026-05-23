@@ -3313,9 +3313,12 @@ async def events_ws(ws: WebSocket) -> None:
         await ws.close(code=4400)
         return
 
-    await ws.accept()
-
+    # Register the subscriber in the same critical section as accept().
+    # This guarantees websocket_connect() only returns after the channel
+    # subscription is live, avoiding a connect/publish race where the first
+    # broadcast can be dropped.
     async with _event_lock:
+        await ws.accept()
         _event_channels.setdefault(channel, set()).add(ws)
 
     try:
@@ -3337,13 +3340,17 @@ async def events_ws(ws: WebSocket) -> None:
                     _event_channels.pop(channel, None)
 
 
+_PREFIX_ALLOWED_CHARS: frozenset = frozenset(
+    "/ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789._~-"
+)
+
+
 def _normalise_prefix(raw: Optional[str]) -> str:
     """Normalise an X-Forwarded-Prefix header value.
 
     Returns a string like ``"/hermes"`` (no trailing slash) or ``""`` when
-    no prefix is set / the header is malformed. We deliberately reject
-    anything containing ``..`` or non-printable bytes so a hostile proxy
-    can't inject HTML via the prefix.
+    no prefix is set / the header is malformed. The value is injected into
+    HTML and JavaScript, so keep it to a relative URL path prefix only.
     """
     if not raw:
         return ""
@@ -3353,9 +3360,11 @@ def _normalise_prefix(raw: Optional[str]) -> str:
     if not p.startswith("/"):
         p = "/" + p
     p = p.rstrip("/")
-    if "//" in p or ".." in p or any(c in p for c in ('"', "'", "<", ">", " ", "\n", "\r", "\t")):
+    if not p:
         return ""
     if len(p) > 64:
+        return ""
+    if "//" in p or ".." in p or any(c not in _PREFIX_ALLOWED_CHARS for c in p):
         return ""
     return p
 

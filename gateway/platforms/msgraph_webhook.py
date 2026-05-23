@@ -85,11 +85,12 @@ class MSGraphWebhookAdapter(BasePlatformAdapter):
         return raw if raw.startswith("/") else f"/{raw}"
 
     @staticmethod
-    def _build_receipt_key(notification: Dict[str, Any]) -> Optional[str]:
+    def _build_receipt_key(notification: Dict[str, Any]) -> str:
         explicit_id = str(notification.get("id") or "").strip()
         if explicit_id:
             return f"id:{explicit_id}"
-        return None
+        payload = json.dumps(notification, sort_keys=True).encode("utf-8")
+        return f"sha1:{sha1(payload).hexdigest()}"
 
     @staticmethod
     def _normalize_resource_value(resource: str) -> str:
@@ -247,11 +248,10 @@ class MSGraphWebhookAdapter(BasePlatformAdapter):
                 continue
 
             receipt_key = self._build_receipt_key(notification)
-            if receipt_key is not None:
-                if self._has_seen_receipt(receipt_key):
-                    duplicates += 1
-                    continue
-                self._remember_receipt(receipt_key)
+            if self._has_seen_receipt(receipt_key):
+                duplicates += 1
+                continue
+            self._remember_receipt(receipt_key)
 
             accepted += 1
             self._accepted_count += 1
@@ -323,7 +323,16 @@ class MSGraphWebhookAdapter(BasePlatformAdapter):
         provided = self._string_or_none(notification.get("clientState"))
         if provided is None:
             return False
-        return hmac.compare_digest(provided, expected)
+        try:
+            return hmac.compare_digest(
+                provided.encode("utf-8"),
+                expected.encode("utf-8"),
+            )
+        except UnicodeEncodeError:
+            # Lone surrogates (e.g. JSON "\ud800") cannot be UTF-8-encoded.
+            # Treat any unencodable clientState as an auth failure rather than
+            # letting the exception propagate as a 500.
+            return False
 
     def _has_seen_receipt(self, receipt_key: str) -> bool:
         return receipt_key in self._seen_receipts
@@ -338,9 +347,9 @@ class MSGraphWebhookAdapter(BasePlatformAdapter):
     def _build_message_event(
         self,
         notification: Dict[str, Any],
-        receipt_key: Optional[str],
+        receipt_key: str,
     ) -> MessageEvent:
-        message_id = receipt_key or f"sha1:{sha1(json.dumps(notification, sort_keys=True).encode('utf-8')).hexdigest()}"
+        message_id = receipt_key
         source = self.build_source(
             chat_id=f"msgraph:{notification.get('subscriptionId', 'unknown')}",
             chat_name="msgraph/webhook",

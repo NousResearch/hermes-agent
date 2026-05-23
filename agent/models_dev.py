@@ -503,6 +503,7 @@ class ModelCapabilities:
     supports_tools: bool = True
     supports_vision: bool = False
     supports_reasoning: bool = False
+    supports_multimodal_tool_results: Optional[bool] = None
     context_window: int = 200000
     max_output_tokens: int = 8192
     model_family: str = ""
@@ -565,6 +566,11 @@ def get_model_capabilities(provider: str, model: str) -> Optional[ModelCapabilit
             supports_tools=bool(custom_meta.get("supports_tools", True)),
             supports_vision=bool(custom_meta.get("supports_vision", False)),
             supports_reasoning=bool(custom_meta.get("supports_reasoning", False)),
+            supports_multimodal_tool_results=(
+                custom_meta.get("supports_multimodal_tool_results")
+                if isinstance(custom_meta.get("supports_multimodal_tool_results"), bool)
+                else None
+            ),
             context_window=(
                 _coerce_positive_int(custom_meta.get("context_length") or custom_meta.get("context_window"))
                 or 200000

@@ -441,6 +441,18 @@ def _supports_media_in_tool_results(provider: str, model: str) -> bool:
     if not p:
         return False
 
+    # Config-declared custom/local providers can override this explicitly.
+    # Some OpenAI-compatible local runtimes accept image_url in normal user
+    # messages but reject image_url parts inside role=tool messages.
+    try:
+        from agent.models_dev import get_model_capabilities
+        caps = get_model_capabilities(provider, model)
+        declared = getattr(caps, "supports_multimodal_tool_results", None) if caps else None
+        if isinstance(declared, bool):
+            return declared
+    except Exception:
+        pass
+
     # Aggregators that route to multiple vendors — assume support since
     # users on these aggregators are typically using vision-capable
     # frontier models. Falling back to text would be a regression for

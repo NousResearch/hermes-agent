@@ -3382,6 +3382,62 @@ class AIAgent:
         except Exception:
             return False
 
+    def _model_supports_multimodal_tool_results(self) -> bool:
+        """Return True if the active provider accepts image parts in tool results."""
+        try:
+            from tools.vision_tools import _supports_media_in_tool_results
+            provider = (getattr(self, "provider", "") or "").strip()
+            model = (getattr(self, "model", "") or "").strip()
+            return bool(_supports_media_in_tool_results(provider, model))
+        except Exception:
+            return False
+
+    def _queue_multimodal_tool_result_user_message(self, tool_name: str, result: Any) -> None:
+        """Queue images from a multimodal tool result as a follow-up user message.
+
+        Some local/OpenAI-compatible runtimes accept ``image_url`` in normal
+        user messages but reject the same content inside ``role: tool``.  For
+        those providers, keep the required tool result text-only, then append a
+        normal user message containing the image parts so the model still sees
+        the pixels on its next turn.
+        """
+        content = result.get("content") if isinstance(result, dict) else None
+        if not isinstance(content, list) or not self._content_has_image_parts(content):
+            return
+
+        text = (
+            f"The {tool_name} tool returned image content. The tool result was "
+            "sent as text because this provider does not accept images in "
+            "role=tool messages. Use the attached image(s) below together with "
+            "the preceding tool result."
+        )
+        parts: List[Dict[str, Any]] = [{"type": "text", "text": text}]
+        for part in content:
+            if not isinstance(part, dict):
+                continue
+            if part.get("type") in {"image_url", "input_image"}:
+                parts.append(part)
+
+        if len(parts) <= 1:
+            return
+        pending = getattr(self, "_pending_multimodal_user_messages", None)
+        if not isinstance(pending, list):
+            pending = []
+            self._pending_multimodal_user_messages = pending
+        pending.append({"role": "user", "content": parts})
+
+    def _drain_pending_multimodal_user_messages(self) -> List[Dict[str, Any]]:
+        pending = getattr(self, "_pending_multimodal_user_messages", None)
+        if not isinstance(pending, list) or not pending:
+            return []
+        self._pending_multimodal_user_messages = []
+        return list(pending)
+
+    def _append_pending_multimodal_user_messages(self, messages: list) -> None:
+        if not isinstance(messages, list):
+            return
+        messages.extend(self._drain_pending_multimodal_user_messages())
+
     def _preprocess_anthropic_content(self, content: Any, role: str) -> Any:
         if not self._content_has_image_parts(content):
             return content
@@ -3539,6 +3595,14 @@ class AIAgent:
                     "content this session — sending text summary",
                     tool_name, key[0], key[1],
                 )
+                return _multimodal_text_summary(result)
+            if not self._model_supports_multimodal_tool_results():
+                logger.debug(
+                    "Tool %s: model %s/%s supports vision but not multimodal "
+                    "tool results — sending text summary plus follow-up user image",
+                    tool_name, key[0], key[1],
+                )
+                self._queue_multimodal_tool_result_user_message(tool_name, result)
                 return _multimodal_text_summary(result)
             return content
 

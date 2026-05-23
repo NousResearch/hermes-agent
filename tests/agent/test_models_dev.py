@@ -495,6 +495,31 @@ class TestGetModelCapabilities:
         assert caps_35b.context_window == 32768
         assert caps_27b.context_window == 8192
 
+    def test_custom_provider_multimodal_tool_result_capability_from_config(self):
+        """Local providers can say they accept user images but reject tool-result images."""
+        from hermes_constants import get_hermes_home
+
+        config_path = get_hermes_home() / "config.yaml"
+        config_path.write_text(
+            "providers:\n"
+            "  qwen-local:\n"
+            "    name: qwen-local\n"
+            "    base_url: http://127.0.0.1:1234/v1\n"
+            "    supports_tools: true\n"
+            "    supports_vision: true\n"
+            "    supports_multimodal_tool_results: false\n"
+            "    context_length: 65536\n"
+            "    models:\n"
+            "      qwen36-27b-vision:\n"
+            "        supports_multimodal_tool_results: false\n"
+        )
+
+        caps = get_model_capabilities("custom:qwen-local", "qwen36-27b-vision")
+
+        assert caps is not None
+        assert caps.supports_vision is True
+        assert caps.supports_multimodal_tool_results is False
+
     def test_custom_provider_context_lookup_uses_config_context_length(self):
         """Context lookup should use custom provider config before models.dev fallback."""
         from hermes_constants import get_hermes_home

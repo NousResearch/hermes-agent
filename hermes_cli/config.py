@@ -3107,7 +3107,8 @@ def _normalize_custom_provider_entry(
         "name", "api", "url", "base_url", "api_key", "key_env", "api_key_env",
         "api_mode", "transport", "model", "default_model", "models",
         "context_length", "rate_limit_delay", "supports_tools", "supports_vision",
-        "supports_reasoning", "max_output_tokens", "max_output",
+        "supports_reasoning", "supports_multimodal_tool_results",
+        "max_output_tokens", "max_output",
         "request_timeout_seconds", "stale_timeout_seconds",
         "discover_models", "extra_body",
     }
@@ -3196,7 +3197,12 @@ def _normalize_custom_provider_entry(
     if isinstance(context_length, int) and context_length > 0:
         normalized["context_length"] = context_length
 
-    for bool_key in ("supports_tools", "supports_vision", "supports_reasoning"):
+    for bool_key in (
+        "supports_tools",
+        "supports_vision",
+        "supports_reasoning",
+        "supports_multimodal_tool_results",
+    ):
         value = entry.get(bool_key)
         if isinstance(value, bool):
             normalized[bool_key] = value

@@ -932,7 +932,8 @@ class TestRunAgentMultimodalHelpers:
             ],
         }
 
-        with patch.object(agent, "_model_supports_vision", return_value=True):
+        with patch.object(agent, "_model_supports_vision", return_value=True), \
+             patch.object(agent, "_model_supports_multimodal_tool_results", return_value=True):
             content = agent._tool_result_content_for_active_model("computer_use", result)
 
         assert content is result["content"]

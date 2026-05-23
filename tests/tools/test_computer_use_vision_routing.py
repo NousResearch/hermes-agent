@@ -148,8 +148,8 @@ class TestRouteDecision:
                 "anthropic", "claude-opus-4-5", None
             ) is False
 
-    def test_provider_rejects_multimodal_tool_results_routes_to_aux(self):
-        """Some providers' tool-result messages won't carry images at all."""
+    def test_provider_rejects_multimodal_tool_results_keeps_native_for_followup_split(self):
+        """Vision-capable providers can split tool text from a follow-up user image."""
         from tools.computer_use import vision_routing
 
         with patch.object(vision_routing, "_lookup_supports_vision", return_value=True), \
@@ -158,10 +158,10 @@ class TestRouteDecision:
                           return_value=False):
             assert vision_routing.should_route_capture_to_aux_vision(
                 "some-aggregator", "some-vision-model", {}
-            ) is True
+            ) is False
 
-    def test_unknown_provider_capabilities_fail_closed(self):
-        """When tool-result lookup returns None, route to aux (safe default)."""
+    def test_unknown_provider_capabilities_with_vision_keep_native_for_followup_split(self):
+        """Known vision support is enough; run_agent can avoid role=tool images."""
         from tools.computer_use import vision_routing
 
         with patch.object(vision_routing, "_lookup_supports_vision", return_value=True), \
@@ -170,7 +170,7 @@ class TestRouteDecision:
                           return_value=None):
             assert vision_routing.should_route_capture_to_aux_vision(
                 "exotic-provider", "exotic-model", {}
-            ) is True
+            ) is False
 
     def test_unknown_vision_capability_fails_closed(self):
         """When models.dev has no entry, prefer aux over a likely 404."""

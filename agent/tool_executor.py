@@ -464,6 +464,8 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
     if num_tools > 0:
         agent._apply_pending_steer_to_tool_results(messages, num_tools)
 
+    agent._append_pending_multimodal_user_messages(messages)
+
 
 
 def execute_tool_calls_sequential(agent, assistant_message, messages: list, effective_task_id: str, api_call_count: int = 0) -> None:
@@ -902,6 +904,8 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
     # applied to sequential execution as well.
     if num_tools_seq > 0:
         agent._apply_pending_steer_to_tool_results(messages, num_tools_seq)
+
+    agent._append_pending_multimodal_user_messages(messages)
 
 
 

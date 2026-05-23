@@ -138,12 +138,17 @@ def should_route_capture_to_aux_vision(
         return True
 
     accepts_tool_image = _provider_accepts_multimodal_tool_result(provider, model)
+    supports_vision = _lookup_supports_vision(provider, model)
+    if supports_vision is True:
+        # A vision-capable model behind a provider that rejects images inside
+        # role=tool messages can still receive the screenshot as a follow-up
+        # normal user image. Keep the multimodal envelope so run_agent can
+        # split it into text-only tool result + user image.
+        return False
+
     if accepts_tool_image is None or accepts_tool_image is False:
         return True
 
-    supports_vision = _lookup_supports_vision(provider, model)
-    if supports_vision is True:
-        return False
     return True
 
 

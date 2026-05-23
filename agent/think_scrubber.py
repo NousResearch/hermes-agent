@@ -40,7 +40,7 @@ The scrubber is re-entrant per agent instance.  Call ``reset()`` at
 the top of each new turn so a hung block from an interrupted prior
 stream cannot taint the next turn's output.
 
-Tag variants handled (case-insensitive):
+Tag variants handled (case-insensitive, with optional attributes):
   ``<think>``, ``<thinking>``, ``<reasoning>``, ``<thought>``,
   ``<REASONING_SCRATCHPAD>``.
 
@@ -84,13 +84,20 @@ class StreamingThinkScrubber:
         "REASONING_SCRATCHPAD",
     )
 
-    # Materialise literal tag strings so the hot path does string
-    # operations, not regex compilation per feed().
+    # Materialise tag strings/prefixes so the hot path does string
+    # operations, not regex compilation per feed().  Opening tags accept
+    # optional attributes to match run_agent._strip_think_blocks'
+    # ``<tag\b[^>]*>`` completed-string behavior.
     _OPEN_TAGS: Tuple[str, ...] = tuple(f"<{name}>" for name in _OPEN_TAG_NAMES)
+    _OPEN_TAG_PREFIXES: Tuple[str, ...] = tuple(
+        f"<{name}" for name in _OPEN_TAG_NAMES
+    )
     _CLOSE_TAGS: Tuple[str, ...] = tuple(f"</{name}>" for name in _OPEN_TAG_NAMES)
 
-    # Pre-compute the longest tag (for partial-tag hold-back bound).
-    _MAX_TAG_LEN: int = max(len(tag) for tag in _OPEN_TAGS + _CLOSE_TAGS)
+    # Pre-compute the longest literal tag/prefix (for partial-tag hold-back bound).
+    _MAX_TAG_LEN: int = max(
+        len(tag) for tag in _OPEN_TAGS + _OPEN_TAG_PREFIXES + _CLOSE_TAGS
+    )
 
     def __init__(self) -> None:
         self._in_block: bool = False
@@ -179,7 +186,7 @@ class StreamingThinkScrubber:
                 # No resolvable tag structure in buf.  Hold back any
                 # partial-tag prefix at the tail so a split tag
                 # across deltas isn't missed, then emit the rest.
-                held = self._max_partial_suffix(buf, self._OPEN_TAGS)
+                held = self._max_open_partial_suffix(buf)
                 held_close = self._max_partial_suffix(
                     buf, self._CLOSE_TAGS,
                 )
@@ -245,27 +252,24 @@ class StreamingThinkScrubber:
     def _find_earliest_closed_pair(self, buf: str):
         """Return (start_idx, end_idx) of the earliest closed pair, else None.
 
-        A closed pair is ``<tag>...</tag>`` of any variant.  Matches are
-        case-insensitive and non-greedy (the closest close tag after
-        an open tag wins), matching the regex ``<tag>.*?</tag>``
+        A closed pair is ``<tag ...>...</tag>`` of any variant.  Matches
+        are case-insensitive and non-greedy (the closest close tag after
+        an open tag wins), matching the regex ``<tag\b[^>]*>.*?</tag>``
         semantics of ``_strip_think_blocks`` case 1.  When two tag
         variants could both match, the one whose open tag appears
         earlier wins.
         """
         buf_lower = buf.lower()
         best: "tuple[int, int] | None" = None
-        for open_tag, close_tag in zip(self._OPEN_TAGS, self._CLOSE_TAGS):
-            open_lower = open_tag.lower()
-            close_lower = close_tag.lower()
-            open_idx = buf_lower.find(open_lower)
-            if open_idx == -1:
+        for open_idx in self._candidate_open_indexes(buf_lower):
+            match = self._match_open_tag_at(buf_lower, open_idx)
+            if not match:
                 continue
-            close_idx = buf_lower.find(
-                close_lower, open_idx + len(open_lower),
-            )
+            open_len, close_tag = match
+            close_idx = buf_lower.find(close_tag.lower(), open_idx + open_len)
             if close_idx == -1:
                 continue
-            end_idx = close_idx + len(close_lower)
+            end_idx = close_idx + len(close_tag)
             if best is None or open_idx < best[0]:
                 best = (open_idx, end_idx)
         return best
@@ -280,20 +284,58 @@ class StreamingThinkScrubber:
         buf_lower = buf.lower()
         best_idx = -1
         best_len = 0
-        for tag in self._OPEN_TAGS:
-            tag_lower = tag.lower()
+        for idx in self._candidate_open_indexes(buf_lower):
+            match = self._match_open_tag_at(buf_lower, idx)
+            if not match:
+                continue
+            open_len, _close_tag = match
+            if self._is_block_boundary(buf, idx, already_emitted):
+                if best_idx == -1 or idx < best_idx:
+                    best_idx = idx
+                    best_len = open_len
+        return best_idx, best_len
+
+
+    @classmethod
+    def _candidate_open_indexes(cls, buf_lower: str) -> list[int]:
+        """Return sorted indexes that may start a reasoning open tag."""
+        indexes: set[int] = set()
+        for prefix in cls._OPEN_TAG_PREFIXES:
+            prefix_lower = prefix.lower()
             search_start = 0
             while True:
-                idx = buf_lower.find(tag_lower, search_start)
+                idx = buf_lower.find(prefix_lower, search_start)
                 if idx == -1:
                     break
-                if self._is_block_boundary(buf, idx, already_emitted):
-                    if best_idx == -1 or idx < best_idx:
-                        best_idx = idx
-                        best_len = len(tag)
-                    break  # first boundary hit for this tag is enough
+                indexes.add(idx)
                 search_start = idx + 1
-        return best_idx, best_len
+        return sorted(indexes)
+
+    @classmethod
+    def _match_open_tag_at(cls, buf_lower: str, idx: int) -> tuple[int, str] | None:
+        """Return ``(open_len, close_tag)`` for a complete opener at ``idx``.
+
+        Opening tags match ``<name\b[^>]*>`` so attribute-bearing
+        reasoning tags are handled the same way in streamed and completed
+        response paths.
+        """
+        for name, prefix, close_tag in zip(
+            cls._OPEN_TAG_NAMES, cls._OPEN_TAG_PREFIXES, cls._CLOSE_TAGS,
+        ):
+            prefix_lower = prefix.lower()
+            if not buf_lower.startswith(prefix_lower, idx):
+                continue
+            after_name = idx + len(prefix_lower)
+            if after_name >= len(buf_lower):
+                return None
+            next_char = buf_lower[after_name]
+            if next_char.isalnum() or next_char == "_":
+                continue
+            end_idx = buf_lower.find(">", after_name)
+            if end_idx == -1:
+                return None
+            return end_idx - idx + 1, close_tag
+        return None
 
     def _is_block_boundary(
         self, buf: str, idx: int, already_emitted: list[str],
@@ -329,6 +371,33 @@ class StreamingThinkScrubber:
         # Newline present — text between it and the tag must be
         # whitespace-only.
         return preceding[last_nl + 1:].strip() == ""
+
+    @classmethod
+    def _max_open_partial_suffix(cls, buf: str) -> int:
+        """Return held-back suffix length for partial opening tags.
+
+        Attribute-bearing openers have unbounded length until ``>``, so
+        hold from a tag-looking suffix such as ``<think type`` rather than
+        emitting it before the next delta can complete the opener.
+        """
+        if not buf:
+            return 0
+        buf_lower = buf.lower()
+        for idx in cls._candidate_open_indexes(buf_lower):
+            suffix = buf_lower[idx:]
+            if ">" in suffix:
+                continue
+            for prefix in cls._OPEN_TAG_PREFIXES:
+                prefix_lower = prefix.lower()
+                if not suffix.startswith(prefix_lower):
+                    continue
+                after_name = len(prefix_lower)
+                if after_name == len(suffix):
+                    return len(buf) - idx
+                next_char = suffix[after_name]
+                if not (next_char.isalnum() or next_char == "_"):
+                    return len(buf) - idx
+        return cls._max_partial_suffix(buf, cls._OPEN_TAG_PREFIXES)
 
     @classmethod
     def _max_partial_suffix(

@@ -45,6 +45,16 @@ class TestClosedPairs:
         s = StreamingThinkScrubber()
         assert _drive(s, ["<THINK>x</Think>Hello"]) == "Hello"
 
+    def test_attribute_pair_single_delta(self) -> None:
+        s = StreamingThinkScrubber()
+        delta = '<think type="scratchpad">secret</think>Hello'
+        assert _drive(s, [delta]) == "Hello"
+
+    def test_attribute_pair_split_across_deltas(self) -> None:
+        s = StreamingThinkScrubber()
+        deltas = ['<think type="scratchpad">sec', 'ret</think>', 'Hello']
+        assert _drive(s, deltas) == "Hello"
+
 
 class TestUnterminatedOpen:
     """Unterminated open tag discards all subsequent content to end of stream."""
@@ -61,6 +71,15 @@ class TestUnterminatedOpen:
     def test_open_after_newline_then_whitespace(self) -> None:
         s = StreamingThinkScrubber()
         assert _drive(s, ["Hello\n  <think>reasoning"]) == "Hello\n  "
+
+    def test_attribute_open_at_stream_start(self) -> None:
+        s = StreamingThinkScrubber()
+        assert _drive(s, ['<think type="scratchpad">reasoning']) == ""
+
+    def test_attribute_open_split_across_deltas(self) -> None:
+        s = StreamingThinkScrubber()
+        deltas = ['<think type="scratch', 'pad">reasoning', '</think>done']
+        assert _drive(s, deltas) == "done"
 
     def test_prose_mentioning_tag_not_stripped(self) -> None:
         """Mid-line '<think>' in prose is preserved (no boundary)."""

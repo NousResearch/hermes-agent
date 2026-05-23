@@ -160,7 +160,7 @@ export function FloatingOverlays({
             )}
 
             {overlay.pager.lines.slice(overlay.pager.offset, overlay.pager.offset + pagerPageSize).map((line, i) => (
-              <Text key={i}>{line}</Text>
+              <Text key={i}>{line || ' '}</Text>
             ))}
 
             <Box marginTop={1}>

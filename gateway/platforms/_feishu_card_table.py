@@ -123,6 +123,7 @@ def _parse_markdown_table_to_card_element(table_text: str) -> Dict[str, Any]:
 def _build_card_with_table_payload(
     content: str,
     sheet_url: Optional[str] = None,
+    bitable_url: Optional[str] = None,
 ) -> str:
     """Build a Feishu interactive card (JSON 2.0) preserving markdown tables.
 
@@ -132,12 +133,17 @@ def _build_card_with_table_payload(
     Lark V7.4+ clients instead of the previously-broken md-table fallback
     that produced blank messages.
 
-    When ``sheet_url`` is supplied, a "Open in Lark Sheet" button (rendered
-    as a bold markdown link, schema-safe across Lark client versions) is
-    appended right after the **first** table. Multiple tables in one
-    message still get hints + raw source, but only the first table maps
-    to a Sheets-API-backed spreadsheet (single-message single-sheet to
-    keep the API call count predictable).
+    Right after the **first** table, a single inline element renders the
+    storage CTAs as bold markdown links (schema-portable across Card JSON
+    v1 / v2). Two channels are supported:
+
+    - ``sheet_url`` — populated Lark Sheet for download / edit / share
+      (Lark Sheet has built-in CSV export = "本地下载")
+    - ``bitable_url`` — blank Lark Bitable app for downstream automation
+      / view / dashboard workflows ("保存到飞书多维表格")
+
+    Both ``None`` ⇒ no storage CTA element is emitted; the user still
+    gets the native table UI (long-press copy on cells works natively).
     """
     segments = _split_content_at_tables(content)
     elements: List[Dict[str, Any]] = []
@@ -145,19 +151,10 @@ def _build_card_with_table_payload(
     for seg_kind, seg_text in segments:
         if seg_kind == "table":
             elements.append(_parse_markdown_table_to_card_element(seg_text))
-            is_first_table = table_index == 0
-            attached_sheet = sheet_url if is_first_table else None
-            if attached_sheet:
-                # Visible CTA right after the table — markdown link is the
-                # most schema-portable button surface (no ``tag: "button"``
-                # field-name guessing across Card JSON v1 / v2).
-                elements.append(_build_sheet_open_element(attached_sheet))
-            # Hint text adapts to whether the sheet CTA is present.
-            elements.append(
-                _build_table_hint_element(has_sheet=bool(attached_sheet))
-            )
-            # Raw markdown source for long-press select + paste workflows.
-            elements.append(_build_raw_source_disclosure(seg_text))
+            if table_index == 0:
+                storage_el = _build_storage_links_element(sheet_url, bitable_url)
+                if storage_el is not None:
+                    elements.append(storage_el)
             table_index += 1
         elif seg_text.strip():
             elements.append({"tag": "markdown", "content": seg_text})
@@ -203,91 +200,80 @@ _SCOUT_FEISHU_FRAGMENT = (
 )
 
 
-_TABLE_HINT_NO_SHEET = (
-    "💡 **复制 / 下载提示** · 长按 cell 复制单元格 · "
-    "长按下方原始数据可全选复制并粘贴到飞书表格 / Excel · "
-    "「保存到飞书表格」按钮需 sheets:spreadsheet OAuth scope (v3 上线中)"
-)
+def _build_storage_links_element(
+    sheet_url: Optional[str],
+    bitable_url: Optional[str],
+) -> Optional[Dict[str, Any]]:
+    """Render the inline storage CTAs as bold markdown links.
 
-_TABLE_HINT_WITH_SHEET = (
-    "💡 长按 cell 复制单元格 · 长按下方原始数据全选复制 · "
-    "点击上方 📊 按钮在飞书表格中查看 / 编辑 / 分享 / 导出 CSV"
-)
+    Two complementary export channels:
 
+    - **Lark Sheet** (``sheet_url``): data is pre-populated; clients use
+      the in-sheet menu to export CSV / Excel locally ("本地下载") or
+      copy / share / edit collaboratively.
+    - **Lark Bitable** (``bitable_url``): blank base ready for views,
+      automations, and downstream pipelines ("保存到飞书多维表格 — 自己
+      组织的多维表格").
 
-def _build_table_hint_element(has_sheet: bool = False) -> Dict[str, Any]:
-    """Inline markdown hint educating users about copy / download paths.
-
-    When the card carries a Lark Sheet CTA (``has_sheet=True``), the hint
-    points users to the button and drops the "v3 coming soon" caveat.
-    Otherwise it explains the long-press fallback and flags that the
-    Sheet button is pending OAuth scope provisioning.
+    Markdown links are deliberately chosen over ``tag: "button"`` because
+    they are schema-portable across Card JSON v1 / v2 and every Lark
+    client build. Returns ``None`` when neither URL is available so the
+    caller can skip emitting an empty element.
     """
-    content = _TABLE_HINT_WITH_SHEET if has_sheet else _TABLE_HINT_NO_SHEET
-    return {"tag": "markdown", "content": content}
-
-
-def _build_sheet_open_element(sheet_url: str) -> Dict[str, Any]:
-    """Render the "Open in Lark Sheet" CTA as a bold markdown link.
-
-    A markdown link works across both Card JSON 1.0 and 2.0 renderers
-    without depending on the ``tag: "button"`` field-name (which differs
-    between schema versions and Lark client builds). The cell rendering
-    is clickable on every Lark client + browser surface.
-    """
-    return {
-        "tag": "markdown",
-        "content": (
-            f"[**📊 在飞书表格中打开 · 编辑 · 分享 · 导出 CSV**]({sheet_url})"
-        ),
-    }
-
-
-def _build_raw_source_disclosure(table_text: str) -> Dict[str, Any]:
-    """Re-emit the original markdown table inside a fenced code block.
-
-    Feishu cards render fenced ``markdown`` content as plain monospace,
-    so long-press select-all on this block lets users copy the table as
-    valid markdown to paste into Lark Sheets, Excel, or any md-capable
-    surface. This is the closest we can ship without a backend Sheets
-    API integration.
-    """
-    stripped = table_text.rstrip("\n")
-    return {
-        "tag": "markdown",
-        "content": f"```markdown\n{stripped}\n```",
-    }
+    parts: List[str] = []
+    if sheet_url:
+        parts.append(f"[**📥 下载 CSV · 编辑(飞书表格)**]({sheet_url})")
+    if bitable_url:
+        parts.append(f"[**📊 保存到多维表格**]({bitable_url})")
+    if not parts:
+        return None
+    return {"tag": "markdown", "content": "  ·  ".join(parts)}
 
 
 def _run_selfcheck() -> int:
-    # === Case A: no sheet_url — v2 layout (hint + raw source only) ===
+    # === Case A: no storage URLs — minimal card (intro / table / footer) ===
     raw = _build_card_with_table_payload(_SCOUT_FEISHU_FRAGMENT)
     card = json.loads(raw)
     assert card["schema"] == "2.0", f"expected schema 2.0, got {card['schema']!r}"
     elements = card["body"]["elements"]
     tags = [e["tag"] for e in elements]
     assert tags == [
-        "markdown", "table", "markdown", "markdown", "markdown"
+        "markdown", "table", "markdown"
     ], f"case A: unexpected element order: {tags}"
-    assert "长按 cell 复制单元格" in elements[2]["content"], "case A: hint missing copy text"
-    assert "v3 上线中" in elements[2]["content"], "case A: hint should flag v3 pending"
-    assert elements[3]["content"].startswith("```markdown"), "case A: raw-source missing fence"
-    assert "| 关键词 |" in elements[3]["content"], "case A: raw-source missing original table"
+    # No raw-markdown disclosure block in the output anymore.
+    for el in elements:
+        assert not el.get("content", "").startswith("```markdown"), (
+            "case A: raw-source disclosure must be gone in v4"
+        )
 
-    # === Case B: with sheet_url — v3 layout (CTA button + adjusted hint) ===
-    mock_url = "https://feishu.cn/sheets/shtcnMOCKTOKEN12345"
-    raw_b = _build_card_with_table_payload(_SCOUT_FEISHU_FRAGMENT, sheet_url=mock_url)
+    # === Case B: sheet_url only — single CTA link ===
+    mock_sheet = "https://feishu.cn/sheets/shtcnMOCKTOKEN12345"
+    raw_b = _build_card_with_table_payload(_SCOUT_FEISHU_FRAGMENT, sheet_url=mock_sheet)
     card_b = json.loads(raw_b)
     elements_b = card_b["body"]["elements"]
     tags_b = [e["tag"] for e in elements_b]
-    # Order: intro / table / sheet-cta / hint / raw-source / footer
+    # Order: intro / table / storage-links / footer
     assert tags_b == [
-        "markdown", "table", "markdown", "markdown", "markdown", "markdown"
+        "markdown", "table", "markdown", "markdown"
     ], f"case B: unexpected element order: {tags_b}"
-    assert mock_url in elements_b[2]["content"], "case B: sheet-cta missing URL"
-    assert "📊" in elements_b[2]["content"], "case B: sheet-cta missing button emoji"
-    assert "v3 上线中" not in elements_b[3]["content"], "case B: hint should drop v3-pending caveat"
-    assert "点击上方 📊 按钮" in elements_b[3]["content"], "case B: hint should reference CTA"
+    assert mock_sheet in elements_b[2]["content"], "case B: sheet URL missing"
+    assert "📥 下载 CSV" in elements_b[2]["content"], "case B: missing CSV button label"
+    assert "多维表格" not in elements_b[2]["content"], "case B: bitable label should be absent"
+
+    # === Case C: both sheet_url and bitable_url — twin CTA links ===
+    mock_bitable = "https://feishu.cn/base/bascnMOCKTOKEN67890"
+    raw_c = _build_card_with_table_payload(
+        _SCOUT_FEISHU_FRAGMENT, sheet_url=mock_sheet, bitable_url=mock_bitable
+    )
+    card_c = json.loads(raw_c)
+    elements_c = card_c["body"]["elements"]
+    storage = elements_c[2]["content"]
+    assert mock_sheet in storage and mock_bitable in storage, (
+        "case C: both URLs must appear in the storage CTA element"
+    )
+    assert "📥 下载 CSV" in storage and "📊 保存到多维表格" in storage, (
+        "case C: both button labels must appear"
+    )
 
     table = elements[1]
     assert len(table["columns"]) == 4, f"expected 4 columns, got {len(table['columns'])}"

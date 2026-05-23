@@ -936,6 +936,45 @@ SUPPORTED_IMAGE_DOCUMENT_TYPES = {
     ".gif": "image/gif",
 }
 
+# ---------------------------------------------------------------------------
+# MEDIA extension set (single source of truth for extract_media and
+# extract_local_files). Derived from SUPPORTED_DOCUMENT_TYPES and
+# SUPPORTED_IMAGE_DOCUMENT_TYPES plus additional known media extensions
+# (audio, video, archives, legacy office, web output). Keeps the two
+# extraction functions in sync automatically -- adding a new extension to
+# SUPPORTED_DOCUMENT_TYPES propagates to both without manual regex updates.
+# ---------------------------------------------------------------------------
+
+_MEDIA_EXTS_SET: set[str] = set()
+for _ext in SUPPORTED_DOCUMENT_TYPES:
+    _MEDIA_EXTS_SET.add(_ext.lstrip("."))
+for _ext in SUPPORTED_IMAGE_DOCUMENT_TYPES:
+    _MEDIA_EXTS_SET.add(_ext.lstrip("."))
+# Additional known media types not covered by document/image dicts
+_MEDIA_EXTS_SET.update({
+    "bmp", "tiff", "tif", "svg",                         # images
+    "mp4", "mov", "avi", "mkv", "webm",                  # video
+    "mp3", "wav", "ogg", "opus", "m4a", "flac",          # audio
+    "doc", "xls", "ppt",                                  # legacy office
+    "odt", "ods", "odp", "rtf", "tsv", "key",            # additional docs
+    "html", "htm",                                        # web output
+    "epub", "apk", "ipa",                                 # binaries
+    "rar", "7z", "tar", "gz", "tgz", "bz2", "xz",        # archives
+})
+# Sort by length descending so longer extensions match before shorter
+# (e.g. "jpeg" matches as "jpeg" not "jpe"+"g")
+_MEDIA_EXT_PATTERN: str = "|".join(
+    sorted(_MEDIA_EXTS_SET, key=lambda x: (-len(x), x))
+)
+
+# Precompiled regex for MEDIA:<path> tag extraction. Compiled once at
+# module load time rather than inside extract_media().
+_MEDIA_TAG_RE: re.Pattern = re.compile(
+    r"""[`\"']?MEDIA:\s*(?P<path>`[^`\n]+`|"[^"\n]+"|'[^'\n]+'|(?:~/|/)\S+(?:[^\S\n]+\S+)*?\.(?:"""
+    + _MEDIA_EXT_PATTERN
+    + r""")(?=[\s`\"',;:)\]}]|$))[`\"']?"""
+)
+
 
 def get_document_cache_dir() -> Path:
     """Return the document cache directory, creating it if it doesn't exist."""
@@ -2267,9 +2306,7 @@ class BasePlatformAdapter(ABC):
         
         # Extract MEDIA:<path> tags, allowing optional whitespace after the colon
         # and quoted/backticked paths for LLM-formatted outputs.
-        media_pattern = re.compile(
-            r'''[`"']?MEDIA:\s*(?P<path>`[^`\n]+`|"[^"\n]+"|'[^'\n]+'|(?:~/|/)\S+(?:[^\S\n]+\S+)*?\.(?:png|jpe?g|gif|webp|bmp|tiff?|svg|mp4|mov|avi|mkv|webm|ogg|opus|mp3|wav|m4a|flac|md|epub|pdf|docx?|odt|rtf|xlsx?|ods|csv|tsv|json|xml|ya?ml|pptx?|odp|key|txt|zip|tar|gz|tgz|bz2|xz|rar|7z|apk|ipa|html?)(?=[\s`"',;:)\]}]|$))[`"']?'''
-        )
+        media_pattern = _MEDIA_TAG_RE
         for match in media_pattern.finditer(content):
             path = match.group("path").strip()
             if len(path) >= 2 and path[0] == path[-1] and path[0] in "`\"'":
@@ -2310,23 +2347,8 @@ class BasePlatformAdapter(ABC):
             Tuple of (list of expanded file paths, cleaned text with the
             raw path strings removed).
         """
-        _LOCAL_MEDIA_EXTS = (
-            # Images (embed inline)
-            '.png', '.jpg', '.jpeg', '.gif', '.webp', '.bmp', '.tiff', '.svg',
-            # Video (embed inline where supported)
-            '.mp4', '.mov', '.avi', '.mkv', '.webm',
-            # Audio (delivered as voice/audio where supported)
-            '.mp3', '.wav', '.ogg', '.m4a', '.flac',
-            # Documents (uploaded as file attachments)
-            '.pdf', '.docx', '.doc', '.odt', '.rtf', '.txt', '.md',
-            # Spreadsheets / data
-            '.xlsx', '.xls', '.ods', '.csv', '.tsv', '.json', '.xml', '.yaml', '.yml',
-            # Presentations
-            '.pptx', '.ppt', '.odp', '.key',
-            # Archives
-            '.zip', '.tar', '.gz', '.tgz', '.bz2', '.xz', '.7z', '.rar',
-            # Web / rendered output
-            '.html', '.htm',
+        _LOCAL_MEDIA_EXTS = tuple(
+            sorted({"." + ext for ext in _MEDIA_EXTS_SET}, key=lambda x: (-len(x), x))
         )
         ext_part = '|'.join(e.lstrip('.') for e in _LOCAL_MEDIA_EXTS)
 

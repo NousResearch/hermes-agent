@@ -10648,7 +10648,7 @@ _BUILTIN_SUBCOMMANDS = frozenset(
         "dump", "fallback", "gateway", "hooks", "import", "insights",
         "kanban", "login", "logout", "logs", "lsp", "mcp", "memory", "migrate",
         "model", "pairing", "plugins", "postinstall", "profile", "proxy",
-        "send", "sessions", "setup",
+        "send", "self-knowledge", "sessions", "setup",
         "skills", "slack", "status", "tools", "uninstall", "update",
         "version", "webhook", "whatsapp", "chat", "secrets",
         # Help-ish invocations — plugin commands not being listed in
@@ -10944,6 +10944,18 @@ def main():
 
     parser, subparsers, chat_parser = build_top_level_parser()
     chat_parser.set_defaults(func=cmd_chat)
+
+    # =========================================================================
+    # self-knowledge command
+    # =========================================================================
+    self_knowledge_parser = subparsers.add_parser(
+        "self-knowledge",
+        help="Render or check Hermes self-knowledge",
+        description="Render, refresh, or drift-check the repo-grounded Hermes self-knowledge document.",
+    )
+    from hermes_cli.self_knowledge.cli import configure_parser as configure_self_knowledge_parser
+
+    configure_self_knowledge_parser(self_knowledge_parser)
 
     # =========================================================================
     # model command

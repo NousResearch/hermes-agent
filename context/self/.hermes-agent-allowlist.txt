@@ -1,0 +1,2 @@
+# References in hand-written self-knowledge sections that should be ignored by drift checks.
+# One exact reference per line.

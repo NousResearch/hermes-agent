@@ -100,6 +100,16 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
     # Pointer to the hermes-agent skill + docs for user questions about Hermes itself.
     stable_parts.append(HERMES_AGENT_HELP_GUIDANCE)
 
+    # Repo-grounded self-knowledge. Slim by default so it improves self-description
+    # without bloating the stable prompt; HERMES_SELF_KNOWLEDGE_PROMPT=off disables it.
+    try:
+        from hermes_cli.self_knowledge.summary import build_slim_summary
+        _self_knowledge = build_slim_summary()
+        if _self_knowledge:
+            stable_parts.append(_self_knowledge)
+    except Exception:
+        pass
+
     # Tool-aware behavioral guidance: only inject when the tools are loaded
     tool_guidance = []
     if "memory" in agent.valid_tool_names:

@@ -1043,6 +1043,22 @@ class TestBuildSystemPrompt:
         prompt = agent._build_system_prompt()
         assert "NOUS SUBSCRIPTION BLOCK" in prompt
 
+    def test_includes_repo_grounded_self_knowledge_summary(self, agent, monkeypatch):
+        monkeypatch.setattr(
+            "hermes_cli.self_knowledge.summary.build_slim_summary",
+            lambda: "SELF KNOWLEDGE SUMMARY",
+        )
+        prompt = agent._build_system_prompt()
+        assert "SELF KNOWLEDGE SUMMARY" in prompt
+
+    def test_self_knowledge_summary_failure_is_nonfatal(self, agent, monkeypatch):
+        def fail():
+            raise RuntimeError("boom")
+
+        monkeypatch.setattr("hermes_cli.self_knowledge.summary.build_slim_summary", fail)
+        prompt = agent._build_system_prompt()
+        assert DEFAULT_AGENT_IDENTITY in prompt
+
     def test_skills_prompt_derives_available_toolsets_from_loaded_tools(self):
         tools = _make_tool_defs("web_search", "skills_list", "skill_view", "skill_manage")
         toolset_map = {

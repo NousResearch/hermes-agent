@@ -75,6 +75,23 @@ class TestValidation:
         m["version"] = 999
         assert _validate_manifest(m) is False
 
+    def test_rejects_pre_v1_version(self, isolated_home):
+        from hermes_cli.model_catalog import _validate_manifest
+        m = _valid_manifest()
+        m["version"] = 0
+        assert _validate_manifest(m) is False
+        m["version"] = -1
+        assert _validate_manifest(m) is False
+
+    def test_rejects_bool_version(self, isolated_home):
+        # ``isinstance(True, int)`` is True in Python — explicit guard
+        # prevents a YAML manifest with ``version: true`` from slipping
+        # through and being treated as version 1.
+        from hermes_cli.model_catalog import _validate_manifest
+        m = _valid_manifest()
+        m["version"] = True
+        assert _validate_manifest(m) is False
+
     def test_rejects_missing_providers(self, isolated_home):
         from hermes_cli.model_catalog import _validate_manifest
         m = _valid_manifest()

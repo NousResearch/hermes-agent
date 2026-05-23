@@ -1175,13 +1175,17 @@ def test_recover_returns_none_for_known_topic(tmp_path):
     assert runner._recover_telegram_topic_thread_id(_make_source(thread_id="222")) is None
 
 
-def test_recover_rewrites_unknown_thread_id_to_most_recent(tmp_path):
-    # Cross-topic Reply leak: inbound thread_id is a Telegram-only id we never bound.
+def test_recover_leaves_unknown_explicit_thread_id_alone(tmp_path):
+    # Regression: a brand-new topic the user just opened has no binding row
+    # yet. The old "unknown topic → snap back to most-recent" behaviour
+    # hijacked every fresh topic into the previous one and was self-
+    # reinforcing because the new topic's binding then never got written.
+    # An explicit, non-lobby thread_id must be trusted as-is.
     db = SessionDB(db_path=tmp_path / "state.db")
     _seed_two_topic_bindings(db)
     runner = _make_runner(session_db=db)
 
-    assert runner._recover_telegram_topic_thread_id(_make_source(thread_id="9999")) == "222"
+    assert runner._recover_telegram_topic_thread_id(_make_source(thread_id="9999")) is None
 
 
 def test_recover_rewrites_lobby_thread_id_to_most_recent(tmp_path):

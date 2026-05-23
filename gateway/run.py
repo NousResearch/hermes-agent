@@ -2216,8 +2216,16 @@ class GatewayRunner:
             return None
         inbound = str(source.thread_id or "")
         is_lobby = not inbound or inbound in self._TELEGRAM_GENERAL_TOPIC_IDS
-        known = {str(b.get("thread_id") or "") for b in bindings}
-        if not is_lobby and inbound in known:
+        # Only rewrite when the inbound id is missing/lobby. An explicit,
+        # non-lobby thread_id must be trusted as-is even when it isn't in
+        # our bindings table — a brand-new topic the user just created has
+        # no binding row yet, and rewriting it to the most-recent topic
+        # traps every fresh topic against the previous one (and is
+        # self-reinforcing because the binding for the new topic then
+        # never gets written). The cross-topic-Reply leak case the
+        # original commit also targeted is rarer than legitimate new
+        # topics and self-corrects on the next message in the right topic.
+        if not is_lobby:
             return None
         user_id = str(source.user_id)
         for b in bindings:  # newest-first

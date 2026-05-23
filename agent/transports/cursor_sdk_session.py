@@ -271,7 +271,13 @@ class CursorSDKSession:
 
     @staticmethod
     def _tool_call_key(call_id: str, name: str) -> str:
-        return call_id or name or "tool"
+        cid = (call_id or "").strip()
+        if cid:
+            return cid
+        n = (name or "").strip()
+        if n and n.lower() != "tool":
+            return n
+        return "tool"
 
     @staticmethod
     def _normalize_tool_args(raw: Any) -> dict[str, Any]:
@@ -280,6 +286,83 @@ class CursorSDKSession:
         if raw is None:
             return {}
         return {"input": raw}
+
+    @staticmethod
+    def _display_tool_name(name: str) -> str:
+        """Normalize Cursor / MCP tool ids for Hermes scrollback display."""
+        cleaned = (name or "").strip()
+        if not cleaned or cleaned.lower() == "tool":
+            return ""
+        lowered = cleaned.lower()
+        for prefix in (
+            "mcp_hermes-tools_",
+            "mcp_hermes_tools_",
+            "hermes-tools_",
+        ):
+            if lowered.startswith(prefix):
+                return cleaned[len(prefix) :]
+        return cleaned
+
+    @classmethod
+    def _parse_tool_event(
+        cls,
+        *,
+        call_id: str = "",
+        name: str = "",
+        args: Any = None,
+        tool_call: Any = None,
+    ) -> tuple[str, str, dict[str, Any]]:
+        """Best-effort (call_id, display_name, args) from Cursor stream payloads."""
+        tc: dict[str, Any] = {}
+        if isinstance(tool_call, Mapping):
+            tc = dict(tool_call)
+        elif tool_call is not None and hasattr(tool_call, "__dict__"):
+            tc = {
+                k: v
+                for k, v in vars(tool_call).items()
+                if not k.startswith("_")
+            }
+
+        parsed_args = cls._normalize_tool_args(args)
+        for key in ("args", "input", "arguments"):
+            if key in tc and tc[key] is not None:
+                if not parsed_args:
+                    parsed_args = cls._normalize_tool_args(tc[key])
+                break
+
+        resolved_id = (
+            (call_id or "").strip()
+            or str(tc.get("callId") or tc.get("call_id") or "").strip()
+        )
+        resolved_name = cls._display_tool_name(
+            (name or "").strip()
+            or str(
+                tc.get("name")
+                or tc.get("toolName")
+                or tc.get("tool_name")
+                or tc.get("tool")
+                or ""
+            ).strip()
+        )
+        return resolved_id, resolved_name, parsed_args
+
+    def _pop_active_tool_entry(
+        self, call_id: str, name: str
+    ) -> Optional[dict[str, Any]]:
+        """Pop the in-flight tool record; tolerate incomplete completion events."""
+        cid = (call_id or "").strip()
+        if cid and cid in self._active_tool_calls:
+            return self._active_tool_calls.pop(cid)
+
+        display = self._display_tool_name(name)
+        if display:
+            for key, entry in list(self._active_tool_calls.items()):
+                if entry.get("name") == display:
+                    return self._active_tool_calls.pop(key)
+
+        if len(self._active_tool_calls) == 1:
+            return self._active_tool_calls.pop(next(iter(self._active_tool_calls)))
+        return None
 
     def _notify_idle_progress(self) -> None:
         if self._active_tool_calls:
@@ -292,15 +375,21 @@ class CursorSDKSession:
         call_id: str,
         name: str,
         args: Any = None,
+        tool_call: Any = None,
     ) -> None:
-        key = self._tool_call_key(call_id, name)
+        resolved_id, resolved_name, normalized_args = self._parse_tool_event(
+            call_id=call_id, name=name, args=args, tool_call=tool_call
+        )
+        if not resolved_name:
+            return
+        key = self._tool_call_key(resolved_id, resolved_name)
         if key in self._active_tool_calls:
             return
-        normalized_args = self._normalize_tool_args(args)
         self._active_tool_calls[key] = {
-            "name": name,
+            "name": resolved_name,
             "args": normalized_args,
             "start": time.monotonic(),
+            "call_id": resolved_id,
         }
         callback = self._tool_progress_callback
         if callback is None:
@@ -308,9 +397,9 @@ class CursorSDKSession:
         try:
             callback(
                 "tool.started",
-                function_name=name,
+                function_name=resolved_name,
                 function_args=normalized_args,
-                preview=name,
+                preview=resolved_name,
             )
         except Exception:
             pass
@@ -321,13 +410,18 @@ class CursorSDKSession:
         call_id: str,
         name: str,
         is_error: bool = False,
+        tool_call: Any = None,
     ) -> None:
-        key = self._tool_call_key(call_id, name)
-        entry = self._active_tool_calls.pop(key, None)
+        resolved_id, resolved_name, _ = self._parse_tool_event(
+            call_id=call_id, name=name, tool_call=tool_call
+        )
+        entry = self._pop_active_tool_entry(resolved_id, resolved_name)
         if entry is None:
             return
-        tool_name = name or entry.get("name") or "tool"
-        args = (entry or {}).get("args") or {}
+        # Prefer the name captured at tool.started — completion events often
+        # omit it, and defaulting to "tool" breaks scrollback + _pending_tool_info.
+        tool_name = (entry.get("name") or resolved_name or "tool").strip() or "tool"
+        args = entry.get("args") or {}
         duration = 0.0
         if entry and entry.get("start"):
             duration = max(0.0, time.monotonic() - float(entry["start"]))
@@ -350,18 +444,20 @@ class CursorSDKSession:
         if isinstance(msg, dict):
             status = str(msg.get("status") or "").strip().lower()
             call_id = str(msg.get("call_id") or "")
-            name = str(msg.get("name") or "tool")
+            name = str(msg.get("name") or "")
             args = msg.get("args")
         else:
             status = str(getattr(msg, "status", "") or "").strip().lower()
             call_id = str(getattr(msg, "call_id", "") or "")
-            name = str(getattr(msg, "name", "") or "tool")
+            name = str(getattr(msg, "name", "") or "")
             args = getattr(msg, "args", None)
         if status == "running":
             self._notify_tool_started(call_id=call_id, name=name, args=args)
         elif status in {"completed", "error"}:
             self._notify_tool_completed(
-                call_id=call_id, name=name, is_error=(status == "error")
+                call_id=call_id,
+                name=name,
+                is_error=(status == "error"),
             )
 
     def _resolve_sdk_client(self) -> Any:
@@ -496,23 +592,17 @@ class CursorSDKSession:
         """Mirror Cursor low-level tool events into Hermes tool_progress_callback."""
         update_type = str(getattr(update, "type", "") or "")
         if update_type == "tool-call-started":
-            call_id = str(getattr(update, "call_id", "") or "")
-            tool_call = getattr(update, "tool_call", None) or {}
-            if isinstance(tool_call, Mapping):
-                name = str(tool_call.get("name") or tool_call.get("toolName") or "tool")
-                args = tool_call.get("args") or tool_call.get("input")
-            else:
-                name = str(getattr(tool_call, "name", "") or "tool")
-                args = getattr(tool_call, "args", None) or getattr(tool_call, "input", None)
-            self._notify_tool_started(call_id=call_id, name=name, args=args)
+            self._notify_tool_started(
+                call_id=str(getattr(update, "call_id", "") or ""),
+                name="",
+                tool_call=getattr(update, "tool_call", None),
+            )
         elif update_type == "tool-call-completed":
-            call_id = str(getattr(update, "call_id", "") or "")
-            tool_call = getattr(update, "tool_call", None) or {}
-            if isinstance(tool_call, Mapping):
-                name = str(tool_call.get("name") or tool_call.get("toolName") or "tool")
-            else:
-                name = str(getattr(tool_call, "name", "") or "tool")
-            self._notify_tool_completed(call_id=call_id, name=name)
+            self._notify_tool_completed(
+                call_id=str(getattr(update, "call_id", "") or ""),
+                name="",
+                tool_call=getattr(update, "tool_call", None),
+            )
 
     def _run_turn_worker(
         self,

@@ -976,6 +976,19 @@ def get_cute_tool_message(
             return _wrap(f"┊ 🔀 delegate  {len(tasks)} parallel tasks  {dur}")
         return _wrap(f"┊ 🔀 delegate  {_trunc(args.get('goal', ''), 35)}  {dur}")
 
+    # Cursor SDK native tools (and close aliases)
+    _cursor = tool_name.lower()
+    if _cursor in {"shell", "bash", "run_terminal_cmd"}:
+        cmd = args.get("command") or args.get("cmd") or args.get("input") or ""
+        return _wrap(f"┊ 💻 $         {_trunc(cmd, 42)}  {dur}")
+    if _cursor in {"read", "read_file"}:
+        return _wrap(f"┊ 📖 read      {_path(args.get('path', args.get('file', '')))}  {dur}")
+    if _cursor in {"write", "write_file", "edit", "str_replace"}:
+        return _wrap(f"┊ ✍️  write     {_path(args.get('path', args.get('file', '')))}  {dur}")
+    if _cursor in {"grep", "search", "search_files", "glob", "list_dir"}:
+        pattern = _trunc(args.get("pattern") or args.get("query") or args.get("glob_pattern") or "", 35)
+        return _wrap(f"┊ 🔎 grep      {pattern}  {dur}")
+
     preview = build_tool_preview(tool_name, args) or ""
     return _wrap(f"┊ ⚡ {tool_name[:9]:9} {_trunc(preview, 35)}  {dur}")
 

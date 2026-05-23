@@ -9,7 +9,10 @@ which has provider-specific conditionals for max_tokens defaults,
 reasoning configuration, temperature handling, and extra_body assembly.
 """
 
-from typing import Any, Dict
+import copy
+import json
+from typing import Any, Dict, List, Optional
+from urllib.parse import urlparse
 
 from agent.lmstudio_reasoning import resolve_lmstudio_effort
 from agent.moonshot_schema import is_moonshot_model, sanitize_moonshot_tools
@@ -30,6 +33,188 @@ def _reasoning_config_for_model(model: str, reasoning_config: dict | None) -> di
         normalized["effort"] = "max"
         return normalized
     return reasoning_config
+
+
+_COPILOT_GEMINI_SCHEMA_MAP_KEYS = frozenset(
+    {"properties", "patternProperties", "$defs", "definitions"}
+)
+_COPILOT_GEMINI_SCHEMA_LIST_KEYS = frozenset(
+    {"anyOf", "oneOf", "allOf", "prefixItems"}
+)
+_COPILOT_GEMINI_SCHEMA_NODE_KEYS = frozenset(
+    {"items", "contains", "not", "additionalProperties", "propertyNames"}
+)
+_COPILOT_PROVIDER_NAMES = frozenset(
+    {"copilot", "github-copilot", "github-models", "github-model", "github"}
+)
+
+
+def _is_gemini_model(model: Any) -> bool:
+    normalized = str(model or "").strip().lower()
+    if not normalized:
+        return False
+    parts = normalized.replace(":", "/").split("/")
+    return any(part.startswith("gemini") for part in parts)
+
+
+def _is_copilot_base_url(base_url: Any) -> bool:
+    normalized = str(base_url or "").strip().lower()
+    if not normalized:
+        return False
+    parsed = urlparse(normalized if "://" in normalized else f"https://{normalized}")
+    return (parsed.hostname or "") == "api.githubcopilot.com"
+
+
+def _should_sanitize_copilot_gemini_tools(
+    model: Any,
+    *,
+    profile: Any = None,
+    params: dict[str, Any] | None = None,
+) -> bool:
+    if not _is_gemini_model(model):
+        return False
+
+    params = params or {}
+    profile_name = str(getattr(profile, "name", "") or "").strip().lower()
+    if profile_name in _COPILOT_PROVIDER_NAMES:
+        return True
+
+    provider_name = str(params.get("provider_name") or "").strip().lower()
+    if provider_name in _COPILOT_PROVIDER_NAMES:
+        return True
+
+    return _is_copilot_base_url(params.get("base_url"))
+
+
+def _schema_note(description: Any, note: str) -> str:
+    existing = description if isinstance(description, str) else ""
+    if note in existing:
+        return existing
+    if existing:
+        separator = "" if existing.endswith((" ", "\n")) else " "
+        return f"{existing}{separator}{note}"
+    return note
+
+
+def _format_schema_value(value: Any) -> str:
+    try:
+        return json.dumps(value, ensure_ascii=True)
+    except TypeError:
+        return str(value)
+
+
+def _collapse_type_union(type_value: list[Any]) -> str:
+    members = [
+        item.strip().lower()
+        for item in type_value
+        if isinstance(item, str) and item.strip()
+    ]
+    non_null = [item for item in members if item != "null"]
+    if not non_null:
+        return "string"
+    if "string" in non_null:
+        return "string"
+    if "number" in non_null:
+        return "number"
+    return non_null[0]
+
+
+def _sanitize_copilot_gemini_schema_node(node: Any) -> tuple[Any, bool]:
+    if isinstance(node, list):
+        changed = False
+        sanitized_list = []
+        for item in node:
+            sanitized, item_changed = _sanitize_copilot_gemini_schema_node(item)
+            sanitized_list.append(sanitized)
+            changed = changed or item_changed
+        return sanitized_list, changed
+
+    if not isinstance(node, dict):
+        return node, False
+
+    sanitized: dict[str, Any] = {}
+    changed = False
+    for key, value in node.items():
+        if key in _COPILOT_GEMINI_SCHEMA_MAP_KEYS and isinstance(value, dict):
+            mapped: dict[Any, Any] = {}
+            for sub_key, sub_value in value.items():
+                sub_sanitized, sub_changed = _sanitize_copilot_gemini_schema_node(
+                    sub_value
+                )
+                mapped[sub_key] = sub_sanitized
+                changed = changed or sub_changed
+            sanitized[key] = mapped
+        elif key in _COPILOT_GEMINI_SCHEMA_LIST_KEYS and isinstance(value, list):
+            items = []
+            for item in value:
+                item_sanitized, item_changed = _sanitize_copilot_gemini_schema_node(
+                    item
+                )
+                items.append(item_sanitized)
+                changed = changed or item_changed
+            sanitized[key] = items
+        elif key in _COPILOT_GEMINI_SCHEMA_NODE_KEYS and isinstance(value, dict):
+            nested, nested_changed = _sanitize_copilot_gemini_schema_node(value)
+            sanitized[key] = nested
+            changed = changed or nested_changed
+        else:
+            sanitized[key] = value
+
+    enum_value = sanitized.get("enum")
+    if isinstance(enum_value, list) and any(
+        not isinstance(item, str) for item in enum_value
+    ):
+        allowed = ", ".join(_format_schema_value(item) for item in enum_value)
+        sanitized.pop("enum", None)
+        sanitized["description"] = _schema_note(
+            sanitized.get("description"),
+            f"Allowed values: {allowed}.",
+        )
+        changed = True
+
+    type_value = sanitized.get("type")
+    if isinstance(type_value, list):
+        original_types = [
+            item.strip().lower()
+            for item in type_value
+            if isinstance(item, str) and item.strip()
+        ]
+        sanitized["type"] = _collapse_type_union(type_value)
+        if original_types:
+            display = " or ".join(dict.fromkeys(t for t in original_types if t != "null"))
+            if display:
+                sanitized["description"] = _schema_note(
+                    sanitized.get("description"),
+                    f"Accepts {display}.",
+                )
+        changed = True
+
+    return sanitized, changed
+
+
+def _sanitize_copilot_gemini_tools(tools: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Normalize tool schemas for Copilot-hosted Gemini chat completions.
+
+    Copilot's Gemini chat-completions endpoint rejects two OpenAI JSON Schema
+    shapes that other providers accept: non-string enum values and type unions
+    expressed as arrays.  Keep the repair local to Copilot Gemini requests.
+    """
+    sanitized = copy.deepcopy(tools)
+    changed = False
+
+    for tool in sanitized:
+        if not isinstance(tool, dict):
+            continue
+        fn = tool.get("function")
+        if not isinstance(fn, dict):
+            continue
+        params = fn.get("parameters")
+        new_params, params_changed = _sanitize_copilot_gemini_schema_node(params)
+        if params_changed:
+            fn["parameters"] = new_params
+            changed = True
+
+    return sanitized if changed else tools
 
 
 def _build_gemini_thinking_config(model: str, reasoning_config: dict | None) -> dict | None:
@@ -368,6 +553,8 @@ class ChatCompletionsTransport(ProviderTransport):
             # etc.) compatible, in addition to direct moonshot.ai endpoints.
             if is_moonshot_model(model):
                 tools = sanitize_moonshot_tools(tools)
+            elif _should_sanitize_copilot_gemini_tools(model, params=params):
+                tools = _sanitize_copilot_gemini_tools(tools)
             api_kwargs["tools"] = tools
 
         # max_tokens resolution — priority: ephemeral > user > provider default
@@ -555,6 +742,10 @@ class ChatCompletionsTransport(ProviderTransport):
         if tools:
             if is_moonshot_model(model):
                 tools = sanitize_moonshot_tools(tools)
+            elif _should_sanitize_copilot_gemini_tools(
+                model, profile=profile, params=params
+            ):
+                tools = _sanitize_copilot_gemini_tools(tools)
             api_kwargs["tools"] = tools
 
         # max_tokens resolution — priority: ephemeral > user > profile default

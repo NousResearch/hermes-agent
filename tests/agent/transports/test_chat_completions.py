@@ -13,6 +13,37 @@ def transport():
     return get_transport("chat_completions")
 
 
+def _copilot_gemini_problem_tools():
+    return [
+        {
+            "type": "function",
+            "function": {
+                "name": "copilot_gemini_schema_probe",
+                "description": "Probe schema",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "action": {
+                            "type": "string",
+                            "enum": ["search_members", "fetch_messages", "create_thread"],
+                        },
+                        "auto_archive_duration": {
+                            "type": "integer",
+                            "enum": [60, 1440, 4320, 10080],
+                            "description": "Thread archive duration in minutes.",
+                        },
+                        "time_from": {
+                            "type": ["number", "string"],
+                            "description": "Lower time bound.",
+                        },
+                    },
+                    "required": ["action"],
+                },
+            },
+        }
+    ]
+
+
 class TestChatCompletionsBasic:
 
     def test_api_mode(self, transport):
@@ -771,6 +802,92 @@ class TestChatCompletionsKimi:
         )
         # The parameters dict is passed through untouched (no synthetic type)
         assert "type" not in kw["tools"][0]["function"]["parameters"]["properties"]["q"]
+
+    def test_copilot_gemini_sanitizes_integer_enum_and_type_union(self, transport):
+        """Copilot-hosted Gemini rejects integer enums and type arrays."""
+        from providers import get_provider_profile
+
+        tools = _copilot_gemini_problem_tools()
+        kw = transport.build_kwargs(
+            model="gemini-3.5-flash",
+            messages=[{"role": "user", "content": "Hi"}],
+            tools=tools,
+            provider_profile=get_provider_profile("copilot"),
+            max_tokens_param_fn=lambda n: {"max_tokens": n},
+        )
+
+        props = kw["tools"][0]["function"]["parameters"]["properties"]
+        assert props["action"]["enum"] == [
+            "search_members",
+            "fetch_messages",
+            "create_thread",
+        ]
+        assert props["auto_archive_duration"]["type"] == "integer"
+        assert "enum" not in props["auto_archive_duration"]
+        assert "Allowed values: 60, 1440, 4320, 10080." in (
+            props["auto_archive_duration"]["description"]
+        )
+        assert props["time_from"]["type"] == "string"
+        assert "Accepts number or string." in props["time_from"]["description"]
+
+        original_props = tools[0]["function"]["parameters"]["properties"]
+        assert original_props["auto_archive_duration"]["enum"] == [
+            60,
+            1440,
+            4320,
+            10080,
+        ]
+        assert original_props["time_from"]["type"] == ["number", "string"]
+
+    def test_copilot_non_gemini_tools_keep_original_schema(self, transport):
+        """Copilot models outside the Gemini family keep the OpenAI schema."""
+        from providers import get_provider_profile
+
+        tools = _copilot_gemini_problem_tools()
+        kw = transport.build_kwargs(
+            model="gpt-4o",
+            messages=[{"role": "user", "content": "Hi"}],
+            tools=tools,
+            provider_profile=get_provider_profile("copilot"),
+            max_tokens_param_fn=lambda n: {"max_tokens": n},
+        )
+
+        props = kw["tools"][0]["function"]["parameters"]["properties"]
+        assert props["auto_archive_duration"]["enum"] == [60, 1440, 4320, 10080]
+        assert props["time_from"]["type"] == ["number", "string"]
+
+    def test_non_copilot_gemini_tools_keep_original_schema(self, transport):
+        """The Copilot Gemini repair must not weaken other provider schemas."""
+        from providers import get_provider_profile
+
+        tools = _copilot_gemini_problem_tools()
+        kw = transport.build_kwargs(
+            model="google/gemini-3.5-flash",
+            messages=[{"role": "user", "content": "Hi"}],
+            tools=tools,
+            provider_profile=get_provider_profile("openrouter"),
+            max_tokens_param_fn=lambda n: {"max_tokens": n},
+        )
+
+        props = kw["tools"][0]["function"]["parameters"]["properties"]
+        assert props["auto_archive_duration"]["enum"] == [60, 1440, 4320, 10080]
+        assert props["time_from"]["type"] == ["number", "string"]
+
+    def test_copilot_gemini_custom_base_url_is_sanitized(self, transport):
+        """Custom entries pointed at api.githubcopilot.com get the same repair."""
+        tools = _copilot_gemini_problem_tools()
+        kw = transport.build_kwargs(
+            model="gemini-3.5-flash",
+            messages=[{"role": "user", "content": "Hi"}],
+            tools=tools,
+            base_url="https://api.githubcopilot.com",
+            provider_name="custom",
+            max_tokens_param_fn=lambda n: {"max_tokens": n},
+        )
+
+        props = kw["tools"][0]["function"]["parameters"]["properties"]
+        assert "enum" not in props["auto_archive_duration"]
+        assert props["time_from"]["type"] == "string"
 
 
 class TestChatCompletionsLmStudioReasoning:

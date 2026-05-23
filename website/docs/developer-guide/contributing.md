@@ -198,6 +198,20 @@ Include:
 - **What platforms** you tested on
 - Reference any related issues
 
+### PR Title
+
+Use an ISA-prefixed title that includes the task number when one is available:
+
+```text
+ISA-999: Title of PR
+```
+
+If there is no specific task number for the change, use `ISA-000`:
+
+```text
+ISA-000: Title of PR
+```
+
 ### Commit Messages
 
 We use [Conventional Commits](https://www.conventionalcommits.org/):

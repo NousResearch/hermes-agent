@@ -20,7 +20,10 @@ import hashlib
 import json
 import logging
 import re
+import copy
+import threading
 import time
+from concurrent.futures import Future, ThreadPoolExecutor
 from typing import Any, Dict, List, Optional
 
 from agent.auxiliary_client import call_llm, _is_connection_error
@@ -480,6 +483,18 @@ class ContextCompressor(ContextEngine):
         self._last_compression_savings_pct = 100.0
         self._ineffective_compression_count = 0
         self._summary_failure_cooldown_until = 0.0  # transient errors must not block a fresh session
+        self._precompression_generation = getattr(self, "_precompression_generation", 0) + 1
+        future = getattr(self, "_precompression_future", None)
+        if future is not None and not future.done():
+            try:
+                future.cancel()
+            except Exception:
+                pass
+        self._precompression_future = None
+        self._precompression_inflight_key = None
+        self._precompression_inflight_generation = None
+        self._precompression_cache = {}
+        self._last_precompression_cache_hit = False
 
     def update_model(
         self,
@@ -524,6 +539,7 @@ class ContextCompressor(ContextEngine):
         provider: str = "",
         api_mode: str = "",
         abort_on_summary_failure: bool = False,
+        background_precompression: Optional[Dict[str, Any]] = None,
     ):
         self.model = model
         self.base_url = base_url
@@ -604,6 +620,39 @@ class ContextCompressor(ContextEngine):
         # succeeded.  Silent recovery would hide the broken config.
         self._last_aux_model_failure_error: Optional[str] = None
         self._last_aux_model_failure_model: Optional[str] = None
+        self._summary_generation_lock = threading.RLock()
+
+        # Optional speculative/background precompaction.  When enabled, Hermes
+        # can summarize a stable prefix before the foreground turn actually
+        # crosses the hard compression threshold.  Later, compress() reuses the
+        # ready summary iff the exact pruned message window still matches.
+        bg_cfg = background_precompression if isinstance(background_precompression, dict) else {}
+        self.background_precompression_enabled = (
+            str(bg_cfg.get("enabled", False)).lower() in {"true", "1", "yes"}
+        )
+        try:
+            self.background_precompression_trigger_percent = float(
+                bg_cfg.get("trigger_threshold", 0.35)
+            )
+        except (TypeError, ValueError):
+            self.background_precompression_trigger_percent = 0.35
+        self.background_precompression_trigger_percent = max(
+            0.05, min(self.background_precompression_trigger_percent, 0.95)
+        )
+        try:
+            _bg_workers = int(bg_cfg.get("max_workers", 1))
+        except (TypeError, ValueError):
+            _bg_workers = 1
+        self._precompression_executor = ThreadPoolExecutor(
+            max_workers=max(1, min(_bg_workers, 2)),
+            thread_name_prefix="hermes-precompress",
+        )
+        self._precompression_future: Optional[Future] = None
+        self._precompression_inflight_key: Optional[str] = None
+        self._precompression_inflight_generation: Optional[int] = None
+        self._precompression_generation: int = 0
+        self._precompression_cache: Dict[str, str] = {}
+        self._last_precompression_cache_hit: bool = False
 
     def update_from_response(self, usage: Dict[str, Any]):
         """Update tracked token usage from API response."""
@@ -910,7 +959,18 @@ class ContextCompressor(ContextEngine):
         self.summary_model = ""  # empty = use main model
         self._summary_failure_cooldown_until = 0.0  # no cooldown — retry immediately
 
-    def _generate_summary(self, turns_to_summarize: List[Dict[str, Any]], focus_topic: str = None) -> Optional[str]:
+    def _generate_summary(self, turns_to_summarize: List[Dict[str, Any]], focus_topic: Optional[str] = None) -> Optional[str]:
+        """Generate a structured summary of conversation turns."""
+        with self._summary_generation_lock:
+            return self._generate_summary_locked(turns_to_summarize, focus_topic=focus_topic)
+
+    def _generate_summary_locked(
+        self,
+        turns_to_summarize: List[Dict[str, Any]],
+        focus_topic: Optional[str] = None,
+        previous_summary_override: Optional[str] = None,
+        update_state: bool = True,
+    ) -> Optional[str]:
         """Generate a structured summary of conversation turns.
 
         Uses a structured template (Goal, Progress, Decisions, Resolved/Pending
@@ -1016,14 +1076,16 @@ Target ~{summary_budget} tokens. Be CONCRETE — include file paths, command out
 
 Write only the summary body. Do not include any preamble or prefix."""
 
-        if self._previous_summary:
+        previous_summary = previous_summary_override if previous_summary_override is not None else self._previous_summary
+
+        if previous_summary:
             # Iterative update: preserve existing info, add new progress
             prompt = f"""{_summarizer_preamble}
 
 You are updating a context compaction summary. A previous compaction produced the summary below. New conversation turns have occurred since then and need to be incorporated.
 
 PREVIOUS SUMMARY:
-{self._previous_summary}
+{previous_summary}
 
 NEW TURNS TO INCORPORATE:
 {content_to_summarize}
@@ -1077,15 +1139,17 @@ The user has requested that this compaction PRIORITISE preserving all informatio
             # ignore prompt instructions and echo back secrets verbatim.
             summary = redact_sensitive_text(content.strip())
             # Store for iterative updates on next compaction
-            self._previous_summary = summary
-            self._summary_failure_cooldown_until = 0.0
-            self._summary_model_fallen_back = False
-            self._last_summary_error = None
+            if update_state:
+                self._previous_summary = summary
+                self._summary_failure_cooldown_until = 0.0
+                self._summary_model_fallen_back = False
+                self._last_summary_error = None
             return self._with_summary_prefix(summary)
         except RuntimeError:
             # No provider configured — long cooldown, unlikely to self-resolve
-            self._summary_failure_cooldown_until = time.monotonic() + _SUMMARY_FAILURE_COOLDOWN_SECONDS
-            self._last_summary_error = "no auxiliary LLM provider configured"
+            if update_state:
+                self._summary_failure_cooldown_until = time.monotonic() + _SUMMARY_FAILURE_COOLDOWN_SECONDS
+                self._last_summary_error = "no auxiliary LLM provider configured"
             logging.warning("Context compression: no provider available for "
                             "summary. Middle turns will be dropped without summary "
                             "for %d seconds.",
@@ -1153,6 +1217,8 @@ The user has requested that this compaction PRIORITISE preserving all informatio
                     _reason = "closed stream prematurely"
                 else:
                     _reason = "timed out"
+                if not update_state:
+                    return None
                 self._fallback_to_main_for_compression(e, _reason)
                 return self._generate_summary(turns_to_summarize, focus_topic=focus_topic)  # retry immediately
 
@@ -1170,6 +1236,8 @@ The user has requested that this compaction PRIORITISE preserving all informatio
                 and self.summary_model != self.model
                 and not getattr(self, "_summary_model_fallen_back", False)
             ):
+                if not update_state:
+                    return None
                 self._fallback_to_main_for_compression(e, "failed")
                 return self._generate_summary(turns_to_summarize, focus_topic=focus_topic)
 
@@ -1177,11 +1245,12 @@ The user has requested that this compaction PRIORITISE preserving all informatio
             # streaming premature-close) — shorter cooldown for JSON decode and
             # streaming-closed since those conditions can self-resolve quickly.
             _transient_cooldown = 30 if (_is_json_decode or _is_streaming_closed) else 60
-            self._summary_failure_cooldown_until = time.monotonic() + _transient_cooldown
             err_text = str(e).strip() or e.__class__.__name__
             if len(err_text) > 220:
                 err_text = err_text[:217].rstrip() + "..."
-            self._last_summary_error = err_text
+            if update_state:
+                self._summary_failure_cooldown_until = time.monotonic() + _transient_cooldown
+                self._last_summary_error = err_text
             logging.warning(
                 "Failed to generate context summary: %s. "
                 "Further summary attempts paused for %d seconds.",
@@ -1488,10 +1557,152 @@ The user has requested that this compaction PRIORITISE preserving all informatio
         return compress_start < compress_end
 
     # ------------------------------------------------------------------
+    # Speculative/background precompaction
+    # ------------------------------------------------------------------
+
+    def _prepare_precompression_window(
+        self,
+        messages: List[Dict[str, Any]],
+        focus_topic: Optional[str] = None,
+    ) -> Optional[Dict[str, Any]]:
+        """Return a stable summarization window for background compaction.
+
+        The foreground ``compress()`` path performs a cheap pruning pass before
+        choosing summary boundaries.  Background precompaction must make the
+        exact same choices and fingerprint the pruned middle window, otherwise
+        a stale summary could be reused for different content.
+        """
+        n_messages = len(messages)
+        _min_for_compress = self._protect_head_size(messages) + 3 + 1
+        if n_messages <= _min_for_compress:
+            return None
+
+        prepared_messages = copy.deepcopy(messages)
+        prepared_messages, _ = self._prune_old_tool_results(
+            prepared_messages,
+            protect_tail_count=self.protect_last_n,
+            protect_tail_tokens=self.tail_token_budget,
+        )
+
+        compress_start = self._protect_head_size(prepared_messages)
+        compress_start = self._align_boundary_forward(prepared_messages, compress_start)
+        compress_end = self._find_tail_cut_by_tokens(prepared_messages, compress_start)
+        if compress_start >= compress_end:
+            return None
+
+        summary_search_start = 1 if prepared_messages and prepared_messages[0].get("role") == "system" else 0
+        summary_idx, summary_body = self._find_latest_context_summary(
+            prepared_messages,
+            summary_search_start,
+            compress_end,
+        )
+        turns_start = compress_start
+        previous_summary = self._previous_summary
+        if summary_idx is not None:
+            turns_start = max(compress_start, summary_idx + 1)
+            if summary_body and not previous_summary:
+                previous_summary = summary_body
+        turns_to_summarize = prepared_messages[turns_start:compress_end]
+        if not turns_to_summarize:
+            return None
+
+        fingerprint_payload = {
+            "focus_topic": focus_topic or "",
+            "previous_summary": previous_summary or "",
+            "turns": turns_to_summarize,
+        }
+        fingerprint = hashlib.sha256(
+            json.dumps(fingerprint_payload, sort_keys=True, default=str).encode("utf-8")
+        ).hexdigest()
+        return {
+            "key": fingerprint,
+            "turns": turns_to_summarize,
+            "previous_summary": previous_summary,
+            "focus_topic": focus_topic,
+        }
+
+    def _harvest_precompression_future(self) -> None:
+        future = self._precompression_future
+        key = self._precompression_inflight_key
+        generation = self._precompression_inflight_generation
+        if future is None or not future.done():
+            return
+        try:
+            summary = future.result()
+            if key and summary and generation == self._precompression_generation:
+                self._precompression_cache = {key: summary}
+        except Exception as exc:
+            logger.debug("background precompression failed: %s", exc, exc_info=True)
+        finally:
+            self._precompression_future = None
+            self._precompression_inflight_key = None
+            self._precompression_inflight_generation = None
+
+    def maybe_start_background_precompression(
+        self,
+        messages: List[Dict[str, Any]],
+        current_tokens: Optional[int] = None,
+        focus_topic: Optional[str] = None,
+    ) -> bool:
+        """Speculatively summarize a stable prefix without blocking callers.
+
+        Returns True when a new background job was submitted. The job is
+        best-effort: failures are logged at debug level and never affect the
+        foreground conversation.
+        """
+        self._harvest_precompression_future()
+        if not self.background_precompression_enabled:
+            return False
+        tokens = current_tokens if current_tokens is not None else self.last_prompt_tokens
+        trigger_tokens = int(self.context_length * self.background_precompression_trigger_percent)
+        if tokens < trigger_tokens or tokens >= self.threshold_tokens:
+            return False
+        if self._precompression_future is not None and not self._precompression_future.done():
+            return False
+
+        prepared = self._prepare_precompression_window(messages, focus_topic=focus_topic)
+        if not prepared:
+            return False
+        key = prepared["key"]
+        if key in self._precompression_cache:
+            return False
+
+        generation = self._precompression_generation
+
+        def _work() -> Optional[str]:
+            # Background precompression must be observational only. It runs
+            # without the foreground summary lock so an in-flight speculative
+            # call cannot block foreground compression from proceeding. A
+            # generation check in _harvest_precompression_future() prevents
+            # stale summaries from being cached after /reset.
+            if generation != self._precompression_generation:
+                return None
+            return self._generate_summary_locked(
+                prepared["turns"],
+                focus_topic=prepared.get("focus_topic"),
+                previous_summary_override=prepared.get("previous_summary"),
+                update_state=False,
+            )
+
+        self._precompression_inflight_key = key
+        self._precompression_inflight_generation = generation
+        self._precompression_future = self._precompression_executor.submit(_work)
+        self._harvest_precompression_future()
+        return True
+
+    def _take_ready_precompression_summary(self, key: str) -> Optional[str]:
+        self._harvest_precompression_future()
+        summary = self._precompression_cache.pop(key, None)
+        self._last_precompression_cache_hit = bool(summary)
+        if summary:
+            self._previous_summary = self._strip_summary_prefix(summary)
+        return summary
+
+    # ------------------------------------------------------------------
     # Main compression entry point
     # ------------------------------------------------------------------
 
-    def compress(self, messages: List[Dict[str, Any]], current_tokens: int = None, focus_topic: str = None, force: bool = False) -> List[Dict[str, Any]]:
+    def compress(self, messages: List[Dict[str, Any]], current_tokens: Optional[int] = None, focus_topic: Optional[str] = None, force: bool = False) -> List[Dict[str, Any]]:
         """Compress conversation messages by summarizing middle turns.
 
         Algorithm:
@@ -1521,6 +1732,7 @@ The user has requested that this compaction PRIORITISE preserving all informatio
         self._last_aux_model_failure_error = None
         self._last_aux_model_failure_model = None
         self._last_compress_aborted = False
+        self._last_precompression_cache_hit = False
 
         # Manual /compress (force=True) bypasses the failure cooldown so the
         # user can retry immediately after an auto-compress abort.  Without
@@ -1599,8 +1811,22 @@ The user has requested that this compaction PRIORITISE preserving all informatio
                 tail_msgs,
             )
 
-        # Phase 3: Generate structured summary
-        summary = self._generate_summary(turns_to_summarize, focus_topic=focus_topic)
+        # Phase 3: Generate structured summary. If a speculative background
+        # precompaction produced a summary for exactly this pruned middle
+        # window, reuse it and avoid blocking this foreground turn on another
+        # auxiliary LLM call. The fingerprint includes the turns, focus topic,
+        # and previous summary body, so changed conversations fall back safely.
+        precompression_payload = {
+            "focus_topic": focus_topic or "",
+            "previous_summary": self._previous_summary or "",
+            "turns": turns_to_summarize,
+        }
+        precompression_key = hashlib.sha256(
+            json.dumps(precompression_payload, sort_keys=True, default=str).encode("utf-8")
+        ).hexdigest()
+        summary = self._take_ready_precompression_summary(precompression_key)
+        if not summary:
+            summary = self._generate_summary(turns_to_summarize, focus_topic=focus_topic)
 
         # If summary generation failed, behavior splits on
         # ``abort_on_summary_failure`` (config: compression.abort_on_summary_failure):

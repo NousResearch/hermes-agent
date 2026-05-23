@@ -611,6 +611,10 @@ compression:
   target_ratio: 0.20                                # Fraction of threshold to preserve as recent tail
   protect_last_n: 20                                # Min recent messages to keep uncompressed
   hygiene_hard_message_limit: 400                   # Gateway safety valve — see below
+  background:                                      # Optional speculative precompression cache
+    enabled: false                                  # Disabled by default; enable to reduce later compaction latency
+    trigger_threshold: 0.35                         # Start cache warmup around 35% context usage
+    max_workers: 1                                  # Keep low so background summaries don't compete with live turns
 
 # The summarization model/provider is configured under auxiliary:
 auxiliary:
@@ -625,6 +629,8 @@ Older configs with `compression.summary_model`, `compression.summary_provider`, 
 :::
 
 `hygiene_hard_message_limit` is a gateway-only **pre-compression safety valve**. Runaway sessions with thousands of messages can hit model context limits before the normal percent-of-context threshold fires; when message count crosses this ceiling, Hermes forces compression regardless of token usage. Default `400` — raise it for platforms where very long sessions are normal, lower it to force more aggressive compression. Editing this value on a running gateway takes effect on the next message (see below).
+
+`background` is optional speculative precompression. When enabled, Hermes can summarize the stable middle of a long conversation before the hard compression threshold is reached, then reuse that summary only if the exact pruned message window still matches when foreground compression runs. This keeps the live turn from waiting on a duplicate summarization call. It is disabled by default.
 
 :::tip Gateway hot-reload of compression and context length
 As of recent releases, editing `model.context_length` or any `compression.*` key in `config.yaml` on a running gateway takes effect on the next message — no gateway restart, no `/reset`, no session rotation required. The cached-agent signature includes these keys, so the gateway transparently rebuilds the agent when it sees a change. API keys and tool/skill config still require the usual reload paths.
@@ -1175,6 +1181,7 @@ display:
   platforms: {}           # Per-platform display overrides (see below)
   tool_progress_overrides: {}  # DEPRECATED — use display.platforms instead
   interim_assistant_messages: true  # Gateway: send natural mid-turn assistant updates as separate messages
+  status_messages: true    # Gateway: show lifecycle/warning bubbles (compaction, provider fallback, retries)
   skin: default           # Built-in or custom CLI skin (see user-guide/features/skins)
   personality: "kawaii"  # Legacy cosmetic field still surfaced in some summaries
   compact: false          # Compact output mode (less whitespace)
@@ -1269,6 +1276,15 @@ display:
 Platforms without an override fall back to the global `tool_progress` value. Valid platform keys: `telegram`, `discord`, `slack`, `signal`, `whatsapp`, `matrix`, `mattermost`, `email`, `sms`, `homeassistant`, `dingtalk`, `feishu`, `wecom`, `weixin`, `bluebubbles`, `qqbot`. The legacy `display.tool_progress_overrides` key still loads for backward compatibility but is deprecated and migrated into `display.platforms` on first load.
 
 `interim_assistant_messages` is gateway-only. When enabled, Hermes sends completed mid-turn assistant updates as separate chat messages. This is independent from `tool_progress` and does not require gateway streaming.
+
+`status_messages` is gateway-only. When enabled, Hermes may send short lifecycle or warning bubbles during a turn (for example context compaction, provider retry/fallback, or other status callbacks). Set it globally or per platform to `false` to suppress these mid-turn status notices while still delivering the final assistant response and keeping logs intact:
+
+```yaml
+display:
+  platforms:
+    telegram:
+      status_messages: false
+```
 
 ## Privacy
 

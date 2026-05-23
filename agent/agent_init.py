@@ -1218,6 +1218,9 @@ def init_agent(
         pass
     compression_enabled = str(_compression_cfg.get("enabled", True)).lower() in {"true", "1", "yes"}
     compression_target_ratio = float(_compression_cfg.get("target_ratio", 0.20))
+    compression_background = _compression_cfg.get("background", {})
+    if not isinstance(compression_background, dict):
+        compression_background = {}
     compression_protect_last = int(_compression_cfg.get("protect_last_n", 20))
     # protect_first_n is the number of non-system messages to protect at
     # the head, in addition to the system prompt (which is always
@@ -1447,6 +1450,7 @@ def init_agent(
             provider=agent.provider,
             api_mode=agent.api_mode,
             abort_on_summary_failure=compression_abort_on_summary_failure,
+            background_precompression=compression_background,
         )
     agent.compression_enabled = compression_enabled
 

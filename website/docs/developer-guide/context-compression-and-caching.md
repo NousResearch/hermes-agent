@@ -84,6 +84,10 @@ compression:
   threshold: 0.50            # Fraction of context window (default: 0.50 = 50%)
   target_ratio: 0.20         # How much of threshold to keep as tail (default: 0.20)
   protect_last_n: 20         # Minimum protected tail messages (default: 20)
+  background:
+    enabled: false           # Optional speculative summary cache (default: false)
+    trigger_threshold: 0.35  # Start warmup before the hard threshold
+    max_workers: 1           # Keep background summarization low-concurrency
 
 # Summarization model/provider configured under auxiliary:
 auxiliary:
@@ -101,6 +105,9 @@ auxiliary:
 | `target_ratio` | `0.20` | 0.10-0.80 | Controls tail protection token budget: `threshold_tokens × target_ratio` |
 | `protect_last_n` | `20` | ≥1 | Minimum number of recent messages always preserved |
 | `protect_first_n` | `3` | (hardcoded) | System prompt + first exchange always preserved |
+| `background.enabled` | `false` | boolean | Speculatively summarizes a stable middle window before foreground compression needs it |
+| `background.trigger_threshold` | `0.35` | 0.05-0.95 | Starts speculative precompression when prompt tokens reach this fraction of context length but remain below the hard threshold |
+| `background.max_workers` | `1` | 1-2 | Worker count for background summarization |
 
 ### Computed Values (for a 200K context model at defaults)
 
@@ -148,6 +155,14 @@ The `_align_boundary_backward()` method walks past consecutive tool results
 to find the parent assistant message, keeping groups intact.
 
 ### Phase 3: Generate Structured Summary
+
+If `compression.background.enabled` is true, Hermes may already have a cached
+summary for the exact middle window selected above. The cache key includes the
+pruned turns, focus topic, and previous summary body. Foreground compression
+reuses the cached summary only when that fingerprint matches; otherwise it falls
+back to a normal synchronous summary call. Background precompression is
+best-effort and must not mutate live conversation state until a matching
+foreground compression consumes the cached summary.
 
 :::warning Summary model context length
 The summary model must have a context window **at least as large** as the main agent model's. The entire middle section is sent to the summary model in a single `call_llm(task="compression")` call. If the summary model's context is smaller, the API returns a context-length error — `_generate_summary()` catches it, logs a warning, and returns `None`. The compressor then drops the middle turns **without a summary**, silently losing conversation context. This is the most common cause of degraded compaction quality.

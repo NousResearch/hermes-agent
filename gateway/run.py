@@ -15482,6 +15482,16 @@ class GatewayRunner:
                 and platform_key in _legacy_tp_overrides
             )
         )
+        # Optional hard mute for agent status bubbles on chat platforms. This
+        # suppresses lifecycle/warning messages such as context compaction,
+        # provider retry/fallback notices, and other mid-turn status callbacks
+        # while preserving the final assistant response and logs.
+        _status_messages_enabled = is_truthy_value(
+            _platform_cfg.get("status_messages", _display_cfg.get("status_messages", True))
+            if isinstance(_platform_cfg, dict)
+            else _display_cfg.get("status_messages", True),
+            default=True,
+        )
         progress_mode = (
             _env_tp
             if _env_tp and not _tool_progress_configured
@@ -16046,7 +16056,7 @@ class GatewayRunner:
             _status_thread_metadata = self._thread_metadata_for_source(source, event_message_id) if _progress_thread_id else None
 
         def _status_callback_sync(event_type: str, message: str) -> None:
-            if not _status_adapter or not _run_still_current():
+            if not _status_messages_enabled or not _status_adapter or not _run_still_current():
                 return
             prepared_message = _prepare_gateway_status_message(
                 source.platform,

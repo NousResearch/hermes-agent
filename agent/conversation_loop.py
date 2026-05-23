@@ -3487,6 +3487,15 @@ def run_conversation(
                         messages, tools=agent.tools or None
                     )
 
+                if agent.compression_enabled:
+                    try:
+                        _compressor.maybe_start_background_precompression(
+                            messages,
+                            current_tokens=_real_tokens,
+                        )
+                    except Exception as exc:
+                        logger.debug("background precompression trigger failed: %s", exc, exc_info=True)
+
                 if agent.compression_enabled and _compressor.should_compress(_real_tokens):
                     agent._safe_print("  ⟳ compacting context…")
                     messages, active_system_prompt = agent._compress_context(
@@ -3829,6 +3838,19 @@ def run_conversation(
                     messages.pop()
 
                 messages.append(final_msg)
+                if agent.compression_enabled:
+                    try:
+                        _final_tokens_for_precompression = agent.context_compressor.last_prompt_tokens
+                        if _final_tokens_for_precompression <= 0:
+                            _final_tokens_for_precompression = estimate_request_tokens_rough(
+                                messages, tools=agent.tools or None
+                            )
+                        agent.context_compressor.maybe_start_background_precompression(
+                            messages,
+                            current_tokens=_final_tokens_for_precompression,
+                        )
+                    except Exception as exc:
+                        logger.debug("background precompression trigger failed: %s", exc, exc_info=True)
                 
                 _turn_exit_reason = f"text_response(finish_reason={finish_reason})"
                 if not agent.quiet_mode:

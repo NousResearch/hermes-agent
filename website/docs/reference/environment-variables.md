@@ -591,6 +591,10 @@ compression:
   threshold: 0.50
   target_ratio: 0.20         # fraction of threshold to preserve as recent tail
   protect_last_n: 20         # minimum recent messages to keep uncompressed
+  background:
+    enabled: false           # optional speculative precompression cache
+    trigger_threshold: 0.35
+    max_workers: 1
 ```
 
 :::info Legacy migration

@@ -11613,8 +11613,24 @@ class HermesCLI:
             sys.stdout.flush()
             time.sleep(0.15)
 
+            # Detect if compression rotated the session mid-turn
+            old_sid = self.session_id
+            new_sid = getattr(self.agent, "session_id", None)
+
             # Update history with full conversation
-            self.conversation_history = result.get("messages", self.conversation_history) if result else self.conversation_history
+            if (
+                new_sid
+                and old_sid
+                and new_sid != old_sid
+                and hasattr(self.agent, "_session_messages")
+                and self.agent._session_messages is not None
+            ):
+                # Compression rotated the session — use the agent's
+                # internal compressed message store instead of the
+                # inflated post-turn result["messages"].
+                self.conversation_history = list(self.agent._session_messages)
+            else:
+                self.conversation_history = result.get("messages", self.conversation_history) if result else self.conversation_history
 
             # If auto-compression fired mid-turn, the agent created a new
             # continuation session and mutated self.agent.session_id. Sync

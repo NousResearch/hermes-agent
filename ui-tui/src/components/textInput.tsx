@@ -707,7 +707,8 @@ export function TextInput({
       return
     }
 
-    if (!emitPaste({ cursor: at, text, value: vRef.current }) && PRINTABLE.test(text)) {
+    if (!emitPaste({ cursor: at, text, value: vRef.current })) {
+      // No onPaste handler — commit directly so paste always works (e.g. in ClarifyPrompt)
       commit(vRef.current.slice(0, at) + text + vRef.current.slice(end), at + text.length)
     }
   }

@@ -42,8 +42,11 @@ jobs:
                 continue ;;
             esac
 
-            # Check if email is in AUTHOR_MAP (either as a key or matches noreply pattern)
-            if echo "$email" | grep -qP '\+.*@users\.noreply\.github\.com'; then
+            # Check if email is in AUTHOR_MAP (either as a key or matches a
+            # GitHub noreply pattern). GitHub emits both numeric-plus-user
+            # noreply addresses (123+user@users.noreply.github.com) and
+            # username-only addresses (user@users.noreply.github.com).
+            if echo "$email" | grep -qP '(^[^@]+|^\d+\+[^@]+)@users\.noreply\.github\.com$'; then
               continue  # GitHub noreply emails auto-resolve
             fi
 

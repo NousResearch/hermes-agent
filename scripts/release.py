@@ -48,6 +48,9 @@ AUTHOR_MAP = {
     # teknium (multiple emails)
     "teknium1@gmail.com": "teknium1",
     "cipherframe@users.noreply.github.com": "CipherFrame",
+    "linux2010@github.com": "Linux2010",
+    "root@srv1626652.hstgr.cloud": "houenyang-momo",
+    "mike@hilomedia.local": "josephnilo",
     "me@promplate.dev": "CNSeniorious000",
     "yichengqiao21@gmail.com": "YarrowQiao",
     "erhanyasarx@gmail.com": "erhnysr",

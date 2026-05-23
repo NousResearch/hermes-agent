@@ -126,6 +126,41 @@ class TestBuiltinSkins:
             for key in required_keys:
                 assert key in skin.colors, f"Skin '{name}' missing color '{key}'"
 
+    def test_completion_menu_contrast_for_fixed_builtin_skins(self):
+        from hermes_cli.skin_engine import (
+            _BUILTIN_SKINS,
+            _contrast_ratio,
+            get_prompt_toolkit_style_overrides,
+            set_active_skin,
+        )
+
+        def bg_and_fg(style: str) -> tuple[str, str]:
+            bg = ""
+            fg = ""
+            for token in style.split():
+                if token.startswith("bg:"):
+                    bg = token[3:]
+                elif token.startswith("#") and not fg:
+                    fg = token
+            return bg, fg
+
+        fixed_skins = set(_BUILTIN_SKINS) - {"charizard"}
+        completion_keys = (
+            "completion-menu.completion",
+            "completion-menu.completion.current",
+            "completion-menu.meta.completion",
+            "completion-menu.meta.completion.current",
+        )
+
+        for skin_name in sorted(fixed_skins):
+            set_active_skin(skin_name)
+            overrides = get_prompt_toolkit_style_overrides()
+            for key in completion_keys:
+                bg, fg = bg_and_fg(overrides[key])
+                ratio = _contrast_ratio(fg, bg)
+                assert ratio is not None
+                assert ratio >= 4.5, f"{skin_name} {key} contrast is {ratio:.2f}: {fg} on {bg}"
+
 
 class TestSkinManagement:
     def test_set_active_skin(self):

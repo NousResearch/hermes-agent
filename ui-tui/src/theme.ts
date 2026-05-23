@@ -8,6 +8,8 @@ export interface ThemeColors {
   completionCurrentBg: string
   completionMetaBg: string
   completionMetaCurrentBg: string
+  completionText: string
+  completionMetaText: string
 
   label: string
   ok: string
@@ -129,6 +131,106 @@ function channelLuminance(value: number): number {
 
 function relativeLuminance(red: number, green: number, blue: number): number {
   return 0.2126 * channelLuminance(red) + 0.7152 * channelLuminance(green) + 0.0722 * channelLuminance(blue)
+}
+
+const MIN_MENU_CONTRAST = 4.5
+
+function colorLuminance(color: string): number | null {
+  const rgb = parseHex(color)
+
+  return rgb ? relativeLuminance(rgb[0], rgb[1], rgb[2]) : null
+}
+
+function contrastRatio(foreground: string, background: string): number | null {
+  const fg = colorLuminance(foreground)
+  const bg = colorLuminance(background)
+
+  if (fg === null || bg === null) {
+    return null
+  }
+
+  const lighter = Math.max(fg, bg)
+  const darker = Math.min(fg, bg)
+
+  return (lighter + 0.05) / (darker + 0.05)
+}
+
+function minContrast(foreground: string, backgrounds: readonly string[]): number | null {
+  const ratios = backgrounds
+    .map((background) => contrastRatio(foreground, background))
+    .filter((ratio): ratio is number => ratio !== null)
+
+  return ratios.length ? Math.min(...ratios) : null
+}
+
+function readableForeground(preferred: string, fallbacks: readonly string[], backgrounds: readonly string[]): string {
+  const candidates = [...new Set([preferred, ...fallbacks, '#FFFFFF', '#000000'].filter(Boolean))]
+  let best = preferred
+  let bestScore = -1
+
+  for (const candidate of candidates) {
+    const score = minContrast(candidate, backgrounds)
+
+    if (score === null) {
+      continue
+    }
+
+    if (score >= MIN_MENU_CONTRAST) {
+      return candidate
+    }
+
+    if (score > bestScore) {
+      best = candidate
+      bestScore = score
+    }
+  }
+
+  return best
+}
+
+function readableHighlightTarget(foregrounds: readonly string[]): string {
+  const scoreFor = (background: string) => Math.min(
+    ...foregrounds.map((foreground) => contrastRatio(foreground, background) ?? -1)
+  )
+
+  return scoreFor('#000000') >= scoreFor('#FFFFFF') ? '#000000' : '#FFFFFF'
+}
+
+function readableHighlightBg(base: string, accent: string, foregrounds: readonly string[]): string {
+  const mixed = mix(base, accent, 0.34)
+
+  if (!parseHex(mixed)) {
+    return mixed
+  }
+
+  const target = readableHighlightTarget(foregrounds)
+  let best = mixed
+  let bestScore = -1
+
+  for (const amount of [0, 0.12, 0.24, 0.36, 0.48, 0.6, 0.72, 0.84]) {
+    const adjusted = mix(mixed, target, amount)
+
+    const scores = foregrounds
+      .map((foreground) => contrastRatio(foreground, adjusted))
+      .filter((score): score is number => score !== null)
+
+    if (!scores.length) {
+      continue
+    }
+
+    const score = Math.min(...scores)
+
+    if (score > bestScore) {
+      best = adjusted
+      bestScore = score
+    }
+
+    if (score >= MIN_MENU_CONTRAST) {
+      return adjusted
+    }
+  }
+
+  return best
 }
 
 function rgbToHsl(red: number, green: number, blue: number): [number, number, number] {
@@ -270,6 +372,8 @@ export const DARK_THEME: Theme = {
     completionCurrentBg: '#333355',
     completionMetaBg: '#1a1a2e',
     completionMetaCurrentBg: '#333355',
+    completionText: '#DAA520',
+    completionMetaText: '#CC9B1F',
 
     label: '#DAA520',
     ok: '#4caf50',
@@ -318,6 +422,8 @@ export const LIGHT_THEME: Theme = {
     completionCurrentBg: mix('#F5F5F5', '#A0651C', 0.25),
     completionMetaBg: '#F5F5F5',
     completionMetaCurrentBg: mix('#F5F5F5', '#A0651C', 0.25),
+    completionText: '#7A5A0F',
+    completionMetaText: '#7A5A0F',
 
     label: '#7A5A0F',
     ok: '#2E7D32',
@@ -528,28 +634,49 @@ export function fromSkin(
   const accent = c('ui_accent') ?? c('banner_accent') ?? d.color.accent
   const bannerAccent = c('banner_accent') ?? c('banner_title') ?? d.color.accent
   const muted = c('banner_dim') ?? d.color.muted
+  const text = c('ui_text') ?? c('banner_text') ?? d.color.text
+  const label = c('ui_label') ?? d.color.label
   const completionBg = c('completion_menu_bg') ?? d.color.completionBg
+  const completionTextBase = c('completion_menu_text') ?? label
+  const completionMetaTextBase = c('completion_menu_meta_text') ?? muted
 
   const completionCurrentBg =
     c('completion_menu_current_bg') ??
-    (hasSkinColors ? mix(completionBg, bannerAccent, 0.25) : d.color.completionCurrentBg)
+    (hasSkinColors
+      ? readableHighlightBg(completionBg, bannerAccent, [completionTextBase, completionMetaTextBase])
+      : d.color.completionCurrentBg)
 
   const completionMetaBg = c('completion_menu_meta_bg') ?? completionBg
   const completionMetaCurrentBg = c('completion_menu_meta_current_bg') ?? completionCurrentBg
+  const shouldRepairMenuText = hasSkinColors
+
+  const completionText = c('completion_menu_text') ?? (shouldRepairMenuText
+    ? readableForeground(completionTextBase, [text, d.color.completionText], [completionBg, completionCurrentBg])
+    : completionTextBase)
+
+  const completionMetaText = c('completion_menu_meta_text') ?? (shouldRepairMenuText
+    ? readableForeground(
+      completionMetaTextBase,
+      [completionText, text, d.color.completionMetaText],
+      [completionMetaBg, completionMetaCurrentBg]
+    )
+    : completionMetaTextBase)
 
   return normalizeThemeForAnsiLightTerminal({
     color: {
       primary: c('ui_primary') ?? c('banner_title') ?? d.color.primary,
       accent,
       border: c('ui_border') ?? c('banner_border') ?? d.color.border,
-      text: c('ui_text') ?? c('banner_text') ?? d.color.text,
+      text,
       muted,
       completionBg,
       completionCurrentBg,
       completionMetaBg,
       completionMetaCurrentBg,
+      completionText,
+      completionMetaText,
 
-      label: c('ui_label') ?? d.color.label,
+      label,
       ok: c('ui_ok') ?? d.color.ok,
       error: c('ui_error') ?? d.color.error,
       warn: c('ui_warn') ?? d.color.warn,

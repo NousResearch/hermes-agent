@@ -47,6 +47,8 @@ All fields are optional. Missing values inherit from the ``default`` skin.
       completion_menu_current_bg: "#333355"  # Active completion row background
       completion_menu_meta_bg: "#1a1a2e"     # Completion meta column background
       completion_menu_meta_current_bg: "#333355"  # Active completion meta background
+      completion_menu_text: "#FFF8DC"    # Completion command text; auto-derived when omitted
+      completion_menu_meta_text: "#DAA520"  # Completion description/meta text; auto-derived when omitted
 
     # Spinner: customize the animated spinner during API calls
     spinner:
@@ -113,6 +115,7 @@ Activate with ``/skin <name>`` in the CLI or ``display.skin: <name>`` in config.
 """
 
 import logging
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
@@ -157,6 +160,67 @@ class SkinConfig:
         return self.branding.get(key, fallback)
 
 
+_HEX_COLOR_RE = re.compile(r"^#?([0-9a-fA-F]{6})$")
+
+
+def _parse_hex_color(value: str) -> Optional[Tuple[int, int, int]]:
+    """Parse a six-digit hex color value."""
+    match = _HEX_COLOR_RE.match((value or "").strip())
+    if not match:
+        return None
+    raw = match.group(1)
+    return (int(raw[0:2], 16), int(raw[2:4], 16), int(raw[4:6], 16))
+
+
+def _channel_luminance(value: int) -> float:
+    normalized = value / 255
+    return normalized / 12.92 if normalized <= 0.03928 else ((normalized + 0.055) / 1.055) ** 2.4
+
+
+def _relative_luminance(color: str) -> Optional[float]:
+    rgb = _parse_hex_color(color)
+    if not rgb:
+        return None
+    return 0.2126 * _channel_luminance(rgb[0]) + 0.7152 * _channel_luminance(rgb[1]) + 0.0722 * _channel_luminance(rgb[2])
+
+
+def _contrast_ratio(foreground: str, background: str) -> Optional[float]:
+    fg_luma = _relative_luminance(foreground)
+    bg_luma = _relative_luminance(background)
+    if fg_luma is None or bg_luma is None:
+        return None
+    lighter = max(fg_luma, bg_luma)
+    darker = min(fg_luma, bg_luma)
+    return (lighter + 0.05) / (darker + 0.05)
+
+
+def _min_contrast(foreground: str, backgrounds: List[str]) -> Optional[float]:
+    ratios = [_contrast_ratio(foreground, bg) for bg in backgrounds]
+    valid = [ratio for ratio in ratios if ratio is not None]
+    return min(valid) if valid else None
+
+
+def _readable_foreground(preferred: str, fallbacks: List[str], backgrounds: List[str]) -> str:
+    """Choose a foreground that stays readable across completion backgrounds."""
+    candidates: List[str] = []
+    for candidate in [preferred, *fallbacks, "#FFFFFF", "#000000"]:
+        if candidate and candidate not in candidates:
+            candidates.append(candidate)
+
+    best = preferred
+    best_score = -1.0
+    for candidate in candidates:
+        score = _min_contrast(candidate, backgrounds)
+        if score is None:
+            continue
+        if score >= 4.5:
+            return candidate
+        if score > best_score:
+            best = candidate
+            best_score = score
+    return best
+
+
 # =============================================================================
 # Built-in skin definitions
 # =============================================================================
@@ -182,6 +246,11 @@ _BUILTIN_SKINS: Dict[str, Dict[str, Any]] = {
             "status_bar_bg": "#1a1a2e",
             "session_label": "#DAA520",
             "session_border": "#8B8682",
+            "selection_bg": "#2A2005",
+            "completion_menu_bg": "#050509",
+            "completion_menu_current_bg": "#1F1A05",
+            "completion_menu_meta_bg": "#08080C",
+            "completion_menu_meta_current_bg": "#2A2005",
         },
         "spinner": {
             # Empty = use hardcoded defaults in display.py
@@ -223,6 +292,13 @@ _BUILTIN_SKINS: Dict[str, Dict[str, Any]] = {
             "status_bar_critical": "#EF5350",
             "session_label": "#C7A96B",
             "session_border": "#6E584B",
+            "selection_bg": "#3F1414",
+            "completion_menu_bg": "#0B0505",
+            "completion_menu_current_bg": "#351010",
+            "completion_menu_meta_bg": "#100707",
+            "completion_menu_meta_current_bg": "#3F1414",
+            "completion_menu_text": "#C7A96B",
+            "completion_menu_meta_text": "#C7A96B",
         },
         "spinner": {
             "waiting_faces": ["(⚔)", "(⛨)", "(▲)", "(<>)", "(/)"],
@@ -295,6 +371,13 @@ _BUILTIN_SKINS: Dict[str, Dict[str, Any]] = {
             "status_bar_critical": "#F0F0F0",
             "session_label": "#888888",
             "session_border": "#555555",
+            "selection_bg": "#303030",
+            "completion_menu_bg": "#080808",
+            "completion_menu_current_bg": "#2A2A2A",
+            "completion_menu_meta_bg": "#101010",
+            "completion_menu_meta_current_bg": "#303030",
+            "completion_menu_text": "#C9D1D9",
+            "completion_menu_meta_text": "#C9D1D9",
         },
         "spinner": {},
         "branding": {
@@ -334,6 +417,13 @@ _BUILTIN_SKINS: Dict[str, Dict[str, Any]] = {
             "status_bar_critical": "#FF7A7A",
             "session_label": "#7eb8f6",
             "session_border": "#4b5563",
+            "selection_bg": "#182B52",
+            "completion_menu_bg": "#070B14",
+            "completion_menu_current_bg": "#132241",
+            "completion_menu_meta_bg": "#0A1020",
+            "completion_menu_meta_current_bg": "#182B52",
+            "completion_menu_text": "#8EA8FF",
+            "completion_menu_meta_text": "#C9D1D9",
         },
         "spinner": {},
         "branding": {
@@ -371,6 +461,9 @@ _BUILTIN_SKINS: Dict[str, Dict[str, Any]] = {
             "completion_menu_current_bg": "#DBEAFE",
             "completion_menu_meta_bg": "#EEF2FF",
             "completion_menu_meta_current_bg": "#BFDBFE",
+            "completion_menu_text": "#0F172A",
+            "completion_menu_meta_text": "#475569",
+            "selection_bg": "#BFDBFE",
         },
         "spinner": {},
         "branding": {
@@ -408,6 +501,9 @@ _BUILTIN_SKINS: Dict[str, Dict[str, Any]] = {
             "completion_menu_current_bg": "#E8DCC8",
             "completion_menu_meta_bg": "#F0E8D8",
             "completion_menu_meta_current_bg": "#DFCFB0",
+            "completion_menu_text": "#2C1810",
+            "completion_menu_meta_text": "#5C3D11",
+            "selection_bg": "#DFCFB0",
         },
         "spinner": {},
         "branding": {
@@ -447,6 +543,13 @@ _BUILTIN_SKINS: Dict[str, Dict[str, Any]] = {
             "status_bar_critical": "#D94F4F",
             "session_label": "#A9DFFF",
             "session_border": "#496884",
+            "selection_bg": "#0B3A60",
+            "completion_menu_bg": "#04101C",
+            "completion_menu_current_bg": "#073256",
+            "completion_menu_meta_bg": "#061624",
+            "completion_menu_meta_current_bg": "#0B3A60",
+            "completion_menu_text": "#A9DFFF",
+            "completion_menu_meta_text": "#A9DFFF",
         },
         "spinner": {
             "waiting_faces": ["(≈)", "(Ψ)", "(∿)", "(◌)", "(◠)"],
@@ -519,6 +622,13 @@ _BUILTIN_SKINS: Dict[str, Dict[str, Any]] = {
             "status_bar_critical": "#F5F5F5",
             "session_label": "#919191",
             "session_border": "#656565",
+            "selection_bg": "#333333",
+            "completion_menu_bg": "#0A0A0A",
+            "completion_menu_current_bg": "#2E2E2E",
+            "completion_menu_meta_bg": "#101010",
+            "completion_menu_meta_current_bg": "#333333",
+            "completion_menu_text": "#D3D3D3",
+            "completion_menu_meta_text": "#D3D3D3",
         },
         "spinner": {
             "waiting_faces": ["(◉)", "(◌)", "(◬)", "(⬤)", "(::)"],
@@ -879,6 +989,18 @@ def get_prompt_toolkit_style_overrides() -> Dict[str, str]:
     menu_current_bg = skin.get_color("completion_menu_current_bg", "#333355")
     menu_meta_bg = skin.get_color("completion_menu_meta_bg", menu_bg)
     menu_meta_current_bg = skin.get_color("completion_menu_meta_current_bg", menu_current_bg)
+    menu_text_override = skin.get_color("completion_menu_text", "")
+    menu_current_text_override = skin.get_color("completion_menu_current_text", "")
+    menu_meta_text_override = skin.get_color("completion_menu_meta_text", "")
+    menu_meta_current_text_override = skin.get_color("completion_menu_meta_current_text", "")
+    menu_text = menu_text_override or _readable_foreground(text, [label, title], [menu_bg])
+    menu_current_text = menu_current_text_override or (
+        menu_text_override or _readable_foreground(title, [menu_text, text, label], [menu_current_bg])
+    )
+    menu_meta_text = menu_meta_text_override or _readable_foreground(dim, [menu_text, text, label], [menu_meta_bg])
+    menu_meta_current_text = menu_meta_current_text_override or (
+        menu_meta_text_override or _readable_foreground(label, [menu_meta_text, menu_text, text], [menu_meta_current_bg])
+    )
 
     return {
         # Typed input always uses terminal default fg/bg so it's
@@ -899,11 +1021,11 @@ def get_prompt_toolkit_style_overrides() -> Dict[str, str]:
         "status-bar-critical": f"bg:{status_bg} {status_critical} bold",
         "input-rule": input_rule,
         "image-badge": f"{label} bold",
-        "completion-menu": f"bg:{menu_bg} {text}",
-        "completion-menu.completion": f"bg:{menu_bg} {text}",
-        "completion-menu.completion.current": f"bg:{menu_current_bg} {title}",
-        "completion-menu.meta.completion": f"bg:{menu_meta_bg} {dim}",
-        "completion-menu.meta.completion.current": f"bg:{menu_meta_current_bg} {label}",
+        "completion-menu": f"bg:{menu_bg} {menu_text}",
+        "completion-menu.completion": f"bg:{menu_bg} {menu_text}",
+        "completion-menu.completion.current": f"bg:{menu_current_bg} {menu_current_text} bold",
+        "completion-menu.meta.completion": f"bg:{menu_meta_bg} {menu_meta_text}",
+        "completion-menu.meta.completion.current": f"bg:{menu_meta_current_bg} {menu_meta_current_text}",
         "clarify-border": input_rule,
         "clarify-title": f"{title} bold",
         "clarify-question": f"{text} bold",

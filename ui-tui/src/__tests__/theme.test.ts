@@ -200,13 +200,13 @@ describe('fromSkin', () => {
     expect(fromSkin({ banner_title: '#FF0000' }, {}).color.accent).toBe(DEFAULT_THEME.color.accent)
   })
 
-  it('derives completion current background from resolved completion background', async () => {
+  it('derives readable completion current background from resolved completion background', async () => {
     const { fromSkin } = await importThemeWithCleanEnv()
 
     const theme = fromSkin({ banner_accent: '#000000', completion_menu_bg: '#ffffff' }, {})
 
     expect(theme.color.completionBg).toBe('#ffffff')
-    expect(theme.color.completionCurrentBg).toBe('#bfbfbf')
+    expect(theme.color.completionCurrentBg).toBe('#2f2f2f')
   })
 
   it('uses active completion color as the selection highlight fallback', async () => {
@@ -227,6 +227,32 @@ describe('fromSkin', () => {
 
     expect(theme.color.completionMetaBg).toBe('#111111')
     expect(theme.color.completionMetaCurrentBg).toBe('#222222')
+  })
+
+  it('maps completion foreground colors from skins', async () => {
+    const { fromSkin } = await importThemeWithCleanEnv()
+
+    const theme = fromSkin({
+      completion_menu_text: '#eeeeee',
+      completion_menu_meta_text: '#cccccc'
+    }, {})
+
+    expect(theme.color.completionText).toBe('#eeeeee')
+    expect(theme.color.completionMetaText).toBe('#cccccc')
+  })
+
+  it('repairs completion foreground contrast when skins only set backgrounds', async () => {
+    const { fromSkin } = await importThemeWithCleanEnv()
+
+    const theme = fromSkin({
+      completion_menu_bg: '#ffffff',
+      completion_menu_current_bg: '#ffffff',
+      completion_menu_meta_bg: '#ffffff',
+      completion_menu_meta_current_bg: '#ffffff'
+    }, {})
+
+    expect(theme.color.completionText).toBe('#000000')
+    expect(theme.color.completionMetaText).toBe('#000000')
   })
 
   it('lets selection_bg override completion highlight colors', async () => {

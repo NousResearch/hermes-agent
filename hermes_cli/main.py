@@ -12267,6 +12267,11 @@ Examples:
         "inspect", help="Preview a skill without installing"
     )
     skills_inspect.add_argument("identifier", help="Skill identifier")
+    skills_inspect.add_argument(
+        "--ast-deep",
+        action="store_true",
+        help="Run AST-level diagnostics on Python files before installing",
+    )
 
     skills_list = skills_subparsers.add_parser("list", help="List installed skills")
     skills_list.add_argument(
@@ -12300,6 +12305,11 @@ Examples:
     )
     skills_audit.add_argument(
         "name", nargs="?", help="Specific skill to audit (default: all)"
+    )
+    skills_audit.add_argument(
+        "--deep",
+        action="store_true",
+        help="Run AST-level analysis on Python files (opt-in diagnostic)",
     )
 
     skills_uninstall = skills_subparsers.add_parser(

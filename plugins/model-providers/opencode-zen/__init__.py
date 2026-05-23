@@ -41,13 +41,24 @@ class OpenCodeGoProfile(ProviderProfile):
         top_level: dict[str, Any] = {}
 
         if _is_kimi_k2_model(model):
-            # Kimi K2 uses Moonshot's native binary thinking switch here, not
-            # OpenRouter's normalized extra_body.reasoning object.
-            if isinstance(reasoning_config, dict):
-                enabled = reasoning_config.get("enabled") is not False
-                extra_body["thinking"] = {
-                    "type": "enabled" if enabled else "disabled"
-                }
+            # Kimi K2 on OpenCode Go uses Moonshot's native wire shape:
+            # extra_body.thinking (binary toggle) + top-level reasoning_effort
+            # (low|medium|high). Mirrors the KimiProfile (api.moonshot.ai/v1).
+            if not isinstance(reasoning_config, dict):
+                # No config → leave server defaults alone.
+                return extra_body, top_level
+
+            enabled = reasoning_config.get("enabled") is not False
+            extra_body["thinking"] = {"type": "enabled" if enabled else "disabled"}
+
+            if not enabled:
+                return extra_body, top_level
+
+            effort = (reasoning_config.get("effort") or "").strip().lower()
+            if effort in {"xhigh", "max"}:
+                top_level["reasoning_effort"] = "high"
+            elif effort in {"low", "medium", "high"}:
+                top_level["reasoning_effort"] = effort
             return extra_body, top_level
 
         if not _is_deepseek_thinking_model(model):

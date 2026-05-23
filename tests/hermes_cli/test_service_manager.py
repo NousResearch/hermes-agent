@@ -174,7 +174,7 @@ def test_systemd_manager_kind_and_registration_unsupported() -> None:
     assert mgr.kind == "systemd"
     assert mgr.supports_runtime_registration() is False
     with pytest.raises(NotImplementedError):
-        mgr.register_profile_gateway("foo", port=9100)
+        mgr.register_profile_gateway("foo")
     with pytest.raises(NotImplementedError):
         mgr.unregister_profile_gateway("foo")
     assert mgr.list_profile_gateways() == []
@@ -187,7 +187,7 @@ def test_launchd_manager_kind_and_registration_unsupported() -> None:
     assert mgr.kind == "launchd"
     assert mgr.supports_runtime_registration() is False
     with pytest.raises(NotImplementedError):
-        mgr.register_profile_gateway("foo", port=9100)
+        mgr.register_profile_gateway("foo")
     assert mgr.list_profile_gateways() == []
     assert isinstance(mgr, ServiceManager)
 
@@ -197,7 +197,7 @@ def test_windows_manager_kind_and_registration_unsupported() -> None:
     assert mgr.kind == "windows"
     assert mgr.supports_runtime_registration() is False
     with pytest.raises(NotImplementedError):
-        mgr.register_profile_gateway("foo", port=9100)
+        mgr.register_profile_gateway("foo")
     assert isinstance(mgr, ServiceManager)
 
 
@@ -417,7 +417,7 @@ def test_s6_register_creates_service_dir_and_triggers_scan(
 ) -> None:
     from hermes_cli.service_manager import S6ServiceManager
     mgr = S6ServiceManager(scandir=s6_scandir)
-    mgr.register_profile_gateway("coder", port=9150)
+    mgr.register_profile_gateway("coder")
 
     svc_dir = s6_scandir / "gateway-coder"
     assert svc_dir.is_dir()
@@ -454,7 +454,7 @@ def test_s6_register_extra_env_is_quoted(s6_scandir, fake_subprocess_run) -> Non
     from hermes_cli.service_manager import S6ServiceManager
     mgr = S6ServiceManager(scandir=s6_scandir)
     mgr.register_profile_gateway(
-        "x", port=9300, extra_env={"FOO": "bar baz", "QUOTED": "a'b"},
+        "x", extra_env={"FOO": "bar baz", "QUOTED": "a'b"},
     )
     run_text = (s6_scandir / "gateway-x" / "run").read_text()
     # shlex.quote should have wrapped both values
@@ -466,7 +466,7 @@ def test_s6_register_rejects_invalid_profile_name(s6_scandir) -> None:
     from hermes_cli.service_manager import S6ServiceManager
     mgr = S6ServiceManager(scandir=s6_scandir)
     with pytest.raises(ValueError):
-        mgr.register_profile_gateway("Bad/Name", port=9100)
+        mgr.register_profile_gateway("Bad/Name")
 
 
 def test_s6_register_rejects_duplicate(s6_scandir, fake_subprocess_run) -> None:
@@ -474,7 +474,7 @@ def test_s6_register_rejects_duplicate(s6_scandir, fake_subprocess_run) -> None:
     mgr = S6ServiceManager(scandir=s6_scandir)
     (s6_scandir / "gateway-coder").mkdir(parents=True)
     with pytest.raises(ValueError, match="already registered"):
-        mgr.register_profile_gateway("coder", port=9150)
+        mgr.register_profile_gateway("coder")
 
 
 def test_s6_register_rolls_back_on_svscanctl_failure(
@@ -494,7 +494,7 @@ def test_s6_register_rolls_back_on_svscanctl_failure(
 
     mgr = S6ServiceManager(scandir=s6_scandir)
     with pytest.raises(RuntimeError, match="s6-svscanctl failed"):
-        mgr.register_profile_gateway("coder", port=9150)
+        mgr.register_profile_gateway("coder")
     assert not (s6_scandir / "gateway-coder").exists()
 
 

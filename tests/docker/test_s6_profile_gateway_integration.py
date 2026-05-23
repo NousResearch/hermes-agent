@@ -29,7 +29,7 @@ _REGISTER_SCRIPT = """
 import sys
 sys.path.insert(0, "/opt/hermes")
 from hermes_cli.service_manager import S6ServiceManager
-S6ServiceManager().register_profile_gateway("phase3test", port=9301)
+S6ServiceManager().register_profile_gateway("phase3test")
 # Don't worry about whether the gateway actually starts — we only care
 # that the supervision slot was created. The gateway run script will
 # likely error out (no profile config exists) but that's expected.

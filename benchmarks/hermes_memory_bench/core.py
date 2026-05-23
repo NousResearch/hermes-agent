@@ -14,6 +14,7 @@ from agent.memory_bitemporal_fact_graph import (
 )
 from agent.memory_contradiction_engine import explain_contradiction_group, group_contradictions
 from agent.memory_compiler import MEMORY_COMPILER_POLICY, compile_memory_patterns
+from agent.memory_blocks import MEMORY_BLOCK_POLICY, compile_blocks_from_compiler_result
 from agent.memory_retrieval_fusion import fuse_memory_retrieval
 
 
@@ -29,6 +30,7 @@ DIMENSIONS = (
     "bitemporal_fact_graph",
     "contradiction_engine",
     "memory_compiler",
+    "memory_blocks",
     "latency_ms",
 )
 POLICY = {
@@ -222,6 +224,17 @@ def _answer_case(case: dict[str, Any]) -> tuple[str, dict[str, Any]]:
             "procedure_block_candidate": procedure,
             "candidate_count": len(memories),
             "policy": dict(MEMORY_COMPILER_POLICY),
+        }
+
+    if dimension == "memory_blocks":
+        compiler_result = compile_memory_patterns(memories, project_scope=case.get("project_scope"))
+        blocks = compile_blocks_from_compiler_result(compiler_result, project_scope=case.get("project_scope"))
+        block = blocks[0] if blocks else {}
+        return block.get("block_type", ""), {
+            "compiler": compiler_result,
+            "memory_blocks": blocks,
+            "candidate_count": len(memories),
+            "policy": dict(MEMORY_BLOCK_POLICY),
         }
 
     selected = _newest(memories)

@@ -28,6 +28,7 @@ python -m benchmarks.hermes_memory_bench.run --suite smoke --output /tmp/hermes-
 - `bitemporal_fact_graph`
 - `contradiction_engine`
 - `memory_compiler`
+- `memory_blocks`
 - `latency_ms`
 
 ## Hybrid Retrieval Fusion v0.1
@@ -107,6 +108,24 @@ been applied.
 
 The smoke suite includes `memory_compiler`, proving that facts can compile into
 a review-only procedure candidate while preserving the benchmark schema.
+
+## Memory Blocks v0.1
+
+Memory Blocks v0.1 lives in `agent.memory_blocks`. It converts review-only
+compiler output into deterministic memory block candidates that future agents
+can inspect without applying them. Supported block types are `human_profile`,
+`persona`, `collaboration_style`, `project_context`, `procedural_rules`,
+`safety_policy`, `methodology`, and `current_task_state`.
+
+Every candidate includes a deterministic `block_id`, `review_required` status,
+source pattern and fact ids, confidence, validity, `proposal_only` mutation
+policy, `direct_write_allowed: false`, and explicit read-only policy proving
+that it does not write memory, write the Memory Graph, modify config, approve
+allowlists, create proposals, or create operation-ledger events.
+
+The smoke suite includes `memory_blocks`, proving that a compiler procedure
+candidate becomes a review-only `procedural_rules` block candidate while the
+JSON report schema remains stable.
 
 ## Report Schema
 

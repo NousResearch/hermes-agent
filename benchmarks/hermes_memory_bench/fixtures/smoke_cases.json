@@ -309,5 +309,53 @@
         }
       }
     ]
+  },
+  {
+    "id": "memory_blocks_review_only_procedural_rules",
+    "dimension": "memory_blocks",
+    "description": "Compiler procedure candidate becomes a review-only procedural rules block.",
+    "query": "Can Hermes Memory Fabric create review-only procedural rules blocks?",
+    "project_scope": "memory-fabric",
+    "expected_answer": "procedural_rules",
+    "memories": [
+      {
+        "fact_id": "memory-blocks-procedure-1",
+        "subject": "Hermes Memory Fabric",
+        "predicate": "procedure",
+        "object": "create review-only memory block candidates",
+        "project_id": "memory-fabric",
+        "source_episode_id": "episode-memory-blocks-a",
+        "provenance": "bench:memory-blocks:a",
+        "confidence": 0.92,
+        "valid_from": "2026-05-23T00:00:00Z",
+        "system_created_at": "2026-05-23T09:00:00Z",
+        "governance": {
+          "read_only": true,
+          "would_write_memory": false,
+          "would_modify_config": false,
+          "would_write_graph": false,
+          "does_not_create_operation_events": true
+        }
+      },
+      {
+        "fact_id": "memory-blocks-procedure-2",
+        "subject": "Hermes Memory Fabric",
+        "predicate": "procedure",
+        "object": "create review-only memory block candidates",
+        "project_id": "memory-fabric",
+        "source_episode_id": "episode-memory-blocks-b",
+        "provenance": "bench:memory-blocks:b",
+        "confidence": 0.91,
+        "valid_from": "2026-05-23T00:00:00Z",
+        "system_created_at": "2026-05-23T10:00:00Z",
+        "governance": {
+          "read_only": true,
+          "would_write_memory": false,
+          "would_modify_config": false,
+          "would_write_graph": false,
+          "does_not_create_operation_events": true
+        }
+      }
+    ]
   }
 ]

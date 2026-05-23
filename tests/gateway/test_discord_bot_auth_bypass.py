@@ -176,11 +176,12 @@ def test_bot_bypass_does_not_leak_to_other_platforms(monkeypatch):
 # -----------------------------------------------------------------------------
 
 
-def test_discord_role_config_bypasses_gateway_allowlist(monkeypatch):
-    """When DISCORD_ALLOWED_ROLES is set, _is_user_authorized must trust
-    the adapter's pre-filter and authorize. Without this, role-only setups
-    (DISCORD_ALLOWED_ROLES populated, DISCORD_ALLOWED_USERS empty) would
-    hit the 'no allowlists configured' branch and get rejected.
+def test_discord_role_config_does_not_bypass_gateway_allowlist(monkeypatch):
+    """DISCORD_ALLOWED_ROLES is enforced by the Discord adapter only.
+
+    The gateway-level authorization check cannot see a user's live role
+    membership, so a role-only config must not authorize an arbitrary source
+    before the adapter pre-filter has actually approved the event.
     """
     runner = _make_bare_runner()
 
@@ -188,7 +189,7 @@ def test_discord_role_config_bypasses_gateway_allowlist(monkeypatch):
     # Note: DISCORD_ALLOWED_USERS is NOT set — the entire point.
 
     source = _make_discord_human_source(user_id="999888777")
-    assert runner._is_user_authorized(source) is True
+    assert runner._is_user_authorized(source) is False
 
 
 def test_discord_role_config_still_authorizes_alongside_users(monkeypatch):

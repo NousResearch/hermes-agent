@@ -216,63 +216,99 @@ def load_hermes_dotenv(
 
 
 def _apply_external_secret_sources(home_path: Path) -> None:
-    """Pull secrets from external sources (currently Bitwarden) into env.
+    """Pull secrets from external sources (Bitwarden, 1Password) into env.
 
     Runs AFTER dotenv loads so .env values are visible (we use them to
-    locate the access token) but BEFORE the rest of Hermes reads
-    ``os.environ`` for credentials.  Any failure here is logged and
-    swallowed — external secret sources must never block startup.
+    locate access tokens and detect ``op://`` references) but BEFORE
+    the rest of Hermes reads ``os.environ`` for credentials.  Any
+    failure here is logged and swallowed — external secret sources
+    must never block startup.
     """
     try:
         cfg = _load_secrets_config(home_path)
     except Exception:  # noqa: BLE001 — config errors must not block startup
         return
 
+    if not cfg:
+        return
+
+    # --- Bitwarden Secrets Manager ------------------------------------------
     bw_cfg = (cfg or {}).get("bitwarden") or {}
-    if not bw_cfg.get("enabled"):
-        return
+    if bw_cfg.get("enabled"):
+        try:
+            from agent.secret_sources.bitwarden import apply_bitwarden_secrets
+        except ImportError:
+            pass
+        else:
+            result = apply_bitwarden_secrets(
+                enabled=True,
+                access_token_env=bw_cfg.get("access_token_env", "BWS_ACCESS_TOKEN"),
+                project_id=bw_cfg.get("project_id", ""),
+                override_existing=bool(bw_cfg.get("override_existing", False)),
+                cache_ttl_seconds=float(bw_cfg.get("cache_ttl_seconds", 300)),
+                auto_install=bool(bw_cfg.get("auto_install", True)),
+            )
 
-    try:
-        from agent.secret_sources.bitwarden import apply_bitwarden_secrets
-    except ImportError:
-        return
+            if result.applied:
+                # Re-run the ASCII sanitization pass: BSM values are user-supplied
+                # and might have the same copy-paste corruption as a manually
+                # edited .env (see #6843).
+                _sanitize_loaded_credentials()
+                # Remember where these came from so the setup / `hermes model`
+                # flows can label detected credentials with "(from Bitwarden)" —
+                # otherwise users see "credentials ✓" with no hint that the value
+                # came from BSM rather than .env.
+                for name in result.applied:
+                    _SECRET_SOURCES[name] = "bitwarden"
+                print(
+                    f"  Bitwarden Secrets Manager: applied {len(result.applied)} "
+                    f"secret{'s' if len(result.applied) != 1 else ''} "
+                    f"({', '.join(sorted(result.applied))})",
+                    file=sys.stderr,
+                )
+            if result.error:
+                print(
+                    f"  Bitwarden Secrets Manager: {result.error}",
+                    file=sys.stderr,
+                )
+            for warn in result.warnings:
+                print(
+                    f"  Bitwarden Secrets Manager: {warn}",
+                    file=sys.stderr,
+                )
 
-    result = apply_bitwarden_secrets(
-        enabled=True,
-        access_token_env=bw_cfg.get("access_token_env", "BWS_ACCESS_TOKEN"),
-        project_id=bw_cfg.get("project_id", ""),
-        override_existing=bool(bw_cfg.get("override_existing", False)),
-        cache_ttl_seconds=float(bw_cfg.get("cache_ttl_seconds", 300)),
-        auto_install=bool(bw_cfg.get("auto_install", True)),
-    )
+    # --- 1Password SDK (op:// references) -----------------------------------
+    op_cfg = (cfg or {}).get("onepassword") or {}
+    if op_cfg.get("enabled"):
+        try:
+            from agent.secret_sources.onepassword import apply_onepassword_secrets
+        except ImportError:
+            pass
+        else:
+            result = apply_onepassword_secrets(
+                enabled=True,
+                mode=op_cfg.get("mode", "desktop"),
+                service_account_token_env=op_cfg.get(
+                    "service_account_token_env", "OP_SERVICE_ACCOUNT_TOKEN"
+                ),
+                cache_ttl_seconds=float(op_cfg.get("cache_ttl_seconds", 300)),
+                override_existing=bool(op_cfg.get("override_existing", False)),
+            )
 
-    if result.applied:
-        # Re-run the ASCII sanitization pass: BSM values are user-supplied
-        # and might have the same copy-paste corruption as a manually
-        # edited .env (see #6843).
-        _sanitize_loaded_credentials()
-        # Remember where these came from so the setup / `hermes model`
-        # flows can label detected credentials with "(from Bitwarden)" —
-        # otherwise users see "credentials ✓" with no hint that the value
-        # came from BSM rather than .env.
-        for name in result.applied:
-            _SECRET_SOURCES[name] = "bitwarden"
-        print(
-            f"  Bitwarden Secrets Manager: applied {len(result.applied)} "
-            f"secret{'s' if len(result.applied) != 1 else ''} "
-            f"({', '.join(sorted(result.applied))})",
-            file=sys.stderr,
-        )
-    if result.error:
-        print(
-            f"  Bitwarden Secrets Manager: {result.error}",
-            file=sys.stderr,
-        )
-    for warn in result.warnings:
-        print(
-            f"  Bitwarden Secrets Manager: {warn}",
-            file=sys.stderr,
-        )
+            if result.applied:
+                _sanitize_loaded_credentials()
+                for name in result.applied:
+                    _SECRET_SOURCES[name] = "1password"
+            if result.error:
+                print(
+                    f"  1Password: {result.error}",
+                    file=sys.stderr,
+                )
+            for warn in result.warnings:
+                print(
+                    f"  1Password: {warn}",
+                    file=sys.stderr,
+                )
 
 
 def _load_secrets_config(home_path: Path) -> dict:

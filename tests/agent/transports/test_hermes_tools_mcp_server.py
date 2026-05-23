@@ -8,6 +8,9 @@ build helper assembles a server when the SDK is present.
 
 from __future__ import annotations
 
+import inspect
+import json
+from typing import Literal, get_args, get_origin
 from unittest.mock import patch
 
 import pytest
@@ -97,6 +100,86 @@ class TestModuleSurface:
             assert orch_tool in EXPOSED_TOOLS, (
                 f"{orch_tool!r} missing from codex callback"
             )
+
+
+class TestToolHandlerBuilder:
+    def test_normalize_tool_args_unwraps_legacy_kwargs(self):
+        from agent.transports.hermes_tools_mcp_server import _normalize_tool_args
+
+        assert _normalize_tool_args({"kwargs": {"all_boards": True}}) == {
+            "all_boards": True,
+        }
+        assert _normalize_tool_args({"all_boards": True}) == {"all_boards": True}
+
+    def test_build_tool_handler_exposes_flat_parameters(self):
+        from agent.transports.hermes_tools_mcp_server import _build_tool_handler
+
+        captured: list[tuple[str, dict]] = []
+
+        def fake_dispatch(tool_name: str, args: dict) -> str:
+            captured.append((tool_name, args))
+            return json.dumps({"ok": True})
+
+        schema = {
+            "type": "object",
+            "properties": {
+                "all_boards": {"type": "boolean", "description": "List all boards"},
+                "board": {"type": "string", "description": "Board slug"},
+            },
+        }
+        handler = _build_tool_handler(
+            "ideas_list",
+            schema,
+            "List ideas",
+            dispatch=fake_dispatch,
+        )
+        sig = inspect.signature(handler)
+        assert list(sig.parameters) == ["all_boards", "board"]
+        assert sig.parameters["all_boards"].default is None
+        assert sig.parameters["board"].default is None
+
+        handler(all_boards=True)
+        assert captured == [("ideas_list", {"all_boards": True})]
+
+    def test_build_tool_handler_preserves_false_boolean(self):
+        from agent.transports.hermes_tools_mcp_server import _build_tool_handler
+
+        captured: list[dict] = []
+
+        def fake_dispatch(_tool_name: str, args: dict) -> str:
+            captured.append(args)
+            return "{}"
+
+        handler = _build_tool_handler(
+            "ideas_list",
+            {"type": "object", "properties": {"all_boards": {"type": "boolean"}}},
+            "List ideas",
+            dispatch=fake_dispatch,
+        )
+        handler(all_boards=False)
+        assert captured == [{"all_boards": False}]
+
+    def test_build_tool_handler_enum_becomes_literal(self):
+        from typing import Union
+
+        from agent.transports.hermes_tools_mcp_server import _build_tool_handler
+
+        handler = _build_tool_handler(
+            "ideas_update",
+            {
+                "type": "object",
+                "properties": {
+                    "status": {"type": "string", "enum": ["draft", "done"]},
+                },
+            },
+            "Update idea",
+            dispatch=lambda _n, _a: "{}",
+        )
+        status_type = handler.__annotations__["status"]
+        assert get_origin(status_type) is Union
+        inner = get_args(status_type)[0]
+        assert get_origin(inner) is type(Literal)
+        assert set(get_args(inner)) == {"draft", "done"}
 
 
 class TestMain:

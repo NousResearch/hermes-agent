@@ -44,13 +44,145 @@ Spawned by: CodexAppServerSession.ensure_started() when the runtime is
 
 from __future__ import annotations
 
+import inspect
 import json
 import logging
 import os
 import sys
-from typing import Any, Optional
+from typing import Any, Callable, Literal, Optional
 
 logger = logging.getLogger(__name__)
+
+
+def _normalize_tool_args(raw: dict[str, Any]) -> dict[str, Any]:
+    """Unwrap legacy MCP calls that nested Hermes args under a ``kwargs`` key.
+
+    FastMCP used to register handlers as ``def _dispatch(**kwargs)``, which made
+    clients send ``{"kwargs": {"all_boards": true}}`` instead of flat args.
+    """
+    if not raw:
+        return {}
+    if set(raw.keys()) == {"kwargs"} and isinstance(raw.get("kwargs"), dict):
+        return dict(raw["kwargs"])
+    return dict(raw)
+
+
+def _json_schema_property_type(prop: dict[str, Any]) -> Any:
+    """Map a JSON-schema property to a Python type annotation for FastMCP."""
+    enum_values = prop.get("enum")
+    if enum_values:
+        return Literal[tuple(enum_values)]  # type: ignore[valid-type]
+
+    schema_type = prop.get("type")
+    if schema_type == "boolean":
+        return bool
+    if schema_type == "integer":
+        return int
+    if schema_type == "number":
+        return float
+    if schema_type == "array":
+        items = prop.get("items") or {}
+        item_type = _json_schema_property_type(items) if isinstance(items, dict) else Any
+        return list[item_type]  # type: ignore[valid-type]
+    if schema_type == "object":
+        return dict[str, Any]
+
+    # Missing type — treat as string (matches Hermes/OpenAI tool conventions).
+    return str
+
+
+def _build_tool_handler(
+    tool_name: str,
+    params_schema: dict[str, Any],
+    description: str,
+    *,
+    dispatch: Callable[[str, dict[str, Any]], str],
+) -> Callable[..., str]:
+    """Build a FastMCP-compatible handler with flat parameters from JSON schema."""
+    properties = params_schema.get("properties") or {}
+    if not isinstance(properties, dict):
+        properties = {}
+    required = set(params_schema.get("required") or [])
+
+    parameters: list[inspect.Parameter] = []
+    annotations: dict[str, Any] = {"return": str}
+
+    for param_name, prop in properties.items():
+        if not isinstance(prop, dict):
+            prop = {}
+        annotation = _json_schema_property_type(prop)
+        if param_name not in required:
+            annotation = Optional[annotation]
+            default = prop.get("default", None)
+        else:
+            default = inspect.Parameter.empty
+
+        parameters.append(
+            inspect.Parameter(
+                param_name,
+                kind=inspect.Parameter.KEYWORD_ONLY,
+                default=default,
+                annotation=annotation,
+            )
+        )
+        annotations[param_name] = annotation
+
+    def _dispatch(**arguments: Any) -> str:
+        tool_args = _normalize_tool_args(arguments)
+        # Drop unset optional params so Hermes handlers see the same shape as native tools.
+        tool_args = {k: v for k, v in tool_args.items() if v is not None}
+        try:
+            return dispatch(tool_name, tool_args)
+        except Exception as exc:
+            logger.exception("tool %s raised", tool_name)
+            return json.dumps({"error": str(exc), "tool": tool_name})
+
+    _dispatch.__name__ = tool_name
+    _dispatch.__doc__ = description
+    _dispatch.__annotations__ = annotations
+    _dispatch.__signature__ = inspect.Signature(parameters, return_annotation=str)
+    return _dispatch
+
+
+def _register_hermes_tool(
+    mcp: Any,
+    handler: Callable[..., str],
+    *,
+    name: str,
+    description: str,
+) -> None:
+    """Register a handler and wrap it so legacy nested ``kwargs`` args still work."""
+    from mcp.server.fastmcp.tools.base import Tool
+
+    mcp.add_tool(handler, name=name, description=description)
+    registered = mcp._tool_manager.get_tool(name)
+    if registered is None:
+        return
+
+    class _HermesTool(Tool):
+        async def run(
+            self,
+            arguments: dict[str, Any],
+            context: Any = None,
+            convert_result: bool = False,
+        ) -> Any:
+            normalized = _normalize_tool_args(dict(arguments or {}))
+            return await super().run(normalized, context=context, convert_result=convert_result)
+
+    wrapped = _HermesTool(
+        fn=registered.fn,
+        name=registered.name,
+        title=registered.title,
+        description=registered.description,
+        parameters=registered.parameters,
+        fn_metadata=registered.fn_metadata,
+        is_async=registered.is_async,
+        context_kwarg=registered.context_kwarg,
+        annotations=registered.annotations,
+        icons=registered.icons,
+        meta=registered.meta,
+    )
+    mcp._tool_manager._tools[name] = wrapped
 
 
 # Tools we expose. Each name MUST match a registered Hermes tool that
@@ -162,35 +294,26 @@ def _build_server() -> Any:
         description = spec.get("description") or f"Hermes {name} tool"
         params_schema = spec.get("parameters") or {"type": "object", "properties": {}}
 
-        # FastMCP wants a Python callable. Build a closure that takes the
-        # arguments dict, dispatches via handle_function_call, and returns
-        # the result string. We use add_tool() for full control over the
-        # input schema (FastMCP's @tool() decorator inspects type hints,
-        # which we can't get from a JSON schema at runtime).
-        def _make_handler(tool_name: str):
-            def _dispatch(**kwargs: Any) -> str:
-                try:
-                    return handle_function_call(tool_name, kwargs or {})
-                except Exception as exc:
-                    logger.exception("tool %s raised", tool_name)
-                    return json.dumps({"error": str(exc), "tool": tool_name})
-            _dispatch.__name__ = tool_name
-            _dispatch.__doc__ = description
-            return _dispatch
+        # FastMCP derives MCP inputSchema from the handler signature. A bare
+        # ``**kwargs`` handler exposes a single required ``kwargs`` object, which
+        # breaks clients (they send nested args that never reach Hermes). Build a
+        # function with one keyword-only parameter per JSON-schema property instead.
+        handler = _build_tool_handler(
+            name,
+            params_schema,
+            description,
+            dispatch=handle_function_call,
+        )
 
         try:
-            mcp.add_tool(
-                _make_handler(name),
-                name=name,
-                description=description,
-                # FastMCP accepts JSON schema directly via the
-                # input_schema parameter on newer versions; older
-                # versions use parameters_schema. Try both for compat.
-            )
+            _register_hermes_tool(mcp, handler, name=name, description=description)
         except TypeError:
             # Older mcp SDK signature — fall back to decorator-style.
-            handler = _make_handler(name)
             handler = mcp.tool(name=name, description=description)(handler)
+            try:
+                _register_hermes_tool(mcp, handler, name=name, description=description)
+            except Exception:
+                pass
 
         exposed_count += 1
 

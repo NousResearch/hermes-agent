@@ -3858,30 +3858,55 @@ class AIAgent:
 
     @staticmethod
     def _sanitize_tool_calls_for_strict_api(api_msg: dict) -> dict:
-        """Strip Codex Responses API fields from tool_calls for strict providers.
+        """Scrub tool_calls so strict OpenAI-compatible APIs accept the replay.
 
-        Providers like Mistral, Fireworks, and other strict OpenAI-compatible APIs
-        validate the Chat Completions schema and reject unknown fields (call_id,
-        response_item_id) with 400 or 422 errors. These fields are preserved in
-        the internal message history — this method only modifies the outgoing
-        API copy.
+        Does two things to the *outgoing API copy* (the in-memory history is
+        untouched so Codex-side fallback still works if the session pivots):
+
+        1. Strip Codex Responses API fields (`call_id`, `response_item_id`).
+           Mistral / Fireworks / Groq reject these with 400/422.
+
+        2. Repair malformed JSON in `function.arguments`. Some models
+           (smaller ones, post-context-compaction states, TS arms that
+           sampled a weak model) emit tool_calls whose `arguments` string
+           is not valid JSON. When that message is later replayed to a
+           strict API, the whole turn 400s.
+
+           Scrub strategy: parse-test each `arguments` string; if it
+           doesn't parse, replace with ``"{}"``. The tool *result* in the
+           next message still carries whatever the tool actually produced,
+           so the model has the semantic information — it just loses
+           visibility of the malformed arg string, which is strictly worse
+           than a hard 400 on every subsequent turn.
 
         Creates new tool_call dicts rather than mutating in-place, so the
         original messages list retains call_id/response_item_id for Codex
-        Responses API compatibility (e.g. if the session falls back to a
-        Codex provider later).
-
-        Fields stripped: call_id, response_item_id
+        Responses API compatibility.
         """
+        import json as _json
+
         tool_calls = api_msg.get("tool_calls")
         if not isinstance(tool_calls, list):
             return api_msg
         _STRIP_KEYS = {"call_id", "response_item_id"}
-        api_msg["tool_calls"] = [
-            {k: v for k, v in tc.items() if k not in _STRIP_KEYS}
-            if isinstance(tc, dict) else tc
-            for tc in tool_calls
-        ]
+        scrubbed = []
+        for tc in tool_calls:
+            if not isinstance(tc, dict):
+                scrubbed.append(tc)
+                continue
+            new_tc = {k: v for k, v in tc.items() if k not in _STRIP_KEYS}
+            fn = new_tc.get("function")
+            if isinstance(fn, dict):
+                args = fn.get("arguments")
+                if isinstance(args, str):
+                    try:
+                        _json.loads(args)
+                    except (ValueError, TypeError):
+                        fn_copy = dict(fn)
+                        fn_copy["arguments"] = "{}"
+                        new_tc["function"] = fn_copy
+            scrubbed.append(new_tc)
+        api_msg["tool_calls"] = scrubbed
         return api_msg
 
     def _supports_reasoning_content(self) -> bool:

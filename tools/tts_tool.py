@@ -1909,8 +1909,7 @@ def text_to_speech_tool(
             logger.info("Generating speech with Piper (local)...")
             _generate_piper_tts(text, file_str, tts_config)
 
-        else:
-            # Default: Edge TTS (free), with NeuTTS as local fallback
+        elif provider == "edge":
             edge_available = True
             try:
                 _import_edge_tts()
@@ -1937,6 +1936,23 @@ def text_to_speech_tool(
                     "error": "No TTS provider available. Install edge-tts (pip install edge-tts) "
                              "or set up NeuTTS for local synthesis."
                 }, ensure_ascii=False)
+
+        else:
+            # Fail loud on unknown provider. Silently falling back to Edge
+            # masked a Fish Audio regression for ~a day (toryx-private#797).
+            # See tests/tools/test_tts_providers.py — that test enforces the
+            # set of known providers at CI time.
+            known = sorted({
+                "edge", "elevenlabs", "openai", "minimax", "xai",
+                "mistral", "gemini", "fish", "neutts", "kittentts", "piper",
+            })
+            msg = (
+                f"TTS provider {provider!r} is not implemented. "
+                f"Known providers: {', '.join(known)}. "
+                f"Check your tts.provider config — typos silently broke voice output before this check existed."
+            )
+            logger.error("tts: %s", msg)
+            return json.dumps({"success": False, "error": msg}, ensure_ascii=False)
 
         # Check the file was actually created
         if not os.path.exists(file_str) or os.path.getsize(file_str) == 0:

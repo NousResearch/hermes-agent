@@ -814,6 +814,20 @@ DEFAULT_CONFIG = {
                                       # Default False matches historical behavior; set to
                                       # True if you'd rather pause than silently lose
                                       # context turns when your aux model is flaky.
+        "safe_retry": {
+            "enabled": True,         # on provider safety/content-filter blocks,
+                                      # retry once with high-risk raw tool output
+                                      # scrubbed before giving up.
+        },
+        "chunked": {
+            "enabled": True,         # after normal + safe retry are blocked,
+                                      # summarize scrubbed message chunks then merge.
+            "chunk_messages": 40,    # messages per chunk for chunked recovery.
+        },
+        "fallback": {
+            "extractive_marker": True,  # final no-LLM local fallback that preserves
+                                         # recent asks/actions/files without raw logs.
+        },
     },
 
     # Anthropic prompt caching (Claude via OpenRouter or native Anthropic API).

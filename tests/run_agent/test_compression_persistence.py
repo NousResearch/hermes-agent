@@ -202,3 +202,65 @@ class TestGatewayHistoryOffsetAfterSplit:
         assert len(new_messages) == 0, (
             "Expected 0 messages with stale offset=200 (demonstrates the bug)"
         )
+
+def test_compress_context_warns_chunked_recovery_without_fallback_marker():
+    from agent.conversation_compression import compress_context
+
+    agent = MagicMock()
+    agent.session_id = "sid"
+    agent.model = "model"
+    agent.platform = "qqbot"
+    agent.tools = []
+    agent.status_callback = None
+    agent._memory_manager = None
+    agent._compression_feasibility_checked = True
+    agent._last_compression_summary_warning = None
+    agent._last_aux_fallback_warning_key = None
+    agent._cached_system_prompt = "system"
+    agent._build_system_prompt.return_value = "system"
+    agent._todo_store.format_for_injection.return_value = ""
+    agent.context_compressor.compress.return_value = [{"role": "user", "content": "kept"}]
+    agent.context_compressor._last_compress_aborted = False
+    agent.context_compressor._last_summary_error = None
+    agent.context_compressor._last_summary_recovery_stage = "chunked"
+    agent.context_compressor._last_aux_model_failure_model = None
+    agent.context_compressor.compression_count = 1
+
+    compressed, _ = compress_context(agent, [{"role": "user", "content": "old"}], "system")
+
+    assert compressed == [{"role": "user", "content": "kept"}]
+    warnings = [call.args[0] for call in agent._emit_warning.call_args_list]
+    assert any("分块压缩恢复" in msg for msg in warnings)
+    assert all("fallback context marker" not in msg for msg in warnings)
+
+
+def test_compress_context_warns_extractive_fallback_without_fallback_marker():
+    from agent.conversation_compression import compress_context
+
+    agent = MagicMock()
+    agent.session_id = "sid"
+    agent.model = "model"
+    agent.platform = "qqbot"
+    agent.tools = []
+    agent.status_callback = None
+    agent._memory_manager = None
+    agent._compression_feasibility_checked = True
+    agent._last_compression_summary_warning = None
+    agent._last_aux_fallback_warning_key = None
+    agent._cached_system_prompt = "system"
+    agent._build_system_prompt.return_value = "system"
+    agent._todo_store.format_for_injection.return_value = ""
+    agent.context_compressor.compress.return_value = [{"role": "user", "content": "kept"}]
+    agent.context_compressor._last_compress_aborted = False
+    agent.context_compressor._last_summary_error = "extractive fallback after summary failure: Your request was blocked."
+    agent.context_compressor._last_summary_recovery_stage = "extractive_fallback"
+    agent.context_compressor._last_aux_model_failure_model = None
+    agent.context_compressor.compression_count = 1
+
+    compressed, _ = compress_context(agent, [{"role": "user", "content": "old"}], "system")
+
+    assert compressed == [{"role": "user", "content": "kept"}]
+    warnings = [call.args[0] for call in agent._emit_warning.call_args_list]
+    assert any("本地提取式 fallback" in msg for msg in warnings)
+    assert all("fallback context marker" not in msg for msg in warnings)
+

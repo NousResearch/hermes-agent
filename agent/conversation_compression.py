@@ -302,7 +302,7 @@ def compress_context(
         focus_topic,
     )
     agent._emit_status(
-        "🗜️ Compacting context — summarizing earlier conversation so I can continue..."
+        "🗜️ 正在压缩 context：总结前面的对话，方便继续。"
     )
 
     # Notify external memory provider before compression discards context
@@ -329,9 +329,9 @@ def compress_context(
         if getattr(agent, "_last_compression_summary_warning", None) != _err:
             agent._last_compression_summary_warning = _err
             agent._emit_warning(
-                f"⚠ Compression aborted: {_err}. "
-                "No messages were dropped — conversation continues unchanged. "
-                "Run /compress to retry, or /new to start a fresh session."
+                f"⚠ context 压缩已中止：{_err}。"
+                "没有丢弃任何消息，对话会保持原样继续。"
+                "可发送 /compress 重试，或 /new 开新会话。"
             )
         _existing_sp = getattr(agent, "_cached_system_prompt", None)
         if not _existing_sp:
@@ -339,12 +339,28 @@ def compress_context(
         return messages, _existing_sp
 
     summary_error = getattr(agent.context_compressor, "_last_summary_error", None)
-    if summary_error:
+    summary_recovery_stage = getattr(agent.context_compressor, "_last_summary_recovery_stage", None)
+    if summary_recovery_stage == "chunked":
+        _stage_key = "chunked"
+        if getattr(agent, "_last_compression_summary_warning", None) != _stage_key:
+            agent._last_compression_summary_warning = _stage_key
+            agent._emit_warning(
+                "ℹ context 常规压缩被 provider 拦截；已通过分块压缩恢复上下文。"
+            )
+    elif summary_recovery_stage == "extractive_fallback":
+        _stage_key = summary_error or "extractive_fallback"
+        if getattr(agent, "_last_compression_summary_warning", None) != _stage_key:
+            agent._last_compression_summary_warning = _stage_key
+            agent._emit_warning(
+                f"⚠ context summary 失败：{summary_error or 'unknown error'}。"
+                "已使用本地提取式 fallback 保留最近关键上下文。"
+            )
+    elif summary_error:
         if getattr(agent, "_last_compression_summary_warning", None) != summary_error:
             agent._last_compression_summary_warning = summary_error
             agent._emit_warning(
-                f"⚠ Compression summary failed: {summary_error}. "
-                "Inserted a fallback context marker."
+                f"⚠ context summary 失败：{summary_error}。"
+                "已插入 fallback context marker。"
             )
     else:
         # No hard failure — but did the configured aux model error out
@@ -359,9 +375,9 @@ def compress_context(
             if getattr(agent, "_last_aux_fallback_warning_key", None) != _aux_key:
                 agent._last_aux_fallback_warning_key = _aux_key
                 agent._emit_warning(
-                    f"ℹ Configured compression model '{_aux_fail_model}' failed "
-                    f"({_aux_fail_err or 'unknown error'}). Recovered using main model — "
-                    "check auxiliary.compression.model in config.yaml."
+                    f"ℹ 配置的 compression model '{_aux_fail_model}' 失败"
+                    f"（{_aux_fail_err or 'unknown error'}）。已改用 main model 恢复 — "
+                    "请检查 auxiliary.compression.model in config.yaml。"
                 )
 
     todo_snapshot = agent._todo_store.format_for_injection()
@@ -446,8 +462,8 @@ def compress_context(
     _cc = agent.context_compressor.compression_count
     if _cc >= 2:
         agent._vprint(
-            f"{agent.log_prefix}⚠️  Session compressed {_cc} times — "
-            f"accuracy may degrade. Consider /new to start fresh.",
+            f"{agent.log_prefix}⚠️  Session 已压缩 {_cc} 次 — "
+            f"准确性可能下降。建议发送 /new 开新会话。",
             force=True,
         )
 

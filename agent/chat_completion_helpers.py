@@ -205,7 +205,7 @@ def interruptible_api_call(agent, api_kwargs: dict):
     )
 
     _call_start = time.time()
-    agent._touch_activity("waiting for non-streaming API response")
+    agent._touch_activity("等待非流式 API 响应")
 
     t = threading.Thread(target=_call, daemon=True)
     t.start()
@@ -219,7 +219,7 @@ def interruptible_api_call(agent, api_kwargs: dict):
         if _poll_count % 100 == 0:  # 100 × 0.3s = 30s
             _elapsed = time.time() - _call_start
             agent._touch_activity(
-                f"waiting for non-streaming response ({int(_elapsed)}s elapsed)"
+                f"等待非流式响应（已等待 {int(_elapsed)} 秒）"
             )
 
         # Stale-call detector: kill the connection if no response
@@ -234,9 +234,9 @@ def interruptible_api_call(agent, api_kwargs: dict):
                 api_kwargs.get("model", "unknown"), f"{_est_ctx:,}",
             )
             agent._emit_status(
-                f"⚠️ No response from provider for {int(_elapsed)}s "
-                f"(non-streaming, model: {api_kwargs.get('model', 'unknown')}). "
-                f"Aborting call."
+                f"⚠️ Provider 已 {int(_elapsed)} 秒无响应"
+                f"（非流式，model: {api_kwargs.get('model', 'unknown')}）。"
+                f"正在中止本次调用。"
             )
             try:
                 if agent.api_mode == "anthropic_messages":
@@ -247,14 +247,14 @@ def interruptible_api_call(agent, api_kwargs: dict):
             except Exception:
                 pass
             agent._touch_activity(
-                f"stale non-streaming call killed after {int(_elapsed)}s"
+                f"非流式调用已因超时中止（已等待 {int(_elapsed)} 秒）"
             )
             # Wait briefly for the thread to notice the closed connection.
             t.join(timeout=2.0)
             if result["error"] is None and result["response"] is None:
                 result["error"] = TimeoutError(
-                    f"Non-streaming API call timed out after {int(_elapsed)}s "
-                    f"with no response (threshold: {int(_stale_timeout)}s)"
+                    f"非流式 API 调用超时：已等待 {int(_elapsed)} 秒仍无响应"
+                    f"（阈值：{int(_stale_timeout)} 秒）"
                 )
             break
 

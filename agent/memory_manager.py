@@ -454,6 +454,57 @@ class MemoryManager:
                 )
         return "\n\n".join(parts)
 
+    def build_source_of_truth_compaction(
+        self,
+        messages: List[Dict[str, Any]],
+        *,
+        last_user_message: str = "",
+        memory_context: str = "",
+        session_id: str = "",
+        focus_topic: str = "",
+    ) -> List[Dict[str, Any]]:
+        """Ask providers for a non-blocking source-of-truth compaction.
+
+        First provider to return a non-empty message list wins. Fail-closed to
+        normal compression on provider errors or malformed results.
+        """
+        for provider in self._providers:
+            try:
+                result = provider.build_source_of_truth_compaction(
+                    messages,
+                    last_user_message=last_user_message,
+                    memory_context=memory_context,
+                    session_id=session_id,
+                    focus_topic=focus_topic or "",
+                )
+                if self._valid_source_of_truth_messages(result):
+                    return result
+            except Exception as e:
+                logger.debug(
+                    "Memory provider '%s' build_source_of_truth_compaction failed: %s",
+                    provider.name, e,
+                )
+        return []
+
+    @staticmethod
+    def _valid_source_of_truth_messages(result: Any) -> bool:
+        """Validate provider-built compaction messages before trusting them."""
+        if not isinstance(result, list) or not result:
+            return False
+        allowed_roles = {"system", "user", "assistant"}
+        for msg in result:
+            if not isinstance(msg, dict):
+                return False
+            role = msg.get("role")
+            if role not in allowed_roles:
+                return False
+            if msg.get("tool_calls") or msg.get("tool_call_id"):
+                return False
+            content = msg.get("content")
+            if not isinstance(content, (str, list)):
+                return False
+        return True
+
     @staticmethod
     def _provider_memory_write_metadata_mode(provider: MemoryProvider) -> str:
         """Return how to pass metadata to a provider's memory-write hook."""

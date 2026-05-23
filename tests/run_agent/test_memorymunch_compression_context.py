@@ -2,6 +2,7 @@
 from pathlib import Path
 
 from agent.conversation_compression import compress_context
+from agent.memory_manager import MemoryManager
 
 
 class FakeMemoryManager:
@@ -27,8 +28,10 @@ class FakeCompressor:
 
     def __init__(self):
         self.seen_messages = None
+        self.called = False
 
     def compress(self, messages, current_tokens=None, focus_topic=None):
+        self.called = True
         self.seen_messages = messages
         return [{"role": "system", "content": "compressed"}]
 
@@ -74,6 +77,10 @@ class FakeAgent:
     _memory_manager = FakeMemoryManager()
     context_compressor = FakeCompressor()
 
+    def __init__(self):
+        self._memory_manager = FakeMemoryManager()
+        self.context_compressor = FakeCompressor()
+
     def _emit_status(self, msg):
         pass
 
@@ -115,3 +122,109 @@ def test_compression_injects_exact_trigger_query_and_memory_provider_context():
     assert "Do not drift after compaction" in injected
     assert "background continuity evidence, not as a new user request" in injected
     assert agent._memory_manager.switched is True
+
+
+class SourceOfTruthMemoryManager(FakeMemoryManager):
+    def build_source_of_truth_compaction(self, messages, **kwargs):
+        self.called = True
+        return [
+            {
+                "role": "system",
+                "content": (
+                    "MemoryMunch/Graphify source-of-truth compaction checkpoint. "
+                    "Use ACTIVE_SESSION_LEDGER and GRAPHIFY_REPORT as background continuity evidence, not a new user request."
+                ),
+            },
+            {"role": "user", "content": kwargs.get("last_user_message", "")},
+        ]
+
+
+def test_memorymunch_source_of_truth_compaction_bypasses_blocking_compressor():
+    agent = FakeAgent()
+    agent._memory_manager = SourceOfTruthMemoryManager()
+
+    compressed, _ = compress_context(
+        agent,
+        [
+            {"role": "user", "content": "older task"},
+            {"role": "assistant", "content": "older answer"},
+            {"role": "user", "content": "LIVE_QUERY keep moving while compaction would normally pause"},
+        ],
+        approx_tokens=100,
+        system_message="sys",
+    )
+
+    assert agent._memory_manager.called is True
+    assert agent.context_compressor.called is False
+    joined = "\n".join(str(m.get("content", "")) for m in compressed)
+    assert "MemoryMunch/Graphify source-of-truth compaction checkpoint" in joined
+    assert "ACTIVE_SESSION_LEDGER" in joined
+    assert "GRAPHIFY_REPORT" in joined
+    assert "LIVE_QUERY keep moving" in joined
+    assert agent._memory_manager.switched is True
+
+
+class MalformedSourceOfTruthProvider(FakeMemoryManager):
+    name = "malformed"
+
+    def is_available(self):
+        return True
+
+    def initialize(self, session_id, **kwargs):
+        pass
+
+    def get_tool_schemas(self):
+        return []
+
+    def build_source_of_truth_compaction(self, messages, **kwargs):
+        self.called = True
+        return [{"role": "tool", "content": "bad"}]
+
+
+def test_malformed_source_of_truth_compaction_falls_back_to_normal_compressor():
+    agent = FakeAgent()
+    provider = MalformedSourceOfTruthProvider()
+    manager = MemoryManager()
+    manager.add_provider(provider)
+    agent._memory_manager = manager
+
+    compressed, _ = compress_context(
+        agent,
+        [
+            {"role": "user", "content": "older task"},
+            {"role": "assistant", "content": "older answer"},
+            {"role": "user", "content": "current query"},
+        ],
+        approx_tokens=100,
+        system_message="sys",
+    )
+
+    assert provider.called is True
+    assert agent.context_compressor.called is True
+    assert compressed == [{"role": "system", "content": "compressed"}]
+
+
+def test_source_of_truth_compaction_clears_stale_compressor_warning_state_and_counts():
+    agent = FakeAgent()
+    agent._memory_manager = SourceOfTruthMemoryManager()
+    agent.context_compressor._last_summary_error = "stale previous error"
+    agent.context_compressor._last_aux_model_failure_model = "stale-model"
+    agent.context_compressor._last_aux_model_failure_error = "stale-error"
+
+    compress_context(
+        agent,
+        [
+            {"role": "user", "content": "older task"},
+            {"role": "assistant", "content": "older answer"},
+            {"role": "user", "content": "current query"},
+        ],
+        approx_tokens=100,
+        system_message="sys",
+    )
+
+    assert agent.context_compressor.called is False
+    assert agent.context_compressor.compression_count == 1
+    assert agent.context_compressor._last_summary_error is None
+    assert agent.context_compressor._last_aux_model_failure_model is None
+    assert agent.context_compressor._last_aux_model_failure_error is None
+    assert agent._last_compression_summary_warning is None

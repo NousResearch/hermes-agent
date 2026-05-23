@@ -318,12 +318,39 @@ def compress_context(
             ),
         })
 
-    try:
-        compressed = agent.context_compressor.compress(messages_for_compression, current_tokens=approx_tokens, focus_topic=focus_topic)
-    except TypeError:
-        # Plugin context engine with strict signature that doesn't accept
-        # focus_topic — fall back to calling without it.
-        compressed = agent.context_compressor.compress(messages_for_compression, current_tokens=approx_tokens)
+    source_of_truth_compressed = []
+    if agent._memory_manager:
+        try:
+            source_of_truth_compressed = agent._memory_manager.build_source_of_truth_compaction(
+                messages,
+                last_user_message=last_user_message,
+                memory_context=memory_compression_context,
+                session_id=agent.session_id or "",
+                focus_topic=focus_topic or "",
+            ) or []
+        except Exception:
+            source_of_truth_compressed = []
+
+    if source_of_truth_compressed:
+        compressed = source_of_truth_compressed
+        try:
+            agent.context_compressor._last_summary_error = None
+            agent.context_compressor._last_aux_model_failure_model = None
+            agent.context_compressor._last_aux_model_failure_error = None
+            agent.context_compressor.compression_count += 1
+        except Exception:
+            pass
+        logger.info(
+            "context compression used memory provider source-of-truth checkpoint: session=%s messages=%d->%d",
+            agent.session_id or "none", _pre_msg_count, len(compressed),
+        )
+    else:
+        try:
+            compressed = agent.context_compressor.compress(messages_for_compression, current_tokens=approx_tokens, focus_topic=focus_topic)
+        except TypeError:
+            # Plugin context engine with strict signature that doesn't accept
+            # focus_topic — fall back to calling without it.
+            compressed = agent.context_compressor.compress(messages_for_compression, current_tokens=approx_tokens)
 
     summary_error = getattr(agent.context_compressor, "_last_summary_error", None)
     if summary_error:
@@ -353,7 +380,8 @@ def compress_context(
 
     todo_snapshot = agent._todo_store.format_for_injection()
     if todo_snapshot:
-        compressed.append({"role": "user", "content": todo_snapshot})
+        todo_role = "system" if compressed and compressed[-1].get("role") == "user" else "user"
+        compressed.append({"role": todo_role, "content": todo_snapshot})
 
     agent._invalidate_system_prompt()
     new_system_prompt = agent._build_system_prompt(system_message)

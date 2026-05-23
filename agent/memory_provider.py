@@ -211,6 +211,25 @@ class MemoryProvider(ABC):
         """
         return ""
 
+    def build_source_of_truth_compaction(
+        self,
+        messages: List[Dict[str, Any]],
+        *,
+        last_user_message: str = "",
+        memory_context: str = "",
+        session_id: str = "",
+        focus_topic: str = "",
+    ) -> List[Dict[str, Any]]:
+        """Optionally build a fast compaction checkpoint from provider truth.
+
+        Providers with an external source-of-truth ledger/graph may return a
+        compact OpenAI-format message list so Hermes can avoid a blocking
+        auxiliary summarizer call. Returned content must be fenced as
+        background continuity evidence, not a new user request. Return [] to
+        use the normal compressor.
+        """
+        return []
+
     def on_delegation(self, task: str, result: str, *,
                       child_session_id: str = "", **kwargs) -> None:
         """Called on the PARENT agent when a subagent completes.

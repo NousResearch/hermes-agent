@@ -601,6 +601,9 @@ def test_android_diagnostics_exposes_bluetooth_analyzer_report_for_readiness_and
     assert '"manufacturer_names"' in diagnostics_bridge
     assert 'Bluetooth SIG service labels' in diagnostics_bridge
     assert '"bluetooth_signal_history"' in diagnostics_bridge
+    assert '"bluetooth_device_detail"' in diagnostics_bridge
+    assert 'Open Bluetooth device detail evidence' in diagnostics_bridge
+    assert 'Bluetooth device detail route' in diagnostics_bridge
     assert '"bluetooth_analyzer_feature_matrix"' in diagnostics_bridge
     assert '"bluetooth_analyzer_workflow_routes"' in diagnostics_bridge
     assert '"bluetooth_scan_policy_matrix"' in diagnostics_bridge

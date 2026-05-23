@@ -3684,8 +3684,8 @@ object HermesDeviceDiagnosticsBridge {
                     label = "Bluetooth RSSI and identity context",
                     ready = bluetoothReady,
                     valueLabel = "$bluetoothDeviceCount device(s), $bluetoothHistoryCount trend row(s)",
-                    detail = "$bluetoothMetadataCount metadata row(s), $bluetoothServiceLabelCount service label(s), and $bluetoothManufacturerNameCount manufacturer name(s) available for nearby-device reasoning.",
-                    recommendation = "Use this row to keep Bluetooth proximity, service UUID labels, manufacturer IDs, and history trends linked to the same observation.",
+                    detail = "$bluetoothMetadataCount metadata row(s), $bluetoothServiceLabelCount service label(s), $bluetoothManufacturerNameCount manufacturer name(s), and device-detail/export routes available for nearby-device reasoning.",
+                    recommendation = "Use this row to keep Bluetooth proximity, service UUID labels, manufacturer IDs, device detail/export rows, and history trends linked to the same observation.",
                     fraction = when {
                         bluetoothDeviceCount > 0 && bluetoothMetadataCount > 0 -> 0.95f
                         bluetoothHistoryCount > 0 -> 0.75f
@@ -3694,8 +3694,8 @@ object HermesDeviceDiagnosticsBridge {
                     },
                     extra = JSONObject()
                         .put("fusion_key", "bluetooth_rssi_identity_context")
-                        .put("source_actions", JSONArray().put("bluetooth_analyzer_report").put("bluetooth_signal_history").put("bluetooth_scan"))
-                        .put("card_graph_types", JSONArray().put("bluetooth_metadata_summary").put("bluetooth_signal_history").put("bluetooth_rssi"))
+                        .put("source_actions", JSONArray().put("bluetooth_analyzer_report").put("bluetooth_signal_history").put("bluetooth_device_details").put("bluetooth_export").put("bluetooth_scan"))
+                        .put("card_graph_types", JSONArray().put("bluetooth_metadata_summary").put("bluetooth_device_detail").put("bluetooth_signal_history").put("bluetooth_rssi"))
                         .put("bluetooth_device_count", bluetoothDeviceCount)
                         .put("bluetooth_metadata_count", bluetoothMetadataCount)
                         .put("bluetooth_signal_history_count", bluetoothHistoryCount)
@@ -3776,8 +3776,8 @@ object HermesDeviceDiagnosticsBridge {
                     fraction = if (signalRouteCount > 0) 0.9f else 0.45f,
                     extra = JSONObject()
                         .put("fusion_key", "source_card_drill_down")
-                        .put("source_actions", JSONArray().put("agent_observation_report").put("wifi_analyzer_report").put("wifi_channel_graph").put("bluetooth_analyzer_report").put("sensor_analyzer_report").put("radio_signal_status").put("gpu_backend_risk_report"))
-                        .put("card_graph_types", JSONArray().put("agent_signal_context_matrix").put("wifi_channel_graph").put("wifi_channel_rating").put("bluetooth_signal_history").put("motion_pose_estimate").put("radio_frequency_capability").put("gpu_backend_risk_matrix"))
+                        .put("source_actions", JSONArray().put("agent_observation_report").put("wifi_analyzer_report").put("wifi_channel_graph").put("bluetooth_analyzer_report").put("bluetooth_device_details").put("bluetooth_export").put("sensor_analyzer_report").put("radio_signal_status").put("gpu_backend_risk_report"))
+                        .put("card_graph_types", JSONArray().put("agent_signal_context_matrix").put("wifi_channel_graph").put("wifi_channel_rating").put("bluetooth_device_detail").put("bluetooth_signal_history").put("motion_pose_estimate").put("radio_frequency_capability").put("gpu_backend_risk_matrix"))
                         .put("signal_workflow_route_count", signalRouteCount),
                 ),
             )
@@ -3871,8 +3871,8 @@ object HermesDeviceDiagnosticsBridge {
                     label = "Bluetooth proximity evidence",
                     ready = bluetoothReady,
                     valueLabel = "$bluetoothDeviceCount device(s), $bluetoothHistoryCount trend row(s)",
-                    detail = "$bluetoothMetadataCount metadata row(s), ${bluetoothReport.optInt("bluetooth_service_label_count", 0)} service label(s), and ${bluetoothReport.optInt("bluetooth_manufacturer_name_count", 0)} manufacturer label(s) are available for nearby-device cards.",
-                    recommendation = "Open Bluetooth Analyzer or signal history cards before explaining proximity, beacons, paired inventory, service identity, or manufacturer context.",
+                    detail = "$bluetoothMetadataCount metadata row(s), ${bluetoothReport.optInt("bluetooth_service_label_count", 0)} service label(s), ${bluetoothReport.optInt("bluetooth_manufacturer_name_count", 0)} manufacturer label(s), and device detail/export routes are available for nearby-device cards.",
+                    recommendation = "Open Bluetooth Analyzer, device detail, export, or signal history cards before explaining proximity, beacons, paired inventory, service identity, or manufacturer context.",
                     fraction = when {
                         bluetoothDeviceCount > 0 && bluetoothMetadataCount > 0 -> 0.95f
                         bluetoothHistoryCount > 0 -> 0.75f
@@ -3883,8 +3883,8 @@ object HermesDeviceDiagnosticsBridge {
                         .put("evidence_key", "bluetooth_proximity")
                         .put("tool_action", "bluetooth_analyzer_report")
                         .put("graph_type", "bluetooth_signal_history")
-                        .put("source_actions", JSONArray().put("bluetooth_analyzer_report").put("bluetooth_scan").put("bluetooth_signal_history"))
-                        .put("card_graph_types", JSONArray().put("bluetooth_metadata_summary").put("bluetooth_signal_history").put("bluetooth_rssi"))
+                        .put("source_actions", JSONArray().put("bluetooth_analyzer_report").put("bluetooth_scan").put("bluetooth_signal_history").put("bluetooth_device_details").put("bluetooth_export"))
+                        .put("card_graph_types", JSONArray().put("bluetooth_metadata_summary").put("bluetooth_device_detail").put("bluetooth_signal_history").put("bluetooth_rssi"))
                         .put("bluetooth_device_count", bluetoothDeviceCount)
                         .put("bluetooth_metadata_count", bluetoothMetadataCount)
                         .put("bluetooth_signal_history_count", bluetoothHistoryCount),
@@ -4034,6 +4034,18 @@ object HermesDeviceDiagnosticsBridge {
             .put(
                 capabilityRow(
                     category = "signal_evidence_route",
+                    label = "Open Bluetooth device detail evidence",
+                    ready = true,
+                    valueLabel = "bluetooth_device_details",
+                    detail = "Use for per-device Bluetooth detail cards, service/manufacturer evidence, bond state, class, RSSI/proximity, advertisement fields, and exportable metadata.",
+                    recommendation = "Use bluetooth_export only when the user asks for JSON or CSV rows; otherwise prefer bluetooth_device_details for inspection cards.",
+                    fraction = 0.9f,
+                    extra = JSONObject().put("tool_action", "bluetooth_device_details"),
+                ),
+            )
+            .put(
+                capabilityRow(
+                    category = "signal_evidence_route",
                     label = "Open motion pose evidence",
                     ready = true,
                     valueLabel = "motion_pose",
@@ -4087,6 +4099,8 @@ object HermesDeviceDiagnosticsBridge {
         .put("wifi_channel_graph")
         .put("bluetooth_analyzer_report")
         .put("bluetooth_signal_history")
+        .put("bluetooth_device_details")
+        .put("bluetooth_export")
         .put("sensor_analyzer_report")
         .put("motion_pose")
         .put("radio_signal_status")
@@ -4104,6 +4118,7 @@ object HermesDeviceDiagnosticsBridge {
         .put("wifi_connection_link")
         .put("wifi_channel_rating")
         .put("wifi_channel_utilization")
+        .put("bluetooth_device_detail")
         .put("bluetooth_signal_history")
         .put("motion_pose_estimate")
         .put("motion_sensor_history")
@@ -4147,10 +4162,22 @@ object HermesDeviceDiagnosticsBridge {
                     label = "Open Bluetooth analyzer cards",
                     ready = true,
                     valueLabel = "bluetooth_analyzer_report",
-                    detail = "Use for nearby/paired inventory, RSSI trend, proximity, service labels, manufacturer metadata, and scan-policy boundaries.",
-                    recommendation = "Use refresh=false for passive rows and refresh=true only when the user needs a live nearby scan.",
+                    detail = "Use for nearby/paired inventory, RSSI trend, proximity, service labels, manufacturer metadata, device detail/export routes, and scan-policy boundaries.",
+                    recommendation = "Use refresh=false for passive rows and refresh=true only when the user needs a live nearby scan; pivot to bluetooth_device_details for per-device inspection.",
                     fraction = 0.9f,
                     extra = JSONObject().put("tool_action", "bluetooth_analyzer_report"),
+                ),
+            )
+            .put(
+                capabilityRow(
+                    category = "agent_observation_route",
+                    label = "Open Bluetooth device detail cards",
+                    ready = true,
+                    valueLabel = "bluetooth_device_details",
+                    detail = "Use for per-device Bluetooth metadata cards covering identity, class, bond state, RSSI/proximity, services, manufacturer IDs, advertisement fields, and export manifests.",
+                    recommendation = "Use bluetooth_export when the user asks for CSV or JSON Bluetooth rows; otherwise keep inspection in the expandable detail card.",
+                    fraction = 0.9f,
+                    extra = JSONObject().put("tool_action", "bluetooth_device_details"),
                 ),
             )
             .put(
@@ -4323,6 +4350,15 @@ object HermesDeviceDiagnosticsBridge {
         )
         putCanonicalCardManifestRoute(
             rows = rows,
+            label = "Bluetooth device detail route",
+            sourceAction = "bluetooth_device_details",
+            graphType = "bluetooth_device_detail",
+            refreshPolicy = "passive_after_scan_active_on_request",
+            permissionGate = "bluetooth_scan_or_connect_permission",
+            detail = "Bluetooth detail cards expose identity, class, bond state, services, manufacturer IDs, RSSI/proximity, advertisement fields, and export-ready metadata rows.",
+        )
+        putCanonicalCardManifestRoute(
+            rows = rows,
             label = "Motion pose route",
             sourceAction = "motion_pose",
             graphType = "motion_pose_estimate",
@@ -4451,9 +4487,9 @@ object HermesDeviceDiagnosticsBridge {
                     category = "wireless_workflow",
                     label = "Inspect nearby Bluetooth",
                     ready = bluetoothPermission.optBoolean("can_scan_nearby_devices", false),
-                    valueLabel = if (bluetoothPermission.optBoolean("can_scan_nearby_devices", false)) "call bluetooth_scan" else "grant Bluetooth scan access",
-                    detail = "Best next tool: android_device_diagnostics_tool action=bluetooth_scan.",
-                    recommendation = "Use for nearby BLE beacons, paired devices, service UUID labels, manufacturer names, and RSSI proximity.",
+                    valueLabel = if (bluetoothPermission.optBoolean("can_scan_nearby_devices", false)) "call bluetooth_device_details" else "grant Bluetooth scan access",
+                    detail = "Best next tools: android_device_diagnostics_tool action=bluetooth_scan or bluetooth_device_details.",
+                    recommendation = "Use for nearby BLE beacons, paired devices, service UUID labels, manufacturer names, RSSI proximity, and exportable per-device metadata.",
                     fraction = if (bluetoothPermission.optBoolean("can_scan_nearby_devices", false)) 1f else 0.45f,
                 ),
             )

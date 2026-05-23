@@ -129,6 +129,9 @@ class TestReadCodexAccessToken:
         hermes_home.mkdir(parents=True, exist_ok=True)
         (hermes_home / "auth.json").write_text(json.dumps({"version": 1, "providers": {}}))
         monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        # Pin CODEX_HOME so the resolver's borrow fallback can't escape
+        # to a developer's real ~/.codex/auth.json on the host.
+        monkeypatch.setenv("CODEX_HOME", str(tmp_path / "absent-codex-cli"))
         with patch("agent.auxiliary_client._select_pool_entry", return_value=(False, None)):
             result = _read_codex_access_token()
         assert result is None
@@ -145,23 +148,26 @@ class TestReadCodexAccessToken:
             },
         }))
         monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.setenv("CODEX_HOME", str(tmp_path / "absent-codex-cli"))
         result = _read_codex_access_token()
         assert result is None
 
-    def test_malformed_json_returns_none(self, tmp_path):
+    def test_malformed_json_returns_none(self, tmp_path, monkeypatch):
         codex_dir = tmp_path / ".codex"
         codex_dir.mkdir()
         (codex_dir / "auth.json").write_text("{bad json")
-        with patch("agent.auxiliary_client.Path.home", return_value=tmp_path):
-            result = _read_codex_access_token()
+        # CODEX_HOME points the borrow at this malformed file; Hermes
+        # store is the auto-tempdir from the global conftest (empty).
+        monkeypatch.setenv("CODEX_HOME", str(codex_dir))
+        result = _read_codex_access_token()
         assert result is None
 
-    def test_missing_tokens_key_returns_none(self, tmp_path):
+    def test_missing_tokens_key_returns_none(self, tmp_path, monkeypatch):
         codex_dir = tmp_path / ".codex"
         codex_dir.mkdir()
         (codex_dir / "auth.json").write_text(json.dumps({"other": "data"}))
-        with patch("agent.auxiliary_client.Path.home", return_value=tmp_path):
-            result = _read_codex_access_token()
+        monkeypatch.setenv("CODEX_HOME", str(codex_dir))
+        result = _read_codex_access_token()
         assert result is None
 
 
@@ -187,6 +193,9 @@ class TestReadCodexAccessToken:
             },
         }))
         monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        # Block the borrow fallback so the expired-JWT semantics are
+        # what's actually under test here.
+        monkeypatch.setenv("CODEX_HOME", str(tmp_path / "absent-codex-cli"))
         with patch("agent.auxiliary_client._select_pool_entry", return_value=(False, None)):
             result = _read_codex_access_token()
         assert result is None, "Expired JWT should return None"

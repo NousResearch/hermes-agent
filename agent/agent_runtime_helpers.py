@@ -1277,6 +1277,10 @@ def restore_primary_runtime(agent) -> bool:
             "Primary runtime restored for new turn: %s (%s)",
             agent.model, agent.provider,
         )
+        agent._emit_status(
+            f"✅ Fallback cleared — resuming with primary model: "
+            f"{agent.model} via {agent.provider}"
+        )
         return True
     except Exception as e:
         logger.warning("Failed to restore primary runtime: %s", e)

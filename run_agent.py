@@ -886,7 +886,7 @@ class AIAgent:
             self._vprint(f"{self.log_prefix}{message}", force=True)
         except Exception:
             pass
-        if self.status_callback:
+        if getattr(self, "status_callback", None):
             try:
                 self.status_callback("lifecycle", message)
             except Exception:

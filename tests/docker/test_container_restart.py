@@ -40,6 +40,61 @@ def _sh(container: str, cmd: str, timeout: int = 30) -> subprocess.CompletedProc
     return docker_exec_sh(container, cmd, timeout=timeout)
 
 
+def _wait_for_path(
+    container: str,
+    path: str,
+    *,
+    kind: str = "f",
+    deadline_s: float = 30.0,
+    interval_s: float = 0.25,
+) -> bool:
+    """Poll `test -<kind> <path>` inside container until success or timeout.
+
+    `kind` is the `test` flag: 'f' for file, 'd' for directory, 'e' for
+    existence. Returns True on success, False on timeout. Strictly
+    better than a fixed `time.sleep()` because:
+
+      * we don't wait the full budget when the path appears early, and
+      * the test fails with a precise "waited N seconds" assertion
+        instead of a confusing one-line failure mid-test when the
+        sleep was too short.
+    """
+    end = time.monotonic() + deadline_s
+    while time.monotonic() < end:
+        r = _sh(container, f"test -{kind} {path}", timeout=5)
+        if r.returncode == 0:
+            return True
+        time.sleep(interval_s)
+    return False
+
+
+def _wait_for_reconcile_log_mention(
+    container: str,
+    profile: str,
+    *,
+    deadline_s: float = 30.0,
+    interval_s: float = 0.25,
+) -> str:
+    """Poll until /opt/data/logs/container-boot.log mentions `profile`.
+
+    Returns the matching log content on success. On timeout, returns
+    the last observed contents so the assertion can render a
+    meaningful diagnostic. The container-boot.log is the explicit
+    signal that the reconciler has finished — much more reliable
+    than a fixed sleep that hopes 8 seconds is enough.
+    """
+    end = time.monotonic() + deadline_s
+    last = ""
+    while time.monotonic() < end:
+        r = _sh(container, "cat /opt/data/logs/container-boot.log", timeout=5)
+        if r.returncode == 0:
+            last = r.stdout
+            if f"profile={profile}" in last:
+                return last
+        time.sleep(interval_s)
+    return last
+
+
 @pytest.fixture
 def restart_container(request, built_image: str):
     """A long-running container with a named volume so docker restart
@@ -57,9 +112,28 @@ def restart_container(request, built_image: str):
         timeout=30,
     )
     r.check_returncode()
-    # Give s6 + stage2 + 02-reconcile a moment to come up cleanly on
-    # the fresh volume.
-    time.sleep(5)
+    # Wait for s6 + stage2 + 02-reconcile to publish the boot log so
+    # the test can rely on the default slot being registered before
+    # it starts issuing commands. The reconciler always writes one
+    # 'default' line on every boot (PR #30136 item I1) — that's our
+    # readiness signal.
+    deadline = time.monotonic() + 30.0
+    while time.monotonic() < deadline:
+        r = _docker(
+            "exec", "-u", "hermes", name, "sh", "-c",
+            "cat /opt/data/logs/container-boot.log 2>/dev/null",
+            timeout=5,
+        )
+        if r.returncode == 0 and "profile=default" in r.stdout:
+            break
+        time.sleep(0.25)
+    else:
+        # Defensive: surface a timeout from the fixture itself so the
+        # test failure points at "container never finished cont-init"
+        # rather than mid-test where the symptom would be obscure.
+        raise RuntimeError(
+            f"container {name} did not finish cont-init within 30s"
+        )
     yield name
     _docker("rm", "-f", name)
     _docker("volume", "rm", "-f", volume)
@@ -99,19 +173,21 @@ def test_running_gateway_survives_container_restart(restart_container: str) -> N
     _exec(container, "python3", "-c", write_state, timeout=10).check_returncode()
 
     # Restart. After this, /run/service/ is empty until cont-init.d
-    # runs the reconciler.
+    # runs the reconciler. We need to wait long enough for the
+    # reconciler to write coder's entry to the boot log AND for
+    # s6-svscan to spin up the service supervise tree from the
+    # restored slot. Polling the boot log gives us the first signal.
     _docker("restart", container, timeout=60).check_returncode()
-    time.sleep(8)  # stage2 + reconcile + svscan rescan
-
-    # Reconciler logged the action.
-    r = _sh(container, "cat /opt/data/logs/container-boot.log")
-    assert r.returncode == 0, f"reconcile log missing: {r.stderr}"
-    assert "profile=coder" in r.stdout
-    assert "action=started" in r.stdout
+    log = _wait_for_reconcile_log_mention(container, "coder", deadline_s=30.0)
+    assert "profile=coder" in log, (
+        f"reconciler never logged coder after restart: {log!r}"
+    )
+    assert "action=started" in log
 
     # Service slot exists.
-    r = _sh(container, "test -d /run/service/gateway-coder")
-    assert r.returncode == 0, "slot not recreated after restart"
+    assert _wait_for_path(
+        container, "/run/service/gateway-coder", kind="d", deadline_s=10.0,
+    ), "slot not recreated after restart"
 
     # No `down` marker — we asked for auto-start.
     r = _sh(container, "test -f /run/service/gateway-coder/down")
@@ -133,11 +209,13 @@ def test_stopped_gateway_stays_stopped_after_restart(restart_container: str) -> 
     _exec(container, "python3", "-c", write_state, timeout=10).check_returncode()
 
     _docker("restart", container, timeout=60).check_returncode()
-    time.sleep(8)
+    log = _wait_for_reconcile_log_mention(container, "writer", deadline_s=30.0)
+    assert "profile=writer" in log
 
     # Slot exists.
-    r = _sh(container, "test -d /run/service/gateway-writer")
-    assert r.returncode == 0
+    assert _wait_for_path(
+        container, "/run/service/gateway-writer", kind="d", deadline_s=10.0,
+    )
 
     # Down marker present.
     r = _sh(container, "test -f /run/service/gateway-writer/down")
@@ -165,7 +243,7 @@ def test_stale_gateway_pid_cleaned_up_on_restart(restart_container: str) -> None
     _exec(container, "python3", "-c", stamp, timeout=10).check_returncode()
 
     _docker("restart", container, timeout=60).check_returncode()
-    time.sleep(8)
+    _wait_for_reconcile_log_mention(container, "ghost", deadline_s=30.0)
 
     # Stale runtime files swept.
     r = _sh(container, "test -f /opt/data/profiles/ghost/gateway.pid")

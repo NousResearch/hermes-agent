@@ -6614,7 +6614,12 @@ class GatewayRunner:
             # this, the clarify is not found → message falls through
             # → a new Session is created → two Sessions run in parallel
             # in the same Thread (Session split).
-            if _pending_clarify is None:
+            # Guard: only in Thread contexts where session key mismatch
+            # can actually occur — non-Thread paths (DM, channel root)
+            # always have _quick_key == canonical key, so calling
+            # get_or_create_session here breaks Telegram topic mode lobby
+            # (which asserts it's never called).
+            if _pending_clarify is None and source.thread_id:
                 try:
                     _canonical_entry = self.session_store.get_or_create_session(source)
                     _canonical_key = _canonical_entry.session_key

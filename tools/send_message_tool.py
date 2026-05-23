@@ -289,7 +289,7 @@ def _handle_send(args):
                             return data["channel"]["id"]
                         return None
             from model_tools import _run_async
-            dm_channel = _run_async(_open_slack_dm(pconfig.token, chat_id))
+            dm_channel = _run_async(_open_slack_dm(pconfig.token.split(",")[0].strip(), chat_id))
             if dm_channel:
                 chat_id = dm_channel
             else:
@@ -751,7 +751,7 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
     last_result = None
     for chunk in chunks:
         if platform == Platform.SLACK:
-            result = await _send_slack(pconfig.token, chat_id, chunk)
+            result = await _send_slack(pconfig.token.split(",")[0].strip(), chat_id, chunk)
         elif platform == Platform.WHATSAPP:
             result = await _send_whatsapp(pconfig.extra, chat_id, chunk)
         elif platform == Platform.SIGNAL:

@@ -43,10 +43,11 @@ const LINE_COLORS: Record<string, string> = {
   debug: "text-text-tertiary",
 };
 
-const formatFilterLabel = (value: string) => value.toUpperCase();
+const formatFilterLabel = (value: string, labelMap?: Record<string, string>) =>
+  labelMap?.[value] ?? value.toUpperCase();
 
-const toSegmentOptions = <T extends string>(values: readonly T[]) =>
-  values.map((v) => ({ value: v, label: formatFilterLabel(v) }));
+const toSegmentOptions = <T extends string>(values: readonly T[], labelMap?: Record<string, string>) =>
+  values.map((v) => ({ value: v, label: formatFilterLabel(v, labelMap) }));
 
 const filterGroupClass =
   "flex min-w-0 w-full flex-col items-start gap-1.5 sm:w-auto sm:max-w-full sm:flex-row sm:items-center";
@@ -66,6 +67,9 @@ export default function LogsPage() {
   const [error, setError] = useState<string | null>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
   const { t } = useI18n();
+  const fileLabels: Record<string, string> = { agent: t.logs.fileAgent ?? "Agent", errors: t.logs.fileErrors ?? "Errors", gateway: t.logs.fileGateway ?? "Gateway" };
+  const levelLabels: Record<string, string> = { ALL: t.common.all ?? "All", DEBUG: t.logs.levelDebug ?? "Debug", INFO: t.logs.levelInfo ?? "Info", WARNING: t.logs.levelWarning ?? "Warning", ERROR: t.logs.levelError ?? "Error" };
+  const componentLabels: Record<string, string> = { all: t.common.all ?? "All", gateway: t.logs.compGateway ?? "Gateway", agent: t.logs.compAgent ?? "Agent", tools: t.logs.compTools ?? "Tools", cli: t.logs.compCli ?? "CLI", cron: t.logs.compCron ?? "Cron" };
   const { setAfterTitle, setEnd } = usePageHeader();
 
   const fetchLogs = useCallback(() => {
@@ -89,8 +93,8 @@ export default function LogsPage() {
     setAfterTitle(
       <span className="flex items-center gap-1.5">
         <Badge tone="secondary" className="text-xs">
-          {formatFilterLabel(file)} · {formatFilterLabel(level)} ·{" "}
-          {formatFilterLabel(component)}
+          {formatFilterLabel(file, fileLabels)} · {formatFilterLabel(level, levelLabels)} ·{" "}
+          {formatFilterLabel(component, componentLabels)}
         </Badge>
         <Button
           type="button"
@@ -166,7 +170,7 @@ export default function LogsPage() {
             className={segmentedClass}
             value={file}
             onChange={setFile}
-            options={toSegmentOptions(FILES)}
+            options={toSegmentOptions(FILES, fileLabels)}
           />
         </FilterGroup>
 
@@ -175,7 +179,7 @@ export default function LogsPage() {
             className={segmentedClass}
             value={level}
             onChange={setLevel}
-            options={toSegmentOptions(LEVELS)}
+            options={toSegmentOptions(LEVELS, levelLabels)}
           />
         </FilterGroup>
 
@@ -184,7 +188,7 @@ export default function LogsPage() {
             className={segmentedClass}
             value={component}
             onChange={setComponent}
-            options={toSegmentOptions(COMPONENTS)}
+            options={toSegmentOptions(COMPONENTS, componentLabels)}
           />
         </FilterGroup>
 

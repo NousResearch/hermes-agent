@@ -51,6 +51,7 @@ import { Badge } from "@nous-research/ui/ui/components/badge";
 import { useI18n } from "@/i18n";
 import { usePageHeader } from "@/contexts/usePageHeader";
 import { PluginSlot } from "@/plugins";
+import { cnConfigDescription } from "@/lib/configCnLabels";
 
 /* ------------------------------------------------------------------ */
 /*  Helpers                                                            */
@@ -122,7 +123,7 @@ export default function ConfigPage() {
   const [confirmReset, setConfirmReset] = useState(false);
   const { toast, showToast } = useToast();
   const fileInputRef = useRef<HTMLInputElement>(null);
-  const { t } = useI18n();
+  const { t, locale } = useI18n();
   const { setEnd } = usePageHeader();
 
   useLayoutEffect(() => {
@@ -401,7 +402,7 @@ export default function ConfigPage() {
           <div className="py-1">
             <AutoField
               schemaKey={key}
-              schema={s}
+              schema={locale === "zh" && typeof s.description === "string" && !/[\u4e00-\u9fff]/.test(s.description) ? { ...s, description: cnConfigDescription(key) } : s}
               value={getNestedValue(config, key)}
               onChange={(v) => setConfig(setNestedValue(config, key, v))}
             />

@@ -756,13 +756,13 @@ class TestResolveSessionNameLengthLimit:
         assert len(result_b) == self.HONCHO_MAX
 
     def test_truncated_result_has_hash_suffix(self):
-        """Truncated IDs must end with '-<8 hex chars>' for collision resistance."""
+        """Truncated IDs must end with '-<32 hex chars>' for collision resistance."""
         import re
         key = "matrix-" + ("a" * 300)
         config = HonchoClientConfig()
         result = config.resolve_session_name(gateway_session_key=key)
-        # Last 9 chars: '-' + 8 hex chars.
-        assert re.search(r"-[0-9a-f]{8}$", result)
+        # Last 33 chars: '-' + 32 hex chars.
+        assert re.search(r"-[0-9a-f]{32}$", result)
 
 
 class TestResetHonchoClient:

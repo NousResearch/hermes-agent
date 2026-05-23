@@ -565,7 +565,7 @@ class HonchoClientConfig:
     # limit after sanitization; the Honcho API then rejects every call for that
     # session with "session_id too long". See issue #13868.
     _HONCHO_SESSION_ID_MAX_LEN = 100
-    _HONCHO_SESSION_ID_HASH_LEN = 8
+    _HONCHO_SESSION_ID_HASH_LEN = 32
 
     @classmethod
     def _enforce_session_id_limit(cls, sanitized: str, original: str) -> str:
@@ -575,6 +575,8 @@ class HonchoClientConfig:
         For over-limit keys, keep a prefix of the sanitized ID and append a
         deterministic ``-<sha256 prefix>`` suffix so two distinct long keys
         that share a leading segment don't collide onto the same truncated ID.
+        Uses a 128-bit (32 hex) digest prefix to preserve isolation under
+        adversarial key selection while staying within Honcho's 100-char limit.
         The hash is taken over the *original* pre-sanitization key, so two
         inputs that sanitize to the same string still collide intentionally
         (same logical session), but two inputs that only share a prefix do not.

@@ -59,6 +59,59 @@ def test_write_json_returns_false_on_broken_pipe(monkeypatch):
     assert server.write_json({"ok": True}) is False
 
 
+def test_tui_verbose_tool_details_fail_closed_when_redaction_fails(monkeypatch):
+    redact_module = types.ModuleType("agent.redact")
+
+    def fail_redaction(*_args, **_kwargs):
+        raise RuntimeError("redaction unavailable")
+
+    setattr(redact_module, "redact_sensitive_text", fail_redaction)
+    monkeypatch.setitem(sys.modules, "agent.redact", redact_module)
+
+    assert server._redact_tui_verbose_text("api_key=secret") == ""
+    assert server._tool_args_text({"api_key": "secret"}) == ""
+    assert server._tool_result_text("token=secret") == ""
+
+
+def test_tui_verbose_tool_details_are_capped_before_emit(monkeypatch):
+    monkeypatch.setattr(server, "_TUI_VERBOSE_TEXT_MAX_CHARS", 12)
+    monkeypatch.setattr(server, "_TUI_VERBOSE_TEXT_MAX_LINES", 2)
+
+    capped = server._cap_tui_verbose_text("one\ntwo\nthree\nfour")
+
+    assert capped.startswith("[showing verbose tail; omitted ")
+    assert capped.endswith("three\nfour")
+    assert "one" not in capped
+
+
+def test_tui_verbose_tool_events_omit_details_when_redaction_fails(monkeypatch):
+    redact_module = types.ModuleType("agent.redact")
+
+    def fail_redaction(*_args, **_kwargs):
+        raise RuntimeError("redaction unavailable")
+
+    setattr(redact_module, "redact_sensitive_text", fail_redaction)
+    monkeypatch.setitem(sys.modules, "agent.redact", redact_module)
+
+    events: list[tuple[str, str, dict]] = []
+    monkeypatch.setattr(
+        server, "_emit", lambda event_type, sid, payload: events.append((event_type, sid, payload))
+    )
+    monkeypatch.setitem(
+        server._sessions,
+        "redaction-test",
+        {"tool_progress_mode": "verbose", "tool_started_at": {}},
+    )
+
+    server._on_tool_start("redaction-test", "tool-1", "terminal", {"command": "pwd"})
+    server._on_tool_complete("redaction-test", "tool-1", "terminal", {"command": "pwd"}, "done")
+
+    assert events[0][0] == "tool.start"
+    assert events[1][0] == "tool.complete"
+    assert "args_text" not in events[0][2]
+    assert "result_text" not in events[1][2]
+
+
 def test_dispatch_rejects_non_object_request():
     resp = server.dispatch([])
 

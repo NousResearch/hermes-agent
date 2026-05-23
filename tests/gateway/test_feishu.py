@@ -167,6 +167,7 @@ class TestFeishuAdapterMessaging(unittest.TestCase):
         "FEISHU_WEBHOOK_HOST": "127.0.0.1",
         "FEISHU_WEBHOOK_PORT": "9001",
         "FEISHU_WEBHOOK_PATH": "/hook",
+        "FEISHU_VERIFICATION_TOKEN": "test-verification-token",
     }, clear=True)
     def test_connect_webhook_mode_starts_local_server(self):
         from gateway.config import PlatformConfig
@@ -3190,6 +3191,39 @@ class TestWebhookSecurity(unittest.TestCase):
         )
         response = asyncio.run(adapter._handle_webhook_request(request))
         self.assertEqual(response.status, 401)
+
+    @patch.dict(os.environ, {}, clear=True)
+    def test_webhook_connect_requires_inbound_auth_secret(self):
+        from gateway.config import PlatformConfig
+        from gateway.platforms.feishu import FeishuAdapter
+
+        adapter = FeishuAdapter(
+            PlatformConfig(
+                enabled=True,
+                extra={"app_id": "cli_app", "app_secret": "secret_app", "connection_mode": "webhook"},
+            )
+        )
+        self.assertFalse(asyncio.run(adapter.connect()))
+
+    @patch.dict(os.environ, {}, clear=True)
+    def test_webhook_loads_auth_secrets_from_platform_extra(self):
+        from gateway.config import PlatformConfig
+        from gateway.platforms.feishu import FeishuAdapter
+
+        adapter = FeishuAdapter(
+            PlatformConfig(
+                enabled=True,
+                extra={
+                    "app_id": "cli_app",
+                    "app_secret": "secret_app",
+                    "connection_mode": "webhook",
+                    "verification_token": "token_from_extra",
+                    "encrypt_key": "encrypt_from_extra",
+                },
+            )
+        )
+        self.assertEqual(adapter._verification_token, "token_from_extra")
+        self.assertEqual(adapter._encrypt_key, "encrypt_from_extra")
 
     @patch.dict(os.environ, {}, clear=True)
     def test_webhook_url_verification_challenge_passes_without_signature(self):

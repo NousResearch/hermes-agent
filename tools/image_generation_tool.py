@@ -125,6 +125,30 @@ FAL_MODELS: Dict[str, Dict[str, Any]] = {
         },
         "max_reference_images": 9,
     },
+    "fal-ai/flux-pro/v1.1": {
+        "display": "FLUX Pro v1.1",
+        "speed": "~8s",
+        "strengths": "BFL original Flux Pro, studio-grade photorealism",
+        "price": "$0.04/MP",
+        "size_style": "image_size_preset",
+        "sizes": {
+            "landscape": "landscape_16_9",
+            "square": "square_hd",
+            "portrait": "portrait_16_9",
+        },
+        "defaults": {
+            "num_images": 1,
+            "output_format": "jpeg",
+            "sync_mode": False,
+            "safety_tolerance": "6",
+            "enhance_prompt": False,
+        },
+        "supports": {
+            "prompt", "image_size", "num_images", "output_format",
+            "sync_mode", "seed", "safety_tolerance", "enhance_prompt",
+        },
+        "upscale": False,
+    },
     "fal-ai/flux-2-pro": {
         "display": "FLUX 2 Pro",
         "speed": "~6s",

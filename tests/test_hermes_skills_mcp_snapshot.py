@@ -32,6 +32,14 @@ def test_fleet_context_snapshot_reports_missing_agents_dir(snapshot_env):
     result = mcp.build_fleet_context_snapshot()
 
     assert result["mode"] == "skills_only"
+    assert result["writes_allowed"] is False
+    assert result["source_of_truth"] is None
+    assert result["authority_boundary"] == {
+        "mode": "skills_only",
+        "writes_allowed": False,
+        "source_of_truth": None,
+        "gateway_reachable": False,
+    }
     assert result["gateway_reachable"] is False
     assert result["agents_dir"] is None
     assert result["registry_present"] is False
@@ -55,6 +63,8 @@ def test_fleet_context_snapshot_registry_only(snapshot_env):
     result = mcp.build_fleet_context_snapshot()
 
     assert result["agents_dir"] == str(agents_dir)
+    assert result["source_of_truth"] == "HERMES_REPO/agents"
+    assert result["writes_allowed"] is False
     assert result["registry_present"] is True
     assert result["agent_count"] == 2
     assert result["registry_summary"]["by_lane"] == {"A": 1, "B": 1}
@@ -116,3 +126,22 @@ def test_fleet_context_snapshot_gateway_unavailable_keeps_skills_mode(snapshot_e
 
     assert result["gateway_reachable"] is False
     assert result["mode"] == "skills_only"
+    assert result["authority_boundary"]["writes_allowed"] is False
+
+
+def test_fleet_context_snapshot_explicit_agents_dir_is_source_of_truth(snapshot_env, monkeypatch):
+    _repo, _home, mcp = snapshot_env
+    runtime_agents = _repo / "runtime-agents"
+    _write_registry(runtime_agents, {"alpha": {"status": "active"}})
+    monkeypatch.setenv("HERMES_AGENTS_DIR", str(runtime_agents))
+
+    result = mcp.build_fleet_context_snapshot()
+
+    assert result["agents_dir"] == str(runtime_agents)
+    assert result["source_of_truth"] == "HERMES_AGENTS_DIR"
+    assert result["authority_boundary"] == {
+        "mode": "skills_only",
+        "writes_allowed": False,
+        "source_of_truth": "HERMES_AGENTS_DIR",
+        "gateway_reachable": False,
+    }

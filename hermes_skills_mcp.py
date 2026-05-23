@@ -278,6 +278,22 @@ def _gateway_reachable() -> bool:
         return False
 
 
+def _source_of_truth_label(agents_dir: Optional[Path]) -> Optional[str]:
+    """Return the authority layer that supplied the agent documents."""
+    if agents_dir is None:
+        return None
+    explicit = os.environ.get("HERMES_AGENTS_DIR")
+    if explicit and agents_dir == Path(explicit):
+        return "HERMES_AGENTS_DIR"
+    repo_agents = _get_hermes_repo() / "agents"
+    if agents_dir == repo_agents:
+        return "HERMES_REPO/agents"
+    home_agents = _get_hermes_home() / "hermes-agent" / "agents"
+    if agents_dir == home_agents:
+        return "HERMES_HOME/hermes-agent/agents"
+    return str(agents_dir)
+
+
 def build_fleet_context_snapshot() -> dict:
     """Build a bounded, read-only fleet bootstrap snapshot for MCP clients."""
     hermes_home = _get_hermes_home()
@@ -351,8 +367,17 @@ def build_fleet_context_snapshot() -> dict:
         missing_layers.append("held_spec_ledger")
 
     gateway = _gateway_reachable()
+    source_of_truth = _source_of_truth_label(agents_dir)
     return {
-        "mode": "live_ops_available" if gateway else "skills_only",
+        "mode": "live_ops" if gateway else "skills_only",
+        "writes_allowed": False,
+        "source_of_truth": source_of_truth,
+        "authority_boundary": {
+            "mode": "live_ops" if gateway else "skills_only",
+            "writes_allowed": False,
+            "source_of_truth": source_of_truth,
+            "gateway_reachable": gateway,
+        },
         "hermes_home": str(hermes_home),
         "hermes_repo": str(hermes_repo),
         "agents_dir": str(agents_dir) if agents_dir else None,

@@ -2074,8 +2074,7 @@ class GatewayRunner:
             return None
         inbound = str(source.thread_id or "")
         is_lobby = not inbound or inbound in self._TELEGRAM_GENERAL_TOPIC_IDS
-        known = {str(b.get("thread_id") or "") for b in bindings}
-        if not is_lobby and inbound in known:
+        if not is_lobby:
             return None
         user_id = str(source.user_id)
         for b in bindings:  # newest-first

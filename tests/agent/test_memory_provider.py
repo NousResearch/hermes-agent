@@ -1063,21 +1063,26 @@ class TestHonchoCadenceTracking:
 
 
 class TestMemoryToolToolsetGate:
-    """Issue #5544: memory provider tools must respect platform_toolsets.
+    """Memory provider tool injection gate.
 
-    Before the fix, MemoryManager.get_all_tool_schemas() output was appended
-    to AIAgent.tools unconditionally in agent_init.py — bypassing the
-    enabled_toolsets filter. Result: `platform_toolsets: telegram: []`
-    still leaked fact_store and other memory tools into the tool surface,
-    causing 10x latency on local models (Qwen3-30B: 1.7s → 42s) and
-    tool-call loops on small models.
+    Two issues feed this gate:
 
-    These tests mirror the gate logic in agent/agent_init.py around the
-    memory provider tool injection block. The gate condition is:
+    - #5544 — `platform_toolsets: telegram: []` must suppress all memory
+      tool injection (10x latency on local models).
+    - #30979 — when the user has activated an external memory provider via
+      `hermes memory setup`, that provider's tools must reach the agent
+      surface even if the user disabled the built-in `memory` toolset
+      (e.g. per the hindsight migration guide that asks for
+      `hermes tools disable memory`).
 
-        enabled_toolsets is None        → no filter, inject (backward compat)
-        "memory" in enabled_toolsets    → user opted in, inject
-        otherwise (incl. [])            → skip injection
+    Final gate (mirrors agent/agent_init.py):
+
+        enabled_toolsets is None           → inject (backward compat)
+        enabled_toolsets == []             → skip (#5544 strict opt-out)
+        "memory" in enabled_toolsets       → inject (explicit opt-in)
+        external provider AND non-empty    → inject (#30979 implicit opt-in
+                                             via `hermes memory setup`)
+        otherwise                          → skip
     """
 
     @staticmethod
@@ -1086,9 +1091,15 @@ class TestMemoryToolToolsetGate:
         tools = []
         valid_tool_names = set()
 
-        if memory_manager and tools is not None and (
-            enabled_toolsets is None or "memory" in enabled_toolsets
-        ):
+        has_external = bool(
+            memory_manager and getattr(memory_manager, "has_external", False)
+        )
+        gate_open = (
+            enabled_toolsets is None
+            or "memory" in enabled_toolsets
+            or (has_external and bool(enabled_toolsets))
+        )
+        if memory_manager and tools is not None and gate_open:
             _existing = {
                 t.get("function", {}).get("name")
                 for t in tools
@@ -1105,11 +1116,11 @@ class TestMemoryToolToolsetGate:
 
         return tools, valid_tool_names
 
-    def _mgr_with_tools(self, *tool_names):
+    def _mgr_with_tools(self, *tool_names, name="ext"):
         """Build a MemoryManager whose providers expose the named tool schemas."""
         mgr = MemoryManager()
         p = FakeMemoryProvider(
-            "ext",
+            name,
             tools=[{"name": n, "description": n, "parameters": {}} for n in tool_names],
         )
         mgr.add_provider(p)
@@ -1128,16 +1139,43 @@ class TestMemoryToolToolsetGate:
         tools, names = self._run_memory_injection(["terminal", "memory", "web"], mgr)
         assert "fact_store" in names
 
-    def test_empty_toolsets_blocks_injection(self):
-        """`platform_toolsets: telegram: []` must suppress memory tools. (#5544)"""
+    def test_empty_toolsets_blocks_injection_even_with_external(self):
+        """`platform_toolsets: telegram: []` strict opt-out wins over #30979.
+
+        The user asked for NO tools — even an external provider's tools
+        stay out. (#5544 latency contract.)
+        """
         mgr = self._mgr_with_tools("fact_store")
         tools, names = self._run_memory_injection([], mgr)
         assert tools == []
         assert names == set()
 
-    def test_toolsets_without_memory_blocks_injection(self):
-        """Toolset list that doesn't name 'memory' must suppress injection."""
-        mgr = self._mgr_with_tools("fact_store")
+    def test_toolsets_without_memory_inject_when_external_provider(self):
+        """#30979: external provider tools follow the user's `memory setup` opt-in.
+
+        Hindsight's migration guide tells users to `hermes tools disable memory`
+        so the built-in MEMORY.md tool stops shadowing the plugin. With the
+        old gate (#5544 only) that also dropped hindsight_recall / fact_store
+        / etc. from the tool surface — a silent break of the integration.
+        Now: external provider + non-empty toolset list = inject.
+        """
+        mgr = self._mgr_with_tools("hindsight_recall", "hindsight_retain")
+        tools, names = self._run_memory_injection(["terminal", "web"], mgr)
+        assert names == {"hindsight_recall", "hindsight_retain"}
+
+    def test_toolsets_without_memory_blocks_when_no_external_provider(self):
+        """No external provider + toolset list without 'memory' = skip.
+
+        Pure builtin manager has no provider tools to inject anyway, but
+        the gate must still close so a hypothetical builtin-only schema
+        leak doesn't slip through.
+        """
+        mgr = MemoryManager()
+        builtin = FakeMemoryProvider(
+            "builtin",
+            tools=[{"name": "memory", "description": "builtin", "parameters": {}}],
+        )
+        mgr.add_provider(builtin)
         tools, names = self._run_memory_injection(["terminal", "web"], mgr)
         assert tools == []
         assert names == set()
@@ -1147,10 +1185,10 @@ class TestMemoryToolToolsetGate:
         tools, names = self._run_memory_injection(None, None)
         assert tools == []
 
-    def test_multiple_schemas_all_blocked_together(self):
-        """When the gate is closed, no memory tools leak — not even partially."""
+    def test_multiple_schemas_all_blocked_together_on_empty(self):
+        """`[]` opt-out blocks every schema — not even partial leak."""
         mgr = self._mgr_with_tools("fact_store", "memory_search", "memory_add")
-        tools, names = self._run_memory_injection(["terminal"], mgr)
+        tools, names = self._run_memory_injection([], mgr)
         assert tools == []
         assert names == set()
 

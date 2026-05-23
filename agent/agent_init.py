@@ -1151,17 +1151,27 @@ def init_agent(
     # 400 errors on providers that enforce unique names (e.g. Xiaomi
     # MiMo via Nous Portal).
     #
-    # Respect the platform's enabled_toolsets configuration (#5544):
+    # Gate (refined by #30979 on top of #5544):
     #   enabled_toolsets is None        → no filter, inject (backward compat)
-    #   "memory" in enabled_toolsets    → user opted in, inject
-    #   otherwise (incl. [])            → user excluded memory, skip injection
-    #
-    # Without this gate, `platform_toolsets: telegram: []` still leaks memory
-    # provider tools (fact_store, etc.) into the tool surface — a 10x latency
-    # penalty on local models and a frequent trigger of tool-call loops.
-    if agent._memory_manager and agent.tools is not None and (
-        agent.enabled_toolsets is None or "memory" in agent.enabled_toolsets
-    ):
+    #   enabled_toolsets == []          → strict opt-out, skip injection (#5544)
+    #   "memory" in enabled_toolsets    → explicit opt-in, inject
+    #   external provider registered    → user already opted in via
+    #                                     `hermes memory setup`; inject the
+    #                                     plugin's tools even if the user
+    #                                     disabled the built-in `memory`
+    #                                     toolset (e.g. per the hindsight
+    #                                     migration guide). #5544's `[]`
+    #                                     suppression still wins.
+    #   none of the above               → skip injection
+    _mm = agent._memory_manager
+    _has_external_mem = bool(_mm and getattr(_mm, "has_external", False))
+    _ets = agent.enabled_toolsets
+    _gate_open = (
+        _ets is None
+        or "memory" in _ets
+        or (_has_external_mem and bool(_ets))
+    )
+    if _mm and agent.tools is not None and _gate_open:
         _existing_tool_names = {
             t.get("function", {}).get("name")
             for t in agent.tools

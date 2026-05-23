@@ -60,6 +60,11 @@ from agent.memory_real_proposal_write_lock_gate import (
     create_real_proposal_write_lock_gate,
     summarize_real_proposal_write_lock_gates,
 )
+from agent.memory_human_approval_token_request import (
+    MEMORY_HUMAN_APPROVAL_TOKEN_REQUEST_POLICY,
+    create_human_approval_token_request,
+    summarize_human_approval_token_requests,
+)
 from agent.memory_retrieval_fusion import fuse_memory_retrieval
 
 
@@ -85,6 +90,7 @@ DIMENSIONS = (
     "memory_real_proposal_creation_plan",
     "memory_real_proposal_dry_run",
     "memory_real_proposal_write_lock_gate",
+    "memory_human_approval_token_request",
     "latency_ms",
 )
 POLICY = {
@@ -585,6 +591,67 @@ def _answer_case(case: dict[str, Any]) -> tuple[str, dict[str, Any]]:
             "writes_proposal_files": False,
             "writes_operation_ledger": False,
             "policy": dict(MEMORY_REAL_PROPOSAL_WRITE_LOCK_GATE_POLICY),
+        }
+
+    if dimension == "memory_human_approval_token_request":
+        compiler_result = compile_memory_patterns(memories, project_scope=case.get("project_scope"))
+        blocks = compile_blocks_from_compiler_result(compiler_result, project_scope=case.get("project_scope"))
+        queue = build_review_queue(blocks, reviewer=case.get("reviewer"))
+        decisions = [evaluate_review_queue_item(item, reviewer=case.get("reviewer")) for item in queue]
+        drafts = [create_memory_proposal_draft(decision, author=case.get("author")) for decision in decisions]
+        submissions = [
+            create_governance_submission_candidate(draft, reviewer=case.get("governance_reviewer"))
+            for draft in drafts
+        ]
+        packets = [
+            create_governance_submission_packet(submission, reviewer=case.get("packet_reviewer"))
+            for submission in submissions
+        ]
+        outcomes = [
+            create_human_review_outcome_candidate(packet, reviewer=case.get("human_reviewer"))
+            for packet in packets
+        ]
+        plans = [
+            create_real_proposal_creation_plan(outcome, planner=case.get("planner"))
+            for outcome in outcomes
+        ]
+        dry_runs = [
+            create_real_proposal_dry_run(plan, operator=case.get("operator"))
+            for plan in plans
+        ]
+        write_lock_gates = [
+            create_real_proposal_write_lock_gate(dry_run, operator=case.get("write_lock_operator"))
+            for dry_run in dry_runs
+        ]
+        approval_token_requests = [
+            create_human_approval_token_request(gate, requester=case.get("approval_token_requester"))
+            for gate in write_lock_gates
+        ]
+        request = approval_token_requests[0] if approval_token_requests else {}
+        return request.get("request_status", ""), {
+            "compiler": compiler_result,
+            "memory_blocks": blocks,
+            "review_queue": queue,
+            "decision_candidates": decisions,
+            "proposal_draft_candidates": drafts,
+            "governance_submission_candidates": submissions,
+            "governance_submission_packet_candidates": packets,
+            "human_review_outcome_candidates": outcomes,
+            "real_proposal_creation_plan_candidates": plans,
+            "real_proposal_dry_run_candidates": dry_runs,
+            "real_proposal_write_lock_gate_candidates": write_lock_gates,
+            "human_approval_token_request_candidates": approval_token_requests,
+            "summary": summarize_human_approval_token_requests(approval_token_requests),
+            "candidate_count": len(memories),
+            "token_issued": False,
+            "persisted_approval": False,
+            "created_real_proposal": False,
+            "created_operation_event": False,
+            "submitted_to_governance": False,
+            "converted_to_real_proposal": False,
+            "writes_proposal_files": False,
+            "writes_operation_ledger": False,
+            "policy": dict(MEMORY_HUMAN_APPROVAL_TOKEN_REQUEST_POLICY),
         }
 
     selected = _newest(memories)

@@ -184,6 +184,12 @@ into read-only write-lock candidates that are only eligible for a separate human
 approval token flow; it never creates real proposals, writes proposal files, or
 creates operation-ledger events.
 
+Memory Human Approval Token Request v0.1 lives in
+`agent.memory_human_approval_token_request`. It turns eligible write-lock gates
+into read-only human approval token request candidates for manual review without
+issuing tokens, persisting approvals, creating real proposals, writing proposal
+files, or creating operation-ledger events.
+
 ---
 
 ## Migrating from OpenClaw

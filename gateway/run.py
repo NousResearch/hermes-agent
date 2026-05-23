@@ -11396,6 +11396,7 @@ class GatewayRunner:
             self._reasoning_config = reasoning_config
             self._service_tier = self._load_service_tier()
             turn_route = self._resolve_turn_agent_config(prompt, model, runtime_kwargs)
+            ignore_rules = is_truthy_value(os.environ.get("HERMES_IGNORE_RULES"))
 
             # Enrich the prompt with image descriptions so the background
             # agent can see user-attached images (same as the main flow).
@@ -11421,6 +11422,8 @@ class GatewayRunner:
                     max_iterations=max_iterations,
                     quiet_mode=True,
                     verbose_logging=False,
+                    skip_context_files=ignore_rules,
+                    skip_memory=ignore_rules,
                     enabled_toolsets=enabled_toolsets,
                     disabled_toolsets=disabled_toolsets,
                     reasoning_config=reasoning_config,
@@ -16248,6 +16251,7 @@ class GatewayRunner:
                 )
 
             turn_route = self._resolve_turn_agent_config(message, model, runtime_kwargs)
+            ignore_rules = is_truthy_value(os.environ.get("HERMES_IGNORE_RULES"))
 
             # Check agent cache — reuse the AIAgent from the previous message
             # in this session to preserve the frozen system prompt and tool
@@ -16285,6 +16289,8 @@ class GatewayRunner:
                     max_iterations=max_iterations,
                     quiet_mode=True,
                     verbose_logging=False,
+                    skip_context_files=ignore_rules,
+                    skip_memory=ignore_rules,
                     enabled_toolsets=enabled_toolsets,
                     disabled_toolsets=disabled_toolsets,
                     ephemeral_system_prompt=combined_ephemeral or None,

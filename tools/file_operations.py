@@ -85,9 +85,9 @@ def _get_safe_write_root() -> Optional[str]:
     return _shared_get_safe_write_root()
 
 
-def _is_write_denied(path: str, base_dir: str | None = None) -> bool:
+def _is_write_denied(path: str, base_dir: str | None = None, home: str | None = None) -> bool:
     """Return True if path is on the write deny list."""
-    return _shared_is_write_denied(path, base_dir=base_dir)
+    return _shared_is_write_denied(path, home=home, base_dir=base_dir)
 
 
 # =============================================================================

@@ -86,11 +86,19 @@ def is_write_denied(path: str, home: str | None = None, base_dir: str | None = N
             paths. When omitted, the current process cwd is used.
     """
     home = os.path.realpath(os.path.expanduser(home or "~"))
-    expanded = os.path.expanduser(str(path))
+
+    def _expand_target_user_home(value: str) -> str:
+        if value == "~":
+            return home
+        if value.startswith("~/"):
+            return os.path.join(home, value[2:])
+        return os.path.expanduser(value)
+
+    expanded = _expand_target_user_home(str(path))
     if os.path.isabs(expanded):
         resolved = os.path.realpath(expanded)
     else:
-        anchor = os.path.realpath(os.path.expanduser(base_dir or os.getcwd()))
+        anchor = os.path.realpath(_expand_target_user_home(base_dir or os.getcwd()))
         resolved = os.path.realpath(os.path.join(anchor, expanded))
 
     if resolved in build_write_denied_paths(home):

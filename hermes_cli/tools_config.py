@@ -1925,6 +1925,16 @@ def _configure_tool_category(ts_key: str, cat: dict, config: dict):
         print()
 
         # Plain text labels only (no ANSI codes in menu items)
+        # When the user is logged into Nous, surface a marker on providers
+        # whose access is included in their subscription so it's visually
+        # obvious which options cost extra vs. cost nothing on top of Nous.
+        try:
+            _nous_logged_in = bool(
+                get_nous_subscription_features(config).nous_auth_present
+            )
+        except Exception:
+            _nous_logged_in = False
+
         provider_choices = []
         for p in providers:
             badge = f" [{p['badge']}]" if p.get("badge") else ""
@@ -1938,7 +1948,15 @@ def _configure_tool_category(ts_key: str, cat: dict, config: dict):
                     configured = ""
                 else:
                     configured = " [configured]"
-            provider_choices.append(f"{p['name']}{badge}{tag}{configured}")
+            # Highlight Nous-managed entries when the user has Portal auth.
+            # curses_radiolist can't render ANSI inside item strings, so we
+            # use a plain unicode star + parenthetical phrase. Suppressed
+            # when no Portal auth is present so non-subscribers see the
+            # picker unchanged.
+            sub_marker = ""
+            if _nous_logged_in and p.get("managed_nous_feature"):
+                sub_marker = "  ★ Included with your Nous subscription"
+            provider_choices.append(f"{p['name']}{badge}{tag}{configured}{sub_marker}")
 
         # Add skip option
         provider_choices.append("Skip — keep defaults / configure later")
@@ -2405,6 +2423,30 @@ def _configure_provider(provider: dict, config: dict):
 
     # Prompt for each required env var
     all_configured = True
+    # If this BYOK provider lives in a category that ALSO has a
+    # Nous-managed sibling, show a single dim hint so users know
+    # they can avoid the key entirely via a Portal subscription.
+    # Suppressed when the user is already authed to Nous.
+    _show_portal_hint = False
+    if env_vars and not managed_feature and not provider.get("requires_nous_auth"):
+        try:
+            _has_managed_sibling = False
+            for _cat_key, _cat in TOOL_CATEGORIES.items():
+                _providers = _cat.get("providers", [])
+                if provider in _providers and any(
+                    sib.get("managed_nous_feature") for sib in _providers
+                ):
+                    _has_managed_sibling = True
+                    break
+            if _has_managed_sibling:
+                _features = get_nous_subscription_features(config)
+                _show_portal_hint = not _features.nous_auth_present
+        except Exception:
+            _show_portal_hint = False
+
+    if _show_portal_hint:
+        _print_info("  Available through Nous Portal subscription.")
+
     for var in env_vars:
         existing = get_env_value(var["key"])
         if existing:

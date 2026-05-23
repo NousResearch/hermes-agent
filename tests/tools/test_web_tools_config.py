@@ -123,7 +123,7 @@ class TestFirecrawlClientConfig:
                     _get_firecrawl_client()
                     mock_fc.assert_called_once_with(
                         api_key="nous-token",
-                        api_url="https://firecrawl-gateway.localhost:3009",
+                        api_url="https://127.0.0.1:3009",
                     )
 
     def test_default_gateway_domain_targets_nous_production_origin(self):

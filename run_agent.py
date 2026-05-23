@@ -129,6 +129,7 @@ from agent.prompt_builder import (
     MEMORY_GUIDANCE, SESSION_SEARCH_GUIDANCE, SKILLS_GUIDANCE,
     HERMES_AGENT_HELP_GUIDANCE,
     KANBAN_GUIDANCE,
+    build_app_tools_prompt,
     build_nous_subscription_prompt,
 )
 from agent.model_metadata import (

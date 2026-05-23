@@ -74,7 +74,7 @@ This isn't a quality bar — it's a coupling-and-maintenance decision. Memory pr
 | Requirement | Notes |
 |-------------|-------|
 | **Git** | With `--recurse-submodules` support, and the `git-lfs` extension installed |
-| **Python 3.11+** | uv will install it if missing |
+| **Python 3.11+** | uv will install it if missing; `3.11` is the checked-in local development default |
 | **uv** | Fast Python package manager ([install](https://docs.astral.sh/uv/)) |
 | **Node.js 20+** | Optional — needed for browser tools and WhatsApp bridge (matches root `package.json` engines) |
 
@@ -84,7 +84,7 @@ This isn't a quality bar — it's a coupling-and-maintenance decision. Memory pr
 git clone --recurse-submodules https://github.com/NousResearch/hermes-agent.git
 cd hermes-agent
 
-# Create venv with Python 3.11
+# Create venv with the checked-in local development default (Python 3.11)
 uv venv venv --python 3.11
 export VIRTUAL_ENV="$(pwd)/venv"
 

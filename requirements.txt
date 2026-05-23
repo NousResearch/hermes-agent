@@ -1,0 +1,3 @@
+# Python 3.11+ is required; .python-version pins the local development default to 3.11.
+# Runtime and development dependencies are declared in pyproject.toml.
+-e .[all,dev]

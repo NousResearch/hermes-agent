@@ -143,8 +143,9 @@ must pass `scripts/jcode_native_registration_check.py`.
 queue and the native crate. It creates a temporary jcode worktree, applies the
 registration hook, copies `bridges/jcode-native-hermes-tool` into jcode, patches
 jcode's dev-dependencies, and runs a Rust integration test that verifies
-`hermes_web_search` and `hermes_web_extract` are visible through jcode's native
-registry definitions.
+`hermes_web_search`, `hermes_web_extract`, `hermes_session_search`, and
+`hermes_memory` are visible through jcode's native registry definitions, then
+executes `hermes_web_search` through `Registry::execute`.
 
 `bridges/hermes-mcp-server/` exposes the same `hermes-service.v1` boundary as a
 small dependency-free stdio MCP server. jcode already has an MCP manager, so

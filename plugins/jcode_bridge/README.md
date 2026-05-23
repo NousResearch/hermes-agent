@@ -307,7 +307,8 @@ scripts/jcode_supertool_registry_smoke.py --jcode /absolute/path/to/jcode
 That smoke applies the jcode registry patch in a temporary jcode worktree,
 copies `bridges/jcode-native-hermes-tool` into jcode, patches jcode's
 dev-dependencies, and runs a Rust integration test proving Hermes-backed tools
-show up in jcode's own native registry definitions.
+show up in jcode's own native registry definitions and execute through
+`Registry::execute`.
 
 Run the contract fixture gate:
 

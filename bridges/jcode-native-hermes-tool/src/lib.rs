@@ -94,6 +94,50 @@ impl HermesNativeTool {
         )
     }
 
+    pub fn session_search(config: HermesToolConfig) -> Self {
+        Self::new(
+            "hermes_session_search",
+            "session_search",
+            "Search Hermes session history from jcode's native tool loop.",
+            json!({
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                    "query": {"type": "string"},
+                    "limit": {"type": "integer", "minimum": 1, "maximum": 50},
+                    "sort": {"type": "string", "enum": ["relevance", "newest"]},
+                    "around_message_id": {"type": "string"},
+                    "window": {"type": "integer", "minimum": 1, "maximum": 20},
+                    "role_filter": {"type": "string"},
+                    "safety_override_reason": {"type": "string"}
+                },
+                "required": ["query"]
+            }),
+            config,
+        )
+    }
+
+    pub fn memory(config: HermesToolConfig) -> Self {
+        Self::new(
+            "hermes_memory",
+            "memory",
+            "Read or update Hermes persistent memory from jcode.",
+            json!({
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                    "action": {"type": "string", "enum": ["add", "replace", "remove"]},
+                    "target": {"type": "string", "enum": ["memory", "user"]},
+                    "content": {"type": "string"},
+                    "old_text": {"type": "string"},
+                    "safety_override_reason": {"type": "string"}
+                },
+                "required": ["action", "target"]
+            }),
+            config,
+        )
+    }
+
     async fn call_hermes_service(&self, args: Value, ctx: &ToolContext) -> Result<Value> {
         let (program, command_args) = self
             .config
@@ -153,7 +197,9 @@ impl HermesNativeTool {
 
 pub fn default_hermes_toolset(config: HermesToolConfig) -> Vec<(String, Arc<dyn Tool>)> {
     let web_search = HermesNativeTool::web_search(config.clone());
-    let web_extract = HermesNativeTool::web_extract(config);
+    let web_extract = HermesNativeTool::web_extract(config.clone());
+    let session_search = HermesNativeTool::session_search(config.clone());
+    let memory = HermesNativeTool::memory(config);
     vec![
         (
             web_search.name().to_string(),
@@ -163,6 +209,11 @@ pub fn default_hermes_toolset(config: HermesToolConfig) -> Vec<(String, Arc<dyn 
             web_extract.name().to_string(),
             Arc::new(web_extract) as Arc<dyn Tool>,
         ),
+        (
+            session_search.name().to_string(),
+            Arc::new(session_search) as Arc<dyn Tool>,
+        ),
+        (memory.name().to_string(), Arc::new(memory) as Arc<dyn Tool>),
     ]
 }
 

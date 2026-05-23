@@ -72,7 +72,8 @@ needed to build it without permanently forking both upstreams:
 - `scripts/jcode_supertool_registry_smoke.py` is the strongest native proof:
   it applies the jcode hook in a temp worktree, copies the Hermes native tool
   crate into jcode, and runs a Rust integration test that sees Hermes-backed
-  tools in jcode's registry definitions.
+  tools in jcode's registry definitions and executes one through
+  `Registry::execute`.
 
 ## Migration Path
 

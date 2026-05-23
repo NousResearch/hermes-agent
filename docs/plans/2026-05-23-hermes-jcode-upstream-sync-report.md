@@ -1,12 +1,12 @@
 # Hermes/jcode upstream sync report
 
-Generated: 2026-05-23T19:46:39+00:00
+Generated: 2026-05-23T19:54:00+00:00
 
 ## Repositories
 
 | Repo | Branch | Commit | Dirty |
 | --- | --- | --- | --- |
-| hermes | codex/hermes-jcode-bridge | bef15f2895f7453b3ab13883d88ac09245ea0529 | True |
+| hermes | codex/hermes-jcode-bridge | 3048dd9a4c9a0e9d69ecbb0ab2ddf4a37b4ee8ac | True |
 | jcode | master | 7951a2ddb91bad10155b911ccd0971de5baeafc8 | True |
 
 ## Graphify
@@ -99,10 +99,10 @@ Iterations: 30
 
 | Metric | ms |
 | --- | ---: |
-| min | 0.032 |
-| p50 | 0.039 |
-| p95 | 0.068 |
-| max | 0.105 |
+| min | 0.035 |
+| p50 | 0.036 |
+| p95 | 0.076 |
+| max | 0.121 |
 
 ## jcode Native Hermes Tool
 
@@ -117,6 +117,7 @@ jcode path: /Users/aayu/Workspace/developer/hermes/.codex-research/jcode
 | native_tool:uses_jcode_tool_core | True |
 | native_tool:implements_tool_trait | True |
 | native_tool:defines_hermes_research_tools | True |
+| native_tool:defines_hermes_state_tools | True |
 | native_tool:exports_default_toolset | True |
 | jcode_checkout:exists | True |
 | workspace:manifest_exists | True |
@@ -142,7 +143,7 @@ jcode path: /Users/aayu/Workspace/developer/hermes/.codex-research/jcode
 
 Success: True
 jcode path: /Users/aayu/Workspace/developer/hermes/.codex-research/jcode
-worktree: /var/folders/t1/lv87zx017jl6tsks2dz22mk00000gn/T/jcode-supertool-registry-z93siivj/jcode
+worktree: /var/folders/t1/lv87zx017jl6tsks2dz22mk00000gn/T/jcode-supertool-registry-fjq985c_/jcode
 
 | Check | OK |
 | --- | --- |
@@ -154,6 +155,7 @@ worktree: /var/folders/t1/lv87zx017jl6tsks2dz22mk00000gn/T/jcode-supertool-regis
 | native_tool:copied_into_jcode | True |
 | native_tool:exports_toolset | True |
 | jcode_test:writes_native_registry_test | True |
+| cargo:test_jcode_registry_with_hermes_tools | True |
 
 ## Recommendations
 

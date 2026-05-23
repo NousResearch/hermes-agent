@@ -22,8 +22,9 @@ NATIVE_TOOL_DIR = ROOT / "bridges" / "jcode-native-hermes-tool"
 REGISTRY_TEST = r'''use async_trait::async_trait;
 use jcode::message::{Message, ToolDefinition};
 use jcode::provider::{EventStream, Provider};
-use jcode::tool::Registry;
+use jcode::tool::{Registry, ToolContext, ToolExecutionMode};
 use jcode_native_hermes_tool::{default_hermes_toolset, HermesToolConfig};
+use serde_json::json;
 use std::sync::Arc;
 
 struct MockProvider;
@@ -49,25 +50,63 @@ impl Provider for MockProvider {
     }
 }
 
+fn fake_hermes_service_command() -> Vec<String> {
+    let script = std::env::temp_dir().join(format!(
+        "fake-hermes-service-{}-{}.py",
+        std::process::id(),
+        std::thread::current().name().unwrap_or("test")
+    ));
+    std::fs::write(
+        &script,
+        r#"import json
+import sys
+
+line = sys.stdin.readline().strip()
+request = json.loads(line)
+print(json.dumps({
+    "type": "hermes_service_response",
+    "contract_version": "hermes-service.v1",
+    "id": request.get("id"),
+    "ok": True,
+    "tool": request.get("tool"),
+    "result": {
+        "executed_by": "fake_hermes_service",
+        "tool": request.get("tool"),
+        "args": request.get("args", {}),
+    },
+    "duration_ms": 1,
+}))
+"#,
+    )
+    .expect("write fake Hermes service");
+    vec!["python3".to_string(), script.display().to_string()]
+}
+
 #[tokio::test]
-async fn hermes_native_tools_register_in_jcode_registry() {
+async fn hermes_native_tools_register_and_execute_in_jcode_registry() {
     let provider: Arc<dyn Provider> = Arc::new(MockProvider);
     let registry = Registry::new(provider).await;
     let config = HermesToolConfig {
-        service_command: vec![
-            "python3".to_string(),
-            "scripts/hermes_service_bridge.py".to_string(),
-            "stdio".to_string(),
-        ],
+        service_command: fake_hermes_service_command(),
         timeout_ms: 1_000,
     };
 
     let registered = registry
         .register_toolset("hermes", default_hermes_toolset(config))
         .await;
-    assert_eq!(registered, vec!["hermes_web_extract", "hermes_web_search"]);
+    assert_eq!(
+        registered,
+        vec![
+            "hermes_memory",
+            "hermes_session_search",
+            "hermes_web_extract",
+            "hermes_web_search",
+        ]
+    );
 
     let names = registry.tool_names().await;
+    assert!(names.contains(&"hermes_memory".to_string()));
+    assert!(names.contains(&"hermes_session_search".to_string()));
     assert!(names.contains(&"hermes_web_search".to_string()));
     assert!(names.contains(&"hermes_web_extract".to_string()));
 
@@ -76,8 +115,33 @@ async fn hermes_native_tools_register_in_jcode_registry() {
         .iter()
         .map(|definition| definition.name.as_str())
         .collect::<Vec<_>>();
+    assert!(definition_names.contains(&"hermes_memory"));
+    assert!(definition_names.contains(&"hermes_session_search"));
     assert!(definition_names.contains(&"hermes_web_search"));
     assert!(definition_names.contains(&"hermes_web_extract"));
+
+    let output = registry
+        .execute(
+            "hermes_web_search",
+            json!({"query": "bridge", "limit": 1}),
+            ToolContext {
+                session_id: "session_smoke".to_string(),
+                message_id: "message_smoke".to_string(),
+                tool_call_id: "call_smoke".to_string(),
+                working_dir: None,
+                stdin_request_tx: None,
+                graceful_shutdown_signal: None,
+                execution_mode: ToolExecutionMode::Direct,
+            },
+        )
+        .await
+        .expect("execute Hermes-backed jcode tool");
+    assert_eq!(output.title.as_deref(), Some("hermes:web_search"));
+    assert!(output.output.contains("fake_hermes_service"));
+    assert_eq!(
+        output.metadata.as_ref().and_then(|value| value.get("tool")),
+        Some(&json!("web_search"))
+    );
 }
 '''
 

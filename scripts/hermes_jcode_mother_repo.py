@@ -260,7 +260,8 @@ verify the patch queue still applies to the pinned jcode commit.
 Use `scripts/jcode_supertool_registry_smoke.py --jcode upstreams/jcode` for the
 strongest local proof: it applies the jcode patch in a temporary worktree,
 copies the native Hermes tool crate into jcode, and runs a Rust integration test
-that verifies Hermes tools appear in jcode's native registry definitions.
+that verifies Hermes tools appear in jcode's native registry definitions and
+execute through `Registry::execute`.
 """
 
 

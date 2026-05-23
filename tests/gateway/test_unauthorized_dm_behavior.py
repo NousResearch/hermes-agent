@@ -724,6 +724,56 @@ def test_explicit_pair_config_overrides_allowlist_default(monkeypatch):
     assert behavior == "pair"
 
 
+@pytest.mark.asyncio
+async def test_email_without_allowlist_ignores_unauthorized_dm(monkeypatch):
+    """Email is fail-closed by default because public addresses attract spam."""
+    _clear_auth_env(monkeypatch)
+
+    config = GatewayConfig(
+        platforms={Platform.EMAIL: PlatformConfig(enabled=True)},
+    )
+    runner, adapter = _make_runner(Platform.EMAIL, config)
+
+    result = await runner._handle_message(
+        _make_event(Platform.EMAIL, "stranger@example.com", "stranger@example.com")
+    )
+
+    assert result is None
+    runner.pairing_store.generate_code.assert_not_called()
+    adapter.send.assert_not_awaited()
+
+
+def test_get_unauthorized_dm_behavior_email_no_allowlist_returns_ignore(monkeypatch):
+    """Email should not send pairing codes to unknown senders by default."""
+    _clear_auth_env(monkeypatch)
+
+    config = GatewayConfig(
+        platforms={Platform.EMAIL: PlatformConfig(enabled=True)},
+    )
+    runner, _adapter = _make_runner(Platform.EMAIL, config)
+
+    behavior = runner._get_unauthorized_dm_behavior(Platform.EMAIL)
+    assert behavior == "ignore"
+
+
+def test_email_explicit_pair_config_overrides_fail_closed_default(monkeypatch):
+    """Operators can still opt email into pairing with explicit platform config."""
+    _clear_auth_env(monkeypatch)
+
+    config = GatewayConfig(
+        platforms={
+            Platform.EMAIL: PlatformConfig(
+                enabled=True,
+                extra={"unauthorized_dm_behavior": "pair"},
+            ),
+        },
+    )
+    runner, _adapter = _make_runner(Platform.EMAIL, config)
+
+    behavior = runner._get_unauthorized_dm_behavior(Platform.EMAIL)
+    assert behavior == "pair"
+
+
 def test_allowlist_authorized_user_returns_ignore_for_unauthorized(monkeypatch):
     """_get_unauthorized_dm_behavior returns 'ignore' when allowlist is set.
 

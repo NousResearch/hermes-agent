@@ -117,6 +117,28 @@ class TestHandleVoiceCommand:
         assert runner._voice_mode["telegram:123"] == "all"
 
     @pytest.mark.asyncio
+    async def test_voice_text_alias_sets_text_only(self, runner):
+        runner._voice_mode["telegram:123"] = "audio_only"
+        event = _make_event("/voice text")
+        result = await runner._handle_voice_command(event)
+        assert "text" in result.lower()
+        assert runner._voice_mode["telegram:123"] == "off"
+
+    @pytest.mark.asyncio
+    async def test_voice_both_alias_sets_text_plus_audio(self, runner):
+        event = _make_event("/voice both")
+        result = await runner._handle_voice_command(event)
+        assert "tts" in result.lower()
+        assert runner._voice_mode["telegram:123"] == "all"
+
+    @pytest.mark.asyncio
+    async def test_voice_audio_alias_sets_audio_only(self, runner):
+        event = _make_event("/voice audio")
+        result = await runner._handle_voice_command(event)
+        assert "audio-only" in result.lower()
+        assert runner._voice_mode["telegram:123"] == "audio_only"
+
+    @pytest.mark.asyncio
     async def test_voice_status_off(self, runner):
         event = _make_event("/voice status")
         result = await runner._handle_voice_command(event)
@@ -190,19 +212,22 @@ class TestHandleVoiceCommand:
             "telegram:off_chat": "off",
             "telegram:on_chat": "voice_only",
             "telegram:tts_chat": "all",
+            "telegram:audio_chat": "audio_only",
             "slack:999": "voice_only",  # wrong platform, must be ignored
         }
         adapter = SimpleNamespace(
             _auto_tts_default=False,
             _auto_tts_disabled_chats=set(),
             _auto_tts_enabled_chats=set(),
+            _auto_tts_audio_only_chats=set(),
             platform=Platform.TELEGRAM,
         )
 
         runner._sync_voice_mode_state_to_adapter(adapter)
 
         assert adapter._auto_tts_disabled_chats == {"off_chat"}
-        assert adapter._auto_tts_enabled_chats == {"on_chat", "tts_chat"}
+        assert adapter._auto_tts_enabled_chats == {"on_chat", "tts_chat", "audio_chat"}
+        assert adapter._auto_tts_audio_only_chats == {"audio_chat"}
 
     def test_sync_pushes_config_default_onto_adapter(self, runner, monkeypatch):
         """Issue #16007: ``voice.auto_tts`` must propagate to ``_auto_tts_default``."""
@@ -348,6 +373,10 @@ class TestAutoVoiceReply:
     def test_text_input_all_mode_runner_fires(self, runner):
         """all + text input: only runner fires (base auto-TTS only for voice)."""
         assert self._call(runner, "all", MessageType.TEXT) is True
+
+    def test_text_input_audio_only_mode_runner_fires(self, runner):
+        """audio_only + text input: runner sends audio, caller suppresses text."""
+        assert self._call(runner, "audio_only", MessageType.TEXT) is True
 
     def test_text_input_voice_only_no_reply(self, runner):
         """voice_only + text input: neither fires."""

@@ -1610,6 +1610,19 @@ def create_task(
                         "skills": list(skills_list) if skills_list else None,
                     },
                 )
+                if task_status == "blocked":
+                    # Initial blocked cards are explicit operator holds
+                    # (e.g. review smoke tests / human-ops gates), not
+                    # recoverable circuit-breaker blocks. Emit the same
+                    # sticky signal as block_task() so recompute_ready()
+                    # does not auto-promote them to ready on the next
+                    # dispatcher/list tick.
+                    _append_event(
+                        conn,
+                        task_id,
+                        "blocked",
+                        {"reason": "initial_status=blocked"},
+                    )
             return task_id
         except sqlite3.IntegrityError:
             if attempt == 1:

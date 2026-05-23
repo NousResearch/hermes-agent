@@ -104,6 +104,56 @@ _TELEGRAM_IMAGE_EXT_TO_MIME = {
     ".gif": "image/gif",
 }
 
+_TELEGRAM_AUDIO_DOCUMENT_TYPES = {
+    ".ogg": "audio/ogg",
+    ".opus": "audio/ogg",
+    ".oga": "audio/ogg",
+    ".mp3": "audio/mpeg",
+    ".m4a": "audio/mp4",
+    ".aac": "audio/aac",
+    ".wav": "audio/wav",
+    ".webm": "audio/webm",
+}
+_TELEGRAM_AUDIO_MIME_TO_EXT = {
+    "audio/ogg": ".ogg",
+    "audio/opus": ".opus",
+    "audio/mpeg": ".mp3",
+    "audio/mp3": ".mp3",
+    "audio/mp4": ".m4a",
+    "audio/x-m4a": ".m4a",
+    "audio/aac": ".aac",
+    "audio/wav": ".wav",
+    "audio/x-wav": ".wav",
+    "audio/webm": ".webm",
+    "video/webm": ".webm",
+}
+
+
+def _sniff_audio_document_ext(data: bytes) -> str:
+    """Best-effort audio container detection for Telegram documents.
+
+    Some Telegram clients send recorded audio as a generic document with no
+    filename and no MIME type.  In that case extension/MIME lookup returns
+    ``unknown`` even though the payload is a perfectly valid OGG/WebM/etc.
+    Keep this intentionally conservative: only recognize well-known magic
+    bytes so arbitrary binary documents still hit the normal unsupported-file
+    path instead of being misrouted as audio.
+    """
+    head = data[:64]
+    if head.startswith(b"OggS"):
+        return ".ogg"
+    if head.startswith(b"ID3") or (len(head) >= 2 and head[0] == 0xFF and (head[1] & 0xE0) == 0xE0):
+        return ".mp3"
+    if head.startswith(b"RIFF") and b"WAVE" in head[:16]:
+        return ".wav"
+    if len(head) >= 12 and head[4:8] == b"ftyp":
+        return ".m4a"
+    # Matroska/WebM EBML header.  Telegram voice-like files occasionally show
+    # up this way when sent as file attachments from non-standard clients.
+    if head.startswith(b"\x1a\x45\xdf\xa3"):
+        return ".webm"
+    return ""
+
 
 MAX_COMMANDS_PER_SCOPE = 30
 
@@ -5139,6 +5189,8 @@ class TelegramAdapter(BasePlatformAdapter):
                 if not ext and doc_mime:
                     ext = _TELEGRAM_IMAGE_MIME_TO_EXT.get(doc_mime, "")
                     if not ext:
+                        ext = _TELEGRAM_AUDIO_MIME_TO_EXT.get(doc_mime, "")
+                    if not ext:
                         mime_to_ext = {v: k for k, v in SUPPORTED_DOCUMENT_TYPES.items()}
                         ext = mime_to_ext.get(doc_mime, "")
 
@@ -5208,6 +5260,18 @@ class TelegramAdapter(BasePlatformAdapter):
                     await self.handle_message(event)
                     return
 
+                if ext in _TELEGRAM_AUDIO_DOCUMENT_TYPES or doc_mime.startswith("audio/"):
+                    file_obj = await doc.get_file()
+                    audio_bytes = await file_obj.download_as_bytearray()
+                    audio_ext = ext if ext in _TELEGRAM_AUDIO_DOCUMENT_TYPES else _TELEGRAM_AUDIO_MIME_TO_EXT.get(doc_mime, ".ogg")
+                    cached_path = cache_audio_from_bytes(bytes(audio_bytes), ext=audio_ext)
+                    event.media_urls = [cached_path]
+                    event.media_types = [_TELEGRAM_AUDIO_DOCUMENT_TYPES.get(audio_ext, doc_mime or "audio/ogg")]
+                    event.message_type = MessageType.AUDIO
+                    logger.info("[Telegram] Cached user audio document at %s", cached_path)
+                    await self.handle_message(event)
+                    return
+
                 # NOTE: image-document handling is performed earlier in this
                 # function (ext in _TELEGRAM_IMAGE_EXTENSIONS or image/* mime),
                 # which returns before reaching here.  Any subsequent
@@ -5216,6 +5280,22 @@ class TelegramAdapter(BasePlatformAdapter):
 
                 # Check if supported
                 if ext not in SUPPORTED_DOCUMENT_TYPES:
+                    # Some clients upload recorded audio as a generic document
+                    # with no filename or MIME type. Download only after the
+                    # size cap above, sniff conservative audio signatures, and
+                    # otherwise keep the normal unsupported-document behavior.
+                    if not ext and not doc_mime:
+                        file_obj = await doc.get_file()
+                        unknown_bytes = bytes(await file_obj.download_as_bytearray())
+                        sniffed_audio_ext = _sniff_audio_document_ext(unknown_bytes)
+                        if sniffed_audio_ext:
+                            cached_path = cache_audio_from_bytes(unknown_bytes, ext=sniffed_audio_ext)
+                            event.media_urls = [cached_path]
+                            event.media_types = [_TELEGRAM_AUDIO_DOCUMENT_TYPES[sniffed_audio_ext]]
+                            event.message_type = MessageType.AUDIO
+                            logger.info("[Telegram] Cached user sniffed audio document at %s", cached_path)
+                            await self.handle_message(event)
+                            return
                     supported_list = ", ".join(sorted(SUPPORTED_DOCUMENT_TYPES.keys()))
                     event.text = (
                         f"Unsupported document type '{ext or 'unknown'}'. "

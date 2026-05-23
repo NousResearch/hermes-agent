@@ -1898,10 +1898,13 @@ class GatewayRunner:
             return
         if disabled:
             disabled_chats.add(chat_id)
-            # ``/voice off`` also clears any explicit enable — it's a hard override.
+            # ``/voice off`` also clears any explicit enable/audio-only state — it's a hard override.
             enabled_chats = getattr(adapter, "_auto_tts_enabled_chats", None)
             if isinstance(enabled_chats, set):
                 enabled_chats.discard(chat_id)
+            audio_only_chats = getattr(adapter, "_auto_tts_audio_only_chats", None)
+            if isinstance(audio_only_chats, set):
+                audio_only_chats.discard(chat_id)
         else:
             disabled_chats.discard(chat_id)
 
@@ -1923,6 +1926,16 @@ class GatewayRunner:
         else:
             enabled_chats.discard(chat_id)
 
+    def _set_adapter_audio_only(self, adapter, chat_id: str, enabled: bool) -> None:
+        """Update an adapter's per-chat audio-only set if present."""
+        audio_only_chats = getattr(adapter, "_auto_tts_audio_only_chats", None)
+        if not isinstance(audio_only_chats, set):
+            return
+        if enabled:
+            audio_only_chats.add(chat_id)
+        else:
+            audio_only_chats.discard(chat_id)
+
     def _sync_voice_mode_state_to_adapter(self, adapter) -> None:
         """Restore persisted /voice state into a live platform adapter.
 
@@ -1937,7 +1950,12 @@ class GatewayRunner:
 
         disabled_chats = getattr(adapter, "_auto_tts_disabled_chats", None)
         enabled_chats = getattr(adapter, "_auto_tts_enabled_chats", None)
-        if not isinstance(disabled_chats, set) and not isinstance(enabled_chats, set):
+        audio_only_chats = getattr(adapter, "_auto_tts_audio_only_chats", None)
+        if (
+            not isinstance(disabled_chats, set)
+            and not isinstance(enabled_chats, set)
+            and not isinstance(audio_only_chats, set)
+        ):
             return
 
         # Push the global voice.auto_tts default (config.yaml) onto the adapter.
@@ -1964,7 +1982,13 @@ class GatewayRunner:
             enabled_chats.clear()
             enabled_chats.update(
                 key[len(prefix):] for key, mode in self._voice_mode.items()
-                if mode in {"voice_only", "all"} and key.startswith(prefix)
+                if mode in {"voice_only", "all", "audio_only"} and key.startswith(prefix)
+            )
+        if isinstance(audio_only_chats, set):
+            audio_only_chats.clear()
+            audio_only_chats.update(
+                key[len(prefix):] for key, mode in self._voice_mode.items()
+                if mode == "audio_only" and key.startswith(prefix)
             )
 
     async def _safe_adapter_disconnect(self, adapter, platform) -> None:
@@ -8852,6 +8876,8 @@ class GatewayRunner:
             _already_sent = bool(agent_result.get("already_sent"))
             if self._should_send_voice_reply(event, response, agent_messages, already_sent=_already_sent):
                 await self._send_voice_reply(event, response)
+                if self._voice_mode.get(self._voice_key(event.source.platform, event.source.chat_id)) == "audio_only":
+                    return None
 
             # If streaming already delivered the response, extract and
             # deliver any MEDIA: files before returning None.  Streaming
@@ -10844,24 +10870,33 @@ class GatewayRunner:
 
         adapter = self.adapters.get(platform)
 
-        if args in {"on", "enable"}:
+        if args in {"on", "enable", "voice", "voice-only", "voice_only"}:
             self._voice_mode[voice_key] = "voice_only"
             self._save_voice_modes()
             if adapter:
                 self._set_adapter_auto_tts_enabled(adapter, chat_id, enabled=True)
+                self._set_adapter_audio_only(adapter, chat_id, enabled=False)
             return t("gateway.voice.enabled_voice_only")
-        elif args in {"off", "disable"}:
+        elif args in {"off", "disable", "text", "text-only", "text_only"}:
             self._voice_mode[voice_key] = "off"
             self._save_voice_modes()
             if adapter:
                 self._set_adapter_auto_tts_disabled(adapter, chat_id, disabled=True)
             return t("gateway.voice.disabled_text")
-        elif args == "tts":
+        elif args in {"tts", "all", "both", "text+audio", "audio+text", "text-audio", "audio-text"}:
             self._voice_mode[voice_key] = "all"
             self._save_voice_modes()
             if adapter:
                 self._set_adapter_auto_tts_enabled(adapter, chat_id, enabled=True)
+                self._set_adapter_audio_only(adapter, chat_id, enabled=False)
             return t("gateway.voice.tts_enabled")
+        elif args in {"audio", "audio-only", "audio_only", "voice-only-output", "voice_only_output"}:
+            self._voice_mode[voice_key] = "audio_only"
+            self._save_voice_modes()
+            if adapter:
+                self._set_adapter_auto_tts_enabled(adapter, chat_id, enabled=True)
+                self._set_adapter_audio_only(adapter, chat_id, enabled=True)
+            return "Audio-only mode enabled. Replies will be sent as voice/audio without a text body. Use /voice text for text-only or /voice both for text + audio."
         elif args in {"channel", "join"}:
             return await self._handle_voice_channel_join(event)
         elif args == "leave":
@@ -10872,6 +10907,7 @@ class GatewayRunner:
                 "off": t("gateway.voice.label_off"),
                 "voice_only": t("gateway.voice.label_voice_only"),
                 "all": t("gateway.voice.label_all"),
+                "audio_only": "Audio-only (voice/audio replies, no text body)",
             }
             # Append voice channel info if connected
             adapter = self.adapters.get(event.source.platform)
@@ -11124,7 +11160,7 @@ class GatewayRunner:
         is_voice_input = (event.message_type == MessageType.VOICE)
 
         should = (
-            (voice_mode == "all")
+            (voice_mode in {"all", "audio_only"})
             or (voice_mode == "voice_only" and is_voice_input)
         )
         if not should:

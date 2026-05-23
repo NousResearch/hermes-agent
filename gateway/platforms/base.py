@@ -1425,6 +1425,9 @@ class BasePlatformAdapter(ABC):
         self._auto_tts_default: bool = False
         self._auto_tts_enabled_chats: set = set()
         self._auto_tts_disabled_chats: set = set()
+        # Chats that requested audio-only output. They still need auto-TTS
+        # enabled, but the text body is suppressed after the audio is sent.
+        self._auto_tts_audio_only_chats: set = set()
         # Chats where typing indicator is paused (e.g. during approval waits).
         # _keep_typing skips send_typing when the chat_id is in this set.
         self._typing_paused: set = set()
@@ -1514,6 +1517,10 @@ class BasePlatformAdapter(ABC):
         if chat_id in self._auto_tts_disabled_chats:
             return False
         return bool(self._auto_tts_default)
+
+    def _should_suppress_text_for_audio_only_chat(self, chat_id: str) -> bool:
+        """Whether this chat requested audio-only replies."""
+        return chat_id in self._auto_tts_audio_only_chats
 
     def set_fatal_error_handler(self, handler: Callable[["BasePlatformAdapter"], Awaitable[None] | None]) -> None:
         self._fatal_error_handler = handler
@@ -3319,11 +3326,13 @@ class BasePlatformAdapter(ABC):
 
                 # Play TTS audio before text (voice-first experience)
                 _tts_caption_delivered = False
+                _audio_only_reply = self._should_suppress_text_for_audio_only_chat(event.source.chat_id)
                 if _tts_path and Path(_tts_path).exists():
                     try:
                         telegram_tts_caption = None
                         if (
-                            self.platform == Platform.TELEGRAM
+                            not _audio_only_reply
+                            and self.platform == Platform.TELEGRAM
                             and text_content
                             and text_content[:1024] == text_content
                         ):
@@ -3344,7 +3353,7 @@ class BasePlatformAdapter(ABC):
                             pass
 
                 # Send the text portion
-                if text_content and not _tts_caption_delivered:
+                if text_content and not _tts_caption_delivered and not _audio_only_reply:
                     logger.info("[%s] Sending response (%d chars) to %s", self.name, len(text_content), event.source.chat_id)
                     _reply_anchor = _reply_anchor_for_event(event)
                     # Mark final response messages for notification delivery.

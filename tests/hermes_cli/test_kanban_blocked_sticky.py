@@ -76,6 +76,30 @@ def test_worker_block_is_not_auto_promoted_by_recompute_ready(kanban_home: Path)
             assert kb.get_task(conn, tid).status == "blocked"
 
 
+def test_initial_blocked_task_is_sticky_across_recompute_ready(kanban_home: Path) -> None:
+    """A task created directly in the blocked lane is an operator hold, not
+    a circuit-breaker block, so the dispatcher must not auto-promote it to
+    ready and spawn a worker immediately.
+
+    This covers dashboard/CLI smoke-test cards created as blocked for human
+    validation.  Before this regression fix, initial blocked rows had no
+    ``blocked`` event, so ``recompute_ready`` treated them like recoverable
+    circuit-breaker blocks and promoted them on the next tick.
+    """
+    with kb.connect() as conn:
+        tid = kb.create_task(
+            conn,
+            title="parked for UI review",
+            assignee="default",
+            initial_status="blocked",
+        )
+        assert kb.get_task(conn, tid).status == "blocked"
+
+        for _ in range(3):
+            assert kb.recompute_ready(conn) == 0
+            assert kb.get_task(conn, tid).status == "blocked"
+
+
 def test_worker_block_on_child_with_done_parents_is_still_sticky(kanban_home: Path) -> None:
     """The parent-completion path is the one ``recompute_ready`` was
     designed for, so it's the most dangerous false-positive: even when

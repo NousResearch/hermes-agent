@@ -321,6 +321,48 @@ def test_patch_block_then_unblock(client):
     assert r.json()["task"]["status"] == "ready"
 
 
+def test_patch_review_status_is_stable_and_not_ready(client):
+    """Dashboard must support the native review column as a stable status.
+
+    Regression: editing or dragging a blocked review handoff to review must not
+    call the unblock path, because unblock promotes it back to ready and lets
+    the dispatcher claim it again.
+    """
+
+    t = client.post("/api/plugins/kanban/tasks", json={"title": "x"}).json()["task"]
+    r = client.patch(
+        f"/api/plugins/kanban/tasks/{t['id']}",
+        json={"status": "blocked", "block_reason": "review-required: needs eyes"},
+    )
+    assert r.status_code == 200
+    assert r.json()["task"]["status"] == "blocked"
+
+    r = client.patch(
+        f"/api/plugins/kanban/tasks/{t['id']}",
+        json={"status": "review"},
+    )
+    assert r.status_code == 200, r.text
+    assert r.json()["task"]["status"] == "review"
+
+    columns = client.get("/api/plugins/kanban/board").json()["columns"]
+    by_name = {c["name"]: c["tasks"] for c in columns}
+    assert any(x["id"] == t["id"] for x in by_name["review"])
+    assert not any(x["id"] == t["id"] for x in by_name["ready"])
+
+
+def test_dashboard_bundle_exposes_review_column_copy():
+    """The client bundle must know about review for labels/dots/fallback UIs."""
+
+    repo_root = Path(__file__).resolve().parents[2]
+    bundle = repo_root / "plugins" / "kanban" / "dashboard" / "dist" / "index.js"
+    js = bundle.read_text()
+
+    assert '"review"' in js
+    assert 'review: "Review"' in js
+    assert 'review: "Needs human review before completion"' in js
+    assert 'review: "hermes-kanban-dot-review"' in js
+
+
 def test_patch_schedule_then_unblock(client):
     t = client.post("/api/plugins/kanban/tasks", json={"title": "x"}).json()["task"]
     r = client.patch(

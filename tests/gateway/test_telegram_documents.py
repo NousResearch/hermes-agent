@@ -151,6 +151,9 @@ def _redirect_cache(tmp_path, monkeypatch):
     monkeypatch.setattr(
         "gateway.platforms.base.VIDEO_CACHE_DIR", tmp_path / "video_cache"
     )
+    monkeypatch.setattr(
+        "gateway.platforms.base.AUDIO_CACHE_DIR", tmp_path / "audio_cache"
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -338,8 +341,51 @@ class TestDocumentDownloadBlock:
         assert event.media_types == ["application/pdf"]
 
     @pytest.mark.asyncio
+    async def test_audio_document_with_mime_is_cached_as_audio(self, adapter):
+        content = b"ID3 fake mp3 payload"
+        file_obj = _make_file_obj(content)
+        doc = _make_document(
+            file_name=None,
+            mime_type="audio/mpeg",
+            file_size=len(content),
+            file_obj=file_obj,
+        )
+        msg = _make_message(document=doc)
+        update = _make_update(msg)
+
+        await adapter._handle_media_message(update, MagicMock())
+        event = adapter.handle_message.call_args[0][0]
+        assert event.message_type == MessageType.AUDIO
+        assert len(event.media_urls) == 1
+        assert event.media_urls[0].endswith(".mp3")
+        assert os.path.exists(event.media_urls[0])
+        assert event.media_types == ["audio/mpeg"]
+
+    @pytest.mark.asyncio
+    async def test_unknown_document_with_ogg_magic_is_cached_as_audio(self, adapter):
+        content = b"OggS" + b"\x00" * 32
+        file_obj = _make_file_obj(content)
+        doc = _make_document(
+            file_name=None,
+            mime_type=None,
+            file_size=len(content),
+            file_obj=file_obj,
+        )
+        msg = _make_message(document=doc)
+        update = _make_update(msg)
+
+        await adapter._handle_media_message(update, MagicMock())
+        event = adapter.handle_message.call_args[0][0]
+        assert event.message_type == MessageType.AUDIO
+        assert len(event.media_urls) == 1
+        assert event.media_urls[0].endswith(".ogg")
+        assert os.path.exists(event.media_urls[0])
+        assert event.media_types == ["audio/ogg"]
+
+    @pytest.mark.asyncio
     async def test_missing_filename_and_mime_rejected(self, adapter):
-        doc = _make_document(file_name=None, mime_type=None, file_size=100)
+        file_obj = _make_file_obj(b"not-a-supported-audio-container")
+        doc = _make_document(file_name=None, mime_type=None, file_size=100, file_obj=file_obj)
         msg = _make_message(document=doc)
         update = _make_update(msg)
 

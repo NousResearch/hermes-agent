@@ -352,3 +352,26 @@ class TestTelegramAutoTtsCaptionDelivery:
                 "metadata": {"thread_id": "17585", "notify": True},
             }
         ]
+
+    @pytest.mark.asyncio
+    async def test_audio_only_auto_tts_suppresses_caption_and_followup_text(self, tmp_path):
+        adapter = DummyTelegramAdapter()
+        adapter._keep_typing = self._hold_typing()
+        adapter._should_auto_tts_for_chat = lambda _chat_id: True
+        adapter._auto_tts_audio_only_chats.add("-1001")
+        adapter.play_tts = AsyncMock(return_value=SendResult(success=True, message_id="tts-1"))
+        adapter.set_message_handler(lambda _event: asyncio.sleep(0, result="Short reply"))
+
+        tts_path = tmp_path / "reply.ogg"
+        tts_path.write_text("audio", encoding="utf-8")
+        event = self._make_voice_event()
+
+        with patch("tools.tts_tool.check_tts_requirements", return_value=True), patch(
+            "tools.tts_tool.text_to_speech_tool",
+            return_value=json.dumps({"file_path": str(tts_path)}),
+        ):
+            await adapter._process_message_background(event, build_session_key(event.source))
+
+        adapter.play_tts.assert_awaited_once()
+        assert adapter.play_tts.await_args.kwargs["caption"] is None
+        assert adapter.sent == []

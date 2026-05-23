@@ -734,6 +734,13 @@ def init_agent(
                 from hermes_cli.models import copilot_default_headers
 
                 client_kwargs["default_headers"] = copilot_default_headers()
+            elif (
+                base_url_host_matches(effective_base, "cpa.yumeapi.cn")
+                or base_url_host_matches(effective_base, "ai.yumeapi.cn")
+            ):
+                client_kwargs["default_headers"] = {
+                    "User-Agent": "curl/8.5.0",
+                }
             elif base_url_host_matches(effective_base, "api.kimi.com"):
                 client_kwargs["default_headers"] = {
                     "User-Agent": "claude-code/0.1.0",

@@ -2899,6 +2899,11 @@ class AIAgent:
             self._client_kwargs["default_headers"] = copilot_default_headers()
         elif base_url_host_matches(base_url, "api.kimi.com"):
             self._client_kwargs["default_headers"] = {"User-Agent": "claude-code/0.1.0"}
+        elif (
+            base_url_host_matches(base_url, "cpa.yumeapi.cn")
+            or base_url_host_matches(base_url, "ai.yumeapi.cn")
+        ):
+            self._client_kwargs["default_headers"] = {"User-Agent": "curl/8.5.0"}
         elif base_url_host_matches(base_url, "portal.qwen.ai"):
             self._client_kwargs["default_headers"] = _qwen_portal_headers()
         elif base_url_host_matches(base_url, "chatgpt.com"):

@@ -5625,7 +5625,6 @@ class TestFTS5ToolCallMigration:
         finally:
             session_db.close()
 
-
 class TestFTSExternalContentMigration:
     """v23 migration: inline-mode FTS tables (v11-v22) are rebuilt as
     external-content tables, and role='tool' rows are excluded from the
@@ -5961,7 +5960,6 @@ class TestFTSExternalContentMigration:
             assert len(all_hits) == 2
         finally:
             db.close()
-
 
 # ---------------------------------------------------------------------------
 # apply_wal_with_fallback — read-only probe tests
@@ -7103,4 +7101,3 @@ class TestLoneSurrogatePersistence:
         db.create_session("s1", source="cli")
         assert db.set_session_title("s1", "title \ud835 bad") is True
         assert db.get_session("s1")["title"] == "title \ufffd bad"
-

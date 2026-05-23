@@ -16,7 +16,7 @@ Migrate a user's OpenClaw customization footprint into Hermes Agent. Imports Her
 |---|---|
 | Source | Optional — install with `hermes skills install official/migration/openclaw-migration` |
 | Path | `optional-skills/migration/openclaw-migration` |
-| Version | `1.0.0` |
+| Version | `1.1.0` |
 | Author | Hermes Agent (Nous Research) |
 | License | MIT |
 | Platforms | linux, macos, windows |
@@ -314,3 +314,179 @@ After a successful run, the user should have:
 - Hermes memory files populated with converted OpenClaw knowledge
 - OpenClaw skills available under `~/.hermes/skills/openclaw-imports/`
 - a migration report showing any conflicts, omissions, or unsupported data
+
+## What the script does NOT migrate
+
+The helper script handles persona/memory/skill imports cleanly, but several
+classes of OpenClaw state live outside its scope. Walk through these
+manually after the script finishes — they bit us on the Hex migration
+(2026-05-23):
+
+1. **Workflows under `~/.openclaw/workspace/workflows/`** — OpenClaw's
+   folder-per-workflow pattern (AGENT.md + sibling state) doesn't map onto
+   Hermes. Skills are the right home for the agent procedure; cron jobs are
+   the right home for scheduling. Convert each workflow by hand: extract the
+   AGENT.md body into `~/.hermes/skills/<workflow-name>/SKILL.md` with
+   proper Hermes frontmatter (`name`, `description`, `version`, `license`,
+   `metadata.hermes.tags`), then wire scheduling with
+   `hermes cron create --name <name> --schedule "<cron>" --skill <name>
+   --deliver <local|telegram>`. Use `--disabled` to preserve prior
+   disabled state. Heartbeat-style workflows that need silence-on-clean
+   should return exactly `HEARTBEAT_OK` or `[SILENT]` per cron conventions.
+
+2. **OpenClaw `cron/jobs.json`** — not read by Hermes. Inspect it (path:
+   `~/.openclaw/cron/jobs.json`) to learn schedules, deliveries, and
+   enabled/disabled state, then recreate each job under Hermes cron. Match
+   the `deliver` channel and the `enabled` flag.
+
+3. **Restic / S3 backup scripts** — typically under
+   `~/.openclaw/scripts/backup-to-s3.sh` (or wherever the host put them).
+   They back up `$HOME/.openclaw`. After migration, rewrite the script to
+   target `$HOME/.hermes` and exclude regenerable Hermes paths:
+
+   ```
+   --exclude "$HOME/.hermes/hermes-agent"
+   --exclude "$HOME/.hermes/logs"
+   --exclude "$HOME/.hermes/cache"
+   --exclude "$HOME/.hermes/sandboxes"
+   --exclude "$HOME/.hermes/audio_cache"
+   --exclude "$HOME/.hermes/image_cache"
+   --exclude "$HOME/.hermes/backups"
+   --exclude "$HOME/.hermes/state.db-shm"
+   --exclude "$HOME/.hermes/state.db-wal"
+   --exclude "$HOME/.hermes/gateway.pid"
+   --exclude "$HOME/.hermes/gateway.lock"
+   --exclude "$HOME/.hermes/auth.lock"
+   ```
+
+   **Critical:** scope retention to the new path so it doesn't accidentally
+   prune the old OpenClaw snapshot history. Use
+   `restic forget --path "$HOME/.hermes" --keep-daily 7 ...` instead of an
+   un-scoped forget. The repo path (e.g. `openclaw-fleet-backups/<host>`)
+   should usually stay the same so snapshot history chains across the
+   migration; rename the bucket later as a separate ops task. Run the
+   script once manually after edit, confirm a snapshot lands under the new
+   path, then re-list snapshots to confirm prior history is intact.
+
+4. **External rsync / Dropbox mirrors of OpenClaw memory** — e.g. a
+   `~/Dropbox/Knowledge Base - <host>/` mirror of `~/.openclaw/memory/`.
+   Hermes memories live in a different shape (`~/.hermes/memories/` with
+   `MEMORY.md` + `USER.md`), so naively repointing the rsync with
+   `--delete` will WIPE the existing Dropbox knowledge base on the next
+   tick. The safe pattern:
+
+   ```bash
+   mkdir -p ~/.hermes/memories/cortex-archive
+   rsync -a --exclude "main.sqlite" --exclude "*.sqlite-shm" \
+     --exclude "*.sqlite-wal" \
+     ~/.openclaw/memory/ ~/.hermes/memories/cortex-archive/
+   # then repoint the rsync source to ~/.hermes/memories/
+   ```
+
+   That preserves the old Cortex KB inside the new memory dir and keeps
+   the Dropbox mirror useful.
+
+5. **Crontab entries that reference OpenClaw paths** — e.g. a
+   `health-check-cron.sh` that lives in an `openclaw-config` checkout, or
+   any user crontab line referencing `~/.openclaw/...`. Edit the crontab
+   to remove or repoint those lines:
+
+   ```bash
+   crontab -l > /tmp/cron.old
+   sed -i "s|\.openclaw/memory|.hermes/memories|g" /tmp/cron.old
+   # remove obsolete openclaw-config health-check lines
+   crontab /tmp/cron.old
+   ```
+
+6. **systemd user units** — `openclaw-gateway.service`,
+   `openclaw-health-check.{service,timer}`, `openclaw-backup-s3.{service,timer}`,
+   `openclaw-backup-verify.{service,timer}`,
+   `openclaw-workspace-backup.{service,timer}`. Stop and disable the
+   **timers** (not the services — timers trigger services). Many of these
+   are `static` units with no `[Install]` section, so disable applies to
+   the timer only:
+
+   ```bash
+   for t in openclaw-health-check.timer openclaw-backup-s3.timer \
+            openclaw-backup-verify.timer openclaw-workspace-backup.timer; do
+     systemctl --user stop "$t"
+     systemctl --user disable "$t"
+   done
+   systemctl --user list-units --state=active | grep -i openclaw  # expect none
+   ```
+
+   Leave `openclaw-gateway.service` disabled (the migration script's
+   compatibility shim or the user's setup should already have switched
+   delivery to `hermes-gateway.service`).
+
+7. **Helper processes / hooks** — e.g. `agentmail-hook-proxy.py` started
+   by `uv run` from the OpenClaw cron. `pkill -f agentmail-hook-proxy.py`
+   and confirm with `ps -ef | grep agentmail-hook | grep -v grep`.
+
+## Post-import skill curation
+
+`openclaw-imports/` is a fire-hose. After the script copies every
+OpenClaw skill into `~/.hermes/skills/openclaw-imports/`, audit them
+against the host's actual purpose before letting them broaden the agent's
+trigger surface:
+
+1. Read the host's MEMORY.md / USER.md to recall what the host is *for*
+   (e.g. coding box, fleet captain, personal device).
+2. For each imported skill, ask: does this serve that purpose on this
+   host? Productivity-CRM-meeting skills imported onto a coding box
+   should be dropped. Workflow-builder-style OpenClaw-specific skills
+   should be dropped (Hermes uses cron+skills, not OpenClaw "stewards").
+   Skills whose Hermes built-in is a strictly better version should also
+   be dropped — diff them with `diff -rq` and prefer the built-in unless
+   the OpenClaw version has unique value.
+3. Move the dropped skills into a recovery dir under
+   `/tmp/dropped-skills-bak/` rather than deleting outright, in case a
+   later session needs the content.
+
+On Hex (2026-05-23), this collapsed 24 imported skills down to 7 keepers
+plus the Hermes built-in `claude-code`.
+
+## Verification checklist (run after every host migration)
+
+Before declaring a host migrated, walk this checklist end-to-end and
+record results in `~/.hermes/plans/<host>-migration/`:
+
+1. **Gateway service is active:**
+   ```bash
+   systemctl --user is-active hermes-gateway   # expect: active
+   ```
+2. **No OpenClaw units active:**
+   ```bash
+   systemctl --user list-units --state=active | grep -i openclaw \
+     || echo "✓ none"
+   ```
+3. **Cron jobs loaded and healthy:**
+   ```bash
+   hermes cron list
+   ```
+   Confirm each job shows `[active]`, a real `Next run`, and a `Last run:
+   ... ok` if it's already fired.
+4. **End-to-end cron tick:** trigger a known-cheap job manually:
+   ```bash
+   hermes cron run <job-id>
+   ```
+   Wait one scheduler tick (≤90s), confirm a new file appears under
+   `~/.hermes/cron/output/<job-id>/`, and inspect the `## Response`
+   section. Heartbeat-style jobs should produce `HEARTBEAT_OK` or
+   `[SILENT]`.
+5. **Backup script runs and lands a snapshot:**
+   ```bash
+   bash ~/.hermes/scripts/backup-to-s3.sh
+   restic -r "<repo>" snapshots --path "$HOME/.hermes"
+   ```
+   Confirm the new snapshot exists AND prior `~/.openclaw` snapshots are
+   still listed.
+6. **Provider auth works:** read `hermes status` and confirm the
+   configured provider/model has a corresponding ✓ on its API key.
+7. **No stray OpenClaw processes:**
+   ```bash
+   ps -ef | grep -E "(openclaw|agentmail-hook)" | grep -v grep \
+     || echo "✓ none"
+   ```
+
+Only after all 7 pass should the migration be reported as complete.

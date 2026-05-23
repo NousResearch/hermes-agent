@@ -339,6 +339,33 @@ class TestGeneratedSystemdUnits:
 
         assert "/home/test/.nvm/versions/node/v24.14.0/bin" in unit
 
+    def test_user_unit_skips_pytest_temp_resolved_node_directory(self, monkeypatch):
+        # A ``~/.local/bin/node`` symlink can outlive the pytest tmpdir it
+        # originally pointed at. ``shutil.which("node")`` then resolves into
+        # ``/tmp/pytest-of-.../hermes_test/node/bin/node`` and the generated
+        # unit would otherwise persist that ephemeral path, causing
+        # ``hermes gateway status`` to flap "outdated" forever and the
+        # refresh path to refuse to write the polluted unit. (#31074)
+        monkeypatch.setattr(
+            gateway_cli.shutil,
+            "which",
+            lambda cmd: "/tmp/pytest-of-alice/pytest-42/test_x/hermes_test/node/bin/node"
+            if cmd == "node"
+            else None,
+        )
+
+        unit = gateway_cli.generate_systemd_unit(system=False)
+
+        # Scope the assertion to the PATH= line — HERMES_HOME under the test
+        # conftest legitimately sits inside the per-test pytest tmpdir.
+        import re
+
+        path_match = re.search(r'Environment="PATH=([^"]*)"', unit)
+        assert path_match is not None, "PATH environment missing from unit"
+        path_value = path_match.group(1)
+        assert "/pytest-of-" not in path_value
+        assert "/hermes_test/" not in path_value
+
     def test_user_unit_includes_wsl_windows_interop_paths(self, monkeypatch):
         monkeypatch.setattr(gateway_cli, "is_wsl", lambda: True)
         monkeypatch.setenv(
@@ -1628,6 +1655,66 @@ class TestProfileArg:
         plist = gateway_cli.generate_launchd_plist()
         assert "<string>--profile</string>" in plist
         assert "<string>mybot</string>" in plist
+
+    @staticmethod
+    def _launchd_path_value(plist: str) -> str:
+        # Extract just the PATH <string>…</string> payload so assertions can
+        # focus on the generated PATH and ignore HERMES_HOME/log paths, which
+        # legitimately sit under the test's tmp_path sandbox.
+        import re
+
+        match = re.search(
+            r"<key>PATH</key>\s*<string>(.*?)</string>",
+            plist,
+            flags=re.S,
+        )
+        assert match is not None, "PATH key missing from generated plist"
+        return match.group(1)
+
+    def test_launchd_plist_skips_pytest_temp_resolved_node_directory(self, tmp_path, monkeypatch):
+        # Same root cause as the systemd variant: a stale node symlink that
+        # resolves into a pytest tmpdir would otherwise leak into the
+        # installed plist's PATH. (#31074)
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir(parents=True)
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.setattr(gateway_cli, "get_hermes_home", lambda: hermes_home)
+        monkeypatch.setenv("PATH", "/usr/local/bin:/usr/bin")
+        monkeypatch.setattr(
+            gateway_cli.shutil,
+            "which",
+            lambda cmd: "/tmp/pytest-of-alice/pytest-42/test_x/hermes_test/node/bin/node"
+            if cmd == "node"
+            else None,
+        )
+
+        path_value = self._launchd_path_value(gateway_cli.generate_launchd_plist())
+
+        assert "/pytest-of-" not in path_value
+        assert "/hermes_test/" not in path_value
+
+    def test_launchd_plist_omits_pytest_temp_entries_from_shell_path(self, tmp_path, monkeypatch):
+        # The launchd plist captures the invoking shell's PATH so user-installed
+        # tools (nvm, Homebrew, etc.) stay reachable under launchd. If that PATH
+        # contains a pytest-leftover entry it should not be baked in. (#31074)
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir(parents=True)
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.setattr(gateway_cli, "get_hermes_home", lambda: hermes_home)
+        monkeypatch.setenv(
+            "PATH",
+            "/usr/local/bin:/tmp/pytest-of-alice/pytest-7/test_y/hermes_test/node/bin:/usr/bin",
+        )
+        monkeypatch.setattr(gateway_cli.shutil, "which", lambda cmd: None)
+
+        path_value = self._launchd_path_value(gateway_cli.generate_launchd_plist())
+
+        assert "/usr/local/bin" in path_value
+        assert "/usr/bin" in path_value
+        assert "/pytest-of-" not in path_value
+        assert "/hermes_test/" not in path_value
 
     def test_launchd_plist_path_uses_real_user_home_not_profile_home(self, tmp_path, monkeypatch):
         profile_dir = tmp_path / ".hermes" / "profiles" / "orcha"

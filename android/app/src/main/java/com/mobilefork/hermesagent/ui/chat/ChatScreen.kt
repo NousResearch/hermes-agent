@@ -291,6 +291,7 @@ fun ChatScreen(
                 startAuthMethod = ::startAuthMethod,
                 speakLastReply = { speak(viewModel.latestAssistantReply()) },
             ),
+            strings = strings,
         )
         if (commandResult.handled) {
             viewModel.consumeCommandResult(input, commandResult.feedback)
@@ -306,8 +307,7 @@ fun ChatScreen(
                     modifier = Modifier
                         .fillMaxSize()
                         .widthIn(max = 960.dp)
-                        .padding(horizontal = 16.dp, vertical = 12.dp)
-                        .imePadding(),
+                        .padding(horizontal = 16.dp, vertical = 12.dp),
                     verticalArrangement = Arrangement.spacedBy(12.dp),
                 ) {
                 ChatHeaderCard(
@@ -415,6 +415,9 @@ fun ChatScreen(
                     }
                 }
                 ChatComposer(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .imePadding(),
                     input = uiState.input,
                     attachments = uiState.attachments,
                     isSending = uiState.isSending,
@@ -605,6 +608,7 @@ private fun ChatBubble(
     val isUser = message.role == "user"
     val containerColor = if (isUser) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.surfaceVariant
     val contentColor = if (isUser) MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.onSurfaceVariant
+    val strings = LocalHermesStrings.current
     val roleLabel = if (isUser) "You" else "Hermes"
     Row(
         modifier = Modifier.fillMaxWidth(),
@@ -655,7 +659,7 @@ private fun ChatBubble(
                         IconButton(onClick = onSpeak) {
                             Icon(
                                 painter = painterResource(id = R.drawable.ic_action_speaker),
-                                contentDescription = "Speak reply",
+                                contentDescription = strings.speakReply(),
                                 tint = contentColor,
                             )
                         }
@@ -674,6 +678,7 @@ private fun CompactChatTurn(
 ) {
     var promptExpanded by rememberSaveable(turn.id) { mutableStateOf(false) }
     val userMessage = turn.userMessage
+    val strings = LocalHermesStrings.current
     Surface(
         modifier = Modifier
             .fillMaxWidth()
@@ -740,7 +745,7 @@ private fun CompactChatTurn(
                         ) {
                             Icon(
                                 painter = painterResource(id = R.drawable.ic_action_speaker),
-                                contentDescription = "Speak reply",
+                                contentDescription = strings.speakReply(),
                                 tint = MaterialTheme.colorScheme.primary,
                                 modifier = Modifier.size(18.dp),
                             )
@@ -759,7 +764,8 @@ private fun CompactPromptHeader(
     keywordHighlightingEnabled: Boolean,
     onToggle: () -> Unit,
 ) {
-    val label = if (expanded) "Your full prompt" else "Your prompt"
+    val strings = LocalHermesStrings.current
+    val label = strings.compactPromptLabel(expanded)
     Surface(
         modifier = Modifier
             .fillMaxWidth()
@@ -1245,6 +1251,7 @@ private fun ConversationHistoryList(
 
 @Composable
 private fun ChatComposer(
+    modifier: Modifier = Modifier,
     input: String,
     attachments: List<ChatAttachment>,
     isSending: Boolean,
@@ -1260,7 +1267,7 @@ private fun ChatComposer(
     val strings = LocalHermesStrings.current
     var actionMenuOpen by rememberSaveable { mutableStateOf(false) }
     Surface(
-        modifier = Modifier.fillMaxWidth(),
+        modifier = modifier,
         color = MaterialTheme.colorScheme.surface,
         shape = RoundedCornerShape(28.dp),
         tonalElevation = 2.dp,
@@ -1309,7 +1316,7 @@ private fun ChatComposer(
                                     contentDescription = null,
                                     modifier = Modifier.size(18.dp),
                                 )
-                                Text(" Image")
+                                Text(" ${strings.attachImage()}")
                             }
                             Button(
                                 onClick = {
@@ -1325,7 +1332,7 @@ private fun ChatComposer(
                                     contentDescription = null,
                                     modifier = Modifier.size(18.dp),
                                 )
-                                Text(" Camera")
+                                Text(" ${strings.camera()}")
                             }
                         }
                         QuietMetaText(text = strings.chatCommandsTip(isListening), color = MaterialTheme.colorScheme.onSurfaceVariant)
@@ -1374,7 +1381,7 @@ private fun ChatComposer(
                 IconButton(onClick = { actionMenuOpen = !actionMenuOpen }) {
                     Icon(
                         painter = painterResource(id = R.drawable.ic_nav_settings),
-                        contentDescription = "More input actions",
+                        contentDescription = strings.moreInputActions(),
                         tint = MaterialTheme.colorScheme.primary,
                         modifier = Modifier.size(22.dp),
                     )
@@ -1429,7 +1436,7 @@ private fun SignalIntelligenceQuickActionGrid(
         verticalArrangement = Arrangement.spacedBy(8.dp),
     ) {
         Text(
-            text = "Signal intelligence",
+            text = LocalHermesStrings.current.signalIntelligence(),
             style = MaterialTheme.typography.labelLarge,
             color = MaterialTheme.colorScheme.primary,
             maxLines = 1,

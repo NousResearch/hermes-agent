@@ -51,6 +51,10 @@ fun SettingsScreen(
     val strings = LocalHermesStrings.current
     val scrollState = rememberScrollState()
     val selectedPreset = ProviderPresets.find(uiState.provider)
+    val selectedProviderLabel = strings.providerDisplayLabel(
+        uiState.provider,
+        selectedPreset?.label ?: uiState.provider,
+    )
 
     SideEffect {
         onContextActionsChanged(emptyList())
@@ -70,7 +74,7 @@ fun SettingsScreen(
                     verticalArrangement = Arrangement.spacedBy(12.dp),
                 ) {
                     SettingsHelpCard(
-                        providerLabel = selectedPreset?.label ?: uiState.provider,
+                        providerLabel = selectedProviderLabel,
                         strings = strings,
                     )
                     LanguagePickerCard(
@@ -83,6 +87,7 @@ fun SettingsScreen(
                         onPromptChange = viewModel::updateCustomSystemPrompt,
                         onSave = viewModel::saveAgentPersona,
                         onClear = viewModel::clearAgentPersona,
+                        strings = strings,
                     )
                     AppearanceCard(
                         chatDisplayMode = uiState.chatDisplayMode,
@@ -103,6 +108,7 @@ fun SettingsScreen(
                         onCardShapeChange = viewModel::updateThemeCardShape,
                         onApplyPreset = viewModel::applyThemePreset,
                         onSaveAppearance = viewModel::saveAppearance,
+                        strings = strings,
                     )
                     OnDeviceInferenceCard(
                         onDeviceBackend = uiState.onDeviceBackend,
@@ -116,6 +122,7 @@ fun SettingsScreen(
                     OfflineAirplaneCard(
                         enabled = uiState.offlineAirplaneMode,
                         onChange = viewModel::updateOfflineAirplaneMode,
+                        strings = strings,
                     )
                     LocalModelDownloadsSection(
                         dataSaverMode = uiState.dataSaverMode,
@@ -128,7 +135,7 @@ fun SettingsScreen(
 
                     RemoteFallbackCard(
                         providerId = uiState.provider,
-                        providerLabel = selectedPreset?.label ?: uiState.provider,
+                        providerLabel = selectedProviderLabel,
                         baseUrl = uiState.baseUrl,
                         model = uiState.model,
                         apiKey = uiState.apiKey,
@@ -162,6 +169,7 @@ private fun AgentPersonaCard(
     onPromptChange: (String) -> Unit,
     onSave: () -> Unit,
     onClear: () -> Unit,
+    strings: com.mobilefork.hermesagent.ui.i18n.HermesStrings,
 ) {
     Surface(
         modifier = Modifier.fillMaxWidth(),
@@ -175,12 +183,12 @@ private fun AgentPersonaCard(
                 .padding(16.dp),
             verticalArrangement = Arrangement.spacedBy(12.dp),
         ) {
-            Text("Agent persona", style = MaterialTheme.typography.titleMedium)
+            Text(strings.agentPersonaTitle(), style = MaterialTheme.typography.titleMedium)
             OutlinedTextField(
                 value = customSystemPrompt,
                 onValueChange = onPromptChange,
-                label = { Text("Custom system prompt") },
-                placeholder = { Text("Example: stay concise, ask before external sends, prefer local tools first.") },
+                label = { Text(strings.customSystemPromptLabel()) },
+                placeholder = { Text(strings.customSystemPromptPlaceholder()) },
                 modifier = Modifier
                     .fillMaxWidth()
                     .testTag("AgentPersonaPrompt"),
@@ -188,7 +196,7 @@ private fun AgentPersonaCard(
                 maxLines = 8,
             )
             Text(
-                "${customSystemPrompt.length}/${AppSettings.MAX_CUSTOM_SYSTEM_PROMPT_CHARS} characters",
+                strings.characterCount(customSystemPrompt.length, AppSettings.MAX_CUSTOM_SYSTEM_PROMPT_CHARS),
                 style = MaterialTheme.typography.bodySmall,
             )
             FlowRow(
@@ -200,14 +208,14 @@ private fun AgentPersonaCard(
                     modifier = Modifier.testTag("SaveAgentPersonaButton"),
                     onClick = onSave,
                 ) {
-                    Text("Save persona")
+                    Text(strings.savePersonaLabel())
                 }
                 Button(
                     modifier = Modifier.testTag("ClearAgentPersonaButton"),
                     onClick = onClear,
                     enabled = customSystemPrompt.isNotBlank(),
                 ) {
-                    Text("Clear")
+                    Text(strings.clearLabel())
                 }
             }
         }
@@ -234,6 +242,7 @@ private fun AppearanceCard(
     onCardShapeChange: (String) -> Unit,
     onApplyPreset: (AppearanceThemePreset) -> Unit,
     onSaveAppearance: () -> Unit,
+    strings: com.mobilefork.hermesagent.ui.i18n.HermesStrings,
 ) {
     Surface(
         modifier = Modifier.fillMaxWidth(),
@@ -247,12 +256,12 @@ private fun AppearanceCard(
                 .padding(16.dp),
             verticalArrangement = Arrangement.spacedBy(12.dp),
         ) {
-            Text("Theme and chat layout", style = MaterialTheme.typography.titleMedium)
+            Text(strings.appearanceTitle(), style = MaterialTheme.typography.titleMedium)
             Text(
-                "Tune compact or expanded chat, keyword highlighting, app colours, and rounded or squared cards.",
+                strings.appearanceDescription(),
                 style = MaterialTheme.typography.bodySmall,
             )
-            Text("Chat display", style = MaterialTheme.typography.titleSmall)
+            Text(strings.chatDisplayLabel(), style = MaterialTheme.typography.titleSmall)
             FlowRow(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
@@ -263,14 +272,14 @@ private fun AppearanceCard(
                     onClick = { onChatDisplayModeChange("compact") },
                     enabled = chatDisplayMode != "compact",
                 ) {
-                    Text("Compact")
+                    Text(strings.compactModeLabel())
                 }
                 Button(
                     modifier = Modifier.testTag("ChatDisplayExpanded"),
                     onClick = { onChatDisplayModeChange("expanded") },
                     enabled = chatDisplayMode != "expanded",
                 ) {
-                    Text("Expanded")
+                    Text(strings.expandedModeLabel())
                 }
             }
             Row(
@@ -279,12 +288,12 @@ private fun AppearanceCard(
                 verticalAlignment = Alignment.CenterVertically,
             ) {
                 Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                    Text("Keyword and skill highlighting", style = MaterialTheme.typography.titleSmall)
-                    Text("Subtle pills for commands, tools, skills, attachments, and agent actions.", style = MaterialTheme.typography.bodySmall)
+                    Text(strings.keywordHighlightingTitle(), style = MaterialTheme.typography.titleSmall)
+                    Text(strings.keywordHighlightingDescription(), style = MaterialTheme.typography.bodySmall)
                 }
                 Switch(checked = keywordHighlightingEnabled, onCheckedChange = onKeywordHighlightingChange)
             }
-            Text("Colour presets", style = MaterialTheme.typography.titleSmall)
+            Text(strings.colourPresetsTitle(), style = MaterialTheme.typography.titleSmall)
             FlowRow(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
@@ -299,39 +308,39 @@ private fun AppearanceCard(
             OutlinedTextField(
                 value = themePrimaryHex,
                 onValueChange = onPrimaryHexChange,
-                label = { Text("Accent / user bubble hex") },
+                label = { Text(strings.accentHexLabel()) },
                 modifier = Modifier.fillMaxWidth(),
                 singleLine = true,
             )
             OutlinedTextField(
                 value = themeSecondaryHex,
                 onValueChange = onSecondaryHexChange,
-                label = { Text("Secondary accent hex") },
+                label = { Text(strings.secondaryAccentHexLabel()) },
                 modifier = Modifier.fillMaxWidth(),
                 singleLine = true,
             )
             OutlinedTextField(
                 value = themeBackgroundHex,
                 onValueChange = onBackgroundHexChange,
-                label = { Text("Background hex") },
+                label = { Text(strings.backgroundHexLabel()) },
                 modifier = Modifier.fillMaxWidth(),
                 singleLine = true,
             )
             OutlinedTextField(
                 value = themeSurfaceHex,
                 onValueChange = onSurfaceHexChange,
-                label = { Text("Composer/card surface hex") },
+                label = { Text(strings.composerSurfaceHexLabel()) },
                 modifier = Modifier.fillMaxWidth(),
                 singleLine = true,
             )
             OutlinedTextField(
                 value = themeSurfaceVariantHex,
                 onValueChange = onSurfaceVariantHexChange,
-                label = { Text("Assistant/card panel hex") },
+                label = { Text(strings.assistantPanelHexLabel()) },
                 modifier = Modifier.fillMaxWidth(),
                 singleLine = true,
             )
-            Text("Cards and boxes", style = MaterialTheme.typography.titleSmall)
+            Text(strings.cardsAndBoxesTitle(), style = MaterialTheme.typography.titleSmall)
             FlowRow(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
@@ -343,7 +352,7 @@ private fun AppearanceCard(
                         onClick = { onCardShapeChange(shape) },
                         enabled = themeCardShape != shape,
                     ) {
-                        Text(shape.replaceFirstChar { it.uppercase() })
+                        Text(strings.cardShapeLabel(shape))
                     }
                 }
             }
@@ -353,7 +362,7 @@ private fun AppearanceCard(
                     .testTag("SaveAppearanceButton"),
                 onClick = onSaveAppearance,
             ) {
-                Text("Save appearance")
+                Text(strings.saveAppearanceLabel())
             }
         }
     }
@@ -363,6 +372,7 @@ private fun AppearanceCard(
 private fun OfflineAirplaneCard(
     enabled: Boolean,
     onChange: (Boolean) -> Unit,
+    strings: com.mobilefork.hermesagent.ui.i18n.HermesStrings,
 ) {
     Surface(
         modifier = Modifier.fillMaxWidth(),
@@ -382,16 +392,16 @@ private fun OfflineAirplaneCard(
                 verticalAlignment = Alignment.CenterVertically,
             ) {
                 Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                    Text("Offline airplane mode", style = MaterialTheme.typography.titleMedium)
+                    Text(strings.offlineAirplaneModeTitle(), style = MaterialTheme.typography.titleMedium)
                     Text(
-                        "Blocks Hermes internet features while keeping local files, localhost model runtimes, and on-device automation available.",
+                        strings.offlineAirplaneModeDescription(),
                         style = MaterialTheme.typography.bodySmall,
                     )
                 }
                 Switch(checked = enabled, onCheckedChange = onChange)
             }
             Button(onClick = { onChange(!enabled) }) {
-                Text(if (enabled) "Turn app internet back on" else "Cut app internet")
+                Text(strings.offlineAirplaneToggleLabel(enabled))
             }
         }
     }
@@ -474,7 +484,7 @@ private fun RemoteFallbackCard(
                         onClick = { onSelectProvider(preset.id) },
                         enabled = preset.id != providerId,
                     ) {
-                        Text(preset.label)
+                        Text(strings.providerDisplayLabel(preset.id, preset.label))
                     }
                 }
             }
@@ -530,7 +540,10 @@ private fun RemoteFallbackCard(
                 keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
             )
             Text(strings.apiKeyHelp(), style = MaterialTheme.typography.bodySmall)
-            Text(ProviderPresets.credentialInputHelp(providerId), style = MaterialTheme.typography.bodySmall)
+            Text(
+                strings.providerCredentialInputHelp(ProviderPresets.apiKeyEnvVars(providerId)),
+                style = MaterialTheme.typography.bodySmall,
+            )
             Button(onClick = onSave) {
                 Text(strings.saveLabel())
             }
@@ -634,6 +647,8 @@ private fun localizedOnDeviceSummary(
     val trimmed = summary.trim()
     return when {
         trimmed.isBlank() -> strings.noCompatibleLocalModel
+        trimmed == "Remote provider mode" -> strings.remoteProviderMode()
+        trimmed == "Checking preferred local model…" -> strings.checkingPreferredLocalModel()
         trimmed.startsWith("No preferred local model") -> strings.noCompatibleLocalModel
         trimmed.startsWith("Preferred local model:") ->
             "${strings.preferredLocalModel}: ${trimmed.substringAfter(':').trim()}"

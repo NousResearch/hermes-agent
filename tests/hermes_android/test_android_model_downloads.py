@@ -90,8 +90,17 @@ def test_local_model_download_ui_mentions_hugging_face_progress_resume_and_mobil
     assert 'strings.localDownloadsExampleGuidance()' in downloads_ui
     assert 'strings.downloadManagerReliabilityDescription()' in downloads_ui
     assert 'strings.localDownloadStatusLine(item.runtimeFlavor, item.statusLabel)' in downloads_ui
+    assert 'strings.importModelFromPhoneFiles()' in downloads_ui
+    assert 'strings.offlineAirplaneLocalModelsOnly()' in downloads_ui
+    assert 'strings.recommendedLocalModelDescription(preset.id, preset.description)' in downloads_ui
+    assert 'strings.recommendedLocalModelTestedLabel(preset.id, preset.testedLabel)' in downloads_ui
+    assert 'strings.localModelUiText(uiState.workerCatalogStatus)' in downloads_ui
+    assert 'strings.localModelUiText(item.statusMessage)' in downloads_ui
     assert 'strings.restartOnMobileData()' in downloads_ui
     assert 'strings.openSystemDownloads()' in downloads_ui
+    assert 'fun importModelFromPhoneFiles()' in strings
+    assert 'fun recommendedLocalModelDescription' in strings
+    assert 'fun localModelUiText' in strings
     assert 'Enter any Hugging Face repo' in strings
     assert 'Qwen/Qwen2.5-1.5B-Instruct-GGUF' in strings
     assert 'litert-community/Phi-4-mini-instruct' in strings

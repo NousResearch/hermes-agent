@@ -308,7 +308,7 @@ def test_settings_opens_official_provider_key_pages():
     assert "viewModel::openProviderKeyPage" in settings_screen
     assert "viewModel::copyProviderKeyPage" in settings_screen
     assert "viewModel::checkProviderKeyPage" in settings_screen
-    assert "ProviderPresets.credentialInputHelp(providerId)" in settings_screen
+    assert "strings.providerCredentialInputHelp(ProviderPresets.apiKeyEnvVars(providerId))" in settings_screen
     assert "Intent.ACTION_VIEW" in browser_launcher
     assert "Uri.parse(targetUrl)" in settings_view_model
     assert "HermesProviderSetupWebActivity.open" in settings_view_model
@@ -351,13 +351,15 @@ def test_settings_opens_official_provider_key_pages():
     assert "KeyboardType.Password" in settings_screen
     assert "ProviderPresets.parseCredentialInput(snapshot.provider, snapshot.apiKey)" in settings_view_model
     assert "parsedCredential.importedFromEnvLine" in settings_view_model
-    assert "imported ${parsedCredential.sourceLabel} into secure storage" in settings_view_model
+    assert "strings.settingsSavedImportedCredential(parsedCredential.sourceLabel)" in settings_view_model
+    assert "imported $sourceLabel into secure storage" in strings
 
 
 def test_settings_can_import_saved_python_provider_credentials_without_blank_overwrite():
     settings_screen = (REPO_ROOT / "android/app/src/main/java/com/mobilefork/hermesagent/ui/settings/SettingsScreen.kt").read_text(encoding="utf-8")
     settings_view_model = (REPO_ROOT / "android/app/src/main/java/com/mobilefork/hermesagent/ui/settings/SettingsViewModel.kt").read_text(encoding="utf-8")
     auth_bridge = (REPO_ROOT / "hermes_android/auth_bridge.py").read_text(encoding="utf-8")
+    strings = (REPO_ROOT / "android/app/src/main/java/com/mobilefork/hermesagent/ui/i18n/HermesStrings.kt").read_text(encoding="utf-8")
 
     assert "onImportProviderCredential = viewModel::importSavedProviderCredential" in settings_screen
     assert "status = uiState.status" in settings_screen
@@ -368,7 +370,8 @@ def test_settings_can_import_saved_python_provider_credentials_without_blank_ove
     assert "secretsStore.saveApiKey(snapshot.provider, apiKey)" in settings_view_model
     assert "val providerApiKey = parsedCredential.apiKey" in settings_view_model
     assert "if (providerApiKey.isNotBlank())" in settings_view_model
-    assert "Blank API key field left existing Hermes credentials untouched" in settings_view_model
+    assert "strings.settingsSavedPreservedCredential()" in settings_view_model
+    assert "Blank API key field left existing Hermes credentials untouched" in strings
     assert "write_provider_auth_bundle" in settings_view_model
     assert "write_runtime_config" in settings_view_model
     assert "No saved Hermes credential found for $providerLabel" in settings_view_model

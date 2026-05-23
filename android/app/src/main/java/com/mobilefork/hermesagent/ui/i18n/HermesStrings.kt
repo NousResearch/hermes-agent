@@ -167,6 +167,748 @@ data class HermesStrings(
         AppLanguage.ENGLISH -> "Choose the provider you want Hermes to call directly. Save provider keys or tokens here; use Accounts for app sign-in."
     }
 
+    fun providerDisplayLabel(providerId: String, fallbackLabel: String): String {
+        return when (providerId.trim().lowercase()) {
+            "custom" -> when (language) {
+                AppLanguage.CHINESE -> "自定义 OpenAI 兼容端点"
+                AppLanguage.SPANISH -> "Endpoint personalizado compatible con OpenAI"
+                AppLanguage.GERMAN -> "Eigener OpenAI-kompatibler Endpunkt"
+                AppLanguage.PORTUGUESE -> "Endpoint personalizado compatível com OpenAI"
+                AppLanguage.FRENCH -> "Point de terminaison personnalisé compatible OpenAI"
+                AppLanguage.ENGLISH -> "Custom OpenAI-compatible"
+            }
+            else -> fallbackLabel
+        }
+    }
+
+    fun remoteProviderMode(): String = when (language) {
+        AppLanguage.CHINESE -> "远程提供商模式"
+        AppLanguage.SPANISH -> "Modo de proveedor remoto"
+        AppLanguage.GERMAN -> "Remote-Anbietermodus"
+        AppLanguage.PORTUGUESE -> "Modo de provedor remoto"
+        AppLanguage.FRENCH -> "Mode fournisseur distant"
+        AppLanguage.ENGLISH -> "Remote provider mode"
+    }
+
+    fun checkingPreferredLocalModel(): String = when (language) {
+        AppLanguage.CHINESE -> "正在检查首选本地模型…"
+        AppLanguage.SPANISH -> "Comprobando el modelo local preferido…"
+        AppLanguage.GERMAN -> "Bevorzugtes lokales Modell wird geprüft…"
+        AppLanguage.PORTUGUESE -> "Verificando modelo local preferido…"
+        AppLanguage.FRENCH -> "Vérification du modèle local préféré…"
+        AppLanguage.ENGLISH -> "Checking preferred local model…"
+    }
+
+    fun providerCredentialInputHelp(envVars: List<String>): String {
+        val primary = envVars.firstOrNull().orEmpty()
+        val aliases = envVars.drop(1).joinToString(separator = ", ")
+        return if (aliases.isBlank()) {
+            when (language) {
+                AppLanguage.CHINESE -> "可粘贴原始密钥，或形如 $primary=... 的 CLI 环境变量行。"
+                AppLanguage.SPANISH -> "Pega una clave sin formato o una línea de entorno CLI como $primary=..."
+                AppLanguage.GERMAN -> "Füge einen Rohschlüssel oder eine CLI-Umgebungszeile wie $primary=... ein."
+                AppLanguage.PORTUGUESE -> "Cole uma chave bruta ou uma linha de ambiente CLI como $primary=..."
+                AppLanguage.FRENCH -> "Collez une clé brute ou une ligne d’environnement CLI comme $primary=..."
+                AppLanguage.ENGLISH -> "Paste a raw key or a CLI env line such as $primary=..."
+            }
+        } else {
+            when (language) {
+                AppLanguage.CHINESE -> "可粘贴原始密钥，或形如 $primary=... 的 CLI 环境变量行；也接受 $aliases。"
+                AppLanguage.SPANISH -> "Pega una clave sin formato o una línea de entorno CLI como $primary=...; también acepta $aliases."
+                AppLanguage.GERMAN -> "Füge einen Rohschlüssel oder eine CLI-Umgebungszeile wie $primary=... ein; akzeptiert auch $aliases."
+                AppLanguage.PORTUGUESE -> "Cole uma chave bruta ou uma linha de ambiente CLI como $primary=...; também aceita $aliases."
+                AppLanguage.FRENCH -> "Collez une clé brute ou une ligne d’environnement CLI comme $primary=... ; accepte aussi $aliases."
+                AppLanguage.ENGLISH -> "Paste a raw key or a CLI env line such as $primary=...; also accepts $aliases."
+            }
+        }
+    }
+
+    fun appearanceTitle(): String = when (language) {
+        AppLanguage.CHINESE -> "主题与聊天布局"
+        AppLanguage.SPANISH -> "Tema y diseño del chat"
+        AppLanguage.GERMAN -> "Theme und Chat-Layout"
+        AppLanguage.PORTUGUESE -> "Tema e layout do chat"
+        AppLanguage.FRENCH -> "Thème et disposition du chat"
+        AppLanguage.ENGLISH -> "Theme and chat layout"
+    }
+
+    fun appearanceDescription(): String = when (language) {
+        AppLanguage.CHINESE -> "调整紧凑或展开聊天、关键词高亮、应用配色以及卡片圆角或方角。"
+        AppLanguage.SPANISH -> "Ajusta chat compacto o expandido, resaltado de palabras clave, colores de la app y tarjetas redondeadas o cuadradas."
+        AppLanguage.GERMAN -> "Passe kompakten oder erweiterten Chat, Hervorhebung, App-Farben und runde oder eckige Karten an."
+        AppLanguage.PORTUGUESE -> "Ajuste chat compacto ou expandido, destaque de palavras-chave, cores do app e cartões arredondados ou quadrados."
+        AppLanguage.FRENCH -> "Réglez le chat compact ou étendu, la mise en évidence, les couleurs de l’app et les cartes arrondies ou carrées."
+        AppLanguage.ENGLISH -> "Tune compact or expanded chat, keyword highlighting, app colours, and rounded or squared cards."
+    }
+
+    fun chatDisplayLabel(): String = when (language) {
+        AppLanguage.CHINESE -> "聊天显示"
+        AppLanguage.SPANISH -> "Vista del chat"
+        AppLanguage.GERMAN -> "Chat-Anzeige"
+        AppLanguage.PORTUGUESE -> "Exibição do chat"
+        AppLanguage.FRENCH -> "Affichage du chat"
+        AppLanguage.ENGLISH -> "Chat display"
+    }
+
+    fun compactModeLabel(): String = when (language) {
+        AppLanguage.CHINESE -> "紧凑"
+        AppLanguage.SPANISH -> "Compacto"
+        AppLanguage.GERMAN -> "Kompakt"
+        AppLanguage.PORTUGUESE -> "Compacto"
+        AppLanguage.FRENCH -> "Compact"
+        AppLanguage.ENGLISH -> "Compact"
+    }
+
+    fun expandedModeLabel(): String = when (language) {
+        AppLanguage.CHINESE -> "展开"
+        AppLanguage.SPANISH -> "Expandido"
+        AppLanguage.GERMAN -> "Erweitert"
+        AppLanguage.PORTUGUESE -> "Expandido"
+        AppLanguage.FRENCH -> "Étendu"
+        AppLanguage.ENGLISH -> "Expanded"
+    }
+
+    fun keywordHighlightingTitle(): String = when (language) {
+        AppLanguage.CHINESE -> "关键词与技能高亮"
+        AppLanguage.SPANISH -> "Resaltado de palabras clave y habilidades"
+        AppLanguage.GERMAN -> "Keyword- und Skill-Hervorhebung"
+        AppLanguage.PORTUGUESE -> "Destaque de palavras-chave e habilidades"
+        AppLanguage.FRENCH -> "Mise en évidence des mots-clés et compétences"
+        AppLanguage.ENGLISH -> "Keyword and skill highlighting"
+    }
+
+    fun keywordHighlightingDescription(): String = when (language) {
+        AppLanguage.CHINESE -> "为命令、工具、技能、附件和代理操作显示轻量标签。"
+        AppLanguage.SPANISH -> "Píldoras sutiles para comandos, herramientas, habilidades, adjuntos y acciones del agente."
+        AppLanguage.GERMAN -> "Dezente Markierungen für Befehle, Tools, Skills, Anhänge und Agentenaktionen."
+        AppLanguage.PORTUGUESE -> "Marcadores sutis para comandos, ferramentas, habilidades, anexos e ações do agente."
+        AppLanguage.FRENCH -> "Pastilles discrètes pour commandes, outils, compétences, pièces jointes et actions d’agent."
+        AppLanguage.ENGLISH -> "Subtle pills for commands, tools, skills, attachments, and agent actions."
+    }
+
+    fun colourPresetsTitle(): String = when (language) {
+        AppLanguage.CHINESE -> "配色预设"
+        AppLanguage.SPANISH -> "Preajustes de color"
+        AppLanguage.GERMAN -> "Farbvorlagen"
+        AppLanguage.PORTUGUESE -> "Predefinições de cor"
+        AppLanguage.FRENCH -> "Préréglages de couleur"
+        AppLanguage.ENGLISH -> "Colour presets"
+    }
+
+    fun accentHexLabel(): String = when (language) {
+        AppLanguage.CHINESE -> "强调色 / 用户气泡十六进制"
+        AppLanguage.SPANISH -> "Hex de acento / burbuja de usuario"
+        AppLanguage.GERMAN -> "Akzent / Nutzerblase Hex"
+        AppLanguage.PORTUGUESE -> "Hex de destaque / bolha do usuário"
+        AppLanguage.FRENCH -> "Hex accent / bulle utilisateur"
+        AppLanguage.ENGLISH -> "Accent / user bubble hex"
+    }
+
+    fun secondaryAccentHexLabel(): String = when (language) {
+        AppLanguage.CHINESE -> "第二强调色十六进制"
+        AppLanguage.SPANISH -> "Hex de acento secundario"
+        AppLanguage.GERMAN -> "Sekundärer Akzent Hex"
+        AppLanguage.PORTUGUESE -> "Hex de destaque secundário"
+        AppLanguage.FRENCH -> "Hex accent secondaire"
+        AppLanguage.ENGLISH -> "Secondary accent hex"
+    }
+
+    fun backgroundHexLabel(): String = when (language) {
+        AppLanguage.CHINESE -> "背景色十六进制"
+        AppLanguage.SPANISH -> "Hex de fondo"
+        AppLanguage.GERMAN -> "Hintergrund Hex"
+        AppLanguage.PORTUGUESE -> "Hex do fundo"
+        AppLanguage.FRENCH -> "Hex arrière-plan"
+        AppLanguage.ENGLISH -> "Background hex"
+    }
+
+    fun composerSurfaceHexLabel(): String = when (language) {
+        AppLanguage.CHINESE -> "输入框 / 卡片表面十六进制"
+        AppLanguage.SPANISH -> "Hex de compositor / tarjeta"
+        AppLanguage.GERMAN -> "Composer-/Kartenfläche Hex"
+        AppLanguage.PORTUGUESE -> "Hex do compositor / cartão"
+        AppLanguage.FRENCH -> "Hex surface compositeur / carte"
+        AppLanguage.ENGLISH -> "Composer/card surface hex"
+    }
+
+    fun assistantPanelHexLabel(): String = when (language) {
+        AppLanguage.CHINESE -> "助手 / 卡片面板十六进制"
+        AppLanguage.SPANISH -> "Hex de panel asistente / tarjeta"
+        AppLanguage.GERMAN -> "Assistent-/Kartenpanel Hex"
+        AppLanguage.PORTUGUESE -> "Hex do painel assistente / cartão"
+        AppLanguage.FRENCH -> "Hex panneau assistant / carte"
+        AppLanguage.ENGLISH -> "Assistant/card panel hex"
+    }
+
+    fun cardsAndBoxesTitle(): String = when (language) {
+        AppLanguage.CHINESE -> "卡片与输入框"
+        AppLanguage.SPANISH -> "Tarjetas y cajas"
+        AppLanguage.GERMAN -> "Karten und Felder"
+        AppLanguage.PORTUGUESE -> "Cartões e caixas"
+        AppLanguage.FRENCH -> "Cartes et boîtes"
+        AppLanguage.ENGLISH -> "Cards and boxes"
+    }
+
+    fun cardShapeLabel(shape: String): String = when (shape.trim().lowercase()) {
+        "square" -> when (language) {
+            AppLanguage.CHINESE -> "方角"
+            AppLanguage.SPANISH -> "Cuadrado"
+            AppLanguage.GERMAN -> "Eckig"
+            AppLanguage.PORTUGUESE -> "Quadrado"
+            AppLanguage.FRENCH -> "Carré"
+            AppLanguage.ENGLISH -> "Square"
+        }
+        "soft" -> when (language) {
+            AppLanguage.CHINESE -> "柔和"
+            AppLanguage.SPANISH -> "Suave"
+            AppLanguage.GERMAN -> "Weich"
+            AppLanguage.PORTUGUESE -> "Suave"
+            AppLanguage.FRENCH -> "Doux"
+            AppLanguage.ENGLISH -> "Soft"
+        }
+        else -> when (language) {
+            AppLanguage.CHINESE -> "圆角"
+            AppLanguage.SPANISH -> "Redondeado"
+            AppLanguage.GERMAN -> "Rund"
+            AppLanguage.PORTUGUESE -> "Arredondado"
+            AppLanguage.FRENCH -> "Arrondi"
+            AppLanguage.ENGLISH -> "Rounded"
+        }
+    }
+
+    fun saveAppearanceLabel(): String = when (language) {
+        AppLanguage.CHINESE -> "保存外观"
+        AppLanguage.SPANISH -> "Guardar apariencia"
+        AppLanguage.GERMAN -> "Erscheinungsbild speichern"
+        AppLanguage.PORTUGUESE -> "Salvar aparência"
+        AppLanguage.FRENCH -> "Enregistrer l’apparence"
+        AppLanguage.ENGLISH -> "Save appearance"
+    }
+
+    fun offlineAirplaneModeTitle(): String = when (language) {
+        AppLanguage.CHINESE -> "离线飞行模式"
+        AppLanguage.SPANISH -> "Modo avión sin conexión"
+        AppLanguage.GERMAN -> "Offline-Flugmodus"
+        AppLanguage.PORTUGUESE -> "Modo avião offline"
+        AppLanguage.FRENCH -> "Mode avion hors ligne"
+        AppLanguage.ENGLISH -> "Offline airplane mode"
+    }
+
+    fun offlineAirplaneModeDescription(): String = when (language) {
+        AppLanguage.CHINESE -> "阻止 Hermes 联网功能，同时保留本地文件、本机模型运行时和设备端自动化。"
+        AppLanguage.SPANISH -> "Bloquea las funciones de internet de Hermes y mantiene archivos locales, runtimes localhost y automatización en el dispositivo."
+        AppLanguage.GERMAN -> "Blockiert Hermes-Internetfunktionen, während lokale Dateien, localhost-Modellruntimes und Geräteautomation verfügbar bleiben."
+        AppLanguage.PORTUGUESE -> "Bloqueia recursos de internet do Hermes mantendo arquivos locais, runtimes localhost e automação no dispositivo."
+        AppLanguage.FRENCH -> "Bloque les fonctions Internet de Hermes tout en gardant fichiers locaux, runtimes localhost et automatisation sur l’appareil."
+        AppLanguage.ENGLISH -> "Blocks Hermes internet features while keeping local files, localhost model runtimes, and on-device automation available."
+    }
+
+    fun offlineAirplaneToggleLabel(enabled: Boolean): String = if (enabled) {
+        when (language) {
+            AppLanguage.CHINESE -> "恢复应用联网"
+            AppLanguage.SPANISH -> "Reactivar internet de la app"
+            AppLanguage.GERMAN -> "App-Internet wieder aktivieren"
+            AppLanguage.PORTUGUESE -> "Reativar internet do app"
+            AppLanguage.FRENCH -> "Rétablir Internet pour l’app"
+            AppLanguage.ENGLISH -> "Turn app internet back on"
+        }
+    } else {
+        when (language) {
+            AppLanguage.CHINESE -> "断开应用联网"
+            AppLanguage.SPANISH -> "Cortar internet de la app"
+            AppLanguage.GERMAN -> "App-Internet trennen"
+            AppLanguage.PORTUGUESE -> "Cortar internet do app"
+            AppLanguage.FRENCH -> "Couper Internet pour l’app"
+            AppLanguage.ENGLISH -> "Cut app internet"
+        }
+    }
+
+    fun offlineAirplaneStatus(enabled: Boolean): String = if (enabled) {
+        when (language) {
+            AppLanguage.CHINESE -> "离线飞行模式已开启。Hermes 会阻止门户、提供商设置、模型下载和 HTTP 自动化；本地后端与 localhost 仍可用。"
+            AppLanguage.SPANISH -> "El modo avión offline está activado. Hermes bloqueará portal, configuración de proveedores, descargas de modelos y automatizaciones HTTP; los backends locales y localhost siguen disponibles."
+            AppLanguage.GERMAN -> "Offline-Flugmodus ist aktiv. Hermes blockiert Portal, Anbieter-Setup, Modell-Downloads und HTTP-Automationen; lokale Backends und localhost bleiben verfügbar."
+            AppLanguage.PORTUGUESE -> "O modo avião offline está ativado. O Hermes bloqueará portal, configuração de provedores, downloads de modelos e automações HTTP; backends locais e localhost seguem disponíveis."
+            AppLanguage.FRENCH -> "Le mode avion hors ligne est activé. Hermes bloque le portail, la configuration fournisseur, les téléchargements de modèles et les automatisations HTTP ; les backends locaux et localhost restent disponibles."
+            AppLanguage.ENGLISH -> "Offline airplane mode is on. Hermes will block portal, provider setup, model downloads, and HTTP automations while local backends and localhost stay available."
+        }
+    } else {
+        when (language) {
+            AppLanguage.CHINESE -> "离线飞行模式已关闭。Hermes 联网功能已恢复。"
+            AppLanguage.SPANISH -> "El modo avión offline está desactivado. Las funciones de internet de Hermes vuelven a estar disponibles."
+            AppLanguage.GERMAN -> "Offline-Flugmodus ist aus. Hermes-Internetfunktionen sind wieder verfügbar."
+            AppLanguage.PORTUGUESE -> "O modo avião offline está desativado. Os recursos de internet do Hermes estão disponíveis novamente."
+            AppLanguage.FRENCH -> "Le mode avion hors ligne est désactivé. Les fonctions Internet de Hermes sont de nouveau disponibles."
+            AppLanguage.ENGLISH -> "Offline airplane mode is off. Hermes internet features are available again."
+        }
+    }
+
+    fun agentPersonaLimited(limit: Int): String = when (language) {
+        AppLanguage.CHINESE -> "代理人格最多 $limit 个字符。"
+        AppLanguage.SPANISH -> "La personalidad del agente está limitada a $limit caracteres."
+        AppLanguage.GERMAN -> "Die Agenten-Persona ist auf $limit Zeichen begrenzt."
+        AppLanguage.PORTUGUESE -> "A persona do agente é limitada a $limit caracteres."
+        AppLanguage.FRENCH -> "La personnalité de l’agent est limitée à $limit caractères."
+        AppLanguage.ENGLISH -> "Agent persona is limited to $limit characters."
+    }
+
+    fun agentPersonaSaved(): String = when (language) {
+        AppLanguage.CHINESE -> "代理人格已保存。新聊天会包含这个自定义系统提示词。"
+        AppLanguage.SPANISH -> "Personalidad del agente guardada. Los chats nuevos incluirán este prompt de sistema personalizado."
+        AppLanguage.GERMAN -> "Agenten-Persona gespeichert. Neue Chats enthalten diesen eigenen Systemprompt."
+        AppLanguage.PORTUGUESE -> "Persona do agente salva. Novos chats incluirão este prompt de sistema personalizado."
+        AppLanguage.FRENCH -> "Personnalité de l’agent enregistrée. Les nouveaux chats incluront cette invite système personnalisée."
+        AppLanguage.ENGLISH -> "Agent persona saved. New chats will include this custom system prompt."
+    }
+
+    fun agentPersonaCleared(): String = when (language) {
+        AppLanguage.CHINESE -> "代理人格已清除。"
+        AppLanguage.SPANISH -> "Personalidad del agente borrada."
+        AppLanguage.GERMAN -> "Agenten-Persona gelöscht."
+        AppLanguage.PORTUGUESE -> "Persona do agente limpa."
+        AppLanguage.FRENCH -> "Personnalité de l’agent effacée."
+        AppLanguage.ENGLISH -> "Agent persona cleared."
+    }
+
+    fun agentPersonaTitle(): String = when (language) {
+        AppLanguage.CHINESE -> "代理人格"
+        AppLanguage.SPANISH -> "Personalidad del agente"
+        AppLanguage.GERMAN -> "Agenten-Persona"
+        AppLanguage.PORTUGUESE -> "Persona do agente"
+        AppLanguage.FRENCH -> "Personnalité de l’agent"
+        AppLanguage.ENGLISH -> "Agent persona"
+    }
+
+    fun customSystemPromptLabel(): String = when (language) {
+        AppLanguage.CHINESE -> "自定义系统提示词"
+        AppLanguage.SPANISH -> "Prompt de sistema personalizado"
+        AppLanguage.GERMAN -> "Eigener Systemprompt"
+        AppLanguage.PORTUGUESE -> "Prompt de sistema personalizado"
+        AppLanguage.FRENCH -> "Invite système personnalisée"
+        AppLanguage.ENGLISH -> "Custom system prompt"
+    }
+
+    fun customSystemPromptPlaceholder(): String = when (language) {
+        AppLanguage.CHINESE -> "示例：保持简洁，外部发送前先询问，优先使用本地工具。"
+        AppLanguage.SPANISH -> "Ejemplo: sé conciso, pregunta antes de envíos externos y prefiere herramientas locales."
+        AppLanguage.GERMAN -> "Beispiel: knapp bleiben, vor externem Senden fragen, lokale Tools bevorzugen."
+        AppLanguage.PORTUGUESE -> "Exemplo: seja conciso, pergunte antes de envios externos e prefira ferramentas locais."
+        AppLanguage.FRENCH -> "Exemple : rester concis, demander avant les envois externes, préférer les outils locaux."
+        AppLanguage.ENGLISH -> "Example: stay concise, ask before external sends, prefer local tools first."
+    }
+
+    fun characterCount(current: Int, limit: Int): String = when (language) {
+        AppLanguage.CHINESE -> "$current/$limit 个字符"
+        AppLanguage.SPANISH -> "$current/$limit caracteres"
+        AppLanguage.GERMAN -> "$current/$limit Zeichen"
+        AppLanguage.PORTUGUESE -> "$current/$limit caracteres"
+        AppLanguage.FRENCH -> "$current/$limit caractères"
+        AppLanguage.ENGLISH -> "$current/$limit characters"
+    }
+
+    fun savePersonaLabel(): String = when (language) {
+        AppLanguage.CHINESE -> "保存人格"
+        AppLanguage.SPANISH -> "Guardar personalidad"
+        AppLanguage.GERMAN -> "Persona speichern"
+        AppLanguage.PORTUGUESE -> "Salvar persona"
+        AppLanguage.FRENCH -> "Enregistrer la personnalité"
+        AppLanguage.ENGLISH -> "Save persona"
+    }
+
+    fun clearLabel(): String = when (language) {
+        AppLanguage.CHINESE -> "清除"
+        AppLanguage.SPANISH -> "Borrar"
+        AppLanguage.GERMAN -> "Leeren"
+        AppLanguage.PORTUGUESE -> "Limpar"
+        AppLanguage.FRENCH -> "Effacer"
+        AppLanguage.ENGLISH -> "Clear"
+    }
+
+    fun chatDisplayModeSet(mode: String): String {
+        val label = if (mode.trim().equals("expanded", ignoreCase = true)) expandedModeLabel() else compactModeLabel()
+        return when (language) {
+            AppLanguage.CHINESE -> "聊天显示模式已设为 $label。"
+            AppLanguage.SPANISH -> "Vista del chat configurada en $label."
+            AppLanguage.GERMAN -> "Chat-Anzeige auf $label gesetzt."
+            AppLanguage.PORTUGUESE -> "Exibição do chat definida como $label."
+            AppLanguage.FRENCH -> "Affichage du chat défini sur $label."
+            AppLanguage.ENGLISH -> "Chat display mode set to $label."
+        }
+    }
+
+    fun keywordHighlightingStatus(enabled: Boolean): String = if (enabled) {
+        when (language) {
+            AppLanguage.CHINESE -> "关键词高亮已开启。"
+            AppLanguage.SPANISH -> "Resaltado de palabras clave activado."
+            AppLanguage.GERMAN -> "Keyword-Hervorhebung ist aktiv."
+            AppLanguage.PORTUGUESE -> "Destaque de palavras-chave ativado."
+            AppLanguage.FRENCH -> "Mise en évidence activée."
+            AppLanguage.ENGLISH -> "Keyword highlighting is on."
+        }
+    } else {
+        when (language) {
+            AppLanguage.CHINESE -> "关键词高亮已关闭。"
+            AppLanguage.SPANISH -> "Resaltado de palabras clave desactivado."
+            AppLanguage.GERMAN -> "Keyword-Hervorhebung ist aus."
+            AppLanguage.PORTUGUESE -> "Destaque de palavras-chave desativado."
+            AppLanguage.FRENCH -> "Mise en évidence désactivée."
+            AppLanguage.ENGLISH -> "Keyword highlighting is off."
+        }
+    }
+
+    fun cardShapeSet(shape: String): String = when (language) {
+        AppLanguage.CHINESE -> "卡片形状已设为 ${cardShapeLabel(shape)}。"
+        AppLanguage.SPANISH -> "Forma de tarjeta configurada en ${cardShapeLabel(shape)}."
+        AppLanguage.GERMAN -> "Kartenform auf ${cardShapeLabel(shape)} gesetzt."
+        AppLanguage.PORTUGUESE -> "Formato do cartão definido como ${cardShapeLabel(shape)}."
+        AppLanguage.FRENCH -> "Forme des cartes définie sur ${cardShapeLabel(shape)}."
+        AppLanguage.ENGLISH -> "Card shape set to ${cardShapeLabel(shape)}."
+    }
+
+    fun themePresetLoaded(label: String): String = when (language) {
+        AppLanguage.CHINESE -> "已加载 $label 配色。点保存外观以持久保存。"
+        AppLanguage.SPANISH -> "Colores de $label cargados. Guarda la apariencia para conservarlos."
+        AppLanguage.GERMAN -> "$label-Farben geladen. Speichere das Erscheinungsbild, um sie zu behalten."
+        AppLanguage.PORTUGUESE -> "Cores $label carregadas. Salve a aparência para persistir."
+        AppLanguage.FRENCH -> "Couleurs $label chargées. Enregistrez l’apparence pour les conserver."
+        AppLanguage.ENGLISH -> "Loaded $label colours. Save appearance to persist them."
+    }
+
+    fun appearanceSaved(): String = when (language) {
+        AppLanguage.CHINESE -> "外观已保存。"
+        AppLanguage.SPANISH -> "Apariencia guardada."
+        AppLanguage.GERMAN -> "Erscheinungsbild gespeichert."
+        AppLanguage.PORTUGUESE -> "Aparência salva."
+        AppLanguage.FRENCH -> "Apparence enregistrée."
+        AppLanguage.ENGLISH -> "Appearance saved."
+    }
+
+    fun settingsSaveStarted(): String = when (language) {
+        AppLanguage.CHINESE -> "正在保存设置并重启 Hermes 运行时…"
+        AppLanguage.SPANISH -> "Guardando ajustes y reiniciando el runtime de Hermes…"
+        AppLanguage.GERMAN -> "Einstellungen werden gespeichert und Hermes-Runtime wird neu gestartet…"
+        AppLanguage.PORTUGUESE -> "Salvando configurações e reiniciando o runtime do Hermes…"
+        AppLanguage.FRENCH -> "Enregistrement des réglages et redémarrage du runtime Hermes…"
+        AppLanguage.ENGLISH -> "Saving settings and restarting Hermes runtime..."
+    }
+
+    fun settingsSavedBackendRestarted(): String = when (language) {
+        AppLanguage.CHINESE -> "设置已保存，后端已重启。"
+        AppLanguage.SPANISH -> "Ajustes guardados y backend reiniciado."
+        AppLanguage.GERMAN -> "Einstellungen gespeichert und Backend neu gestartet."
+        AppLanguage.PORTUGUESE -> "Configurações salvas e backend reiniciado."
+        AppLanguage.FRENCH -> "Réglages enregistrés et backend redémarré."
+        AppLanguage.ENGLISH -> "Settings saved and backend restarted"
+    }
+
+    fun settingsSavedImportedCredential(sourceLabel: String): String = when (language) {
+        AppLanguage.CHINESE -> "设置已保存，已将 $sourceLabel 导入安全存储并重启后端。"
+        AppLanguage.SPANISH -> "Ajustes guardados, $sourceLabel importado al almacenamiento seguro y backend reiniciado."
+        AppLanguage.GERMAN -> "Einstellungen gespeichert, $sourceLabel in sicheren Speicher importiert und Backend neu gestartet."
+        AppLanguage.PORTUGUESE -> "Configurações salvas, $sourceLabel importado para o armazenamento seguro e backend reiniciado."
+        AppLanguage.FRENCH -> "Réglages enregistrés, $sourceLabel importé dans le stockage sécurisé et backend redémarré."
+        AppLanguage.ENGLISH -> "Settings saved, imported $sourceLabel into secure storage, and backend restarted"
+    }
+
+    fun settingsSavedDataSaver(): String = when (language) {
+        AppLanguage.CHINESE -> "设置已保存。省流模式会让大型下载等待 Wi-Fi / 非计费网络。"
+        AppLanguage.SPANISH -> "Ajustes guardados. El modo ahorro de datos mantiene descargas grandes en Wi-Fi o redes no medidas."
+        AppLanguage.GERMAN -> "Einstellungen gespeichert. Datensparmodus hält große Downloads auf WLAN oder ungetakteten Netzen."
+        AppLanguage.PORTUGUESE -> "Configurações salvas. O modo economia de dados mantém downloads grandes no Wi-Fi ou redes não tarifadas."
+        AppLanguage.FRENCH -> "Réglages enregistrés. Le mode économie de données garde les gros téléchargements sur Wi-Fi ou réseau non limité."
+        AppLanguage.ENGLISH -> "Settings saved. Data saver mode now keeps heavy downloads on Wi-Fi / unmetered networks."
+    }
+
+    fun settingsSavedPreservedCredential(): String = when (language) {
+        AppLanguage.CHINESE -> "设置已保存，后端已重启。空白 API 密钥栏保留了已有 Hermes 凭据。"
+        AppLanguage.SPANISH -> "Ajustes guardados y backend reiniciado. El campo de clave API vacío conservó las credenciales Hermes existentes."
+        AppLanguage.GERMAN -> "Einstellungen gespeichert und Backend neu gestartet. Das leere API-Schlüsselfeld hat vorhandene Hermes-Zugangsdaten beibehalten."
+        AppLanguage.PORTUGUESE -> "Configurações salvas e backend reiniciado. O campo de chave API vazio manteve as credenciais Hermes existentes."
+        AppLanguage.FRENCH -> "Réglages enregistrés et backend redémarré. Le champ de clé API vide a conservé les identifiants Hermes existants."
+        AppLanguage.ENGLISH -> "Settings saved and backend restarted. Blank API key field left existing Hermes credentials untouched."
+    }
+
+    fun settingsSaveFailed(errorName: String): String = when (language) {
+        AppLanguage.CHINESE -> "设置保存失败（$errorName）。"
+        AppLanguage.SPANISH -> "Error al guardar ajustes ($errorName)."
+        AppLanguage.GERMAN -> "Speichern der Einstellungen fehlgeschlagen ($errorName)."
+        AppLanguage.PORTUGUESE -> "Falha ao salvar configurações ($errorName)."
+        AppLanguage.FRENCH -> "Échec de l’enregistrement des réglages ($errorName)."
+        AppLanguage.ENGLISH -> "Settings save failed ($errorName)."
+    }
+
+    fun onDeviceBackendReady(): String = when (language) {
+        AppLanguage.CHINESE -> "设备端后端已就绪，Hermes 运行时已重启"
+        AppLanguage.SPANISH -> "Backend en el dispositivo listo y runtime de Hermes reiniciado"
+        AppLanguage.GERMAN -> "On-Device-Backend bereit und Hermes-Runtime neu gestartet"
+        AppLanguage.PORTUGUESE -> "Backend no dispositivo pronto e runtime do Hermes reiniciado"
+        AppLanguage.FRENCH -> "Backend sur l’appareil prêt et runtime Hermes redémarré"
+        AppLanguage.ENGLISH -> "On-device backend ready and Hermes runtime restarted"
+    }
+
+    fun offlineAirplaneKeptRemoteFallbackDisabled(statusMessage: String): String = when (language) {
+        AppLanguage.CHINESE -> "$statusMessage。离线飞行模式保持远程回退关闭。"
+        AppLanguage.SPANISH -> "$statusMessage. El modo avión offline mantuvo desactivado el respaldo remoto."
+        AppLanguage.GERMAN -> "$statusMessage. Offline-Flugmodus hat den Remote-Fallback deaktiviert gehalten."
+        AppLanguage.PORTUGUESE -> "$statusMessage. O modo avião offline manteve o fallback remoto desativado."
+        AppLanguage.FRENCH -> "$statusMessage. Le mode avion hors ligne a gardé le secours distant désactivé."
+        AppLanguage.ENGLISH -> "$statusMessage. Offline airplane mode kept remote fallback disabled."
+    }
+
+    fun stayedOnSavedRemoteProvider(statusMessage: String): String = when (language) {
+        AppLanguage.CHINESE -> "$statusMessage。Hermes 保持使用已保存的远程提供商。"
+        AppLanguage.SPANISH -> "$statusMessage. Hermes permaneció en tu proveedor remoto guardado."
+        AppLanguage.GERMAN -> "$statusMessage. Hermes blieb beim gespeicherten Remote-Anbieter."
+        AppLanguage.PORTUGUESE -> "$statusMessage. O Hermes permaneceu no provedor remoto salvo."
+        AppLanguage.FRENCH -> "$statusMessage. Hermes est resté sur le fournisseur distant enregistré."
+        AppLanguage.ENGLISH -> "$statusMessage. Hermes stayed on your saved remote provider."
+    }
+
+    fun compactPromptLabel(expanded: Boolean): String = if (expanded) {
+        when (language) {
+            AppLanguage.CHINESE -> "完整提示词"
+            AppLanguage.SPANISH -> "Prompt completo"
+            AppLanguage.GERMAN -> "Vollständiger Prompt"
+            AppLanguage.PORTUGUESE -> "Prompt completo"
+            AppLanguage.FRENCH -> "Invite complète"
+            AppLanguage.ENGLISH -> "Your full prompt"
+        }
+    } else {
+        when (language) {
+            AppLanguage.CHINESE -> "你的提示词"
+            AppLanguage.SPANISH -> "Tu prompt"
+            AppLanguage.GERMAN -> "Dein Prompt"
+            AppLanguage.PORTUGUESE -> "Seu prompt"
+            AppLanguage.FRENCH -> "Votre invite"
+            AppLanguage.ENGLISH -> "Your prompt"
+        }
+    }
+
+    fun speakReply(): String = when (language) {
+        AppLanguage.CHINESE -> "朗读回复"
+        AppLanguage.SPANISH -> "Leer respuesta"
+        AppLanguage.GERMAN -> "Antwort vorlesen"
+        AppLanguage.PORTUGUESE -> "Ler resposta"
+        AppLanguage.FRENCH -> "Lire la réponse"
+        AppLanguage.ENGLISH -> "Speak reply"
+    }
+
+    fun moreInputActions(): String = when (language) {
+        AppLanguage.CHINESE -> "更多输入操作"
+        AppLanguage.SPANISH -> "Más acciones de entrada"
+        AppLanguage.GERMAN -> "Weitere Eingabeaktionen"
+        AppLanguage.PORTUGUESE -> "Mais ações de entrada"
+        AppLanguage.FRENCH -> "Plus d’actions de saisie"
+        AppLanguage.ENGLISH -> "More input actions"
+    }
+
+    fun attachImage(): String = when (language) {
+        AppLanguage.CHINESE -> "图片"
+        AppLanguage.SPANISH -> "Imagen"
+        AppLanguage.GERMAN -> "Bild"
+        AppLanguage.PORTUGUESE -> "Imagem"
+        AppLanguage.FRENCH -> "Image"
+        AppLanguage.ENGLISH -> "Image"
+    }
+
+    fun camera(): String = when (language) {
+        AppLanguage.CHINESE -> "相机"
+        AppLanguage.SPANISH -> "Cámara"
+        AppLanguage.GERMAN -> "Kamera"
+        AppLanguage.PORTUGUESE -> "Câmera"
+        AppLanguage.FRENCH -> "Caméra"
+        AppLanguage.ENGLISH -> "Camera"
+    }
+
+    fun signalIntelligence(): String = when (language) {
+        AppLanguage.CHINESE -> "信号智能"
+        AppLanguage.SPANISH -> "Inteligencia de señal"
+        AppLanguage.GERMAN -> "Signalintelligenz"
+        AppLanguage.PORTUGUESE -> "Inteligência de sinais"
+        AppLanguage.FRENCH -> "Intelligence des signaux"
+        AppLanguage.ENGLISH -> "Signal intelligence"
+    }
+
+    fun chatCommandHelp(): String = when (language) {
+        AppLanguage.CHINESE -> "可用应用命令：/new、/history、/clear、/accounts、/settings、/device、/portal、/auth、/signin <openrouter|openai|chatgpt|claude|gemini|qwen|qwen-coding-plan|qwen-oauth|zai|google|email|phone>、/provider <id>、/model <name>、/speak last。"
+        AppLanguage.SPANISH -> "Comandos disponibles: /new, /history, /clear, /accounts, /settings, /device, /portal, /auth, /signin <openrouter|openai|chatgpt|claude|gemini|qwen|qwen-coding-plan|qwen-oauth|zai|google|email|phone>, /provider <id>, /model <name>, /speak last."
+        AppLanguage.GERMAN -> "Verfügbare Befehle: /new, /history, /clear, /accounts, /settings, /device, /portal, /auth, /signin <openrouter|openai|chatgpt|claude|gemini|qwen|qwen-coding-plan|qwen-oauth|zai|google|email|phone>, /provider <id>, /model <name>, /speak last."
+        AppLanguage.PORTUGUESE -> "Comandos disponíveis: /new, /history, /clear, /accounts, /settings, /device, /portal, /auth, /signin <openrouter|openai|chatgpt|claude|gemini|qwen|qwen-coding-plan|qwen-oauth|zai|google|email|phone>, /provider <id>, /model <name>, /speak last."
+        AppLanguage.FRENCH -> "Commandes disponibles : /new, /history, /clear, /accounts, /settings, /device, /portal, /auth, /signin <openrouter|openai|chatgpt|claude|gemini|qwen|qwen-coding-plan|qwen-oauth|zai|google|email|phone>, /provider <id>, /model <name>, /speak last."
+        AppLanguage.ENGLISH -> "Available app commands: /new, /history, /clear, /accounts, /settings, /device, /portal, /auth, /signin <openrouter|openai|chatgpt|claude|gemini|qwen|qwen-coding-plan|qwen-oauth|zai|google|email|phone>, /provider <id>, /model <name>, /speak last."
+    }
+
+    fun chatCommandOpenedAccounts(): String = when (language) {
+        AppLanguage.CHINESE -> "已打开账户页面，可管理登录和提供商认证。"
+        AppLanguage.SPANISH -> "Cuentas abierto para gestionar inicios de sesión y autenticación de proveedores."
+        AppLanguage.GERMAN -> "Konten geöffnet, damit du Anmeldungen und Anbieter-Auth verwalten kannst."
+        AppLanguage.PORTUGUESE -> "Contas aberto para gerenciar logins e autenticação de provedores."
+        AppLanguage.FRENCH -> "Comptes ouvert pour gérer connexions et authentification fournisseur."
+        AppLanguage.ENGLISH -> "Opened Accounts so you can manage sign-ins and provider auth."
+    }
+
+    fun chatCommandOpenedSettings(): String = when (language) {
+        AppLanguage.CHINESE -> "已打开设置，可配置提供商、基础 URL、模型和 API 密钥。"
+        AppLanguage.SPANISH -> "Ajustes abierto para proveedor, URL base, modelo y clave API."
+        AppLanguage.GERMAN -> "Einstellungen für Anbieter, Basis-URL, Modell und API-Schlüssel geöffnet."
+        AppLanguage.PORTUGUESE -> "Configurações abertas para provedor, URL base, modelo e chave API."
+        AppLanguage.FRENCH -> "Réglages ouverts pour fournisseur, URL de base, modèle et clé API."
+        AppLanguage.ENGLISH -> "Opened Settings for provider, base URL, model, and API key controls."
+    }
+
+    fun chatCommandOpenedDevice(): String = when (language) {
+        AppLanguage.CHINESE -> "已打开设备页面，可使用 Linux 命令、共享文件夹和无障碍控制。"
+        AppLanguage.SPANISH -> "Dispositivo abierto para comandos Linux, carpetas compartidas y controles de accesibilidad."
+        AppLanguage.GERMAN -> "Gerät für Linux-Befehle, freigegebene Ordner und Bedienhilfen geöffnet."
+        AppLanguage.PORTUGUESE -> "Dispositivo aberto para comandos Linux, pastas compartilhadas e controles de acessibilidade."
+        AppLanguage.FRENCH -> "Appareil ouvert pour commandes Linux, dossiers partagés et contrôles d’accessibilité."
+        AppLanguage.ENGLISH -> "Opened Device for Linux commands, shared folders, and accessibility controls."
+    }
+
+    fun chatCommandOpenedPortal(): String = when (language) {
+        AppLanguage.CHINESE -> "已打开提供商门户页面。"
+        AppLanguage.SPANISH -> "Página del portal de proveedores abierta."
+        AppLanguage.GERMAN -> "Anbieterportal geöffnet."
+        AppLanguage.PORTUGUESE -> "Página do portal de provedores aberta."
+        AppLanguage.FRENCH -> "Page du portail fournisseur ouverte."
+        AppLanguage.ENGLISH -> "Opened the Provider Portal page."
+    }
+
+    fun chatCommandProviderUsage(): String = when (language) {
+        AppLanguage.CHINESE -> "用法：/provider <provider-id>"
+        AppLanguage.SPANISH -> "Uso: /provider <provider-id>"
+        AppLanguage.GERMAN -> "Nutzung: /provider <provider-id>"
+        AppLanguage.PORTUGUESE -> "Uso: /provider <provider-id>"
+        AppLanguage.FRENCH -> "Utilisation : /provider <provider-id>"
+        AppLanguage.ENGLISH -> "Usage: /provider <provider-id>"
+    }
+
+    fun chatCommandProviderApplied(providerId: String): String = when (language) {
+        AppLanguage.CHINESE -> "已应用提供商 $providerId，并重启 Hermes 后端。"
+        AppLanguage.SPANISH -> "Proveedor $providerId aplicado y backend de Hermes reiniciado."
+        AppLanguage.GERMAN -> "Anbieter $providerId angewendet und Hermes-Backend neu gestartet."
+        AppLanguage.PORTUGUESE -> "Provedor $providerId aplicado e backend do Hermes reiniciado."
+        AppLanguage.FRENCH -> "Fournisseur $providerId appliqué et backend Hermes redémarré."
+        AppLanguage.ENGLISH -> "Applied provider $providerId and restarted the Hermes backend."
+    }
+
+    fun chatCommandUnknownProvider(providerId: String): String = when (language) {
+        AppLanguage.CHINESE -> "未知提供商“$providerId”。请打开设置查看可用提供商配置。"
+        AppLanguage.SPANISH -> "Proveedor desconocido '$providerId'. Abre Ajustes para ver perfiles disponibles."
+        AppLanguage.GERMAN -> "Unbekannter Anbieter '$providerId'. Öffne Einstellungen für verfügbare Profile."
+        AppLanguage.PORTUGUESE -> "Provedor desconhecido '$providerId'. Abra Configurações para ver os perfis disponíveis."
+        AppLanguage.FRENCH -> "Fournisseur inconnu '$providerId'. Ouvrez Réglages pour voir les profils disponibles."
+        AppLanguage.ENGLISH -> "Unknown provider '$providerId'. Open Settings for the available provider profiles."
+    }
+
+    fun chatCommandModelUsage(): String = when (language) {
+        AppLanguage.CHINESE -> "用法：/model <model-name>"
+        AppLanguage.SPANISH -> "Uso: /model <model-name>"
+        AppLanguage.GERMAN -> "Nutzung: /model <model-name>"
+        AppLanguage.PORTUGUESE -> "Uso: /model <model-name>"
+        AppLanguage.FRENCH -> "Utilisation : /model <model-name>"
+        AppLanguage.ENGLISH -> "Usage: /model <model-name>"
+    }
+
+    fun chatCommandModelUpdated(modelName: String): String = when (language) {
+        AppLanguage.CHINESE -> "已将当前 Hermes 模型更新为“$modelName”，并重启后端。"
+        AppLanguage.SPANISH -> "Modelo activo de Hermes actualizado a '$modelName' y backend reiniciado."
+        AppLanguage.GERMAN -> "Aktives Hermes-Modell auf '$modelName' aktualisiert und Backend neu gestartet."
+        AppLanguage.PORTUGUESE -> "Modelo Hermes ativo atualizado para '$modelName' e backend reiniciado."
+        AppLanguage.FRENCH -> "Modèle Hermes actif mis à jour vers '$modelName' et backend redémarré."
+        AppLanguage.ENGLISH -> "Updated the active Hermes model to '$modelName' and restarted the backend."
+    }
+
+    fun chatCommandModelFailed(modelName: String): String = when (language) {
+        AppLanguage.CHINESE -> "无法应用模型“$modelName”。请打开设置直接编辑模型。"
+        AppLanguage.SPANISH -> "No se pudo aplicar el modelo '$modelName'. Abre Ajustes para editarlo directamente."
+        AppLanguage.GERMAN -> "Modell '$modelName' konnte nicht angewendet werden. Bearbeite es direkt in den Einstellungen."
+        AppLanguage.PORTUGUESE -> "Não foi possível aplicar o modelo '$modelName'. Abra Configurações para editar diretamente."
+        AppLanguage.FRENCH -> "Impossible d’appliquer le modèle '$modelName'. Ouvrez Réglages pour le modifier directement."
+        AppLanguage.ENGLISH -> "Could not apply model '$modelName'. Open Settings to edit the model directly."
+    }
+
+    fun chatCommandSignInUsage(): String = when (language) {
+        AppLanguage.CHINESE -> "用法：/signin <openrouter|openai|chatgpt|claude|gemini|qwen|qwen-coding-plan|qwen-oauth|zai|google|email|phone>"
+        AppLanguage.SPANISH -> "Uso: /signin <openrouter|openai|chatgpt|claude|gemini|qwen|qwen-coding-plan|qwen-oauth|zai|google|email|phone>"
+        AppLanguage.GERMAN -> "Nutzung: /signin <openrouter|openai|chatgpt|claude|gemini|qwen|qwen-coding-plan|qwen-oauth|zai|google|email|phone>"
+        AppLanguage.PORTUGUESE -> "Uso: /signin <openrouter|openai|chatgpt|claude|gemini|qwen|qwen-coding-plan|qwen-oauth|zai|google|email|phone>"
+        AppLanguage.FRENCH -> "Utilisation : /signin <openrouter|openai|chatgpt|claude|gemini|qwen|qwen-coding-plan|qwen-oauth|zai|google|email|phone>"
+        AppLanguage.ENGLISH -> "Usage: /signin <openrouter|openai|chatgpt|claude|gemini|qwen|qwen-coding-plan|qwen-oauth|zai|google|email|phone>"
+    }
+
+    fun chatCommandOpenRouterOAuth(): String = when (language) {
+        AppLanguage.CHINESE -> "已在浏览器中打开 OpenRouter OAuth。请批准 Hermes 保存用户可控 API 密钥，或在设置中粘贴 OpenRouter API 密钥。"
+        AppLanguage.SPANISH -> "OAuth de OpenRouter abierto en el navegador. Autoriza a Hermes a guardar una clave API controlada por ti, o pega una clave API de OpenRouter en Ajustes."
+        AppLanguage.GERMAN -> "OpenRouter OAuth im Browser geöffnet. Erlaube Hermes, einen nutzergesteuerten API-Schlüssel zu speichern, oder füge ihn in Einstellungen ein."
+        AppLanguage.PORTUGUESE -> "OAuth do OpenRouter aberto no navegador. Autorize o Hermes a salvar uma chave API controlada por você, ou cole uma chave OpenRouter em Configurações."
+        AppLanguage.FRENCH -> "OAuth OpenRouter ouvert dans le navigateur. Autorisez Hermes à enregistrer une clé API contrôlée par vous, ou collez une clé OpenRouter dans Réglages."
+        AppLanguage.ENGLISH -> "Opened OpenRouter OAuth in your browser. Approve Hermes to save a user-controlled API key, or paste an OpenRouter API key in Settings."
+    }
+
+    fun chatCommandLegacyQwenOAuth(): String = when (language) {
+        AppLanguage.CHINESE -> "已在设置中准备旧版 qwen-oauth 令牌配置，并在浏览器中打开提供商设置页。Qwen OAuth 登录已于 2026-04-15 停用；新 Qwen Cloud API 密钥配置请使用 /signin qwen。"
+        AppLanguage.SPANISH -> "Configuración legacy qwen-oauth preparada en Ajustes y página de proveedor abierta en el navegador. Los inicios Qwen OAuth terminaron el 2026-04-15; usa /signin qwen para nuevas claves API de Qwen Cloud."
+        AppLanguage.GERMAN -> "Legacy qwen-oauth-Token-Setup in Einstellungen vorbereitet und Anbieter-Setup im Browser geöffnet. Qwen OAuth-Anmeldungen wurden am 2026-04-15 eingestellt; nutze /signin qwen für neue Qwen-Cloud-API-Schlüssel."
+        AppLanguage.PORTUGUESE -> "Configuração legacy qwen-oauth preparada em Configurações e página do provedor aberta no navegador. Logins Qwen OAuth foram encerrados em 2026-04-15; use /signin qwen para novas chaves API Qwen Cloud."
+        AppLanguage.FRENCH -> "Configuration legacy qwen-oauth préparée dans Réglages et page fournisseur ouverte dans le navigateur. Les connexions Qwen OAuth ont été arrêtées le 2026-04-15 ; utilisez /signin qwen pour les nouvelles clés API Qwen Cloud."
+        AppLanguage.ENGLISH -> "Prepared legacy qwen-oauth token setup in Settings and opened the provider setup page in your browser. Qwen OAuth sign-ins were discontinued on 2026-04-15; use /signin qwen for new Qwen Cloud API-key setup."
+    }
+
+    fun chatCommandProviderTokenSetup(method: String): String = when (language) {
+        AppLanguage.CHINESE -> "已在设置中准备 $method API 密钥/令牌配置，并在浏览器中打开提供商设置页。请在该处粘贴提供商凭据以驱动 Hermes。"
+        AppLanguage.SPANISH -> "Configuración de clave API/token de $method preparada en Ajustes y página de proveedor abierta en el navegador. Pega allí la credencial para alimentar Hermes."
+        AppLanguage.GERMAN -> "$method API-Schlüssel/Token-Setup in Einstellungen vorbereitet und Anbieter-Setup im Browser geöffnet. Füge dort die Zugangsdaten ein, um Hermes zu betreiben."
+        AppLanguage.PORTUGUESE -> "Configuração de chave API/token de $method preparada em Configurações e página do provedor aberta no navegador. Cole a credencial ali para alimentar o Hermes."
+        AppLanguage.FRENCH -> "Configuration clé API/jeton $method préparée dans Réglages et page fournisseur ouverte dans le navigateur. Collez l’identifiant fournisseur pour alimenter Hermes."
+        AppLanguage.ENGLISH -> "Prepared $method API-key/token setup in Settings and opened the provider setup page in your browser. Paste the provider credential there to power Hermes."
+    }
+
+    fun chatCommandCorr3xtSignIn(method: String): String = when (language) {
+        AppLanguage.CHINESE -> "已为 $method 打开 Corr3xt 应用登录。请在浏览器中完成，然后返回 Hermes。"
+        AppLanguage.SPANISH -> "Inicio de sesión Corr3xt abierto para $method. Complétalo en el navegador y vuelve a Hermes."
+        AppLanguage.GERMAN -> "Corr3xt-App-Anmeldung für $method geöffnet. Schließe sie im Browser ab und kehre zu Hermes zurück."
+        AppLanguage.PORTUGUESE -> "Login Corr3xt aberto para $method. Complete no navegador e volte ao Hermes."
+        AppLanguage.FRENCH -> "Connexion Corr3xt ouverte pour $method. Terminez dans le navigateur puis revenez à Hermes."
+        AppLanguage.ENGLISH -> "Opened Corr3xt app sign-in for $method. Complete it in your browser, then come back to Hermes."
+    }
+
+    fun chatCommandSignInFailed(method: String): String = when (language) {
+        AppLanguage.CHINESE -> "无法启动“$method”登录。请在账户中配置可访问的 Corr3xt URL，或在设置中使用提供商 API 密钥。"
+        AppLanguage.SPANISH -> "No se pudo iniciar sesión para '$method'. Configura una URL Corr3xt alcanzable en Cuentas o usa claves API de proveedor en Ajustes."
+        AppLanguage.GERMAN -> "Anmeldung für '$method' konnte nicht gestartet werden. Konfiguriere eine erreichbare Corr3xt-URL in Konten oder nutze Anbieter-API-Schlüssel in Einstellungen."
+        AppLanguage.PORTUGUESE -> "Não foi possível iniciar login para '$method'. Configure uma URL Corr3xt acessível em Contas ou use chaves API de provedor em Configurações."
+        AppLanguage.FRENCH -> "Impossible de démarrer la connexion pour '$method'. Configurez une URL Corr3xt joignable dans Comptes ou utilisez des clés API fournisseur dans Réglages."
+        AppLanguage.ENGLISH -> "Could not start sign-in for '$method'. Configure a reachable Corr3xt URL in Accounts, or use provider API keys in Settings."
+    }
+
+    fun chatCommandSpeakingLatest(): String = when (language) {
+        AppLanguage.CHINESE -> "正在朗读最新 Hermes 回复。"
+        AppLanguage.SPANISH -> "Leyendo la última respuesta de Hermes."
+        AppLanguage.GERMAN -> "Neueste Hermes-Antwort wird vorgelesen."
+        AppLanguage.PORTUGUESE -> "Lendo a resposta Hermes mais recente."
+        AppLanguage.FRENCH -> "Lecture de la dernière réponse Hermes."
+        AppLanguage.ENGLISH -> "Speaking the latest Hermes reply."
+    }
+
+    fun chatCommandNoReplyToSpeak(): String = when (language) {
+        AppLanguage.CHINESE -> "还没有可朗读的助手回复。"
+        AppLanguage.SPANISH -> "Aún no hay respuesta del asistente para leer."
+        AppLanguage.GERMAN -> "Es gibt noch keine Assistentenantwort zum Vorlesen."
+        AppLanguage.PORTUGUESE -> "Ainda não há resposta do assistente para ler."
+        AppLanguage.FRENCH -> "Aucune réponse de l’assistant à lire pour l’instant."
+        AppLanguage.ENGLISH -> "There is no assistant reply available to speak yet."
+    }
+
+    fun chatCommandSpeakUsage(): String = when (language) {
+        AppLanguage.CHINESE -> "用法：/speak last"
+        AppLanguage.SPANISH -> "Uso: /speak last"
+        AppLanguage.GERMAN -> "Nutzung: /speak last"
+        AppLanguage.PORTUGUESE -> "Uso: /speak last"
+        AppLanguage.FRENCH -> "Utilisation : /speak last"
+        AppLanguage.ENGLISH -> "Usage: /speak last"
+    }
+
     fun defaultBaseUrlSummary(providerLabel: String, defaultBaseUrl: String): String = when (language) {
         AppLanguage.CHINESE -> "$providerLabel 的默认地址：$defaultBaseUrl"
         AppLanguage.SPANISH -> "URL predeterminada para $providerLabel: $defaultBaseUrl"
@@ -888,6 +1630,270 @@ data class HermesStrings(
         AppLanguage.PORTUGUESE -> "Aguardando o callback do Corr3xt para $label."
         AppLanguage.FRENCH -> "En attente du callback Corr3xt pour $label."
         AppLanguage.ENGLISH -> "Waiting for Corr3xt callback for $label."
+    }
+
+    fun importModelFromPhoneFiles(): String = when (language) {
+        AppLanguage.CHINESE -> "从手机文件导入模型"
+        AppLanguage.SPANISH -> "Importar modelo desde archivos del teléfono"
+        AppLanguage.GERMAN -> "Modell aus Telefon-Dateien importieren"
+        AppLanguage.PORTUGUESE -> "Importar modelo dos arquivos do telefone"
+        AppLanguage.FRENCH -> "Importer un modèle depuis les fichiers du téléphone"
+        AppLanguage.ENGLISH -> "Import model from phone files"
+    }
+
+    fun offlineAirplaneLocalModelsOnly(): String = when (language) {
+        AppLanguage.CHINESE -> "离线飞行模式已开启，因此 Hermes 只会使用已导入或已下载的本地模型。"
+        AppLanguage.SPANISH -> "El modo avión sin conexión está activo, por lo que Hermes solo usará modelos locales importados o ya descargados."
+        AppLanguage.GERMAN -> "Der Offline-Flugmodus ist aktiv; Hermes nutzt daher nur importierte oder bereits heruntergeladene lokale Modelle."
+        AppLanguage.PORTUGUESE -> "O modo avião offline está ativado, então o Hermes usará apenas modelos locais importados ou já baixados."
+        AppLanguage.FRENCH -> "Le mode avion hors ligne est actif ; Hermes utilisera donc seulement les modèles locaux importés ou déjà téléchargés."
+        AppLanguage.ENGLISH -> "Offline airplane mode is on, so Hermes will only use imported or already-downloaded local models."
+    }
+
+    fun recommendedLocalModelDescription(presetId: String, fallback: String): String = when (presetId) {
+        "qwen35-08b-q4km-gguf" -> when (language) {
+            AppLanguage.CHINESE -> "小型 Unsloth GGUF 模型，适合在手机上快速验证可见聊天回复、文件创建/删除以及原生工具调用。"
+            AppLanguage.SPANISH -> "Modelo GGUF pequeño de Unsloth para respuestas visibles rápidas, creación y borrado de archivos, y validación de herramientas nativas en teléfonos."
+            AppLanguage.GERMAN -> "Kleines Unsloth-GGUF-Modell für schnelle sichtbare Chat-Antworten, Datei-Erstellung und -Löschung sowie native Tool-Calling-Validierung auf Telefonen."
+            AppLanguage.PORTUGUESE -> "Modelo GGUF pequeno da Unsloth para respostas visíveis rápidas, criação e exclusão de arquivos e validação de chamadas de ferramentas nativas em telefones."
+            AppLanguage.FRENCH -> "Petit modèle GGUF Unsloth pour des réponses visibles rapides, la création/suppression de fichiers et la validation des appels d’outils natifs sur téléphone."
+            AppLanguage.ENGLISH -> fallback
+        }
+        "gemma4-e2b-litert-lm" -> when (language) {
+            AppLanguage.CHINESE -> "Hermes 移动聊天的一等 Gemma 4 本地运行时目标，覆盖图像能力运行时管线、MTP 加速和 Android 代理工具。"
+            AppLanguage.SPANISH -> "Objetivo local Gemma 4 de primera clase para chat móvil de Hermes, con canalización de imagen, aceleración MTP y herramientas de agente Android."
+            AppLanguage.GERMAN -> "Erstklassiges lokales Gemma-4-Laufzeitziel für Hermes Mobile Chat mit Bild-Pipeline, MTP-Beschleunigung und Android-Agentenwerkzeugen."
+            AppLanguage.PORTUGUESE -> "Alvo local Gemma 4 de primeira classe para o chat móvel do Hermes, com suporte a imagem, aceleração MTP e ferramentas de agente Android."
+            AppLanguage.FRENCH -> "Cible locale Gemma 4 de premier niveau pour le chat mobile Hermes, avec pipeline image, accélération MTP et outils d’agent Android."
+            AppLanguage.ENGLISH -> fallback
+        }
+        "gemma4-e4b-litert-lm" -> when (language) {
+            AppLanguage.CHINESE -> "更大的 Gemma 4 LiteRT-LM 模型，仍低于 5 GB 测试上限；使用 Google AI Edge Gallery 当前的 MTP 更新工件，在高内存手机上获得更高质量的本地代理回复。"
+            AppLanguage.SPANISH -> "Modelo Gemma 4 LiteRT-LM más grande, por debajo del límite de prueba de 5 GB, con el artefacto MTP actual de Google AI Edge Gallery para respuestas locales de mayor calidad en teléfonos con mucha RAM."
+            AppLanguage.GERMAN -> "Größeres Gemma-4-LiteRT-LM-Modell unter der 5-GB-Testgrenze mit aktuellem MTP-Artefakt aus Google AI Edge Gallery für bessere lokale Agentenantworten auf RAM-starken Telefonen."
+            AppLanguage.PORTUGUESE -> "Modelo Gemma 4 LiteRT-LM maior, abaixo do limite de teste de 5 GB, usando o artefato MTP atual do Google AI Edge Gallery para respostas locais melhores em telefones com muita RAM."
+            AppLanguage.FRENCH -> "Modèle Gemma 4 LiteRT-LM plus grand sous le plafond de test de 5 Go, utilisant l’artefact MTP actuel de Google AI Edge Gallery pour de meilleures réponses locales sur téléphones à forte RAM."
+            AppLanguage.ENGLISH -> fallback
+        }
+        "gemma3-1b-litert-lm" -> when (language) {
+            AppLanguage.CHINESE -> "小型 Gemma 3 兼容性目标，适合低内存设备和快速本地运行时启动。"
+            AppLanguage.SPANISH -> "Objetivo de compatibilidad Gemma 3 pequeño para dispositivos con poca memoria y arranque local rápido."
+            AppLanguage.GERMAN -> "Kleines Gemma-3-Kompatibilitätsziel für Geräte mit wenig Speicher und schnellen lokalen Laufzeitstart."
+            AppLanguage.PORTUGUESE -> "Alvo pequeno de compatibilidade Gemma 3 para dispositivos com pouca memória e inicialização local rápida."
+            AppLanguage.FRENCH -> "Petite cible de compatibilité Gemma 3 pour les appareils à faible mémoire et le démarrage local rapide."
+            AppLanguage.ENGLISH -> fallback
+        }
+        else -> fallback
+    }
+
+    fun recommendedLocalModelTestedLabel(presetId: String, fallback: String): String = when (presetId) {
+        "qwen35-08b-q4km-gguf" -> when (language) {
+            AppLanguage.CHINESE -> "Unsloth Q4_K_M 手机工具调用"
+            AppLanguage.SPANISH -> "Herramientas en teléfono con Unsloth Q4_K_M"
+            AppLanguage.GERMAN -> "Unsloth Q4_K_M Tool-Calling auf Telefonen"
+            AppLanguage.PORTUGUESE -> "Chamada de ferramentas no telefone com Unsloth Q4_K_M"
+            AppLanguage.FRENCH -> "Appels d’outils sur téléphone avec Unsloth Q4_K_M"
+            AppLanguage.ENGLISH -> fallback
+        }
+        "gemma4-e2b-litert-lm", "gemma4-e4b-litert-lm" -> when (language) {
+            AppLanguage.CHINESE -> "Edge Gallery 1.0.13 MTP 路径"
+            AppLanguage.SPANISH -> "Ruta MTP de Edge Gallery 1.0.13"
+            AppLanguage.GERMAN -> "Edge-Gallery-1.0.13-MTP-Pfad"
+            AppLanguage.PORTUGUESE -> "Caminho MTP do Edge Gallery 1.0.13"
+            AppLanguage.FRENCH -> "Chemin MTP Edge Gallery 1.0.13"
+            AppLanguage.ENGLISH -> fallback
+        }
+        "gemma3-1b-litert-lm" -> when (language) {
+            AppLanguage.CHINESE -> "小型兼容性路径"
+            AppLanguage.SPANISH -> "Ruta pequeña de compatibilidad"
+            AppLanguage.GERMAN -> "Kleiner Kompatibilitätspfad"
+            AppLanguage.PORTUGUESE -> "Caminho pequeno de compatibilidade"
+            AppLanguage.FRENCH -> "Petit chemin de compatibilité"
+            AppLanguage.ENGLISH -> fallback
+        }
+        else -> fallback
+    }
+
+    fun localModelUiText(text: String): String {
+        if (language == AppLanguage.ENGLISH || text.isBlank()) return text
+        val replacements = when (language) {
+            AppLanguage.CHINESE -> listOf(
+                "Cleared Hugging Face token" to "已清除 Hugging Face 令牌",
+                "Saved Hugging Face token for private or gated model downloads" to "已保存用于私有或受限模型下载的 Hugging Face 令牌",
+                "Refreshing signed Hugging Face model catalog…" to "正在刷新已签名的 Hugging Face 模型目录…",
+                "Signed catalog loaded, but no downloadable model files were detected yet" to "已加载签名目录，但还没有检测到可下载的模型文件",
+                "Signed catalog loaded with " to "已加载签名目录，包含 ",
+                " downloadable model choices" to " 个可下载模型选项",
+                "Unable to load signed model catalog:" to "无法加载签名模型目录：",
+                "Importing local model from phone files…" to "正在从手机文件导入本地模型…",
+                " and marked it as the preferred local model." to "，并已标记为首选本地模型。",
+                "Local file" to "本地文件",
+                "Preparing download…" to "正在准备下载…",
+                "Inspecting model candidate…" to "正在检查模型候选项…",
+                "Model candidate inspected" to "模型候选项已检查",
+                "Queued " to "已将 ",
+                " in Android DownloadManager" to " 加入 Android 下载管理器",
+                "; Hermes will start it when Android finishes the download." to " 加入队列；Android 完成下载后 Hermes 会启动它。",
+                " is already downloaded. Starting runtime…" to " 已下载。正在启动运行时…",
+                "Preparing " to "正在准备 ",
+                " from signed catalog…" to "（来自签名目录）…",
+                "Restarted " to "已重新开始 ",
+                " with mobile data and roaming allowed" to "，允许使用移动数据和漫游",
+                "Unable to restart this download on mobile data" to "无法通过移动数据重新开始此下载",
+                "Opened Android Downloads" to "已打开 Android 下载",
+                "Android Downloads is not available on this device" to "此设备没有 Android 下载界面",
+                "Marked this model as the preferred local runtime candidate" to "已将此模型标记为首选本地运行时候选项",
+                "Preferred model is ready. Starting Hermes runtime…" to "首选模型已准备好。正在启动 Hermes 运行时…",
+                "File: " to "文件：",
+                "Size: " to "大小：",
+                "Phone RAM: " to "手机内存：",
+                "ABIs: " to "ABI：",
+                "HTTP range resume is available" to "支持 HTTP 分段续传",
+                "resume depends on server support" to "能否续传取决于服务器支持"
+            )
+            AppLanguage.SPANISH -> listOf(
+                "Cleared Hugging Face token" to "Token de Hugging Face borrado",
+                "Saved Hugging Face token for private or gated model downloads" to "Token de Hugging Face guardado para descargas privadas o restringidas",
+                "Refreshing signed Hugging Face model catalog…" to "Actualizando el catálogo firmado de modelos de Hugging Face…",
+                "Signed catalog loaded, but no downloadable model files were detected yet" to "Catálogo firmado cargado, pero aún no se detectaron archivos de modelo descargables",
+                "Signed catalog loaded with " to "Catálogo firmado cargado con ",
+                " downloadable model choices" to " opciones de modelo descargables",
+                "Unable to load signed model catalog:" to "No se pudo cargar el catálogo firmado de modelos:",
+                "Importing local model from phone files…" to "Importando modelo local desde archivos del teléfono…",
+                " and marked it as the preferred local model." to " y marcado como modelo local preferido.",
+                "Local file" to "Archivo local",
+                "Preparing download…" to "Preparando descarga…",
+                "Inspecting model candidate…" to "Inspeccionando candidato de modelo…",
+                "Model candidate inspected" to "Candidato de modelo inspeccionado",
+                "Queued " to "En cola ",
+                " in Android DownloadManager" to " en Android DownloadManager",
+                "; Hermes will start it when Android finishes the download." to "; Hermes lo iniciará cuando Android termine la descarga.",
+                " is already downloaded. Starting runtime…" to " ya está descargado. Iniciando runtime…",
+                "Preparing " to "Preparando ",
+                " from signed catalog…" to " desde el catálogo firmado…",
+                "Restarted " to "Reiniciado ",
+                " with mobile data and roaming allowed" to " con datos móviles y roaming permitidos",
+                "Unable to restart this download on mobile data" to "No se puede reiniciar esta descarga con datos móviles",
+                "Opened Android Downloads" to "Descargas de Android abiertas",
+                "Android Downloads is not available on this device" to "Descargas de Android no está disponible en este dispositivo",
+                "Marked this model as the preferred local runtime candidate" to "Este modelo se marcó como candidato local preferido del runtime",
+                "Preferred model is ready. Starting Hermes runtime…" to "El modelo preferido está listo. Iniciando el runtime de Hermes…",
+                "File: " to "Archivo: ",
+                "Size: " to "Tamaño: ",
+                "Phone RAM: " to "RAM del teléfono: ",
+                "ABIs: " to "ABI: ",
+                "HTTP range resume is available" to "La reanudación HTTP por rangos está disponible",
+                "resume depends on server support" to "la reanudación depende del soporte del servidor"
+            )
+            AppLanguage.GERMAN -> listOf(
+                "Cleared Hugging Face token" to "Hugging-Face-Token gelöscht",
+                "Saved Hugging Face token for private or gated model downloads" to "Hugging-Face-Token für private oder beschränkte Modell-Downloads gespeichert",
+                "Refreshing signed Hugging Face model catalog…" to "Signierten Hugging-Face-Modellkatalog aktualisieren…",
+                "Signed catalog loaded, but no downloadable model files were detected yet" to "Signierter Katalog geladen, aber noch keine herunterladbaren Modelldateien erkannt",
+                "Signed catalog loaded with " to "Signierter Katalog geladen mit ",
+                " downloadable model choices" to " herunterladbaren Modelloptionen",
+                "Unable to load signed model catalog:" to "Signierter Modellkatalog konnte nicht geladen werden:",
+                "Importing local model from phone files…" to "Lokales Modell aus Telefon-Dateien importieren…",
+                " and marked it as the preferred local model." to " und als bevorzugtes lokales Modell markiert.",
+                "Local file" to "Lokale Datei",
+                "Preparing download…" to "Download vorbereiten…",
+                "Inspecting model candidate…" to "Modellkandidat wird geprüft…",
+                "Model candidate inspected" to "Modellkandidat geprüft",
+                "Queued " to "In Warteschlange: ",
+                " in Android DownloadManager" to " im Android-Downloadmanager",
+                "; Hermes will start it when Android finishes the download." to "; Hermes startet es, wenn Android den Download beendet.",
+                " is already downloaded. Starting runtime…" to " ist bereits heruntergeladen. Laufzeit wird gestartet…",
+                "Preparing " to "Vorbereitung von ",
+                " from signed catalog…" to " aus dem signierten Katalog…",
+                "Restarted " to "Neu gestartet: ",
+                " with mobile data and roaming allowed" to " mit erlaubten mobilen Daten und Roaming",
+                "Unable to restart this download on mobile data" to "Dieser Download kann nicht über mobile Daten neu gestartet werden",
+                "Opened Android Downloads" to "Android-Downloads geöffnet",
+                "Android Downloads is not available on this device" to "Android-Downloads ist auf diesem Gerät nicht verfügbar",
+                "Marked this model as the preferred local runtime candidate" to "Dieses Modell wurde als bevorzugter lokaler Laufzeitkandidat markiert",
+                "Preferred model is ready. Starting Hermes runtime…" to "Bevorzugtes Modell ist bereit. Hermes-Laufzeit wird gestartet…",
+                "File: " to "Datei: ",
+                "Size: " to "Größe: ",
+                "Phone RAM: " to "Telefon-RAM: ",
+                "ABIs: " to "ABIs: ",
+                "HTTP range resume is available" to "HTTP-Range-Fortsetzung ist verfügbar",
+                "resume depends on server support" to "Fortsetzung hängt von Serverunterstützung ab"
+            )
+            AppLanguage.PORTUGUESE -> listOf(
+                "Cleared Hugging Face token" to "Token do Hugging Face apagado",
+                "Saved Hugging Face token for private or gated model downloads" to "Token do Hugging Face salvo para downloads privados ou restritos",
+                "Refreshing signed Hugging Face model catalog…" to "Atualizando catálogo assinado de modelos do Hugging Face…",
+                "Signed catalog loaded, but no downloadable model files were detected yet" to "Catálogo assinado carregado, mas nenhum arquivo de modelo baixável foi detectado ainda",
+                "Signed catalog loaded with " to "Catálogo assinado carregado com ",
+                " downloadable model choices" to " opções de modelo baixáveis",
+                "Unable to load signed model catalog:" to "Não foi possível carregar o catálogo assinado de modelos:",
+                "Importing local model from phone files…" to "Importando modelo local dos arquivos do telefone…",
+                " and marked it as the preferred local model." to " e marcado como modelo local preferido.",
+                "Local file" to "Arquivo local",
+                "Preparing download…" to "Preparando download…",
+                "Inspecting model candidate…" to "Inspecionando candidato de modelo…",
+                "Model candidate inspected" to "Candidato de modelo inspecionado",
+                "Queued " to "Na fila ",
+                " in Android DownloadManager" to " no Android DownloadManager",
+                "; Hermes will start it when Android finishes the download." to "; o Hermes vai iniciá-lo quando o Android terminar o download.",
+                " is already downloaded. Starting runtime…" to " já está baixado. Iniciando runtime…",
+                "Preparing " to "Preparando ",
+                " from signed catalog…" to " do catálogo assinado…",
+                "Restarted " to "Reiniciado ",
+                " with mobile data and roaming allowed" to " com dados móveis e roaming permitidos",
+                "Unable to restart this download on mobile data" to "Não foi possível reiniciar este download com dados móveis",
+                "Opened Android Downloads" to "Downloads do Android abertos",
+                "Android Downloads is not available on this device" to "Downloads do Android não está disponível neste dispositivo",
+                "Marked this model as the preferred local runtime candidate" to "Este modelo foi marcado como candidato local preferido do runtime",
+                "Preferred model is ready. Starting Hermes runtime…" to "O modelo preferido está pronto. Iniciando o runtime do Hermes…",
+                "File: " to "Arquivo: ",
+                "Size: " to "Tamanho: ",
+                "Phone RAM: " to "RAM do telefone: ",
+                "ABIs: " to "ABIs: ",
+                "HTTP range resume is available" to "Retomada HTTP por intervalo disponível",
+                "resume depends on server support" to "a retomada depende do suporte do servidor"
+            )
+            AppLanguage.FRENCH -> listOf(
+                "Cleared Hugging Face token" to "Jeton Hugging Face effacé",
+                "Saved Hugging Face token for private or gated model downloads" to "Jeton Hugging Face enregistré pour les téléchargements privés ou restreints",
+                "Refreshing signed Hugging Face model catalog…" to "Actualisation du catalogue signé de modèles Hugging Face…",
+                "Signed catalog loaded, but no downloadable model files were detected yet" to "Catalogue signé chargé, mais aucun fichier de modèle téléchargeable n’a encore été détecté",
+                "Signed catalog loaded with " to "Catalogue signé chargé avec ",
+                " downloadable model choices" to " choix de modèles téléchargeables",
+                "Unable to load signed model catalog:" to "Impossible de charger le catalogue signé de modèles :",
+                "Importing local model from phone files…" to "Import du modèle local depuis les fichiers du téléphone…",
+                " and marked it as the preferred local model." to " et défini comme modèle local préféré.",
+                "Local file" to "Fichier local",
+                "Preparing download…" to "Préparation du téléchargement…",
+                "Inspecting model candidate…" to "Inspection du modèle candidat…",
+                "Model candidate inspected" to "Modèle candidat inspecté",
+                "Queued " to "Mis en file : ",
+                " in Android DownloadManager" to " dans Android DownloadManager",
+                "; Hermes will start it when Android finishes the download." to " ; Hermes le démarrera quand Android aura terminé le téléchargement.",
+                " is already downloaded. Starting runtime…" to " est déjà téléchargé. Démarrage du runtime…",
+                "Preparing " to "Préparation de ",
+                " from signed catalog…" to " depuis le catalogue signé…",
+                "Restarted " to "Relancé : ",
+                " with mobile data and roaming allowed" to " avec données mobiles et itinérance autorisées",
+                "Unable to restart this download on mobile data" to "Impossible de relancer ce téléchargement en données mobiles",
+                "Opened Android Downloads" to "Téléchargements Android ouvert",
+                "Android Downloads is not available on this device" to "Téléchargements Android n’est pas disponible sur cet appareil",
+                "Marked this model as the preferred local runtime candidate" to "Ce modèle a été marqué comme candidat local préféré du runtime",
+                "Preferred model is ready. Starting Hermes runtime…" to "Le modèle préféré est prêt. Démarrage du runtime Hermes…",
+                "File: " to "Fichier : ",
+                "Size: " to "Taille : ",
+                "Phone RAM: " to "RAM du téléphone : ",
+                "ABIs: " to "ABI : ",
+                "HTTP range resume is available" to "La reprise HTTP par plage est disponible",
+                "resume depends on server support" to "la reprise dépend du serveur"
+            )
+            AppLanguage.ENGLISH -> emptyList()
+        }
+        var translated = text
+        replacements.forEach { (source, target) ->
+            translated = translated.replace(source, target)
+        }
+        return translated
     }
 
     fun localDownloadsExampleGuidance(): String = when (language) {

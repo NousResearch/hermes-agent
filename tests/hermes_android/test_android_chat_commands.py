@@ -6,6 +6,7 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 
 def test_chat_command_router_supports_native_navigation_and_auth_commands():
     router = (REPO_ROOT / "android/app/src/main/java/com/mobilefork/hermesagent/ui/chat/ChatCommandRouter.kt").read_text(encoding="utf-8")
+    strings = (REPO_ROOT / "android/app/src/main/java/com/mobilefork/hermesagent/ui/i18n/HermesStrings.kt").read_text(encoding="utf-8")
 
     for command in [
         '/help',
@@ -22,14 +23,16 @@ def test_chat_command_router_supports_native_navigation_and_auth_commands():
         '/speak',
     ]:
         assert command in router
-    assert 'openrouter|openai|chatgpt|claude|gemini|qwen|qwen-coding-plan|qwen-oauth|zai|google|email|phone' in router
-    assert 'Prepared $method API-key/token setup in Settings' in router
+    assert 'openrouter|openai|chatgpt|claude|gemini|qwen|qwen-coding-plan|qwen-oauth|zai|google|email|phone' in strings
+    assert 'chatCommandProviderTokenSetup' in router
+    assert 'Prepared $method API-key/token setup in Settings' in strings
     assert '"qwen-oauth", "qwen-portal", "qwen-cli", "qwen-chat" -> "qwen-oauth"' in router
     assert '"bailian", "bailian-coding-plan" -> "qwen-coding-plan"' in router
     chat_screen = (REPO_ROOT / "android/app/src/main/java/com/mobilefork/hermesagent/ui/chat/ChatScreen.kt").read_text(encoding="utf-8")
     assert 'setOf("openrouter", "openai", "chatgpt", "claude", "gemini", "qwen", "qwen-coding-plan", "qwen-oauth", "zai", "google", "email", "phone")' in chat_screen
     assert '"qwen-oauth"' in chat_screen
-    assert 'Configure a reachable Corr3xt URL in Accounts' in router
+    assert 'chatCommandSignInFailed' in router
+    assert 'Configure a reachable Corr3xt URL in Accounts' in strings
     assert 'applyProvider' in router
     assert 'applyModel' in router
     assert 'startAuthMethod' in router

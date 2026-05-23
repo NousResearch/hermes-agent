@@ -32,6 +32,11 @@ def test_localization_layer_covers_visible_chat_auth_portal_device_and_settings_
         'localDownloadsExampleGuidance',
         'downloadManagerReliabilityDescription',
         'localDownloadStatusLine',
+        'importModelFromPhoneFiles',
+        'offlineAirplaneLocalModelsOnly',
+        'recommendedLocalModelDescription',
+        'recommendedLocalModelTestedLabel',
+        'localModelUiText',
         'restartOnMobileData',
         'openSystemDownloads',
         'operatorStandbyTitle',
@@ -56,10 +61,55 @@ def test_localization_layer_covers_visible_chat_auth_portal_device_and_settings_
     assert 'strings.operatorStandbyLastDispatch(' in device
     assert 'strings.toolProfileTitle' in tool_profile
     assert 'strings.providerLabel' in settings
+    assert 'strings.providerDisplayLabel(preset.id, preset.label)' in settings
+    assert 'strings.providerCredentialInputHelp(ProviderPresets.apiKeyEnvVars(providerId))' in settings
+    assert 'strings.appearanceTitle()' in settings
+    assert 'strings.offlineAirplaneModeTitle()' in settings
+    assert 'strings.compactPromptLabel(expanded)' in chat
+    assert 'strings.chatCommandHelp()' in (
+        REPO_ROOT / "android/app/src/main/java/com/mobilefork/hermesagent/ui/chat/ChatCommandRouter.kt"
+    ).read_text(encoding="utf-8")
     assert 'strings.localDownloadsExampleGuidance()' in downloads_section
     assert 'strings.downloadManagerReliabilityDescription()' in downloads_section
+    assert 'strings.importModelFromPhoneFiles()' in downloads_section
+    assert 'strings.recommendedLocalModelDescription(preset.id, preset.description)' in downloads_section
+    assert 'strings.localModelUiText(uiState.workerCatalogStatus)' in downloads_section
     assert 'LaunchedEffect(strings.language)' in portal
     assert 'strings.portalLoadingStatus' in portal
+
+
+def test_screenshot_reported_custom_endpoint_i18n_and_ime_layout_regressions_are_guarded():
+    strings = (REPO_ROOT / "android/app/src/main/java/com/mobilefork/hermesagent/ui/i18n/HermesStrings.kt").read_text(encoding="utf-8")
+    settings = (REPO_ROOT / "android/app/src/main/java/com/mobilefork/hermesagent/ui/settings/SettingsScreen.kt").read_text(encoding="utf-8")
+    settings_view_model = (REPO_ROOT / "android/app/src/main/java/com/mobilefork/hermesagent/ui/settings/SettingsViewModel.kt").read_text(encoding="utf-8")
+    chat = (REPO_ROOT / "android/app/src/main/java/com/mobilefork/hermesagent/ui/chat/ChatScreen.kt").read_text(encoding="utf-8")
+    manifest = (REPO_ROOT / "android/app/src/main/AndroidManifest.xml").read_text(encoding="utf-8")
+
+    for key in [
+        "providerDisplayLabel",
+        "providerCredentialInputHelp",
+        "appearanceTitle",
+        "offlineAirplaneToggleLabel",
+        "settingsSavedBackendRestarted",
+        "chatCommandHelp",
+        "compactPromptLabel",
+        "recommendedLocalModelDescription",
+        "localModelUiText",
+    ]:
+        assert key in strings
+
+    assert 'providerId.trim().lowercase()) {\n            "custom"' in strings
+    assert 'AppLanguage.CHINESE -> "自定义 OpenAI 兼容端点"' in strings
+    assert 'val selectedProviderLabel = strings.providerDisplayLabel(' in settings
+    assert 'uiState.provider,' in settings
+    assert 'strings.providerCredentialInputHelp(ProviderPresets.apiKeyEnvVars(providerId))' in settings
+    assert 'if (provider.isBlank())' in settings_view_model
+    assert 'provider == "custom"' not in settings_view_model.split("private fun loadApiKeyForProvider", 1)[1].split("fun updateOnDeviceBackend", 1)[0]
+    assert 'strings.settingsSavedBackendRestarted()' in settings_view_model
+    assert 'android:windowSoftInputMode="adjustResize"' in manifest
+    assert '.widthIn(max = 960.dp)\n                        .padding(horizontal = 16.dp, vertical = 12.dp),' in chat
+    assert 'modifier = Modifier\n                        .fillMaxWidth()\n                        .imePadding(),' in chat
+    assert 'strings = strings' in chat
 
 
 def test_settings_backend_toggles_sync_with_download_runtime_target_controls():

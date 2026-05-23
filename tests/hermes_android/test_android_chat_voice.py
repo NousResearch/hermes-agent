@@ -19,9 +19,11 @@ def test_manifest_and_chat_use_android_voice_input():
 def test_chat_supports_tts_playback_for_assistant_replies():
     chat_screen = (REPO_ROOT / "android/app/src/main/java/com/mobilefork/hermesagent/ui/chat/ChatScreen.kt").read_text(encoding="utf-8")
     tts_controller = (REPO_ROOT / "android/app/src/main/java/com/mobilefork/hermesagent/ui/chat/HermesTtsController.kt").read_text(encoding="utf-8")
+    strings = (REPO_ROOT / "android/app/src/main/java/com/mobilefork/hermesagent/ui/i18n/HermesStrings.kt").read_text(encoding="utf-8")
 
     assert 'HermesTtsController' in chat_screen
-    assert 'Speak reply' in chat_screen
+    assert 'strings.speakReply()' in chat_screen
+    assert 'AppLanguage.ENGLISH -> "Speak reply"' in strings
     assert 'TextToSpeech' in tts_controller
     assert 'fun speak(text: String): Boolean' in tts_controller
     assert 'textToSpeech.speak' in tts_controller

@@ -26,7 +26,9 @@ def test_chat_screen_has_bubbles_history_and_action_icons():
     assert 'strings.messageHermes' in chat_screen
     assert 'Message Hermes Fork' in strings
     assert 'Speak last reply' in chat_screen
-    assert 'Available app commands:' in (REPO_ROOT / "android/app/src/main/java/com/mobilefork/hermesagent/ui/chat/ChatCommandRouter.kt").read_text(encoding="utf-8")
+    chat_command_router = (REPO_ROOT / "android/app/src/main/java/com/mobilefork/hermesagent/ui/chat/ChatCommandRouter.kt").read_text(encoding="utf-8")
+    assert 'strings.chatCommandHelp()' in chat_command_router
+    assert 'Available app commands:' in strings
 
 
 def test_conversation_store_tracks_multiple_sessions_and_messages():

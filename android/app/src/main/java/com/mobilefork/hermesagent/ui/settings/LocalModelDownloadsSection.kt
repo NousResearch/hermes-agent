@@ -138,12 +138,12 @@ fun LocalModelDownloadsSection(
                         )
                     },
                 ) {
-                    Text("Import model from phone files")
+                    Text(strings.importModelFromPhoneFiles())
                 }
             }
             if (offlineAirplaneMode) {
                 Text(
-                    "Offline airplane mode is on, so Hermes will only use imported or already-downloaded local models.",
+                    strings.offlineAirplaneLocalModelsOnly(),
                     style = MaterialTheme.typography.bodySmall,
                 )
             }
@@ -200,7 +200,7 @@ fun LocalModelDownloadsSection(
                         }
                     }
                     if (selectedDetectedModel != null) {
-                        Text(selectedDetectedModel.summary, style = MaterialTheme.typography.bodySmall)
+                        Text(strings.localModelUiText(selectedDetectedModel.summary), style = MaterialTheme.typography.bodySmall)
                         Text(
                             "${selectedDetectedModel.runtimeFlavor} · ${selectedDetectedModel.repoOrUrl}",
                             style = MaterialTheme.typography.labelMedium,
@@ -230,7 +230,7 @@ fun LocalModelDownloadsSection(
                         }
                     }
                     if (uiState.workerCatalogStatus.isNotBlank()) {
-                        Text(uiState.workerCatalogStatus, style = MaterialTheme.typography.bodySmall)
+                        Text(strings.localModelUiText(uiState.workerCatalogStatus), style = MaterialTheme.typography.bodySmall)
                     }
                 }
             }
@@ -247,9 +247,9 @@ fun LocalModelDownloadsSection(
                         verticalArrangement = Arrangement.spacedBy(8.dp),
                     ) {
                         Text(preset.title, style = MaterialTheme.typography.titleSmall)
-                        Text(preset.description, style = MaterialTheme.typography.bodySmall)
+                        Text(strings.recommendedLocalModelDescription(preset.id, preset.description), style = MaterialTheme.typography.bodySmall)
                         Text(
-                            "${preset.runtimeFlavor} · ${preset.testedLabel}",
+                            "${preset.runtimeFlavor} · ${strings.recommendedLocalModelTestedLabel(preset.id, preset.testedLabel)}",
                             style = MaterialTheme.typography.labelMedium,
                             color = MaterialTheme.colorScheme.secondary,
                         )
@@ -271,13 +271,13 @@ fun LocalModelDownloadsSection(
                 style = MaterialTheme.typography.bodySmall,
             )
             if (uiState.inspectionStatus.isNotBlank()) {
-                Text(uiState.inspectionStatus, style = MaterialTheme.typography.bodySmall)
+                Text(strings.localModelUiText(uiState.inspectionStatus), style = MaterialTheme.typography.bodySmall)
             }
             if (uiState.candidateSummary.isNotBlank()) {
-                Text(uiState.candidateSummary, style = MaterialTheme.typography.bodySmall)
+                Text(strings.localModelUiText(uiState.candidateSummary), style = MaterialTheme.typography.bodySmall)
             }
             if (uiState.candidateRamWarning.isNotBlank()) {
-                Text(uiState.candidateRamWarning, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
+                Text(strings.localModelUiText(uiState.candidateRamWarning), color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
             }
             HorizontalDivider()
             Text(strings.downloadManagerTitle.ifBlank { "Download manager" }, style = MaterialTheme.typography.titleSmall)
@@ -318,9 +318,9 @@ fun LocalModelDownloadsSection(
                                 modifier = Modifier.fillMaxWidth(),
                             )
                             Text(item.progressLabel, style = MaterialTheme.typography.bodySmall)
-                            Text(item.statusMessage, style = MaterialTheme.typography.bodySmall)
+                            Text(strings.localModelUiText(item.statusMessage), style = MaterialTheme.typography.bodySmall)
                             if (item.ramWarning.isNotBlank()) {
-                                Text(item.ramWarning, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
+                                Text(strings.localModelUiText(item.ramWarning), color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
                             }
                             Text(item.localPath, style = MaterialTheme.typography.bodySmall)
                             FlowRow(

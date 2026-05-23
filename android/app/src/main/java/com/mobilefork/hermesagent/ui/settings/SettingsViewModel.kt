@@ -20,6 +20,7 @@ import com.mobilefork.hermesagent.data.ProviderSetupTarget
 import com.mobilefork.hermesagent.data.SecureSecretsStore
 import com.mobilefork.hermesagent.device.HermesProviderSetupWebActivity
 import com.mobilefork.hermesagent.ui.i18n.AppLanguage
+import com.mobilefork.hermesagent.ui.i18n.hermesStringsFor
 import com.mobilefork.hermesagent.ui.theme.normalizeThemeHex
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -102,6 +103,8 @@ class SettingsViewModel(application: Application) : AndroidViewModel(application
         )
     }
 
+    private fun currentStrings() = hermesStringsFor(AppLanguage.fromTag(_uiState.value.languageTag))
+
     fun reload() {
         val reloaded = loadInitialState()
         _uiState.value = reloaded
@@ -134,17 +137,14 @@ class SettingsViewModel(application: Application) : AndroidViewModel(application
     fun updateOfflineAirplaneMode(enabled: Boolean) {
         val existing = settingsStore.load()
         settingsStore.save(existing.copy(offlineAirplaneMode = enabled))
+        val strings = currentStrings()
         if (enabled) {
             HermesRuntimeManager.stop()
         }
         _uiState.update {
             it.copy(
                 offlineAirplaneMode = enabled,
-                status = if (enabled) {
-                    "Offline airplane mode is on. Hermes will block portal, provider setup, model downloads, and HTTP automations while local backends and localhost stay available."
-                } else {
-                    "Offline airplane mode is off. Hermes internet features are available again."
-                },
+                status = strings.offlineAirplaneStatus(enabled),
             )
         }
     }
@@ -158,7 +158,7 @@ class SettingsViewModel(application: Application) : AndroidViewModel(application
             it.copy(
                 customSystemPrompt = normalized,
                 status = if (value.length > normalized.length) {
-                    "Agent persona is limited to ${AppSettings.MAX_CUSTOM_SYSTEM_PROMPT_CHARS} characters."
+                    currentStrings().agentPersonaLimited(AppSettings.MAX_CUSTOM_SYSTEM_PROMPT_CHARS)
                 } else {
                     it.status
                 },
@@ -170,12 +170,13 @@ class SettingsViewModel(application: Application) : AndroidViewModel(application
         val normalized = AppSettings.normalizeCustomSystemPrompt(_uiState.value.customSystemPrompt)
         settingsStore.save(settingsStore.load().copy(customSystemPrompt = normalized))
         _uiState.update {
+            val strings = currentStrings()
             it.copy(
                 customSystemPrompt = normalized,
                 status = if (normalized.isBlank()) {
-                    "Agent persona cleared."
+                    strings.agentPersonaCleared()
                 } else {
-                    "Agent persona saved. New chats will include this custom system prompt."
+                    strings.agentPersonaSaved()
                 },
             )
         }
@@ -186,7 +187,7 @@ class SettingsViewModel(application: Application) : AndroidViewModel(application
         _uiState.update {
             it.copy(
                 customSystemPrompt = "",
-                status = "Agent persona cleared.",
+                status = currentStrings().agentPersonaCleared(),
             )
         }
     }
@@ -197,7 +198,7 @@ class SettingsViewModel(application: Application) : AndroidViewModel(application
         _uiState.update {
             it.copy(
                 chatDisplayMode = normalized,
-                status = "Chat display mode set to ${normalized.replaceFirstChar { char -> char.uppercase() }}.",
+                status = currentStrings().chatDisplayModeSet(normalized),
             )
         }
     }
@@ -206,7 +207,7 @@ class SettingsViewModel(application: Application) : AndroidViewModel(application
         _uiState.update {
             it.copy(
                 keywordHighlightingEnabled = enabled,
-                status = if (enabled) "Keyword highlighting is on." else "Keyword highlighting is off.",
+                status = currentStrings().keywordHighlightingStatus(enabled),
             )
         }
     }
@@ -221,7 +222,7 @@ class SettingsViewModel(application: Application) : AndroidViewModel(application
         _uiState.update {
             it.copy(
                 themeCardShape = normalized,
-                status = "Card shape set to ${normalized.replaceFirstChar { char -> char.uppercase() }}.",
+                status = currentStrings().cardShapeSet(normalized),
             )
         }
     }
@@ -234,7 +235,7 @@ class SettingsViewModel(application: Application) : AndroidViewModel(application
                 themeBackgroundHex = preset.backgroundHex,
                 themeSurfaceHex = preset.surfaceHex,
                 themeSurfaceVariantHex = preset.surfaceVariantHex,
-                status = "Loaded ${preset.label} colours. Save appearance to persist them.",
+                status = currentStrings().themePresetLoaded(preset.label),
             )
         }
     }
@@ -263,13 +264,13 @@ class SettingsViewModel(application: Application) : AndroidViewModel(application
                 themeSurfaceHex = updated.themeSurfaceHex,
                 themeSurfaceVariantHex = updated.themeSurfaceVariantHex,
                 themeCardShape = updated.themeCardShape,
-                status = "Appearance saved.",
+                status = currentStrings().appearanceSaved(),
             )
         }
     }
 
     private fun loadApiKeyForProvider(provider: String) {
-        if (provider.isBlank() || provider == "custom") {
+        if (provider.isBlank()) {
             return
         }
         viewModelScope.launch {
@@ -611,8 +612,9 @@ class SettingsViewModel(application: Application) : AndroidViewModel(application
 
     fun save() {
         val snapshot = _uiState.value
+        val strings = hermesStringsFor(AppLanguage.fromTag(snapshot.languageTag))
         viewModelScope.launch {
-            _uiState.update { it.copy(status = "Saving settings and restarting Hermes runtime...") }
+            _uiState.update { it.copy(status = strings.settingsSaveStarted()) }
             runCatching {
                 withContext(Dispatchers.IO) {
                     val existingSettings = settingsStore.load()
@@ -658,7 +660,8 @@ class SettingsViewModel(application: Application) : AndroidViewModel(application
                     )
                     val parsedCredential = ProviderPresets.parseCredentialInput(snapshot.provider, snapshot.apiKey)
                     val providerApiKey = parsedCredential.apiKey
-                    val preservedBlankCredential = providerApiKey.isBlank() && snapshot.provider != "custom"
+                    val preservedBlankCredential = providerApiKey.isBlank() &&
+                        secretsStore.loadApiKey(snapshot.provider).isNotBlank()
                     if (providerApiKey.isNotBlank()) {
                         secretsStore.saveApiKey(snapshot.provider, providerApiKey)
                         Python.getInstance().getModule("hermes_android.auth_bridge").callAttr(
@@ -675,13 +678,16 @@ class SettingsViewModel(application: Application) : AndroidViewModel(application
                         OnDeviceBackendManager.preferredDownloadSummary(app, snapshot.onDeviceBackend)
                     }
                     val statusMessage = when {
-                        useLocalBackend -> "On-device backend ready and Hermes runtime restarted"
-                        snapshot.offlineAirplaneMode -> "${localBackendStatus.statusMessage}. Offline airplane mode kept remote fallback disabled."
-                        backendKind != BackendKind.NONE -> "${localBackendStatus.statusMessage}. Hermes stayed on your saved remote provider."
-                        parsedCredential.importedFromEnvLine -> "Settings saved, imported ${parsedCredential.sourceLabel} into secure storage, and backend restarted"
-                        snapshot.dataSaverMode -> "Settings saved. Data saver mode now keeps heavy downloads on Wi-Fi / unmetered networks."
-                        preservedBlankCredential -> "Settings saved and backend restarted. Blank API key field left existing Hermes credentials untouched."
-                        else -> "Settings saved and backend restarted"
+                        useLocalBackend -> strings.onDeviceBackendReady()
+                        snapshot.offlineAirplaneMode ->
+                            strings.offlineAirplaneKeptRemoteFallbackDisabled(localBackendStatus.statusMessage)
+                        backendKind != BackendKind.NONE ->
+                            strings.stayedOnSavedRemoteProvider(localBackendStatus.statusMessage)
+                        parsedCredential.importedFromEnvLine ->
+                            strings.settingsSavedImportedCredential(parsedCredential.sourceLabel)
+                        snapshot.dataSaverMode -> strings.settingsSavedDataSaver()
+                        preservedBlankCredential -> strings.settingsSavedPreservedCredential()
+                        else -> strings.settingsSavedBackendRestarted()
                     }
                     SettingsSaveResult(
                         apiKey = providerApiKey,
@@ -699,7 +705,7 @@ class SettingsViewModel(application: Application) : AndroidViewModel(application
                 }
             }.onFailure { error ->
                 _uiState.update {
-                    it.copy(status = "Settings save failed (${error::class.java.simpleName}).")
+                    it.copy(status = strings.settingsSaveFailed(error::class.java.simpleName))
                 }
             }
         }

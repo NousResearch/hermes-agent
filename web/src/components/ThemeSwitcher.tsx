@@ -65,7 +65,7 @@ export function ThemeSwitcher({ dropUp = false }: ThemeSwitcherProps) {
       <Button
         ghost
         onClick={() => setOpen((o) => !o)}
-        className="px-2 py-1 normal-case tracking-normal font-normal text-xs text-muted-foreground hover:text-foreground"
+        className="px-2 py-1 normal-case tracking-normal font-normal text-xs text-text-secondary hover:text-foreground"
         title={t.theme?.switchTheme ?? "Switch theme"}
         aria-label={t.theme?.switchTheme ?? "Switch theme"}
         aria-expanded={open}
@@ -76,7 +76,7 @@ export function ThemeSwitcher({ dropUp = false }: ThemeSwitcherProps) {
 
           <Typography
             mondwest
-            className="hidden sm:inline tracking-wide uppercase text-[0.65rem]"
+            className="hidden sm:inline text-display tracking-wide text-xs"
           >
             {label}
           </Typography>
@@ -115,7 +115,7 @@ export function ThemeSwitcher({ dropUp = false }: ThemeSwitcherProps) {
           <div className="border-b border-current/20 px-3 py-2">
             <Typography
               mondwest
-              className="text-[0.65rem] tracking-[0.15em] uppercase text-midground/70"
+              className="text-display text-xs tracking-[0.12em] text-text-tertiary"
             >
               {sheetTitle}
             </Typography>
@@ -166,12 +166,12 @@ function ThemeSwitcherOptions({
             <div className="flex min-w-0 flex-1 flex-col gap-0.5">
               <Typography
                 mondwest
-                className="truncate text-[0.75rem] tracking-wide uppercase"
+                className="truncate text-display text-xs tracking-wide"
               >
                 {th.label}
               </Typography>
               {th.description && (
-                <Typography className="truncate text-[0.65rem] normal-case tracking-normal text-midground/50">
+                <Typography className="truncate text-xs tracking-normal text-text-tertiary">
                   {th.description}
                 </Typography>
               )}

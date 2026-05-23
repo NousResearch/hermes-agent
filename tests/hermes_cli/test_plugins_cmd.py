@@ -65,6 +65,36 @@ class TestSanitizePluginName:
         with pytest.raises(ValueError, match="must not be empty"):
             _sanitize_plugin_name("", tmp_path)
 
+    # ── allow_subdir=True ──
+
+    def test_allow_subdir_accepts_single_slash(self, tmp_path):
+        target = _sanitize_plugin_name(
+            "observability/langfuse", tmp_path, allow_subdir=True
+        )
+        assert target == (tmp_path / "observability" / "langfuse").resolve()
+
+    def test_allow_subdir_strips_leading_trailing_slash(self, tmp_path):
+        target = _sanitize_plugin_name(
+            "/image_gen/openai/", tmp_path, allow_subdir=True
+        )
+        assert target == (tmp_path / "image_gen" / "openai").resolve()
+
+    def test_allow_subdir_still_rejects_dot_dot(self, tmp_path):
+        with pytest.raises(ValueError, match="must not contain"):
+            _sanitize_plugin_name("foo/../bar", tmp_path, allow_subdir=True)
+
+    def test_allow_subdir_still_rejects_backslash(self, tmp_path):
+        with pytest.raises(ValueError, match="must not contain"):
+            _sanitize_plugin_name("foo\\bar", tmp_path, allow_subdir=True)
+
+    def test_allow_subdir_rejects_empty_after_strip(self, tmp_path):
+        with pytest.raises(ValueError, match="must not be empty"):
+            _sanitize_plugin_name("///", tmp_path, allow_subdir=True)
+
+    def test_allow_subdir_resolves_inside_plugins_dir(self, tmp_path):
+        target = _sanitize_plugin_name("a/b/c", tmp_path, allow_subdir=True)
+        assert target.is_relative_to(tmp_path.resolve())
+
 
 # ── _resolve_git_url ──────────────────────────────────────────────────────
 

@@ -1429,6 +1429,10 @@ def run_conversation(
                         _trunc_result = _trunc_transport.normalize_response(
                             response, strip_tool_prefix=agent._is_anthropic_oauth
                         )
+                    elif agent.api_mode == "codex_responses":
+                        _trunc_result = _trunc_transport.normalize_response(
+                            response, provider=agent.provider
+                        )
                     else:
                         _trunc_result = _trunc_transport.normalize_response(response)
                     _trunc_msg = _trunc_result
@@ -3020,6 +3024,8 @@ def run_conversation(
             _normalize_kwargs = {}
             if agent.api_mode == "anthropic_messages":
                 _normalize_kwargs["strip_tool_prefix"] = agent._is_anthropic_oauth
+            elif agent.api_mode == "codex_responses":
+                _normalize_kwargs["provider"] = agent.provider
             normalized = _transport.normalize_response(response, **_normalize_kwargs)
             assistant_message = normalized
             finish_reason = normalized.finish_reason

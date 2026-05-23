@@ -248,22 +248,28 @@ def _chat_messages_to_responses_input(
     messages: List[Dict[str, Any]],
     *,
     is_xai_responses: bool = False,
+    reasoning_provider: str | None = None,
 ) -> List[Dict[str, Any]]:
     """Convert internal chat-style messages to Responses input items.
 
-    ``is_xai_responses`` is kept for transport signature compatibility but
-    no longer suppresses encrypted reasoning replay.  Earlier (PR #26644,
+    ``is_xai_responses`` is kept for transport signature compatibility and
+    gates replay of legacy unknown-origin encrypted reasoning.  Earlier (PR #26644,
     May 2026) we believed xAI's OAuth/SuperGrok ``/v1/responses`` surface
     rejected replayed ``encrypted_content`` reasoning items minted by
     prior turns, and we stripped them.  That decision was wrong — xAI
     explicitly relies on Hermes threading encrypted reasoning back across
-    turns for cross-turn coherence (the whole point of their partnership
-    integration).  We now replay encrypted reasoning on every Responses
-    transport (xAI, native Codex, custom relays) and let xAI tell us
-    explicitly if a specific surface ever rejects a payload.
+    turns for cross-turn coherence.  Provider-tagged xAI reasoning is still
+    replayed, but legacy unknown-origin or cross-provider encrypted blobs are
+    filtered before xAI sees them because xAI cannot decrypt blobs minted by a
+    different provider/session chain.
     """
     items: List[Dict[str, Any]] = []
     seen_item_ids: set = set()
+    current_reasoning_provider = (
+        reasoning_provider.strip().lower()
+        if isinstance(reasoning_provider, str)
+        else ""
+    )
 
     for msg in messages:
         if not isinstance(msg, dict):
@@ -285,16 +291,41 @@ def _chat_messages_to_responses_input(
                 content_text = str(content) if content is not None else ""
 
             if role == "assistant":
-                # Replay encrypted reasoning items from previous turns
-                # so the API can maintain coherent reasoning chains.
-                # This applies to every Responses transport including
-                # xAI — see _chat_messages_to_responses_input docstring
-                # for the May 2026 reversal of the earlier xAI gate.
+                # Replay encrypted reasoning items from previous turns so the
+                # API can maintain coherent reasoning chains. Provider tags are
+                # local metadata used only to avoid cross-provider replay.
                 codex_reasoning = msg.get("codex_reasoning_items")
                 has_codex_reasoning = False
                 if isinstance(codex_reasoning, list):
                     for ri in codex_reasoning:
                         if isinstance(ri, dict) and ri.get("encrypted_content"):
+                            item_provider = ri.get("source_provider") or ri.get("provider")
+                            item_provider_norm = (
+                                item_provider.strip().lower()
+                                if isinstance(item_provider, str)
+                                else ""
+                            )
+                            # Legacy rows predate provider tagging. Once the
+                            # current Responses provider is known, do not replay
+                            # unknown-origin encrypted blobs. They may have been
+                            # minted by a different backend before a provider
+                            # switch, and the receiving backend cannot decrypt
+                            # them. Newly tagged same-provider items still replay
+                            # normally for cross-turn reasoning coherence.
+                            if current_reasoning_provider and not item_provider_norm:
+                                continue
+                            if (
+                                current_reasoning_provider
+                                and item_provider_norm
+                                and item_provider_norm != current_reasoning_provider
+                            ):
+                                continue
+                            if (
+                                is_xai_responses
+                                and not current_reasoning_provider
+                                and item_provider_norm not in {"xai", "xai-oauth"}
+                            ):
+                                continue
                             item_id = ri.get("id")
                             if item_id and item_id in seen_item_ids:
                                 continue
@@ -302,7 +333,11 @@ def _chat_messages_to_responses_input(
                             # Responses API cannot look up items by ID and
                             # returns 404.  The encrypted_content blob is
                             # self-contained for reasoning chain continuity.
-                            replay_item = {k: v for k, v in ri.items() if k != "id"}
+                            replay_item = {
+                                k: v
+                                for k, v in ri.items()
+                                if k not in {"id", "provider", "source_provider"}
+                            }
                             items.append(replay_item)
                             if item_id:
                                 seen_item_ids.add(item_id)

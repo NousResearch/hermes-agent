@@ -289,18 +289,19 @@ def test_classify_api_error_stream_event_unrelated_not_reclassified():
 # ---------------------------------------------------------------------------
 
 
-def _assistant_msg_with_encrypted_reasoning(text="hi from grok", encrypted="enc_blob"):
+def _assistant_msg_with_encrypted_reasoning(text="hi from grok", encrypted="enc_blob", provider=None):
+    reasoning_item = {
+        "type": "reasoning",
+        "id": "rs_xai_001",
+        "encrypted_content": encrypted,
+        "summary": [],
+    }
+    if provider:
+        reasoning_item["source_provider"] = provider
     return {
         "role": "assistant",
         "content": text,
-        "codex_reasoning_items": [
-            {
-                "type": "reasoning",
-                "id": "rs_xai_001",
-                "encrypted_content": encrypted,
-                "summary": [],
-            }
-        ],
+        "codex_reasoning_items": [reasoning_item],
     }
 
 
@@ -333,17 +334,23 @@ def test_codex_reasoning_replay_includes_encrypted_content_for_xai():
 
     msgs = [
         {"role": "user", "content": "hi"},
-        _assistant_msg_with_encrypted_reasoning(),
+        _assistant_msg_with_encrypted_reasoning(provider="xai-oauth"),
         {"role": "user", "content": "what's your name?"},
     ]
 
-    items = _chat_messages_to_responses_input(msgs, is_xai_responses=True)
+    items = _chat_messages_to_responses_input(
+        msgs,
+        is_xai_responses=True,
+        reasoning_provider="xai-oauth",
+    )
     reasoning = [it for it in items if it.get("type") == "reasoning"]
     assert len(reasoning) == 1, (
         "xAI must receive replayed reasoning items — see docstring for the "
         "May 2026 reversal of the earlier suppression gate."
     )
     assert reasoning[0]["encrypted_content"] == "enc_blob"
+    assert "source_provider" not in reasoning[0]
+    assert "provider" not in reasoning[0]
 
     # And the assistant's visible text must still be present alongside it.
     assistant_items = [
@@ -351,6 +358,69 @@ def test_codex_reasoning_replay_includes_encrypted_content_for_xai():
         if it.get("role") == "assistant" or it.get("type") == "message"
     ]
     assert assistant_items, "assistant message must still be present"
+
+
+def test_codex_reasoning_replay_skips_unknown_origin_items_for_known_provider():
+    """Do not send legacy untagged encrypted blobs after provider switches."""
+    from agent.codex_responses_adapter import _chat_messages_to_responses_input
+
+    msgs = [
+        {"role": "user", "content": "hi"},
+        _assistant_msg_with_encrypted_reasoning(),
+        {"role": "user", "content": "continue"},
+    ]
+
+    items = _chat_messages_to_responses_input(
+        msgs,
+        is_xai_responses=True,
+        reasoning_provider="xai-oauth",
+    )
+    reasoning = [it for it in items if it.get("type") == "reasoning"]
+    assert reasoning == []
+
+    items = _chat_messages_to_responses_input(
+        msgs,
+        reasoning_provider="openai-codex",
+    )
+    reasoning = [it for it in items if it.get("type") == "reasoning"]
+    assert reasoning == []
+
+
+def test_codex_reasoning_replay_skips_cross_provider_items_for_xai():
+    """Codex/OpenAI encrypted blobs are not decryptable by xAI."""
+    from agent.codex_responses_adapter import _chat_messages_to_responses_input
+
+    msgs = [
+        {"role": "user", "content": "hi"},
+        _assistant_msg_with_encrypted_reasoning(provider="openai-codex"),
+        {"role": "user", "content": "continue"},
+    ]
+
+    items = _chat_messages_to_responses_input(
+        msgs,
+        is_xai_responses=True,
+        reasoning_provider="xai-oauth",
+    )
+    reasoning = [it for it in items if it.get("type") == "reasoning"]
+    assert reasoning == []
+
+
+def test_codex_reasoning_replay_skips_cross_provider_items_for_xai_without_current_provider():
+    """If the endpoint is xAI but the current provider name is unavailable, stay conservative."""
+    from agent.codex_responses_adapter import _chat_messages_to_responses_input
+
+    msgs = [
+        {"role": "user", "content": "hi"},
+        _assistant_msg_with_encrypted_reasoning(provider="openai-codex"),
+        {"role": "user", "content": "continue"},
+    ]
+
+    items = _chat_messages_to_responses_input(
+        msgs,
+        is_xai_responses=True,
+    )
+    reasoning = [it for it in items if it.get("type") == "reasoning"]
+    assert reasoning == []
 
 
 def test_codex_transport_xai_request_includes_encrypted_content():
@@ -386,18 +456,21 @@ def test_codex_transport_xai_replays_reasoning_in_input():
         messages=[
             {"role": "system", "content": "sys"},
             {"role": "user", "content": "hi"},
-            _assistant_msg_with_encrypted_reasoning(text="hi from grok"),
+            _assistant_msg_with_encrypted_reasoning(text="hi from grok", provider="xai-oauth"),
             {"role": "user", "content": "what's your name?"},
         ],
         tools=None,
         instructions="sys",
         reasoning_config={"enabled": True, "effort": "medium"},
         is_xai_responses=True,
+        provider="xai-oauth",
     )
     input_items = kwargs["input"]
     reasoning_items = [it for it in input_items if it.get("type") == "reasoning"]
     assert len(reasoning_items) == 1
     assert reasoning_items[0]["encrypted_content"] == "enc_blob"
+    assert "source_provider" not in reasoning_items[0]
+    assert "provider" not in reasoning_items[0]
 
 
 def test_codex_transport_native_codex_still_replays_reasoning_in_input():

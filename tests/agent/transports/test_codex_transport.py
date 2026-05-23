@@ -428,6 +428,40 @@ class TestCodexNormalizeResponse:
             }
         ]
 
+    def test_reasoning_items_tagged_with_source_provider(self, transport):
+        """Provider tags are local metadata used to prevent cross-provider replay."""
+        r = SimpleNamespace(
+            output=[
+                SimpleNamespace(
+                    type="reasoning",
+                    id="rs_abc",
+                    encrypted_content="enc_blob",
+                    summary=[],
+                    status="completed",
+                ),
+                SimpleNamespace(
+                    type="message",
+                    role="assistant",
+                    content=[SimpleNamespace(type="output_text", text="Hello world")],
+                    status="completed",
+                ),
+            ],
+            status="completed",
+            incomplete_details=None,
+            usage=SimpleNamespace(input_tokens=10, output_tokens=5,
+                                  input_tokens_details=None, output_tokens_details=None),
+        )
+        nr = transport.normalize_response(r, provider="xai-oauth")
+        assert nr.codex_reasoning_items == [
+            {
+                "type": "reasoning",
+                "encrypted_content": "enc_blob",
+                "id": "rs_abc",
+                "summary": [],
+                "source_provider": "xai-oauth",
+            }
+        ]
+
     def test_tool_call_response(self, transport):
         """Normalize a Codex response with tool calls."""
         r = SimpleNamespace(

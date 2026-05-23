@@ -363,6 +363,7 @@ def build_api_kwargs(agent, api_messages: list) -> dict:
             session_id=getattr(agent, "session_id", None),
             max_tokens=agent.max_tokens,
             request_overrides=agent.request_overrides,
+            provider=agent.provider,
             is_github_responses=is_github_responses,
             is_codex_backend=is_codex_backend,
             is_xai_responses=is_xai_responses,

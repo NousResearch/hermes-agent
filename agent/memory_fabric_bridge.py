@@ -433,6 +433,8 @@ def memory_boundary_allowlist_audit(*, log_limit: int = 200) -> dict[str, Any]:
 
     reviewed_allowlists = []
     unreviewed_allowlists = []
+    manual_review_evidence = _boundary_manual_review_evidence()
+    manual_review_complete = bool(manual_review_evidence.get("complete"))
 
     if external_allowed:
         unreviewed_allowlists.append({
@@ -440,18 +442,29 @@ def memory_boundary_allowlist_audit(*, log_limit: int = 200) -> dict[str, Any]:
             "value": external_allowed,
             "reason": "External automatic recall allowlist is non-empty and requires explicit human review evidence.",
         })
-    else:
+    elif manual_review_complete:
         reviewed_allowlists.append({
             "id": "openclaw.external_auto_precheck_allowed_channels",
             "value": [],
-            "review": "empty_allowlist_reviewed_as_blocked_default",
+            "review": "empty_allowlist_reviewed_with_manual_evidence",
+            "evidence_source": manual_review_evidence.get("source"),
+        })
+    else:
+        unreviewed_allowlists.append({
+            "id": "openclaw.external_auto_precheck_boundary_review",
+            "value": {
+                "external_auto_precheck_allowed_channels": [],
+                "external_auto_precheck_default": openclaw.get("external_auto_precheck_default"),
+            },
+            "reason": "Empty allowlist and blocked default are safe, but 星界记忆 readiness requires explicit manual boundary review evidence in the policy or operation ledger.",
         })
 
-    if openclaw.get("external_auto_precheck_default") == "blocked":
+    if openclaw.get("external_auto_precheck_default") == "blocked" and manual_review_complete:
         reviewed_allowlists.append({
             "id": "openclaw.external_auto_precheck_default",
             "value": "blocked",
-            "review": "external automatic recall remains blocked by default",
+            "review": "blocked_default_reviewed_with_manual_evidence",
+            "evidence_source": manual_review_evidence.get("source"),
         })
 
     exposure_risks = []
@@ -501,13 +514,16 @@ def memory_boundary_allowlist_audit(*, log_limit: int = 200) -> dict[str, Any]:
         and openclaw.get("external_auto_precheck_default") == "blocked"
         and status.get("policy", {}).get("writes_are_proposal_only") is True
         and status.get("policy", {}).get("external_channel_auto_recall_requires_allowlist") is True
+        and manual_review_complete
     )
 
     recommended_next_actions = []
     if ready:
-        recommended_next_actions.append("Mark cross-system boundary allowlists as explicitly reviewed for 星界记忆 readiness.")
+        recommended_next_actions.append("Keep the manual boundary review evidence linked to 星界记忆 readiness.")
     else:
         recommended_next_actions.append("Keep external automatic recall blocked and resolve unreviewed allowlists or exposure risks before 星界记忆.")
+    if not manual_review_complete:
+        recommended_next_actions.append("Create a formal policy proposal or manual review record for the blocked external automatic recall boundary; the audit will only read that evidence.")
     if external_allowed:
         recommended_next_actions.append("Create a policy proposal for each exact external channel before allowlisting; do not auto-approve.")
 
@@ -552,9 +568,12 @@ def memory_boundary_allowlist_audit(*, log_limit: int = 200) -> dict[str, Any]:
             "policy_outcome_risk_level": outcome.get("risk_level"),
             "ledger_health_score": ledger.get("health_score"),
             "ledger_risk_level": ledger.get("risk_level"),
+            "manual_boundary_review": manual_review_evidence,
             "critical_audit_failure_count": len(critical_audit_failures),
             "unreviewed_allowlist_count": len(unreviewed_allowlists),
             "exposure_risk_count": len(exposure_risks),
+            "external_auto_precheck_default_blocked": openclaw.get("external_auto_precheck_default") == "blocked",
+            "external_auto_precheck_allowlist_empty": not external_allowed,
         },
         "recommended_next_actions": recommended_next_actions,
         "policy": {
@@ -1464,6 +1483,102 @@ memory_fabric_search = search_memory_fabric
 memory_graph_read = read_memory_graph
 memory_write_proposal = create_memory_write_proposal
 memory_snapshot_export = export_memory_snapshot
+
+
+def _boundary_manual_review_evidence() -> dict[str, Any]:
+    """Find existing manual boundary review evidence without recording anything."""
+
+    policy_ledger = memory_policy_proposal_ledger(limit=500)
+    proposals = policy_ledger.get("proposals", []) if isinstance(policy_ledger.get("proposals"), list) else []
+    for proposal in proposals:
+        if not isinstance(proposal, dict) or not _is_boundary_review_policy_proposal(proposal):
+            continue
+        decisions = proposal.get("decisions", []) if isinstance(proposal.get("decisions"), list) else []
+        approved_decisions = [
+            decision for decision in decisions
+            if isinstance(decision, dict) and _clean_text(decision.get("decision")) == "approved"
+        ]
+        if approved_decisions and proposal.get("latest_status") == "approved":
+            latest = approved_decisions[-1]
+            return {
+                "complete": True,
+                "source": "policy_proposal_ledger",
+                "proposal_id": proposal.get("proposal_id", ""),
+                "suggestion_id": proposal.get("suggestion_id", ""),
+                "reviewer": latest.get("reviewer", ""),
+                "reviewed_at": latest.get("created_at", ""),
+                "decision": "approved",
+                "read_only_detection": True,
+            }
+
+    operation_ledger = memory_operation_ledger(limit=500)
+    events = operation_ledger.get("events", []) if isinstance(operation_ledger.get("events"), list) else []
+    for event in events:
+        if not isinstance(event, dict) or not _is_boundary_manual_review_event(event):
+            continue
+        return {
+            "complete": True,
+            "source": "operation_ledger",
+            "event_id": event.get("event_id", ""),
+            "event_type": event.get("event_type", ""),
+            "reviewer": event.get("reviewer", event.get("actor", "")),
+            "reviewed_at": event.get("created_at", ""),
+            "decision": event.get("decision", event.get("status", "reviewed")),
+            "read_only_detection": True,
+        }
+
+    decided_boundary_proposals = [
+        {
+            "proposal_id": proposal.get("proposal_id", ""),
+            "suggestion_id": proposal.get("suggestion_id", ""),
+            "latest_status": proposal.get("latest_status", ""),
+        }
+        for proposal in proposals
+        if isinstance(proposal, dict)
+        and _is_boundary_review_policy_proposal(proposal)
+        and proposal.get("latest_status") in {"rejected", "deferred"}
+    ]
+    return {
+        "complete": False,
+        "source": "none",
+        "read_only_detection": True,
+        "policy_proposal_ledger_exists": policy_ledger.get("exists"),
+        "operation_ledger_exists": operation_ledger.get("exists"),
+        "decided_but_not_completion_evidence": decided_boundary_proposals[:5],
+    }
+
+
+def _is_boundary_review_policy_proposal(proposal: Mapping[str, Any]) -> bool:
+    suggestion_id = _clean_text(proposal.get("suggestion_id"))
+    target = _clean_text(proposal.get("target"))
+    text = " ".join(
+        _clean_text(proposal.get(key)).lower()
+        for key in ("recommendation", "rationale", "next_step")
+    )
+    return (
+        suggestion_id == "external_auto_recall.keep_blocked"
+        or "autoprecheckallowedchannelids" in target.lower()
+        or "external_auto_recall" in target.lower()
+        or ("external" in text and "allowlist" in text and "review" in text)
+        or ("automatic recall" in text and "blocked" in text and "review" in text)
+    )
+
+
+def _is_boundary_manual_review_event(event: Mapping[str, Any]) -> bool:
+    event_type = _clean_text(event.get("event_type")).lower()
+    operation = _clean_text(event.get("operation")).lower()
+    subject = " ".join(
+        _clean_text(event.get(key)).lower()
+        for key in ("subject", "target", "boundary", "rationale", "reason")
+    )
+    decision = _clean_text(event.get("decision", event.get("status", ""))).lower()
+    non_mutating = event.get("would_modify_config") is not True and event.get("would_write_memory") is not True
+    return (
+        non_mutating
+        and event_type in {"memory_boundary_manual_review", "boundary_manual_review", "manual_boundary_review"}
+        and (operation in {"", "audit", "manual_review", "review"} or "boundary" in subject)
+        and decision in {"", "approved", "reviewed", "complete", "completed", "pass", "passed"}
+    )
 
 
 def _memory_evolution_evidence(

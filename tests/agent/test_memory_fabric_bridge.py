@@ -1,3 +1,4 @@
+import agent.memory_fabric_bridge as memory_fabric_bridge
 from agent.memory_fabric_bridge import (
     memory_boundary_allowlist_audit,
     MEMORY_EVOLUTION_TIERS,
@@ -87,15 +88,73 @@ def test_memory_recall_quality_evaluate_is_read_only():
     assert result["would_mutate_memory"] is False
 
 
-def test_memory_boundary_allowlist_audit_is_read_only_and_ready_for_star_realm():
+def _ready_federation_status():
+    return {
+        "ready": True,
+        "clients": {
+            "hermes": {"role": "primary_memory_owner"},
+            "codex": {
+                "role": "memory_client",
+                "access_path": "codex_mcp",
+                "write_policy": "proposal_only",
+                "ready": True,
+            },
+            "openclaw": {
+                "role": "memory_client",
+                "access_path": "openclaw_plugin",
+                "plugin_enabled": True,
+                "conversation_access_allowed": True,
+                "auto_precheck_enabled": True,
+                "auto_precheck_agent_profiles": ["default"],
+                "external_auto_precheck_allowed_channels": [],
+                "external_auto_precheck_default": "blocked",
+                "write_policy": "proposal_only",
+                "ready": True,
+            },
+        },
+        "policy": {
+            "writes_are_proposal_only": True,
+            "external_channel_auto_recall_requires_allowlist": True,
+        },
+    }
+
+
+def _ready_federation_audit(*, log_limit=200):
+    return {
+        "ready": True,
+        "checks": [
+            {"id": "writes.proposal_only", "status": "pass", "severity": "critical"},
+            {"id": "external.default_blocked", "status": "pass", "severity": "critical"},
+        ],
+    }
+
+
+def _healthy_policy_outcome(*, limit=50, stale_after_hours=72):
+    return {"health_score": 100, "risk_level": "low"}
+
+
+def _healthy_ledger(*, limit=500, client="", operation=""):
+    return {"health_score": 100, "risk_level": "low", "findings": []}
+
+
+def test_memory_boundary_allowlist_audit_requires_manual_review_evidence(monkeypatch):
+    monkeypatch.setattr(memory_fabric_bridge, "memory_federation_status", _ready_federation_status)
+    monkeypatch.setattr(memory_fabric_bridge, "memory_federation_audit", _ready_federation_audit)
+    monkeypatch.setattr(memory_fabric_bridge, "memory_policy_outcome_monitor", _healthy_policy_outcome)
+    monkeypatch.setattr(memory_fabric_bridge, "memory_ledger_intelligence", _healthy_ledger)
+
     result = memory_boundary_allowlist_audit(log_limit=200)
 
     assert result["success"] is True
     assert result["audit_type"] == "hermes_memory_boundary_allowlist_audit"
-    assert result["ready"] is True
-    assert result["boundary_readiness_score"] >= 90
-    assert result["reviewed"] is True
-    assert result["unreviewed_allowlists"] == []
+    assert result["ready"] is False
+    assert result["boundary_readiness_score"] < 100
+    assert result["reviewed"] is False
+    assert result["unreviewed_allowlists"][0]["id"] == "openclaw.external_auto_precheck_boundary_review"
+    assert result["evidence"]["manual_boundary_review"]["complete"] is False
+    assert result["evidence"]["external_auto_precheck_default_blocked"] is True
+    assert result["evidence"]["external_auto_precheck_allowlist_empty"] is True
+    assert any("formal policy proposal or manual review record" in action for action in result["recommended_next_actions"])
     assert result["policy"]["audit_is_read_only"] is True
     assert result["policy"]["does_not_modify_config"] is True
     assert result["policy"]["does_not_write_memory"] is True
@@ -107,16 +166,48 @@ def test_memory_boundary_allowlist_audit_is_read_only_and_ready_for_star_realm()
     assert result["would_write_graph"] is False
 
 
-def test_memory_evolution_reaches_star_realm_after_boundary_review(monkeypatch):
-    # This readiness test intentionally checks the real local Hermes home.
-    # The global pytest fixture isolates HERMES_HOME into a tempdir by default,
-    # which is correct for most tests but would hide the real Memory Fabric.
-    monkeypatch.delenv("HERMES_HOME", raising=False)
+def test_memory_boundary_allowlist_audit_accepts_existing_policy_review_evidence(monkeypatch):
+    monkeypatch.setattr(memory_fabric_bridge, "memory_federation_status", _ready_federation_status)
+    monkeypatch.setattr(memory_fabric_bridge, "memory_federation_audit", _ready_federation_audit)
+    monkeypatch.setattr(memory_fabric_bridge, "memory_policy_outcome_monitor", _healthy_policy_outcome)
+    monkeypatch.setattr(memory_fabric_bridge, "memory_ledger_intelligence", _healthy_ledger)
 
+    def policy_ledger(*, limit=500, status="", proposal_id=""):
+        return {
+            "exists": True,
+            "proposals": [
+                {
+                    "proposal_id": "memory-policy-proposal-boundary-review",
+                    "suggestion_id": "external_auto_recall.keep_blocked",
+                    "target": "openclaw.autoPrecheckAllowedChannelIds",
+                    "latest_status": "approved",
+                    "decisions": [
+                        {
+                            "decision": "approved",
+                            "reviewer": "human-reviewer",
+                            "created_at": "2026-05-23T00:00:00+00:00",
+                        }
+                    ],
+                }
+            ],
+        }
+
+    monkeypatch.setattr(memory_fabric_bridge, "memory_policy_proposal_ledger", policy_ledger)
+
+    result = memory_boundary_allowlist_audit(log_limit=200)
+
+    assert result["ready"] is True
+    assert result["reviewed"] is True
+    assert result["unreviewed_allowlists"] == []
+    assert result["boundary_readiness_score"] == 100
+    assert result["evidence"]["manual_boundary_review"]["complete"] is True
+    assert result["evidence"]["manual_boundary_review"]["source"] == "policy_proposal_ledger"
+    assert result["reviewed_allowlists"][0]["review"] == "empty_allowlist_reviewed_with_manual_evidence"
+
+
+def test_memory_evolution_does_not_claim_star_realm_without_boundary_review():
     result = memory_evolution_status()
 
     assert result["success"] is True
-    assert result["current"]["level"] >= 10
-    assert result["current"]["name"] == "星界记忆"
-    assert result["evidence"]["boundary_allowlists_reviewed"] is True
-    assert result["next"]["level"] == 11
+    assert result["evidence"]["boundary_allowlists_reviewed"] is False
+    assert result["evidence"]["boundary_readiness_score"] < 100

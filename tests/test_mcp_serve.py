@@ -983,7 +983,8 @@ class TestToolRegistration:
 
         assert result["success"] is True
         assert result["audit_type"] == "hermes_memory_boundary_allowlist_audit"
-        assert result["ready"] is True
+        assert result["ready"] is False
+        assert result["reviewed"] is False
         assert result["policy"]["audit_is_read_only"] is True
         assert result["policy"]["does_not_modify_config"] is True
         assert result["policy"]["does_not_write_memory"] is True

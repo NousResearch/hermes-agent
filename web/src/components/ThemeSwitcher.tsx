@@ -2,9 +2,9 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { Palette, Check } from "lucide-react";
 import { Button } from "@nous-research/ui/ui/components/button";
 import { ListItem } from "@nous-research/ui/ui/components/list-item";
-import { BottomPickSheet } from "@/components/BottomPickSheet";
-import { Typography } from "@/components/NouiTypography";
-import { useBelowBreakpoint } from "@/hooks/useBelowBreakpoint";
+import { BottomSheet } from "@nous-research/ui/ui/components/bottom-sheet";
+import { Typography } from "@nous-research/ui/ui/components/typography";
+import { useBelowBreakpoint } from "@nous-research/ui/hooks/use-below-breakpoint";
 import { BUILTIN_THEMES, useTheme } from "@/themes";
 import type { DashboardTheme, ThemeListEntry } from "@/themes";
 import { useI18n } from "@/i18n";
@@ -84,7 +84,7 @@ export function ThemeSwitcher({ dropUp = false }: ThemeSwitcherProps) {
       </Button>
 
       {useMobileSheet && (
-        <BottomPickSheet
+        <BottomSheet
           backdropDismissLabel={t.common.close}
           onClose={close}
           open={open}
@@ -98,7 +98,7 @@ export function ThemeSwitcher({ dropUp = false }: ThemeSwitcherProps) {
               themeName={themeName}
             />
           </div>
-        </BottomPickSheet>
+        </BottomSheet>
       )}
 
       {open && !useMobileSheet && (

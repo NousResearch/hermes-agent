@@ -378,7 +378,19 @@ class S6ServiceManager:
              time, not Python-substituted at registration time (OQ8-C).
           2. Activates the bundled venv.
           3. Drops to the hermes user and exec's
-             ``hermes -p <profile> gateway run``.
+             ``hermes -p <profile> gateway run`` (or just ``hermes
+             gateway run`` for the default profile — see below).
+
+        Special case: ``profile == "default"`` emits ``hermes gateway
+        run`` with **no** ``-p`` flag. This is the sentinel for "the
+        root HERMES_HOME profile" (the implicit profile that exists at
+        the top of $HERMES_HOME, not under profiles/). It must be
+        spelled this way because ``_profile_suffix()`` returns the
+        empty string for the root profile, and the dispatcher in
+        ``hermes_cli.gateway`` maps that empty string to the
+        ``gateway-default`` service slot. Passing ``-p default`` here
+        would instead look up ``$HERMES_HOME/profiles/default/`` — a
+        completely different (and almost always nonexistent) profile.
 
         Note: the ``port`` parameter is accepted for API parity with
         :meth:`register_profile_gateway` but is currently ignored — the
@@ -401,9 +413,12 @@ class S6ServiceManager:
         ]
         for k, v in sorted(extra_env.items()):
             lines.append(f"export {k}={shlex.quote(v)}")
-        lines.append(
-            f"exec s6-setuidgid hermes hermes -p {shlex.quote(profile)} gateway run"
-        )
+        if profile == "default":
+            lines.append("exec s6-setuidgid hermes hermes gateway run")
+        else:
+            lines.append(
+                f"exec s6-setuidgid hermes hermes -p {shlex.quote(profile)} gateway run"
+            )
         return "\n".join(lines) + "\n"
 
     @staticmethod

@@ -878,6 +878,15 @@ class APIServerAdapter(BasePlatformAdapter):
         from hermes_cli.tools_config import _get_platform_tools
 
         runtime_kwargs = _resolve_runtime_agent_kwargs()
+        # Defer to the server-side `config.yaml` model rather than letting
+        # the kwarg below collide with a `model` key already populated in
+        # `runtime_kwargs`. Without this pop, the explicit `model=model`
+        # on the `AIAgent(...)` constructor a few lines down raises
+        # `TypeError: AIAgent() got multiple values for keyword argument
+        # 'model'` and 500s every `POST /v1/chat/completions` regardless
+        # of payload. See #10773 for the per-request-model design; this is
+        # the narrow band-aid only.
+        runtime_kwargs.pop('model', None)
         reasoning_config = GatewayRunner._load_reasoning_config()
         model = _resolve_gateway_model()
 

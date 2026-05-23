@@ -1379,6 +1379,7 @@ def init_agent(
     # 3. Check general plugin system (user-installed plugins)
     # 4. Fall back to built-in ContextCompressor
     _selected_engine = None
+    _ctx_cfg = {}
     _engine_name = "compressor"  # default
     try:
         _ctx_cfg = _agent_cfg.get("context", {}) if isinstance(_agent_cfg, dict) else {}
@@ -1386,7 +1387,40 @@ def init_agent(
     except Exception:
         pass
 
-    if _engine_name != "compressor":
+    _engine_name = str(_engine_name).strip().lower()
+    if _engine_name == "dag":
+        try:
+            _dag_cfg = _ctx_cfg.get("dag", {}) if isinstance(_ctx_cfg, dict) else {}
+            if not isinstance(_dag_cfg, dict):
+                _dag_cfg = {}
+            _platform_name = str(agent.platform or "cli").strip().lower()
+            _gateway_enabled = str(
+                _dag_cfg.get("gateway_enabled", os.getenv("HERMES_DAG_CONTEXT_GATEWAY_ENABLED", ""))
+            ).strip().lower() in {"1", "true", "yes", "on"}
+            _mutation_queue_enabled = str(
+                _dag_cfg.get("mutation_queue_enabled", os.getenv("HERMES_DAG_CONTEXT_MUTATION_QUEUE_ENABLED", ""))
+            ).strip().lower() in {"1", "true", "yes", "on"}
+            if _platform_name not in {"", "cli"} and not _gateway_enabled:
+                _ra().logger.warning(
+                    "DAG context engine requested on gateway platform '%s' but "
+                    "context.dag.gateway_enabled is not set — using built-in compressor",
+                    _platform_name,
+                )
+            else:
+                from agent.context_dag_engine import DAGContextEngine
+                _selected_engine = DAGContextEngine(
+                    session_db=agent._session_db,
+                    enabled=True,
+                    threshold_percent=compression_threshold,
+                    gateway_enabled=_gateway_enabled,
+                    mutation_queue_enabled=_mutation_queue_enabled,
+                )
+        except Exception as _dag_load_err:
+            _ra().logger.warning(
+                "Native DAG context engine unavailable — falling back to built-in compressor: %s",
+                _dag_load_err,
+            )
+    elif _engine_name != "compressor":
         # Try loading from plugins/context_engine/<name>/
         try:
             from plugins.context_engine import load_context_engine

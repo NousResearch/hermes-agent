@@ -9,12 +9,13 @@ Source files: `agent/context_engine.py` (ABC), `agent/context_compressor.py` (de
 
 ## Pluggable Context Engine
 
-Context management is built on the `ContextEngine` ABC (`agent/context_engine.py`). The built-in `ContextCompressor` is the default implementation, but plugins can replace it with alternative engines (e.g., Lossless Context Management).
+Context management is built on the `ContextEngine` ABC (`agent/context_engine.py`). The built-in `ContextCompressor` is the default implementation, but plugins can replace it with alternative engines (e.g., Lossless Context Management). Hermes also ships an experimental native DAG engine, but it is **beta and explicit opt-in**.
 
 ```yaml
 context:
-  engine: "compressor"    # default — built-in lossy summarization
+  engine: "compressor"    # default — built-in legacy compressor
   engine: "lcm"           # example — plugin providing lossless context
+  engine: "dag"           # beta native DAG engine; opt-in only
 ```
 
 The engine is responsible for:
@@ -24,11 +25,12 @@ The engine is responsible for:
 - Tracking token usage from API responses
 
 Selection is config-driven via `context.engine` in `config.yaml`. The resolution order:
-1. Check `plugins/context_engine/<name>/` directory
-2. Check general plugin system (`register_context_engine()`)
-3. Fall back to built-in `ContextCompressor`
+1. Use native `dag` when `context.engine: dag` is explicitly selected
+2. Check `plugins/context_engine/<name>/` directory
+3. Check general plugin system (`register_context_engine()`)
+4. Fall back to built-in `ContextCompressor`
 
-Plugin engines are **never auto-activated** — the user must explicitly set `context.engine` to the plugin's name. The default `"compressor"` always uses the built-in.
+Plugin engines and the native DAG engine are **never auto-activated** — the user must explicitly set `context.engine` to the engine's name. The default `"compressor"` always uses the built-in legacy compressor.
 
 Configure via `hermes plugins` → Provider Plugins → Context Engine, or edit `config.yaml` directly.
 
@@ -77,6 +79,61 @@ API-reported token counts.
 ## Configuration
 
 All compression settings are read from `config.yaml` under the `compression` key:
+
+### Beta DAG context engine (opt-in)
+
+The native DAG context engine is beta. It is disabled by default and must be explicitly enabled. Its core safety invariant is: the raw transcript remains canonical, and the model sees a projection assembled from summaries plus a fresh tail. DAG compression is projection-only; it must not rewrite, truncate, or rotate the raw transcript.
+
+Minimal CLI-only enablement:
+
+```yaml
+context:
+  engine: dag
+  dag:
+    gateway_enabled: false          # default/safe: gateway keeps legacy compressor unless explicitly enabled
+    mutation_queue_enabled: false   # default/safe: synchronous/inert queue path
+```
+
+Gateway beta enablement requires both the engine and the gateway flag:
+
+```yaml
+context:
+  engine: dag
+  dag:
+    gateway_enabled: true           # opt in gateway status/compression guard paths
+    mutation_queue_enabled: true    # opt in per-session mutation queue sidecar/reconcile work
+```
+
+Equivalent environment flags are available for deployments that do not want to edit YAML:
+
+```bash
+HERMES_DAG_CONTEXT_GATEWAY_ENABLED=true
+HERMES_DAG_CONTEXT_MUTATION_QUEUE_ENABLED=true
+```
+
+Rollback is immediate and non-destructive:
+
+```yaml
+context:
+  engine: compressor
+```
+
+Switching back to `compressor` leaves DAG tables/sidecars inert; no downgrade migration is required. Defaults remain safe/off and Hermes does not enable DAG automatically.
+
+Status surfaces (`/status` in CLI and gateway) intentionally use beta wording and report:
+- whether DAG is enabled and explicitly opt-in
+- `gateway_enabled` and `mutation_queue_enabled`
+- projection-only/no transcript rewrite safety
+- projection status, token estimate, fresh-tail start, latest raw message id
+- reconciliation/checkpoint state and stale/warning notes
+- mutation queue counts when available
+- sidecar stored-part counts when available
+
+Expansion tool: when DAG is enabled, the engine injects `context_expand`. It can read summary/source spans and bounded raw message pages for the current session only. Expansion output is reference-only/untrusted context, not an instruction channel. Large tool outputs may be projected as preview + `sidecar://...` ref/hash/line-count; full sidecar content remains in the local additive store and is paged only through current-session expansion. Treat sidecar privacy like the raw transcript: it may contain tool output secrets and should not be exported unless the session data is allowed to be exported.
+
+### Legacy compressor settings
+
+All legacy compressor settings are read from `config.yaml` under the `compression` key:
 
 ```yaml
 compression:

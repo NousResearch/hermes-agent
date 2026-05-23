@@ -8225,9 +8225,17 @@ class GatewayRunner:
                                     skip_memory=True,
                                     enabled_toolsets=["memory"],
                                     session_id=session_entry.session_id,
+                                    **self._gateway_agent_session_kwargs(source),
                                 )
                                 try:
                                     _hyg_agent._print_fn = lambda *a, **kw: None
+
+                                    if getattr(_hyg_agent.context_compressor, "projection_only_compression", False) is True:
+                                        logger.warning(
+                                            "Session hygiene: DAG projection-only compression skipped for gateway session %s",
+                                            session_entry.session_id,
+                                        )
+                                        return
 
                                     loop = asyncio.get_running_loop()
                                     _compressed, _ = await loop.run_in_executor(
@@ -9341,6 +9349,36 @@ class GatewayRunner:
             output = output[:3800] + "\n" + t("gateway.kanban.truncated_suffix")
         return output or t("gateway.kanban.no_output")
 
+    def _dag_context_status_lines(self, session_id: str) -> list[str]:
+        """Return user-visible DAG context beta/safety lines for /status.
+
+        Kept opt-in so legacy context users see the same /status output.
+        """
+        try:
+            from hermes_cli.config import load_config
+            from agent.context_dag_status import dag_context_status_lines
+
+            cfg = load_config() or {}
+            context_cfg = cfg.get("context") if isinstance(cfg, dict) else {}
+            context_cfg = context_cfg if isinstance(context_cfg, dict) else {}
+            dag_cfg = context_cfg.get("dag") if isinstance(context_cfg, dict) else {}
+            dag_cfg = dag_cfg if isinstance(dag_cfg, dict) else {}
+            gateway_flag = dag_cfg.get("gateway_enabled")
+            if gateway_flag is None:
+                gateway_flag = os.getenv("HERMES_DAG_CONTEXT_GATEWAY_ENABLED")
+            gateway_enabled = str(gateway_flag).strip().lower() in {"1", "true", "yes", "on"} if gateway_flag is not None else False
+            if str(context_cfg.get("engine") or "compressor").strip().lower() == "dag" and not gateway_enabled:
+                return [
+                    "DAG context: configured but inactive on gateway; using legacy compressor fallback until context.dag.gateway_enabled is explicitly enabled."
+                ]
+            return dag_context_status_lines(
+                config=cfg,
+                session_id=session_id,
+                session_db=self._session_db,
+            )
+        except Exception:
+            return []
+
     async def _handle_status_command(self, event: MessageEvent) -> str:
         """Handle /status command."""
         source = event.source
@@ -9401,6 +9439,7 @@ class GatewayRunner:
             "",
             t("gateway.status.platforms", platforms=', '.join(connected_platforms)),
         ])
+        lines.extend(self._dag_context_status_lines(session_entry.session_id))
 
         # Session recap — what was this session ABOUT? Pure local compute,
         # no LLM call, no prompt-cache impact. Useful when juggling multiple
@@ -11851,6 +11890,28 @@ class GatewayRunner:
                 example = t("gateway.footer.example_line", preview=preview)
         return t("gateway.footer.saved", state=state, example=example)
 
+    def _gateway_agent_session_kwargs(self, source: SessionSource) -> dict:
+        """Return gateway/session identity kwargs for temporary AIAgent instances."""
+        platform = None
+        try:
+            platform = getattr(source.platform, "value", source.platform)
+        except Exception:
+            platform = None
+        session_db = getattr(self, "_session_db", None)
+        if session_db is None:
+            session_db = getattr(getattr(self, "session_store", None), "_db", None)
+        return {
+            "session_db": session_db,
+            "platform": platform,
+            "user_id": getattr(source, "user_id", None),
+            "user_name": getattr(source, "user_name", None),
+            "chat_id": getattr(source, "chat_id", None),
+            "chat_name": getattr(source, "chat_name", None),
+            "chat_type": getattr(source, "chat_type", None),
+            "thread_id": getattr(source, "thread_id", None),
+            "gateway_session_key": self._session_key_for_source(source),
+        }
+
     async def _handle_compress_command(self, event: MessageEvent) -> str:
         """Handle /compress command -- manually compress conversation context.
 
@@ -11895,6 +11956,7 @@ class GatewayRunner:
                 skip_memory=True,
                 enabled_toolsets=["memory"],
                 session_id=session_entry.session_id,
+                **self._gateway_agent_session_kwargs(source),
             )
             try:
                 tmp_agent._print_fn = lambda *a, **kw: None
@@ -11910,6 +11972,37 @@ class GatewayRunner:
                 )
 
                 compressor = tmp_agent.context_compressor
+                if getattr(compressor, "projection_only_compression", False) is True:
+                    reconcile = getattr(compressor, "reconcile_transcript", None)
+                    status = getattr(compressor, "get_status", lambda: {})()
+                    if callable(reconcile):
+                        try:
+                            rec = reconcile(msgs, source="gateway_compress")
+                            inserted = getattr(rec, "inserted", 0) if rec is not None else 0
+                            warnings = getattr(rec, "warnings", []) if rec is not None else []
+                            warning_line = (
+                                f" Reconciliation warning(s): {len(warnings)}; see DAG status for details."
+                                if warnings else ""
+                            )
+                            return (
+                                "DAG context engine is active for this gateway session. "
+                                "/compress rebuilt/reconciled DAG read state only; it did not rewrite, "
+                                "truncate, or rotate the raw transcript. "
+                                f"Mirrored missing raw message(s): {inserted}."
+                                f" Projection-only status: {status.get('gateway_compression_status', 'safe')}."
+                                f"{warning_line}"
+                            )
+                        except Exception as rec_err:
+                            logger.warning("DAG gateway /compress reconciliation failed safely: %s", rec_err)
+                            return (
+                                "DAG context engine is active, but projection-only reconciliation failed safely; "
+                                "/compress did not rewrite or truncate the raw transcript. "
+                                f"Error: {rec_err}"
+                            )
+                    return (
+                        "DAG context engine is projection-only in the gateway; /compress did not rewrite, "
+                        "truncate, or rotate the raw transcript."
+                    )
                 if not compressor.has_content_to_compress(msgs):
                     return t("gateway.compress.nothing_to_do")
 

@@ -313,11 +313,56 @@ def compress_context(
             pass
 
     try:
-        compressed = agent.context_compressor.compress(messages, current_tokens=approx_tokens, focus_topic=focus_topic, force=force)
+        compressed_result = agent.context_compressor.compress(
+            messages,
+            current_tokens=approx_tokens,
+            focus_topic=focus_topic,
+            force=force,
+        )
     except TypeError:
         # Plugin context engine with strict signature that doesn't accept
         # focus_topic / force — fall back to calling without them.
-        compressed = agent.context_compressor.compress(messages, current_tokens=approx_tokens)
+        compressed_result = agent.context_compressor.compress(messages, current_tokens=approx_tokens)
+
+    projection_only = bool(getattr(compressed_result, "projection_only", False))
+    preserves_session = bool(getattr(compressed_result, "preserves_session", False))
+    compressed = getattr(compressed_result, "messages", compressed_result)
+    if compressed is None:
+        compressed = []
+    elif not isinstance(compressed, list):
+        compressed = list(compressed)
+    else:
+        compressed = list(compressed)
+
+    if projection_only and preserves_session:
+        warning = getattr(compressed_result, "warning", None)
+        if warning:
+            agent._emit_warning(f"ℹ DAG context fallback: {warning}")
+        todo_snapshot = agent._todo_store.format_for_injection()
+        if todo_snapshot:
+            compressed.append({"role": "user", "content": todo_snapshot})
+        agent._mark_projection_only_messages_for_persistence(messages, compressed)
+        agent._invalidate_system_prompt()
+        new_system_prompt = agent._build_system_prompt(system_message)
+        agent._cached_system_prompt = new_system_prompt
+        _compressed_est = estimate_request_tokens_rough(
+            compressed,
+            system_prompt=new_system_prompt or "",
+            tools=agent.tools or None,
+        )
+        agent.context_compressor.last_prompt_tokens = _compressed_est
+        agent.context_compressor.last_completion_tokens = 0
+        try:
+            from tools.file_tools import reset_file_dedup
+            reset_file_dedup(task_id)
+        except Exception:
+            pass
+        logger.info(
+            "DAG projection context assembled without session split: session=%s messages=%d->%d tokens=~%s",
+            agent.session_id or "none", _pre_msg_count, len(compressed),
+            f"{_compressed_est:,}",
+        )
+        return compressed, new_system_prompt
 
     # If compression aborted (aux LLM failed to produce a usable summary)
     # the compressor returns the input messages unchanged.  Surface the

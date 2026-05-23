@@ -26,7 +26,25 @@ Lifecycle:
 """
 
 from abc import ABC, abstractmethod
-from typing import Any, Dict, List
+from dataclasses import dataclass
+from typing import Any, Dict, List, Optional, Union
+
+
+@dataclass
+class ContextCompressionResult:
+    """Explicit result for engines whose compression is projection-only.
+
+    Legacy engines still return ``list[dict]``.  DAG-backed engines can return
+    this envelope so callers avoid treating a projection as a new raw
+    transcript or as a compression-driven child session boundary.
+    """
+
+    messages: List[Dict[str, Any]]
+    projection_only: bool = False
+    preserves_session: bool = False
+    changed: bool = True
+    raw_checkpoint: Optional[Dict[str, Any]] = None
+    warning: Optional[str] = None
 
 
 class ContextEngine(ABC):
@@ -84,7 +102,7 @@ class ContextEngine(ABC):
         messages: List[Dict[str, Any]],
         current_tokens: int = None,
         focus_topic: str = None,
-    ) -> List[Dict[str, Any]]:
+    ) -> Union[List[Dict[str, Any]], ContextCompressionResult]:
         """Compact the message list and return the new message list.
 
         This is the main entry point. The engine receives the full message

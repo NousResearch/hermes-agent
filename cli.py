@@ -5842,6 +5842,20 @@ class HermesCLI:
         except Exception as exc:  # defensive — don't let /status fail
             logger.debug("build_recap failed in /status: %s", exc)
 
+        try:
+            from agent.context_dag_status import dag_context_status_lines
+
+            dag_lines = dag_context_status_lines(
+                config=getattr(self, "config", None),
+                session_id=self.session_id,
+                session_db=self._session_db,
+                engine=getattr(agent, "context_compressor", None),
+            )
+            if dag_lines:
+                lines.append("")
+                lines.extend(dag_lines)
+        except Exception:
+            pass
         self._console_print("\n".join(lines), highlight=False, markup=False)
     
     def _fast_command_available(self) -> bool:

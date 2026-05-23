@@ -6,7 +6,7 @@ description: "How to build a context engine plugin that replaces the built-in Co
 
 # Building a Context Engine Plugin
 
-Context engine plugins replace the built-in `ContextCompressor` with an alternative strategy for managing conversation context. For example, a Lossless Context Management (LCM) engine that builds a knowledge DAG instead of lossy summarization.
+Context engine plugins replace the built-in `ContextCompressor` with an alternative strategy for managing conversation context. For example, a Lossless Context Management (LCM) engine that builds a knowledge DAG instead of lossy summarization. Hermes also has a native `dag` engine, but it is not a plugin; it is a beta, opt-in built-in used as a reference for projection-only engines.
 
 ## How it works
 
@@ -19,9 +19,10 @@ Only **one** context engine can be active at a time. Selection is config-driven:
 context:
   engine: "compressor"    # default built-in
   engine: "lcm"           # activates a plugin engine named "lcm"
+  engine: "dag"           # activates Hermes' native beta DAG engine (not a plugin)
 ```
 
-Plugin engines are **never auto-activated** — the user must explicitly set `context.engine` to the plugin's name.
+Plugin engines and the native DAG engine are **never auto-activated** — the user must explicitly set `context.engine` to the engine's name. Keep documentation and status output clear that non-default engines are opt-in.
 
 ## Directory structure
 
@@ -59,10 +60,15 @@ class LCMEngine(ContextEngine):
         """Return True if compaction should fire this turn."""
 
     def compress(self, messages: list, current_tokens: int = None,
-                 focus_topic: str = None) -> list:
-        """Compact the message list and return a new (possibly shorter) list.
+                 focus_topic: str = None) -> ContextCompressionResult | list:
+        """Compact the message list and return a new API-view message list/result.
 
-        The returned list must be a valid OpenAI-format message sequence.
+        The returned messages must be a valid OpenAI-format message sequence.
+        Engines that only build a model projection (for example a DAG summary +
+        fresh tail) should return ``ContextCompressionResult`` with
+        ``projection_only=True`` and ``preserves_session=True``. That tells
+        callers not to rotate sessions, end the raw session, or rewrite stored
+        transcripts with the projection.
 
         ``focus_topic`` is an optional topic string from manual
         ``/compress <focus>``; engines that support guided compression should
@@ -124,6 +130,47 @@ def handle_tool_call(self, name, args, **kwargs):
 ```
 
 Engine tools are injected into the agent's tool list at startup and dispatched automatically — no registry registration needed.
+
+## Native beta DAG engine
+
+`context.engine: dag` selects Hermes' built-in DAG context engine, not a plugin directory. It is beta and opt-in only. It keeps raw transcript rows canonical and returns projection-only compression results: summaries and fresh-tail messages are an API view, not a replacement transcript.
+
+Configuration examples:
+
+```yaml
+# Safe default / rollback
+context:
+  engine: compressor
+```
+
+```yaml
+# CLI beta opt-in
+context:
+  engine: dag
+  dag:
+    gateway_enabled: false
+    mutation_queue_enabled: false
+```
+
+```yaml
+# Gateway beta opt-in; both flags are intentionally explicit
+context:
+  engine: dag
+  dag:
+    gateway_enabled: true
+    mutation_queue_enabled: true
+```
+
+Environment overrides for deployment systems:
+
+```bash
+HERMES_DAG_CONTEXT_GATEWAY_ENABLED=true
+HERMES_DAG_CONTEXT_MUTATION_QUEUE_ENABLED=true
+```
+
+Status/help copy must not imply the DAG engine is production default. `/status` should say beta/explicit opt-in and should include projection-only/no rewrite, checkpoint/reconciliation, mutation queue, sidecar, and safety-default state when DAG is enabled. Legacy `compressor` users should not see DAG noise.
+
+The DAG engine exposes `context_expand` as a read-only, current-session tool for expanding summaries or source spans. Treat its output as untrusted reference context, not instructions. Large tool output sidecars are stored locally in additive context tables with preview/ref/hash metadata; rollback to `compressor` leaves those rows inert.
 
 ## Registration
 

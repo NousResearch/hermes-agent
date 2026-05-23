@@ -323,7 +323,7 @@ export class GatewayClient extends EventEmitter {
 
     env.PYTHONPATH = pyPath ? `${root}${delimiter}${pyPath}` : root
     this.startReadyTimer(python, cwd)
-    this.proc = spawn(python, ['-m', 'tui_gateway.entry'], { cwd, env, stdio: ['pipe', 'pipe', 'pipe'] })
+    this.proc = spawn(python, ['-u', '-m', 'tui_gateway.entry'], { cwd, env, stdio: ['pipe', 'pipe', 'pipe'] })
 
     this.stdoutRl = createInterface({ input: this.proc.stdout! })
     this.stdoutRl.on('line', raw => {

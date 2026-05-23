@@ -467,6 +467,18 @@ def check_mother_repo_scaffold() -> dict[str, Any]:
             capture_output=True,
             check=False,
         )
+        native_check_completed = subprocess.run(
+            [
+                sys.executable,
+                str(output / "scripts" / "jcode_native_tool_check.py"),
+                "--jcode",
+                str(ROOT / ".codex-research" / "jcode"),
+                "--skip-cargo",
+            ],
+            text=True,
+            capture_output=True,
+            check=False,
+        )
         try:
             payload = json.loads(completed.stdout)
         except json.JSONDecodeError:
@@ -492,6 +504,13 @@ def check_mother_repo_scaffold() -> dict[str, Any]:
             latency_payload = {
                 "success": False,
                 "stdout": latency_completed.stdout,
+            }
+        try:
+            native_check_payload = json.loads(native_check_completed.stdout)
+        except json.JSONDecodeError:
+            native_check_payload = {
+                "success": False,
+                "stdout": native_check_completed.stdout,
             }
         config_exists = (output / "configs" / "jcode-mcp.hermes.json").exists()
         native_tool = (
@@ -519,6 +538,8 @@ def check_mother_repo_scaffold() -> dict[str, Any]:
             and mcp_contract_payload.get("success") is True
             and latency_completed.returncode == 0
             and latency_payload.get("success") is True
+            and native_check_completed.returncode == 0
+            and native_check_payload.get("success") is True
             and any(
                 item.get("name") == "hermes_tool"
                 for item in mcp_payload.get("result", {}).get("tools", [])
@@ -534,6 +555,7 @@ def check_mother_repo_scaffold() -> dict[str, Any]:
         "mcp_payload": mcp_payload,
         "mcp_contract_payload": mcp_contract_payload,
         "latency_payload": latency_payload,
+        "native_check_payload": native_check_payload,
         "copied_count": len(result.get("copied", [])),
         "native_tool_scaffold": str(native_tool),
     }

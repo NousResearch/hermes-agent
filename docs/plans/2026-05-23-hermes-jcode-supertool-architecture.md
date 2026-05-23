@@ -62,6 +62,8 @@ needed to build it without permanently forking both upstreams:
   dispatch work to jcode while the jcode-hosted tool layer matures.
 - `scripts/hermes_jcode_mother_repo.py` creates the first supertool workspace
   shape with pinned upstreams, native tool scaffolding, contracts, and gates.
+- `scripts/jcode_native_tool_check.py` verifies that the native tool crate
+  still compiles against jcode's Rust `Tool` architecture.
 
 ## Migration Path
 

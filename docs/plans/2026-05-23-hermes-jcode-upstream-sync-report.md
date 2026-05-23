@@ -1,12 +1,12 @@
 # Hermes/jcode upstream sync report
 
-Generated: 2026-05-23T07:02:31+00:00
+Generated: 2026-05-23T19:05:42+00:00
 
 ## Repositories
 
 | Repo | Branch | Commit | Dirty |
 | --- | --- | --- | --- |
-| hermes | main | 729a778af0b3f984b4934361cad3050f6afb79ba | True |
+| hermes | codex/hermes-jcode-bridge | a83fac4dae3ac86a8a557b5f059cb8f8443f51e7 | True |
 | jcode | master | 7951a2ddb91bad10155b911ccd0971de5baeafc8 | True |
 
 ## Graphify
@@ -97,10 +97,27 @@ Iterations: 30
 
 | Metric | ms |
 | --- | ---: |
-| min | 0.02 |
-| p50 | 0.022 |
-| p95 | 0.057 |
-| max | 0.067 |
+| min | 0.035 |
+| p50 | 0.037 |
+| p95 | 0.071 |
+| max | 0.119 |
+
+## jcode Native Hermes Tool
+
+Success: True
+Native tool dir: /Users/aayu/Workspace/developer/hermes/bridges/jcode-native-hermes-tool
+jcode path: /Users/aayu/Workspace/developer/hermes/.codex-research/jcode
+
+| Check | OK |
+| --- | --- |
+| native_tool:cargo_toml_exists | True |
+| native_tool:lib_rs_exists | True |
+| native_tool:uses_jcode_tool_core | True |
+| native_tool:implements_tool_trait | True |
+| native_tool:defines_hermes_research_tools | True |
+| jcode_checkout:exists | True |
+| workspace:manifest_exists | True |
+| cargo:check | True |
 
 ## Recommendations
 

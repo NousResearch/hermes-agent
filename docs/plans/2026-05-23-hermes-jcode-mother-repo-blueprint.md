@@ -204,13 +204,14 @@ For every Hermes or jcode bump:
 6. Run `scripts/hermes_service_bridge.py check`.
 7. Run `python3 bridges/hermes-mcp-server/hermes_mcp_server.py --check --live`.
 8. Run `scripts/jcode_bridge_latency_probe.py --iterations 50`.
-9. Run any mother-repo contract tests against `contracts/*/v*`.
-10. Run smoke routes:
+9. Run `scripts/jcode_native_tool_check.py --jcode <jcode checkout>`.
+10. Run any mother-repo contract tests against `contracts/*/v*`.
+11. Run smoke routes:
    - Hermes webhook -> jcode sidecar
    - jcode local task -> Hermes research tool
    - browser/profile task with explicit outbound-action approval
    - memory read/write sync dry run
-11. Record the generated report next to the upstream SHA bump.
+12. Record the generated report next to the upstream SHA bump.
 
 If a contract breaks, prefer one of these in order:
 
@@ -286,6 +287,8 @@ Phase 3 now has its first scaffold:
   validates the MCP fixtures, schemas, and a live mock roundtrip
 - `scripts/jcode_bridge_latency_probe.py --iterations 50` measures persistent
   local MCP bridge overhead without model or network calls
+- `scripts/jcode_native_tool_check.py --jcode <jcode checkout>` validates the
+  native Hermes tool crate against jcode's Rust `Tool` architecture
 - the next upstream jcode patch should be small: register the native Hermes
   tools in jcode's tool registry and wire configuration for the Hermes service
   host
@@ -347,6 +350,8 @@ The generated workspace includes:
   jcode -> Hermes service from inside the scaffold
 - `scripts/jcode_bridge_latency_probe.py`, which measures local MCP bridge
   overhead inside the scaffold
+- `scripts/jcode_native_tool_check.py`, which checks that the native Hermes
+  tool crate still compiles against a pinned jcode checkout
 
 Build and smoke the Rust client:
 
@@ -362,6 +367,7 @@ Inspect the native jcode tool scaffold:
 
 ```bash
 sed -n '1,220p' bridges/jcode-native-hermes-tool/src/lib.rs
+python3 scripts/jcode_native_tool_check.py --jcode /path/to/jcode
 ```
 
 This is intentionally a scaffold, not the final product. Its job is to make the

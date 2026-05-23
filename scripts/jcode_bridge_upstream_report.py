@@ -206,6 +206,28 @@ def _latency_report() -> dict[str, Any]:
     return payload
 
 
+def _native_tool_report(jcode_path: Path, *, cargo: bool) -> dict[str, Any]:
+    script = ROOT / "scripts" / "jcode_native_tool_check.py"
+    cmd = [sys.executable, str(script), "--jcode", str(jcode_path)]
+    if not cargo:
+        cmd.append("--skip-cargo")
+    completed = _run(cmd, cwd=ROOT)
+    try:
+        payload = json.loads(completed.stdout)
+    except json.JSONDecodeError:
+        payload = {
+            "success": False,
+            "error": "failed to parse native jcode tool output",
+            "stdout": completed.stdout,
+        }
+    payload["returncode"] = completed.returncode
+    if completed.stderr:
+        payload["stderr"] = completed.stderr
+    if completed.returncode != 0:
+        payload["success"] = False
+    return payload
+
+
 def _recommendations(report: dict[str, Any]) -> list[str]:
     items: list[str] = []
     contract = report.get("bridge_contract", {})
@@ -220,6 +242,9 @@ def _recommendations(report: dict[str, Any]) -> list[str]:
     latency = report.get("bridge_latency", {})
     if isinstance(latency, dict) and not latency.get("success"):
         items.append("Review bridge latency probe failure before pinning upstreams.")
+    native_tool = report.get("jcode_native_tool", {})
+    if isinstance(native_tool, dict) and not native_tool.get("success"):
+        items.append("Do not bump upstreams until the native jcode Hermes tool check passes.")
     smoke = report.get("bridge_smoke")
     if isinstance(smoke, dict) and not smoke.get("success"):
         items.append("Do not bump upstreams until jcode-bridge smoke checks pass.")
@@ -253,6 +278,10 @@ def build_report(args: argparse.Namespace) -> dict[str, Any]:
         "hermes_service_contract": service_contract_report(),
         "hermes_mcp_contract": _mcp_contract_report(),
         "bridge_latency": _latency_report(),
+        "jcode_native_tool": _native_tool_report(
+            jcode_path,
+            cargo=not args.skip_native_cargo,
+        ),
     }
     if args.smoke:
         report["bridge_smoke"] = _smoke_report()
@@ -270,6 +299,7 @@ def build_report(args: argparse.Namespace) -> dict[str, Any]:
         and bool(report["hermes_service_contract"].get("success"))
         and bool(report["hermes_mcp_contract"].get("success"))
         and bool(report["bridge_latency"].get("success"))
+        and bool(report["jcode_native_tool"].get("success"))
         and repos_present
         and graph_reports_present
         and smoke_ok
@@ -395,6 +425,21 @@ def _markdown(report: dict[str, Any]) -> str:
         f"| max | {summary.get('max_ms', '')} |",
     ])
 
+    native_tool = report.get("jcode_native_tool", {})
+    lines.extend([
+        "",
+        "## jcode Native Hermes Tool",
+        "",
+        f"Success: {native_tool.get('success')}",
+        f"Native tool dir: {native_tool.get('native_tool_dir')}",
+        f"jcode path: {native_tool.get('jcode_path')}",
+        "",
+        "| Check | OK |",
+        "| --- | --- |",
+    ])
+    for check in native_tool.get("checks", []):
+        lines.append(f"| {check.get('name')} | {check.get('ok')} |")
+
     lines.extend([
         "",
         "## Recommendations",
@@ -442,6 +487,11 @@ def main(argv: list[str] | None = None) -> int:
         "--smoke",
         action="store_true",
         help="Run stdlib bridge smoke checks and include them in the report.",
+    )
+    parser.add_argument(
+        "--skip-native-cargo",
+        action="store_true",
+        help="Only source-check the native jcode Hermes tool; skip cargo check.",
     )
     parser.add_argument(
         "--format",

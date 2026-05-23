@@ -272,6 +272,12 @@ behavior. The native jcode tool scaffold is source-validated by the scaffold
 copy checks and is designed to compile inside a mother repo that has
 `upstreams/jcode` checked out.
 
+Run the native jcode tool gate when a jcode checkout is available:
+
+```bash
+scripts/jcode_native_tool_check.py --jcode /absolute/path/to/jcode
+```
+
 For upstream bumps, generate a combined sync report:
 
 ```bash
@@ -281,9 +287,9 @@ scripts/jcode_bridge_upstream_report.py --smoke --format markdown \
 
 That report records both repo SHAs, dirty-state samples, Graphify summaries,
 Graphify artifact paths/sizes, bridge contract/schema results, reverse-service
-and MCP transport status, latency-probe metrics, and optional smoke results.
-Use it as the first gate before deciding whether a new jcode/Hermes pair is
-compatible.
+and MCP transport status, latency-probe metrics, native jcode tool status, and
+optional smoke results. Use it as the first gate before deciding whether a new
+jcode/Hermes pair is compatible.
 
 For a standalone mother-repo scaffold:
 

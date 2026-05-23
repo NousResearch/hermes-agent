@@ -28,6 +28,7 @@ FIXTURE_DIR = ROOT / "tests" / "fixtures" / "jcode_bridge"
 HERMES_SERVICE_FIXTURE_DIR = ROOT / "tests" / "fixtures" / "hermes_service"
 HERMES_MCP_FIXTURE_DIR = ROOT / "tests" / "fixtures" / "hermes_mcp"
 LATENCY_PROBE = ROOT / "scripts" / "jcode_bridge_latency_probe.py"
+NATIVE_TOOL_CHECK = ROOT / "scripts" / "jcode_native_tool_check.py"
 PLAN_DOCS = (
     ROOT / "docs" / "plans" / "2026-05-22-hermes-jcode-comparison.md",
     ROOT / "docs" / "plans" / "2026-05-22-hermes-jcode-bridge-implementation.md",
@@ -240,6 +241,10 @@ pointing at this scaffold.
 Use `scripts/jcode_bridge_latency_probe.py` to measure local bridge overhead
 without model or network calls. That probe keeps the speed claim honest: jcode
 can remain the Rust hot path while Hermes contributes higher-level autonomy.
+
+Use `scripts/jcode_native_tool_check.py --jcode upstreams/jcode` after pinning
+or symlinking jcode into `upstreams/jcode`. That check proves the native Hermes
+tool crate still compiles against jcode's Rust tool architecture.
 """
 
 
@@ -367,6 +372,7 @@ def build_manifest(hermes: Path, jcode: Path) -> dict[str, Any]:
             "run scripts/hermes_service_bridge.py check in the Hermes checkout",
             "run bridges/hermes-mcp-server/hermes_mcp_server.py --check --live",
             "run scripts/jcode_bridge_latency_probe.py --iterations 50",
+            "run scripts/jcode_native_tool_check.py --jcode <jcode checkout>",
             "run Hermes-side jcode_bridge_smoke.py in the Hermes checkout",
             "generate and archive an upstream-sync report",
         ],
@@ -478,6 +484,8 @@ def scaffold(output: Path, manifest: dict[str, Any], *, force: bool) -> dict[str
     copied.append("scripts/hermes_service_bridge.py")
     _copy_file(LATENCY_PROBE, output / "scripts" / "jcode_bridge_latency_probe.py", force=force)
     copied.append("scripts/jcode_bridge_latency_probe.py")
+    _copy_file(NATIVE_TOOL_CHECK, output / "scripts" / "jcode_native_tool_check.py", force=force)
+    copied.append("scripts/jcode_native_tool_check.py")
     _write_text(
         output / "configs" / "jcode-mcp.hermes.json",
         json.dumps(_jcode_mcp_config(output), indent=2, ensure_ascii=True, sort_keys=True) + "\n",

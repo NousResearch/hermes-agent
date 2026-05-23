@@ -281,6 +281,12 @@ Probe local bridge overhead without model or network calls:
 scripts/jcode_bridge_latency_probe.py --iterations 50
 ```
 
+Validate the native jcode Tool scaffold against a jcode checkout:
+
+```bash
+scripts/jcode_native_tool_check.py --jcode /absolute/path/to/jcode
+```
+
 Run the contract fixture gate:
 
 ```bash
@@ -309,8 +315,8 @@ scripts/jcode_bridge_upstream_report.py --smoke --format markdown \
 
 Use that report before bumping either upstream. It records both SHAs, Graphify
 summaries, artifact paths/sizes, bridge contract/schema status, MCP transport
-status, reverse Hermes service status, latency-probe metrics, and optional
-smoke status.
+status, reverse Hermes service status, latency-probe metrics, native jcode tool
+status, and optional smoke status.
 
 Create a standalone mother-repo scaffold:
 

@@ -3304,6 +3304,26 @@ class BasePlatformAdapter(ABC):
 
         # Check if there's already an active handler for this session
         if session_key in self._active_sessions:
+            # Internal synthetic events (background process completion/watch
+            # notifications) are routed through the normal adapter so they can
+            # reuse session context, but they are not live user input. Queue
+            # them for the next turn without setting the interrupt guard or
+            # invoking the busy-session handler, otherwise the gateway can emit
+            # a bogus "Interrupting current task" ack and abort user work.
+            if getattr(event, "internal", False):
+                logger.debug(
+                    "[%s] Queuing internal event for active session %s without interrupt",
+                    self.name,
+                    session_key,
+                )
+                merge_pending_message_event(
+                    self._pending_messages,
+                    session_key,
+                    event,
+                    merge_text=True,
+                )
+                return
+
             # Certain commands must bypass the active-session guard and be
             # dispatched directly to the gateway runner.  Without this, they
             # are queued as pending messages and either:

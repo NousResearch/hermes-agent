@@ -47,6 +47,7 @@ def _make_event(
     user_id: str = "u1",
     user_name: str | None = None,
     thread_id: str | None = None,
+    internal: bool = False,
 ) -> MessageEvent:
     source = SessionSource(
         platform=Platform.TELEGRAM,
@@ -61,6 +62,7 @@ def _make_event(
         message_type=MessageType.TEXT,
         source=source,
         message_id=f"msg-{text[:8]}",
+        internal=internal,
     )
 
 
@@ -375,3 +377,32 @@ def test_busy_text_mode_respects_env_var_override(monkeypatch):
     adapter = _make_initialized_adapter()
     assert adapter._busy_text_mode == "interrupt"
     assert not adapter._is_queue_text_debounce_candidate(_make_event("test"))
+
+
+@pytest.mark.asyncio
+async def test_internal_followup_queues_without_interrupting_active_session():
+    """Synthetic process/watch events must not masquerade as live user input.
+
+    Background process notifications use ``MessageEvent.internal=True`` and may
+    arrive while the session they belong to is already processing a real user
+    turn. They should be queued for the next turn without setting the interrupt
+    guard; otherwise the gateway emits a bogus "Interrupting current task" ack
+    and aborts user work even though no user sent a new message.
+    """
+    adapter = _make_adapter()
+    first = _make_event("real user work")
+    session_key = build_session_key(first.source)
+
+    guard = asyncio.Event()
+    adapter._active_sessions[session_key] = guard
+    internal_event = _make_event(
+        '[IMPORTANT: Background process proc_x matched watch pattern "ready".]',
+        internal=True,
+    )
+
+    await adapter.handle_message(internal_event)
+
+    pending = adapter._pending_messages[session_key]
+    assert pending is internal_event
+    assert pending.internal is True
+    assert not guard.is_set(), "internal events must not interrupt the active user turn"

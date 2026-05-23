@@ -9,196 +9,11 @@
   const h = React.createElement;
   const API = "/api/plugins/marketing_factory";
 
-  // Channel character limits for displaying body-length vs cap
-  const CHANNEL_LIMITS = {
-    x: 280,
-    instagram: 2200,
-    tiktok: 2200,
-    linkedin: 5000,
-    blog: 5000,
-    email: 5000,
-    app_store: 170,
-  };
-
-  // Filter chip ordering
-  const STATUS_FILTERS = ["all", "needs_review", "approved", "scheduled", "dry_run_posted", "rejected"];
-
-  function cx(...parts) {
-    return parts.filter(Boolean).join(" ");
-  }
-
-  function card(className, ...children) {
-    return h("section", { className: cx("rounded-2xl border border-midground/15 bg-background/65 p-4 shadow-sm", className) }, children);
-  }
-
-  function smallButton(label, onClick, disabled, tone) {
-    return h("button", {
-      type: "button",
-      onClick,
-      disabled,
-      className: cx(
-        "min-h-[44px] rounded-xl border px-3 py-2 text-sm font-medium transition",
-        disabled ? "cursor-not-allowed border-midground/10 text-midground/35" : "border-midground/20 text-foreground hover:bg-midground/10",
-        tone === "danger" && !disabled ? "border-red-400/40 text-red-200 hover:bg-red-500/10" : "",
-        tone === "primary" && !disabled ? "border-cyan-300/40 bg-cyan-300/10 text-cyan-100 hover:bg-cyan-300/20" : ""
-      ),
-    }, label);
-  }
-
-  function pill(text, tone) {
-    const styles = {
-      needs_review: "border-amber-300/30 bg-amber-300/10 text-amber-100",
-      approved: "border-emerald-300/30 bg-emerald-300/10 text-emerald-100",
-      scheduled: "border-blue-300/30 bg-blue-300/10 text-blue-100",
-      dry_run_posted: "border-purple-300/30 bg-purple-300/10 text-purple-100",
-      rejected: "border-red-300/30 bg-red-300/10 text-red-100",
-      llm_ok: "border-emerald-300/30 bg-emerald-300/5 text-emerald-200/90",
-      llm_fallback: "border-amber-300/30 bg-amber-300/5 text-amber-200/90",
-      safety_ok: "border-emerald-300/20 bg-transparent text-emerald-300/90",
-      safety_fail: "border-red-300/30 bg-red-300/10 text-red-100",
-      route_cheap: "border-midground/20 text-midground/80",
-      route_mid: "border-blue-300/20 text-blue-200/90",
-      route_premium: "border-purple-300/30 text-purple-200/90",
-      tone_neutral: "border-midground/20 text-midground/80",
-    };
-    return h("span", { className: cx("inline-flex rounded-full border px-2.5 py-1 text-xs", styles[tone] || styles.tone_neutral) }, text);
-  }
-
-  function Stat({ label, value, sublabel }) {
-    return card("min-h-[92px]",
-      h("div", { className: "text-xs uppercase tracking-[0.18em] text-midground/60" }, label),
-      h("div", { className: "mt-2 text-3xl font-semibold text-foreground" }, String(value ?? 0)),
-      sublabel ? h("div", { className: "mt-1 text-xs text-midground/60" }, sublabel) : null
-    );
-  }
-
-  function safetyDetail(safety) {
-    if (!safety || typeof safety !== "object") return null;
-    if (safety.passed) return null;
-    const checks = safety.checks || {};
-    const issues = [];
-    if (Array.isArray(checks.forbidden_claims) && checks.forbidden_claims.length) issues.push(`forbidden: ${checks.forbidden_claims.join(", ")}`);
-    if (checks.channel_constraints === false) issues.push("over channel length");
-    if (checks.useful === false) issues.push("too short");
-    if (checks.hallucinated_claims_risk && checks.hallucinated_claims_risk !== "low") issues.push(`hallucination risk: ${checks.hallucinated_claims_risk}`);
-    return issues.length ? issues.join(" · ") : "safety check failed";
-  }
-
-  function bodyLengthIndicator(channel, body) {
-    const limit = CHANNEL_LIMITS[channel] || 2000;
-    const length = (body || "").length;
-    const pct = Math.min(100, Math.round((length / limit) * 100));
-    const tone = pct >= 100 ? "border-red-400/40 text-red-200" : pct >= 85 ? "border-amber-300/40 text-amber-200" : "border-midground/20 text-midground/70";
-    return h("span", { className: cx("inline-flex rounded-full border px-2 py-0.5 text-[10px]", tone) }, `${length} / ${limit}`);
-  }
-
-  function tokenPanel(budgets) {
-    const total = budgets?.spent_tokens_today || 0;
-    const daily = budgets?.daily_tokens || 250000;
-    const byRoute = budgets?.spent_by_route || {};
-    const perApp = budgets?.per_app_tokens || {};
-    const perChannel = budgets?.per_channel_tokens || {};
-    const pct = Math.min(100, Math.round((total / daily) * 100));
-    return card(null,
-      h("div", { className: "flex items-center justify-between gap-2" },
-        h("h2", { className: "text-lg font-semibold" }, "Token spend"),
-        h("span", { className: "text-xs text-midground/60" }, `daily limit ${daily.toLocaleString()}`)
-      ),
-      h("div", { className: "mt-3 flex items-baseline gap-2" },
-        h("div", { className: "text-3xl font-semibold text-foreground" }, total.toLocaleString()),
-        h("div", { className: "text-xs text-midground/70" }, `tokens today (${pct}% of cap)`)
-      ),
-      h("div", { className: "mt-3 h-2 w-full overflow-hidden rounded-full bg-midground/10" },
-        h("div", {
-          className: cx("h-full", pct >= 90 ? "bg-red-400/70" : pct >= 70 ? "bg-amber-300/70" : "bg-cyan-300/60"),
-          style: { width: `${pct}%` },
-        })
-      ),
-      h("div", { className: "mt-3 grid grid-cols-3 gap-2 text-xs" },
-        ["cheap", "mid", "premium"].map((route) => h("div", {
-          key: route,
-          className: "rounded-lg border border-midground/15 bg-background/60 p-2",
-        },
-          h("div", { className: "uppercase tracking-[0.16em] text-midground/60" }, route),
-          h("div", { className: "mt-1 text-sm font-semibold" }, (byRoute[route] || 0).toLocaleString())
-        ))
-      ),
-      Object.keys(perApp).length ? h("div", { className: "mt-3 text-xs text-midground/70" },
-        h("div", { className: "uppercase tracking-[0.14em] text-midground/50" }, "by app"),
-        h("div", { className: "mt-1 flex flex-wrap gap-2" },
-          Object.entries(perApp).map(([slug, n]) => h("span", {
-            key: slug,
-            className: "rounded-full border border-midground/15 px-2 py-0.5",
-          }, `${slug}: ${n.toLocaleString()}`))
-        )
-      ) : null,
-      Object.keys(perChannel).length ? h("div", { className: "mt-2 text-xs text-midground/70" },
-        h("div", { className: "uppercase tracking-[0.14em] text-midground/50" }, "by channel"),
-        h("div", { className: "mt-1 flex flex-wrap gap-2" },
-          Object.entries(perChannel).map(([ch, n]) => h("span", {
-            key: ch,
-            className: "rounded-full border border-midground/15 px-2 py-0.5",
-          }, `${ch === "_none" ? "(research)" : ch}: ${n.toLocaleString()}`))
-        )
-      ) : null,
-      budgets?.last_reset_date ? h("div", { className: "mt-3 text-[10px] text-midground/50" }, `daily counters last reset ${budgets.last_reset_date} (UTC)`) : null
-    );
-  }
-
-  function channelModePanel(app, busy, run) {
-    if (!app) return null;
-    const modes = app.channel_modes || {};
-    const channels = app.channels || [];
-    if (!channels.length) return null;
-    const anyLive = channels.some((channel) => (modes[channel] || "dry_run") === "live");
-    return card(anyLive ? "border-red-400/40 bg-red-500/5" : null,
-      h("div", { className: "flex items-center justify-between gap-2" },
-        h("h2", { className: "text-lg font-semibold" }, "Channel publish modes"),
-        anyLive ? h("span", { className: "text-xs text-red-200 font-medium" }, "LIVE channel(s) active") : h("span", { className: "text-xs text-midground/60" }, "All channels dry-run")
-      ),
-      h("p", { className: "mt-2 text-xs text-midground/70" }, "Until a real connector is registered, switching a channel to live still falls back to dry-run automatically (audited). When the connector IS wired, live = real public posts."),
-      h("div", { className: "mt-3 flex flex-col gap-2" },
-        channels.map((channel) => {
-          const mode = modes[channel] || "dry_run";
-          const live = mode === "live";
-          return h("div", {
-            key: channel,
-            className: cx("flex items-center justify-between rounded-xl border p-2.5", live ? "border-red-400/40 bg-red-500/10" : "border-midground/15 bg-background/60"),
-          },
-            h("div", { className: "flex items-center gap-2" },
-              h("span", { className: "text-sm font-medium" }, channel),
-              h("span", { className: cx("inline-flex rounded-full border px-2 py-0.5 text-[10px]", live ? "border-red-300/40 bg-red-300/10 text-red-100" : "border-midground/20 text-midground/70") }, mode)
-            ),
-            h("button", {
-              type: "button",
-              disabled: !!busy,
-              onClick: () => {
-                const nextMode = live ? "dry_run" : "live";
-                if (nextMode === "live") {
-                  const confirmText = window.prompt(`Switch ${channel} to LIVE for ${app.slug}? Live means real public posts when a connector is registered.\n\nType the channel name (${channel}) to confirm:`);
-                  if (!confirmText || confirmText.trim() !== channel) return;
-                }
-                return run(`mode ${channel}`, () => fetchJSON(`${API}/apps/${encodeURIComponent(app.slug)}/channels/${encodeURIComponent(channel)}/mode`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ mode: nextMode, reviewer: "dashboard" }) }));
-              },
-              className: cx(
-                "min-h-[32px] rounded-lg border px-2.5 py-1 text-xs font-medium",
-                live ? "border-red-400/40 text-red-100 hover:bg-red-500/10" : "border-midground/20 text-foreground hover:bg-midground/10"
-              ),
-            }, live ? "switch to dry-run" : "switch to LIVE")
-          );
-        })
-      )
-    );
-  }
+  function cx(...parts) { return parts.filter(Boolean).join(" "); }
 
   // ---------------------------------------------------------------------------
-  // FactoryFloor — live agent activity strip
+  // FactoryFloor — only visible while a campaign is actively running.
   // ---------------------------------------------------------------------------
-  // Subscribes to /api/plugins/marketing_factory/progress/stream (SSE) and
-  // shows each agent as a card that lights up green while it's working,
-  // dims when idle, and shows the last detail line so the user can SEE
-  // their factory operate during a Generate run.
-
   const AGENT_CARDS = [
     { key: "brand_memory", label: "Brand Memory", emoji: "🧠" },
     { key: "research",     label: "Trend Spotter", emoji: "🔭" },
@@ -208,10 +23,9 @@
     { key: "safety",       label: "Safety Officer", emoji: "🛡️" },
   ];
 
-  function FactoryFloor() {
+  function useFactoryProgress() {
     const [agentStates, setAgentStates] = useState({});
     const [campaignRunning, setCampaignRunning] = useState(null);
-    const [, setTickKey] = useState(0); // force re-render for time-since
     useEffect(() => {
       const es = new EventSource(`${API}/progress/stream`);
       es.onmessage = (ev) => {
@@ -224,72 +38,57 @@
         } else if (type === "campaign.end") {
           setCampaignRunning(null);
         } else if (type === "agent.start" || type === "agent.end") {
-          const agent = payload.agent;
           setAgentStates((prev) => ({
             ...prev,
-            [agent]: {
+            [payload.agent]: {
               state: type === "agent.start" ? "working" : "idle",
               detail: payload.detail || "",
-              channel: payload.channel || null,
               at: payload.timestamp,
             },
           }));
         }
       };
       es.onerror = () => { /* browser auto-reconnects */ };
-      // Heartbeat to refresh "Nm ago" labels
-      const t = setInterval(() => setTickKey((n) => n + 1), 5000);
-      return () => { es.close(); clearInterval(t); };
+      return () => es.close();
     }, []);
+    return { agentStates, campaignRunning };
+  }
 
-    function timeAgo(ts) {
-      if (!ts) return "—";
-      const secs = Math.max(0, Math.floor(Date.now() / 1000 - ts));
-      if (secs < 5) return "just now";
-      if (secs < 60) return `${secs}s ago`;
-      const m = Math.floor(secs / 60);
-      if (m < 60) return `${m}m ago`;
-      const h = Math.floor(m / 60);
-      return `${h}h ago`;
-    }
-
-    return h("div", { className: "rounded-2xl border border-midground/15 bg-background/65 p-4 shadow-sm" },
-      h("div", { className: "flex items-center justify-between gap-2 mb-3" },
+  function FactoryFloor({ campaignRunning, agentStates }) {
+    if (!campaignRunning) return null;
+    return h("div", { className: "rounded-2xl border border-cyan-300/30 bg-cyan-300/5 p-4" },
+      h("div", { className: "flex items-center justify-between mb-3" },
         h("div", null,
-          h("div", { className: "text-xs uppercase tracking-[0.22em] text-cyan-200/70" }, "Factory floor"),
-          h("div", { className: "text-base font-semibold" }, campaignRunning
-            ? `Running for ${campaignRunning.app_slug} (${campaignRunning.days}d)…`
-            : "Idle — click Generate to wake the agents")
+          h("div", { className: "text-xs uppercase tracking-[0.22em] text-cyan-200/70" }, "Factory is making content"),
+          h("div", { className: "text-base font-semibold" }, `${campaignRunning.app_slug} · ${campaignRunning.days} days`)
         ),
-        campaignRunning ? h("div", { className: "flex items-center gap-2 text-xs text-cyan-200" },
-          h("div", { className: "h-2 w-2 rounded-full bg-cyan-300 animate-pulse" }),
-          h("span", null, `Started ${timeAgo(campaignRunning.started_at)}`)
-        ) : null
+        h("div", { className: "h-3 w-3 rounded-full bg-cyan-300 animate-pulse" })
       ),
       h("div", { className: "grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-2" },
         AGENT_CARDS.map((agent) => {
           const state = agentStates[agent.key];
           const working = state && state.state === "working";
-          const tone = working ? "border-cyan-300/50 bg-cyan-300/10" : "border-midground/15 bg-background/60";
-          return h("div", { key: agent.key, className: cx("rounded-xl border p-2.5 transition", tone) },
+          return h("div", {
+            key: agent.key,
+            className: cx("rounded-xl border p-2.5 transition", working ? "border-cyan-300/50 bg-cyan-300/10" : "border-midground/15 bg-background/40"),
+          },
             h("div", { className: "flex items-center gap-2" },
-              h("span", { className: cx("text-lg", working ? "" : "opacity-70") }, agent.emoji),
+              h("span", { className: cx("text-base", working ? "" : "opacity-50") }, agent.emoji),
               h("span", { className: "text-xs font-medium" }, agent.label),
-              working ? h("span", { className: "ml-auto h-2 w-2 rounded-full bg-cyan-300 animate-pulse" })
-                      : h("span", { className: "ml-auto h-2 w-2 rounded-full bg-midground/30" })
+              h("span", { className: cx("ml-auto h-2 w-2 rounded-full", working ? "bg-cyan-300 animate-pulse" : "bg-midground/25") })
             ),
-            h("div", { className: cx("mt-1.5 text-[10px] leading-snug min-h-[28px]", working ? "text-cyan-100" : "text-midground/70") },
-              state ? (state.detail || (working ? "working…" : "ready")) : "ready"
-            ),
-            state ? h("div", { className: "mt-0.5 text-[10px] text-midground/50" },
-              working ? "now" : timeAgo(state.at)
-            ) : null
+            h("div", { className: cx("mt-1.5 text-[10px] leading-snug min-h-[28px]", working ? "text-cyan-100" : "text-midground/60") },
+              state && state.detail ? state.detail : (working ? "working…" : "ready")
+            )
           );
         })
       )
     );
   }
 
+  // ---------------------------------------------------------------------------
+  // PlatformPreview — renders a draft as it would appear on its channel
+  // ---------------------------------------------------------------------------
   function PlatformPreview({ draft, app }) {
     const channel = draft.channel;
     const brandName = (app && app.name) || draft.app_slug;
@@ -298,7 +97,7 @@
     const firstImage = (draft.images || []).find((img) => img && img.url);
 
     if (channel === "x") {
-      return h("div", { className: "rounded-2xl border border-midground/20 bg-background/80 p-4 max-w-md" },
+      return h("div", { className: "rounded-2xl border border-midground/20 bg-background/80 p-4" },
         h("div", { className: "flex items-start gap-3" },
           h("div", { className: "h-10 w-10 rounded-full bg-cyan-300/40 shrink-0" }),
           h("div", { className: "flex-1 min-w-0" },
@@ -314,7 +113,7 @@
       );
     }
     if (channel === "instagram") {
-      return h("div", { className: "rounded-xl border border-midground/20 bg-background/80 p-3 max-w-sm" },
+      return h("div", { className: "rounded-xl border border-midground/20 bg-background/80 p-3" },
         h("div", { className: "flex items-center gap-2 mb-2" },
           h("div", { className: "h-8 w-8 rounded-full bg-gradient-to-br from-pink-400 via-red-500 to-yellow-400" }),
           h("span", { className: "text-sm font-semibold" }, brandName)
@@ -328,7 +127,7 @@
       );
     }
     if (channel === "tiktok") {
-      return h("div", { className: "rounded-xl border border-midground/20 bg-black text-white p-3 max-w-xs relative" },
+      return h("div", { className: "rounded-xl border border-midground/20 bg-black text-white p-3 relative" },
         firstImage ? h("img", { src: firstImage.url, alt: "tiktok thumb", loading: "lazy", className: "w-full aspect-[9/16] rounded-lg object-cover mb-2 opacity-90" }) : h("div", { className: "w-full aspect-[9/16] rounded-lg bg-midground/40 mb-2" }),
         h("div", { className: "absolute bottom-3 left-3 right-3 text-sm" },
           h("div", { className: "font-semibold" }, brandName),
@@ -337,7 +136,7 @@
       );
     }
     if (channel === "linkedin") {
-      return h("div", { className: "rounded-lg border border-midground/20 bg-background/80 p-4 max-w-md" },
+      return h("div", { className: "rounded-lg border border-midground/20 bg-background/80 p-4" },
         h("div", { className: "flex items-start gap-3 mb-3" },
           h("div", { className: "h-12 w-12 rounded-full bg-blue-400/40 shrink-0" }),
           h("div", null,
@@ -349,7 +148,7 @@
       );
     }
     if (channel === "blog") {
-      return h("article", { className: "rounded-lg border border-midground/20 bg-background/80 p-4 max-w-2xl prose prose-sm prose-invert" },
+      return h("article", { className: "rounded-lg border border-midground/20 bg-background/80 p-4" },
         h("pre", { className: "whitespace-pre-wrap text-xs leading-6 font-mono text-midground/90" }, body)
       );
     }
@@ -357,120 +156,214 @@
       const lines = body.split("\n");
       const subjectLine = lines[0] && lines[0].toLowerCase().startsWith("subject:") ? lines[0] : null;
       const rest = subjectLine ? lines.slice(1).join("\n") : body;
-      return h("div", { className: "rounded-lg border border-midground/20 bg-background/80 p-4 max-w-xl" },
+      return h("div", { className: "rounded-lg border border-midground/20 bg-background/80 p-4" },
         subjectLine ? h("div", { className: "border-b border-midground/15 pb-2 mb-3 text-sm font-semibold" }, subjectLine) : null,
         h("div", { className: "text-xs text-midground/60 mb-3" }, `From: ${brandName} <hello@${draft.app_slug}.com>`),
         h("p", { className: "text-sm leading-6 whitespace-pre-wrap" }, rest)
       );
     }
     if (channel === "app_store") {
-      return h("div", { className: "rounded-2xl border border-midground/20 bg-gradient-to-br from-cyan-900/20 to-purple-900/20 p-4 max-w-sm" },
+      return h("div", { className: "rounded-2xl border border-midground/20 bg-gradient-to-br from-cyan-900/20 to-purple-900/20 p-4" },
         h("div", { className: "text-[10px] uppercase tracking-[0.18em] text-midground/70" }, "App Store promotional text"),
         h("p", { className: "mt-2 text-base font-medium leading-snug" }, body)
       );
     }
-    // Fallback: just show the body in a box
     return h("div", { className: "rounded-lg border border-midground/20 bg-background/80 p-3 text-sm whitespace-pre-wrap" }, body);
   }
 
-  function SchedulePicker({ draft, busy, run }) {
-    const [editing, setEditing] = useState(false);
-    const canEdit = draft.status !== "posted" && draft.status !== "dry_run_posted";
-    const display = draft.scheduled_for ? new Date(draft.scheduled_for).toLocaleString() : "unscheduled";
-    if (!editing || !canEdit) {
-      return h("button", {
-        type: "button",
-        disabled: !canEdit,
-        onClick: () => canEdit && setEditing(true),
-        className: "text-xs text-midground/60 hover:text-cyan-200 underline disabled:no-underline",
-      }, display);
-    }
-    // Build a value compatible with <input type="datetime-local"> (no tz, local time)
-    const toLocal = (iso) => {
-      try {
-        const d = iso ? new Date(iso) : new Date();
-        const pad = (n) => String(n).padStart(2, "0");
-        return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
-      } catch (e) { return ""; }
-    };
-    const initial = toLocal(draft.scheduled_for);
-    let value = initial;
-    return h("span", { className: "flex items-center gap-1 text-xs" },
-      h("input", {
-        type: "datetime-local",
-        defaultValue: initial,
-        onChange: (e) => { value = e.target.value; },
-        className: "rounded-md border border-cyan-300/40 bg-background/60 px-1 py-0.5",
-      }),
-      h("button", {
-        type: "button",
-        onClick: () => {
-          if (!value) return;
-          setEditing(false);
-          const iso = new Date(value).toISOString();
-          return run(`reschedule ${draft.id}`, () => fetchJSON(`${API}/drafts/${encodeURIComponent(draft.id)}/scheduled-for`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ scheduled_for: iso }) }));
-        },
-        disabled: !!busy,
-        className: "text-cyan-200 underline",
-      }, "save"),
-      h("button", { type: "button", onClick: () => setEditing(false), className: "text-midground/60 underline" }, "cancel")
-    );
-  }
-
-  function EditableBody({ draft, busy, run, app }) {
-    const [editing, setEditing] = useState(false);
-    const [showPreview, setShowPreview] = useState(false);
-    const [value, setValue] = useState(draft.body || "");
-    useEffect(() => { setValue(draft.body || ""); }, [draft.body, draft.id]);
-    const canEdit = draft.status !== "posted" && draft.status !== "dry_run_posted";
-    if (!editing) {
-      return h("div", { className: "mt-3" },
-        h("div", { className: "flex items-start gap-2" },
-          showPreview
-            ? h("div", { className: "flex-1" }, h(PlatformPreview, { draft, app }))
-            : h("p", { className: "flex-1 whitespace-pre-wrap text-sm leading-6" }, draft.body),
-          h("div", { className: "flex flex-col gap-1 shrink-0" },
-            h("button", {
-              type: "button",
-              onClick: () => setShowPreview(!showPreview),
-              className: "text-[10px] text-midground/60 hover:text-cyan-200 underline",
-            }, showPreview ? "show raw" : "show preview"),
-            canEdit ? h("button", {
-              type: "button",
-              onClick: () => { setValue(draft.body || ""); setEditing(true); },
-              className: "text-[10px] text-midground/60 hover:text-cyan-200 underline",
-            }, "edit") : null
-          )
-        )
-      );
-    }
-    return h("div", { className: "mt-3 flex flex-col gap-2" },
-      h("textarea", {
-        value,
-        onChange: (e) => setValue(e.target.value),
-        rows: Math.max(3, Math.min(12, (value.match(/\n/g) || []).length + 3)),
-        className: "w-full rounded-lg border border-cyan-300/40 bg-background/60 p-2 text-sm leading-6 font-mono",
-      }),
-      h("div", { className: "flex items-center gap-2" },
-        smallButton("Save edit", () => {
-          if (!value.trim()) return;
-          setEditing(false);
-          return run(`edit ${draft.id}`, () => fetchJSON(`${API}/drafts/${encodeURIComponent(draft.id)}`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ body: value, editor: "dashboard" }) }));
-        }, !!busy, "primary"),
-        smallButton("Cancel", () => { setValue(draft.body || ""); setEditing(false); }, !!busy),
-        h("span", { className: "text-[10px] text-midground/60" }, `${value.length} chars`)
+  // ---------------------------------------------------------------------------
+  // DraftCard — minimal: channel pill, preview, 3 actions.
+  // ---------------------------------------------------------------------------
+  function DraftCard({ draft, app, busy, run }) {
+    return h("article", { className: "rounded-2xl border border-midground/15 bg-background/40 p-4" },
+      h("div", { className: "flex items-center justify-between gap-2 mb-3" },
+        h("span", { className: "text-xs uppercase tracking-[0.18em] text-midground/70" }, draft.channel),
+        h("span", { className: "text-xs text-midground/50" }, draft.created_at ? new Date(draft.created_at).toLocaleString() : "")
+      ),
+      h(PlatformPreview, { draft, app }),
+      h("div", { className: "mt-4 flex flex-wrap gap-2" },
+        h("button", {
+          type: "button",
+          disabled: !!busy,
+          onClick: () => run(`approve ${draft.id}`, () => fetchJSON(`${API}/drafts/${encodeURIComponent(draft.id)}/approve`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ reviewer: "dashboard", reason: "approved" }) })),
+          className: cx(
+            "flex-1 min-w-[120px] min-h-[48px] rounded-xl border px-4 py-2 text-sm font-medium transition",
+            busy ? "cursor-not-allowed border-midground/10 text-midground/35" : "border-emerald-300/40 bg-emerald-300/10 text-emerald-100 hover:bg-emerald-300/20"
+          ),
+        }, "✓ Approve"),
+        h("button", {
+          type: "button",
+          disabled: !!busy,
+          onClick: () => {
+            const reason = window.prompt("Why are you rejecting this? Be specific — your reason teaches the factory what to avoid.\n\nLeave blank to cancel.");
+            if (!reason || !reason.trim()) return;
+            return run(`reject ${draft.id}`, () => fetchJSON(`${API}/drafts/${encodeURIComponent(draft.id)}/reject`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ reviewer: "dashboard", reason: reason.trim() }) }));
+          },
+          className: cx(
+            "flex-1 min-w-[120px] min-h-[48px] rounded-xl border px-4 py-2 text-sm font-medium transition",
+            busy ? "cursor-not-allowed border-midground/10 text-midground/35" : "border-red-400/40 text-red-200 hover:bg-red-500/10"
+          ),
+        }, "✗ Reject"),
+        h("button", {
+          type: "button",
+          disabled: !!busy,
+          onClick: () => run(`regen ${draft.id}`, () => fetchJSON(`${API}/drafts/${encodeURIComponent(draft.id)}/regenerate`, { method: "POST" })),
+          className: cx(
+            "flex-1 min-w-[120px] min-h-[48px] rounded-xl border px-4 py-2 text-sm font-medium transition",
+            busy ? "cursor-not-allowed border-midground/10 text-midground/35" : "border-midground/20 text-foreground hover:bg-midground/10"
+          ),
+        }, "↻ New version")
       )
     );
   }
 
+  // ---------------------------------------------------------------------------
+  // SettingsDrawer — slide-out panel for everything that's not the main flow.
+  // ---------------------------------------------------------------------------
+  function SettingsDrawer({ open, onClose, data, busy, run, advanced, setAdvanced }) {
+    if (!open) return null;
+    const summary = data?.summary || {};
+    const advisor = data?.advisor;
+    const budgets = summary.budgets || {};
+    const poll = summary.poll || {};
+    const lastPollAt = poll.last_poll_at ? new Date(poll.last_poll_at).toLocaleString() : "never";
+
+    return h("div", { className: "fixed inset-0 z-50 flex" },
+      h("div", { onClick: onClose, className: "absolute inset-0 bg-black/50" }),
+      h("aside", { className: "relative ml-auto w-full max-w-md h-full overflow-y-auto bg-background border-l border-midground/20 p-6 flex flex-col gap-5" },
+        h("div", { className: "flex items-center justify-between" },
+          h("h2", { className: "text-lg font-semibold" }, "Settings"),
+          h("button", { onClick: onClose, className: "text-midground/60 hover:text-foreground text-xl" }, "×")
+        ),
+
+        h("section", null,
+          h("div", { className: "text-xs uppercase tracking-[0.18em] text-midground/60 mb-2" }, "Numbers"),
+          h("div", { className: "grid grid-cols-2 gap-2 text-sm" },
+            h("div", { className: "rounded-lg border border-midground/15 bg-background/40 p-2" }, h("div", { className: "text-midground/60 text-xs" }, "Apps"), h("div", { className: "text-lg font-semibold" }, summary.apps ?? 0)),
+            h("div", { className: "rounded-lg border border-midground/15 bg-background/40 p-2" }, h("div", { className: "text-midground/60 text-xs" }, "Campaigns"), h("div", { className: "text-lg font-semibold" }, summary.campaigns ?? 0)),
+            h("div", { className: "rounded-lg border border-midground/15 bg-background/40 p-2" }, h("div", { className: "text-midground/60 text-xs" }, "Drafts"), h("div", { className: "text-lg font-semibold" }, summary.drafts ?? 0)),
+            h("div", { className: "rounded-lg border border-midground/15 bg-background/40 p-2" }, h("div", { className: "text-midground/60 text-xs" }, "Pending"), h("div", { className: "text-lg font-semibold" }, summary.pending_approvals ?? 0))
+          )
+        ),
+
+        advisor && !advisor.healthy ? h("section", null,
+          h("div", { className: "text-xs uppercase tracking-[0.18em] text-midground/60 mb-2" }, "Things to know"),
+          h("div", { className: "flex flex-col gap-2 text-xs" },
+            (advisor.items || []).map((item, idx) => h("div", {
+              key: idx,
+              className: cx("rounded-lg border p-2", item.severity === "warning" ? "border-amber-300/30 bg-amber-300/5" : "border-blue-300/30 bg-blue-300/5"),
+            },
+              h("div", { className: "font-medium" }, item.message),
+              h("div", { className: "mt-1 text-midground/70" }, `→ ${item.action}`)
+            ))
+          )
+        ) : null,
+
+        h("section", null,
+          h("div", { className: "text-xs uppercase tracking-[0.18em] text-midground/60 mb-2" }, "Brands"),
+          h("div", { className: "flex flex-col gap-2" },
+            (data?.apps || []).map((app) => h("div", { key: app.slug, className: "rounded-lg border border-midground/15 bg-background/40 p-3 text-sm" },
+              h("div", { className: "flex items-center justify-between gap-2" },
+                h("div", { className: "font-semibold" }, app.name || app.slug),
+                h("span", { className: cx("text-[10px] rounded-full border px-2 py-0.5", app.auto_generate ? "border-cyan-300/40 text-cyan-100" : "border-midground/20 text-midground/70") }, app.auto_generate ? `auto-on (≤${app.auto_generate_threshold || 3})` : "auto-off")
+              ),
+              h("div", { className: "mt-1 text-xs text-midground/60" }, app.positioning || "—"),
+              h("div", { className: "mt-2 flex flex-wrap gap-2" },
+                h("button", {
+                  onClick: () => run(`auto ${app.slug}`, () => fetchJSON(`${API}/apps/${encodeURIComponent(app.slug)}/auto-generate`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ enabled: !app.auto_generate }) })),
+                  disabled: !!busy,
+                  className: "text-[10px] underline text-midground/70 hover:text-cyan-200",
+                }, app.auto_generate ? "turn auto-gen off" : "turn auto-gen on"),
+                h("button", {
+                  onClick: async () => {
+                    try {
+                      const result = await fetchJSON(`${API}/apps/${encodeURIComponent(app.slug)}/digest?days=7`);
+                      if (navigator.clipboard && navigator.clipboard.writeText) {
+                        await navigator.clipboard.writeText(result.markdown);
+                        alert(`7-day digest for ${app.slug} copied to clipboard.`);
+                      }
+                    } catch (e) { alert(`Digest failed: ${e.message || e}`); }
+                  },
+                  disabled: !!busy,
+                  className: "text-[10px] underline text-midground/70 hover:text-cyan-200",
+                }, "copy weekly digest")
+              )
+            ))
+          ),
+          h("button", {
+            onClick: () => {
+              const slug = window.prompt("New app slug (lowercase, alphanumeric, dashes/underscores ok):");
+              if (!slug || !slug.trim()) return;
+              const name = window.prompt(`Display name for ${slug}:`);
+              if (!name) return;
+              const positioning = window.prompt("Brand positioning (one sentence):") || "";
+              const icp = window.prompt("Who buys/uses this?") || "";
+              const tone = window.prompt("Brand tone (e.g. cute warm playful):") || "";
+              const cta = window.prompt("Default call-to-action:") || "";
+              const channelsStr = window.prompt("Channels (comma-separated: x,instagram,tiktok,linkedin,blog,email,app_store):") || "";
+              const channels = channelsStr.split(",").map((s) => s.trim()).filter(Boolean);
+              if (!channels.length) { alert("At least one channel required."); return; }
+              const pillarsStr = window.prompt("Content pillars (recurring themes, comma-separated):") || "";
+              const linkStr = window.prompt("Primary link (URL):") || "";
+              return run("add-app", () => fetchJSON(`${API}/apps`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({
+                slug: slug.trim(), name: name.trim(), positioning, icp, tone, cta,
+                channels,
+                content_pillars: pillarsStr.split(",").map((s) => s.trim()).filter(Boolean),
+                forbidden_claims: [], claims: [], competitors: [], assets: [],
+                links: linkStr ? [linkStr] : [],
+              }) }));
+            },
+            disabled: !!busy,
+            className: "mt-3 w-full rounded-lg border border-cyan-300/40 bg-cyan-300/10 text-cyan-100 px-3 py-2 text-sm",
+          }, "+ Add new brand")
+        ),
+
+        h("section", null,
+          h("div", { className: "text-xs uppercase tracking-[0.18em] text-midground/60 mb-2" }, "Cost"),
+          h("div", { className: "text-sm text-midground/80" },
+            `${(budgets.spent_tokens_today || 0).toLocaleString()} tokens used today (${budgets.daily_tokens ? Math.round(100 * (budgets.spent_tokens_today || 0) / budgets.daily_tokens) : 0}% of cap)`
+          )
+        ),
+
+        h("section", null,
+          h("div", { className: "text-xs uppercase tracking-[0.18em] text-midground/60 mb-2" }, "Auto-publishing loop"),
+          h("div", { className: "text-xs text-midground/70" }, `Last tick: ${lastPollAt} · ${poll.total_polls || 0} ticks total`),
+          h("button", {
+            onClick: () => run("poll", () => fetchJSON(`${API}/poll`, { method: "POST" })),
+            disabled: !!busy,
+            className: "mt-2 text-sm underline text-cyan-200",
+          }, "Run poll now"),
+          h("div", { className: "mt-2 rounded-lg border border-midground/20 bg-background/40 p-2 font-mono text-[10px] text-midground/70 break-all" },
+            `hermes marketing-factory enable-poller`
+          )
+        ),
+
+        h("section", null,
+          h("label", { className: "flex items-center gap-2 text-sm" },
+            h("input", {
+              type: "checkbox",
+              checked: !!advanced,
+              onChange: (e) => setAdvanced(e.target.checked),
+            }),
+            h("span", null, "Advanced mode (show pills, filters, bulk actions on the main page)")
+          )
+        )
+      )
+    );
+  }
+
+  // ---------------------------------------------------------------------------
+  // Main page
+  // ---------------------------------------------------------------------------
   function MarketingFactoryPage() {
     const [data, setData] = useState(null);
     const [loading, setLoading] = useState(true);
     const [busy, setBusy] = useState(null);
     const [error, setError] = useState(null);
     const [appSlug, setAppSlug] = useState("pupular");
-    const [days, setDays] = useState(7);
-    const [statusFilter, setStatusFilter] = useState("needs_review");
+    const [settingsOpen, setSettingsOpen] = useState(false);
+    const [advanced, setAdvanced] = useState(false);
+    const { agentStates, campaignRunning } = useFactoryProgress();
 
     const refresh = useCallback(async () => {
       setError(null);
@@ -484,6 +377,13 @@
     useEffect(() => {
       refresh().catch((err) => setError(err.message || String(err))).finally(() => setLoading(false));
     }, []);
+
+    // Auto-refresh after a campaign finishes
+    useEffect(() => {
+      if (campaignRunning === null) {
+        refresh().catch(() => {});
+      }
+    }, [campaignRunning, refresh]);
 
     const run = useCallback(async (label, fn) => {
       setBusy(label);
@@ -499,315 +399,87 @@
       }
     }, [refresh]);
 
-    const allDrafts = useMemo(() => {
+    const currentApp = useMemo(() => (data?.apps || []).find((a) => a.slug === appSlug), [data, appSlug]);
+
+    const reviewableDrafts = useMemo(() => {
       const drafts = data?.drafts || [];
-      return drafts.filter((draft) => !appSlug || draft.app_slug === appSlug).slice().reverse();
+      return drafts
+        .filter((draft) => draft.app_slug === appSlug && draft.status === "needs_review")
+        .slice()
+        .reverse();
     }, [data, appSlug]);
 
-    const filteredDrafts = useMemo(() => {
-      if (statusFilter === "all") return allDrafts;
-      return allDrafts.filter((draft) => draft.status === statusFilter);
-    }, [allDrafts, statusFilter]);
+    if (loading) return h("div", { className: "p-6 text-sm text-midground" }, "Loading…");
 
-    const statusCounts = useMemo(() => {
-      const counts = { all: allDrafts.length };
-      for (const draft of allDrafts) {
-        counts[draft.status] = (counts[draft.status] || 0) + 1;
-      }
-      return counts;
-    }, [allDrafts]);
+    return h("div", { className: "mx-auto flex w-full max-w-4xl flex-col gap-6 p-6 text-foreground" },
 
-    const pending = allDrafts.filter((draft) => draft.status === "needs_review");
-    const approved = allDrafts.filter((draft) => draft.status === "approved");
-    const scheduled = allDrafts.filter((draft) => draft.status === "scheduled");
-
-    if (loading) return h("div", { className: "p-4 text-sm text-midground" }, "Loading Marketing Factory…");
-
-    return h("div", { className: "mx-auto flex w-full max-w-7xl flex-col gap-4 p-4 text-foreground" },
-      h("header", { className: "flex flex-col gap-3 md:flex-row md:items-end md:justify-between" },
+      // Header: just title + settings gear
+      h("header", { className: "flex items-center justify-between" },
         h("div", null,
-          h("div", { className: "text-xs uppercase tracking-[0.22em] text-cyan-200/70" }, "Dry-run-first Mission Control"),
-          h("h1", { className: "mt-1 text-3xl font-semibold" }, "Marketing Factory"),
-          h("p", { className: "mt-2 max-w-3xl text-sm leading-6 text-midground" }, "Review brand profiles, generate campaign drafts, approve safely, schedule, and dry-run publish. This MVP never performs public posting.")
+          h("h1", { className: "text-2xl font-semibold" }, "Marketing Factory"),
+          h("p", { className: "text-sm text-midground" }, "Approve good posts. Reject bad ones with a reason. The factory learns.")
         ),
-        h("div", { className: "flex flex-wrap gap-2" },
-          smallButton("Refresh", () => run("refresh", refresh), !!busy),
-          smallButton("Initialize samples", () => run("init", () => fetchJSON(`${API}/init`, { method: "POST" })), !!busy, "primary")
-        )
+        h("button", {
+          onClick: () => setSettingsOpen(true),
+          className: "rounded-xl border border-midground/20 px-3 py-2 text-sm hover:bg-midground/10",
+        }, "⚙ Settings")
       ),
 
-      error ? h("div", { className: "rounded-xl border border-red-400/30 bg-red-500/10 p-3 text-sm text-red-100", role: "alert" }, error) : null,
-      busy ? h("div", { className: "rounded-xl border border-cyan-300/20 bg-cyan-300/10 p-3 text-sm text-cyan-100" }, `Working: ${busy}…`) : null,
+      // Error banner if any
+      error ? h("div", { className: "rounded-xl border border-red-400/30 bg-red-500/10 p-3 text-sm text-red-100" }, error) : null,
 
-      (() => {
-        const advisor = data?.advisor;
-        if (!advisor || advisor.healthy) return null;
-        const items = advisor.items || [];
-        const warnings = items.filter((item) => item.severity === "warning");
-        const headerTone = warnings.length ? "border-amber-300/40 bg-amber-300/10 text-amber-100" : "border-blue-300/30 bg-blue-300/5 text-blue-100";
-        return h("div", { className: cx("rounded-xl border p-3 text-sm", headerTone) },
-          h("div", { className: "flex flex-wrap items-baseline gap-2" },
-            h("span", { className: "font-semibold" }, `${items.length} advisor item${items.length === 1 ? "" : "s"}`),
-            warnings.length ? h("span", { className: "text-xs uppercase tracking-[0.16em]" }, `${warnings.length} warning${warnings.length === 1 ? "" : "s"}`) : null
-          ),
-          h("ul", { className: "mt-2 flex flex-col gap-2 text-xs" },
-            items.map((item, idx) => h("li", { key: idx, className: "rounded-lg border border-midground/15 bg-background/40 p-2" },
-              h("div", { className: "flex flex-wrap items-baseline gap-2" },
-                h("span", { className: cx("inline-flex rounded-full border px-2 py-0.5 text-[10px] uppercase tracking-[0.14em]", item.severity === "warning" ? "border-amber-300/40 text-amber-200" : "border-blue-300/30 text-blue-200") }, item.severity),
-                item.app_slug ? h("span", { className: "text-midground/70" }, item.app_slug) : null,
-                h("span", null, item.message)
-              ),
-              h("div", { className: "mt-1 text-midground/70" }, `→ ${item.action}`)
-            ))
-          )
-        );
-      })(),
+      // Factory floor — ONLY visible while a campaign is running
+      h(FactoryFloor, { campaignRunning, agentStates }),
 
-      h(FactoryFloor, null),
-
-      h("div", { className: "grid gap-3 sm:grid-cols-2 lg:grid-cols-5" },
-        h(Stat, { label: "Apps", value: data?.summary?.apps }),
-        h(Stat, { label: "Campaigns", value: data?.summary?.campaigns }),
-        h(Stat, { label: "Drafts", value: data?.summary?.drafts }),
-        h(Stat, { label: "Pending", value: data?.summary?.pending_approvals }),
-        h(Stat, { label: "Dry-runs", value: data?.summary?.dry_run_publish_events })
-      ),
-
-      (() => {
-        const poll = data?.summary?.poll || {};
-        const lastPolledAt = poll.last_poll_at ? new Date(poll.last_poll_at).toLocaleString() : "never";
-        const lastFired = poll.last_poll_fired ?? 0;
-        const totalPolls = poll.total_polls ?? 0;
-        return card("border-midground/15",
-          h("div", { className: "flex flex-wrap items-center justify-between gap-2" },
-            h("div", null,
-              h("div", { className: "text-xs uppercase tracking-[0.18em] text-midground/60" }, "Scheduled poller"),
-              h("div", { className: "mt-1 text-sm text-midground" }, `Last tick: ${lastPolledAt} · fired ${lastFired} on last tick · ${totalPolls} ticks total`)
-            ),
-            h("div", { className: "flex flex-wrap gap-2" },
-              smallButton("Run poll now", () => run("poll", () => fetchJSON(`${API}/poll`, { method: "POST" })), !!busy),
-              h("code", { className: "rounded-lg border border-midground/15 bg-background/60 px-2 py-1 text-[10px] text-midground/70" }, 'hermes cron create --schedule "every 5m" --command "hermes marketing-factory poll"')
-            )
-          )
-        );
-      })(),
-
-      card("border-cyan-300/20 bg-cyan-300/5",
-        h("div", { className: "flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between" },
-          h("div", null,
-            h("div", { className: "text-xs uppercase tracking-[0.18em] text-midground/60" }, "Next marketing action"),
-            h("div", { className: "mt-1 text-xl font-semibold" }, data?.next_action?.title || "Inspect state"),
-            h("p", { className: "mt-1 text-sm text-midground" }, data?.next_action?.detail || "No recommendation available.")
-          ),
-          h("div", { className: "flex flex-wrap items-center gap-2" },
-            h("select", { value: appSlug, onChange: (e) => setAppSlug(e.target.value), className: "min-h-[44px] rounded-xl border border-midground/20 bg-background px-3 text-sm" },
+      // App picker + the ONE big button
+      h("section", { className: "rounded-2xl border border-cyan-300/30 bg-cyan-300/5 p-6 flex flex-col gap-4" },
+        h("div", { className: "flex items-center justify-between gap-3" },
+          h("div", { className: "flex items-center gap-2" },
+            h("span", { className: "text-xs uppercase tracking-[0.18em] text-cyan-200/70" }, "Brand"),
+            h("select", {
+              value: appSlug,
+              onChange: (e) => setAppSlug(e.target.value),
+              className: "rounded-lg border border-midground/20 bg-background px-3 py-2 text-base font-semibold",
+            },
               (data?.apps || []).map((app) => h("option", { key: app.slug, value: app.slug }, app.name || app.slug))
-            ),
-            h("input", { type: "number", min: 1, max: 31, value: days, onChange: (e) => setDays(Number(e.target.value || 7)), className: "min-h-[44px] w-20 rounded-xl border border-midground/20 bg-background px-3 text-sm" }),
-            smallButton("Generate", () => run("generate", () => fetchJSON(`${API}/campaigns/generate`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ app_slug: appSlug, days }) })), !!busy || !appSlug, "primary"),
-            smallButton(`Schedule approved (${approved.length})`, () => run("schedule", () => fetchJSON(`${API}/schedule?app_slug=${encodeURIComponent(appSlug)}`, { method: "POST" })), !!busy || !approved.length),
-            smallButton(`Dry-run publish (${scheduled.length})`, () => run("publish", () => fetchJSON(`${API}/publish-dry-run?app_slug=${encodeURIComponent(appSlug)}`, { method: "POST" })), !!busy || !scheduled.length),
-            smallButton(`Publish — mode-aware (${scheduled.length})`, () => {
-              const currentApp = (data?.apps || []).find((a) => a.slug === appSlug);
-              const liveChannels = currentApp ? (currentApp.channels || []).filter((c) => (currentApp.channel_modes || {})[c] === "live") : [];
-              if (liveChannels.length) {
-                const ok = window.confirm(`LIVE channels active for ${appSlug}: ${liveChannels.join(", ")}.\n\nIf a real connector is registered, this WILL post publicly. Without a connector it falls back to dry-run (audited). Proceed?`);
-                if (!ok) return;
-              }
-              return run("publish-modes", () => fetchJSON(`${API}/publish?app_slug=${encodeURIComponent(appSlug)}`, { method: "POST" }));
-            }, !!busy || !scheduled.length)
-          )
-        )
+            )
+          ),
+          h("div", { className: "text-xs text-midground/70" }, currentApp ? `${(currentApp.channels || []).length} channels` : "")
+        ),
+        h("button", {
+          onClick: () => run("generate", () => fetchJSON(`${API}/campaigns/generate`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ app_slug: appSlug, days: 7 }) })),
+          disabled: !!busy || !!campaignRunning || !appSlug,
+          className: cx(
+            "w-full min-h-[80px] rounded-2xl border-2 px-6 py-4 text-xl font-semibold transition",
+            (!!busy || !!campaignRunning) ? "cursor-not-allowed border-midground/15 text-midground/40 bg-background/40" : "border-cyan-300/50 bg-cyan-300/15 text-cyan-50 hover:bg-cyan-300/25"
+          ),
+        }, campaignRunning ? "Factory is making content…" : busy === "generate" ? "Starting…" : `+ Make new content for ${currentApp?.name || appSlug}`),
+        h("p", { className: "text-xs text-midground/60 text-center" }, "Generates 7 days of posts across all channels for this brand. ~60-90 seconds.")
       ),
 
-      h("div", { className: "grid gap-4 xl:grid-cols-[1.45fr_0.85fr]" },
-        card(null,
-          h("div", { className: "flex flex-wrap items-center justify-between gap-3" },
-            h("h2", { className: "text-lg font-semibold" }, `Draft queue${appSlug ? ` · ${appSlug}` : ""}`),
-            h("div", { className: "flex flex-wrap items-center gap-2" },
-              smallButton(`Approve all pending (${pending.length})`, () => run("approve-all", () => fetchJSON(`${API}/drafts/approve-all?app_slug=${encodeURIComponent(appSlug)}`, { method: "POST" })), !!busy || !pending.length, "primary"),
-              smallButton(`Reject all pending (${pending.length})`, () => run("reject-all", () => fetchJSON(`${API}/drafts/reject-all?app_slug=${encodeURIComponent(appSlug)}`, { method: "POST" })), !!busy || !pending.length, "danger")
-            )
-          ),
-          h("div", { className: "mt-3 flex flex-wrap gap-2" },
-            STATUS_FILTERS.map((status) => h("button", {
-              key: status,
-              type: "button",
-              onClick: () => setStatusFilter(status),
-              className: cx(
-                "min-h-[36px] rounded-full border px-3 py-1 text-xs transition",
-                statusFilter === status ? "border-cyan-300/40 bg-cyan-300/10 text-cyan-100" : "border-midground/20 text-midground hover:bg-midground/10"
-              ),
-            }, `${status === "all" ? "All" : status.replace(/_/g, " ")} · ${statusCounts[status] || 0}`))
-          ),
-          h("div", { className: "mt-4 flex flex-col gap-3" },
-            filteredDrafts.length ? filteredDrafts.slice(0, 30).map((draft) => h("article", { key: draft.id, className: "rounded-xl border border-midground/15 bg-background/70 p-3" },
-              h("div", { className: "flex flex-wrap items-center gap-2" },
-                pill(draft.status, draft.status),
-                h("span", { className: "text-xs uppercase tracking-[0.14em] text-midground/60" }, draft.channel),
-                pill(draft.model_route || "cheap", `route_${draft.model_route || "cheap"}`),
-                draft.llm_used ? pill(`llm: ${draft.llm_model || "ok"}`, "llm_ok") : pill(draft.llm_error ? "template (llm err)" : "template", draft.llm_error ? "llm_fallback" : "tone_neutral"),
-                draft.safety ? pill(draft.safety.passed ? "safety ok" : "safety fail", draft.safety.passed ? "safety_ok" : "safety_fail") : null,
-                (typeof draft.freshness_score === "number" && draft.freshness_compared_against > 0) ? (
-                  draft.freshness_score < 0.3
-                    ? pill(`near-duplicate · ${Math.round(draft.freshness_score * 100)}% fresh`, "safety_fail")
-                    : draft.freshness_score < 0.5
-                      ? pill(`similar to recent · ${Math.round(draft.freshness_score * 100)}% fresh`, "llm_fallback")
-                      : pill(`${Math.round(draft.freshness_score * 100)}% fresh`, "tone_neutral")
-                ) : null,
-                bodyLengthIndicator(draft.channel, draft.body),
-                h(SchedulePicker, { draft, busy, run })
-              ),
-              draft.llm_error ? h("div", { className: "mt-2 text-[11px] text-amber-200/90" }, `LLM fallback reason: ${draft.llm_error}`) : null,
-              draft.safety && !draft.safety.passed && safetyDetail(draft.safety) ? h("div", { className: "mt-2 text-[11px] text-red-200/90" }, `Safety issues: ${safetyDetail(draft.safety)}`) : null,
-              (Array.isArray(draft._checklist) && draft._checklist.length) ? h("div", { className: "mt-2 flex flex-wrap gap-2 text-[10px]" },
-                draft._checklist.map((check, idx) => {
-                  const icon = check.passed ? "✓" : (check.severity === "error" ? "✗" : "⚠");
-                  const tone = check.passed
-                    ? "border-emerald-300/30 text-emerald-200/80"
-                    : (check.severity === "error" ? "border-red-300/40 text-red-200" : "border-amber-300/40 text-amber-200");
-                  return h("span", {
-                    key: idx,
-                    title: check.note || "",
-                    className: cx("inline-flex items-center gap-1 rounded border px-1.5 py-0.5", tone),
-                  }, h("span", null, icon), h("span", null, check.label));
-                })
-              ) : null,
-              h(EditableBody, { draft, busy, run, app: (data?.apps || []).find((a) => a.slug === draft.app_slug) }),
-              (Array.isArray(draft.images) && draft.images.length) ? h("div", { className: "mt-3 flex flex-wrap gap-2" },
-                draft.images.filter((img) => img && img.url).map((img, idx) => h("div", {
-                  key: idx,
-                  className: "flex flex-col gap-1",
-                },
-                  h("a", { href: img.url, target: "_blank", rel: "noreferrer" },
-                    h("img", {
-                      src: img.url,
-                      alt: img.prompt || "generated image",
-                      loading: "lazy",
-                      className: "w-24 h-24 rounded-lg border border-midground/20 object-cover",
-                    })
-                  ),
-                  img.prompt ? h("div", { className: "max-w-[6rem] text-[10px] text-midground/60 leading-snug" }, img.prompt.length > 80 ? img.prompt.slice(0, 80) + "…" : img.prompt) : null
-                ))
-              ) : null,
-              h("div", { className: "mt-3 flex flex-wrap gap-2" },
-                smallButton("Approve", () => run(`approve ${draft.id}`, () => fetchJSON(`${API}/drafts/${encodeURIComponent(draft.id)}/approve`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ reviewer: "dashboard", reason: "Approved in Marketing Factory dashboard" }) })), !!busy || draft.status !== "needs_review", "primary"),
-                smallButton("Reject", () => {
-                  const reason = window.prompt("Why are you rejecting this draft? Specific feedback steers future generations.\n\n(Leave blank to cancel.)");
-                  if (!reason || !reason.trim()) return;
-                  return run(`reject ${draft.id}`, () => fetchJSON(`${API}/drafts/${encodeURIComponent(draft.id)}/reject`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ reviewer: "dashboard", reason: reason.trim() }) }));
-                }, !!busy || draft.status !== "needs_review", "danger"),
-                smallButton("Regenerate", () => run(`regen ${draft.id}`, () => fetchJSON(`${API}/drafts/${encodeURIComponent(draft.id)}/regenerate`, { method: "POST" })), !!busy || draft.status === "scheduled" || draft.status === "dry_run_posted" || draft.status === "posted"),
-                smallButton("+2 variants", () => run(`variants ${draft.id}`, () => fetchJSON(`${API}/drafts/${encodeURIComponent(draft.id)}/variants?count=2`, { method: "POST" })), !!busy || draft.status === "scheduled" || draft.status === "dry_run_posted" || draft.status === "posted"),
-                smallButton("Schedule", () => run(`schedule ${draft.id}`, () => fetchJSON(`${API}/drafts/${encodeURIComponent(draft.id)}/schedule`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({}) })), !!busy || draft.status !== "approved"),
-                smallButton("Dry-run", () => run(`dry-run ${draft.id}`, () => fetchJSON(`${API}/drafts/${encodeURIComponent(draft.id)}/publish-dry-run`, { method: "POST" })), !!busy || draft.status !== "scheduled")
-              )
-            )) : h("p", { className: "text-sm text-midground" }, statusFilter === "all" ? "No drafts yet. Initialize samples, then generate a campaign." : `No drafts with status “${statusFilter.replace(/_/g, " ")}”.`)
-          )
+      // The feed: drafts that need review
+      h("section", null,
+        h("div", { className: "flex items-baseline justify-between mb-4" },
+          h("h2", { className: "text-lg font-semibold" }, reviewableDrafts.length === 0 ? "No new posts to review" : `${reviewableDrafts.length} post${reviewableDrafts.length === 1 ? "" : "s"} ready for you`),
+          reviewableDrafts.length > 0 ? h("div", { className: "text-xs text-midground/60" }, "Approve / Reject / New version") : null
         ),
+        reviewableDrafts.length === 0
+          ? h("div", { className: "rounded-2xl border border-dashed border-midground/20 p-8 text-center text-sm text-midground/60" },
+              campaignRunning ? "The factory is working. Posts will appear here in a moment." : "Click the big button above to make some.")
+          : h("div", { className: "flex flex-col gap-4" },
+              reviewableDrafts.map((draft) => h(DraftCard, { key: draft.id, draft, app: currentApp, busy, run }))
+            )
+      ),
 
-        h("div", { className: "flex flex-col gap-4" },
-          tokenPanel(data?.summary?.budgets),
-          channelModePanel((data?.apps || []).find((app) => app.slug === appSlug), busy, run),
-          card(null,
-            h("div", { className: "flex items-center justify-between gap-2" },
-              h("h2", { className: "text-lg font-semibold" }, "Brand apps"),
-              smallButton("+ Add app", () => {
-                const slug = window.prompt("New app slug (lowercase, alphanumeric, dashes/underscores ok):");
-                if (!slug || !slug.trim()) return;
-                const name = window.prompt(`Display name for ${slug}:`);
-                if (!name || !name.trim()) return;
-                const positioning = window.prompt("Brand positioning (one sentence):") || "";
-                const icp = window.prompt("Ideal customer profile (who buys/uses this?):") || "";
-                const tone = window.prompt("Brand tone (e.g. cute warm playful / trustworthy premium clear):") || "";
-                const cta = window.prompt("Default call-to-action:") || "";
-                const channelsStr = window.prompt("Channels (comma-separated, e.g. x,instagram,tiktok,blog,email,linkedin,app_store):") || "";
-                const channels = channelsStr.split(",").map((s) => s.trim()).filter(Boolean);
-                if (!channels.length) {
-                  alert("At least one channel is required. Aborting.");
-                  return;
-                }
-                const pillarsStr = window.prompt("Content pillars (comma-separated, the recurring themes):") || "";
-                const forbiddenStr = window.prompt("Forbidden claims (comma-separated, things the brand must NEVER promise):") || "";
-                const linkStr = window.prompt("Primary link (e.g. App Store URL, website):") || "";
-                return run("add-app", () => fetchJSON(`${API}/apps`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({
-                  slug: slug.trim(), name: name.trim(), positioning, icp, tone, cta,
-                  channels,
-                  content_pillars: pillarsStr.split(",").map((s) => s.trim()).filter(Boolean),
-                  forbidden_claims: forbiddenStr.split(",").map((s) => s.trim()).filter(Boolean),
-                  links: linkStr ? [linkStr] : [],
-                  claims: [], competitors: [], assets: [],
-                }) }));
-              }, !!busy, "primary")
-            ),
-            h("div", { className: "mt-3 flex flex-col gap-3" },
-              (data?.apps || []).map((app) => h("div", { key: app.slug, className: cx("rounded-xl border p-3 text-sm", app.slug === appSlug ? "border-cyan-300/40 bg-cyan-300/10" : "border-midground/15 bg-background/60") },
-                h("div", { className: "flex items-start justify-between gap-2" },
-                  h("button", { type: "button", onClick: () => setAppSlug(app.slug), className: "flex-1 text-left" },
-                    h("div", { className: "font-semibold" }, app.name || app.slug),
-                    h("div", { className: "mt-1 text-midground" }, app.positioning || app.icp || "No positioning set"),
-                    h("div", { className: "mt-2 flex items-center gap-2 text-[10px]" },
-                      h("span", { className: cx("inline-flex rounded-full border px-2 py-0.5", app.auto_generate ? "border-cyan-300/40 bg-cyan-300/10 text-cyan-100" : "border-midground/20 text-midground/70") }, `auto-gen: ${app.auto_generate ? "ON" : "off"}${app.auto_generate ? ` (≤${app.auto_generate_threshold || 3})` : ""}`)
-                    )
-                  ),
-                  h("div", { className: "flex flex-col gap-1 items-end" },
-                    h("button", {
-                      type: "button",
-                      disabled: !!busy,
-                      onClick: () => {
-                        const enabled = !app.auto_generate;
-                        if (enabled && !window.confirm(`Turn ON auto-generation for ${app.slug}? When fewer than ${app.auto_generate_threshold || 3} drafts are pending, the poll tick will fire a new 7-day campaign (cooldown 24h between auto-runs).`)) return;
-                        return run(`auto-gen ${app.slug}`, () => fetchJSON(`${API}/apps/${encodeURIComponent(app.slug)}/auto-generate`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ enabled, reviewer: "dashboard" }) }));
-                      },
-                      className: "text-[10px] text-midground/60 hover:text-cyan-200 underline",
-                    }, app.auto_generate ? "turn auto-gen off" : "turn auto-gen on"),
-                    h("button", {
-                      type: "button",
-                      disabled: !!busy,
-                      onClick: async () => {
-                        try {
-                          const result = await fetchJSON(`${API}/apps/${encodeURIComponent(app.slug)}/digest?days=7`);
-                          if (navigator.clipboard && navigator.clipboard.writeText) {
-                            await navigator.clipboard.writeText(result.markdown);
-                            alert(`7-day digest for ${app.slug} copied to clipboard.`);
-                          } else {
-                            window.prompt("Copy this markdown digest:", result.markdown);
-                          }
-                        } catch (err) {
-                          alert(`Digest failed: ${err.message || err}`);
-                        }
-                      },
-                      className: "text-[10px] text-midground/60 hover:text-cyan-200 underline",
-                    }, "copy digest"),
-                    h("button", {
-                      type: "button",
-                      disabled: !!busy,
-                      onClick: () => {
-                        const confirmText = window.prompt(`Type the slug (${app.slug}) to DELETE this app and ALL its drafts/campaigns/etc:`);
-                        if (!confirmText || confirmText.trim() !== app.slug) return;
-                        return run(`remove ${app.slug}`, () => fetchJSON(`${API}/apps/${encodeURIComponent(app.slug)}?cascade=true`, { method: "DELETE" }));
-                      },
-                      className: "text-[10px] text-midground/60 hover:text-red-300 underline",
-                    }, "remove")
-                  )
-                )
-              ))
-            )
-          ),
-          card(null,
-            h("h2", { className: "text-lg font-semibold" }, "Audit trail"),
-            h("div", { className: "mt-3 max-h-[420px] overflow-auto rounded-xl border border-midground/10" },
-              (data?.audit || []).slice().reverse().map((event) => h("div", { key: event.id, className: "border-b border-midground/10 p-3 text-sm last:border-0" },
-                h("div", { className: "flex items-center justify-between gap-2" },
-                  h("span", { className: "font-medium" }, event.action),
-                  h("span", { className: "text-xs text-midground/60" }, event.app_slug || "system")
-                ),
-                h("div", { className: "mt-1 text-xs text-midground/60" }, event.timestamp)
-              ))
-            )
-          )
+      // Advanced section — only shows when toggled in settings
+      advanced ? h("details", { className: "rounded-2xl border border-midground/15 bg-background/40 p-3 text-sm" },
+        h("summary", { className: "cursor-pointer text-midground/80" }, "Advanced — other statuses & batch actions"),
+        h("div", { className: "mt-3 text-xs text-midground/70" },
+          `Drafts by status: ${JSON.stringify(data?.draft_status_counts || {})}`
         )
-      )
+      ) : null,
+
+      h(SettingsDrawer, { open: settingsOpen, onClose: () => setSettingsOpen(false), data, busy, run, advanced, setAdvanced })
     );
   }
 

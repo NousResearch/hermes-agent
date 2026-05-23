@@ -706,12 +706,22 @@ function renderNodeToOutput(
         const content = node.childNodes.find(c => (c as DOMElement).yogaNode) as DOMElement | undefined
 
         const contentYoga = content?.yogaNode
-        // scrollHeight is the intrinsic height of the content wrapper.
-        // Do NOT add getComputedTop() — that's the wrapper's offset
-        // within the viewport (equal to the scroll container's
-        // paddingTop), and innerHeight already subtracts padding, so
-        // including it double-counts padding and inflates maxScroll.
-        const scrollHeight = contentYoga?.getComputedHeight() ?? 0
+        // scrollHeight is the intrinsic height of the content wrapper, but
+        // after terminal resizes Yoga can leave tall descendants overflowing
+        // that wrapper. Use the deepest direct child bottom so sticky-bottom
+        // math can still reach the real final rendered row.
+        let scrollHeight = Math.ceil(contentYoga?.getComputedHeight() ?? 0)
+
+        if (content) {
+          for (const child of content.childNodes) {
+            const childYoga = (child as DOMElement).yogaNode
+
+            if (childYoga) {
+              scrollHeight = Math.max(scrollHeight, Math.ceil(childYoga.getComputedTop() + childYoga.getComputedHeight()))
+            }
+          }
+        }
+
         // Capture previous scroll bounds BEFORE overwriting — the at-bottom
         // follow check compares against last frame's max.
         const prevScrollHeight = node.scrollHeight ?? scrollHeight
@@ -896,7 +906,14 @@ function renderNodeToOutput(
             const regionTop = Math.floor(y + contentYoga.getComputedTop())
             const regionBottom = regionTop + innerHeight - 1
 
-            if (cached?.y === y && cached.height === height && innerHeight > 0 && Math.abs(delta) < innerHeight) {
+            if (
+              cached?.x === x &&
+              cached.y === y &&
+              cached.width === width &&
+              cached.height === height &&
+              innerHeight > 0 &&
+              Math.abs(delta) < innerHeight
+            ) {
               hint = { top: regionTop, bottom: regionBottom, delta }
               scrollHint = hint
             } else {

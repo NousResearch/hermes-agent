@@ -23,6 +23,7 @@ from agent.auxiliary_client import (
     _get_provider_chain,
     _is_payment_error,
     _is_rate_limit_error,
+    _is_server_capacity_error,
     _normalize_aux_provider,
     _try_payment_fallback,
     _resolve_auto,
@@ -1194,6 +1195,71 @@ class TestAuxiliaryFallbackLayering:
         exc = Exception("Payment Required: insufficient credits")
         exc.status_code = 402
         return exc
+
+    def _make_server_capacity_err(self):
+        exc = Exception("Error code: 503 - UNAVAILABLE high demand")
+        setattr(exc, "status_code", 503)
+        return exc
+
+    def test_server_capacity_error_detection(self):
+        assert _is_server_capacity_error(self._make_server_capacity_err())
+
+    def test_explicit_provider_503_uses_configured_chain_first(self, monkeypatch):
+        """Provider-side 5xx capacity errors should use fallback_chain for explicit aux providers."""
+        monkeypatch.setenv("OPENROUTER_API_KEY", "or-key")
+
+        primary_client = MagicMock()
+        primary_client.chat.completions.create.side_effect = self._make_server_capacity_err()
+
+        chain_client = MagicMock()
+        chain_client.chat.completions.create.return_value = MagicMock(choices=[
+            MagicMock(message=MagicMock(content="from configured chain"))
+        ])
+
+        main_called = MagicMock()
+
+        with patch("agent.auxiliary_client._get_cached_client",
+                   return_value=(primary_client, "gemini-3.5-flash")), \
+             patch("agent.auxiliary_client._resolve_task_provider_model",
+                   return_value=("gemini", "gemini-3.5-flash", None, None, None)), \
+             patch("agent.auxiliary_client._try_configured_fallback_chain",
+                   return_value=(chain_client, "gpt-5.4", "fallback_chain[0](openai-codex)")), \
+             patch("agent.auxiliary_client._try_main_agent_model_fallback",
+                   side_effect=main_called):
+            result = call_llm(
+                task="compression",
+                messages=[{"role": "user", "content": "hello"}],
+            )
+
+        assert chain_client.chat.completions.create.called
+        main_called.assert_not_called()
+
+    def test_configured_fallback_chain_passes_explicit_base_url_and_model(self):
+        """fallback_chain entries should pass base_url/api_key through the explicit-override args."""
+        from agent.auxiliary_client import _try_configured_fallback_chain
+
+        fake_client = MagicMock()
+        with patch("agent.auxiliary_client._get_auxiliary_task_config", return_value={
+            "fallback_chain": [{
+                "provider": "openai-codex",
+                "model": "gpt-5.4",
+                "base_url": "https://chatgpt.com/backend-api/codex",
+                "api_key": "",
+            }]
+        }), patch("agent.auxiliary_client.resolve_provider_client",
+                  return_value=(fake_client, "gpt-5.4")) as resolve:
+            client, model, label = _try_configured_fallback_chain(
+                "compression", "gemini", reason="server capacity error")
+
+        assert client is fake_client
+        assert model == "gpt-5.4"
+        assert label == "fallback_chain[0](openai-codex)"
+        resolve.assert_called_once_with(
+            provider="openai-codex",
+            model="gpt-5.4",
+            explicit_base_url="https://chatgpt.com/backend-api/codex",
+            explicit_api_key="",
+        )
 
     def test_explicit_provider_uses_configured_chain_first(self, monkeypatch, caplog):
         """When a user has fallback_chain configured, it's tried BEFORE the main agent model."""

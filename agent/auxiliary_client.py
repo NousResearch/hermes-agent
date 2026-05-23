@@ -2303,6 +2303,31 @@ def _is_rate_limit_error(exc: Exception) -> bool:
     return False
 
 
+def _is_server_capacity_error(exc: Exception) -> bool:
+    """Detect transient provider-side capacity failures worth rerouting.
+
+    Unlike request validation errors, these mean the chosen backend is
+    temporarily unable to serve an otherwise valid auxiliary request. Gemini's
+    endpoint commonly reports this as HTTP 503 with ``UNAVAILABLE`` / "high
+    demand"; treating it as capacity lets explicit auxiliary providers use
+    their configured ``fallback_chain`` instead of failing compression outright.
+    """
+    status = getattr(exc, "status_code", None)
+    if status in {502, 503, 504}:
+        return True
+    err_lower = str(exc).lower()
+    return any(kw in err_lower for kw in (
+        "error code: 503",
+        "status': 'unavailable'",
+        'status": "unavailable"',
+        "currently experiencing high demand",
+        "server overloaded",
+        "overloaded",
+        "temporarily unavailable",
+        "service unavailable",
+    ))
+
+
 def _is_connection_error(exc: Exception) -> bool:
     """Detect connection/network errors that warrant provider fallback.
 
@@ -2836,17 +2861,21 @@ def _try_configured_fallback_chain(
         label = f"fallback_chain[{i}]({fb_provider})"
 
         try:
-            fb_client = _resolve_single_provider(
-                fb_provider, fb_model, fb_base_url, fb_api_key)
+            fb_client, resolved_fb_model = resolve_provider_client(
+                provider=fb_provider,
+                model=fb_model or "",
+                explicit_base_url=fb_base_url or "",
+                explicit_api_key=fb_api_key or "",
+            )
         except Exception:
-            fb_client = None
+            fb_client, resolved_fb_model = None, None
 
         if fb_client is not None:
             logger.info(
                 "Auxiliary %s: %s on %s — configured fallback to %s (%s)",
-                task, reason, failed_provider, label, fb_model or "default",
+                task, reason, failed_provider, label, resolved_fb_model or fb_model or "default",
             )
-            return fb_client, fb_model, label
+            return fb_client, resolved_fb_model or fb_model, label
         tried.append(label)
 
     if tried:
@@ -4860,17 +4889,23 @@ def call_llm(
             _is_payment_error(first_err)
             or _is_connection_error(first_err)
             or _is_rate_limit_error(first_err)
+            or _is_server_capacity_error(first_err)
         )
         # Respect explicit provider choice for transient errors (auth, request
         # validation, etc.) but allow fallback when the provider clearly cannot
-        # serve the request due to capacity: payment/quota exhaustion and
-        # connection failures are capacity problems, not request constraints.
+        # serve the request due to capacity: payment/quota exhaustion,
+        # connection failures, and provider-side 5xx capacity errors are not
+        # request constraints.
         # See #26803: daily token quota (429 + "too many tokens per day") must
         # fall back just like a 402 credit error.
         is_auto = resolved_provider in {"auto", "", None}
         # Capacity errors bypass the explicit-provider gate: the provider
         # literally cannot serve this request regardless of user intent.
-        is_capacity_error = _is_payment_error(first_err) or _is_connection_error(first_err)
+        is_capacity_error = (
+            _is_payment_error(first_err)
+            or _is_connection_error(first_err)
+            or _is_server_capacity_error(first_err)
+        )
         if should_fallback and (is_auto or is_capacity_error):
             if _is_payment_error(first_err):
                 reason = "payment error"
@@ -4883,6 +4918,8 @@ def call_llm(
                 )
             elif _is_rate_limit_error(first_err):
                 reason = "rate limit"
+            elif _is_server_capacity_error(first_err):
+                reason = "server capacity error"
             else:
                 reason = "connection error"
             logger.info("Auxiliary %s: %s on %s (%s), trying fallback",
@@ -5222,12 +5259,18 @@ async def async_call_llm(
             _is_payment_error(first_err)
             or _is_connection_error(first_err)
             or _is_rate_limit_error(first_err)
+            or _is_server_capacity_error(first_err)
         )
-        # Capacity errors (payment/quota/connection) bypass the explicit-provider
-        # gate — the provider cannot serve the request regardless of user intent.
+        # Capacity errors (payment/quota/connection/provider-side 5xx) bypass
+        # the explicit-provider gate — the provider cannot serve the request
+        # regardless of user intent.
         # See #26803: daily token quota must fall back like a 402 credit error.
         is_auto = resolved_provider in {"auto", "", None}
-        is_capacity_error = _is_payment_error(first_err) or _is_connection_error(first_err)
+        is_capacity_error = (
+            _is_payment_error(first_err)
+            or _is_connection_error(first_err)
+            or _is_server_capacity_error(first_err)
+        )
         if should_fallback and (is_auto or is_capacity_error):
             if _is_payment_error(first_err):
                 reason = "payment error"
@@ -5236,6 +5279,8 @@ async def async_call_llm(
                 )
             elif _is_rate_limit_error(first_err):
                 reason = "rate limit"
+            elif _is_server_capacity_error(first_err):
+                reason = "server capacity error"
             else:
                 reason = "connection error"
             logger.info("Auxiliary %s (async): %s on %s (%s), trying fallback",

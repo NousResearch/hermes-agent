@@ -23,9 +23,11 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import secrets
 import threading
 import time
 from dataclasses import dataclass
+from urllib.parse import parse_qs, urlparse
 from typing import Any, Dict, List, Optional, Tuple
 
 import websockets
@@ -59,6 +61,12 @@ CONSOLE_HISTORY_MAX = 50
 # dialog fired, even if they couldn't respond to it in time.
 RECENT_DIALOGS_MAX = 20
 
+# Bound bridge-created pending dialogs and serialized text so hostile pages
+# cannot inflate supervisor memory or browser_snapshot context indefinitely.
+PENDING_DIALOGS_MAX = 5
+DIALOG_TEXT_MAX_CHARS = 4096
+DIALOG_BRIDGE_MAX_URL_CHARS = 16_384
+
 # Magic host the injected dialog bridge XHRs to.  Intercepted via the CDP
 # Fetch domain before any network resolution happens, so the hostname never
 # has to exist.  Keep this ASCII + URL-safe; we also gate Fetch patterns on it.
@@ -74,10 +82,11 @@ _DIALOG_BRIDGE_SCRIPT = r"""
 (() => {
   if (window.__hermesDialogBridgeInstalled) return;
   window.__hermesDialogBridgeInstalled = true;
-  const ENDPOINT = "http://hermes-dialog-bridge.invalid/";
+  const ENDPOINT = "http://hermes-dialog-bridge.invalid/__HERMES_DIALOG_BRIDGE_TOKEN__/";
+  const BridgeXHR = window.XMLHttpRequest;
   function ask(kind, message, defaultPrompt) {
     try {
-      const xhr = new XMLHttpRequest();
+      const xhr = new BridgeXHR();
       // Use GET with query params so we don't need to worry about request
       // body encoding in the Fetch interceptor.
       const params = new URLSearchParams({
@@ -122,6 +131,14 @@ _DIALOG_BRIDGE_SCRIPT = r"""
   // recent_dialogs.
 })();
 """
+
+
+def _truncate_dialog_text(value: Any) -> str:
+    """Bound attacker-controlled dialog text stored in snapshots."""
+    text = str(value or "")
+    if len(text) <= DIALOG_TEXT_MAX_CHARS:
+        return text
+    return text[:DIALOG_TEXT_MAX_CHARS] + "…"
 
 
 # ── Data model ────────────────────────────────────────────────────────────────
@@ -317,6 +334,7 @@ class CDPSupervisor:
         self._dialog_watchdogs: Dict[str, asyncio.TimerHandle] = {}
         # Monotonic id generator for dialogs (human-readable in snapshots).
         self._dialog_seq = 0
+        self._bridge_token = secrets.token_urlsafe(24)
 
     # ── Public sync API ──────────────────────────────────────────────────────
 
@@ -695,6 +713,12 @@ class CDPSupervisor:
         # real native dialogs before we can call handleJavaScriptDialog).
         await self._install_dialog_bridge(self._page_session_id)
 
+    def _dialog_bridge_script(self) -> str:
+        """Return the injected bridge script with this supervisor's token."""
+        return _DIALOG_BRIDGE_SCRIPT.replace(
+            "__HERMES_DIALOG_BRIDGE_TOKEN__", self._bridge_token
+        )
+
     async def _install_dialog_bridge(self, session_id: str) -> None:
         """Install the dialog-bridge init script + Fetch interceptor on a session.
 
@@ -712,7 +736,7 @@ class CDPSupervisor:
         try:
             await self._cdp(
                 "Page.addScriptToEvaluateOnNewDocument",
-                {"source": _DIALOG_BRIDGE_SCRIPT, "runImmediately": True},
+                {"source": self._dialog_bridge_script(), "runImmediately": True},
                 session_id=session_id,
                 timeout=5.0,
             )
@@ -746,7 +770,7 @@ class CDPSupervisor:
         try:
             await self._cdp(
                 "Runtime.evaluate",
-                {"expression": _DIALOG_BRIDGE_SCRIPT, "returnByValue": True},
+                {"expression": self._dialog_bridge_script(), "returnByValue": True},
                 session_id=session_id,
                 timeout=3.0,
             )
@@ -838,8 +862,8 @@ class CDPSupervisor:
         dialog = PendingDialog(
             id=f"d-{self._dialog_seq}",
             type=str(params.get("type") or ""),
-            message=str(params.get("message") or ""),
-            default_prompt=str(params.get("defaultPrompt") or ""),
+            message=_truncate_dialog_text(params.get("message")),
+            default_prompt=_truncate_dialog_text(params.get("defaultPrompt")),
             opened_at=time.time(),
             cdp_session_id=session_id or self._page_session_id or "",
             frame_id=params.get("frameId"),
@@ -1043,15 +1067,35 @@ class CDPSupervisor:
                 pass
             return
 
+        if len(url) > DIALOG_BRIDGE_MAX_URL_CHARS:
+            await self._fulfill_rejected_bridge_request(request_id, session_id=session_id)
+            return
+
+        parsed = urlparse(url)
+        if (
+            parsed.scheme != "http"
+            or parsed.netloc != DIALOG_BRIDGE_HOST
+            or parsed.path.strip("/") != self._bridge_token
+        ):
+            await self._fulfill_rejected_bridge_request(request_id, session_id=session_id)
+            return
+
+        with self._state_lock:
+            pending_count = len(self._pending_dialogs)
+        if pending_count >= PENDING_DIALOGS_MAX:
+            await self._fulfill_rejected_bridge_request(request_id, session_id=session_id)
+            return
+
         # Parse query string for dialog metadata. Use urllib to be robust.
-        from urllib.parse import urlparse, parse_qs
-        q = parse_qs(urlparse(url).query)
+        q = parse_qs(parsed.query, keep_blank_values=True)
 
         def _q(name: str) -> str:
             v = q.get(name, [""])
-            return v[0] if v else ""
+            return _truncate_dialog_text(v[0] if v else "")
 
         kind = _q("kind") or "alert"
+        if kind not in {"alert", "confirm", "prompt"}:
+            kind = "alert"
         message = _q("message")
         default_prompt = _q("default_prompt")
 
@@ -1092,6 +1136,31 @@ class CDPSupervisor:
                 lambda: asyncio.create_task(self._dialog_timeout_expired(dialog.id)),
             )
             self._dialog_watchdogs[dialog.id] = handle
+
+    async def _fulfill_rejected_bridge_request(
+        self, request_id: Any, *, session_id: Optional[str]
+    ) -> None:
+        """Reject an unauthenticated or overflow bridge request and unblock it."""
+        try:
+            import base64 as _b64
+
+            body = _b64.b64encode(b'{"accept":false,"prompt_text":""}').decode()
+            await self._cdp(
+                "Fetch.fulfillRequest",
+                {
+                    "requestId": str(request_id),
+                    "responseCode": 403,
+                    "responseHeaders": [
+                        {"name": "Content-Type", "value": "application/json"},
+                        {"name": "Access-Control-Allow-Origin", "value": "*"},
+                    ],
+                    "body": body,
+                },
+                session_id=session_id,
+                timeout=3.0,
+            )
+        except Exception:
+            pass
 
     async def _fulfill_bridge_request(
         self, dialog: PendingDialog, *, accept: bool, prompt_text: str

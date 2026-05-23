@@ -1510,6 +1510,63 @@ def run_curator_review(
         state2["last_run_duration_seconds"] = elapsed
         state2["last_run_summary"] = final_summary
 
+        # Post-archive safety guard: if the LLM removed skills but produced
+        # zero verified consolidations, the archives were likely hallucinated
+        # or based on stale/irrelevance judgments that may break active
+        # workflows.  Fail closed: move them back from .archive/ so the
+        # user's operational skills stay available.
+        try:
+            after_report_guard = skill_usage.agent_created_report()
+        except Exception:
+            after_report_guard = []
+        after_names_guard = {r.get("name") for r in after_report_guard if isinstance(r, dict)}
+        removed_names = before_names - after_names_guard
+        if removed_names:
+            # Check whether any tool-call evidence of real consolidation exists.
+            _tc_names = [tc.get("name") for tc in (llm_meta.get("tool_calls") or []) if isinstance(tc, dict)]
+            _has_consolidation_evidence = (
+                _tc_names.count("skill_manage") > 0
+                and any(
+                    tc.get("name") == "skill_manage"
+                    and (
+                        "write_file" in str(tc.get("arguments", ""))
+                        or "patch" in str(tc.get("arguments", ""))
+                        or "create" in str(tc.get("arguments", ""))
+                        or "edit" in str(tc.get("arguments", ""))
+                    )
+                    for tc in (llm_meta.get("tool_calls") or [])
+                    if isinstance(tc, dict)
+                )
+            )
+            if not _has_consolidation_evidence:
+                # No consolidation tool-call evidence — rollback archives.
+                import shutil
+                archive_dir = get_hermes_home() / "skills" / ".archive"
+                restored = 0
+                for name in removed_names:
+                    archived_path = archive_dir / name
+                    if archived_path.exists():
+                        try:
+                            dest = get_hermes_home() / "skills" / name
+                            shutil.move(str(archived_path), str(dest))
+                            restored += 1
+                            logger.warning(
+                                "Curator safety guard: restored '%s' from archive "
+                                "(no consolidation evidence found)",
+                                name,
+                            )
+                        except Exception as e:
+                            logger.debug(
+                                "Curator safety guard: failed to restore '%s': %s", name, e
+                            )
+                if restored > 0:
+                    final_summary = (
+                        f"{final_summary}\n"
+                        f"SAFETY GUARD: restored {restored} skill(s) from archive "
+                        f"(no consolidation evidence — fail-closed)"
+                    )
+                    state2["last_run_summary"] = final_summary
+
         # Write the per-run report. Runs in a best-effort try so a
         # reporting bug never breaks the curator itself. Report path is
         # recorded in state so `hermes curator status` can point at it.

@@ -111,6 +111,7 @@ def check_discord_requirements() -> bool:
     Intents = _Intents
     commands = _commands
     DISCORD_AVAILABLE = True
+    _define_discord_view_classes()
     return True
 
 
@@ -1488,7 +1489,8 @@ class DiscordAdapter(BasePlatformAdapter):
         reported in ``raw_response['warnings']`` so the caller can surface
         partial-send issues.
         """
-        from tools.send_message_tool import _derive_forum_thread_name
+        # _derive_forum_thread_name is defined further down in this same
+        # module — no cross-module import needed.
 
         formatted = self.format_message(content)
         chunks = self.truncate_message(formatted, self.MAX_MESSAGE_LENGTH)
@@ -1550,7 +1552,8 @@ class DiscordAdapter(BasePlatformAdapter):
         ForumChannel accepts the same file/files/content kwargs as
         ``channel.send``, creating the thread and starter message atomically.
         """
-        from tools.send_message_tool import _derive_forum_thread_name
+        # _derive_forum_thread_name is defined further down in this same
+        # module — no cross-module import needed.
 
         if not thread_name:
             # Prefer the text content, fall back to the first attached
@@ -2705,8 +2708,13 @@ class DiscordAdapter(BasePlatformAdapter):
 
         Discord's TYPING_START gateway event is unreliable in DMs for bots.
         Instead, start a background loop that hits the typing endpoint every
-        8 seconds (typing indicator lasts ~10s).  The loop is cancelled when
+        12 seconds (typing indicator lasts ~10s).  The loop is cancelled when
         stop_typing() is called (after the response is sent).
+
+        Rate-limit handling: if a 429 is encountered, the loop logs a
+        warning, sleeps for the ``retry_after`` duration (or a sensible
+        default), and continues — it does NOT die on a single rate-limit
+        hit.  Only CancelledError (from stop_typing) stops the loop.
         """
         if not self._client:
             return
@@ -2726,9 +2734,22 @@ class DiscordAdapter(BasePlatformAdapter):
                     except asyncio.CancelledError:
                         return
                     except Exception as e:
-                        logger.debug("Discord typing indicator failed for %s: %s", chat_id, e)
-                        return
-                    await asyncio.sleep(8)
+                        # Don't die on 429 — backoff and continue
+                        retry_after = self._extract_discord_retry_after(e)
+                        if retry_after is not None:
+                            logger.warning(
+                                "Typing indicator rate-limited for %s; retrying in %.1fs",
+                                chat_id, retry_after,
+                            )
+                        else:
+                            logger.debug(
+                                "Discord typing indicator failed for %s: %s",
+                                chat_id, e,
+                            )
+                            return
+                        await asyncio.sleep(retry_after)
+                        continue
+                    await asyncio.sleep(12)
             except asyncio.CancelledError:
                 pass
             finally:
@@ -3600,6 +3621,24 @@ class DiscordAdapter(BasePlatformAdapter):
             )
             return 32 * 1024 * 1024
         return max(0, value)
+
+    @staticmethod
+    def _is_discord_voice_message_attachment(att: Any) -> bool:
+        """Return True when a Discord audio attachment is a native voice note."""
+        marker = getattr(att, "is_voice_message", None)
+        if marker is not None:
+            if callable(marker):
+                try:
+                    return bool(marker())
+                except Exception as exc:
+                    logger.debug("[Discord] is_voice_message() failed for attachment: %s", exc)
+                    return False
+            return bool(marker)
+
+        return (
+            getattr(att, "duration", None) is not None
+            and getattr(att, "waveform", None) is not None
+        )
 
     def _discord_free_response_channels(self) -> set:
         """Return Discord channel IDs where no bot mention is required.
@@ -4541,7 +4580,10 @@ class DiscordAdapter(BasePlatformAdapter):
                     elif att.content_type.startswith("video/"):
                         msg_type = MessageType.VIDEO
                     elif att.content_type.startswith("audio/"):
-                        msg_type = MessageType.AUDIO
+                        if self._is_discord_voice_message_attachment(att):
+                            msg_type = MessageType.VOICE
+                        else:
+                            msg_type = MessageType.AUDIO
                     else:
                         doc_ext = ""
                         if att.filename:
@@ -4949,7 +4991,17 @@ def _component_check_auth(
     return False
 
 
-if DISCORD_AVAILABLE:
+def _define_discord_view_classes() -> None:
+    """Register Discord UI view classes as module globals.
+
+    Called at module load (when discord.py is pre-installed) and also from
+    check_discord_requirements() after a lazy install, so view classes are
+    always defined whenever DISCORD_AVAILABLE is True.  Without this,
+    ExecApprovalView and siblings are only defined at import time; a later
+    lazy install sets DISCORD_AVAILABLE=True but leaves the classes
+    undefined, causing NameError on the first button interaction.
+    """
+    global ExecApprovalView, SlashConfirmView, UpdatePromptView, ModelPickerView, ClarifyChoiceView
 
     class ExecApprovalView(discord.ui.View):
         """
@@ -5649,3 +5701,492 @@ if DISCORD_AVAILABLE:
             self.resolved = True
             for child in self.children:
                 child.disabled = True
+if DISCORD_AVAILABLE:
+    _define_discord_view_classes()
+
+
+# ── Standalone (out-of-process) sender ────────────────────────────────────────
+# Used by ``tools/send_message_tool._send_via_adapter`` when the gateway runner
+# is not in this process (e.g. ``hermes cron`` running standalone) and no live
+# DiscordAdapter instance is available.  Implements the same forum/thread/
+# multipart logic the live adapter would use, via Discord's REST API directly.
+#
+# This block was previously hosted in ``tools/send_message_tool.py`` as
+# ``_send_discord``.  It moved into the plugin so all Discord-specific HTTP
+# logic lives next to the adapter — same shape as Teams' ``_standalone_send``.
+
+# Process-local cache for Discord channel-type probes.  Avoids re-probing the
+# same channel on every send when the directory cache has no entry (e.g. fresh
+# install, or channel created after the last directory build).
+_DISCORD_CHANNEL_TYPE_PROBE_CACHE: Dict[str, bool] = {}
+
+
+def _remember_channel_is_forum(chat_id: str, is_forum: bool) -> None:
+    _DISCORD_CHANNEL_TYPE_PROBE_CACHE[str(chat_id)] = bool(is_forum)
+
+
+def _probe_is_forum_cached(chat_id: str) -> Optional[bool]:
+    return _DISCORD_CHANNEL_TYPE_PROBE_CACHE.get(str(chat_id))
+
+
+def _derive_forum_thread_name(message: str) -> str:
+    """Derive a thread name from the first line of the message, capped at 100 chars."""
+    first_line = message.strip().split("\n", 1)[0].strip()
+    # Strip common markdown heading prefixes
+    first_line = first_line.lstrip("#").strip()
+    if not first_line:
+        first_line = "New Post"
+    return first_line[:100]
+
+
+def _standalone_sanitize_error(text) -> str:
+    """Local copy of tools.send_message_tool._sanitize_error_text — strips bot
+    tokens from any error payload before bubbling it up.  Inlined so the
+    plugin doesn't introduce a hard dependency on send_message_tool internals.
+    """
+    s = str(text)
+    # Mask anything that looks like a Bot token in an Authorization header.
+    import re as _re_san
+    return _re_san.sub(
+        r"(Authorization:\s*Bot\s+)\S+",
+        r"\1***",
+        s,
+        flags=_re_san.IGNORECASE,
+    )
+
+
+async def _standalone_send(
+    pconfig,
+    chat_id: str,
+    message: str,
+    *,
+    thread_id: Optional[str] = None,
+    media_files: Optional[list] = None,
+    force_document: bool = False,
+) -> Dict[str, Any]:
+    """Send via Discord REST API without a live gateway adapter.
+
+    Used by ``tools/send_message_tool._send_via_adapter`` when the gateway
+    runner is not in this process.  Reads ``DISCORD_BOT_TOKEN`` from
+    ``pconfig.token`` (set by the gateway config loader from env) and falls
+    back to the ``DISCORD_BOT_TOKEN`` env var.
+
+    Forum channels (type 15) reject ``POST /messages`` — a thread post is
+    created automatically via ``POST /channels/{id}/threads``.  Media files
+    are uploaded as multipart attachments on the starter message of the new
+    thread.  Channel type is resolved from the channel directory first, then
+    a process-local probe cache, and only as a last resort with a live
+    ``GET /channels/{id}`` probe (whose result is memoized).
+
+    ``force_document`` is accepted for signature parity but unused — Discord
+    treats every uploaded file as a generic attachment.
+    """
+    try:
+        import aiohttp
+    except ImportError:
+        return {"error": "aiohttp not installed. Run: pip install aiohttp"}
+
+    token = (getattr(pconfig, "token", None) or os.getenv("DISCORD_BOT_TOKEN", "")).strip()
+    if not token:
+        return {"error": "Discord standalone send: DISCORD_BOT_TOKEN is not set"}
+
+    try:
+        from gateway.platforms.base import resolve_proxy_url, proxy_kwargs_for_aiohttp
+        _proxy = resolve_proxy_url(platform_env_var="DISCORD_PROXY")
+        _sess_kw, _req_kw = proxy_kwargs_for_aiohttp(_proxy)
+        auth_headers = {"Authorization": f"Bot {token}"}
+        json_headers = {**auth_headers, "Content-Type": "application/json"}
+        media_files = media_files or []
+        last_data = None
+        warnings = []
+
+        # Thread endpoint: Discord threads are channels; send directly to the thread ID.
+        if thread_id:
+            url = f"https://discord.com/api/v10/channels/{thread_id}/messages"
+        else:
+            # Check if the target channel is a forum channel (type 15).
+            # Forum channels reject POST /messages — create a thread post instead.
+            # Three-layer detection: directory cache → process-local probe
+            # cache → GET /channels/{id} probe (with result memoized).
+            _channel_type = None
+            try:
+                from gateway.channel_directory import lookup_channel_type
+                _channel_type = lookup_channel_type("discord", chat_id)
+            except Exception:
+                pass
+
+            if _channel_type == "forum":
+                is_forum = True
+            elif _channel_type is not None:
+                is_forum = False
+            else:
+                cached = _probe_is_forum_cached(chat_id)
+                if cached is not None:
+                    is_forum = cached
+                else:
+                    is_forum = False
+                    try:
+                        info_url = f"https://discord.com/api/v10/channels/{chat_id}"
+                        async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=15), **_sess_kw) as info_sess:
+                            async with info_sess.get(info_url, headers=json_headers, **_req_kw) as info_resp:
+                                if info_resp.status == 200:
+                                    info = await info_resp.json()
+                                    is_forum = info.get("type") == 15
+                                    _remember_channel_is_forum(chat_id, is_forum)
+                    except Exception:
+                        logger.debug("Failed to probe channel type for %s", chat_id, exc_info=True)
+
+            if is_forum:
+                thread_name = _derive_forum_thread_name(message)
+                thread_url = f"https://discord.com/api/v10/channels/{chat_id}/threads"
+
+                # Filter to readable media files up front so we can pick the
+                # right code path (JSON vs multipart) before opening a session.
+                valid_media = []
+                for media_path, _is_voice in media_files:
+                    if not os.path.exists(media_path):
+                        warning = f"Media file not found, skipping: {media_path}"
+                        logger.warning(warning)
+                        warnings.append(warning)
+                        continue
+                    valid_media.append(media_path)
+
+                async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=60), **_sess_kw) as session:
+                    if valid_media:
+                        # Multipart: payload_json + files[N] creates a forum
+                        # thread with the starter message plus attachments in
+                        # a single API call.
+                        attachments_meta = [
+                            {"id": str(idx), "filename": os.path.basename(path)}
+                            for idx, path in enumerate(valid_media)
+                        ]
+                        starter_message = {"content": message, "attachments": attachments_meta}
+                        payload_json = json.dumps({"name": thread_name, "message": starter_message})
+
+                        form = aiohttp.FormData()
+                        form.add_field("payload_json", payload_json, content_type="application/json")
+
+                        try:
+                            for idx, media_path in enumerate(valid_media):
+                                with open(media_path, "rb") as fh:
+                                    form.add_field(
+                                        f"files[{idx}]",
+                                        fh.read(),
+                                        filename=os.path.basename(media_path),
+                                    )
+                            async with session.post(thread_url, headers=auth_headers, data=form, **_req_kw) as resp:
+                                if resp.status not in {200, 201}:
+                                    body = await resp.text()
+                                    return {"error": f"Discord forum thread creation error ({resp.status}): {body}"}
+                                data = await resp.json()
+                        except Exception as e:
+                            return {"error": _standalone_sanitize_error(f"Discord forum thread upload failed: {e}")}
+                    else:
+                        # No media — simple JSON POST creates the thread with
+                        # just the text starter.
+                        async with session.post(
+                            thread_url,
+                            headers=json_headers,
+                            json={
+                                "name": thread_name,
+                                "message": {"content": message},
+                            },
+                            **_req_kw,
+                        ) as resp:
+                            if resp.status not in {200, 201}:
+                                body = await resp.text()
+                                return {"error": f"Discord forum thread creation error ({resp.status}): {body}"}
+                            data = await resp.json()
+
+                thread_id_created = data.get("id")
+                starter_msg_id = (data.get("message") or {}).get("id", thread_id_created)
+                result = {
+                    "success": True,
+                    "platform": "discord",
+                    "chat_id": chat_id,
+                    "thread_id": thread_id_created,
+                    "message_id": starter_msg_id,
+                }
+                if warnings:
+                    result["warnings"] = warnings
+                return result
+
+            url = f"https://discord.com/api/v10/channels/{chat_id}/messages"
+
+        async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=30), **_sess_kw) as session:
+            # Send text message (skip if empty and media is present)
+            if message.strip() or not media_files:
+                async with session.post(url, headers=json_headers, json={"content": message}, **_req_kw) as resp:
+                    if resp.status not in {200, 201}:
+                        body = await resp.text()
+                        return {"error": f"Discord API error ({resp.status}): {body}"}
+                    last_data = await resp.json()
+
+            # Send each media file as a separate multipart upload
+            for media_path, _is_voice in media_files:
+                if not os.path.exists(media_path):
+                    warning = f"Media file not found, skipping: {media_path}"
+                    logger.warning(warning)
+                    warnings.append(warning)
+                    continue
+                try:
+                    form = aiohttp.FormData()
+                    filename = os.path.basename(media_path)
+                    with open(media_path, "rb") as f:
+                        form.add_field("files[0]", f, filename=filename)
+                        async with session.post(url, headers=auth_headers, data=form, **_req_kw) as resp:
+                            if resp.status not in {200, 201}:
+                                body = await resp.text()
+                                warning = _standalone_sanitize_error(f"Failed to send media {media_path}: Discord API error ({resp.status}): {body}")
+                                logger.error(warning)
+                                warnings.append(warning)
+                                continue
+                            last_data = await resp.json()
+                except Exception as e:
+                    warning = _standalone_sanitize_error(f"Failed to send media {media_path}: {e}")
+                    logger.error(warning)
+                    warnings.append(warning)
+
+        if last_data is None:
+            error = "No deliverable text or media remained after processing"
+            if warnings:
+                return {"error": error, "warnings": warnings}
+            return {"error": error}
+
+        result = {"success": True, "platform": "discord", "chat_id": chat_id, "message_id": last_data.get("id")}
+        if warnings:
+            result["warnings"] = warnings
+        return result
+    except Exception as e:
+        return {"error": _standalone_sanitize_error(f"Discord send failed: {e}")}
+
+
+# ── Plugin entry point ────────────────────────────────────────────────────────
+
+
+def _clean_discord_user_ids(raw: str) -> list:
+    """Strip common Discord mention prefixes from a comma-separated ID string."""
+    cleaned = []
+    for uid in raw.replace(" ", "").split(","):
+        uid = uid.strip()
+        if uid.startswith("<@") and uid.endswith(">"):
+            uid = uid.lstrip("<@!").rstrip(">")
+        if uid.lower().startswith("user:"):
+            uid = uid[5:]
+        if uid:
+            cleaned.append(uid)
+    return cleaned
+
+
+def interactive_setup() -> None:
+    """Guide the user through Discord bot setup.
+
+    Mirrors Teams' ``interactive_setup`` shape: lazy-imports CLI helpers so
+    the plugin's import surface stays small, prompts for the bot token,
+    captures an allowlist, and offers to set a home channel.
+    """
+    from hermes_cli.config import get_env_value, save_env_value
+    from hermes_cli.cli_output import (
+        prompt,
+        prompt_yes_no,
+        print_header,
+        print_info,
+        print_success,
+    )
+
+    print_header("Discord")
+    existing = get_env_value("DISCORD_BOT_TOKEN")
+    if existing:
+        print_info("Discord: already configured")
+        if not prompt_yes_no("Reconfigure Discord?", False):
+            if not get_env_value("DISCORD_ALLOWED_USERS"):
+                print_info("⚠️  Discord has no user allowlist - anyone can use your bot!")
+                if prompt_yes_no("Add allowed users now?", True):
+                    print_info("   To find Discord ID: Enable Developer Mode, right-click name → Copy ID")
+                    allowed_users = prompt("Allowed user IDs (comma-separated)")
+                    if allowed_users:
+                        cleaned_ids = _clean_discord_user_ids(allowed_users)
+                        save_env_value("DISCORD_ALLOWED_USERS", ",".join(cleaned_ids))
+                        print_success("Discord allowlist configured")
+            return
+
+    print_info("Create a bot at https://discord.com/developers/applications")
+    token = prompt("Discord bot token", password=True)
+    if not token:
+        return
+    save_env_value("DISCORD_BOT_TOKEN", token)
+    print_success("Discord token saved")
+
+    print()
+    print_info("🔒 Security: Restrict who can use your bot")
+    print_info("   To find your Discord user ID:")
+    print_info("   1. Enable Developer Mode in Discord settings")
+    print_info("   2. Right-click your name → Copy ID")
+    print()
+    print_info("   You can also use Discord usernames (resolved on gateway start).")
+    print()
+    allowed_users = prompt(
+        "Allowed user IDs or usernames (comma-separated, leave empty for open access)"
+    )
+    if allowed_users:
+        cleaned_ids = _clean_discord_user_ids(allowed_users)
+        save_env_value("DISCORD_ALLOWED_USERS", ",".join(cleaned_ids))
+        print_success("Discord allowlist configured")
+    else:
+        print_info("⚠️  No allowlist set - anyone in servers with your bot can use it!")
+
+    print()
+    print_info("📬 Home Channel: where Hermes delivers cron job results,")
+    print_info("   cross-platform messages, and notifications.")
+    print_info("   To get a channel ID: right-click a channel → Copy Channel ID")
+    print_info("   (requires Developer Mode in Discord settings)")
+    print_info("   You can also set this later by typing /set-home in a Discord channel.")
+    home_channel = prompt("Home channel ID (leave empty to set later with /set-home)")
+    if home_channel:
+        save_env_value("DISCORD_HOME_CHANNEL", home_channel)
+
+
+def _apply_yaml_config(yaml_cfg: dict, discord_cfg: dict) -> dict | None:
+    """Translate ``config.yaml`` ``discord:`` keys into env vars.
+
+    Implements the ``apply_yaml_config_fn`` contract (#24836).  Mirrors the
+    legacy ``discord_cfg`` block that used to live in
+    ``gateway/config.py::load_gateway_config()`` before this migration.
+
+    The DiscordAdapter reads its runtime configuration via ``os.getenv()``
+    throughout the connect / handle code paths (``DISCORD_REQUIRE_MENTION``,
+    ``DISCORD_FREE_RESPONSE_CHANNELS``, ``DISCORD_AUTO_THREAD``,
+    ``DISCORD_REACTIONS``, ``DISCORD_IGNORED_CHANNELS``,
+    ``DISCORD_ALLOWED_CHANNELS``, ``DISCORD_NO_THREAD_CHANNELS``,
+    ``DISCORD_HISTORY_BACKFILL``, ``DISCORD_HISTORY_BACKFILL_LIMIT``,
+    ``DISCORD_ALLOW_MENTION_*``, ``DISCORD_REPLY_TO_MODE``,
+    ``DISCORD_THREAD_REQUIRE_MENTION``).  Rather than rewrite ~50 call sites
+    inside the adapter to read from ``PlatformConfig.extra`` instead, this
+    hook keeps the existing env-driven model and merely owns the
+    YAML→env translation here, next to the adapter that consumes it.
+
+    Env vars take precedence over YAML — every assignment is guarded by
+    ``not os.getenv(...)`` so explicit env vars survive a config.yaml
+    update.  Returns ``None`` because no extras are seeded into
+    ``PlatformConfig.extra`` directly (everything flows through env).
+    """
+    if "require_mention" in discord_cfg and not os.getenv("DISCORD_REQUIRE_MENTION"):
+        os.environ["DISCORD_REQUIRE_MENTION"] = str(discord_cfg["require_mention"]).lower()
+    if "thread_require_mention" in discord_cfg and not os.getenv("DISCORD_THREAD_REQUIRE_MENTION"):
+        os.environ["DISCORD_THREAD_REQUIRE_MENTION"] = str(discord_cfg["thread_require_mention"]).lower()
+    frc = discord_cfg.get("free_response_channels")
+    if frc is not None and not os.getenv("DISCORD_FREE_RESPONSE_CHANNELS"):
+        if isinstance(frc, list):
+            frc = ",".join(str(v) for v in frc)
+        os.environ["DISCORD_FREE_RESPONSE_CHANNELS"] = str(frc)
+    if "auto_thread" in discord_cfg and not os.getenv("DISCORD_AUTO_THREAD"):
+        os.environ["DISCORD_AUTO_THREAD"] = str(discord_cfg["auto_thread"]).lower()
+    if "reactions" in discord_cfg and not os.getenv("DISCORD_REACTIONS"):
+        os.environ["DISCORD_REACTIONS"] = str(discord_cfg["reactions"]).lower()
+    # ignored_channels: channels where bot never responds (even when mentioned)
+    ic = discord_cfg.get("ignored_channels")
+    if ic is not None and not os.getenv("DISCORD_IGNORED_CHANNELS"):
+        if isinstance(ic, list):
+            ic = ",".join(str(v) for v in ic)
+        os.environ["DISCORD_IGNORED_CHANNELS"] = str(ic)
+    # allowed_channels: if set, bot ONLY responds in these channels (whitelist)
+    ac = discord_cfg.get("allowed_channels")
+    if ac is not None and not os.getenv("DISCORD_ALLOWED_CHANNELS"):
+        if isinstance(ac, list):
+            ac = ",".join(str(v) for v in ac)
+        os.environ["DISCORD_ALLOWED_CHANNELS"] = str(ac)
+    # no_thread_channels: channels where bot responds directly without creating thread
+    ntc = discord_cfg.get("no_thread_channels")
+    if ntc is not None and not os.getenv("DISCORD_NO_THREAD_CHANNELS"):
+        if isinstance(ntc, list):
+            ntc = ",".join(str(v) for v in ntc)
+        os.environ["DISCORD_NO_THREAD_CHANNELS"] = str(ntc)
+    # history_backfill: recover missed channel messages for shared sessions
+    # when require_mention is active.  Fetches messages between bot turns
+    # and prepends them to the user message for context.
+    if "history_backfill" in discord_cfg and not os.getenv("DISCORD_HISTORY_BACKFILL"):
+        os.environ["DISCORD_HISTORY_BACKFILL"] = str(discord_cfg["history_backfill"]).lower()
+    hbl = discord_cfg.get("history_backfill_limit")
+    if hbl is not None and not os.getenv("DISCORD_HISTORY_BACKFILL_LIMIT"):
+        os.environ["DISCORD_HISTORY_BACKFILL_LIMIT"] = str(hbl)
+    # allow_mentions: granular control over what the bot can ping.
+    # Safe defaults (no @everyone/roles) are applied in the adapter;
+    # these YAML keys only override when set and let users opt back
+    # into unsafe modes (e.g. roles=true) if they actually want it.
+    allow_mentions_cfg = discord_cfg.get("allow_mentions")
+    if isinstance(allow_mentions_cfg, dict):
+        for yaml_key, env_key in (
+            ("everyone", "DISCORD_ALLOW_MENTION_EVERYONE"),
+            ("roles", "DISCORD_ALLOW_MENTION_ROLES"),
+            ("users", "DISCORD_ALLOW_MENTION_USERS"),
+            ("replied_user", "DISCORD_ALLOW_MENTION_REPLIED_USER"),
+        ):
+            if yaml_key in allow_mentions_cfg and not os.getenv(env_key):
+                os.environ[env_key] = str(allow_mentions_cfg[yaml_key]).lower()
+    # reply_to_mode: top-level preferred, falls back to extra.reply_to_mode.
+    # YAML 1.1 parses bare 'off' as boolean False — coerce to string "off".
+    _discord_extra = discord_cfg.get("extra") if isinstance(discord_cfg.get("extra"), dict) else {}
+    _discord_rtm = (
+        discord_cfg["reply_to_mode"] if "reply_to_mode" in discord_cfg
+        else _discord_extra.get("reply_to_mode")
+    )
+    if _discord_rtm is not None and not os.getenv("DISCORD_REPLY_TO_MODE"):
+        _rtm_str = "off" if _discord_rtm is False else str(_discord_rtm).lower()
+        os.environ["DISCORD_REPLY_TO_MODE"] = _rtm_str
+    return None  # all settings flow through env; nothing to merge into extras
+
+
+def _is_connected(config) -> bool:
+    """Discord is considered connected when DISCORD_BOT_TOKEN is set.
+
+    Looks up via ``hermes_cli.gateway.get_env_value`` at call time (not via
+    the plugin's own bound import) so tests that patch ``gateway_mod.get_env_value``
+    — including ``test_setup_openclaw_migration`` — can suppress ambient
+    ``DISCORD_BOT_TOKEN`` env vars. Matches what the legacy
+    ``_PLATFORMS["discord"]`` dispatch did before this migration.
+    """
+    import hermes_cli.gateway as gateway_mod
+    return bool((gateway_mod.get_env_value("DISCORD_BOT_TOKEN") or "").strip())
+
+
+def _build_adapter(config):
+    """Factory wrapper that constructs DiscordAdapter from a PlatformConfig."""
+    return DiscordAdapter(config)
+
+
+def register(ctx) -> None:
+    """Plugin entry point — called by the Hermes plugin system."""
+    ctx.register_platform(
+        name="discord",
+        label="Discord",
+        adapter_factory=_build_adapter,
+        check_fn=check_discord_requirements,
+        is_connected=_is_connected,
+        required_env=["DISCORD_BOT_TOKEN"],
+        install_hint="pip install 'hermes-agent[discord]'",
+        # Interactive setup wizard — replaces the central
+        # hermes_cli/setup.py::_setup_discord function.  Same shape as Teams.
+        setup_fn=interactive_setup,
+        # YAML→env config bridge — owns the translation of ``config.yaml``
+        # ``discord:`` keys (require_mention, free_response_channels,
+        # auto_thread, reactions, ignored_channels, allowed_channels,
+        # no_thread_channels, allow_mentions.*, reply_to_mode,
+        # thread_require_mention) into ``DISCORD_*`` env vars that the
+        # adapter reads via ``os.getenv()``.  Replaces the hardcoded block
+        # that used to live in ``gateway/config.py``.  Hook contract: #24836.
+        apply_yaml_config_fn=_apply_yaml_config,
+        # Auth env vars for _is_user_authorized() integration
+        allowed_users_env="DISCORD_ALLOWED_USERS",
+        allow_all_env="DISCORD_ALLOW_ALL_USERS",
+        # Cron home-channel delivery
+        cron_deliver_env_var="DISCORD_HOME_CHANNEL",
+        # Out-of-process cron delivery via Discord REST API.  Without this
+        # hook, ``deliver=discord`` cron jobs fail with "No live adapter"
+        # when cron runs separately from the gateway.  Mirrors Teams pattern.
+        standalone_sender_fn=_standalone_send,
+        # Discord hard limit per message
+        max_message_length=2000,
+        # Display
+        emoji="🎮",
+        allow_update_command=True,
+    )

@@ -16,6 +16,7 @@ with ``APIConnectionError('Connection error.')`` whose cause was
 That is the exact scenario this test reproduces at object level without a
 network, so it runs in CI on every PR.
 """
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 from run_agent import AIAgent
@@ -186,3 +187,40 @@ def test_replace_primary_openai_client_survives_repeated_rebuilds():
         "Some _create_openai_client calls returned the same object across "
         "a teardown — rebuild is not producing fresh clients"
     )
+
+
+def test_force_close_tcp_sockets_descends_httpcore_1_connection_wrapper():
+    """httpcore 1.x stores the real stream below conn._connection.
+
+    Post-#29507: the helper must shut sockets down but must NOT release the
+    FD via ``sock.close()`` — that race recycled FDs into unrelated file
+    descriptors (kanban.db) and let TLS bytes overwrite SQLite headers. The
+    owning httpx thread is responsible for closing FDs on its own unwind.
+    """
+    from agent.agent_runtime_helpers import force_close_tcp_sockets
+
+    class FakeSocket:
+        def __init__(self):
+            self.shutdown_calls = 0
+            self.close_calls = 0
+
+        def shutdown(self, _how):
+            self.shutdown_calls += 1
+
+        def close(self):
+            self.close_calls += 1
+
+    sock = FakeSocket()
+    stream = SimpleNamespace(_sock=sock)
+    http11 = SimpleNamespace(_network_stream=stream)
+    pool_entry = SimpleNamespace(_connection=http11)
+    pool = SimpleNamespace(_connections=[pool_entry])
+    transport = SimpleNamespace(_pool=pool)
+    http_client = SimpleNamespace(_transport=transport)
+    openai_client = SimpleNamespace(_client=http_client)
+
+    assert force_close_tcp_sockets(openai_client) == 1
+    assert sock.shutdown_calls == 1
+    # #29507: close() must NOT be called from this helper — the owning
+    # httpx worker thread releases the FD, not us.
+    assert sock.close_calls == 0

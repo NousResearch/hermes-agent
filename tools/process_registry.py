@@ -42,6 +42,7 @@ import uuid
 
 _IS_WINDOWS = platform.system() == "Windows"
 from tools.environments.local import _find_shell, _resolve_safe_cwd, _sanitize_subprocess_env
+from hermes_cli._subprocess_compat import windows_hide_flags
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
 
@@ -549,6 +550,8 @@ class ProcessRegistry:
         # stdout is a pipe, hiding output from process(action="poll")).
         bg_env = _sanitize_subprocess_env(os.environ, env_vars)
         bg_env["PYTHONUNBUFFERED"] = "1"
+        _popen_kwargs = {"creationflags": windows_hide_flags()} if _IS_WINDOWS else {}
+
         proc = subprocess.Popen(
             [user_shell, "-lic", f"set +m; {command}"],
             text=True,
@@ -560,7 +563,7 @@ class ProcessRegistry:
             stderr=subprocess.STDOUT,
             stdin=subprocess.DEVNULL,
             preexec_fn=None if _IS_WINDOWS else os.setsid,
-            creationflags=subprocess.CREATE_NO_WINDOW if _IS_WINDOWS else 0,
+            **_popen_kwargs,
         )
 
         session.process = proc

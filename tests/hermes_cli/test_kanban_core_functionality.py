@@ -2700,6 +2700,12 @@ def test_default_spawn_auto_loads_kanban_worker_skill(kanban_home, monkeypatch):
     We intercept Popen to capture the argv without actually spawning a
     hermes subprocess (which would hang trying to call an LLM).
     """
+    # Pretend the bundled kanban-worker skill resolves for this isolated
+    # HERMES_HOME — the fixture creates an empty tmpdir without the
+    # devops/kanban-worker tree, and _default_spawn gates the --skills
+    # flag on actual resolvability.
+    monkeypatch.setattr(kb, "_kanban_worker_skill_available", lambda _h: True)
+
     captured = {}
 
     class FakeProc:
@@ -2969,6 +2975,7 @@ def test_create_task_skills_lists_all_toolset_typos(kanban_home):
 def test_default_spawn_appends_per_task_skills(kanban_home, monkeypatch):
     """Dispatcher argv must carry one `--skills X` pair per task skill,
     in addition to the built-in kanban-worker."""
+    monkeypatch.setattr(kb, "_kanban_worker_skill_available", lambda _h: True)
     captured = {}
 
     class FakeProc:
@@ -3018,6 +3025,7 @@ def test_default_spawn_appends_per_task_skills(kanban_home, monkeypatch):
 
 def test_default_spawn_dedupes_kanban_worker_from_task_skills(kanban_home, monkeypatch):
     """If a task explicitly lists 'kanban-worker', we don't double-pass it."""
+    monkeypatch.setattr(kb, "_kanban_worker_skill_available", lambda _h: True)
     captured = {}
 
     class FakeProc:
@@ -3665,9 +3673,13 @@ def test_gateway_dispatcher_disables_corrupt_board_without_traceback(
     assert sum("not a valid SQLite database" in msg for msg in messages) == 1
     assert not any("tick failed on board" in msg for msg in messages)
     assert not any(record.exc_info for record in caplog.records)
-    # First tick connect + two ready-queue probes. The second dispatch tick
-    # skips connect because the corrupt board fingerprint is disabled.
-    assert calls["connect"] == 3
+    # First tick connect (dispatch) + two probes per `_has_ready_work` call
+    # (ready then review, both via _kb.connect). The second dispatch tick
+    # skips the dispatch connect because the corrupt board fingerprint is
+    # disabled, but the ready/review probes still each connect. PR f55d94a1e
+    # added the review-column probe alongside the existing ready-column
+    # probe, bumping this from 3 → 5.
+    assert calls["connect"] == 5
 
 
 # ---------------------------------------------------------------------------

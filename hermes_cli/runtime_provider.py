@@ -47,7 +47,8 @@ def _config_base_url_trustworthy_for_bare_custom(cfg_base_url: str, cfg_provider
     """Decide whether ``model.base_url`` may back bare ``custom`` runtime resolution.
 
     GitHub #14676: the model picker can select Custom while ``model.provider`` still reflects a
-    previous provider. Reject non-loopback URLs unless the YAML provider is already ``custom``,
+    previous provider. Reject non-loopback URLs unless the YAML provider is already ``custom``
+    (or one of the local-server aliases that resolve to ``custom`` — ollama, vllm, llamacpp, …),
     so a stale OpenRouter/Z.ai base_url cannot hijack local ``custom`` sessions.
     """
     cfg_provider_norm = (cfg_provider or "").strip().lower()
@@ -56,6 +57,17 @@ def _config_base_url_trustworthy_for_bare_custom(cfg_base_url: str, cfg_provider
         return False
     if cfg_provider_norm == "custom":
         return True
+    # GitHub #27132: provider aliases that resolve to "custom" at runtime
+    # (ollama, vllm, llamacpp, …) should be trusted the same way "custom"
+    # is, otherwise a legit LAN/WireGuard ollama endpoint silently falls
+    # through to OpenRouter.
+    try:
+        from hermes_cli.auth import resolve_provider as _resolve_provider
+
+        if _resolve_provider(cfg_provider_norm) == "custom":
+            return True
+    except Exception:
+        pass
     if base_url_host_matches(bu, "openrouter.ai"):
         return False
     return _loopback_hostname(base_url_hostname(bu))
@@ -86,6 +98,63 @@ def _detect_api_mode_for_url(base_url: str) -> Optional[str]:
     if hostname == "api.kimi.com" and "/coding" in normalized:
         return "anthropic_messages"
     return None
+
+
+def _host_derived_api_key(base_url: str) -> str:
+    """Look up `<VENDOR>_API_KEY` in the env, derived from the base URL host.
+
+    Examples:
+        https://api.deepseek.com/v1   → DEEPSEEK_API_KEY
+        https://api.groq.com/openai/v1 → GROQ_API_KEY
+        https://api.mistral.ai/v1     → MISTRAL_API_KEY
+        https://generativelanguage.googleapis.com/v1beta/openai/ → GOOGLEAPIS_API_KEY
+
+    Returns the env value (stripped) or "". Never returns env vars whose names
+    are already explicitly checked elsewhere — those are handled by their own
+    host-gated paths (OPENAI/OPENROUTER/OLLAMA).
+
+    The vendor label is the *registrable* portion of the hostname: strip
+    ``api.`` / ``www.`` prefixes, then take the second-to-last label
+    (``api.deepseek.com`` → ``deepseek``). Falls back to "" for hostnames
+    that don't yield a usable vendor label (IPs, loopback, single-label
+    hosts).
+    """
+    hostname = base_url_hostname(base_url)
+    if not hostname:
+        return ""
+    # Reject IPv4 / IPv6 / loopback — no meaningful vendor label.
+    if any(ch.isdigit() for ch in hostname.split(".")[-1]):
+        # Last label starts with a digit → likely IP. (TLDs are never numeric.)
+        return ""
+    if hostname in ("localhost",) or ":" in hostname:
+        return ""
+    labels = [lbl for lbl in hostname.split(".") if lbl]
+    # Strip common API/CDN prefixes.
+    while labels and labels[0] in ("api", "www"):
+        labels.pop(0)
+    if len(labels) < 2:
+        return ""
+    # Take the *registrable* label (second-to-last). For typical provider
+    # hosts this is what users intuitively call "the vendor":
+    #   deepseek.com               → labels[-2] = "deepseek"  ✓
+    #   api.groq.com → groq.com    → labels[-2] = "groq"      ✓
+    #   api.mistral.ai             → labels[-2] = "mistral"   ✓
+    # Crucially, lookalike hosts pick the ATTACKER's label, not the spoofed
+    # vendor:
+    #   api.deepseek.com.attacker.test → labels[-2] = "attacker"
+    # so DEEPSEEK_API_KEY stays put and the chain falls through to
+    # no-key-required. This mirrors how `base_url_host_matches` resists the
+    # same lookalike attack for explicit hosts.
+    vendor = labels[-2]
+    # Sanitize to env var charset: A-Z, 0-9, underscore.
+    sanitized = "".join(ch if ch.isalnum() else "_" for ch in vendor).upper()
+    if not sanitized or not sanitized[0].isalpha():
+        return ""
+    # Don't re-derive env vars already handled by explicit host-gated paths.
+    if sanitized in ("OPENAI", "OPENROUTER", "OLLAMA"):
+        return ""
+    env_name = f"{sanitized}_API_KEY"
+    return (os.getenv(env_name, "") or "").strip()
 
 
 def _auto_detect_local_model(base_url: str) -> str:
@@ -459,6 +528,9 @@ def _get_named_custom_provider(requested_provider: str) -> Optional[Dict[str, An
                         "api_key": resolved_api_key,
                         "model": entry.get("default_model", ""),
                     }
+                    extra_body = entry.get("extra_body")
+                    if isinstance(extra_body, dict):
+                        result["extra_body"] = dict(extra_body)
                     # The v11→v12 migration writes the API mode under the new
                     # ``transport`` field, but hand-edited configs may still
                     # use the legacy ``api_mode`` spelling.  Accept both —
@@ -484,6 +556,9 @@ def _get_named_custom_provider(requested_provider: str) -> Optional[Dict[str, An
                             "api_key": resolved_api_key,
                             "model": entry.get("default_model", ""),
                         }
+                        extra_body = entry.get("extra_body")
+                        if isinstance(extra_body, dict):
+                            result["extra_body"] = dict(extra_body)
                         api_mode = _parse_api_mode(entry.get("api_mode") or entry.get("transport"))
                         if api_mode:
                             result["api_mode"] = api_mode
@@ -527,6 +602,9 @@ def _get_named_custom_provider(requested_provider: str) -> Optional[Dict[str, An
             result["key_env"] = key_env
         if provider_key:
             result["provider_key"] = provider_key
+        extra_body = entry.get("extra_body")
+        if isinstance(extra_body, dict):
+            result["extra_body"] = dict(extra_body)
         api_mode = _parse_api_mode(entry.get("api_mode"))
         if api_mode:
             result["api_mode"] = api_mode
@@ -538,6 +616,13 @@ def _get_named_custom_provider(requested_provider: str) -> Optional[Dict[str, An
     return None
 
 
+def _custom_provider_request_overrides(custom_provider: Dict[str, Any]) -> Dict[str, Any]:
+    extra_body = custom_provider.get("extra_body")
+    if not isinstance(extra_body, dict) or not extra_body:
+        return {}
+    return {"extra_body": dict(extra_body)}
+
+
 def _resolve_named_custom_runtime(
     *,
     requested_provider: str,
@@ -547,7 +632,20 @@ def _resolve_named_custom_runtime(
     # Bare `provider="custom"` with an explicit base_url (e.g. propagated
     # from a `model_aliases:` direct-alias resolution) — build a runtime
     # directly so the alias's base_url actually takes effect.
+    #
+    # GitHub #27132: provider aliases that resolve to "custom" at runtime
+    # (ollama, vllm, llamacpp, …) are treated identically here, so a YAML
+    # `provider: ollama` with a LAN/WireGuard `base_url` doesn't silently
+    # fall through to OpenRouter.
     requested_norm = (requested_provider or "").strip().lower()
+    if requested_norm and requested_norm != "custom":
+        try:
+            from hermes_cli.auth import resolve_provider as _resolve_provider
+
+            if _resolve_provider(requested_norm) == "custom":
+                requested_norm = "custom"
+        except Exception:
+            pass
     if requested_norm == "custom" and explicit_base_url:
         base_url = explicit_base_url.strip().rstrip("/")
         # Check credential pool first — mirrors the named-custom-provider path
@@ -557,10 +655,17 @@ def _resolve_named_custom_runtime(
         if pool_result:
             pool_result["source"] = "direct-alias"
             return pool_result
+        _da_is_openai_url   = base_url_host_matches(base_url, "openai.com") or base_url_host_matches(base_url, "openai.azure.com")
+        _da_is_openrouter   = base_url_host_matches(base_url, "openrouter.ai")
         api_key_candidates = [
             (explicit_api_key or "").strip(),
-            os.getenv("OPENAI_API_KEY", "").strip(),
-            os.getenv("OPENROUTER_API_KEY", "").strip(),
+            # Gate env key fallbacks on authoritative hosts (#28660)
+            (os.getenv("OPENAI_API_KEY", "").strip()     if _da_is_openai_url else ""),
+            (os.getenv("OPENROUTER_API_KEY", "").strip() if _da_is_openrouter  else ""),
+            # Bonus (#28660): derive `<VENDOR>_API_KEY` from the host so users
+            # who set DEEPSEEK_API_KEY / GROQ_API_KEY / MISTRAL_API_KEY get the
+            # intuitive match without configuring `custom_providers` first.
+            _host_derived_api_key(base_url),
         ]
         api_key = next(
             (c for c in api_key_candidates if has_usable_secret(c)),
@@ -594,14 +699,27 @@ def _resolve_named_custom_runtime(
         model_name = custom_provider.get("model")
         if model_name:
             pool_result["model"] = model_name
+        request_overrides = _custom_provider_request_overrides(custom_provider)
+        if request_overrides:
+            pool_result["request_overrides"] = {
+                **dict(pool_result.get("request_overrides") or {}),
+                **request_overrides,
+            }
         return pool_result
 
+    _cp_is_openai_url   = base_url_host_matches(base_url, "openai.com") or base_url_host_matches(base_url, "openai.azure.com")
+    _cp_is_openrouter   = base_url_host_matches(base_url, "openrouter.ai")
     api_key_candidates = [
         (explicit_api_key or "").strip(),
         str(custom_provider.get("api_key", "") or "").strip(),
         os.getenv(str(custom_provider.get("key_env", "") or "").strip(), "").strip(),
-        os.getenv("OPENAI_API_KEY", "").strip(),
-        os.getenv("OPENROUTER_API_KEY", "").strip(),
+        # Gate provider env keys on their authoritative hosts — sending
+        # OPENAI_API_KEY to a local-llm endpoint leaks credentials (#28660).
+        (os.getenv("OPENAI_API_KEY", "").strip()     if _cp_is_openai_url  else ""),
+        (os.getenv("OPENROUTER_API_KEY", "").strip() if _cp_is_openrouter  else ""),
+        # Bonus (#28660): derive `<VENDOR>_API_KEY` from the host as a final
+        # fallback when key_env wasn't set explicitly.
+        _host_derived_api_key(base_url),
     ]
     api_key = next((candidate for candidate in api_key_candidates if has_usable_secret(candidate)), "")
 
@@ -618,6 +736,9 @@ def _resolve_named_custom_runtime(
     # provider name differs from the actual model string the API expects.
     if custom_provider.get("model"):
         result["model"] = custom_provider["model"]
+    request_overrides = _custom_provider_request_overrides(custom_provider)
+    if request_overrides:
+        result["request_overrides"] = request_overrides
     return result
 
 
@@ -638,6 +759,19 @@ def _resolve_openrouter_runtime(
             break
     requested_norm = (requested_provider or "").strip().lower()
     cfg_provider = cfg_provider.strip().lower()
+    # GitHub #27132: provider aliases that resolve to "custom" (ollama,
+    # vllm, llamacpp, …) follow the same base_url trust + routing rules
+    # as a bare `provider: custom`. Normalising here keeps every check
+    # below — `requested_norm == "custom"`, the trust check, the pool
+    # gate up the stack — alias-aware without duplicating the alias map.
+    if requested_norm and requested_norm != "custom":
+        try:
+            from hermes_cli.auth import resolve_provider as _resolve_provider
+
+            if _resolve_provider(requested_norm) == "custom":
+                requested_norm = "custom"
+        except Exception:
+            pass
 
     env_openrouter_base_url = os.getenv("OPENROUTER_BASE_URL", "").strip()
     env_custom_base_url = os.getenv("CUSTOM_BASE_URL", "").strip()
@@ -669,7 +803,15 @@ def _resolve_openrouter_runtime(
     # OPENAI_API_KEY so the OpenRouter key doesn't leak to an unrelated
     # provider (issues #420, #560).
     _is_openrouter_url = base_url_host_matches(base_url, "openrouter.ai")
-    if _is_openrouter_url:
+    # Also treat explicitly-configured OpenRouter mirrors/proxies as OpenRouter
+    # for key selection — if the user set OPENROUTER_BASE_URL or requested
+    # provider=openrouter explicitly, OPENROUTER_API_KEY should still be used.
+    _is_openrouter_context = _is_openrouter_url or (
+        requested_norm == "openrouter"
+        and (env_openrouter_base_url or base_url == env_openrouter_base_url)
+        and base_url == (env_openrouter_base_url or "").rstrip("/")
+    )
+    if _is_openrouter_context:
         api_key_candidates = [
             explicit_api_key,
             os.getenv("OPENROUTER_API_KEY"),
@@ -683,13 +825,24 @@ def _resolve_openrouter_runtime(
         # "ollama.com" (e.g. http://127.0.0.1/ollama.com/v1) or whose
         # hostname is a look-alike (ollama.com.attacker.test) must not
         # receive the Ollama credential. See GHSA-76xc-57q6-vm5m.
-        _is_ollama_url = base_url_host_matches(base_url, "ollama.com")
+        _is_ollama_url    = base_url_host_matches(base_url, "ollama.com")
+        _is_openai_url    = base_url_host_matches(base_url, "openai.com")
+        _is_openai_azure  = base_url_host_matches(base_url, "openai.azure.com")
+        # Gate each provider key on its own host — sending OPENAI_API_KEY or
+        # OPENROUTER_API_KEY to an unrelated custom endpoint (DeepSeek, Groq,
+        # Mistral, …) leaks credentials and causes 401s (issue #28660).
+        # Mirrors the OLLAMA_API_KEY host-gate added in GHSA-76xc-57q6-vm5m.
         api_key_candidates = [
             explicit_api_key,
             (cfg_api_key if use_config_base_url else ""),
-            (os.getenv("OLLAMA_API_KEY") if _is_ollama_url else ""),
-            os.getenv("OPENAI_API_KEY"),
-            os.getenv("OPENROUTER_API_KEY"),
+            (os.getenv("OLLAMA_API_KEY")     if _is_ollama_url                       else ""),
+            (os.getenv("OPENAI_API_KEY")     if (_is_openai_url or _is_openai_azure) else ""),
+            (os.getenv("OPENROUTER_API_KEY") if _is_openrouter_url                   else ""),
+            # Bonus (#28660): derive `<VENDOR>_API_KEY` from the host so users
+            # who set DEEPSEEK_API_KEY / GROQ_API_KEY / MISTRAL_API_KEY get the
+            # intuitive match. Helper returns "" for IPs/loopback and for env
+            # vars already handled by the explicit host-gated paths above.
+            _host_derived_api_key(base_url),
         ]
     api_key = next(
         (str(candidate or "").strip() for candidate in api_key_candidates if has_usable_secret(candidate)),

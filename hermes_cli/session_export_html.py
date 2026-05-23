@@ -480,6 +480,55 @@ HTML_TEMPLATE = """<!DOCTYPE html>
             display: block;
         }}
 
+        /* System Prompt Section */
+        .system-prompt-section {{
+            margin-top: 2rem;
+            border-radius: 0.75rem;
+            border: 1px solid var(--border-color);
+            background-color: var(--user-bg);
+            overflow: hidden;
+            text-align: left;
+            max-width: 800px;
+            margin-left: auto;
+            margin-right: auto;
+        }}
+
+        .system-prompt-header {{
+            padding: 0.75rem 1.25rem;
+            display: flex;
+            align-items: center;
+            gap: 0.6rem;
+            cursor: pointer;
+            user-select: none;
+            font-size: 0.875rem;
+            font-weight: 600;
+            color: var(--secondary-text);
+        }}
+
+        .system-prompt-header:hover {{
+            background-color: rgba(0,0,0,0.02);
+        }}
+
+        .system-prompt-header svg.chevron {{
+            transition: transform 0.2s ease;
+        }}
+
+        .system-prompt-section.active svg.chevron {{
+            transform: rotate(90deg);
+        }}
+
+        .system-prompt-content {{
+            display: none;
+            padding: 0 1.25rem 1.25rem 1.25rem;
+            font-size: 0.9rem;
+            border-top: 1px solid var(--border-color);
+            padding-top: 1rem;
+        }}
+
+        .system-prompt-section.active .system-prompt-content {{
+            display: block;
+        }}
+
         footer {{
             margin-top: 5rem;
             padding-top: 2rem;
@@ -553,7 +602,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
 
         // Card Toggles
         document.addEventListener('click', function(e) {{
-            const header = e.target.closest('.message-header, .tool-call-header, .reasoning-header');
+            const header = e.target.closest('.message-header, .tool-call-header, .reasoning-header, .system-prompt-header');
             if (header) {{
                 header.parentElement.classList.toggle('active');
             }}
@@ -740,27 +789,30 @@ def generate_multi_session_html_export(sessions: List[Dict[str, Any]]) -> str:
         started_at = _format_timestamp(s.get("started_at", 0))
         messages = s.get("messages", [])
         
-        # System Prompt Handling: Prepend if present in session metadata and not already in messages
-        system_prompt = s.get("system_prompt")
-        all_messages = []
-        if system_prompt:
-            # Avoid duplicating if the first message in the list is already the system prompt
-            first_msg = messages[0] if messages else None
-            if not (first_msg and first_msg.get("role") == "system" and first_msg.get("content") == system_prompt):
-                all_messages.append({
-                    "role": "system",
-                    "content": system_prompt,
-                    "timestamp": s.get("started_at", 0)
-                })
-        all_messages.extend(messages)
-        
-        messages_html = _generate_messages_html(all_messages)
+        messages_html = _generate_messages_html(messages)
         
         view_class = "session-view"
         if not is_multi: view_class += " active"
         
+        session_view_id = f"view-{sid}"
+        
+        system_prompt = s.get("system_prompt")
+        system_html = ""
+        if system_prompt:
+            system_html = f'''
+            <div class="system-prompt-section">
+                <div class="system-prompt-header">
+                    {ICON_CHEVRON_RIGHT.replace('class="', 'class="chevron ')}
+                    {ICON_SHIELD} System Prompt (Persona)
+                </div>
+                <div class="system-prompt-content">
+                    <div class="content">{_escape_html(system_prompt)}</div>
+                </div>
+            </div>
+            '''
+        
         session_html = f'''
-        <div class="{view_class}" id="view-{sid}">
+        <div class="{view_class}" id="{session_view_id}">
             <header class="fade-in">
                 <h1>{_escape_html(title)}</h1>
                 <div class="meta">
@@ -768,6 +820,7 @@ def generate_multi_session_html_export(sessions: List[Dict[str, Any]]) -> str:
                     <div class="meta-item"><strong>Model:</strong> {_escape_html(model)}</div>
                     <div class="meta-item"><strong>Started:</strong> {started_at}</div>
                 </div>
+                {system_html}
             </header>
             <main>
                 {messages_html}

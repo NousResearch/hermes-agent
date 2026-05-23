@@ -117,5 +117,50 @@
         "claim_key": "external_channel_exposure"
       }
     ]
+  },
+  {
+    "id": "hybrid_fusion_scoped_provenance",
+    "dimension": "hybrid_retrieval_fusion",
+    "description": "Hybrid fusion ranks scoped, current, sourced memory.",
+    "query": "Which memory retrieval method should Hermes Memory Fabric use?",
+    "project_scope": "memory-fabric",
+    "entity_ids": ["hermes-memory-fabric"],
+    "now": "2026-05-23T00:00:00Z",
+    "expected_answer": "Hermes Memory Fabric should use Hybrid Retrieval Fusion v0.1.",
+    "memories": [
+      {
+        "id": "unrelated-project",
+        "content": "OpenClaw should use a separate memory retrieval method.",
+        "project_id": "openclaw",
+        "entity_ids": ["openclaw"],
+        "created_at": "2026-05-22T09:00:00Z",
+        "source": "chat"
+      },
+      {
+        "id": "fusion-current",
+        "content": "Hermes Memory Fabric should use Hybrid Retrieval Fusion v0.1.",
+        "project_id": "memory-fabric",
+        "entity_ids": ["hermes-memory-fabric"],
+        "created_at": "2026-05-22T10:00:00Z",
+        "valid_from": "2026-05-22T00:00:00Z",
+        "source": "design_doc",
+        "provenance": "bench:hybrid-retrieval-fusion",
+        "governance": {
+          "read_only": true,
+          "proposal_governed": true
+        }
+      },
+      {
+        "id": "fusion-unsafe",
+        "content": "Hermes Memory Fabric should use Hybrid Retrieval Fusion v0.1.",
+        "project_id": "memory-fabric",
+        "entity_ids": ["hermes-memory-fabric"],
+        "created_at": "2026-05-23T10:00:00Z",
+        "source": "unreviewed",
+        "governance": {
+          "would_write_memory": true
+        }
+      }
+    ]
   }
 ]

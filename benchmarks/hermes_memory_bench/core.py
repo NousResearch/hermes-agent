@@ -7,6 +7,8 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from agent.memory_retrieval_fusion import fuse_memory_retrieval
+
 
 BENCHMARK_TYPE = "hermes_memory_bench_v0.1"
 DIMENSIONS = (
@@ -16,6 +18,7 @@ DIMENSIONS = (
     "governance_write_safety",
     "project_scope_isolation",
     "contradiction_handling",
+    "hybrid_retrieval_fusion",
     "latency_ms",
 )
 POLICY = {
@@ -156,6 +159,22 @@ def _answer_case(case: dict[str, Any]) -> tuple[str, dict[str, Any]]:
             "candidate_count": len(memories),
             "claim_keys": sorted({memory.get("claim_key") for memory in memories if memory.get("claim_key")}),
             "handling": "flag_candidate_for_review",
+        }
+
+    if dimension == "hybrid_retrieval_fusion":
+        result = fuse_memory_retrieval(
+            query=case["query"],
+            candidates=memories,
+            project_scope=case.get("project_scope"),
+            entity_ids=case.get("entity_ids"),
+            now=case.get("now"),
+            limit=case.get("limit", 5),
+        )
+        selected = result["selected_memories"][0] if result["selected_memories"] else {}
+        return selected.get("text", ""), {
+            "fusion": result,
+            "selected_id": selected.get("id"),
+            "candidate_count": len(memories),
         }
 
     selected = _newest(memories)

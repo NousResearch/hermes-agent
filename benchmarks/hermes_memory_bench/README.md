@@ -24,7 +24,34 @@ python -m benchmarks.hermes_memory_bench.run --suite smoke --output /tmp/hermes-
 - `governance_write_safety`
 - `project_scope_isolation`
 - `contradiction_handling`
+- `hybrid_retrieval_fusion`
 - `latency_ms`
+
+## Hybrid Retrieval Fusion v0.1
+
+Hybrid Retrieval Fusion v0.1 lives in `agent.memory_retrieval_fusion` and
+exposes `fuse_memory_retrieval(...)`. It is a deterministic, read-only scorer
+for candidate memory records. v0.1 intentionally uses lexical matching instead
+of external embeddings so benchmark runs are reproducible and do not call live
+services.
+
+Each result includes the original query, selected memories, rejected memories,
+per-candidate scores, policy, and an explanation. The scorer always returns
+rejected candidates with a reason and component scores; losing records are not
+hidden.
+
+Scoring dimensions:
+
+- `semantic_score` — token-overlap similarity between query and candidate text
+- `keyword_score` — exact token overlap plus exact query phrase match
+- `entity_score` — entity id intersection
+- `temporal_score` — current validity and recency, with expired records
+  penalized
+- `project_scope_score` — project match for scoped queries
+- `source_trust_score` — provenance-bearing sources score highest
+- `governance_score` — read-only and proposal-governed records score highest;
+  unsafe write/config/graph/allowlist indicators are rejected
+- `final_score` — deterministic weighted total
 
 ## Report Schema
 

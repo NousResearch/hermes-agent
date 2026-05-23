@@ -1142,3 +1142,21 @@ not the specific names.
 
 Reviewers should reject new change-detector tests; authors should convert
 them into invariants before re-requesting review.
+
+## Learned User Preferences
+
+- Respond in Japanese; use なんJ tone in `_docs/` implementation logs.
+- Run Python with `py -3`; chain PowerShell commands with `;`, not `&`.
+- Write implementation logs under `_docs/` as `yyyy-mm-dd_{feature}_{worktreename}.md`.
+- Personal single-user gateway deployments use `GATEWAY_ALLOW_ALL_USERS=true` in `~/.hermes/.env`.
+
+## Learned Workspace Facts
+
+- Primary inference: OpenCode Zen free models (`opencode-zen` + `auto-free`) with rotation via `skills/autonomous-ai-agents/opencode-free-rotation/` and `scripts/refresh_opencode_free_catalog.py`.
+- Local rollback: llama-cpp at `http://127.0.0.1:8080/v1`; TurboQuant `llama-server` RTX3080 scripts live under `scripts/windows/`.
+- User fallback GGUF (huihui-qwen35-4b Q8_0) is stored under `H:\elt_data\releases\` on this machine.
+- OpenCode credentials bridge from OpenClaw: shared `OPENCODE_API_KEY` satisfies `OPENCODE_ZEN_API_KEY` when the Zen-specific key is unset.
+- Companion WebUI checkout: `C:\Users\downl\Desktop\hermes-webui`.
+- Config reference for OpenCode free + llama rollback: `docs/migration/opencode_free_webui_config.example.yaml`.
+- Windows logon autostart: `scripts/windows/register-hermes-autostart.ps1` registers llama + gateway scheduled tasks.
+- Active deployment checkout is `hermes-agent-upstream-sync`; user pushes directly to `main`.

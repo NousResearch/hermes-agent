@@ -1,0 +1,26 @@
+<svg viewBox="0 0 80 20" width="80" height="20" xmlns="http://www.w3.org/2000/svg"
+     style="vertical-align: middle;">
+  <!--
+    Tufte sparkline: word-sized, no axes, no labels.
+    Min marked in coral, max in blue, endpoint in gray.
+    Data: [15, 12, 8, 14, 6, 10, 3, 9, 5]
+  -->
+
+  <!-- Data line -->
+  <polyline
+    points="0,15.3 10,12.8 20,9.4 30,13.6 40,6.8 50,10.2 60,4.3 70,9.4 80,7.7"
+    fill="none"
+    stroke="#666"
+    stroke-width="1"
+    stroke-linejoin="round"
+  />
+
+  <!-- Max point (value=15, index=0) — blue -->
+  <circle cx="0" cy="15.3" r="1.5" fill="#4e79a7" />
+
+  <!-- Min point (value=3, index=6) — coral -->
+  <circle cx="60" cy="4.3" r="1.5" fill="#e15759" />
+
+  <!-- Endpoint (value=5, index=8) — gray -->
+  <circle cx="80" cy="7.7" r="1.5" fill="#666" />
+</svg>

@@ -199,6 +199,7 @@ const sidebars: SidebarsConfig = {
                   items: [
                     'user-guide/skills/bundled/devops/devops-kanban-orchestrator',
                     'user-guide/skills/bundled/devops/devops-kanban-worker',
+                    'user-guide/skills/bundled/devops/devops-tufte-data-viz',
                     'user-guide/skills/bundled/devops/devops-webhook-subscriptions',
                     'user-guide/skills/bundled/devops/devops-xurl',
                   ],

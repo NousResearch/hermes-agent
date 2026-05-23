@@ -68,6 +68,7 @@ If a skill is missing from this list but present in the repo, the catalog is reg
 |-------|-------------|------|
 | [`kanban-orchestrator`](/user-guide/skills/bundled/devops/devops-kanban-orchestrator) | Decomposition playbook + anti-temptation rules for an orchestrator profile routing work through Kanban. The "don't do the work yourself" rule and the basic lifecycle are auto-injected into every kanban worker's system prompt; this skill... | `devops/kanban-orchestrator` |
 | [`kanban-worker`](/user-guide/skills/bundled/devops/devops-kanban-worker) | Pitfalls, examples, and edge cases for Hermes Kanban workers. The lifecycle itself is auto-injected into every worker's system prompt as KANBAN_GUIDANCE (from agent/prompt_builder.py); this skill is what you load when you want deeper det... | `devops/kanban-worker` |
+| [`tufte-data-viz`](/user-guide/skills/bundled/devops/devops-tufte-data-viz) | Use when creating, reviewing, or styling charts, graphs, dashboards, sparklines, or any data visualization. Applies to Recharts, ECharts, Chart.js, matplotlib, Plotly, seaborn, D3.js, and SVG. Enforces Tufte... | `devops/tufte-data-viz` |
 | [`webhook-subscriptions`](/user-guide/skills/bundled/devops/devops-webhook-subscriptions) | Webhook subscriptions: event-driven agent runs. | `devops/webhook-subscriptions` |
 | [`xurl`](/user-guide/skills/bundled/devops/devops-xurl) | X/Twitter via xurl CLI: post, search, DM, media, v2 API. | `devops/xurl` |
 
@@ -172,9 +173,6 @@ If a skill is missing from this list but present in the repo, the catalog is reg
 | Skill | Description | Path |
 |-------|-------------|------|
 | [`openhue`](/user-guide/skills/bundled/smart-home/smart-home-openhue) | Control Philips Hue lights, scenes, rooms via OpenHue CLI. | `smart-home/openhue` |
-
-<<<<<<< HEAD
-## social-media
 
 ## software-development
 

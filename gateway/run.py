@@ -6614,6 +6614,9 @@ class GatewayRunner:
         if canonical == "tgtocli":
             return await self._handle_tgtocli_command(event)
 
+        if canonical == "wstocli":
+            return await self._handle_wstocli_command(event)
+
         if canonical == "agents":
             return await self._handle_agents_command(event)
 
@@ -8983,6 +8986,71 @@ class GatewayRunner:
         return (
             f"{status}: {message}\n"
             f"TG: {self._tgtocli_source_summary(session_id)}\n"
+            f"Target: {target.get('summary', target.get('name', 'CLI'))}"
+        )
+
+    def _wstocli_targets_with_new(self, session_id: str) -> list[dict[str, str]]:
+        short_id = session_id.split("_")[-1][:8] if session_id else "session"
+        safe_short = re.sub(r"[^A-Za-z0-9_-]", "", short_id) or "session"
+        targets = self._tgtocli_discover_targets()
+        targets.append({
+            "kind": "new",
+            "name": f"hermes-wstocli-{safe_short}",
+            "pane_id": "",
+            "cwd": os.getcwd(),
+            "summary": "new hidden terminal",
+        })
+        return targets
+
+    def _wstocli_picker_text(self, session_id: str, targets: list[dict[str, str]]) -> str:
+        lines = [
+            "Pick CLI target for Workspace session:",
+            f"WS: {self._tgtocli_source_summary(session_id)}",
+            "",
+        ]
+        for idx, target in enumerate(targets, 1):
+            label = "New tmux CLI" if target.get("kind") == "new" else target.get("name", "tmux CLI")
+            summary = target.get("summary") or "idle Hermes CLI"
+            cwd = target.get("cwd") or ""
+            id_part = f" pane `{target.get('pane_id')}`" if target.get("pane_id") else ""
+            lines.append(f"{idx}. {label}{id_part}")
+            lines.append(f"   {summary}")
+            if cwd:
+                lines.append(f"   {cwd}")
+        lines.extend(["", "Reply: `/wstocli 1` (or another number)"])
+        return "\n".join(lines)
+
+    async def _handle_wstocli_command(self, event: MessageEvent) -> str:
+        """Handle /wstocli — choose where Workspace/API should open in CLI."""
+        source = event.source
+        if getattr(source, "platform", None) is None or source.platform.value != "api_server":
+            return "/wstocli only works from Workspace/API Server. Use `/tgtocli` from Telegram or `hermes --resume <session_id>` from CLI."
+
+        session_entry = self.session_store.get_or_create_session(source)
+        session_id = str(session_entry.session_id)
+        targets = self._wstocli_targets_with_new(session_id)
+        arg = event.get_command_args().strip().lower()
+        if not arg or arg in {"list", "help", "?"}:
+            return self._wstocli_picker_text(session_id, targets)
+
+        if arg == "new":
+            index = len(targets)
+        elif arg.isdigit():
+            index = int(arg)
+        else:
+            return self._wstocli_picker_text(session_id, targets)
+        if index < 1 or index > len(targets):
+            return self._wstocli_picker_text(session_id, targets)
+
+        target = targets[index - 1]
+        if target.get("kind") == "new":
+            ok, message = self._tgtocli_start_new(session_id, target.get("name") or "hermes-wstocli")
+        else:
+            ok, message = self._tgtocli_send_to_tmux(session_id, target)
+        status = "DONE" if ok else "GAP"
+        return (
+            f"{status}: {message}\n"
+            f"WS: {self._tgtocli_source_summary(session_id)}\n"
             f"Target: {target.get('summary', target.get('name', 'CLI'))}"
         )
 

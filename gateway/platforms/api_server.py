@@ -30,7 +30,10 @@ import hmac
 import json
 import logging
 import os
+import shlex
+import shutil
 import socket as _socket
+import subprocess
 import re
 import sqlite3
 import time
@@ -845,6 +848,222 @@ class APIServerAdapter(BasePlatformAdapter):
         return self._session_db
 
     # ------------------------------------------------------------------
+    # Workspace/API -> CLI transfer helper (/wstocli)
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _wstocli_short_text(text: str, fallback: str = "idle Hermes CLI") -> str:
+        noisy = (
+            "Welcome to Hermes Agent",
+            "Type your message",
+            "Tip:",
+            "ctx --",
+            "──",
+            "━━",
+            "❯",
+        )
+        for raw in reversed((text or "").splitlines()):
+            line = re.sub(r"[│╰╭╯╮─━┊✦⚕░]+", " ", raw).strip()
+            if not line or any(part in line for part in noisy):
+                continue
+            words = line.split()[:8]
+            if words:
+                return " ".join(words)[:80]
+        return fallback
+
+    def _wstocli_session_label(self, session_id: str) -> str:
+        title = None
+        preview = ""
+        db = self._ensure_session_db()
+        if db:
+            try:
+                title = db.get_session_title(session_id)
+            except Exception:
+                title = None
+            try:
+                row = db._get_session_rich_row(session_id)
+                if row:
+                    preview = str(row.get("preview") or "").strip()
+            except Exception:
+                preview = ""
+            if not preview:
+                try:
+                    for msg in reversed(db.get_messages(session_id)):
+                        if msg.get("role") == "user" and msg.get("content"):
+                            preview = str(msg.get("content") or "").strip()
+                            break
+                except Exception:
+                    preview = ""
+        base = title or self._wstocli_short_text(preview, fallback="untitled session")
+        return f"{base} (`{session_id}`)"
+
+    def _wstocli_discover_targets(self) -> list[dict[str, str]]:
+        if not shutil.which("tmux"):
+            return []
+        try:
+            listed = subprocess.run(
+                [
+                    "tmux",
+                    "list-panes",
+                    "-a",
+                    "-F",
+                    "#{session_name}\t#{pane_id}\t#{pane_current_command}\t#{pane_pid}\t#{pane_current_path}",
+                ],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                timeout=5,
+                check=False,
+            )
+        except Exception:
+            return []
+        if listed.returncode != 0:
+            return []
+
+        targets: list[dict[str, str]] = []
+        seen: set[str] = set()
+        for raw in (listed.stdout or "").splitlines():
+            parts = raw.split("\t")
+            if len(parts) < 5:
+                continue
+            name, pane_id, command, pane_pid, cwd = parts[:5]
+            try:
+                ps = subprocess.run(
+                    ["ps", "-o", "args=", "-p", pane_pid],
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    text=True,
+                    timeout=3,
+                    check=False,
+                )
+                args = (ps.stdout or "").strip()
+            except Exception:
+                args = ""
+            if "hermes" not in " ".join([name, command, args]).lower():
+                continue
+            try:
+                captured = subprocess.run(
+                    ["tmux", "capture-pane", "-t", pane_id, "-p", "-S", "-80"],
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    text=True,
+                    timeout=5,
+                    check=False,
+                )
+                pane_text = captured.stdout if captured.returncode == 0 else ""
+            except Exception:
+                pane_text = ""
+            match = re.search(r"--resume\s+(\S+)", args)
+            resumed = match.group(1).strip("'\"") if match else ""
+            label = self._wstocli_session_label(resumed) if resumed else self._wstocli_short_text(pane_text)
+            key = pane_id or name
+            if key in seen:
+                continue
+            seen.add(key)
+            targets.append({
+                "kind": "tmux",
+                "name": name,
+                "pane_id": pane_id,
+                "cwd": cwd,
+                "summary": label,
+            })
+        return targets
+
+    def _wstocli_targets_with_new(self, session_id: str) -> list[dict[str, str]]:
+        short_id = session_id.split("_")[-1][:8] if session_id else "session"
+        safe_short = re.sub(r"[^A-Za-z0-9_-]", "", short_id) or "session"
+        targets = self._wstocli_discover_targets()
+        targets.append({
+            "kind": "new",
+            "name": f"hermes-wstocli-{safe_short}",
+            "pane_id": "",
+            "cwd": os.getcwd(),
+            "summary": "new hidden terminal",
+        })
+        return targets
+
+    def _wstocli_picker_text(self, session_id: str, targets: list[dict[str, str]]) -> str:
+        lines = [
+            "Pick CLI target for Workspace session:",
+            f"WS: {self._wstocli_session_label(session_id)}",
+            "",
+        ]
+        for idx, target in enumerate(targets, 1):
+            label = "New tmux CLI" if target.get("kind") == "new" else target.get("name", "tmux CLI")
+            summary = target.get("summary") or "idle Hermes CLI"
+            cwd = target.get("cwd") or ""
+            id_part = f" pane `{target.get('pane_id')}`" if target.get("pane_id") else ""
+            lines.append(f"{idx}. {label}{id_part}")
+            lines.append(f"   {summary}")
+            if cwd:
+                lines.append(f"   {cwd}")
+        lines.extend(["", "Reply: `/wstocli 1` (or another number)"])
+        return "\n".join(lines)
+
+    def _wstocli_start_new(self, session_id: str, tmux_name: str) -> tuple[bool, str]:
+        if not shutil.which("tmux"):
+            return False, f"tmux not found. Run: `hermes --resume {session_id}`"
+        resume_cmd = f"hermes --resume {shlex.quote(session_id)}"
+        created = subprocess.run(
+            ["tmux", "new-session", "-d", "-s", tmux_name, resume_cmd],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            timeout=10,
+            check=False,
+        )
+        if created.returncode != 0:
+            err = (created.stderr or created.stdout or "unknown tmux error").strip()
+            return False, f"Could not start tmux CLI: {err}\nRun: `{resume_cmd}`"
+        return True, f"Started new CLI: `{tmux_name}`"
+
+    def _wstocli_send_to_tmux(self, session_id: str, target: dict[str, str]) -> tuple[bool, str]:
+        pane = target.get("pane_id") or target.get("name") or ""
+        if not pane:
+            return False, "Missing tmux pane target."
+        payload = f"/resume {session_id}"
+        sent = subprocess.run(
+            ["tmux", "send-keys", "-t", pane, payload, "Enter"],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            timeout=5,
+            check=False,
+        )
+        if sent.returncode != 0:
+            err = (sent.stderr or sent.stdout or "unknown tmux error").strip()
+            return False, f"Could not send to `{target.get('name', pane)}`: {err}"
+        return True, f"Sent to `{target.get('name', pane)}`: `{payload}`"
+
+    def _handle_wstocli_command(self, command_text: str, session_id: str) -> str:
+        targets = self._wstocli_targets_with_new(session_id)
+        parts = (command_text or "").strip().split(maxsplit=1)
+        arg = parts[1].strip().lower() if len(parts) > 1 else ""
+        if not arg or arg in {"list", "help", "?"}:
+            return self._wstocli_picker_text(session_id, targets)
+
+        if arg == "new":
+            index = len(targets)
+        elif arg.isdigit():
+            index = int(arg)
+        else:
+            return self._wstocli_picker_text(session_id, targets)
+        if index < 1 or index > len(targets):
+            return self._wstocli_picker_text(session_id, targets)
+
+        target = targets[index - 1]
+        if target.get("kind") == "new":
+            ok, message = self._wstocli_start_new(session_id, target.get("name") or "hermes-wstocli")
+        else:
+            ok, message = self._wstocli_send_to_tmux(session_id, target)
+        status = "DONE" if ok else "GAP"
+        return (
+            f"{status}: {message}\n"
+            f"WS: {self._wstocli_session_label(session_id)}\n"
+            f"Target: {target.get('summary', target.get('name', 'CLI'))}"
+        )
+
+    # ------------------------------------------------------------------
     # Agent creation helper
     # ------------------------------------------------------------------
 
@@ -1137,6 +1356,40 @@ class APIServerAdapter(BasePlatformAdapter):
         completion_id = f"chatcmpl-{uuid.uuid4().hex[:29]}"
         model_name = body.get("model", self._model_name)
         created = int(time.time())
+
+        if isinstance(user_message, str) and user_message.strip().split(maxsplit=1)[0].lower() == "/wstocli":
+            final_response = self._handle_wstocli_command(user_message, session_id)
+            response_headers = {"X-Hermes-Session-Id": session_id}
+            if gateway_session_key:
+                response_headers["X-Hermes-Session-Key"] = gateway_session_key
+            if stream:
+                import queue as _q
+                _stream_q: _q.Queue = _q.Queue()
+                _stream_q.put(final_response)
+                _stream_q.put(None)
+
+                async def _done_result():
+                    return ({"final_response": final_response, "session_id": session_id}, {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0})
+
+                return await self._write_sse_chat_completion(
+                    request, completion_id, model_name, created, _stream_q,
+                    asyncio.ensure_future(_done_result()), [None], session_id=session_id,
+                    gateway_session_key=gateway_session_key,
+                )
+            return web.json_response({
+                "id": completion_id,
+                "object": "chat.completion",
+                "created": created,
+                "model": model_name,
+                "choices": [
+                    {
+                        "index": 0,
+                        "message": {"role": "assistant", "content": final_response},
+                        "finish_reason": "stop",
+                    }
+                ],
+                "usage": {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
+            }, headers=response_headers)
 
         if stream:
             import queue as _q

@@ -115,6 +115,8 @@ COMMAND_REGISTRY: list[CommandDef] = [
                args_hint="[name]"),
     CommandDef("tgtocli", "Transfer Telegram session into a chosen CLI", "Session",
                gateway_only=True, args_hint="[N|new|list]"),
+    CommandDef("wstocli", "Transfer Workspace/API session into a chosen CLI", "Session",
+               gateway_only=True, args_hint="[N|new|list]"),
 
     # Configuration
     CommandDef("sessions", "Browse and resume previous sessions", "Session"),

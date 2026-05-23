@@ -1030,7 +1030,7 @@ class TestGetProviderChain:
         chain = _get_provider_chain()
         assert len(chain) == 4
         labels = [label for label, _ in chain]
-        assert labels == ["openrouter", "nous", "local/custom", "api-key"]
+        assert labels == ["nous", "local/custom", "api-key", "openrouter"]
         # Codex is deliberately NOT in this chain — see _get_provider_chain
         # docstring. ChatGPT-account Codex has a shifting model allow-list;
         # guessing a model to fall back on breaks more often than it helps.
@@ -1041,7 +1041,7 @@ class TestGetProviderChain:
         sentinel = lambda: ("patched", "model")
         with patch("agent.auxiliary_client._try_openrouter", sentinel):
             chain = _get_provider_chain()
-        assert chain[0] == ("openrouter", sentinel)
+        assert chain[-1] == ("openrouter", sentinel)
 
 
 class TestTryPaymentFallback:

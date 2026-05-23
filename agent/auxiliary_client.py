@@ -7,19 +7,19 @@ the best available backend without duplicating fallback logic.
 Resolution order for text tasks (auto mode):
   1. User's main provider + main model (used regardless of provider type —
      aggregators, direct API-key providers, native Anthropic, Codex, etc.)
-  2. OpenRouter  (OPENROUTER_API_KEY)
-  3. Nous Portal (~/.hermes/auth.json active provider)
-  4. Custom endpoint (config.yaml model.base_url + OPENAI_API_KEY)
-  5. Native Anthropic
-  6. Direct API-key providers (z.ai/GLM, Kimi/Moonshot, MiniMax, MiniMax-CN)
-  7. None
+  2. Nous Portal (~/.hermes/auth.json active provider)
+  3. Custom endpoint (config.yaml model.base_url + OPENAI_API_KEY)
+  4. Native Anthropic + direct API-key providers (Kimi/Moonshot, DeepSeek,
+     MiniMax, Qwen/Alibaba, z.ai/GLM, etc.)
+  5. OpenRouter  (OPENROUTER_API_KEY) — emergency fallback only
+  6. None
 
 Resolution order for vision/multimodal tasks (auto mode):
   1. Selected main provider, if it is one of the supported vision backends below
-  2. OpenRouter
-  3. Nous Portal
-  4. Native Anthropic
-  5. Custom endpoint (for local vision models: Qwen-VL, LLaVA, Pixtral, etc.)
+  2. Nous Portal
+  3. Native Anthropic + direct provider vision models when available
+  4. Custom endpoint (for local vision models: Qwen-VL, LLaVA, Pixtral, etc.)
+  5. OpenRouter — emergency fallback only
   6. None
 
 Codex OAuth (ChatGPT-account auth) is intentionally NOT in either
@@ -2118,10 +2118,10 @@ def _get_provider_chain() -> List[tuple]:
     a caller explicitly requests it with a model.
     """
     return [
-        ("openrouter", _try_openrouter),
         ("nous", _try_nous),
         ("local/custom", _try_custom_endpoint),
         ("api-key", _resolve_api_key_provider),
+        ("openrouter", _try_openrouter),
     ]
 
 

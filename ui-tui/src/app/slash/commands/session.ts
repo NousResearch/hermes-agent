@@ -99,6 +99,7 @@ export const sessionCommands: SlashCommand[] = [
       if (ctx.session.guardBusySessionSwitch('switch sessions')) {
         return
       }
+
       if (!arg.trim()) {
         return patchOverlayState({ picker: true })
       }

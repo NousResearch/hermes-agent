@@ -1,6 +1,6 @@
+import { TERMUX_TUI_MODE } from '../config/env.js'
 import type { Msg } from '../types.js'
 
-import { TERMUX_TUI_MODE } from '../config/env.js'
 import { transcriptBodyWidth } from './inputMetrics.js'
 
 const hashText = (text: string) => {

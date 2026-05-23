@@ -51,20 +51,23 @@ jobs:
 
       - name: Determine base ref
         id: base
+        env:
+          BASE_REF: ${{ github.base_ref }}
+          EVENT_NAME: ${{ github.event_name }}
         run: |
           # For PRs, diff against the merge base with the target branch.
           # For pushes to main, diff against the previous commit on main.
-          if [ "${{ github.event_name }}" = "pull_request" ]; then
-            BASE_SHA=$(git merge-base "origin/${{ github.base_ref }}" HEAD)
-            BASE_REF="origin/${{ github.base_ref }}"
+          if [ "$EVENT_NAME" = "pull_request" ]; then
+            BASE_SHA=$(git merge-base "origin/$BASE_REF" HEAD)
+            BASE_REF_VALUE="origin/$BASE_REF"
           else
             BASE_SHA=$(git rev-parse HEAD~1 2>/dev/null || git rev-parse HEAD)
-            BASE_REF="HEAD~1"
+            BASE_REF_VALUE="HEAD~1"
           fi
           echo "sha=${BASE_SHA}" >> "$GITHUB_OUTPUT"
-          echo "ref=${BASE_REF}" >> "$GITHUB_OUTPUT"
+          echo "ref=${BASE_REF_VALUE}" >> "$GITHUB_OUTPUT"
           echo "Base SHA: ${BASE_SHA}"
-          echo "Base ref: ${BASE_REF}"
+          echo "Base ref: ${BASE_REF_VALUE}"
 
       - name: Run ruff + ty on HEAD
         run: |
@@ -103,14 +106,22 @@ jobs:
           echo "base ty:   $(wc -c < .lint-reports/base/ty.json) bytes"
 
       - name: Generate diff summary
+        env:
+          HEAD_REF: ${{ github.head_ref }}
+          REF_NAME: ${{ github.ref_name }}
+          EVENT_NAME: ${{ github.event_name }}
         run: |
+          HEAD_REF_VALUE="$HEAD_REF"
+          if [ "$EVENT_NAME" != "pull_request" ]; then
+            HEAD_REF_VALUE="$REF_NAME"
+          fi
           python scripts/lint_diff.py \
             --base-ruff .lint-reports/base/ruff.json \
             --head-ruff .lint-reports/head/ruff.json \
             --base-ty   .lint-reports/base/ty.json \
             --head-ty   .lint-reports/head/ty.json \
             --base-ref  "${{ steps.base.outputs.ref }}" \
-            --head-ref  "${{ github.event_name == 'pull_request' && github.head_ref || github.ref_name }}" \
+            --head-ref  "$HEAD_REF_VALUE" \
             --output    .lint-reports/summary.md
           cat .lint-reports/summary.md >> "$GITHUB_STEP_SUMMARY"
 

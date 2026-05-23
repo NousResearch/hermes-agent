@@ -83,7 +83,8 @@ internal fun diagnosticCardPreviewPriority(card: DiagnosticCardSummary): Int {
         "signal_evidence_matrix",
         "agent_signal_context_matrix",
         "rf_coexistence_matrix",
-        "signal_awareness_matrix" -> 0
+        "signal_awareness_matrix",
+        "agent_self_check_matrix" -> 0
         "wifi_channel_strength",
         "wifi_access_point_detail",
         "wifi_access_point_semantics",
@@ -123,6 +124,7 @@ internal fun diagnosticCardPreviewPriority(card: DiagnosticCardSummary): Int {
         "agent_workflow_readiness",
         "kai_operations_matrix",
         "agent_tool_sandbox_matrix",
+        "agent_self_check_routes",
         "agent_observation_matrix",
         "agent_observation_routes",
         "agent_card_manifest" -> 6
@@ -161,6 +163,7 @@ private fun graphRows(graphType: String?, rows: JSONArray): List<DiagnosticGraph
                 "motion_sensor_quality" -> capabilityMatrixRow(row)
                 "sensor_capability" -> sensorCapabilityRow(row)
                 "agent_capability_matrix", "kai_parity_matrix", "agent_workflow_readiness", "kai_operations_matrix", "agent_tool_sandbox_matrix",
+                "agent_self_check_matrix", "agent_self_check_routes",
                 "agent_observation_matrix", "agent_observation_routes", "agent_signal_context_matrix",
                 "signal_evidence_matrix", "signal_evidence_routes",
                 "rf_coexistence_matrix", "rf_coexistence_routes",

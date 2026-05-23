@@ -388,6 +388,40 @@ def test_android_diagnostics_exposes_agent_environment_report_for_kai_parity():
     assert '"android_automation_notification_task"' in automation_bridge
 
 
+def test_android_diagnostics_exposes_agent_self_check_report_for_kai_heartbeat_and_signal_routes():
+    diagnostics_bridge = (REPO_ROOT / "android/app/src/main/java/com/mobilefork/hermesagent/device/HermesDeviceDiagnosticsBridge.kt").read_text(encoding="utf-8")
+    chat_client = (REPO_ROOT / "android/app/src/main/java/com/mobilefork/hermesagent/ui/chat/NativeToolCallingChatClient.kt").read_text(encoding="utf-8")
+    diagnostic_cards = (REPO_ROOT / "android/app/src/main/java/com/mobilefork/hermesagent/ui/chat/DiagnosticCards.kt").read_text(encoding="utf-8")
+    quick_actions = (REPO_ROOT / "android/app/src/main/java/com/mobilefork/hermesagent/ui/chat/SignalIntelligenceQuickActions.kt").read_text(encoding="utf-8")
+
+    assert '"agent_self_check_report"' in diagnostics_bridge
+    assert 'agentSelfCheckReportJson(appContext)' in diagnostics_bridge
+    assert 'fun agentSelfCheckReportJson(context: Context): JSONObject' in diagnostics_bridge
+    assert 'agentSelfCheckMatrixRows(' in diagnostics_bridge
+    assert 'agentSelfCheckRouteRows(' in diagnostics_bridge
+    assert '"agent_self_check_matrix"' in diagnostics_bridge
+    assert '"agent_self_check_routes"' in diagnostics_bridge
+    assert 'Kai-style passive Hermes self-check' in diagnostics_bridge
+    assert 'Kai-style heartbeat surface' in diagnostics_bridge
+    assert 'Wi-Fi Analyzer card coverage' in diagnostics_bridge
+    assert 'Bluetooth proximity card coverage' in diagnostics_bridge
+    assert 'Motion sensor workflow coverage' in diagnostics_bridge
+    assert 'Radio/RF boundary coverage' in diagnostics_bridge
+    assert 'RF coexistence fusion' in diagnostics_bridge
+    assert 'MediaTek/non-Adreno backend guard' in diagnostics_bridge
+    assert 'Local inference compatibility' in diagnostics_bridge
+    assert 'Tool sandbox and Kai operations' in diagnostics_bridge
+    assert 'Expandable card manifest' in diagnostics_bridge
+    assert 'Treat heartbeat rows as status surfacing' in diagnostics_bridge
+    assert 'agent_self_check_report' in chat_client
+    assert 'passive agent self-check/heartbeat reports' in chat_client
+    assert '"agent_self_check_matrix"' in diagnostic_cards
+    assert '"agent_self_check_routes"' in diagnostic_cards
+    assert 'id = "agent_self_check"' in quick_actions
+    assert 'diagnosticAction = "agent_self_check_report"' in quick_actions
+    assert 'action=agent_self_check_report' in quick_actions
+
+
 def test_android_diagnostics_exposes_agent_observation_dashboard_for_gemma_signal_cards():
     diagnostics_bridge = (REPO_ROOT / "android/app/src/main/java/com/mobilefork/hermesagent/device/HermesDeviceDiagnosticsBridge.kt").read_text(encoding="utf-8")
     chat_client = (REPO_ROOT / "android/app/src/main/java/com/mobilefork/hermesagent/ui/chat/NativeToolCallingChatClient.kt").read_text(encoding="utf-8")

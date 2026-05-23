@@ -141,6 +141,8 @@ object HermesDeviceDiagnosticsBridge {
                 agentCardManifestReportJson(appContext).toString()
             "agent_environment_report", "environment_report", "capability_matrix", "system_capability_report", "kai_parity_report" ->
                 agentEnvironmentReportJson(appContext).toString()
+            "agent_self_check_report", "agent_heartbeat_report", "kai_heartbeat_report", "self_check_report", "heartbeat_report" ->
+                agentSelfCheckReportJson(appContext).toString()
             "social_gmail_goal_preflight", "social_gmail_preflight", "phone_goal_preflight", "end_to_end_goal_preflight" ->
                 socialGmailGoalPreflightJson(appContext).toString()
             "show_active_overlay", "show_working_overlay", "active_overlay" ->
@@ -3180,6 +3182,354 @@ object HermesDeviceDiagnosticsBridge {
                     detail = "${hindsightStatus.optInt("reinforced_memory_count", 0)} reinforced, ${hindsightStatus.optInt("promoted_memory_count", 0)} promoted for prompt context.",
                     recommendation = "Use hindsight_memory_tool retain/recall/reflect/promoted_context around complex work.",
                     fraction = ((hindsightStatus.optInt("promoted_memory_count", 0) + 1) / 5f).coerceIn(0.25f, 1f),
+                ),
+            )
+    }
+
+    fun agentSelfCheckReportJson(context: Context): JSONObject {
+        val appContext = context.applicationContext
+        val wifiReport = wifiAnalyzerReportJson(appContext, JSONObject().put("refresh", false))
+        val bluetoothReport = bluetoothAnalyzerReportJson(appContext, JSONObject().put("refresh", false))
+        val sensorReport = sensorAnalyzerReportJson(appContext, JSONObject().put("include_snapshot", false))
+        val radioReport = radioSignalStatusJson(appContext)
+        val signalReport = signalAwarenessReportJson(appContext)
+        val rfReport = rfCoexistenceReportJson(appContext)
+        val backendRiskReport = gpuBackendRiskReportJson(appContext)
+        val mediatekReport = mediatekReadinessReportJson(appContext)
+        val inferenceReport = localInferenceCompatibilityReportJson(appContext)
+        val environmentReport = agentEnvironmentReportJson(appContext)
+        val automationStatus = environmentReport.optJSONObject("automation_standby_status") ?: JSONObject()
+        val toolSandboxRows = environmentReport.optJSONArray("agent_tool_sandbox_matrix") ?: JSONArray()
+        val kaiOperationsRows = environmentReport.optJSONArray("kai_operations_matrix") ?: JSONArray()
+        val workflowRows = environmentReport.optJSONArray("workflow_readiness_matrix") ?: JSONArray()
+        val cardManifestSources = agentCardManifestSources(
+            wifiReport = wifiReport,
+            bluetoothReport = bluetoothReport,
+            sensorReport = sensorReport,
+            radioReport = radioReport,
+            backendRiskReport = backendRiskReport,
+            mediatekReport = mediatekReport,
+            signalReport = signalReport,
+            environmentReport = environmentReport,
+        )
+        val cardManifestRows = agentCardManifestRows(cardManifestSources)
+        val selfCheckRows = agentSelfCheckMatrixRows(
+            wifiReport = wifiReport,
+            bluetoothReport = bluetoothReport,
+            sensorReport = sensorReport,
+            radioReport = radioReport,
+            rfReport = rfReport,
+            backendRiskReport = backendRiskReport,
+            mediatekReport = mediatekReport,
+            inferenceReport = inferenceReport,
+            automationStatus = automationStatus,
+            toolSandboxRows = toolSandboxRows,
+            kaiOperationsRows = kaiOperationsRows,
+            workflowRows = workflowRows,
+            cardManifestRows = cardManifestRows,
+        )
+        val routeRows = agentSelfCheckRouteRows(automationStatus)
+        return JSONObject()
+            .put("success", true)
+            .put("action", "agent_self_check_report")
+            .put("report_scope", "Kai-style passive Hermes self-check for heartbeat readiness, wireless/radio/sensor observability, MediaTek/non-Adreno backend guardrails, expandable cards, and next diagnostic routes.")
+            .put(
+                "source_report_actions",
+                JSONArray()
+                    .put("agent_environment_report")
+                    .put("wifi_analyzer_report")
+                    .put("bluetooth_analyzer_report")
+                    .put("sensor_analyzer_report")
+                    .put("radio_signal_status")
+                    .put("rf_coexistence_report")
+                    .put("mediatek_readiness_report")
+                    .put("gpu_backend_risk_report")
+                    .put("local_inference_compatibility_report")
+                    .put("agent_card_manifest_report"),
+            )
+            .put("automation_standby_status", automationStatus)
+            .put("agent_environment_summary", observationSummaryJson(environmentReport, "agent_environment_report"))
+            .put("wifi_observation_summary", observationSummaryJson(wifiReport, "wifi_analyzer_report"))
+            .put("bluetooth_observation_summary", observationSummaryJson(bluetoothReport, "bluetooth_analyzer_report"))
+            .put("sensor_observation_summary", observationSummaryJson(sensorReport, "sensor_analyzer_report"))
+            .put("radio_observation_summary", observationSummaryJson(radioReport, "radio_signal_status"))
+            .put("rf_coexistence_summary", observationSummaryJson(rfReport, "rf_coexistence_report"))
+            .put("mediatek_readiness_summary", observationSummaryJson(mediatekReport, "mediatek_readiness_report"))
+            .put("backend_risk_summary", observationSummaryJson(backendRiskReport, "gpu_backend_risk_report"))
+            .put("local_inference_summary", observationSummaryJson(inferenceReport, "local_inference_compatibility_report"))
+            .put("agent_self_check_matrix", selfCheckRows)
+            .put("agent_self_check_routes", routeRows)
+            .put("agent_card_manifest", cardManifestRows)
+            .put("agent_self_check_count", selfCheckRows.length())
+            .put("ready_agent_self_check_count", countReadyRows(selfCheckRows))
+            .put("agent_self_check_route_count", routeRows.length())
+            .put("agent_card_manifest_count", cardManifestRows.length())
+            .put(
+                "self_check_directives",
+                JSONArray()
+                    .put("Run this passive self-check before long-running Android automation, local inference, Wi-Fi/Bluetooth/radio analysis, or MediaTek compatibility claims.")
+                    .put("Treat heartbeat rows as status surfacing; they do not imply unrestricted background AI execution.")
+                    .put("Use route rows to open the exact evidence card before changing settings, requesting active scans, or promising GPU acceleration.")
+                    .put("Prefer passive analyzer reports first; request active Wi-Fi, Bluetooth, motion, or radio bridge samples only when current live evidence is needed."),
+            )
+            .put(
+                "cards",
+                JSONArray()
+                    .put(
+                        graphCard(
+                            title = "Agent Self-Check",
+                            body = "${selfCheckRows.length()} passive self-check row(s) covering heartbeat, signals, sensors, radio, backend risk, MediaTek readiness, local inference, and card coverage.",
+                            graphType = "agent_self_check_matrix",
+                            rows = selfCheckRows,
+                        ),
+                    )
+                    .put(
+                        graphCard(
+                            title = "Self-Check Routes",
+                            body = "${routeRows.length()} route row(s) for opening the right follow-up diagnostic card.",
+                            graphType = "agent_self_check_routes",
+                            rows = routeRows,
+                        ),
+                    )
+                    .put(
+                        graphCard(
+                            title = "Agent Card Manifest",
+                            body = "${cardManifestRows.length()} source card row(s) mapping graph types to source actions and refresh policies.",
+                            graphType = "agent_card_manifest",
+                            rows = cardManifestRows,
+                        ),
+                    ),
+            )
+    }
+
+    private fun agentSelfCheckMatrixRows(
+        wifiReport: JSONObject,
+        bluetoothReport: JSONObject,
+        sensorReport: JSONObject,
+        radioReport: JSONObject,
+        rfReport: JSONObject,
+        backendRiskReport: JSONObject,
+        mediatekReport: JSONObject,
+        inferenceReport: JSONObject,
+        automationStatus: JSONObject,
+        toolSandboxRows: JSONArray,
+        kaiOperationsRows: JSONArray,
+        workflowRows: JSONArray,
+        cardManifestRows: JSONArray,
+    ): JSONArray {
+        val heartbeatReady = automationStatus.optBoolean("standby_heartbeat_supported", false)
+        val heartbeatInterval = automationStatus.optInt("heartbeat_interval_seconds", 0)
+        val wifiGraphCount = wifiReport.optInt("wifi_channel_graph_count", wifiReport.optJSONArray("wifi_channel_graph")?.length() ?: 0)
+        val wifiRatingCount = wifiReport.optJSONArray("wifi_channel_ratings")?.length() ?: 0
+        val bluetoothDeviceCount = bluetoothReport.optInt("bluetooth_device_count", bluetoothReport.optJSONArray("bluetooth_devices")?.length() ?: 0)
+        val bluetoothHistoryCount = bluetoothReport.optInt("bluetooth_signal_history_count", bluetoothReport.optJSONArray("bluetooth_signal_history")?.length() ?: 0)
+        val motionQualityCount = sensorReport.optInt("motion_sensor_quality_count", sensorReport.optJSONArray("motion_sensor_quality")?.length() ?: 0)
+        val motionHistoryCount = sensorReport.optInt("motion_sensor_history_count", sensorReport.optJSONArray("motion_sensor_history")?.length() ?: 0)
+        val radioConstraintCount = radioReport.optInt("radio_signal_constraint_count", radioReport.optJSONArray("radio_signal_constraint_matrix")?.length() ?: 0)
+        val rfRows = rfReport.optJSONArray("rf_coexistence_matrix") ?: JSONArray()
+        val mediatekRows = mediatekReport.optJSONArray("mediatek_readiness_matrix") ?: JSONArray()
+        val backendRiskScore = backendRiskReport.optInt("gpu_backend_risk_score", 0).coerceIn(0, 100)
+        val backendRiskLevel = backendRiskReport.optString("gpu_backend_risk_level").ifBlank { "unknown" }
+        val inferenceRows = inferenceReport.optJSONArray("local_inference_compatibility_matrix") ?: JSONArray()
+        return JSONArray()
+            .put(
+                capabilityRow(
+                    category = "agent_self_check",
+                    label = "Kai-style heartbeat surface",
+                    ready = heartbeatReady,
+                    valueLabel = if (heartbeatReady) "${heartbeatInterval.coerceAtLeast(1)}s heartbeat" else "standby status only",
+                    detail = "${automationStatus.optInt("enabled_automation_count", 0)} enabled automation(s), ${automationStatus.optInt("recent_run_count", 0)} recent run(s), remote dispatch=${automationStatus.optBoolean("remote_dispatch_compatible", false)}.",
+                    recommendation = "Use android_automation_tool operator_standby_status/operator_heartbeat before long-running or remote-dispatch workflows.",
+                    fraction = if (heartbeatReady) 0.92f else 0.45f,
+                    extra = JSONObject()
+                        .put("tool_action", "android_automation_tool:operator_heartbeat")
+                        .put("parity_source", "Kai autonomous heartbeat")
+                        .put("requires_user_configured_automation", true),
+                ),
+            )
+            .put(
+                capabilityRow(
+                    category = "agent_self_check",
+                    label = "Wi-Fi Analyzer card coverage",
+                    ready = wifiGraphCount > 0 || wifiRatingCount > 0,
+                    valueLabel = "$wifiGraphCount graph / $wifiRatingCount rating row(s)",
+                    detail = "Passive Wi-Fi Analyzer rows cover channel graphs, channel ratings, utilization, AP metadata, filters, band coverage, and signal history.",
+                    recommendation = "Open wifi_analyzer_report or wifi_channel_utilization before router placement, channel-change, or nearby-signal advice.",
+                    fraction = if (wifiGraphCount > 0 || wifiRatingCount > 0) 0.86f else 0.35f,
+                    extra = JSONObject().put("tool_action", "wifi_analyzer_report").put("source_graph_type", "wifi_channel_graph"),
+                ),
+            )
+            .put(
+                capabilityRow(
+                    category = "agent_self_check",
+                    label = "Bluetooth proximity card coverage",
+                    ready = bluetoothDeviceCount > 0 || bluetoothHistoryCount > 0,
+                    valueLabel = "$bluetoothDeviceCount device / $bluetoothHistoryCount history row(s)",
+                    detail = "Bluetooth analyzer rows expose nearby devices, service labels, manufacturer metadata, RSSI history, proximity labels, and export rows.",
+                    recommendation = "Open bluetooth_analyzer_report or bluetooth_signal_history before Bluetooth proximity, coexistence, or device-identity reasoning.",
+                    fraction = if (bluetoothDeviceCount > 0 || bluetoothHistoryCount > 0) 0.82f else 0.35f,
+                    extra = JSONObject().put("tool_action", "bluetooth_analyzer_report").put("source_graph_type", "bluetooth_rssi"),
+                ),
+            )
+            .put(
+                capabilityRow(
+                    category = "agent_self_check",
+                    label = "Motion sensor workflow coverage",
+                    ready = motionQualityCount > 0 || motionHistoryCount > 0,
+                    valueLabel = "$motionQualityCount quality / $motionHistoryCount history row(s)",
+                    detail = "Sensor rows cover accelerometer, gyroscope, rotation vector, linear acceleration, freshness, calibration, cadence, and workflow readiness.",
+                    recommendation = "Open sensor_analyzer_report or motion_sensor_quality before motion-aware automation, orientation reasoning, or stability claims.",
+                    fraction = if (motionQualityCount > 0 || motionHistoryCount > 0) 0.82f else 0.35f,
+                    extra = JSONObject().put("tool_action", "sensor_analyzer_report").put("source_graph_type", "motion_sensor_quality"),
+                ),
+            )
+            .put(
+                capabilityRow(
+                    category = "agent_self_check",
+                    label = "Radio/RF boundary coverage",
+                    ready = radioConstraintCount > 0,
+                    valueLabel = "$radioConstraintCount constraint row(s)",
+                    detail = "Radio cards expose AM/FM band-plan rows, vendor/SDR bridge schemas, sample graph support, and public Android RF limits.",
+                    recommendation = "Use radio_signal_status/radio_signal_graph and disclose hardware boundaries before promising AM/FM or broad RF scanning.",
+                    fraction = if (radioConstraintCount > 0) 0.74f else 0.35f,
+                    extra = JSONObject().put("tool_action", "radio_signal_status").put("source_graph_type", "radio_signal_constraint_matrix"),
+                ),
+            )
+            .put(
+                capabilityRow(
+                    category = "agent_self_check",
+                    label = "RF coexistence fusion",
+                    ready = rfRows.length() > 0,
+                    valueLabel = "${countReadyRows(rfRows)}/${rfRows.length()} ready rows",
+                    detail = "RF coexistence rows fuse Wi-Fi channel pressure, Bluetooth 2.4 GHz proximity, radio limits, and MediaTek/non-Adreno backend context.",
+                    recommendation = "Open rf_coexistence_report before cross-signal advice or before linking wireless observations to local model runtime behavior.",
+                    fraction = if (rfRows.length() > 0) (countReadyRows(rfRows).toFloat() / rfRows.length()).coerceIn(0.25f, 1f) else 0.35f,
+                    extra = JSONObject().put("tool_action", "rf_coexistence_report").put("source_graph_type", "rf_coexistence_matrix"),
+                ),
+            )
+            .put(
+                capabilityRow(
+                    category = "agent_self_check",
+                    label = "MediaTek/non-Adreno backend guard",
+                    ready = mediatekRows.length() > 0 && backendRiskScore < 75,
+                    valueLabel = "$backendRiskLevel risk / ${countReadyRows(mediatekRows)} ready row(s)",
+                    detail = "MediaTek, Dimensity, Helio, Mali, Immortalis, PowerVR/IMG, Xclipse, Unisoc, Tensor, Exynos, Snapdragon, and CPU fallback rows are visible.",
+                    recommendation = "Open mediatek_readiness_report and gpu_backend_risk_report before making local Gemma acceleration claims.",
+                    fraction = if (mediatekRows.length() > 0) ((100 - backendRiskScore) / 100f).coerceIn(0.2f, 0.95f) else 0.35f,
+                    extra = JSONObject().put("tool_action", "mediatek_readiness_report").put("source_graph_type", "mediatek_readiness_matrix"),
+                ),
+            )
+            .put(
+                capabilityRow(
+                    category = "agent_self_check",
+                    label = "Local inference compatibility",
+                    ready = countReadyRows(inferenceRows) > 0,
+                    valueLabel = "${countReadyRows(inferenceRows)}/${inferenceRows.length()} ready rows",
+                    detail = "Local inference rows separate model artifact fit, runtime health, multimodal readiness, backend acceleration, CPU fallback, and validation scope.",
+                    recommendation = "Open local_inference_compatibility_report before promising offline Gemma 4 multimodal or tool-calling behavior.",
+                    fraction = if (inferenceRows.length() > 0) (countReadyRows(inferenceRows).toFloat() / inferenceRows.length()).coerceIn(0.25f, 1f) else 0.35f,
+                    extra = JSONObject().put("tool_action", "local_inference_compatibility_report").put("source_graph_type", "local_inference_compatibility_matrix"),
+                ),
+            )
+            .put(
+                capabilityRow(
+                    category = "agent_self_check",
+                    label = "Tool sandbox and Kai operations",
+                    ready = countReadyRows(toolSandboxRows) > 0 && countReadyRows(kaiOperationsRows) > 0,
+                    valueLabel = "${countReadyRows(toolSandboxRows)} tool / ${countReadyRows(kaiOperationsRows)} operation rows",
+                    detail = "Tool sandbox and Kai operations rows disclose permissions, sandbox scope, heartbeat, memory/persona, settings backup, TTS, image, provider fallback, and MCP-equivalent routing.",
+                    recommendation = "Open agent_environment_report before routing Kai-style tool orchestration, settings backup, memory, or persona workflows.",
+                    fraction = if (toolSandboxRows.length() + kaiOperationsRows.length() > 0) 0.82f else 0.35f,
+                    extra = JSONObject().put("tool_action", "agent_environment_report").put("source_graph_type", "agent_tool_sandbox_matrix"),
+                ),
+            )
+            .put(
+                capabilityRow(
+                    category = "agent_self_check",
+                    label = "Expandable card manifest",
+                    ready = cardManifestRows.length() > 0,
+                    valueLabel = "${cardManifestRows.length()} card route(s)",
+                    detail = "Card manifest rows map graph types to diagnostic actions, refresh policies, and permission gates so Gemma can open the right top card.",
+                    recommendation = "Open agent_card_manifest_report before choosing a visible Wi-Fi, Bluetooth, sensor, radio, backend, or Kai operations card.",
+                    fraction = if (cardManifestRows.length() > 0) 0.9f else 0.3f,
+                    extra = JSONObject().put("tool_action", "agent_card_manifest_report").put("source_graph_type", "agent_card_manifest"),
+                ),
+            )
+            .put(
+                capabilityRow(
+                    category = "agent_self_check",
+                    label = "Workflow readiness routing",
+                    ready = workflowRows.length() > 0,
+                    valueLabel = "${countReadyRows(workflowRows)}/${workflowRows.length()} ready rows",
+                    detail = "Workflow readiness rows give the next precise diagnostic action for signal, sensor, radio, backend, memory, automation, and local model work.",
+                    recommendation = "Use route rows instead of guessing from prose when a user asks for full-system diagnostics or capability status.",
+                    fraction = if (workflowRows.length() > 0) (countReadyRows(workflowRows).toFloat() / workflowRows.length()).coerceIn(0.25f, 1f) else 0.35f,
+                    extra = JSONObject().put("tool_action", "agent_environment_report").put("source_graph_type", "agent_workflow_readiness"),
+                ),
+            )
+    }
+
+    private fun agentSelfCheckRouteRows(automationStatus: JSONObject): JSONArray {
+        val heartbeatReady = automationStatus.optBoolean("standby_heartbeat_supported", false)
+        return JSONArray()
+            .put(
+                capabilityRow(
+                    category = "agent_self_check_route",
+                    label = "Run passive self-check",
+                    ready = true,
+                    valueLabel = "agent_self_check_report",
+                    detail = "One passive route summarizes heartbeat readiness, analyzer coverage, radio limits, card routes, and backend guardrails.",
+                    recommendation = "Use this before broad system claims or long-running tasks.",
+                    fraction = 0.95f,
+                    extra = JSONObject().put("tool_action", "agent_self_check_report").put("refresh_policy", "passive_first"),
+                ),
+            )
+            .put(
+                capabilityRow(
+                    category = "agent_self_check_route",
+                    label = "Inspect heartbeat and automation state",
+                    ready = heartbeatReady,
+                    valueLabel = if (heartbeatReady) "operator_heartbeat" else "operator_standby_status",
+                    detail = "Routes to Hermes automation standby state without implying unrestricted background prompt execution.",
+                    recommendation = "Use when a task needs Kai-style status visibility, remote dispatch, or scheduling readiness.",
+                    fraction = if (heartbeatReady) 0.9f else 0.45f,
+                    extra = JSONObject().put("tool_action", "android_automation_tool:operator_standby_status"),
+                ),
+            )
+            .put(
+                capabilityRow(
+                    category = "agent_self_check_route",
+                    label = "Open cross-signal evidence",
+                    ready = true,
+                    valueLabel = "agent_signal_evidence_report",
+                    detail = "Routes to compact Gemma-readable evidence for Wi-Fi, Bluetooth, motion sensors, radio boundaries, and local inference fit.",
+                    recommendation = "Use before explaining what Hermes can currently see.",
+                    fraction = 0.88f,
+                    extra = JSONObject().put("tool_action", "agent_signal_evidence_report"),
+                ),
+            )
+            .put(
+                capabilityRow(
+                    category = "agent_self_check_route",
+                    label = "Open RF coexistence and MediaTek guardrails",
+                    ready = true,
+                    valueLabel = "rf_coexistence_report",
+                    detail = "Routes to wireless coexistence and non-Adreno backend context for MediaTek/Mali/PowerVR devices.",
+                    recommendation = "Use before connecting signal observations to local model runtime behavior.",
+                    fraction = 0.84f,
+                    extra = JSONObject().put("tool_action", "rf_coexistence_report"),
+                ),
+            )
+            .put(
+                capabilityRow(
+                    category = "agent_self_check_route",
+                    label = "Open expandable card manifest",
+                    ready = true,
+                    valueLabel = "agent_card_manifest_report",
+                    detail = "Routes to graph card source actions, refresh policies, and permission gates.",
+                    recommendation = "Use before choosing which top card to expand for the user.",
+                    fraction = 0.9f,
+                    extra = JSONObject().put("tool_action", "agent_card_manifest_report"),
                 ),
             )
     }
@@ -14109,6 +14459,7 @@ object HermesDeviceDiagnosticsBridge {
         "agent_observation_report",
         "agent_card_manifest_report",
         "agent_environment_report",
+        "agent_self_check_report",
         "social_gmail_goal_preflight",
         "show_active_overlay",
         "tool_catalog",

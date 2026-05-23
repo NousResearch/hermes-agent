@@ -40,6 +40,13 @@ val SIGNAL_INTELLIGENCE_QUICK_ACTIONS = listOf(
         iconRes = R.drawable.ic_nav_hermes,
     ),
     SignalIntelligenceQuickAction(
+        id = "agent_self_check",
+        label = "Self-Check",
+        diagnosticAction = "agent_self_check_report",
+        prompt = "Run android_device_diagnostics_tool action=agent_self_check_report",
+        iconRes = R.drawable.ic_nav_hermes,
+    ),
+    SignalIntelligenceQuickAction(
         id = "agent_observation",
         label = "Agent Observation",
         diagnosticAction = "agent_observation_report",

@@ -2,6 +2,8 @@
 
 set -e
 
+export PATH="/opt/hermes/.venv/bin:${PATH}"
+
 echo "========================================="
 echo "Agent Toolkit Setup Script"
 echo "========================================="

@@ -5037,10 +5037,13 @@ def _dispatch_via_service_manager_if_s6(
     profile defaults to the current one (resolved via ``_profile_arg``).
     The s6 service slot was created either by the Phase 4 profile-create
     hook or by the container-boot reconciler (cont-init.d/02-…). If it
-    doesn't exist, ``s6-svc`` will raise CalledProcessError — caller
-    sees that as a normal failure path.
+    doesn't exist or s6 returns an error, the named errors from
+    :mod:`hermes_cli.service_manager` are caught and surfaced as
+    actionable CLI messages (no raw ``CalledProcessError`` traceback).
     """
     from hermes_cli.service_manager import (
+        GatewayNotRegisteredError,
+        S6CommandError,
         detect_service_manager,
         get_service_manager,
     )
@@ -5055,14 +5058,21 @@ def _dispatch_via_service_manager_if_s6(
         profile = _profile_suffix() or "default"
     mgr = get_service_manager()
     service_name = f"gateway-{profile}"
-    if action == "start":
-        mgr.start(service_name)
-    elif action == "stop":
-        mgr.stop(service_name)
-    elif action == "restart":
-        mgr.restart(service_name)
-    else:
-        return False
+    try:
+        if action == "start":
+            mgr.start(service_name)
+        elif action == "stop":
+            mgr.stop(service_name)
+        elif action == "restart":
+            mgr.restart(service_name)
+        else:
+            return False
+    except GatewayNotRegisteredError as exc:
+        print(f"✗ {exc}")
+        sys.exit(1)
+    except S6CommandError as exc:
+        print(f"✗ {exc}")
+        sys.exit(1)
     return True
 
 

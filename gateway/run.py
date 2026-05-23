@@ -7189,6 +7189,9 @@ class GatewayRunner:
         if canonical == "status":
             return await self._handle_status_command(event)
 
+        if canonical == "wsummary":
+            return await self._handle_whatsapp_summary_command(event)
+
         if canonical == "agents":
             return await self._handle_agents_command(event)
 
@@ -12549,6 +12552,52 @@ class GatewayRunner:
                 return t("gateway.title.current_with_title", session_id=session_id, title=title)
             else:
                 return t("gateway.title.current_no_title", session_id=session_id)
+
+    async def _handle_whatsapp_summary_command(self, event: MessageEvent) -> str:
+        """Handle /wsummary for on-demand WhatsApp transcript summaries."""
+        from gateway.config import Platform
+        from gateway.whatsapp_transcript_summary import (
+            format_whatsapp_transcript_summary,
+            generate_whatsapp_transcript_summary,
+            parse_transcript_summary_command_args,
+        )
+
+        if event.source is None or event.source.platform != Platform.WHATSAPP:
+            return (
+                "WhatsApp transcript summary\n"
+                "Status: forbidden\n"
+                "This command is only available from an owner-authorized "
+                "WhatsApp surface."
+            )
+
+        authorized = (
+            event.participant_role == "owner_operator"
+            and event.command_authority_scope == "owner_only"
+        )
+        if not authorized:
+            summary = generate_whatsapp_transcript_summary(
+                None,
+                authorized=False,
+            )
+            return format_whatsapp_transcript_summary(summary)
+
+        try:
+            request = parse_transcript_summary_command_args(event.get_command_args().strip())
+        except ValueError:
+            return (
+                "WhatsApp transcript summary\n"
+                "Status: invalid_request\n"
+                "Usage: /wsummary destination_key=<value> range_start_utc=<UTC> "
+                "range_end_utc=<UTC> [conversation_key=<value>] "
+                "[group_chat_id=<value>] [dm_counterparty_id=<value>] "
+                "[include_operator_context=true|false]"
+            )
+
+        summary = generate_whatsapp_transcript_summary(
+            request,
+            authorized=authorized,
+        )
+        return format_whatsapp_transcript_summary(summary)
 
     async def _handle_resume_command(self, event: MessageEvent) -> str:
         """Handle /resume command — switch to a previously-named session."""

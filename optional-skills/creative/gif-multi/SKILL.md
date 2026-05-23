@@ -4,7 +4,7 @@ description: >-
   Search and send reaction GIFs from Giphy on Telegram, Discord, WhatsApp,
   Signal, Slack, and more. Auto-configures per-platform conversion (MP4,
   GIF optimized, text-only fallback).
-version: 1.0.0
+version: 1.1.0
 author: chdlc
 license: MIT
 platforms: [linux, macos, windows]
@@ -84,14 +84,18 @@ For delivery, call `send_message(action='list')` to see all available targets an
 
 ```
 Available:
-  telegram:Christian (dm)              ← DM sin topic
-  telegram:Christian / General (dm)    ← DM con topic General
-  telegram:Christian / System (dm)     ← DM con topic System
-  discord:#general                     ← Canal de servidor
+  telegram:user (dm)                         ← DM root (no topic)
+  telegram:user / General (dm)               ← DM with a topic
+  telegram:user / topic 12345 (dm)           ← Auto-created topic by Telegram
+  discord:#general                           ← Server channel
   ...
 ```
 
 The agent selects the target that matches where the conversation is happening.
+
+- **No topics configured:** only `telegram:user (dm)` appears.
+- **Topics active:** each topic appears as `telegram:user / <topic-name> (dm)`.
+- **Bare platform** (e.g. `telegram`) sends to the home channel, not the current topic.
 
 ### 2. Search and convert
 
@@ -113,29 +117,47 @@ Returns JSON with the converted file path:
 }
 ```
 
-### 3. Send via Hermes
+### 3. Investigate the platform
 
-The agent sends a text message with the GIF as media attachment using `MEDIA:<path>`.
-Use `send_message(action='list')` to find the correct target for the current conversation:
+Before choosing how to send, check how the target platform handles animated content:
+
+- **Telegram:** Use `sendAnimation` (Bot API) — sends MP4 as an auto-looping GIF. The `sendVideo` method displays it as a regular video with controls. Do NOT use Hermes MEDIA delivery for GIFs on Telegram; use the Bot API `sendAnimation` workaround instead (see below).
+- **Discord:** `send_video` with attachments works as a GIF if the file is MP4/WebM.
+- **WhatsApp / Signal / others:** Check the platform's documentation or the Hermes platform adapter in `gateway/platforms/` to find the correct sending method.
+
+Do not assume `MEDIA:` delivery behaves identically across platforms. When in doubt, inspect the adapter code or this skill's reference files.
+
+### 4. Send by platform
+
+**Telegram — Bot API directly (recommended for GIFs):**
+
+```bash
+BOT_TOKEN=$(grep TELEGRAM_BOT_TOKEN ~/.hermes/.env | grep -v "^#" | cut -d= -f2-)
+curl -s -X POST "https://api.telegram.org/bot${BOT_TOKEN}/sendAnimation" \
+  -F chat_id=<CHAT_ID> \
+  -F message_thread_id=<THREAD_ID> \
+  -F animation=@/path/to/gif.mp4 \
+  -F caption="optional caption"
+```
+
+See the `references/telegram-sendAnimation-workaround.md` reference file for full details.
+
+**Other platforms — MEDIA delivery as fallback:**
+
+Use `MEDIA:<path>` in `send_message` as a generic fallback. Text and media arrive as separate messages on most platforms.
 
 ```python
-# Get available targets first
-send_message(action='list')
-# → "Available: telegram:Christian (dm), telegram:Christian / General (dm), discord:#general ..."
-
-# Then send to the matching one
 send_message(
-  action='send',
-  target='telegram:Christian / System (dm)',  # or whichever matches
-  message="Caption aquí 🐱 MEDIA:/path/to/file.mp4"
+  target='platform:target',
+  message="Caption 🐱 MEDIA:/path/to/file.mp4"
 )
 ```
 
-**Do not hardcode chat_id/thread_id.** Topics are optional per-platform and per-user — let the `send_message(action='list')` output guide the target selection.
+**Do not hardcode chat_id/thread_id.** Topics are optional per-platform and per-user.
 
-Hermes delivers the text and the file as native media on the platform (text + file arrive as separate messages).
+> **Why separate messages?** The gateway's `_deliver_media_from_response()` extracts media paths and sends them via `send_video()` without a caption, even though platform adapters support captions.
 
-### 4. Cleanup
+### 5. Cleanup
 
 The cache under `~/.hermes/.gif_cache/` auto-purges files older than 10 minutes on each search.
 
@@ -153,14 +175,14 @@ python3 ~/.hermes/skills/media/gif-multi/scripts/gif_multi.py --mode on_request
 ```
 
 The user can also say it in conversation:
-- "deja de mandar gifs sin preguntar" → switch to `on_request`
-- "manda gifs cuando quieras" → switch to `natural`
+- "stop sending without asking" → switch to `on_request`
+- "feel free to send GIFs naturally" → switch to `natural`
 
 ## Platform Profiles
 
 | Platform | Format | Max size | Notes |
 |---|---|---|---|
-| Telegram | MP4 (H.264) | 50 MB | Standard, works in topics/DMs |
+| Telegram | MP4 (H.264) | 50 MB | Send via sendAnimation, not MEDIA |
 | Discord | MP4 (H.264) | 25 MB | Within Nitro limits |
 | WhatsApp | MP4 baseline | 16 MB | Baseline profile for compatibility |
 | Signal | MP4 (H.264) | 50 MB | |
@@ -192,13 +214,26 @@ python3 ~/.hermes/skills/media/gif-multi/scripts/gif_multi.py \
 
 6. **API rate limit (Giphy: 1,000/day).** If hit, the API returns an error. Wait until the next day or upgrade to a paid plan.
 
+7. **Forgot to send after generating.** Running `gif_multi.py` saves the file to cache — it does NOT deliver it. You must call the sending method (Bot API or `send_message`) after generating. The script only creates the file.
+
+8. **MEDIA needs text alongside it (when used as fallback).** `send_message(message="MEDIA:/path/to/file.mp4")` fails with "No deliverable text or media remained". Include at least some text: `message="🎉 MEDIA:/path/to/file.mp4"`.
+
+9. **MEDIA on Telegram sends as video, not GIF.** Hermes' MEDIA delivery uses `send_video()` which displays the MP4 as a regular video with controls. For proper auto-looping GIFs on Telegram, use the Bot API `sendAnimation` workaround (see step 4 and the reference file).
+
+10. **Assuming MEDIA works the same across platforms.** Always investigate how the target platform handles animated content before sending. What works on Discord may not work on Telegram, Signal, or others.
+
+## Reference files
+
+- `references/telegram-sendAnimation-workaround.md` — Bot API curl command for proper GIF delivery on Telegram
+- `references/hermes-media-delivery.md` — how MEDIA: flows through the gateway
+
 ## Verification Checklist
 
 - [ ] `GIPHY_API_KEY` is set in `~/.hermes/.env`
 - [ ] `python3 gif_multi.py --check` shows all ✅
 - [ ] `--discover --platforms` configured the skill for your platforms
-- [ ] A test search + MEDIA: send works on the target platform
-- [ ] The GIF plays correctly in the destination chat
+- [ ] A test search + send works on the target platform
+- [ ] The GIF plays correctly as an animation (not a video/sticker) in the destination chat
 
 ## Agent Workflow (Internal)
 
@@ -214,7 +249,10 @@ python3 ~/.hermes/skills/media/gif-multi/scripts/gif_multi.py \
    - **Do not hardcode targets** — call `send_message(action='list')` to discover available targets if unsure
    - Pick a query based on the reaction needed
    - Run the script: `gif_multi.py "<query>" --channel <platform>`
-   - Send via Hermes: `send_message(message="text MEDIA:<path>", target="<target from list>")`
+   - **Investigate the platform first** — check how it handles animated content. See step 3 in Daily Workflow.
+   - **Telegram:** use Bot API `sendAnimation` via curl (see reference file). Do NOT use MEDIA for Telegram GIFs.
+   - **Other platforms:** use `send_message` with `MEDIA:<path>` as generic fallback. Text and media arrive as separate messages.
+   - **Critical:** ensure you actually call the sending method after generating — the script only creates the file, it doesn't deliver it.
 
 3. **Mode changes:**
    - User says "stop sending without asking" → `gif_multi.py --mode on_request`

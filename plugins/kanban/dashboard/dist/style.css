@@ -64,17 +64,13 @@
 
 .hermes-kanban-columns {
   display: flex;
+  flex-wrap: wrap;
   gap: 0.75rem;
   align-items: start;
-  overflow-x: auto;
-  scrollbar-width: none;
-}
-.hermes-kanban-columns::-webkit-scrollbar {
-  display: none;
 }
 
 .hermes-kanban-column {
-  flex: 0 0 280px;
+  flex: 0 0 250px;
   display: flex;
   flex-direction: column;
   background: color-mix(in srgb, var(--color-card) 85%, transparent);

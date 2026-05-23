@@ -1320,3 +1320,51 @@ class TestMinimaxOAuthProvider:
         from agent.auxiliary_client import _API_KEY_PROVIDER_AUX_MODELS
         assert "minimax-oauth" in _API_KEY_PROVIDER_AUX_MODELS
         assert _API_KEY_PROVIDER_AUX_MODELS["minimax-oauth"]  # non-empty
+
+
+class TestTrueFoundryProvider:
+    """Tests for TrueFoundry AI Gateway — an OpenAI-compatible proxy."""
+
+    def test_truefoundry_profile_loads(self):
+        from providers import get_provider_profile
+        profile = get_provider_profile("truefoundry")
+        assert profile is not None
+        assert profile.name == "truefoundry"
+        assert profile.display_name == "TrueFoundry"
+        assert "TFY_API_KEY" in profile.env_vars
+
+    def test_truefoundry_aliases(self):
+        from providers import get_provider_profile
+        profile = get_provider_profile("truefoundry")
+        assert "tfy" in profile.aliases
+        assert "truefoundry-gateway" in profile.aliases
+
+    def test_truefoundry_alias_resolves(self):
+        assert resolve_provider("tfy") == "truefoundry"
+        assert resolve_provider("truefoundry-gateway") == "truefoundry"
+
+    def test_truefoundry_in_provider_registry(self):
+        """Auto-registration from ProviderProfile should expose TrueFoundry."""
+        assert "truefoundry" in PROVIDER_REGISTRY
+        pconfig = PROVIDER_REGISTRY["truefoundry"]
+        assert pconfig.auth_type == "api_key"
+        assert pconfig.id == "truefoundry"
+        assert pconfig.api_key_env_vars == ("TFY_API_KEY",)
+        assert pconfig.base_url_env_var == "TFY_BASE_URL"
+
+    def test_truefoundry_aliases_in_registry(self):
+        assert "tfy" in PROVIDER_REGISTRY
+        assert "truefoundry-gateway" in PROVIDER_REGISTRY
+
+    def test_truefoundry_label(self):
+        from hermes_cli.models import _PROVIDER_LABELS
+        assert "truefoundry" in _PROVIDER_LABELS
+        assert _PROVIDER_LABELS["truefoundry"] == "TrueFoundry"
+
+    def test_truefoundry_credential_resolution(self, monkeypatch):
+        monkeypatch.setenv("TFY_API_KEY", "test-tfy-key")
+        monkeypatch.setenv("TFY_BASE_URL", "https://gw.example.com/v1")
+        result = resolve_api_key_provider_credentials("truefoundry")
+        assert result["api_key"] == "test-tfy-key"
+        assert result["base_url"] == "https://gw.example.com/v1"
+        assert result["provider"] == "truefoundry"

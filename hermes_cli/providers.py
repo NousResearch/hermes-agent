@@ -207,6 +207,11 @@ HERMES_OVERLAYS: Dict[str, HermesOverlay] = {
         transport="openai_chat",  # default; overridden by api_mode in config
         base_url_env_var="AZURE_FOUNDRY_BASE_URL",
     ),
+    "truefoundry": HermesOverlay(
+        transport="openai_chat",
+        extra_env_vars=("TFY_API_KEY",),
+        base_url_env_var="TFY_BASE_URL",
+    ),
     "bedrock": HermesOverlay(
         transport="bedrock_converse",
         auth_type="aws_sdk",
@@ -352,6 +357,10 @@ ALIASES: Dict[str, str] = {
     # gmi
     "gmi-cloud": "gmi",
     "gmicloud": "gmi",
+
+    # truefoundry
+    "tfy": "truefoundry",
+    "truefoundry-gateway": "truefoundry",
 
     # Local server aliases → virtual "local" concept (resolved via user config)
     "lmstudio": "lmstudio",

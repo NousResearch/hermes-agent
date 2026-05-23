@@ -47,13 +47,13 @@ def test_bundled_plugins_discovered():
 
 
 def test_all_34_profiles_register():
-    """After discovery, the registry must contain exactly 34 distinct profiles."""
+    """After discovery, the registry must contain exactly 35 distinct profiles."""
     _clear_provider_caches()
     from providers import list_providers
 
     profiles = list_providers()
     names = sorted(p.name for p in profiles)
-    assert len(names) == 34, f"Expected 34 profiles, got {len(names)}: {names}"
+    assert len(names) == 35, f"Expected 35 profiles, got {len(names)}: {names}"
 
     # Spot-check representative providers from different categories
     for required in (

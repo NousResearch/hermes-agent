@@ -152,6 +152,31 @@ class TestShouldAllowInstall:
         )
         assert allowed is False
         assert "Blocked" in reason
+        # Error message MUST explain why --force didn't work, not invite a retry.
+        assert "does not override" in reason
+        assert "Use --force to override" not in reason
+
+    def test_force_does_not_override_dangerous_for_trusted_message(self):
+        f = [Finding("x", "critical", "c", "f", 1, "m", "d")]
+        allowed, reason = should_allow_install(
+            self._result("trusted", "dangerous", f), force=True
+        )
+        assert allowed is False
+        assert "does not override" in reason
+        assert "Use --force to override" not in reason
+
+    def test_non_dangerous_block_keeps_force_hint(self):
+        # When --force CAN override the block, the error message must still
+        # point to it. Use builtin trust + dangerous to land in the block
+        # branch without triggering the dangerous-specific message.
+        f = [Finding("x", "high", "network", "f", 1, "m", "d")]
+        # Construct a path where decision == block but verdict != dangerous.
+        # community + caution = block per current INSTALL_POLICY.
+        allowed, reason = should_allow_install(
+            self._result("community", "caution", f), force=False
+        )
+        assert allowed is False
+        assert "Use --force to override" in reason
 
     def test_force_does_not_override_dangerous_for_trusted(self):
         f = [Finding("x", "critical", "c", "f", 1, "m", "d")]

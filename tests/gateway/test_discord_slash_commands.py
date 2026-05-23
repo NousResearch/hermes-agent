@@ -169,8 +169,8 @@ async def test_registers_palette_without_replacing_commands(adapter):
     assert "commands" in adapter._client.tree.commands
 
     interaction = SimpleNamespace()
-    await adapter._client.tree.commands["palette"](interaction, page="2")
-    adapter._run_palette_slash.assert_awaited_once_with(interaction, "2")
+    await adapter._client.tree.commands["palette"](interaction)
+    adapter._run_palette_slash.assert_awaited_once_with(interaction)
 
     commands_cmd = adapter._client.tree.commands["commands"]
     await commands_cmd.callback(interaction, args="2")

@@ -3,6 +3,7 @@
 import asyncio
 import os
 import sys
+import time
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -665,18 +666,54 @@ class TestSlackCommandPalette:
         monkeypatch.delenv("SLACK_ALLOWED_CHANNELS", raising=False)
         adapter = _make_adapter()
         adapter.handle_message = AsyncMock()
+        adapter._palette_confirmations["nonce1"] = {
+            "command": "new",
+            "channel_id": "C1",
+            "user_id": "U1",
+            "thread_ts": "123.456",
+            "message_ts": "123.456",
+            "ts": time.monotonic(),
+        }
         body = {
             "channel": {"id": "C1"},
             "user": {"id": "U1", "name": "merlin"},
-            "message": {"ts": "123.456"},
-            "container": {"is_ephemeral": False},
+            "message": {"ts": "999.000"},
+            "container": {"is_ephemeral": True},
         }
 
-        await adapter._handle_palette_action(AsyncMock(), body, {"value": "confirm:new"})
+        await adapter._handle_palette_action(AsyncMock(), body, {"value": "confirm:new:nonce1"})
 
         event = adapter.handle_message.await_args.args[0]
         assert event.text == "/new"
+        assert event.source.thread_id == "123.456"
         assert getattr(event, "preconfirmed_destructive", False) is True
+
+    @pytest.mark.asyncio
+    async def test_stateless_or_expired_palette_confirmation_is_rejected(self, monkeypatch):
+        monkeypatch.delenv("SLACK_ALLOWED_USERS", raising=False)
+        monkeypatch.delenv("SLACK_ALLOWED_CHANNELS", raising=False)
+        adapter = _make_adapter()
+        adapter.handle_message = AsyncMock()
+        body = {
+            "channel": {"id": "C1"},
+            "user": {"id": "U1", "name": "merlin"},
+            "message": {"ts": "999.000"},
+            "container": {"is_ephemeral": True},
+        }
+
+        await adapter._handle_palette_action(AsyncMock(), body, {"value": "confirm:new"})
+        adapter.handle_message.assert_not_called()
+
+        adapter._palette_confirmations["expired"] = {
+            "command": "new",
+            "channel_id": "C1",
+            "user_id": "U1",
+            "thread_ts": "123.456",
+            "message_ts": "123.456",
+            "ts": time.monotonic() - adapter._PALETTE_CONFIRM_TTL - 1,
+        }
+        await adapter._handle_palette_action(AsyncMock(), body, {"value": "confirm:new:expired"})
+        adapter.handle_message.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_palette_button_respects_allowed_channel_gate(self, monkeypatch):

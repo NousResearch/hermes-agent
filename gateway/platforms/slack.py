@@ -14,6 +14,7 @@ import json
 import logging
 import os
 import re
+import secrets
 import time
 from dataclasses import dataclass, field
 from typing import Dict, Optional, Any, Tuple, List
@@ -348,6 +349,12 @@ class SlackAdapter(BasePlatformAdapter):
         # (channel_id, user_id) to avoid cross-user collisions.
         # Each value: {"response_url": str, "ts": float}
         self._slash_command_contexts: Dict[Tuple[str, str], Dict[str, Any]] = {}
+        # Palette confirmation state: nonce -> original click context.  Slack
+        # confirmation prompts can be ephemeral, so the confirm-click body may
+        # only identify the ephemeral prompt instead of the original palette
+        # message/thread.  The nonce binds the second click to the original
+        # command, user, channel, and session/thread context.
+        self._palette_confirmations: Dict[str, Dict[str, Any]] = {}
 
     def _describe_slack_api_error(self, response: Any, *, file_obj: Optional[Dict[str, Any]] = None) -> Optional[str]:
         """Convert Slack API auth/permission failures into actionable user-facing text."""
@@ -413,6 +420,7 @@ class SlackAdapter(BasePlatformAdapter):
     _SLASH_CTX_TTL = 120.0  # seconds — response_url is valid for 30 min;
     # we use a much shorter TTL to avoid routing unrelated messages
     # as ephemeral if the command handler was slow or dropped.
+    _PALETTE_CONFIRM_TTL = 300.0  # seconds, mirrors Discord view timeout
 
     def _pop_slash_context(
         self, chat_id: str,
@@ -2342,6 +2350,81 @@ class SlackAdapter(BasePlatformAdapter):
             logger.error("[Slack] send_command_palette failed: %s", exc, exc_info=True)
             return SendResult(success=False, error=str(exc))
 
+
+    def _palette_action_message_context(
+        self,
+        body: Dict[str, Any],
+        channel_id: str,
+        *,
+        is_dm: bool,
+    ) -> Tuple[str, Optional[str]]:
+        """Return (message_ts, thread_ts) for a Slack palette action body."""
+        message = body.get("message", {}) or {}
+        container = body.get("container", {}) or {}
+        msg_ts = str(message.get("ts") or container.get("message_ts") or "")
+        thread_ts = message.get("thread_ts")
+        if not thread_ts:
+            if is_dm:
+                if self._dm_top_level_threads_as_sessions():
+                    thread_ts = msg_ts or None
+            else:
+                thread_ts = msg_ts or None
+        return msg_ts, str(thread_ts) if thread_ts else None
+
+    def _prune_palette_confirmations(self) -> None:
+        now = time.monotonic()
+        stale = [
+            nonce for nonce, state in self._palette_confirmations.items()
+            if now - float(state.get("ts", 0.0)) > self._PALETTE_CONFIRM_TTL
+        ]
+        for nonce in stale:
+            self._palette_confirmations.pop(nonce, None)
+
+    def _store_palette_confirmation(
+        self,
+        command: str,
+        channel_id: str,
+        user_id: str,
+        body: Dict[str, Any],
+    ) -> str:
+        self._prune_palette_confirmations()
+        is_dm = channel_id.startswith("D")
+        msg_ts, thread_ts = self._palette_action_message_context(body, channel_id, is_dm=is_dm)
+        nonce = secrets.token_urlsafe(12)
+        while nonce in self._palette_confirmations:
+            nonce = secrets.token_urlsafe(12)
+        self._palette_confirmations[nonce] = {
+            "command": command,
+            "channel_id": channel_id,
+            "user_id": user_id,
+            "message_ts": msg_ts,
+            "thread_ts": thread_ts,
+            "ts": time.monotonic(),
+        }
+        return nonce
+
+    def _pop_palette_confirmation(
+        self,
+        nonce: Optional[str],
+        command: str,
+        channel_id: str,
+        user_id: str,
+    ) -> Optional[Dict[str, Any]]:
+        if not nonce:
+            return None
+        self._prune_palette_confirmations()
+        state = self._palette_confirmations.pop(nonce, None)
+        if not state:
+            return None
+        if (
+            state.get("command") != command
+            or state.get("channel_id") != channel_id
+            or state.get("user_id") != user_id
+        ):
+            logger.warning("[Slack] Palette confirmation nonce context mismatch for /%s", command)
+            return None
+        return state
+
     async def _send_palette_confirmation(
         self,
         channel_id: str,
@@ -2357,6 +2440,7 @@ class SlackAdapter(BasePlatformAdapter):
             "yolo": "Enable YOLO mode for this session and skip dangerous-command approvals?",
         }
         prompt = prompts.get(command, f"Run /{command}?")
+        nonce = self._store_palette_confirmation(command, channel_id, user_id, body)
         blocks = [
             {
                 "type": "section",
@@ -2370,13 +2454,13 @@ class SlackAdapter(BasePlatformAdapter):
                         "text": {"type": "plain_text", "text": "Confirm"},
                         "style": "danger",
                         "action_id": "hermes_palette_action",
-                        "value": f"confirm:{command}",
+                        "value": f"confirm:{command}:{nonce}",
                     },
                     {
                         "type": "button",
                         "text": {"type": "plain_text", "text": "Cancel"},
                         "action_id": "hermes_palette_action",
-                        "value": f"cancel:{command}",
+                        "value": f"cancel:{command}:{nonce}",
                     },
                 ],
             },
@@ -2417,11 +2501,18 @@ class SlackAdapter(BasePlatformAdapter):
         await ack()
         raw_value = str(action.get("value") or "").strip()
         confirmed = False
+        cancelled = False
+        nonce: Optional[str] = None
         if raw_value.startswith("cancel:"):
-            return
-        if raw_value.startswith("confirm:"):
+            cancelled = True
+            parts = raw_value.split(":", 2)
+            raw_value = parts[1] if len(parts) > 1 else ""
+            nonce = parts[2] if len(parts) > 2 else None
+        elif raw_value.startswith("confirm:"):
             confirmed = True
-            raw_value = raw_value.split(":", 1)[1]
+            parts = raw_value.split(":", 2)
+            raw_value = parts[1] if len(parts) > 1 else ""
+            nonce = parts[2] if len(parts) > 2 else None
         command = raw_value.strip().lstrip("/")
         from hermes_cli.commands import (
             GATEWAY_QUICK_ACTION_COMMANDS,
@@ -2458,21 +2549,26 @@ class SlackAdapter(BasePlatformAdapter):
                 )
                 return
 
+        if cancelled:
+            if nonce:
+                self._pop_palette_confirmation(nonce, command, channel_id, user_id)
+            return
+
         if command in GATEWAY_QUICK_ACTION_CONFIRM_COMMANDS and not confirmed:
             await self._send_palette_confirmation(channel_id, user_id, command, body)
             return
 
-        message = body.get("message", {}) or {}
-        msg_ts = message.get("ts", "")
-        container = body.get("container", {}) or {}
-        is_ephemeral = bool(container.get("is_ephemeral"))
-        thread_ts = message.get("thread_ts")
-        if not thread_ts and not is_ephemeral:
-            if is_dm:
-                if self._dm_top_level_threads_as_sessions():
-                    thread_ts = msg_ts
-            else:
-                thread_ts = msg_ts
+        pending_confirmation: Optional[Dict[str, Any]] = None
+        if confirmed:
+            pending_confirmation = self._pop_palette_confirmation(nonce, command, channel_id, user_id)
+            if pending_confirmation is None:
+                logger.warning("[Slack] Ignoring expired or unbound palette confirmation for /%s", command)
+                return
+
+        msg_ts, thread_ts = self._palette_action_message_context(body, channel_id, is_dm=is_dm)
+        if pending_confirmation is not None:
+            msg_ts = str(pending_confirmation.get("message_ts") or msg_ts or "")
+            thread_ts = pending_confirmation.get("thread_ts")
         from gateway.platforms.base import resolve_channel_prompt, resolve_channel_skills
         source = self.build_source(
             chat_id=channel_id,

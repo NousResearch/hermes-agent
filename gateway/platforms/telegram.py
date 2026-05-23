@@ -11,7 +11,9 @@ import asyncio
 import json
 import logging
 import os
+import secrets
 import tempfile
+import time
 import html as _html
 import re
 from typing import Dict, List, Optional, Any
@@ -454,6 +456,10 @@ class TelegramAdapter(BasePlatformAdapter):
         # Slash-confirm button state: confirm_id → session_key (for /reload-mcp
         # and any other slash-confirm prompts; see GatewayRunner._request_slash_confirm).
         self._slash_confirm_state: Dict[str, str] = {}
+        # Palette confirmation state: nonce -> original click context.  Telegram
+        # callback_data is client-replayable, so destructive quick-action confirms
+        # must be bound to the original user/chat/topic and expire.
+        self._palette_confirmations: Dict[str, Dict[str, Any]] = {}
         # Clarify button state: clarify_id → session_key (for the clarify tool's
         # multiple-choice prompts; see GatewayRunner clarify_callback wiring).
         self._clarify_state: Dict[str, str] = {}
@@ -2950,6 +2956,64 @@ class TelegramAdapter(BasePlatformAdapter):
             # Catch-all (e.g. page counter button "mx:noop")
             await query.answer()
 
+
+    _PALETTE_CONFIRM_TTL = 300.0  # seconds, mirrors Discord view timeout
+
+    def _prune_palette_confirmations(self) -> None:
+        now = time.monotonic()
+        stale = [
+            nonce for nonce, state in self._palette_confirmations.items()
+            if now - float(state.get("ts", 0.0)) > self._PALETTE_CONFIRM_TTL
+        ]
+        for nonce in stale:
+            self._palette_confirmations.pop(nonce, None)
+
+    def _store_palette_confirmation(
+        self,
+        command: str,
+        chat_id: str,
+        user_id: str,
+        thread_id: Optional[str],
+    ) -> str:
+        self._prune_palette_confirmations()
+        nonce = secrets.token_urlsafe(12)
+        while nonce in self._palette_confirmations:
+            nonce = secrets.token_urlsafe(12)
+        self._palette_confirmations[nonce] = {
+            "command": command,
+            "chat_id": str(chat_id),
+            "user_id": str(user_id),
+            "thread_id": str(thread_id) if thread_id is not None else None,
+            "ts": time.monotonic(),
+        }
+        return nonce
+
+    def _pop_palette_confirmation(
+        self,
+        nonce: Optional[str],
+        command: str,
+        chat_id: str,
+        user_id: str,
+        thread_id: Optional[str],
+    ) -> Optional[Dict[str, Any]]:
+        if not nonce:
+            return None
+        self._prune_palette_confirmations()
+        state = self._palette_confirmations.pop(nonce, None)
+        if not state:
+            return None
+        expected_thread = state.get("thread_id")
+        actual_thread = str(thread_id) if thread_id is not None else None
+        if (
+            state.get("command") != command
+            or state.get("chat_id") != str(chat_id)
+            or state.get("user_id") != str(user_id)
+            or expected_thread != actual_thread
+        ):
+            logger.warning("[%s] Palette confirmation nonce context mismatch for /%s", self.name, command)
+            return None
+        return state
+
     async def _send_palette_confirmation(
         self,
         query: Any,
@@ -2965,10 +3029,12 @@ class TelegramAdapter(BasePlatformAdapter):
             "yolo": "Enable YOLO mode for this session and skip dangerous-command approvals?",
         }
         prompt = prompts.get(command, f"Run /{command}?")
+        user_id = str(getattr(getattr(query, "from_user", None), "id", "") or "")
+        nonce = self._store_palette_confirmation(command, chat_id, user_id, thread_id)
         keyboard = InlineKeyboardMarkup([
             [
-                InlineKeyboardButton("Confirm", callback_data=f"qa:confirm:{command}"),
-                InlineKeyboardButton("Cancel", callback_data=f"qa:cancel:{command}"),
+                InlineKeyboardButton("Confirm", callback_data=f"qa:confirm:{command}:{nonce}"),
+                InlineKeyboardButton("Cancel", callback_data=f"qa:cancel:{command}:{nonce}"),
             ]
         ])
         kwargs: Dict[str, Any] = {
@@ -3094,12 +3160,18 @@ class TelegramAdapter(BasePlatformAdapter):
         if data.startswith("qa:"):
             raw_value = data.split(":", 1)[1].strip()
             confirmed = False
+            cancelled = False
+            nonce: Optional[str] = None
             if raw_value.startswith("cancel:"):
-                await query.answer(text="Cancelled.")
-                return
-            if raw_value.startswith("confirm:"):
+                cancelled = True
+                parts = raw_value.split(":", 2)
+                raw_value = parts[1] if len(parts) > 1 else ""
+                nonce = parts[2] if len(parts) > 2 else None
+            elif raw_value.startswith("confirm:"):
                 confirmed = True
-                raw_value = raw_value.split(":", 1)[1]
+                parts = raw_value.split(":", 2)
+                raw_value = parts[1] if len(parts) > 1 else ""
+                nonce = parts[2] if len(parts) > 2 else None
             command = raw_value.strip().lstrip("/")
             from hermes_cli.commands import (
                 GATEWAY_QUICK_ACTION_COMMANDS,
@@ -3134,6 +3206,14 @@ class TelegramAdapter(BasePlatformAdapter):
                 chat_type_value,
             )
 
+            if cancelled:
+                if nonce:
+                    self._pop_palette_confirmation(
+                        nonce, command, str(query_chat_id), caller_id, thread_id_str,
+                    )
+                await query.answer(text="Cancelled.")
+                return
+
             if command in GATEWAY_QUICK_ACTION_CONFIRM_COMMANDS and not confirmed:
                 await query.answer(text=f"Confirm /{command} to continue.")
                 await self._send_palette_confirmation(
@@ -3143,6 +3223,14 @@ class TelegramAdapter(BasePlatformAdapter):
                     thread_id_str,
                 )
                 return
+
+            if confirmed:
+                pending_confirmation = self._pop_palette_confirmation(
+                    nonce, command, str(query_chat_id), caller_id, thread_id_str,
+                )
+                if pending_confirmation is None:
+                    await query.answer(text="Confirmation expired. Please try again.")
+                    return
 
             await query.answer(text=f"Running /{command}…")
 

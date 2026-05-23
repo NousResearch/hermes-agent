@@ -1,6 +1,7 @@
 """Regression guard: send_slash_confirm must use format_message + MARKDOWN_V2."""
 
 import sys
+import time
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
@@ -182,13 +183,46 @@ class TestTelegramCommandPalette:
         monkeypatch.delenv("TELEGRAM_IGNORED_THREADS", raising=False)
         adapter = _make_adapter()
         adapter.handle_message = AsyncMock()
-        update, _query = _make_palette_update("qa:confirm:new")
+        adapter._palette_confirmations["nonce1"] = {
+            "command": "new",
+            "chat_id": "-100",
+            "user_id": "123",
+            "thread_id": "99",
+            "ts": time.monotonic(),
+        }
+        update, _query = _make_palette_update("qa:confirm:new:nonce1")
 
         await adapter._handle_callback_query(update, SimpleNamespace())
 
         event = adapter.handle_message.await_args.args[0]
         assert event.text == "/new"
         assert getattr(event, "preconfirmed_destructive", False) is True
+
+    @pytest.mark.asyncio
+    async def test_stateless_or_expired_palette_confirmation_is_rejected(self, monkeypatch):
+        monkeypatch.setenv("TELEGRAM_ALLOWED_USERS", "*")
+        monkeypatch.delenv("TELEGRAM_ALLOWED_CHATS", raising=False)
+        monkeypatch.delenv("TELEGRAM_ALLOWED_TOPICS", raising=False)
+        monkeypatch.delenv("TELEGRAM_IGNORED_THREADS", raising=False)
+        adapter = _make_adapter()
+        adapter.handle_message = AsyncMock()
+
+        update, query = _make_palette_update("qa:confirm:new")
+        await adapter._handle_callback_query(update, SimpleNamespace())
+        query.answer.assert_awaited_with(text="Confirmation expired. Please try again.")
+        adapter.handle_message.assert_not_called()
+
+        adapter._palette_confirmations["expired"] = {
+            "command": "new",
+            "chat_id": "-100",
+            "user_id": "123",
+            "thread_id": "99",
+            "ts": time.monotonic() - adapter._PALETTE_CONFIRM_TTL - 1,
+        }
+        update, query = _make_palette_update("qa:confirm:new:expired")
+        await adapter._handle_callback_query(update, SimpleNamespace())
+        query.answer.assert_awaited_with(text="Confirmation expired. Please try again.")
+        adapter.handle_message.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_palette_callback_respects_allowed_topic_gate(self, monkeypatch):

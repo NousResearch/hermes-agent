@@ -2,6 +2,19 @@
 
 Instructions for AI coding assistants and developers working on the hermes-agent codebase.
 
+## JurisNet Strategic Context
+
+For work involving Hernán Caravario or the JurisNet/FalloBot ecosystem, use this framing:
+
+- **JurisNet is the center of the ecosystem.** The core challenge is indexing and serving the law of Latin America at high coverage and quality.
+- **FalloBot and JurisCheck are product surfaces / demo vehicles.** They exist to prove the utility of JurisNet, not to replace it as the strategic center.
+- **Primary business priority:** prepare compelling product demos that help secure funding for JurisNet.
+- **Parallel technical priority:** increase JurisNet Core coverage as fast as possible.
+- When prioritizing work, prefer tasks that improve at least one of:
+  1. funding-readiness of demos built on top of JurisNet;
+  2. coverage, retrieval quality, or operational throughput of JurisNet Core.
+- Avoid over-investing in wrapper-only polish when it does not strengthen JurisNet's moat or make the demos more convincing.
+
 ## Development Environment
 
 ```bash

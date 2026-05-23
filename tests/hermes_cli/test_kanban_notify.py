@@ -16,6 +16,9 @@ def kanban_home(tmp_path, monkeypatch):
     home = tmp_path / ".hermes"
     home.mkdir()
     monkeypatch.setenv("HERMES_HOME", str(home))
+    # tmp_path must be in the media-delivery allow list so that artifact
+    # files created by tests pass validate_media_delivery_path().
+    monkeypatch.setenv("HERMES_MEDIA_ALLOW_DIRS", str(tmp_path))
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
     kb.init_db()
     return home

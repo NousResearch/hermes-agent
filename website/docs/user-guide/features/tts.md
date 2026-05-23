@@ -14,7 +14,7 @@ If you have a paid [Nous Portal](https://portal.nousresearch.com) subscription, 
 
 ## Text-to-Speech
 
-Convert text to speech with ten providers:
+Convert text to speech with eleven providers:
 
 | Provider | Quality | Cost | API Key |
 |----------|---------|------|---------|
@@ -28,6 +28,7 @@ Convert text to speech with ten providers:
 | **NeuTTS** | Good | Free (local) | None needed |
 | **KittenTTS** | Good | Free (local) | None needed |
 | **Piper** | Good | Free (local) | None needed |
+| **Voicebox** | Voice-clone sidecar | Free (local) | None needed |
 
 ### Platform Delivery
 
@@ -43,7 +44,7 @@ Convert text to speech with ten providers:
 ```yaml
 # In ~/.hermes/config.yaml
 tts:
-  provider: "edge"              # "edge" | "elevenlabs" | "openai" | "minimax" | "mistral" | "gemini" | "xai" | "neutts" | "kittentts" | "piper"
+  provider: "edge"              # "edge" | "elevenlabs" | "openai" | "minimax" | "mistral" | "gemini" | "xai" | "neutts" | "kittentts" | "piper" | "voicebox"
   speed: 1.0                    # Global speed multiplier (provider-specific settings override this)
   edge:
     voice: "en-US-AriaNeural"   # 322 voices, 74 languages
@@ -93,6 +94,14 @@ tts:
     # noise_w_scale: 0.8
     # volume: 1.0                               # 0.5 = half as loud
     # normalize_audio: true
+  voicebox:
+    base_url: http://127.0.0.1:17493            # Voicebox desktop app REST server
+    client_id: hermes-agent                     # per-client binding shown in Voicebox Settings → MCP
+    profile: ''                                 # optional profile name/id; empty = Voicebox binding/default
+    engine: ''                                  # optional: qwen, chatterbox, kokoro, etc.
+    personality: null                           # null = Voicebox per-client default
+    language: en
+    poll_timeout: 180
 ```
 
 **Speed control**: The global `tts.speed` value applies to all providers by default. Each provider can override it with its own `speed` setting (e.g., `tts.openai.speed: 1.5`). Provider-specific speed takes precedence over the global value. Default is `1.0` (normal speed).
@@ -113,6 +122,8 @@ Each provider has a documented per-request input-character cap. Hermes truncates
 | ElevenLabs | Model-aware (see below) |
 | NeuTTS | 2000 |
 | KittenTTS | 2000 |
+| Piper | 5000 |
+| Voicebox | 10000 |
 
 **ElevenLabs** picks a cap from the configured `model_id`:
 
@@ -146,6 +157,7 @@ Telegram voice bubbles require Opus/OGG audio format:
 - **NeuTTS** outputs WAV and also needs **ffmpeg** to convert for Telegram voice bubbles
 - **KittenTTS** outputs WAV and also needs **ffmpeg** to convert for Telegram voice bubbles
 - **Piper** outputs WAV and also needs **ffmpeg** to convert for Telegram voice bubbles
+- **Voicebox** outputs WAV and also needs **ffmpeg** to convert for Telegram voice bubbles
 
 ```bash
 # Ubuntu/Debian
@@ -158,7 +170,7 @@ brew install ffmpeg
 sudo dnf install ffmpeg
 ```
 
-Without ffmpeg, Edge TTS, MiniMax TTS, NeuTTS, KittenTTS, and Piper audio are sent as regular audio files (playable, but shown as a rectangular player instead of a voice bubble).
+Without ffmpeg, Edge TTS, MiniMax TTS, NeuTTS, KittenTTS, Piper, and Voicebox audio are sent as regular audio files (playable, but shown as a rectangular player instead of a voice bubble).
 
 :::tip
 If you want voice bubbles without installing ffmpeg, switch to the OpenAI, ElevenLabs, or Mistral provider.
@@ -205,6 +217,29 @@ tts:
 ```
 
 **Advanced knobs** (`tts.piper.length_scale` / `noise_scale` / `noise_w_scale` / `volume` / `normalize_audio`, `use_cuda`) correspond 1:1 to Piper's `SynthesisConfig`. They're ignored on older `piper-tts` versions.
+
+### Voicebox (local voice-clone sidecar)
+
+Voicebox is an optional local desktop sidecar from `jamiepine/voicebox`. Hermes does **not** vendor Voicebox or its ML models. Start the Voicebox app, then Hermes can talk to its localhost REST API for cloned/profile voices.
+
+```yaml
+tts:
+  provider: voicebox
+  voicebox:
+    base_url: http://127.0.0.1:17493
+    client_id: hermes-agent
+    profile: Morgan        # optional; empty uses Voicebox's per-client/default binding
+    language: en
+```
+
+The optional `voicebox` toolset also exposes:
+
+- `voicebox_status` — check the local sidecar
+- `voicebox_list_profiles` — list Voicebox voice profiles
+- `voicebox_speak` — speak text and download generated audio
+- `voicebox_transcribe` — transcribe a local audio file through Voicebox Whisper
+
+Voicebox also exposes MCP at `http://127.0.0.1:17493/mcp`; configure it under `mcp_servers.voicebox` if you want MCP-native tools instead of REST helpers.
 
 ### Custom command providers
 

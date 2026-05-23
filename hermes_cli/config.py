@@ -1101,9 +1101,9 @@ DEFAULT_CONFIG = {
     # Each provider supports an optional `max_text_length:` override for the
     # per-request input-character cap. Omit it to use the provider's documented
     # limit (OpenAI 4096, xAI 15000, MiniMax 10000, ElevenLabs 5k-40k model-aware,
-    # Gemini 5000, Edge 5000, Mistral 4000, NeuTTS/KittenTTS 2000).
+    # Gemini 5000, Edge 5000, Voicebox 10000, Mistral 4000, NeuTTS/KittenTTS 2000).
     "tts": {
-        "provider": "edge",  # "edge" (free) | "elevenlabs" (premium) | "openai" | "xai" | "minimax" | "mistral" | "gemini" | "neutts" (local) | "kittentts" (local) | "piper" (local)
+        "provider": "edge",  # "edge" (free) | "elevenlabs" (premium) | "openai" | "xai" | "minimax" | "mistral" | "gemini" | "neutts" (local) | "kittentts" (local) | "piper" (local) | "voicebox" (local sidecar)
         "edge": {
             "voice": "en-US-AriaNeural",
             # Popular: AriaNeural, JennyNeural, AndrewNeural, BrianNeural, SoniaNeural
@@ -1145,6 +1145,20 @@ DEFAULT_CONFIG = {
             # "noise_w_scale": 0.8,
             # "volume": 1.0,
             # "normalize_audio": True,
+        },
+        "voicebox": {
+            # jamiepine/voicebox local desktop sidecar. Start Voicebox first;
+            # Hermes talks to REST locally and can also use Voicebox MCP via
+            # mcp_servers.voicebox if configured separately.
+            "base_url": "http://127.0.0.1:17493",
+            "client_id": "hermes-agent",
+            "profile": "",       # Optional profile name/id; empty = Voicebox binding/default
+            "engine": "",        # Optional: qwen, chatterbox, kokoro, etc.
+            "personality": None,  # None = Voicebox per-client default
+            "language": "en",
+            "timeout": 30,
+            "poll_timeout": 180,
+            "poll_interval": 1.0,
         },
     },
     

@@ -191,8 +191,14 @@ TOOLSETS = {
     },
     
     "tts": {
-        "description": "Text-to-speech: convert text to audio with Edge TTS (free), ElevenLabs, OpenAI, or xAI",
+        "description": "Text-to-speech: convert text to audio with Edge TTS (free), ElevenLabs, OpenAI, xAI, or local sidecars",
         "tools": ["text_to_speech"],
+        "includes": []
+    },
+
+    "voicebox": {
+        "description": "Voicebox local voice-clone sidecar: health, profiles, speak, and transcribe via REST",
+        "tools": ["voicebox_status", "voicebox_list_profiles", "voicebox_speak", "voicebox_transcribe"],
         "includes": []
     },
     

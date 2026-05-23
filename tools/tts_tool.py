@@ -13,6 +13,7 @@ Built-in TTS providers:
 - NeuTTS (local, free, no API key): On-device TTS via neutts
 - KittenTTS (local, free, no API key): On-device 25MB model
 - Piper (local, free, no API key): OHF-Voice/piper1-gpl neural VITS, 44 languages
+- Voicebox (local sidecar, no API key): jamiepine/voicebox REST voice-clone app
 
 Custom command providers:
 - Users can declare any number of named providers with ``type: command``
@@ -200,6 +201,7 @@ PROVIDER_MAX_TEXT_LENGTH: Dict[str, int] = {
     "neutts": 2000,       # local model, quality falls off on long text
     "kittentts": 2000,    # local 25MB model
     "piper": 5000,        # local VITS model, phoneme-based; practical cap
+    "voicebox": 10000,    # local Voicebox /speak REST cap
 }
 
 # ElevenLabs caps vary by model_id. https://elevenlabs.io/docs/overview/models
@@ -346,6 +348,7 @@ BUILTIN_TTS_PROVIDERS = frozenset({
     "neutts",
     "kittentts",
     "piper",
+    "voicebox",
 })
 
 DEFAULT_COMMAND_TTS_TIMEOUT_SECONDS = 120
@@ -1683,7 +1686,9 @@ def text_to_speech_tool(
         timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
         out_dir = Path(DEFAULT_OUTPUT_DIR)
         out_dir.mkdir(parents=True, exist_ok=True)
-        if command_provider_config is not None:
+        if provider == "voicebox":
+            file_path = out_dir / f"tts_{timestamp}.wav"
+        elif command_provider_config is not None:
             fmt = _get_command_tts_output_format(command_provider_config)
             file_path = out_dir / f"tts_{timestamp}.{fmt}"
         # Use .ogg for Telegram with providers that support native Opus output,
@@ -1794,6 +1799,13 @@ def text_to_speech_tool(
             logger.info("Generating speech with Piper (local)...")
             _generate_piper_tts(text, file_str, tts_config)
 
+        elif provider == "voicebox":
+            logger.info("Generating speech with Voicebox local sidecar...")
+            from tools.voicebox_tool import voicebox_speak_to_file
+
+            result = voicebox_speak_to_file(text, file_str, tts_config=tts_config)
+            file_str = result.get("file_path", file_str)
+
         else:
             # Default: Edge TTS (free), with NeuTTS as local fallback
             edge_available = True
@@ -1843,7 +1855,7 @@ def text_to_speech_tool(
                     if opus_path:
                         file_str = opus_path
                 voice_compatible = file_str.endswith(".ogg")
-        elif provider in {"edge", "neutts", "minimax", "xai", "kittentts", "piper"} and not file_str.endswith(".ogg"):
+        elif provider in {"edge", "neutts", "minimax", "xai", "kittentts", "piper", "voicebox"} and not file_str.endswith(".ogg"):
             opus_path = _convert_to_opus(file_str)
             if opus_path:
                 file_str = opus_path
@@ -1941,6 +1953,13 @@ def check_tts_requirements() -> bool:
         return True
     if _check_piper_available():
         return True
+    try:
+        from tools.voicebox_tool import check_voicebox_available
+
+        if check_voicebox_available():
+            return True
+    except Exception:
+        pass
     return False
 
 

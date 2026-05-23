@@ -286,6 +286,9 @@ def run_conversation(
     agent._unicode_sanitization_passes = 0
     agent._tool_guardrails.reset_for_turn()
     agent._tool_guardrail_halt_decision = None
+    # Per-turn compression no-progress latch — see
+    # agent.conversation_compression for the death-loop rationale.
+    agent._compression_no_progress_turn = False
     # True until the server rejects an image_url content part with an error
     # like "Only 'text' content type is supported."  Set to False on first
     # rejection and kept False for the rest of the session so we never re-send
@@ -454,14 +457,42 @@ def run_conversation(
             )
             # May need multiple passes for very large sessions with small
             # context windows (each pass summarises the middle N turns).
+            from agent.conversation_compression import (
+                compression_made_progress as _cmp_made_progress,
+                should_skip_compression_for_turn as _cmp_should_skip,
+            )
             for _pass in range(3):
+                if _cmp_should_skip(agent):
+                    break
                 _orig_len = len(messages)
                 messages, active_system_prompt = agent._compress_context(
                     messages, system_message, approx_tokens=_preflight_tokens,
                     task_id=effective_task_id,
                 )
-                if len(messages) >= _orig_len:
-                    break  # Cannot compress further
+                # Re-estimate after compression so the no-progress check
+                # below can compare pre/post tokens — and the loop's
+                # threshold-clearing decision uses fresh data.
+                _post_tokens = estimate_request_tokens_rough(
+                    messages,
+                    system_prompt=active_system_prompt or "",
+                    tools=agent.tools or None,
+                )
+                # No-progress guard: when protect_first_n + protect_last_n
+                # leaves nothing droppable, the compressor returns the
+                # same message count and only a few % token reduction.
+                # Latch a per-turn flag so the post-tool-call site also
+                # skips, and bail out instead of looping (#deathloop).
+                if not _cmp_made_progress(
+                    pre_msg_count=_orig_len,
+                    post_msg_count=len(messages),
+                    pre_tokens=_preflight_tokens,
+                    post_tokens=_post_tokens,
+                ):
+                    agent._compression_no_progress_turn = True
+                    logger.warning(
+                        "compression-no-progress, aborting compress loop for this turn"
+                    )
+                    break
                 # Compression created a new session — clear the history
                 # reference so _flush_messages_to_session_db writes ALL
                 # compressed messages to the new session's SQLite, not
@@ -478,12 +509,7 @@ def run_conversation(
                 agent._last_content_with_tools = None
                 agent._last_content_tools_all_housekeeping = False
                 agent._mute_post_response = False
-                # Re-estimate after compression
-                _preflight_tokens = estimate_request_tokens_rough(
-                    messages,
-                    system_prompt=active_system_prompt or "",
-                    tools=agent.tools or None,
-                )
+                _preflight_tokens = _post_tokens
                 if _preflight_tokens < agent.context_compressor.threshold_tokens:
                     break  # Under threshold
 
@@ -3382,7 +3408,14 @@ def run_conversation(
                         messages, tools=agent.tools or None
                     )
 
-                if agent.compression_enabled and _compressor.should_compress(_real_tokens):
+                from agent.conversation_compression import (
+                    should_skip_compression_for_turn as _cmp_should_skip_post,
+                )
+                if (
+                    agent.compression_enabled
+                    and not _cmp_should_skip_post(agent)
+                    and _compressor.should_compress(_real_tokens)
+                ):
                     agent._safe_print("  ⟳ compacting context…")
                     messages, active_system_prompt = agent._compress_context(
                         messages, system_message,

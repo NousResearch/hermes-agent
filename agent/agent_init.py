@@ -1306,6 +1306,15 @@ def init_agent(
         )
     agent.compression_enabled = compression_enabled
 
+    # Boot-time visibility: print the resolved compression knobs so a stale
+    # config (or stale gateway runtime) is unambiguous in agent.log. Pair
+    # this with "Preflight compression: …" to spot mismatches at a glance.
+    try:
+        from agent.conversation_compression import log_compression_configured
+        log_compression_configured(agent.context_compressor, enabled=compression_enabled)
+    except Exception:
+        pass
+
     # Reject models whose context window is below the minimum required
     # for reliable tool-calling workflows (64K tokens).
     from agent.model_metadata import MINIMUM_CONTEXT_LENGTH

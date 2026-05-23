@@ -548,9 +548,166 @@ def try_shrink_image_parts_in_messages(api_messages: list) -> bool:
     return changed_count > 0
 
 
+# ──────────────────────────────────────────────────────────────────────
+# No-progress guard
+#
+# Observed: when ``protect_first_n + protect_last_n >= total messages``
+# the compressor has nothing to drop and just re-summarises the same
+# turns inline, producing identical message counts on input/output and
+# only a few % token reduction.  The preflight loop would then retry on
+# the next iteration's tool result and burn Haiku tokens forever.
+#
+# Guard: detect "compression did not meaningfully shrink the window" and
+# latch a per-turn flag on the agent so further compress attempts on the
+# same turn (preflight passes 2+, post-tool-call site) are skipped.
+# ──────────────────────────────────────────────────────────────────────
+
+_NO_PROGRESS_MIN_TOKEN_REDUCTION = 0.15
+_TURN_FLAG_ATTR = "_compression_no_progress_turn"
+
+
+def compression_made_progress(
+    *,
+    pre_msg_count: int,
+    post_msg_count: int,
+    pre_tokens: int,
+    post_tokens: int,
+    min_token_reduction: float = _NO_PROGRESS_MIN_TOKEN_REDUCTION,
+) -> bool:
+    """Return True if a compression pass meaningfully shrank the window.
+
+    Two ways a pass counts as progress:
+      1. Message count strictly decreased (real turns were dropped).
+      2. Message count unchanged but tokens dropped by ≥
+         ``min_token_reduction`` (15% by default) — the summary
+         actually collapsed long tool results inline.
+
+    Anything else (same count + small/negative token delta, or a zero
+    baseline that can't be ratioed) is "no progress".
+    """
+    if post_msg_count < pre_msg_count:
+        return True
+    if pre_tokens <= 0:
+        return False
+    reduction = (pre_tokens - post_tokens) / pre_tokens
+    return reduction >= min_token_reduction
+
+
+def should_skip_compression_for_turn(agent: Any) -> bool:
+    """True if the per-turn no-progress flag has already latched."""
+    return bool(getattr(agent, _TURN_FLAG_ATTR, False))
+
+
+def _latch_no_progress_for_turn(agent: Any) -> None:
+    """Set the per-turn flag and log the abort decision once."""
+    setattr(agent, _TURN_FLAG_ATTR, True)
+    logger.warning(
+        "compression-no-progress, aborting compress loop for this turn"
+    )
+
+
+def _preflight_compress_with_guard(
+    agent: Any,
+    *,
+    messages: list,
+    system_message: str,
+    active_system_prompt: str,
+    tools: Optional[list],
+    preflight_tokens: int,
+    max_passes: int = 3,
+    effective_task_id: str = "default",
+    threshold_tokens: Optional[int] = None,
+    estimate_fn=None,
+) -> Tuple[list, str]:
+    """Drive the preflight compression loop with the no-progress guard.
+
+    Returns the (possibly compressed) messages and the active system
+    prompt. The function is intentionally narrow — it does not touch
+    session_id rotation, conversation_history clearing, or retry-counter
+    resets; those side effects still live in run_conversation. This
+    helper exists so the guard logic can be unit-tested without spinning
+    up the full agent loop.
+    """
+    if estimate_fn is None:
+        estimate_fn = estimate_request_tokens_rough
+    if threshold_tokens is None:
+        threshold_tokens = getattr(
+            getattr(agent, "context_compressor", None),
+            "threshold_tokens",
+            0,
+        )
+
+    current_tokens = preflight_tokens
+    for _pass in range(max_passes):
+        if should_skip_compression_for_turn(agent):
+            break
+        pre_count = len(messages)
+        messages, active_system_prompt = agent._compress_context(
+            messages,
+            system_message,
+            approx_tokens=current_tokens,
+            task_id=effective_task_id,
+        )
+        post_count = len(messages)
+        post_tokens = estimate_fn(
+            messages,
+            system_prompt=active_system_prompt or "",
+            tools=tools,
+        )
+
+        if not compression_made_progress(
+            pre_msg_count=pre_count,
+            post_msg_count=post_count,
+            pre_tokens=current_tokens,
+            post_tokens=post_tokens,
+        ):
+            _latch_no_progress_for_turn(agent)
+            break
+
+        current_tokens = post_tokens
+        if threshold_tokens and current_tokens < threshold_tokens:
+            break
+
+    return messages, active_system_prompt
+
+
+def format_compression_boot_log(compressor: Any, *, enabled: bool) -> str:
+    """Render the resolved compression configuration in a single INFO line.
+
+    Surfaces every knob a stale-config or stale-runtime mismatch could
+    quietly diverge on — threshold %, target %, head/tail protections,
+    model context_length, and the absolute token trigger. Pair this with
+    Preflight compression log lines to immediately tell whether the live
+    threshold matches the user's config.yaml.
+    """
+    if not enabled:
+        return "Compression configured: disabled"
+
+    threshold_pct = int(round(getattr(compressor, "threshold_percent", 0.0) * 100))
+    target_pct = int(round(getattr(compressor, "summary_target_ratio", 0.0) * 100))
+    return (
+        "Compression configured: "
+        f"threshold={threshold_pct}% "
+        f"target={target_pct}% "
+        f"protect_first={getattr(compressor, 'protect_first_n', 0)} "
+        f"protect_last={getattr(compressor, 'protect_last_n', 0)} "
+        f"context_len={getattr(compressor, 'context_length', 0)} "
+        f"trigger_at={getattr(compressor, 'threshold_tokens', 0)} tokens"
+    )
+
+
+def log_compression_configured(compressor: Any, *, enabled: bool) -> None:
+    """Emit the boot-time INFO line so it lands in agent.log every startup."""
+    logger.info(format_compression_boot_log(compressor, enabled=enabled))
+
+
 __all__ = [
     "check_compression_model_feasibility",
     "replay_compression_warning",
     "compress_context",
+    "compression_made_progress",
+    "format_compression_boot_log",
+    "log_compression_configured",
+    "should_skip_compression_for_turn",
     "try_shrink_image_parts_in_messages",
 ]

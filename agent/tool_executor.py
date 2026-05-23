@@ -44,6 +44,7 @@ from tools.terminal_tool import (
     get_active_env,
 )
 from tools.tool_result_storage import (
+    cap_tool_result_tokens,
     maybe_persist_tool_result,
     enforce_turn_budget,
 )
@@ -424,6 +425,11 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
             tool_use_id=tc.id,
             env=get_active_env(effective_task_id),
         ) if not _is_multimodal_tool_result(function_result) else function_result
+
+        # Defensive token cap: clamp anything still over ~8K tokens after
+        # persistence (medium-sized results that slip past the 100K-char
+        # layer-2 threshold but still bloat context across a few calls).
+        function_result = cap_tool_result_tokens(function_result, tool_name=name)
 
         subdir_hints = agent._subdirectory_hints.check_tool_call(name, args)
         if subdir_hints:
@@ -852,6 +858,9 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
             tool_use_id=tool_call.id,
             env=get_active_env(effective_task_id),
         ) if not _is_multimodal_tool_result(function_result) else function_result
+
+        # Defensive token cap: see concurrent path for rationale.
+        function_result = cap_tool_result_tokens(function_result, tool_name=function_name)
 
         # Discover subdirectory context files from tool arguments
         subdir_hints = agent._subdirectory_hints.check_tool_call(function_name, function_args)

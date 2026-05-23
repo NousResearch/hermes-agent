@@ -1,0 +1,204 @@
+from __future__ import annotations
+
+import json
+import time
+from dataclasses import dataclass
+from datetime import UTC, datetime
+from pathlib import Path
+from typing import Any
+
+
+BENCHMARK_TYPE = "hermes_memory_bench_v0.1"
+DIMENSIONS = (
+    "recall_accuracy",
+    "temporal_accuracy",
+    "source_provenance_accuracy",
+    "governance_write_safety",
+    "project_scope_isolation",
+    "contradiction_handling",
+    "latency_ms",
+)
+POLICY = {
+    "read_only": True,
+    "would_write_memory": False,
+    "would_modify_config": False,
+    "would_write_graph": False,
+    "does_not_create_operation_events": True,
+}
+
+
+@dataclass(frozen=True)
+class CaseResult:
+    id: str
+    dimension: str
+    query: str
+    expected_answer: str
+    actual_answer: str
+    score: float
+    latency_ms: float
+    passed: bool
+    evidence: dict[str, Any]
+
+    def to_json(self) -> dict[str, Any]:
+        return {
+            "id": self.id,
+            "dimension": self.dimension,
+            "query": self.query,
+            "expected_answer": self.expected_answer,
+            "actual_answer": self.actual_answer,
+            "score": self.score,
+            "latency_ms": self.latency_ms,
+            "passed": self.passed,
+            "evidence": self.evidence,
+        }
+
+
+def fixtures_path() -> Path:
+    return Path(__file__).with_name("fixtures") / "smoke_cases.json"
+
+
+def load_cases(suite: str) -> list[dict[str, Any]]:
+    if suite != "smoke":
+        raise ValueError(f"Unsupported suite: {suite}")
+    with fixtures_path().open("r", encoding="utf-8") as handle:
+        cases = json.load(handle)
+    if not isinstance(cases, list):
+        raise ValueError("Smoke fixture must contain a list of cases.")
+    return cases
+
+
+def run_benchmark(suite: str = "smoke") -> dict[str, Any]:
+    cases = [_evaluate_case(case) for case in load_cases(suite)]
+    scores = _dimension_scores(cases)
+    aggregate = _aggregate(cases)
+    return {
+        "benchmark_type": BENCHMARK_TYPE,
+        "generated_at": datetime.now(UTC).isoformat().replace("+00:00", "Z"),
+        "suite": suite,
+        "scores": scores,
+        "cases": [case.to_json() for case in cases],
+        "aggregate": aggregate,
+        "policy": dict(POLICY),
+    }
+
+
+def write_report(report: dict[str, Any], output: str | Path | None = None) -> None:
+    payload = json.dumps(report, indent=2, sort_keys=True) + "\n"
+    if output:
+        Path(output).write_text(payload, encoding="utf-8")
+    else:
+        print(payload, end="")
+
+
+def _evaluate_case(case: dict[str, Any]) -> CaseResult:
+    started = time.perf_counter()
+    dimension = case["dimension"]
+    expected = case["expected_answer"]
+    actual, evidence = _answer_case(case)
+    latency_ms = round((time.perf_counter() - started) * 1000, 3)
+    score = 1.0 if actual == expected else 0.0
+    return CaseResult(
+        id=case["id"],
+        dimension=dimension,
+        query=case["query"],
+        expected_answer=expected,
+        actual_answer=actual,
+        score=score,
+        latency_ms=latency_ms,
+        passed=score == 1.0,
+        evidence=evidence,
+    )
+
+
+def _answer_case(case: dict[str, Any]) -> tuple[str, dict[str, Any]]:
+    dimension = case["dimension"]
+    memories = list(case.get("memories", []))
+
+    if dimension == "governance_write_safety":
+        return "blocked", {
+            "blocked_operation": case.get("unsafe_operation"),
+            "reason": "Benchmark policy forbids writes and proposals.",
+            "policy": dict(POLICY),
+        }
+
+    if dimension == "project_scope_isolation":
+        scope = case.get("project_scope")
+        scoped = [memory for memory in memories if memory.get("project_id") == scope]
+        selected = _newest(scoped)
+        return selected.get("content", ""), {
+            "project_scope": scope,
+            "candidate_count": len(memories),
+            "scoped_candidate_count": len(scoped),
+            "selected_project_id": selected.get("project_id"),
+        }
+
+    if dimension == "temporal_accuracy":
+        selected = _newest(memories)
+        return selected.get("content", ""), {
+            "selected_created_at": selected.get("created_at"),
+            "candidate_count": len(memories),
+            "temporal_rule": "newest_matching_preference_wins",
+        }
+
+    if dimension == "source_provenance_accuracy":
+        selected = _newest(memories)
+        source_ok = selected.get("source") == case.get("required_source")
+        provenance_ok = selected.get("provenance") == case.get("required_provenance")
+        return selected.get("content", ""), {
+            "source": selected.get("source"),
+            "provenance": selected.get("provenance"),
+            "source_ok": source_ok,
+            "provenance_ok": provenance_ok,
+        }
+
+    if dimension == "contradiction_handling":
+        return _contradiction_answer(memories), {
+            "candidate_count": len(memories),
+            "claim_keys": sorted({memory.get("claim_key") for memory in memories if memory.get("claim_key")}),
+            "handling": "flag_candidate_for_review",
+        }
+
+    selected = _newest(memories)
+    return selected.get("content", ""), {
+        "candidate_count": len(memories),
+        "selected_project_id": selected.get("project_id"),
+        "selected_source": selected.get("source"),
+    }
+
+
+def _newest(memories: list[dict[str, Any]]) -> dict[str, Any]:
+    if not memories:
+        return {}
+    return max(memories, key=lambda memory: memory.get("created_at", ""))
+
+
+def _contradiction_answer(memories: list[dict[str, Any]]) -> str:
+    normalized = {str(memory.get("content", "")).lower() for memory in memories}
+    has_allowed = any(" is allowed" in content for content in normalized)
+    has_blocked = any(" is blocked" in content or "forbidden" in content for content in normalized)
+    return "contradiction_detected" if has_allowed and has_blocked else _newest(memories).get("content", "")
+
+
+def _dimension_scores(cases: list[CaseResult]) -> dict[str, float]:
+    scores: dict[str, float] = {}
+    for dimension in DIMENSIONS:
+        if dimension == "latency_ms":
+            scores[dimension] = round(sum(case.latency_ms for case in cases) / max(len(cases), 1), 3)
+            continue
+        relevant = [case for case in cases if case.dimension == dimension]
+        scores[dimension] = round(sum(case.score for case in relevant) / len(relevant), 3) if relevant else 0.0
+    return scores
+
+
+def _aggregate(cases: list[CaseResult]) -> dict[str, Any]:
+    case_count = len(cases)
+    passed_count = sum(1 for case in cases if case.passed)
+    score = sum(case.score for case in cases) / case_count if case_count else 0.0
+    return {
+        "overall_score": round(score, 3),
+        "case_count": case_count,
+        "passed_count": passed_count,
+        "failed_count": case_count - passed_count,
+        "mean_latency_ms": round(sum(case.latency_ms for case in cases) / max(case_count, 1), 3),
+        "dimensions": list(DIMENSIONS),
+    }

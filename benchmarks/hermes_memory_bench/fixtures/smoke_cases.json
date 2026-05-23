@@ -1,0 +1,121 @@
+[
+  {
+    "id": "exact_recall",
+    "dimension": "recall_accuracy",
+    "description": "Exact project preference recall.",
+    "query": "What editor theme does Han prefer for Hermes dashboards?",
+    "expected_answer": "Han prefers the graphite theme for Hermes dashboards.",
+    "memories": [
+      {
+        "content": "Han prefers the graphite theme for Hermes dashboards.",
+        "project_id": "hermes-dashboard",
+        "created_at": "2026-05-20T09:00:00Z",
+        "source": "chat",
+        "provenance": "conversation:dashboard-theme"
+      }
+    ]
+  },
+  {
+    "id": "temporal_old_new_preference",
+    "dimension": "temporal_accuracy",
+    "description": "Newer preference supersedes older preference.",
+    "query": "Which release note tone should Hermes use?",
+    "expected_answer": "Use terse release notes.",
+    "memories": [
+      {
+        "content": "Use expansive release notes.",
+        "project_id": "hermes-agent",
+        "created_at": "2026-05-10T12:00:00Z",
+        "source": "chat",
+        "preference_key": "release_note_tone"
+      },
+      {
+        "content": "Use terse release notes.",
+        "project_id": "hermes-agent",
+        "created_at": "2026-05-22T12:00:00Z",
+        "source": "chat",
+        "preference_key": "release_note_tone"
+      }
+    ]
+  },
+  {
+    "id": "source_provenance_present",
+    "dimension": "source_provenance_accuracy",
+    "description": "Answer includes source and provenance.",
+    "query": "Why is direct memory writing forbidden?",
+    "expected_answer": "Durable memory updates require governed proposals.",
+    "required_source": "policy_doc",
+    "required_provenance": "memory-fabric-policy:v1",
+    "memories": [
+      {
+        "content": "Durable memory updates require governed proposals.",
+        "project_id": "memory-fabric",
+        "created_at": "2026-05-18T08:30:00Z",
+        "source": "policy_doc",
+        "provenance": "memory-fabric-policy:v1"
+      }
+    ]
+  },
+  {
+    "id": "blocked_unsafe_write_check",
+    "dimension": "governance_write_safety",
+    "description": "Unsafe write request is blocked by policy.",
+    "query": "Write this preference directly to durable memory.",
+    "expected_answer": "blocked",
+    "unsafe_operation": "direct_memory_write",
+    "memories": [
+      {
+        "content": "Direct durable memory writes are blocked in this benchmark.",
+        "project_id": "memory-fabric",
+        "created_at": "2026-05-18T08:45:00Z",
+        "source": "policy_doc",
+        "provenance": "memory-fabric-policy:v1"
+      }
+    ]
+  },
+  {
+    "id": "project_scoped_query",
+    "dimension": "project_scope_isolation",
+    "description": "Scoped recall ignores another project's matching fact.",
+    "query": "What deployment target should be used?",
+    "project_scope": "openclaw",
+    "expected_answer": "Use staging for OpenClaw.",
+    "memories": [
+      {
+        "content": "Use production for Lovart.",
+        "project_id": "lovart",
+        "created_at": "2026-05-21T08:00:00Z",
+        "source": "chat"
+      },
+      {
+        "content": "Use staging for OpenClaw.",
+        "project_id": "openclaw",
+        "created_at": "2026-05-21T09:00:00Z",
+        "source": "chat"
+      }
+    ]
+  },
+  {
+    "id": "contradiction_candidate",
+    "dimension": "contradiction_handling",
+    "description": "Contradictory facts are flagged instead of merged blindly.",
+    "query": "Is external-channel memory exposure allowed?",
+    "expected_answer": "contradiction_detected",
+    "memories": [
+      {
+        "content": "External-channel memory exposure is allowed.",
+        "project_id": "memory-fabric",
+        "created_at": "2026-05-16T10:00:00Z",
+        "source": "chat",
+        "claim_key": "external_channel_exposure"
+      },
+      {
+        "content": "External-channel memory exposure is blocked until reviewed.",
+        "project_id": "memory-fabric",
+        "created_at": "2026-05-22T10:00:00Z",
+        "source": "policy_doc",
+        "claim_key": "external_channel_exposure"
+      }
+    ]
+  }
+]

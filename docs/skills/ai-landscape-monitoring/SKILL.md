@@ -285,7 +285,7 @@ Town is the **primary operator interface** for Darren's investment workflow. Cur
 - **Thinking mode:** Both models support non-thinking and thinking (default) modes
 - **API compatibility:** OpenAI format (`https://api.deepseek.com`) AND Anthropic format (`https://api.deepseek.com/anthropic`) — true drop-in replacement
 - **Concurrency:** V4 Flash 2,500 / V4 Pro 500
-- **Legacy model names:** `deepseek-chat` and `deepseek-reasoner` → map to non-thinking/thinking modes of V4 Flash (will be deprecated)
+- **Legacy model names:** `deepseek-chat` and `deepseek-reasoner` map to non-thinking/thinking modes of V4 Flash (will be deprecated)
 - **Promo:** V4 Pro at 75% off through 2026-05-31 15:59 UTC; post-promo = 1/4 original price permanently
 - **Data sovereignty note:** China-based infrastructure — do NOT route portfolio-sensitive or PII-containing prompts without operator review
 

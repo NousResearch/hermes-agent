@@ -762,8 +762,11 @@ def _resolve_effective_accept(
     """
     if accept_hooks_arg:
         return True
+    # Require a process-level token to prevent prompt injection bypass
+    from hermes_state import get_cron_token
+    cron_token = get_cron_token()
     env = os.environ.get("HERMES_ACCEPT_HOOKS", "").strip().lower()
-    if env in {"1", "true", "yes", "on"}:
+    if env in {"1", "true", "yes", "on"} and cron_token:
         return True
     cfg_val = cfg.get("hooks_auto_accept", False)
     if isinstance(cfg_val, bool):

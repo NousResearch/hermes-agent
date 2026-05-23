@@ -226,6 +226,32 @@ def _root_or_workspace(file_path: str, workspace: str, markers: Sequence[str], e
 # ---------------------------------------------------------------------------
 
 
+def _windows_cmd_shim_for_npm_bin(bin_path: str) -> Optional[str]:
+    """Return a runnable .cmd shim for npm-installed shell wrappers on Windows.
+
+    ``npm install`` on Windows creates both POSIX shell wrappers and ``.cmd``
+    launchers under ``node_modules/.bin``.  Hermes may copy/symlink only the
+    POSIX wrapper into ``~/.hermes/lsp/bin``; spawning that file directly with
+    ``subprocess.Popen`` on Windows raises WinError 193.  Prefer the sibling
+    ``.cmd`` shim whenever the selected binary is a non-extension npm wrapper.
+    """
+    if os.name != "nt":
+        return None
+    root, ext = os.path.splitext(bin_path)
+    if ext.lower() in {".exe", ".cmd", ".bat", ".com"}:
+        return None
+    candidates = [root + ".cmd"]
+    if os.path.basename(os.path.dirname(bin_path)).lower() == "bin":
+        staging = os.path.dirname(os.path.dirname(bin_path))
+        candidates.append(
+            os.path.join(staging, "node_modules", ".bin", os.path.basename(bin_path) + ".cmd")
+        )
+    for candidate in candidates:
+        if os.path.exists(candidate):
+            return candidate
+    return None
+
+
 def _spawn_pyright(root: str, ctx: ServerContext) -> Optional[SpawnSpec]:
     bin_path = _resolve_override(ctx, "pyright") or _which(
         "pyright-langserver", "pyright"
@@ -235,6 +261,9 @@ def _spawn_pyright(root: str, ctx: ServerContext) -> Optional[SpawnSpec]:
         bin_path = try_install("pyright", ctx.install_strategy)
         if bin_path is None:
             return None
+    cmd_shim = _windows_cmd_shim_for_npm_bin(bin_path)
+    if cmd_shim:
+        bin_path = cmd_shim
     # If we got the cli ``pyright``, the langserver is its sibling.
     base = os.path.basename(bin_path)
     if base in {"pyright", "pyright.exe"}:

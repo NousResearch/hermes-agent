@@ -123,6 +123,102 @@ def test_missing_allowlisted_source_is_degraded_no_source(tmp_path):
     assert result["degraded_reason"] == "descriptor missing source label"
 
 
+def test_is_file_failure_returns_safe_degraded_response(tmp_path, monkeypatch):
+    root = tmp_path / "wiki"
+    root.mkdir()
+    page = root / "atlas-overview.md"
+    page.write_text("Atlas public overview\n", encoding="utf-8")
+
+    original_is_file = Path.is_file
+
+    def broken_is_file(self):
+        if self == page:
+            raise PermissionError(f"permission denied: {page}")
+        return original_is_file(self)
+
+    monkeypatch.setattr(Path, "is_file", broken_is_file)
+
+    result = wiki.read_wiki_include(
+        "atlas-public-overview",
+        "atlas-overview",
+        config=_cfg(root, page),
+    )
+
+    assert result["success"] is False
+    assert result["source"] == "atlas-wiki"
+    assert result["privacy"] == "least_sensitive"
+    assert result["freshness"] == "unavailable"
+    assert result["degraded"] is True
+    assert result["degraded_reason"] == "allowlisted wiki source is unreadable"
+    assert result["path"] == "wiki:atlas-overview.md"
+    assert str(page) not in result["error"]
+    assert str(tmp_path) not in result["error"]
+
+
+def test_stat_failure_returns_safe_degraded_response(tmp_path, monkeypatch):
+    root = tmp_path / "wiki"
+    root.mkdir()
+    page = root / "atlas-overview.md"
+    page.write_text("Atlas public overview\n", encoding="utf-8")
+
+    original_stat = Path.stat
+
+    def broken_stat(self, *args, **kwargs):
+        if self == page:
+            raise OSError(f"stat failed for {page}")
+        return original_stat(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "stat", broken_stat)
+
+    result = wiki.read_wiki_include(
+        "atlas-public-overview",
+        "atlas-overview",
+        config=_cfg(root, page),
+    )
+
+    assert result["success"] is False
+    assert result["source"] == "atlas-wiki"
+    assert result["privacy"] == "least_sensitive"
+    assert result["freshness"] == "unavailable"
+    assert result["degraded"] is True
+    assert result["degraded_reason"] == "allowlisted wiki source is unreadable"
+    assert result["path"] == "wiki:atlas-overview.md"
+    assert str(page) not in result["error"]
+    assert str(tmp_path) not in result["error"]
+
+
+def test_read_text_failure_returns_safe_degraded_response(tmp_path, monkeypatch):
+    root = tmp_path / "wiki"
+    root.mkdir()
+    page = root / "atlas-overview.md"
+    page.write_text("Atlas public overview\n", encoding="utf-8")
+
+    original_read_text = Path.read_text
+
+    def broken_read_text(self, *args, **kwargs):
+        if self == page:
+            raise OSError(f"read failed for {page}")
+        return original_read_text(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "read_text", broken_read_text)
+
+    result = wiki.read_wiki_include(
+        "atlas-public-overview",
+        "atlas-overview",
+        config=_cfg(root, page),
+    )
+
+    assert result["success"] is False
+    assert result["source"] == "atlas-wiki"
+    assert result["privacy"] == "least_sensitive"
+    assert result["freshness"] == "unavailable"
+    assert result["degraded"] is True
+    assert result["degraded_reason"] == "allowlisted wiki source is unreadable"
+    assert result["path"] == "wiki:atlas-overview.md"
+    assert str(page) not in result["error"]
+    assert str(tmp_path) not in result["error"]
+
+
 def test_disabled_or_missing_source_returns_degraded_no_read(tmp_path, monkeypatch):
     page = tmp_path / "wiki" / "missing.md"
 

@@ -184,6 +184,27 @@ def _freshness_label(st_mtime: float) -> str:
     return dt.isoformat().replace("+00:00", "Z")
 
 
+def _degraded_filesystem_result(
+    include_id: str,
+    subject: str,
+    display_path: str,
+    source_label: str,
+    privacy_label: str,
+) -> Dict[str, Any]:
+    return {
+        "success": False,
+        "include_id": include_id,
+        "subject": subject,
+        "source": source_label or "wiki",
+        "privacy": privacy_label,
+        "freshness": "unavailable",
+        "degraded": True,
+        "degraded_reason": "allowlisted wiki source is unreadable",
+        "path": display_path,
+        "error": "allowlisted wiki source is unreadable",
+    }
+
+
 def read_wiki_include(include_id: str, subject: str, *, config: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     """Read one explicitly allowlisted wiki include descriptor.
 
@@ -213,7 +234,12 @@ def read_wiki_include(include_id: str, subject: str, *, config: Optional[Dict[st
     source_label = str(desc.get("source") or "").strip()
     privacy_label = str(desc.get("privacy") or desc.get("privacy_label") or "least_sensitive").strip()
 
-    if not path.exists():
+    try:
+        exists = path.exists()
+    except OSError:
+        return _degraded_filesystem_result(include_id, subject, display_path, source_label, privacy_label)
+
+    if not exists:
         return {
             "success": False,
             "include_id": include_id,
@@ -226,15 +252,29 @@ def read_wiki_include(include_id: str, subject: str, *, config: Optional[Dict[st
             "path": display_path,
             "error": "allowlisted wiki source is missing",
         }
-    if not path.is_file():
+    try:
+        is_file = path.is_file()
+    except OSError:
+        return _degraded_filesystem_result(include_id, subject, display_path, source_label, privacy_label)
+
+    if not is_file:
         raise WikiIncludeError("wiki include rejected: descriptor path is not a file")
-    size = path.stat().st_size
+
+    try:
+        size = path.stat().st_size
+    except OSError:
+        return _degraded_filesystem_result(include_id, subject, display_path, source_label, privacy_label)
+
     if size > int(cfg.get("max_bytes") or _MAX_WIKI_INCLUDE_BYTES):
         raise WikiIncludeError("wiki include rejected: file exceeds wiki include size limit")
 
-    text = path.read_text(encoding="utf-8", errors="replace")
+    try:
+        text = path.read_text(encoding="utf-8", errors="replace")
+        st = path.stat()
+    except OSError:
+        return _degraded_filesystem_result(include_id, subject, display_path, source_label, privacy_label)
+
     redacted = _redact_content(text)
-    st = path.stat()
     degraded = not bool(source_label)
     return {
         "success": True,

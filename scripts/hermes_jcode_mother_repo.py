@@ -30,6 +30,7 @@ HERMES_MCP_FIXTURE_DIR = ROOT / "tests" / "fixtures" / "hermes_mcp"
 LATENCY_PROBE = ROOT / "scripts" / "jcode_bridge_latency_probe.py"
 NATIVE_TOOL_CHECK = ROOT / "scripts" / "jcode_native_tool_check.py"
 NATIVE_REGISTRATION_CHECK = ROOT / "scripts" / "jcode_native_registration_check.py"
+SUPERTOOL_REGISTRY_SMOKE = ROOT / "scripts" / "jcode_supertool_registry_smoke.py"
 JCODE_PATCH_DIR = ROOT / "patches" / "jcode"
 PLAN_DOCS = (
     ROOT / "docs" / "plans" / "2026-05-22-hermes-jcode-comparison.md",
@@ -255,6 +256,11 @@ tool crate still compiles against jcode's Rust tool architecture.
 
 Use `scripts/jcode_native_registration_check.py --jcode upstreams/jcode` to
 verify the patch queue still applies to the pinned jcode commit.
+
+Use `scripts/jcode_supertool_registry_smoke.py --jcode upstreams/jcode` for the
+strongest local proof: it applies the jcode patch in a temporary worktree,
+copies the native Hermes tool crate into jcode, and runs a Rust integration test
+that verifies Hermes tools appear in jcode's native registry definitions.
 """
 
 
@@ -384,6 +390,7 @@ def build_manifest(hermes: Path, jcode: Path) -> dict[str, Any]:
             "run scripts/jcode_bridge_latency_probe.py --iterations 50",
             "run scripts/jcode_native_tool_check.py --jcode <jcode checkout>",
             "run scripts/jcode_native_registration_check.py --jcode <jcode checkout>",
+            "run scripts/jcode_supertool_registry_smoke.py --jcode <jcode checkout>",
             "run Hermes-side jcode_bridge_smoke.py in the Hermes checkout",
             "generate and archive an upstream-sync report",
         ],
@@ -391,6 +398,7 @@ def build_manifest(hermes: Path, jcode: Path) -> dict[str, Any]:
             "path": "patches/jcode",
             "registration_hook": "patches/jcode/register-external-toolset.patch",
             "check": "scripts/jcode_native_registration_check.py --jcode <jcode checkout>",
+            "native_registry_smoke": "scripts/jcode_supertool_registry_smoke.py --jcode <jcode checkout>",
         },
     }
 
@@ -510,6 +518,12 @@ def scaffold(output: Path, manifest: dict[str, Any], *, force: bool) -> dict[str
         force=force,
     )
     copied.append("scripts/jcode_native_registration_check.py")
+    _copy_file(
+        SUPERTOOL_REGISTRY_SMOKE,
+        output / "scripts" / "jcode_supertool_registry_smoke.py",
+        force=force,
+    )
+    copied.append("scripts/jcode_supertool_registry_smoke.py")
     _write_text(
         output / "configs" / "jcode-mcp.hermes.json",
         json.dumps(_jcode_mcp_config(output), indent=2, ensure_ascii=True, sort_keys=True) + "\n",

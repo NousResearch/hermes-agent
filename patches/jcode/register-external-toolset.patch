@@ -1,7 +1,12 @@
 diff --git a/src/tool/mod.rs b/src/tool/mod.rs
 --- a/src/tool/mod.rs
 +++ b/src/tool/mod.rs
-@@ -573,0 +574,39 @@ impl Registry {
+@@ -570,4 +570,43 @@ impl Registry {
+     pub async fn register(&self, name: String, tool: Arc<dyn Tool>) {
+         let mut tools = self.tools.write().await;
+         tools.insert(name, tool);
+     }
++
 +    /// Register a namespaced batch of native tools supplied by an extension crate.
 +    ///
 +    /// External tool providers should construct normal `Arc<dyn Tool>` values and
@@ -40,11 +45,16 @@ diff --git a/src/tool/mod.rs b/src/tool/mod.rs
 +        registered.sort();
 +        registered
 +    }
-+
 diff --git a/src/tool/tests.rs b/src/tool/tests.rs
 --- a/src/tool/tests.rs
 +++ b/src/tool/tests.rs
-@@ -96,0 +97,27 @@ fn tool_definitions_do_not_auto_inject_intent() {
+@@ -92,5 +92,32 @@ impl Tool for BareSchemaTool {
+ #[test]
+ fn tool_definitions_do_not_auto_inject_intent() {
+     let def = BareSchemaTool.to_definition();
+     assert!(def.input_schema["properties"]["intent"].is_null());
+ }
++
 +#[tokio::test]
 +async fn register_toolset_namespaces_external_tools() {
 +    let provider: Arc<dyn Provider> = Arc::new(MockProvider);
@@ -71,4 +81,3 @@ diff --git a/src/tool/tests.rs b/src/tool/tests.rs
 +    assert!(names.contains(&"hermes_memory".to_string()));
 +    assert!(names.contains(&"hermes_web_search".to_string()));
 +}
-+

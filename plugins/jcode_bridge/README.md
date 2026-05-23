@@ -298,6 +298,17 @@ Validate that the jcode native registration hook still applies:
 scripts/jcode_native_registration_check.py --jcode /absolute/path/to/jcode
 ```
 
+Run the strongest jcode-hosted supertool smoke:
+
+```bash
+scripts/jcode_supertool_registry_smoke.py --jcode /absolute/path/to/jcode
+```
+
+That smoke applies the jcode registry patch in a temporary jcode worktree,
+copies `bridges/jcode-native-hermes-tool` into jcode, patches jcode's
+dev-dependencies, and runs a Rust integration test proving Hermes-backed tools
+show up in jcode's own native registry definitions.
+
 Run the contract fixture gate:
 
 ```bash
@@ -327,7 +338,8 @@ scripts/jcode_bridge_upstream_report.py --smoke --format markdown \
 Use that report before bumping either upstream. It records both SHAs, Graphify
 summaries, artifact paths/sizes, bridge contract/schema status, MCP transport
 status, reverse Hermes service status, latency-probe metrics, native jcode tool
-status, jcode registration-patch status, and optional smoke status.
+status, jcode registration-patch status, jcode-hosted supertool registry status,
+and optional smoke status.
 
 Create a standalone mother-repo scaffold:
 

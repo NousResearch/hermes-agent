@@ -4,6 +4,7 @@ use jcode_tool_core::{Tool, ToolContext};
 use jcode_tool_types::ToolOutput;
 use serde_json::{Value, json};
 use std::process::Stdio;
+use std::sync::Arc;
 use std::time::Duration;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::process::Command;
@@ -148,6 +149,21 @@ impl HermesNativeTool {
         }
         Ok(response)
     }
+}
+
+pub fn default_hermes_toolset(config: HermesToolConfig) -> Vec<(String, Arc<dyn Tool>)> {
+    let web_search = HermesNativeTool::web_search(config.clone());
+    let web_extract = HermesNativeTool::web_extract(config);
+    vec![
+        (
+            web_search.name().to_string(),
+            Arc::new(web_search) as Arc<dyn Tool>,
+        ),
+        (
+            web_extract.name().to_string(),
+            Arc::new(web_extract) as Arc<dyn Tool>,
+        ),
+    ]
 }
 
 #[async_trait]

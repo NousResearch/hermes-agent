@@ -69,6 +69,10 @@ needed to build it without permanently forking both upstreams:
   still compiles against jcode's Rust `Tool` architecture.
 - `scripts/jcode_native_registration_check.py` verifies that the jcode
   registration patch still applies to the pinned jcode checkout.
+- `scripts/jcode_supertool_registry_smoke.py` is the strongest native proof:
+  it applies the jcode hook in a temp worktree, copies the Hermes native tool
+  crate into jcode, and runs a Rust integration test that sees Hermes-backed
+  tools in jcode's registry definitions.
 
 ## Migration Path
 

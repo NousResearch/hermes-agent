@@ -139,6 +139,13 @@ extension crates. The patch deliberately does not import Hermes. The mother repo
 can apply it while the hook is proposed upstream, and future upstream updates
 must pass `scripts/jcode_native_registration_check.py`.
 
+`scripts/jcode_supertool_registry_smoke.py` closes the loop between the patch
+queue and the native crate. It creates a temporary jcode worktree, applies the
+registration hook, copies `bridges/jcode-native-hermes-tool` into jcode, patches
+jcode's dev-dependencies, and runs a Rust integration test that verifies
+`hermes_web_search` and `hermes_web_extract` are visible through jcode's native
+registry definitions.
+
 `bridges/hermes-mcp-server/` exposes the same `hermes-service.v1` boundary as a
 small dependency-free stdio MCP server. jcode already has an MCP manager, so
 this is the first no-upstream-patch bootstrap route for jcode to call Hermes
@@ -214,13 +221,14 @@ For every Hermes or jcode bump:
 8. Run `scripts/jcode_bridge_latency_probe.py --iterations 50`.
 9. Run `scripts/jcode_native_tool_check.py --jcode <jcode checkout>`.
 10. Run `scripts/jcode_native_registration_check.py --jcode <jcode checkout>`.
-11. Run any mother-repo contract tests against `contracts/*/v*`.
-12. Run smoke routes:
+11. Run `scripts/jcode_supertool_registry_smoke.py --jcode <jcode checkout>`.
+12. Run any mother-repo contract tests against `contracts/*/v*`.
+13. Run smoke routes:
    - Hermes webhook -> jcode sidecar
    - jcode local task -> Hermes research tool
    - browser/profile task with explicit outbound-action approval
    - memory read/write sync dry run
-13. Record the generated report next to the upstream SHA bump.
+14. Record the generated report next to the upstream SHA bump.
 
 If a contract breaks, prefer one of these in order:
 

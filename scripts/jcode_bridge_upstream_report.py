@@ -247,6 +247,28 @@ def _native_registration_report(jcode_path: Path) -> dict[str, Any]:
     return payload
 
 
+def _supertool_registry_report(jcode_path: Path, *, cargo: bool) -> dict[str, Any]:
+    script = ROOT / "scripts" / "jcode_supertool_registry_smoke.py"
+    cmd = [sys.executable, str(script), "--jcode", str(jcode_path)]
+    if not cargo:
+        cmd.append("--skip-cargo")
+    completed = _run(cmd, cwd=ROOT)
+    try:
+        payload = json.loads(completed.stdout)
+    except json.JSONDecodeError:
+        payload = {
+            "success": False,
+            "error": "failed to parse jcode supertool registry smoke output",
+            "stdout": completed.stdout,
+        }
+    payload["returncode"] = completed.returncode
+    if completed.stderr:
+        payload["stderr"] = completed.stderr
+    if completed.returncode != 0:
+        payload["success"] = False
+    return payload
+
+
 def _recommendations(report: dict[str, Any]) -> list[str]:
     items: list[str] = []
     contract = report.get("bridge_contract", {})
@@ -267,6 +289,9 @@ def _recommendations(report: dict[str, Any]) -> list[str]:
     native_registration = report.get("jcode_native_registration", {})
     if isinstance(native_registration, dict) and not native_registration.get("success"):
         items.append("Refresh the jcode native registration patch before pinning upstreams.")
+    supertool_registry = report.get("jcode_supertool_registry", {})
+    if isinstance(supertool_registry, dict) and not supertool_registry.get("success"):
+        items.append("Fix the jcode-hosted Hermes native registry smoke before pinning upstreams.")
     smoke = report.get("bridge_smoke")
     if isinstance(smoke, dict) and not smoke.get("success"):
         items.append("Do not bump upstreams until jcode-bridge smoke checks pass.")
@@ -305,6 +330,10 @@ def build_report(args: argparse.Namespace) -> dict[str, Any]:
             cargo=not args.skip_native_cargo,
         ),
         "jcode_native_registration": _native_registration_report(jcode_path),
+        "jcode_supertool_registry": _supertool_registry_report(
+            jcode_path,
+            cargo=args.supertool_cargo,
+        ),
     }
     if args.smoke:
         report["bridge_smoke"] = _smoke_report()
@@ -324,6 +353,7 @@ def build_report(args: argparse.Namespace) -> dict[str, Any]:
         and bool(report["bridge_latency"].get("success"))
         and bool(report["jcode_native_tool"].get("success"))
         and bool(report["jcode_native_registration"].get("success"))
+        and bool(report["jcode_supertool_registry"].get("success"))
         and repos_present
         and graph_reports_present
         and smoke_ok
@@ -479,6 +509,21 @@ def _markdown(report: dict[str, Any]) -> str:
     for check in native_registration.get("checks", []):
         lines.append(f"| {check.get('name')} | {check.get('ok')} |")
 
+    supertool_registry = report.get("jcode_supertool_registry", {})
+    lines.extend([
+        "",
+        "## jcode Supertool Registry Smoke",
+        "",
+        f"Success: {supertool_registry.get('success')}",
+        f"jcode path: {supertool_registry.get('jcode_path')}",
+        f"worktree: {supertool_registry.get('worktree')}",
+        "",
+        "| Check | OK |",
+        "| --- | --- |",
+    ])
+    for check in supertool_registry.get("checks", []):
+        lines.append(f"| {check.get('name')} | {check.get('ok')} |")
+
     lines.extend([
         "",
         "## Recommendations",
@@ -531,6 +576,11 @@ def main(argv: list[str] | None = None) -> int:
         "--skip-native-cargo",
         action="store_true",
         help="Only source-check the native jcode Hermes tool; skip cargo check.",
+    )
+    parser.add_argument(
+        "--supertool-cargo",
+        action="store_true",
+        help="Run the full jcode Rust registry smoke instead of the fast setup-only version.",
     )
     parser.add_argument(
         "--format",

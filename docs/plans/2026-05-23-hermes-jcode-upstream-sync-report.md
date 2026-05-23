@@ -1,12 +1,12 @@
 # Hermes/jcode upstream sync report
 
-Generated: 2026-05-23T19:13:21+00:00
+Generated: 2026-05-23T19:46:39+00:00
 
 ## Repositories
 
 | Repo | Branch | Commit | Dirty |
 | --- | --- | --- | --- |
-| hermes | codex/hermes-jcode-bridge | ceb0e34f35b81b95ba3a4226f5f59b91e62620fd | True |
+| hermes | codex/hermes-jcode-bridge | bef15f2895f7453b3ab13883d88ac09245ea0529 | True |
 | jcode | master | 7951a2ddb91bad10155b911ccd0971de5baeafc8 | True |
 
 ## Graphify
@@ -54,6 +54,7 @@ Success: True
 | hermes_mcp_server | True |
 | hermes_mcp_contract | True |
 | jcode_native_registration_patch | True |
+| jcode_supertool_registry_smoke | True |
 | mother_repo_scaffold | True |
 | webhook_preflight_pass | True |
 | webhook_preflight_blocks | True |
@@ -98,10 +99,10 @@ Iterations: 30
 
 | Metric | ms |
 | --- | ---: |
-| min | 0.041 |
-| p50 | 0.049 |
-| p95 | 0.125 |
-| max | 0.175 |
+| min | 0.032 |
+| p50 | 0.039 |
+| p95 | 0.068 |
+| max | 0.105 |
 
 ## jcode Native Hermes Tool
 
@@ -116,6 +117,7 @@ jcode path: /Users/aayu/Workspace/developer/hermes/.codex-research/jcode
 | native_tool:uses_jcode_tool_core | True |
 | native_tool:implements_tool_trait | True |
 | native_tool:defines_hermes_research_tools | True |
+| native_tool:exports_default_toolset | True |
 | jcode_checkout:exists | True |
 | workspace:manifest_exists | True |
 | cargo:check | True |
@@ -135,6 +137,23 @@ jcode path: /Users/aayu/Workspace/developer/hermes/.codex-research/jcode
 | patch:adds_namespace_test | True |
 | jcode_tests:expected_anchor_present | True |
 | patch:git_apply_check | True |
+
+## jcode Supertool Registry Smoke
+
+Success: True
+jcode path: /Users/aayu/Workspace/developer/hermes/.codex-research/jcode
+worktree: /var/folders/t1/lv87zx017jl6tsks2dz22mk00000gn/T/jcode-supertool-registry-z93siivj/jcode
+
+| Check | OK |
+| --- | --- |
+| jcode_checkout:exists | True |
+| patch:exists | True |
+| native_tool:exists | True |
+| jcode_worktree:prepared | True |
+| jcode_patch:applied | True |
+| native_tool:copied_into_jcode | True |
+| native_tool:exports_toolset | True |
+| jcode_test:writes_native_registry_test | True |
 
 ## Recommendations
 

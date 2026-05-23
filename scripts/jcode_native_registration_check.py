@@ -79,7 +79,10 @@ def check_registration_patch(jcode_path: Path, patch_path: Path) -> dict[str, An
         ),
     ])
 
-    completed = _run(["git", "apply", "--check", str(patch_path)], cwd=jcode_path)
+    completed = _run(
+        ["git", "apply", "--check", "--unidiff-zero", str(patch_path)],
+        cwd=jcode_path,
+    )
     checks.append(_check(
         "patch:git_apply_check",
         completed.returncode == 0,

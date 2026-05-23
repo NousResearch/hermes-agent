@@ -86,6 +86,10 @@ def _source_checks(native_dir: Path) -> list[dict[str, Any]]:
             "native_tool:defines_hermes_research_tools",
             "hermes_web_search" in lib_text and "hermes_web_extract" in lib_text,
         ),
+        _check(
+            "native_tool:exports_default_toolset",
+            "default_hermes_toolset" in lib_text,
+        ),
     ]
 
 

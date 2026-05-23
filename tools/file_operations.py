@@ -27,6 +27,7 @@ Usage:
 
 import os
 import re
+import time
 import difflib
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
@@ -39,6 +40,11 @@ from agent.file_safety import (
     build_write_denied_prefixes,
     get_safe_write_root as _shared_get_safe_write_root,
     is_write_denied as _shared_is_write_denied,
+)
+from agent.live_config_guard import (
+    classify_live_config_path,
+    is_live_config_path,
+    validate_live_config_write,
 )
 
 
@@ -90,6 +96,31 @@ def _is_write_denied(path: str) -> bool:
     return _shared_is_write_denied(path)
 
 
+def _is_outside_safe_write_root(path: str) -> bool:
+    """Return True when HERMES_WRITE_SAFE_ROOT blocks this path."""
+    safe_root = _get_safe_write_root()
+    if not safe_root:
+        return False
+    try:
+        resolved = os.path.realpath(os.path.expanduser(str(path)))
+    except Exception:
+        return True
+    return not (resolved == safe_root or resolved.startswith(safe_root + os.sep))
+
+
+def _is_write_denied_for_modify(path: str) -> bool:
+    """Write-deny check for content-preserving writes.
+
+    Active Hermes config.yaml/.env files are still protected, but by the
+    stronger live-config guard below so safe edits can preserve existing
+    credentials, emit a redacted diff, and create a backup.  The opt-in
+    HERMES_WRITE_SAFE_ROOT sandbox remains authoritative.
+    """
+    if is_live_config_path(path) and not _is_outside_safe_write_root(path):
+        return False
+    return _is_write_denied(path)
+
+
 # =============================================================================
 # Result Data Classes
 # =============================================================================
@@ -127,6 +158,8 @@ class WriteResult:
     # isn't in a git workspace, or when no diagnostics were introduced
     # by this edit.
     lsp_diagnostics: Optional[str] = None
+    backup_path: Optional[str] = None
+    redacted_diff: Optional[str] = None
     error: Optional[str] = None
     warning: Optional[str] = None
 
@@ -145,6 +178,8 @@ class PatchResult:
     lint: Optional[Dict[str, Any]] = None
     # See :class:`WriteResult.lsp_diagnostics`.
     lsp_diagnostics: Optional[str] = None
+    backup_path: Optional[str] = None
+    redacted_diff: Optional[str] = None
     error: Optional[str] = None
     
     def to_dict(self) -> dict:
@@ -161,6 +196,10 @@ class PatchResult:
             result["lint"] = self.lint
         if self.lsp_diagnostics:
             result["lsp_diagnostics"] = self.lsp_diagnostics
+        if self.backup_path:
+            result["backup_path"] = self.backup_path
+        if self.redacted_diff:
+            result["redacted_diff"] = self.redacted_diff
         if self.error:
             result["error"] = self.error
         return result
@@ -943,37 +982,54 @@ class ShellFileOperations(FileOperations):
         # Expand ~ and other shell paths
         path = self._expand_path(path)
 
-        # Block writes to sensitive paths
-        if _is_write_denied(path):
+        # Block writes to sensitive paths.  Live Hermes config/.env files use
+        # a stronger content-aware guard below instead of a blanket deny.
+        if _is_write_denied_for_modify(path):
             return WriteResult(error=f"Write denied: '{path}' is a protected system/credential file.")
 
-        # Capture pre-write content.  Two consumers want it:
+        live_guarded = classify_live_config_path(path)
+
+        # Capture pre-write content.  Three consumers want it:
         #
-        #   1. The lint-delta layer (for in-process linters like ast.parse
+        #   1. The live-config guard needs old vs new credential fields to
+        #      refuse placeholder/null/deleted secret writes before touching
+        #      disk and to generate a force-redacted diff.
+        #   2. The lint-delta layer (for in-process linters like ast.parse
         #      and json.loads) needs the previous content to compute the
         #      set of NEW lint errors introduced by this write.
-        #   2. The LSP layer needs pre/post content to build a line-shift
+        #   3. The LSP layer needs pre/post content to build a line-shift
         #      map — pre-existing diagnostics below the edit point shift
         #      when lines are added/removed, and the shift map remaps
         #      baseline diagnostics into post-edit coordinates so the
         #      strict (range-aware) delta key matches.
         #
         # The set of extensions we capture pre_content for is therefore
-        # the UNION of in-process lint coverage and LSP coverage.  For
-        # extensions outside both sets (binaries, opaque formats),
-        # skipping the read keeps the hot path fast.
+        # the UNION of live-config coverage, in-process lint coverage, and
+        # LSP coverage.  For extensions outside all sets (binaries, opaque
+        # formats), skipping the read keeps the hot path fast.
         ext = os.path.splitext(path)[1].lower()
         pre_content: Optional[str] = None
-        want_pre = ext in LINTERS_INPROC or self._lsp_handles_extension(ext)
+        want_pre = live_guarded is not None or ext in LINTERS_INPROC or self._lsp_handles_extension(ext)
         if want_pre:
             # Best-effort read; failure (file missing, permission) leaves
-            # pre_content as None which makes both downstream consumers
-            # degrade gracefully (lint reports all errors; LSP skips the
-            # shift map).
+            # pre_content as None which makes downstream consumers degrade
+            # gracefully (guard treats it as a new file, lint reports all
+            # errors, LSP skips the shift map).
             read_cmd = f"cat {self._escape_shell_arg(path)} 2>/dev/null"
             read_result = self._exec(read_cmd)
-            if read_result.exit_code == 0 and read_result.stdout:
+            if read_result.exit_code == 0:
                 pre_content = read_result.stdout
+
+        guard_result = validate_live_config_write(
+            path,
+            old_content=pre_content,
+            new_content=content,
+        )
+        if guard_result.error:
+            return WriteResult(
+                error=guard_result.error,
+                redacted_diff=guard_result.redacted_diff,
+            )
 
         # Snapshot LSP diagnostics for this file (best-effort) so the
         # post-write LSP layer can return only diagnostics introduced
@@ -991,6 +1047,21 @@ class ShellFileOperations(FileOperations):
             mkdir_result = self._exec(mkdir_cmd)
             if mkdir_result.exit_code == 0:
                 dirs_created = True
+
+        backup_path: Optional[str] = None
+        if guard_result.guarded and pre_content is not None:
+            stamp = time.strftime("%Y%m%dT%H%M%SZ", time.gmtime())
+            backup_path = f"{path}.bak.{stamp}.{os.getpid()}"
+            backup_cmd = (
+                f"cp -p {self._escape_shell_arg(path)} "
+                f"{self._escape_shell_arg(backup_path)}"
+            )
+            backup_result = self._exec(backup_cmd)
+            if backup_result.exit_code != 0:
+                return WriteResult(
+                    error=f"Failed to back up live Hermes config before write: {backup_result.stdout}",
+                    redacted_diff=guard_result.redacted_diff,
+                )
 
         # Write via stdin pipe — content bypasses shell arg parsing entirely,
         # so there's no ARG_MAX limit regardless of file size.
@@ -1031,6 +1102,8 @@ class ShellFileOperations(FileOperations):
             dirs_created=dirs_created,
             lint=lint_result.to_dict() if lint_result else None,
             lsp_diagnostics=lsp_diagnostics,
+            backup_path=backup_path,
+            redacted_diff=guard_result.redacted_diff,
         )
     
     # =========================================================================
@@ -1054,8 +1127,9 @@ class ShellFileOperations(FileOperations):
         # Expand ~ and other shell paths
         path = self._expand_path(path)
 
-        # Block writes to sensitive paths
-        if _is_write_denied(path):
+        # Block writes to sensitive paths.  Live Hermes config/.env files are
+        # checked by write_file's content-aware live-config guard.
+        if _is_write_denied_for_modify(path):
             return PatchResult(error=f"Write denied: '{path}' is a protected system/credential file.")
 
         # Read current content
@@ -1085,7 +1159,10 @@ class ShellFileOperations(FileOperations):
         # Write back
         write_result = self.write_file(path, new_content)
         if write_result.error:
-            return PatchResult(error=f"Failed to write changes: {write_result.error}")
+            return PatchResult(
+                error=f"Failed to write changes: {write_result.error}",
+                redacted_diff=write_result.redacted_diff,
+            )
 
         # Post-write verification — re-read the file and confirm the bytes we
         # intended to write actually landed. Catches silent persistence
@@ -1114,8 +1191,9 @@ class ShellFileOperations(FileOperations):
                 "The patch did not persist. Re-read the file and try again."
             ))
 
-        # Generate diff
-        diff = self._unified_diff(content, new_content, path)
+        # Generate diff.  For live config/secrets files, never return an
+        # unredacted diff because unchanged context lines may contain keys.
+        diff = write_result.redacted_diff or self._unified_diff(content, new_content, path)
 
         # Auto-lint with delta refinement: only surface errors introduced
         # by this patch, filtering out pre-existing lint failures so the
@@ -1134,6 +1212,8 @@ class ShellFileOperations(FileOperations):
             # the patch as a whole.  Keep the field separate from the
             # syntax-check ``lint`` so the agent can read both signals.
             lsp_diagnostics=write_result.lsp_diagnostics,
+            backup_path=write_result.backup_path,
+            redacted_diff=write_result.redacted_diff,
         )
     
     def patch_v4a(self, patch_content: str) -> PatchResult:

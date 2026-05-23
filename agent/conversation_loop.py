@@ -818,8 +818,15 @@ def run_conversation(
             # Remove finish_reason - not accepted by strict APIs (e.g. Mistral)
             if "finish_reason" in api_msg:
                 api_msg.pop("finish_reason")
-            # Strip internal thinking-prefill marker
-            api_msg.pop("_thinking_prefill", None)
+            # Strip internal markers — underscore-prefixed fields are
+            # Hermes-internal tracking fields that must never reach the wire.
+            # Strict providers (Fireworks, Mistral, etc.) reject unknown keys
+            # in the messages array. This covers _thinking_prefill,
+            # _empty_recovery_synthetic, _empty_terminal_sentinel, and any
+            # future internal-only fields.
+            for _k in list(api_msg.keys()):
+                if _k.startswith("_"):
+                    api_msg.pop(_k, None)
             # Strip Codex Responses API fields (call_id, response_item_id) for
             # strict providers like Mistral, Fireworks, etc. that reject unknown fields.
             # Uses new dicts so the internal messages list retains the fields

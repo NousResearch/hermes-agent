@@ -129,6 +129,7 @@ from agent.prompt_builder import (
     MEMORY_GUIDANCE, SESSION_SEARCH_GUIDANCE, SKILLS_GUIDANCE,
     HERMES_AGENT_HELP_GUIDANCE,
     KANBAN_GUIDANCE,
+    DELEGATION_GUIDANCE, DELEGATION_COMPLEX_TASK_NUDGE,
     build_nous_subscription_prompt,
 )
 from agent.model_metadata import (
@@ -335,6 +336,10 @@ class AIAgent:
         "[hermes-agent: tool call arguments were corrupted in this session and "
         "have been dropped to keep the conversation alive. See issue #15236.]"
     )
+    _DEFAULT_LIGHTWEIGHT_TURN_MAX = 6
+    _DEFAULT_SIMPLE_CHECK_TURN_MAX = 8
+    _DEFAULT_CODING_TURN_MAX = 90
+    _DEFAULT_SHIP_MODE_TURN_MAX = 128
 
     @property
     def base_url(self) -> str:
@@ -3844,6 +3849,91 @@ class AIAgent:
         """Forwarder — see ``agent.chat_completion_helpers.handle_max_iterations``."""
         from agent.chat_completion_helpers import handle_max_iterations
         return handle_max_iterations(self, messages, api_call_count)
+
+    def _turn_budget_classification(self, user_message: str, conversation_history: Optional[List[Dict[str, Any]]] = None) -> str:
+        """Classify this turn for budget shaping.
+
+        Keep this cheap/deterministic: it decides whether a gateway control turn
+        deserves coding/ship capacity, not what work to do.
+        """
+        text = (user_message or "").lower()
+        recent = ""
+        try:
+            if conversation_history:
+                tail = conversation_history[-8:]
+                recent = "\n".join(str(m.get("content", ""))[:500] for m in tail if isinstance(m, dict)).lower()
+        except Exception:
+            recent = ""
+        combined = f"{text}\n{recent}"
+
+        casual = ("?" in text and not any(v in text for v in ("fix", "implement", "ship", "patch", "build", "debug", "test", "verify", "restart", "deploy")))
+        if casual and not any(k in text for k in ("why", "broken", "slow", "performance", "not working")):
+            return "surface"
+
+        dev_context = any(k in combined for k in (
+            "repo", "branch", "commit", "diff", "test", "pytest", "build", "runtime", "gateway",
+            "discord", "kanban", "cron", "aivs", "ssw", "sku", "nextjs", "ui", "ux", "scrape",
+            "browser", "obsidian", "honcho", "database", "sqlite", "db", "vps", "service", "systemd",
+        ))
+        action = any(k in text for k in (
+            "fix", "implement", "patch", "ship", "build", "debug", "repair", "restore", "verify",
+            "test", "restart", "deploy", "wire", "configure", "make", "do it", "continue", "finish",
+            "use", "raise", "increase",
+        ))
+        ship_intent = any(k in text for k in (
+            "ship", "finish", "end-to-end", "e2e", "no stopping", "don't stop", "dont stop",
+            "all the way", "autonomous", "long running", "deep", "use 128", "128 iterations",
+            "make a plan and fix", "fix this", "fix thjs", "implement these fixes",
+            "use 128", "128 iterations", "choking iteration", "iteration to 32",
+        ))
+        heavy = any(k in combined for k in (
+            "scrape", "scraping", "import", "qa", "visual", "browser use", "background", "kanban",
+            "database", "migration", "multi-file", "preview", "deploy", "smoke", "design", "full app-dev",
+        ))
+
+        if dev_context and action and (ship_intent or heavy):
+            return "ship_mode"
+        if dev_context and action:
+            return "coding"
+        if action and any(k in text for k in ("code", "app", "ui", "bug", "performance")):
+            return "coding"
+        if text.startswith(("check ", "status ", "show ")) or text in {"status", "check"}:
+            return "simple_check"
+        return "surface"
+
+    def _resolve_turn_max_iterations(self, user_message: str, conversation_history: Optional[List[Dict[str, Any]]] = None) -> int:
+        configured = int(getattr(self, "_configured_max_iterations", getattr(self, "max_iterations", 90)) or 90)
+        if getattr(self, "_external_turn_ceiling_active", False):
+            self._last_turn_budget_classification = "external_ceiling"
+            return configured
+
+        platform = (getattr(self, "platform", "") or "").lower()
+        if platform == "cron" or os.getenv("HERMES_KANBAN_TASK"):
+            self._last_turn_budget_classification = "durable_worker"
+            return configured
+
+        try:
+            from hermes_cli.config import load_config, resolve_agent_max_turns
+            cfg = load_config()
+            coding = resolve_agent_max_turns(cfg, mode="coding", include_legacy_global_override=False)
+            ship = resolve_agent_max_turns(cfg, mode="ship_mode", include_legacy_global_override=False)
+            lightweight = resolve_agent_max_turns(cfg, mode="lightweight_followup", include_legacy_global_override=False)
+        except Exception:
+            coding, ship, lightweight = self._DEFAULT_CODING_TURN_MAX, self._DEFAULT_SHIP_MODE_TURN_MAX, self._DEFAULT_LIGHTWEIGHT_TURN_MAX
+
+        classification = self._turn_budget_classification(user_message, conversation_history)
+        self._last_turn_budget_classification = classification
+        if classification == "ship_mode":
+            return max(configured, ship)
+        if classification == "coding":
+            return max(configured, coding)
+        if classification == "simple_check":
+            return min(configured, self._DEFAULT_SIMPLE_CHECK_TURN_MAX)
+        if platform in {"discord", "telegram", "slack", "matrix", "gateway"}:
+            text = (user_message or "").strip()
+            if len(text) < 240 and "?" not in text and not any(k in text.lower() for k in ("fix", "implement", "patch", "build", "debug", "verify", "restart", "deploy")):
+                return min(configured, lightweight)
+        return configured
 
     def run_conversation(
         self,

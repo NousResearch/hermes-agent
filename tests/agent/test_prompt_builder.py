@@ -21,6 +21,8 @@ from agent.prompt_builder import (
     build_environment_hints,
     CONTEXT_FILE_MAX_CHARS,
     DEFAULT_AGENT_IDENTITY,
+    DELEGATION_GUIDANCE,
+    DELEGATION_COMPLEX_TASK_NUDGE,
     TOOL_USE_ENFORCEMENT_GUIDANCE,
     TOOL_USE_ENFORCEMENT_MODELS,
     OPENAI_MODEL_EXECUTION_GUIDANCE,
@@ -38,6 +40,11 @@ from hermes_cli.nous_subscription import NousFeatureState, NousSubscriptionFeatu
 
 
 class TestGuidanceConstants:
+    def test_delegation_guidance_exports_cleanly(self):
+        assert "delegate_task" in DELEGATION_GUIDANCE
+        assert "durable" in DELEGATION_GUIDANCE
+        assert "delegate_task" in DELEGATION_COMPLEX_TASK_NUDGE
+
     def test_memory_guidance_discourages_task_logs(self):
         assert "durable facts" in MEMORY_GUIDANCE
         assert "Do NOT save task progress" in MEMORY_GUIDANCE

@@ -329,7 +329,16 @@ def load_cli_config() -> Dict[str, Any]:
             "threshold": 0.50,    # Compress at 50% of model's context limit
         },
         "agent": {
-            "max_turns": 90,  # Default max tool-calling iterations (shared with subagents)
+            "max_turns": 90,  # Legacy global default; per-surface turn_budgets shape runtime caps.
+            "turn_budgets": {
+                "cli": 16,
+                "gateway": 32,
+                "api_server": 32,
+                "cron": 90,
+                "lightweight_followup": 6,
+                "coding": 90,
+                "ship_mode": 128,
+            },
             "verbose": False,
             "system_prompt": "",
             "prefill_messages_file": "",
@@ -386,7 +395,7 @@ def load_cli_config() -> Dict[str, Any]:
             },
         },
         "delegation": {
-            "max_iterations": 45,  # Max tool-calling turns per child agent
+            "max_iterations": 90,  # Max tool-calling turns per child agent
             "model": "",       # Subagent model override (empty = inherit parent model)
             "provider": "",    # Subagent provider override (empty = inherit parent provider)
             "base_url": "",    # Direct OpenAI-compatible endpoint for subagents
@@ -470,6 +479,28 @@ def load_cli_config() -> Dict[str, Any]:
                 and agent_file_config.get("max_turns") is not None
             ):
                 defaults["agent"]["max_turns"] = file_config["max_turns"]
+
+            # Preserve legacy non-default max_turns configs. The built-in CLI
+            # default includes turn_budgets.cli=16; if an older user config only
+            # sets max_turns: N, leaving that default budget in the merged dict
+            # would incorrectly shadow the user's explicit global override.
+            agent_file_config = file_config.get("agent")
+            effective_agent_max_turns = defaults.get("agent", {}).get("max_turns")
+            if (
+                (
+                    isinstance(agent_file_config, dict)
+                    and "turn_budgets" not in agent_file_config
+                )
+                and effective_agent_max_turns not in (None, 90, "90")
+            ) or (
+                "max_turns" in file_config
+                and not (
+                    isinstance(agent_file_config, dict)
+                    and "turn_budgets" in agent_file_config
+                )
+                and effective_agent_max_turns not in (None, 90, "90")
+            ):
+                defaults["agent"].pop("turn_budgets", None)
         except Exception as e:
             logger.warning("Failed to load cli-config.yaml: %s", e)
 
@@ -2666,20 +2697,14 @@ class HermesCLI:
             self.api_key = api_key or os.getenv("OPENROUTER_API_KEY") or os.getenv("OPENAI_API_KEY")
         else:
             self.api_key = api_key or os.getenv("OPENAI_API_KEY") or os.getenv("OPENROUTER_API_KEY")
-        # Max turns priority: CLI arg > config file > env var > default
+        # Max turns priority: CLI arg > task-shaped CLI budget resolver.
+        # The resolver preserves legacy non-default global overrides but keeps
+        # ordinary CLI sessions small when the global default is still 90.
         if max_turns is not None:  # CLI arg was explicitly set
             self.max_turns = max_turns
-        elif CLI_CONFIG["agent"].get("max_turns"):
-            self.max_turns = CLI_CONFIG["agent"]["max_turns"]
-        elif CLI_CONFIG.get("max_turns"):  # Backwards compat: root-level max_turns
-            self.max_turns = CLI_CONFIG["max_turns"]
-        elif os.getenv("HERMES_MAX_ITERATIONS"):
-            try:
-                self.max_turns = int(os.getenv("HERMES_MAX_ITERATIONS", ""))
-            except (TypeError, ValueError):
-                self.max_turns = 90
         else:
-            self.max_turns = 90
+            from hermes_cli.config import resolve_agent_max_turns
+            self.max_turns = resolve_agent_max_turns(CLI_CONFIG, mode="cli")
         
         # Parse and validate toolsets
         self.enabled_toolsets = toolsets

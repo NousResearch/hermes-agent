@@ -217,6 +217,26 @@ class TestManagerCacheOps:
                 real_queue.put(_ASYNC_SHUTDOWN)
                 mgr._async_thread.join(timeout=2.0)
 
+    def test_save_messages_false_skips_existing_context_fetch_on_session_create(self):
+        from plugins.memory.honcho.client import HonchoClientConfig
+
+        cfg = HonchoClientConfig(write_frequency="async", save_messages=False)
+        fake_honcho = MagicMock()
+        fake_session = MagicMock()
+        fake_session.context.side_effect = AssertionError("context should not be fetched")
+        fake_session.get_peer_configuration.return_value = SimpleNamespace(
+            observe_me=None,
+            observe_others=None,
+        )
+        fake_honcho.session.return_value = fake_session
+        fake_honcho.peer.side_effect = lambda peer_id: SimpleNamespace(id=peer_id)
+
+        mgr = HonchoSessionManager(honcho=fake_honcho, config=cfg)
+        session = mgr.get_or_create("discord:123")
+
+        assert session.messages == []
+        fake_session.context.assert_not_called()
+
     def test_delete_cached_session(self):
         mgr = HonchoSessionManager()
         session = HonchoSession(
@@ -258,11 +278,23 @@ class TestPeerLookupHelpers:
         mgr._cache[session.key] = session
         return mgr, session
 
-    def test_get_peer_card_uses_direct_peer_lookup(self):
+    def test_get_peer_card_prefers_target_peer_own_card(self):
         mgr, session = self._make_cached_manager()
+        user_peer = MagicMock()
+        user_peer.get_card.return_value = ["Name: Robert"]
+        mgr._get_or_create_peer = MagicMock(return_value=user_peer)
+
+        assert mgr.get_peer_card(session.key) == ["Name: Robert"]
+        mgr._get_or_create_peer.assert_called_once_with(session.user_peer_id)
+        user_peer.get_card.assert_called_once_with()
+
+    def test_get_peer_card_falls_back_to_observer_target_card(self):
+        mgr, session = self._make_cached_manager()
+        user_peer = MagicMock()
+        user_peer.get_card.return_value = []
         assistant_peer = MagicMock()
         assistant_peer.get_card.return_value = ["Name: Robert"]
-        mgr._get_or_create_peer = MagicMock(return_value=assistant_peer)
+        mgr._get_or_create_peer = MagicMock(side_effect=[user_peer, assistant_peer])
 
         assert mgr.get_peer_card(session.key) == ["Name: Robert"]
         assistant_peer.get_card.assert_called_once_with(target=session.user_peer_id)
@@ -1030,6 +1062,42 @@ class TestBaseContextSummary:
         assert elapsed < 0.2
         assert provider._prefetch_thread is not None
         provider._prefetch_thread.join(timeout=1.0)
+
+    def test_dialectic_cadence_zero_disables_first_turn_dialectic_but_keeps_base_context(self):
+        provider = HonchoMemoryProvider()
+        provider._recall_mode = "hybrid"
+        provider._session_key = "test"
+        provider._manager = MagicMock()
+        provider._manager.pop_context_result.return_value = {}
+        provider._base_context_cache = "## User Representation\nBase context"
+        provider._turn_count = 1
+        provider._last_dialectic_turn = -999
+        provider._dialectic_cadence = 0
+        provider._config = SimpleNamespace(context_tokens=None, timeout=1)
+
+        result = provider.prefetch("substantive request")
+
+        assert "Base context" in result
+        assert provider._prefetch_thread is None
+        provider._manager.dialectic_query.assert_not_called()
+
+    def test_dialectic_cadence_zero_queue_prefetch_refreshes_context_only(self):
+        provider = HonchoMemoryProvider()
+        provider._recall_mode = "hybrid"
+        provider._session_key = "test"
+        provider._manager = MagicMock()
+        provider._turn_count = 3
+        provider._last_context_turn = 0
+        provider._context_cadence = 3
+        provider._last_dialectic_turn = -999
+        provider._dialectic_cadence = 0
+        provider._config = SimpleNamespace(context_tokens=None, timeout=1)
+
+        provider.queue_prefetch("substantive request")
+
+        provider._manager.prefetch_context.assert_called_once_with("test", "substantive request")
+        assert provider._prefetch_thread is None
+        provider._manager.dialectic_query.assert_not_called()
 
     def test_format_includes_summary(self):
         """Session summary should appear first in the formatted context."""

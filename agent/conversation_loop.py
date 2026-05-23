@@ -212,7 +212,10 @@ def run_conversation(
     # NOTE: _turns_since_memory and _iters_since_skill are NOT reset here.
     # They are initialized in __init__ and must persist across run_conversation
     # calls so that nudge logic accumulates correctly in CLI mode.
-    agent.iteration_budget = IterationBudget(agent.max_iterations)
+    turn_max_iterations = agent._resolve_turn_max_iterations(user_message, conversation_history) if hasattr(agent, "_resolve_turn_max_iterations") else agent.max_iterations
+    agent.max_iterations = turn_max_iterations
+    agent._last_resolved_turn_max_iterations = turn_max_iterations
+    agent.iteration_budget = IterationBudget(turn_max_iterations)
 
     # Log conversation turn start for debugging/observability
     _preview_text = _summarize_user_message_for_log(user_message)
@@ -690,6 +693,18 @@ def run_conversation(
                         _injections.append(_fenced)
                 if _plugin_user_context:
                     _injections.append(_plugin_user_context)
+                try:
+                    classification = getattr(agent, "_last_turn_budget_classification", "")
+                    delegate_depth = int(getattr(agent, "_delegate_depth", 0) or 0)
+                    if (
+                        "delegate_task" in getattr(agent, "valid_tool_names", set())
+                        and delegate_depth == 0
+                        and classification in {"coding", "ship_mode"}
+                    ):
+                        from agent.prompt_builder import DELEGATION_COMPLEX_TASK_NUDGE
+                        _injections.append(DELEGATION_COMPLEX_TASK_NUDGE)
+                except Exception:
+                    pass
                 if _injections:
                     _base = api_msg.get("content", "")
                     if isinstance(_base, str):
@@ -922,6 +937,61 @@ def run_conversation(
                     _sanitize_structure_non_ascii(api_kwargs)
                 if agent.api_mode == "codex_responses":
                     api_kwargs = agent._get_transport().preflight_kwargs(api_kwargs, allow_stream=False)
+
+                # Final pre-API request-size guard. Gateway spill should catch
+                # poisoned sessions earlier, but system prompts, tools, memory,
+                # plugin context, native images, and provider transforms can
+                # inflate the actual request after gateway preflight. Fail closed
+                # before any provider or fallback sees the raw payload.
+                try:
+                    from gateway.context_spill import request_pressure_from_api_kwargs
+                    _ctx_len = getattr(getattr(agent, "context_compressor", None), "context_length", 200000)
+                    _pressure = request_pressure_from_api_kwargs(api_kwargs, context_length=_ctx_len)
+                    agent._last_request_pressure = _pressure
+                    if _pressure.get("too_large"):
+                        _guard_error = (
+                            "Hermes pre-API request-size guard blocked an oversized internal payload before provider call: "
+                            f"~{_pressure.get('approx_tokens')} estimated tokens, "
+                            f"{_pressure.get('request_bytes')} bytes; guard threshold {_pressure.get('threshold_tokens')} tokens. "
+                            "No provider call was made. Gateway context spill/quarantine should reduce this session before retry."
+                        )
+                        logger.error(_guard_error)
+                        return {
+                            "final_response": None,
+                            "messages": messages,
+                            "api_calls": api_call_count,
+                            "completed": False,
+                            "failed": True,
+                            "partial": True,
+                            "error": _guard_error,
+                            "request_size_guard": _pressure,
+                        }
+                except Exception as _guard_exc:
+                    if type(_guard_exc).__name__ == "SystemExit":
+                        raise
+                    _guard_error = (
+                        "Pre-API request size guard failed closed before provider call: "
+                        f"{type(_guard_exc).__name__}: {_guard_exc}. "
+                        "I did not send the request to a model."
+                    )
+                    logger.error(_guard_error)
+                    agent._last_request_pressure = {
+                        "approx_tokens": 0,
+                        "request_bytes": 0,
+                        "context_length": 0,
+                        "threshold_tokens": 0,
+                        "too_large": True,
+                    }
+                    return {
+                        "final_response": None,
+                        "messages": messages,
+                        "api_calls": api_call_count,
+                        "completed": False,
+                        "failed": True,
+                        "partial": True,
+                        "error": _guard_error,
+                        "request_size_guard": agent._last_request_pressure,
+                    }
 
                 try:
                     from hermes_cli.plugins import invoke_hook as _invoke_hook

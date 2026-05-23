@@ -251,6 +251,23 @@ KANBAN_GUIDANCE = (
     "cross-agent handoffs that outlive one API loop."
 )
 
+DELEGATION_GUIDANCE = (
+    "# Delegation tool guidance\n"
+    "Use `delegate_task` only for bounded, synchronous subtasks that benefit "
+    "from isolated reasoning or parallel review. Do not use it for simple chat, "
+    "one-off checks, single-file reads, or tiny follow-ups. Do not use it for "
+    "durable work that must outlive the current turn; use cron, Kanban, or a "
+    "tracked background process for that. When delegating, pass all necessary "
+    "context explicitly and verify any child-reported side effects yourself."
+)
+
+DELEGATION_COMPLEX_TASK_NUDGE = (
+    "Complex coding/runtime/audit work is in progress. If independent lanes "
+    "would materially speed up verification or reduce context bloat, use "
+    "`delegate_task` for bounded parallel subtasks. Do not delegate trivial "
+    "checks or durable/background work."
+)
+
 TOOL_USE_ENFORCEMENT_GUIDANCE = (
     "# Tool-use enforcement\n"
     "You MUST use your tools to take action — do not describe what you would do "

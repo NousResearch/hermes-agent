@@ -21,6 +21,117 @@ from typing import Dict, List, Optional, Any
 
 logger = logging.getLogger(__name__)
 
+_CONTEXT_COMPACTION_MARKER = "[CONTEXT COMPACTION"
+_CONTEXT_COMPACTION_END_MARKER = "--- END OF CONTEXT SUMMARY"
+_GATEWAY_HANDOFF_MARKER = "[GATEWAY HANDOFF]"
+_TOOL_REPLAY_FULL_RECENT_MESSAGES = 12
+_MAX_OLD_TOOL_REPLAY_CHARS = 1200
+
+
+def _compact_replayed_handoff_content(content: Any) -> Any:
+    """Keep gateway/compaction handoffs from becoming permanent context bloat.
+
+    Gateway spill recovery and context-compaction handoff blocks are useful once:
+    the next model call needs them to recover.  If persisted verbatim, long
+    Discord threads replay them forever and every subsequent compaction/spill
+    inherits the previous handoff.  That was the nichamilton.info failure mode:
+    the handoff itself became the new runaway context.
+
+    Preserve the live user ask after the handoff when present; otherwise keep a
+    small pointer/summary marker.  This is replay-only/persistence hygiene, not
+    deletion of the original forensic spill files.
+    """
+    if not isinstance(content, str) or not content:
+        return content
+    if _CONTEXT_COMPACTION_MARKER not in content and not content.lstrip().startswith(_GATEWAY_HANDOFF_MARKER):
+        return content
+
+    text = content.strip()
+
+    # If a compacted summary was prepended to a real follow-up, keep only the
+    # real follow-up after the explicit end marker.
+    if _CONTEXT_COMPACTION_END_MARKER in text:
+        _before, after = text.rsplit(_CONTEXT_COMPACTION_END_MARKER, 1)
+        after = after.strip()
+        after = after.lstrip(" —-\n\t")
+        if after:
+            return (
+                "[prior context-compaction handoff omitted from replay; "
+                "it was already consumed on the recovery turn]\n\n"
+                f"{after}"
+            )
+
+    # Keep gateway spill coordinates/current ask, but drop any nested compacted
+    # transcript summary that followed it.
+    if text.startswith(_GATEWAY_HANDOFF_MARKER):
+        lines = text.splitlines()
+        kept: List[str] = []
+        in_current_ask = False
+        for line in lines:
+            if line.startswith(_CONTEXT_COMPACTION_MARKER):
+                break
+            kept.append(line)
+            if line.startswith("Current user ask"):
+                in_current_ask = True
+            elif in_current_ask and line.startswith("Instructions:"):
+                break
+        compact = "\n".join(kept).strip()
+        if compact:
+            return compact + "\n[prior nested context summary omitted from replay; use linked wiki handoff if needed]"
+
+    return "[prior context-compaction handoff omitted from replay; already consumed on the recovery turn]"
+
+
+def _compact_replayed_handoff_message(message: Dict[str, Any]) -> Dict[str, Any]:
+    if not isinstance(message, dict):
+        return message
+    if message.get("role") not in {"user", "assistant"}:
+        return message
+    content = message.get("content")
+    compacted = _compact_replayed_handoff_content(content)
+    if compacted is content:
+        return message
+    return {**message, "content": compacted}
+
+
+def _compact_replayed_messages_for_context(messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Apply replay-only hygiene to loaded gateway transcripts.
+
+    Long Discord dev threads accumulate large tool outputs that were useful at
+    execution time but should not be resent forever. Keep the recent tail intact
+    for immediate continuity; compact older tool blobs to a pointer so they can
+    be rerun/read again if exact output matters.
+    """
+    if not messages:
+        return messages
+    total = len(messages)
+    compacted_messages: List[Dict[str, Any]] = []
+    preserve_from = max(0, total - _TOOL_REPLAY_FULL_RECENT_MESSAGES)
+    for idx, msg in enumerate(messages):
+        if not isinstance(msg, dict):
+            compacted_messages.append(msg)
+            continue
+        entry = _compact_replayed_handoff_message(msg)
+        content = entry.get("content")
+        if (
+            entry.get("role") == "tool"
+            and idx < preserve_from
+            and isinstance(content, str)
+            and len(content) > _MAX_OLD_TOOL_REPLAY_CHARS
+        ):
+            tool_name = entry.get("tool_name") or entry.get("name") or "tool"
+            preview = content[:800].rstrip()
+            entry = {
+                **entry,
+                "content": (
+                    f"[{tool_name} output compacted from replay; {len(content)} chars; "
+                    "rerun the tool or read the source file if exact output is needed.]\n"
+                    f"{preview}"
+                ),
+            }
+        compacted_messages.append(entry)
+    return compacted_messages
+
 
 def _now() -> datetime:
     """Return the current local time."""
@@ -491,6 +602,16 @@ class SessionEntry:
     resume_reason: Optional[str] = None  # e.g. "restart_timeout"
     last_resume_marked_at: Optional[datetime] = None
 
+    # Context-spill quarantine metadata.  A quarantined entry must never
+    # replay its historical transcript into a model; it resets to a fresh lane
+    # with a small handoff pointer instead.
+    quarantined: bool = False
+    quarantine_reason: Optional[str] = None
+    quarantine_spill_path: Optional[str] = None
+    quarantine_raw_path: Optional[str] = None
+    quarantined_at: Optional[datetime] = None
+    quarantine_old_session_id: Optional[str] = None
+
     def to_dict(self) -> Dict[str, Any]:
         result = {
             "session_key": self.session_key,
@@ -517,6 +638,16 @@ class SessionEntry:
                 if self.last_resume_marked_at
                 else None
             ),
+            "quarantined": self.quarantined,
+            "quarantine_reason": self.quarantine_reason,
+            "quarantine_spill_path": self.quarantine_spill_path,
+            "quarantine_raw_path": self.quarantine_raw_path,
+            "quarantined_at": (
+                self.quarantined_at.isoformat()
+                if self.quarantined_at
+                else None
+            ),
+            "quarantine_old_session_id": self.quarantine_old_session_id,
             "is_fresh_reset": self.is_fresh_reset,
             "was_auto_reset": self.was_auto_reset,
             "auto_reset_reason": self.auto_reset_reason,
@@ -547,6 +678,14 @@ class SessionEntry:
             except (TypeError, ValueError):
                 last_resume_marked_at = None
 
+        quarantined_at = None
+        _qa = data.get("quarantined_at")
+        if _qa:
+            try:
+                quarantined_at = datetime.fromisoformat(_qa)
+            except (TypeError, ValueError):
+                quarantined_at = None
+
         return cls(
             session_key=data["session_key"],
             session_id=data["session_id"],
@@ -569,6 +708,12 @@ class SessionEntry:
             resume_pending=data.get("resume_pending", False),
             resume_reason=data.get("resume_reason"),
             last_resume_marked_at=last_resume_marked_at,
+            quarantined=data.get("quarantined", False),
+            quarantine_reason=data.get("quarantine_reason"),
+            quarantine_spill_path=data.get("quarantine_spill_path"),
+            quarantine_raw_path=data.get("quarantine_raw_path"),
+            quarantined_at=quarantined_at,
+            quarantine_old_session_id=data.get("quarantine_old_session_id"),
             is_fresh_reset=data.get("is_fresh_reset", False),
             was_auto_reset=data.get("was_auto_reset", False),
             auto_reset_reason=data.get("auto_reset_reason"),
@@ -740,6 +885,136 @@ class SessionStore:
             except OSError as e:
                 logger.debug("Could not remove temp file %s: %s", tmp_path, e)
             raise
+
+    def _quarantine_index_path(self, raw_state_dir: Optional[str | Path] = None) -> Path:
+        base = Path(raw_state_dir) if raw_state_dir else (self.sessions_dir.parent / "state" / "context-spills")
+        return base / "quarantined_sessions.json"
+
+    def _read_quarantine_index_locked(self, raw_state_dir: Optional[str | Path] = None) -> Dict[str, Any]:
+        path = self._quarantine_index_path(raw_state_dir)
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            return data if isinstance(data, dict) else {}
+        except FileNotFoundError:
+            return {}
+        except Exception as exc:
+            logger.debug("Failed to read quarantine index %s: %s", path, exc)
+            return {}
+
+    def _write_quarantine_index_locked(self, data: Dict[str, Any], raw_state_dir: Optional[str | Path] = None) -> None:
+        path = self._quarantine_index_path(raw_state_dir)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            os.chmod(path.parent, 0o700)
+        except OSError:
+            pass
+        import tempfile
+        fd, tmp_path = tempfile.mkstemp(dir=str(path.parent), suffix=".tmp", prefix=".quarantine_")
+        try:
+            os.fchmod(fd, 0o600)
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
+                json.dump(data, f, indent=2, ensure_ascii=False)
+                f.flush()
+                os.fsync(f.fileno())
+            atomic_replace(tmp_path, path)
+        except BaseException:
+            try:
+                os.unlink(tmp_path)
+            except OSError:
+                pass
+            raise
+
+    def is_session_quarantined(self, session_id: str, raw_state_dir: Optional[str | Path] = None) -> bool:
+        if not session_id:
+            return False
+        with self._lock:
+            return str(session_id) in self._read_quarantine_index_locked(raw_state_dir)
+
+    def get_session_quarantine(self, session_id: str, raw_state_dir: Optional[str | Path] = None) -> Optional[Dict[str, Any]]:
+        if not session_id:
+            return None
+        with self._lock:
+            record = self._read_quarantine_index_locked(raw_state_dir).get(str(session_id))
+            return record if isinstance(record, dict) else None
+
+    def spill_and_reset_session(
+        self,
+        session_key: str,
+        *,
+        old_session_id: str,
+        spill_id: str,
+        wiki_path: Optional[str],
+        raw_path: Optional[str],
+        reason: str,
+    ) -> Optional[SessionEntry]:
+        """Atomically record quarantine metadata and reset the active lane."""
+        db_end_session_id = None
+        db_create_kwargs = None
+        new_entry = None
+        now = _now()
+        with self._lock:
+            self._ensure_loaded_locked()
+            old_entry = self._entries.get(session_key)
+            if old_entry is None:
+                return None
+            old_session_id = old_session_id or old_entry.session_id
+            # The quarantine index is a control-plane guard, not part of the
+            # raw spill bundle. Keep it at SessionStore's canonical default path
+            # so every replay gate (/resume, startup auto-resume,
+            # mark_resume_pending) reads the same index even if raw spill files
+            # are configured in a subdirectory.
+            index = self._read_quarantine_index_locked()
+            index[old_session_id] = {
+                "session_id": old_session_id,
+                "session_key": session_key,
+                "spill_id": spill_id,
+                "wiki_path": wiki_path,
+                "raw_path": raw_path,
+                "reason": reason,
+                "quarantined_at": now.isoformat(),
+            }
+            self._write_quarantine_index_locked(index)
+
+            db_end_session_id = old_session_id
+            session_id = f"{now.strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:8]}"
+            new_entry = SessionEntry(
+                session_key=session_key,
+                session_id=session_id,
+                created_at=now,
+                updated_at=now,
+                origin=old_entry.origin,
+                display_name=old_entry.display_name,
+                platform=old_entry.platform,
+                chat_type=old_entry.chat_type,
+                was_auto_reset=True,
+                auto_reset_reason="quarantined",
+                is_fresh_reset=True,
+                quarantined=False,
+                quarantine_reason=reason,
+                quarantine_spill_path=wiki_path,
+                quarantine_raw_path=raw_path,
+                quarantine_old_session_id=old_session_id,
+            )
+            self._entries[session_key] = new_entry
+            self._save()
+            db_create_kwargs = {
+                "session_id": session_id,
+                "source": old_entry.platform.value if old_entry.platform else "unknown",
+                "user_id": old_entry.origin.user_id if old_entry.origin else None,
+            }
+
+        if self._db and db_end_session_id:
+            try:
+                self._db.end_session(db_end_session_id, "context_spill_quarantine")
+            except Exception as e:
+                logger.debug("Session DB operation failed: %s", e)
+        if self._db and db_create_kwargs:
+            try:
+                self._db.create_session(**db_create_kwargs)
+            except Exception as e:
+                logger.debug("Session DB operation failed: %s", e)
+        return new_entry
     
     def _generate_session_key(self, source: SessionSource) -> str:
         """Generate a session key from a source."""
@@ -884,7 +1159,9 @@ class SessionStore:
                 # so repeated interrupted restarts that escalate via the
                 # existing ``.restart_failure_counts`` stuck-loop counter
                 # still converge to a clean slate.
-                if entry.suspended:
+                if entry.quarantined or entry.session_id in self._read_quarantine_index_locked():
+                    reset_reason = "quarantined"
+                elif entry.suspended:
                     reset_reason = "suspended"
                 elif entry.resume_pending:
                     # Restart-interrupted session: preserve the session_id
@@ -1005,7 +1282,7 @@ class SessionStore:
                 entry = self._entries[session_key]
                 # Never override an explicit ``suspended`` — that is a hard
                 # forced-wipe signal (from /stop or stuck-loop escalation).
-                if entry.suspended:
+                if entry.suspended or entry.quarantined or entry.session_id in self._read_quarantine_index_locked():
                     return False
                 entry.resume_pending = True
                 entry.resume_reason = reason
@@ -1118,6 +1395,8 @@ class SessionStore:
             for entry in self._entries.values():
                 if entry.resume_pending:
                     continue
+                if entry.quarantined or entry.session_id in self._read_quarantine_index_locked():
+                    continue
                 if not entry.suspended and entry.updated_at >= cutoff:
                     entry.resume_pending = True
                     entry.resume_reason = "restart_interrupted"
@@ -1197,6 +1476,14 @@ class SessionStore:
             if session_key not in self._entries:
                 return None
 
+            if target_session_id in self._read_quarantine_index_locked():
+                logger.warning(
+                    "Refusing to switch %s to quarantined session %s",
+                    session_key,
+                    target_session_id,
+                )
+                return None
+
             old_entry = self._entries[session_key]
 
             # Don't switch if already on that session
@@ -1261,6 +1548,8 @@ class SessionStore:
                      via its own _flush_messages_to_session_db(), preventing
                      the duplicate-write bug (#860).
         """
+        message = _compact_replayed_handoff_message(message)
+
         # Write to SQLite (unless the agent already handled it)
         if self._db and not skip_db:
             try:
@@ -1297,6 +1586,8 @@ class SessionStore:
         Used by /retry, /undo, and /compress to persist modified conversation history.
         Rewrites both SQLite and legacy JSONL storage.
         """
+        messages = [_compact_replayed_handoff_message(msg) for msg in messages]
+
         # SQLite: replace atomically so a mid-rewrite failure doesn't leave
         # the session half-empty in the DB while JSONL still has history.
         if self._db:
@@ -1355,9 +1646,9 @@ class SessionStore:
                     "using JSONL (legacy session not yet fully migrated)",
                     session_id, len(jsonl_messages), len(db_messages),
                 )
-            return jsonl_messages
+            return _compact_replayed_messages_for_context(jsonl_messages)
 
-        return db_messages
+        return _compact_replayed_messages_for_context(db_messages)
 
 
 def build_session_context(

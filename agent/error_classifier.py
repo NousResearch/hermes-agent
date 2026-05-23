@@ -177,6 +177,9 @@ _CONTEXT_OVERFLOW_PATTERNS = [
     "context window",
     "prompt is too long",
     "prompt exceeds max length",
+    "request buffer limit",
+    "exceeded request buffer limit",
+    "pre-api request size guard",
     "max_tokens",
     "maximum number of tokens",
     # vLLM / local inference server patterns

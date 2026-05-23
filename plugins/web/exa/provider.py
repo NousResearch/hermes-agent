@@ -122,11 +122,22 @@ class ExaWebSearchProvider(WebSearchProvider):
                 return {"success": False, "error": "Interrupted"}
 
             logger.info("Exa search: '%s' (limit=%d)", query, limit)
-            response = _get_exa_client().search(
-                query,
-                num_results=limit,
-                contents={"highlights": True},
-            )
+            client = _get_exa_client()
+            try:
+                response = client.search(
+                    query,
+                    num_results=limit,
+                    contents={"highlights": True},
+                )
+            except Exception as exc:  # noqa: BLE001 — retry plain search when highlights quota fails
+                message = str(exc)
+                if "NO_MORE_CREDITS" not in message and "402" not in message:
+                    raise
+                logger.info(
+                    "Exa search with highlights failed (%s); retrying plain search",
+                    message,
+                )
+                response = client.search(query, num_results=limit)
 
             web_results = []
             for i, result in enumerate(response.results or []):

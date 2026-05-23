@@ -388,6 +388,30 @@ _env_path = _hermes_home / '.env'
 load_hermes_dotenv(hermes_home=_hermes_home, project_env=Path(__file__).resolve().parents[1] / '.env')
 
 
+def _resolve_gateway_max_iterations_from_config(cfg: dict | None, platform_key: str = "gateway") -> int:
+    """Resolve the live gateway/platform budget from config.yaml."""
+    try:
+        from hermes_cli.config import resolve_agent_max_turns
+        return resolve_agent_max_turns(cfg or {}, mode=platform_key or "gateway")
+    except Exception:
+        return 90
+
+
+def _has_configured_gateway_iteration_budget(cfg: dict | None, platform_key: str = "gateway") -> bool:
+    agent_cfg = (cfg or {}).get("agent", {}) if isinstance(cfg, dict) else {}
+    if not isinstance(agent_cfg, dict):
+        return False
+    if "max_turns" in agent_cfg:
+        return True
+    budgets = agent_cfg.get("turn_budgets")
+    if not isinstance(budgets, dict):
+        return False
+    surface = (platform_key or "gateway").strip().lower()
+    if surface in {"discord", "telegram", "slack", "whatsapp", "signal", "matrix", "mattermost", "sms", "email", "feishu", "dingtalk", "wecom", "weixin", "bluebubbles", "qqbot", "yuanbao", "webhook", "homeassistant"}:
+        surface = "gateway"
+    return budgets.get(surface) is not None or budgets.get("gateway") is not None
+
+
 def _reload_runtime_env_preserving_config_authority() -> None:
     """Reload .env for fresh credentials without letting stale .env override config.
 
@@ -396,26 +420,25 @@ def _reload_runtime_env_preserving_config_authority() -> None:
     settings such as agent.max_turns; otherwise a stale HERMES_MAX_ITERATIONS in
     .env can replace the startup bridge on later turns.
     """
+    cfg = _load_gateway_config()
+    config_owns_budget = _has_configured_gateway_iteration_budget(cfg, "gateway")
+    resolved_budget = (
+        _resolve_gateway_max_iterations_from_config(cfg, "gateway")
+        if config_owns_budget
+        else None
+    )
+
     load_hermes_dotenv(
         hermes_home=_hermes_home,
         project_env=Path(__file__).resolve().parents[1] / '.env',
     )
 
-    config_path = _hermes_home / 'config.yaml'
-    if not config_path.exists():
-        return
-    try:
-        import yaml as _yaml
-        with open(config_path, encoding="utf-8") as f:
-            cfg = _yaml.safe_load(f) or {}
-        from hermes_cli.config import _expand_env_vars
-        cfg = _expand_env_vars(cfg)
-    except Exception:
-        return
-
-    agent_cfg = cfg.get("agent", {})
-    if isinstance(agent_cfg, dict) and "max_turns" in agent_cfg:
-        os.environ["HERMES_MAX_ITERATIONS"] = str(agent_cfg["max_turns"])
+    # Reload .env for credentials, then restore config authority for the legacy
+    # env var consumed by older gateway/tool paths. This is the resolver output
+    # for the gateway surface (turn_budgets.gateway when present, otherwise a
+    # non-default explicit agent.max_turns), not a blind max_turns mirror.
+    if resolved_budget is not None:
+        os.environ["HERMES_MAX_ITERATIONS"] = str(resolved_budget)
 
 
 _DOCKER_VOLUME_SPEC_RE = re.compile(r"^(?P<host>.+):(?P<container>/[^:]+?)(?::(?P<options>[^:]+))?$")
@@ -525,16 +548,16 @@ if _config_path.exists():
                     os.environ[_env_map["base_url"]] = _base_url
                 if _api_key:
                     os.environ[_env_map["api_key"]] = _api_key
-        # config.yaml is the documented, authoritative source for these
-        # settings — it unconditionally wins over .env values. Previously
-        # the guards below read `if X not in os.environ` and let stale
-        # .env entries (e.g. HERMES_MAX_ITERATIONS=60 written by an old
-        # `hermes setup` run) silently shadow the user's current config.
-        # See PR #18413 / the 60-vs-500 max_turns incident.
+        # config.yaml remains authoritative for gateway runtime settings.
+        # Bridge the resolved gateway budget (turn_budgets.gateway when set,
+        # otherwise an explicit non-default legacy max_turns) for legacy env
+        # consumers; do not blindly mirror the global max_turns.
+        if _has_configured_gateway_iteration_budget(_cfg, "gateway"):
+            os.environ["HERMES_MAX_ITERATIONS"] = str(
+                _resolve_gateway_max_iterations_from_config(_cfg, "gateway")
+            )
         _agent_cfg = _cfg.get("agent", {})
         if _agent_cfg and isinstance(_agent_cfg, dict):
-            if "max_turns" in _agent_cfg:
-                os.environ["HERMES_MAX_ITERATIONS"] = str(_agent_cfg["max_turns"])
             if "gateway_timeout" in _agent_cfg:
                 os.environ["HERMES_AGENT_TIMEOUT"] = str(_agent_cfg["gateway_timeout"])
             if "gateway_timeout_warning" in _agent_cfg:
@@ -632,6 +655,7 @@ from gateway.config import (
 from gateway.session import (
     SessionStore,
     SessionSource,
+    SessionEntry,
     SessionContext,
     build_session_context,
     build_session_context_prompt,
@@ -729,12 +753,21 @@ def _try_resolve_fallback_provider() -> dict | None:
             if not isinstance(entry, dict):
                 continue
             try:
-                runtime = resolve_runtime_provider(
-                    requested=entry.get("provider"),
-                    target_model=entry.get("model"),
-                    explicit_base_url=entry.get("base_url"),
-                    explicit_api_key=entry.get("api_key"),
-                )
+                try:
+                    runtime = resolve_runtime_provider(
+                        requested=entry.get("provider"),
+                        target_model=entry.get("model"),
+                        explicit_base_url=entry.get("base_url"),
+                        explicit_api_key=entry.get("api_key"),
+                    )
+                except TypeError as type_exc:
+                    if "target_model" not in str(type_exc):
+                        raise
+                    runtime = resolve_runtime_provider(
+                        requested=entry.get("provider"),
+                        explicit_base_url=entry.get("base_url"),
+                        explicit_api_key=entry.get("api_key"),
+                    )
                 logger.info(
                     "Fallback provider resolved: %s model=%s",
                     runtime.get("provider"),
@@ -1092,6 +1125,11 @@ def _normalize_empty_agent_response(
 
     if agent_result.get("failed"):
         error_detail = agent_result.get("error", "unknown error")
+        if agent_result.get("request_size_guard"):
+            return (
+                "⚠️ Hermes blocked an oversized internal request before any model call. "
+                "This is a gateway/request-shaping guard, not proof that the conversation exceeded the model context."
+            )
         error_str = str(error_detail).lower()
         is_context_failure = any(
             p in error_str
@@ -1254,6 +1292,7 @@ class GatewayRunner:
         self._pending_native_image_paths_by_session: Dict[str, List[str]] = {}
         self._busy_ack_ts: Dict[str, float] = {}  # last busy-ack timestamp per session (debounce)
         self._session_run_generation: Dict[str, int] = {}
+        self._context_spill_locks: Dict[str, asyncio.Lock] = {}
         # LRU cache of live SessionSources keyed by session_key. Used by
         # fallback routing paths (shutdown notifications, synthetic
         # background-process events) when the persisted origin is missing
@@ -3246,10 +3285,13 @@ class GatewayRunner:
         try:
             with self.session_store._lock:  # noqa: SLF001 — snapshot under lock
                 self.session_store._ensure_loaded_locked()  # noqa: SLF001
+                quarantine_index = self.session_store._read_quarantine_index_locked()  # noqa: SLF001
                 candidates = [
                     entry for entry in self.session_store._entries.values()  # noqa: SLF001
                     if entry.resume_pending
                     and not entry.suspended
+                    and not entry.quarantined
+                    and str(entry.session_id) not in quarantine_index
                     and entry.origin is not None
                     and entry.resume_reason in self._AUTO_RESUME_REASONS
                 ]
@@ -3333,10 +3375,9 @@ class GatewayRunner:
         # config.yaml → env bridge did the right thing at a glance (instead
         # of silently running at a stale .env value for weeks).
         try:
-            _effective_max_iter = int(os.getenv("HERMES_MAX_ITERATIONS", "90"))
+            _effective_max_iter = _resolve_gateway_max_iterations_from_config(_load_gateway_config(), "gateway")
             logger.info(
-                "Agent budget: max_iterations=%d (agent.max_turns from config.yaml, "
-                "or HERMES_MAX_ITERATIONS from .env, or default 90)",
+                "Agent budget: gateway max_iterations=%d (agent.turn_budgets.gateway/config resolver)",
                 _effective_max_iter,
             )
         except Exception:
@@ -7214,6 +7255,269 @@ class GatewayRunner:
                 pass
         return source
 
+    def _context_spill_lock_for_session(self, session_key: str) -> asyncio.Lock:
+        locks = getattr(self, "_context_spill_locks", None)
+        if locks is None:
+            locks = {}
+            self._context_spill_locks = locks
+        lock = locks.get(session_key)
+        if lock is None:
+            lock = asyncio.Lock()
+            locks[session_key] = lock
+        return lock
+
+    def _effective_gateway_context_length(self, source: SessionSource, session_key: str, user_config: dict) -> int:
+        from agent.model_metadata import get_model_context_length
+
+        model = getattr(self, "_model", "") or ""
+        runtime = {}
+        config_ctx = None
+        model_cfg = user_config.get("model", {}) if isinstance(user_config, dict) else {}
+        if isinstance(model_cfg, dict):
+            try:
+                raw_ctx = model_cfg.get("context_length")
+                config_ctx = int(raw_ctx) if raw_ctx is not None else None
+            except (TypeError, ValueError):
+                config_ctx = None
+        try:
+            model, runtime = self._resolve_session_agent_runtime(
+                source=source,
+                session_key=session_key,
+                user_config=user_config if isinstance(user_config, dict) else None,
+            )
+        except Exception:
+            runtime = {}
+        ctx = get_model_context_length(
+            model,
+            base_url=runtime.get("base_url") or getattr(self, "_base_url", "") or "",
+            api_key=runtime.get("api_key") or "",
+            provider=runtime.get("provider") or "",
+            config_context_length=config_ctx,
+        )
+        fb_cfg = user_config.get("fallback_providers") or user_config.get("fallback_model") if isinstance(user_config, dict) else None
+        fb_list = fb_cfg if isinstance(fb_cfg, list) else ([fb_cfg] if isinstance(fb_cfg, dict) else [])
+        for fb in fb_list:
+            if not isinstance(fb, dict):
+                continue
+            fb_model = str(fb.get("model") or "").strip()
+            if not fb_model:
+                continue
+            try:
+                fb_ctx = get_model_context_length(
+                    fb_model,
+                    base_url=str(fb.get("base_url") or ""),
+                    api_key=str(fb.get("api_key") or ""),
+                    provider=str(fb.get("provider") or ""),
+                    config_context_length=None,
+                )
+                if fb_ctx:
+                    ctx = min(ctx, fb_ctx)
+            except Exception:
+                pass
+        return int(ctx or 200000)
+
+    async def _maybe_spill_gateway_context(
+        self,
+        *,
+        history: list,
+        message_text: str,
+        source: SessionSource,
+        session_entry: SessionEntry,
+        session_key: str,
+        stage: str,
+        context_prompt: str = "",
+        channel_prompt: str = "",
+    ):
+        from gateway.context_spill import (
+            ContextSpillWriteError,
+            decide_context_spill,
+            load_context_spill_config,
+            write_context_spill,
+        )
+        from hermes_constants import get_hermes_home
+
+        user_config = _load_gateway_config()
+        spill_config = load_context_spill_config(user_config, get_hermes_home())
+        if not spill_config.enabled:
+            return None
+        context_length = self._effective_gateway_context_length(source, session_key, user_config)
+        decision = decide_context_spill(
+            history if isinstance(history, list) else [],
+            message_text or "",
+            context_length=context_length,
+            config=spill_config,
+            stage=stage,
+            system_prompt=context_prompt or "",
+            channel_prompt=channel_prompt or "",
+        )
+        if not decision.should_spill:
+            return None
+        if spill_config.mode == "shadow":
+            logger.warning(
+                "Gateway context spill shadow hit: session=%s stage=%s reason=%s tokens=%s messages=%s chars=%s bytes=%s",
+                session_entry.session_id,
+                stage,
+                decision.reason,
+                decision.approx_tokens,
+                decision.message_count,
+                decision.char_count,
+                decision.request_bytes,
+            )
+            return None
+        result = write_context_spill(
+            history=history if isinstance(history, list) else [],
+            message_text=message_text or "",
+            source=source,
+            session_entry=session_entry,
+            decision=decision,
+            config=spill_config,
+        )
+        new_entry = self.session_store.spill_and_reset_session(
+            session_key,
+            old_session_id=session_entry.session_id,
+            spill_id=result.spill_id,
+            wiki_path=str(result.wiki_path) if result.wiki_path else None,
+            raw_path=str(result.raw_path) if result.raw_path else None,
+            reason=decision.reason,
+        )
+        if new_entry is None:
+            raise ContextSpillWriteError("session reset failed after spill write")
+        self._evict_cached_agent(session_key)
+        self._session_model_overrides.pop(session_key, None)
+        self._set_session_reasoning_override(session_key, None)
+        if hasattr(self, "_pending_model_notes"):
+            self._pending_model_notes.pop(session_key, None)
+        logger.warning(
+            "Gateway context spill enforced: old_session=%s new_session=%s spill=%s stage=%s reason=%s",
+            session_entry.session_id,
+            new_entry.session_id,
+            result.spill_id,
+            stage,
+            decision.reason,
+        )
+        return result, new_entry
+
+    async def _spill_gateway_context_after_request_guard(
+        self,
+        *,
+        history: list,
+        message_text: str,
+        source: SessionSource,
+        session_entry: SessionEntry,
+        session_key: str,
+        agent_result: dict,
+        context_prompt: str = "",
+        channel_prompt: str = "",
+    ):
+        """Persist a final pre-API guard hit before resetting/retrying.
+
+        Gateway Stage A/B preflight catches oversized persisted transcripts and
+        inbound expansions.  The agent-level guard can still trip after system
+        prompt, memory, tool schemas, or provider transport transforms inflate
+        the *actual* request.  In that path we must not fall back to the legacy
+        compression-exhausted reset, because that loses the current ask and
+        leaves no quarantine record for the old session id.
+        """
+        from gateway.context_spill import (
+            ContextSpillDecision,
+            ContextSpillWriteError,
+            estimate_gateway_payload,
+            load_context_spill_config,
+            write_context_spill,
+        )
+        from hermes_constants import get_hermes_home
+
+        user_config = _load_gateway_config()
+        spill_config = load_context_spill_config(user_config, get_hermes_home())
+        if not spill_config.enabled:
+            return None
+
+        pressure = agent_result.get("request_size_guard") if isinstance(agent_result, dict) else None
+        pressure = pressure if isinstance(pressure, dict) else {}
+        approx_est, char_count, message_count, request_bytes_est = estimate_gateway_payload(
+            history if isinstance(history, list) else [],
+            message_text or "",
+            system_prompt=context_prompt or "",
+            channel_prompt=channel_prompt or "",
+            extra_overhead_tokens=0,
+        )
+        try:
+            approx_tokens = int(pressure.get("approx_tokens") or approx_est)
+        except (TypeError, ValueError):
+            approx_tokens = approx_est
+        try:
+            request_bytes = int(pressure.get("request_bytes") or request_bytes_est)
+        except (TypeError, ValueError):
+            request_bytes = request_bytes_est
+        try:
+            threshold_tokens = int(pressure.get("threshold_tokens") or 0)
+        except (TypeError, ValueError):
+            threshold_tokens = 0
+        if threshold_tokens <= 0:
+            context_length = self._effective_gateway_context_length(source, session_key, user_config)
+            threshold_tokens = max(
+                1,
+                min(
+                    spill_config.hard_token_limit,
+                    max(50_000, int(context_length * spill_config.token_threshold_ratio)),
+                ),
+            )
+
+        decision = ContextSpillDecision(
+            should_spill=True,
+            reason=(
+                "pre_api_request_guard:"
+                f"{approx_tokens}>={threshold_tokens};bytes={request_bytes}"
+            ),
+            approx_tokens=approx_tokens,
+            char_count=char_count,
+            message_count=message_count,
+            threshold_tokens=threshold_tokens,
+            request_bytes=request_bytes,
+            stage="pre_api_guard",
+        )
+        if spill_config.mode == "shadow":
+            logger.warning(
+                "Gateway context spill shadow hit after pre-api guard: session=%s reason=%s tokens=%s bytes=%s",
+                session_entry.session_id,
+                decision.reason,
+                decision.approx_tokens,
+                decision.request_bytes,
+            )
+            return None
+
+        result = write_context_spill(
+            history=history if isinstance(history, list) else [],
+            message_text=message_text or "",
+            source=source,
+            session_entry=session_entry,
+            decision=decision,
+            config=spill_config,
+        )
+        new_entry = self.session_store.spill_and_reset_session(
+            session_key,
+            old_session_id=session_entry.session_id,
+            spill_id=result.spill_id,
+            wiki_path=str(result.wiki_path) if result.wiki_path else None,
+            raw_path=str(result.raw_path) if result.raw_path else None,
+            reason=decision.reason,
+        )
+        if new_entry is None:
+            raise ContextSpillWriteError("session reset failed after pre-api guard spill write")
+        self._evict_cached_agent(session_key)
+        self._session_model_overrides.pop(session_key, None)
+        self._set_session_reasoning_override(session_key, None)
+        if hasattr(self, "_pending_model_notes"):
+            self._pending_model_notes.pop(session_key, None)
+        logger.warning(
+            "Gateway context spill enforced after pre-api guard: old_session=%s new_session=%s spill=%s reason=%s",
+            session_entry.session_id,
+            new_entry.session_id,
+            result.spill_id,
+            decision.reason,
+        )
+        return result, new_entry
+
     async def _handle_message_with_agent(self, event, source, _quick_key: str, run_generation: int):
         """Inner handler that runs under the _running_agents sentinel guard."""
         _msg_start_time = time.time()
@@ -7401,7 +7705,8 @@ class GatewayRunner:
 
         # Load conversation history from transcript
         history = self.session_store.load_transcript(session_entry.session_id)
-        
+        spill_recovery_message = None
+
         # -----------------------------------------------------------------
         # Session hygiene: auto-compress pathologically large transcripts
         #
@@ -7687,6 +7992,54 @@ class GatewayRunner:
                             "Session hygiene auto-compress failed: %s", e
                         )
 
+        # Stage A context-spill preflight: history-only, after hygiene has
+        # had a chance to summarize a large but valid transcript. Context
+        # spill is a last-resort quarantine, not the normal long-dev-thread
+        # memory mechanism.
+        try:
+            async with self._context_spill_lock_for_session(session_key):
+                stage_a = await self._maybe_spill_gateway_context(
+                    history=history,
+                    message_text=event.text or "",
+                    source=source,
+                    session_entry=session_entry,
+                    session_key=session_key,
+                    stage="history",
+                    context_prompt=context_prompt,
+                    channel_prompt=event.channel_prompt or "",
+                )
+        except Exception as spill_exc:
+            from gateway.context_spill import ContextSpillWriteError
+            if isinstance(spill_exc, ContextSpillWriteError):
+                logger.error("Gateway context spill failed closed before model call: %s", spill_exc)
+                adapter = self.adapters.get(source.platform)
+                if adapter:
+                    await adapter.send(
+                        source.chat_id,
+                        "Context was too large to send safely, but the recovery spill could not be written. I did not send the oversized transcript to a model.",
+                        metadata=self._thread_metadata_for_source(source),
+                    )
+                return
+            raise
+        if stage_a is not None:
+            spill_result, session_entry = stage_a
+            history = []
+            spill_recovery_message = spill_result.recovery_message
+            context = build_session_context(source, self.config, session_entry)
+            _redact_pii = bool(getattr(self.config, "redact_pii", False))
+            context_prompt = build_session_context_prompt(context, redact_pii=_redact_pii)
+            if spill_result.user_notice:
+                adapter = self.adapters.get(source.platform)
+                if adapter:
+                    try:
+                        await adapter.send(
+                            source.chat_id,
+                            spill_result.user_notice,
+                            metadata=self._thread_metadata_for_source(source),
+                        )
+                    except Exception as notice_exc:
+                        logger.debug("Context spill user notice failed: %s", notice_exc)
+
         # First-message onboarding -- only on the very first interaction ever
         if not history and not self.session_store.has_any_sessions():
             context_prompt += (
@@ -7743,13 +8096,62 @@ class GatewayRunner:
         # attachments (documents, audio, etc.) are not sent to the vision
         # tool even when they appear in the same message.
         # -----------------------------------------------------------------
-        message_text = await self._prepare_inbound_message_text(
-            event=event,
-            source=source,
-            history=history,
-        )
-        if message_text is None:
-            return
+        if spill_recovery_message is not None:
+            message_text = spill_recovery_message
+        else:
+            message_text = await self._prepare_inbound_message_text(
+                event=event,
+                source=source,
+                history=history,
+            )
+            if message_text is None:
+                return
+
+            # Stage B context-spill preflight: actual model-facing inbound
+            # text, including backfill/reply/doc/image/context-reference expansion.
+            try:
+                async with self._context_spill_lock_for_session(session_key):
+                    stage_b = await self._maybe_spill_gateway_context(
+                        history=history,
+                        message_text=message_text,
+                        source=source,
+                        session_entry=session_entry,
+                        session_key=session_key,
+                        stage="inbound",
+                        context_prompt=context_prompt,
+                        channel_prompt=event.channel_prompt or "",
+                    )
+            except Exception as spill_exc:
+                from gateway.context_spill import ContextSpillWriteError
+                if isinstance(spill_exc, ContextSpillWriteError):
+                    logger.error("Gateway context spill failed closed before model call: %s", spill_exc)
+                    adapter = self.adapters.get(source.platform)
+                    if adapter:
+                        await adapter.send(
+                            source.chat_id,
+                            "Context was too large to send safely, but the recovery spill could not be written. I did not send the oversized transcript to a model.",
+                            metadata=self._thread_metadata_for_source(source),
+                        )
+                    return
+                raise
+            if stage_b is not None:
+                spill_result, session_entry = stage_b
+                history = []
+                message_text = spill_result.recovery_message
+                context = build_session_context(source, self.config, session_entry)
+                _redact_pii = bool(getattr(self.config, "redact_pii", False))
+                context_prompt = build_session_context_prompt(context, redact_pii=_redact_pii)
+                if spill_result.user_notice:
+                    adapter = self.adapters.get(source.platform)
+                    if adapter:
+                        try:
+                            await adapter.send(
+                                source.chat_id,
+                                spill_result.user_notice,
+                                metadata=self._thread_metadata_for_source(source),
+                            )
+                        except Exception as notice_exc:
+                            logger.debug("Context spill user notice failed: %s", notice_exc)
 
         # Bind this gateway run generation to the adapter's active-session
         # event so deferred post-delivery callbacks can be released by the
@@ -7783,6 +8185,70 @@ class GatewayRunner:
                 event_message_id=self._reply_anchor_for_event(event),
                 channel_prompt=event.channel_prompt,
             )
+
+            # One bounded retry: the first run may fail at the agent's final
+            # pre-API guard after tool schemas/memory/system prompt inflate the
+            # request. Spill/quarantine the old transcript, then retry exactly
+            # once with the small recovery handoff. If that reduced retry still
+            # trips the guard, the normal fail-closed error path below reports it
+            # without looping.
+            if agent_result.get("request_size_guard") and session_entry and session_key:
+                try:
+                    async with self._context_spill_lock_for_session(session_key):
+                        post_guard_spill = await self._spill_gateway_context_after_request_guard(
+                            history=history,
+                            message_text=message_text,
+                            source=source,
+                            session_entry=session_entry,
+                            session_key=session_key,
+                            agent_result=agent_result,
+                            context_prompt=context_prompt,
+                            channel_prompt=event.channel_prompt or "",
+                        )
+                except Exception as spill_exc:
+                    from gateway.context_spill import ContextSpillWriteError
+                    if isinstance(spill_exc, ContextSpillWriteError):
+                        logger.error("Gateway post-agent context spill failed closed before retry: %s", spill_exc)
+                        adapter = self.adapters.get(source.platform)
+                        if adapter:
+                            await adapter.send(
+                                source.chat_id,
+                                "Context was too large to send safely, but the recovery spill could not be written. I did not send the oversized transcript to a model or retry it.",
+                                metadata=self._thread_metadata_for_source(source),
+                            )
+                        return None
+                    raise
+
+                if post_guard_spill is not None:
+                    spill_result, session_entry = post_guard_spill
+                    history = []
+                    message_text = spill_result.recovery_message
+                    context = build_session_context(source, self.config, session_entry)
+                    _redact_pii = bool(getattr(self.config, "redact_pii", False))
+                    context_prompt = build_session_context_prompt(context, redact_pii=_redact_pii)
+                    if spill_result.user_notice:
+                        adapter = self.adapters.get(source.platform)
+                        if adapter:
+                            try:
+                                await adapter.send(
+                                    source.chat_id,
+                                    spill_result.user_notice,
+                                    metadata=self._thread_metadata_for_source(source),
+                                )
+                            except Exception as notice_exc:
+                                logger.debug("Context spill user notice failed: %s", notice_exc)
+
+                    agent_result = await self._run_agent(
+                        message=message_text,
+                        context_prompt=context_prompt,
+                        history=history,
+                        source=source,
+                        session_id=session_entry.session_id,
+                        session_key=session_key,
+                        run_generation=run_generation,
+                        event_message_id=self._reply_anchor_for_event(event),
+                        channel_prompt=event.channel_prompt,
+                    )
 
             # Stop persistent typing indicator now that the agent is done
             try:
@@ -7972,12 +8438,14 @@ class GatewayRunner:
             # own context-length classifier.
             is_context_overflow_failure = agent_failed_early and (
                 bool(agent_result.get("compression_exhausted"))
+                or bool(agent_result.get("request_size_guard"))
                 or any(p in _err_str_for_classify for p in (
                     "context length", "context size", "context window",
                     "maximum context", "token limit", "too many tokens",
                     "reduce the length", "exceeds the limit",
                     "request entity too large", "prompt is too long",
                     "payload too large", "input is too long",
+                    "request buffer limit", "exceeded request buffer limit",
                 ))
                 or ("400" in _err_str_for_classify and len(history) > 50)
             )
@@ -7998,7 +8466,12 @@ class GatewayRunner:
             # large to process.  Auto-reset it so the next message starts
             # fresh instead of replaying the same oversized context in an
             # infinite fail loop.  (#9893)
-            if agent_result.get("compression_exhausted") and session_entry and session_key:
+            if (
+                agent_result.get("compression_exhausted")
+                and not agent_result.get("request_size_guard")
+                and session_entry
+                and session_key
+            ):
                 logger.info(
                     "Auto-resetting session %s after compression exhaustion.",
                     session_entry.session_id,
@@ -10707,7 +11180,7 @@ class GatewayRunner:
             disabled_toolsets = agent_cfg.get("disabled_toolsets") or None
 
             pr = self._provider_routing
-            max_iterations = int(os.getenv("HERMES_MAX_ITERATIONS", "90"))
+            max_iterations = _resolve_gateway_max_iterations_from_config(user_config, platform_key)
             reasoning_config = self._resolve_session_reasoning_config(source=source)
             self._reasoning_config = reasoning_config
             self._service_tier = self._load_service_tier()
@@ -15180,9 +15653,6 @@ class GatewayRunner:
             # (concurrency-safe). Keep os.environ as fallback for CLI/cron.
             os.environ["HERMES_SESSION_KEY"] = session_key or ""
 
-            # Read from env var or use default (same as CLI)
-            max_iterations = int(os.getenv("HERMES_MAX_ITERATIONS", "90"))
-            
             # Map platform enum to the platform hint key the agent understands.
             # Platform.LOCAL ("local") maps to "cli"; others pass through as-is.
             platform_key = "cli" if source.platform == Platform.LOCAL else source.platform.value
@@ -15200,6 +15670,7 @@ class GatewayRunner:
             # keys may change without restart). Keep config.yaml authoritative for
             # runtime budget settings bridged into env vars.
             _reload_runtime_env_preserving_config_authority()
+            max_iterations = _resolve_gateway_max_iterations_from_config(user_config, platform_key)
 
             try:
                 model, runtime_kwargs = self._resolve_session_agent_runtime(
@@ -15409,6 +15880,10 @@ class GatewayRunner:
             agent.reasoning_config = reasoning_config
             agent.service_tier = self._service_tier
             agent.request_overrides = turn_route.get("request_overrides") or {}
+            agent._configured_max_iterations = max_iterations
+            agent.max_iterations = max_iterations
+            agent._last_resolved_turn_max_iterations = None
+            agent._external_turn_ceiling_active = False
 
             _bg_review_release = threading.Event()
             _bg_review_pending: list[str] = []

@@ -229,6 +229,18 @@ class HonchoSessionManager:
                 session_id, e,
             )
 
+        # Loading existing messages is only needed when Hermes is using Honcho
+        # as a transcript store. Nic's low-latency/no-write mode keeps
+        # saveMessages=false, so a session.context() call here is pure overhead
+        # and can create scary non-fatal timeout warnings on the hot tool path.
+        if not self._save_messages:
+            logger.debug(
+                "Honcho session '%s' loaded; skipped existing-message context fetch because saveMessages=false",
+                session_id,
+            )
+            self._sessions_cache[session_id] = session
+            return session, []
+
         # Load existing messages via context() - single call for messages + metadata
         existing_messages = []
         try:
@@ -1014,17 +1026,23 @@ class HonchoSessionManager:
         """
         Fetch a peer card — a curated list of key facts.
 
-        Fast, no LLM reasoning. Returns raw structured facts Honcho has
-        inferred about the target peer (name, role, preferences, patterns).
-        Empty list if unavailable.
+        Fast, no LLM reasoning. Prefer the target peer's own card so manual
+        honcho_profile(card=...) updates read back immediately. Fall back to
+        the observer/target view for Honcho installations where the SDK stores
+        cards as observer-specific conclusions.
         """
         session = self._cache.get(session_key)
         if not session:
             return []
 
         try:
-            observer_peer_id, target_peer_id = self._resolve_observer_target(session, peer)
-            return self._fetch_peer_card(observer_peer_id, target=target_peer_id)
+            target_peer_id = self._resolve_peer_id(session, peer)
+            direct_card = self._fetch_peer_card(target_peer_id)
+            if direct_card:
+                return direct_card
+
+            observer_peer_id, observer_target_peer_id = self._resolve_observer_target(session, peer)
+            return self._fetch_peer_card(observer_peer_id, target=observer_target_peer_id)
         except Exception as e:
             logger.debug("Failed to fetch peer card from Honcho: %s", e)
             return []

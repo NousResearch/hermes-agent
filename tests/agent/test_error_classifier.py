@@ -458,6 +458,12 @@ class TestClassifyApiError:
         assert result.reason == FailoverReason.timeout
         assert result.should_compress is False
 
+    def test_request_buffer_limit_classifies_as_context_overflow(self):
+        e = MockAPIError("exceeded request buffer limit", status_code=400)
+        result = classify_api_error(e, approx_tokens=10_000, context_length=256_000)
+        assert result.reason == FailoverReason.context_overflow
+        assert result.should_compress is True
+
     # ── Provider-specific: Anthropic thinking signature ──
 
     def test_anthropic_thinking_signature(self):

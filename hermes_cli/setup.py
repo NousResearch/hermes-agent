@@ -1760,11 +1760,19 @@ def setup_terminal_backend(config: dict):
 
 def _apply_default_agent_settings(config: dict):
     """Apply recommended defaults for all agent settings without prompting."""
-    config.setdefault("agent", {})["max_turns"] = 90
-    # config.yaml is the authoritative source for max_turns; the gateway
-    # bridges it into HERMES_MAX_ITERATIONS at startup. We no longer write
-    # to .env to avoid the dual-source inconsistency that caused the
-    # 60-vs-500 bug (stale .env entry silently shadowing config.yaml).
+    agent_cfg = config.setdefault("agent", {})
+    agent_cfg["max_turns"] = 90
+    agent_cfg.setdefault("turn_budgets", {
+        "cli": 16,
+        "gateway": 32,
+        "api_server": 32,
+        "cron": 90,
+        "lightweight_followup": 6,
+        "coding": 90,
+        "ship_mode": 128,
+    })
+    # config.yaml is authoritative for task-shaped turn budgets. Do not
+    # persist HERMES_MAX_ITERATIONS; stale env caps caused prior runtime lies.
     remove_env_value("HERMES_MAX_ITERATIONS")
 
     config.setdefault("display", {})["tool_progress"] = "all"
@@ -1810,9 +1818,8 @@ def setup_agent_settings(config: dict):
         max_iter = int(max_iter_str)
         if max_iter > 0:
             # Write to config.yaml (authoritative) only. Also clean up any
-            # stale .env entry from earlier setup runs — the gateway's
-            # bridge in gateway/run.py now unconditionally derives
-            # HERMES_MAX_ITERATIONS from agent.max_turns at startup.
+            # stale .env entry from earlier setup runs. Runtime surfaces now
+            # resolve task-shaped budgets directly from config.yaml.
             config.setdefault("agent", {})["max_turns"] = max_iter
             config.pop("max_turns", None)
             remove_env_value("HERMES_MAX_ITERATIONS")

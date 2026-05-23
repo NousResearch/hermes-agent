@@ -598,6 +598,16 @@ class HonchoMemoryProvider(MemoryProvider):
         if base_context:
             parts.append(base_context)
 
+        # dialecticCadence <= 0 explicitly disables the Honcho LLM supplement.
+        # Keep base context injection alive, but do not start first-turn or
+        # background .chat() calls. This is the fast path for gateway sessions
+        # where Honcho read/context is wanted but slow dialectic calls should
+        # not add latency or warning noise.
+        if self._dialectic_cadence <= 0:
+            if not parts:
+                return ""
+            return self._truncate_to_budget("\n\n".join(parts))
+
         # ----- Layer 2: Dialectic supplement -----
         # On the very first turn, no queue_prefetch() has run yet so the
         # dialectic result is empty.  Run with a bounded timeout so a slow
@@ -715,6 +725,11 @@ class HonchoMemoryProvider(MemoryProvider):
                 self._manager.prefetch_context(self._session_key, query)
             except Exception as e:
                 logger.debug("Honcho context prefetch failed: %s", e)
+
+        # dialecticCadence <= 0 explicitly disables Honcho LLM supplement
+        # prefetches while preserving the base context refresh above.
+        if self._dialectic_cadence <= 0:
+            return
 
         # ----- Dialectic prefetch (supplement layer) -----
         # Thread-alive guard with stale-thread recovery: a hung Honcho call

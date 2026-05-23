@@ -156,6 +156,38 @@ class TestFallbackChainAdvancement:
             assert agent._try_activate_fallback() is True
             assert agent.model == "gpt-4o"
 
+    def test_oversized_request_skips_fallback_without_resolving_client(self):
+        fbs = [{"provider": "openai", "model": "gpt-4o"}]
+        agent = _make_agent(fallback_model=fbs)
+        setattr(agent, "_last_request_pressure", {
+            "approx_tokens": 100_000,
+            "request_bytes": 900_000,
+            "too_large": False,
+        })
+        with (
+            patch("agent.model_metadata.get_model_context_length", return_value=64_000),
+            patch("agent.auxiliary_client.resolve_provider_client") as mock_rpc,
+        ):
+            assert agent._try_activate_fallback() is False
+            mock_rpc.assert_not_called()
+            assert getattr(agent, "_fallback_disabled_due_to_context_size") is True
+
+    def test_fallback_guard_failure_skips_fallback_closed(self):
+        fbs = [{"provider": "openai", "model": "gpt-4o"}]
+        agent = _make_agent(fallback_model=fbs)
+        setattr(agent, "_last_request_pressure", {
+            "approx_tokens": 1,
+            "request_bytes": 1,
+            "too_large": False,
+        })
+        with (
+            patch("agent.model_metadata.get_model_context_length", side_effect=RuntimeError("metadata down")),
+            patch("agent.auxiliary_client.resolve_provider_client") as mock_rpc,
+        ):
+            assert agent._try_activate_fallback() is False
+            mock_rpc.assert_not_called()
+            assert getattr(agent, "_fallback_disabled_due_to_context_size") is True
+
     def test_resolves_key_env_for_fallback_provider(self):
         fbs = [
             {

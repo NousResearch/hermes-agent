@@ -28,6 +28,85 @@ from typing import Dict, Any, Optional, List, Tuple
 
 logger = logging.getLogger(__name__)
 
+DEFAULT_AGENT_TURN_BUDGETS = {
+    "cli": 16,
+    "gateway": 32,
+    "api_server": 32,
+    "cron": 90,
+    "lightweight_followup": 6,
+    "coding": 90,
+    "ship_mode": 128,
+}
+
+_MESSAGING_GATEWAY_MODES = {
+    "discord", "telegram", "slack", "whatsapp", "signal", "matrix",
+    "mattermost", "sms", "email", "feishu", "dingtalk", "wecom",
+    "weixin", "bluebubbles", "qqbot", "yuanbao", "webhook",
+    "homeassistant", "gateway",
+}
+
+
+def get_default_agent_turn_budgets() -> Dict[str, int]:
+    return dict(DEFAULT_AGENT_TURN_BUDGETS)
+
+
+def _normalize_agent_turn_budget_mode(mode: str | None) -> str:
+    key = (mode or "cli").strip().lower()
+    if key == "local":
+        return "cli"
+    if key in _MESSAGING_GATEWAY_MODES:
+        return "gateway"
+    return key
+
+
+def _positive_int(value: Any) -> Optional[int]:
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        return None
+    return parsed if parsed > 0 else None
+
+
+def resolve_agent_max_turns(
+    config: Dict[str, Any] | None,
+    *,
+    mode: str = "cli",
+    env: Dict[str, str] | None = None,
+    include_legacy_global_override: bool = True,
+) -> int:
+    """Resolve the effective tool-loop budget for a runtime surface.
+
+    Per-surface budgets win. Legacy global max_turns/HERMES_MAX_ITERATIONS are
+    only compatibility fallbacks so one old blunt knob cannot make Discord,
+    cron, CLI, and API-server turns all behave the same.
+    """
+    cfg = config if isinstance(config, dict) else {}
+    agent_cfg = cfg.get("agent") if isinstance(cfg.get("agent"), dict) else {}
+    mode_key = _normalize_agent_turn_budget_mode(mode)
+
+    budgets = agent_cfg.get("turn_budgets") if isinstance(agent_cfg, dict) else None
+    if isinstance(budgets, dict):
+        for key in (mode_key, "gateway" if mode_key in _MESSAGING_GATEWAY_MODES else None):
+            if not key:
+                continue
+            value = _positive_int(budgets.get(key))
+            if value is not None:
+                return value
+
+    defaults = get_default_agent_turn_budgets()
+    if include_legacy_global_override:
+        for raw in (agent_cfg.get("max_turns") if isinstance(agent_cfg, dict) else None, cfg.get("max_turns")):
+            value = _positive_int(raw)
+            if value is not None and value != 90:
+                return value
+        env_map = env if env is not None else os.environ
+        value = _positive_int(env_map.get("HERMES_MAX_ITERATIONS") if env_map else None)
+        if value is not None and value != 90:
+            return value
+
+    return defaults.get(mode_key) or _positive_int(agent_cfg.get("max_turns") if isinstance(agent_cfg, dict) else None) or 90
+
+
 # Track which (config_path, mtime_ns, size) tuples we've already warned about
 # so concurrent CLI/gateway loads of a broken config.yaml don't spam stderr
 # every time. Cleared automatically when the file changes (different mtime).
@@ -471,6 +550,23 @@ DEFAULT_CONFIG = {
     "model": "",
     "providers": {},
     "fallback_providers": [],
+    "gateway_context_spill": {
+        "enabled": True,
+        "mode": "enforce",
+        "wiki_dir": "~/wiki/outputs/gateway-context-spills",
+        "raw_state_dir": "~/.hermes/state/context-spills",
+        "token_threshold_ratio": 0.70,
+        "hard_token_limit": 180000,
+        "hard_message_limit": 180,
+        "hard_char_limit": 500000,
+        "hard_request_byte_limit": 1800000,
+        "include_raw_state": True,
+        "include_redacted_wiki_excerpt_chars": 24000,
+        "reset_live_session": True,
+        "notify_user": True,
+        "fallback_safe": True,
+        "retention_days": 30,
+    },
     "credential_pool_strategies": {},
     "toolsets": ["hermes-cli"],
     "agent": {
@@ -553,6 +649,7 @@ DEFAULT_CONFIG = {
         # only controls how inbound user images are presented.
         "image_input_mode": "auto",
         "disabled_toolsets": [],
+        "turn_budgets": get_default_agent_turn_budgets(),
     },
     
     "terminal": {
@@ -1180,7 +1277,7 @@ DEFAULT_CONFIG = {
         # extras" without silently stripping MCP tools the parent already has.
         # Set to false for strict intersection.
         "inherit_mcp_toolsets": True,
-        "max_iterations": 50,  # per-subagent iteration cap (each subagent gets its own budget,
+        "max_iterations": 90,  # per-subagent iteration cap (each subagent gets its own budget,
                                # independent of the parent's max_iterations)
         "child_timeout_seconds": 600,  # wall-clock timeout for each child agent (floor 30s,
                                        # no ceiling). High-reasoning models on large tasks
@@ -3204,7 +3301,7 @@ def check_config_version() -> Tuple[int, int]:
 # Fields that are valid at root level of config.yaml
 _KNOWN_ROOT_KEYS = {
     "_config_version", "model", "providers", "fallback_model",
-    "fallback_providers", "credential_pool_strategies", "toolsets",
+    "fallback_providers", "gateway_context_spill", "credential_pool_strategies", "toolsets",
     "agent", "terminal", "display", "compression", "delegation",
     "auxiliary", "custom_providers", "context", "memory", "gateway",
     "sessions",

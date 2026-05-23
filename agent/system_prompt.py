@@ -29,6 +29,8 @@ from typing import Any, Dict, List, Optional
 
 from agent.prompt_builder import (
     DEFAULT_AGENT_IDENTITY,
+    DELEGATION_COMPLEX_TASK_NUDGE,
+    DELEGATION_GUIDANCE,
     GOOGLE_MODEL_OPERATIONAL_GUIDANCE,
     HERMES_AGENT_HELP_GUIDANCE,
     KANBAN_GUIDANCE,
@@ -114,6 +116,8 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
     # this block.
     if "kanban_show" in agent.valid_tool_names:
         tool_guidance.append(KANBAN_GUIDANCE)
+    if "delegate_task" in agent.valid_tool_names:
+        tool_guidance.append(DELEGATION_GUIDANCE)
     if tool_guidance:
         stable_parts.append(" ".join(tool_guidance))
 

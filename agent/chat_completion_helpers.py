@@ -694,6 +694,43 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
     if not fb_provider or not fb_model:
         return agent._try_activate_fallback()  # skip invalid, try next
 
+    # Fallback must never receive a raw oversized payload.  The current
+    # request pressure is captured immediately before the primary provider
+    # call; if it exceeds this fallback's smaller context window, skip this
+    # fallback instead of amplifying a context failure into fake quota/auth
+    # errors.
+    pressure = getattr(agent, "_last_request_pressure", None)
+    if isinstance(pressure, dict):
+        try:
+            from agent.model_metadata import get_model_context_length
+            fb_ctx_for_guard = get_model_context_length(
+                fb_model,
+                base_url=str(fb.get("base_url") or ""),
+                api_key=str(fb.get("api_key") or ""),
+                provider=fb_provider,
+                config_context_length=None,
+            )
+            fb_threshold = min(180000, int((fb_ctx_for_guard or 200000) * 0.70))
+            if int(pressure.get("approx_tokens") or 0) >= fb_threshold:
+                logging.warning(
+                    "Fallback skip: request too large for fallback %s/%s (~%s tokens >= %s). Refusing raw oversized fallback.",
+                    fb_provider,
+                    fb_model,
+                    pressure.get("approx_tokens"),
+                    fb_threshold,
+                )
+                agent._fallback_disabled_due_to_context_size = True
+                return agent._try_activate_fallback(reason=reason)
+        except Exception as guard_exc:
+            logging.warning(
+                "Fallback skip: context-size guard failed for %s/%s (%s). Refusing raw fallback for safety.",
+                fb_provider,
+                fb_model,
+                guard_exc,
+            )
+            agent._fallback_disabled_due_to_context_size = True
+            return agent._try_activate_fallback(reason=reason)
+
     # Skip entries that resolve to the current (provider, model) — falling
     # back to the same backend that just failed loops the failure. Compare
     # base_url too so two distinct custom_providers entries pointing at the

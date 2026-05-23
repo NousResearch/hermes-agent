@@ -599,6 +599,7 @@ class DiscordAdapter(BasePlatformAdapter):
         """Connect to Discord and start receiving events."""
         if not DISCORD_AVAILABLE:
             logger.error("[%s] discord.py not installed. Run: pip install discord.py", self.name)
+            self._set_fatal_error("missing_dependency", "discord.py not installed", retryable=False)
             return False
 
         # Load opus codec for voice channel support
@@ -627,6 +628,7 @@ class DiscordAdapter(BasePlatformAdapter):
 
         if not self.config.token:
             logger.error("[%s] No bot token configured", self.name)
+            self._set_fatal_error("missing_credentials", "No bot token configured", retryable=False)
             return False
 
         try:

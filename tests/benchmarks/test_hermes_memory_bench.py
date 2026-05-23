@@ -67,3 +67,23 @@ def test_benchmark_does_not_write_graph_or_operation_ledger(tmp_path, monkeypatc
     assert not (hermes_home / "memory" / "graph" / "memory_graph.sqlite").exists()
     assert not (hermes_home / "memory" / "audit" / "memory_operation_ledger.jsonl").exists()
     assert not (hermes_home / "memory" / "proposals" / "memory_write_proposals.jsonl").exists()
+
+
+def test_memory_real_proposal_dry_run_smoke_case_is_preview_only():
+    report = run_benchmark("smoke")
+    case = next(
+        case
+        for case in report["cases"]
+        if case["dimension"] == "memory_real_proposal_dry_run"
+    )
+
+    dry_run = case["evidence"]["real_proposal_dry_run_candidates"][0]
+    assert case["actual_answer"] == "manual_final_preflight_required"
+    assert dry_run["dry_run_validation"] == {"valid": True, "errors": []}
+    assert dry_run["proposal_record_preview"]["written"] is False
+    assert dry_run["operation_ledger_preview"]["written"] is False
+    assert dry_run["operation_ledger_preview"]["created_operation_event"] is False
+    assert case["evidence"]["created_real_proposal"] is False
+    assert case["evidence"]["created_operation_event"] is False
+    assert case["evidence"]["writes_proposal_files"] is False
+    assert case["evidence"]["writes_operation_ledger"] is False

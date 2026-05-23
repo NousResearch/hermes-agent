@@ -36,6 +36,7 @@ python -m benchmarks.hermes_memory_bench.run --suite smoke --output /tmp/hermes-
 - `memory_governance_submission_packet`
 - `memory_human_review_outcome_gate`
 - `memory_real_proposal_creation_plan`
+- `memory_real_proposal_dry_run`
 - `latency_ms`
 
 ## Hybrid Retrieval Fusion v0.1
@@ -267,6 +268,26 @@ events.
 The smoke suite includes `memory_real_proposal_creation_plan`, proving that a
 valid `approve_real_proposal_creation` outcome becomes a
 `manual_creation_plan_required` plan candidate without creating a real proposal.
+
+## Memory Real Proposal Dry Run v0.1
+
+Memory Real Proposal Dry Run v0.1 lives in
+`agent.memory_real_proposal_dry_run`. It turns a valid
+`manual_creation_plan_required` plan candidate into a deterministic
+`manual_final_preflight_required` dry-run candidate.
+
+The dry run previews the proposal record, operation-ledger record, deterministic
+target paths, payload, source evidence, and final preflight checklist. Invalid
+plans, missing payload previews, missing source evidence, or missing creation
+steps/preflight checks produce invalid dry runs with explicit reasons. The dry
+run creates preview candidates only; it does not create real proposals, write
+proposal files, write operation-ledger events, submit to governance, persist
+approvals, apply proposals, write memory, write the Memory Graph, or modify
+config.
+
+The smoke suite includes `memory_real_proposal_dry_run`, proving that a valid
+manual creation plan becomes a `manual_final_preflight_required` dry run without
+creating a real proposal or operation event.
 
 ## Report Schema
 

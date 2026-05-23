@@ -715,5 +715,60 @@
         }
       }
     ]
+  },
+  {
+    "id": "memory_real_proposal_dry_run_manual_final_preflight",
+    "dimension": "memory_real_proposal_dry_run",
+    "description": "Valid manual creation plan becomes a final preflight dry-run candidate.",
+    "query": "Can Hermes Memory Fabric preview a real proposal write without creating a proposal or ledger event?",
+    "project_scope": "memory-fabric",
+    "reviewer": "memory-fabric-reviewer",
+    "author": "memory-fabric-author",
+    "governance_reviewer": "memory-fabric-governance-reviewer",
+    "packet_reviewer": "memory-fabric-packet-reviewer",
+    "human_reviewer": "memory-fabric-human-reviewer",
+    "planner": "memory-fabric-plan-reviewer",
+    "operator": "memory-fabric-final-preflight-operator",
+    "expected_answer": "manual_final_preflight_required",
+    "memories": [
+      {
+        "fact_id": "real-proposal-dry-run-procedure-1",
+        "subject": "Hermes Memory Fabric",
+        "predicate": "procedure",
+        "object": "create read-only real proposal dry-run previews",
+        "project_id": "memory-fabric",
+        "source_episode_id": "episode-memory-real-proposal-dry-run-a",
+        "provenance": "bench:memory-real-proposal-dry-run:a",
+        "confidence": 0.92,
+        "valid_from": "2026-05-23T00:00:00Z",
+        "system_created_at": "2026-05-23T09:00:00Z",
+        "governance": {
+          "read_only": true,
+          "would_write_memory": false,
+          "would_modify_config": false,
+          "would_write_graph": false,
+          "does_not_create_operation_events": true
+        }
+      },
+      {
+        "fact_id": "real-proposal-dry-run-procedure-2",
+        "subject": "Hermes Memory Fabric",
+        "predicate": "procedure",
+        "object": "create read-only real proposal dry-run previews",
+        "project_id": "memory-fabric",
+        "source_episode_id": "episode-memory-real-proposal-dry-run-b",
+        "provenance": "bench:memory-real-proposal-dry-run:b",
+        "confidence": 0.91,
+        "valid_from": "2026-05-23T00:00:00Z",
+        "system_created_at": "2026-05-23T10:00:00Z",
+        "governance": {
+          "read_only": true,
+          "would_write_memory": false,
+          "would_modify_config": false,
+          "would_write_graph": false,
+          "does_not_create_operation_events": true
+        }
+      }
+    ]
   }
 ]

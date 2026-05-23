@@ -289,7 +289,7 @@ def init_agent(
     agent.provider = provider_name or ""
     agent.acp_command = acp_command or command
     agent.acp_args = list(acp_args or args or [])
-    if api_mode in {"chat_completions", "codex_responses", "anthropic_messages", "bedrock_converse", "codex_app_server"}:
+    if api_mode in {"chat_completions", "codex_responses", "anthropic_messages", "bedrock_converse", "cursor_sdk", "codex_app_server"}:
         agent.api_mode = api_mode
     elif agent.provider == "openai-codex":
         agent.api_mode = "codex_responses"
@@ -320,7 +320,16 @@ def init_agent(
         # (bedrock-runtime.<region>.amazonaws.com).
         agent.api_mode = "bedrock_converse"
     else:
-        agent.api_mode = "chat_completions"
+        try:
+            from providers import get_provider_profile as _get_profile_for_mode
+
+            _profile = _get_profile_for_mode(agent.provider)
+        except Exception:
+            _profile = None
+        if _profile and _profile.api_mode and _profile.api_mode != "chat_completions":
+            agent.api_mode = _profile.api_mode
+        else:
+            agent.api_mode = "chat_completions"
 
     # Eagerly warm the transport cache so import errors surface at init,
     # not mid-conversation.  Also validates the api_mode is registered.
@@ -687,6 +696,20 @@ def init_agent(
         if not agent.quiet_mode:
             _gr_label = " + Guardrails" if agent._bedrock_guardrail_config else ""
             print(f"🤖 AI Agent initialized with model: {agent.model} (AWS Bedrock, {agent._bedrock_region}{_gr_label})")
+    elif agent.api_mode == "cursor_sdk":
+        agent.api_key = api_key or os.getenv("CURSOR_API_KEY", "")
+        agent.base_url = base_url or "cursor-sdk://local"
+        agent.client = None
+        agent._client_kwargs = {
+            "api_key": agent.api_key,
+            "base_url": agent.base_url,
+        }
+        if not agent.quiet_mode:
+            print(f"🤖 AI Agent initialized with model: {agent.model} (Cursor SDK)")
+            if isinstance(agent.api_key, str) and len(agent.api_key) > 12:
+                print(f"🔑 Using API key: {agent.api_key[:8]}...{agent.api_key[-4:]}")
+            else:
+                print("⚠️  Warning: CURSOR_API_KEY appears invalid or missing")
     else:
         if api_key and base_url:
             # Explicit credentials from CLI/gateway — construct directly.

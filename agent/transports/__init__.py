@@ -66,3 +66,7 @@ def _discover_transports() -> None:
         import agent.transports.bedrock  # noqa: F401
     except ImportError:
         pass
+    try:
+        import agent.transports.cursor_sdk  # noqa: F401
+    except ImportError:
+        pass

@@ -242,6 +242,7 @@ _VALID_API_MODES = {
     "codex_responses",
     "anthropic_messages",
     "bedrock_converse",
+    "cursor_sdk",
     # Optional opt-in: hand the entire turn to a `codex app-server` subprocess
     # so terminal/file-ops/patching/sandboxing run inside Codex's own runtime
     # instead of Hermes' tool dispatch. Gated behind config key
@@ -389,15 +390,28 @@ def _resolve_runtime_from_pool_entry(
             # Refs #16878.
             from hermes_cli.models import opencode_model_api_mode
             api_mode = opencode_model_api_mode(provider, effective_model)
+        elif provider == "cursor-sdk":
+            api_mode = "cursor_sdk"
         elif configured_mode and _provider_supports_explicit_api_mode(provider, configured_provider):
             api_mode = configured_mode
         else:
+            try:
+                from providers import get_provider_profile
+
+                _profile = get_provider_profile(provider)
+            except Exception:
+                _profile = None
+            if _profile and _profile.api_mode and _profile.api_mode != "chat_completions":
+                api_mode = _profile.api_mode
+            else:
+                _profile = None
             # Auto-detect Anthropic-compatible endpoints (/anthropic suffix,
             # Kimi /coding, api.openai.com → codex_responses, api.x.ai →
             # codex_responses).
-            detected = _detect_api_mode_for_url(base_url)
-            if detected:
-                api_mode = detected
+            if _profile is None:
+                detected = _detect_api_mode_for_url(base_url)
+                if detected:
+                    api_mode = detected
 
     # OpenCode base URLs end with /v1 for OpenAI-compatible models, but the
     # Anthropic SDK prepends its own /v1/messages to the base_url.  Strip the
@@ -1176,7 +1190,15 @@ def _resolve_explicit_runtime(
             api_mode = "codex_responses"
         else:
             configured_mode = _parse_api_mode(model_cfg.get("api_mode"))
-            if configured_mode:
+            try:
+                from providers import get_provider_profile
+
+                _profile = get_provider_profile(provider)
+            except Exception:
+                _profile = None
+            if _profile and _profile.api_mode and _profile.api_mode != "chat_completions":
+                api_mode = _profile.api_mode
+            elif configured_mode:
                 api_mode = configured_mode
             else:
                 # Auto-detect from URL (Anthropic /anthropic suffix,
@@ -1632,15 +1654,24 @@ def resolve_runtime_provider(
                 from hermes_cli.models import opencode_model_api_mode
                 _effective = target_model or model_cfg.get("default", "")
                 api_mode = opencode_model_api_mode(provider, _effective)
-            elif configured_mode and _provider_supports_explicit_api_mode(provider, configured_provider):
-                api_mode = configured_mode
             else:
-                # Auto-detect Anthropic-compatible endpoints by URL convention
-                # (e.g. https://api.minimax.io/anthropic, https://dashscope.../anthropic)
-                # plus api.openai.com → codex_responses and api.x.ai → codex_responses.
-                detected = _detect_api_mode_for_url(base_url)
-                if detected:
-                    api_mode = detected
+                try:
+                    from providers import get_provider_profile
+
+                    _profile = get_provider_profile(provider)
+                except Exception:
+                    _profile = None
+                if _profile and _profile.api_mode and _profile.api_mode != "chat_completions":
+                    api_mode = _profile.api_mode
+                elif configured_mode and _provider_supports_explicit_api_mode(provider, configured_provider):
+                    api_mode = configured_mode
+                else:
+                    # Auto-detect Anthropic-compatible endpoints by URL convention
+                    # (e.g. https://api.minimax.io/anthropic, https://dashscope.../anthropic)
+                    # plus api.openai.com → codex_responses and api.x.ai → codex_responses.
+                    detected = _detect_api_mode_for_url(base_url)
+                    if detected:
+                        api_mode = detected
         # Strip trailing /v1 for OpenCode Anthropic models (see comment above).
         if api_mode == "anthropic_messages" and provider in {"opencode-zen", "opencode-go"}:
             base_url = re.sub(r"/v1/?$", "", base_url)

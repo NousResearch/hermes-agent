@@ -181,6 +181,19 @@ def interruptible_api_call(agent, api_kwargs: dict):
                         invalidate_runtime_client(region)
                     raise
                 result["response"] = normalize_converse_response(raw_response)
+            elif agent.api_mode == "cursor_sdk":
+                from agent.cursor_sdk_adapter import create_cursor_sdk_response
+
+                result["response"] = create_cursor_sdk_response(
+                    api_key=api_kwargs.get("api_key") or getattr(agent, "api_key", ""),
+                    model=api_kwargs.get("model") or getattr(agent, "model", ""),
+                    messages=api_kwargs.get("messages") or [],
+                    cwd=api_kwargs.get("cwd") or os.getcwd(),
+                    runtime=api_kwargs.get("runtime"),
+                    timeout=api_kwargs.get("timeout"),
+                    stream=False,
+                    interrupt_check=lambda: agent._interrupt_requested,
+                )
             else:
                 request_client = _set_request_client(
                     agent._create_request_openai_client(
@@ -316,6 +329,18 @@ def build_api_kwargs(agent, api_messages: list) -> dict:
             max_tokens=agent.max_tokens or 4096,
             region=region,
             guardrail_config=guardrail,
+        )
+
+    if agent.api_mode == "cursor_sdk":
+        _cursor = agent._get_transport()
+        return _cursor.build_kwargs(
+            model=agent.model,
+            messages=api_messages,
+            tools=None,
+            api_key=getattr(agent, "api_key", ""),
+            cwd=os.getenv("CURSOR_SDK_CWD") or os.getcwd(),
+            runtime=os.getenv("CURSOR_SDK_RUNTIME", "local"),
+            timeout=agent._resolved_api_call_timeout(),
         )
 
     if agent.api_mode == "codex_responses":
@@ -1301,6 +1326,56 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
             t.join(timeout=0.3)
             if agent._interrupt_requested:
                 raise InterruptedError("Agent interrupted during Bedrock API call")
+        if result["error"] is not None:
+            raise result["error"]
+        return result["response"]
+
+    if agent.api_mode == "cursor_sdk":
+        result = {"response": None, "error": None}
+        first_delta_fired = {"done": False}
+
+        def _fire_first():
+            if not first_delta_fired["done"] and on_first_delta:
+                first_delta_fired["done"] = True
+                try:
+                    on_first_delta()
+                except Exception:
+                    pass
+
+        def _cursor_call():
+            try:
+                from agent.cursor_sdk_adapter import create_cursor_sdk_response
+
+                def _on_delta(text: str) -> None:
+                    _fire_first()
+                    agent._fire_stream_delta(text)
+
+                def _on_reasoning(text: str) -> None:
+                    _fire_first()
+                    agent._fire_reasoning_delta(text)
+
+                result["response"] = create_cursor_sdk_response(
+                    api_key=api_kwargs.get("api_key") or getattr(agent, "api_key", ""),
+                    model=api_kwargs.get("model") or getattr(agent, "model", ""),
+                    messages=api_kwargs.get("messages") or [],
+                    cwd=api_kwargs.get("cwd") or os.getcwd(),
+                    runtime=api_kwargs.get("runtime"),
+                    timeout=api_kwargs.get("timeout"),
+                    stream=True,
+                    on_delta=_on_delta if agent._has_stream_consumers() else None,
+                    on_reasoning_delta=_on_reasoning if agent.reasoning_callback else None,
+                    on_status=lambda message: agent._touch_activity(message),
+                    interrupt_check=lambda: agent._interrupt_requested,
+                )
+            except Exception as e:
+                result["error"] = e
+
+        t = threading.Thread(target=_cursor_call, daemon=True)
+        t.start()
+        while t.is_alive():
+            t.join(timeout=0.3)
+            if agent._interrupt_requested:
+                raise InterruptedError("Agent interrupted during Cursor SDK call")
         if result["error"] is not None:
             raise result["error"]
         return result["response"]

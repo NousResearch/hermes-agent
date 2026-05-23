@@ -470,8 +470,8 @@ class TestRootLevelProviderOverride:
 
         assert cfg["model"]["provider"] == "openrouter"
 
-    def test_root_provider_ignored_when_default_model_provider_exists(self, tmp_path, monkeypatch):
-        """Even when model.provider is the default 'auto', root-level provider is ignored."""
+    def test_root_provider_used_as_fallback_when_model_provider_missing(self, tmp_path, monkeypatch):
+        """Legacy root-level provider still populates model.provider in the CLI loader."""
         import yaml
 
         hermes_home = tmp_path / ".hermes"
@@ -491,8 +491,29 @@ class TestRootLevelProviderOverride:
         monkeypatch.setattr(cli, "_hermes_home", hermes_home)
         cfg = cli.load_cli_config()
 
-        # Root-level "opencode-go" must NOT leak through
-        assert cfg["model"]["provider"] != "opencode-go"
+        assert cfg["model"]["provider"] == "opencode-go"
+
+    def test_root_base_url_used_as_fallback_when_model_base_url_missing(self, tmp_path, monkeypatch):
+        """Legacy root-level base_url still populates model.base_url in the CLI loader."""
+        import yaml
+
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+        config_path = hermes_home / "config.yaml"
+        config_path.write_text(yaml.safe_dump({
+            "base_url": "https://example.com/v1",
+            "model": {
+                "default": "google/gemini-3-flash-preview",
+            },
+        }))
+
+        import cli
+        monkeypatch.setattr(cli, "_hermes_home", hermes_home)
+        cfg = cli.load_cli_config()
+
+        assert cfg["model"]["base_url"] == "https://example.com/v1"
 
     def test_terminal_vercel_runtime_bridged_to_env(self, tmp_path, monkeypatch):
         """Classic CLI must expose terminal.vercel_runtime to terminal_tool.py."""

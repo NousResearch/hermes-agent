@@ -868,6 +868,28 @@ class TestProcessToolHandler:
         result = json.loads(_handle_process({"action": "poll"}))
         assert "error" in result
 
+    def test_non_list_actions_are_task_scoped(self):
+        from tools.process_registry import ProcessSession, _handle_process, process_registry
+
+        session = ProcessSession(
+            id="proc_scope_test",
+            command="sleep 10",
+            task_id="owner-task",
+            started_at=time.time(),
+        )
+        process_registry._running[session.id] = session
+        try:
+            result = json.loads(
+                _handle_process(
+                    {"action": "poll", "session_id": session.id},
+                    task_id="other-task",
+                )
+            )
+            assert "error" in result
+            assert "does not belong" in result["error"]
+        finally:
+            process_registry._running.pop(session.id, None)
+
     def test_unknown_action(self):
         from tools.process_registry import _handle_process
         result = json.loads(_handle_process({"action": "unknown_action"}))

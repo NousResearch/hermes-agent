@@ -26,6 +26,19 @@ def _write_registry(agents_dir, payload):
     (agents_dir / "AGENT_REGISTRY.json").write_text(json.dumps(payload), encoding="utf-8")
 
 
+def _registered_tools(mcp_module):
+    class _FakeMcp:
+        def tool(self):
+            def _decorator(fn):
+                setattr(self, fn.__name__, fn)
+                return fn
+            return _decorator
+
+    fake = _FakeMcp()
+    mcp_module.register_skills_tools(fake)
+    return fake
+
+
 def test_fleet_context_snapshot_reports_missing_agents_dir(snapshot_env):
     _repo, _home, mcp = snapshot_env
 
@@ -116,3 +129,58 @@ def test_fleet_context_snapshot_gateway_unavailable_keeps_skills_mode(snapshot_e
 
     assert result["gateway_reachable"] is False
     assert result["mode"] == "skills_only"
+
+
+def test_skills_list_supports_external_hermes_agents_dir(tmp_path, monkeypatch):
+    repo = tmp_path / "hermes-agent"
+    repo.mkdir()
+    agents_dir = tmp_path / "product" / "agents"
+    agent_dir = agents_dir / "alpha"
+    agent_dir.mkdir(parents=True)
+    (agent_dir / "SOUL.md").write_text("# alpha\n", encoding="utf-8")
+
+    monkeypatch.setenv("HERMES_REPO", str(repo))
+    monkeypatch.setenv("HERMES_AGENTS_DIR", str(agents_dir))
+
+    import hermes_skills_mcp as mcp
+    tools = _registered_tools(mcp)
+
+    result = json.loads(tools.skills_list("agents"))
+
+    assert result["paths"]["agents_dir"] == str(agents_dir)
+    assert result["agents_skills"][0]["agent"] == "alpha"
+    assert result["agents_skills"][0]["path"] == str(agent_dir)
+
+
+def test_skills_context_tools_reject_path_escape(snapshot_env):
+    repo, _home, mcp = snapshot_env
+    agents_dir = repo / "agents"
+    agent_dir = agents_dir / "alpha"
+    agent_dir.mkdir(parents=True)
+    (agent_dir / "SOUL.md").write_text("# alpha\n", encoding="utf-8")
+    (repo / ".learnings").mkdir()
+    (repo / "artifacts").mkdir()
+    tools = _registered_tools(mcp)
+
+    assert "Invalid agent path" in tools.skills_read("../..", "etc/passwd")
+    assert "Invalid learnings path" in tools.learnings_read("../config.yaml")
+    assert "Invalid artifacts path" in tools.artifacts_list("../")
+
+
+def test_agents_tools_support_nested_registry_shape(snapshot_env):
+    repo, _home, mcp = snapshot_env
+    agents_dir = repo / "agents"
+    _write_registry(
+        agents_dir,
+        {"agents": {"alpha": {"lane": "A", "status": "active"}}},
+    )
+    (agents_dir / "alpha").mkdir()
+    (agents_dir / "alpha" / "SOUL.md").write_text("# alpha\n", encoding="utf-8")
+    tools = _registered_tools(mcp)
+
+    listed = json.loads(tools.agents_list())
+    detail = json.loads(tools.agents_get("alpha"))
+
+    assert listed["count"] == 1
+    assert listed["agents"][0]["name"] == "alpha"
+    assert detail["registry"] == {"lane": "A", "status": "active"}

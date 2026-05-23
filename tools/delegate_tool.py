@@ -30,7 +30,7 @@ from concurrent.futures import (
 )
 from typing import Any, Dict, List, Optional
 
-from toolsets import TOOLSETS
+from toolsets import TOOLSETS, resolve_toolset
 
 # Sentinel value used by the runtime provider system for providers that are
 # not natively known (named custom providers, third-party aggregators, etc.).
@@ -670,14 +670,25 @@ def _resolve_workspace_hint(parent_agent) -> Optional[str]:
 
 
 def _strip_blocked_tools(toolsets: List[str]) -> List[str]:
-    """Remove toolsets that contain only blocked tools."""
+    """Remove toolsets that would expose blocked delegated-child tools."""
     blocked_toolset_names = {
         "delegation",
         "clarify",
         "memory",
         "code_execution",
     }
-    return [t for t in toolsets if t not in blocked_toolset_names]
+    stripped: list[str] = []
+    for toolset_name in toolsets:
+        if toolset_name in blocked_toolset_names:
+            continue
+        try:
+            resolved_tools = set(resolve_toolset(toolset_name))
+        except Exception:
+            resolved_tools = set(TOOLSETS.get(toolset_name, {}).get("tools", []))
+        if resolved_tools & DELEGATE_BLOCKED_TOOLS:
+            continue
+        stripped.append(toolset_name)
+    return stripped
 
 
 def _build_child_progress_callback(
@@ -954,9 +965,13 @@ def _build_child_agent(
             )
         child_toolsets = _strip_blocked_tools(child_toolsets)
     elif parent_agent and parent_enabled is not None:
-        child_toolsets = _strip_blocked_tools(parent_enabled)
+        child_toolsets = _strip_blocked_tools(
+            sorted(_expand_parent_toolsets(set(parent_enabled)))
+        )
     elif parent_toolsets:
-        child_toolsets = _strip_blocked_tools(sorted(parent_toolsets))
+        child_toolsets = _strip_blocked_tools(
+            sorted(_expand_parent_toolsets(set(parent_toolsets)))
+        )
     else:
         child_toolsets = _strip_blocked_tools(DEFAULT_TOOLSETS)
 

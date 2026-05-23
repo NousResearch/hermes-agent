@@ -848,6 +848,13 @@ class TestBlockedTools(unittest.TestCase):
         self.assertEqual(_MIN_SPAWN_DEPTH, 1)
         self.assertEqual(_MAX_SPAWN_DEPTH_CAP, 3)
 
+    def test_composite_toolsets_do_not_reexpose_blocked_tools(self):
+        filtered = _strip_blocked_tools(["hermes-cli", "terminal", "file", "delegation"])
+        self.assertNotIn("hermes-cli", filtered)
+        self.assertNotIn("delegation", filtered)
+        self.assertIn("terminal", filtered)
+        self.assertIn("file", filtered)
+
 
 class TestDelegationCredentialResolution(unittest.TestCase):
     """Tests for provider:model credential resolution in delegation config."""
@@ -911,7 +918,8 @@ class TestDelegationCredentialResolution(unittest.TestCase):
         creds = _resolve_delegation_credentials(cfg, parent)
 
         self.assertEqual(creds["model"], "server-default-model")
-        self.assertEqual(creds["provider"], "custom")
+        # Named custom:* providers keep the configured id when runtime resolves as custom.
+        self.assertEqual(creds["provider"], "custom:my-server")
         self.assertEqual(creds["base_url"], "https://my-server.example/v1")
         mock_resolve.assert_called_once_with(
             requested="custom:my-server",

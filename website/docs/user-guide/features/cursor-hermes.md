@@ -65,7 +65,7 @@ Use this mode for: editing agents, pipeline code, audits, PRs, and Cursor Cloud 
 
 **Requires** `hermes gateway` (or an already-running gateway) and populated `HERMES_HOME/sessions/`.
 
-Messaging tools: `conversations_list`, `messages_read`, `messages_send`, `events_poll`, `events_wait`, approvals, `channels_list`, etc.
+Messaging tools: `conversations_list`, `messages_read`, `messages_send`, `events_poll`, `events_wait`, bridge-observed approvals, `channels_list`, etc. Approval responses are best-effort for approvals observed by the MCP bridge; they are not a durable gateway approval API.
 
 Use this mode for: steering live Telegram/Discord/Slack sessions, approvals, and operational messaging.
 

@@ -1517,6 +1517,17 @@ def _handle_process(args, **kw):
     elif action in {"poll", "log", "wait", "kill", "write", "submit", "close"}:
         if not session_id:
             return tool_error(f"session_id is required for {action}")
+        if task_id:
+            session = process_registry.get(session_id)
+            if session is None:
+                return json.dumps(
+                    {"status": "not_found", "error": f"No process with ID {session_id}"},
+                    ensure_ascii=False,
+                )
+            if session.task_id != task_id:
+                return tool_error(
+                    f"Process {session_id} does not belong to the current task"
+                )
         if action == "poll":
             return json.dumps(process_registry.poll(session_id), ensure_ascii=False)
         elif action == "log":

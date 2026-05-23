@@ -114,6 +114,29 @@ def _file_mtime_iso(path: Path) -> str:
         return ""
 
 
+def _display_path(path: Path) -> str:
+    """Return a repo-relative path when possible, otherwise an absolute path."""
+    try:
+        return str(path.relative_to(_get_hermes_repo()))
+    except ValueError:
+        return str(path)
+
+
+def _safe_child_path(root: Path, *parts: str) -> Optional[Path]:
+    """Resolve a user-supplied child path without escaping ``root``."""
+    try:
+        for part in parts:
+            if Path(str(part)).is_absolute():
+                return None
+        base = root.resolve()
+        candidate = base.joinpath(*(str(part) for part in parts)).resolve()
+        if not candidate.is_relative_to(base):
+            return None
+        return candidate
+    except (OSError, RuntimeError, ValueError):
+        return None
+
+
 def _dir_listing(path: Path, max_depth: int = 2, _depth: int = 0) -> List[dict]:
     """Recursively list a directory up to max_depth."""
     if not path.is_dir() or _depth > max_depth:
@@ -126,7 +149,7 @@ def _dir_listing(path: Path, max_depth: int = 2, _depth: int = 0) -> List[dict]:
             entry: dict = {
                 "name": item.name,
                 "type": "directory" if item.is_dir() else "file",
-                "path": str(item.relative_to(_get_hermes_repo())),
+                "path": _display_path(item),
             }
             if item.is_file():
                 try:
@@ -375,7 +398,9 @@ def _find_heartbeat(agent_name: str) -> Optional[dict]:
     agents_dir = _find_agents_dir()
     if not agents_dir:
         return None
-    heartbeat = agents_dir / agent_name / "HEARTBEAT.md"
+    heartbeat = _safe_child_path(agents_dir, agent_name, "HEARTBEAT.md")
+    if not heartbeat:
+        return None
     if not heartbeat.exists():
         return None
     try:
@@ -394,7 +419,9 @@ def _find_soul_md(agent_name: str) -> Optional[Path]:
     agents_dir = _find_agents_dir()
     if not agents_dir:
         return None
-    soul = agents_dir / agent_name / "SOUL.md"
+    soul = _safe_child_path(agents_dir, agent_name, "SOUL.md")
+    if not soul:
+        return None
     if soul.exists():
         return soul
     return None
@@ -566,7 +593,7 @@ def register_skills_tools(mcp) -> None:
                     entry: dict = {
                         "agent": agent_dir.name,
                         "has_soul_md": soul.exists(),
-                        "path": str(agent_dir.relative_to(_get_hermes_repo())),
+                        "path": _display_path(agent_dir),
                     }
                     if soul.exists():
                         entry["soul_md_modified"] = _file_mtime_iso(soul)
@@ -612,7 +639,9 @@ def register_skills_tools(mcp) -> None:
         # Try custom agent first
         agents_dir = _find_agents_dir()
         if agents_dir:
-            agent_path = agents_dir / name / file
+            agent_path = _safe_child_path(agents_dir, name, file)
+            if agent_path is None:
+                return json.dumps({"error": "Invalid agent path"}, indent=2)
             if agent_path.exists():
                 content = _safe_read(agent_path)
                 return json.dumps({
@@ -628,7 +657,9 @@ def register_skills_tools(mcp) -> None:
         skills_dir = _get_repo_skills_dir()
         if skills_dir:
             # Direct path
-            skill_path = skills_dir / name / file
+            skill_path = _safe_child_path(skills_dir, name, file)
+            if skill_path is None:
+                return json.dumps({"error": "Invalid skill path"}, indent=2)
             if skill_path.exists():
                 content = _safe_read(skill_path)
                 return json.dumps({
@@ -643,7 +674,9 @@ def register_skills_tools(mcp) -> None:
             for category in skills_dir.iterdir():
                 if not category.is_dir():
                     continue
-                candidate = category / name / file
+                candidate = _safe_child_path(category, name, file)
+                if candidate is None:
+                    continue
                 if candidate.exists():
                     content = _safe_read(candidate)
                     return json.dumps({
@@ -678,7 +711,7 @@ def register_skills_tools(mcp) -> None:
             include_heartbeat: Include HEARTBEAT.md content for each agent
                                (default false — set true for health check)
         """
-        registry = _load_agent_registry()
+        registry = _registry_agents(_load_agent_registry())
         agents_dir = _find_agents_dir()
 
         agents = []
@@ -738,7 +771,7 @@ def register_skills_tools(mcp) -> None:
         result: dict = {"name": name}
 
         # Registry entry
-        registry = _load_agent_registry()
+        registry = _registry_agents(_load_agent_registry())
         if name in registry:
             result["registry"] = registry[name]
 
@@ -759,8 +792,8 @@ def register_skills_tools(mcp) -> None:
         # Agent directory listing
         agents_dir = _find_agents_dir()
         if agents_dir:
-            agent_dir = agents_dir / name
-            if agent_dir.is_dir():
+            agent_dir = _safe_child_path(agents_dir, name)
+            if agent_dir and agent_dir.is_dir():
                 result["files"] = []
                 for item in sorted(agent_dir.iterdir()):
                     if item.name.startswith("."):
@@ -879,7 +912,9 @@ def register_skills_tools(mcp) -> None:
                 ],
             }, indent=2)
 
-        target = learnings_dir / file
+        target = _safe_child_path(learnings_dir, file)
+        if target is None:
+            return json.dumps({"error": "Invalid learnings path"}, indent=2)
 
         # If requesting a directory, list it
         if target.is_dir():
@@ -939,7 +974,9 @@ def register_skills_tools(mcp) -> None:
                 "error": "Artifacts directory not found",
             }, indent=2)
 
-        target = artifacts_dir / path if path else artifacts_dir
+        target = _safe_child_path(artifacts_dir, path) if path else artifacts_dir.resolve()
+        if target is None:
+            return json.dumps({"error": "Invalid artifacts path"}, indent=2)
         if not target.is_dir():
             return json.dumps({
                 "error": f"Directory not found: {target}",
@@ -949,9 +986,9 @@ def register_skills_tools(mcp) -> None:
         entries = _dir_listing(target, max_depth=depth)
 
         return json.dumps({
-            "path": str(target.relative_to(_get_hermes_repo())),
+            "path": _display_path(target),
             "depth": depth,
             "entries": entries,
         }, indent=2)
 
-    logger.debug("Registered 7 skills/knowledge MCP tools")
+    logger.debug("Registered 8 skills/knowledge MCP tools")

@@ -280,13 +280,26 @@ def execute_via_helper(
     *,
     helper_path: str | None = None,
     timeout_s: float = 15.0,
+    delay_seconds: float = 0.0,
+    fire_and_forget: bool = False,
 ) -> dict[str, Any]:
     """Run the Artemis helper script that pushes the 3 self-intros and
-    sets `profile.sub_agent_intros_pushed=true`.
+    sets the onboarding-pushed flag.
+
+    Args:
+      delay_seconds: Helper sleeps this long before posting the first
+        intro. Used so Coach's reply lands on Slack before the team's
+        self-introductions start (Coach speaks first, then the team).
+      fire_and_forget: When true, spawn the helper as a detached
+        background process and return immediately with
+        {"ok": True, "mode": "fire_and_forget"}; the caller does not
+        observe success/failure. When false (default), wait for the
+        helper to finish and parse its JSON output.
 
     Returns:
-      {"ok": True, "pushed": <int>} on success
-      {"ok": False, "stage": "...", "error": "..."} on failure
+      Sync mode: {"ok": True, "pushed": <int>} on success
+                 {"ok": False, "stage": "...", "error": "..."} on failure
+      Fire-and-forget mode: {"ok": True, "mode": "fire_and_forget"}
 
     Failures are not raised — caller logs and proceeds.
     """
@@ -307,7 +320,11 @@ def execute_via_helper(
         fail["error"] = f"helper not found: {helper_path}"
         return fail
 
-    payload = json.dumps({"user_id": user_id, "intros": intros})
+    payload = json.dumps({
+        "user_id": user_id,
+        "intros": intros,
+        "delay_seconds": delay_seconds,
+    })
 
     # Same venv resolution as turn_intent_detector — Artemis MCP server
     # needs the Hermes venv python (mcp SDK).
@@ -328,6 +345,27 @@ def execute_via_helper(
         _tts = None
     if _tts:
         _subprocess_env["HERMES_SESSION_THREAD_TS"] = _tts
+
+    if fire_and_forget:
+        # Detached background process: dispatcher will sleep
+        # delay_seconds then post intros. Gateway returns immediately
+        # so Coach's reply can land on Slack first.
+        try:
+            proc_bg = subprocess.Popen(
+                [venv_python, helper_path],
+                stdin=subprocess.PIPE,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                env=_subprocess_env,
+                start_new_session=True,
+            )
+            if proc_bg.stdin is not None:
+                proc_bg.stdin.write(payload.encode("utf-8"))
+                proc_bg.stdin.close()
+        except OSError as e:
+            fail["error"] = f"helper spawn failed: {e}"
+            return fail
+        return {"ok": True, "mode": "fire_and_forget"}
 
     try:
         proc = subprocess.run(

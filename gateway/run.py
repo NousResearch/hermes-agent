@@ -3156,12 +3156,19 @@ class GatewayRunner:
                     _onb = detect_onboarding_complete(response, _profile, _uid)
                     _log_onb(source.chat_id or "", _onb)
                     if _onb.get("trigger") and _uid:
-                        _onb_result = _onb_execute(_uid, _onb["intros"])
+                        # Fire-and-forget: helper sleeps 3s before posting
+                        # so Coach's reply lands on Slack first, then
+                        # team self-intros follow. Gateway doesn't wait.
+                        _onb_result = _onb_execute(
+                            _uid, _onb["intros"],
+                            delay_seconds=3.0,
+                            fire_and_forget=True,
+                        )
                         if _onb_result.get("ok"):
                             logger.info(
-                                "onboarding-complete: chat=%s dispatched=%s",
+                                "onboarding-complete: chat=%s spawned (mode=%s)",
                                 source.chat_id or "unknown",
-                                _onb_result.get("pushed"),
+                                _onb_result.get("mode", "sync"),
                             )
                         else:
                             logger.warning(

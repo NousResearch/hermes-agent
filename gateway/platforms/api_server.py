@@ -414,6 +414,71 @@ class ResponseStore:
 
 
 # ---------------------------------------------------------------------------
+# Runtime-detail helpers for /api/gateway/status
+# ---------------------------------------------------------------------------
+#
+# These give a Desktop-in-remote-mode client the same information
+# that `hermes --version` produces locally: which hermes-agent
+# version is running, the Python interpreter, the openai SDK
+# version (when installed), and the most recent release tag.
+#
+# Each helper is best-effort and never raises: on lookup failure
+# it returns None so the response field becomes JSON null rather
+# than the request failing.
+
+
+def _hermes_agent_version() -> Optional[str]:
+    """Installed hermes-agent package version, or None on failure."""
+    try:
+        from importlib.metadata import version
+
+        return version("hermes-agent")
+    except Exception:
+        return None
+
+
+def _python_runtime_version() -> str:
+    """Runtime Python version, e.g. ``"3.11.15"``. Always available."""
+    import sys
+
+    return (
+        f"{sys.version_info.major}."
+        f"{sys.version_info.minor}."
+        f"{sys.version_info.micro}"
+    )
+
+
+def _openai_sdk_version() -> Optional[str]:
+    """Installed `openai` package version (None if not importable)."""
+    try:
+        from importlib.metadata import version
+
+        return version("openai")
+    except Exception:
+        return None
+
+
+def _hermes_agent_released() -> Optional[str]:
+    """Most recent dated release tag in the local git checkout.
+
+    Falls back to None if git isn't reachable or the working tree
+    isn't a checkout. Cheap subprocess call gated to 2s so a
+    misconfigured environment can't slow this endpoint down.
+    """
+    try:
+        import subprocess
+
+        out = subprocess.check_output(
+            ["git", "describe", "--tags", "--abbrev=0"],
+            stderr=subprocess.DEVNULL,
+            timeout=2,
+        )
+        return out.decode("utf-8", "replace").strip().lstrip("v") or None
+    except Exception:
+        return None
+
+
+# ---------------------------------------------------------------------------
 # CORS middleware
 # ---------------------------------------------------------------------------
 
@@ -1082,6 +1147,21 @@ class APIServerAdapter(BasePlatformAdapter):
                 "active_agents": runtime.get("active_agents", 0),
                 "exit_reason": runtime.get("exit_reason"),
                 "updated_at": runtime.get("updated_at"),
+                # Version + runtime detail block — lets remote clients
+                # render an "About this Hermes" panel without shelling
+                # out `hermes --version` (which doesn't exist on a
+                # desktop-in-remote-mode host). All fields are
+                # best-effort: a lookup failure yields null, never an
+                # exception.
+                "version": _hermes_agent_version(),
+                "python_version": _python_runtime_version(),
+                "openai_sdk_version": _openai_sdk_version(),
+                "released": _hermes_agent_released(),
+                # Reserved for follow-up PRs that introduce optional
+                # subsystems (kanban write API, providers list,
+                # recent events, usage summary, …). Empty here,
+                # populated by the matching subsystem PRs as they land.
+                "subsystem_capabilities": [],
             }
         )
 

@@ -50,7 +50,7 @@ import sqlite3
 import time
 import uuid
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 try:
     from aiohttp import web
@@ -476,6 +476,115 @@ def _hermes_agent_released() -> Optional[str]:
         return out.decode("utf-8", "replace").strip().lstrip("v") or None
     except Exception:
         return None
+
+
+# ---------------------------------------------------------------------------
+# Provider inventory helpers (used by /api/providers)
+# ---------------------------------------------------------------------------
+#
+# Detects which LLM providers the user has set up, without ever
+# returning the credentials themselves. Layered detection:
+#
+# - .env file:    `<NAME>_API_KEY=<non-empty value>` → configured
+# - config.yaml:  any key under `providers: {…}` → configured
+# - config.yaml:  `model.provider` value → configured + marked active
+#
+# Both files are read with broad exception handling — a missing or
+# malformed file yields an empty contribution rather than a 500.
+
+_KNOWN_PROVIDERS: Tuple[str, ...] = (
+    "nous",
+    "openrouter",
+    "anthropic",
+    "openai",
+    "openai-codex",
+    "copilot",
+    "huggingface",
+    "google",
+    "deepseek",
+    "minimax",
+    "alibaba",
+    "kimi",
+    "zai",
+    "vercel",
+    "custom",
+)
+
+
+def _env_value_is_empty(env_text: str, pattern: str) -> bool:
+    """True if ``pattern=`` is followed by empty / whitespace /
+    quoted-empty content in a `.env`-style text blob."""
+    idx = env_text.find(pattern)
+    if idx < 0:
+        return True
+    line_end = env_text.find("\n", idx)
+    line = env_text[idx + len(pattern) : line_end if line_end > 0 else None]
+    value = line.strip().strip('"').strip("'")
+    return not value
+
+
+def _list_provider_status(profile_dir: Path) -> Tuple[List[Dict[str, Any]], Optional[str]]:
+    """Return ``(providers, active_provider)`` for the given profile.
+
+    Each providers entry is ``{key, label, configured, active}``.
+    ``active`` is the lowercase ``model.provider`` value from
+    config.yaml, or None if unset.
+    """
+    env_text = ""
+    env_path = profile_dir / ".env"
+    if env_path.exists():
+        try:
+            env_text = env_path.read_text(encoding="utf-8")
+        except Exception:
+            env_text = ""
+
+    configured_via_yaml: set = set()
+    active_provider: Optional[str] = None
+    cfg_path = profile_dir / "config.yaml"
+    if cfg_path.exists():
+        try:
+            import yaml  # PyYAML already a hermes-agent dep
+
+            cfg = yaml.safe_load(cfg_path.read_text(encoding="utf-8"))
+            if isinstance(cfg, dict):
+                providers_map = cfg.get("providers") or {}
+                if isinstance(providers_map, dict):
+                    for key in providers_map.keys():
+                        configured_via_yaml.add(str(key).lower())
+                model_section = cfg.get("model") or {}
+                if isinstance(model_section, dict):
+                    prov = model_section.get("provider")
+                    if isinstance(prov, str) and prov.strip():
+                        active_provider = prov.strip().lower()
+                        configured_via_yaml.add(active_provider)
+        except Exception:
+            pass
+
+    providers_out: List[Dict[str, Any]] = []
+    # Union of known set + anything custom mentioned in config.yaml
+    # that we don't already know about.
+    all_keys = list(_KNOWN_PROVIDERS) + [
+        k for k in sorted(configured_via_yaml) if k not in _KNOWN_PROVIDERS
+    ]
+    for name in all_keys:
+        env_patterns = (
+            f"{name.upper()}_API_KEY=",
+            f"{name.upper().replace('-', '_')}_API_KEY=",
+        )
+        configured_via_env = any(
+            pat in env_text and not _env_value_is_empty(env_text, pat)
+            for pat in env_patterns
+        )
+        configured = configured_via_env or name in configured_via_yaml
+        providers_out.append(
+            {
+                "key": name,
+                "label": name.replace("-", " ").title(),
+                "configured": configured,
+                "active": active_provider == name,
+            }
+        )
+    return providers_out, active_provider
 
 
 # ---------------------------------------------------------------------------
@@ -1526,6 +1635,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 "remote_skills": True,
                 "remote_toolsets": True,
                 "remote_gateway_status": True,
+                "remote_providers": True,
                 "session_continuity_header": "X-Hermes-Session-Id",
                 "session_key_header": "X-Hermes-Session-Key",
                 "cors": bool(self._cors_origins),
@@ -1558,6 +1668,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 "installed_skills": {"method": "GET", "path": "/api/skills/installed"},
                 "bundled_skills": {"method": "GET", "path": "/api/skills/bundled"},
                 "skill_content": {"method": "GET", "path": "/api/skills/content"},
+                "providers": {"method": "GET", "path": "/api/providers"},
             },
         })
 
@@ -3219,6 +3330,33 @@ class APIServerAdapter(BasePlatformAdapter):
             return _api_json_error(str(exc), status=500)
 
     # ------------------------------------------------------------------
+    # Providers — read-only inventory; never the API keys
+    # ------------------------------------------------------------------
+
+    async def _handle_list_providers(self, request: "web.Request") -> "web.Response":
+        """GET /api/providers — list known LLM providers + a
+        ``configured`` flag derived from ``~/.hermes/.env`` and
+        ``~/.hermes/config.yaml``. **Never** returns the credentials.
+
+        A provider counts as configured if EITHER its
+        ``<NAME>_API_KEY`` env var is set in ``~/.hermes/.env``
+        with a non-empty value, OR it appears as a key under the
+        ``providers`` map in ``~/.hermes/config.yaml``, OR it is
+        the currently-selected ``model.provider``. The active
+        provider name is returned at the top level.
+        """
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+        try:
+            profile_dir = _profile_dir_for_request(request)
+            providers, active = _list_provider_status(profile_dir)
+            return web.json_response({"providers": providers, "active": active})
+        except Exception as exc:
+            logger.exception("GET /api/providers failed")
+            return _api_json_error(str(exc), status=500)
+
+    # ------------------------------------------------------------------
     # Cron jobs API
     # ------------------------------------------------------------------
 
@@ -4240,6 +4378,8 @@ class APIServerAdapter(BasePlatformAdapter):
             self._app.router.add_get("/api/skills/installed", self._handle_installed_skills)
             self._app.router.add_get("/api/skills/bundled", self._handle_bundled_skills)
             self._app.router.add_get("/api/skills/content", self._handle_skill_content)
+            # Providers inventory (no keys, just configured flags)
+            self._app.router.add_get("/api/providers", self._handle_list_providers)
             # Cron jobs management API
             self._app.router.add_get("/api/jobs", self._handle_list_jobs)
             self._app.router.add_post("/api/jobs", self._handle_create_job)

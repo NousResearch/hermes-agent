@@ -252,6 +252,25 @@ class FileToolsIntegrationTests(unittest.TestCase):
         w2 = json.loads(write_file_tool(path=p, content="two\n", task_id="agentC"))
         self.assertFalse(w2.get("_warning"))
 
+    def test_kanban_worker_write_file_refuses_after_partial_read(self):
+        p = self._write_seed("partial.txt", "one\ntwo\nthree\n")
+        r = json.loads(read_file_tool(path=p, limit=1, task_id="agentK"))
+        self.assertTrue(r.get("truncated"), r)
+
+        old_task = os.environ.get("HERMES_KANBAN_TASK")
+        os.environ["HERMES_KANBAN_TASK"] = "t_agentK"
+        try:
+            w = json.loads(write_file_tool(path=p, content="one\n", task_id="agentK"))
+        finally:
+            if old_task is None:
+                os.environ.pop("HERMES_KANBAN_TASK", None)
+            else:
+                os.environ["HERMES_KANBAN_TASK"] = old_task
+
+        self.assertIn("error", w)
+        self.assertIn("Kanban worker safety", w["error"])
+        self.assertIn("partial read_file view", w["error"])
+
     def test_patch_tool_also_surfaces_sibling_warning(self):
         p = self._write_seed("p.txt", "hello world\n")
         json.loads(read_file_tool(path=p, task_id="agentA"))

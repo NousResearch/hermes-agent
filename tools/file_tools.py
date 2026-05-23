@@ -625,6 +625,52 @@ _READ_DEDUP_STATUS_MESSAGE = (
     "the earlier read_file result in this conversation is "
     "still current — refer to that instead of re-reading."
 )
+_FILE_STATE_PARTIAL_READ_FRAGMENT = "was last read with offset/limit pagination"
+
+
+def _in_kanban_worker_context() -> bool:
+    """Return true when this process is running as a Kanban worker."""
+    return bool(os.environ.get("HERMES_KANBAN_TASK"))
+
+
+def _kanban_default_truncated_read_error(
+    path: str,
+    *,
+    offset: int,
+    limit: int,
+    total_lines,
+    hint: str | None = None,
+) -> str:
+    if isinstance(total_lines, int) and total_lines <= 2000:
+        next_step = f"Call read_file again with offset=1 and limit={total_lines}."
+    else:
+        next_step = "Read the file in explicit pages with offset and limit before editing."
+    return json.dumps({
+        "error": (
+            "Kanban worker safety: read_file used its default line limit and "
+            "returned a truncated page. Do not treat this as complete source "
+            f"content. {next_step}"
+        ),
+        "path": path,
+        "truncated": True,
+        "content_returned": False,
+        "requested_offset": offset,
+        "requested_limit": limit,
+        "total_lines": total_lines,
+        "hint": hint,
+    }, ensure_ascii=False)
+
+
+def _kanban_partial_read_write_error(path: str, warning: str | None) -> str | None:
+    if not (_in_kanban_worker_context() and warning):
+        return None
+    if _FILE_STATE_PARTIAL_READ_FRAGMENT not in warning:
+        return None
+    return (
+        "Kanban worker safety: refusing to overwrite "
+        f"{path!r} after only a partial read_file view. Re-read the whole file "
+        "with an explicit limit when possible, or use patch for a targeted edit."
+    )
 
 
 def _cap_read_tracker_data(task_data: dict) -> None:
@@ -894,7 +940,14 @@ def clear_file_ops_cache(task_id: str = None):
             _file_ops_cache.clear()
 
 
-def read_file_tool(path: str, offset: int = 1, limit: int = 500, task_id: str = "default") -> str:
+def read_file_tool(
+    path: str,
+    offset: int = 1,
+    limit: int = 500,
+    task_id: str = "default",
+    *,
+    default_limit_used: bool = False,
+) -> str:
     """Read a file with pagination and line numbers."""
     try:
         offset, limit = normalize_read_pagination(offset, limit)
@@ -1045,6 +1098,19 @@ def read_file_tool(path: str, offset: int = 1, limit: int = 500, task_id: str = 
         file_ops = _get_file_ops(task_id)
         result = file_ops.read_file(path, offset, limit)
         result_dict = result.to_dict()
+
+        if (
+            default_limit_used
+            and _in_kanban_worker_context()
+            and result_dict.get("truncated")
+        ):
+            return _kanban_default_truncated_read_error(
+                path,
+                offset=offset,
+                limit=limit,
+                total_lines=result_dict.get("total_lines", "unknown"),
+                hint=result_dict.get("hint"),
+            )
 
         # ── Character-count guard ─────────────────────────────────────
         # We're model-agnostic so we can't count tokens; characters are
@@ -1361,6 +1427,9 @@ def write_file_tool(path: str, content: str, task_id: str = "default",
 
         if _resolved is None:
             stale_warning = _check_file_staleness(path, task_id)
+            kanban_write_error = _kanban_partial_read_write_error(path, stale_warning)
+            if kanban_write_error:
+                return tool_error(kanban_write_error)
             file_ops = _get_file_ops(task_id)
             result = file_ops.write_file(path, content)
             result_dict = result.to_dict()
@@ -1382,10 +1451,13 @@ def write_file_tool(path: str, content: str, task_id: str = "default",
             # Workspace-divergence warning: relative path resolving outside the
             # terminal's cwd (the worktree-cwd bug). Lowest priority of the three.
             cwd_warning = _path_resolution_warning(path, Path(_resolved), task_id)
+            effective_warning = cross_warning or stale_warning or cwd_warning
+            kanban_write_error = _kanban_partial_read_write_error(path, effective_warning)
+            if kanban_write_error:
+                return tool_error(kanban_write_error)
             file_ops = _get_file_ops(task_id)
             result = file_ops.write_file(_resolved, content)
             result_dict = result.to_dict()
-            effective_warning = cross_warning or stale_warning or cwd_warning
             if effective_warning:
                 result_dict["_warning"] = effective_warning
             # Always report the ABSOLUTE path actually written, so a wrong-cwd
@@ -1770,7 +1842,13 @@ SEARCH_FILES_SCHEMA = {
 
 def _handle_read_file(args, **kw):
     tid = kw.get("task_id") or "default"
-    return read_file_tool(path=args.get("path", ""), offset=args.get("offset", 1), limit=args.get("limit", 500), task_id=tid)
+    return read_file_tool(
+        path=args.get("path", ""),
+        offset=args.get("offset", 1),
+        limit=args.get("limit", 500),
+        task_id=tid,
+        default_limit_used="limit" not in args,
+    )
 
 
 def _handle_write_file(args, **kw):

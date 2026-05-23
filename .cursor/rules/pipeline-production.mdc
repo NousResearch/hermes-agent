@@ -1,0 +1,136 @@
+---
+description: Daily production pipeline, CI recovery, cron management, and post-snapshot debugging
+globs:
+  - "tools/run_daily_production.py"
+  - "tools/run_post_snapshot_supervisor.py"
+  - "tools/build_hermes_knowledge_layer.py"
+  - "cron/**"
+  - ".github/**"
+  - "scripts/run_tests.sh"
+  - "batch_runner.py"
+alwaysApply: false
+---
+
+# Pipeline & Production Operations
+
+## Daily pipeline (13 steps, ~100 min)
+
+Runner: `tools/run_daily_production.py`
+Cron: 5:30 PM ET weekdays + @reboot catch-up
+Timeout: 6000s (raised from 4500s for Monday AACT batch)
+
+### Step order (never reorder without spec approval)
+
+1. Price refresh
+2. Cache warm (including FDA) — MUST run before screen
+3. Screen (with `--inputs-manifest write`)
+4. Audit
+5. Gates
+6. Manifest + promotion
+7. Drift report
+8. Action packet
+9. Shadow portfolio
+10. Trade plan
+11. Portfolio report
+12. Readiness scorecard
+13. Ops digest + PIT backfill (optional)
+
+**Rule:** Always warm 8-K cache BEFORE running screen. Violation = stale data in scoring.
+
+### Monday AACT behavior
+
+- AACT batch runs over weekend, ingestion takes 23+ min on Mondays
+- Timeout must accommodate: 6000s minimum
+- If AACT times out: expected behavior, retry next day (data catches up Tuesday)
+
+## CI status and recovery
+
+### GitHub Actions budget exhaustion (current blocker)
+
+- CI is blocked by budget, not code failures
+- Recovery expected ~June 1 (monthly quota reset)
+- Local test results remain canonical until CI recovers
+- OPS-CI-001 lint branch waiting on quota
+
+### CI failure taxonomy
+
+| Pattern | Root Cause | Fix |
+|---------|-----------|-----|
+| pytest CVE | Security advisory | Upgrade in requirements.txt |
+| Registry enum | Invalid status values | Use valid enum (active/deprecated) |
+| Ruleset drift test | New source not in allowed list | Add to test_decision_ruleset.py |
+| Critical F821/F811 | Undefined vars, unused imports | Fix source, run ruff |
+| Universe loading: 1 ticker | Stale ipo_dates.json | Update all last_price_date |
+| Intraday mover NO_DATA | Poll before snapshot | Shift first poll to after ~10:30 ET |
+| dep-audit | Outdated deps with CVEs | Merge dependabot PRs |
+| type-check | mypy version drift | Bump mypy, fix new errors |
+
+### Test commands (always use wrapper)
+
+```bash
+scripts/run_tests.sh                              # Full suite
+scripts/run_tests.sh tests/gateway/               # Subsystem
+scripts/run_tests.sh tests/tools/test_delegate.py::TestBlockedTools  # Specific
+.venv/bin/ruff check .                            # Lint
+```
+
+Do NOT call `pytest` directly — the wrapper normalizes credentials, HOME, timezone, locale, and worker count.
+
+## Cron management (WSL2)
+
+### Active cron jobs
+
+| Job | Time (ET) | Frequency |
+|-----|-----------|-----------|
+| Daily production pipeline | 5:30 PM | Weekdays |
+| @reboot catch-up | On boot | — |
+| Universe maintenance | 10:00 AM | Weekdays |
+| Herald | via daily pipeline | Weekdays |
+| Bellringer (previews) | separate cron | Weekdays |
+| Bellringer (results) | separate cron | Weekdays |
+| Intraday mover watch | market hours | Weekdays |
+| Fleet steward | periodic | Daily |
+
+### WSL2 cron risks
+
+- Windows host suspend kills crons silently (sleep-cliff)
+- Stopgap: `powercfg /change standby-timeout-ac 0`
+- Missed cron signature: 24-48h gap in `data/snapshots/`
+- Fix: `sudo service cron start` after any WSL restart
+
+### Cron debugging
+
+```bash
+sudo service cron status           # Is cron running?
+crontab -l                         # List all entries
+grep -i <agent> ~/.hermes/logs/    # Check recent logs
+```
+
+**Lane A constraint:** No cron job may depend on a gateway token.
+
+## Knowledge layer (Spec 089)
+
+Generator: `tools/build_hermes_knowledge_layer.py`
+
+Output artifacts:
+- `artifacts/ops/knowledge_layer/latest_state.{json,md}`
+- `artifacts/ops/held_spec_ledger/latest.{json,md}`
+- `artifacts/ops/first_fire_ledger/latest.{json,md}`
+- `artifacts/ops/contradiction_ledger/latest.md`
+- `artifacts/ops/operator_brief/daily/YYYY-MM-DD.md`
+
+## Post-snapshot orchestration
+
+`tools/run_post_snapshot_supervisor.py` runs after daily pipeline:
+- Checks all 13 steps completed
+- Triggers supervisor anomaly detection
+- Updates knowledge layer
+- Generates operator brief
+
+## Anti-patterns
+
+- Do NOT run screen without cache warm (stale 8-K data)
+- Do NOT reduce timeout below 6000s (Monday AACT kills it)
+- Do NOT modify cron entries without verifying they survive WSL restart
+- Do NOT merge PRs with failing CI unless budget-blocked (not code-broken)
+- Do NOT skip the test wrapper (bare pytest misses env normalization)

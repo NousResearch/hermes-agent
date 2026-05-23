@@ -1,0 +1,129 @@
+---
+description: MCP server development — adding tools, extending hermes_skills_mcp.py, testing tool surfaces
+globs:
+  - "mcp_serve.py"
+  - "hermes_skills_mcp.py"
+  - "hermes_mcp/**"
+  - ".cursor/mcp.json"
+  - ".cursor/mcp.json.example"
+  - "tools/mcp_*"
+alwaysApply: false
+---
+
+# MCP Server Development
+
+## Architecture
+
+- `mcp_serve.py` — Main MCP server entry point (stdio transport)
+- `hermes_skills_mcp.py` — Standalone module providing 8 read-only skills/knowledge tools
+- `.cursor/mcp.json` — Cursor auto-connects to the server defined here
+- Transport: stdio (no HTTP, no gateway dependency for skills tools)
+
+## Two tool surfaces (do not conflate)
+
+| Surface | Module | Tools | Gateway Required |
+|---------|--------|-------|-----------------|
+| Skills & Knowledge | `hermes_skills_mcp.py` | 8 read-only | No |
+| Messaging & Ops | `mcp_serve.py` core | 10 messaging tools | Yes |
+
+### Skills tools (read-only, no gateway)
+
+| Tool | Input | Returns |
+|------|-------|---------|
+| `fleet_context_snapshot()` | — | Bounded session bootstrap: mode, paths, registry, memory, knowledge, held-spec flags |
+| `skills_list()` | — | All SOUL.md files and repo skills |
+| `skills_read(name)` | agent/skill name | Full SOUL.md or skill content |
+| `agents_list(include_heartbeat)` | bool | Registry + optional heartbeat |
+| `agents_get(name)` | agent name | Full detail: registry, SOUL.md, heartbeat, files |
+| `knowledge_read(artifact)` | artifact key | Knowledge layer content |
+| `learnings_read(file?)` | optional path | .learnings/ memory files |
+| `artifacts_list(path?)` | optional subpath | artifacts/ directory listing |
+
+### Messaging tools (require gateway)
+
+`conversations_list`, `conversation_get`, `messages_read`,
+`attachments_fetch`, `events_poll`, `events_wait`, `messages_send`,
+`channels_list`, `permissions_list_open`, `permissions_respond`
+
+## Adding a new read-only tool
+
+1. Define the tool function in `hermes_skills_mcp.py`
+2. Follow the existing pattern:
+   - Type-annotated parameters with docstrings
+   - Return structured dict (JSON-serializable)
+   - Graceful degradation on missing files/paths
+   - No mutations — read-only surface only
+3. Register in the tool list within `hermes_skills_mcp.py`
+4. Test: restart Cursor, verify tool appears in MCP panel
+5. Update `.cursor/rules/hermes-fleet.mdc` if the tool affects session-start checklist
+
+## Adding a new messaging/ops tool
+
+1. Define in the appropriate module under `mcp_serve.py` dispatch
+2. Requires gateway connection / messaging platform state
+3. Must respect authority model — tool cannot exceed the invoking agent's authority
+4. Add to `toolsets.py` if it should be available to agents
+5. Test via `scripts/run_tests.sh tests/tools/`
+
+## Path resolution
+
+All MCP tools resolve paths via environment variables:
+- `HERMES_HOME` — User home (~/.hermes/ or profile-specific)
+- `HERMES_REPO` — Repository root
+- `HERMES_AGENTS_DIR` — Agents directory (usually `agents/`)
+
+Use `get_hermes_home()` from `hermes_constants` — never hardcode paths.
+
+## Graceful degradation
+
+- If `hermes_skills_mcp` import fails, messaging tools still work (logged at DEBUG)
+- If an artifact file is missing, return `{"error": "not_found", "path": "..."}` — not an exception
+- If heartbeat file is stale, return the data with a `stale: true` flag
+
+## Testing MCP changes
+
+```bash
+# Verify import doesn't break main server
+python3 -c "import hermes_skills_mcp"
+
+# Test tool output manually
+python3 -c "from hermes_skills_mcp import skills_list; print(skills_list())"
+
+# Full test suite
+scripts/run_tests.sh tests/tools/
+```
+
+## Schema conventions
+
+Tool responses should be JSON-serializable dicts with:
+- Consistent key naming (snake_case)
+- `as_of` timestamp where staleness matters
+- `error` key for graceful failures (not exceptions)
+- Arrays for lists, not comma-separated strings
+
+## Cursor integration
+
+`.cursor/mcp.json` format:
+```json
+{
+  "mcpServers": {
+    "hermes": {
+      "command": "${workspaceFolder}/hermes-mcp-serve",
+      "args": []
+    }
+  }
+}
+```
+
+Do NOT commit host-specific paths. Use `${workspaceFolder}` or copy from `.cursor/mcp.json.example`.
+
+## Governance constraint (ACTIVE)
+
+The MCP surface is READ-ONLY. Do not add write tools that modify:
+- `.learnings/` files
+- `artifacts/` state
+- `agents/AGENT_REGISTRY.json`
+- Knowledge layer outputs
+- Any production data
+
+Write paths require the Town-Hermes Feedback Protocol (currently FROZEN).

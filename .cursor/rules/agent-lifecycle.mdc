@@ -1,0 +1,85 @@
+---
+description: Agent creation, editing, and lifecycle management — use when working on agent SOUL.md files, registry entries, or heartbeat debugging
+globs:
+  - "agents/**"
+  - "agents/AGENT_REGISTRY.json"
+  - "tools/agent_heartbeat_checks.py"
+  - "tools/agent_supervisor_sentinel.py"
+alwaysApply: false
+---
+
+# Agent Operations
+
+## Before touching any agent
+
+1. `agents_get(name="<agent>")` — load full detail (registry, SOUL.md, heartbeat, files)
+2. `skills_read(name="<agent>")` — read the SOUL.md behavioral contract
+3. `knowledge_read(artifact="held_spec_ledger")` — check if the agent is constrained
+
+## Creating a new agent
+
+1. Create directory: `agents/<name>/`
+2. Write `SOUL.md` following the template in `agents/ops/SOUL.md` (simplest reference)
+3. Add entry to `agents/AGENT_REGISTRY.json` with required fields:
+   - `name`, `lane` (A/B/C), `authority` (observe_only|observe_and_propose|write_artifacts|mutate_data), `status` (active|deprecated), `governance_tier` (0-4)
+4. Add corresponding entry to `AGENTS.md` fleet documentation
+5. If Lane B: wire into `run_agent_direct.py` dispatch and add cron entry
+6. If Lane A: wire into deterministic script (no LLM dependency)
+7. Run `scripts/run_tests.sh tests/` to verify no registry enum breakage
+
+## SOUL.md contract rules
+
+- SOUL.md is BEHAVIORAL TRUTH — it defines what the agent IS, not what it does technically
+- Never contradict SOUL.md constraints from runtime wrappers
+- Required sections: Identity, Purpose, Constraints, Tools, Heartbeat Cadence
+- Uncertainty handling must be explicit (RED/FAIL/UNKNOWN, never GUESS)
+- Authority level in SOUL.md must match AGENT_REGISTRY.json exactly
+
+## Authority model (5 tiers, never escalate without operator approval)
+
+| Level | Can Do | Cannot Do |
+|-------|--------|-----------|
+| observe_only | Read files, check status | Write anything |
+| observe_and_propose | Read + suggest changes | Write without approval |
+| write_artifacts | Write to artifacts/ | Touch data/ or config |
+| mutate_data | Write to data/ | Modify configuration |
+| mutate_config | Full access | — (operator only, no agent holds this) |
+
+## Heartbeat debugging
+
+Stale = no heartbeat > 48h. Check in order:
+1. `crontab -l | grep <agent>` — is the cron entry present?
+2. `tail -50 logs/<agent>_*.log` — last run output?
+3. `python3 run_agent_direct.py --agent <agent>` — manual trigger
+4. Check Together API latency: `cat together_latency.log | tail -20`
+5. If gateway-dependent: verify `hermes_mail_smoke_test.py` passes
+
+## Lane constraints (never violate)
+
+- **Lane A:** No LLM calls. Scripts and cron only. Deterministic output.
+- **Lane B:** File/JSON check first, LLM only on anomaly. Uses `run_agent_direct.py`.
+- **Lane C:** Manual-only, no cron. Full LLM budget. Synthesis and audit tasks.
+
+## Registry schema
+
+```json
+{
+  "name": "string",
+  "lane": "A|B|C",
+  "authority": "observe_only|observe_and_propose|write_artifacts|mutate_data",
+  "status": "active|deprecated",
+  "suppressed": false,
+  "retired": false,
+  "governance_tier": 0-4,
+  "description": "string",
+  "cron": "optional cron expression"
+}
+```
+
+## Anti-patterns
+
+- Do NOT hardcode agent counts anywhere (source from AGENT_REGISTRY.json)
+- Do NOT assign `mutate_config` to any agent
+- Do NOT create Lane A agents that import LLM modules
+- Do NOT skip SOUL.md when creating an agent ("I'll add it later" = never)
+- Do NOT modify a suppressed/retired agent without explicit operator approval

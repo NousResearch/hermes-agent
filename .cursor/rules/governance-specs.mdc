@@ -1,0 +1,94 @@
+---
+description: Governance system — held specs, promotion paths, architecture decisions, routing policy
+globs:
+  - "governance/**"
+  - "production_data/decision_rulesets/**"
+  - "artifacts/ops/held_spec_ledger/**"
+  - "artifacts/ops/knowledge_layer/**"
+  - "artifacts/audit/**"
+  - "H20D_DECISION_MATRIX*.md"
+alwaysApply: false
+---
+
+# Governance & Specifications
+
+## Before modifying governed areas
+
+1. `knowledge_read(artifact="held_spec_ledger")` — check for active holds
+2. `knowledge_read(artifact="latest_state")` — current operational context
+3. `learnings_read()` — check for governance-related memory entries
+4. Read `governance/AGENT_ROUTING_POLICY.md` for tier classification
+
+## Governance tiers (from AGENT_ROUTING_POLICY.md)
+
+| Tier | Sensitivity | Review Required | Examples |
+|------|------------|-----------------|----------|
+| 0 | Critical production | Operator memo + approval | decision_engine.py, selector_engine.py, scoring modules |
+| 1 | Infrastructure | PR review | cron, batch_runner, gateway |
+| 2 | Agent behavior | SOUL.md alignment check | Agent code, prompts |
+| 3 | Production data/hashes | HASH_ROTATIONS.md entry | Ruleset promotion, hash rotation |
+| 4 | Policy itself | Governance memo required | AGENT_ROUTING_POLICY.md changes |
+
+## Held specification protocol
+
+A held spec means: DO NOT modify the constrained area without explicit operator approval.
+
+Current held spec ledger (check `knowledge_read` for live state):
+- Held specs block downstream specs (dependency chain)
+- `AWAITING_FIRST_FIRE` = passed but needs production validation
+- `HELD_SUPPRESSED` = blocked by external dependency
+- `SPEC_REQUIRED` = degradation detected, spec needed before proceeding
+
+## Promotion path (ruleset changes)
+
+To promote a new ruleset version:
+
+1. Pass full promotion battery (FM + bootstrap + FDR + LOSO)
+2. Write entry to `governance/HASH_ROTATIONS.md`:
+   - Old hash, new hash, effective date, affected surface, reason, downstream impact, reviewer
+3. Update pinned hash in BOTH:
+   - `run_screen.py`
+   - `run_phase2_snapshot_delta.py`
+   (These MUST stay in sync — mismatched hashes = governance violation)
+4. Update `CLAUDE.md` active ruleset section
+5. Verify: `scripts/run_tests.sh tests/test_decision_ruleset.py`
+
+## Architecture freeze
+
+When an architecture freeze is active:
+- No new features to selector, ranker, or decision engine
+- Bug fixes allowed with explicit justification
+- Spec work on held items allowed (design only, no merge to main)
+- Freeze lift requires governance decision (e.g., h20d)
+
+Current state: Check `knowledge_read(artifact="latest_state")` for freeze status.
+
+## Active ruleset
+
+- ID: `8887576e` (v1.14.0)
+- File: `production_data/decision_rulesets/v1.14.0_coinvest_only_selector.json`
+- Manifest: 36+ entries, no duplicate IDs
+- Pinned in: `run_screen.py` AND `run_phase2_snapshot_delta.py`
+
+## Contradiction handling
+
+The knowledge layer maintains a contradiction ledger:
+- `artifacts/ops/contradiction_ledger/latest.md`
+- 0 hard contradictions = healthy
+- Possible drift items need investigation but don't block operations
+- When you find a contradiction: log it, don't silently resolve it
+
+## h20d decision framework
+
+h20d = a governance checkpoint where multiple frozen items are evaluated together.
+- All Path A conditions must be met for freeze lift
+- Decision matrix document lives at repo root: `H20D_DECISION_MATRIX_*.md`
+- Post-h20d: spec lanes open, automation paths permitted
+
+## Anti-patterns
+
+- Do NOT modify production hashes without a HASH_ROTATIONS.md entry
+- Do NOT bypass held specs ("it's a small change" doesn't matter)
+- Do NOT resolve contradictions by picking one side — log and escalate
+- Do NOT merge governance-tier changes without an audit trail
+- Do NOT assume freeze is lifted without checking latest_state

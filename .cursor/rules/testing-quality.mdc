@@ -1,0 +1,100 @@
+---
+description: Test conventions, fixture patterns, and quality assurance workflows
+globs:
+  - "tests/**"
+  - "scripts/run_tests.sh"
+  - "conftest.py"
+  - "pytest.ini"
+  - "setup.cfg"
+alwaysApply: false
+---
+
+# Testing & Quality Assurance
+
+## Test runner (MANDATORY)
+
+Always use the wrapper script — never call pytest directly:
+
+```bash
+scripts/run_tests.sh                              # Full suite
+scripts/run_tests.sh tests/gateway/               # Subsystem
+scripts/run_tests.sh tests/tools/test_delegate.py::TestBlockedTools  # Specific test
+```
+
+The wrapper normalizes: credentials, HOME, timezone, locale, worker count.
+Bare pytest = inconsistent results across environments.
+
+## Lint
+
+```bash
+.venv/bin/ruff check .
+```
+
+Critical violations (F821 undefined name, F811 unused import) must be fixed before commit.
+
+## Environment setup
+
+```bash
+source .venv/bin/activate  # or: source venv/bin/activate
+```
+
+The wrapper probes `.venv`, `venv`, and the shared Hermes checkout venv automatically.
+
+## Test invariants
+
+- Tests MUST NOT write to a real `~/.hermes/` — use existing fixtures with `HERMES_HOME` override
+- Tests MUST NOT depend on network calls (mock external APIs)
+- Tests MUST NOT depend on specific file mtimes (use fixture factories)
+- Tests MUST be idempotent (running twice = same result)
+
+## Key fixture patterns
+
+| Fixture | Purpose | Location |
+|---------|---------|----------|
+| `tmp_hermes_home` | Isolated HERMES_HOME | conftest.py |
+| `mock_registry` | Fake AGENT_REGISTRY.json | tests/conftest.py |
+| `mock_knowledge` | Fake knowledge layer state | tests/conftest.py |
+| `mock_together_api` | Mocked Together AI responses | tests/gateway/ |
+
+## Coverage expectations
+
+- Core modules (decision_engine, selector, scoring): high coverage required
+- Tool implementations: medium coverage
+- CLI slash commands: basic smoke tests
+- Plugins: isolated plugin tests
+
+## Test categories
+
+| Directory | Tests | CI Required |
+|-----------|-------|-------------|
+| tests/tools/ | Built-in tool dispatch | Yes |
+| tests/gateway/ | Gateway messaging, auth | Yes |
+| tests/ (root) | Integration, regression | Yes |
+| tests/research/ | Research harness (slow) | Optional |
+
+## When to run tests
+
+- Before ANY commit (at minimum, affected subsystem)
+- After modifying agent registry (enum breakage risk)
+- After modifying tool dispatch (blocked-tool enforcement)
+- After modifying production scripts (regression risk)
+- After modifying governance files (routing policy tests)
+
+## CI integration (when budget allows)
+
+GitHub Actions workflows in `.github/`:
+- Unit tests (all platforms)
+- Lint (ruff)
+- Type check (mypy)
+- Security audit (pip-audit)
+- Container smoke test (Docker build)
+
+Currently budget-blocked until ~June 1. Local tests are canonical.
+
+## Anti-patterns
+
+- Do NOT skip tests before committing ("it's just a docs change" — docs can break imports)
+- Do NOT use pytest directly (env normalization matters)
+- Do NOT write tests that depend on production data paths (use fixtures)
+- Do NOT ignore flaky tests (investigate: timing? network? fixture leak?)
+- Do NOT hardcode dates in test assertions (use relative or fixture dates)

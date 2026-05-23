@@ -1,0 +1,112 @@
+---
+description: Signal agent workflows — Herald, Bellringer, Intraday Mover, catalyst tracking, and email delivery
+globs:
+  - "agents/AGENT_REGISTRY.json"
+  - "agents/herald/**"
+  - "agents/bellringer*/**"
+  - "agents/intraday_mover_watch/**"
+  - "agents/catalyst_delta/**"
+  - "agents/crt_resolution_watcher/**"
+  - "agents/event_analyst/**"
+  - "artifacts/ops/knowledge_layer/**"
+  - "artifacts/ops/held_spec_ledger/**"
+  - "data/press_releases/**"
+  - "tools/run_agent_direct.py"
+alwaysApply: false
+---
+
+# Signal Agent Workflows
+
+## Herald Digest (highest-priority signal agent)
+
+### What it does
+Daily press release digest — scrapes, deduplicates, classifies, and emails biotech press releases.
+
+### Done predicate (BOTH required)
+- `data/press_releases/deduped/deduped_{date}.jsonl` exists
+- `data/press_releases/classified/classified_{date}.jsonl` exists
+
+If classification failed but dedupe exists: next supervisor run retries.
+
+### Dark diagnosis
+
+```bash
+crontab -l | grep herald
+ls -la ~/.hermes/logs/ | grep herald
+tail -50 logs/daily_production_*.log | grep -i herald
+python3 run_agent_direct.py --agent herald
+python3 run_agent_direct.py --agent herald --skip-preflight
+```
+
+Root causes (in priority order):
+1. hermes-mail bridge down (Herald runs but email never arrives)
+2. Timeout budget exceeded (historical: 23+ min sleeps over 341 tickers)
+3. Cron entry missing (WSL2 restart can lose entries)
+4. Preflight gate blocking (dirty git, missing snapshot, governance hold)
+
+### Fix: PR #266 parallelized fetcher
+ThreadPoolExecutor, 12 workers, ~3-5 min (was 23+ min sequential)
+
+## Bellringer (earnings signals)
+
+Previews and Results are DIFFERENT cron jobs — one working + one dark = only one job failing.
+
+```bash
+crontab -l | grep -i bellringer
+cat logs/bellringer_results_*.log | tail -50
+python3 run_agent_direct.py --agent bellringer_results --date YYYY-MM-DD
+```
+
+## Intraday Mover Watch
+
+- Runs during market hours (9:30 AM - 4:00 PM ET)
+- Triggers on >= 5% intraday moves in watchlist tickers
+- Depends on price snapshot (must run AFTER daily snapshot)
+- NO_DATA error = poll before snapshot. Fix: shift first poll to after ~10:30 ET
+
+## Catalyst Resolution Tracker (CRT)
+
+- Agent: `crt_resolution_watcher` — ONLY agent with `mutate_data` authority
+- Writes to catalyst resolution tables under orchestrator supervision
+- Tracks PDUFA dates, AdCom outcomes, Ph3 readouts
+- Resolution = confirmed FDA action, data release, or calendar event closure
+
+## hermes-mail bridge (delivery infrastructure)
+
+All signal agents depend on this for email delivery.
+
+```bash
+python3 hermes_mail_smoke_test.py
+cat ~/.hermes/.env | grep SMTP
+```
+
+Fix: regenerate Gmail app password at https://myaccount.google.com/apppasswords
+Success: smoke test email arrives in djschulz@gmail.com
+
+## Email signal verification (Gmail search)
+
+```
+subject:"Herald" after:2026/05/12
+from:djschulz@gmail.com subject:"Bellringer" "biotech earnings" after:2026/05/12
+subject:"Intraday Mover" OR subject:"HIGH alert" after:2026/05/12
+subject:"Morning Briefing" after:2026/05/12
+subject:"Catalyst Update" after:2026/05/12
+```
+
+## Triage priority (when multiple agents down)
+
+1. hermes-mail bridge — if down, nothing delivers
+2. Herald Digest — highest-value daily signal
+3. Bellringer — earnings preview/results
+4. fleet_steward — restores health monitoring
+5. Intraday Mover Watch — real-time price alerts
+6. grok_biotech_watch — depends on XAI API key
+7. Evening forward-shadow — watchdog, lower priority
+8. postmortem memory-write — cosmetic, lowest
+
+## Anti-patterns
+
+- Do NOT test Herald without checking mail bridge first (silent failure)
+- Do NOT mix up Bellringer previews vs results (different cron entries)
+- Do NOT run intraday mover before daily snapshot exists
+- Do NOT grant additional authority to signal agents (observe_only is correct)

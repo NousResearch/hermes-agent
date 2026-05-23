@@ -1,0 +1,92 @@
+---
+description: LLM model configuration, provider routing, and inference parameter management
+globs:
+  - "hermes_cli/config.py"
+  - "cli-config.yaml.example"
+  - "run_agent.py"
+  - "model_tools.py"
+alwaysApply: false
+---
+
+# LLM & Model Configuration
+
+## Provider / model source of truth
+
+Do **not** infer the active provider/model from this rule. Verify the current
+runtime source before changing model configuration:
+
+1. `fleet_context_snapshot()` for fleet state and missing layers
+2. `agents_list(include_heartbeat=true)` for agent registry / heartbeat state
+3. `hermes model` or `hermes config get model` for local CLI defaults
+4. Relevant runtime wrappers/scripts for production-pinned model values
+
+Secrets belong in `.env`; non-secret routing/settings belong in config.
+
+### Model routing logic
+
+- `llama*` patterns -> Together AI (OpenAI-compatible endpoint)
+- `claude*` patterns -> Anthropic SDK
+- HOT memory currently records fleet model: **deepseek/deepseek-v4-flash:free** (migrated 2026-05-20). Verify before editing.
+
+## Inference parameters (production)
+
+| Parameter | Value | Rationale |
+|-----------|-------|-----------|
+| Temperature | 0.2 | Governance determinism |
+| Frequency penalty | 0.1 | Reduce repetition |
+| Top_p | 0.95 | Tighter nucleus |
+| Repetition penalty | 1.2 | Anti-loop |
+| API timeout | 2400s | Together cold start spikes (8-12s) |
+| Retry | Exponential backoff | 500ms-8000ms |
+| Compression threshold | 0.5 | 131K context window |
+
+Do NOT reduce timeout below 2400s — Together cold starts spike 8-12s.
+
+## Config precedence
+
+CLI args > `~/.hermes/config.yaml` > `~/.hermes/.env` > defaults
+
+### Key facts
+
+- OpenAI is NOT a first-class provider (no `OPENAI_API_KEY` env var by default)
+- `OPENAI_BASE_URL` and `LLM_MODEL` env vars were REMOVED — config.yaml is source of truth
+- Secrets in `.env`, settings in `config.yaml`
+
+## CCFT-aware routing (code surface -> minimum model)
+
+| Code Surface | Minimum Model |
+|--------------|--------------|
+| CCFT enforcement, selector, scoring, catalyst | Sonnet 4.6+ or Opus 4.7 |
+| Walk-forward harness, SHA256 hash flows | Sonnet 4.6+ |
+| Tests, utility scripts, data ingestion | GPT-5.3-Codex or Sonnet 4.6 |
+| Documentation, non-scoring agent code | GPT-5.3-Codex |
+| Log summarization, terminal output | Deterministic scripts (no LLM) |
+
+## Llama-specific prompting rules (for agent SOUL.md)
+
+- IF/THEN chains, not open-ended reasoning
+- Step numbering for multi-step workflows
+- Schema-first output format
+- No inferred data; report missing explicitly
+- Confidence thresholds explicit in prompt
+
+## Mid-session model switching
+
+```
+/model custom:openai-direct:gpt-5.3-codex
+/model openrouter:anthropic/claude-sonnet-4-6
+/model openrouter:anthropic/claude-opus-4-7
+```
+
+## Gateway monitoring
+
+- `~/.hermes/monitor_together_latency.py` tracks trends
+- Alerts on: success rate < 80% OR avg latency > 5s
+- Logs to: `together_latency.log`
+
+## Anti-patterns
+
+- Do NOT use `OPENAI_BASE_URL` env var (removed, use config.yaml)
+- Do NOT hardcode model names in agent code (route through config)
+- Do NOT reduce API timeout (Together cold starts need headroom)
+- Do NOT use LLM for Lane A agent tasks (deterministic only)

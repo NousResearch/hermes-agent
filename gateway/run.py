@@ -1479,13 +1479,31 @@ def _resolve_hermes_bin() -> Optional[list[str]]:
     """Resolve the Hermes update command as argv parts.
 
     Tries in order:
-    1. ``shutil.which("hermes")`` — standard PATH lookup
-    2. ``sys.executable -m hermes_cli.main`` — fallback when Hermes is running
+    1. Windows venv guard — when running from a venv on Windows, prefer the
+       interpreter-bound module form. A bare ``hermes`` lookup on a
+       restricted ``PATH`` (Scheduled Task, detached process) can resolve
+       to a *different* interpreter's ``hermes.exe`` (pip console-script
+       launcher) that cannot bootstrap the venv's editable install and
+       dies with ``ModuleNotFoundError: No module named 'hermes_cli'``.
+    2. ``shutil.which("hermes")`` — standard PATH lookup
+    3. ``sys.executable -m hermes_cli.main`` — fallback when Hermes is running
        from a venv/module invocation and the ``hermes`` shim is not on PATH
 
     Returns argv parts ready for quoting/joining, or ``None`` if neither works.
     """
     import shutil
+
+    if sys.platform == "win32" and (
+        os.environ.get("VIRTUAL_ENV")
+        or sys.prefix != getattr(sys, "base_prefix", sys.prefix)
+    ):
+        try:
+            import importlib.util
+
+            if importlib.util.find_spec("hermes_cli") is not None:
+                return [sys.executable, "-m", "hermes_cli.main"]
+        except Exception:
+            pass
 
     hermes_bin = shutil.which("hermes")
     if hermes_bin:

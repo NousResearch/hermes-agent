@@ -185,6 +185,72 @@ class TestHandleUpdateCommand:
         assert result is None
 
     @pytest.mark.asyncio
+    async def test_resolve_hermes_bin_windows_venv_prefers_module_form(self, monkeypatch):
+        """Windows + venv bypasses the .exe shim to avoid the cross-interpreter trap.
+
+        Mirrors ``hermes_cli.kanban_db._resolve_hermes_argv`` (#30943). On a
+        Windows Scheduled Task with a restricted ``PATH``, ``shutil.which``
+        can resolve a *different* interpreter's ``hermes.exe`` launcher;
+        spawning it then dies with ``ModuleNotFoundError: hermes_cli`` because
+        the system interpreter has no ``__editable__`` ``.pth`` for the venv.
+        """
+        import sys
+        from gateway.run import _resolve_hermes_bin
+
+        monkeypatch.setenv("VIRTUAL_ENV", "C:\\venvs\\hermes")
+        monkeypatch.setattr(sys, "platform", "win32")
+        fake_spec = MagicMock()
+        with patch("shutil.which", return_value="C:\\Python312\\Scripts\\hermes.exe"), \
+             patch("importlib.util.find_spec", return_value=fake_spec):
+            result = _resolve_hermes_bin()
+
+        assert result == [sys.executable, "-m", "hermes_cli.main"]
+
+    @pytest.mark.asyncio
+    async def test_resolve_hermes_bin_windows_unactivated_venv_uses_sys_prefix(self, monkeypatch):
+        """``sys.prefix != sys.base_prefix`` catches unactivated Scheduled-Task venvs."""
+        import sys
+        from gateway.run import _resolve_hermes_bin
+
+        monkeypatch.delenv("VIRTUAL_ENV", raising=False)
+        monkeypatch.setattr(sys, "platform", "win32")
+        monkeypatch.setattr(sys, "prefix", "C:\\venvs\\hermes")
+        monkeypatch.setattr(sys, "base_prefix", "C:\\Python312")
+        fake_spec = MagicMock()
+        with patch("shutil.which", return_value="C:\\Python312\\Scripts\\hermes.exe"), \
+             patch("importlib.util.find_spec", return_value=fake_spec):
+            result = _resolve_hermes_bin()
+
+        assert result == [sys.executable, "-m", "hermes_cli.main"]
+
+    @pytest.mark.asyncio
+    async def test_resolve_hermes_bin_windows_non_venv_still_uses_shim(self, monkeypatch):
+        """Outside a venv on Windows the shim is still preferred."""
+        import sys
+        from gateway.run import _resolve_hermes_bin
+
+        monkeypatch.delenv("VIRTUAL_ENV", raising=False)
+        monkeypatch.setattr(sys, "platform", "win32")
+        monkeypatch.setattr(sys, "base_prefix", sys.prefix)
+        with patch("shutil.which", return_value="C:\\Python312\\Scripts\\hermes.exe"):
+            result = _resolve_hermes_bin()
+
+        assert result == ["C:\\Python312\\Scripts\\hermes.exe"]
+
+    @pytest.mark.asyncio
+    async def test_resolve_hermes_bin_posix_venv_still_uses_shim(self, monkeypatch):
+        """The venv guard is Windows-only — POSIX shims are not affected."""
+        import sys
+        from gateway.run import _resolve_hermes_bin
+
+        monkeypatch.setenv("VIRTUAL_ENV", "/home/u/venvs/hermes")
+        monkeypatch.setattr(sys, "platform", "linux")
+        with patch("shutil.which", return_value="/home/u/venvs/hermes/bin/hermes"):
+            result = _resolve_hermes_bin()
+
+        assert result == ["/home/u/venvs/hermes/bin/hermes"]
+
+    @pytest.mark.asyncio
     async def test_writes_pending_marker(self, tmp_path):
         """Writes .update_pending.json with correct platform and chat info."""
         runner = _make_runner()

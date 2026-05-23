@@ -6297,6 +6297,20 @@ def _hermes_path_argv(path: str) -> list[str]:
     return [_absolute_hermes_path(path)]
 
 
+def _running_in_venv() -> bool:
+    """Return true when the current interpreter is inside a virtualenv.
+
+    Checks both ``$VIRTUAL_ENV`` (set by venv/virtualenv activation) and the
+    ``sys.prefix != sys.base_prefix`` invariant — the latter catches venvs
+    that were never ``activate``d (Scheduled Tasks, launchd jobs, detached
+    processes that exec the venv's python directly).
+    """
+    if os.environ.get("VIRTUAL_ENV"):
+        return True
+    base_prefix = getattr(sys, "base_prefix", sys.prefix)
+    return sys.prefix != base_prefix
+
+
 def _resolve_hermes_argv() -> list[str]:
     """Resolve the ``hermes`` invocation as argv parts for ``Popen``.
 
@@ -6305,13 +6319,23 @@ def _resolve_hermes_argv() -> list[str]:
     1. ``$HERMES_BIN`` — explicit operator override. Path-like values are
        normalized to absolute paths; bare command names keep normal PATH
        semantics and never prefer a same-directory file before ``PATH``.
-    2. ``shutil.which("hermes")`` — the console-script shim, normalized to
+    2. Windows venv guard — when running from a venv on Windows with no
+       explicit override, prefer the interpreter-bound module form. A bare
+       ``hermes`` lookup on a Scheduled Task's restricted ``PATH`` can
+       resolve to a *different* interpreter's ``hermes.exe`` (e.g. the
+       system Python's console-script launcher). The pip-generated
+       ``.exe`` launcher cannot bootstrap the venv's editable install when
+       its ``__editable__`` ``.pth`` is not on the spawned interpreter's
+       ``sys.path``, so the worker dies with
+       ``ModuleNotFoundError: No module named 'hermes_cli'``. Using the
+       venv's ``sys.executable`` directly side-steps the launcher entirely.
+    3. ``shutil.which("hermes")`` — the console-script shim, normalized to
        an absolute path. On Windows, ``which`` can return a relative
        ``.\\hermes.CMD`` when the current directory is on ``PATH``; directly
        launching batch shims is also unsafe with task-derived argv. The
        dispatcher therefore falls back to the interpreter-bound module form
        for implicit ``.cmd`` / ``.bat`` shims.
-    3. ``sys.executable -m hermes_cli.main`` — fallback for setups where
+    4. ``sys.executable -m hermes_cli.main`` — fallback for setups where
        Hermes is launched from a venv and the ``hermes`` shim is not on
        the dispatcher's ``$PATH`` (cron, systemd ``User=`` services,
        launchd jobs, detached processes, etc.). Goes through the running
@@ -6330,6 +6354,9 @@ def _resolve_hermes_argv() -> list[str]:
         resolved_env_bin = _safe_which_no_cwd(env_bin)
         if resolved_env_bin:
             return _hermes_path_argv(resolved_env_bin)
+        return _module_hermes_argv()
+
+    if _IS_WINDOWS and _running_in_venv():
         return _module_hermes_argv()
 
     hermes_bin = _safe_which_no_cwd("hermes") if _IS_WINDOWS else shutil.which("hermes")

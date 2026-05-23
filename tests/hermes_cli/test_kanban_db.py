@@ -2726,6 +2726,93 @@ def test_resolve_hermes_argv_module_actually_runs():
     assert "Hermes Agent" in r.stdout, f"unexpected output: {r.stdout[:200]!r}"
 
 
+def test_resolve_hermes_argv_windows_venv_prefers_module_form(monkeypatch):
+    """Windows + venv resolves to the venv ``sys.executable`` module form.
+
+    Regression for #30943: under a Windows Scheduled Task with a restricted
+    ``PATH``, ``shutil.which("hermes")`` can resolve to the *system*
+    Python's ``hermes.exe`` console-script launcher instead of the venv's.
+    The system launcher then spawns the system interpreter, which has no
+    ``__editable__`` ``.pth`` for the venv's ``hermes_cli`` install, so the
+    worker dies with ``ModuleNotFoundError: No module named 'hermes_cli'``.
+    The venv guard avoids the launcher entirely by going straight through
+    the running ``sys.executable``.
+    """
+    import sys
+    import hermes_cli.kanban_db as kb
+
+    monkeypatch.delenv("HERMES_BIN", raising=False)
+    monkeypatch.setattr(kb, "_IS_WINDOWS", True)
+    monkeypatch.setenv("VIRTUAL_ENV", "C:\\venvs\\hermes")
+    monkeypatch.setattr(kb, "_safe_which_no_cwd", lambda name: "C:\\Python312\\Scripts\\hermes.exe")
+
+    assert kb._resolve_hermes_argv() == [sys.executable, "-m", "hermes_cli.main"]
+
+
+def test_resolve_hermes_argv_windows_unactivated_venv_prefers_module_form(monkeypatch):
+    """Detects an unactivated venv via ``sys.prefix != sys.base_prefix``.
+
+    Scheduled Tasks and detached processes routinely exec the venv's
+    ``python.exe`` directly without ``activate``, so ``$VIRTUAL_ENV`` is
+    not set. The ``sys.prefix`` check catches that path.
+    """
+    import sys
+    import hermes_cli.kanban_db as kb
+
+    monkeypatch.delenv("HERMES_BIN", raising=False)
+    monkeypatch.delenv("VIRTUAL_ENV", raising=False)
+    monkeypatch.setattr(kb, "_IS_WINDOWS", True)
+    monkeypatch.setattr(sys, "prefix", "C:\\venvs\\hermes")
+    monkeypatch.setattr(sys, "base_prefix", "C:\\Python312")
+    monkeypatch.setattr(kb, "_safe_which_no_cwd", lambda name: "C:\\Python312\\Scripts\\hermes.exe")
+
+    assert kb._resolve_hermes_argv() == [sys.executable, "-m", "hermes_cli.main"]
+
+
+def test_resolve_hermes_argv_windows_non_venv_still_uses_path_shim(monkeypatch, tmp_path):
+    """Outside a venv on Windows the shim is still preferred for familiar ``ps`` output."""
+    import sys
+    import hermes_cli.kanban_db as kb
+
+    shim = tmp_path / "Scripts" / "hermes.exe"
+    shim.parent.mkdir()
+    shim.write_text("", encoding="utf-8")
+    monkeypatch.delenv("HERMES_BIN", raising=False)
+    monkeypatch.delenv("VIRTUAL_ENV", raising=False)
+    monkeypatch.setattr(kb, "_IS_WINDOWS", True)
+    monkeypatch.setattr(sys, "base_prefix", sys.prefix)
+    monkeypatch.setattr(kb, "_safe_which_no_cwd", lambda name: str(shim))
+
+    assert kb._resolve_hermes_argv() == [str(shim)]
+
+
+def test_resolve_hermes_argv_posix_venv_still_uses_path_shim(monkeypatch):
+    """The venv guard is Windows-only — POSIX shims work correctly from a venv."""
+    import shutil
+    import hermes_cli.kanban_db as kb
+
+    monkeypatch.delenv("HERMES_BIN", raising=False)
+    monkeypatch.setenv("VIRTUAL_ENV", "/home/u/venvs/hermes")
+    monkeypatch.setattr(kb, "_IS_WINDOWS", False)
+    monkeypatch.setattr(shutil, "which", lambda name: "/home/u/venvs/hermes/bin/hermes")
+
+    assert kb._resolve_hermes_argv() == ["/home/u/venvs/hermes/bin/hermes"]
+
+
+def test_resolve_hermes_argv_windows_venv_explicit_hermes_bin_wins(monkeypatch, tmp_path):
+    """``HERMES_BIN`` is an explicit operator override and beats the venv guard."""
+    import hermes_cli.kanban_db as kb
+
+    shim = tmp_path / "bin" / "hermes.exe"
+    shim.parent.mkdir()
+    shim.write_text("", encoding="utf-8")
+    monkeypatch.setattr(kb, "_IS_WINDOWS", True)
+    monkeypatch.setenv("VIRTUAL_ENV", "C:\\venvs\\hermes")
+    monkeypatch.setenv("HERMES_BIN", str(shim))
+
+    assert kb._resolve_hermes_argv() == [str(shim)]
+
+
 # ---------------------------------------------------------------------------
 # task_age — guard against corrupt timestamp values
 #

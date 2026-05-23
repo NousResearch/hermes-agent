@@ -9,6 +9,17 @@ Inspired by Claude Code's /insights command, adapted for Hermes Agent's
 multi-platform architecture with additional cost estimation and platform
 breakdown capabilities.
 
+Data sources:
+1. Session DB (SQLite, hermes_state.py): per-session token, tool, message,
+   and model metadata.
+2. Skill-usage telemetry JSONL (SIE AC#8): the two-phase dispatch log at
+   ~/hermes-workspace/Lex-Workspace/sie/analytics/skill-usage.jsonl. Init
+   and complete rows are reconciled by dispatch_id; the resulting
+   skill_usage section is independent from and additive to the session-DB
+   path. Missing or unreadable telemetry degrades gracefully (the
+   skill_usage section reports available=False with a reason; the rest of
+   the report still renders).
+
 Usage:
     from agent.insights import InsightsEngine
     engine = InsightsEngine(db)
@@ -17,10 +28,11 @@ Usage:
 """
 
 import json
+import os
 import time
 from collections import Counter, defaultdict
-from datetime import datetime
-from typing import Any, Dict, List
+from datetime import datetime, timezone
+from typing import Any, Dict, List, Optional
 
 from agent.usage_pricing import (
     CanonicalUsage,
@@ -31,6 +43,235 @@ from agent.usage_pricing import (
 )
 
 _DEFAULT_PRICING = DEFAULT_PRICING
+
+_DEFAULT_SKILL_USAGE_PATH = "~/hermes-workspace/Lex-Workspace/sie/analytics/skill-usage.jsonl"
+_UNJOINED_INFLIGHT_THRESHOLD_S = 30 * 60  # 30 minutes
+
+
+def _parse_iso8601(value: Any) -> Optional[float]:
+    """Parse an ISO-8601 timestamp string into a Unix epoch seconds float.
+
+    Accepts trailing 'Z' (UTC) and standard offsets. Returns None on any
+    malformed input (caller decides whether the row is keepable).
+    """
+    if not isinstance(value, str) or not value:
+        return None
+    raw = value.strip()
+    if raw.endswith("Z"):
+        raw = raw[:-1] + "+00:00"
+    try:
+        dt = datetime.fromisoformat(raw)
+    except ValueError:
+        return None
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt.timestamp()
+
+
+class _SkillUsageAggregator:
+    """Reads the SIE two-phase skill-usage JSONL log and aggregates it.
+
+    The log is append-only with two row phases per dispatch:
+      - phase=init     written at dispatch start
+      - phase=complete written at dispatch end, carries outcome + duration_s
+
+    Rows are reconciled by dispatch_id. A complete row with no matching init
+    is still counted (init may have been written before the window). An init
+    row with no matching complete row, older than the unjoined threshold
+    (default 30 min), counts as unjoined_in_flight (stuck dispatch signal).
+
+    The aggregator never raises on malformed input: missing files, decode
+    errors, and schema drift all degrade gracefully and surface via the
+    available/reason fields.
+    """
+
+    def __init__(self, path: str):
+        self.path = path
+
+    def aggregate(self, days: int, now_ts: Optional[float] = None) -> Dict[str, Any]:
+        now_ts = now_ts if now_ts is not None else time.time()
+        window_start = now_ts - (days * 86400)
+        window_end = now_ts
+
+        try:
+            if not os.path.exists(self.path):
+                return self._unavailable("file not found", days, window_start, window_end)
+            with open(self.path, "r", encoding="utf-8") as fh:
+                rows = self._parse_rows(fh)
+        except OSError as exc:
+            return self._unavailable(f"unreadable: {exc}", days, window_start, window_end)
+
+        # Reconcile init + complete by dispatch_id.
+        # Keep all complete rows in window. Track init rows separately for
+        # unjoined detection.
+        completes: List[Dict[str, Any]] = []
+        inits_by_dispatch: Dict[str, Dict[str, Any]] = {}
+        completed_dispatch_ids: set = set()
+
+        for row in rows:
+            phase = row.get("phase")
+            dispatch_id = row.get("dispatch_id") or ""
+            ts_epoch = _parse_iso8601(row.get("ts"))
+            if ts_epoch is None:
+                continue
+            if phase == "complete":
+                if ts_epoch < window_start or ts_epoch > window_end:
+                    continue
+                completes.append(row)
+                if dispatch_id:
+                    completed_dispatch_ids.add(dispatch_id)
+            elif phase == "init":
+                # We need init rows regardless of window for unjoined
+                # detection (an old init with no complete is the signal),
+                # but the unjoined window itself is bounded by `days`.
+                if ts_epoch < window_start or ts_epoch > window_end:
+                    continue
+                if dispatch_id:
+                    inits_by_dispatch[dispatch_id] = row
+
+        unjoined = 0
+        for dispatch_id, init_row in inits_by_dispatch.items():
+            if dispatch_id in completed_dispatch_ids:
+                continue
+            started_ts = _parse_iso8601(init_row.get("started_at") or init_row.get("ts"))
+            if started_ts is None:
+                continue
+            if (now_ts - started_ts) >= _UNJOINED_INFLIGHT_THRESHOLD_S:
+                unjoined += 1
+
+        by_skill = self._aggregate_by_skill(completes)
+        by_agent = self._aggregate_by_agent(completes)
+        top_failure_skills = self._top_failure_skills(by_skill, limit=5)
+
+        return {
+            "available": True,
+            "total_dispatches": len(completes),
+            "by_skill": by_skill,
+            "by_agent": by_agent,
+            "top_failure_skills": top_failure_skills,
+            "unjoined_in_flight": unjoined,
+            "window_start_iso": _epoch_to_iso(window_start),
+            "window_end_iso": _epoch_to_iso(window_end),
+            "source_path": self.path,
+        }
+
+    @staticmethod
+    def _parse_rows(fh) -> List[Dict[str, Any]]:
+        rows = []
+        for line in fh:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                obj = json.loads(line)
+            except (json.JSONDecodeError, ValueError):
+                continue
+            if isinstance(obj, dict):
+                rows.append(obj)
+        return rows
+
+    @staticmethod
+    def _aggregate_by_skill(completes: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        groups: Dict[str, Dict[str, Any]] = {}
+        for row in completes:
+            skill = row.get("skill") or "unknown"
+            outcome = (row.get("outcome") or "").lower()
+            duration = row.get("duration_s")
+            g = groups.setdefault(skill, {
+                "skill": skill, "total": 0, "success": 0, "failure": 0,
+                "error": 0, "in_flight": 0, "_duration_sum": 0.0,
+                "_duration_n": 0,
+            })
+            g["total"] += 1
+            if outcome == "success":
+                g["success"] += 1
+            elif outcome == "failure":
+                g["failure"] += 1
+            elif outcome == "error":
+                g["error"] += 1
+            elif outcome == "in_flight":
+                g["in_flight"] += 1
+            if isinstance(duration, (int, float)) and duration >= 0:
+                g["_duration_sum"] += float(duration)
+                g["_duration_n"] += 1
+        out = []
+        for g in groups.values():
+            total = g["total"]
+            scored = g["success"] + g["failure"] + g["error"]
+            success_rate = (g["success"] / scored) if scored else 0.0
+            avg_duration = (g["_duration_sum"] / g["_duration_n"]) if g["_duration_n"] else 0.0
+            out.append({
+                "skill": g["skill"],
+                "total": total,
+                "success": g["success"],
+                "failure": g["failure"],
+                "error": g["error"],
+                "in_flight": g["in_flight"],
+                "success_rate": round(success_rate, 4),
+                "avg_duration_s": round(avg_duration, 3),
+            })
+        out.sort(key=lambda r: r["total"], reverse=True)
+        return out
+
+    @staticmethod
+    def _aggregate_by_agent(completes: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        groups: Dict[str, Dict[str, Any]] = {}
+        for row in completes:
+            agent = row.get("agent") or "unknown"
+            outcome = (row.get("outcome") or "").lower()
+            duration = row.get("duration_s")
+            g = groups.setdefault(agent, {
+                "agent": agent, "total": 0, "success": 0, "scored": 0,
+                "_duration_sum": 0.0, "_duration_n": 0,
+            })
+            g["total"] += 1
+            if outcome in ("success", "failure", "error"):
+                g["scored"] += 1
+                if outcome == "success":
+                    g["success"] += 1
+            if isinstance(duration, (int, float)) and duration >= 0:
+                g["_duration_sum"] += float(duration)
+                g["_duration_n"] += 1
+        out = []
+        for g in groups.values():
+            success_rate = (g["success"] / g["scored"]) if g["scored"] else 0.0
+            avg_duration = (g["_duration_sum"] / g["_duration_n"]) if g["_duration_n"] else 0.0
+            out.append({
+                "agent": g["agent"],
+                "total": g["total"],
+                "success_rate": round(success_rate, 4),
+                "avg_duration_s": round(avg_duration, 3),
+            })
+        out.sort(key=lambda r: r["total"], reverse=True)
+        return out
+
+    @staticmethod
+    def _top_failure_skills(by_skill: List[Dict[str, Any]], limit: int) -> List[Dict[str, Any]]:
+        failing = [
+            {"skill": r["skill"], "failure_count": r["failure"] + r["error"]}
+            for r in by_skill
+            if (r["failure"] + r["error"]) > 0
+        ]
+        failing.sort(key=lambda r: r["failure_count"], reverse=True)
+        return failing[:limit]
+
+    @staticmethod
+    def _unavailable(reason: str, days: int, window_start: float, window_end: float) -> Dict[str, Any]:
+        return {
+            "available": False,
+            "reason": reason,
+            "total_dispatches": 0,
+            "by_skill": [],
+            "by_agent": [],
+            "top_failure_skills": [],
+            "unjoined_in_flight": 0,
+            "window_start_iso": _epoch_to_iso(window_start),
+            "window_end_iso": _epoch_to_iso(window_end),
+        }
+
+
+def _epoch_to_iso(epoch: float) -> str:
+    return datetime.fromtimestamp(epoch, tz=timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
 def _has_known_pricing(model_name: str, provider: str = None, base_url: str = None) -> bool:
@@ -98,15 +339,23 @@ class InsightsEngine:
     to query session and message data.
     """
 
-    def __init__(self, db):
+    def __init__(self, db, skill_usage_path: Optional[str] = None):
         """
         Initialize with a SessionDB instance.
 
         Args:
             db: A SessionDB instance (from hermes_state.py)
+            skill_usage_path: Optional override for the SIE skill-usage
+                JSONL log location. Defaults to
+                ~/hermes-workspace/Lex-Workspace/sie/analytics/skill-usage.jsonl
+                expanded via os.path.expanduser. Missing file degrades
+                gracefully (skill_usage section reports available=False).
         """
         self.db = db
         self._conn = db._conn
+        resolved = skill_usage_path if skill_usage_path is not None else _DEFAULT_SKILL_USAGE_PATH
+        self.skill_usage_path = os.path.expanduser(resolved)
+        self._skill_usage_aggregator = _SkillUsageAggregator(self.skill_usage_path)
 
     def generate(self, days: int = 30, source: str = None) -> Dict[str, Any]:
         """
@@ -120,6 +369,11 @@ class InsightsEngine:
             Dict with all computed insights
         """
         cutoff = time.time() - (days * 86400)
+
+        # SIE telemetry aggregation is independent of session-DB content
+        # and runs on its own data source, so compute it unconditionally
+        # and attach to the report (even when no sessions exist).
+        sie_skill_usage = self._skill_usage_aggregator.aggregate(days=days)
 
         # Gather raw data
         sessions = self._get_sessions(cutoff, source)
@@ -147,6 +401,7 @@ class InsightsEngine:
                 },
                 "activity": {},
                 "top_sessions": [],
+                "skill_usage": sie_skill_usage,
             }
 
         # Compute insights
@@ -170,6 +425,7 @@ class InsightsEngine:
             "skills": skills,
             "activity": activity,
             "top_sessions": top_sessions,
+            "skill_usage": sie_skill_usage,
         }
 
     # =========================================================================
@@ -728,7 +984,10 @@ class InsightsEngine:
         if report.get("empty"):
             days = report.get("days", 30)
             src = f" (source: {report['source_filter']})" if report.get("source_filter") else ""
-            return f"  No sessions found in the last {days} days{src}."
+            header = f"  No sessions found in the last {days} days{src}."
+            sie = report.get("skill_usage") or {}
+            extra = self._format_skill_usage_section(sie)
+            return "\n".join([header, ""] + extra) if extra else header
 
         lines = []
         o = report["overview"]
@@ -861,7 +1120,76 @@ class InsightsEngine:
                 lines.append(f"  {ts['label']:<20} {ts['value']:<18} ({ts['date']}, {ts['session_id']})")
             lines.append("")
 
+        # SIE Skill Usage (telemetry JSONL data source)
+        sie = report.get("skill_usage") or {}
+        lines.extend(self._format_skill_usage_section(sie))
+
         return "\n".join(lines)
+
+    def _format_skill_usage_section(self, sie: Dict[str, Any]) -> List[str]:
+        """Render the SIE skill-usage section. No em dashes (HR-8).
+
+        Always emits a header so the report's structure is predictable.
+        Degradation cases (no file, unreadable, zero dispatches) render a
+        single explanatory line and skip the tables.
+        """
+        lines: List[str] = []
+        lines.append("  ## Skill Usage")
+        lines.append("  " + "─" * 56)
+        if not sie:
+            lines.append("  No skill-usage telemetry available.")
+            lines.append("")
+            return lines
+        if not sie.get("available", False):
+            reason = sie.get("reason", "unavailable")
+            lines.append(f"  Telemetry unavailable: {reason}")
+            lines.append("")
+            return lines
+        total = sie.get("total_dispatches", 0)
+        unjoined = sie.get("unjoined_in_flight", 0)
+        win_start = sie.get("window_start_iso", "")
+        win_end = sie.get("window_end_iso", "")
+        lines.append(f"  Window: {win_start} to {win_end}")
+        lines.append(f"  Total dispatches: {total:,}   Unjoined in-flight: {unjoined}")
+        if total == 0:
+            lines.append("  No completed dispatches in window.")
+            lines.append("")
+            return lines
+
+        by_skill = sie.get("by_skill") or []
+        if by_skill:
+            lines.append("")
+            lines.append(f"  {'Skill':<28} {'Total':>6} {'Succ':>5} {'Fail':>5} {'Err':>4} {'Rate':>6} {'AvgDur':>8}")
+            for r in by_skill[:10]:
+                rate_pct = f"{r['success_rate'] * 100:.1f}%"
+                dur = f"{r['avg_duration_s']:.2f}s"
+                lines.append(
+                    f"  {r['skill'][:28]:<28} {r['total']:>6} {r['success']:>5} "
+                    f"{r['failure']:>5} {r['error']:>4} {rate_pct:>6} {dur:>8}"
+                )
+            if len(by_skill) > 10:
+                lines.append(f"  ... and {len(by_skill) - 10} more skills")
+
+        by_agent = sie.get("by_agent") or []
+        if by_agent:
+            lines.append("")
+            lines.append(f"  {'Agent':<14} {'Total':>6} {'Rate':>7} {'AvgDur':>9}")
+            for r in by_agent:
+                rate_pct = f"{r['success_rate'] * 100:.1f}%"
+                dur = f"{r['avg_duration_s']:.2f}s"
+                lines.append(
+                    f"  {r['agent'][:14]:<14} {r['total']:>6} {rate_pct:>7} {dur:>9}"
+                )
+
+        top_failures = sie.get("top_failure_skills") or []
+        if top_failures:
+            lines.append("")
+            lines.append("  Top failure skills:")
+            for r in top_failures:
+                lines.append(f"    {r['skill']}: {r['failure_count']}")
+
+        lines.append("")
+        return lines
 
     def format_gateway(self, report: Dict) -> str:
         """Format the insights report for gateway/messaging (shorter)."""

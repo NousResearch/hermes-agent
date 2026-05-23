@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
-import { canFastAppendShape, canFastBackspaceShape } from '../components/textInput.js'
+import { canFastAppendShape, canFastBackspaceShape, supportsFastEchoTerminal } from '../components/textInput.js'
 
 // The fast-echo path bypasses Ink and writes characters directly to stdout
 // for the common case of typing plain English at the end of the line. These
@@ -170,5 +170,31 @@ describe('canFastBackspaceShape', () => {
     // must always pass `columns`; this case is for unit tests of the
     // pre-wrap shape contract.
     expect(canFastBackspaceShape('hello ', 'hello '.length)).toBe(true)
+  })
+})
+
+describe('supportsFastEchoTerminal', () => {
+  it('disables fast-echo in Apple Terminal', () => {
+    expect(supportsFastEchoTerminal({ TERM_PROGRAM: 'Apple_Terminal' } as NodeJS.ProcessEnv)).toBe(false)
+  })
+
+  it('disables fast-echo by default in Termux mode', () => {
+    expect(
+      supportsFastEchoTerminal({ TERMUX_VERSION: '0.118.0', PREFIX: '/data/data/com.termux/files/usr' } as NodeJS.ProcessEnv)
+    ).toBe(false)
+  })
+
+  it('allows explicit Termux fast-echo opt-in via env override', () => {
+    expect(
+      supportsFastEchoTerminal({
+        HERMES_TUI_TERMUX_FAST_ECHO: '1',
+        TERMUX_VERSION: '0.118.0'
+      } as NodeJS.ProcessEnv)
+    ).toBe(true)
+  })
+
+  it('keeps fast-echo enabled in VS Code and unknown non-Termux terminals', () => {
+    expect(supportsFastEchoTerminal({ TERM_PROGRAM: 'vscode' } as NodeJS.ProcessEnv)).toBe(true)
+    expect(supportsFastEchoTerminal({ TERM: 'xterm-256color' } as NodeJS.ProcessEnv)).toBe(true)
   })
 })

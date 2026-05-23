@@ -27,6 +27,15 @@ const sidebars: SidebarsConfig = {
         'user-guide/windows-wsl-quickstart',
         'user-guide/configuration',
         'user-guide/configuring-models',
+        {
+          type: 'category',
+          label: 'Secrets',
+          collapsed: true,
+          items: [
+            'user-guide/secrets/index',
+            'user-guide/secrets/bitwarden',
+          ],
+        },
         'user-guide/sessions',
         'user-guide/profiles',
         'user-guide/profile-distributions',
@@ -90,6 +99,7 @@ const sidebars: SidebarsConfig = {
             'user-guide/features/vision',
             'user-guide/features/image-generation',
             'user-guide/features/tts',
+            'user-guide/features/deliverable-mode',
           ],
         },
         {
@@ -154,6 +164,7 @@ const sidebars: SidebarsConfig = {
                     'user-guide/skills/bundled/creative/creative-architecture-diagram',
                     'user-guide/skills/bundled/creative/creative-ascii-art',
                     'user-guide/skills/bundled/creative/creative-ascii-video',
+                    'user-guide/skills/bundled/creative/creative-baoyu-article-illustrator',
                     'user-guide/skills/bundled/creative/creative-baoyu-comic',
                     'user-guide/skills/bundled/creative/creative-baoyu-infographic',
                     'user-guide/skills/bundled/creative/creative-claude-design',

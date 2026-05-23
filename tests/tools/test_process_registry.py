@@ -296,10 +296,17 @@ class TestStdinHelpers:
         assert result["status"] == "ok"
 
     def test_close_stdin_allows_eof_driven_process_to_finish(self, registry, tmp_path):
+        """PTY mode: writing data + sending EOF lets an EOF-driven child finish.
+
+        Background non-PTY mode used to expose subprocess stdin via a pipe,
+        but PR #214b95392 detached non-PTY stdin to DEVNULL to fix keyboard
+        lockout (#17959). For interactive stdin → PTY mode is now the only
+        supported path.
+        """
         session = registry.spawn_local(
             'python3 -c "import sys; print(sys.stdin.read().strip())"',
             cwd=str(tmp_path),
-            use_pty=False,
+            use_pty=True,
         )
 
         try:

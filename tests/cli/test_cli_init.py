@@ -99,7 +99,21 @@ class TestVerboseAndToolProgress:
     def test_tool_progress_mode_is_string(self):
         cli = _make_cli()
         assert isinstance(cli.tool_progress_mode, str)
-        assert cli.tool_progress_mode in ("off", "new", "all", "verbose")
+        assert cli.tool_progress_mode in {"off", "new", "all", "verbose"}
+
+
+class TestFallbackChainInit:
+    def test_merges_new_and_legacy_fallback_config(self):
+        cli = _make_cli(config_overrides={
+            "fallback_providers": [
+                {"provider": "openrouter", "model": "anthropic/claude-sonnet-4.6"},
+            ],
+            "fallback_model": {"provider": "nous", "model": "Hermes-4"},
+        })
+        assert cli._fallback_model == [
+            {"provider": "openrouter", "model": "anthropic/claude-sonnet-4.6"},
+            {"provider": "nous", "model": "Hermes-4"},
+        ]
 
 
 class TestBusyInputMode:

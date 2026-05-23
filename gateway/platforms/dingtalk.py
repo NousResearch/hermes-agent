@@ -774,7 +774,14 @@ class DingTalkAdapter(BasePlatformAdapter):
                             elif mapped == "audio":
                                 media_types.append("audio")
                                 if msg_type == MessageType.TEXT:
-                                    msg_type = MessageType.AUDIO
+                                    # DingTalk's "voice" rich-text item is a
+                                    # native voice note — route through STT.
+                                    # "audio" comes from file uploads only;
+                                    # keep those as AUDIO (no auto-STT).
+                                    if item_type == "voice":
+                                        msg_type = MessageType.VOICE
+                                    else:
+                                        msg_type = MessageType.AUDIO
                             elif mapped == "video":
                                 media_types.append("video")
                                 if msg_type == MessageType.TEXT:
@@ -1394,6 +1401,16 @@ class _IncomingHandler(
             super().__init__()
         self._adapter = adapter
         self._loop = loop
+
+    def pre_start(self) -> None:
+        """No-op pre-start hook required by dingtalk-stream SDK.
+
+        The SDK calls ``pre_start()`` on every registered handler before
+        opening the WebSocket connection.  Without this method, the SDK
+        raises ``AttributeError: '_IncomingHandler' object has no
+        attribute 'pre_start'`` and kills the stream connection.
+        """
+        return
 
     async def process(self, message: "CallbackMessage"):
         """Called by dingtalk-stream (>=0.20) when a message arrives.

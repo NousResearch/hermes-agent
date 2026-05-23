@@ -162,7 +162,7 @@ class TestCmdUpdateBranchFallback:
             if call.args
             and call.args[0][0] == "/usr/bin/npm"
             and call.args[0][1] == "ci"
-            and call.kwargs.get("cwd") in (PROJECT_ROOT, PROJECT_ROOT / "ui-tui")
+            and call.kwargs.get("cwd") in {PROJECT_ROOT, PROJECT_ROOT / "ui-tui"}
         ]
         assert len(repo_and_tui_calls) == 2
         for call in repo_and_tui_calls:

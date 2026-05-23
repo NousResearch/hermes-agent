@@ -634,6 +634,24 @@ When the flag is on, any uploaded file is downloaded, cached under `~/.hermes/ca
 
 Known-text formats already in the allowlist (`.txt`, `.md`, `.log`) continue to have their contents auto-injected up to 100 KiB; that behavior is unchanged when the flag is on.
 
+Equivalent env vars: `DISCORD_ALLOW_ANY_ATTACHMENT=true` and `DISCORD_MAX_ATTACHMENT_BYTES=33554432` (or `0` for no cap).
+
+:::warning Memory cost of unlimited
+Disabling the size cap (`max_attachment_bytes: 0`) means a user can drop a multi-GB file on the bot and the gateway will dutifully buffer it through memory while caching to disk. Only set this in trusted single-user installs. For shared bots, keep the default 32 MiB or raise it conservatively.
+:::
+
+## Interactive Prompts (clarify)
+
+When the agent calls the `clarify` tool — to ask which approach you prefer, get post-task feedback, or check before a non-trivial decision — Discord renders the question with **one button per choice**:
+
+> Which framework should I use for the dashboard?
+>
+> [1. Next.js] [2. Remix] [3. Astro] [Other (type answer)]
+
+Click a numbered button to answer, or click **Other** to type a free-form response (the next message you send in that channel becomes the answer). Open-ended `clarify` calls (no preset choices) skip the buttons and just capture your next message.
+
+The buttons disable themselves once a choice is made so duplicate clicks don't double-resolve the prompt. Configure the response timeout via `agent.clarify_timeout` in `~/.hermes/config.yaml` (default `600` seconds). If you don't respond within the timeout, the agent unblocks with a sentinel message and adapts rather than hanging.
+
 ## Home Channel
 
 You can designate a "home channel" where the bot sends proactive messages (such as cron job output, reminders, and notifications). There are two ways to set it:

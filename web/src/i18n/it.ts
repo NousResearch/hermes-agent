@@ -127,6 +127,7 @@ export const it: Translations = {
 
   sessions: {
     title: "Sessioni",
+    overview: "Panoramica",
     searchPlaceholder: "Cerca nel contenuto dei messaggi...",
     noSessions: "Nessuna sessione",
     noMatch: "Nessuna sessione corrisponde alla ricerca",
@@ -269,7 +270,7 @@ export const it: Translations = {
       "Scopri, installa, abilita e aggiorna i plugin Hermes (parità con `hermes plugins`).",
     identifierLabel: "URL Git o owner/repo",
     inactive: "inattivo",
-    installBtn: "Installa da Git",
+    installBtn: "Installa",
     installHeading: "Installa da GitHub / URL Git",
     installHint: "Usa la forma breve owner/repo o un URL clone https:// o git@ completo.",
     memoryProviderLabel: "Provider di memoria",
@@ -367,6 +368,8 @@ export const it: Translations = {
     description: "Gestisci chiavi API e segreti memorizzati in",
     hideAdvanced: "Nascondi avanzate",
     showAdvanced: "Mostra avanzate",
+    showLess: "Mostra meno",
+    showMore: "Mostra di più",
     llmProviders: "Provider LLM",
     providersConfigured: "{configured} di {total} provider configurati",
     getKey: "Ottieni chiave",
@@ -392,7 +395,7 @@ export const it: Translations = {
     disconnect: "Disconnetti",
     managedExternally: "Gestito esternamente",
     copied: "Copiato ✓",
-    cli: "CLI",
+    cli: "Copia",
     copyCliCommand: "Copia comando CLI (per uso esterno / fallback)",
     connect: "Connetti",
     sessionExpires: "La sessione scade tra {time}",
@@ -653,6 +656,7 @@ export const it: Translations = {
     columnLabels: {
       triage: "Triage",
       todo: "Da fare",
+      scheduled: "Pianificato",
       ready: "Pronto",
       running: "In corso",
       blocked: "Bloccato",
@@ -662,6 +666,7 @@ export const it: Translations = {
     columnHelp: {
       triage: "Idee grezze — un specifier elaborerà la specifica",
       todo: "In attesa di dipendenze o non assegnato",
+      scheduled: "In attesa di un ritardo noto o di un follow-up pianificato",
       ready: "Dipendenze soddisfatte; assegna un profilo per il dispatch",
       running: "Preso in carico da un worker — in esecuzione",
       blocked: "Il worker ha richiesto input umano",

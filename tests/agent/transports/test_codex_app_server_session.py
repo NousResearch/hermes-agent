@@ -9,10 +9,12 @@ from __future__ import annotations
 
 import threading
 import time
+from unittest.mock import patch
 from typing import Any, Optional
 
 import pytest
 
+import agent.transports.codex_app_server_session as session_mod
 from agent.transports.codex_app_server_session import (
     CodexAppServerSession,
     TurnResult,
@@ -344,6 +346,23 @@ class TestRunTurn:
         assert r.interrupted is True
         assert r.error and "timed out" in r.error
 
+    def test_deadline_uses_monotonic_clock(self):
+        client = FakeClient()
+        s = make_session(client)
+        monotonic_values = iter([1000.0, 999.0, 999.0, 1001.0])
+        with patch.object(
+            session_mod.time,
+            "monotonic",
+            side_effect=lambda: next(monotonic_values),
+        ):
+            r = s.run_turn(
+                "never finishes",
+                turn_timeout=0.1,
+                notification_poll_timeout=0.0,
+            )
+        assert r.interrupted is True
+        assert r.error and "timed out" in r.error
+
     def test_failed_turn_records_error_from_turn_completed(self):
         client = FakeClient()
         client.queue_notification(
@@ -665,6 +684,35 @@ class TestSessionRetirement:
         assert r.error and "silent" in r.error
         # Confirm we issued turn/interrupt to free codex compute
         assert any(method == "turn/interrupt" for (method, _) in client.requests)
+
+    def test_post_tool_watchdog_uses_monotonic_clock(self):
+        client = FakeClient()
+        client.queue_notification(
+            "item/completed",
+            item={
+                "type": "commandExecution", "id": "ex1",
+                "command": "echo hi", "cwd": "/tmp",
+                "status": "completed", "aggregatedOutput": "hi",
+                "exitCode": 0, "commandActions": [],
+            },
+            threadId="t", turnId="tu1",
+        )
+        s = make_session(client)
+        monotonic_values = iter([1000.0, 999.0, 999.0, 999.0, 1000.2])
+        with patch.object(
+            session_mod.time,
+            "monotonic",
+            side_effect=lambda: next(monotonic_values),
+        ):
+            r = s.run_turn(
+                "tool then silence",
+                turn_timeout=5.0,
+                notification_poll_timeout=0.0,
+                post_tool_quiet_timeout=0.15,
+            )
+        assert r.interrupted is True
+        assert r.should_retire is True
+        assert r.error and "silent" in r.error
 
     def test_post_tool_watchdog_resets_on_further_activity(self):
         """A tool completion followed by an agent message should NOT trip

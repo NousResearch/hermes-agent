@@ -28,6 +28,8 @@ import sys
 from contextlib import redirect_stderr, redirect_stdout
 from typing import Optional
 
+from hermes_cli.fallback_config import get_fallback_chain
+
 
 def _normalize_toolsets(toolsets: object = None) -> list[str] | None:
     if not toolsets:
@@ -301,6 +303,9 @@ def _run_agent(
         toolsets_list = sorted(_get_platform_tools(cfg, "cli"))
 
     session_db = _create_session_db_for_oneshot()
+    # Read the effective fallback chain from profile config so oneshot workers
+    # honour the same merge semantics as interactive CLI and gateway sessions.
+    _fb = get_fallback_chain(cfg)
 
     agent = AIAgent(
         api_key=runtime.get("api_key"),
@@ -313,6 +318,7 @@ def _run_agent(
         platform="cli",
         session_db=session_db,
         credential_pool=runtime.get("credential_pool"),
+        fallback_model=_fb or None,
         # Interactive callbacks are intentionally NOT wired beyond this
         # one.  In oneshot mode there's no user sitting at a terminal:
         #   - clarify  → returns a synthetic "pick a default" instruction

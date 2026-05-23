@@ -554,23 +554,50 @@ class TestExtractReasoning:
         assert result == "from structured field"
 
 
-class TestCleanSessionContent:
-    def test_none_passthrough(self):
-        assert AIAgent._clean_session_content(None) is None
+class TestSessionJsonSnapshotOptIn:
+    """Regression: per-session JSON snapshot writer is opt-in via config.
 
-    def test_scratchpad_converted(self):
-        text = "<REASONING_SCRATCHPAD>think</REASONING_SCRATCHPAD> answer"
-        result = AIAgent._clean_session_content(text)
-        assert "<REASONING_SCRATCHPAD>" not in result
-        assert "<think>" in result
+    state.db is canonical (PR #29182).  ``sessions.write_json_snapshots``
+    defaults to False, so the agent must NOT write ``session_{sid}.json``
+    files by default — that behavior caused multi-GB sessions directories
+    on heavy users.  Users can opt back in for external tooling that reads
+    the JSON files directly.
+    """
 
-    def test_extra_newlines_cleaned(self):
-        text = "\n\n\n<think>x</think>\n\n\nafter"
-        result = AIAgent._clean_session_content(text)
-        # Should not have excessive newlines around think block
-        assert "\n\n\n" not in result
-        # Content after think block must be preserved
-        assert "after" in result
+    def test_session_json_disabled_by_default(self, agent):
+        # Default config: writer is gated off.
+        assert getattr(agent, "_session_json_enabled", False) is False, (
+            "sessions.write_json_snapshots must default to False"
+        )
+
+    def test_save_session_log_noops_when_disabled(self, agent, tmp_path):
+        # When disabled, calling the method must not write any file even
+        # if logs_dir is writable and messages are non-empty.
+        agent._session_json_enabled = False
+        agent.logs_dir = tmp_path
+        agent._session_messages = [{"role": "user", "content": "hello"}]
+        agent._save_session_log()
+        # No session_*.json must appear under logs_dir.
+        assert list(tmp_path.glob("session_*.json")) == []
+
+    def test_save_session_log_writes_when_enabled(self, agent, tmp_path):
+        # Opt-in path: with the flag on and a session_id, the writer must
+        # produce ``session_{sid}.json`` under logs_dir.
+        agent._session_json_enabled = True
+        agent.logs_dir = tmp_path
+        messages = [{"role": "user", "content": "hello"}]
+        agent._save_session_log(messages)
+        expected = tmp_path / f"session_{agent.session_id}.json"
+        assert expected.exists(), (
+            "Opt-in writer must produce session_{sid}.json under logs_dir"
+        )
+
+    def test_logs_dir_retained_for_request_dumps(self, agent):
+        # logs_dir is kept unconditionally because
+        # agent_runtime_helpers.dump_api_request_debug still writes
+        # request_dump_*.json there (debug breadcrumb path), independent of
+        # the session JSON opt-in.
+        assert hasattr(agent, "logs_dir")
 
 
 class TestGetMessagesUpToLastAssistant:
@@ -989,6 +1016,28 @@ class TestBuildSystemPrompt:
         # Should contain current date info like "Conversation started:"
         assert "Conversation started:" in prompt
 
+    def test_datetime_is_date_only_not_minute_precision(self, agent):
+        """Timestamp must be date-only (no HH:MM) so the system prompt
+        stays byte-stable for the full day. Minute precision invalidates
+        prefix-cache KV on every rebuild path (compression, fresh-agent
+        gateway turns, session resume without a stored prompt)."""
+        prompt = agent._build_system_prompt()
+        # Find the line and strip it for inspection
+        for line in prompt.splitlines():
+            if line.startswith("Conversation started:"):
+                # Must NOT contain AM/PM indicator (minute precision had %I:%M %p)
+                assert " AM" not in line and " PM" not in line, (
+                    f"Timestamp line has time-of-day, breaks daily cache stability: {line!r}"
+                )
+                # Must NOT contain a colon followed by two digits (HH:MM pattern)
+                import re as _re
+                assert not _re.search(r":\d{2}", line), (
+                    f"Timestamp line has HH:MM, breaks daily cache stability: {line!r}"
+                )
+                break
+        else:
+            assert False, "Expected a 'Conversation started:' line in the system prompt"
+
     def test_includes_nous_subscription_prompt(self, agent, monkeypatch):
         monkeypatch.setattr(run_agent, "build_nous_subscription_prompt", lambda tool_names: "NOUS SUBSCRIPTION BLOCK")
         prompt = agent._build_system_prompt()
@@ -1073,6 +1122,54 @@ class TestToolUseEnforcementConfig:
         agent = self._make_agent(model="anthropic/claude-sonnet-4", tool_use_enforcement="auto")
         prompt = agent._build_system_prompt()
         assert TOOL_USE_ENFORCEMENT_GUIDANCE not in prompt
+
+    def test_auto_injects_for_grok(self):
+        """xAI Grok / xai-oauth models hit the same enforcement path as GPT."""
+        from agent.prompt_builder import TOOL_USE_ENFORCEMENT_GUIDANCE
+        agent = self._make_agent(model="x-ai/grok-4.3", tool_use_enforcement="auto")
+        prompt = agent._build_system_prompt()
+        assert TOOL_USE_ENFORCEMENT_GUIDANCE in prompt
+
+    def test_auto_injects_for_qwen(self):
+        """Qwen models default to chatty/hallucinatory tool use without enforcement."""
+        from agent.prompt_builder import TOOL_USE_ENFORCEMENT_GUIDANCE
+        agent = self._make_agent(model="qwen/qwen-plus", tool_use_enforcement="auto")
+        prompt = agent._build_system_prompt()
+        assert TOOL_USE_ENFORCEMENT_GUIDANCE in prompt
+
+    def test_auto_injects_for_deepseek(self):
+        """DeepSeek models default to chatty/hallucinatory tool use without enforcement."""
+        from agent.prompt_builder import TOOL_USE_ENFORCEMENT_GUIDANCE
+        agent = self._make_agent(model="deepseek/deepseek-r1", tool_use_enforcement="auto")
+        prompt = agent._build_system_prompt()
+        assert TOOL_USE_ENFORCEMENT_GUIDANCE in prompt
+
+    def test_auto_injects_execution_guidance_for_grok(self):
+        """Grok also gets OPENAI_MODEL_EXECUTION_GUIDANCE (verification,
+        mandatory_tool_use, act_dont_ask). Same failure modes as GPT in
+        practice — claims completion without tool calls, suggests workarounds
+        instead of using existing tools.
+        """
+        from agent.prompt_builder import OPENAI_MODEL_EXECUTION_GUIDANCE
+        agent = self._make_agent(model="x-ai/grok-4.3", tool_use_enforcement="auto")
+        prompt = agent._build_system_prompt()
+        assert OPENAI_MODEL_EXECUTION_GUIDANCE in prompt
+
+    def test_auto_injects_execution_guidance_for_xai_oauth_model(self):
+        """xai-oauth bare model names (no slash) also match the grok pattern."""
+        from agent.prompt_builder import OPENAI_MODEL_EXECUTION_GUIDANCE
+        agent = self._make_agent(model="grok-4.3", tool_use_enforcement="auto")
+        prompt = agent._build_system_prompt()
+        assert OPENAI_MODEL_EXECUTION_GUIDANCE in prompt
+
+    def test_auto_does_not_inject_execution_guidance_for_claude(self):
+        """Sanity: execution guidance stays off for non-targeted families."""
+        from agent.prompt_builder import OPENAI_MODEL_EXECUTION_GUIDANCE
+        agent = self._make_agent(
+            model="anthropic/claude-sonnet-4", tool_use_enforcement="auto"
+        )
+        prompt = agent._build_system_prompt()
+        assert OPENAI_MODEL_EXECUTION_GUIDANCE not in prompt
 
     def test_true_forces_for_all_models(self):
         from agent.prompt_builder import TOOL_USE_ENFORCEMENT_GUIDANCE
@@ -1831,7 +1928,6 @@ class TestExecuteToolCalls:
         agent._interruptible_api_call = _fake_api_call
         agent._persist_session = lambda *args, **kwargs: None
         agent._save_trajectory = lambda *args, **kwargs: None
-        agent._save_session_log = lambda *args, **kwargs: None
 
         captured = io.StringIO()
         agent._print_fn = lambda *args, **kw: print(*args, file=captured, **kw)
@@ -2282,9 +2378,11 @@ class TestMcpParallelToolBatch:
     def test_mcp_tools_parallel_when_server_opted_in(self):
         """MCP tools from a parallel-safe server can run concurrently."""
         from run_agent import _should_parallelize_tool_batch
-        from tools.mcp_tool import _parallel_safe_servers, _lock
+        from tools.mcp_tool import _mcp_tool_server_names, _parallel_safe_servers, _lock
         with _lock:
             _parallel_safe_servers.add("github")
+            _mcp_tool_server_names["mcp_github_list_repos"] = "github"
+            _mcp_tool_server_names["mcp_github_search_code"] = "github"
         try:
             tc1 = _mock_tool_call(name="mcp_github_list_repos", arguments='{"org":"openai"}', call_id="c1")
             tc2 = _mock_tool_call(name="mcp_github_search_code", arguments='{"q":"test"}', call_id="c2")
@@ -2292,13 +2390,16 @@ class TestMcpParallelToolBatch:
         finally:
             with _lock:
                 _parallel_safe_servers.discard("github")
+                _mcp_tool_server_names.pop("mcp_github_list_repos", None)
+                _mcp_tool_server_names.pop("mcp_github_search_code", None)
 
     def test_mixed_mcp_and_builtin_parallel(self):
         """MCP parallel tools mixed with built-in parallel-safe tools."""
         from run_agent import _should_parallelize_tool_batch
-        from tools.mcp_tool import _parallel_safe_servers, _lock
+        from tools.mcp_tool import _mcp_tool_server_names, _parallel_safe_servers, _lock
         with _lock:
             _parallel_safe_servers.add("docs")
+            _mcp_tool_server_names["mcp_docs_search"] = "docs"
         try:
             tc1 = _mock_tool_call(name="mcp_docs_search", arguments='{"query":"api"}', call_id="c1")
             tc2 = _mock_tool_call(name="web_search", arguments='{"query":"test"}', call_id="c2")
@@ -2306,14 +2407,17 @@ class TestMcpParallelToolBatch:
         finally:
             with _lock:
                 _parallel_safe_servers.discard("docs")
+                _mcp_tool_server_names.pop("mcp_docs_search", None)
 
     def test_mixed_parallel_and_serial_mcp_servers(self):
         """One parallel MCP server + one non-parallel MCP server = sequential."""
         from run_agent import _should_parallelize_tool_batch
-        from tools.mcp_tool import _parallel_safe_servers, _lock
+        from tools.mcp_tool import _mcp_tool_server_names, _parallel_safe_servers, _lock
         with _lock:
             _parallel_safe_servers.add("docs")
             # "github" is NOT in _parallel_safe_servers
+            _mcp_tool_server_names["mcp_docs_search"] = "docs"
+            _mcp_tool_server_names["mcp_github_list_repos"] = "github"
         try:
             tc1 = _mock_tool_call(name="mcp_docs_search", arguments='{"query":"api"}', call_id="c1")
             tc2 = _mock_tool_call(name="mcp_github_list_repos", arguments='{"org":"openai"}', call_id="c2")
@@ -2321,6 +2425,8 @@ class TestMcpParallelToolBatch:
         finally:
             with _lock:
                 _parallel_safe_servers.discard("docs")
+                _mcp_tool_server_names.pop("mcp_docs_search", None)
+                _mcp_tool_server_names.pop("mcp_github_list_repos", None)
 
 
 class TestHandleMaxIterations:
@@ -2529,6 +2635,31 @@ class TestRunConversation:
             result = agent.run_conversation("hello")
         assert result["final_response"] == "Final answer"
         assert result["completed"] is True
+
+    def test_ollama_small_runtime_context_fails_before_api_call(self, agent, caplog):
+        self._setup_agent(agent)
+        agent.model = "qwen3.5:9b"
+        agent.provider = "custom"
+        agent.base_url = "http://host.docker.internal:11434/v1"
+        agent._ollama_num_ctx = 4096
+
+        with (
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+            caplog.at_level(logging.WARNING, logger="agent.conversation_loop"),
+        ):
+            result = agent.run_conversation("Call ps -aux")
+
+        assert result["failed"] is True
+        assert result["completed"] is False
+        assert result["api_calls"] == 0
+        assert result["turn_exit_reason"] == "ollama_runtime_context_too_small"
+        assert "Ollama loaded `qwen3.5:9b` with only 4,096 tokens" in result["final_response"]
+        assert "model.ollama_num_ctx: 65536" in result["final_response"]
+        assert not agent.client.chat.completions.create.called
+        assert "Ollama runtime context too small for Hermes tool use" in caplog.text
+        assert "runtime_context=4096" in caplog.text
 
     def test_tool_calls_then_stop(self, agent):
         self._setup_agent(agent)
@@ -3522,11 +3653,17 @@ class TestRetryExhaustion:
             usage=None,
         )
         agent.client.chat.completions.create.return_value = bad_resp
+        # The conversation loop was extracted out of run_agent.py and pulls
+        # in time/jittered_backoff at module level — patch BOTH so the
+        # retry waits don't burn 18+ seconds of real wall-clock time here.
+        from agent import conversation_loop as _conv_loop
         with (
             patch.object(agent, "_persist_session"),
             patch.object(agent, "_save_trajectory"),
             patch.object(agent, "_cleanup_task_resources"),
             patch("run_agent.time", self._make_fast_time_mock()),
+            patch.object(_conv_loop, "time", self._make_fast_time_mock()),
+            patch.object(_conv_loop, "jittered_backoff", lambda *a, **k: 0.0),
         ):
             result = agent.run_conversation("hello")
         assert result.get("completed") is False, (
@@ -3540,11 +3677,14 @@ class TestRetryExhaustion:
         """Exhausted retries on API errors must return error result, not crash."""
         self._setup_agent(agent)
         agent.client.chat.completions.create.side_effect = RuntimeError("rate limited")
+        from agent import conversation_loop as _conv_loop
         with (
             patch.object(agent, "_persist_session"),
             patch.object(agent, "_save_trajectory"),
             patch.object(agent, "_cleanup_task_resources"),
             patch("run_agent.time", self._make_fast_time_mock()),
+            patch.object(_conv_loop, "time", self._make_fast_time_mock()),
+            patch.object(_conv_loop, "jittered_backoff", lambda *a, **k: 0.0),
         ):
             result = agent.run_conversation("hello")
         assert result.get("completed") is False
@@ -3657,7 +3797,7 @@ class TestNousCredentialRefresh:
 
         assert ok is True
         assert closed["value"] is True
-        assert captured["force_mint"] is True
+        assert captured["inference_auth_mode"] == "legacy"
         assert rebuilt["kwargs"]["api_key"] == "new-nous-key"
         assert (
             rebuilt["kwargs"]["base_url"] == "https://inference-api.nousresearch.com/v1"
@@ -4211,22 +4351,6 @@ class TestSafeWriter:
         assert inner.getvalue() == "test"
 
 
-class TestSaveSessionLogAtomicWrite:
-    def test_uses_shared_atomic_json_helper(self, agent, tmp_path):
-        agent.session_log_file = tmp_path / "session.json"
-        messages = [{"role": "user", "content": "hello"}]
-
-        with patch("run_agent.atomic_json_write", create=True) as mock_atomic_write:
-            agent._save_session_log(messages)
-
-        mock_atomic_write.assert_called_once()
-        call_args = mock_atomic_write.call_args
-        assert call_args.args[0] == agent.session_log_file
-        payload = call_args.args[1]
-        assert payload["session_id"] == agent.session_id
-        assert payload["messages"] == messages
-        assert call_args.kwargs["indent"] == 2
-        assert call_args.kwargs["default"] is str
 
 
 # ===================================================================
@@ -4879,23 +5003,26 @@ class TestAnthropicInterruptHandler:
     def test_interruptible_has_anthropic_branch(self):
         """The interrupt handler must check api_mode == 'anthropic_messages'."""
         import inspect
-        source = inspect.getsource(AIAgent._interruptible_api_call)
+        from agent.chat_completion_helpers import interruptible_api_call
+        source = inspect.getsource(interruptible_api_call)
         assert "anthropic_messages" in source, \
-            "_interruptible_api_call must handle Anthropic interrupt (api_mode check)"
+            "interruptible_api_call must handle Anthropic interrupt (api_mode check)"
 
     def test_interruptible_rebuilds_anthropic_client(self):
         """After interrupting, the Anthropic client should be rebuilt."""
         import inspect
-        source = inspect.getsource(AIAgent._interruptible_api_call)
+        from agent.chat_completion_helpers import interruptible_api_call
+        source = inspect.getsource(interruptible_api_call)
         assert "build_anthropic_client" in source, \
-            "_interruptible_api_call must rebuild Anthropic client after interrupt"
+            "interruptible_api_call must rebuild Anthropic client after interrupt"
 
     def test_streaming_has_anthropic_branch(self):
         """_streaming_api_call must also handle Anthropic interrupt."""
         import inspect
-        source = inspect.getsource(AIAgent._interruptible_streaming_api_call)
+        from agent.chat_completion_helpers import interruptible_streaming_api_call
+        source = inspect.getsource(interruptible_streaming_api_call)
         assert "anthropic_messages" in source, \
-            "_streaming_api_call must handle Anthropic interrupt"
+            "interruptible_streaming_api_call must handle Anthropic interrupt"
 
 
 # ---------------------------------------------------------------------------
@@ -5011,12 +5138,9 @@ class TestPersistUserMessageOverride:
             {"role": "assistant", "content": "Hi!"},
         ]
 
-        with patch.object(agent, "_save_session_log") as mock_save:
-            agent._persist_session(messages, [])
+        agent._persist_session(messages, [])
 
         assert messages[0]["content"] == "Hello there"
-        saved_messages = mock_save.call_args.args[0]
-        assert saved_messages[0]["content"] == "Hello there"
         first_db_write = agent._session_db.append_message.call_args_list[0].kwargs
         assert first_db_write["content"] == "Hello there"
 
@@ -5304,14 +5428,20 @@ class TestMemoryNudgeCounterPersistence:
     def test_counters_not_reset_in_preamble(self):
         """The run_conversation preamble must not zero the nudge counters."""
         import inspect
-        src = inspect.getsource(AIAgent.run_conversation)
+        from agent.conversation_loop import run_conversation as _rc
+        src = inspect.getsource(_rc)
         # The preamble resets many fields (retry counts, budget, etc.)
         # before the main loop. Find that reset block and verify our
         # counters aren't in it. The reset block ends at iteration_budget.
-        preamble_end = src.index("self.iteration_budget = IterationBudget")
+        # The extracted body uses ``agent.X`` (not ``self.X``).  Anchor
+        # exactly on ``agent.iteration_budget = IterationBudget`` so an
+        # unrelated identifier ending in ``iteration_budget`` (e.g.
+        # ``_iteration_budget`` or ``shared_iteration_budget``) can't
+        # match the boundary.
+        preamble_end = src.index("agent.iteration_budget = IterationBudget")
         preamble = src[:preamble_end]
-        assert "self._turns_since_memory = 0" not in preamble
-        assert "self._iters_since_skill = 0" not in preamble
+        assert "agent._turns_since_memory = 0" not in preamble
+        assert "agent._iters_since_skill = 0" not in preamble
 
 
 class TestDeadRetryCode:
@@ -5319,7 +5449,8 @@ class TestDeadRetryCode:
 
     def test_no_unreachable_max_retries_after_backoff(self):
         import inspect
-        source = inspect.getsource(AIAgent.run_conversation)
+        from agent.conversation_loop import run_conversation as _rc
+        source = inspect.getsource(_rc)
         occurrences = source.count("if retry_count >= max_retries:")
         assert occurrences == 2, (
             f"Expected 2 occurrences of 'if retry_count >= max_retries:' "
@@ -5357,7 +5488,8 @@ class TestMemoryContextSanitization:
         a literal <memory-context> tag we don't silently delete their text.
         The streaming scrubber + plugin-side scrub cover real leak paths."""
         import inspect
-        src = inspect.getsource(AIAgent.run_conversation)
+        from agent.conversation_loop import run_conversation as _rc
+        src = inspect.getsource(_rc)
         assert "sanitize_context(user_message)" not in src
         assert "sanitize_context(persist_user_message)" not in src
 
@@ -5393,7 +5525,8 @@ class TestMemoryProviderTurnStart:
     def test_on_turn_start_called_before_prefetch(self):
         """Source-level check: on_turn_start appears before prefetch_all in run_conversation."""
         import inspect
-        src = inspect.getsource(AIAgent.run_conversation)
+        from agent.conversation_loop import run_conversation as _rc
+        src = inspect.getsource(_rc)
         # Find the actual method calls, not comments
         idx_turn_start = src.index(".on_turn_start(")
         idx_prefetch = src.index(".prefetch_all(")
@@ -5403,7 +5536,10 @@ class TestMemoryProviderTurnStart:
         )
 
     def test_on_turn_start_uses_user_turn_count(self):
-        """Source-level check: on_turn_start receives self._user_turn_count."""
+        """Source-level check: on_turn_start receives the user_turn_count."""
         import inspect
-        src = inspect.getsource(AIAgent.run_conversation)
-        assert "on_turn_start(self._user_turn_count" in src
+        from agent.conversation_loop import run_conversation as _rc
+        src = inspect.getsource(_rc)
+        # The extracted body uses ``agent.X`` rather than ``self.X``;
+        # assert the extracted-form spelling directly.
+        assert "on_turn_start(agent._user_turn_count" in src

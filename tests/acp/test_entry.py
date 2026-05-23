@@ -94,103 +94,62 @@ def test_main_setup_skips_browser_prompt_on_no(monkeypatch):
     assert called == []
 
 
-def test_main_setup_browser_invokes_bundled_script(monkeypatch):
-    """`hermes-acp --setup-browser` must shell out to the bundled bootstrap
-    script — never reimplement the install logic inline."""
-    monkeypatch.setattr("platform.system", lambda: "Linux")
+def test_main_setup_browser_calls_ensure_dependency(monkeypatch):
+    """`hermes-acp --setup-browser` routes through dep_ensure.ensure_dependency."""
+    calls = []
 
-    captured = {}
+    def fake_ensure(dep, interactive=True):
+        calls.append((dep, interactive))
+        return True
 
-    def fake_run(cmd, check=False):
-        captured["cmd"] = cmd
-
-        class _R:
-            returncode = 0
-
-        return _R()
-
-    monkeypatch.setattr("subprocess.run", fake_run)
+    monkeypatch.setattr("hermes_cli.dep_ensure.ensure_dependency", fake_ensure)
 
     entry.main(["--setup-browser"])
 
-    assert captured["cmd"][0] == "bash"
-    assert captured["cmd"][1].endswith("bootstrap_browser_tools.sh")
-    # --yes is NOT passed when the flag is absent.
-    assert "--yes" not in captured["cmd"]
+    assert ("node", True) in calls
+    assert ("browser", True) in calls
 
 
 def test_main_setup_browser_forwards_yes_flag(monkeypatch):
-    monkeypatch.setattr("platform.system", lambda: "Linux")
+    """--yes suppresses interactive prompts in ensure_dependency."""
+    calls = []
 
-    captured = {}
+    def fake_ensure(dep, interactive=True):
+        calls.append((dep, interactive))
+        return True
 
-    def fake_run(cmd, check=False):
-        captured["cmd"] = cmd
-
-        class _R:
-            returncode = 0
-
-        return _R()
-
-    monkeypatch.setattr("subprocess.run", fake_run)
+    monkeypatch.setattr("hermes_cli.dep_ensure.ensure_dependency", fake_ensure)
 
     entry.main(["--setup-browser", "--yes"])
 
-    assert "--yes" in captured["cmd"]
+    assert ("node", False) in calls
+    assert ("browser", False) in calls
 
 
-def test_main_setup_browser_uses_powershell_on_windows(monkeypatch):
-    monkeypatch.setattr("platform.system", lambda: "Windows")
+def test_main_setup_browser_stops_on_node_failure(monkeypatch):
+    """If node install fails, browser install is not attempted."""
+    calls = []
 
-    captured = {}
+    def fake_ensure(dep, interactive=True):
+        calls.append(dep)
+        return dep != "node"  # node fails
 
-    def fake_run(cmd, check=False):
-        captured["cmd"] = cmd
-
-        class _R:
-            returncode = 0
-
-        return _R()
-
-    monkeypatch.setattr("subprocess.run", fake_run)
-
-    entry.main(["--setup-browser", "--yes"])
-
-    assert captured["cmd"][0] == "powershell.exe"
-    assert any(part.endswith("bootstrap_browser_tools.ps1") for part in captured["cmd"])
-    assert "-Yes" in captured["cmd"]
-
-
-def test_main_setup_browser_propagates_failure(monkeypatch):
-    monkeypatch.setattr("platform.system", lambda: "Linux")
-
-    class _R:
-        returncode = 7
-
-    monkeypatch.setattr("subprocess.run", lambda cmd, check=False: _R())
+    monkeypatch.setattr("hermes_cli.dep_ensure.ensure_dependency", fake_ensure)
 
     with pytest.raises(SystemExit) as excinfo:
         entry.main(["--setup-browser"])
-    assert excinfo.value.code == 7
+    assert excinfo.value.code == 1
+    assert "node" in calls
+    assert "browser" not in calls
 
 
-def test_bootstrap_scripts_ship_with_package():
-    """The package-data wiring (pyproject.toml) must include the bootstrap
-    scripts — otherwise `--setup-browser` 404s at runtime."""
-    from pathlib import Path
+def test_main_setup_browser_propagates_browser_failure(monkeypatch):
+    """If browser install fails, exit code is 1."""
+    def fake_ensure(dep, interactive=True):
+        return dep != "browser"  # browser fails
 
-    bootstrap_dir = Path(entry.__file__).resolve().parent / "bootstrap"
-    sh = bootstrap_dir / "bootstrap_browser_tools.sh"
-    ps1 = bootstrap_dir / "bootstrap_browser_tools.ps1"
+    monkeypatch.setattr("hermes_cli.dep_ensure.ensure_dependency", fake_ensure)
 
-    assert sh.is_file(), f"missing bundled script: {sh}"
-    assert ps1.is_file(), f"missing bundled script: {ps1}"
-
-    sh_text = sh.read_text(encoding="utf-8")
-    ps1_text = ps1.read_text(encoding="utf-8")
-
-    # Sanity: scripts know how to find the Hermes-managed Node prefix.
-    assert "HERMES_HOME" in sh_text
-    assert "agent-browser" in sh_text
-    assert "HermesHome" in ps1_text
-    assert "agent-browser" in ps1_text
+    with pytest.raises(SystemExit) as excinfo:
+        entry.main(["--setup-browser"])
+    assert excinfo.value.code == 1

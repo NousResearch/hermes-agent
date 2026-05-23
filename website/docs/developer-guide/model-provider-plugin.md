@@ -107,6 +107,12 @@ Full definition in `providers/base.py`. The most useful ones:
 
 ## Overridable hooks
 
+### Contract
+- All hooks are optional — you only need to override what your provider requires.
+- Default implementations in `ProviderProfile` are safe no-ops or pass-throughs.
+- Hooks are called with keyword arguments only where documented.
+- Return values must match the documented types (see examples below).
+
 Subclass `ProviderProfile` for non-trivial quirks:
 
 ```python

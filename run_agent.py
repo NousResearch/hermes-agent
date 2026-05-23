@@ -3870,6 +3870,17 @@ class AIAgent:
         if casual and not any(k in text for k in ("why", "broken", "slow", "performance", "not working")):
             return "surface"
 
+        # Code-level app-ship guard: serious app/product build requests get
+        # ship-mode budget even when the model has not remembered or loaded the
+        # app-ship-mode skill. The helper is conservative so tiny fixes and
+        # question-only planning turns do not get hijacked.
+        try:
+            from agent.ship_mode_guard import is_serious_app_ship_request
+            if is_serious_app_ship_request(user_message, conversation_history):
+                return "ship_mode"
+        except Exception:
+            pass
+
         dev_context = any(k in combined for k in (
             "repo", "branch", "commit", "diff", "test", "pytest", "build", "runtime", "gateway",
             "discord", "kanban", "cron", "aivs", "ssw", "sku", "nextjs", "ui", "ux", "scrape",

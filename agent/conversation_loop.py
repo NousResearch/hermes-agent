@@ -462,6 +462,22 @@ def run_conversation(
     except Exception as exc:
         logger.warning("pre_llm_call hook failed: %s", exc)
 
+    # Core app/product ship-mode routing guard. Like plugin context, this is
+    # injected into the current API request only; it is not persisted and does
+    # not alter the cached system prompt. That makes the guard deterministic
+    # without breaking prefix caching or transcript cleanliness.
+    _ship_mode_routing_context = ""
+    try:
+        from agent.ship_mode_guard import build_ship_mode_routing_context
+        _ship_mode_routing_context = build_ship_mode_routing_context(
+            original_user_message,
+            conversation_history,
+            platform=getattr(agent, "platform", None) or "",
+            valid_tool_names=getattr(agent, "valid_tool_names", set()) or set(),
+        )
+    except Exception as exc:
+        logger.debug("ship-mode routing guard failed: %s", exc)
+
     # Main conversation loop
     api_call_count = 0
     final_response = None
@@ -695,6 +711,8 @@ def run_conversation(
                         _injections.append(_fenced)
                 if _plugin_user_context:
                     _injections.append(_plugin_user_context)
+                if _ship_mode_routing_context:
+                    _injections.append(_ship_mode_routing_context)
                 try:
                     classification = getattr(agent, "_last_turn_budget_classification", "")
                     delegate_depth = int(getattr(agent, "_delegate_depth", 0) or 0)

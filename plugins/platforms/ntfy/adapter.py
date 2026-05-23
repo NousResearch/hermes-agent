@@ -83,6 +83,44 @@ RECONNECT_BACKOFF = [2, 5, 10, 30, 60]
 STREAM_TIMEOUT_SECONDS = 90  # ntfy keepalive default is 55s; give margin
 
 
+def _build_auth_header(token: str) -> Dict[str, str]:
+    """Build an ``Authorization`` header from an ntfy token.
+
+    Shared by :class:`NtfyAdapter._auth_headers` and :func:`_standalone_send`
+    so both paths follow the same auth shape and whitespace-stripping rules.
+
+    Tokens are stripped of surrounding whitespace — pasted tokens often
+    carry trailing newlines that would otherwise render the header
+    malformed (``Authorization: Bearer foo\\n``).  ``user:pass`` tokens
+    become Basic auth; anything else is treated as a Bearer token.
+    Returns ``{}`` when no token is configured.
+    """
+    if not token:
+        return {}
+    token = token.strip()
+    if not token:
+        return {}
+    if ":" in token:
+        import base64
+        encoded = base64.b64encode(token.encode()).decode()
+        return {"Authorization": f"Basic {encoded}"}
+    return {"Authorization": f"Bearer {token}"}
+
+
+def _truncate_body(message: str, *, context: str) -> bytes:
+    """Apply the ntfy 4096-char limit, logging a warning on truncation.
+
+    ``context`` is included in the log message so adapter and standalone
+    truncations can be told apart in logs.
+    """
+    if len(message) > MAX_MESSAGE_LENGTH:
+        logger.warning(
+            "%s: truncating message from %d to %d chars (ntfy limit)",
+            context, len(message), MAX_MESSAGE_LENGTH,
+        )
+    return message[:MAX_MESSAGE_LENGTH].encode("utf-8")
+
+
 def check_requirements() -> bool:
     """Check whether the ntfy adapter is installable and minimally configured.
 
@@ -212,11 +250,21 @@ class NtfyAdapter(BasePlatformAdapter):
                     "[%s] Authentication failed (401) — stopping reconnect loop. Check NTFY_TOKEN.",
                     self.name,
                 )
+                self._set_fatal_error(
+                    "ntfy_unauthorized",
+                    "ntfy server rejected auth (401). Check NTFY_TOKEN.",
+                    retryable=False,
+                )
                 raise _FatalStreamError("401 Unauthorized")
             if response.status_code == 404:
                 logger.error(
                     "[%s] Topic not found (404): %s — stopping reconnect loop.",
                     self.name, self._topic,
+                )
+                self._set_fatal_error(
+                    "ntfy_topic_not_found",
+                    f"ntfy topic '{self._topic}' returned 404. Check NTFY_TOPIC.",
+                    retryable=False,
                 )
                 raise _FatalStreamError("404 Not Found")
             response.raise_for_status()
@@ -382,15 +430,7 @@ class NtfyAdapter(BasePlatformAdapter):
 
     def _auth_headers(self) -> Dict[str, str]:
         """Build Authorization header if a token is configured."""
-        if not self._token:
-            return {}
-        # ntfy supports both Bearer tokens and Base64-encoded Basic auth;
-        # 'user:pass' pairs become Basic, anything else is treated as Bearer.
-        if ":" in self._token:
-            import base64
-            encoded = base64.b64encode(self._token.encode()).decode()
-            return {"Authorization": f"Basic {encoded}"}
-        return {"Authorization": f"Bearer {self._token}"}
+        return _build_auth_header(self._token)
 
 
 # ---------------------------------------------------------------------------
@@ -479,27 +519,16 @@ async def _standalone_send(
     markdown_env = os.getenv("NTFY_MARKDOWN", "").strip().lower()
     markdown_enabled = bool(extra.get("markdown")) or markdown_env in ("1", "true", "yes")
 
-    headers = {"Content-Type": "text/plain; charset=utf-8"}
-    if token:
-        if ":" in token:
-            import base64
-            headers["Authorization"] = f"Basic {base64.b64encode(token.encode()).decode()}"
-        else:
-            headers["Authorization"] = f"Bearer {token}"
+    headers = {"Content-Type": "text/plain; charset=utf-8", **_build_auth_header(token)}
     if markdown_enabled:
         headers["X-Markdown"] = "true"
 
-    if len(message) > MAX_MESSAGE_LENGTH:
-        logger.warning(
-            "ntfy standalone: truncating message from %d to %d chars",
-            len(message), MAX_MESSAGE_LENGTH,
-        )
-    body = message[:MAX_MESSAGE_LENGTH]
+    body = _truncate_body(message, context="ntfy standalone")
 
     url = f"{server}/{publish_topic}"
     try:
         async with httpx.AsyncClient(timeout=15.0) as client:
-            resp = await client.post(url, content=body.encode("utf-8"), headers=headers)
+            resp = await client.post(url, content=body, headers=headers)
         if resp.status_code >= 300:
             return {"error": f"ntfy HTTP {resp.status_code}: {resp.text[:200]}"}
         try:

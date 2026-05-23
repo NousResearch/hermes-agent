@@ -839,3 +839,105 @@ def test_adapter_factory_returns_ntfy_adapter():
     cfg = PlatformConfig(enabled=True, extra={"topic": "t"})
     adapter = factory(cfg)
     assert isinstance(adapter, NtfyAdapter)
+
+
+# ---------------------------------------------------------------------------
+# 12. Robustness — token hygiene + fatal-state propagation
+# ---------------------------------------------------------------------------
+
+
+class TestTokenHygiene:
+    """``_build_auth_header`` must strip pasted-token whitespace; pasted
+    tokens often carry trailing newlines that break the Authorization line."""
+
+    def test_trailing_whitespace_stripped(self):
+        assert _ntfy._build_auth_header("  tok123  ") == {"Authorization": "Bearer tok123"}
+
+    def test_trailing_newline_stripped(self):
+        assert _ntfy._build_auth_header("tok123\n") == {"Authorization": "Bearer tok123"}
+
+    def test_whitespace_only_returns_empty(self):
+        assert _ntfy._build_auth_header("   \n  ") == {}
+
+    def test_basic_auth_token_also_stripped(self):
+        h = _ntfy._build_auth_header("  user:pass  ")
+        assert h["Authorization"].startswith("Basic ")
+        import base64
+        assert h["Authorization"] == "Basic " + base64.b64encode(b"user:pass").decode()
+
+    def test_adapter_strips_token_via_helper(self):
+        """The adapter delegates to _build_auth_header, so token whitespace
+        passed via config.extra is also stripped."""
+        config = PlatformConfig(enabled=True, extra={"topic": "t", "token": "  tok\n"})
+        adapter = NtfyAdapter(config)
+        assert adapter._auth_headers() == {"Authorization": "Bearer tok"}
+
+
+class TestFatalErrorPropagation:
+    """When the stream hits 401/404, the adapter must transition to the
+    ``fatal`` state via ``_set_fatal_error`` so the gateway's runtime
+    status reflects reality instead of staying 'connected'."""
+
+    def test_401_sets_fatal_unauthorized(self):
+        adapter = NtfyAdapter(PlatformConfig(enabled=True, extra={"topic": "t"}))
+        adapter._http_client = MagicMock()
+
+        # Mock the streaming response
+        mock_response = MagicMock()
+        mock_response.status_code = 401
+        # async-context-manager flavor for httpx.stream
+        mock_cm = AsyncMock()
+        mock_cm.__aenter__ = AsyncMock(return_value=mock_response)
+        mock_cm.__aexit__ = AsyncMock(return_value=None)
+        adapter._http_client.stream = MagicMock(return_value=mock_cm)
+
+        fake_httpx = MagicMock()
+        fake_httpx.Timeout = MagicMock()
+        with patch.object(_ntfy, "httpx", fake_httpx):
+            with pytest.raises(_ntfy._FatalStreamError):
+                _run(adapter._consume_stream("https://ntfy.example/t/json", {}))
+
+        assert adapter.has_fatal_error is True
+        assert adapter._fatal_error_code == "ntfy_unauthorized"
+        assert adapter._fatal_error_retryable is False
+
+    def test_404_sets_fatal_topic_not_found(self):
+        adapter = NtfyAdapter(PlatformConfig(enabled=True, extra={"topic": "missing-topic"}))
+        adapter._http_client = MagicMock()
+
+        mock_response = MagicMock()
+        mock_response.status_code = 404
+        mock_cm = AsyncMock()
+        mock_cm.__aenter__ = AsyncMock(return_value=mock_response)
+        mock_cm.__aexit__ = AsyncMock(return_value=None)
+        adapter._http_client.stream = MagicMock(return_value=mock_cm)
+
+        fake_httpx = MagicMock()
+        fake_httpx.Timeout = MagicMock()
+        with patch.object(_ntfy, "httpx", fake_httpx):
+            with pytest.raises(_ntfy._FatalStreamError):
+                _run(adapter._consume_stream("https://ntfy.example/missing-topic/json", {}))
+
+        assert adapter.has_fatal_error is True
+        assert adapter._fatal_error_code == "ntfy_topic_not_found"
+        assert "missing-topic" in adapter._fatal_error_message
+        assert adapter._fatal_error_retryable is False
+
+
+class TestTruncateHelper:
+    """``_truncate_body`` is shared between adapter.send() (inline truncation
+    today, may migrate) and ``_standalone_send``. It must cap to
+    MAX_MESSAGE_LENGTH and return bytes."""
+
+    def test_short_message_passes_through(self):
+        assert _ntfy._truncate_body("hi", context="test") == b"hi"
+
+    def test_long_message_truncated(self):
+        long = "x" * (MAX_MESSAGE_LENGTH + 50)
+        result = _ntfy._truncate_body(long, context="test")
+        assert isinstance(result, bytes)
+        assert len(result) == MAX_MESSAGE_LENGTH
+
+    def test_unicode_message_encoded(self):
+        result = _ntfy._truncate_body("héllo 🔔", context="test")
+        assert result == "héllo 🔔".encode("utf-8")

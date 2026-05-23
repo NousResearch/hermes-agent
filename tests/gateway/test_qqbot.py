@@ -138,8 +138,8 @@ class TestIsVoiceContentType:
     def test_voice_content_type(self):
         assert self._fn("voice", "msg.silk") is True
 
-    def test_audio_content_type(self):
-        assert self._fn("audio/mp3", "file.mp3") is True
+    def test_plain_audio_file_is_not_voice_message(self):
+        assert self._fn("audio/mp3", "file.mp3") is False
 
     def test_voice_extension(self):
         assert self._fn("", "file.silk") is True

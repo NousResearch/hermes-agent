@@ -22,6 +22,11 @@ from .adapter import (  # noqa: F401
     _coerce_list,
     _ssrf_redirect_guard,
 )
+from .multi_adapter import (  # noqa: F401
+    QQMultiAdapter,
+    collect_qq_credentials,
+    has_any_qq_credentials,
+)
 
 # -- Onboard (QR-code scan-to-configure) -----------------------------------
 from .onboard import (  # noqa: F401
@@ -58,6 +63,9 @@ from .keyboards import (  # noqa: F401
 __all__ = [
     # adapter
     "QQAdapter",
+    "QQMultiAdapter",
+    "collect_qq_credentials",
+    "has_any_qq_credentials",
     "QQCloseError",
     "check_qq_requirements",
     "_coerce_list",

@@ -129,6 +129,27 @@ export function SessionPanel({ info, sid, t }: SessionPanelProps) {
     return line
   }
 
+  const sectionListBody = (entries: [string, string[]][], maxItems: number, overflowLabel: string) => {
+    const shown = entries.slice(0, maxItems)
+    const overflow = entries.length - maxItems
+
+    return (
+      <>
+        {shown.map(([k, vs]) => (
+          <Text key={k} wrap="truncate">
+            <Text color={t.color.muted}>{strip(k)}: </Text>
+            <Text color={t.color.text}>{truncLine(strip(k) + ': ', vs)}</Text>
+          </Text>
+        ))}
+        {overflow > 0 && (
+          <Text color={t.color.muted}>
+            (and {overflow} more {overflowLabel}…)
+          </Text>
+        )}
+      </>
+    )
+  }
+
   // ── Collapsible skills section ──
   const skillEntries = Object.entries(info.skills).sort()
   const skillsTotal = flat(info.skills).length
@@ -139,46 +160,14 @@ export function SessionPanel({ info, sid, t }: SessionPanelProps) {
       return <InlineLoader label="scanning skills" t={t} />
     }
 
-    const shown = skillEntries.slice(0, SKILLS_MAX)
-    const overflow = skillEntries.length - SKILLS_MAX
-
-    return (
-      <>
-        {shown.map(([k, vs]) => (
-          <Text key={k} wrap="truncate">
-            <Text color={t.color.muted}>{strip(k)}: </Text>
-            <Text color={t.color.text}>{truncLine(strip(k) + ': ', vs)}</Text>
-          </Text>
-        ))}
-        {overflow > 0 && (
-          <Text color={t.color.muted}>(and {overflow} more categories…)</Text>
-        )}
-      </>
-    )
+    return sectionListBody(skillEntries, SKILLS_MAX, 'categories')
   }
 
   // ── Collapsible tools section ──
   const toolEntries = Object.entries(info.tools).sort()
   const toolsTotal = flat(info.tools).length
 
-  const toolsBody = () => {
-    const shown = toolEntries.slice(0, TOOLSETS_MAX)
-    const overflow = toolEntries.length - TOOLSETS_MAX
-
-    return (
-      <>
-        {shown.map(([k, vs]) => (
-          <Text key={k} wrap="truncate">
-            <Text color={t.color.muted}>{strip(k)}: </Text>
-            <Text color={t.color.text}>{truncLine(strip(k) + ': ', vs)}</Text>
-          </Text>
-        ))}
-        {overflow > 0 && (
-          <Text color={t.color.muted}>(and {overflow} more toolsets…)</Text>
-        )}
-      </>
-    )
-  }
+  const toolsBody = () => sectionListBody(toolEntries, TOOLSETS_MAX, 'toolsets')
 
   // ── Collapsible MCP section ──
   const mcpBody = () => (

@@ -306,14 +306,17 @@ describe('createGatewayEventHandler', () => {
     const streamed = 'short streamed reasoning'
     const onEvent = createGatewayEventHandler(buildCtx(appended))
 
-    onEvent({ payload: {}, type: 'message.start' } as any)
-    onEvent({ payload: { text: streamed }, type: 'thinking.delta' } as any)
-    vi.runOnlyPendingTimers()
+    try {
+      onEvent({ payload: {}, type: 'message.start' } as any)
+      onEvent({ payload: { text: streamed }, type: 'thinking.delta' } as any)
+      vi.runOnlyPendingTimers()
 
-    expect(getTurnState().reasoning).toBe(streamed)
-    expect(getTurnState().reasoningActive).toBe(true)
-    expect(getTurnState().reasoningTokens).toBe(estimateTokensRough(streamed))
-    vi.useRealTimers()
+      expect(getTurnState().reasoning).toBe(streamed)
+      expect(getTurnState().reasoningActive).toBe(true)
+      expect(getTurnState().reasoningTokens).toBe(estimateTokensRough(streamed))
+    } finally {
+      vi.useRealTimers()
+    }
   })
 
   it('ignores late thinking.delta after the turn has already completed', () => {

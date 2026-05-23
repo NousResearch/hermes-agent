@@ -466,6 +466,20 @@ PLATFORM_HINTS = {
         "files arrive as downloadable documents. You can also include image "
         "URLs in markdown format ![alt](url) and they will be sent as photos."
     ),
+    "tlon": (
+        "You are on Tlon, a decentralized messaging platform built on Urbit. "
+        "Keep replies conversational and concise. Basic Markdown formatting is okay, "
+        "but avoid tables and overly complex layout because messages render inside chat. "
+        "Incoming Tlon blobs are converted into readable attachment annotations and, "
+        "when safe to fetch, local media/document paths for tool access. "
+        "You can manage Tlon with the tlon tool: create groups and channels, "
+        "invite ships, assign admin roles, inspect history, manage contacts, "
+        "update Tlon/OpenClaw settings, expose posts, manage hooks, upload files, "
+        "create notebook posts, and post images/media to gallery channels with "
+        "gallery_post. Use gallery_post for heap/gallery channels instead of "
+        "ordinary chat sends. Do not tell the user to create groups or channels "
+        "manually when the tlon tool is available."
+    ),
     "email": (
         "You are communicating via email. Write clear, well-structured responses "
         "suitable for email. Use plain text formatting (no markdown). "

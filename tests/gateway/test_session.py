@@ -213,6 +213,29 @@ class TestBuildSessionContextPrompt:
         assert "short and conversational" in prompt
         assert "blank line" in prompt
 
+    def test_tlon_group_prompt_includes_group_and_channel_ids(self):
+        config = GatewayConfig(
+            platforms={
+                Platform.TLON: PlatformConfig(enabled=True),
+            },
+        )
+        source = SessionSource(
+            platform=Platform.TLON,
+            chat_id="chat/~ramlud-bintun/v1fsl36d",
+            chat_name="Hermes Group / general",
+            chat_type="group",
+            user_id="~malmur-halmex",
+            user_name="~malmur-halmex",
+            parent_chat_id="~ramlud-bintun/v1l3qcoq",
+        )
+        ctx = build_session_context(source, config)
+        prompt = build_session_context_prompt(ctx)
+
+        assert "Tlon IDs" in prompt
+        assert "Group: `~ramlud-bintun/v1l3qcoq`" in prompt
+        assert "Channel: `chat/~ramlud-bintun/v1fsl36d`" in prompt
+        assert "use these exact IDs" in prompt
+
     def test_discord_prompt(self):
         config = GatewayConfig(
             platforms={

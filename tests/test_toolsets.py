@@ -254,3 +254,7 @@ class TestDefaultPlatformWebSearchCoverage:
 
     def test_hermes_api_server_toolset_includes_web_search(self):
         assert "web_search" in resolve_toolset("hermes-api-server")
+
+    def test_hermes_tlon_toolset_includes_native_tlon_tool(self):
+        assert "tlon" in resolve_toolset("hermes-tlon")
+        assert "tlon" in resolve_toolset("hermes-tlon-safe")

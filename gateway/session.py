@@ -373,6 +373,19 @@ def build_session_context_prompt(
             "Use target='yuanbao:direct:<account_id>' for DM "
             "and target='yuanbao:group:<group_code>' for group chat."
         )
+    elif context.source.platform == Platform.TLON:
+        src = context.source
+        if src.chat_type == "group":
+            lines.append("")
+            lines.append("**Tlon IDs:**")
+            if src.parent_chat_id:
+                lines.append(f"  - Group: `{src.parent_chat_id}` (use as `group_id` for the `tlon` tool)")
+            lines.append(f"  - Channel: `{src.chat_id}` (use as `channel_id` for messages/channels)")
+            if src.thread_id:
+                lines.append(f"  - Thread/root post: `{src.thread_id}`")
+            lines.append(
+                "When the user refers to this group or channel, use these exact IDs."
+            )
 
     # Connected platforms
     platforms_list = ["local (files on this machine)"]

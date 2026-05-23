@@ -1,12 +1,12 @@
 ---
 sidebar_position: 1
 title: "Messaging Gateway"
-description: "Chat with Hermes from Telegram, Discord, Slack, WhatsApp, Signal, SMS, Email, Home Assistant, Mattermost, Matrix, DingTalk, Yuanbao, Microsoft Teams, LINE, Webhooks, or any OpenAI-compatible frontend via the API server — architecture and setup overview"
+description: "Chat with Hermes from Telegram, Discord, Slack, WhatsApp, Signal, Tlon, SMS, Email, Home Assistant, Mattermost, Matrix, DingTalk, Yuanbao, Microsoft Teams, LINE, Webhooks, or any OpenAI-compatible frontend via the API server — architecture and setup overview"
 ---
 
 # Messaging Gateway
 
-Chat with Hermes from Telegram, Discord, Slack, WhatsApp, Signal, SMS, Email, Home Assistant, Mattermost, Matrix, DingTalk, Feishu/Lark, WeCom, Weixin, BlueBubbles (iMessage), QQ, Yuanbao, Microsoft Teams, LINE, or your browser. The gateway is a single background process that connects to all your configured platforms, handles sessions, runs cron jobs, and delivers voice messages.
+Chat with Hermes from Telegram, Discord, Slack, WhatsApp, Signal, Tlon, SMS, Email, Home Assistant, Mattermost, Matrix, DingTalk, Feishu/Lark, WeCom, Weixin, BlueBubbles (iMessage), QQ, Yuanbao, Microsoft Teams, LINE, or your browser. The gateway is a single background process that connects to all your configured platforms, handles sessions, runs cron jobs, and delivers voice messages.
 
 For the full voice feature set — including CLI microphone mode, spoken replies in messaging, and Discord voice-channel conversations — see [Voice Mode](/docs/user-guide/features/voice-mode) and [Use Voice Mode with Hermes](/docs/guides/use-voice-mode-with-hermes).
 
@@ -25,6 +25,7 @@ For the full voice feature set — including CLI microphone mode, spoken replies
 | Home Assistant | — | — | — | — | — | — | — |
 | Mattermost | ✅ | ✅ | ✅ | ✅ | — | ✅ | ✅ |
 | Matrix | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| Tlon | — | ✅ | ✅ | ✅ | ✅ | — | — |
 | DingTalk | — | ✅ | ✅ | — | ✅ | — | ✅ |
 | Feishu/Lark | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
 | WeCom | ✅ | ✅ | ✅ | — | — | ✅ | ✅ |

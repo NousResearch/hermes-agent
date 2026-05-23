@@ -73,6 +73,8 @@ async def build_channel_directory(adapters: Dict[Any, Any]) -> Dict[str, Any]:
                 platforms["discord"] = _build_discord(adapter)
             elif platform == Platform.SLACK:
                 platforms["slack"] = await _build_slack(adapter)
+            elif platform == Platform.TLON:
+                platforms["tlon"] = _build_tlon(adapter)
         except Exception as e:
             logger.warning("Channel directory: failed to build %s: %s", platform.value, e)
 
@@ -201,6 +203,42 @@ async def _build_slack(adapter) -> List[Dict[str, Any]]:
 
     # Merge in DM/group entries discovered from session history.
     for entry in _build_from_sessions("slack"):
+        if entry.get("id") not in seen_ids:
+            channels.append(entry)
+            seen_ids.add(entry.get("id"))
+
+    return channels
+
+
+def _build_tlon(adapter) -> List[Dict[str, str]]:
+    """Enumerate monitored/discovered Tlon channels plus known DMs."""
+    channels: List[Dict[str, str]] = []
+    seen_ids: set[str] = set()
+
+    monitored = sorted(getattr(adapter, "monitored_channels", set()) or [])
+    channel_to_group = getattr(adapter, "_channel_to_group", {}) or {}
+    group_names = getattr(adapter, "_group_names", {}) or {}
+    for nest in monitored:
+        parsed = None
+        try:
+            from gateway.platforms.tlon import _parse_channel_nest
+            parsed = _parse_channel_nest(nest)
+        except Exception:
+            parsed = None
+
+        group_id = channel_to_group.get(nest, "")
+        group_name = group_names.get(group_id, group_id)
+        channel_name = parsed["name"] if parsed else nest
+        label = f"{group_name}/{channel_name}" if group_name else channel_name
+        channels.append({
+            "id": nest,
+            "name": label,
+            "type": parsed["type"] if parsed else "channel",
+            "guild": group_name,
+        })
+        seen_ids.add(nest)
+
+    for entry in _build_from_sessions("tlon"):
         if entry.get("id") not in seen_ids:
             channels.append(entry)
             seen_ids.add(entry.get("id"))

@@ -114,6 +114,85 @@ def test_create_task_appears_on_board(client):
     assert "researcher" in data["assignees"]
 
 
+def test_create_task_with_selected_profile_from_roster_appears_on_board(client, monkeypatch, tmp_path):
+    from hermes_cli import profiles as profiles_mod
+
+    monkeypatch.setattr(
+        profiles_mod,
+        "list_profiles",
+        lambda: [
+            profiles_mod.ProfileInfo(
+                name="default",
+                path=tmp_path / ".hermes",
+                is_default=True,
+                gateway_running=False,
+                model="gpt-5.5",
+                provider="openai-codex",
+                description="General worker",
+            ),
+            profiles_mod.ProfileInfo(
+                name="specifier-bot",
+                path=tmp_path / "specifier-bot",
+                is_default=False,
+                gateway_running=False,
+                model="glm-5.1",
+                provider="zai",
+                skill_count=3,
+                description="Turns rough ideas into ready specs",
+            ),
+        ],
+    )
+
+    roster = client.get("/api/plugins/kanban/profiles")
+    assert roster.status_code == 200, roster.text
+    profiles = {p["name"]: p for p in roster.json()["profiles"]}
+    assert "specifier-bot" in profiles
+    assert profiles["specifier-bot"]["description"] == "Turns rough ideas into ready specs"
+    assert "path" not in profiles["specifier-bot"]
+    assert "has_env" not in profiles["specifier-bot"]
+
+    r = client.post(
+        "/api/plugins/kanban/tasks",
+        json={"title": "Specify dashboard quick create", "assignee": "specifier-bot"},
+    )
+    assert r.status_code == 200, r.text
+    task = r.json()["task"]
+    assert task["assignee"] == "specifier-bot"
+    assert task["status"] == "ready"
+
+    board = client.get("/api/plugins/kanban/board").json()
+    ready = next(c for c in board["columns"] if c["name"] == "ready")
+    assert any(t["id"] == task["id"] and t["assignee"] == "specifier-bot" for t in ready["tasks"])
+    assert "specifier-bot" in board["assignees"]
+
+
+def test_profiles_endpoint_failure_is_understandable(client, monkeypatch):
+    from hermes_cli import profiles as profiles_mod
+
+    def fail_to_list_profiles():
+        raise RuntimeError("profile store unavailable")
+
+    monkeypatch.setattr(profiles_mod, "list_profiles", fail_to_list_profiles)
+
+    r = client.get("/api/plugins/kanban/profiles")
+    assert r.status_code == 500
+    assert r.json()["detail"] == "failed to list profiles: profile store unavailable"
+
+
+def test_inline_create_uses_profile_selector_not_free_text_assignee_input():
+    repo_root = Path(__file__).resolve().parents[2]
+    bundle = repo_root / "plugins" / "kanban" / "dashboard" / "dist" / "index.js"
+    js = bundle.read_text()
+
+    assert "function ProfileSelector(props)" in js
+    assert "SDK.fetchJSON(`${API}/profiles`)" in js
+    assert "profileLoadError" in js
+    assert "Select a profile" in js
+    assert "No profiles available" in js
+    assert "setAssignee(e.target.value)" not in js
+    assert "assignee: assignee || null" in js
+
+
 def test_scheduled_tasks_have_their_own_column_not_todo(client):
     """Scheduled/time-delay tasks must not be silently bucketed into todo."""
 

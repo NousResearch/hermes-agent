@@ -8373,7 +8373,7 @@ class GatewayRunner:
     @classmethod
     def _gateway_kanban_spawn_denial(cls, args) -> str | None:
         """Deny gateway Kanban requests that can launch or relaunch profiles."""
-        action = getattr(args, "kanban_action", None)
+        action = getattr(args, "kanban_action", None) if args else None
         if not action:
             return None
 

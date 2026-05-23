@@ -1289,6 +1289,56 @@ The user has requested that this compaction PRIORITISE preserving all informatio
         # Safety: never go back into the head region.
         return max(last_user_idx, head_end + 1)
 
+    def _find_minimal_tail_cut(
+        self, messages: List[Dict[str, Any]], head_end: int,
+    ) -> int:
+        """Find a minimal tail boundary that keeps only the most recent exchange.
+
+        Instead of protecting a large token-budget tail (which can contain
+        dozens of stale turns), this keeps at most the last 3 messages as raw
+        active context.  Everything before that is summarised.
+
+        This prevents the ``[summary] → [new Q&A] → [old tail history] → [user
+        reply]`` mis-ordering that confuses models when the tail contains
+        obsolete work from a previous topic.
+
+        Rules:
+          * Protect at most 3 messages (one recent user–assistant exchange).
+          * Always include the most recent user message.
+          * Never split a tool_call / tool_result group.
+          * Never cut into the head region.
+        """
+        n = len(messages)
+        max_tail = 3
+
+        # Start from the end and walk back up to max_tail messages, but stop
+        # at any boundary that would split a tool group.
+        cut_idx = n
+        for i in range(n - 1, max(head_end, n - max_tail - 1), -1):
+            if i <= head_end:
+                break
+            msg = messages[i]
+            role = msg.get("role", "")
+            # Don't split: a tool result must stay with its preceding
+            # assistant tool_calls message.
+            if role == "tool" and i > head_end + 1:
+                # Include the assistant message that owns this tool result
+                cut_idx = i
+                continue
+            cut_idx = i
+            # If we hit a user message and have already collected ≥1 message,
+            # that's a natural turn boundary — stop here.
+            if role == "user":
+                break
+
+        # Ensure the most recent user message is always in the tail.
+        cut_idx = self._ensure_last_user_message_in_tail(messages, cut_idx, head_end)
+
+        # Align to avoid splitting tool groups
+        cut_idx = self._align_boundary_backward(messages, cut_idx)
+
+        return max(cut_idx, head_end + 1)
+
     def _find_tail_cut_by_tokens(
         self, messages: List[Dict[str, Any]], head_end: int,
         token_budget: int | None = None,
@@ -1377,9 +1427,17 @@ The user has requested that this compaction PRIORITISE preserving all informatio
         Algorithm:
           1. Prune old tool results (cheap pre-pass, no LLM call)
           2. Protect head messages (system prompt + first exchange)
-          3. Find tail boundary by token budget (~20K tokens of recent context)
-          4. Summarize middle turns with structured LLM prompt
+          3. Find tail boundary — only keep the most recent exchange (≤3 msgs)
+             as active context; everything else is summarised
+          4. Summarise all compressible turns (old tail + middle) with LLM
           5. On re-compression, iteratively update the previous summary
+
+        The key difference from the previous implementation: the tail is no
+        longer protected by a large token budget.  Only the last ~3 messages
+        (one recent exchange) survive as raw context so that the model always
+        sees ``[summary] → [latest question] → [latest answer]`` without
+        stale history polluting the space between the summary and the user's
+        most recent message.  See issue #XXXXX for the motivation.
 
         After compression, orphaned tool_call / tool_result pairs are cleaned
         up so the API never receives mismatched IDs.
@@ -1422,8 +1480,12 @@ The user has requested that this compaction PRIORITISE preserving all informatio
         compress_start = self._protect_head_size(messages)
         compress_start = self._align_boundary_forward(messages, compress_start)
 
-        # Use token-budget tail protection instead of fixed message count
-        compress_end = self._find_tail_cut_by_tokens(messages, compress_start)
+        # Use a minimal tail: only keep the last few messages as active
+        # context so stale history does not pollute the space between the
+        # summary and the user's latest reply.  Previously a large token-
+        # budget tail was used which could include dozens of old turns that
+        # are already covered by the summary.
+        compress_end = self._find_minimal_tail_cut(messages, compress_start)
 
         if compress_start >= compress_end:
             return messages

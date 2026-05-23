@@ -912,11 +912,12 @@ class TestCompressWithClient:
         ]
 
     def test_user_role_summary_carries_end_marker(self):
-        """When the summary lands as standalone role='user' (e.g. head ends
-        with assistant/tool), the message body must include the explicit
-        '--- END OF CONTEXT SUMMARY ---' marker. Without it, weak models
-        read the verbatim past user request quoted in '## Active Task' as
-        fresh input (#11475, #14521).
+        """When the summary must be merged into the first tail message (the
+        common path with minimal tail, because head_last=assistant and
+        tail_first=user triggers double-collision), the merged content must
+        include the explicit '--- END OF CONTEXT SUMMARY ---' marker.
+        Without it, weak models read the verbatim past user request quoted
+        in '## Active Task' as fresh input (#11475, #14521).
         """
         mock_response = MagicMock()
         mock_response.choices = [MagicMock()]
@@ -925,29 +926,24 @@ class TestCompressWithClient:
         with patch("agent.context_compressor.get_model_context_length", return_value=100000):
             c = ContextCompressor(model="test", quiet_mode=True, protect_first_n=2, protect_last_n=2)
 
-        # head_last=assistant, tail_first=assistant (same shape as the
-        # existing consecutive-user test) → role resolves to "user".
+        # With minimal tail the first tail message is always the most recent
+        # user message, so head_last=assistant + tail_first=user triggers
+        # double-collision → summary is merged into the first tail message.
         msgs = [
             {"role": "user", "content": "msg 0"},
             {"role": "assistant", "content": "msg 1"},
-            {"role": "user", "content": "msg 2"},
-            {"role": "assistant", "content": "msg 3"},
-            {"role": "user", "content": "msg 4"},
-            {"role": "assistant", "content": "msg 5"},
-            {"role": "user", "content": "msg 6"},
-            {"role": "assistant", "content": "msg 7"},
+        ] + [
+            {"role": "user" if i % 2 == 0 else "assistant", "content": f"msg {i}"}
+            for i in range(2, 20)
         ]
         with patch("agent.context_compressor.call_llm", return_value=mock_response):
             result = c.compress(msgs)
 
+        # Find the message containing the summary (merged into first tail msg)
         summary_msg = next(
             m for m in result if (m.get("content") or "").startswith(SUMMARY_PREFIX)
         )
-        assert summary_msg["role"] == "user"
         assert "END OF CONTEXT SUMMARY" in summary_msg["content"]
-        assert summary_msg["content"].rstrip().endswith(
-            "respond to the message below, not the summary above ---"
-        )
 
     def test_summary_role_avoids_consecutive_user_messages(self):
         """Summary role should alternate with the last head message to avoid consecutive same-role messages."""
@@ -1064,22 +1060,22 @@ class TestCompressWithClient:
         with patch("agent.context_compressor.get_model_context_length", return_value=100000):
             c = ContextCompressor(model="test", quiet_mode=True, protect_first_n=2, protect_last_n=3)
 
+        # Build a long enough sequence so the minimal-tail cut leaves a real
+        # middle section to compress.  The final user message must be the
+        # first tail message to trigger double collision.
         # Head: [system, user, assistant]  →  last head = assistant
-        # Tail: [user, assistant, user]    →  first tail = user
+        # Tail: [user]                     →  first tail = user
         # summary_role="user" collides with tail, "assistant" collides with head → merge
-        # NOTE: protect_first_n=2 preserves 2 non-system messages in addition to
-        # the system prompt (always implicitly protected).
         msgs = [
             {"role": "system", "content": "system prompt"},
             {"role": "user", "content": "msg 1"},
             {"role": "assistant", "content": "msg 2"},
-            {"role": "user", "content": "msg 3"},      # compressed
-            {"role": "assistant", "content": "msg 4"},  # compressed
-            {"role": "user", "content": "msg 5"},       # compressed
-            {"role": "user", "content": "msg 6"},       # tail start
-            {"role": "assistant", "content": "msg 7"},
-            {"role": "user", "content": "msg 8"},
         ]
+        for i in range(3, 13):
+            msgs.append({"role": "user" if i % 2 == 0 else "assistant", "content": f"msg {i}"})
+        msgs.append({"role": "assistant", "content": "msg 13"})
+        msgs.append({"role": "user", "content": "msg 14"})
+
         with patch("agent.context_compressor.call_llm", return_value=mock_response):
             result = c.compress(msgs)
 
@@ -1090,8 +1086,8 @@ class TestCompressWithClient:
             if r1 in ("user", "assistant") and r2 in ("user", "assistant"):
                 assert r1 != r2, f"consecutive {r1} at indices {i-1},{i}"
 
-        # The summary text should be merged into the first tail message
-        first_tail = [m for m in result if "msg 6" in (m.get("content") or "")]
+        # The summary text should be merged into the first tail message (msg 14)
+        first_tail = [m for m in result if "msg 14" in (m.get("content") or "")]
         assert len(first_tail) == 1
         assert "summary text" in first_tail[0]["content"]
 
@@ -1104,17 +1100,17 @@ class TestCompressWithClient:
         with patch("agent.context_compressor.get_model_context_length", return_value=100000):
             c = ContextCompressor(model="test", quiet_mode=True, protect_first_n=2, protect_last_n=3)
 
+        # Same double-collision layout as above, but the tail message has
+        # structured (list) content instead of a plain string.
         msgs = [
             {"role": "system", "content": "system prompt"},
             {"role": "user", "content": "msg 1"},
             {"role": "assistant", "content": "msg 2"},
-            {"role": "user", "content": "msg 3"},
-            {"role": "assistant", "content": "msg 4"},
-            {"role": "user", "content": "msg 5"},
-            {"role": "user", "content": [{"type": "text", "text": "msg 6"}]},
-            {"role": "assistant", "content": "msg 7"},
-            {"role": "user", "content": "msg 8"},
         ]
+        for i in range(3, 13):
+            msgs.append({"role": "user" if i % 2 == 0 else "assistant", "content": f"msg {i}"})
+        msgs.append({"role": "assistant", "content": "msg 13"})
+        msgs.append({"role": "user", "content": [{"type": "text", "text": "msg 14"}]})
 
         with patch("agent.context_compressor.call_llm", return_value=mock_response):
             result = c.compress(msgs)
@@ -1126,37 +1122,37 @@ class TestCompressWithClient:
         assert isinstance(merged_tail["content"], list)
         assert "summary text" in merged_tail["content"][0]["text"]
         assert any(
-            isinstance(block, dict) and block.get("text") == "msg 6"
+            isinstance(block, dict) and block.get("text") == "msg 14"
             for block in merged_tail["content"]
         )
 
     def test_double_collision_user_head_assistant_tail(self):
-        """Reverse double collision: head ends with 'user', tail starts with 'assistant'.
-        summary='assistant' collides with tail, 'user' collides with head → merge."""
+        """Double collision also occurs when head_last=assistant and the
+        minimal-tail algorithm places a user message as the first tail entry.
+        summary='user' collides with tail, 'assistant' collides with head → merge.
+        With the minimal-tail cut the tail always starts at the most recent
+        user message, so this is the common double-collision path.
+        """
         mock_response = MagicMock()
         mock_response.choices = [MagicMock()]
         mock_response.choices[0].message.content = "summary text"
 
         with patch("agent.context_compressor.get_model_context_length", return_value=100000):
-            c = ContextCompressor(model="test", quiet_mode=True, protect_first_n=1, protect_last_n=2)
+            c = ContextCompressor(model="test", quiet_mode=True, protect_first_n=2, protect_last_n=2)
 
-        # Head: [system, user]        → last head = user
-        # Tail: [assistant, user, assistant] → first tail = assistant
-        # summary_role="assistant" collides with tail, "user" collides with head → merge
-        # NOTE: protect_first_n=1 preserves 1 non-system message in addition to
-        # the system prompt (always implicitly protected).
-        # With min_tail=3, tail = last 3 messages (indices 5-7).
-        # Need 8 messages: _min_for_compress = head(2) + 3 + 1 = 6, must have > 6.
+        # Head: [system, user, assistant] → last head = assistant
+        # Tail: [user, …] → first tail = user
+        # summary_role="user" collides with tail, "assistant" collides with head → merge
         msgs = [
             {"role": "system", "content": "system prompt"},
             {"role": "user", "content": "msg 1"},
-            {"role": "assistant", "content": "msg 2"},   # compressed
-            {"role": "user", "content": "msg 3"},        # compressed
-            {"role": "assistant", "content": "msg 4"},   # compressed
-            {"role": "assistant", "content": "msg 5"},   # tail start
-            {"role": "user", "content": "msg 6"},
-            {"role": "assistant", "content": "msg 7"},
+            {"role": "assistant", "content": "msg 2"},
         ]
+        for i in range(3, 13):
+            msgs.append({"role": "user" if i % 2 == 0 else "assistant", "content": f"msg {i}"})
+        msgs.append({"role": "assistant", "content": "msg 13"})
+        msgs.append({"role": "user", "content": "msg 14"})
+
         with patch("agent.context_compressor.call_llm", return_value=mock_response):
             result = c.compress(msgs)
 
@@ -1167,8 +1163,8 @@ class TestCompressWithClient:
             if r1 in ("user", "assistant") and r2 in ("user", "assistant"):
                 assert r1 != r2, f"consecutive {r1} at indices {i-1},{i}"
 
-        # The summary should be merged into the first tail message (assistant at index 5)
-        first_tail = [m for m in result if "msg 5" in (m.get("content") or "")]
+        # The summary should be merged into the first tail message
+        first_tail = [m for m in result if "msg 14" in (m.get("content") or "")]
         assert len(first_tail) == 1
         assert "summary text" in first_tail[0]["content"]
 

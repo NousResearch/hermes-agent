@@ -4574,6 +4574,78 @@ class GatewayRunner:
         except Exception:
             return "default"
 
+    def _channel_profile_routes(self, platform: Optional[Platform] = None) -> dict[str, str]:
+        """Return configured per-channel profile routes.
+
+        Supports both the global shape:
+
+            gateway:
+              channel_profiles: {"<channel_id>": "profile"}
+
+        and the platform-local shape:
+
+            discord:
+              channel_profiles: {"<channel_id>": "profile"}
+        """
+        cfg = _load_gateway_config()
+        routes: dict[str, str] = {}
+        for block in (cfg.get("gateway"), cfg):
+            if isinstance(block, dict):
+                raw = block.get("channel_profiles")
+                if isinstance(raw, dict):
+                    routes.update({str(k): str(v) for k, v in raw.items() if v})
+        platform_key = platform.value if platform else None
+        if platform_key and isinstance(cfg.get(platform_key), dict):
+            raw = cfg[platform_key].get("channel_profiles")
+            if isinstance(raw, dict):
+                routes.update({str(k): str(v) for k, v in raw.items() if v})
+        return routes
+
+    def _effective_profile_name_for_source(self, source: Optional[SessionSource]) -> str:
+        """Resolve the profile that should handle a source.
+
+        Discord/Slack threads can use their own chat IDs, so parent channel
+        routes are considered after direct chat/thread candidates.
+        """
+        active = self._active_profile_name()
+        if source is None:
+            return active
+        routes = self._channel_profile_routes(source.platform)
+        candidates = [
+            getattr(source, "chat_id", None),
+            getattr(source, "thread_id", None),
+            getattr(source, "parent_chat_id", None),
+        ]
+        for candidate in candidates:
+            if candidate is None:
+                continue
+            profile = routes.get(str(candidate))
+            if profile:
+                return profile
+        return active
+
+    def _load_profile_config(self, profile_name: str) -> dict:
+        """Load config.yaml for a named profile without mutating HERMES_HOME."""
+        profile_name = (profile_name or "default").strip() or "default"
+        if profile_name == "default":
+            return _load_gateway_config()
+        try:
+            import yaml
+            from hermes_cli.profiles import resolve_profile_env
+
+            profile_home = Path(resolve_profile_env(profile_name))
+            cfg_path = profile_home / "config.yaml"
+            if cfg_path.exists():
+                with open(cfg_path, encoding="utf-8") as f:
+                    return yaml.safe_load(f) or {}
+        except Exception as exc:
+            logger.warning("Could not load routed profile %s config: %s", profile_name, exc)
+        return _load_gateway_config()
+
+    def _effective_user_config_for_source(self, source: Optional[SessionSource]) -> tuple[dict, str]:
+        profile_name = self._effective_profile_name_for_source(source)
+        return self._load_profile_config(profile_name), profile_name
+
     async def _kanban_notifier_watcher(self, interval: float = 5.0) -> None:
         """Poll ``kanban_notify_subs`` and deliver terminal events to users.
 
@@ -9218,17 +9290,31 @@ class GatewayRunner:
         return EphemeralReply(f"{header}{_tip_line}")
 
     async def _handle_profile_command(self, event: MessageEvent) -> str:
-        """Handle /profile — show active profile name and home directory."""
-        from hermes_constants import display_hermes_home
-        from hermes_cli.profiles import get_active_profile_name
+        """Handle /profile — show the effective profile for this chat.
 
-        display = display_hermes_home()
-        profile_name = get_active_profile_name()
+        The gateway process usually runs under one profile, but individual
+        Discord channels/threads can be routed to named profiles. Report the
+        effective chat profile instead of only the process profile.
+        """
+        from hermes_constants import display_hermes_home
+        from hermes_cli.profiles import resolve_profile_env
+
+        process_profile = self._active_profile_name()
+        effective_profile = self._effective_profile_name_for_source(event.source)
+        if effective_profile == "default":
+            display = display_hermes_home()
+        else:
+            try:
+                display = resolve_profile_env(effective_profile)
+            except Exception:
+                display = display_hermes_home()
 
         lines = [
-            t("gateway.profile.header", profile=profile_name),
+            t("gateway.profile.header", profile=effective_profile),
             t("gateway.profile.home", home=display),
         ]
+        if effective_profile != process_profile:
+            lines.append(f"**Gateway process profile:** `{process_profile}`")
 
         return "\n".join(lines)
 
@@ -9964,7 +10050,10 @@ class GatewayRunner:
         # Parse --provider and --global flags
         model_input, explicit_provider, persist_global = parse_model_flags(raw_args)
 
-        # Read current model/provider from config
+        # Read current model/provider from the effective chat profile config.
+        # The gateway process itself may run as `default`, while Discord
+        # channels can be routed to profile-specific agents.
+        source = event.source
         current_model = ""
         current_provider = "openrouter"
         current_base_url = ""
@@ -9973,7 +10062,7 @@ class GatewayRunner:
         custom_provs = None
         config_path = _hermes_home / "config.yaml"
         try:
-            cfg = _load_gateway_config()
+            cfg, _effective_profile = self._effective_user_config_for_source(source)
             if cfg:
                 model_cfg = cfg.get("model", {})
                 if isinstance(model_cfg, dict):
@@ -9990,7 +10079,6 @@ class GatewayRunner:
             pass
 
         # Check for session override
-        source = event.source
         session_key = self._session_key_for_source(source)
         override = self._session_model_overrides.get(session_key, {})
         if override:

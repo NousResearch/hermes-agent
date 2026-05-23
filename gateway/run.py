@@ -1315,17 +1315,17 @@ def _load_gateway_runtime_config() -> dict:
     ``config.yaml`` while still respecting tests that monkeypatch
     ``gateway.run._hermes_home``. Build on ``_load_gateway_config()`` rather
     than calling the canonical loader directly so both behaviors stay aligned.
+
+    Expansion failures are intentionally NOT swallowed — silently returning
+    the unexpanded dict would mask the very bug this helper exists to fix.
     """
     cfg = _load_gateway_config()
     if not isinstance(cfg, dict) or not cfg:
         return {}
-    try:
-        from hermes_cli.config import _expand_env_vars
+    from hermes_cli.config import _expand_env_vars
 
-        expanded = _expand_env_vars(cfg)
-        return expanded if isinstance(expanded, dict) else {}
-    except Exception:
-        return cfg
+    expanded = _expand_env_vars(cfg)
+    return expanded if isinstance(expanded, dict) else {}
 
 
 def _resolve_gateway_model(config: dict | None = None) -> str:

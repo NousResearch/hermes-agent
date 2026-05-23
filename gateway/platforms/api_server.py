@@ -1021,10 +1021,10 @@ class APIServerAdapter(BasePlatformAdapter):
 
         stream = body.get("stream", False)
 
-        proxy_scope = body.get("hermes_proxy_scope")
         origin_platform = None
         enabled_toolsets_override = None
-        if proxy_scope is not None:
+        if "hermes_proxy_scope" in body:
+            proxy_scope = body["hermes_proxy_scope"]
             if not isinstance(proxy_scope, dict):
                 return web.json_response(_openai_error("Invalid hermes_proxy_scope"), status=400)
             if not verify_proxy_scope_signature(

@@ -706,6 +706,24 @@ class TestChatCompletionsEndpoint:
                 assert mock_run.call_args.kwargs["enabled_toolsets_override"] == ["todo"]
 
     @pytest.mark.asyncio
+    async def test_chat_completions_rejects_null_proxy_scope(self, adapter):
+        """Explicit null hermes_proxy_scope in the body is rejected with 400."""
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.post(
+                "/v1/chat/completions",
+                json={
+                    "model": "hermes-agent",
+                    "messages": [{"role": "user", "content": "Hi"}],
+                    "hermes_proxy_scope": None,
+                },
+            )
+
+            assert resp.status == 400
+            data = await resp.json()
+            assert "hermes_proxy_scope" in data["error"]["message"]
+
+    @pytest.mark.asyncio
     async def test_invalid_json_returns_400(self, adapter):
         app = _create_app(adapter)
         async with TestClient(TestServer(app)) as cli:

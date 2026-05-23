@@ -5,6 +5,9 @@ Covers:
   GET /runs/{run_id}
   GET /runs/{run_id}/inspect
 """
+import pytest
+pytest.importorskip("fastapi")
+
 
 from __future__ import annotations
 

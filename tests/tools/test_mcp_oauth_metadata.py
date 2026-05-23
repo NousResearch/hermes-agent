@@ -15,6 +15,9 @@ forces the SDK to fall back to guessing ``{server_url}/token``, which returns
 refresh token is still valid. These tests lock in the disk persistence
 layer so refresh across restarts stays quiet.
 """
+import pytest
+pytest.importorskip("mcp")
+
 
 from __future__ import annotations
 

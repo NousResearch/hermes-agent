@@ -1,4 +1,7 @@
 """Regression tests for dashboard cron job profile routing."""
+import pytest
+pytest.importorskip("fastapi")
+
 
 import pytest
 from fastapi import HTTPException

@@ -153,6 +153,11 @@ VALID_HOOKS: Set[str] = {
     #   {"action": "allow"}  /  None             -> normal dispatch
     # Kwargs: event: MessageEvent, gateway: GatewayRunner, session_store.
     "pre_gateway_dispatch",
+    # Agent/tool progress observer. Plugins can mirror tool progress to
+    # external control planes without core importing plugin-specific code.
+    # Kwargs: event_type, function_name, preview, function_args, plus callback
+    # metadata such as tool_call_id, duration, and is_error.
+    "on_tool_progress",
     # Approval lifecycle hooks. Fired by tools/approval.py when a dangerous
     # command needs user approval -- fires BOTH for CLI-interactive prompts
     # and for gateway/ACP approvals (Telegram, Discord, Slack, TUI, etc.).

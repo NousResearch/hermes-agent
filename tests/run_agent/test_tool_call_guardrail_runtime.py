@@ -103,7 +103,10 @@ def test_default_sequential_path_warns_repeated_exact_failure_without_blocking_e
 
     mock_hfc.assert_called_once()
     assert len(starts) == 1
-    assert any(event[0][0] == "tool.completed" for event in progress)
+    completed = [event for event in progress if event[0][0] == "tool.completed"]
+    assert len(completed) == 1
+    assert completed[0][1]["tool_call_id"] == "c-soft"
+    assert "repeated_exact_failure_warning" in completed[0][1]["result"]
     assert len(messages) == 1
     assert messages[0]["role"] == "tool"
     assert messages[0]["tool_call_id"] == "c-soft"
@@ -215,9 +218,11 @@ def test_config_enabled_hard_stop_concurrent_path_does_not_submit_blocked_calls_
     assert starts == [("c-allow", "web_search", allowed_args)]
     started_events = [event for event in progress_events if event[0] == "tool.started"]
     completed_events = [event for event in progress_events if event[0] == "tool.completed"]
-    assert started_events == [("tool.started", "web_search", allowed_args, {})]
+    assert started_events == [("tool.started", "web_search", allowed_args, {"tool_call_id": "c-allow"})]
     assert len(completed_events) == 1
     assert completed_events[0][1] == "web_search"
+    assert completed_events[0][3]["tool_call_id"] == "c-allow"
+    assert completed_events[0][3]["result"] == json.dumps({"ok": "allowed"})
 
 
 def test_plugin_pre_tool_block_wins_without_counting_as_toolguard_block():

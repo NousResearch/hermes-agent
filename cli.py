@@ -11118,6 +11118,20 @@ class HermesCLI:
         stacked line to scrollback on tool.completed so users can see the
         full history of tool calls (not just the current one in the spinner).
         """
+        try:
+            from hermes_cli.plugins import get_plugin_manager
+
+            get_plugin_manager().invoke_hook(
+                "on_tool_progress",
+                event_type=event_type,
+                function_name=function_name,
+                preview=preview,
+                function_args=function_args,
+                **kwargs,
+            )
+        except Exception:
+            pass
+
         if event_type == "tool.completed":
             self._tool_start_time = 0.0
             # Print stacked scrollback line for "all" / "new" modes

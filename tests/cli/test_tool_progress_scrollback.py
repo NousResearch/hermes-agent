@@ -63,6 +63,41 @@ def _make_cli(tool_progress="all", verbose=_UNSET):
 class TestToolProgressScrollback:
     """Stacked scrollback lines for 'all' and 'new' modes."""
 
+    def test_progress_callback_invokes_plugin_hook_with_metadata(self, monkeypatch):
+        cli = _make_cli(tool_progress="none")
+        calls = []
+
+        class FakePluginManager:
+            def invoke_hook(self, name, **kwargs):
+                calls.append((name, kwargs))
+                return []
+
+        monkeypatch.setattr(
+            "hermes_cli.plugins.get_plugin_manager",
+            lambda: FakePluginManager(),
+        )
+
+        cli._on_tool_progress(
+            "tool.started",
+            "terminal",
+            "git status",
+            {"command": "git status"},
+            tool_call_id="call_1",
+        )
+
+        assert calls == [
+            (
+                "on_tool_progress",
+                {
+                    "event_type": "tool.started",
+                    "function_name": "terminal",
+                    "preview": "git status",
+                    "function_args": {"command": "git status"},
+                    "tool_call_id": "call_1",
+                },
+            )
+        ]
+
     def test_all_mode_prints_scrollback_on_completed(self):
         """In 'all' mode, tool.completed prints a stacked line."""
         cli = _make_cli(tool_progress="all")

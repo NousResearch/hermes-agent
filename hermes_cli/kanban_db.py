@@ -5367,6 +5367,58 @@ def _kanban_worker_skill_available(hermes_home: Optional[str]) -> bool:
     return False
 
 
+def _tenant_project_skill_available(
+    tenant: str,
+    hermes_home: "Optional[str]",
+) -> "Optional[str]":
+    """Resolve a project skill matching *tenant* and ensure it's synced into the
+    worker's profile-scoped skills directory.
+
+    When a task carries ``tenant=shop``, the dispatcher auto-injects
+    ``--skills shop`` so the worker loads the project-specific skill without
+    the task author having to list it manually.  Before injecting, the
+    function copies the skill from the canonical source tree
+    (``~/.hermes/skills/<category>/<tenant>/``) into the profile's skills
+    directory if it's missing, avoiding "Unknown skill(s): X" on worker
+    startup.
+
+    Returns the skill name (``tenant``) on success, ``None`` if no skill
+    matching *tenant* exists in the source tree.
+    """
+    from pathlib import Path as _Path
+    import shutil as _shutil
+
+    # Canonical skill source — always read from the DEFAULT root home,
+    # not a profile-scoped one.
+    source_root = _Path.home() / ".hermes" / "skills"
+    if not source_root.is_dir():
+        return None
+
+    tenant_skill_dir = None
+    try:
+        for skill_md in source_root.rglob(f"{tenant}/SKILL.md"):
+            if skill_md.is_file():
+                tenant_skill_dir = skill_md.parent
+                break
+    except OSError:
+        return None
+
+    if tenant_skill_dir is None:
+        return None
+
+    # Destination: profile-scoped skills dir (or default if HERMES_HOME is unset)
+    dest_base = _Path(hermes_home) if hermes_home else (_Path.home() / ".hermes")
+    dest_skills = dest_base / "skills"
+    rel = tenant_skill_dir.relative_to(source_root)
+    dest = dest_skills / rel
+
+    if not (dest / "SKILL.md").is_file():
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        _shutil.copytree(tenant_skill_dir, dest, dirs_exist_ok=True)
+
+    return tenant
+
+
 def _worker_terminal_timeout_env(
     max_runtime_seconds: Optional[int],
     current_timeout: Optional[str],
@@ -5510,6 +5562,20 @@ def _default_spawn(
     # contract still ships via KANBAN_GUIDANCE.
     if _kanban_worker_skill_available(env.get("HERMES_HOME")):
         cmd.extend(["--skills", "kanban-worker"])
+    # Auto-inject tenant project skill when the task carries --tenant.
+    # e.g. tenant=shop resolves to skills/dogfood/shop/SKILL.md and
+    # injects --skills shop.  The helper also syncs the skill into the
+    # profile-scoped skills dir if it's missing, preventing "Unknown
+    # skill(s): X" on worker startup.  Skip if the task already lists
+    # the tenant skill explicitly (avoid double-loading).
+    if task.tenant:
+        _tenant_skill = _tenant_project_skill_available(
+            task.tenant, env.get("HERMES_HOME")
+        )
+        if _tenant_skill:
+            task_skills = task.skills or []
+            if _tenant_skill not in task_skills:
+                cmd.extend(["--skills", _tenant_skill])
     # Per-task force-loaded skills. Each name goes in its own
     # `--skills X` pair rather than a single comma-joined arg: the CLI
     # accepts both forms (action='append' + comma-split), but

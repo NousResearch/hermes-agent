@@ -4783,25 +4783,25 @@ class GatewayRunner:
                                 r = task.result.strip().splitlines()[0][:160]
                                 handoff = f"\n{r}"
                             msg = (
-                                f"✔ {tag}Kanban {sub['task_id']} done"
+                                f"✔ {tag}[{board_slug}] {sub['task_id']} done"
                                 f" — {title}{handoff}"
                             )
                         elif kind == "blocked":
                             reason = ""
                             if ev.payload and ev.payload.get("reason"):
                                 reason = f": {str(ev.payload['reason'])[:160]}"
-                            msg = f"⏸ {tag}Kanban {sub['task_id']} blocked{reason}"
+                            msg = f"⏸ {tag}[{board_slug}] {sub['task_id']} blocked{reason}"
                         elif kind == "gave_up":
                             err = ""
                             if ev.payload and ev.payload.get("error"):
                                 err = f"\n{str(ev.payload['error'])[:200]}"
                             msg = (
-                                f"✖ {tag}Kanban {sub['task_id']} gave up "
+                                f"✖ {tag}[{board_slug}] {sub['task_id']} gave_up "
                                 f"after repeated spawn failures{err}"
                             )
                         elif kind == "crashed":
                             msg = (
-                                f"✖ {tag}Kanban {sub['task_id']} worker crashed "
+                                f"✖ {tag}[{board_slug}] {sub['task_id']} worker crashed "
                                 f"(pid gone); dispatcher will retry"
                             )
                         elif kind == "timed_out":
@@ -4809,7 +4809,7 @@ class GatewayRunner:
                             if ev.payload and ev.payload.get("limit_seconds"):
                                 limit = int(ev.payload["limit_seconds"])
                             msg = (
-                                f"⏱ {tag}Kanban {sub['task_id']} timed out "
+                                f"⏱ {tag}[{board_slug}] {sub['task_id']} timed out "
                                 f"(max_runtime={limit}s); will retry"
                             )
                         else:

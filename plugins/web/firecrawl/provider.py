@@ -487,6 +487,7 @@ class FirecrawlWebSearchProvider(WebSearchProvider):
                             _get_firecrawl_client().scrape,
                             url=url,
                             formats=formats,
+                            wait_for=3000,
                         ),
                         timeout=60,
                     )

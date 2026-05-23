@@ -1282,7 +1282,7 @@ class NativeToolCallingChatClient(
             .put(
                 functionSpec(
                     name = "android_device_diagnostics_tool",
-                    description = "Inspect resource-heavy apps, storage/memory status, nearby Wi-Fi signals, filterable Wi-Fi Analyzer readiness/scan-policy reports, current Wi-Fi association/link-quality telemetry, channel ratings, inferred channel utilization/occupancy, access-point detail/export rows, AP semantic/risk labels, band coverage, signal history, vendor/OUI metadata and filter facets, Bluetooth Analyzer readiness/scan-policy reports, nearby Bluetooth devices plus service UUID labels/manufacturer names/proximity metadata, Bluetooth device detail/export rows, Bluetooth RSSI history/trends, Sensor Analyzer readiness/sampling-policy reports, accelerometer/gyroscope/ambient sensor snapshots, motion sensor history/trends, fused motion pose/heading/angular-motion/acceleration estimates, motion sensor quality gates for IMU source coverage, freshness, calibration, stability, cadence, and workflow readiness, camera capability, overlay status, passive local backend runtime health, dedicated MediaTek/Dimensity/Helio/Mali/PowerVR/non-Adreno readiness profiles, GPU/backend risk matrices, local inference compatibility scorecards, thermal/memory/power runtime stability guardrails, SOC/GPU compatibility and backend-policy reports, Gemma-visible signal evidence bundles, agent observation dashboards with fused signal-context matrices, direct diagnostic card manifests, Kai-style agent environment parity/readiness, cross-signal awareness routes, tool catalog, radio analyzer AM/FM band-plan rows, AM/FM signal graph rows, receiver profile schemas for vendor AM/FM and external SDR bridges, vendor radio hints, Wi-Fi/Bluetooth radio routes, external SDR constraints, RF/AM/FM hardware limits, and phone preflight readiness for TikTok/Instagram/Gmail end-to-end work.",
+                    description = "Inspect resource-heavy apps, storage/memory status, nearby Wi-Fi signals, filterable Wi-Fi Analyzer readiness/scan-policy reports, current Wi-Fi association/link-quality telemetry, channel ratings, inferred channel utilization/occupancy, access-point detail/export rows, AP semantic/risk labels, band coverage, signal history, vendor/OUI metadata and filter facets, Bluetooth Analyzer readiness/scan-policy reports, nearby Bluetooth devices plus service UUID labels/manufacturer names/proximity metadata, Bluetooth device detail/export rows, Bluetooth RSSI history/trends, Sensor Analyzer readiness/sampling-policy reports, accelerometer/gyroscope/ambient sensor snapshots, motion sensor history/trends, fused motion pose/heading/angular-motion/acceleration estimates, motion sensor quality gates for IMU source coverage, freshness, calibration, stability, cadence, and workflow readiness, camera capability, overlay status, passive local backend runtime health, dedicated MediaTek/Dimensity/Helio/Mali/PowerVR/non-Adreno readiness profiles, GPU/backend risk matrices, local inference compatibility scorecards, thermal/memory/power runtime stability guardrails, SOC/GPU compatibility and backend-policy reports, Gemma-visible signal evidence bundles, agent observation dashboards with fused signal-context matrices, direct diagnostic card manifests, Kai-style agent environment parity/readiness and tool sandbox/status matrices, cross-signal awareness routes, tool catalog, radio analyzer AM/FM band-plan rows, AM/FM signal graph rows, receiver profile schemas for vendor AM/FM and external SDR bridges, vendor radio hints, Wi-Fi/Bluetooth radio routes, external SDR constraints, RF/AM/FM hardware limits, and phone preflight readiness for TikTok/Instagram/Gmail end-to-end work.",
                     properties = JSONObject()
                         .put("action", stringProp("status, top_apps, wifi_scan, wifi_filtered_scan, wifi_analyzer_report, wifi_connection_link, wifi_channel_graph, wifi_channel_rating, wifi_channel_utilization, wifi_ap_details, wifi_export, bluetooth_scan, bluetooth_analyzer_report, bluetooth_signal_history, bluetooth_device_details, bluetooth_export, sensor_analyzer_report, motion_sensor_quality, motion_sensor_history, motion_pose, sensor_snapshot, camera_status, radio_signal_status, radio_signal_graph, radio_analyzer_report, signal_capability_status, local_backend_runtime_report, mediatek_readiness_report, soc_compatibility_report, gpu_backend_risk_report, local_inference_compatibility_report, device_performance_report, signal_awareness_report, agent_signal_evidence_report, signal_evidence_bundle, agent_observation_report, agent_card_manifest_report, agent_environment_report, social_gmail_goal_preflight, show_active_overlay, tool_catalog, open_usage_access_settings, open_camera_permission_settings."))
                         .put("limit", intProp("Maximum rows for top apps, Wi-Fi networks, or Bluetooth devices. Defaults to 5."))
@@ -3975,6 +3975,8 @@ internal object NativeToolContextCompressor {
                 "kai_parity_count",
                 "kai_operations_count",
                 "ready_kai_operations_count",
+                "agent_tool_sandbox_count",
+                "ready_agent_tool_sandbox_count",
                 "workflow_readiness_count",
                 "agent_observation_count",
                 "ready_agent_observation_count",
@@ -4141,6 +4143,7 @@ internal object NativeToolContextCompressor {
         "agent_capability_matrix",
         "kai_parity_matrix",
         "kai_operations_matrix",
+        "agent_tool_sandbox_matrix",
         "workflow_readiness_matrix",
         "agent_observation_matrix",
         "agent_observation_routes",
@@ -4390,6 +4393,10 @@ internal object NativeToolContextCompressor {
         "hardware_gate",
         "constraint_type",
         "source_surface",
+        "sandbox_scope",
+        "host_access",
+        "remote_dispatch_capable",
+        "mcp_parity_status",
         "report_scope",
         "count",
         "options",

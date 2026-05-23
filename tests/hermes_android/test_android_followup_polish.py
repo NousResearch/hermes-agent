@@ -213,12 +213,22 @@ def test_android_diagnostics_exposes_agent_environment_report_for_kai_parity():
     assert 'kaiParityMatrixRows(' in diagnostics_bridge
     assert 'kaiOperationsMatrixRows(' in diagnostics_bridge
     assert 'workflowReadinessRows(' in diagnostics_bridge
+    assert 'agentToolSandboxRows(' in diagnostics_bridge
     assert '"agent_capability_matrix"' in diagnostics_bridge
     assert '"kai_parity_matrix"' in diagnostics_bridge
     assert '"kai_operations_matrix"' in diagnostics_bridge
     assert '"workflow_readiness_matrix"' in diagnostics_bridge
+    assert '"agent_tool_sandbox_matrix"' in diagnostics_bridge
+    assert 'Tool Sandbox Status' in diagnostics_bridge
     assert 'Multi-provider priority and fallback' in diagnostics_bridge
     assert 'Tool and MCP bridge route' in diagnostics_bridge
+    assert 'Native diagnostics tool surface' in diagnostics_bridge
+    assert 'Terminal/Linux workspace surface' in diagnostics_bridge
+    assert 'Privileged Android action surface' in diagnostics_bridge
+    assert 'External MCP/server parity surface' in diagnostics_bridge
+    assert 'sandbox_scope' in diagnostics_bridge
+    assert 'remote_dispatch_capable' in diagnostics_bridge
+    assert 'mcp_parity_status' in diagnostics_bridge
     assert 'Encrypted credentials and backup route' in diagnostics_bridge
     assert 'export_app_settings/import_app_settings' in diagnostics_bridge
     assert 'Customizable soul / system prompt' in diagnostics_bridge
@@ -245,7 +255,9 @@ def test_android_diagnostics_exposes_agent_environment_report_for_kai_parity():
     assert '"kai_parity_matrix"' in chat_client
     assert '"kai_operations_matrix"' in chat_client
     assert '"workflow_readiness_matrix"' in chat_client
+    assert '"agent_tool_sandbox_matrix"' in chat_client
     assert '"kai_operations_matrix"' in diagnostic_cards
+    assert '"agent_tool_sandbox_matrix"' in diagnostic_cards
     assert '"agent_capability_matrix", "kai_parity_matrix", "agent_workflow_readiness"' in diagnostic_cards
     assert 'capabilityMatrixRow(row)' in diagnostic_cards
     assert '"schedule_task", "kai_schedule_task" -> scheduleTaskJson(context, arguments)' in automation_bridge

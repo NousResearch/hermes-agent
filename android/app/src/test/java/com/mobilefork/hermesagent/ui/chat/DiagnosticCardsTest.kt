@@ -612,6 +612,30 @@ class DiagnosticCardsTest {
                     )
                     .put(
                         JSONObject()
+                            .put("title", "Tool Sandbox Status")
+                            .put("body", "Agent tool sandbox rows.")
+                            .put("graph_type", "agent_tool_sandbox_matrix")
+                            .put(
+                                "rows",
+                                JSONArray().put(
+                                    JSONObject()
+                                        .put("category", "agent_tool_sandbox")
+                                        .put("label", "Terminal/Linux workspace surface")
+                                        .put("ready", true)
+                                        .put("value_label", "terminal_tool")
+                                        .put("detail", "App-sandboxed terminal workspace with permission gates.")
+                                        .put("recommendation", "Use native tools first.")
+                                        .put("sandbox_scope", "app-private workspace")
+                                        .put("permission_gate", "app storage")
+                                        .put("host_access", "no host filesystem")
+                                        .put("remote_dispatch_capable", false)
+                                        .put("mcp_parity_status", "Kai Linux sandbox analogue")
+                                        .put("fraction", 0.8),
+                                ),
+                            ),
+                    )
+                    .put(
+                        JSONObject()
                             .put("title", "Agent Observation")
                             .put("body", "Observation dashboard.")
                             .put("graph_type", "agent_observation_matrix")
@@ -636,7 +660,8 @@ class DiagnosticCardsTest {
         val socRow = cards[0].rows.single()
         val heartbeatRow = cards[1].rows.single()
         val operationsRow = cards[2].rows.single()
-        val observationRow = cards[3].rows.single()
+        val sandboxRow = cards[3].rows.single()
+        val observationRow = cards[4].rows.single()
 
         assertEquals("SOC and LiteRT backend policy", socRow.label)
         assertEquals("ARM MediaTek/Mali", socRow.valueLabel)
@@ -650,6 +675,10 @@ class DiagnosticCardsTest {
         assertEquals("tool_catalog", operationsRow.valueLabel)
         assertTrue(operationsRow.detail.contains("kai operations"))
         assertTrue(operationsRow.detail.contains("tool_catalog"))
+        assertEquals("Terminal/Linux workspace surface", sandboxRow.label)
+        assertEquals("terminal_tool", sandboxRow.valueLabel)
+        assertTrue(sandboxRow.detail.contains("agent tool sandbox"))
+        assertTrue(sandboxRow.detail.contains("permission gates"))
         assertEquals("Gemma signal dashboard", observationRow.label)
         assertEquals("single observation report", observationRow.valueLabel)
         assertTrue(observationRow.detail.contains("agent observation"))

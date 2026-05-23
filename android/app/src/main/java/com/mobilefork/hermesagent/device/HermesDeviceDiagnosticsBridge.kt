@@ -2566,11 +2566,12 @@ object HermesDeviceDiagnosticsBridge {
         )
         val kaiParityRows = kaiParityMatrixRows(preferredModel, hindsightStatus, automationStatus, modelRouting, personaStatus)
         val kaiOperationsRows = kaiOperationsMatrixRows(automationStatus, modelRouting, personaStatus)
+        val toolSandboxRows = agentToolSandboxRows(appContext, automationStatus, hindsightStatus, personaStatus)
         val readinessRows = workflowReadinessRows(diagnostics, signalStatus, preferredModel, automationStatus, modelRouting, availableSensors)
         return JSONObject()
             .put("success", true)
             .put("action", "agent_environment_report")
-            .put("report_scope", "Hermes agent environment, Kai parity and operations, wireless/radio/sensor inputs, and SOC/backend compatibility context.")
+            .put("report_scope", "Hermes agent environment, Kai parity and operations, tool sandbox status, wireless/radio/sensor inputs, and SOC/backend compatibility context.")
             .put("android_device_identity", deviceIdentityJson())
             .put("soc_profile", socProfile)
             .put("preferred_local_model", preferredModel)
@@ -2582,12 +2583,15 @@ object HermesDeviceDiagnosticsBridge {
             .put("agent_capability_matrix", capabilityRows)
             .put("kai_parity_matrix", kaiParityRows)
             .put("kai_operations_matrix", kaiOperationsRows)
+            .put("agent_tool_sandbox_matrix", toolSandboxRows)
             .put("workflow_readiness_matrix", readinessRows)
             .put("agent_capability_count", capabilityRows.length())
             .put("ready_capability_count", countReadyRows(capabilityRows))
             .put("kai_parity_count", kaiParityRows.length())
             .put("kai_operations_count", kaiOperationsRows.length())
             .put("ready_kai_operations_count", countReadyRows(kaiOperationsRows))
+            .put("agent_tool_sandbox_count", toolSandboxRows.length())
+            .put("ready_agent_tool_sandbox_count", countReadyRows(toolSandboxRows))
             .put("workflow_readiness_count", readinessRows.length())
             .put(
                 "ai_experience_elevation_plan",
@@ -2599,7 +2603,8 @@ object HermesDeviceDiagnosticsBridge {
                     .put("Use SOC and LiteRT backend policy fields to avoid Snapdragon-only assumptions and keep MediaTek/Mali/PowerVR devices on GPU-first with CPU fallback when available.")
                     .put("Use hindsight_memory_tool and operator heartbeat/status rows to retain durable context and expose autonomous task readiness.")
                     .put("Use Settings Agent persona plus secret-free app settings export/import for Kai-style customizable soul/system prompt behavior.")
-                    .put("Use kai_operations_matrix to route Kai-style provider fallback, tool bridge, configurable persona, encrypted storage, secret-free settings backup, automation backup, TTS, image, and shell-boundary work through native Hermes surfaces."),
+                    .put("Use kai_operations_matrix to route Kai-style provider fallback, tool bridge, configurable persona, encrypted storage, secret-free settings backup, automation backup, TTS, image, and shell-boundary work through native Hermes surfaces.")
+                    .put("Use agent_tool_sandbox_matrix before executing tools so Gemma can see which surfaces are app-sandboxed, permission-gated, privileged, remote-dispatch capable, or MCP-equivalent."),
             )
             .put(
                 "cards",
@@ -2630,12 +2635,194 @@ object HermesDeviceDiagnosticsBridge {
                     )
                     .put(
                         graphCard(
+                            title = "Tool Sandbox Status",
+                            body = "${toolSandboxRows.length()} tool surface row(s) mapping sandbox scope, permission gates, host access, remote dispatch, and MCP parity status before Gemma chooses an action.",
+                            graphType = "agent_tool_sandbox_matrix",
+                            rows = toolSandboxRows,
+                        ),
+                    )
+                    .put(
+                        graphCard(
                             title = "Workflow Readiness",
                             body = "${readinessRows.length()} readiness row(s) that tell Gemma which native capability to call next.",
                             graphType = "agent_workflow_readiness",
                             rows = readinessRows,
                         ),
                     ),
+            )
+    }
+
+    private fun agentToolSandboxRows(
+        context: Context,
+        automationStatus: JSONObject,
+        hindsightStatus: JSONObject,
+        personaStatus: JSONObject,
+    ): JSONArray {
+        val privilegedStatus = runCatching { HermesPrivilegedAccessBridge.readStatus(context) }.getOrNull()
+        val privilegedReady = privilegedStatus?.let { it.shizukuBinderAlive && it.shizukuPermissionGranted } == true
+        val accessibilityEnabled = runCatching { HermesAccessibilityController.isServiceEnabled(context) }.getOrDefault(false)
+        val accessibilityConnected = runCatching { HermesAccessibilityController.isServiceConnected() }.getOrDefault(false)
+        val heartbeatReady = automationStatus.optBoolean("standby_heartbeat_supported", false)
+        return JSONArray()
+            .put(
+                capabilityRow(
+                    category = "agent_tool_sandbox",
+                    label = "Native diagnostics tool surface",
+                    ready = true,
+                    valueLabel = "android_device_diagnostics_tool",
+                    detail = "Passive status and report actions expose Wi-Fi, Bluetooth, sensor, radio, SOC, backend, card-manifest, and tool-catalog context; active refresh flags remain explicit.",
+                    recommendation = "Call android_device_diagnostics_tool action=tool_catalog or the narrow report action before asking Gemma to act on a capability.",
+                    fraction = 0.95f,
+                    extra = JSONObject()
+                        .put("tool_action", "android_device_diagnostics_tool:tool_catalog")
+                        .put("source_surface", "native_diagnostics_bridge")
+                        .put("sandbox_scope", "Android app process and structured framework APIs")
+                        .put("permission_gate", "Wi-Fi/Bluetooth/sensor refresh permissions only when active data is requested")
+                        .put("host_access", "no root or host filesystem access")
+                        .put("remote_dispatch_capable", false)
+                        .put("mcp_parity_status", "native_bridge_first"),
+                ),
+            )
+            .put(
+                capabilityRow(
+                    category = "agent_tool_sandbox",
+                    label = "Android automation and heartbeat surface",
+                    ready = heartbeatReady,
+                    valueLabel = if (heartbeatReady) "operator_heartbeat" else "operator_standby_status",
+                    detail = "${automationStatus.optInt("enabled_automation_count", 0)} enabled automation(s), ${automationStatus.optInt("recent_run_count", 0)} recent run(s), batch heartbeat supported=${automationStatus.optBoolean("batch_heartbeat_supported", false)}.",
+                    recommendation = "Use android_automation_tool operator_standby_status/operator_heartbeat before remote dispatch, scheduled tasks, or long-running automation plans.",
+                    fraction = if (heartbeatReady) 0.9f else 0.45f,
+                    extra = JSONObject()
+                        .put("tool_action", "android_automation_tool:operator_heartbeat")
+                        .put("source_surface", "operator_standby")
+                        .put("sandbox_scope", "Hermes automation records, notifications, widgets, and user-approved Android intents")
+                        .put("permission_gate", "user-created automation records and Android permission prompts")
+                        .put("host_access", "Android app/device APIs only")
+                        .put("remote_dispatch_capable", automationStatus.optBoolean("remote_dispatch_compatible", true))
+                        .put("mcp_parity_status", "native_scheduler_and_dispatch"),
+                ),
+            )
+            .put(
+                capabilityRow(
+                    category = "agent_tool_sandbox",
+                    label = "Terminal/Linux workspace surface",
+                    ready = true,
+                    valueLabel = "terminal_tool",
+                    detail = "Shell work runs inside the Hermes app workspace/native shell boundary and should not be treated as root, host, or unrestricted Android access.",
+                    recommendation = "Prefer Android-native structured tools first; use terminal_tool for short workspace commands, file inspection, and local helper scripts.",
+                    fraction = 0.8f,
+                    extra = JSONObject()
+                        .put("tool_action", "terminal_tool")
+                        .put("source_surface", "android_terminal_workspace")
+                        .put("sandbox_scope", "app-private workspace and packaged native shell")
+                        .put("permission_gate", "app storage and shell command allowlist")
+                        .put("host_access", "no host filesystem, no root by default")
+                        .put("remote_dispatch_capable", false)
+                        .put("mcp_parity_status", "Kai Linux sandbox analogue"),
+                ),
+            )
+            .put(
+                capabilityRow(
+                    category = "agent_tool_sandbox",
+                    label = "Privileged Android action surface",
+                    ready = privilegedReady,
+                    valueLabel = if (privilegedReady) {
+                        privilegedStatus?.shizukuPrivilegeLabel?.ifBlank { "Shizuku/Sui granted" } ?: "Shizuku/Sui granted"
+                    } else {
+                        "Shizuku/Sui gated"
+                    },
+                    detail = "Shizuku installed=${privilegedStatus?.shizukuInstalled == true}, Sui installed=${privilegedStatus?.suiInstalled == true}, binder alive=${privilegedStatus?.shizukuBinderAlive == true}, permission granted=${privilegedStatus?.shizukuPermissionGranted == true}.",
+                    recommendation = "Use android_system_tool status/open_shizuku_app/request_shizuku_permission before run_privileged_shell or protected package/settings actions.",
+                    fraction = if (privilegedReady) 0.9f else if (privilegedStatus?.shizukuBinderAlive == true) 0.55f else 0.3f,
+                    extra = JSONObject()
+                        .put("tool_action", "android_system_tool:status")
+                        .put("source_surface", "shizuku_sui_bridge")
+                        .put("sandbox_scope", "user-granted Shizuku/Sui privileged Android bridge")
+                        .put("permission_gate", "Shizuku/Sui running plus Hermes permission grant")
+                        .put("host_access", "Android shell UID only after explicit grant")
+                        .put("remote_dispatch_capable", false)
+                        .put("mcp_parity_status", "privileged tool gate"),
+                ),
+            )
+            .put(
+                capabilityRow(
+                    category = "agent_tool_sandbox",
+                    label = "UI/accessibility surface",
+                    ready = accessibilityConnected,
+                    valueLabel = when {
+                        accessibilityConnected -> "accessibility connected"
+                        accessibilityEnabled -> "service enabled"
+                        else -> "accessibility gated"
+                    },
+                    detail = "android_ui_tool can inspect and control visible Android UI through accessibility snapshots, screenshot hashes, focus, text, click, scroll, and navigation actions.",
+                    recommendation = "Check android_ui_tool status/sense/visual_snapshot before sensitive UI actions or any external send/post tap.",
+                    fraction = if (accessibilityConnected) 0.95f else if (accessibilityEnabled) 0.65f else 0.35f,
+                    extra = JSONObject()
+                        .put("tool_action", "android_ui_tool:status")
+                        .put("source_surface", "accessibility_ui_bridge")
+                        .put("sandbox_scope", "visible Android UI and screenshot/accessibility snapshot only")
+                        .put("permission_gate", "user-enabled Hermes accessibility service")
+                        .put("host_access", "foreground Android UI only")
+                        .put("remote_dispatch_capable", false)
+                        .put("mcp_parity_status", "visual/control tool route"),
+                ),
+            )
+            .put(
+                capabilityRow(
+                    category = "agent_tool_sandbox",
+                    label = "External MCP/server parity surface",
+                    ready = true,
+                    valueLabel = "native tool bridge",
+                    detail = "Hermes currently maps Kai MCP-style work to native terminal, file, Android system, UI, automation, diagnostics, and memory tools; external MCP endpoints are an explicit future bridge.",
+                    recommendation = "Call tool_catalog first and choose a native Hermes tool before adding an external MCP dependency.",
+                    fraction = 0.8f,
+                    extra = JSONObject()
+                        .put("tool_action", "android_device_diagnostics_tool:tool_catalog")
+                        .put("source_surface", "native_tool_catalog")
+                        .put("sandbox_scope", "in-app native tool registry")
+                        .put("permission_gate", "per-tool Android permissions and app settings")
+                        .put("host_access", "no external server by default")
+                        .put("remote_dispatch_capable", false)
+                        .put("mcp_parity_status", "native equivalent, external MCP future"),
+                ),
+            )
+            .put(
+                capabilityRow(
+                    category = "agent_tool_sandbox",
+                    label = "Memory/persona secure local surface",
+                    ready = true,
+                    valueLabel = if (personaStatus.optBoolean("custom_system_prompt_enabled", false)) "custom persona + memory" else "default persona + memory",
+                    detail = "Hindsight memory has ${hindsightStatus.optInt("memory_count", 0)} memory row(s); provider credentials stay in encrypted stores and persona/settings export remains secret-free.",
+                    recommendation = "Use hindsight_memory_tool plus Settings Agent persona for durable behavior changes without exposing provider secrets.",
+                    fraction = 0.9f,
+                    extra = JSONObject()
+                        .put("tool_action", "hindsight_memory_tool:recall")
+                        .put("source_surface", "hindsight_memory_and_persona")
+                        .put("sandbox_scope", "local encrypted preferences and app-local memory records")
+                        .put("permission_gate", "user settings and provider-auth stores")
+                        .put("host_access", "local app data only")
+                        .put("remote_dispatch_capable", false)
+                        .put("mcp_parity_status", "Kai persistent memory/persona analogue"),
+                ),
+            )
+            .put(
+                capabilityRow(
+                    category = "agent_tool_sandbox",
+                    label = "External send safety surface",
+                    ready = true,
+                    valueLabel = "social_gmail_goal_preflight",
+                    detail = "Social, Gmail, and other external-send workflows require current UI evidence, installed app checks, model readiness, and visible confirmation before send/post taps.",
+                    recommendation = "Run social_gmail_goal_preflight and android_ui_tool snapshots before any external message, post, DM, or email send.",
+                    fraction = 0.85f,
+                    extra = JSONObject()
+                        .put("tool_action", "android_device_diagnostics_tool:social_gmail_goal_preflight")
+                        .put("source_surface", "external_send_guardrails")
+                        .put("sandbox_scope", "foreground app UI with explicit confirmation")
+                        .put("permission_gate", "accessibility, app install, account state, and user-visible send controls")
+                        .put("host_access", "target app UI only")
+                        .put("remote_dispatch_capable", false)
+                        .put("mcp_parity_status", "guarded side-effect route"),
+                ),
             )
     }
 

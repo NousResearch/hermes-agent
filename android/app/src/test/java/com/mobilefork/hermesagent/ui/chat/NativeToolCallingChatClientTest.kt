@@ -747,6 +747,8 @@ class NativeToolCallingChatClientTest {
             .put("kai_operations_count", 1)
             .put("ready_kai_operations_count", 1)
             .put("workflow_readiness_count", 1)
+            .put("agent_tool_sandbox_count", 1)
+            .put("ready_agent_tool_sandbox_count", 1)
             .put("agent_capability_matrix", capabilities)
             .put(
                 "kai_parity_matrix",
@@ -771,6 +773,22 @@ class NativeToolCallingChatClientTest {
                 ),
             )
             .put(
+                "agent_tool_sandbox_matrix",
+                JSONArray().put(
+                    JSONObject()
+                        .put("category", "agent_tool_sandbox")
+                        .put("label", "Terminal/Linux workspace surface")
+                        .put("ready", true)
+                        .put("value_label", "terminal_tool")
+                        .put("tool_action", "terminal_tool")
+                        .put("sandbox_scope", "app-private workspace")
+                        .put("permission_gate", "app storage")
+                        .put("host_access", "no host filesystem")
+                        .put("remote_dispatch_capable", false)
+                        .put("mcp_parity_status", "Kai Linux sandbox analogue"),
+                ),
+            )
+            .put(
                 "workflow_readiness_matrix",
                 JSONArray().put(
                     JSONObject()
@@ -788,10 +806,13 @@ class NativeToolCallingChatClientTest {
         val capabilityMatrix = parsed.getJSONObject("agent_capability_matrix")
         val kaiParity = parsed.getJSONArray("kai_parity_matrix")
         val kaiOperations = parsed.getJSONArray("kai_operations_matrix")
+        val toolSandbox = parsed.getJSONArray("agent_tool_sandbox_matrix")
         val readiness = parsed.getJSONArray("workflow_readiness_matrix")
 
         assertTrue(parsed.getBoolean("_hermes_context_compressed"))
         assertEquals(20, parsed.getInt("agent_capability_count"))
+        assertEquals(1, parsed.getInt("agent_tool_sandbox_count"))
+        assertEquals(1, parsed.getInt("ready_agent_tool_sandbox_count"))
         assertEquals("array", capabilityMatrix.getString("type"))
         assertEquals(20, capabilityMatrix.getInt("original_count"))
         assertEquals("Capability 0", capabilityMatrix.getJSONArray("items").getJSONObject(0).getString("label"))
@@ -799,6 +820,10 @@ class NativeToolCallingChatClientTest {
         assertEquals("Autonomous heartbeat", kaiParity.getJSONObject(0).getString("label"))
         assertEquals("Tool and MCP bridge route", kaiOperations.getJSONObject(0).getString("label"))
         assertEquals("android_device_diagnostics_tool:tool_catalog", kaiOperations.getJSONObject(0).getString("tool_action"))
+        assertEquals("Terminal/Linux workspace surface", toolSandbox.getJSONObject(0).getString("label"))
+        assertEquals("terminal_tool", toolSandbox.getJSONObject(0).getString("tool_action"))
+        assertEquals("app-private workspace", toolSandbox.getJSONObject(0).getString("sandbox_scope"))
+        assertEquals("Kai Linux sandbox analogue", toolSandbox.getJSONObject(0).getString("mcp_parity_status"))
         assertEquals("Analyze nearby Wi-Fi", readiness.getJSONObject(0).getString("label"))
     }
 

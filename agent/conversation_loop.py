@@ -436,7 +436,18 @@ def run_conversation(
         agent._turns_since_memory += 1
         if agent._turns_since_memory >= agent._memory_nudge_interval:
             _should_review_memory = True
-            agent._turns_since_memory = 0
+            # #30812 — DO NOT reset ``_turns_since_memory`` here.
+            # The counter must stay where it is until the background
+            # review thread actually spawns near the end of this
+            # function: if ``run_conversation`` exits early
+            # (interrupt, no ``final_response``, an exception in the
+            # iteration loop), the gate at the spawn site will skip
+            # the review and the counter we've spent here would be
+            # gone for nothing — the user would have to wait another
+            # ``_memory_nudge_interval`` turns before the next review
+            # is even considered. Pinning the reset to the actual
+            # spawn keeps consumption "bound to the review thread" as
+            # the reporter requested.
 
     # Add user message
     user_msg = {"role": "user", "content": user_message}
@@ -4140,7 +4151,13 @@ def run_conversation(
             and agent._iters_since_skill >= agent._skill_nudge_interval
             and "skill_manage" in agent.valid_tool_names):
         _should_review_skills = True
-        agent._iters_since_skill = 0
+        # #30812 — like ``_turns_since_memory`` above, do not reset the
+        # skill counter here.  The reset must be bound to the actual
+        # ``_spawn_background_review`` call below, otherwise a turn
+        # that satisfies the cadence but skips the spawn gate (no
+        # ``final_response`` / interrupted) silently consumes the
+        # counter and the user has to wait another full interval
+        # before the skill review is considered again.
 
     # External memory provider: sync the completed turn + queue next prefetch.
     agent._sync_external_memory_for_turn(
@@ -4159,7 +4176,20 @@ def run_conversation(
                 review_skills=_should_review_skills,
             )
         except Exception:
-            pass  # Background review is best-effort
+            # Background review is best-effort.  Keep both counters
+            # where they are so the next turn re-attempts the spawn
+            # instead of silently rolling the cadence forward (#30812).
+            pass
+        else:
+            # Spawn succeeded — only NOW do we consume the cadence
+            # counters that gated this turn's review.  Each counter is
+            # reset independently because ``_spawn_background_review``
+            # can carry one or both review flags and we want the same
+            # accounting either way (#30812).
+            if _should_review_memory:
+                agent._turns_since_memory = 0
+            if _should_review_skills:
+                agent._iters_since_skill = 0
 
     # Note: Memory provider on_session_end() + shutdown_all() are NOT
     # called here — run_conversation() is called once per user message in

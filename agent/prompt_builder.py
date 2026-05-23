@@ -830,7 +830,23 @@ def build_environment_hints() -> str:
     return "\n\n".join(hints)
 
 
-CONTEXT_FILE_MAX_CHARS = 20_000
+def _read_context_file_max_chars() -> int:
+    """Configurable context-file truncation limit.
+
+    Set HERMES_CONTEXT_FILE_MAX_CHARS to a positive integer to raise the
+    default 20_000-char cap (helpful for very large SOUL.md / per-profile
+    config files where the default head/tail truncation can silently drop
+    constraints). Invalid or unset values fall back to 20_000.
+    """
+    raw = os.getenv("HERMES_CONTEXT_FILE_MAX_CHARS", "").strip()
+    if raw.isdigit():
+        v = int(raw)
+        if v > 0:
+            return v
+    return 20_000
+
+
+CONTEXT_FILE_MAX_CHARS = _read_context_file_max_chars()
 CONTEXT_TRUNCATE_HEAD_RATIO = 0.7
 CONTEXT_TRUNCATE_TAIL_RATIO = 0.2
 

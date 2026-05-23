@@ -104,6 +104,23 @@ def _scan_memory_content(content: str) -> Optional[str]:
     return None
 
 
+def _normalize_content(content: str) -> str:
+    """Normalize whitespace and newlines for comparison."""
+    return " ".join(content.split())
+
+
+def _deduplicate_entries(entries: List[str]) -> List[str]:
+    """Deduplicate entries based on normalized whitespace, preserving order and original formatting."""
+    seen = set()
+    deduped = []
+    for e in entries:
+        norm = _normalize_content(e)
+        if norm not in seen:
+            seen.add(norm)
+            deduped.append(e)
+    return deduped
+
+
 class MemoryStore:
     """
     Bounded curated memory with file persistence. One instance per AIAgent.
@@ -132,8 +149,8 @@ class MemoryStore:
         self.user_entries = self._read_file(mem_dir / "USER.md")
 
         # Deduplicate entries (preserves order, keeps first occurrence)
-        self.memory_entries = list(dict.fromkeys(self.memory_entries))
-        self.user_entries = list(dict.fromkeys(self.user_entries))
+        self.memory_entries = _deduplicate_entries(self.memory_entries)
+        self.user_entries = _deduplicate_entries(self.user_entries)
 
         # Capture frozen snapshot for system prompt injection
         self._system_prompt_snapshot = {
@@ -191,7 +208,7 @@ class MemoryStore:
         Called under file lock to get the latest state before mutating.
         """
         fresh = self._read_file(self._path_for(target))
-        fresh = list(dict.fromkeys(fresh))  # deduplicate
+        fresh = _deduplicate_entries(fresh)  # deduplicate
         self._set_entries(target, fresh)
 
     def save_to_disk(self, target: str):
@@ -239,8 +256,9 @@ class MemoryStore:
             entries = self._entries_for(target)
             limit = self._char_limit(target)
 
-            # Reject exact duplicates
-            if content in entries:
+            # Reject equivalent duplicates
+            norm_content = _normalize_content(content)
+            if any(_normalize_content(e) == norm_content for e in entries):
                 return self._success_response(target, "Entry already exists (no duplicate added).")
 
             # Calculate what the new total would be
@@ -284,7 +302,11 @@ class MemoryStore:
             self._reload_target(target)
 
             entries = self._entries_for(target)
-            matches = [(i, e) for i, e in enumerate(entries) if old_text in e]
+            norm_old = _normalize_content(old_text)
+            if len(norm_old) < 8:
+                matches = [(i, e) for i, e in enumerate(entries) if norm_old == _normalize_content(e)]
+            else:
+                matches = [(i, e) for i, e in enumerate(entries) if norm_old in _normalize_content(e)]
 
             if not matches:
                 return {"success": False, "error": f"No entry matched '{old_text}'."}
@@ -334,7 +356,11 @@ class MemoryStore:
             self._reload_target(target)
 
             entries = self._entries_for(target)
-            matches = [(i, e) for i, e in enumerate(entries) if old_text in e]
+            norm_old = _normalize_content(old_text)
+            if len(norm_old) < 8:
+                matches = [(i, e) for i, e in enumerate(entries) if norm_old == _normalize_content(e)]
+            else:
+                matches = [(i, e) for i, e in enumerate(entries) if norm_old in _normalize_content(e)]
 
             if not matches:
                 return {"success": False, "error": f"No entry matched '{old_text}'."}

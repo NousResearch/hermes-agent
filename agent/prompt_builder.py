@@ -873,7 +873,7 @@ def _build_skills_manifest(skills_dir: Path) -> dict[str, list[int]]:
     return manifest
 
 
-def _load_skills_snapshot(skills_dir: Path) -> Optional[dict]:
+def _load_skills_snapshot(skills_dir: Path, manifest: Optional[dict] = None) -> Optional[dict]:
     """Load the disk snapshot if it exists and its manifest still matches."""
     snapshot_path = _skills_prompt_snapshot_path()
     if not snapshot_path.exists():
@@ -886,7 +886,8 @@ def _load_skills_snapshot(skills_dir: Path) -> Optional[dict]:
         return None
     if snapshot.get("version") != _SKILLS_SNAPSHOT_VERSION:
         return None
-    if snapshot.get("manifest") != _build_skills_manifest(skills_dir):
+    target_manifest = manifest if manifest is not None else _build_skills_manifest(skills_dir)
+    if snapshot.get("manifest") != target_manifest:
         return None
     return snapshot
 
@@ -1018,6 +1019,23 @@ def build_skills_system_prompt(
     if not skills_dir.exists() and not external_dirs:
         return ""
 
+    local_manifest = _build_skills_manifest(skills_dir)
+    external_manifests = {}
+    for d in external_dirs:
+        if d.exists():
+            try:
+                external_manifests[str(d.resolve())] = _build_skills_manifest(d)
+            except Exception:
+                external_manifests[str(d.resolve())] = {"__manifest_error__": [0, 0]}
+
+    def _manifest_to_key(m: dict[str, list[int]]) -> tuple:
+        return tuple(sorted((k, tuple(v)) for k, v in m.items()))
+
+    manifest_key = (
+        _manifest_to_key(local_manifest),
+        tuple(sorted((d_str, _manifest_to_key(m)) for d_str, m in external_manifests.items()))
+    )
+
     # ── Layer 1: in-process LRU cache ─────────────────────────────────
     # Include the resolved platform so per-platform disabled-skill lists
     # produce distinct cache entries (gateway serves multiple platforms).
@@ -1035,6 +1053,7 @@ def build_skills_system_prompt(
         tuple(sorted(str(ts) for ts in (available_toolsets or set()))),
         _platform_hint,
         tuple(sorted(disabled)),
+        manifest_key,
     )
     with _SKILLS_PROMPT_CACHE_LOCK:
         cached = _SKILLS_PROMPT_CACHE.get(cache_key)
@@ -1043,7 +1062,7 @@ def build_skills_system_prompt(
             return cached
 
     # ── Layer 2: disk snapshot ────────────────────────────────────────
-    snapshot = _load_skills_snapshot(skills_dir)
+    snapshot = _load_skills_snapshot(skills_dir, local_manifest)
 
     skills_by_category: dict[str, list[tuple[str, str]]] = {}
     category_descriptions: dict[str, str] = {}

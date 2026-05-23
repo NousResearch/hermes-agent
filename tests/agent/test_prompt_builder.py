@@ -1194,4 +1194,98 @@ class TestOpenAIModelExecutionGuidance:
 # =========================================================================
 
 
+class TestSkillsPromptCacheInvalidation:
+    def test_rebuilds_prompt_when_skill_file_changed(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        pb = pytest.importorskip("agent.prompt_builder")
 
+        # Create a skill
+        skill_dir = tmp_path / "skills" / "general" / "test-cache-skill"
+        skill_dir.mkdir(parents=True)
+        skill_file = skill_dir / "SKILL.md"
+        skill_file.write_text(
+            "---\nname: test-cache-skill\ndescription: Initial description\n---\n"
+        )
+
+        # Build prompt first time
+        result1 = pb.build_skills_system_prompt(
+            available_tools=set(),
+            available_toolsets=set(),
+        )
+        assert "Initial description" in result1
+
+        # Build prompt second time - should hit cache
+        result2 = pb.build_skills_system_prompt(
+            available_tools=set(),
+            available_toolsets=set(),
+        )
+        assert result1 is result2 or result1 == result2
+
+        # Now modify the skill file and physically push the mtime forward to avoid timestamp collision issues
+        skill_file.write_text(
+            "---\nname: test-cache-skill\ndescription: Updated description\n---\n"
+        )
+        st = skill_file.stat()
+        import os
+        os.utime(skill_file, (st.st_atime, st.st_mtime + 5))
+
+        # Build prompt third time - should invalidate cache and reload updated description
+        result3 = pb.build_skills_system_prompt(
+            available_tools=set(),
+            available_toolsets=set(),
+        )
+        assert "Updated description" in result3
+        assert "Initial description" not in result3
+
+
+class TestSkillsPromptCacheExternalDirsException:
+    @pytest.fixture(autouse=True)
+    def _clear_skills_cache(self):
+        from agent.prompt_builder import clear_skills_system_prompt_cache
+        clear_skills_system_prompt_cache(clear_snapshot=True)
+        yield
+        clear_skills_system_prompt_cache(clear_snapshot=True)
+
+    def test_external_dir_exception_sentinel_invalidates_cache(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        from pathlib import Path
+
+        ext_dir = tmp_path / "ext_skills"
+        ext_dir.mkdir()
+
+        pb = pytest.importorskip("agent.prompt_builder")
+        orig_build_manifest = pb._build_skills_manifest
+
+        # 模拟切换异常状态的标志
+        manifest_error = True
+
+        def mock_build_manifest(d):
+            if Path(d).resolve() == ext_dir.resolve() and manifest_error:
+                raise OSError("Simulated error during stat/iter_index")
+            return orig_build_manifest(d)
+
+        monkeypatch.setattr(
+            pb,
+            "get_all_skills_dirs",
+            lambda: [tmp_path / "skills", ext_dir],
+        )
+        monkeypatch.setattr(pb, "_build_skills_manifest", mock_build_manifest)
+
+        # 1. 出错时第一次调用，应该成功并不崩溃（使用错误哨兵值构建 cache_key）
+        result_error = pb.build_skills_system_prompt()
+
+        # 2. 第二次调用，依然出错，应命中缓存
+        result_error_cached = pb.build_skills_system_prompt()
+        assert result_error == result_error_cached
+
+        # 3. 消除错误状态，并在 external 目录下新建一个技能
+        manifest_error = False
+        ext_skill_dir = ext_dir / "general" / "ext-skill"
+        ext_skill_dir.mkdir(parents=True)
+        (ext_skill_dir / "SKILL.md").write_text(
+            "---\nname: ext-skill\ndescription: External skill\n---\n"
+        )
+
+        # 4. 再次调用，缓存必须失效并载入外部技能
+        result_recovered = pb.build_skills_system_prompt()
+        assert "ext-skill" in result_recovered

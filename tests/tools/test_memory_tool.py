@@ -135,7 +135,7 @@ class TestMemoryStoreAdd:
 class TestMemoryStoreReplace:
     def test_replace_entry(self, store):
         store.add("memory", "Python 3.11 project")
-        result = store.replace("memory", "3.11", "Python 3.12 project")
+        result = store.replace("memory", "3.11 project", "Python 3.12 project")
         assert result["success"] is True
         assert "Python 3.12 project" in result["entries"]
         assert "Python 3.11 project" not in result["entries"]
@@ -148,7 +148,7 @@ class TestMemoryStoreReplace:
     def test_replace_ambiguous_match(self, store):
         store.add("memory", "server A runs nginx")
         store.add("memory", "server B runs nginx")
-        result = store.replace("memory", "nginx", "apache")
+        result = store.replace("memory", "runs nginx", "apache")
         assert result["success"] is False
         assert "Multiple" in result["error"]
 
@@ -255,3 +255,80 @@ class TestMemoryToolDispatcher:
     def test_remove_requires_old_text(self, store):
         result = json.loads(memory_tool(action="remove", store=store))
         assert result["success"] is False
+
+
+class TestMemoryStoreWhitespaceDeduplication:
+    def test_add_whitespace_insensitive_deduplication(self, store):
+        store.add("memory", "fact   with  multiple \n  spaces")
+        # Equivalent content with different spacing should be rejected
+        result = store.add("memory", "fact with multiple spaces")
+        assert result["success"] is True
+        assert len(store.memory_entries) == 1
+
+    def test_load_whitespace_insensitive_deduplication(self, tmp_path, monkeypatch):
+        monkeypatch.setattr("tools.memory_tool.get_memory_dir", lambda: tmp_path)
+        mem_file = tmp_path / "MEMORY.md"
+        mem_file.write_text("duplicate \n entry\n§\nduplicate   entry\n§\nunique entry")
+
+        store = MemoryStore()
+        store.load_from_disk()
+        assert len(store.memory_entries) == 2
+        # Should keep the first one
+        assert store.memory_entries[0] == "duplicate \n entry"
+
+    def test_replace_whitespace_insensitive_match(self, store):
+        store.add("memory", "server   configured   with \n python")
+        result = store.replace("memory", "server configured with python", "server with py3")
+        assert result["success"] is True
+        assert "server with py3" in store.memory_entries
+        assert len(store.memory_entries) == 1
+
+    def test_remove_whitespace_insensitive_match(self, store):
+        store.add("memory", "server   configured   with \n python")
+        result = store.remove("memory", "server configured with python")
+        assert result["success"] is True
+        assert len(store.memory_entries) == 0
+
+
+class TestMemoryStoreShortQueryProtection:
+    def test_short_query_exact_match_replace_success(self, store):
+        # 长度小于 8（"short" 长度为 5），如果精确匹配，replace 应该成功
+        store.add("memory", "short")
+        result = store.replace("memory", "short", "longer replacement")
+        assert result["success"] is True
+        assert "longer replacement" in store.memory_entries
+        assert "short" not in store.memory_entries
+
+    def test_short_query_substring_match_replace_fails(self, store):
+        # 长度小于 8（"short" 长度为 5），如果是子串但非精确匹配，replace 应该失败
+        store.add("memory", "this is a short entry")
+        result = store.replace("memory", "short", "longer replacement")
+        assert result["success"] is False
+        assert "No entry matched" in result["error"]
+        assert "this is a short entry" in store.memory_entries
+
+    def test_short_query_exact_match_remove_success(self, store):
+        # 长度小于 8，精确匹配 remove 成功
+        store.add("memory", "short")
+        result = store.remove("memory", "short")
+        assert result["success"] is True
+        assert len(store.memory_entries) == 0
+
+    def test_short_query_substring_match_remove_fails(self, store):
+        # 长度小于 8，子串非精确匹配 remove 失败
+        store.add("memory", "this is a short entry")
+        result = store.remove("memory", "short")
+        assert result["success"] is False
+        assert "No entry matched" in result["error"]
+        assert "this is a short entry" in store.memory_entries
+
+    def test_long_query_substring_match_works(self, store):
+        # 长度大于等于 8（"longquery" 长度为 9），子串匹配应该能正常 replace 和 remove
+        store.add("memory", "this has a longquery in it")
+        result = store.replace("memory", "longquery", "this has a replaced value in it")
+        assert result["success"] is True
+        assert "this has a replaced value in it" in store.memory_entries
+
+        result2 = store.remove("memory", "replaced value")
+        assert result2["success"] is True
+        assert len(store.memory_entries) == 0

@@ -23,6 +23,11 @@ from dataclasses import dataclass, field
 from threading import Lock
 from typing import Any, Dict, List, Optional
 
+from acp_adapter.provenance import (
+    build_hermes_session_meta,
+    current_hermes_session_id,
+)
+
 logger = logging.getLogger(__name__)
 
 
@@ -181,6 +186,10 @@ class SessionState:
     runtime_lock: Any = field(default_factory=Lock)
     current_prompt_text: str = ""
     interrupted_prompt_text: str = ""
+    hermes_session_id: str | None = None
+    in_place_compaction_count: int = 0
+    last_compaction_mode: str | None = None
+    metadata_dirty: bool = False
 
 
 class SessionManager:
@@ -220,6 +229,7 @@ class SessionManager:
             cwd=cwd,
             model=getattr(agent, "model", "") or "",
             cancel_event=threading.Event(),
+            hermes_session_id=session_id,
         )
         with self._lock:
             self._sessions[session_id] = state
@@ -272,6 +282,7 @@ class SessionManager:
             model=getattr(agent, "model", original.model) or original.model,
             history=copy.deepcopy(original.history),
             cancel_event=threading.Event(),
+            hermes_session_id=new_id,
         )
         with self._lock:
             self._sessions[new_id] = state
@@ -303,7 +314,8 @@ class SessionManager:
                     continue
                 if normalized_cwd and _normalize_cwd_for_compare(s.cwd) != normalized_cwd:
                     continue
-                persisted = persisted_rows.get(s.session_id, {})
+                hermes_session_id = current_hermes_session_id(s) or s.session_id
+                persisted = persisted_rows.get(hermes_session_id) or persisted_rows.get(s.session_id, {})
                 preview = next(
                     (
                         str(msg.get("content") or "").strip()
@@ -315,6 +327,7 @@ class SessionManager:
                 results.append(
                     {
                         "session_id": s.session_id,
+                        "hermes_session_id": hermes_session_id,
                         "cwd": s.cwd,
                         "model": s.model,
                         "history_len": history_len,
@@ -322,12 +335,21 @@ class SessionManager:
                         "updated_at": _format_updated_at(
                             persisted.get("last_active") or persisted.get("started_at") or time.time()
                         ),
+                        "field_meta": build_hermes_session_meta(
+                            db,
+                            acp_session_id=s.session_id,
+                            hermes_session_id=hermes_session_id,
+                            row=persisted or None,
+                            in_place_compaction_count=s.in_place_compaction_count,
+                            last_compaction_mode=s.last_compaction_mode,
+                        ),
                     }
                 )
 
         # Merge any persisted sessions not currently in memory.
         for sid, row in persisted_rows.items():
-            if sid in seen_ids:
+            acp_session_id = str(row.get("_lineage_root_id") or sid)
+            if sid in seen_ids or acp_session_id in seen_ids:
                 continue
             message_count = int(row.get("message_count") or 0)
             if message_count <= 0:
@@ -343,12 +365,19 @@ class SessionManager:
             if normalized_cwd and _normalize_cwd_for_compare(session_cwd) != normalized_cwd:
                 continue
             results.append({
-                "session_id": sid,
+                "session_id": acp_session_id,
+                "hermes_session_id": sid,
                 "cwd": session_cwd,
                 "model": row.get("model") or "",
                 "history_len": message_count,
                 "title": _build_session_title(row.get("title"), row.get("preview"), session_cwd),
                 "updated_at": _format_updated_at(row.get("last_active") or row.get("started_at")),
+                "field_meta": build_hermes_session_meta(
+                    db,
+                    acp_session_id=acp_session_id,
+                    hermes_session_id=sid,
+                    row=row,
+                ),
             })
 
         results.sort(key=lambda item: _updated_at_sort_key(item.get("updated_at")), reverse=True)
@@ -432,6 +461,8 @@ class SessionManager:
 
         # Ensure model is a plain string (not a MagicMock or other proxy).
         model_str = str(state.model) if state.model else None
+        storage_session_id = current_hermes_session_id(state) or state.session_id
+        state.hermes_session_id = storage_session_id
         session_meta = {"cwd": state.cwd}
         provider = getattr(state.agent, "provider", None)
         base_url = getattr(state.agent, "base_url", None)
@@ -446,13 +477,15 @@ class SessionManager:
 
         try:
             # Ensure the session record exists.
-            existing = db.get_session(state.session_id)
+            existing = db.get_session(storage_session_id)
             if existing is None:
                 db.create_session(
-                    session_id=state.session_id,
+                    session_id=storage_session_id,
                     source="acp",
                     model=model_str,
-                    model_config={"cwd": state.cwd},
+                    model_config=session_meta,
+                    session_kind="acp",
+                    creator_kind="acp",
                 )
             else:
                 # Update model_config (contains cwd) if changed.
@@ -460,7 +493,7 @@ class SessionManager:
                     with db._lock:
                         db._conn.execute(
                             "UPDATE sessions SET model_config = ?, model = COALESCE(?, model) WHERE id = ?",
-                            (cwd_json, model_str, state.session_id),
+                            (cwd_json, model_str, storage_session_id),
                         )
                         db._conn.commit()
                 except Exception:
@@ -469,9 +502,9 @@ class SessionManager:
             # Replace stored messages with current history atomically so a
             # mid-rewrite failure rolls back and the previously persisted
             # conversation is preserved (salvaged from #13675).
-            db.replace_messages(state.session_id, state.history)
+            db.replace_messages(storage_session_id, state.history)
         except Exception:
-            logger.warning("Failed to persist ACP session %s", state.session_id, exc_info=True)
+            logger.warning("Failed to persist ACP session %s", storage_session_id, exc_info=True)
 
     def _restore(self, session_id: str) -> Optional[SessionState]:
         """Load a session from the database into memory, recreating the AIAgent."""
@@ -494,6 +527,17 @@ class SessionManager:
         if row.get("source") != "acp":
             return None
 
+        hermes_session_id = session_id
+        try:
+            tip_id = db.get_compression_tip(session_id)
+            if tip_id and tip_id != session_id:
+                tip_row = db.get_session(tip_id)
+                if tip_row and tip_row.get("source") == "acp":
+                    hermes_session_id = tip_id
+                    row = tip_row
+        except Exception:
+            logger.debug("Failed to resolve ACP compression tip for %s", session_id, exc_info=True)
+
         # Extract cwd from model_config.
         cwd = "."
         requested_provider = row.get("billing_provider")
@@ -515,14 +559,14 @@ class SessionManager:
 
         # Load conversation history.
         try:
-            history = db.get_messages_as_conversation(session_id)
+            history = db.get_messages_as_conversation(hermes_session_id)
         except Exception:
             logger.warning("Failed to load messages for ACP session %s", session_id, exc_info=True)
             history = []
 
         try:
             agent = self._make_agent(
-                session_id=session_id,
+                session_id=hermes_session_id,
                 cwd=cwd,
                 model=model,
                 requested_provider=requested_provider,
@@ -540,6 +584,7 @@ class SessionManager:
             model=model or getattr(agent, "model", "") or "",
             history=history,
             cancel_event=threading.Event(),
+            hermes_session_id=hermes_session_id,
         )
         with self._lock:
             self._sessions[session_id] = state

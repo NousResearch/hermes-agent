@@ -71,6 +71,11 @@ from acp_adapter.events import (
     make_tool_progress_cb,
 )
 from acp_adapter.permissions import make_approval_callback
+from acp_adapter.provenance import (
+    build_hermes_session_meta,
+    build_hermes_session_meta_for_state,
+    current_hermes_session_id,
+)
 from acp_adapter.session import SessionManager, SessionState, _expand_acp_enabled_toolsets
 from acp_adapter.tools import build_tool_complete, build_tool_start
 
@@ -525,6 +530,19 @@ class HermesACPAgent(acp.Agent):
         self._conn = conn
         logger.info("ACP client connected")
 
+    def _session_field_meta(self, state: SessionState) -> dict[str, Any]:
+        """Build Hermes ``_meta`` for an in-memory ACP session."""
+        return build_hermes_session_meta_for_state(self.session_manager._get_db(), state)
+
+    def _sync_state_hermes_session_id(self, state: SessionState) -> bool:
+        """Notice internal Hermes session rotation after automatic compression."""
+        current_id = current_hermes_session_id(state)
+        if not current_id or current_id == state.hermes_session_id:
+            return False
+        state.hermes_session_id = current_id
+        state.last_compaction_mode = "split"
+        state.metadata_dirty = True
+        return True
 
     def _session_modes(self, state: SessionState) -> SessionModeState:
         """Return ACP session modes while preserving Zed's separate model picker.
@@ -713,30 +731,47 @@ class HermesACPAgent(acp.Agent):
         """Send ACP native session metadata after Hermes changes it."""
         if not self._conn:
             return
+        db = self.session_manager._get_db()
+        state = self.session_manager.get_session(session_id)
+        hermes_session_id = session_id
+        field_meta: dict[str, Any] | None = None
         try:
-            row = self.session_manager._get_db().get_session(session_id)
+            if state is not None:
+                hermes_session_id = current_hermes_session_id(state) or session_id
+                field_meta = self._session_field_meta(state)
+            row = db.get_session(hermes_session_id) if db is not None else None
         except Exception:
             logger.debug("Could not read ACP session info for %s", session_id, exc_info=True)
             return
-        if not row:
+        if not row and state is None:
             return
 
-        title = row.get("title")
+        title = row.get("title") if row else None
+        if field_meta is None:
+            field_meta = build_hermes_session_meta(
+                db,
+                acp_session_id=session_id,
+                hermes_session_id=hermes_session_id,
+                row=row,
+            )
         # The `sessions` table does not have an `updated_at` column (see
         # hermes_state.py schema — only started_at/ended_at). Use "now" as
         # the updated_at since we're emitting this notification precisely
-        # because the title was just refreshed.
+        # because metadata/title changed.
         updated_at = datetime.now(timezone.utc).isoformat()
         update = SessionInfoUpdate(
             session_update="session_info_update",
             title=title if isinstance(title, str) and title.strip() else None,
             updated_at=updated_at,
+            field_meta=field_meta,
         )
         try:
             await self._conn.session_update(
                 session_id=session_id,
                 update=update,
             )
+            if state is not None:
+                state.metadata_dirty = False
         except Exception:
             logger.debug("Could not send ACP session info update for %s", session_id, exc_info=True)
 
@@ -1081,6 +1116,7 @@ class HermesACPAgent(acp.Agent):
             session_id=state.session_id,
             models=self._build_model_state(state),
             modes=self._session_modes(state),
+            field_meta=self._session_field_meta(state),
         )
 
     async def load_session(
@@ -1125,6 +1161,7 @@ class HermesACPAgent(acp.Agent):
         return LoadSessionResponse(
             models=self._build_model_state(state),
             modes=self._session_modes(state),
+            field_meta=self._session_field_meta(state),
         )
 
     async def resume_session(
@@ -1157,6 +1194,7 @@ class HermesACPAgent(acp.Agent):
         return ResumeSessionResponse(
             models=self._build_model_state(state),
             modes=self._session_modes(state),
+            field_meta=self._session_field_meta(state),
         )
 
     async def cancel(self, session_id: str, **kwargs: Any) -> None:
@@ -1232,6 +1270,7 @@ class HermesACPAgent(acp.Agent):
                     cwd=s["cwd"],
                     title=s.get("title"),
                     updated_at=updated_at,
+                    field_meta=s.get("field_meta"),
                 )
             )
 
@@ -1310,6 +1349,8 @@ class HermesACPAgent(acp.Agent):
                 if self._conn:
                     update = acp.update_agent_message_text(response_text)
                     await self._conn.session_update(session_id, update)
+                    if state.metadata_dirty:
+                        await self._send_session_info_update(session_id)
                     await self._send_usage_update(state)
                 return PromptResponse(stop_reason="end_turn")
 
@@ -1507,6 +1548,7 @@ class HermesACPAgent(acp.Agent):
                 state.current_prompt_text = ""
             return PromptResponse(stop_reason="end_turn")
 
+        self._sync_state_hermes_session_id(state)
         if result.get("messages"):
             state.history = result["messages"]
             # Persist updated history so sessions survive process restarts.
@@ -1570,6 +1612,8 @@ class HermesACPAgent(acp.Agent):
                 cached_read_tokens=result.get("cache_read_tokens"),
             )
 
+        if state.metadata_dirty:
+            await self._send_session_info_update(session_id)
         await self._send_usage_update(state)
 
         stop_reason = "cancelled" if state.cancel_event and state.cancel_event.is_set() else "end_turn"
@@ -1825,6 +1869,9 @@ class HermesACPAgent(acp.Agent):
                 agent._session_db = original_session_db
 
             state.history = compressed
+            state.in_place_compaction_count += 1
+            state.last_compaction_mode = "in_place"
+            state.metadata_dirty = True
             self.session_manager.save_session(state.session_id)
 
             new_count = len(state.history)

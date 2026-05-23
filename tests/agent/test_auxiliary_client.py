@@ -2808,3 +2808,71 @@ class TestAuxUnhealthyCache:
             )
             # After the 402, OpenRouter is in the unhealthy cache.
             assert _is_provider_unhealthy("openrouter") is True
+
+
+# ---------------------------------------------------------------------------
+# _build_call_kwargs — Nous portal tag merge resilience
+# ---------------------------------------------------------------------------
+
+class TestBuildCallKwargsNousTagsMerge:
+    """Regression for 'NoneType' object is not iterable on title_generation.
+
+    The Nous-tagged auxiliary path used to call
+    ``merged_extra.setdefault("tags", []).extend(_nous_portal_tags())``.
+    When the incoming ``extra_body`` already carried ``{"tags": None}``
+    (e.g. an ``auxiliary.<task>.extra_body.tags:`` key in YAML with no
+    value, or any upstream merge that left tags=None), ``setdefault``
+    returned the existing ``None`` and ``.extend()`` crashed with
+    "'NoneType' object is not iterable" — silently aborting title
+    generation and surfacing as "⚠ Auxiliary title generation failed".
+    """
+
+    def test_extra_body_tags_none_does_not_crash(self):
+        """tags=None in extra_body must not raise — Nous tags still appended."""
+        from agent.auxiliary_client import _build_call_kwargs
+
+        kwargs = _build_call_kwargs(
+            provider="nous",
+            model="hermes-4",
+            messages=[{"role": "user", "content": "hi"}],
+            extra_body={"tags": None},
+        )
+
+        assert "extra_body" in kwargs
+        tags = kwargs["extra_body"]["tags"]
+        assert isinstance(tags, list)
+        assert any(t.startswith("product=hermes-agent") for t in tags)
+        assert any(t.startswith("client=hermes-client-v") for t in tags)
+
+    def test_extra_body_tags_non_list_does_not_crash(self):
+        """tags=<str> (malformed config) must not raise either."""
+        from agent.auxiliary_client import _build_call_kwargs
+
+        kwargs = _build_call_kwargs(
+            provider="nous",
+            model="hermes-4",
+            messages=[{"role": "user", "content": "hi"}],
+            extra_body={"tags": "oops-not-a-list"},
+        )
+
+        tags = kwargs["extra_body"]["tags"]
+        assert isinstance(tags, list)
+        # Malformed value is replaced (not concatenated to) so the request body
+        # stays valid for the Portal.
+        assert "oops-not-a-list" not in tags
+        assert any(t.startswith("product=hermes-agent") for t in tags)
+
+    def test_extra_body_tags_existing_list_is_preserved(self):
+        """Pre-existing user tags must be kept and the Nous tags appended."""
+        from agent.auxiliary_client import _build_call_kwargs
+
+        kwargs = _build_call_kwargs(
+            provider="nous",
+            model="hermes-4",
+            messages=[{"role": "user", "content": "hi"}],
+            extra_body={"tags": ["user-tag=foo"]},
+        )
+
+        tags = kwargs["extra_body"]["tags"]
+        assert "user-tag=foo" in tags
+        assert any(t.startswith("product=hermes-agent") for t in tags)

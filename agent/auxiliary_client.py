@@ -4189,7 +4189,18 @@ def _build_call_kwargs(
     # Provider-specific extra_body
     merged_extra = dict(extra_body or {})
     if provider == "nous" or auxiliary_is_nous:
-        merged_extra.setdefault("tags", []).extend(_nous_portal_tags())
+        # Defensive: ``extra_body`` (from config or upstream merges) may carry
+        # ``{"tags": None}`` — e.g. an auxiliary.<task>.extra_body.tags: key in
+        # YAML with no value.  ``setdefault`` only inserts when the key is
+        # missing, so it returns ``None`` here and ``.extend()`` then crashes
+        # with "'NoneType' object is not iterable".  Coerce to a list first.
+        existing_tags = merged_extra.get("tags")
+        if not isinstance(existing_tags, list):
+            existing_tags = []
+        else:
+            existing_tags = list(existing_tags)
+        existing_tags.extend(_nous_portal_tags())
+        merged_extra["tags"] = existing_tags
     if merged_extra:
         kwargs["extra_body"] = merged_extra
 

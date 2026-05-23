@@ -168,6 +168,28 @@ class TestMemoryProviderABC:
         assert p.get_config_schema() == []
         p.save_config({}, "/tmp")
 
+    def test_system_prompt_block_default(self):
+        """Default implementation of system_prompt_block returns empty string."""
+
+        class _MinimalProvider(MemoryProvider):
+            """Implements abstract methods only; intentionally omits system_prompt_block."""
+
+            @property
+            def name(self) -> str:
+                return "minimal"
+
+            def is_available(self) -> bool:
+                return True
+
+            def initialize(self, session_id, **kwargs):
+                pass
+
+            def get_tool_schemas(self):
+                return []
+
+        p = _MinimalProvider()
+        assert p.system_prompt_block() == ""
+
 
 # ---------------------------------------------------------------------------
 # MemoryManager tests

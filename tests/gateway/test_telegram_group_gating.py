@@ -313,6 +313,40 @@ def test_observed_group_context_replays_normally_without_telegram_prompt():
     assert agent_history == [{"role": "user", "content": "[Alice|111]\nside chatter"}]
 
 
+def test_observed_group_context_preserves_slash_command_text_for_dispatch():
+    from gateway.platforms.base import MessageEvent, MessageType, Platform, SessionSource
+
+    adapter = _make_adapter(
+        require_mention=True,
+        allowed_chats=["-100"],
+        group_allowed_chats=["-100"],
+        observe_unmentioned_group_messages=True,
+    )
+    event = MessageEvent(
+        text="/new@hermes_bot",
+        message_type=MessageType.COMMAND,
+        source=SessionSource(
+            platform=Platform.TELEGRAM,
+            chat_id="-100",
+            user_id="111",
+            user_name="Alice",
+            chat_type="group",
+            thread_id="7",
+        ),
+        raw_message=_group_message(
+            "/new@hermes_bot",
+            entities=[_bot_command_entity("/new@hermes_bot", "/new@hermes_bot")],
+        ),
+    )
+
+    attributed = adapter._apply_telegram_group_observe_attribution(event)
+
+    assert attributed.text == "/new@hermes_bot"
+    assert attributed.get_command() == "new"
+    assert attributed.source.user_id is None
+    assert "observed Telegram group context" in attributed.channel_prompt
+
+
 def test_unmentioned_group_observe_requires_chat_allowlist_for_shared_context():
     async def _run():
         adapter = _make_adapter(

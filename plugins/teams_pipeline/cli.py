@@ -50,6 +50,7 @@ def register_cli(subparser: argparse.ArgumentParser) -> None:
     fetch_p.add_argument("--join-web-url", default="")
     fetch_p.add_argument("--tenant-id", default="")
     fetch_p.add_argument("--call-record-id", default="")
+    fetch_p.add_argument("--recap-url", default="", help="Teams meeting recap URL")
 
     subs_p = subs.add_parser("subscriptions", aliases=["subs"], help="List Graph subscriptions")
     subs_p.add_argument("--store-path", default="")
@@ -86,6 +87,12 @@ def register_cli(subparser: argparse.ArgumentParser) -> None:
     validate_p = subs.add_parser("validate", help="Validate Teams pipeline configuration snapshot")
     validate_p.add_argument("--store-path", default="")
 
+    auth_p = subs.add_parser("auth", help="Manage delegated OAuth2 authentication for Graph delivery")
+    auth_p.add_argument("auth_action", choices=["login", "status", "logout"], nargs="?", default="status")
+    auth_p.add_argument("--store-path", default="")
+    auth_p.add_argument("--scope", default="", help="Space-separated OAuth scopes (default: Chat.ReadWrite Chat.Read OnlineMeetings.Read User.Read offline_access)")
+    auth_p.add_argument("--port", type=int, default=54321, help="Local server port for auth callback (default: 54321)")
+
     subparser.set_defaults(func=teams_pipeline_command)
 
 
@@ -121,6 +128,8 @@ def teams_pipeline_command(args: argparse.Namespace) -> int:
             _cmd_token_health(args)
         elif action == "validate":
             _cmd_validate(args)
+        elif action == "auth":
+            _cmd_auth(args)
         else:
             print(f"Unknown teams-pipeline action: {action}")
             return 2
@@ -299,7 +308,32 @@ def _cmd_run(args) -> None:
         print("job_id is required")
         return
     store = TeamsPipelineStore(_store_path(getattr(args, "store_path", None)))
-    pipeline = TeamsMeetingPipeline(graph_client=build_graph_client(), store=store, config={})
+
+    # Load delivery config from gateway config (same as runtime build)
+    from gateway.config import load_gateway_config
+    from gateway.config import Platform
+    from plugins.teams_pipeline.runtime import build_pipeline_runtime_config
+
+    gateway_config = load_gateway_config()
+    pipeline_config = build_pipeline_runtime_config(gateway_config)
+
+    # Initialize Teams sender if delivery is configured
+    teams_sender = None
+    teams_config = gateway_config.platforms.get(Platform("teams"))
+    teams_delivery = pipeline_config.get("teams_delivery", {})
+    if teams_config and teams_config.enabled and teams_delivery.get("enabled"):
+        try:
+            from plugins.platforms.teams.adapter import TeamsSummaryWriter
+            teams_sender = TeamsSummaryWriter(platform_config=teams_config)
+        except ImportError:
+            pass
+
+    pipeline = TeamsMeetingPipeline(
+        graph_client=build_graph_client(),
+        store=store,
+        config=pipeline_config,
+        teams_sender=teams_sender,
+    )
     result = _run_async(pipeline.run_job(job_id))
     print(json.dumps(_compact_job(result.to_dict()), indent=2, sort_keys=True))
 
@@ -309,8 +343,9 @@ def _cmd_fetch(args) -> None:
     join_web_url = str(getattr(args, "join_web_url", "") or "").strip() or None
     tenant_id = str(getattr(args, "tenant_id", "") or "").strip() or None
     call_record_id = str(getattr(args, "call_record_id", "") or "").strip() or None
-    if not meeting_id and not join_web_url:
-        print("meeting_id or join_web_url is required")
+    recap_url = str(getattr(args, "recap_url", "") or "").strip() or None
+    if not meeting_id and not join_web_url and not recap_url and not call_record_id:
+        print("meeting_id, join_web_url, recap_url, or call_record_id is required")
         return
 
     client = build_graph_client()
@@ -320,6 +355,7 @@ def _cmd_fetch(args) -> None:
             meeting_id=meeting_id,
             join_web_url=join_web_url,
             tenant_id=tenant_id,
+            recap_url=recap_url,
         )
     )
     transcript_artifact, transcript_text = _run_async(fetch_preferred_transcript_text(client, meeting_ref))
@@ -460,3 +496,73 @@ def _cmd_validate(args) -> None:
     store = TeamsPipelineStore(_store_path(getattr(args, "store_path", None)))
     snapshot = _validate_configuration_snapshot(store)
     print(json.dumps(snapshot, indent=2, sort_keys=True))
+
+
+# ---------------------------------------------------------------------------
+# Delegated OAuth2 auth management
+# ---------------------------------------------------------------------------
+
+_DEFAULT_OAUTH_SCOPES = "Chat.ReadWrite Chat.Read OnlineMeetings.Read User.Read offline_access"
+
+
+def _cmd_auth(args) -> None:
+    import os as _os
+    import urllib.parse as _urllib
+    import uuid as _uuid
+
+    token_path = _os.path.expanduser("~/.hermes/teams_oauth_tokens.json")
+    auth_action = getattr(args, "auth_action", "status")
+
+    client_id = _os.getenv("MSGRAPH_CLIENT_ID", "")
+    tenant_id = _os.getenv("MSGRAPH_TENANT_ID", "")
+    scopes = (getattr(args, "scope", "") or _DEFAULT_OAUTH_SCOPES).strip()
+    redirect_uri = f"http://localhost:{getattr(args, 'port', 54321)}/auth/callback"
+
+    if auth_action == "status":
+        if _os.path.exists(token_path):
+            import json
+            with open(token_path) as f:
+                tokens = json.load(f)
+            import time
+            expires_at = tokens.get("expires_at", 0)
+            remaining = max(0, float(expires_at) - time.time())
+            print("✅ Delegated OAuth tokens found:")
+            print(f"  Token file: {token_path}")
+            print(f"  Access token: {'present' if tokens.get('access_token') else 'missing'}")
+            print(f"  Refresh token: {'present' if tokens.get('refresh_token') else 'missing'}")
+            print(f"  Expires in: {remaining:.0f}s ({remaining/60:.1f}m)")
+            print(f"  Scope: {tokens.get('scope', 'N/A')}")
+        else:
+            print("❌ No delegated OAuth tokens found.")
+            print(f"  Run: hermes teams-pipeline auth login")
+
+    elif auth_action == "login":
+        state = str(_uuid.uuid4())
+        auth_url = (
+            f"https://login.microsoftonline.com/{tenant_id}/oauth2/v2.0/authorize?"
+            f"client_id={client_id}"
+            f"&response_type=code"
+            f"&redirect_uri={_urllib.quote(redirect_uri, safe='')}"
+            f"&response_mode=query"
+            f"&scope={_urllib.quote(scopes)}"
+            f"&state={state}"
+            f"&prompt=consent"
+        )
+        print("=== Delegated OAuth2 Login ===")
+        print()
+        print("1. Open this URL in your browser:")
+        print(f"   {auth_url}")
+        print()
+        print("2. Login and accept consent")
+        print("3. After redirect, copy the 'code' parameter from the URL bar")
+        print("4. Run: hermes teams-pipeline auth exchange --code <CODE>")
+        print(f"   (or paste the full redirect URL)")
+        print()
+        print(f"State: {state}")
+
+    elif auth_action == "logout":
+        if _os.path.exists(token_path):
+            _os.remove(token_path)
+            print(f"✅ Deleted OAuth tokens: {token_path}")
+        else:
+            print("No tokens to delete.")

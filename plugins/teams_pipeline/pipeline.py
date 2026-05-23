@@ -11,6 +11,7 @@ import subprocess
 import tempfile
 import uuid
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Awaitable, Callable, Optional
 
@@ -327,7 +328,30 @@ class TeamsMeetingPipeline:
 
     async def run_notification(self, notification: dict[str, Any]) -> TeamsMeetingPipelineJob:
         job = self.create_job_from_notification(notification)
-        if job.status in TERMINAL_PIPELINE_STATES or job.status in ACTIVE_PIPELINE_STATES - {"received"}:
+        if job.status in TERMINAL_PIPELINE_STATES:
+            return job
+        if job.status in ACTIVE_PIPELINE_STATES - {"received"}:
+            # Stale-job recovery: if the job has been stuck in an active state
+            # for more than STALE_JOB_MINUTES, reset it to "received" so the
+            # full pipeline re-runs on the next tick.
+            stale_minutes = int(os.getenv("TEAMS_PIPELINE_STALE_JOB_MINUTES", "10"))
+            updated_at = job.updated_at
+            if isinstance(updated_at, str):
+                try:
+                    updated_at = datetime.fromisoformat(updated_at)
+                except (ValueError, TypeError):
+                    updated_at = None
+            if updated_at is not None:
+                if updated_at.tzinfo is None:
+                    updated_at = updated_at.replace(tzinfo=timezone.utc)
+                age = (datetime.now(timezone.utc) - updated_at).total_seconds() / 60
+                if age > stale_minutes:
+                    logger.warning(
+                        "Teams pipeline job %s stuck in %s for %.0f min — resetting to received",
+                        job.job_id, job.status, age,
+                    )
+                    self.store.upsert_job(job.job_id, {**job.to_dict(), "status": "received"})
+                    return await self.run_job(job.job_id)
             return job
         return await self.run_job(job.job_id)
 
@@ -341,15 +365,24 @@ class TeamsMeetingPipeline:
 
         try:
             job = self._persist_job(job, status="resolving_meeting")
-            notification = meeting_ref.metadata.get("notification") if isinstance(meeting_ref.metadata, dict) else {}
-            resolved_meeting = await resolve_meeting_reference(
-                self.graph_client,
-                meeting_id=meeting_ref.meeting_id,
-                join_web_url=meeting_ref.join_web_url or meeting_ref.metadata.get("join_web_url"),
-                tenant_id=meeting_ref.tenant_id,
-            )
-            job.meeting_ref = resolved_meeting
-            job = self._persist_job(job, meeting_ref=resolved_meeting.to_dict())
+            notification = (meeting_ref.metadata or {}).get("notification") or {}
+
+            # Skip re-resolution if meeting_ref already has full metadata
+            # (e.g., resolved from recap URL with call record data)
+            md = meeting_ref.metadata or {}
+            already_resolved = bool(md.get("subject") and md.get("startDateTime") and md.get("endDateTime"))
+            if already_resolved:
+                resolved_meeting = meeting_ref
+                logger.info("Meeting already resolved via recap URL: %s", resolved_meeting.meeting_id[:40])
+            else:
+                resolved_meeting = await resolve_meeting_reference(
+                    self.graph_client,
+                    meeting_id=meeting_ref.meeting_id,
+                    join_web_url=meeting_ref.join_web_url or meeting_ref.metadata.get("join_web_url"),
+                    tenant_id=meeting_ref.tenant_id,
+                )
+                job.meeting_ref = resolved_meeting
+                job = self._persist_job(job, meeting_ref=resolved_meeting.to_dict())
 
             transcript_text: str | None = None
             if self.config.transcript_preferred:
@@ -395,10 +428,13 @@ class TeamsMeetingPipeline:
                 artifacts.append(call_record)
 
             job = self._persist_job(job, status="summarizing")
-            generated = await self.summarize_fn(
-                resolved_meeting=resolved_meeting,
-                transcript_text=transcript_text or "",
-                artifacts=artifacts,
+            generated = await asyncio.wait_for(
+                self.summarize_fn(
+                    resolved_meeting=resolved_meeting,
+                    transcript_text=transcript_text or "",
+                    artifacts=artifacts,
+                ),
+                timeout=180.0,
             )
             summary_payload = (
                 generated
@@ -460,11 +496,14 @@ class TeamsMeetingPipeline:
         with tempfile.TemporaryDirectory(dir=str(temp_root), prefix="teams-recording-") as tmp_dir:
             recording_name = recording.display_name or f"{recording.artifact_id}.mp4"
             recording_path = Path(tmp_dir) / recording_name
-            await download_recording_artifact(
-                self.graph_client,
-                meeting_ref,
-                recording,
-                recording_path,
+            await asyncio.wait_for(
+                download_recording_artifact(
+                    self.graph_client,
+                    meeting_ref,
+                    recording,
+                    recording_path,
+                ),
+                timeout=300,  # 5-minute timeout — large recordings can be slow
             )
             audio_path = await self._prepare_audio_path(recording_path)
             job = self._persist_job(job, status="transcribing_audio")
@@ -558,28 +597,40 @@ class TeamsMeetingPipeline:
 
     async def _write_sinks(self, job: TeamsMeetingPipelineJob, payload: TeamsMeetingSummaryPayload) -> None:
         if self.config.notion and self.config.notion.get("enabled") and self.notion_writer:
-            job = self._persist_job(job, status="writing_notion")
-            sink_key = f"notion:{payload.meeting_ref.meeting_id}"
-            existing = self.store.get_sink_record(sink_key)
-            result = await self.notion_writer.write_summary(payload, self.config.notion, existing)
-            self.store.upsert_sink_record(sink_key, result)
+            try:
+                job = self._persist_job(job, status="writing_notion")
+                sink_key = f"notion:{payload.meeting_ref.meeting_id}"
+                existing = self.store.get_sink_record(sink_key)
+                result = await self.notion_writer.write_summary(payload, self.config.notion, existing)
+                self.store.upsert_sink_record(sink_key, result)
+            except Exception as exc:
+                logger.warning("Teams pipeline Notion sink failed: %s", exc)
+                self.store.upsert_sink_record(f"error:notion:{payload.meeting_ref.meeting_id}", {"error": str(exc)})
 
         if self.config.linear and self.config.linear.get("enabled") and self.linear_writer:
-            job = self._persist_job(job, status="writing_linear")
-            sink_key = f"linear:{payload.meeting_ref.meeting_id}"
-            existing = self.store.get_sink_record(sink_key)
-            result = await self.linear_writer.write_summary(payload, self.config.linear, existing)
-            self.store.upsert_sink_record(sink_key, result)
+            try:
+                job = self._persist_job(job, status="writing_linear")
+                sink_key = f"linear:{payload.meeting_ref.meeting_id}"
+                existing = self.store.get_sink_record(sink_key)
+                result = await self.linear_writer.write_summary(payload, self.config.linear, existing)
+                self.store.upsert_sink_record(sink_key, result)
+            except Exception as exc:
+                logger.warning("Teams pipeline Linear sink failed: %s", exc)
+                self.store.upsert_sink_record(f"error:linear:{payload.meeting_ref.meeting_id}", {"error": str(exc)})
 
         if self.config.teams_delivery and self.config.teams_delivery.get("enabled") and self.teams_sender:
-            job = self._persist_job(job, status="sending_teams")
-            sink_key = f"teams:{payload.meeting_ref.meeting_id}"
-            existing = self.store.get_sink_record(sink_key)
-            if hasattr(self.teams_sender, "write_summary"):
-                result = await self.teams_sender.write_summary(payload, self.config.teams_delivery, existing)
-            else:
-                result = await self.teams_sender(payload, self.config.teams_delivery, existing)
-            self.store.upsert_sink_record(sink_key, result)
+            try:
+                job = self._persist_job(job, status="sending_teams")
+                sink_key = f"teams:{payload.meeting_ref.meeting_id}"
+                existing = self.store.get_sink_record(sink_key)
+                if hasattr(self.teams_sender, "write_summary"):
+                    result = await self.teams_sender.write_summary(payload, self.config.teams_delivery, existing)
+                else:
+                    result = await self.teams_sender(payload, self.config.teams_delivery, existing)
+                self.store.upsert_sink_record(sink_key, result)
+            except Exception as exc:
+                logger.warning("Teams pipeline Teams sink failed: %s", exc)
+                self.store.upsert_sink_record(f"error:teams:{payload.meeting_ref.meeting_id}", {"error": str(exc)})
 
 
 def _collect_call_metrics(artifacts: list[MeetingArtifact]) -> dict[str, Any]:
@@ -592,14 +643,51 @@ def _collect_call_metrics(artifacts: list[MeetingArtifact]) -> dict[str, Any]:
 
 
 def _collect_participants(meeting_ref: TeamsMeetingRef) -> list[str]:
-    participants = meeting_ref.metadata.get("participants") or []
+    participants = meeting_ref.metadata.get("participants")
+    if not participants:
+        return []
+
     result: list[str] = []
-    if isinstance(participants, list):
+
+    def _extract_name(person: dict[str, Any]) -> str | None:
+        """Extract display name, fallback to UPN."""
+        if not isinstance(person, dict):
+            return None
+        name = person.get("displayName")
+        if name:
+            return str(name)
+        # Fallback: nested identity.user.displayName
+        user = (person.get("identity") or {}).get("user") or {}
+        name = user.get("displayName")
+        if name:
+            return str(name)
+        # Final fallback: UPN
+        upn = person.get("upn")
+        if upn:
+            return str(upn)
+        return None
+
+    # Format 1: nested dict with organizer + attendees (call record format)
+    if isinstance(participants, dict):
+        organizer = participants.get("organizer")
+        if organizer:
+            name = _extract_name(organizer)
+            if name:
+                result.append(name)
+        attendees = participants.get("attendees") or []
+        if isinstance(attendees, list):
+            for person in attendees:
+                name = _extract_name(person)
+                if name:
+                    result.append(name)
+    # Format 2: flat list (legacy format)
+    elif isinstance(participants, list):
         for item in participants:
             if isinstance(item, dict):
-                name = item.get("displayName") or (((item.get("identity") or {}).get("user") or {}).get("displayName"))
+                name = _extract_name(item)
                 if name:
                     result.append(str(name))
+
     return result
 
 

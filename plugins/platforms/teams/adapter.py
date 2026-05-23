@@ -116,6 +116,91 @@ def _parse_bool(value: Any, *, default: bool = False) -> bool:
     return default
 
 
+class _DelegatedOAuthTokenProvider:
+    """OAuth2 token provider that uses authorization code + refresh token flow.
+
+    Loads tokens from ~/.hermes/teams_oauth_tokens.json and auto-refreshes
+    when the access token is expired or about to expire.
+    """
+
+    def __init__(
+        self,
+        *,
+        client_id: str | None = None,
+        client_secret: str | None = None,
+        tenant_id: str | None = None,
+        token_path: str | None = None,
+        transport: Any | None = None,
+    ):
+        import os as _os
+        self._client_id = client_id or _os.getenv("MSGRAPH_CLIENT_ID", "")
+        self._client_secret = client_secret or _os.getenv("MSGRAPH_CLIENT_SECRET", "")
+        self._tenant_id = tenant_id or _os.getenv("MSGRAPH_TENANT_ID", "")
+        self._token_path = token_path or _os.path.expanduser("~/.hermes/teams_oauth_tokens.json")
+        self._transport = transport
+        self._tokens: dict[str, Any] = {}
+
+    def _load_tokens(self) -> dict[str, Any]:
+        import os as _os
+        if _os.path.exists(self._token_path):
+            with open(self._token_path) as f:
+                return json.load(f)
+        return {}
+
+    def _save_tokens(self, tokens: dict[str, Any]) -> None:
+        import os as _os
+        _os.makedirs(_os.path.dirname(self._token_path) or ".", exist_ok=True)
+        with open(self._token_path, "w") as f:
+            json.dump(tokens, f, indent=2)
+
+    async def get_access_token(self, *, force_refresh: bool = False) -> str:
+        if not force_refresh:
+            tokens = self._load_tokens()
+            if tokens and tokens.get("access_token"):
+                import time
+                expires_at = tokens.get("expires_at") or 0
+                # Refresh if less than 60 seconds remaining
+                if time.time() < float(expires_at) - 60:
+                    return tokens["access_token"]
+
+        tokens = self._load_tokens()
+        refresh_token = tokens.get("refresh_token")
+        if not refresh_token:
+            raise ValueError(
+                "No delegated OAuth tokens found. Run 'hermes teams-pipeline auth login' first."
+            )
+
+        import time
+        import httpx
+        token_url = f"https://login.microsoftonline.com/{self._tenant_id}/oauth2/v2.0/token"
+        data = {
+            "grant_type": "refresh_token",
+            "client_id": self._client_id,
+            "client_secret": self._client_secret,
+            "refresh_token": refresh_token,
+        }
+
+        # Use self._transport if available (for testing)
+        client_kwargs: dict[str, Any] = {"timeout": 30.0}
+        if self._transport:
+            client_kwargs["transport"] = self._transport
+
+        async with httpx.AsyncClient(**client_kwargs) as client:
+            resp = await client.post(token_url, data=data)
+            if resp.status_code != 200:
+                raise ValueError(
+                    f"Token refresh failed ({resp.status_code}): {resp.text[:300]}"
+                )
+            new_tokens = resp.json()
+            # Set expiry timestamp
+            new_tokens["expires_at"] = time.time() + new_tokens.get("expires_in", 3600)
+            self._save_tokens(new_tokens)
+            return new_tokens["access_token"]
+
+    def clear_cache(self) -> None:
+        return None
+
+
 class _StaticAccessTokenProvider:
     """Minimal token-provider shim so outbound Graph delivery can reuse the shared client."""
 
@@ -169,10 +254,34 @@ class TeamsSummaryWriter:
                 merged.get("team_id") and merged.get("channel_id")
             ):
                 mode = "graph"
+
+        # Extract meeting chat ID from payload metadata (thread_id)
+        meeting_chat_id = None
+        try:
+            meeting_ref = getattr(payload, "meeting_ref", None)
+            if meeting_ref:
+                metadata = getattr(meeting_ref, "metadata", None) or {}
+                meeting_chat_id = (
+                    metadata.get("thread_id")
+                    or metadata.get("recap_data", {}).get("threadId")
+                )
+                # Fallback: extract from join_web_url
+                if not meeting_chat_id:
+                    join_url = getattr(meeting_ref, "join_web_url", "") or ""
+                    if join_url:
+                        import urllib.parse as _up
+                        decoded = _up.unquote(join_url)
+                        import re as _re
+                        m = _re.search(r"(19:meeting_[A-Za-z0-9_\-]+@thread\.v2)", decoded)
+                        if m:
+                            meeting_chat_id = m.group(1)
+        except Exception:
+            pass
+
         if mode == "incoming_webhook":
             return await self._write_summary_via_incoming_webhook(payload, merged)
         if mode == "graph":
-            return await self._write_summary_via_graph(payload, merged)
+            return await self._write_summary_via_graph(payload, merged, meeting_chat_id=meeting_chat_id)
         raise ValueError(
             "Teams delivery_mode must be 'incoming_webhook' or 'graph'."
         )
@@ -228,9 +337,14 @@ class TeamsSummaryWriter:
         self,
         payload: Any,
         config: dict[str, Any],
+        *,
+        meeting_chat_id: str | None = None,
     ) -> dict[str, Any]:
         graph_client = self._build_graph_client(config)
-        chat_id = str(config.get("chat_id") or "").strip()
+        # Priority: meeting chat ID (dynamic) > config chat_id > team/channel
+        chat_id = str(meeting_chat_id or "").strip()
+        if not chat_id:
+            chat_id = str(config.get("chat_id") or "").strip()
         if chat_id:
             path = f"/chats/{quote(chat_id, safe='')}/messages"
             response = await graph_client.post_json(
@@ -275,12 +389,27 @@ class TeamsSummaryWriter:
         from tools.microsoft_graph_auth import MicrosoftGraphTokenProvider
         from tools.microsoft_graph_client import MicrosoftGraphClient
 
+        # PRIORITY 1: Delegated OAuth token (can post to user chats)
+        # Try first — if tokens exist, use delegated auth for delivery
+        try:
+            delegated = _DelegatedOAuthTokenProvider(transport=self._transport)
+            # Test that we can get a token (non-destructive check)
+            import os as _os
+            token_path = _os.path.expanduser("~/.hermes/teams_oauth_tokens.json")
+            if _os.path.exists(token_path):
+                return MicrosoftGraphClient(delegated, transport=self._transport)  # type: ignore[arg-type]
+        except (ValueError, ImportError):
+            pass  # Fall through to app-only or static token
+
+        # PRIORITY 2: Static access token from config
         access_token = str(config.get("access_token") or "").strip()
         if access_token:
             return MicrosoftGraphClient(
                 _StaticAccessTokenProvider(access_token),
                 transport=self._transport,
             )
+
+        # PRIORITY 3: App-only token (can read callRecords but cannot post to chats)
         return MicrosoftGraphClient(
             MicrosoftGraphTokenProvider.from_env(),
             transport=self._transport,

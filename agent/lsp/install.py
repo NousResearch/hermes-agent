@@ -268,7 +268,14 @@ def _install_npm(
                         shutil.copy2(c, link)
                     except OSError:
                         return str(c)
-            return str(link if link.exists() else c)
+            # On Windows, returning the POSIX shell wrapper causes
+            # subprocess.Popen(..., shell=False) to raise WinError 193. Return
+            # the npm-generated .cmd shim when available; it is the native
+            # executable wrapper Windows can spawn directly.
+            if os.name == "nt" and c.suffix.lower() == ".cmd":
+                return str(link if link.exists() else c)
+            if os.name != "nt":
+                return str(link if link.exists() else c)
     logger.warning("[install] npm install for %s succeeded but bin %s not found", pkg, bin_name)
     return None
 

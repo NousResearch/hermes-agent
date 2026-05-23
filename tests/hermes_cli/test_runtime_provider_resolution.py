@@ -2701,3 +2701,31 @@ def test_host_derived_key_helper_basic_cases():
     for k in ("DEEPSEEK_API_KEY", "GROQ_API_KEY", "MISTRAL_API_KEY",
               "OPENAI_API_KEY", "OPENROUTER_API_KEY"):
         _os.environ.pop(k, None)
+
+def test_named_provider_key_env_uses_get_env_value_fallback(monkeypatch):
+    """New-style providers.* key_env can live in Hermes .env / Windows HKCU, not os.environ."""
+    monkeypatch.delenv("IEPOSE_API_KEY", raising=False)
+    monkeypatch.setattr(
+        rp,
+        "load_config",
+        lambda: {
+            "providers": {
+                "iepose": {
+                    "name": "iepose",
+                    "base_url": "https://ai3456.iepose.cn/v1",
+                    "key_env": "IEPOSE_API_KEY",
+                    "default_model": "gpt-5.5",
+                    "api_mode": "chat_completions",
+                }
+            }
+        },
+    )
+    monkeypatch.setattr("hermes_cli.config.get_env_value", lambda name: "dotenv-token" if name == "IEPOSE_API_KEY" else "")
+
+    resolved = rp._get_named_custom_provider("iepose")
+
+    assert resolved is not None
+    assert resolved["api_key"] == "dotenv-token"
+    assert resolved["base_url"] == "https://ai3456.iepose.cn/v1"
+    assert resolved["api_mode"] == "chat_completions"
+    assert resolved["model"] == "gpt-5.5"

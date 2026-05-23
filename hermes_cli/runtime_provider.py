@@ -517,6 +517,14 @@ def _get_named_custom_provider(requested_provider: str) -> Optional[Dict[str, An
             # Fall back to inline api_key when key_env is absent or unresolvable
             if not resolved_api_key:
                 resolved_api_key = str(entry.get("api_key", "") or "").strip()
+            # get_env_value also checks Hermes .env and Windows HKCU\Environment;
+            # os.getenv alone misses credentials loaded through Hermes config.
+            if not resolved_api_key and key_env:
+                try:
+                    from hermes_cli.config import get_env_value
+                    resolved_api_key = str(get_env_value(key_env) or "").strip()
+                except Exception:
+                    pass
 
             if requested_norm in {ep_name, name_norm, f"custom:{name_norm}"}:
                 # Found match by provider key

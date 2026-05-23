@@ -360,6 +360,38 @@ class TestExtractMedia:
         assert "[[audio_as_voice]]" not in cleaned
         assert "[[as_document]]" not in cleaned
 
+    def test_media_tag_recognizes_html_extension(self):
+        """HTML files should be matched by MEDIA: directive (#31137)."""
+        content = "MEDIA:/tmp/report.html"
+        media, cleaned = BasePlatformAdapter.extract_media(content)
+        assert media == [("/tmp/report.html", False)]
+        assert cleaned == ""
+
+    def test_media_tag_recognizes_md_extension(self):
+        """Markdown files should be matched by MEDIA: directive (#31137)."""
+        content = "MEDIA:/tmp/notes.md"
+        media, cleaned = BasePlatformAdapter.extract_media(content)
+        assert media == [("/tmp/notes.md", False)]
+
+    def test_media_tag_recognizes_json_extension(self):
+        """JSON files should be matched by MEDIA: directive (#31137)."""
+        content = "MEDIA:/tmp/data.json"
+        media, cleaned = BasePlatformAdapter.extract_media(content)
+        assert media == [("/tmp/data.json", False)]
+
+    def test_media_tag_recognizes_svg_extension(self):
+        """SVG files should be matched by MEDIA: directive (#31137)."""
+        content = "MEDIA:/tmp/diagram.svg"
+        media, cleaned = BasePlatformAdapter.extract_media(content)
+        assert media == [("/tmp/diagram.svg", False)]
+
+    def test_media_tag_recognizes_all_archive_extensions(self):
+        """All archive extensions from _MEDIA_EXTS should work."""
+        for ext in [".tar", ".gz", ".tgz", ".bz2", ".xz"]:
+            content = f"MEDIA:/tmp/archive{ext}"
+            media, _ = BasePlatformAdapter.extract_media(content)
+            assert len(media) == 1, f"Failed for {ext}"
+
 
 class TestMediaDeliveryPathValidation:
     def _patch_roots(self, monkeypatch, *roots):

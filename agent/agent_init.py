@@ -1485,6 +1485,11 @@ def init_agent(
         and (
             agent.enabled_toolsets is None
             or "context_engine" in agent.enabled_toolsets
+            # Custom context engines always inject their tools.
+            # The gate above only blocks the built-in compressor
+            # (which has no tools anyway) from leaking when
+            # platform_toolsets is explicitly empty (#5544).
+            or agent.context_compressor.name != "compressor"
         )
     ):
         _existing_tool_names = {

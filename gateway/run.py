@@ -1007,6 +1007,7 @@ from gateway.session import (
     build_session_key,
     is_shared_multi_user_session,
 )
+from gateway.session_handoff import build_session_handoff_note
 from gateway.delivery import DeliveryRouter
 from gateway.platforms.base import (
     BasePlatformAdapter,
@@ -8115,7 +8116,32 @@ class GatewayRunner:
                 context_note = "[System note: The user's session was automatically reset by the daily schedule. This is a fresh conversation with no prior context.]"
             else:
                 context_note = "[System note: The user's previous session expired due to inactivity. This is a fresh conversation with no prior context.]"
-            context_prompt = context_note + "\n\n" + context_prompt
+
+            handoff_note = None
+            try:
+                handoff_cfg = getattr(self.session_store.config, "session_handoff", None)
+                handoff_mode = getattr(handoff_cfg, "mode", "none")
+                parent_session_id = getattr(session_entry, "parent_session_id", None)
+                if handoff_mode != "none" and parent_session_id:
+                    parent_messages = self.session_store.load_transcript(parent_session_id)
+                    handoff_note = build_session_handoff_note(
+                        mode=handoff_mode,
+                        parent_session_id=parent_session_id,
+                        reset_reason=reset_reason,
+                        parent_messages=parent_messages,
+                        previous_updated_at=getattr(session_entry, "parent_updated_at", None),
+                        now=datetime.now(),
+                        max_chars=getattr(handoff_cfg, "max_chars", 2400),
+                        last_messages=getattr(handoff_cfg, "last_messages", 8),
+                    )
+            except Exception as e:
+                logger.debug("Session handoff generation failed (non-fatal): %s", e)
+                handoff_note = None
+
+            if handoff_note:
+                context_prompt = handoff_note + "\n\n" + context_prompt
+            else:
+                context_prompt = context_note + "\n\n" + context_prompt
 
             # Send a user-facing notification explaining the reset, unless:
             # - notifications are disabled in config

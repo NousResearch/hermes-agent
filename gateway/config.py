@@ -18,6 +18,7 @@ from enum import Enum
 
 from hermes_cli.config import get_hermes_home
 from utils import is_truthy_value
+from gateway.session_handoff import SessionHandoffConfig
 
 logger = logging.getLogger(__name__)
 
@@ -495,6 +496,10 @@ class GatewayConfig:
     # fresh session exactly as if the reset policy had fired.  0 = disabled.
     session_store_max_age_days: int = 90
 
+    # Compact background context injected after automatic session resets.
+    # Default off: upgrade/onboarding feature decisions should opt users in.
+    session_handoff: SessionHandoffConfig = field(default_factory=SessionHandoffConfig)
+
     def get_connected_platforms(self) -> List[Platform]:
         """Return list of platforms that are enabled and configured."""
         connected = []
@@ -588,6 +593,7 @@ class GatewayConfig:
             "unauthorized_dm_behavior": self.unauthorized_dm_behavior,
             "streaming": self.streaming.to_dict(),
             "session_store_max_age_days": self.session_store_max_age_days,
+            "session_handoff": self.session_handoff.to_dict(),
         }
     
     @classmethod
@@ -656,6 +662,7 @@ class GatewayConfig:
             unauthorized_dm_behavior=unauthorized_dm_behavior,
             streaming=StreamingConfig.from_dict(data.get("streaming", {})),
             session_store_max_age_days=session_store_max_age_days,
+            session_handoff=SessionHandoffConfig.from_dict(data.get("session_handoff")),
         )
 
     def get_unauthorized_dm_behavior(self, platform: Optional[Platform] = None) -> str:
@@ -721,6 +728,10 @@ def load_gateway_config() -> GatewayConfig:
             sr = yaml_cfg.get("session_reset")
             if sr and isinstance(sr, dict):
                 gw_data["default_reset_policy"] = sr
+
+            handoff_cfg = yaml_cfg.get("session_handoff")
+            if isinstance(handoff_cfg, dict):
+                gw_data["session_handoff"] = handoff_cfg
 
             qc = yaml_cfg.get("quick_commands")
             if qc is not None:

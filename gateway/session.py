@@ -458,6 +458,8 @@ class SessionEntry:
     was_auto_reset: bool = False
     auto_reset_reason: Optional[str] = None  # "idle" or "daily"
     reset_had_activity: bool = False  # whether the expired session had any messages
+    parent_session_id: Optional[str] = None  # previous session after auto-reset
+    parent_updated_at: Optional[datetime] = None
 
     # Set by reset_session() when the user explicitly sends /new or /reset.
     # Consumed once by _handle_message_with_agent to trigger topic/channel
@@ -521,6 +523,12 @@ class SessionEntry:
             "was_auto_reset": self.was_auto_reset,
             "auto_reset_reason": self.auto_reset_reason,
             "reset_had_activity": self.reset_had_activity,
+            "parent_session_id": self.parent_session_id,
+            "parent_updated_at": (
+                self.parent_updated_at.isoformat()
+                if self.parent_updated_at
+                else None
+            ),
         }
         if self.origin:
             result["origin"] = self.origin.to_dict()
@@ -546,6 +554,14 @@ class SessionEntry:
                 last_resume_marked_at = datetime.fromisoformat(_lrma)
             except (TypeError, ValueError):
                 last_resume_marked_at = None
+
+        parent_updated_at = None
+        _pua = data.get("parent_updated_at")
+        if _pua:
+            try:
+                parent_updated_at = datetime.fromisoformat(_pua)
+            except (TypeError, ValueError):
+                parent_updated_at = None
 
         return cls(
             session_key=data["session_key"],
@@ -573,6 +589,8 @@ class SessionEntry:
             was_auto_reset=data.get("was_auto_reset", False),
             auto_reset_reason=data.get("auto_reset_reason"),
             reset_had_activity=data.get("reset_had_activity", False),
+            parent_session_id=data.get("parent_session_id"),
+            parent_updated_at=parent_updated_at,
         )
 
 
@@ -908,11 +926,15 @@ class SessionStore:
                     auto_reset_reason = reset_reason
                     # Track whether the expired session had any real conversation
                     reset_had_activity = entry.total_tokens > 0
+                    parent_session_id = entry.session_id
+                    parent_updated_at = entry.updated_at
                     db_end_session_id = entry.session_id
             else:
                 was_auto_reset = False
                 auto_reset_reason = None
                 reset_had_activity = False
+                parent_session_id = None
+                parent_updated_at = None
 
             # Create new session
             session_id = f"{now.strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:8]}"
@@ -929,6 +951,8 @@ class SessionStore:
                 was_auto_reset=was_auto_reset,
                 auto_reset_reason=auto_reset_reason,
                 reset_had_activity=reset_had_activity,
+                parent_session_id=parent_session_id,
+                parent_updated_at=parent_updated_at,
             )
 
             self._entries[session_key] = entry

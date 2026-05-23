@@ -710,12 +710,15 @@ class HermesDeviceDiagnosticsBridgeTest {
         assertTrue(result.getJSONArray("radio_receiver_profiles").length() >= 5)
         assertTrue(result.getInt("radio_receiver_profile_count") >= 5)
         assertTrue(result.getInt("ready_radio_receiver_profile_count") >= 5)
+        assertTrue(result.getJSONArray("radio_receiver_bridge_schema").length() >= 3)
+        assertTrue(result.getInt("radio_receiver_bridge_schema_count") >= 3)
         assertTrue(result.getJSONArray("radio_signal_feature_matrix").length() >= 6)
         assertTrue(result.getJSONArray("radio_signal_workflow_routes").length() >= 4)
         assertTrue(result.getJSONArray("radio_signal_constraint_matrix").length() >= 4)
         assertTrue(result.getJSONArray("radio_signal_graph_rows").length() >= 2)
         assertEquals(result.getJSONArray("radio_signal_graph_rows").length(), result.getInt("radio_signal_graph_row_count"))
         assertEquals(0, result.getInt("radio_signal_graph_sample_count"))
+        assertFalse(result.getJSONObject("radio_signal_graph_sample_summary").getBoolean("bridge_ready"))
         assertTrue(result.getInt("radio_signal_feature_count") >= 6)
         assertTrue(result.getInt("ready_radio_signal_feature_count") >= 1)
         assertTrue(result.getInt("radio_signal_workflow_route_count") >= 4)
@@ -763,6 +766,8 @@ class HermesDeviceDiagnosticsBridgeTest {
         assertTrue(sdrReceiver.getBoolean("requires_external_hardware"))
         assertEquals("radio_signal_graph", sdrReceiver.getString("route_action"))
         assertTrue(sdrReceiver.getJSONArray("sample_fields").toString().contains("center_frequency_hz"))
+        assertTrue(result.getJSONArray("radio_receiver_bridge_schema").toString().contains("radio_samples_json"))
+        assertTrue(result.getJSONArray("radio_receiver_bridge_schema").toString().contains("rds_radio_text"))
         assertTrue(graphRows.toString().contains("AM broadcast band"))
         assertTrue(graphRows.toString().contains("FM broadcast band"))
         assertEquals(graphRows.length(), result.getInt("radio_signal_graph_row_count"))
@@ -780,6 +785,8 @@ class HermesDeviceDiagnosticsBridgeTest {
         assertEquals("radio_signal_workflow_routes", cards.getJSONObject(3).getString("graph_type"))
         assertEquals("Radio Scan Boundaries", cards.getJSONObject(4).getString("title"))
         assertEquals("radio_signal_constraint_matrix", cards.getJSONObject(4).getString("graph_type"))
+        assertTrue(cards.toString().contains("Radio Bridge Sample Schema"))
+        assertTrue(cards.toString().contains("radio_receiver_bridge_schema"))
     }
 
     @Test
@@ -817,6 +824,9 @@ class HermesDeviceDiagnosticsBridgeTest {
         assertTrue(result.getBoolean("requires_vendor_or_external_receiver_for_am_fm_samples"))
         assertTrue(result.getBoolean("radio_signal_graph_bridge_ready"))
         assertEquals(2, result.getInt("radio_signal_graph_sample_count"))
+        assertTrue(result.getJSONObject("radio_signal_graph_sample_summary").getBoolean("bridge_ready"))
+        assertEquals(1, result.getJSONObject("radio_signal_graph_sample_summary").getInt("fm_sample_count"))
+        assertEquals(1, result.getJSONObject("radio_signal_graph_sample_summary").getInt("am_sample_count"))
         assertTrue(result.getInt("radio_signal_graph_row_count") >= 4)
         val rows = result.getJSONArray("radio_signal_graph_rows").toString()
         assertTrue(rows.contains("Hermes FM"))
@@ -828,6 +838,45 @@ class HermesDeviceDiagnosticsBridgeTest {
         assertEquals("radio_signal_graph", cards.getJSONObject(0).getString("graph_type"))
         assertEquals("Radio Receiver Source Readiness", cards.getJSONObject(1).getString("title"))
         assertTrue(cards.toString().contains("radio_receiver_profile"))
+        assertTrue(cards.toString().contains("Radio Bridge Sample Schema"))
+        assertTrue(result.getJSONArray("radio_receiver_bridge_schema").toString().contains("station_label"))
+    }
+
+    @Test
+    fun radioSignalGraphAcceptsDirectAndJsonBridgeSamples() {
+        val result = HermesDeviceDiagnosticsBridge.radioSignalGraphJson(
+            context,
+            JSONObject()
+                .put("sample_source", "unit_test_direct_bridge")
+                .put("station_label", "Direct FM")
+                .put("frequency_mhz", "101.7")
+                .put("rssi_dbm", "-52")
+                .put("snr_db", "27")
+                .put("modulation", "fm")
+                .put("receiver_id", "fm_vendor_or_sdr")
+                .put("rds_program_service", "HERMES")
+                .put("rds_radio_text", "Bridge supplied RDS text")
+                .put(
+                    "radio_samples_json",
+                    """[{"station_label":"JSON AM","frequency_khz":880,"power_db":-68,"modulation":"am","receiver_id":"am_vendor_or_sdr"}]""",
+                ),
+        )
+
+        assertTrue(result.getBoolean("success"))
+        assertTrue(result.getBoolean("radio_signal_graph_bridge_ready"))
+        assertEquals(2, result.getInt("radio_signal_graph_sample_count"))
+        val summary = result.getJSONObject("radio_signal_graph_sample_summary")
+        assertEquals(1, summary.getInt("fm_sample_count"))
+        assertEquals(1, summary.getInt("am_sample_count"))
+        assertEquals(1, summary.getInt("rds_sample_count"))
+        val rows = result.getJSONArray("radio_signal_graph_rows").toString()
+        assertTrue(rows.contains("Direct FM"))
+        assertTrue(rows.contains("101.7 MHz"))
+        assertTrue(rows.contains("HERMES"))
+        assertTrue(rows.contains("Bridge supplied RDS text"))
+        assertTrue(rows.contains("JSON AM"))
+        assertTrue(rows.contains("880 kHz"))
+        assertTrue(result.getJSONArray("radio_receiver_bridge_schema").toString().contains("direct_argument_fields"))
     }
 
     @Test
@@ -1800,6 +1849,7 @@ class HermesDeviceDiagnosticsBridgeTest {
         assertTrue(evidenceText.contains("bluetooth_signal_history"))
         assertTrue(evidenceText.contains("motion_pose_estimate"))
         assertTrue(evidenceText.contains("radio_signal_graph"))
+        assertTrue(evidenceText.contains("radio_receiver_bridge_schema"))
         assertTrue(evidenceText.contains("local_inference_compatibility_matrix"))
         assertTrue(routeText.contains("Open Wi-Fi graph evidence"))
         assertTrue(routeText.contains("Open Bluetooth proximity evidence"))
@@ -1811,6 +1861,7 @@ class HermesDeviceDiagnosticsBridgeTest {
         assertTrue(graphTypes.contains("signal_evidence_matrix"))
         assertTrue(graphTypes.contains("wifi_channel_graph"))
         assertTrue(graphTypes.contains("bluetooth_device_detail"))
+        assertTrue(graphTypes.contains("radio_receiver_bridge_schema"))
         assertTrue(graphTypes.contains("local_inference_compatibility_matrix"))
         assertTrue(result.getJSONArray("cards").toString().contains("Signal Evidence Bundle"))
         assertTrue(result.getJSONArray("cards").toString().contains("Signal Evidence Routes"))
@@ -1923,6 +1974,7 @@ class HermesDeviceDiagnosticsBridgeTest {
         assertTrue(cardManifestText.contains("bluetooth_device_details"))
         assertTrue(cardManifestText.contains("bluetooth_device_detail"))
         assertTrue(cardManifestText.contains("radio_signal_status"))
+        assertTrue(cardManifestText.contains("radio_receiver_bridge_schema"))
         assertTrue(cardManifestText.contains("gpu_backend_risk_report"))
         assertTrue(cardManifestText.contains("agent_environment_report"))
         assertTrue(cardManifestText.contains("refresh_policy"))
@@ -1975,6 +2027,7 @@ class HermesDeviceDiagnosticsBridgeTest {
         assertTrue(graphTypes.contains("wifi_channel_graph"))
         assertTrue(graphTypes.contains("bluetooth_device_detail"))
         assertTrue(graphTypes.contains("radio_signal_graph"))
+        assertTrue(graphTypes.contains("radio_receiver_bridge_schema"))
         assertTrue(graphTypes.contains("gpu_backend_risk_matrix"))
         assertTrue(result.getJSONArray("cards").toString().contains("Agent Card Manifest"))
         assertTrue(result.getJSONArray("gemma_observation_directives").toString().contains("graph_type"))

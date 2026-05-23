@@ -124,6 +124,7 @@ def test_expanded_activity_rows_show_every_agent_visible_diagnostic_card():
     assert '"bluetooth_rssi"' in diagnostic_cards
     assert '"bluetooth_device_detail"' in diagnostic_cards
     assert '"radio_signal_graph"' in diagnostic_cards
+    assert '"radio_receiver_bridge_schema"' in diagnostic_cards
     assert '"motion_sensor_history"' in diagnostic_cards
     assert '"motion_sensor_quality"' in diagnostic_cards
     assert '"soc_backend_matrix"' in diagnostic_cards

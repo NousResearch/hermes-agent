@@ -393,11 +393,19 @@ class NativeToolCallingChatClientTest {
     @Test
     fun extractsExplicitRadioSignalGraphDiagnosticQuickActionArguments() {
         val parsed = NativeToolCallingChatClient.extractExplicitAndroidDiagnosticsArguments(
-            "Run android_device_diagnostics_tool action=radio_signal_graph",
+            "Run android_device_diagnostics_tool action=radio_signal_graph sample_source=vendor_fm_bridge receiver_id=fm_vendor_or_sdr station_label=\"Hermes FM\" frequency_mhz=99.5 rssi_dbm=-58 snr_db=31 modulation=fm rds_program_service=HERMES",
         )
 
         requireNotNull(parsed)
         assertEquals("radio_signal_graph", parsed.getString("action"))
+        assertEquals("vendor_fm_bridge", parsed.getString("sample_source"))
+        assertEquals("fm_vendor_or_sdr", parsed.getString("receiver_id"))
+        assertEquals("Hermes FM", parsed.getString("station_label"))
+        assertEquals("99.5", parsed.getString("frequency_mhz"))
+        assertEquals("-58", parsed.getString("rssi_dbm"))
+        assertEquals("31", parsed.getString("snr_db"))
+        assertEquals("fm", parsed.getString("modulation"))
+        assertEquals("HERMES", parsed.getString("rds_program_service"))
     }
 
     @Test

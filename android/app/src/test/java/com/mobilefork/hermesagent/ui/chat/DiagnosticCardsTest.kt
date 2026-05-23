@@ -888,6 +888,9 @@ class DiagnosticCardsTest {
                                         .put("modulation", "fm")
                                         .put("rssi_dbm", -58)
                                         .put("snr_db", 31)
+                                        .put("rds_program_service", "HERMES")
+                                        .put("rds_radio_text", "Bridge supplied RDS text")
+                                        .put("sample_rate_hz", 240000)
                                         .put("sampled", true)
                                         .put("scan_state", "bridge_sample_reported")
                                         .put("recommendation", "Use as a receiver-provided sample."),
@@ -914,12 +917,55 @@ class DiagnosticCardsTest {
         assertEquals("-58 dBm", rows[0].valueLabel)
         assertTrue(rows[0].detail.contains("99.5 MHz"))
         assertTrue(rows[0].detail.contains("receiver fm_vendor_or_sdr"))
+        assertTrue(rows[0].detail.contains("RDS HERMES"))
+        assertTrue(rows[0].detail.contains("Bridge supplied RDS text"))
+        assertTrue(rows[0].detail.contains("sample 240000 Hz"))
         assertTrue(rows[0].detail.contains("SNR 31 dB"))
         assertTrue(rows[0].fraction >= 0.6f)
         assertEquals("AM broadcast band", rows[1].label)
         assertEquals("external receiver required", rows[1].valueLabel)
         assertTrue(rows[1].detail.contains("530-1700 kHz"))
         assertTrue(rows[1].detail.contains("external_or_vendor_receiver_required"))
+    }
+
+    @Test
+    fun parsesRadioBridgeSchemaRowsForExpandableCards() {
+        val content = JSONObject()
+            .put(
+                "cards",
+                JSONArray().put(
+                    JSONObject()
+                        .put("title", "Radio Bridge Sample Schema")
+                        .put("body", "Schema rows.")
+                        .put("graph_type", "radio_receiver_bridge_schema")
+                        .put(
+                            "rows",
+                            JSONArray().put(
+                                JSONObject()
+                                    .put("label", "FM bridge sample input")
+                                    .put("receiver_id", "fm_vendor_or_sdr")
+                                    .put("source_type", "fm_broadcast")
+                                    .put("route_action", "radio_signal_graph")
+                                    .put("scan_state", "bridge_sample_schema_ready")
+                                    .put("value_label", "schema ready")
+                                    .put("sample_fields", JSONArray().put("frequency_mhz").put("rssi_dbm").put("rds_radio_text"))
+                                    .put("direct_argument_fields", JSONArray().put("frequency_mhz").put("station_label"))
+                                    .put("json_argument_keys", JSONArray().put("radio_samples").put("radio_samples_json"))
+                                    .put("recommendation", "Feed FM tuner rows through radio_signal_graph."),
+                            ),
+                        ),
+                ),
+            )
+            .toString()
+
+        val row = extractDiagnosticCards(content).single().rows.single()
+
+        assertEquals("FM bridge sample input", row.label)
+        assertEquals("schema ready", row.valueLabel)
+        assertTrue(row.detail.contains("route radio_signal_graph"))
+        assertTrue(row.detail.contains("samples frequency_mhz"))
+        assertTrue(row.detail.contains("args frequency_mhz"))
+        assertTrue(row.detail.contains("json radio_samples"))
     }
 
     @Test

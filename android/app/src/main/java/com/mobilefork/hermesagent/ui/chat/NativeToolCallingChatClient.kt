@@ -1288,6 +1288,20 @@ class NativeToolCallingChatClient(
                         .put("limit", intProp("Maximum rows for top apps, Wi-Fi networks, or Bluetooth devices. Defaults to 5."))
                         .put("detail_limit", intProp("Maximum Wi-Fi access-point or Bluetooth device detail/export rows. Defaults to limit, or the action max for detail/export actions."))
                         .put("export_format", stringProp("Export format for wifi_export or bluetooth_export: json, csv, or both."))
+                        .put("radio_samples_json", stringProp("Optional JSON array or object of vendor/SDR bridge radio samples for radio_signal_graph. Accepted fields include station_label, frequency_mhz, frequency_khz, rssi_dbm, power_db, snr_db, receiver_id, modulation, and RDS fields."))
+                        .put("sample_source", stringProp("Optional source label for radio_signal_graph bridge samples, such as vendor_fm_bridge or external_sdr_bridge."))
+                        .put("receiver_id", stringProp("Optional radio_signal_graph receiver id such as fm_vendor_or_sdr, am_vendor_or_sdr, or external_sdr_bridge."))
+                        .put("station_label", stringProp("Optional AM/FM station label for a single radio_signal_graph bridge sample."))
+                        .put("frequency_mhz", scalarProp("Optional FM or SDR sample frequency in MHz for a single radio_signal_graph bridge sample."))
+                        .put("frequency_khz", scalarProp("Optional AM sample frequency in kHz for a single radio_signal_graph bridge sample."))
+                        .put("frequency_hz", scalarProp("Optional sample frequency in Hz for external radio/SDR bridge samples."))
+                        .put("center_frequency_hz", scalarProp("Optional center frequency in Hz for external SDR bridge samples."))
+                        .put("rssi_dbm", scalarProp("Optional RSSI in dBm for a single AM/FM radio_signal_graph bridge sample."))
+                        .put("power_db", scalarProp("Optional power in dB for a single radio_signal_graph bridge sample."))
+                        .put("snr_db", scalarProp("Optional SNR in dB for a single radio_signal_graph bridge sample."))
+                        .put("modulation", stringProp("Optional radio modulation for bridge samples, such as fm, am, nfm, or unknown."))
+                        .put("rds_program_service", stringProp("Optional FM RDS program service value reported by a receiver bridge."))
+                        .put("rds_radio_text", stringProp("Optional FM RDS radio text reported by a receiver bridge."))
                         .put("scan_mode", stringProp("Wi-Fi or Bluetooth scan mode for direct signal actions: auto, paused, or resumed. Paused reuses cached rows/history; resumed requests a fresh Android scan or BLE sample."))
                         .put("refresh", boolProp("For wifi_scan, wifi_export, wifi_ap_details, bluetooth_scan, bluetooth_signal_history, bluetooth_device_details, bluetooth_export, motion_sensor_quality, motion_sensor_history, or motion_pose, request Android to refresh scan/sensor results before reading available results; analyzer reports stay passive."))
                         .put("filter_band", stringProp("Optional Wi-Fi filter for wifi_scan, wifi_filtered_scan, wifi_analyzer_report, wifi_ap_details, wifi_channel_graph, wifi_channel_rating, wifi_channel_utilization, or wifi_export. Accepts 2.4GHz, 5GHz, 6GHz, or comma-separated values."))
@@ -3583,6 +3597,20 @@ class NativeToolCallingChatClient(
             "filter_bluetooth_category",
             "filter_bluetooth_proximity",
             "sensor_types",
+            "radio_samples_json",
+            "sample_source",
+            "receiver_id",
+            "station_label",
+            "frequency_mhz",
+            "frequency_khz",
+            "frequency_hz",
+            "center_frequency_hz",
+            "rssi_dbm",
+            "power_db",
+            "snr_db",
+            "modulation",
+            "rds_program_service",
+            "rds_radio_text",
         )
         private val DIAGNOSTIC_BOOLEAN_REGEXES = DIAGNOSTIC_BOOLEAN_ARGUMENTS.associateWith { key ->
             Regex("""(?i)\b${Regex.escape(key)}\s*[:=]\s*(true|false)\b""")
@@ -3971,6 +3999,7 @@ internal object NativeToolContextCompressor {
                 "radio_signal_graph_row_count",
                 "radio_signal_graph_sample_count",
                 "radio_signal_graph_bridge_ready",
+                "radio_receiver_bridge_schema_count",
                 "runtime_backend_feature_count",
                 "ready_runtime_backend_feature_count",
                 "runtime_stability_feature_count",
@@ -4152,6 +4181,7 @@ internal object NativeToolContextCompressor {
         "bluetooth_filter_application",
         "radio_bands",
         "radio_receiver_profiles",
+        "radio_receiver_bridge_schema",
         "radio_signal_graph_rows",
         "radio_signal_graph_sample_rows",
         "radio_signal_feature_matrix",
@@ -4431,6 +4461,25 @@ internal object NativeToolContextCompressor {
         "frequency_max_khz",
         "frequency_min_mhz",
         "frequency_max_mhz",
+        "frequency_khz",
+        "frequency_hz",
+        "frequency_label",
+        "center_frequency_hz",
+        "receiver_id",
+        "sample_source",
+        "station_label",
+        "modulation",
+        "signal_dbuv_or_rssi_dbm",
+        "power_db",
+        "snr_db",
+        "rds_program_service",
+        "rds_radio_text",
+        "bandwidth_hz",
+        "span_hz",
+        "sample_rate_hz",
+        "bin_width_hz",
+        "direct_argument_fields",
+        "json_argument_keys",
         "sensor_type",
         "sensor_label",
         "sensor_name",

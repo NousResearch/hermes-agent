@@ -102,6 +102,7 @@ internal fun diagnosticCardPreviewPriority(card: DiagnosticCardSummary): Int {
         "bluetooth_signal_history" -> 2
         "radio_frequency_capability",
         "radio_signal_graph",
+        "radio_receiver_bridge_schema",
         "radio_receiver_profile" -> 3
         "sensor_vector",
         "motion_sensor_history",
@@ -150,6 +151,7 @@ private fun graphRows(graphType: String?, rows: JSONArray): List<DiagnosticGraph
                 "bluetooth_signal_history" -> bluetoothSignalHistoryRow(row)
                 "radio_frequency_capability" -> radioRow(row)
                 "radio_signal_graph" -> radioSignalGraphRow(row)
+                "radio_receiver_bridge_schema" -> radioReceiverProfileRow(row)
                 "radio_receiver_profile" -> radioReceiverProfileRow(row)
                 "sensor_vector" -> sensorRow(row)
                 "motion_sensor_history" -> motionSensorHistoryRow(row)
@@ -626,7 +628,12 @@ private fun radioSignalGraphRow(row: JSONObject): DiagnosticGraphRow {
         row.optString("source_type").takeIf { it.isNotBlank() },
         row.optString("receiver_id").takeIf { it.isNotBlank() }?.let { "receiver $it" },
         row.optString("modulation").takeIf { it.isNotBlank() && it != "unknown" }?.let { "modulation $it" },
+        row.optString("rds_program_service").takeIf { it.isNotBlank() }?.let { "RDS $it" },
+        row.optString("rds_radio_text").takeIf { it.isNotBlank() }?.let { "text $it" },
         row.optNumber("snr_db")?.toDouble()?.let { "SNR ${formatDecimal(it, if (it % 1.0 == 0.0) 0 else 1)} dB" },
+        row.optNumber("bandwidth_hz")?.toDouble()?.let { "bandwidth ${formatDecimal(it, 0)} Hz" },
+        row.optNumber("span_hz")?.toDouble()?.let { "span ${formatDecimal(it, 0)} Hz" },
+        row.optNumber("sample_rate_hz")?.toDouble()?.let { "sample ${formatDecimal(it, 0)} Hz" },
         row.optString("scan_state").takeIf { it.isNotBlank() },
         row.optString("recommendation").takeIf { it.isNotBlank() },
     ).joinToString(" | ")
@@ -658,6 +665,8 @@ private fun radioReceiverProfileRow(row: JSONObject): DiagnosticGraphRow {
     val schemaFields = joinJsonStrings(row.optJSONArray("graph_row_schema"), 4)
     val stationFields = joinJsonStrings(row.optJSONArray("station_metadata_fields"), 3)
     val sampleFields = joinJsonStrings(row.optJSONArray("sample_fields"), 3)
+    val directFields = joinJsonStrings(row.optJSONArray("direct_argument_fields"), 3)
+    val jsonKeys = joinJsonStrings(row.optJSONArray("json_argument_keys"), 3)
     val detail = listOfNotNull(
         radioRangeLabel(row),
         row.optString("source_type").takeIf { it.isNotBlank() },
@@ -667,6 +676,8 @@ private fun radioReceiverProfileRow(row: JSONObject): DiagnosticGraphRow {
         schemaFields.takeIf { it.isNotBlank() }?.let { "schema $it" },
         stationFields.takeIf { it.isNotBlank() }?.let { "station $it" },
         sampleFields.takeIf { it.isNotBlank() }?.let { "samples $it" },
+        directFields.takeIf { it.isNotBlank() }?.let { "args $it" },
+        jsonKeys.takeIf { it.isNotBlank() }?.let { "json $it" },
         row.optString("recommendation").takeIf { it.isNotBlank() },
     ).joinToString(" | ")
     val fraction = row.optNumber("fraction")?.toFloat() ?: when {

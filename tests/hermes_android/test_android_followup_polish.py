@@ -366,6 +366,11 @@ def test_android_diagnostics_exposes_signal_awareness_report_for_cross_signal_ca
     assert 'radioSignalGraphRows(' in diagnostics_bridge
     assert '"radio_signal_graph_rows"' in diagnostics_bridge
     assert '"radio_signal_graph_sample_count"' in diagnostics_bridge
+    assert '"radio_signal_graph_sample_summary"' in diagnostics_bridge
+    assert '"radio_receiver_bridge_schema"' in diagnostics_bridge
+    assert '"radio_samples_json"' in diagnostics_bridge
+    assert 'radioReceiverBridgeSchemaRows(' in diagnostics_bridge
+    assert 'appendRadioSampleRowsFromString(' in diagnostics_bridge
     assert '"AM/FM Signal Graph"' in diagnostics_bridge
     assert 'radioBandPlanRows(' in diagnostics_bridge
     assert 'cached_wifi_signal_history' in diagnostics_bridge
@@ -381,9 +386,14 @@ def test_android_diagnostics_exposes_signal_awareness_report_for_cross_signal_ca
     assert '"radio_signal_constraint_matrix"' in chat_client
     assert '"radio_signal_graph_rows"' in chat_client
     assert '"radio_signal_graph_sample_rows"' in chat_client
+    assert '"radio_receiver_bridge_schema"' in chat_client
+    assert '"radio_samples_json"' in chat_client
+    assert '"frequency_mhz"' in chat_client
+    assert '"rds_radio_text"' in chat_client
     assert '"signal_awareness_matrix", "signal_workflow_routes", "signal_constraint_matrix",' in diagnostic_cards
     assert '"radio_signal_feature_matrix", "radio_signal_workflow_routes", "radio_signal_constraint_matrix",' in diagnostic_cards
     assert '"radio_signal_graph" -> radioSignalGraphRow(row)' in diagnostic_cards
+    assert '"radio_receiver_bridge_schema" -> radioReceiverProfileRow(row)' in diagnostic_cards
     assert 'radioSignalGraphRow(' in diagnostic_cards
     assert 'diagnosticAction = "radio_signal_graph"' in quick_actions
 

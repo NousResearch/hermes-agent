@@ -1306,6 +1306,44 @@ class DiagnosticCardsTest {
     }
 
     @Test
+    fun parsesMotionSensorQualityRowsForExpandableCards() {
+        val content = JSONObject()
+            .put(
+                "cards",
+                JSONArray().put(
+                    JSONObject()
+                        .put("title", "Motion Sensor Quality")
+                        .put("body", "Quality rows.")
+                        .put("graph_type", "motion_sensor_quality")
+                        .put(
+                            "rows",
+                            JSONArray().put(
+                                JSONObject()
+                                    .put("category", "motion_sensor_quality")
+                                    .put("label", "IMU fusion source coverage")
+                                    .put("ready", true)
+                                    .put("value_label", "4/6 source(s)")
+                                    .put("detail", "accelerometer=true | gyroscope=true | rotation_vector=true")
+                                    .put("recommendation", "Use motion_sensor_quality before orientation workflows.")
+                                    .put("quality_signal", "fusion_sources")
+                                    .put("tool_action", "motion_sensor_quality")
+                                    .put("fraction", 0.94),
+                            ),
+                        ),
+                ),
+            )
+            .toString()
+
+        val row = extractDiagnosticCards(content).single().rows.single()
+
+        assertEquals("IMU fusion source coverage", row.label)
+        assertEquals("4/6 source(s)", row.valueLabel)
+        assertTrue(row.detail.contains("motion sensor quality"))
+        assertTrue(row.detail.contains("Use motion_sensor_quality"))
+        assertTrue(row.fraction > 0.9f)
+    }
+
+    @Test
     fun parsesSocBackendRowsForExpandableCards() {
         val content = JSONObject()
             .put(

@@ -105,6 +105,7 @@ internal fun diagnosticCardPreviewPriority(card: DiagnosticCardSummary): Int {
         "sensor_vector",
         "motion_sensor_history",
         "motion_pose_estimate",
+        "motion_sensor_quality",
         "sensor_capability" -> 4
         "soc_backend_matrix",
         "soc_backend_policy_routes",
@@ -151,6 +152,7 @@ private fun graphRows(graphType: String?, rows: JSONArray): List<DiagnosticGraph
                 "sensor_vector" -> sensorRow(row)
                 "motion_sensor_history" -> motionSensorHistoryRow(row)
                 "motion_pose_estimate" -> motionPoseEstimateRow(row)
+                "motion_sensor_quality" -> capabilityMatrixRow(row)
                 "sensor_capability" -> sensorCapabilityRow(row)
                 "agent_capability_matrix", "kai_parity_matrix", "agent_workflow_readiness", "kai_operations_matrix",
                 "agent_observation_matrix", "agent_observation_routes", "agent_signal_context_matrix",

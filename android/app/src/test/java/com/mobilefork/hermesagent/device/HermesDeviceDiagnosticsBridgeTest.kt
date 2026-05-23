@@ -852,9 +852,15 @@ class HermesDeviceDiagnosticsBridgeTest {
         assertEquals("Sensor Hardware", hardwareCard.getString("title"))
         assertEquals("sensor_capability", hardwareCard.getString("graph_type"))
         assertEquals(result.getJSONArray("sensor_capabilities").length(), hardwareCard.getInt("row_count"))
+        val qualityCard = result.getJSONArray("cards").getJSONObject(4)
+        assertEquals("Motion Sensor Quality", qualityCard.getString("title"))
+        assertEquals("motion_sensor_quality", qualityCard.getString("graph_type"))
+        assertEquals(result.getJSONArray("motion_sensor_quality").length(), qualityCard.getInt("row_count"))
         assertTrue(result.has("sampled_sensor_count"))
         assertTrue(result.has("motion_sensor_history_count"))
         assertTrue(result.has("motion_pose_estimate_count"))
+        assertTrue(result.has("motion_sensor_quality_count"))
+        assertTrue(result.has("motion_sensor_quality_level"))
         assertTrue(result.has("sensor_capability_count"))
         assertTrue(result.has("motion_sensor_count"))
         assertTrue(result.has("wake_up_sensor_count"))
@@ -886,6 +892,7 @@ class HermesDeviceDiagnosticsBridgeTest {
         assertTrue(featureLabels.contains("Motion and orientation sensors"))
         assertTrue(featureLabels.contains("Motion trend history graph"))
         assertTrue(featureLabels.contains("Motion pose fusion rows"))
+        assertTrue(featureLabels.contains("Motion sensor quality gates"))
         assertTrue(featureLabels.contains("Accelerometer access"))
         assertTrue(featureLabels.contains("Gyroscope access"))
         assertTrue(featureLabels.contains("Sensor hardware metadata"))
@@ -893,15 +900,131 @@ class HermesDeviceDiagnosticsBridgeTest {
         assertTrue(routeLabels.contains("Route one-shot motion sample"))
         assertTrue(routeLabels.contains("Route motion trend history"))
         assertTrue(routeLabels.contains("Route motion pose fusion"))
+        assertTrue(routeLabels.contains("Route motion quality gates"))
         assertTrue(routeLabels.contains("Route sensor hardware metadata"))
         assertTrue(routeLabels.contains("Route sampling policy explanation"))
         assertTrue(policyLabels.contains("Passive report default"))
         assertTrue(policyLabels.contains("Bounded one-shot timeout"))
         assertTrue(policyLabels.contains("Analysis and privacy boundary"))
         assertTrue(result.getJSONArray("cards").toString().contains("Sensor Analyzer Readiness"))
+        assertTrue(result.getJSONArray("cards").toString().contains("Motion Sensor Quality"))
+        assertTrue(result.has("motion_sensor_quality_count"))
+        assertTrue(result.has("ready_motion_sensor_quality_count"))
+        assertTrue(result.has("motion_sensor_quality_score"))
+        assertTrue(result.has("motion_sensor_quality_level"))
         assertTrue(result.getInt("sensor_analyzer_feature_count") >= 10)
         assertTrue(result.getInt("sensor_analyzer_workflow_route_count") >= 7)
         assertTrue(result.getInt("sensor_sampling_policy_count") >= 5)
+    }
+
+    @Test
+    fun motionSensorQualityRowsGateFusionFreshnessCalibrationAndStability() {
+        val capabilities = JSONArray()
+            .put(
+                JSONObject()
+                    .put("sensor_type", "accelerometer")
+                    .put("sensor_label", "Accelerometer")
+                    .put("available", true)
+                    .put("min_delay_us", 5000)
+                    .put("power_ma", 0.6),
+            )
+            .put(
+                JSONObject()
+                    .put("sensor_type", "gyroscope")
+                    .put("sensor_label", "Gyroscope")
+                    .put("available", true)
+                    .put("min_delay_us", 5000)
+                    .put("power_ma", 0.8),
+            )
+            .put(
+                JSONObject()
+                    .put("sensor_type", "rotation_vector")
+                    .put("sensor_label", "Rotation vector")
+                    .put("available", true)
+                    .put("min_delay_us", 10000)
+                    .put("power_ma", 0.5),
+            )
+            .put(
+                JSONObject()
+                    .put("sensor_type", "magnetic_field")
+                    .put("sensor_label", "Magnetic field")
+                    .put("available", true)
+                    .put("min_delay_us", 20000)
+                    .put("power_ma", 0.3),
+            )
+        val history = JSONArray()
+            .put(
+                JSONObject()
+                    .put("sensor_type", "accelerometer")
+                    .put("sensor_label", "Accelerometer")
+                    .put("current_magnitude", 9.81)
+                    .put("last_seen_ms", 500)
+                    .put("sample_count", 3)
+                    .put("stability_label", "stable")
+                    .put("accuracy_label", "high"),
+            )
+            .put(
+                JSONObject()
+                    .put("sensor_type", "gyroscope")
+                    .put("sensor_label", "Gyroscope")
+                    .put("current_magnitude", 0.03)
+                    .put("last_seen_ms", 600)
+                    .put("sample_count", 3)
+                    .put("stability_label", "stable")
+                    .put("accuracy_label", "high"),
+            )
+        val poses = JSONArray()
+            .put(
+                JSONObject()
+                    .put("pose_type", "device_pose")
+                    .put("pose_source", "rotation_vector")
+                    .put("confidence_label", "high")
+                    .put("heading_label", "N")
+                    .put("tilt_degrees", 2.0)
+                    .put("fraction", 0.95),
+            )
+
+        val rows = HermesDeviceDiagnosticsBridge.motionSensorQualityRows(
+            capabilities = capabilities,
+            motionHistoryRows = history,
+            motionPoseEstimates = poses,
+            sensorServiceAvailable = true,
+            activeSampleRequested = false,
+            timeoutMs = 800,
+        )
+        val labels = buildSet {
+            for (index in 0 until rows.length()) add(rows.getJSONObject(index).getString("label"))
+        }
+        val text = rows.toString()
+
+        assertEquals(8, rows.length())
+        assertTrue(labels.contains("IMU fusion source coverage"))
+        assertTrue(labels.contains("Pose confidence gate"))
+        assertTrue(labels.contains("Gyroscope stability gate"))
+        assertTrue(labels.contains("Acceleration stability gate"))
+        assertTrue(labels.contains("Cached sample freshness"))
+        assertTrue(labels.contains("Accuracy and calibration gate"))
+        assertTrue(labels.contains("Sampling cadence and power"))
+        assertTrue(labels.contains("Motion-aware workflow readiness"))
+        assertTrue(text.contains("rotation_vector"))
+        assertTrue(text.contains("high"))
+        assertTrue(rows.getJSONObject(0).getBoolean("ready"))
+        assertTrue(rows.getJSONObject(7).getBoolean("ready"))
+    }
+
+    @Test
+    fun motionSensorQualityReportExposesDirectCardsAndCounts() {
+        val result = HermesDeviceDiagnosticsBridge.motionSensorQualityJson(context)
+
+        assertEquals("motion_sensor_quality", result.getString("action"))
+        assertTrue(result.has("motion_sensor_quality"))
+        assertTrue(result.has("motion_sensor_quality_count"))
+        assertTrue(result.has("ready_motion_sensor_quality_count"))
+        assertTrue(result.has("motion_sensor_quality_score"))
+        assertTrue(result.has("motion_sensor_quality_level"))
+        val card = result.getJSONArray("cards").getJSONObject(0)
+        assertEquals("Motion Sensor Quality", card.getString("title"))
+        assertEquals("motion_sensor_quality", card.getString("graph_type"))
     }
 
     @Test

@@ -1282,14 +1282,14 @@ class NativeToolCallingChatClient(
             .put(
                 functionSpec(
                     name = "android_device_diagnostics_tool",
-                    description = "Inspect resource-heavy apps, storage/memory status, nearby Wi-Fi signals, filterable Wi-Fi Analyzer readiness/scan-policy reports, current Wi-Fi association/link-quality telemetry, channel ratings, inferred channel utilization/occupancy, access-point detail/export rows, AP semantic/risk labels, band coverage, signal history, vendor/OUI metadata and filter facets, Bluetooth Analyzer readiness/scan-policy reports, nearby Bluetooth devices plus service UUID labels/manufacturer names/proximity metadata, Bluetooth RSSI history/trends, Sensor Analyzer readiness/sampling-policy reports, accelerometer/gyroscope/ambient sensor snapshots, motion sensor history/trends, fused motion pose/heading/angular-motion/acceleration estimates, camera capability, overlay status, passive local backend runtime health, dedicated MediaTek/Dimensity/Helio/Mali/PowerVR/non-Adreno readiness profiles, GPU/backend risk matrices, local inference compatibility scorecards, thermal/memory/power runtime stability guardrails, SOC/GPU compatibility and backend-policy reports, Gemma-visible signal evidence bundles, agent observation dashboards with fused signal-context matrices, direct diagnostic card manifests, Kai-style agent environment parity/readiness, cross-signal awareness routes, tool catalog, radio analyzer AM/FM band-plan rows, AM/FM signal graph rows, receiver profile schemas for vendor AM/FM and external SDR bridges, vendor radio hints, Wi-Fi/Bluetooth radio routes, external SDR constraints, RF/AM/FM hardware limits, and phone preflight readiness for TikTok/Instagram/Gmail end-to-end work.",
+                    description = "Inspect resource-heavy apps, storage/memory status, nearby Wi-Fi signals, filterable Wi-Fi Analyzer readiness/scan-policy reports, current Wi-Fi association/link-quality telemetry, channel ratings, inferred channel utilization/occupancy, access-point detail/export rows, AP semantic/risk labels, band coverage, signal history, vendor/OUI metadata and filter facets, Bluetooth Analyzer readiness/scan-policy reports, nearby Bluetooth devices plus service UUID labels/manufacturer names/proximity metadata, Bluetooth RSSI history/trends, Sensor Analyzer readiness/sampling-policy reports, accelerometer/gyroscope/ambient sensor snapshots, motion sensor history/trends, fused motion pose/heading/angular-motion/acceleration estimates, motion sensor quality gates for IMU source coverage, freshness, calibration, stability, cadence, and workflow readiness, camera capability, overlay status, passive local backend runtime health, dedicated MediaTek/Dimensity/Helio/Mali/PowerVR/non-Adreno readiness profiles, GPU/backend risk matrices, local inference compatibility scorecards, thermal/memory/power runtime stability guardrails, SOC/GPU compatibility and backend-policy reports, Gemma-visible signal evidence bundles, agent observation dashboards with fused signal-context matrices, direct diagnostic card manifests, Kai-style agent environment parity/readiness, cross-signal awareness routes, tool catalog, radio analyzer AM/FM band-plan rows, AM/FM signal graph rows, receiver profile schemas for vendor AM/FM and external SDR bridges, vendor radio hints, Wi-Fi/Bluetooth radio routes, external SDR constraints, RF/AM/FM hardware limits, and phone preflight readiness for TikTok/Instagram/Gmail end-to-end work.",
                     properties = JSONObject()
-                        .put("action", stringProp("status, top_apps, wifi_scan, wifi_filtered_scan, wifi_analyzer_report, wifi_connection_link, wifi_channel_graph, wifi_channel_rating, wifi_channel_utilization, wifi_ap_details, wifi_export, bluetooth_scan, bluetooth_analyzer_report, bluetooth_signal_history, sensor_analyzer_report, motion_sensor_history, motion_pose, sensor_snapshot, camera_status, radio_signal_status, radio_signal_graph, radio_analyzer_report, signal_capability_status, local_backend_runtime_report, mediatek_readiness_report, soc_compatibility_report, gpu_backend_risk_report, local_inference_compatibility_report, device_performance_report, signal_awareness_report, agent_signal_evidence_report, signal_evidence_bundle, agent_observation_report, agent_card_manifest_report, agent_environment_report, social_gmail_goal_preflight, show_active_overlay, tool_catalog, open_usage_access_settings, open_camera_permission_settings."))
+                        .put("action", stringProp("status, top_apps, wifi_scan, wifi_filtered_scan, wifi_analyzer_report, wifi_connection_link, wifi_channel_graph, wifi_channel_rating, wifi_channel_utilization, wifi_ap_details, wifi_export, bluetooth_scan, bluetooth_analyzer_report, bluetooth_signal_history, sensor_analyzer_report, motion_sensor_quality, motion_sensor_history, motion_pose, sensor_snapshot, camera_status, radio_signal_status, radio_signal_graph, radio_analyzer_report, signal_capability_status, local_backend_runtime_report, mediatek_readiness_report, soc_compatibility_report, gpu_backend_risk_report, local_inference_compatibility_report, device_performance_report, signal_awareness_report, agent_signal_evidence_report, signal_evidence_bundle, agent_observation_report, agent_card_manifest_report, agent_environment_report, social_gmail_goal_preflight, show_active_overlay, tool_catalog, open_usage_access_settings, open_camera_permission_settings."))
                         .put("limit", intProp("Maximum rows for top apps, Wi-Fi networks, or Bluetooth devices. Defaults to 5."))
                         .put("detail_limit", intProp("Maximum Wi-Fi access-point detail/export rows. Defaults to limit, or the Wi-Fi max for wifi_ap_details/wifi_export."))
                         .put("export_format", stringProp("Wi-Fi export format for wifi_export: json, csv, or both."))
                         .put("scan_mode", stringProp("Wi-Fi or Bluetooth scan mode for direct signal actions: auto, paused, or resumed. Paused reuses cached rows/history; resumed requests a fresh Android scan or BLE sample."))
-                        .put("refresh", boolProp("For wifi_scan, wifi_export, wifi_ap_details, bluetooth_scan, bluetooth_signal_history, motion_sensor_history, or motion_pose, request Android to refresh scan/sensor results before reading available results; analyzer reports stay passive."))
+                        .put("refresh", boolProp("For wifi_scan, wifi_export, wifi_ap_details, bluetooth_scan, bluetooth_signal_history, motion_sensor_quality, motion_sensor_history, or motion_pose, request Android to refresh scan/sensor results before reading available results; analyzer reports stay passive."))
                         .put("filter_band", stringProp("Optional Wi-Fi filter for wifi_scan, wifi_filtered_scan, wifi_analyzer_report, wifi_ap_details, wifi_channel_graph, wifi_channel_rating, wifi_channel_utilization, or wifi_export. Accepts 2.4GHz, 5GHz, 6GHz, or comma-separated values."))
                         .put("filter_security", stringProp("Optional Wi-Fi security filter such as WPA3, WPA2, Enhanced Open, Open, WEP, or comma-separated values."))
                         .put("filter_signal", stringProp("Optional Wi-Fi signal quality filter: excellent, good, fair, or weak."))
@@ -1306,7 +1306,7 @@ class NativeToolCallingChatClient(
                         .put("filter_bluetooth_proximity", stringProp("Optional Bluetooth proximity bucket filter: immediate, near, room, or far."))
                         .put("include_hidden", boolProp("For Wi-Fi filters, false excludes hidden SSID rows from returned cards."))
                         .put("hidden_only", boolProp("For Wi-Fi filters, true returns only hidden SSID rows."))
-                        .put("include_snapshot", boolProp("For sensor_analyzer_report, include a bounded one-shot sensor snapshot; default is passive readiness and policy rows only."))
+                        .put("include_snapshot", boolProp("For sensor_analyzer_report or motion_sensor_quality, include a bounded one-shot sensor snapshot; default is passive readiness, cached history, and policy rows only."))
                         .put("sensor_types", stringProp("Comma-separated sensor types such as accelerometer, gyroscope, magnetic_field, light, proximity; returned rows include sensor range, resolution, power, FIFO, wake-up, and sampling-rate metadata when Android exposes it."))
                         .put("timeout_ms", intProp("Sensor or Bluetooth sampling timeout in milliseconds."))
                         .put("message", stringProp("Overlay message for show_active_overlay."))
@@ -3287,6 +3287,8 @@ class NativeToolCallingChatClient(
                     bluetoothDiagnosticArguments("bluetooth_analyzer_report", userText)
                 lower.containsAny("nearby bluetooth", "nearby ble", "scan bluetooth", "scan ble", "bluetooth devices", "ble devices", "bluetooth scanner", "ble scanner", "bluetooth filter", "ble filter") ->
                     bluetoothDiagnosticArguments("bluetooth_scan", userText)
+                lower.containsAny("motion quality", "sensor fusion quality", "imu quality", "gyro quality", "gyroscope quality", "accelerometer quality", "motion readiness", "orientation quality", "sensor calibration", "motion calibration") ->
+                    diagnosticArguments("motion_sensor_quality", "include_snapshot" to false)
                 lower.containsAny("motion history", "motion trend", "motion trends", "imu history", "imu trend", "accelerometer history", "gyroscope history") ->
                     diagnosticArguments(
                         "motion_sensor_history",
@@ -3481,6 +3483,11 @@ class NativeToolCallingChatClient(
             "bluetooth_analyzer_report",
             "bluetooth_signal_history",
             "sensor_analyzer_report",
+            "motion_sensor_quality",
+            "imu_quality_report",
+            "motion_fusion_quality",
+            "gyro_accel_quality",
+            "sensor_fusion_quality",
             "motion_sensor_history",
             "motion_pose",
             "sensor_snapshot",
@@ -3975,6 +3982,10 @@ internal object NativeToolContextCompressor {
                 "cached_motion_sensor_history_count",
                 "motion_pose_estimate_count",
                 "cached_motion_pose_estimate_count",
+                "motion_sensor_quality_count",
+                "ready_motion_sensor_quality_count",
+                "motion_sensor_quality_score",
+                "motion_sensor_quality_level",
                 "ambient_sensor_count",
                 "wake_up_sensor_count",
                 "direct_channel_sensor_count",
@@ -4127,6 +4138,7 @@ internal object NativeToolContextCompressor {
         "sensor_capabilities",
         "motion_sensor_history",
         "motion_pose_estimates",
+        "motion_sensor_quality",
         "cached_motion_pose_estimates",
         "source_sensors",
         "available_sensor_types",
@@ -4408,6 +4420,11 @@ internal object NativeToolContextCompressor {
         "stability_delta",
         "stability_label",
         "magnitude_series",
+        "quality_signal",
+        "freshness_ms",
+        "accuracy_labels",
+        "fastest_sampling_hz",
+        "total_power_ma",
         "pose_type",
         "pose_source",
         "source_sensors",

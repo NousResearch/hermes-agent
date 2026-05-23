@@ -180,6 +180,10 @@ class NativeToolCallingChatClientTest {
             NativeToolCallingChatClient.extractImplicitAndroidDiagnosticsArguments("Show accelerometer history and gyroscope trends.")?.getString("action"),
         )
         assertEquals(
+            "motion_sensor_quality",
+            NativeToolCallingChatClient.extractImplicitAndroidDiagnosticsArguments("Check IMU quality and sensor calibration before orientation automation.")?.getString("action"),
+        )
+        assertEquals(
             "radio_signal_graph",
             NativeToolCallingChatClient.extractImplicitAndroidDiagnosticsArguments("Show the AM/FM radio graph.")?.getString("action"),
         )
@@ -312,6 +316,18 @@ class NativeToolCallingChatClientTest {
         assertEquals("motion_sensor_history", parsed.getString("action"))
         assertTrue(parsed.getBoolean("sample"))
         assertEquals("accelerometer,gyroscope", parsed.getString("sensor_types"))
+    }
+
+    @Test
+    fun extractsExplicitMotionSensorQualityDiagnosticQuickActionArguments() {
+        val parsed = NativeToolCallingChatClient.extractExplicitAndroidDiagnosticsArguments(
+            "Run android_device_diagnostics_tool action=motion_sensor_quality include_snapshot=false sensor_types=accelerometer,gyroscope,rotation_vector",
+        )
+
+        requireNotNull(parsed)
+        assertEquals("motion_sensor_quality", parsed.getString("action"))
+        assertFalse(parsed.getBoolean("include_snapshot"))
+        assertEquals("accelerometer,gyroscope,rotation_vector", parsed.getString("sensor_types"))
     }
 
     @Test
@@ -1352,6 +1368,10 @@ class NativeToolCallingChatClientTest {
             .put("ready_sensor_analyzer_feature_count", 9)
             .put("sensor_analyzer_workflow_route_count", 1)
             .put("sensor_sampling_policy_count", 1)
+            .put("motion_sensor_quality_count", 1)
+            .put("ready_motion_sensor_quality_count", 1)
+            .put("motion_sensor_quality_score", 91)
+            .put("motion_sensor_quality_level", "ready")
             .put(
                 "sensor_sampling_status",
                 JSONObject()
@@ -1382,6 +1402,19 @@ class NativeToolCallingChatClientTest {
                         .put("constraint_type", "sampling_cadence"),
                 ),
             )
+            .put(
+                "motion_sensor_quality",
+                JSONArray().put(
+                    JSONObject()
+                        .put("category", "motion_sensor_quality")
+                        .put("label", "IMU fusion source coverage")
+                        .put("ready", true)
+                        .put("value_label", "4/6 source(s)")
+                        .put("quality_signal", "fusion_sources")
+                        .put("tool_action", "motion_sensor_quality")
+                        .put("source_sensors", JSONArray().put("accelerometer").put("gyroscope").put("rotation_vector")),
+                ),
+            )
             .put("cards", JSONArray().put(JSONObject().put("title", "Sensor Analyzer Readiness").put("body", "18 rows")))
             .toString()
 
@@ -1389,10 +1422,13 @@ class NativeToolCallingChatClientTest {
         val featureMatrix = parsed.getJSONObject("sensor_analyzer_feature_matrix")
         val routes = parsed.getJSONArray("sensor_analyzer_workflow_routes")
         val policies = parsed.getJSONArray("sensor_sampling_policy_matrix")
+        val quality = parsed.getJSONArray("motion_sensor_quality")
 
         assertTrue(parsed.getBoolean("_hermes_context_compressed"))
         assertEquals(18, parsed.getInt("sensor_analyzer_feature_count"))
         assertEquals(9, parsed.getInt("ready_sensor_analyzer_feature_count"))
+        assertEquals(1, parsed.getInt("motion_sensor_quality_count"))
+        assertEquals("ready", parsed.getString("motion_sensor_quality_level"))
         assertFalse(parsed.getJSONObject("sensor_sampling_status").getBoolean("active_sample_requested"))
         assertEquals("array", featureMatrix.getString("type"))
         assertEquals("Sensor analyzer feature 0", featureMatrix.getJSONArray("items").getJSONObject(0).getString("label"))
@@ -1401,6 +1437,9 @@ class NativeToolCallingChatClientTest {
         assertEquals("Route one-shot motion sample", routes.getJSONObject(0).getString("label"))
         assertEquals("Passive report default", policies.getJSONObject(0).getString("label"))
         assertEquals("sampling_cadence", policies.getJSONObject(0).getString("constraint_type"))
+        assertEquals("IMU fusion source coverage", quality.getJSONObject(0).getString("label"))
+        assertEquals("fusion_sources", quality.getJSONObject(0).getString("quality_signal"))
+        assertEquals("motion_sensor_quality", quality.getJSONObject(0).getString("tool_action"))
     }
 
     @Test

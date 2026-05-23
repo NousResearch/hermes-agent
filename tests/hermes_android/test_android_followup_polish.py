@@ -646,18 +646,25 @@ def test_android_diagnostics_exposes_sensor_analyzer_report_for_motion_and_sampl
     assert '"sensor_sampling_policy_matrix"' in diagnostics_bridge
     assert '"motion_pose_estimates"' in diagnostics_bridge
     assert '"motion_pose_estimate"' in diagnostics_bridge
+    assert '"motion_sensor_quality"' in diagnostics_bridge
+    assert 'motionSensorQualityJson(appContext' in diagnostics_bridge
+    assert 'motionSensorQualityRows(' in diagnostics_bridge
     assert '"motion_pose"' in diagnostics_bridge
     assert 'Sensor Analyzer readiness' in diagnostics_bridge
     assert 'accelerometer' in diagnostics_bridge
     assert 'gyroscope' in diagnostics_bridge
     assert 'sensor_analyzer_report' in chat_client
+    assert 'motion_sensor_quality' in chat_client
     assert 'motion_sensor_history' in chat_client
     assert 'motion_pose' in chat_client
+    assert '"motion_sensor_quality"' in chat_client
     assert '"motion_pose_estimates"' in chat_client
+    assert '"motion_sensor_quality"' in diagnostic_cards
     assert '"sensor_analyzer_feature_matrix"' in chat_client
     assert '"sensor_analyzer_workflow_routes"' in chat_client
     assert '"sensor_sampling_policy_matrix"' in chat_client
     assert '"sensor_analyzer_feature_matrix", "sensor_analyzer_workflow_routes", "sensor_sampling_policy_matrix"' in diagnostic_cards
+    assert '"motion_sensor_quality" -> capabilityMatrixRow(row)' in diagnostic_cards
     assert '"motion_sensor_history" -> motionSensorHistoryRow(row)' in diagnostic_cards
     assert '"motion_pose_estimate" -> motionPoseEstimateRow(row)' in diagnostic_cards
     assert 'capabilityMatrixRow(row)' in diagnostic_cards

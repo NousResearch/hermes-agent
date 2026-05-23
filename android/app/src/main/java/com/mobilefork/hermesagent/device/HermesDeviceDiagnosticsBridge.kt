@@ -98,6 +98,8 @@ object HermesDeviceDiagnosticsBridge {
                 bluetoothScanJson(appContext, arguments).toString()
             "sensor_analyzer_report", "sensor_readiness_report", "sensor_feature_report", "sensor_sampling_policy", "motion_sensor_report" ->
                 sensorAnalyzerReportJson(appContext, arguments).toString()
+            "motion_sensor_quality", "imu_quality_report", "motion_fusion_quality", "gyro_accel_quality", "sensor_fusion_quality" ->
+                motionSensorQualityJson(appContext, arguments).toString()
             "motion_sensor_history", "motion_history", "sensor_history", "imu_history", "imu_sensor_history", "accelerometer_history", "gyroscope_history", "sensor_trends", "motion_sensor_trends" ->
                 motionSensorHistoryJson(appContext, arguments).toString()
             "motion_pose", "orientation_snapshot", "pose_snapshot", "motion_orientation" ->
@@ -1093,6 +1095,16 @@ object HermesDeviceDiagnosticsBridge {
         val motionHistoryStore = updateMotionSensorHistory(appContext, samples, observedAtMs)
         val motionHistory = motionSensorHistoryRowsFromStore(motionHistoryStore, observedAtMs)
         val motionPoseEstimates = motionPoseEstimateRows(samples, motionHistory)
+        val motionQualityRows = motionSensorQualityRows(
+            capabilities = capabilities,
+            motionHistoryRows = motionHistory,
+            motionPoseEstimates = motionPoseEstimates,
+            samples = samples,
+            sensorServiceAvailable = true,
+            activeSampleRequested = true,
+            timeoutMs = timeoutMs,
+        )
+        val motionQualityScore = averageCapabilityValue(motionQualityRows)
         val sampledSensorCount = countSampledSensors(samples)
         return JSONObject()
             .put("success", true)
@@ -1109,6 +1121,11 @@ object HermesDeviceDiagnosticsBridge {
             .put("motion_sensor_history_count", motionHistory.length())
             .put("motion_pose_estimates", motionPoseEstimates)
             .put("motion_pose_estimate_count", motionPoseEstimates.length())
+            .put("motion_sensor_quality", motionQualityRows)
+            .put("motion_sensor_quality_count", motionQualityRows.length())
+            .put("ready_motion_sensor_quality_count", countReadyRows(motionQualityRows))
+            .put("motion_sensor_quality_score", motionQualityScore)
+            .put("motion_sensor_quality_level", motionQualityLevelForScore(motionQualityScore))
             .put("wake_up_sensor_count", countSensorCapabilityFlag(capabilities, "wake_up"))
             .put("supported_watcher_types", JSONArray(SENSOR_TYPE_LABELS.keys))
             .put(
@@ -1145,6 +1162,14 @@ object HermesDeviceDiagnosticsBridge {
                             graphType = "sensor_capability",
                             rows = capabilities,
                         ),
+                    )
+                    .put(
+                        graphCard(
+                            title = "Motion Sensor Quality",
+                            body = "${motionQualityRows.length()} fusion, freshness, calibration, stability, cadence, and workflow-readiness row(s) for accelerometer/gyroscope context.",
+                            graphType = "motion_sensor_quality",
+                            rows = motionQualityRows,
+                        ),
                     ),
             )
     }
@@ -1173,6 +1198,16 @@ object HermesDeviceDiagnosticsBridge {
             unavailableSensorRows(requested)
         }
         val available = sensorTypeCatalog(appContext)
+        val motionQualityRows = motionSensorQualityRows(
+            capabilities = capabilities,
+            motionHistoryRows = historyRows,
+            motionPoseEstimates = motionPoseEstimates,
+            samples = sampleResult?.optJSONArray("sensor_samples") ?: JSONArray(),
+            sensorServiceAvailable = sensorManager != null,
+            activeSampleRequested = sampleRequested,
+            timeoutMs = timeoutMs,
+        )
+        val motionQualityScore = averageCapabilityValue(motionQualityRows)
         return JSONObject()
             .put("success", sensorManager != null || historyRows.length() > 0)
             .put("action", "motion_sensor_history")
@@ -1188,9 +1223,22 @@ object HermesDeviceDiagnosticsBridge {
             .put("motion_pose_estimate_count", motionPoseEstimates.length())
             .put("sensor_capabilities", capabilities)
             .put("sensor_capability_count", capabilities.length())
+            .put("motion_sensor_quality", motionQualityRows)
+            .put("motion_sensor_quality_count", motionQualityRows.length())
+            .put("ready_motion_sensor_quality_count", countReadyRows(motionQualityRows))
+            .put("motion_sensor_quality_score", motionQualityScore)
+            .put("motion_sensor_quality_level", motionQualityLevelForScore(motionQualityScore))
             .put(
                 "cards",
                 JSONArray()
+                    .put(
+                        graphCard(
+                            title = "Motion Sensor Quality",
+                            body = "${motionQualityRows.length()} fusion, freshness, calibration, stability, cadence, and workflow-readiness row(s) derived from current or cached IMU data.",
+                            graphType = "motion_sensor_quality",
+                            rows = motionQualityRows,
+                        ),
+                    )
                     .put(
                         graphCard(
                             title = "Motion Pose Estimate",
@@ -1218,6 +1266,103 @@ object HermesDeviceDiagnosticsBridge {
             )
     }
 
+    fun motionSensorQualityJson(context: Context, arguments: JSONObject = JSONObject()): JSONObject {
+        val appContext = context.applicationContext
+        val sensorManager = appContext.getSystemService(SensorManager::class.java)
+        val requested = motionSensorQualityRequestedSensorTypes(arguments)
+        val includeSnapshot = arguments.optBoolean("include_snapshot", false) ||
+            arguments.optBoolean("sample", false) ||
+            arguments.optBoolean("refresh", false)
+        val timeoutMs = arguments.optLong("timeout_ms", DEFAULT_SENSOR_TIMEOUT_MS).coerceIn(150L, MAX_SENSOR_TIMEOUT_MS)
+        val snapshot = if (includeSnapshot && sensorManager != null) {
+            sensorSnapshotJson(
+                appContext,
+                JSONObject(arguments.toString())
+                    .put("sensor_types", requested.joinToString(","))
+                    .put("timeout_ms", timeoutMs),
+            )
+        } else {
+            null
+        }
+        val samples = snapshot?.optJSONArray("sensor_samples") ?: JSONArray()
+        val motionHistory = snapshot?.optJSONArray("motion_sensor_history")
+            ?: motionSensorHistoryRowsFromStore(readMotionSensorHistory(appContext))
+        val motionPoseEstimates = snapshot?.optJSONArray("motion_pose_estimates")
+            ?: motionPoseEstimateRows(samples, motionHistory)
+        val capabilities = if (sensorManager != null) {
+            sensorCapabilityRows(sensorManager, requested)
+        } else {
+            unavailableSensorRows(requested)
+        }
+        val motionQualityRows = motionSensorQualityRows(
+            capabilities = capabilities,
+            motionHistoryRows = motionHistory,
+            motionPoseEstimates = motionPoseEstimates,
+            samples = samples,
+            sensorServiceAvailable = sensorManager != null,
+            activeSampleRequested = includeSnapshot,
+            timeoutMs = timeoutMs,
+        )
+        val motionQualityScore = averageCapabilityValue(motionQualityRows)
+        return JSONObject()
+            .put("success", sensorManager != null || motionHistory.length() > 0 || motionQualityRows.length() > 0)
+            .put("action", "motion_sensor_quality")
+            .put("report_scope", "Motion sensor quality report for accelerometer, gyroscope, rotation-vector, magnetic-field, gravity, linear-acceleration, sample freshness, accuracy/calibration, sampling cadence, power, and workflow-readiness gates.")
+            .put("sensor_service_available", sensorManager != null)
+            .put("include_snapshot", includeSnapshot)
+            .put("sample_timeout_ms", timeoutMs)
+            .put("requested_sensor_types", JSONArray(requested))
+            .put("available_sensor_types", JSONArray(sensorTypeCatalog(appContext)))
+            .put("sensor_samples", samples)
+            .put("sensor_capabilities", capabilities)
+            .put("sensor_capability_count", capabilities.length())
+            .put("motion_sensor_history", motionHistory)
+            .put("motion_sensor_history_count", motionHistory.length())
+            .put("motion_pose_estimates", motionPoseEstimates)
+            .put("motion_pose_estimate_count", motionPoseEstimates.length())
+            .put("motion_sensor_quality", motionQualityRows)
+            .put("motion_sensor_quality_count", motionQualityRows.length())
+            .put("ready_motion_sensor_quality_count", countReadyRows(motionQualityRows))
+            .put("motion_sensor_quality_score", motionQualityScore)
+            .put("motion_sensor_quality_level", motionQualityLevelForScore(motionQualityScore))
+            .put(
+                "cards",
+                JSONArray()
+                    .put(
+                        graphCard(
+                            title = "Motion Sensor Quality",
+                            body = "${motionQualityRows.length()} fusion, freshness, calibration, stability, cadence, and workflow-readiness row(s) for advanced accelerometer/gyroscope context.",
+                            graphType = "motion_sensor_quality",
+                            rows = motionQualityRows,
+                        ),
+                    )
+                    .put(
+                        graphCard(
+                            title = "Motion Pose Estimate",
+                            body = "${motionPoseEstimates.length()} fused pose, heading, angular-motion, or acceleration row(s) used as quality evidence.",
+                            graphType = "motion_pose_estimate",
+                            rows = motionPoseEstimates,
+                        ),
+                    )
+                    .put(
+                        graphCard(
+                            title = "Motion Sensor History",
+                            body = "${motionHistory.length()} cached motion/IMU trend row(s) used for freshness and stability gates.",
+                            graphType = "motion_sensor_history",
+                            rows = motionHistory,
+                        ),
+                    )
+                    .put(
+                        graphCard(
+                            title = "Sensor Hardware",
+                            body = "${capabilities.length()} motion sensor capability row(s) used for cadence, power, FIFO, and wake-up policy.",
+                            graphType = "sensor_capability",
+                            rows = capabilities,
+                        ),
+                    ),
+            )
+    }
+
     fun sensorAnalyzerReportJson(context: Context, arguments: JSONObject = JSONObject()): JSONObject {
         val appContext = context.applicationContext
         val sensorManager = appContext.getSystemService(SensorManager::class.java)
@@ -1237,6 +1382,16 @@ object HermesDeviceDiagnosticsBridge {
             ?: motionSensorHistoryRowsFromStore(readMotionSensorHistory(appContext))
         val motionPoseEstimates = snapshot?.optJSONArray("motion_pose_estimates")
             ?: motionPoseEstimateRows(samples, motionHistory)
+        val motionQualityRows = motionSensorQualityRows(
+            capabilities = capabilities,
+            motionHistoryRows = motionHistory,
+            motionPoseEstimates = motionPoseEstimates,
+            samples = samples,
+            sensorServiceAvailable = sensorManager != null,
+            activeSampleRequested = includeSnapshot,
+            timeoutMs = timeoutMs,
+        )
+        val motionQualityScore = averageCapabilityValue(motionQualityRows)
         val motionSensorCount = countSensorCapabilities(capabilities, MOTION_SENSOR_TYPES)
         val ambientSensorCount = countSensorCapabilities(capabilities, AMBIENT_SENSOR_TYPES)
         val wakeUpSensorCount = countSensorCapabilityFlag(capabilities, "wake_up")
@@ -1262,6 +1417,8 @@ object HermesDeviceDiagnosticsBridge {
             sampledSensorCount = samples.length(),
             motionHistoryCount = motionHistory.length(),
             motionPoseEstimateCount = motionPoseEstimates.length(),
+            motionSensorQualityCount = motionQualityRows.length(),
+            readyMotionSensorQualityCount = countReadyRows(motionQualityRows),
         )
         val routeRows = sensorAnalyzerWorkflowRows(
             availableSensors = available,
@@ -1270,6 +1427,7 @@ object HermesDeviceDiagnosticsBridge {
             capabilityCount = capabilities.length(),
             motionHistoryCount = motionHistory.length(),
             motionPoseEstimateCount = motionPoseEstimates.length(),
+            motionSensorQualityCount = motionQualityRows.length(),
         )
         val policyRows = sensorSamplingPolicyRows(
             sensorServiceAvailable = sensorManager != null,
@@ -1303,6 +1461,14 @@ object HermesDeviceDiagnosticsBridge {
                     body = "${policyRows.length()} service, availability, sampling-cadence, timeout, power, and privacy row(s) for honest motion and ambient analysis.",
                     graphType = "sensor_sampling_policy_matrix",
                     rows = policyRows,
+                ),
+            )
+            .put(
+                graphCard(
+                    title = "Motion Sensor Quality",
+                    body = "${motionQualityRows.length()} fusion, freshness, calibration, stability, cadence, and workflow-readiness row(s) for advanced accelerometer/gyroscope context.",
+                    graphType = "motion_sensor_quality",
+                    rows = motionQualityRows,
                 ),
             )
             .put(
@@ -1352,6 +1518,11 @@ object HermesDeviceDiagnosticsBridge {
             .put("motion_sensor_history_count", motionHistory.length())
             .put("motion_pose_estimates", motionPoseEstimates)
             .put("motion_pose_estimate_count", motionPoseEstimates.length())
+            .put("motion_sensor_quality", motionQualityRows)
+            .put("motion_sensor_quality_count", motionQualityRows.length())
+            .put("ready_motion_sensor_quality_count", countReadyRows(motionQualityRows))
+            .put("motion_sensor_quality_score", motionQualityScore)
+            .put("motion_sensor_quality_level", motionQualityLevelForScore(motionQualityScore))
             .put("supported_watcher_types", JSONArray(SENSOR_TYPE_LABELS.keys))
             .put("sensor_analyzer_feature_matrix", featureRows)
             .put("sensor_analyzer_workflow_routes", routeRows)
@@ -5242,6 +5413,8 @@ object HermesDeviceDiagnosticsBridge {
         sampledSensorCount: Int,
         motionHistoryCount: Int,
         motionPoseEstimateCount: Int,
+        motionSensorQualityCount: Int,
+        readyMotionSensorQualityCount: Int,
     ): JSONArray {
         val hasAccelerometer = "accelerometer" in availableSensors
         val hasGyroscope = "gyroscope" in availableSensors
@@ -5339,6 +5512,20 @@ object HermesDeviceDiagnosticsBridge {
             .put(
                 capabilityRow(
                     category = "sensor_analyzer_parity",
+                    label = "Motion sensor quality gates",
+                    ready = readyMotionSensorQualityCount > 0,
+                    valueLabel = "$readyMotionSensorQualityCount/$motionSensorQualityCount quality row(s)",
+                    detail = "Quality rows combine accelerometer, gyroscope, rotation-vector, magnetic-field, cached freshness, accuracy, stability, cadence, and power metadata into a Gemma-readable readiness gate.",
+                    recommendation = "Use motion_sensor_quality before orientation-sensitive workflows or before treating raw accelerometer/gyroscope values as stable evidence.",
+                    fraction = if (motionSensorQualityCount > 0) (readyMotionSensorQualityCount / motionSensorQualityCount.toFloat()).coerceIn(0.35f, 0.95f) else 0.3f,
+                    extra = JSONObject()
+                        .put("feature_source", "Hermes IMU quality gates")
+                        .put("tool_action", "motion_sensor_quality"),
+                ),
+            )
+            .put(
+                capabilityRow(
+                    category = "sensor_analyzer_parity",
                     label = "Environmental and proximity context",
                     ready = ambientSensorCount > 0,
                     valueLabel = if (ambientSensorCount > 0) "$ambientSensorCount ambient type(s)" else "none reported",
@@ -5427,6 +5614,7 @@ object HermesDeviceDiagnosticsBridge {
         capabilityCount: Int,
         motionHistoryCount: Int,
         motionPoseEstimateCount: Int,
+        motionSensorQualityCount: Int,
     ): JSONArray {
         val hasAccelerometer = "accelerometer" in availableSensors
         val hasGyroscope = "gyroscope" in availableSensors
@@ -5472,6 +5660,20 @@ object HermesDeviceDiagnosticsBridge {
                     fraction = if (motionPoseEstimateCount > 0) 0.95f else if (hasRotationContext) 0.85f else if (hasAccelerometer) 0.65f else 0.3f,
                     extra = JSONObject()
                         .put("tool_action", "motion_pose")
+                        .put("sensor_types", "accelerometer,gravity,magnetic_field,rotation_vector,gyroscope,linear_acceleration"),
+                ),
+            )
+            .put(
+                capabilityRow(
+                    category = "sensor_analyzer_route",
+                    label = "Route motion quality gates",
+                    ready = motionSensorCount > 0 || motionHistoryCount > 0 || motionSensorQualityCount > 0,
+                    valueLabel = "motion_sensor_quality",
+                    detail = "Use for IMU source coverage, pose confidence, gyro stability, acceleration stability, cached freshness, accuracy, and sampling cadence before motion-aware workflows.",
+                    recommendation = "Run passively for planning or with include_snapshot=true when the user needs current accelerometer/gyroscope quality evidence.",
+                    fraction = if (motionSensorQualityCount > 0) 0.9f else if (motionSensorCount > 0 || motionHistoryCount > 0) 0.65f else 0.3f,
+                    extra = JSONObject()
+                        .put("tool_action", "motion_sensor_quality")
                         .put("sensor_types", "accelerometer,gravity,magnetic_field,rotation_vector,gyroscope,linear_acceleration"),
                 ),
             )
@@ -9486,6 +9688,236 @@ object HermesDeviceDiagnosticsBridge {
         return rows
     }
 
+    internal fun motionSensorQualityRows(
+        capabilities: JSONArray,
+        motionHistoryRows: JSONArray,
+        motionPoseEstimates: JSONArray,
+        samples: JSONArray = JSONArray(),
+        sensorServiceAvailable: Boolean = true,
+        activeSampleRequested: Boolean = false,
+        timeoutMs: Long = DEFAULT_SENSOR_TIMEOUT_MS,
+    ): JSONArray {
+        val availableSensors = motionQualityAvailableSensors(capabilities, motionHistoryRows, samples)
+        val hasAccelerometer = "accelerometer" in availableSensors
+        val hasGravity = "gravity" in availableSensors
+        val hasGyroscope = "gyroscope" in availableSensors
+        val hasRotationVector = "rotation_vector" in availableSensors
+        val hasMagnetic = "magnetic_field" in availableSensors
+        val hasLinearAcceleration = "linear_acceleration" in availableSensors
+        val hasAccelerationSource = hasAccelerometer || hasGravity || hasLinearAcceleration
+        val fusionSources = buildList {
+            if (hasAccelerometer) add("accelerometer")
+            if (hasGravity) add("gravity")
+            if (hasGyroscope) add("gyroscope")
+            if (hasRotationVector) add("rotation_vector")
+            if (hasMagnetic) add("magnetic_field")
+            if (hasLinearAcceleration) add("linear_acceleration")
+        }
+        val fusionReady = sensorServiceAvailable && (hasRotationVector || (hasAccelerationSource && (hasGyroscope || hasMagnetic)))
+        val devicePose = firstMotionPoseEstimate(motionPoseEstimates, "device_pose")
+        val gyroHistory = firstMotionSensorHistoryRow(motionHistoryRows, "gyroscope")
+        val gyroSample = firstMotionSampleRow(samples, "gyroscope")
+        val gyroMagnitude = jsonDoubleOrNull(gyroHistory ?: JSONObject(), "current_magnitude")
+            ?: motionSampleMagnitude(gyroSample)
+        val gyroState = gyroMagnitude?.let(::angularMotionStateLabel)
+        val accelerationHistory = firstMotionSensorHistoryRow(motionHistoryRows, "linear_acceleration")
+            ?: firstMotionSensorHistoryRow(motionHistoryRows, "accelerometer")
+            ?: firstMotionSensorHistoryRow(motionHistoryRows, "gravity")
+        val accelerationSample = firstMotionSampleRow(samples, "linear_acceleration")
+            ?: firstMotionSampleRow(samples, "accelerometer")
+            ?: firstMotionSampleRow(samples, "gravity")
+        val accelerationSource = accelerationHistory?.optString("sensor_type")?.takeIf { it.isNotBlank() }
+            ?: accelerationSample?.optString("sensor_type")?.takeIf { it.isNotBlank() }
+            ?: "accelerometer"
+        val accelerationMagnitude = jsonDoubleOrNull(accelerationHistory ?: JSONObject(), "current_magnitude")
+            ?: motionSampleMagnitude(accelerationSample)
+        val accelerationDelta = accelerationMagnitude?.let {
+            if (accelerationSource == "accelerometer" || accelerationSource == "gravity") abs(it - STANDARD_GRAVITY) else it
+        }
+        val accelerationState = accelerationDelta?.let { accelerationMotionStateLabel(accelerationSource, it) }
+        val freshestMs = freshestMotionSampleAgeMs(motionHistoryRows, samples)
+        val accuracyLabels = motionAccuracyLabels(samples, motionHistoryRows)
+        val bestAccuracy = bestMotionAccuracyLabel(accuracyLabels)
+        val weakestAccuracy = weakestMotionAccuracyLabel(accuracyLabels)
+        val fastestHz = fastestMotionSensorHz(capabilities)
+        val totalPowerMa = totalMotionSensorPowerMa(capabilities)
+        val wakeUpCount = countSensorCapabilityFlag(capabilities, "wake_up")
+        val directChannelCount = countSensorCapabilityFlag(capabilities, "direct_channel_supported")
+        val rows = JSONArray()
+        rows.put(
+            capabilityRow(
+                category = "motion_sensor_quality",
+                label = "IMU fusion source coverage",
+                ready = fusionReady,
+                valueLabel = "${fusionSources.size}/6 source(s)",
+                detail = "accelerometer=$hasAccelerometer | gravity=$hasGravity | gyroscope=$hasGyroscope | rotation_vector=$hasRotationVector | magnetic_field=$hasMagnetic | linear_acceleration=$hasLinearAcceleration",
+                recommendation = "Prefer rotation_vector for high-confidence pose, or combine acceleration, gyroscope, and magnetic-field rows while exposing uncertainty.",
+                fraction = when {
+                    fusionReady && hasRotationVector -> 0.96f
+                    fusionReady -> 0.82f
+                    fusionSources.isNotEmpty() -> (fusionSources.size / 6f).coerceIn(0.28f, 0.68f)
+                    else -> 0.18f
+                },
+                extra = JSONObject()
+                    .put("quality_signal", "fusion_sources")
+                    .put("source_sensors", JSONArray(fusionSources))
+                    .put("tool_action", "motion_sensor_quality"),
+            ),
+        )
+        rows.put(
+            capabilityRow(
+                category = "motion_sensor_quality",
+                label = "Pose confidence gate",
+                ready = devicePose != null,
+                valueLabel = devicePose?.optString("confidence_label")?.ifBlank { "pose available" } ?: "sample needed",
+                detail = listOf(
+                    "source=${devicePose?.optString("pose_source")?.ifBlank { "none" } ?: "none"}",
+                    "heading=${devicePose?.optString("heading_label")?.ifBlank { "none" } ?: "none"}",
+                    "tilt=${devicePose?.opt("tilt_degrees") ?: JSONObject.NULL}",
+                ).joinToString(" | "),
+                recommendation = "Run motion_pose with rotation_vector or accelerometer plus magnetic_field before making heading-sensitive claims.",
+                fraction = devicePose?.let { jsonDoubleOrNull(it, "fraction")?.toFloat() }
+                    ?: if (fusionReady) 0.62f else 0.25f,
+                extra = JSONObject()
+                    .put("quality_signal", "pose_confidence")
+                    .put("tool_action", "motion_pose"),
+            ),
+        )
+        rows.put(
+            capabilityRow(
+                category = "motion_sensor_quality",
+                label = "Gyroscope stability gate",
+                ready = gyroMagnitude != null && gyroState in setOf("steady", "minor_rotation"),
+                valueLabel = gyroMagnitude?.let { "${formatDecimal(it, 2)} rad/s ${gyroState ?: "unknown"}" } ?: if (hasGyroscope) "sample needed" else "not reported",
+                detail = listOfNotNull(
+                    gyroHistory?.optString("sensor_name")?.takeIf { it.isNotBlank() },
+                    gyroHistory?.optString("stability_label")?.takeIf { it.isNotBlank() }?.let { "stability=$it" },
+                    gyroHistory?.optInt("sample_count", 0)?.takeIf { it > 0 }?.let { "samples=$it" },
+                    gyroHistory?.optString("accuracy_label")?.takeIf { it.isNotBlank() }?.let { "accuracy=$it" },
+                ).joinToString(" | ").ifBlank { "Gyroscope angular velocity gates orientation-sensitive workflows." },
+                recommendation = "Wait for steady or minor_rotation before triggering stabilization or orientation-sensitive automations.",
+                fraction = gyroMagnitude?.let { (1.0 - (it / 2.0)).toFloat().coerceIn(0.12f, 0.95f) }
+                    ?: if (hasGyroscope) 0.48f else 0.2f,
+                extra = JSONObject()
+                    .put("quality_signal", "gyro_stability")
+                    .put("tool_action", "motion_sensor_history"),
+            ),
+        )
+        rows.put(
+            capabilityRow(
+                category = "motion_sensor_quality",
+                label = "Acceleration stability gate",
+                ready = accelerationDelta != null && accelerationState in setOf("steady", "steady_with_gravity", "light_movement"),
+                valueLabel = accelerationDelta?.let { "${formatDecimal(it, 2)} m/s^2 ${accelerationState ?: "unknown"}" } ?: if (hasAccelerationSource) "sample needed" else "not reported",
+                detail = listOfNotNull(
+                    "source=$accelerationSource",
+                    accelerationHistory?.optString("stability_label")?.takeIf { it.isNotBlank() }?.let { "stability=$it" },
+                    accelerationHistory?.optInt("sample_count", 0)?.takeIf { it > 0 }?.let { "samples=$it" },
+                    accelerationHistory?.optString("accuracy_label")?.takeIf { it.isNotBlank() }?.let { "accuracy=$it" },
+                ).joinToString(" | "),
+                recommendation = "Use linear_acceleration when available; otherwise subtract gravity from accelerometer magnitude and expose movement uncertainty.",
+                fraction = accelerationDelta?.let { (1.0 - (it / 4.0)).toFloat().coerceIn(0.12f, 0.95f) }
+                    ?: if (hasAccelerationSource) 0.5f else 0.2f,
+                extra = JSONObject()
+                    .put("quality_signal", "acceleration_stability")
+                    .put("tool_action", "motion_sensor_history"),
+            ),
+        )
+        rows.put(
+            capabilityRow(
+                category = "motion_sensor_quality",
+                label = "Cached sample freshness",
+                ready = freshestMs != null && freshestMs <= MOTION_QUALITY_FRESH_MS,
+                valueLabel = freshestMs?.let(::motionFreshnessLabel) ?: "no cached sample",
+                detail = "active_sample_requested=$activeSampleRequested | timeout_ms=$timeoutMs | history_rows=${motionHistoryRows.length()} | sampled_rows=${countSampledSensors(samples)}",
+                recommendation = "Use include_snapshot=true when stale or missing samples should not be used for the current workflow.",
+                fraction = freshestMs?.let(::motionFreshnessFraction)
+                    ?: if (activeSampleRequested) 0.38f else 0.28f,
+                extra = JSONObject()
+                    .put("quality_signal", "sample_freshness")
+                    .put("freshness_ms", freshestMs ?: JSONObject.NULL)
+                    .put("tool_action", "motion_sensor_quality"),
+            ),
+        )
+        rows.put(
+            capabilityRow(
+                category = "motion_sensor_quality",
+                label = "Accuracy and calibration gate",
+                ready = bestAccuracy in setOf("high", "medium") && weakestAccuracy !in setOf("unreliable", "low"),
+                valueLabel = if (accuracyLabels.isNotEmpty()) "best $bestAccuracy" else "accuracy unknown",
+                detail = "labels=${accuracyLabels.joinToString(", ").ifBlank { "none" }} | weakest=${weakestAccuracy.ifBlank { "unknown" }} | magnetic accuracy affects heading confidence",
+                recommendation = "When accuracy is low, unreliable, or unknown, refresh the sample and avoid strong compass/heading claims.",
+                fraction = when (bestAccuracy) {
+                    "high" -> if (weakestAccuracy in setOf("low", "unreliable")) 0.55f else 0.92f
+                    "medium" -> if (weakestAccuracy in setOf("low", "unreliable")) 0.45f else 0.78f
+                    "low" -> 0.38f
+                    "unreliable" -> 0.22f
+                    else -> 0.45f
+                },
+                extra = JSONObject()
+                    .put("quality_signal", "accuracy_calibration")
+                    .put("accuracy_labels", JSONArray(accuracyLabels.toList()))
+                    .put("tool_action", "sensor_snapshot"),
+            ),
+        )
+        rows.put(
+            capabilityRow(
+                category = "motion_sensor_quality",
+                label = "Sampling cadence and power",
+                ready = fastestHz != null && fastestHz >= 25.0,
+                valueLabel = fastestHz?.let { "${formatDecimal(it, 1)} Hz fastest" } ?: "cadence unknown",
+                detail = listOfNotNull(
+                    totalPowerMa?.let { "power=${formatDecimal(it, 2)} mA" },
+                    "wake_up=$wakeUpCount",
+                    "direct_channel=$directChannelCount",
+                    "capabilities=${capabilities.length()}",
+                ).joinToString(" | "),
+                recommendation = "Use cadence, power, FIFO, wake-up, and direct-channel metadata before choosing repeated sensor sampling or background watcher thresholds.",
+                fraction = when {
+                    fastestHz == null -> 0.35f
+                    fastestHz >= 100.0 -> 0.92f
+                    fastestHz >= 50.0 -> 0.84f
+                    fastestHz >= 25.0 -> 0.7f
+                    else -> 0.48f
+                },
+                extra = JSONObject()
+                    .put("quality_signal", "cadence_power")
+                    .put("fastest_sampling_hz", fastestHz ?: JSONObject.NULL)
+                    .put("total_power_ma", totalPowerMa ?: JSONObject.NULL)
+                    .put("tool_action", "sensor_analyzer_report"),
+            ),
+        )
+        val workflowReady = fusionReady &&
+            (devicePose != null || freshestMs != null) &&
+            (gyroMagnitude == null || gyroState in setOf("steady", "minor_rotation")) &&
+            (accelerationDelta == null || accelerationState in setOf("steady", "steady_with_gravity", "light_movement"))
+        rows.put(
+            capabilityRow(
+                category = "motion_sensor_quality",
+                label = "Motion-aware workflow readiness",
+                ready = workflowReady,
+                valueLabel = when {
+                    workflowReady -> "ready"
+                    !fusionReady -> "fusion gated"
+                    freshestMs == null -> "sample first"
+                    else -> "wait for stability"
+                },
+                detail = "fusion_ready=$fusionReady | pose=${devicePose != null} | gyro_state=${gyroState ?: "unknown"} | acceleration_state=${accelerationState ?: "unknown"} | freshness=${freshestMs ?: JSONObject.NULL}",
+                recommendation = "Use this row as the top-level go/no-go signal before running orientation, shake, stabilization, or phone-handling automations.",
+                fraction = when {
+                    workflowReady -> 0.93f
+                    fusionReady && freshestMs != null -> 0.62f
+                    fusionReady -> 0.52f
+                    else -> 0.28f
+                },
+                extra = JSONObject()
+                    .put("quality_signal", "workflow_readiness")
+                    .put("tool_action", "motion_sensor_quality"),
+            ),
+        )
+        return rows
+    }
+
     private fun bluetoothDistinctStringCount(devices: JSONArray, key: String): Int {
         val values = linkedSetOf<String>()
         for (index in 0 until devices.length()) {
@@ -9780,6 +10212,17 @@ object HermesDeviceDiagnosticsBridge {
                 .take(MAX_MOTION_HISTORY_SENSORS_PER_SAMPLE)
         } else {
             DEFAULT_MOTION_HISTORY_SENSOR_TYPES
+        }
+    }
+
+    private fun motionSensorQualityRequestedSensorTypes(arguments: JSONObject): List<String> {
+        return if (arguments.has("sensor_types") || arguments.has("sensors") || arguments.has("sensor_type")) {
+            requestedSensorTypes(arguments)
+                .filter { it in MOTION_HISTORY_SENSOR_TYPES }
+                .ifEmpty { DEFAULT_MOTION_POSE_SENSOR_TYPES }
+                .take(MAX_MOTION_HISTORY_SENSORS_PER_SAMPLE)
+        } else {
+            DEFAULT_MOTION_POSE_SENSOR_TYPES
         }
     }
 
@@ -11644,6 +12087,151 @@ object HermesDeviceDiagnosticsBridge {
         return vectors
     }
 
+    private fun motionQualityAvailableSensors(
+        capabilities: JSONArray,
+        motionHistoryRows: JSONArray,
+        samples: JSONArray,
+    ): Set<String> {
+        val sensors = linkedSetOf<String>()
+        fun addSensor(row: JSONObject?, requireAvailable: Boolean) {
+            if (row == null) return
+            val sensorType = canonicalSensorType(row.optString("sensor_type"))
+            if (sensorType !in MOTION_HISTORY_SENSOR_TYPES) return
+            if (requireAvailable && !row.optBoolean("available", false)) return
+            if (!requireAvailable && row.has("sampled") && !row.optBoolean("sampled", false)) return
+            sensors += sensorType
+        }
+        for (index in 0 until capabilities.length()) addSensor(capabilities.optJSONObject(index), requireAvailable = true)
+        for (index in 0 until motionHistoryRows.length()) addSensor(motionHistoryRows.optJSONObject(index), requireAvailable = false)
+        for (index in 0 until samples.length()) addSensor(samples.optJSONObject(index), requireAvailable = false)
+        return sensors
+    }
+
+    private fun firstMotionSensorHistoryRow(rows: JSONArray, vararg sensorTypes: String): JSONObject? {
+        val wanted = sensorTypes.map(::canonicalSensorType).toSet()
+        for (index in 0 until rows.length()) {
+            val row = rows.optJSONObject(index) ?: continue
+            if (canonicalSensorType(row.optString("sensor_type")) in wanted) return row
+        }
+        return null
+    }
+
+    private fun firstMotionSampleRow(rows: JSONArray, vararg sensorTypes: String): JSONObject? {
+        val wanted = sensorTypes.map(::canonicalSensorType).toSet()
+        for (index in 0 until rows.length()) {
+            val row = rows.optJSONObject(index) ?: continue
+            if (!row.optBoolean("available", true)) continue
+            if (row.has("sampled") && !row.optBoolean("sampled", false)) continue
+            if (canonicalSensorType(row.optString("sensor_type")) in wanted) return row
+        }
+        return null
+    }
+
+    private fun firstMotionPoseEstimate(rows: JSONArray, poseType: String): JSONObject? {
+        for (index in 0 until rows.length()) {
+            val row = rows.optJSONObject(index) ?: continue
+            if (row.optString("pose_type") == poseType) return row
+        }
+        return null
+    }
+
+    private fun motionSampleMagnitude(row: JSONObject?): Double? {
+        if (row == null) return null
+        return row.optJSONArray("values")?.let(::motionVectorMagnitude)
+            ?: row.optJSONArray("current_values")?.let(::motionVectorMagnitude)
+    }
+
+    private fun freshestMotionSampleAgeMs(motionHistoryRows: JSONArray, samples: JSONArray): Long? {
+        var freshest: Long? = null
+        for (index in 0 until motionHistoryRows.length()) {
+            val row = motionHistoryRows.optJSONObject(index) ?: continue
+            jsonLongOrNull(row, "last_seen_ms")?.let { age ->
+                freshest = minOf(freshest ?: age, age.coerceAtLeast(0L))
+            }
+        }
+        if (freshest == null && countSampledSensors(samples) > 0) return 0L
+        return freshest
+    }
+
+    private fun motionFreshnessLabel(ageMs: Long): String = when {
+        ageMs < 1_000L -> "<1s fresh"
+        ageMs < 60_000L -> "${ageMs / 1_000L}s old"
+        ageMs < 3_600_000L -> "${ageMs / 60_000L}m old"
+        else -> "${ageMs / 3_600_000L}h old"
+    }
+
+    private fun motionFreshnessFraction(ageMs: Long): Float = when {
+        ageMs <= 5_000L -> 0.95f
+        ageMs <= MOTION_QUALITY_FRESH_MS -> 0.78f
+        ageMs <= 120_000L -> 0.55f
+        else -> 0.3f
+    }
+
+    private fun motionAccuracyLabels(samples: JSONArray, motionHistoryRows: JSONArray): Set<String> {
+        val labels = linkedSetOf<String>()
+        fun addLabel(row: JSONObject?) {
+            val label = row?.optString("accuracy_label")
+                ?.trim()
+                ?.lowercase(Locale.US)
+                ?.takeIf { it.isNotBlank() && it != "unknown" }
+                ?: return
+            labels += label
+        }
+        for (index in 0 until samples.length()) addLabel(samples.optJSONObject(index))
+        for (index in 0 until motionHistoryRows.length()) addLabel(motionHistoryRows.optJSONObject(index))
+        return labels
+    }
+
+    private fun bestMotionAccuracyLabel(labels: Set<String>): String {
+        return labels.maxByOrNull(::motionAccuracyRank) ?: "unknown"
+    }
+
+    private fun weakestMotionAccuracyLabel(labels: Set<String>): String {
+        return labels.minByOrNull(::motionAccuracyRank) ?: "unknown"
+    }
+
+    private fun motionAccuracyRank(label: String): Int = when (label.lowercase(Locale.US)) {
+        "high" -> 4
+        "medium" -> 3
+        "low" -> 2
+        "unreliable" -> 1
+        else -> 0
+    }
+
+    private fun fastestMotionSensorHz(capabilities: JSONArray): Double? {
+        var fastest: Double? = null
+        for (index in 0 until capabilities.length()) {
+            val row = capabilities.optJSONObject(index) ?: continue
+            if (!row.optBoolean("available", false)) continue
+            if (canonicalSensorType(row.optString("sensor_type")) !in MOTION_HISTORY_SENSOR_TYPES) continue
+            val minDelayUs = jsonLongOrNull(row, "min_delay_us")?.takeIf { it > 0L } ?: continue
+            val hz = 1_000_000.0 / minDelayUs.toDouble()
+            fastest = maxOf(fastest ?: hz, hz)
+        }
+        return fastest
+    }
+
+    private fun totalMotionSensorPowerMa(capabilities: JSONArray): Double? {
+        var total = 0.0
+        var count = 0
+        for (index in 0 until capabilities.length()) {
+            val row = capabilities.optJSONObject(index) ?: continue
+            if (!row.optBoolean("available", false)) continue
+            if (canonicalSensorType(row.optString("sensor_type")) !in MOTION_HISTORY_SENSOR_TYPES) continue
+            val power = jsonDoubleOrNull(row, "power_ma")?.takeIf { it >= 0.0 } ?: continue
+            total += power
+            count += 1
+        }
+        return if (count > 0) total else null
+    }
+
+    private fun motionQualityLevelForScore(score: Int): String = when {
+        score >= 85 -> "ready"
+        score >= 65 -> "watch"
+        score >= 45 -> "limited"
+        else -> "blocked"
+    }
+
     private fun vectorMagnitude(values: List<Double>): Double? {
         if (values.isEmpty()) return null
         var sum = 0.0
@@ -11683,8 +12271,8 @@ object HermesDeviceDiagnosticsBridge {
     private fun accelerationMotionStateLabel(source: String, deltaFromGravity: Double): String = when {
         source == "linear_acceleration" && deltaFromGravity < 0.2 -> "steady"
         source == "linear_acceleration" && deltaFromGravity < 1.0 -> "light_movement"
-        source == "accelerometer" && deltaFromGravity < 0.4 -> "steady_with_gravity"
-        source == "accelerometer" && deltaFromGravity < 1.5 -> "moving"
+        (source == "accelerometer" || source == "gravity") && deltaFromGravity < 0.4 -> "steady_with_gravity"
+        (source == "accelerometer" || source == "gravity") && deltaFromGravity < 1.5 -> "moving"
         deltaFromGravity < 4.0 -> "active_movement"
         else -> "impact_or_fast_motion"
     }
@@ -12540,6 +13128,7 @@ object HermesDeviceDiagnosticsBridge {
     private const val MAX_MOTION_HISTORY_SERIES_POINTS = 8
     private const val MOTION_SENSOR_HISTORY_PREFS = "hermes_motion_sensor_history"
     private const val MOTION_SENSOR_HISTORY_KEY = "motion_history"
+    private const val MOTION_QUALITY_FRESH_MS = 30_000L
     private const val STANDARD_GRAVITY = 9.80665
     private const val MAX_SENSOR_TYPES_PER_SAMPLE = 8
     private const val DEFAULT_SENSOR_TIMEOUT_MS = 800L

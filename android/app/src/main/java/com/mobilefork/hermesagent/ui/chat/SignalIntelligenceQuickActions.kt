@@ -145,6 +145,13 @@ val SIGNAL_INTELLIGENCE_QUICK_ACTIONS = listOf(
         iconRes = R.drawable.ic_action_refresh,
     ),
     SignalIntelligenceQuickAction(
+        id = "motion_quality",
+        label = "Motion Quality",
+        diagnosticAction = "motion_sensor_quality",
+        prompt = "Run android_device_diagnostics_tool action=motion_sensor_quality include_snapshot=false",
+        iconRes = R.drawable.ic_nav_device,
+    ),
+    SignalIntelligenceQuickAction(
         id = "radio_limits",
         label = "Radio Signals",
         diagnosticAction = "radio_signal_graph",

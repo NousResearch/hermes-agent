@@ -23,15 +23,32 @@ RUN apt-get update && \
 # ---------- s6-overlay install ----------
 # s6-overlay provides supervision for the main hermes process, the dashboard,
 # and per-profile gateways. /init becomes PID 1 below — see ENTRYPOINT.
-# x86_64 only for now; aarch64 (Apple Silicon, ARM servers) is a follow-up
-# that needs TARGETARCH plumbing across all three ADDs.
+#
+# Multi-arch: BuildKit auto-populates TARGETARCH (amd64 / arm64). s6-overlay
+# uses tarball names keyed on the kernel arch string (x86_64 / aarch64), so
+# we map between them inline. The noarch + symlinks tarballs are
+# architecture-independent and reused as-is.
+#
+# We use `curl` instead of `ADD` for the per-arch tarball because `ADD`
+# evaluates its URL at parse time, before any ARG / TARGETARCH substitution
+# — splitting one URL per arch into two ADDs would download both on every
+# build and leave dead bytes in the cache. A single curl + arch-keyed URL
+# is simpler and cache-friendlier.
+ARG TARGETARCH
 ARG S6_OVERLAY_VERSION=3.2.3.0
 ADD https://github.com/just-containers/s6-overlay/releases/download/v${S6_OVERLAY_VERSION}/s6-overlay-noarch.tar.xz /tmp/
-ADD https://github.com/just-containers/s6-overlay/releases/download/v${S6_OVERLAY_VERSION}/s6-overlay-x86_64.tar.xz /tmp/
 ADD https://github.com/just-containers/s6-overlay/releases/download/v${S6_OVERLAY_VERSION}/s6-overlay-symlinks-noarch.tar.xz /tmp/
-RUN tar -C / -Jxpf /tmp/s6-overlay-noarch.tar.xz && \
-    tar -C / -Jxpf /tmp/s6-overlay-x86_64.tar.xz && \
-    tar -C / -Jxpf /tmp/s6-overlay-symlinks-noarch.tar.xz && \
+RUN set -eu; \
+    case "${TARGETARCH:-amd64}" in \
+        amd64) s6_arch="x86_64" ;; \
+        arm64) s6_arch="aarch64" ;; \
+        *) echo "Unsupported TARGETARCH=${TARGETARCH} for s6-overlay" >&2; exit 1 ;; \
+    esac; \
+    curl -fsSL --retry 3 -o /tmp/s6-overlay-arch.tar.xz \
+        "https://github.com/just-containers/s6-overlay/releases/download/v${S6_OVERLAY_VERSION}/s6-overlay-${s6_arch}.tar.xz"; \
+    tar -C / -Jxpf /tmp/s6-overlay-noarch.tar.xz; \
+    tar -C / -Jxpf /tmp/s6-overlay-arch.tar.xz; \
+    tar -C / -Jxpf /tmp/s6-overlay-symlinks-noarch.tar.xz; \
     rm /tmp/s6-overlay-*.tar.xz
 
 # Non-root user for runtime; UID can be overridden via HERMES_UID at runtime

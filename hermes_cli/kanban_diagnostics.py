@@ -41,6 +41,15 @@ import time
 SEVERITY_ORDER = ("warning", "error", "critical")
 
 
+def severity_at_or_above(severity: Optional[str], threshold: Optional[str]) -> bool:
+    """Return True when ``severity`` meets or exceeds ``threshold``."""
+    if threshold is None:
+        return True
+    if severity not in SEVERITY_ORDER or threshold not in SEVERITY_ORDER:
+        return False
+    return SEVERITY_ORDER.index(severity) >= SEVERITY_ORDER.index(threshold)
+
+
 @dataclass
 class DiagnosticAction:
     """A single recovery action attached to a diagnostic.

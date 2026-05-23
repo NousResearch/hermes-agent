@@ -1,9 +1,9 @@
-import { useApp, useHasSelection, useSelection, useStdout, useTerminalTitle, type ScrollBoxHandle } from '@hermes/ink'
+import { type ScrollBoxHandle, useApp, useHasSelection, useSelection, useStdout, useTerminalTitle } from '@hermes/ink'
 import { useStore } from '@nanostores/react'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
 import { STARTUP_RESUME_ID } from '../config/env.js'
-import { FULL_RENDER_TAIL_ITEMS, MAX_HISTORY, WHEEL_SCROLL_STEP } from '../config/limits.js'
+import { MAX_HISTORY, WHEEL_SCROLL_STEP } from '../config/limits.js'
 import { SECTION_NAMES, sectionMode } from '../domain/details.js'
 import { attachedImageNotice, imageTokenMeta } from '../domain/messages.js'
 import { fmtCwdBranch, shortCwd } from '../domain/paths.js'
@@ -274,7 +274,6 @@ export function useMainApp(gw: GatewayClient) {
       estimatedMsgHeight(virtualRows[index]!.msg, cols, {
         compact: ui.compact,
         details: detailsVisible,
-        limitHistory: index < virtualRows.length - FULL_RENDER_TAIL_ITEMS,
         userPrompt: ui.theme.brand.prompt,
         withSeparator: virtualRows[index]!.msg.role === 'user' && firstUserIdx >= 0 && index > firstUserIdx
       }),
@@ -366,7 +365,7 @@ export function useMainApp(gw: GatewayClient) {
   const gateway = useMemo(() => ({ gw, rpc }), [gw, rpc])
 
   const die = useCallback(() => {
-    gw.kill()
+    gw.kill('app.die')
     exit()
     // Ink's exit() calls unmount() which resets terminal modes but does NOT
     // call process.exit().  Without an explicit exit the Node process stays
@@ -375,6 +374,12 @@ export function useMainApp(gw: GatewayClient) {
     // fires.  This leaves kitty keyboard protocol, mouse modes, etc. enabled
     // in the parent shell.  See issue #19194.
     process.exit(0)
+  }, [exit, gw])
+
+  const dieWithCode = useCallback((code: number) => {
+    gw.kill(`app.dieWithCode:${code}`)
+    exit()
+    process.exit(code)
   }, [exit, gw])
 
   const session = useSessionLifecycle({
@@ -643,6 +648,7 @@ export function useMainApp(gw: GatewayClient) {
         session: {
           closeSession: session.closeSession,
           die,
+          dieWithCode,
           guardBusySessionSwitch: session.guardBusySessionSwitch,
           newSession: session.newSession,
           resetVisibleHistory: session.resetVisibleHistory,
@@ -730,10 +736,13 @@ export function useMainApp(gw: GatewayClient) {
   const anyPanelVisible = SECTION_NAMES.some(
     s => sectionMode(s, ui.detailsMode, ui.sections, ui.detailsModeCommandOverride) !== 'hidden'
   )
+
   const thinkingPanelVisible =
     sectionMode('thinking', ui.detailsMode, ui.sections, ui.detailsModeCommandOverride) !== 'hidden'
+
   const toolsPanelVisible =
     sectionMode('tools', ui.detailsMode, ui.sections, ui.detailsModeCommandOverride) !== 'hidden'
+
   const activityPanelVisible =
     sectionMode('activity', ui.detailsMode, ui.sections, ui.detailsModeCommandOverride) !== 'hidden'
 

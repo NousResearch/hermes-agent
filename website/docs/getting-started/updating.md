@@ -69,6 +69,26 @@ updates:
 
 `--backup` was the always-on behavior in earlier builds, but it was adding minutes to every update on large homes, so it's now opt-in. The lightweight pairing-data snapshot above still runs unconditionally.
 
+### Windows: another `hermes.exe` is running
+
+On Windows, `hermes update` will refuse to run if it detects another `hermes.exe` process holding the venv's entry-point executable open — most commonly the Hermes Desktop app's spawned backend, an open `hermes` REPL in another terminal, or a running gateway:
+
+```
+$ hermes update
+✗ Another hermes.exe is running:
+    PID 12345  hermes.exe
+
+  Updating now would fail to overwrite ...\venv\Scripts\hermes.exe because
+  Windows blocks REPLACE on a running executable.
+
+  Close Hermes Desktop, exit any open `hermes` REPLs, and
+  stop the gateway (`hermes gateway stop`) before retrying.
+  Override with `hermes update --force` if you've already
+  confirmed those processes will not write to the venv.
+```
+
+Close the listed processes and re-run. If you're sure the concurrent process won't interfere (rare — usually only useful when an antivirus shim is mis-attributed), pass `--force` to skip the check. In that case the updater will still retry the `.exe` rename with exponential backoff and, on stubborn locks, schedule the replacement for next reboot via `MoveFileEx(MOVEFILE_DELAY_UNTIL_REBOOT)` so the update can complete.
+
 Expected output looks like:
 
 ```

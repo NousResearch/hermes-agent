@@ -478,11 +478,11 @@ export type GatewayEvent =
       type: 'gateway.start_timeout'
     }
   | { payload?: { preview?: string }; session_id?: string; type: 'gateway.protocol_error' }
-  | { payload?: { text?: string }; session_id?: string; type: 'reasoning.delta' | 'reasoning.available' }
+  | { payload?: { text?: string; verbose?: boolean }; session_id?: string; type: 'reasoning.delta' | 'reasoning.available' }
   | { payload: { name?: string; preview?: string }; session_id?: string; type: 'tool.progress' }
   | { payload: { name?: string }; session_id?: string; type: 'tool.generating' }
   | {
-      payload: { context?: string; name?: string; tool_id: string; todos?: unknown[] }
+      payload: { args_text?: string; context?: string; name?: string; tool_id: string; todos?: unknown[] }
       session_id?: string
       type: 'tool.start'
     }
@@ -492,6 +492,7 @@ export type GatewayEvent =
         error?: string
         inline_diff?: string
         name?: string
+        result_text?: string
         summary?: string
         tool_id: string
         todos?: unknown[]

@@ -1,13 +1,13 @@
 import { Ansi, Box, NoSelect, Text } from '@hermes/ink'
 import { memo, useState } from 'react'
 
+import { TERMUX_TUI_MODE } from '../config/env.js'
 import { LONG_MSG } from '../config/limits.js'
 import { sectionMode } from '../domain/details.js'
 import { userDisplay } from '../domain/messages.js'
 import { ROLE } from '../domain/roles.js'
 import { transcriptBodyWidth, transcriptGutterWidth } from '../lib/inputMetrics.js'
 import {
-  boundedHistoryRenderText,
   boundedLiveRenderText,
   compactPreview,
   hasAnsi,
@@ -32,7 +32,6 @@ export const MessageLine = memo(function MessageLine({
   detailsMode = 'collapsed',
   detailsModeCommandOverride = false,
   isStreaming = false,
-  limitHistoryRender = false,
   msg,
   sections,
   t,
@@ -141,7 +140,7 @@ export const MessageLine = memo(function MessageLine({
     }
 
     if (msg.role === 'assistant') {
-      const bodyWidth = transcriptBodyWidth(cols, msg.role, t.brand.prompt)
+      const bodyWidth = transcriptBodyWidth(cols, msg.role, t.brand.prompt, TERMUX_TUI_MODE)
 
       return isStreaming ? (
         // Incremental markdown: split at the last stable block boundary so
@@ -149,7 +148,7 @@ export const MessageLine = memo(function MessageLine({
         // streamingMarkdown.tsx for the cost model.
         <StreamingMd cols={bodyWidth} compact={compact} t={t} text={boundedLiveRenderText(msg.text)} />
       ) : (
-        <Md cols={bodyWidth} compact={compact} t={t} text={limitHistoryRender ? boundedHistoryRenderText(msg.text) : msg.text} />
+        <Md cols={bodyWidth} compact={compact} t={t} text={msg.text} />
       )
     }
 
@@ -203,7 +202,7 @@ export const MessageLine = memo(function MessageLine({
           </Text>
         </NoSelect>
 
-        <Box width={transcriptBodyWidth(cols, msg.role, t.brand.prompt)}>{content}</Box>
+        <Box width={transcriptBodyWidth(cols, msg.role, t.brand.prompt, TERMUX_TUI_MODE)}>{content}</Box>
       </Box>
     </Box>
   )
@@ -215,7 +214,6 @@ interface MessageLineProps {
   detailsMode?: DetailsMode
   detailsModeCommandOverride?: boolean
   isStreaming?: boolean
-  limitHistoryRender?: boolean
   msg: Msg
   sections?: SectionVisibility
   t: Theme

@@ -41,7 +41,7 @@ def _make_event(
 
 def _make_discord_adapter():
     """Create a minimal DiscordAdapter for testing text batching."""
-    from gateway.platforms.discord import DiscordAdapter
+    from plugins.platforms.discord.adapter import DiscordAdapter
 
     config = PlatformConfig(enabled=True, token="test-token")
     adapter = object.__new__(DiscordAdapter)

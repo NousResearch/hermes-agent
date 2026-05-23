@@ -632,7 +632,10 @@ def _locked_update_approvals() -> Iterator[Dict[str, Any]]:
             yield data
             save_allowlist(data)
         finally:
-            fcntl.flock(lock_fh.fileno(), fcntl.LOCK_UN)
+            try:
+                fcntl.flock(lock_fh.fileno(), fcntl.LOCK_UN)
+            except (OSError, IOError):
+                pass
 
 
 def _prompt_and_record(

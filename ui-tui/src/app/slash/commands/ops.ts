@@ -155,7 +155,7 @@ export const opsCommands: SlashCommand[] = [
       const url = action === 'connect' ? rest.join(' ').trim() || 'http://127.0.0.1:9222' : undefined
 
       if (url) {
-        ctx.transcript.sys(`checking Chrome remote debugging at ${url}...`)
+        ctx.transcript.sys(`checking Chromium-family browser remote debugging at ${url}...`)
       }
 
       ctx.gateway
@@ -181,7 +181,7 @@ export const opsCommands: SlashCommand[] = [
             }
 
             if (r.connected) {
-              ctx.transcript.sys('Browser connected to live Chrome via CDP')
+              ctx.transcript.sys('Browser connected to live Chromium-family browser via CDP')
               ctx.transcript.sys(`Endpoint: ${r.url || '(url unavailable)'}`)
               ctx.transcript.sys('next browser tool call will use this CDP endpoint')
             }

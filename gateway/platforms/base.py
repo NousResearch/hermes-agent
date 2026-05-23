@@ -45,10 +45,10 @@ def _thread_metadata_for_source(source, reply_to_message_id: str | None = None) 
 
     Most platforms route threaded sends with a generic ``thread_id`` metadata
     value. Telegram private-chat topics created through Hermes' DM-topic helper
-    are exposed in updates as ``message_thread_id`` plus a reply anchor, but
-    outbound sends only render in the correct Telegram lane when the adapter
-    supplies both ``message_thread_id`` and ``reply_to_message_id``. Mark those
-    lanes so the Telegram adapter can avoid the known-bad partial routes.
+    are exposed in updates as ``message_thread_id`` plus a reply anchor. Live
+    user-message replies route with ``message_thread_id`` + ``reply_to_message_id``;
+    synthetic/resumed sends that have no reply anchor fall back to Telegram's
+    ``direct_messages_topic_id`` when the Bot API supports it.
     """
     thread_id = getattr(source, "thread_id", None)
     if thread_id is None:
@@ -56,6 +56,9 @@ def _thread_metadata_for_source(source, reply_to_message_id: str | None = None) 
     metadata = {"thread_id": thread_id}
     if _platform_name(getattr(source, "platform", None)) == "telegram" and getattr(source, "chat_type", None) == "dm":
         metadata["telegram_dm_topic_reply_fallback"] = True
+        tid = str(thread_id)
+        if tid and tid not in {"", "1"}:
+            metadata["direct_messages_topic_id"] = tid
         anchor = reply_to_message_id or getattr(source, "message_id", None)
         if anchor is not None:
             metadata["telegram_reply_to_message_id"] = str(anchor)
@@ -67,10 +70,9 @@ def _reply_anchor_for_event(event) -> str | None:
 
     Telegram forum/supergroup topics should be routed by topic metadata, not by
     replying to the triggering message. Hermes-created Telegram private-chat
-    topic lanes are different: Bot API sends reject their ``message_thread_id``
-    and do not route with ``direct_messages_topic_id``. Those lanes only remain
-    visible when sent with both the private topic thread id and a reply to the
-    triggering user message.
+    topic lanes prefer replying to the triggering user message so the answer
+    stays attached to the active lane; synthetic/resumed sends fall back to
+    ``direct_messages_topic_id`` metadata when no message id is available.
     """
     source = getattr(event, "source", None)
     platform = _platform_name(getattr(source, "platform", None))
@@ -470,7 +472,7 @@ sys.path.insert(0, str(_Path(__file__).resolve().parents[2]))
 
 from gateway.config import Platform, PlatformConfig
 from gateway.session import SessionSource, build_session_key
-from hermes_constants import get_hermes_dir
+from hermes_constants import get_hermes_dir, get_hermes_home
 
 
 GATEWAY_SECRET_CAPTURE_UNSUPPORTED_MESSAGE = (
@@ -811,6 +813,86 @@ def cache_video_from_bytes(data: bytes, ext: str = ".mp4") -> str:
 # ---------------------------------------------------------------------------
 
 DOCUMENT_CACHE_DIR = get_hermes_dir("cache/documents", "document_cache")
+SCREENSHOT_CACHE_DIR = get_hermes_dir("cache/screenshots", "browser_screenshots")
+_HERMES_HOME = get_hermes_home()
+MEDIA_DELIVERY_ALLOW_DIRS_ENV = "HERMES_MEDIA_ALLOW_DIRS"
+MEDIA_DELIVERY_SAFE_ROOTS = (
+    IMAGE_CACHE_DIR,
+    AUDIO_CACHE_DIR,
+    VIDEO_CACHE_DIR,
+    DOCUMENT_CACHE_DIR,
+    SCREENSHOT_CACHE_DIR,
+    _HERMES_HOME / "image_cache",
+    _HERMES_HOME / "audio_cache",
+    _HERMES_HOME / "video_cache",
+    _HERMES_HOME / "document_cache",
+    _HERMES_HOME / "browser_screenshots",
+)
+
+
+def _media_delivery_allowed_roots() -> List[Path]:
+    """Return roots from which model-emitted local media may be delivered."""
+    roots = [Path(root) for root in MEDIA_DELIVERY_SAFE_ROOTS]
+    extra_roots = os.environ.get(MEDIA_DELIVERY_ALLOW_DIRS_ENV, "")
+    for chunk in extra_roots.split(os.pathsep):
+        for raw_root in chunk.split(","):
+            raw_root = raw_root.strip()
+            if not raw_root:
+                continue
+            root = Path(os.path.expanduser(raw_root))
+            if root.is_absolute():
+                roots.append(root)
+    return roots
+
+
+def _path_is_within(path: Path, root: Path) -> bool:
+    try:
+        path.relative_to(root)
+        return True
+    except ValueError:
+        return False
+
+
+def validate_media_delivery_path(path: str) -> Optional[str]:
+    """Return a safe absolute file path for native media delivery, else None.
+
+    MEDIA tags and bare local paths in model output are untrusted text. Only
+    existing regular files under Hermes-managed media caches, or roots the
+    operator explicitly allowlists, may be uploaded as native attachments.
+    Symlinks are resolved before the containment check.
+    """
+    if not path:
+        return None
+
+    candidate = str(path).strip()
+    if len(candidate) >= 2 and candidate[0] == candidate[-1] and candidate[0] in "`\"'":
+        candidate = candidate[1:-1].strip()
+    candidate = candidate.lstrip("`\"'").rstrip("`\"',.;:)}]")
+    if not candidate:
+        return None
+
+    expanded = Path(os.path.expanduser(candidate))
+    if not expanded.is_absolute():
+        return None
+
+    try:
+        resolved = expanded.resolve(strict=True)
+    except (OSError, RuntimeError, ValueError):
+        return None
+
+    if not resolved.is_file():
+        return None
+
+    for root in _media_delivery_allowed_roots():
+        try:
+            resolved_root = root.expanduser().resolve(strict=False)
+        except (OSError, RuntimeError, ValueError):
+            continue
+        if _path_is_within(resolved, resolved_root):
+            return str(resolved)
+
+    return None
+
 
 SUPPORTED_DOCUMENT_TYPES = {
     ".pdf": "application/pdf",
@@ -832,6 +914,26 @@ SUPPORTED_DOCUMENT_TYPES = {
     ".ts": "text/plain",
     ".py": "text/plain",
     ".sh": "text/plain",
+}
+
+
+# ---------------------------------------------------------------------------
+# Image document types
+#
+# Image extensions that platforms may deliver as "documents" rather than
+# native photo attachments (Telegram users uploading via the file picker,
+# clients that wrap stickers/screenshots as files, etc.). When we see one
+# of these, we route the bytes through the image cache and the normal
+# vision/photo handling path instead of rejecting them as unsupported
+# documents.
+# ---------------------------------------------------------------------------
+
+SUPPORTED_IMAGE_DOCUMENT_TYPES = {
+    ".jpg": "image/jpeg",
+    ".jpeg": "image/jpeg",
+    ".png": "image/png",
+    ".webp": "image/webp",
+    ".gif": "image/gif",
 }
 
 
@@ -2098,6 +2200,35 @@ class BasePlatformAdapter(ABC):
         return await self.send(chat_id=chat_id, content=text, reply_to=reply_to, metadata=metadata)
 
     @staticmethod
+    def validate_media_delivery_path(path: str) -> Optional[str]:
+        """Return a resolved path if it is safe for native attachment upload."""
+        return validate_media_delivery_path(path)
+
+    @staticmethod
+    def filter_media_delivery_paths(media_files) -> List[Tuple[str, bool]]:
+        """Drop unsafe MEDIA paths and normalize accepted paths."""
+        safe_media: List[Tuple[str, bool]] = []
+        for media_path, is_voice in media_files or []:
+            safe_path = validate_media_delivery_path(str(media_path))
+            if safe_path:
+                safe_media.append((safe_path, bool(is_voice)))
+            else:
+                logger.warning("Skipping unsafe MEDIA directive path outside allowed roots")
+        return safe_media
+
+    @staticmethod
+    def filter_local_delivery_paths(file_paths) -> List[str]:
+        """Drop unsafe bare local file paths and normalize accepted paths."""
+        safe_paths: List[str] = []
+        for file_path in file_paths or []:
+            safe_path = validate_media_delivery_path(str(file_path))
+            if safe_path:
+                safe_paths.append(safe_path)
+            else:
+                logger.warning("Skipping unsafe local file path outside allowed roots")
+        return safe_paths
+
+    @staticmethod
     def extract_media(content: str) -> Tuple[List[Tuple[str, bool]], str]:
         """
         Extract MEDIA:<path> tags and [[audio_as_voice]] directives from response text.
@@ -2137,7 +2268,7 @@ class BasePlatformAdapter(ABC):
         # Extract MEDIA:<path> tags, allowing optional whitespace after the colon
         # and quoted/backticked paths for LLM-formatted outputs.
         media_pattern = re.compile(
-            r'''[`"']?MEDIA:\s*(?P<path>`[^`\n]+`|"[^"\n]+"|'[^'\n]+'|(?:~/|/)\S+(?:[^\S\n]+\S+)*?\.(?:png|jpe?g|gif|webp|mp4|mov|avi|mkv|webm|ogg|opus|mp3|wav|m4a|flac|epub|pdf|zip|rar|7z|docx?|xlsx?|pptx?|txt|csv|apk|ipa)(?=[\s`"',;:)\]}]|$)|\S+)[`"']?'''
+            r'''[`"']?MEDIA:\s*(?P<path>`[^`\n]+`|"[^"\n]+"|'[^'\n]+'|(?:~/|/)\S+(?:[^\S\n]+\S+)*?\.(?:png|jpe?g|gif|webp|mp4|mov|avi|mkv|webm|ogg|opus|mp3|wav|m4a|flac|epub|pdf|zip|rar|7z|docx?|xlsx?|pptx?|txt|csv|apk|ipa)(?=[\s`"',;:)\]}]|$))[`"']?'''
         )
         for match in media_pattern.finditer(content):
             path = match.group("path").strip()
@@ -3144,6 +3275,7 @@ class BasePlatformAdapter(ABC):
 
                 # Extract MEDIA:<path> tags (from TTS tool) before other processing
                 media_files, response = self.extract_media(response)
+                media_files = self.filter_media_delivery_paths(media_files)
 
                 # Extract image URLs and send them as native platform attachments
                 images, text_content = self.extract_images(response)
@@ -3157,6 +3289,7 @@ class BasePlatformAdapter(ABC):
                 # Auto-detect bare local file paths for native media delivery
                 # (helps small models that don't use MEDIA: syntax)
                 local_files, text_content = self.extract_local_files(text_content)
+                local_files = self.filter_local_delivery_paths(local_files)
                 if local_files:
                     logger.info("[%s] extract_local_files found %d file(s) in response", self.name, len(local_files))
                 
@@ -3185,12 +3318,24 @@ class BasePlatformAdapter(ABC):
                         logger.warning("[%s] Auto-TTS failed: %s", self.name, tts_err)
 
                 # Play TTS audio before text (voice-first experience)
+                _tts_caption_delivered = False
                 if _tts_path and Path(_tts_path).exists():
                     try:
-                        await self.play_tts(
+                        telegram_tts_caption = None
+                        if (
+                            self.platform == Platform.TELEGRAM
+                            and text_content
+                            and text_content[:1024] == text_content
+                        ):
+                            telegram_tts_caption = text_content
+                        tts_result = await self.play_tts(
                             chat_id=event.source.chat_id,
                             audio_path=_tts_path,
+                            caption=telegram_tts_caption,
                             metadata=_thread_metadata,
+                        )
+                        _tts_caption_delivered = bool(
+                            telegram_tts_caption and getattr(tts_result, "success", False)
                         )
                     finally:
                         try:
@@ -3199,7 +3344,7 @@ class BasePlatformAdapter(ABC):
                             pass
 
                 # Send the text portion
-                if text_content:
+                if text_content and not _tts_caption_delivered:
                     logger.info("[%s] Sending response (%d chars) to %s", self.name, len(text_content), event.source.chat_id)
                     _reply_anchor = _reply_anchor_for_event(event)
                     # Mark final response messages for notification delivery.

@@ -361,6 +361,72 @@ class TestExtractMedia:
         assert "[[as_document]]" not in cleaned
 
 
+class TestMediaDeliveryPathValidation:
+    def _patch_roots(self, monkeypatch, *roots):
+        monkeypatch.setattr(
+            "gateway.platforms.base.MEDIA_DELIVERY_SAFE_ROOTS",
+            tuple(roots),
+        )
+
+    def test_allows_existing_file_inside_safe_root(self, tmp_path, monkeypatch):
+        root = tmp_path / "media-cache"
+        media_file = root / "voice.ogg"
+        media_file.parent.mkdir(parents=True)
+        media_file.write_bytes(b"OggS")
+        self._patch_roots(monkeypatch, root)
+
+        assert BasePlatformAdapter.validate_media_delivery_path(str(media_file)) == str(media_file.resolve())
+
+    def test_rejects_existing_file_outside_safe_root(self, tmp_path, monkeypatch):
+        root = tmp_path / "media-cache"
+        root.mkdir()
+        secret = tmp_path / "secrets.txt"
+        secret.write_text("not for upload")
+        self._patch_roots(monkeypatch, root)
+
+        assert BasePlatformAdapter.validate_media_delivery_path(str(secret)) is None
+
+    def test_rejects_symlink_escape_from_safe_root(self, tmp_path, monkeypatch):
+        root = tmp_path / "media-cache"
+        root.mkdir()
+        secret = tmp_path / "outside.png"
+        secret.write_bytes(b"secret")
+        link = root / "safe-looking.png"
+        try:
+            link.symlink_to(secret)
+        except OSError:
+            pytest.skip("symlink creation is unavailable")
+        self._patch_roots(monkeypatch, root)
+
+        assert BasePlatformAdapter.validate_media_delivery_path(str(link)) is None
+
+    def test_filter_keeps_safe_media_and_drops_unsafe(self, tmp_path, monkeypatch):
+        root = tmp_path / "media-cache"
+        safe = root / "speech.ogg"
+        unsafe = tmp_path / "outside.ogg"
+        safe.parent.mkdir(parents=True)
+        safe.write_bytes(b"OggS")
+        unsafe.write_bytes(b"OggS")
+        self._patch_roots(monkeypatch, root)
+
+        filtered = BasePlatformAdapter.filter_media_delivery_paths([
+            (str(unsafe), False),
+            (str(safe), True),
+        ])
+
+        assert filtered == [(str(safe.resolve()), True)]
+
+    def test_allows_operator_configured_extra_root(self, tmp_path, monkeypatch):
+        extra_root = tmp_path / "operator-media"
+        media_file = extra_root / "report.pdf"
+        media_file.parent.mkdir(parents=True)
+        media_file.write_bytes(b"%PDF-1.4")
+        self._patch_roots(monkeypatch)
+        monkeypatch.setenv("HERMES_MEDIA_ALLOW_DIRS", str(extra_root))
+
+        assert BasePlatformAdapter.validate_media_delivery_path(str(media_file)) == str(media_file.resolve())
+
+
 # ---------------------------------------------------------------------------
 # should_send_media_as_audio
 # ---------------------------------------------------------------------------
@@ -728,4 +794,3 @@ class TestProxyKwargsForAiohttp:
             sess_kw, req_kw = proxy_kwargs_for_aiohttp("http://proxy:8080")
             assert sess_kw == {}
             assert req_kw == {"proxy": "http://proxy:8080"}
-

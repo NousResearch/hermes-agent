@@ -10,7 +10,7 @@ Some Hermes providers — currently **xAI Grok OAuth** and **Spotify** — use a
 
 This works perfectly when Hermes and your browser are on the same machine. It breaks the moment they aren't: your laptop's browser tries to reach `127.0.0.1` on **your laptop**, but the listener is bound to `127.0.0.1` on **the remote server**.
 
-The fix is a one-line SSH local-forward.
+The fix is a one-line SSH local-forward — **or**, when you don't have a real SSH client (GCP Cloud Shell, GitHub Codespaces, EC2 Instance Connect, Gitpod, browser-based web IDEs), the new `--manual-paste` flag introduced in [#26923](https://github.com/NousResearch/hermes-agent/issues/26923).
 
 ## TL;DR
 
@@ -26,6 +26,23 @@ hermes auth add xai-oauth --no-browser
 ```
 
 Port `56121` is what xAI OAuth uses. For Spotify, replace it with `43827`. Hermes prints the exact port it bound to on the `Waiting for callback on ...` line — copy it from there.
+
+## Browser-only remote (Cloud Shell / Codespaces / EC2 Instance Connect)
+
+If you don't have a regular SSH client — for example because you're running Hermes inside GCP Cloud Shell, GitHub Codespaces, AWS EC2 Instance Connect, Gitpod, or another browser-based console — the SSH tunnel above isn't available. Use `--manual-paste` instead:
+
+```bash
+hermes auth add xai-oauth --manual-paste
+# → Hermes prints an authorize URL. Open it in a browser on your laptop.
+# → Approve in the browser. The redirect to 127.0.0.1:56121/callback fails
+#   to load — that's expected.
+# → Copy the FULL URL from the failed page's address bar.
+# → Paste it back into the terminal at the "Callback URL:" prompt.
+```
+
+The same flag works on `hermes model --manual-paste` for the integrated model picker. A bare `?code=...&state=...` query fragment is accepted too if you don't want to paste the whole URL.
+
+Hermes uses the **same PKCE verifier, state and nonce** for both paths, so the upstream OAuth flow is byte-identical — `--manual-paste` is purely a transport change for the callback hop and is not a security downgrade.
 
 ## Which Providers Need This
 

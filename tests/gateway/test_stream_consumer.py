@@ -149,7 +149,7 @@ class TestEditMessageFinalizeSignature:
         "module_path,class_name",
         [
             ("gateway.platforms.telegram", "TelegramAdapter"),
-            ("gateway.platforms.discord", "DiscordAdapter"),
+            ("plugins.platforms.discord.adapter", "DiscordAdapter"),
             ("gateway.platforms.slack", "SlackAdapter"),
             ("gateway.platforms.matrix", "MatrixAdapter"),
             ("gateway.platforms.mattermost", "MattermostAdapter"),

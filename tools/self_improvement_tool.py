@@ -45,7 +45,13 @@ _LEADING_INDICATOR_HARBINGERS = (
     "correlation_explosion",
 )
 _ONTOLOGY_SCAN_SUFFIXES = {".json", ".yaml", ".yml", ".md"}
-_ONTOLOGY_SCAN_PRUNED_DIRS = {".git"}
+_ONTOLOGY_SCAN_PRUNED_DIRS = {".git", "__pycache__", ".pytest_cache", "tests"}
+_ONTOLOGY_REQUIRED_ARTIFACTS = (
+    ("ontology_metrics", Path("evolution/metrics.json")),
+    ("ontology_delta_report", Path("evolution/delta_report.json")),
+    ("ontology_daily_report", Path("evolution/daily_report.md")),
+)
+_FUTURE_TIMESTAMP_TOLERANCE_SECONDS = 300
 _TEXT_EVIDENCE_EXCLUDED_KEYS = {
     "command",
     "prompt",
@@ -387,6 +393,10 @@ def _iter_ctx_timestamps(payload: Any) -> Iterable[datetime]:
             yield parsed
 
 
+def _ctx_record_is_active(record: dict[str, Any]) -> bool:
+    return record.get("active") is True
+
+
 def _latest_timestamp(values: Iterable[datetime]) -> Optional[datetime]:
     return max(values, default=None)
 
@@ -411,6 +421,46 @@ def _summarize_source(
         "age_hours": round(age_hours, 2),
         "latest_timestamp": latest.isoformat(),
     }
+
+
+def _summarize_ctx_bindings(
+    payload: Any,
+    freshness_hours: int,
+    now: datetime,
+) -> dict[str, Any]:
+    if payload is None:
+        summary = _summarize_source("ctx_bindings", None, freshness_hours, now)
+        summary.update(
+            {
+                "record_count": None,
+                "active_count": None,
+                "freshness_required": True,
+                "detail": "ctx bindings evidence unavailable.",
+            }
+        )
+        return summary
+
+    records = list(_iter_ctx_records(payload))
+    latest = _latest_timestamp(_iter_ctx_timestamps(payload))
+    active_count = sum(1 for record in records if _ctx_record_is_active(record))
+    summary = _summarize_source("ctx_bindings", latest, freshness_hours, now)
+    summary.update(
+        {
+            "record_count": len(records),
+            "active_count": active_count,
+            "freshness_required": bool(active_count),
+        }
+    )
+
+    if active_count == 0 and summary["status"] in {"missing", "stale"}:
+        summary["status"] = "inactive"
+        summary["detail"] = (
+            "No active ctx bindings; retired binding timestamps are informational."
+            if latest is not None
+            else "No ctx bindings recorded; no active ctx sessions require freshness."
+        )
+
+    return summary
 
 
 def _extract_timestamps_from_text(text: str) -> Iterable[datetime]:
@@ -475,6 +525,110 @@ def _iter_ontology_files(root: Path) -> Iterable[Path]:
                 yield path
 
 
+def _split_future_timestamps(
+    timestamps: Iterable[datetime],
+    now: datetime,
+) -> tuple[list[datetime], list[datetime]]:
+    valid: list[datetime] = []
+    future: list[datetime] = []
+    for timestamp in timestamps:
+        if (timestamp - now).total_seconds() > _FUTURE_TIMESTAMP_TOLERANCE_SECONDS:
+            future.append(timestamp)
+        else:
+            valid.append(timestamp)
+    return valid, future
+
+
+def _artifact_summary_from_timestamps(
+    *,
+    name: str,
+    path: Path,
+    timestamps: Iterable[datetime],
+    alerts: Iterable[str],
+    freshness_hours: int,
+    now: datetime,
+) -> dict[str, Any]:
+    valid_timestamps, future_timestamps = _split_future_timestamps(timestamps, now)
+    latest = _latest_timestamp(valid_timestamps)
+    alert_reasons = [str(item).strip() for item in alerts if str(item).strip()]
+    reasons = list(alert_reasons)
+
+    if latest is None:
+        status = "missing"
+        age_hours = None
+        latest_timestamp = None
+        if future_timestamps:
+            reasons.append(f"{name} only has future timestamps")
+    else:
+        age_hours = round(max(0.0, (now - latest).total_seconds() / 3600), 2)
+        latest_timestamp = latest.isoformat()
+        status = "fresh" if age_hours <= freshness_hours else "stale"
+        if status == "stale":
+            reasons.append(f"{name} stale ({age_hours}h)")
+
+    if alert_reasons and status in {"fresh", "stale"}:
+        status = "degraded"
+
+    return {
+        "source": name,
+        "path": str(path),
+        "status": status,
+        "age_hours": age_hours,
+        "latest_timestamp": latest_timestamp,
+        "future_timestamp_count": len(future_timestamps),
+        "ignored_future_timestamps": [
+            timestamp.isoformat() for timestamp in sorted(future_timestamps)[-5:]
+        ],
+        "reasons": reasons,
+    }
+
+
+def _summarize_required_ontology_artifacts(
+    root: Path,
+    freshness_hours: int,
+    now: datetime,
+) -> dict[str, dict[str, Any]]:
+    summaries: dict[str, dict[str, Any]] = {}
+    for name, relative_path in _ONTOLOGY_REQUIRED_ARTIFACTS:
+        path = root / relative_path
+        if not path.exists():
+            summaries[name] = {
+                "source": name,
+                "path": str(path),
+                "status": "missing",
+                "age_hours": None,
+                "latest_timestamp": None,
+                "future_timestamp_count": 0,
+                "ignored_future_timestamps": [],
+                "reasons": [f"{name} missing"],
+            }
+            continue
+        timestamps, alerts = _scan_ontology_file(path)
+        summaries[name] = _artifact_summary_from_timestamps(
+            name=name,
+            path=path,
+            timestamps=timestamps,
+            alerts=alerts,
+            freshness_hours=freshness_hours,
+            now=now,
+        )
+    return summaries
+
+
+def _ontology_external_repair(root: Path, required_artifacts: dict[str, dict[str, Any]]) -> dict[str, Any]:
+    invalid_artifacts = [
+        summary
+        for summary in required_artifacts.values()
+        if str(summary.get("status") or "") in {"stale", "missing", "degraded"}
+    ]
+    return {
+        "required": bool(invalid_artifacts),
+        "repository": str(root),
+        "action": "refresh ontology evolution reporting artifacts",
+        "artifacts": invalid_artifacts,
+    }
+
+
 def _summarize_ontology(root: Path, freshness_hours: int, now: datetime) -> dict[str, Any]:
     if not root.exists():
         return {
@@ -483,6 +637,7 @@ def _summarize_ontology(root: Path, freshness_hours: int, now: datetime) -> dict
             "age_hours": None,
             "reasons": ["ontology root missing"],
             "alerts": [],
+            "required_artifacts": {},
         }
 
     timestamps: list[datetime] = []
@@ -492,14 +647,34 @@ def _summarize_ontology(root: Path, freshness_hours: int, now: datetime) -> dict
         timestamps.extend(file_timestamps)
         alerts.extend(file_alerts)
 
-    latest = _latest_timestamp(timestamps)
+    required_artifacts = _summarize_required_ontology_artifacts(root, freshness_hours, now)
+    required_latest = [
+        parsed
+        for summary in required_artifacts.values()
+        if (parsed := _parse_time(summary.get("latest_timestamp"))) is not None
+    ]
+    invalid_required = [
+        summary
+        for summary in required_artifacts.values()
+        if str(summary.get("status") or "") in {"stale", "missing", "degraded"}
+    ]
+    external_repair = _ontology_external_repair(root, required_artifacts)
+
+    valid_timestamps, future_timestamps = _split_future_timestamps(timestamps, now)
+    latest = _latest_timestamp(required_latest) or _latest_timestamp(valid_timestamps)
     if latest is None:
+        reasons = ["ontology intelligence timestamp missing"]
+        if future_timestamps:
+            reasons.append("ontology intelligence only has future timestamps")
         return {
             "status": "missing",
             "latest_timestamp": None,
             "age_hours": None,
-            "reasons": ["ontology intelligence timestamp missing"],
+            "reasons": reasons,
             "alerts": alerts,
+            "ignored_future_timestamp_count": len(future_timestamps),
+            "required_artifacts": required_artifacts,
+            "external_repair": external_repair,
         }
 
     age_hours = max(0.0, (now - latest).total_seconds() / 3600)
@@ -507,6 +682,14 @@ def _summarize_ontology(root: Path, freshness_hours: int, now: datetime) -> dict
     reasons: list[str] = []
     if status == "stale":
         reasons.append(f"ontology_intelligence stale ({round(age_hours, 2)}h)")
+    for summary in invalid_required:
+        for reason in summary.get("reasons") or [f"{summary.get('source')} {summary.get('status')}"]:
+            text = str(reason).strip()
+            if text and text not in reasons:
+                reasons.append(text)
+    if invalid_required:
+        required_statuses = {str(summary.get("status") or "") for summary in invalid_required}
+        status = "degraded" if required_statuses.intersection({"missing", "degraded"}) else "stale"
     if alerts:
         status = "degraded"
         reasons.extend(alerts)
@@ -516,6 +699,9 @@ def _summarize_ontology(root: Path, freshness_hours: int, now: datetime) -> dict
         "age_hours": round(age_hours, 2),
         "reasons": reasons,
         "alerts": alerts,
+        "ignored_future_timestamp_count": len(future_timestamps),
+        "required_artifacts": required_artifacts,
+        "external_repair": external_repair,
     }
 
 
@@ -571,7 +757,7 @@ def _find_stale_active_ctx(
 ) -> list[dict[str, Any]]:
     stale: list[dict[str, Any]] = []
     for record in _iter_ctx_records(payload):
-        if not record.get("active"):
+        if not _ctx_record_is_active(record):
             continue
         updated = _record_timestamp(record, "updated_at", "updatedAt", "created_at", "createdAt")
         if updated is None:
@@ -592,7 +778,7 @@ def _find_stale_active_ctx(
 def _find_planning_contradictions(codex_payload: Any, ctx_payload: Any) -> list[dict[str, Any]]:
     contradictions: list[dict[str, Any]] = []
     for record in _iter_ctx_records(ctx_payload):
-        if not record.get("active"):
+        if not _ctx_record_is_active(record):
             continue
         worktree_path = str(record.get("worktree_path") or "").strip()
         reason = str(record.get("reason") or "").strip().lower()
@@ -644,6 +830,66 @@ def _find_planning_contradictions(codex_payload: Any, ctx_payload: Any) -> list[
     return contradictions
 
 
+def _build_ctx_remediation(
+    ctx_bindings_path: Path,
+    ctx_summary: dict[str, Any],
+    stale_active_ctx: list[dict[str, Any]],
+    planning_contradictions: list[dict[str, Any]],
+) -> dict[str, Any]:
+    status = str(ctx_summary.get("status") or "")
+    ctx_contradictions = [
+        item
+        for item in planning_contradictions
+        if str(item.get("type") or "").startswith("ctx_")
+    ]
+    required = status in {"missing", "stale", "degraded"} or bool(stale_active_ctx or ctx_contradictions)
+
+    if not required:
+        return {
+            "required": False,
+            "path": str(ctx_bindings_path),
+            "action": "none",
+            "reason": str(
+                ctx_summary.get("detail")
+                or "ctx session-binding evidence is current."
+            ),
+            "active_count": ctx_summary.get("active_count"),
+            "stale_active_count": 0,
+            "contradiction_count": 0,
+        }
+
+    actions: list[str] = []
+    reasons: list[str] = []
+    if status == "missing":
+        actions.append("restore or regenerate ctx session-binding evidence")
+        reasons.append("ctx session-binding evidence is unavailable")
+    elif status == "stale":
+        actions.append("refresh active ctx session bindings or retire sessions that are no longer live")
+        reasons.append(f"ctx session-binding evidence is stale ({ctx_summary.get('age_hours')}h)")
+    elif status == "degraded":
+        actions.append("repair degraded ctx session-binding evidence before selecting new work")
+        reasons.append("ctx session-binding evidence is degraded")
+
+    if stale_active_ctx:
+        actions.append("retire stale active ctx bindings or refresh them from the live ctx runtime")
+        reasons.append(f"{len(stale_active_ctx)} active ctx binding(s) exceed freshness limits")
+    if ctx_contradictions:
+        actions.append("repair ctx binding store contradictions")
+        reasons.append(f"{len(ctx_contradictions)} ctx binding contradiction(s) detected")
+
+    return {
+        "required": True,
+        "path": str(ctx_bindings_path),
+        "action": "; ".join(dict.fromkeys(actions)),
+        "reasons": list(dict.fromkeys(reasons)),
+        "active_count": ctx_summary.get("active_count"),
+        "stale_active_count": len(stale_active_ctx),
+        "stale_active_sessions": stale_active_ctx[:5],
+        "contradiction_count": len(ctx_contradictions),
+        "contradictions": ctx_contradictions[:5],
+    }
+
+
 def _build_provenance_item(tag: str, path: Path, summary: dict[str, Any]) -> dict[str, Any]:
     return {
         "tag": tag,
@@ -686,12 +932,13 @@ def evaluate_self_improvement_evidence(
     journal_latest = _latest_timestamp(_iter_journal_timestamps(journal_payload))
     codex_latest = _latest_timestamp(_iter_codex_timestamps(codex_payload))
     ctx_latest = _latest_timestamp(_iter_ctx_timestamps(ctx_payload))
+    ctx_summary = _summarize_ctx_bindings(ctx_payload, freshness_hours, current)
     ontology_latest = _parse_time(ontology_summary.get("latest_timestamp"))
 
     sources = {
         "journal_entries": _summarize_source("journal_entries", journal_latest, freshness_hours, current),
         "codex_runs": _summarize_source("codex_runs", codex_latest, freshness_hours, current),
-        "ctx_bindings": _summarize_source("ctx_bindings", ctx_latest, freshness_hours, current),
+        "ctx_bindings": ctx_summary,
         "ontology_intelligence": {
             "source": "ontology_intelligence",
             "status": ontology_summary.get("status"),
@@ -703,10 +950,21 @@ def evaluate_self_improvement_evidence(
     stale_active_codex = _find_stale_active_codex(codex_payload, current, active_stale_hours)
     stale_active_ctx = _find_stale_active_ctx(ctx_payload, current, active_stale_hours)
     planning_contradictions = _find_planning_contradictions(codex_payload, ctx_payload)
+    ctx_remediation = _build_ctx_remediation(
+        ctx_bindings_path,
+        ctx_summary,
+        stale_active_ctx,
+        planning_contradictions,
+    )
 
     latest_timestamps = [
         item
-        for item in (journal_latest, codex_latest, ctx_latest, ontology_latest)
+        for item in (
+            journal_latest,
+            codex_latest,
+            None if ctx_summary.get("status") == "inactive" else ctx_latest,
+            ontology_latest,
+        )
         if item is not None
     ]
     freshness_spread_hours = None
@@ -772,6 +1030,8 @@ def evaluate_self_improvement_evidence(
         provenance_items[1]["notes"] = f"{len(stale_active_codex)} active run(s) exceed {active_stale_hours}h"
     if stale_active_ctx:
         provenance_items[2]["notes"] = f"{len(stale_active_ctx)} active session(s) exceed {active_stale_hours}h"
+    elif ctx_summary.get("status") == "inactive":
+        provenance_items[2]["notes"] = str(ctx_summary.get("detail") or "ctx inactive")
     if ontology_alerts:
         provenance_items[3]["notes"] = " | ".join(ontology_alerts)
 
@@ -787,6 +1047,7 @@ def evaluate_self_improvement_evidence(
         "warnings": warnings,
         "ontology": ontology_summary,
         "ontology_alerts": ontology_alerts,
+        "ctx_remediation": ctx_remediation,
         "contradictions": contradictions,
         "reasons": reasons,
         "suppression": {
@@ -1593,11 +1854,13 @@ def _evaluate_leading_indicator_drift_check(
 
 def _build_issue_selection_summary(
     checks: dict[str, dict[str, Any]],
+    gate: Optional[dict[str, Any]] = None,
 ) -> dict[str, Any]:
     guardrail_checks = {
         name: check
         for name, check in checks.items()
         if name in {
+            "reliability_gate",
             "anti_make_work_check",
             "operator_value_alignment",
             "leading_indicator_drift",
@@ -1605,20 +1868,38 @@ def _build_issue_selection_summary(
         and check.get("status") != "pass"
     }
     quantity_guardrail_active = bool(guardrail_checks)
+    reliability_blocked = "reliability_gate" in guardrail_checks
+    gate = gate or {}
+    ctx_remediation = gate.get("ctx_remediation") or {}
+    ontology_repair = (gate.get("ontology") or {}).get("external_repair") or {}
+    remediation_actions = [
+        str(item.get("action") or "").strip()
+        for item in (ctx_remediation, ontology_repair)
+        if item.get("required") and str(item.get("action") or "").strip()
+    ]
+    if reliability_blocked:
+        recommended_focus = "self-improvement evidence freshness repair"
+        detail = (
+            "Repair self-improvement evidence freshness before selecting throughput or operator-value work: "
+            + "; ".join(remediation_actions or ["inspect reliability gate provenance"])
+        )
+    elif quantity_guardrail_active:
+        recommended_focus = "operator decision support plus verified system change"
+        detail = (
+            "Do not select issues because they increase task count; "
+            "prefer work with operator decision support and verified change evidence."
+        )
+    else:
+        recommended_focus = "normal lane selection"
+        detail = "Benchmark guardrails permit normal lane selection."
+
     return {
         "quantity_guardrail_active": quantity_guardrail_active,
         "suppress_raw_throughput_selection": quantity_guardrail_active,
         "blocked_checks": sorted(guardrail_checks),
-        "recommended_focus": (
-            "operator decision support plus verified system change"
-            if quantity_guardrail_active
-            else "normal lane selection"
-        ),
-        "detail": (
-            "Do not select issues because they increase task count; prefer work with operator decision support and verified change evidence."
-            if quantity_guardrail_active
-            else "Benchmark guardrails permit normal lane selection."
-        ),
+        "recommended_focus": recommended_focus,
+        "detail": detail,
+        "remediation_actions": remediation_actions,
     }
 
 
@@ -1700,6 +1981,9 @@ def evaluate_self_improvement_benchmark(
             "warning_count": len(gate.get("warnings") or []),
             "contradiction_count": len(gate.get("contradictions") or []),
             "freshness_spread_hours": gate.get("freshness_spread_hours"),
+            "ctx_remediation_required": bool(
+                (gate.get("ctx_remediation") or {}).get("required")
+            ),
         },
     )
     anti_make_work_check = _evaluate_anti_make_work_check(
@@ -1738,7 +2022,7 @@ def evaluate_self_improvement_benchmark(
         for name, check in checks.items()
         if check.get("critical") and check.get("status") == "fail"
     ]
-    issue_selection = _build_issue_selection_summary(checks)
+    issue_selection = _build_issue_selection_summary(checks, gate)
     operator_summary = _build_operator_summary(checks, issue_selection)
     previous_project_score = _latest_history_project_score(history)
     direction = _score_direction(project_score, previous_project_score, threshold=0.1)

@@ -2531,6 +2531,42 @@ class GatewayRunner:
         except Exception as _tid_err:  # noqa: BLE001
             logger.debug("turn-intent detector failed: %s", _tid_err)
 
+        # S-0518-01 Type A — cold-start (pre-onboarding) prompt block.
+        # While the user has not yet seen the team introduce itself
+        # (onboarding_pushed.flag does not exist), Coach's reply must be
+        # the simulation-shaped handoff: mirror + handoff sentence +
+        # optional preference micro-question. The three sub-agent
+        # self-intros land 3-5 seconds after Coach's reply via the
+        # post-reply detector, so Coach must not preempt them.
+        try:
+            _csuid = getattr(source, "user_id", "") or ""
+            if _csuid:
+                import os as _csos
+                from pathlib import Path as _CSPath
+                _cs_hh = _csos.environ.get("HERMES_HOME") or str(_CSPath.home() / ".hermes")
+                _cs_flag = _CSPath(_cs_hh) / "artemis" / _csuid / "onboarding_pushed.flag"
+                if not _cs_flag.exists():
+                    _cs_block = (
+                        "\n**Onboarding handoff turn — the team has not yet introduced itself to this user.** "
+                        "Your reply must follow this shape:\n\n"
+                        "1. Mirror back what the user just told you in 1-2 short sentences. One normalizing line is fine "
+                        "(e.g. 'that's a clean pivot' / 'common starting point' — but only when it fits).\n"
+                        "2. One short handoff sentence — 'I'm briefing the team now', 'you'll hear from them in a minute', or similar. "
+                        "The three sub-agents (Scout, Analyst, Publicist) will introduce themselves in first person seconds after your reply lands.\n"
+                        "3. Optionally, one micro-question about *working preferences* — communication tone, cadence, channel. "
+                        "**Not** about work direction (do not ask which company / which role / what to prioritize / what to scan first).\n\n"
+                        "Do not list capabilities or what you can help with. Do not narrate what the sub-agents are doing — "
+                        "their introduction is their job. Do not propose work directions or pull together reads / scans / comparisons. "
+                        "Light shape per § Turn Weight, ~50-70 words. Recording facts the user just stated (silent save_user_profile) is fine."
+                    )
+                    context_prompt = context_prompt + "\n" + _cs_block
+                    logger.info(
+                        "cold-start onboarding block injected: chat=%s",
+                        source.chat_id or "unknown",
+                    )
+        except Exception as _cs_err:  # noqa: BLE001
+            logger.debug("cold-start block injection failed: %s", _cs_err)
+
         # If the previous session expired and was auto-reset, prepend a notice
         # so the agent knows this is a fresh conversation (not an intentional /reset).
         if getattr(session_entry, 'was_auto_reset', False):

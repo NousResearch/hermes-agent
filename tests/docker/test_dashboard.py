@@ -52,6 +52,60 @@ def test_dashboard_not_running_by_default(
     )
 
 
+def test_dashboard_slot_reports_down_when_disabled(
+    built_image: str, container_name: str,
+) -> None:
+    """Without HERMES_DASHBOARD, s6-svstat should report the dashboard
+    slot as DOWN (not up-with-sleep-infinity, which would
+    false-positive `hermes doctor` and any other health check).
+
+    Locks the PR #30136 review item I3 fix: cont-init.d/03-dashboard-toggle
+    writes a `down` marker file in the live service-dir when
+    HERMES_DASHBOARD is unset, so the slot reflects reality.
+    """
+    subprocess.run(
+        ["docker", "run", "-d", "--name", container_name, built_image,
+         "sleep", "60"],
+        check=True, capture_output=True, timeout=30,
+    )
+    time.sleep(5)
+    # /command/ isn't on PATH for docker-exec sessions, so call by
+    # absolute path.
+    r = docker_exec(
+        container_name, "/command/s6-svstat", "/run/service/dashboard",
+    )
+    assert r.returncode == 0, f"s6-svstat failed: {r.stderr!r} / {r.stdout!r}"
+    assert "down" in r.stdout, (
+        f"Dashboard slot should be 'down' without HERMES_DASHBOARD; "
+        f"svstat reports: {r.stdout!r}"
+    )
+
+
+def test_dashboard_slot_reports_up_when_enabled(
+    built_image: str, container_name: str,
+) -> None:
+    """Symmetry: with HERMES_DASHBOARD=1, s6-svstat reports the slot as up."""
+    subprocess.run(
+        ["docker", "run", "-d", "--name", container_name,
+         "-e", "HERMES_DASHBOARD=1", built_image, "sleep", "120"],
+        check=True, capture_output=True, timeout=30,
+    )
+    # uvicorn takes a moment to bind; poll svstat.
+    deadline = time.monotonic() + 30.0
+    last = ""
+    while time.monotonic() < deadline:
+        r = docker_exec(
+            container_name, "/command/s6-svstat", "/run/service/dashboard",
+        )
+        last = r.stdout
+        if r.returncode == 0 and "up " in r.stdout:
+            return  # success
+        time.sleep(0.5)
+    raise AssertionError(
+        f"Dashboard slot never reached up state; last svstat: {last!r}"
+    )
+
+
 def test_dashboard_opt_in_starts(
     built_image: str, container_name: str,
 ) -> None:

@@ -956,6 +956,45 @@ def advance_next_run(job_id: str) -> bool:
         return False
 
 
+def defer_next_run(
+    job_id: str,
+    deferred_until: Optional[datetime] = None,
+    reason: Optional[str] = None,
+) -> bool:
+    """Move a due job to a later tick without marking it as executed.
+
+    Resource guards and other backpressure controls use this when running the
+    agent would be unsafe right now. Unlike mark_job_run(), this preserves
+    last_run_at, last_status, and repeat counters so the job can catch up later.
+    """
+    now = _hermes_now()
+    if deferred_until is None:
+        deferred_until = now + timedelta(minutes=10)
+    deferred_until = _ensure_aware(deferred_until)
+    if deferred_until <= now:
+        deferred_until = now + timedelta(minutes=1)
+
+    with _jobs_file_lock:
+        jobs = load_jobs()
+        for job in jobs:
+            if job["id"] == job_id:
+                if not job.get("enabled", True):
+                    return False
+                job["next_run_at"] = deferred_until.isoformat()
+                if job.get("state") != "paused":
+                    job["state"] = "deferred"
+                job["last_deferred_at"] = now.isoformat()
+                job["last_deferred_until"] = deferred_until.isoformat()
+                job["last_deferred_reason"] = reason or "deferred by scheduler"
+                try:
+                    job["defer_count"] = int(job.get("defer_count") or 0) + 1
+                except (TypeError, ValueError):
+                    job["defer_count"] = 1
+                save_jobs(jobs)
+                return True
+        return False
+
+
 def get_due_jobs() -> List[Dict[str, Any]]:
     """Get all jobs that are due to run now.
 

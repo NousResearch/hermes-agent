@@ -17,7 +17,9 @@ import os
 import shutil
 import subprocess
 import sys
+import time
 from contextlib import contextmanager
+from datetime import datetime, timedelta
 
 # fcntl is Unix-only; on Windows use msvcrt for file locking
 try:
@@ -42,6 +44,9 @@ from hermes_cli.config import load_config, _expand_env_vars
 from hermes_time import now as _hermes_now
 
 logger = logging.getLogger(__name__)
+RESOURCE_THROTTLE_FILE = "resource-guard-throttle.json"
+RESOURCE_GUARD_DEFER_MARGIN_SECONDS = 60
+RESOURCE_GUARD_DEFER_FALLBACK_SECONDS = 10 * 60
 
 
 class CronPromptInjectionBlocked(Exception):
@@ -55,6 +60,54 @@ class CronPromptInjectionBlocked(Exception):
     malicious skill could carry an injection payload that reached the
     non-interactive (auto-approve) cron agent.
     """
+
+
+def _resource_guard_throttle_state() -> tuple[bool, str, Optional[int]]:
+    """Return whether Hermes should defer agent-backed cron work temporarily."""
+    path = _get_hermes_home() / "state" / RESOURCE_THROTTLE_FILE
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return False, "", None
+    except Exception as exc:
+        logger.warning("Ignoring invalid resource guard throttle file: %s", exc)
+        return False, "", None
+    if not payload.get("active"):
+        return False, "", None
+    until = int(payload.get("active_until_epoch") or 0)
+    if until and until < int(time.time()):
+        return False, "", None
+    return True, str(payload.get("reason") or "resource guard active"), until or None
+
+
+def _resource_guard_throttle_active() -> tuple[bool, str]:
+    """Backward-compatible guard check used by direct run_job() callers."""
+    active, reason, _until = _resource_guard_throttle_state()
+    return active, reason
+
+
+def _resource_guard_defer_until(active_until_epoch: Optional[int]) -> datetime:
+    """Compute the next controlled retry time for a resource-guard deferral."""
+    now = _hermes_now()
+    if active_until_epoch:
+        try:
+            deferred_until = datetime.fromtimestamp(
+                active_until_epoch + RESOURCE_GUARD_DEFER_MARGIN_SECONDS,
+                tz=now.tzinfo,
+            )
+        except (OSError, OverflowError, ValueError):
+            deferred_until = now + timedelta(seconds=RESOURCE_GUARD_DEFER_FALLBACK_SECONDS)
+    else:
+        deferred_until = now + timedelta(seconds=RESOURCE_GUARD_DEFER_FALLBACK_SECONDS)
+
+    if deferred_until <= now:
+        return now + timedelta(minutes=1)
+    return deferred_until
+
+
+def _agent_backed_job(job: dict) -> bool:
+    """Return True for jobs that need the LLM agent path and can be deferred."""
+    return not job.get("no_agent")
 
 
 def _resolve_cron_enabled_toolsets(job: dict, cfg: dict) -> list[str] | None:
@@ -124,12 +177,13 @@ _LEGACY_HOME_TARGET_ENV_VARS = {
     "QQBOT_HOME_CHANNEL": "QQ_HOME_CHANNEL",
 }
 
-from cron.jobs import get_due_jobs, mark_job_run, save_job_output, advance_next_run
+from cron.jobs import get_due_jobs, mark_job_run, save_job_output, advance_next_run, defer_next_run
 
 # Sentinel: when a cron agent has nothing new to report, it can start its
 # response with this marker to suppress delivery.  Output is still saved
 # locally for audit.
 SILENT_MARKER = "[SILENT]"
+RESOURCE_GUARD_DEFERRED_MARKER = "[RESOURCE_GUARD_DEFERRED]"
 
 # Backward-compatible module override used by tests and emergency monkeypatches.
 _hermes_home: Path | None = None
@@ -1147,6 +1201,7 @@ def _run_job_impl(job: dict) -> tuple[bool, str, str, Optional[str]]:
     """
     job_id = job["id"]
     job_name = str(job.get("name") or job.get("prompt") or job_id or "cron job")
+    throttle_active, throttle_reason = _resource_guard_throttle_active()
 
     # ---------------------------------------------------------------
     # no_agent short-circuit — the script IS the job, no LLM involvement.
@@ -1250,6 +1305,23 @@ def _run_job_impl(job: dict) -> tuple[bool, str, str, Optional[str]]:
             f"{output}\n"
         )
         return True, doc, output, None
+
+    if throttle_active:
+        now_iso = _hermes_now().strftime("%Y-%m-%d %H:%M:%S")
+        logger.warning(
+            "Job '%s' (ID: %s): deferred by resource guard: %s",
+            job_name,
+            job_id,
+            throttle_reason,
+        )
+        deferred_doc = (
+            f"# Cron Job: {job_name}\n\n"
+            f"**Job ID:** {job_id}\n"
+            f"**Run Time:** {now_iso}\n"
+            f"**Status:** deferred by resource guard\n\n"
+            f"{throttle_reason}\n"
+        )
+        return False, deferred_doc, SILENT_MARKER, f"{RESOURCE_GUARD_DEFERRED_MARKER} {throttle_reason}"
 
     # ---------------------------------------------------------------
     # Default (LLM) path — import and construct the agent machinery now
@@ -1826,9 +1898,41 @@ def tick(verbose: bool = True, adapters=None, loop=None) -> int:
         if verbose:
             logger.info("%s - %s job(s) due", _hermes_now().strftime('%H:%M:%S'), len(due_jobs))
 
-        # Advance next_run_at for all recurring jobs FIRST, under the file lock,
-        # before any execution begins.  This preserves at-most-once semantics.
-        for job in due_jobs:
+        throttle_active, throttle_reason, throttle_until_epoch = _resource_guard_throttle_state()
+        jobs_to_run = due_jobs
+        if throttle_active:
+            deferred_until = _resource_guard_defer_until(throttle_until_epoch)
+            jobs_to_run = []
+            deferred_count = 0
+            for job in due_jobs:
+                if _agent_backed_job(job):
+                    if defer_next_run(job["id"], deferred_until, throttle_reason):
+                        deferred_count += 1
+                        logger.warning(
+                            "Job '%s' (ID: %s): deferred by resource guard until %s: %s",
+                            job.get("name") or job.get("prompt") or job["id"],
+                            job["id"],
+                            deferred_until.isoformat(),
+                            throttle_reason,
+                        )
+                    continue
+                jobs_to_run.append(job)
+
+            if verbose and deferred_count:
+                logger.warning(
+                    "Resource guard deferred %d agent-backed cron job(s) until %s; "
+                    "no_agent jobs continue.",
+                    deferred_count,
+                    deferred_until.isoformat(),
+                )
+
+            if not jobs_to_run:
+                return 0
+
+        # Advance next_run_at for jobs that will actually run FIRST, under the
+        # file lock, before any execution begins. This preserves at-most-once
+        # semantics without losing resource-guard-deferred work.
+        for job in jobs_to_run:
             advance_next_run(job["id"])
 
         # Resolve max parallel workers: env var > config.yaml > unbounded.
@@ -1854,7 +1958,7 @@ def tick(verbose: bool = True, adapters=None, loop=None) -> int:
         if verbose:
             logger.info(
                 "Running %d job(s) in parallel (max_workers=%s)",
-                len(due_jobs),
+                len(jobs_to_run),
                 _max_workers if _max_workers else "unbounded",
             )
 
@@ -1866,6 +1970,28 @@ def tick(verbose: bool = True, adapters=None, loop=None) -> int:
                 output_file = save_job_output(job["id"], output)
                 if verbose:
                     logger.info("Output saved to: %s", output_file)
+
+                if error and str(error).startswith(RESOURCE_GUARD_DEFERRED_MARKER):
+                    active, guard_reason, guard_until_epoch = _resource_guard_throttle_state()
+                    defer_reason = str(error).replace(RESOURCE_GUARD_DEFERRED_MARKER, "", 1).strip()
+                    defer_reason = defer_reason or guard_reason or "resource guard active"
+                    deferred_until = _resource_guard_defer_until(guard_until_epoch if active else None)
+                    if defer_next_run(job["id"], deferred_until, defer_reason):
+                        logger.warning(
+                            "Job '%s' (ID: %s): deferred by resource guard until %s: %s",
+                            job.get("name") or job.get("prompt") or job["id"],
+                            job["id"],
+                            deferred_until.isoformat(),
+                            defer_reason,
+                        )
+                    else:
+                        logger.error(
+                            "Job '%s' (ID: %s): resource guard requested deferral, "
+                            "but next_run_at could not be updated",
+                            job.get("name") or job.get("prompt") or job["id"],
+                            job["id"],
+                        )
+                    return False
 
                 # Deliver the final response to the origin/target chat.
                 # If the agent responded with [SILENT], skip delivery (but
@@ -1910,11 +2036,11 @@ def tick(verbose: bool = True, adapters=None, loop=None) -> int:
         # sequentially to avoid corrupting each other. Jobs without either field
         # stay parallel-safe.
         sequential_jobs = [
-            j for j in due_jobs
+            j for j in jobs_to_run
             if (j.get("workdir") or "").strip() or (j.get("profile") or "").strip()
         ]
         parallel_jobs = [
-            j for j in due_jobs
+            j for j in jobs_to_run
             if not ((j.get("workdir") or "").strip() or (j.get("profile") or "").strip())
         ]
 

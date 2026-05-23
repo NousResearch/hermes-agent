@@ -3,13 +3,23 @@
 import json
 import logging
 import os
+from datetime import datetime, timezone
 from unittest.mock import AsyncMock, patch, MagicMock
 
 import pytest
 
-from cron.scheduler import _resolve_origin, _resolve_delivery_target, _deliver_result, _send_media_via_adapter, run_job, SILENT_MARKER, _build_job_prompt
+from cron.scheduler import _resolve_origin, _resolve_delivery_target, _deliver_result, _send_media_via_adapter, run_job, SILENT_MARKER, RESOURCE_GUARD_DEFERRED_MARKER, _build_job_prompt
 from tools.env_passthrough import clear_env_passthrough
 from tools.credential_files import clear_credential_files
+
+
+@pytest.fixture(autouse=True)
+def _ignore_live_resource_guard(monkeypatch):
+    """Keep scheduler unit tests independent from the operator machine's guard file."""
+    monkeypatch.setattr(
+        "cron.scheduler._resource_guard_throttle_state",
+        lambda: (False, "", None),
+    )
 
 
 class TestResolveOrigin:
@@ -2204,6 +2214,110 @@ class TestSendMediaViaAdapter:
         self._run_with_loop(adapter, "123", media_files, None, {"id": "j3"})
         adapter.send_voice.assert_called_once()
         adapter.send_image_file.assert_called_once()
+
+
+class TestResourceGuardDeferral:
+    """Verify resource guard backpressure defers agent jobs instead of losing them."""
+
+    @pytest.fixture(autouse=True)
+    def _isolate_tick_lock(self, tmp_path):
+        lock_dir = tmp_path / "cron"
+        lock_dir.mkdir()
+        lock_file = lock_dir / ".tick.lock"
+        with patch("cron.scheduler._get_lock_paths", return_value=(lock_dir, lock_file)):
+            yield
+
+    def test_tick_defers_agent_jobs_and_still_runs_no_agent_jobs(self, monkeypatch):
+        active_until = int(datetime(2026, 5, 21, 12, 0, tzinfo=timezone.utc).timestamp())
+        monkeypatch.setattr(
+            "cron.scheduler._resource_guard_throttle_state",
+            lambda: (True, "system load high", active_until),
+        )
+        agent_job = {"id": "agent-job", "name": "agent", "deliver": "local"}
+        script_job = {
+            "id": "script-job",
+            "name": "script",
+            "no_agent": True,
+            "deliver": "local",
+        }
+
+        with patch("cron.scheduler.get_due_jobs", return_value=[agent_job, script_job]), \
+             patch("cron.scheduler.defer_next_run", return_value=True) as defer_mock, \
+             patch("cron.scheduler.advance_next_run") as advance_mock, \
+             patch("cron.scheduler.run_job", return_value=(True, "# output", "ok", None)) as run_mock, \
+             patch("cron.scheduler.save_job_output", return_value="/tmp/out.md"), \
+             patch("cron.scheduler._deliver_result", return_value=None), \
+             patch("cron.scheduler.mark_job_run") as mark_mock:
+            from cron.scheduler import tick
+            result = tick(verbose=False)
+
+        assert result == 1
+        defer_mock.assert_called_once()
+        assert defer_mock.call_args.args[0] == "agent-job"
+        assert defer_mock.call_args.args[2] == "system load high"
+        advance_mock.assert_called_once_with("script-job")
+        run_mock.assert_called_once_with(script_job)
+        mark_mock.assert_called_once_with("script-job", True, None, delivery_error=None)
+
+    def test_tick_returns_zero_when_all_due_jobs_are_guard_deferred(self, monkeypatch):
+        monkeypatch.setattr(
+            "cron.scheduler._resource_guard_throttle_state",
+            lambda: (True, "Hermes process count elevated", None),
+        )
+        job = {"id": "agent-job", "name": "agent", "deliver": "local"}
+
+        with patch("cron.scheduler.get_due_jobs", return_value=[job]), \
+             patch("cron.scheduler.defer_next_run", return_value=True) as defer_mock, \
+             patch("cron.scheduler.advance_next_run") as advance_mock, \
+             patch("cron.scheduler.run_job") as run_mock, \
+             patch("cron.scheduler.mark_job_run") as mark_mock:
+            from cron.scheduler import tick
+            result = tick(verbose=False)
+
+        assert result == 0
+        defer_mock.assert_called_once()
+        advance_mock.assert_not_called()
+        run_mock.assert_not_called()
+        mark_mock.assert_not_called()
+
+    def test_tick_defers_if_guard_activates_during_run(self, monkeypatch):
+        active_until = int(datetime(2026, 5, 21, 12, 0, tzinfo=timezone.utc).timestamp())
+        states = iter([
+            (False, "", None),
+            (True, "system load high", active_until),
+        ])
+        monkeypatch.setattr(
+            "cron.scheduler._resource_guard_throttle_state",
+            lambda: next(states),
+        )
+        job = {"id": "agent-job", "name": "agent", "deliver": "local"}
+
+        with patch("cron.scheduler.get_due_jobs", return_value=[job]), \
+             patch("cron.scheduler.advance_next_run") as advance_mock, \
+             patch(
+                 "cron.scheduler.run_job",
+                 return_value=(
+                     False,
+                     "# deferred",
+                     SILENT_MARKER,
+                     f"{RESOURCE_GUARD_DEFERRED_MARKER} system load high",
+                 ),
+             ), \
+             patch("cron.scheduler.save_job_output", return_value="/tmp/out.md") as save_mock, \
+             patch("cron.scheduler.defer_next_run", return_value=True) as defer_mock, \
+             patch("cron.scheduler._deliver_result") as deliver_mock, \
+             patch("cron.scheduler.mark_job_run") as mark_mock:
+            from cron.scheduler import tick
+            result = tick(verbose=False)
+
+        assert result == 0
+        advance_mock.assert_called_once_with("agent-job")
+        save_mock.assert_called_once_with("agent-job", "# deferred")
+        defer_mock.assert_called_once()
+        assert defer_mock.call_args.args[0] == "agent-job"
+        assert defer_mock.call_args.args[2] == "system load high"
+        deliver_mock.assert_not_called()
+        mark_mock.assert_not_called()
 
 
 class TestParallelTick:

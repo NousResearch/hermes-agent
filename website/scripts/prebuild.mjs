@@ -21,9 +21,28 @@ import { fileURLToPath } from "node:url";
 
 const scriptDir = dirname(fileURLToPath(import.meta.url));
 const websiteDir = resolve(scriptDir, "..");
+const repoDir = resolve(websiteDir, "..");
 const extractScript = join(scriptDir, "extract-skills.py");
 const llmsScript = join(scriptDir, "generate-llms-txt.py");
 const outputFile = join(websiteDir, "src", "data", "skills.json");
+const pythonCandidates = [
+  process.env.HERMES_WEBSITE_PYTHON,
+  join(repoDir, ".venv", "bin", "python"),
+  join(repoDir, "venv", "bin", "python"),
+  "python3",
+].filter(Boolean);
+
+function resolvePython() {
+  for (const python of pythonCandidates) {
+    const probe = spawnSync(python, ["-c", "import yaml"], { stdio: "ignore" });
+    if (!probe.error && probe.status === 0) {
+      return python;
+    }
+  }
+  return null;
+}
+
+const pythonBin = resolvePython();
 
 function writeEmptyFallback(reason) {
   mkdirSync(dirname(outputFile), { recursive: true });
@@ -39,11 +58,11 @@ function runPython(script, label) {
     console.warn(`[prebuild] ${label} skipped (script missing)`);
     return false;
   }
-  const r = spawnSync("python3", [script], { stdio: "inherit", cwd: websiteDir });
-  if (r.error && r.error.code === "ENOENT") {
-    console.warn(`[prebuild] ${label} skipped (python3 not found)`);
+  if (!pythonBin) {
+    console.warn(`[prebuild] ${label} skipped (python with pyyaml not found)`);
     return false;
   }
+  const r = spawnSync(pythonBin, [script], { stdio: "inherit", cwd: websiteDir });
   if (r.status !== 0) {
     console.warn(`[prebuild] ${label} exited with status ${r.status}`);
     return false;
@@ -54,14 +73,14 @@ function runPython(script, label) {
 // 1) skills.json — required for the Skills Hub page.
 if (!existsSync(extractScript)) {
   writeEmptyFallback("extract script missing");
+} else if (!pythonBin) {
+  writeEmptyFallback("python with pyyaml not found");
 } else {
-  const r = spawnSync("python3", [extractScript], {
+  const r = spawnSync(pythonBin, [extractScript], {
     stdio: "inherit",
     cwd: websiteDir,
   });
-  if (r.error && r.error.code === "ENOENT") {
-    writeEmptyFallback("python3 not found");
-  } else if (r.status !== 0) {
+  if (r.status !== 0) {
     writeEmptyFallback(`extract-skills.py exited with status ${r.status}`);
   }
 }

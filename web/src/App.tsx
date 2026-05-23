@@ -24,10 +24,12 @@ import {
   Database,
   Download,
   Eye,
+  ExternalLink,
   FileText,
   Globe,
   Heart,
   KeyRound,
+  LayoutDashboard,
   Menu,
   MessageSquare,
   Package,
@@ -182,6 +184,7 @@ const ICON_MAP: Record<string, ComponentType<{ className?: string }>> = {
   Wrench,
   Zap,
   Heart,
+  LayoutDashboard,
   Star,
   Code,
   Eye,
@@ -189,6 +192,31 @@ const ICON_MAP: Record<string, ComponentType<{ className?: string }>> = {
 
 function resolveIcon(name: string): ComponentType<{ className?: string }> {
   return ICON_MAP[name] ?? Puzzle;
+}
+
+function getHuduiUrl(): string {
+  if (typeof window === "undefined") return "http://127.0.0.1:5173/?tab=network";
+  const protocol = window.location.protocol || "http:";
+  const host = window.location.hostname || "127.0.0.1";
+  return `${protocol}//${host}:5173/?tab=network`;
+}
+
+function getPaperclipUrl(): string {
+  if (typeof window === "undefined") return "http://127.0.0.1:8081/";
+  const protocol = window.location.protocol || "http:";
+  const host = window.location.hostname || "127.0.0.1";
+  return `${protocol}//${host}:8081/`;
+}
+
+function getDashboardHubUrl(): string {
+  if (typeof window === "undefined") return "http://127.0.0.1:8081/dashboards";
+  const protocol = window.location.protocol || "http:";
+  const host = window.location.hostname || "127.0.0.1";
+  return `${protocol}//${host}:8081/dashboards`;
+}
+
+function getTailscaleDashboardHubUrl(): string {
+  return "https://appleserver-dashboard.taild9d0ca.ts.net/dashboards";
 }
 
 function buildNavItems(
@@ -316,6 +344,10 @@ export default function App() {
   const normalizedPath = pathname.replace(/\/$/, "") || "/";
   const isChatRoute = normalizedPath === "/chat";
   const embeddedChat = isDashboardEmbeddedChatEnabled();
+  const huduiUrl = useMemo(() => getHuduiUrl(), []);
+  const paperclipUrl = useMemo(() => getPaperclipUrl(), []);
+  const dashboardHubUrl = useMemo(() => getDashboardHubUrl(), []);
+  const tailscaleDashboardHubUrl = useMemo(() => getTailscaleDashboardHubUrl(), []);
 
   // `dashboard.show_token_analytics` gates the Analytics nav item.  The
   // page itself remains reachable by URL (it renders an explanation when
@@ -565,6 +597,107 @@ export default function App() {
                   </ul>
                 </div>
               )}
+
+              <div
+                aria-labelledby="hermes-sidebar-external-nav-heading"
+                className="flex flex-col border-t border-current/10 pb-2"
+                role="group"
+              >
+                <span
+                  className={cn(
+                    "px-5 pt-2.5 pb-1",
+                    "font-mondwest text-[0.6rem] tracking-[0.15em] uppercase opacity-30",
+                  )}
+                  id="hermes-sidebar-external-nav-heading"
+                >
+                  Externe Tools
+                </span>
+
+                <a
+                  className={cn(
+                    "group relative flex h-10 w-full items-center gap-3 overflow-hidden px-5",
+                    "text-[0.9rem] leading-none text-midground/70",
+                    "transition-colors hover:bg-midground/7 hover:text-midground",
+                    "focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-0",
+                  )}
+                  href={dashboardHubUrl}
+                  rel="noreferrer"
+                  target="_blank"
+                >
+                  <LayoutDashboard
+                    aria-hidden
+                    className="h-4 w-4 shrink-0 text-primary/80 transition-colors group-hover:text-primary"
+                  />
+                  <span className="min-w-0 flex-1 truncate">Dashboard Hub</span>
+                  <ExternalLink
+                    aria-hidden
+                    className="h-3.5 w-3.5 shrink-0 text-midground/35 transition-colors group-hover:text-midground/70"
+                  />
+                </a>
+                <a
+                  className={cn(
+                    "group relative flex h-10 w-full items-center gap-3 overflow-hidden px-5",
+                    "text-[0.9rem] leading-none text-midground/70",
+                    "transition-colors hover:bg-midground/7 hover:text-midground",
+                    "focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-0",
+                  )}
+                  href={huduiUrl}
+                  rel="noreferrer"
+                  target="_blank"
+                >
+                  <Activity
+                    aria-hidden
+                    className="h-4 w-4 shrink-0 text-primary/80 transition-colors group-hover:text-primary"
+                  />
+                  <span className="min-w-0 flex-1 truncate">Hermes HUDUI</span>
+                  <ExternalLink
+                    aria-hidden
+                    className="h-3.5 w-3.5 shrink-0 text-midground/35 transition-colors group-hover:text-midground/70"
+                  />
+                </a>
+                <a
+                  className={cn(
+                    "group relative flex h-10 w-full items-center gap-3 overflow-hidden px-5",
+                    "text-[0.9rem] leading-none text-midground/70",
+                    "transition-colors hover:bg-midground/7 hover:text-midground",
+                    "focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-0",
+                  )}
+                  href={paperclipUrl}
+                  rel="noreferrer"
+                  target="_blank"
+                >
+                  <Package
+                    aria-hidden
+                    className="h-4 w-4 shrink-0 text-primary/80 transition-colors group-hover:text-primary"
+                  />
+                  <span className="min-w-0 flex-1 truncate">Paperclip</span>
+                  <ExternalLink
+                    aria-hidden
+                    className="h-3.5 w-3.5 shrink-0 text-midground/35 transition-colors group-hover:text-midground/70"
+                  />
+                </a>
+                <a
+                  className={cn(
+                    "group relative flex h-10 w-full items-center gap-3 overflow-hidden px-5",
+                    "text-[0.9rem] leading-none text-midground/70",
+                    "transition-colors hover:bg-midground/7 hover:text-midground",
+                    "focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-0",
+                  )}
+                  href={tailscaleDashboardHubUrl}
+                  rel="noreferrer"
+                  target="_blank"
+                >
+                  <Globe
+                    aria-hidden
+                    className="h-4 w-4 shrink-0 text-primary/80 transition-colors group-hover:text-primary"
+                  />
+                  <span className="min-w-0 flex-1 truncate">Tailscale Hub</span>
+                  <ExternalLink
+                    aria-hidden
+                    className="h-3.5 w-3.5 shrink-0 text-midground/35 transition-colors group-hover:text-midground/70"
+                  />
+                </a>
+              </div>
             </nav>
 
             <SidebarSystemActions onNavigate={closeMobile} />

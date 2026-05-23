@@ -101,6 +101,37 @@ class TestCommandBypassActiveSession:
         )
 
     @pytest.mark.asyncio
+    async def test_plaintext_stop_bypasses_guard(self):
+        """Exact plain-text Stop must follow the same hard path as /stop."""
+        adapter = _make_adapter()
+        sk = _session_key()
+        adapter._active_sessions[sk] = asyncio.Event()
+
+        await adapter.handle_message(_make_event("Stop"))
+
+        assert sk not in adapter._pending_messages, (
+            "plain-text Stop was queued instead of being dispatched as /stop"
+        )
+        assert any("handled:stop" in r for r in adapter.sent_responses), (
+            "plain-text Stop response was not sent back to the user"
+        )
+
+    @pytest.mark.asyncio
+    async def test_plaintext_stop_phrase_is_not_control_command(self):
+        """Only exact Stop/Stopp is special; stop reminder text stays ordinary."""
+        adapter = _make_adapter()
+        sk = _session_key()
+        guard = asyncio.Event()
+        adapter._active_sessions[sk] = guard
+
+        await adapter.handle_message(_make_event("stop reminder food"))
+
+        assert sk in adapter._pending_messages
+        assert adapter._pending_messages[sk].text == "stop reminder food"
+        assert guard.is_set()
+        assert not adapter.sent_responses
+
+    @pytest.mark.asyncio
     async def test_new_bypasses_guard(self):
         """/new must be dispatched directly, not queued."""
         adapter = _make_adapter()

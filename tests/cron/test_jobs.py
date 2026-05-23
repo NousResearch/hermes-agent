@@ -22,6 +22,7 @@ from cron.jobs import (
     remove_job,
     mark_job_run,
     advance_next_run,
+    defer_next_run,
     get_due_jobs,
     save_job_output,
 )
@@ -642,6 +643,34 @@ class TestAdvanceNextRun:
         # Now the job should NOT be due (simulates restart after crash)
         due_after = get_due_jobs()
         assert len(due_after) == 0, "Job should not be due after advance_next_run"
+
+
+class TestDeferNextRun:
+    """Tests for defer_next_run() — controlled backpressure without marking run."""
+
+    def test_defer_preserves_run_history_and_repeat_count(self, tmp_cron_dir):
+        job = create_job(prompt="Check important queue", schedule="every 1h")
+        before = get_job(job["id"])
+        deferred_until = datetime.now().astimezone() + timedelta(minutes=7)
+
+        result = defer_next_run(
+            job["id"],
+            deferred_until,
+            "system load high",
+        )
+
+        assert result is True
+        updated = get_job(job["id"])
+        assert updated["state"] == "deferred"
+        assert updated["last_run_at"] == before["last_run_at"]
+        assert updated["last_status"] == before["last_status"]
+        assert updated["repeat"]["completed"] == before["repeat"]["completed"]
+        assert datetime.fromisoformat(updated["next_run_at"]) == deferred_until
+        assert updated["last_deferred_reason"] == "system load high"
+        assert updated["defer_count"] == 1
+
+    def test_defer_nonexistent_job_returns_false(self, tmp_cron_dir):
+        assert defer_next_run("nonexistent-id") is False
 
 
 class TestGetDueJobs:

@@ -446,6 +446,30 @@ async def test_stop_hard_kills_running_agent():
     assert "stopped" in result.lower()
 
 
+@pytest.mark.asyncio
+async def test_plaintext_stop_hard_kills_running_agent():
+    """Plain-text Stop must be treated as /stop for WhatsApp-style control."""
+    runner = _make_runner()
+    session_key = build_session_key(
+        SessionSource(platform=Platform.TELEGRAM, chat_id="12345", chat_type="dm", user_id="u1")
+    )
+
+    fake_agent = MagicMock()
+    fake_agent.get_activity_summary.return_value = {"seconds_since_activity": 0}
+    runner._running_agents[session_key] = fake_agent
+    runner.adapters[Platform.TELEGRAM]._active_sessions[session_key] = asyncio.Event()
+
+    result = await runner._handle_message(_make_event(text="Stop"))
+
+    fake_agent.interrupt.assert_called_once_with("Stop requested")
+    assert session_key not in runner._running_agents
+    assert runner.adapters[Platform.TELEGRAM].interrupted_sessions == [
+        (session_key, "12345")
+    ]
+    assert result is not None
+    assert "stopped" in result.lower()
+
+
 # ------------------------------------------------------------------
 # Test 6c: /stop clears pending messages to prevent stale replays
 # ------------------------------------------------------------------

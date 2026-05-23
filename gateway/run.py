@@ -817,6 +817,7 @@ from gateway.platforms.base import (
     MessageEvent,
     MessageType,
     _reply_anchor_for_event,
+    is_plaintext_stop_request,
     merge_pending_message_event,
 )
 from gateway.restart import (
@@ -6532,6 +6533,15 @@ class GatewayRunner:
         # Otherwise control/session commands like /new or /help get silently
         # consumed as update answers instead of being dispatched normally.
         _quick_key = self._session_key_for_source(source)
+
+        if _quick_key in self._running_agents and is_plaintext_stop_request(event):
+            logger.info(
+                "Plain-text stop request for active session %s; routing through /stop",
+                _quick_key,
+            )
+            event = dataclasses.replace(event, text="/stop")
+            source = event.source
+
         _update_prompts = getattr(self, "_update_prompt_pending", {})
         if _update_prompts.get(_quick_key):
             raw = (event.text or "").strip()

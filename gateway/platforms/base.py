@@ -1029,6 +1029,26 @@ _PLAINTEXT_GATEWAY_RESTART_PATTERNS: tuple[re.Pattern[str], ...] = (
     re.compile(r"^(?:please\s+)?restart\s+hermes[.!?\s]*$", re.IGNORECASE),
 )
 
+_PLAINTEXT_STOP_RE = re.compile(r"^(?:stop|stopp)[.!?\s]*$", re.IGNORECASE)
+
+
+def is_plaintext_stop_request(event: "MessageEvent") -> bool:
+    """Return True for exact plain-text stop requests.
+
+    Scope is intentionally narrow so ordinary text like "stop reminder x" keeps
+    its current semantics. The active-session handler uses this to treat
+    WhatsApp-style "Stop" as the same hard control path as ``/stop``.
+    """
+    try:
+        if event is None or event.message_type != MessageType.TEXT:
+            return False
+        text = (event.text or "").strip()
+        if not text or text.startswith("/"):
+            return False
+        return bool(_PLAINTEXT_STOP_RE.match(text))
+    except Exception:
+        return False
+
 
 def coerce_plaintext_gateway_command(event: "MessageEvent") -> None:
     """Rewrite a tiny set of DM plaintext admin phrases into slash commands.
@@ -2903,6 +2923,14 @@ class BasePlatformAdapter(ABC):
             # session lifecycle and its cleanup races with the running task
             # (see PR #4926).
             cmd = event.get_command()
+            if not cmd and is_plaintext_stop_request(event):
+                logger.debug(
+                    "[%s] Plain-text stop bypassing active-session guard for %s",
+                    self.name,
+                    session_key,
+                )
+                event.text = "/stop"
+                cmd = "stop"
             from hermes_cli.commands import should_bypass_active_session
 
             if should_bypass_active_session(cmd):

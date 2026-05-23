@@ -483,6 +483,10 @@ GUI는 의도적으로 얇습니다. auto-assignment, budget, governance gate, o
 
 ## CLI 명령 레퍼런스
 
+### Auto vs Manual orchestration
+
+이 앵커는 영문 원문의 오케스트레이션 모드 설명과 연결하기 위해 유지됩니다.
+
 이 표면은 **사람, 스크립트, cron, dashboard**가 보드를 조작할 때 씁니다. dispatcher 내부 worker는 동일 작업을 `kanban_*` [tool 표면](#how-workers-interact-with-the-board)으로 수행합니다.
 
 ```

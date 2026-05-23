@@ -2,6 +2,29 @@ import {themes as prismThemes} from 'prism-react-renderer';
 import type {Config} from '@docusaurus/types';
 import type * as Preset from '@docusaurus/preset-classic';
 
+type MarkdownNode = {
+  type?: string;
+  url?: string;
+  children?: MarkdownNode[];
+};
+
+function normalizeDocsBaseUrlLinks() {
+  return (tree: MarkdownNode) => {
+    const visit = (node: MarkdownNode) => {
+      if ((node.type === 'link' || node.type === 'definition') && typeof node.url === 'string') {
+        node.url = node.url
+          .replace(/^\/docs\/(?:zh-Hans|ko)(?=\/)/, '')
+          .replace(/^\/docs(?=\/)/, '');
+      }
+      for (const child of node.children ?? []) {
+        visit(child);
+      }
+    };
+
+    visit(tree);
+  };
+}
+
 const config: Config = {
   title: 'Hermes Agent',
   tagline: 'The self-improving AI agent',
@@ -78,6 +101,7 @@ const config: Config = {
           routeBasePath: '/',  // Docs at the root of /docs/
           sidebarPath: './sidebars.ts',
           editUrl: 'https://github.com/NousResearch/hermes-agent/edit/main/website/',
+          remarkPlugins: [normalizeDocsBaseUrlLinks],
         },
         blog: false,
         theme: {

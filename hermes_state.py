@@ -328,6 +328,8 @@ class SessionDB:
     _WRITE_RETRY_MAX_S = 0.150   # 150ms
     # Attempt a PASSIVE WAL checkpoint every N successful writes.
     _CHECKPOINT_EVERY_N_WRITES = 50
+    # Keep CJK LIKE fallback SQL below SQLite expression/variable limits.
+    _CJK_LIKE_MAX_TOKENS = 250
 
     def __init__(self, db_path: Path = None):
         self.db_path = db_path or DEFAULT_DB_PATH
@@ -2078,10 +2080,15 @@ class SessionDB:
                 # For multi-token OR queries (e.g. "广西 OR 桂林 OR 漓江"),
                 # build one LIKE condition per non-operator token so each term
                 # is matched independently (#20494).
-                non_op_tokens = [
+                raw_tokens = [
                     t for t in raw_query.split()
                     if t.upper() not in {"AND", "OR", "NOT"}
                 ] or [raw_query]
+                # Deduplicate and cap attacker-controlled tokens so the
+                # fallback cannot exceed SQLite expression/variable limits.
+                non_op_tokens = list(dict.fromkeys(raw_tokens))[
+                    :self._CJK_LIKE_MAX_TOKENS
+                ]
                 token_clauses = []
                 like_params: list = []
                 for tok in non_op_tokens:
@@ -2117,8 +2124,13 @@ class SessionDB:
                 # instr() for snippet uses first search token
                 like_params = [non_op_tokens[0]] + like_params
                 with self._lock:
-                    like_cursor = self._conn.execute(like_sql, like_params)
-                    matches = [dict(row) for row in like_cursor.fetchall()]
+                    try:
+                        like_cursor = self._conn.execute(like_sql, like_params)
+                        like_rows = like_cursor.fetchall()
+                    except sqlite3.OperationalError:
+                        matches = []
+                    else:
+                        matches = [dict(row) for row in like_rows]
         else:
             with self._lock:
                 try:
@@ -3012,4 +3024,3 @@ class SessionDB:
                 (error[:500], session_id),
             )
         self._execute_write(_do)
-

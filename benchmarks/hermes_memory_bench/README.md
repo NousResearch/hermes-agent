@@ -40,6 +40,7 @@ python -m benchmarks.hermes_memory_bench.run --suite smoke --output /tmp/hermes-
 - `memory_real_proposal_write_lock_gate`
 - `memory_human_approval_token_request`
 - `memory_human_approval_token_review_gate`
+- `memory_human_approval_token_issuance_plan`
 - `latency_ms`
 
 ## Hybrid Retrieval Fusion v0.1
@@ -348,6 +349,25 @@ Graph, or modifies config.
 The smoke suite includes `memory_human_approval_token_review_gate`, proving that
 a valid approval token request becomes `approve_token_issuance` without issuing
 a token, creating a real proposal, or creating an operation event.
+
+### Memory Human Approval Token Issuance Plan v0.1
+
+Implemented in `agent.memory_human_approval_token_issuance_plan`. It turns an
+`approve_token_issuance` review outcome candidate into a deterministic
+`manual_token_issuance_plan_required` plan candidate.
+
+Only valid `approve_token_issuance` review outcomes with proposal-record,
+operation-ledger, target-path previews, and source evidence can create a valid
+plan. `request_changes`, `reject`, `defer`, invalid review outcomes, and missing
+required previews or source evidence produce locked plan candidates. The plan
+never issues approval tokens, persists approvals, creates real proposals, writes
+proposal files, writes operation-ledger events, submits to governance, writes
+memory, writes the Memory Graph, or modifies config.
+
+The smoke suite includes `memory_human_approval_token_issuance_plan`, proving
+that a valid `approve_token_issuance` review outcome becomes
+`manual_token_issuance_plan_required` without issuing a token, creating a real
+proposal, or creating an operation event.
 
 ## Report Schema
 

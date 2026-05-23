@@ -157,3 +157,28 @@ def test_memory_human_approval_token_review_gate_smoke_case_approves_without_iss
     assert case["evidence"]["created_operation_event"] is False
     assert case["evidence"]["writes_proposal_files"] is False
     assert case["evidence"]["writes_operation_ledger"] is False
+
+
+def test_memory_human_approval_token_issuance_plan_smoke_case_requires_manual_plan_without_issuing_token():
+    report = run_benchmark("smoke")
+    case = next(
+        case
+        for case in report["cases"]
+        if case["dimension"] == "memory_human_approval_token_issuance_plan"
+    )
+
+    plan = case["evidence"]["human_approval_token_issuance_plan_candidates"][0]
+    assert case["actual_answer"] == "manual_token_issuance_plan_required"
+    assert plan["plan_validation"] == {"valid": True, "errors": []}
+    assert plan["plan_status"] == "manual_token_issuance_plan_required"
+    assert plan["lock_reason"] is None
+    assert plan["outcome"] == "approve_token_issuance"
+    assert plan["proposal_record_preview"]["written"] is False
+    assert plan["operation_ledger_preview"]["written"] is False
+    assert plan["operation_ledger_preview"]["created_operation_event"] is False
+    assert case["evidence"]["token_issued"] is False
+    assert case["evidence"]["persisted_approval"] is False
+    assert case["evidence"]["created_real_proposal"] is False
+    assert case["evidence"]["created_operation_event"] is False
+    assert case["evidence"]["writes_proposal_files"] is False
+    assert case["evidence"]["writes_operation_ledger"] is False

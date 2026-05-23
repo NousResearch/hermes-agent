@@ -92,6 +92,7 @@ class TestSupadataFallback:
         def fake_urlopen(request, timeout=0):
             seen["url"] = request.full_url
             seen["api_key"] = request.headers.get("X-api-key")
+            seen["user_agent"] = request.headers.get("User-agent")
             seen["timeout"] = timeout
             return FakeResponse()
 
@@ -104,6 +105,7 @@ class TestSupadataFallback:
         )
 
         assert seen["api_key"] == "supadata-test-key"
+        assert seen["user_agent"] == "curl/8.5.0"
         assert "https%3A%2F%2Fwww.youtube.com%2Fwatch%3Fv%3DdQw4w9WgXcQ" in seen["url"]
         assert "lang=en" in seen["url"]
         assert seen["timeout"] == fetch_transcript.SUPADATA_TIMEOUT_SECONDS

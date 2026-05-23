@@ -102,7 +102,15 @@ def _supadata_get(path: str, params: dict | None = None) -> dict:
     if query:
         url = f"{url}?{query}"
 
-    request = urllib.request.Request(url, headers={"x-api-key": api_key})
+    # Supadata is behind Cloudflare and currently rejects Python's default
+    # urllib User-Agent with HTTP 403 / error code 1010. Use a normal CLI UA.
+    request = urllib.request.Request(
+        url,
+        headers={
+            "x-api-key": api_key,
+            "User-Agent": "curl/8.5.0",
+        },
+    )
     try:
         with urllib.request.urlopen(request, timeout=SUPADATA_TIMEOUT_SECONDS) as response:
             body = response.read().decode("utf-8")

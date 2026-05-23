@@ -8496,6 +8496,53 @@ class GatewayRunner:
         )
 
         try:
+            # ── message:received hook ─────────────────────────────────────
+            # Allows user-installed hooks to selectively gate messages
+            # before the agent is ever invoked. Enables "ambient" bots that
+            # observe all channel activity but only reply when relevant.
+            #
+            # Hook handlers return {"action": "ignore"} to silently drop
+            # the message, or {"action": "respond"} / None to proceed.
+            # This is additive — existing require_mention / free_response
+            # gating at the adapter level is already complete by this point.
+            _msg_hook_ctx = {
+                "platform": source.platform.value if source.platform else "",
+                "chat_id": source.chat_id or "",
+                "user_id": source.user_id or "",
+                "user_name": source.user_name or "",
+                "message": message_text,
+                "message_id": source.message_id or "",
+                "is_bot": getattr(source, "is_bot", False),
+                "chat_name": source.chat_name or "",
+                "chat_topic": source.chat_topic or "",
+                "thread_id": source.thread_id or "",
+                "guild_id": source.guild_id or "",
+            }
+            try:
+                _msg_decisions = await self.hooks.emit_collect(
+                    "message:received", _msg_hook_ctx
+                )
+            except Exception as _hook_err:
+                logger.debug(
+                    "message:received hook dispatch failed (non-fatal): %s",
+                    _hook_err,
+                )
+                _msg_decisions = []
+
+            for _decision in (_msg_decisions or []):
+                if not isinstance(_decision, dict):
+                    continue
+                if str(_decision.get("action", "")).strip().lower() == "ignore":
+                    logger.info(
+                        "Message dropped by message:received hook: "
+                        "platform=%s user=%s chat=%s",
+                        _msg_hook_ctx["platform"],
+                        _msg_hook_ctx["user_id"],
+                        _msg_hook_ctx["chat_id"],
+                    )
+                    return None
+            # ── end message:received hook ──────────────────────────────────
+
             # Emit agent:start hook
             hook_ctx = {
                 "platform": source.platform.value if source.platform else "",

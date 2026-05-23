@@ -316,3 +316,89 @@ class TestEmitCollect:
         await reg.emit_collect("agent:start")  # no context arg
 
         assert captured == [("agent:start", {})]
+
+
+class TestMessageReceived:
+    """Tests for the message:received hook event (ambient agent gate)."""
+
+    @pytest.mark.asyncio
+    async def test_emit_collect_ignore_decision(self):
+        """A handler returning {'action': 'ignore'} is collected for upstream gate logic."""
+        reg = HookRegistry()
+        reg._handlers["message:received"] = [
+            lambda _e, _c: {"action": "ignore"},
+        ]
+
+        results = await reg.emit_collect("message:received", {"platform": "discord"})
+        assert results == [{"action": "ignore"}]
+
+    @pytest.mark.asyncio
+    async def test_emit_collect_respond_decision(self):
+        """A handler returning {'action': 'respond'} is collected and respected."""
+        reg = HookRegistry()
+        reg._handlers["message:received"] = [
+            lambda _e, _c: {"action": "respond"},
+        ]
+
+        results = await reg.emit_collect("message:received", {"message": "hello"})
+        assert results == [{"action": "respond"}]
+
+    @pytest.mark.asyncio
+    async def test_emit_collect_mixed_decisions_ignore_wins(self):
+        """With multiple handlers, first ignore in the list should gate the message.
+        This test documents that the gateway caller (run.py) implements the
+        'first ignore wins' rule.
+        """
+        reg = HookRegistry()
+        reg._handlers["message:received"] = [
+            lambda _e, _c: {"action": "respond"},   # first says respond
+            lambda _e, _c: {"action": "ignore"},      # second says ignore
+        ]
+
+        results = await reg.emit_collect("message:received", {})
+        # Both values are returned; the consumer (run.py) iterates and
+        # stops at the first "ignore".
+        assert results == [{"action": "respond"}, {"action": "ignore"}]
+
+    @pytest.mark.asyncio
+    async def test_emit_collect_context_keys(self):
+        """The hook context contains all relevant message metadata."""
+        reg = HookRegistry()
+        captured = []
+
+        def _handler(event_type, context):
+            captured.append(context)
+            return None
+
+        reg._handlers["message:received"] = [_handler]
+
+        await reg.emit_collect("message:received", {
+            "platform": "discord",
+            "chat_id": "123",
+            "user_id": "456",
+            "user_name": "alice",
+            "message": "hello world",
+            "message_id": "789",
+            "is_bot": False,
+            "chat_name": "general",
+            "chat_topic": "",
+            "thread_id": "",
+            "guild_id": "101",
+        })
+
+        ctx = captured[0]
+        assert ctx["platform"] == "discord"
+        assert ctx["chat_id"] == "123"
+        assert ctx["user_id"] == "456"
+        assert ctx["user_name"] == "alice"
+        assert ctx["message"] == "hello world"
+        assert "is_bot" in ctx
+        assert "guild_id" in ctx
+
+    @pytest.mark.asyncio
+    async def test_emit_collect_no_handlers(self):
+        """No handlers registered → empty list → proceed normally."""
+        reg = HookRegistry()
+        results = await reg.emit_collect("message:received", {})
+        assert results == []
+

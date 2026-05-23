@@ -15,6 +15,11 @@ Events:
   - agent:step          -- Each turn in the tool-calling loop
   - agent:end           -- Agent finishes processing
   - command:*           -- Any slash command executed (wildcard match)
+  - message:received    -- After adapter gates, before agent invocation.
+                           Hooks can return {"action": "ignore"} to silently
+                           drop the message without invoking the agent.
+                           Enables "ambient" bots that observe all messages
+                           but reply only when relevant.
 
 Errors in hooks are caught and logged but never block the main pipeline.
 """

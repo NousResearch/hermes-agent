@@ -28,6 +28,8 @@ import sys
 from contextlib import redirect_stderr, redirect_stdout
 from typing import Optional
 
+from hermes_cli.fallback_config import get_fallback_chain
+
 
 def _normalize_toolsets(toolsets: object = None) -> list[str] | None:
     if not toolsets:
@@ -301,14 +303,9 @@ def _run_agent(
         toolsets_list = sorted(_get_platform_tools(cfg, "cli"))
 
     session_db = _create_session_db_for_oneshot()
-    # Read fallback chain from profile config — supports both the new list
-    # format (fallback_providers) and the legacy single-dict (fallback_model).
-    # Mirrors the same normalization in cli.py so oneshot workers (e.g. kanban
-    # workers spawned via `hermes -p <profile> chat -q ...`) honour the
-    # profile's fallback chain just like interactive sessions do.
-    _fb = cfg.get("fallback_providers") or cfg.get("fallback_model") or []
-    if isinstance(_fb, dict):
-        _fb = [_fb] if _fb.get("provider") and _fb.get("model") else []
+    # Read the effective fallback chain from profile config so oneshot workers
+    # honour the same merge semantics as interactive CLI and gateway sessions.
+    _fb = get_fallback_chain(cfg)
 
     agent = AIAgent(
         api_key=runtime.get("api_key"),

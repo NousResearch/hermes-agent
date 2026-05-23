@@ -91,6 +91,23 @@ class TestSyncExternalMemoryForTurn:
             session_id="test_session_001",
         )
 
+    def test_completed_oneshot_turn_syncs_but_skips_prefetch(self):
+        """One-shot CLI runs end the process immediately after the response.
+        There is no next turn to warm, and spawning background prefetch threads
+        during interpreter shutdown can trip native client aborts.
+        """
+        agent = _bare_agent()
+        agent.disable_memory_prefetch = True
+        agent._sync_external_memory_for_turn(
+            original_user_message="Say stable",
+            final_response="Stable",
+            interrupted=False,
+        )
+        agent._memory_manager.sync_all.assert_called_once_with(
+            "Say stable", "Stable", session_id="test_session_001",
+        )
+        agent._memory_manager.queue_prefetch_all.assert_not_called()
+
     # --- Edge cases (pre-existing behaviour preserved) ------------------
 
     def test_no_final_response_skips(self):

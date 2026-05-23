@@ -338,8 +338,34 @@ def _run_agent(
     agent.suppress_status_output = True
     agent.stream_delta_callback = None
     agent.tool_gen_callback = None
+    # One-shot invocations have no next turn to warm.  Avoid spawning provider
+    # prefetch workers during shutdown; they can outlive interpreter teardown
+    # and trigger native aborts in extension-backed HTTP clients.
+    agent.disable_memory_prefetch = True
 
-    return agent.chat(prompt) or ""
+    try:
+        return agent.chat(prompt) or ""
+    finally:
+        # A one-shot CLI process is a full session boundary.  Tear the agent
+        # down explicitly instead of relying on daemon threads to evaporate at
+        # interpreter exit; native clients are impressively bad at evaporating.
+        try:
+            session_messages = getattr(agent, "_session_messages", None)
+            if isinstance(session_messages, list):
+                agent.shutdown_memory_provider(session_messages)
+            else:
+                agent.shutdown_memory_provider([])
+        except Exception:
+            pass
+        try:
+            agent.close()
+        except Exception:
+            pass
+        try:
+            if session_db is not None:
+                session_db.close()
+        except Exception:
+            pass
 
 
 def _oneshot_clarify_callback(question: str, choices=None) -> str:

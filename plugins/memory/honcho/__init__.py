@@ -1311,12 +1311,18 @@ class HonchoMemoryProvider(MemoryProvider):
         for t in (self._prefetch_thread, self._sync_thread):
             if t and t.is_alive():
                 t.join(timeout=5.0)
-        # Flush any remaining messages
+        # Flush any remaining messages and stop the session manager's own
+        # async writer.  ``flush_all`` alone drains the queue but leaves the
+        # daemon thread alive; on short-lived CLI processes that can race
+        # interpreter teardown and abort natively.
         if self._manager:
             try:
-                self._manager.flush_all()
+                self._manager.shutdown()
             except Exception:
-                pass
+                try:
+                    self._manager.flush_all()
+                except Exception:
+                    pass
 
 
 # ---------------------------------------------------------------------------

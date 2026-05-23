@@ -482,6 +482,10 @@ class AIAgent:
             checkpoint_max_file_size_mb=checkpoint_max_file_size_mb,
             pass_session_id=pass_session_id,
         )
+        # Entrypoints that end immediately after a single response (notably
+        # ``hermes -z``) set this to avoid warming context for a non-existent
+        # next turn. Normal interactive/gateway sessions leave prefetch on.
+        self.disable_memory_prefetch = False
 
     def _get_session_db_for_recall(self):
         """Return a SessionDB for recall, lazily creating it if an entrypoint forgot.
@@ -2042,10 +2046,11 @@ class AIAgent:
                 original_user_message, final_response,
                 session_id=self.session_id or "",
             )
-            self._memory_manager.queue_prefetch_all(
-                original_user_message,
-                session_id=self.session_id or "",
-            )
+            if not getattr(self, "disable_memory_prefetch", False):
+                self._memory_manager.queue_prefetch_all(
+                    original_user_message,
+                    session_id=self.session_id or "",
+                )
         except Exception:
             pass
 

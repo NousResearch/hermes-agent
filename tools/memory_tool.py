@@ -29,9 +29,10 @@ import os
 import re
 import tempfile
 from contextlib import contextmanager
+from datetime import date, datetime, timezone
 from pathlib import Path
 from hermes_constants import get_hermes_home
-from typing import Dict, Any, List, Optional
+from typing import Dict, Any, List, Optional, Tuple
 
 from utils import atomic_replace
 
@@ -57,6 +58,137 @@ def get_memory_dir() -> Path:
     return get_hermes_home() / "memories"
 
 ENTRY_DELIMITER = "\n§\n"
+
+
+# ---------------------------------------------------------------------------
+# Optional per-entry frontmatter (YAML).
+#
+# An entry may begin with a YAML frontmatter block of the form:
+#     ---
+#     type: preference
+#     valid_until: 2026-12-31
+#     created_at: 2026-05-08
+#     ---
+#     <body of entry>
+#
+# This is a backward-compatible extension: entries without frontmatter are
+# treated exactly as before, and the writer side is unchanged. The reader
+# side parses the block (if present), strips it from the body that gets
+# injected into the system prompt, and uses well-known fields (currently
+# `valid_until`) to render staleness hints. Unknown keys are preserved on
+# disk and ignored at render time.
+#
+# Why a string-prefix convention rather than a structured schema field:
+#   - zero migration: existing entries stay valid as-is
+#   - zero tool-schema changes: no agent code path changes are needed to
+#     start using metadata; the agent simply writes a frontmatter block
+#     in the `content` argument
+#   - human-readable on disk; easy to grep/audit
+# ---------------------------------------------------------------------------
+
+_FRONTMATTER_RE = re.compile(
+    r"\A---[ \t]*\r?\n(?P<body>.*?)(?:\r?\n)---[ \t]*(?:\r?\n|\Z)",
+    re.DOTALL,
+)
+
+# Recognised metadata keys with semantic meaning. Other keys are preserved
+# but ignored at render time.
+_KNOWN_METADATA_KEYS = frozenset({
+    "type",            # category: preference | fact | procedure | episode
+    "created_at",      # ISO date or datetime
+    "last_used_at",    # ISO date or datetime
+    "source",          # free-form provenance string
+    "valid_until",     # ISO date or datetime; entry is stale after this
+    "supersedes",      # short-id or substring of an entry this replaces
+    "evidence",        # free-form citation/url
+})
+
+# Cap how much of an entry we'll scan looking for a frontmatter block.
+# A real frontmatter block is tiny; bail out fast on anything bigger so a
+# pathological input can't blow up the regex.
+_FRONTMATTER_MAX_SCAN = 4096
+
+
+def _parse_entry_metadata(entry: str) -> Tuple[Dict[str, Any], str]:
+    """Split an entry into (metadata_dict, body).
+
+    If the entry begins with a YAML frontmatter block (``---`` ... ``---``),
+    parse it and return the body without the block. Otherwise return
+    ``({}, entry)`` unchanged.
+
+    Parsing failures are non-fatal: if the block is malformed YAML, we leave
+    the entry as-is (no metadata, full body). This is deliberate — memory
+    must keep working even when an agent writes a slightly broken header.
+    """
+    if not entry or not entry.startswith("---"):
+        return {}, entry
+
+    # Cheap length guard before regex.
+    head = entry if len(entry) <= _FRONTMATTER_MAX_SCAN else entry[:_FRONTMATTER_MAX_SCAN]
+    m = _FRONTMATTER_RE.match(head)
+    if not m:
+        return {}, entry
+
+    raw_block = m.group("body")
+    try:
+        import yaml  # local import: pyyaml is already a project dep
+        parsed = yaml.safe_load(raw_block) if raw_block.strip() else {}
+    except Exception:
+        # Malformed frontmatter — treat entry as plain text, don't drop it.
+        return {}, entry
+
+    if not isinstance(parsed, dict):
+        # e.g. someone wrote `---\nfoo\n---` (a scalar). Don't reinterpret.
+        return {}, entry
+
+    # Coerce keys to strings so downstream code is uniform.
+    metadata = {str(k): v for k, v in parsed.items()}
+    body = entry[m.end():].lstrip("\n")
+    return metadata, body
+
+
+def _coerce_to_date(value: Any) -> Optional[date]:
+    """Best-effort conversion of a metadata value to a date.
+
+    Accepts ``date``, ``datetime``, or ISO-8601 strings (``YYYY-MM-DD`` or
+    full timestamps). Returns ``None`` if the value can't be interpreted —
+    callers treat ``None`` as "no constraint" rather than failing.
+    """
+    if value is None:
+        return None
+    if isinstance(value, datetime):
+        return value.date()
+    if isinstance(value, date):
+        return value
+    if isinstance(value, str):
+        s = value.strip()
+        if not s:
+            return None
+        # Try date first, then full ISO datetime.
+        try:
+            return date.fromisoformat(s[:10])
+        except ValueError:
+            pass
+        try:
+            return datetime.fromisoformat(s.replace("Z", "+00:00")).date()
+        except ValueError:
+            return None
+    return None
+
+
+def _is_stale(metadata: Dict[str, Any], today: Optional[date] = None) -> bool:
+    """Return True if metadata declares the entry expired.
+
+    An entry is stale when ``valid_until`` is set and strictly before today.
+    Same-day is still considered fresh (gives the agent the full day to act).
+    """
+    if not metadata:
+        return False
+    cutoff = _coerce_to_date(metadata.get("valid_until"))
+    if cutoff is None:
+        return False
+    today = today or datetime.now(timezone.utc).date()
+    return cutoff < today
 
 
 # ---------------------------------------------------------------------------
@@ -391,13 +523,22 @@ class MemoryStore:
         return resp
 
     def _render_block(self, target: str, entries: List[str]) -> str:
-        """Render a system prompt block with header and usage indicator."""
+        """Render a system prompt block with header and usage indicator.
+
+        Per-entry frontmatter (if present) is stripped from what the model
+        sees, but expired ``valid_until`` entries are prefixed with a
+        ``[STALE — expired YYYY-MM-DD]`` hint so the model can deprioritise
+        them without requiring the writer side to scrub them first.
+        """
         if not entries:
             return ""
 
         limit = self._char_limit(target)
-        content = ENTRY_DELIMITER.join(entries)
-        current = len(content)
+        rendered_entries = [self._render_entry_for_prompt(e) for e in entries]
+        content = ENTRY_DELIMITER.join(rendered_entries)
+        # Char-budget bookkeeping uses the on-disk size (with frontmatter)
+        # so the displayed usage stays consistent with what `add` checks.
+        current = len(ENTRY_DELIMITER.join(entries))
         pct = min(100, int((current / limit) * 100)) if limit > 0 else 0
 
         if target == "user":
@@ -407,6 +548,33 @@ class MemoryStore:
 
         separator = "═" * 46
         return f"{separator}\n{header}\n{separator}\n{content}"
+
+    @staticmethod
+    def _render_entry_for_prompt(entry: str) -> str:
+        """Render one entry for system-prompt injection.
+
+        - Strips the optional YAML frontmatter block from the body.
+        - If ``valid_until`` is in the past, prefixes the body with a
+          ``[STALE — expired YYYY-MM-DD]`` hint so the model can see at a
+          glance that this entry is past its sell-by date.
+        - On any unexpected error, falls back to the raw entry — memory
+          rendering must never raise.
+        """
+        try:
+            metadata, body = _parse_entry_metadata(entry)
+            if not metadata:
+                return entry
+            if _is_stale(metadata):
+                cutoff = _coerce_to_date(metadata.get("valid_until"))
+                marker = (
+                    f"[STALE — expired {cutoff.isoformat()}] "
+                    if cutoff is not None
+                    else "[STALE] "
+                )
+                return f"{marker}{body}" if body else marker.rstrip()
+            return body
+        except Exception:  # pragma: no cover — defensive
+            return entry
 
     @staticmethod
     def _read_file(path: Path) -> List[str]:

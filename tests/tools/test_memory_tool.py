@@ -255,3 +255,160 @@ class TestMemoryToolDispatcher:
     def test_remove_requires_old_text(self, store):
         result = json.loads(memory_tool(action="remove", store=store))
         assert result["success"] is False
+
+
+
+# =========================================================================
+# Per-entry YAML frontmatter (typed memory entries)
+# =========================================================================
+
+from datetime import date
+
+from tools.memory_tool import (
+    _coerce_to_date,
+    _is_stale,
+    _parse_entry_metadata,
+)
+
+
+class TestParseEntryMetadata:
+    def test_no_frontmatter_returns_unchanged(self):
+        meta, body = _parse_entry_metadata("plain note")
+        assert meta == {}
+        assert body == "plain note"
+
+    def test_empty_string(self):
+        meta, body = _parse_entry_metadata("")
+        assert meta == {}
+        assert body == ""
+
+    def test_basic_frontmatter(self):
+        entry = "---\ntype: preference\nvalid_until: 2099-01-01\n---\nUser likes dark mode"
+        meta, body = _parse_entry_metadata(entry)
+        assert meta == {"type": "preference", "valid_until": date(2099, 1, 1)}
+        assert body == "User likes dark mode"
+
+    def test_frontmatter_with_blank_line_after(self):
+        entry = "---\ntype: fact\n---\n\nMulti\nline\nbody"
+        meta, body = _parse_entry_metadata(entry)
+        assert meta == {"type": "fact"}
+        assert body == "Multi\nline\nbody"
+
+    def test_malformed_yaml_is_non_fatal(self):
+        # Unbalanced bracket -> yaml.safe_load raises -> fallback to plain.
+        entry = "---\ntype: [oops\n---\nbody"
+        meta, body = _parse_entry_metadata(entry)
+        assert meta == {}
+        assert body == entry
+
+    def test_scalar_frontmatter_rejected(self):
+        # "---\nfoo\n---" parses to a string, not a mapping; treat as plain.
+        entry = "---\nfoo\n---\nbody"
+        meta, body = _parse_entry_metadata(entry)
+        assert meta == {}
+        assert body == entry
+
+    def test_three_dash_in_body_is_not_frontmatter(self):
+        entry = "some intro\n---\nlater section"
+        meta, body = _parse_entry_metadata(entry)
+        assert meta == {}
+        assert body == entry
+
+    def test_unknown_keys_are_preserved(self):
+        entry = "---\ntype: fact\ncustom_key: hello\n---\nbody"
+        meta, _ = _parse_entry_metadata(entry)
+        assert meta["custom_key"] == "hello"
+
+
+class TestCoerceToDate:
+    def test_date_passthrough(self):
+        d = date(2026, 5, 8)
+        assert _coerce_to_date(d) == d
+
+    def test_iso_date_string(self):
+        assert _coerce_to_date("2026-05-08") == date(2026, 5, 8)
+
+    def test_iso_datetime_string(self):
+        assert _coerce_to_date("2026-05-08T12:34:56Z") == date(2026, 5, 8)
+
+    def test_garbage_returns_none(self):
+        assert _coerce_to_date("not a date") is None
+        assert _coerce_to_date(None) is None
+        assert _coerce_to_date(42) is None
+        assert _coerce_to_date("") is None
+
+
+class TestIsStale:
+    def test_no_metadata_is_fresh(self):
+        assert _is_stale({}) is False
+
+    def test_no_valid_until_is_fresh(self):
+        assert _is_stale({"type": "preference"}) is False
+
+    def test_future_date_is_fresh(self):
+        assert _is_stale({"valid_until": "2099-01-01"}) is False
+
+    def test_past_date_is_stale(self):
+        assert _is_stale({"valid_until": "2000-01-01"}) is True
+
+    def test_today_is_fresh(self):
+        today = date(2026, 5, 8)
+        assert _is_stale({"valid_until": today}, today=today) is False
+
+    def test_yesterday_is_stale(self):
+        today = date(2026, 5, 8)
+        assert _is_stale({"valid_until": date(2026, 5, 7)}, today=today) is True
+
+
+class TestRenderBlockWithFrontmatter:
+    def test_frontmatter_stripped_from_prompt(self, store):
+        store.add(
+            "memory",
+            "---\ntype: preference\nvalid_until: 2099-01-01\n---\nUser likes dark mode",
+        )
+        store.load_from_disk()
+        block = store.format_for_system_prompt("memory")
+        assert block is not None
+        assert "User likes dark mode" in block
+        # Frontmatter delimiters and keys must not leak into the prompt.
+        assert "valid_until" not in block
+        # The literal "---" frontmatter fence shouldn't survive either.
+        assert "\n---\n" not in block
+
+    def test_stale_entry_gets_marker(self, store):
+        store.add(
+            "memory",
+            "---\ntype: preference\nvalid_until: 2000-01-01\n---\nOld preference",
+        )
+        store.load_from_disk()
+        block = store.format_for_system_prompt("memory")
+        assert block is not None
+        assert "[STALE" in block
+        assert "expired 2000-01-01" in block
+        assert "Old preference" in block
+
+    def test_legacy_entries_unchanged(self, store):
+        store.add("memory", "plain legacy note with no frontmatter")
+        store.load_from_disk()
+        block = store.format_for_system_prompt("memory")
+        assert block is not None
+        assert "plain legacy note with no frontmatter" in block
+        assert "[STALE" not in block
+
+    def test_usage_counter_uses_on_disk_size(self, store):
+        # The usage indicator should reflect what is stored, not what is
+        # rendered — otherwise stripping frontmatter would silently free up
+        # budget the writer did not actually free.
+        long_meta = "---\ntype: preference\nsource: " + ("x" * 80) + "\n---\nbody"
+        store.add("memory", long_meta)
+        store.load_from_disk()
+        block = store.format_for_system_prompt("memory")
+        # Header reports `<current>/<limit>`. Pull the current count back out.
+        import re as _re
+
+        m = _re.search(r"\[(\d+)% — ([\d,]+)/([\d,]+) chars\]", block)
+        assert m is not None
+        current = int(m.group(2).replace(",", ""))
+        # `current` should reflect the on-disk entry length, including the
+        # frontmatter — not just the rendered body.
+        assert current >= len(long_meta)

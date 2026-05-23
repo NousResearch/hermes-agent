@@ -1,0 +1,297 @@
+#!/usr/bin/env python3
+"""
+Refresh Hermes' Anthropic OAuth credential.
+
+Recovery flow for when Anthropic invalidates BOTH the access AND refresh
+tokens server-side (the third-party-app OAuth policy in 2026-05 does this
+every few days).  The auto-refresh-on-401 fix in agent/anthropic_adapter.py
+handles "access expired, refresh still valid" — this script handles the
+case where the refresh also failed.
+
+Usage:
+    scripts/refresh-oauth                 # interactive: opens browser, prompts
+    scripts/refresh-oauth CODE#STATE      # non-interactive: paste the code
+                                           # from the OAuth redirect directly
+    scripts/refresh-oauth --skip-verify   # skip the live api.anthropic.com check
+
+What it does:
+    1. Generates PKCE verifier+challenge and opens the Claude.ai OAuth URL
+       (or accepts CODE#STATE from a previous flow that already redirected).
+    2. Stops launchd-managed dashboard + gateway BEFORE writing auth.json,
+       so the credential pool's _mark_exhausted persist cannot clobber the
+       new tokens (this race ate our first re-OAuth attempt today).
+    3. POSTs to console.anthropic.com/v1/oauth/token for the token pair.
+    4. Writes credential_pool.anthropic[0] in ~/.hermes/auth.json with
+       last_status='ok'.
+    5. Live-verifies the new access_token against api.anthropic.com/v1/messages.
+    6. Reloads the daemons.
+
+Stdlib only — works even when the venv is being rebuilt by the watchdog.
+"""
+
+import argparse
+import base64
+import hashlib
+import json
+import secrets
+import subprocess
+import sys
+import time
+import urllib.error
+import urllib.parse
+import urllib.request
+import webbrowser
+from pathlib import Path
+
+HOME = Path.home()
+AUTH_FILE = HOME / ".hermes" / "auth.json"
+LAUNCH_DASHBOARD = HOME / "Library" / "LaunchAgents" / "sh.hermes.dashboard.plist"
+LAUNCH_GATEWAY = HOME / "Library" / "LaunchAgents" / "sh.hermes.gateway.plist"
+
+# OAuth client identity — same as `hermes auth add anthropic --type oauth`.
+CLIENT_ID = "9d1c250a-e61b-44d9-88ed-5944d1962f5e"
+AUTH_URL_BASE = "https://claude.ai/oauth/authorize"
+TOKEN_URL = "https://console.anthropic.com/v1/oauth/token"
+REDIRECT_URI = "https://console.anthropic.com/oauth/code/callback"
+SCOPES = "org:create_api_key user:profile user:inference"
+MESSAGES_URL = "https://api.anthropic.com/v1/messages"
+
+# Verification probe — small, cheap call.
+PROBE_MODEL = "claude-haiku-4-5-20251001"
+
+
+def _b64url(data: bytes) -> str:
+    return base64.urlsafe_b64encode(data).rstrip(b"=").decode()
+
+
+def _gen_pkce() -> tuple[str, str]:
+    """Return (verifier, challenge) using S256."""
+    verifier = _b64url(secrets.token_bytes(32))
+    challenge = _b64url(hashlib.sha256(verifier.encode()).digest())
+    return verifier, challenge
+
+
+def _build_authorize_url(verifier: str, challenge: str) -> str:
+    # Anthropic's flow embeds the PKCE verifier into `state` so the redirect
+    # delivers it back to the client.  See agent/anthropic_adapter.py:727.
+    return f"{AUTH_URL_BASE}?" + urllib.parse.urlencode({
+        "code": "true",
+        "client_id": CLIENT_ID,
+        "response_type": "code",
+        "redirect_uri": REDIRECT_URI,
+        "scope": SCOPES,
+        "code_challenge": challenge,
+        "code_challenge_method": "S256",
+        "state": verifier,
+    })
+
+
+def _open_browser(url: str) -> None:
+    print()
+    print("Open this URL in your browser to authorize:")
+    print(f"  {url}")
+    print()
+    try:
+        webbrowser.open(url)
+        print("  (browser opened automatically)")
+    except Exception:
+        pass
+
+
+def _read_code_interactive(default_verifier: str) -> tuple[str, str, str]:
+    """Prompt for the authorization code.  Returns (code, state, verifier)."""
+    print()
+    print("After authorizing, paste the code below.  Format: CODE#STATE")
+    try:
+        raw = input("Authorization code: ").strip()
+    except (KeyboardInterrupt, EOFError):
+        sys.exit("\nCancelled.")
+    if not raw:
+        sys.exit("No code entered.")
+    if "#" in raw:
+        code, state = raw.split("#", 1)
+        # State in the redirect IS the original verifier (Anthropic's flow).
+        return code, state, state
+    return raw, "", default_verifier
+
+
+def _exchange_code(code: str, state: str, verifier: str) -> dict:
+    body = json.dumps({
+        "grant_type": "authorization_code",
+        "client_id": CLIENT_ID,
+        "code": code,
+        "state": state,
+        "redirect_uri": REDIRECT_URI,
+        "code_verifier": verifier,
+    }).encode()
+    req = urllib.request.Request(
+        TOKEN_URL,
+        data=body,
+        headers={
+            "Content-Type": "application/json",
+            "User-Agent": "claude-cli/2.1 (external, cli)",
+        },
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=20) as r:
+            return json.loads(r.read().decode())
+    except urllib.error.HTTPError as e:
+        body_txt = e.read().decode(errors="replace")
+        sys.exit(f"Token exchange failed: HTTP {e.code}: {body_txt[:400]}")
+    except urllib.error.URLError as e:
+        sys.exit(f"Token exchange failed: {e}")
+
+
+def _save_to_auth_json(result: dict) -> None:
+    AUTH_FILE.parent.mkdir(parents=True, exist_ok=True)
+    if AUTH_FILE.exists():
+        data = json.loads(AUTH_FILE.read_text())
+    else:
+        data = {
+            "version": 1,
+            "providers": {},
+            "credential_pool": {},
+            "active_provider": "anthropic",
+        }
+    pool = data.setdefault("credential_pool", {})
+    entries = pool.get("anthropic") or []
+    new_expires_at_ms = int((time.time() + result["expires_in"]) * 1000)
+
+    base = entries[0] if entries else {
+        "id": secrets.token_hex(3),
+        "label": "anthropic-oauth-1",
+        "auth_type": "oauth",
+        "priority": 0,
+        "source": "manual:hermes_pkce",
+        "base_url": "https://api.anthropic.com",
+        "request_count": 0,
+    }
+    base.update({
+        "access_token": result["access_token"],
+        "refresh_token": result["refresh_token"],
+        "expires_at_ms": new_expires_at_ms,
+        "last_status": "ok",
+        "last_status_at": None,
+        "last_error_code": None,
+        "last_error_reason": None,
+        "last_error_message": None,
+        "last_error_reset_at": None,
+    })
+    if entries:
+        entries[0] = base
+    else:
+        entries.append(base)
+    pool["anthropic"] = entries
+    AUTH_FILE.write_text(json.dumps(data, indent=2))
+
+
+def _verify_token(access_token: str) -> tuple[int, str]:
+    body = json.dumps({
+        "model": PROBE_MODEL,
+        "max_tokens": 8,
+        "messages": [{"role": "user", "content": "Say OK"}],
+        "system": "You are Claude Code, Anthropic's CLI.",
+    }).encode()
+    req = urllib.request.Request(
+        MESSAGES_URL,
+        data=body,
+        headers={
+            "Authorization": f"Bearer {access_token}",
+            "anthropic-version": "2023-06-01",
+            "anthropic-beta": "oauth-2025-04-20",
+            "content-type": "application/json",
+        },
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=15) as r:
+            return r.status, r.read().decode()
+    except urllib.error.HTTPError as e:
+        return e.code, e.read().decode(errors="replace")
+    except urllib.error.URLError as e:
+        return 0, str(e)
+
+
+def _launchctl(action: str, plist: Path) -> None:
+    if not plist.exists():
+        return
+    subprocess.run(["launchctl", action, str(plist)], capture_output=True)
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(
+        description="Refresh Hermes' Anthropic OAuth credential.",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog=__doc__,
+    )
+    parser.add_argument(
+        "code",
+        nargs="?",
+        help="CODE#STATE from the OAuth redirect.  Skips the interactive flow.",
+    )
+    parser.add_argument(
+        "--skip-verify",
+        action="store_true",
+        help="Skip the live api.anthropic.com check after exchange.",
+    )
+    parser.add_argument(
+        "--skip-daemon-cycle",
+        action="store_true",
+        help="Don't unload/reload the launchd dashboard + gateway plists.",
+    )
+    args = parser.parse_args()
+
+    # 1. Get code + verifier
+    if args.code:
+        if "#" not in args.code:
+            sys.exit("Code must be in CODE#STATE format (Anthropic's redirect appends #state).")
+        code, state = args.code.split("#", 1)
+        verifier = state  # Anthropic's PKCE: state == verifier
+        print(f"Using provided code (state/verifier extracted from #fragment).")
+    else:
+        verifier, challenge = _gen_pkce()
+        _open_browser(_build_authorize_url(verifier, challenge))
+        code, state, verifier = _read_code_interactive(verifier)
+
+    # 2. Stop daemons (prevents credential_pool clobber race)
+    if not args.skip_daemon_cycle:
+        print("Stopping launchd-managed dashboard + gateway...")
+        _launchctl("unload", LAUNCH_DASHBOARD)
+        _launchctl("unload", LAUNCH_GATEWAY)
+        time.sleep(2)
+
+    # 3. Exchange
+    print("Exchanging code for tokens...")
+    result = _exchange_code(code, state, verifier)
+    print(f"  OK  expires_in={result.get('expires_in')}s  scope={result.get('scope', '?')}")
+
+    # 4. Save
+    _save_to_auth_json(result)
+    print(f"  Saved to {AUTH_FILE}")
+
+    # 5. Verify
+    if not args.skip_verify:
+        print("Verifying against api.anthropic.com...")
+        status, body = _verify_token(result["access_token"])
+        if status == 200:
+            print("  HTTP 200  - token accepted.")
+        else:
+            print(f"  HTTP {status}  body: {body[:200]}")
+            print("  (tokens were still saved; daemons will see them on next attempt)")
+
+    # 6. Reload daemons
+    if not args.skip_daemon_cycle:
+        print("Reloading daemons...")
+        _launchctl("load", LAUNCH_DASHBOARD)
+        _launchctl("load", LAUNCH_GATEWAY)
+
+    print()
+    print("Done.  Try chatting from any surface:")
+    print("  - dashboard: http://127.0.0.1:9119/chat")
+    print("  - telegram:  DM @openheavenhermes_bot")
+    print("  - cli:       hermes chat")
+
+
+if __name__ == "__main__":
+    main()

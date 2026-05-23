@@ -1868,6 +1868,51 @@ def _build_xai_oauth_aux_client(model: str) -> Tuple[Optional[Any], Optional[str
     return CodexAuxiliaryClient(real_client, model), model
 
 
+def _build_gemini_cloud_code_aux_client(
+    model: Optional[str] = None,
+) -> Tuple[Optional[Any], Optional[str]]:
+    """Build a GeminiCloudCodeClient for google-gemini-cli OAuth sessions.
+
+    Google Cloud Code Assist uses native Gemini endpoints
+    (cloudcode-pa.googleapis.com) with Bearer OAuth tokens obtained via
+    PKCE.  The ``GeminiCloudCodeClient`` adapter presents an
+    OpenAI-compatible ``.chat.completions`` interface so callers don't
+    need to know about the Gemini wire format.
+
+    The OAuth access token is refreshed transparently inside the client
+    on every request — no explicit credential plumbing is needed here.
+    """
+    try:
+        from agent.google_oauth import load_credentials
+        if load_credentials() is None:
+            return None, None
+    except ImportError:
+        logger.debug("google_oauth module not available")
+        return None, None
+
+    try:
+        from agent.gemini_cloudcode_adapter import GeminiCloudCodeClient
+    except ImportError:
+        logger.debug("GeminiCloudCodeClient not available")
+        return None, None
+
+    # Use the provider's configured default auxiliary model, or fall back
+    # to a cheap Gemini flash model suitable for side tasks.
+    default_model = _get_aux_model_for_provider("google-gemini-cli")
+    if not default_model:
+        # Fallback: use gemini-3-flash-preview which is widely available
+        # on Code Assist quotas.
+        default_model = "gemini-3-flash-preview"
+
+    final_model = model or default_model
+    logger.debug(
+        "Auxiliary client: Google Cloud Code OAuth (%s via Gemini native)",
+        final_model,
+    )
+    client = GeminiCloudCodeClient(api_key="google-oauth")
+    return client, final_model
+
+
 def _build_codex_client(model: str) -> Tuple[Optional[Any], Optional[str]]:
     """Build a CodexAuxiliaryClient for an explicitly-requested model.
 
@@ -3267,6 +3312,25 @@ def resolve_provider_client(
         return (_to_async_client(client, final_model, is_vision=is_vision) if async_mode
                 else (client, final_model))
 
+    # ── Google Gemini Cloud Code Assist (OAuth → Gemini native) ──────
+    # Without this branch, a google-gemini-cli OAuth provider silently
+    # returns (None, None) for every auxiliary task — the generic OAuth
+    # arm only whitelists nous/openai-codex/xai-oauth.  Users who rely on
+    # Google Gemini OAuth as a fallback provider would see their configured
+    # fallback chain entry skipped with only a WARNING log line.
+    if provider == "google-gemini-cli":
+        client, default = _build_gemini_cloud_code_aux_client(model)
+        if client is None:
+            logger.warning(
+                "resolve_provider_client: google-gemini-cli requested but "
+                "no Google OAuth credentials found (run: hermes login "
+                "--provider google-gemini-cli)"
+            )
+            return None, None
+        final_model = _normalize_resolved_model(model or default, provider)
+        return (_to_async_client(client, final_model, is_vision=is_vision) if async_mode
+                else (client, final_model))
+
     # ── Custom endpoint (OPENAI_BASE_URL + OPENAI_API_KEY) ───────────
     if provider == "custom":
         if explicit_base_url:
@@ -3668,6 +3732,8 @@ def resolve_provider_client(
             return resolve_provider_client("openai-codex", model, async_mode)
         if provider == "xai-oauth":
             return resolve_provider_client("xai-oauth", model, async_mode)
+        if provider == "google-gemini-cli":
+            return resolve_provider_client("google-gemini-cli", model, async_mode)
         # Other OAuth providers not directly supported
         logger.warning("resolve_provider_client: OAuth provider %s not "
                        "directly supported, try 'auto'", provider)

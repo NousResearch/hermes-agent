@@ -3026,3 +3026,80 @@ class TestAuxUnhealthyCache:
             )
             # After the 402, OpenRouter is in the unhealthy cache.
             assert _is_provider_unhealthy("openrouter") is True
+
+
+class TestBuildGeminiCloudCodeAuxClient:
+    """Tests for google-gemini-cli OAuth auxiliary client resolution."""
+
+    def test_returns_client_when_oauth_creds_present(self, monkeypatch):
+        """When Google OAuth credentials exist, a GeminiCloudCodeClient is returned."""
+        from agent.auxiliary_client import _build_gemini_cloud_code_aux_client
+
+        mock_client = MagicMock()
+        mock_creds = MagicMock()  # non-None means creds exist
+        with patch(
+            "agent.auxiliary_client._get_aux_model_for_provider",
+            return_value="gemini-3-flash-preview",
+        ), patch(
+            "agent.google_oauth.load_credentials", return_value=mock_creds
+        ), patch(
+            "agent.gemini_cloudcode_adapter.GeminiCloudCodeClient",
+            return_value=mock_client,
+        ):
+            client, model = _build_gemini_cloud_code_aux_client()
+            assert client is mock_client
+            assert model == "gemini-3-flash-preview"
+
+    def test_returns_none_when_no_oauth_creds(self):
+        """When Google OAuth credentials are absent, returns (None, None)."""
+        from agent.auxiliary_client import _build_gemini_cloud_code_aux_client
+
+        with patch(
+            "agent.google_oauth.load_credentials", return_value=None
+        ):
+            client, model = _build_gemini_cloud_code_aux_client()
+            assert client is None
+            assert model is None
+
+    def test_respects_explicit_model_override(self, monkeypatch):
+        """Explicit model parameter is used instead of default."""
+        from agent.auxiliary_client import _build_gemini_cloud_code_aux_client
+
+        mock_client = MagicMock()
+        mock_creds = MagicMock()
+        with patch(
+            "agent.google_oauth.load_credentials", return_value=mock_creds
+        ), patch(
+            "agent.gemini_cloudcode_adapter.GeminiCloudCodeClient",
+            return_value=mock_client,
+        ):
+            client, model = _build_gemini_cloud_code_aux_client(
+                model="gemini-3.1-pro-preview"
+            )
+            assert client is mock_client
+            assert model == "gemini-3.1-pro-preview"
+
+    def test_resolve_provider_client_handles_google_gemini_cli(self, monkeypatch):
+        """resolve_provider_client('google-gemini-cli') returns a client."""
+        from agent.auxiliary_client import resolve_provider_client
+
+        mock_client = MagicMock()
+        with patch(
+            "agent.auxiliary_client._build_gemini_cloud_code_aux_client",
+            return_value=(mock_client, "gemini-3-flash-preview"),
+        ):
+            client, model = resolve_provider_client("google-gemini-cli")
+            assert client is mock_client
+            assert model == "gemini-3-flash-preview"
+
+    def test_resolve_provider_client_returns_none_when_no_creds(self, monkeypatch):
+        """resolve_provider_client('google-gemini-cli') returns (None, None) when no creds."""
+        from agent.auxiliary_client import resolve_provider_client
+
+        with patch(
+            "agent.auxiliary_client._build_gemini_cloud_code_aux_client",
+            return_value=(None, None),
+        ):
+            client, model = resolve_provider_client("google-gemini-cli")
+            assert client is None
+            assert model is None

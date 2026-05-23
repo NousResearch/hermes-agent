@@ -148,7 +148,7 @@ Even when using Nous Portal, Codex, or a custom endpoint, some tools (vision, we
 :::
 
 :::tip Nous Tool Gateway
-Paid Nous Portal subscribers also get access to the **[Tool Gateway](/docs/user-guide/features/tool-gateway)** — web search, image generation, TTS, and browser automation routed through your subscription. No extra API keys needed. It's offered automatically during `hermes model` setup, or enable it later with `hermes tools`.
+Paid Nous Portal subscribers also get access to the **[Tool Gateway](/docs/user-guide/features/tool-gateway)** — web search, image generation, TTS, and browser automation routed through your subscription. No extra API keys needed. On a fresh install, `hermes setup --portal` logs you in, sets Nous as your provider, and turns the gateway on in one command. Existing users can enable it from `hermes model` or per-tool from `hermes tools`. Inspect routing at any time with `hermes portal status`.
 :::
 
 ### Two Commands for Model Management
@@ -164,7 +164,12 @@ If you're trying to switch to a provider you haven't set up yet (e.g. you only h
 
 ### Nous Portal
 
-Subscription-based access to Hermes-4 models (`Hermes-4-70B`, `Hermes-4.3-36B`, `Hermes-4-405B`) via Nous Research's portal. Run `hermes model`, pick **Nous Portal**, sign in through the browser — Hermes stores a long-lived refresh token at `~/.hermes/auth.json`.
+Subscription-based access to Hermes-4 models (`Hermes-4-70B`, `Hermes-4.3-36B`, `Hermes-4-405B`) via Nous Research's portal. Two paths:
+
+- **Fresh install:** `hermes setup --portal` — runs OAuth, sets Nous as your provider, and offers the [Tool Gateway](/docs/user-guide/features/tool-gateway) in one command.
+- **Existing install:** `hermes model`, pick **Nous Portal**, sign in through the browser.
+
+Either path stores a long-lived refresh token at `~/.hermes/auth.json`. Check status with `hermes portal status`.
 
 The refresh token is also shared across profiles via a shared token store, so logging in on one profile carries over to the others.
 

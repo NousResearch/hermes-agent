@@ -41,6 +41,7 @@ import {
   Terminal,
   Users,
   Wrench,
+  Workflow,
   X,
   Zap,
 } from "lucide-react";
@@ -60,6 +61,7 @@ import ConfigPage from "@/pages/ConfigPage";
 import DocsPage from "@/pages/DocsPage";
 import EnvPage from "@/pages/EnvPage";
 import OverviewPage from "@/pages/OverviewPage";
+import TasksPage from "@/pages/TasksPage";
 import SystemHealthPage from "@/pages/SystemHealthPage";
 import SessionsPage from "@/pages/SessionsPage";
 import LogsPage from "@/pages/LogsPage";
@@ -111,6 +113,7 @@ const CHAT_NAV_ITEM: NavItem = {
 const BUILTIN_ROUTES_CORE: Record<string, ComponentType> = {
   "/": RootRedirect,
   "/overview": OverviewPage,
+  "/tasks": TasksPage,
   "/sessions": SessionsPage,
   "/analytics": AnalyticsPage,
   "/models": ModelsPage,
@@ -139,6 +142,12 @@ const BUILTIN_NAV_REST: NavItem[] = [
     labelKey: "overview",
     label: "Mission Control",
     icon: Activity,
+  },
+  {
+    path: "/tasks",
+    labelKey: "tasks",
+    label: "Tasks",
+    icon: Workflow,
   },
   {
     path: "/sessions",
@@ -192,6 +201,7 @@ const ICON_MAP: Record<string, ComponentType<{ className?: string }>> = {
   Shield,
   Users,
   Wrench,
+  Workflow,
   Zap,
   Heart,
   Star,

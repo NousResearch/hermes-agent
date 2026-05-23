@@ -70,6 +70,9 @@ export const api = {
   getStatus: () => fetchJSON<StatusResponse>("/api/status"),
   getSystemHealth: () => fetchJSON<SystemHealthResponse>("/api/system/health"),
   getKanbanStats: () => fetchJSON<KanbanStatsResponse>("/api/plugins/kanban/stats"),
+  getKanbanBoard: () => fetchJSON<KanbanBoardResponse>("/api/plugins/kanban/board"),
+  getKanbanDiagnostics: () => fetchJSON<KanbanDiagnosticsResponse>("/api/plugins/kanban/diagnostics"),
+  getKanbanActiveWorkers: () => fetchJSON<KanbanActiveWorkersResponse>("/api/plugins/kanban/workers/active"),
   getSessions: (limit = 20, offset = 0) =>
     fetchJSON<PaginatedSessions>(`/api/sessions?limit=${limit}&offset=${offset}`),
   getSessionMessages: (id: string) =>
@@ -438,6 +441,78 @@ export interface KanbanStatsResponse {
   by_assignee: Record<string, Record<string, number>>;
   oldest_ready_age_seconds: number | null;
   now: number;
+}
+
+export interface KanbanTask {
+  id: string;
+  title: string;
+  body?: string | null;
+  status: string;
+  assignee?: string | null;
+  tenant?: string | null;
+  priority?: number | null;
+  created_at?: number | string | null;
+  updated_at?: number | string | null;
+  started_at?: number | string | null;
+  completed_at?: number | string | null;
+  latest_summary?: string | null;
+  comment_count?: number;
+  link_counts?: { parents: number; children: number };
+  progress?: { done: number; total: number } | null;
+  diagnostics?: unknown[];
+  warnings?: unknown;
+  age?: {
+    created_age_seconds?: number | null;
+    started_age_seconds?: number | null;
+    time_to_complete_seconds?: number | null;
+  };
+}
+
+export interface KanbanColumn {
+  name: string;
+  tasks: KanbanTask[];
+}
+
+export interface KanbanBoardResponse {
+  columns: KanbanColumn[];
+  tenants: string[];
+  assignees: string[];
+  latest_event_id: number;
+  now: number;
+}
+
+export interface KanbanDiagnosticItem {
+  task_id: string;
+  task_title: string | null;
+  task_status: string | null;
+  task_assignee: string | null;
+  diagnostics: Array<Record<string, unknown>>;
+}
+
+export interface KanbanDiagnosticsResponse {
+  diagnostics: KanbanDiagnosticItem[];
+  count: number;
+}
+
+export interface KanbanWorker {
+  run_id: number;
+  task_id: string;
+  task_title: string;
+  task_status: string;
+  task_assignee: string | null;
+  profile: string | null;
+  worker_pid: number | null;
+  started_at: number | string | null;
+  claim_lock: string | null;
+  claim_expires: number | string | null;
+  last_heartbeat_at: number | string | null;
+  max_runtime_seconds: number | null;
+}
+
+export interface KanbanActiveWorkersResponse {
+  workers: KanbanWorker[];
+  count: number;
+  checked_at: number;
 }
 
 export interface SessionInfo {

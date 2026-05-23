@@ -3096,7 +3096,7 @@ def browser_vision(question: str, annotate: bool = False, task_id: Optional[str]
                 screenshot_args.append("--annotate")
             fb_result = _chrome_fallback_screenshot(
                 effective_task_id, screenshot_args, _get_command_timeout(),
-        )
+            )
         fb_reason = "Lightpanda has no graphical renderer for screenshots; used Chrome for vision capture."
         fb_result = _annotate_lightpanda_fallback(fb_result, fb_reason)
         if fb_result.get("success"):
@@ -3116,6 +3116,8 @@ def browser_vision(question: str, annotate: bool = False, task_id: Optional[str]
             # Fall through to the normal screenshot path so _run_browser_command
             # can still produce the standard fallback metadata/error.
             _lp_prerouted = False
+    except Exception:
+        pass
 
     try:
         screenshots_dir.mkdir(parents=True, exist_ok=True)

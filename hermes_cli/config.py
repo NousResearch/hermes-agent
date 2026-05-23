@@ -1322,6 +1322,15 @@ DEFAULT_CONFIG = {
     # See `website/docs/user-guide/features/hooks.md` for schema + examples.
     "hooks": {},
 
+    "agent_bridge": {
+        "enabled": False,
+        "agent_id": "",
+        "display_name": "",
+        "server_url": "http://127.0.0.1:8791",
+        "token_env": "HERMES_AGENT_BRIDGE_TOKEN",
+        "rooms": {},
+    },
+
     # Auto-accept shell-hook registrations without a TTY prompt.  Also
     # toggleable per-invocation via --accept-hooks or HERMES_ACCEPT_HOOKS=1.
     # Gateway / cron / non-interactive runs need this (or one of the other
@@ -2234,6 +2243,14 @@ OPTIONAL_ENV_VARS = {
         "url": None,
         "password": False,
         "category": "tool",
+        "advanced": True,
+    },
+    "HERMES_AGENT_BRIDGE_TOKEN": {
+        "description": "Shared token for the local Hermes agent bridge",
+        "prompt": "Hermes agent bridge token",
+        "url": None,
+        "password": True,
+        "category": "messaging",
         "advanced": True,
     },
 

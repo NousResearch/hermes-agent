@@ -1,0 +1,10 @@
+name: agent_bridge
+version: "0.1.0"
+description: "Local bridge for multi-agent group-chat style coordination across Hermes gateways."
+author: NousResearch
+hooks:
+  - gateway_startup
+  - pre_gateway_dispatch
+  - post_gateway_response
+requires_env:
+  - HERMES_AGENT_BRIDGE_TOKEN

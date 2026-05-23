@@ -3615,9 +3615,19 @@ class GatewayRunner:
         hook_count = len(self.hooks.loaded_hooks)
         if hook_count:
             logger.info("%s hook(s) loaded", hook_count)
+        _startup_platforms = [p.value for p in self.adapters.keys()]
         await self.hooks.emit("gateway:startup", {
-            "platforms": [p.value for p in self.adapters.keys()],
+            "platforms": _startup_platforms,
         })
+        try:
+            from hermes_cli.plugins import invoke_hook as _invoke_hook
+            _invoke_hook(
+                "gateway_startup",
+                gateway=self,
+                platforms=_startup_platforms,
+            )
+        except Exception as _hook_exc:
+            logger.warning("gateway_startup plugin hook failed: %s", _hook_exc)
         
         if connected_count > 0:
             logger.info("Gateway running with %s platform(s)", connected_count)
@@ -7687,6 +7697,20 @@ class GatewayRunner:
                 **hook_ctx,
                 "response": (response or "")[:500],
             })
+            try:
+                from hermes_cli.plugins import invoke_hook as _invoke_hook
+                _invoke_hook(
+                    "post_gateway_response",
+                    event=event,
+                    source=source,
+                    session_key=session_key,
+                    session_id=session_entry.session_id,
+                    response=response or "",
+                    gateway=self,
+                    already_sent=bool(agent_result.get("already_sent")),
+                )
+            except Exception as _hook_exc:
+                logger.warning("post_gateway_response invocation failed: %s", _hook_exc)
             
             # Check for pending process watchers (check_interval on background processes)
             try:

@@ -3583,14 +3583,14 @@ class GatewayRunner:
 
         # On Windows there's no bash/setsid chain — spawn a tiny Python
         # watcher directly via sys.executable instead.  The watcher polls
-        # current_pid, waits for our exit, then runs `hermes gateway
-        # restart` with detach flags so the respawn survives the CLI
+        # current_pid, waits for our exit, then runs `hermes gateway run
+        # --replace` with detach flags so the respawn survives the CLI
         # that triggered the /restart command closing its console.
         if sys.platform == "win32":
             import textwrap
             from hermes_cli._subprocess_compat import windows_detach_popen_kwargs
 
-            cmd_argv = [*hermes_cmd, "gateway", "restart"]
+            cmd_argv = [*hermes_cmd, "gateway", "run", "--replace"]
             watcher = textwrap.dedent(
                 """
                 import os, subprocess, sys, time
@@ -3648,10 +3648,41 @@ class GatewayRunner:
             )
             return
 
+        expected_starttime = ""
+        try:
+            stat_text = Path(f"/proc/{current_pid}/stat").read_text(
+                encoding="utf-8", errors="ignore"
+            )
+            # /proc/<pid>/stat field 2 (comm) is parenthesized and may contain
+            # spaces, so split after the final ") " before indexing fields.
+            stat_fields_after_comm = stat_text.rsplit(") ", 1)[1].split()
+            # After comm, field 3 (state) is index 0 and field 22 (starttime)
+            # is index 19.  Capturing starttime avoids waiting on PID reuse.
+            if len(stat_fields_after_comm) >= 20:
+                expected_starttime = stat_fields_after_comm[19]
+        except Exception:
+            expected_starttime = ""
+
         cmd = " ".join(shlex.quote(part) for part in hermes_cmd)
         shell_cmd = (
-            f"while kill -0 {current_pid} 2>/dev/null; do sleep 0.2; done; "
-            f"{cmd} gateway restart"
+            f"deadline=$((SECONDS + 120)); "
+            f"expected_start={shlex.quote(expected_starttime)}; "
+            f"stat_path=/proc/{current_pid}/stat; "
+            f"while kill -0 {current_pid} 2>/dev/null; do "
+            f"if [[ -r \"$stat_path\" ]]; then "
+            f"stat_line=$(<\"$stat_path\") || stat_line=''; "
+            f"if [[ -n \"$stat_line\" ]]; then "
+            f"stat_tail=${{stat_line##*) }}; "
+            f"set -- $stat_tail; "
+            f"state=$1; starttime=${{20:-}}; "
+            f"if [[ \"$state\" == 'Z' ]]; then break; fi; "
+            f"if [[ -n \"$expected_start\" && -n \"$starttime\" && \"$starttime\" != \"$expected_start\" ]]; then break; fi; "
+            f"fi; "
+            f"fi; "
+            f"if [[ $SECONDS -ge $deadline ]]; then break; fi; "
+            f"sleep 0.2; "
+            f"done; "
+            f"{cmd} gateway run --replace"
         )
         setsid_bin = shutil.which("setsid")
         if setsid_bin:

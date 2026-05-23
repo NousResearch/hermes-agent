@@ -197,11 +197,38 @@ async def test_launch_detached_restart_command_uses_setsid(monkeypatch):
     assert len(popen_calls) == 1
     cmd, kwargs = popen_calls[0]
     assert cmd[:2] == ["/usr/bin/setsid", "bash"]
-    assert "gateway restart" in cmd[-1]
+    assert "gateway run --replace" in cmd[-1]
+    assert "gateway restart" not in cmd[-1]
     assert "kill -0 321" in cmd[-1]
     assert kwargs["start_new_session"] is True
     assert kwargs["stdout"] is subprocess.DEVNULL
     assert kwargs["stderr"] is subprocess.DEVNULL
+
+
+@pytest.mark.asyncio
+async def test_launch_detached_restart_command_waiter_does_not_hang_on_zombie_pid(monkeypatch):
+    """The POSIX watcher must not wait forever when the old PID is a zombie."""
+    runner, _adapter = make_restart_runner()
+    popen_calls = []
+
+    monkeypatch.setattr(gateway_run, "_resolve_hermes_bin", lambda: ["/usr/bin/hermes"])
+    monkeypatch.setattr(gateway_run.os, "getpid", lambda: 321)
+    monkeypatch.setattr(shutil, "which", lambda cmd: "/usr/bin/setsid" if cmd == "setsid" else None)
+
+    def fake_popen(cmd, **kwargs):
+        popen_calls.append((cmd, kwargs))
+        return MagicMock()
+
+    monkeypatch.setattr(subprocess, "Popen", fake_popen)
+
+    await runner._launch_detached_restart_command()
+
+    assert len(popen_calls) == 1
+    shell_cmd = popen_calls[0][0][-1]
+    assert "/proc/321/stat" in shell_cmd
+    assert "'Z'" in shell_cmd or '"Z"' in shell_cmd
+    assert "120" in shell_cmd
+    assert "gateway run --replace" in shell_cmd
 
 
 # ── Shutdown notification tests ──────────────────────────────────────

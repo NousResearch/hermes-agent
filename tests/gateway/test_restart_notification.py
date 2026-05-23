@@ -36,6 +36,23 @@ def test_restart_notification_pending_true_with_marker(tmp_path, monkeypatch):
 # ── _handle_restart_command writes .restart_notify.json ──────────────────
 
 
+def _clear_webui_restart_env(monkeypatch):
+    monkeypatch.delenv("HERMES_WEBUI_STATE_DIR", raising=False)
+    monkeypatch.delenv("HERMES_WEBUI_PORT", raising=False)
+    monkeypatch.delenv("HERMES_SESSION_PLATFORM", raising=False)
+
+
+def _pretend_not_container(monkeypatch):
+    real_exists = gateway_run.os.path.exists
+
+    def fake_exists(path):
+        if path in {"/.dockerenv", "/run/.containerenv"}:
+            return False
+        return real_exists(path)
+
+    monkeypatch.setattr(gateway_run.os.path, "exists", fake_exists)
+
+
 @pytest.mark.asyncio
 async def test_restart_command_writes_notify_file(tmp_path, monkeypatch):
     """When /restart fires, the requester's routing info is persisted to disk."""
@@ -67,6 +84,7 @@ async def test_restart_command_writes_notify_file(tmp_path, monkeypatch):
 async def test_restart_command_uses_service_restart_under_systemd(tmp_path, monkeypatch):
     """Under systemd (INVOCATION_ID set), /restart uses via_service=True."""
     monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+    _clear_webui_restart_env(monkeypatch)
     monkeypatch.setenv("INVOCATION_ID", "abc123")
 
     runner, _adapter = make_restart_runner()
@@ -86,9 +104,44 @@ async def test_restart_command_uses_service_restart_under_systemd(tmp_path, monk
 
 @pytest.mark.asyncio
 async def test_restart_command_uses_detached_without_systemd(tmp_path, monkeypatch):
-    """Without systemd, /restart uses the detached subprocess approach."""
+    """Without systemd/container supervision, /restart uses detached subprocess."""
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+    _clear_webui_restart_env(monkeypatch)
+    monkeypatch.delenv("INVOCATION_ID", raising=False)
+    _pretend_not_container(monkeypatch)
+
+    runner, _adapter = make_restart_runner()
+    runner.request_restart = MagicMock(return_value=True)
+
+    source = make_restart_source(chat_id="42")
+    event = MessageEvent(
+        text="/restart",
+        message_type=MessageType.TEXT,
+        source=source,
+        message_id="m1",
+    )
+
+    await runner._handle_restart_command(event)
+    runner.request_restart.assert_called_once_with(detached=True, via_service=False)
+
+
+@pytest.mark.asyncio
+async def test_restart_command_uses_detached_inside_webui_container(tmp_path, monkeypatch):
+    """WebUI-hosted gateways are not supervised by Docker's restart policy."""
     monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
     monkeypatch.delenv("INVOCATION_ID", raising=False)
+    monkeypatch.setenv("HERMES_WEBUI_STATE_DIR", str(tmp_path / "webui"))
+
+    real_exists = gateway_run.os.path.exists
+
+    def fake_exists(path):
+        if path == "/.dockerenv":
+            return True
+        if path == "/run/.containerenv":
+            return False
+        return real_exists(path)
+
+    monkeypatch.setattr(gateway_run.os.path, "exists", fake_exists)
 
     runner, _adapter = make_restart_runner()
     runner.request_restart = MagicMock(return_value=True)

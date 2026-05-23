@@ -1386,6 +1386,31 @@ def _resolve_hermes_bin() -> Optional[list[str]]:
     return None
 
 
+def _is_webui_embedded_runtime() -> bool:
+    """Return True when the gateway is hosted by Hermes WebUI.
+
+    WebUI itself commonly runs inside a Docker container, but the gateway is
+    a child of the WebUI server process rather than the container's PID 1 or a
+    system service. In that mode, exiting with the service-restart code leaves
+    the gateway down until WebUI starts it again, so /restart must use the
+    detached manual relaunch helper instead.
+    """
+    return bool(
+        os.environ.get("HERMES_WEBUI_STATE_DIR")
+        or os.environ.get("HERMES_WEBUI_PORT")
+        or os.environ.get("HERMES_SESSION_PLATFORM") == "webui"
+    )
+
+
+def _should_restart_via_service_manager() -> bool:
+    """Choose whether /restart should rely on an external supervisor."""
+    if _is_webui_embedded_runtime():
+        return False
+    under_service = bool(os.environ.get("INVOCATION_ID"))  # systemd sets this
+    in_container = os.path.exists("/.dockerenv") or os.path.exists("/run/.containerenv")
+    return under_service or in_container
+
+
 def _parse_session_key(session_key: str) -> "dict | None":
     """Parse a session key into its component parts.
 
@@ -9850,15 +9875,13 @@ class GatewayRunner:
             logger.debug("Failed to write restart dedup marker: %s", e)
 
         active_agents = self._running_agent_count()
-        # When running under a service manager (systemd/launchd) or inside a
-        # Docker/Podman container, use the service restart path: exit with
-        # code 75 so the service manager / container restart policy restarts
-        # us.  The detached subprocess approach (setsid + bash) doesn't work
-        # under systemd (KillMode=mixed kills the cgroup) or Docker (tini
-        # exits when the gateway dies, taking the detached helper with it).
-        _under_service = bool(os.environ.get("INVOCATION_ID"))  # systemd sets this
-        _in_container = os.path.exists("/.dockerenv") or os.path.exists("/run/.containerenv")
-        if _under_service or _in_container:
+        # When running under a service manager (systemd/launchd) or as a
+        # container main process, use the service restart path: exit with code
+        # 75 so the external supervisor restarts us.  WebUI is a special case:
+        # it often runs inside Docker too, but the gateway is just a child of
+        # the WebUI server, so there is no container restart policy watching the
+        # gateway PID.  In that embedded mode, use the detached helper.
+        if _should_restart_via_service_manager():
             self.request_restart(detached=False, via_service=True)
         else:
             self.request_restart(detached=True, via_service=False)
@@ -18171,7 +18194,8 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
         asyncio.create_task(runner.stop())
 
     def restart_signal_handler():
-        runner.request_restart(detached=False, via_service=True)
+        via_service = _should_restart_via_service_manager()
+        runner.request_restart(detached=not via_service, via_service=via_service)
     
     loop = asyncio.get_running_loop()
     if threading.current_thread() is threading.main_thread():

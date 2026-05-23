@@ -14,7 +14,7 @@ from unittest.mock import AsyncMock, patch
 import pytest
 
 from gateway.config import GatewayConfig, Platform
-from gateway.run import GatewayRunner, _parse_session_key
+from gateway.run import GatewayRunner, _format_gateway_process_notification, _parse_session_key
 
 
 # ---------------------------------------------------------------------------
@@ -26,6 +26,7 @@ class _FakeRegistry:
 
     def __init__(self, sessions):
         self._sessions = list(sessions)
+        self.consumed = set()
 
     def get(self, session_id):
         if self._sessions:
@@ -33,7 +34,10 @@ class _FakeRegistry:
         return None
 
     def is_completion_consumed(self, session_id):
-        return False
+        return session_id in self.consumed
+
+    def mark_completion_consumed(self, session_id):
+        self.consumed.add(session_id)
 
 
 def _build_runner(monkeypatch, tmp_path, mode: str) -> GatewayRunner:
@@ -202,6 +206,47 @@ async def test_run_process_watcher_respects_notification_mode(
     if expected_fragment is not None:
         sent_message = adapter.send.await_args.args[1]
         assert expected_fragment in sent_message
+
+
+@pytest.mark.asyncio
+async def test_run_process_watcher_agent_notify_uses_thread_source(monkeypatch, tmp_path):
+    import tools.process_registry as pr_module
+
+    sessions = [
+        SimpleNamespace(
+            output_buffer="done\n",
+            exited=True,
+            exit_code=0,
+            command="npm test",
+        )
+    ]
+    fake_registry = _FakeRegistry(sessions)
+    monkeypatch.setattr(pr_module, "process_registry", fake_registry)
+
+    async def _instant_sleep(*_a, **_kw):
+        pass
+    monkeypatch.setattr(asyncio, "sleep", _instant_sleep)
+
+    runner = _build_runner(monkeypatch, tmp_path, "all")
+    adapter = runner.adapters[Platform.TELEGRAM]
+
+    await runner._run_process_watcher({
+        "session_id": "proc_agent_notify",
+        "check_interval": 0,
+        "session_key": "agent:main:telegram:group:-100:42",
+        "platform": "telegram",
+        "chat_id": "-100",
+        "thread_id": "42",
+        "user_id": "123",
+        "user_name": "Denis",
+        "notify_on_complete": True,
+    })
+
+    adapter.handle_message.assert_awaited_once()
+    synth_event = adapter.handle_message.await_args.args[0]
+    assert synth_event.source.chat_id == "-100"
+    assert synth_event.source.thread_id == "42"
+    assert fake_registry.is_completion_consumed("proc_agent_notify")
 
 
 @pytest.mark.asyncio
@@ -501,6 +546,38 @@ def test_build_process_event_source_returns_none_for_invalid_platform(monkeypatc
     }
     source = runner._build_process_event_source(evt)
     assert source is None
+
+
+@pytest.mark.asyncio
+async def test_completion_event_routes_to_original_telegram_thread(monkeypatch, tmp_path):
+    """Queued completion events carry their own topic, not the foreground one."""
+    runner = _build_runner(monkeypatch, tmp_path, "all")
+    adapter = runner.adapters[Platform.TELEGRAM]
+    evt = {
+        "type": "completion",
+        "session_id": "proc_done",
+        "session_key": "agent:main:telegram:group:-100:42",
+        "command": "npm test",
+        "exit_code": 0,
+        "output": "ok",
+        "platform": "telegram",
+        "chat_id": "-100",
+        "thread_id": "42",
+        "user_id": "123",
+        "user_name": "Denis",
+    }
+
+    synth_text = _format_gateway_process_notification(evt)
+    assert "completed" in synth_text
+    await runner._inject_watch_notification(synth_text, evt)
+
+    adapter.handle_message.assert_awaited_once()
+    synth_event = adapter.handle_message.await_args.args[0]
+    assert synth_event.internal is True
+    assert synth_event.source.platform == Platform.TELEGRAM
+    assert synth_event.source.chat_id == "-100"
+    assert synth_event.source.thread_id == "42"
+    assert synth_event.source.user_id == "123"
 
 
 def test_build_process_event_source_returns_none_for_short_session_key(monkeypatch, tmp_path):

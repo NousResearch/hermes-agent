@@ -92,6 +92,12 @@ class TestCompletionQueue:
         )
         s.exited = True
         s.exit_code = 0
+        s.session_key = "agent:main:telegram:group:-100:42"
+        s.watcher_platform = "telegram"
+        s.watcher_chat_id = "-100"
+        s.watcher_user_id = "123"
+        s.watcher_user_name = "Denis"
+        s.watcher_thread_id = "42"
         registry._running[s.id] = s
         with patch.object(registry, "_write_checkpoint"):
             registry._move_to_finished(s)
@@ -99,9 +105,15 @@ class TestCompletionQueue:
         assert not registry.completion_queue.empty()
         completion = registry.completion_queue.get_nowait()
         assert completion["session_id"] == s.id
+        assert completion["session_key"] == "agent:main:telegram:group:-100:42"
         assert completion["command"] == "echo hello"
         assert completion["exit_code"] == 0
         assert "build succeeded" in completion["output"]
+        assert completion["platform"] == "telegram"
+        assert completion["chat_id"] == "-100"
+        assert completion["user_id"] == "123"
+        assert completion["user_name"] == "Denis"
+        assert completion["thread_id"] == "42"
 
     def test_move_to_finished_nonzero_exit(self, registry):
         """Nonzero exit codes are captured correctly."""

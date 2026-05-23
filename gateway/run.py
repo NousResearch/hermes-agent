@@ -1411,7 +1411,7 @@ def _parse_session_key(session_key: str) -> "dict | None":
 
 
 def _format_gateway_process_notification(evt: dict) -> "str | None":
-    """Format a watch pattern event from completion_queue into a [IMPORTANT:] message."""
+    """Format a process event from completion_queue into a [IMPORTANT:] message."""
     evt_type = evt.get("type", "completion")
     _sid = evt.get("session_id", "unknown")
     _cmd = evt.get("command", "unknown")
@@ -1433,6 +1433,16 @@ def _format_gateway_process_notification(evt: dict) -> "str | None":
             text += f"\n({_sup} earlier matches were suppressed by rate limit)"
         text += "]"
         return text
+
+    if evt_type == "completion":
+        _exit = evt.get("exit_code")
+        _out = evt.get("output", "")
+        return (
+            f"[IMPORTANT: Background process {_sid} completed "
+            f"(exit code {_exit}).\n"
+            f"Command: {_cmd}\n"
+            f"Output:\n{_out}]"
+        )
 
     return None
 
@@ -8658,28 +8668,28 @@ class GatewayRunner:
             except Exception as e:
                 logger.error("Process watcher setup error: %s", e)
 
-            # Drain watch pattern notifications that arrived during the agent run.
-            # Watch events and completions share the same queue; completions are
-            # already handled by the per-process watcher task above, so we only
-            # inject watch-type events here.
+            # Drain process notifications that arrived during the agent run.
+            # Every queued event carries its own origin metadata; never route it
+            # via the currently active foreground topic.
             try:
                 from tools.process_registry import process_registry as _pr
-                _watch_events = []
+                _process_events = []
                 while not _pr.completion_queue.empty():
                     evt = _pr.completion_queue.get_nowait()
                     evt_type = evt.get("type", "completion")
-                    if evt_type in {"watch_match", "watch_disabled"}:
-                        _watch_events.append(evt)
-                    # else: completion events are handled by the watcher task
-                for evt in _watch_events:
+                    if evt_type in ("watch_match", "watch_disabled", "completion"):
+                        _process_events.append(evt)
+                for evt in _process_events:
                     synth_text = _format_gateway_process_notification(evt)
                     if synth_text:
                         try:
                             await self._inject_watch_notification(synth_text, evt)
+                            if evt.get("type", "completion") == "completion":
+                                _pr.mark_completion_consumed(evt.get("session_id", ""))
                         except Exception as e2:
-                            logger.error("Watch notification injection error: %s", e2)
+                            logger.error("Process notification injection error: %s", e2)
             except Exception as e:
-                logger.debug("Watch queue drain error: %s", e)
+                logger.debug("Process queue drain error: %s", e)
 
             # NOTE: Dangerous command approvals are now handled inline by the
             # blocking gateway approval mechanism in tools/approval.py.  The agent
@@ -14664,6 +14674,7 @@ class GatewayRunner:
                                 source.thread_id,
                             )
                             await adapter.handle_message(synth_event)
+                            _pr_check.mark_completion_consumed(session_id)
                         except Exception as e:
                             logger.error("Agent notify injection error: %s", e)
                     break

@@ -630,13 +630,8 @@ def do_install(identifier: str, category: str = "", force: bool = False,
         c.print("[dim]Use /reset to start a new session now, or --now to activate immediately (invalidates prompt cache).[/]\n")
 
 
-def do_inspect(identifier: str, console: Optional[Console] = None,
-               ast_deep: bool = False) -> None:
-    """Preview a skill's SKILL.md content without installing.
-
-    When ``ast_deep=True``, also runs AST-level diagnostics against Python
-    files in the fetched bundle before installation.
-    """
+def do_inspect(identifier: str, console: Optional[Console] = None) -> None:
+    """Preview a skill's SKILL.md content without installing."""
     from tools.skills_hub import GitHubAuth, create_source_router
 
     c = console or _console
@@ -681,11 +676,6 @@ def do_inspect(identifier: str, console: Optional[Console] = None,
         if len(lines) > 50:
             preview += f"\n\n... ({len(lines) - 50} more lines)"
         c.print(Panel(preview, title="SKILL.md Preview", subtitle="hermes skills install <id> to install"))
-
-    if bundle and ast_deep:
-        from tools.skills_ast_audit import ast_scan_bundle_files, format_ast_report
-        ast_findings = ast_scan_bundle_files(bundle.files)
-        c.print(format_ast_report(ast_findings, skill_name=meta.name))
 
     c.print()
 
@@ -920,8 +910,9 @@ def do_audit(name: Optional[str] = None, console: Optional[Console] = None,
              deep: bool = False) -> None:
     """Re-run security scan on installed hub skills.
 
-    When ``deep=True``, also runs AST-level analysis on Python files
-    (opt-in diagnostic, not a security gate).
+    When ``deep=True``, also runs an opt-in AST-level diagnostic on Python
+    files (review aid only — not a security gate; skills_guard.py verdicts
+    are unchanged).
     """
     from tools.skills_hub import HubLockFile, SKILLS_DIR
     from tools.skills_guard import scan_skill, format_scan_report
@@ -943,9 +934,8 @@ def do_audit(name: Optional[str] = None, console: Optional[Console] = None,
 
     c.print(f"\n[bold]Auditing {len(targets)} skill(s)...[/]\n")
 
-    ast_scan_skill = format_ast_report = None
     if deep:
-        from tools.skills_ast_audit import ast_scan_skill, format_ast_report
+        from tools.skills_ast_audit import ast_scan_path, format_ast_report
 
     for entry in targets:
         skill_path = SKILLS_DIR / entry["install_path"]
@@ -957,8 +947,7 @@ def do_audit(name: Optional[str] = None, console: Optional[Console] = None,
         c.print(format_scan_report(result))
 
         if deep:
-            ast_findings = ast_scan_skill(skill_path)
-            c.print(format_ast_report(ast_findings, skill_name=entry["name"]))
+            c.print(format_ast_report(ast_scan_path(skill_path), skill_name=entry["name"]))
 
         c.print()
 
@@ -1356,7 +1345,7 @@ def skills_command(args) -> None:
                    skip_confirm=getattr(args, "yes", False),
                    name_override=getattr(args, "name", "") or "")
     elif action == "inspect":
-        do_inspect(args.identifier, ast_deep=getattr(args, "ast_deep", False))
+        do_inspect(args.identifier)
     elif action == "list":
         do_list(
             source_filter=args.source,
@@ -1414,7 +1403,6 @@ def handle_skills_slash(cmd: str, console: Optional[Console] = None) -> None:
         /skills install openai/skills/skill-creator --force
         /skills install https://example.com/path/SKILL.md
         /skills inspect openai/skills/skill-creator
-        /skills inspect openai/skills/skill-creator --ast-deep
         /skills list
         /skills list --source hub
         /skills check
@@ -1514,11 +1502,10 @@ def handle_skills_slash(cmd: str, console: Optional[Console] = None) -> None:
                    name_override=name_override, console=c)
 
     elif action == "inspect":
-        non_flag_args = [arg for arg in args if not arg.startswith("--")]
-        if not non_flag_args:
-            c.print("[bold red]Usage:[/] /skills inspect <identifier> [--ast-deep]\n")
+        if not args:
+            c.print("[bold red]Usage:[/] /skills inspect <identifier>\n")
             return
-        do_inspect(non_flag_args[0], console=c, ast_deep="--ast-deep" in args)
+        do_inspect(args[0], console=c)
 
     elif action == "list":
         source_filter = "all"

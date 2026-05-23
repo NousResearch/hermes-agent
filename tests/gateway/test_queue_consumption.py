@@ -334,6 +334,36 @@ class TestQueueConsumptionAfterCompletion:
             )
         assert runner._queue_depth(session_key, adapter=adapter) == 3
 
+
+    def test_enqueue_fifo_rejects_items_over_configured_depth(self):
+        from gateway.run import GatewayRunner
+
+        runner = GatewayRunner.__new__(GatewayRunner)
+        runner.config = {"agent": {"gateway_queue_max_depth": 2}}
+        runner._queued_events = {}
+        adapter = _StubAdapter()
+        session_key = "telegram:user:capped"
+
+        accepted = []
+        for text in ("one", "two", "three"):
+            accepted.append(
+                runner._enqueue_fifo(
+                    session_key,
+                    MessageEvent(
+                        text=text,
+                        message_type=MessageType.TEXT,
+                        source=MagicMock(),
+                        message_id=f"q-{text}",
+                    ),
+                    adapter,
+                )
+            )
+
+        assert accepted == [True, True, False]
+        assert runner._queue_depth(session_key, adapter=adapter) == 2
+        assert adapter._pending_messages[session_key].text == "one"
+        assert [e.text for e in runner._queued_events[session_key]] == ["two"]
+
     def test_enqueue_preserves_text_no_merging(self):
         """Each /queue item keeps its own text — never merged with neighbors."""
         from gateway.run import GatewayRunner

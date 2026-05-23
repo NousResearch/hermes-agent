@@ -544,6 +544,11 @@ DEFAULT_CONFIG = {
         # default is 1800s) plus runtime slack.  Set to 0 to disable the
         # gate and restore pre-fix behaviour (always inject).
         "gateway_auto_continue_freshness": 3600,
+        # Maximum number of pending /queue turns retained per gateway
+        # session. This bounds memory retention and downstream LLM/tool cost
+        # from repeated authorized queue requests while preserving FIFO
+        # behavior for normal use. Values below 1 are clamped to 1.
+        "gateway_queue_max_depth": 25,
         # How user-attached images are presented to the main model on each turn.
         #   "auto"   — attach natively when the active model reports
         #              supports_vision=True AND the user hasn't explicitly

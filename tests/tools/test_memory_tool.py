@@ -255,3 +255,31 @@ class TestMemoryToolDispatcher:
     def test_remove_requires_old_text(self, store):
         result = json.loads(memory_tool(action="remove", store=store))
         assert result["success"] is False
+
+    def test_read_empty(self, store):
+        result = json.loads(memory_tool(action="read", target="memory", store=store))
+        assert result["success"] is True
+        assert result["target"] == "memory"
+        assert result["entries"] == []
+        assert result["entry_count"] == 0
+
+    def test_read_returns_entries_without_mutation(self, store):
+        store.add("memory", "first fact")
+        store.add("memory", "second fact")
+        before = list(store.memory_entries)
+        result = json.loads(memory_tool(action="read", target="memory", store=store))
+        assert result["success"] is True
+        assert result["entries"] == ["first fact", "second fact"]
+        assert result["entry_count"] == 2
+        # Read must not mutate
+        assert store.memory_entries == before
+
+    def test_read_user_target(self, store):
+        store.add("user", "Name: Alice")
+        result = json.loads(memory_tool(action="read", target="user", store=store))
+        assert result["success"] is True
+        assert result["target"] == "user"
+        assert "Name: Alice" in result["entries"]
+
+    def test_read_action_in_schema_enum(self):
+        assert "read" in MEMORY_SCHEMA["parameters"]["properties"]["action"]["enum"]

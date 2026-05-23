@@ -6,8 +6,10 @@ and implement the required methods.
 """
 
 import asyncio
+import hashlib
 import inspect
 import ipaddress
+import json
 import logging
 import os
 import random
@@ -17,6 +19,8 @@ import subprocess
 import sys
 import uuid
 from abc import ABC, abstractmethod
+from pathlib import Path
+from typing import Any
 from urllib.parse import urlsplit
 
 from utils import normalize_proxy_url
@@ -86,6 +90,192 @@ def _reply_anchor_for_event(event) -> str | None:
     if platform == "feishu" and thread_id and getattr(event, "reply_to_message_id", None):
         return getattr(event, "reply_to_message_id", None)
     return getattr(event, "message_id", None)
+
+
+def _telegram_live_e2e_hash(value: Any) -> str | None:
+    """Return a stable hash for private Telegram routing identifiers."""
+    if value is None:
+        return None
+    text = str(value)
+    if not text:
+        return None
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
+def _telegram_live_e2e_receipts_path() -> Path | None:
+    """Return the local JSONL receipt path for Telegram live E2E evidence.
+
+    The path is intentionally local and sanitized. Tests and specialized
+    deployments can override it with HERMES_TELEGRAM_LIVE_E2E_RECEIPTS_PATH.
+    """
+    override = os.getenv("HERMES_TELEGRAM_LIVE_E2E_RECEIPTS_PATH", "").strip()
+    if override:
+        return Path(override).expanduser()
+
+    here = Path(__file__).resolve()
+    for candidate in [Path.cwd(), *here.parents, Path("/Users/agentmoney/godmode-workspace")]:
+        try:
+            if (candidate / "runtime" / "configs").exists() and (candidate / "AGENTS.md").exists():
+                return candidate / "evidence" / "runtime_health" / "telegram_live_e2e" / "receipts.jsonl"
+        except OSError:
+            continue
+    return None
+
+
+def _telegram_live_e2e_delivery_record(result: Any) -> dict[str, Any] | None:
+    """Extract non-secret delivery proof fields from a SendResult-like object."""
+    if result is None:
+        return None
+    raw_response = getattr(result, "raw_response", None)
+    message_ids: list[str] = []
+    requested_thread_id = None
+    thread_fallback = None
+    if isinstance(raw_response, dict):
+        raw_ids = raw_response.get("message_ids")
+        if isinstance(raw_ids, (list, tuple)):
+            message_ids = [str(item) for item in raw_ids if item is not None]
+        requested_thread_id = raw_response.get("requested_thread_id")
+        thread_fallback = raw_response.get("thread_fallback")
+    primary_id = getattr(result, "message_id", None)
+    if primary_id is not None and str(primary_id) not in message_ids:
+        message_ids.insert(0, str(primary_id))
+    continuation_ids = getattr(result, "continuation_message_ids", ()) or ()
+    for item in continuation_ids:
+        if item is not None and str(item) not in message_ids:
+            message_ids.append(str(item))
+    return {
+        "success": bool(getattr(result, "success", False)),
+        "message_id_present": primary_id is not None,
+        "message_id_sha256": _telegram_live_e2e_hash(primary_id),
+        "message_ids_sha256": [_telegram_live_e2e_hash(item) for item in message_ids],
+        "message_count": len(message_ids),
+        "requested_thread_id_sha256": _telegram_live_e2e_hash(requested_thread_id),
+        "requested_thread_id_present": requested_thread_id is not None,
+        "thread_fallback": bool(thread_fallback) if thread_fallback is not None else False,
+        "error_class": type(getattr(result, "error", None)).__name__ if getattr(result, "error", None) else None,
+        "error_sha256": _telegram_live_e2e_hash(getattr(result, "error", None)),
+    }
+
+
+def _telegram_live_e2e_valid_sha256(value: Any) -> str | None:
+    """Return value only when it is a canonical SHA-256 hex digest."""
+    text = str(value or "")
+    if len(text) == 64 and all(ch in "0123456789abcdef" for ch in text):
+        return text
+    return None
+
+
+def _sanitize_telegram_live_e2e_delivery_results(results: Any) -> list[dict[str, Any]]:
+    """Keep only approved non-secret delivery receipt fields."""
+    sanitized: list[dict[str, Any]] = []
+    if not isinstance(results, list):
+        return sanitized
+    for item in results:
+        if not isinstance(item, dict):
+            continue
+        clean: dict[str, Any] = {
+            "success": bool(item.get("success")),
+            "message_id_present": bool(item.get("message_id_present")),
+            "requested_thread_id_present": bool(item.get("requested_thread_id_present")),
+            "thread_fallback": bool(item.get("thread_fallback")),
+        }
+        try:
+            clean["message_count"] = max(0, int(item.get("message_count") or 0))
+        except (TypeError, ValueError):
+            clean["message_count"] = 0
+        for key in ("message_id_sha256", "requested_thread_id_sha256", "error_sha256"):
+            digest = _telegram_live_e2e_valid_sha256(item.get(key))
+            clean[key] = digest
+        raw_ids = item.get("message_ids_sha256")
+        if isinstance(raw_ids, list):
+            clean["message_ids_sha256"] = [
+                digest for digest in (_telegram_live_e2e_valid_sha256(value) for value in raw_ids) if digest
+            ]
+        else:
+            clean["message_ids_sha256"] = []
+        error_class = str(item.get("error_class") or "")
+        clean["error_class"] = error_class if re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]{0,80}", error_class) else None
+        sanitized.append(clean)
+    return sanitized
+
+
+def append_telegram_live_e2e_receipt(
+    *,
+    event: Any,
+    session_key: str,
+    phase: str,
+    delivery_attempted: bool = False,
+    delivery_succeeded: bool = False,
+    delivery_results: list[dict[str, Any]] | None = None,
+    outcome: Any = None,
+    error: BaseException | None = None,
+) -> Path | None:
+    """Append a sanitized Telegram live E2E receipt for CLI proof.
+
+    This records route/delivery correlation without raw message text, raw chat
+    identifiers, tokens, raw Telegram updates, or raw provider output.
+    """
+    source = getattr(event, "source", None)
+    if _platform_name(getattr(source, "platform", None)) != "telegram":
+        return None
+    out_path = _telegram_live_e2e_receipts_path()
+    if out_path is None:
+        return None
+    try:
+        record = {
+            "schema_version": 1,
+            "record_type": "telegram_live_e2e_receipt",
+            "timestamp_utc": datetime.utcnow().isoformat(timespec="seconds") + "Z",
+            "phase": str(phase),
+            "platform": "telegram",
+            "adapter": "hermes_gateway",
+            "session_key_sha256": _telegram_live_e2e_hash(session_key),
+            "chat_type": str(getattr(source, "chat_type", "") or ""),
+            "chat_id_present": bool(getattr(source, "chat_id", None)),
+            "chat_id_sha256": _telegram_live_e2e_hash(getattr(source, "chat_id", None)),
+            "thread_id_present": bool(getattr(source, "thread_id", None)),
+            "thread_id_sha256": _telegram_live_e2e_hash(getattr(source, "thread_id", None)),
+            "user_id_present": bool(getattr(source, "user_id", None)),
+            "user_id_sha256": _telegram_live_e2e_hash(getattr(source, "user_id", None)),
+            "inbound_message_id_present": bool(getattr(event, "message_id", None)),
+            "inbound_message_id_sha256": _telegram_live_e2e_hash(getattr(event, "message_id", None)),
+            "reply_to_message_id_present": bool(getattr(event, "reply_to_message_id", None)),
+            "reply_to_message_id_sha256": _telegram_live_e2e_hash(getattr(event, "reply_to_message_id", None)),
+            "platform_update_id_present": getattr(event, "platform_update_id", None) is not None,
+            "platform_update_id_sha256": _telegram_live_e2e_hash(getattr(event, "platform_update_id", None)),
+            "message_type": str(getattr(getattr(event, "message_type", None), "value", getattr(event, "message_type", "")) or ""),
+            "message_chars": len(str(getattr(event, "text", "") or "")),
+            "media_count": len(getattr(event, "media_urls", []) or []) + len(getattr(event, "media_types", []) or []),
+            "delivery_attempted": bool(delivery_attempted),
+            "delivery_succeeded": bool(delivery_succeeded),
+            "delivery_results": _sanitize_telegram_live_e2e_delivery_results(delivery_results or []),
+            "outcome": str(getattr(outcome, "value", outcome) or ""),
+            "error_class": type(error).__name__ if error else None,
+            "error_sha256": _telegram_live_e2e_hash(str(error)) if error else None,
+            "raw_text_stored": False,
+            "raw_operator_message_stored": False,
+            "raw_private_identifiers_recorded": False,
+            "secret_material_stored": False,
+            "proof_boundary": {
+                "proves": [
+                    "hermes_gateway_received_normalized_telegram_event",
+                    "hermes_gateway_session_key_correlated_by_sha256",
+                    "telegram_delivery_attempt_and_result_recorded_when_response_sent",
+                ],
+                "does_not_prove": [
+                    "openclaw_channel_gateway_exposed_live_conversation",
+                    "telegram_raw_readback_supported",
+                    "future_post_restart_durability",
+                ],
+            },
+        }
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        with out_path.open("a", encoding="utf-8") as handle:
+            handle.write(json.dumps(record, sort_keys=True, separators=(",", ":")) + "\n")
+        return out_path
+    except Exception:
+        logger.debug("Telegram live E2E receipt append failed", exc_info=True)
+        return None
 
 
 def should_send_media_as_audio(platform, ext: str, is_voice: bool = False) -> bool:
@@ -3079,6 +3269,7 @@ class BasePlatformAdapter(ABC):
         # Track delivery outcomes for the processing-complete hook
         delivery_attempted = False
         delivery_succeeded = False
+        delivery_results: list[dict[str, Any]] = []
 
         def _record_delivery(result):
             nonlocal delivery_attempted, delivery_succeeded
@@ -3087,6 +3278,9 @@ class BasePlatformAdapter(ABC):
             delivery_attempted = True
             if getattr(result, "success", False):
                 delivery_succeeded = True
+            receipt = _telegram_live_e2e_delivery_record(result)
+            if receipt is not None:
+                delivery_results.append(receipt)
 
         # Reuse the interrupt event set by handle_message() (which marks
         # the session active before spawning this task to prevent races).
@@ -3381,10 +3575,20 @@ class BasePlatformAdapter(ABC):
 
             # Determine overall success for the processing hook
             processing_ok = delivery_succeeded if delivery_attempted else not bool(response)
+            processing_outcome = ProcessingOutcome.SUCCESS if processing_ok else ProcessingOutcome.FAILURE
             await self._run_processing_hook(
                 "on_processing_complete",
                 event,
-                ProcessingOutcome.SUCCESS if processing_ok else ProcessingOutcome.FAILURE,
+                processing_outcome,
+            )
+            append_telegram_live_e2e_receipt(
+                event=event,
+                session_key=session_key,
+                phase="processing_complete",
+                delivery_attempted=delivery_attempted,
+                delivery_succeeded=delivery_succeeded,
+                delivery_results=delivery_results,
+                outcome=processing_outcome,
             )
 
             # Check if there's a pending message that was queued during our processing
@@ -3432,9 +3636,28 @@ class BasePlatformAdapter(ABC):
             if current_task is None or current_task not in self._expected_cancelled_tasks:
                 outcome = ProcessingOutcome.FAILURE
             await self._run_processing_hook("on_processing_complete", event, outcome)
+            append_telegram_live_e2e_receipt(
+                event=event,
+                session_key=session_key,
+                phase="processing_complete",
+                delivery_attempted=delivery_attempted,
+                delivery_succeeded=delivery_succeeded,
+                delivery_results=delivery_results,
+                outcome=outcome,
+            )
             raise
         except Exception as e:
             await self._run_processing_hook("on_processing_complete", event, ProcessingOutcome.FAILURE)
+            append_telegram_live_e2e_receipt(
+                event=event,
+                session_key=session_key,
+                phase="processing_complete",
+                delivery_attempted=delivery_attempted,
+                delivery_succeeded=delivery_succeeded,
+                delivery_results=delivery_results,
+                outcome=ProcessingOutcome.FAILURE,
+                error=e,
+            )
             logger.error("[%s] Error handling message: %s", self.name, e, exc_info=True)
             # Send the error to the user so they aren't left with radio silence
             try:

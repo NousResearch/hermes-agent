@@ -20,6 +20,27 @@ from fastapi import APIRouter, HTTPException, Query
 router = APIRouter()
 
 
+@router.get("/standalone")
+async def standalone_dashboard() -> dict[str, Any]:
+    """Return the canonical standalone dashboard URL for Hermes bridge rendering."""
+    _refresh_hermes_env()
+    url = (
+        os.environ.get("HERMES_KB_DASHBOARD_STANDALONE_URL")
+        or os.environ.get("KB_DASHBOARD_URL")
+        or "https://helix.tailca54ca.ts.net:9121"
+    ).strip()
+    return {
+        "ok": True,
+        "url": url,
+        "source": "kb-dashboard.standalone",
+        "deprecated_plugin": True,
+        "message": (
+            "The Hermes kb-live-dashboard plugin is now a bridge only. "
+            "Use the standalone kb-dashboard app for the primary visual/live dashboard."
+        ),
+    }
+
+
 @router.get("/live")
 async def live_dashboard(limit: int = Query(default=8, ge=1, le=50)) -> dict[str, Any]:
     command = _dashboard_command(limit=limit)

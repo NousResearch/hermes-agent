@@ -149,6 +149,31 @@
   color: #c44c47;
 }
 
+.kb-live-bridge-panel {
+  background: hsl(var(--card));
+  border: 1px solid hsl(var(--border));
+  border-radius: 8px;
+  margin-top: 18px;
+  max-width: 760px;
+  padding: 20px;
+}
+
+.kb-live-bridge-panel h2 {
+  margin: 14px 0 8px;
+}
+
+.kb-live-bridge-panel p {
+  color: hsl(var(--muted-foreground));
+  line-height: 1.45;
+  margin: 0 0 14px;
+}
+
+.kb-live-bridge-link {
+  color: #0f5f4e;
+  font-weight: 800;
+  overflow-wrap: anywhere;
+}
+
 .kb-live-footer {
   font-size: 12px;
 }

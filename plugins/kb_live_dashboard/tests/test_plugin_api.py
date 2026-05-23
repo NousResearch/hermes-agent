@@ -99,6 +99,29 @@ def test_dashboard_cwd_uses_existing_local_workspace(monkeypatch, tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_standalone_dashboard_url_defaults_to_tailnet(monkeypatch):
+    module = _load_module()
+    monkeypatch.delenv("HERMES_KB_DASHBOARD_STANDALONE_URL", raising=False)
+    monkeypatch.delenv("KB_DASHBOARD_URL", raising=False)
+
+    result = await module.standalone_dashboard()
+
+    assert result["ok"] is True
+    assert result["url"] == "https://helix.tailca54ca.ts.net:9121"
+    assert result["deprecated_plugin"] is True
+
+
+@pytest.mark.asyncio
+async def test_standalone_dashboard_url_uses_environment(monkeypatch):
+    module = _load_module()
+    monkeypatch.setenv("HERMES_KB_DASHBOARD_STANDALONE_URL", "https://example.test/dashboard")
+
+    result = await module.standalone_dashboard()
+
+    assert result["url"] == "https://example.test/dashboard"
+
+
+@pytest.mark.asyncio
 async def test_live_dashboard_unwraps_mcp_packet(monkeypatch):
     module = _load_module()
     seen = {}

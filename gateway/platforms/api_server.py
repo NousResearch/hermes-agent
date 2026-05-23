@@ -673,6 +673,128 @@ def _read_usage_summary(db_path: Path, since_iso: Optional[str] = None) -> Dict[
 
 
 # ---------------------------------------------------------------------------
+# Recent events helper (used by /api/events/recent)
+# ---------------------------------------------------------------------------
+#
+# Synthesises gateway-level *structural* events from the sessions
+# table. Two event types per session: ``session.start`` and (when
+# the session has terminated) ``session.end``. The output is
+# newest-first and capped at ``limit``.
+#
+# **Security note:** the helper only emits *structural metadata* —
+# session id, source, model, timestamp, end_reason, message and
+# tool-call counts, duration. It NEVER reads or returns message
+# content, system prompts, tool output, or any other text body.
+# A remote activity feed can be rendered from this without
+# leaking conversation content.
+
+
+def _parse_iso_to_epoch(value: Optional[str]) -> Optional[float]:
+    """Convert an ISO-8601 string (with or without ``Z``) to a UNIX
+    epoch float. Returns ``None`` for ``None`` or malformed input."""
+    if not value:
+        return None
+    from datetime import datetime
+
+    try:
+        normalised = value.replace("Z", "+00:00")
+        return datetime.fromisoformat(normalised).timestamp()
+    except (TypeError, ValueError):
+        return None
+
+
+def _epoch_to_iso(epoch: Optional[float]) -> Optional[str]:
+    """Convert a UNIX epoch float to an ISO-8601 string with ``Z``
+    suffix (UTC). Returns ``None`` for ``None`` or non-numeric input."""
+    if epoch is None:
+        return None
+    from datetime import datetime, timezone
+
+    try:
+        dt = datetime.fromtimestamp(float(epoch), tz=timezone.utc)
+        return dt.isoformat().replace("+00:00", "Z")
+    except (TypeError, ValueError, OSError):
+        return None
+
+
+def _read_recent_events(
+    db_path: Path,
+    *,
+    limit: int = 50,
+    since_iso: Optional[str] = None,
+) -> List[Dict[str, Any]]:
+    """Build a newest-first list of structural session events."""
+    import sqlite3
+
+    since_epoch = _parse_iso_to_epoch(since_iso)
+
+    # We fetch up to 2x the limit at the SQL layer because each
+    # session yields up to two events (start + end). The final
+    # cap is applied after the Python-side filter.
+    sql_limit = max(1, int(limit) * 2)
+
+    with sqlite3.connect(str(db_path)) as conn:
+        try:
+            rows = conn.execute(
+                """SELECT id, source, model, started_at, ended_at,
+                          end_reason, message_count, tool_call_count
+                   FROM sessions
+                   ORDER BY started_at DESC
+                   LIMIT ?""",
+                (sql_limit,),
+            ).fetchall()
+        except sqlite3.OperationalError:
+            # Legacy DB missing a column — degrade to empty rather
+            # than 500.
+            return []
+
+    events: List[Dict[str, Any]] = []
+    for row in rows:
+        sid, source, model, started_at, ended_at, end_reason, mc, tc = row
+
+        if started_at is not None and (
+            since_epoch is None or float(started_at) >= since_epoch
+        ):
+            events.append(
+                {
+                    "type": "session.start",
+                    "timestamp": _epoch_to_iso(started_at),
+                    "session_id": sid,
+                    "source": source,
+                    "model": model,
+                }
+            )
+
+        if ended_at is not None and (
+            since_epoch is None or float(ended_at) >= since_epoch
+        ):
+            duration: Optional[float] = None
+            try:
+                if started_at is not None:
+                    duration = float(ended_at) - float(started_at)
+            except (TypeError, ValueError):
+                duration = None
+            events.append(
+                {
+                    "type": "session.end",
+                    "timestamp": _epoch_to_iso(ended_at),
+                    "session_id": sid,
+                    "source": source,
+                    "model": model,
+                    "metadata": {
+                        "end_reason": end_reason,
+                        "message_count": int(mc or 0),
+                        "tool_call_count": int(tc or 0),
+                        "duration_seconds": duration,
+                    },
+                }
+            )
+
+    events.sort(key=lambda ev: ev.get("timestamp") or "", reverse=True)
+    return events[: max(1, int(limit))]
+
+
+# ---------------------------------------------------------------------------
 # CORS middleware
 # ---------------------------------------------------------------------------
 
@@ -1722,6 +1844,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 "remote_gateway_status": True,
                 "remote_providers": True,
                 "remote_usage_summary": True,
+                "remote_recent_events": True,
                 "session_continuity_header": "X-Hermes-Session-Id",
                 "session_key_header": "X-Hermes-Session-Key",
                 "cors": bool(self._cors_origins),
@@ -1756,6 +1879,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 "skill_content": {"method": "GET", "path": "/api/skills/content"},
                 "providers": {"method": "GET", "path": "/api/providers"},
                 "usage_summary": {"method": "GET", "path": "/api/usage/summary"},
+                "recent_events": {"method": "GET", "path": "/api/events/recent"},
             },
         })
 
@@ -3488,6 +3612,49 @@ class APIServerAdapter(BasePlatformAdapter):
             return _api_json_error(str(exc), status=500)
 
     # ------------------------------------------------------------------
+    # Recent events — structural session lifecycle, no content
+    # ------------------------------------------------------------------
+
+    async def _handle_recent_events(self, request: "web.Request") -> "web.Response":
+        """GET /api/events/recent — newest-first list of structural
+        session events synthesised from the persisted sessions
+        table.
+
+        Two event types are emitted: ``session.start`` (one per
+        session) and ``session.end`` (when the session has
+        terminated). Each event carries only structural metadata
+        — id, source, model, timestamp, plus end-time aggregates
+        for ``session.end``. **No** message bodies, **no** system
+        prompts, **no** tool output.
+
+        Query params:
+          * ``limit`` — newest-first cap (default 50, max 200)
+          * ``since`` — ISO-8601 timestamp; events older than
+            this are filtered out
+
+        Intended consumer: a remote activity feed in a desktop or
+        dashboard UI.
+        """
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+
+        limit, _ = _coerce_limit_offset(request, default_limit=50)
+        since_iso = request.query.get("since") or None
+        try:
+            profile_dir = _profile_dir_for_request(request)
+            db_path = profile_dir / "state.db"
+            if not db_path.exists():
+                return web.json_response({"events": [], "limit": limit})
+            events = _read_recent_events(
+                db_path, limit=limit, since_iso=since_iso
+            )
+            return web.json_response({"events": events, "limit": limit})
+        except Exception as exc:
+            logger.exception("GET /api/events/recent failed")
+            return _api_json_error(str(exc), status=500)
+
+    # ------------------------------------------------------------------
     # Cron jobs API
     # ------------------------------------------------------------------
 
@@ -4513,6 +4680,8 @@ class APIServerAdapter(BasePlatformAdapter):
             self._app.router.add_get("/api/providers", self._handle_list_providers)
             # Usage summary aggregates (token + cost)
             self._app.router.add_get("/api/usage/summary", self._handle_usage_summary)
+            # Recent structural events for a remote activity feed
+            self._app.router.add_get("/api/events/recent", self._handle_recent_events)
             # Cron jobs management API
             self._app.router.add_get("/api/jobs", self._handle_list_jobs)
             self._app.router.add_post("/api/jobs", self._handle_create_job)

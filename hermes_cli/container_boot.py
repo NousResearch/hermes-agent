@@ -60,44 +60,87 @@ def reconcile_profile_gateways(
 ) -> list[ReconcileAction]:
     """Recreate s6 service registrations for every persistent profile.
 
+    Always registers a ``gateway-default`` slot for the root profile
+    (the implicit profile that lives at the top of ``$HERMES_HOME``,
+    not under ``profiles/``). The dispatcher in ``hermes_cli.gateway``
+    maps an empty profile suffix to ``gateway-default``, so this slot
+    is what ``hermes gateway start`` (no ``-p``) targets. Without it,
+    bare ``hermes gateway start`` inside the container would land on
+    ``s6-svc -u /run/service/gateway-default`` → uncaught
+    ``CalledProcessError`` → traceback to the user (PR #30136 review).
+
+    The default slot's prior state is read from
+    ``$HERMES_HOME/gateway_state.json`` (sibling to the profile root,
+    not under ``profiles/``); stale runtime files there are swept the
+    same way as for named profiles.
+
     Args:
         hermes_home: The container's HERMES_HOME (typically /opt/data).
-            Profiles live under ``<hermes_home>/profiles/<name>/``.
+            Profiles live under ``<hermes_home>/profiles/<name>/``;
+            the default profile lives at ``<hermes_home>`` itself.
         scandir: The s6 dynamic scandir (typically /run/service). Service
             directories are created at ``<scandir>/gateway-<profile>/``.
         dry_run: When True, walk and return the action list without
             touching the filesystem. For tests and `--dry-run` debug.
 
     Returns:
-        One :class:`ReconcileAction` per profile, in directory order.
+        One :class:`ReconcileAction` per profile, in this order:
+        ``default`` first, then named profiles in directory order.
     """
     actions: list[ReconcileAction] = []
+
+    # Default profile — always register, even if nothing has ever
+    # populated the root profile dir. The slot exists so
+    # ``hermes gateway start`` (no ``-p``) has somewhere to land;
+    # auto-up only when the prior state was "running" (same rule as
+    # named profiles).
+    default_prior_state = _read_prior_state(hermes_home)
+    default_should_start = default_prior_state in _AUTOSTART_STATES
+    if not dry_run:
+        _cleanup_stale_runtime_files(hermes_home)
+        _register_service(scandir, "default", start=default_should_start)
+    actions.append(ReconcileAction(
+        profile="default",
+        prior_state=default_prior_state,
+        action="started" if default_should_start else "registered",
+    ))
+
     profiles_root = hermes_home / "profiles"
-    if not profiles_root.is_dir():
-        return actions
+    if profiles_root.is_dir():
+        for entry in sorted(profiles_root.iterdir()):
+            if not entry.is_dir():
+                continue
+            # SOUL.md is always seeded by `hermes profile create` (config.yaml
+            # is not — that comes later via `hermes setup`). Use it as the
+            # "real profile" marker so stray dirs (backups, manual mkdir)
+            # aren't picked up.
+            if not (entry / "SOUL.md").exists():
+                continue
+            # The "default" service name is reserved for the root
+            # profile (above) — if a user has somehow created a
+            # ``profiles/default/`` directory, skip it to avoid the
+            # slot collision. Their gateway would still be reachable
+            # via ``hermes -p default-named gateway start`` if they
+            # rename the directory; we don't try to disambiguate here.
+            if entry.name == "default":
+                log.warning(
+                    "profiles/default/ exists — skipping to avoid colliding "
+                    "with the reserved root-profile s6 slot",
+                )
+                continue
 
-    for entry in sorted(profiles_root.iterdir()):
-        if not entry.is_dir():
-            continue
-        # SOUL.md is always seeded by `hermes profile create` (config.yaml
-        # is not — that comes later via `hermes setup`). Use it as the
-        # "real profile" marker so stray dirs (backups, manual mkdir)
-        # aren't picked up.
-        if not (entry / "SOUL.md").exists():
-            continue
+            prior_state = _read_prior_state(entry)
+            should_start = prior_state in _AUTOSTART_STATES
 
-        prior_state = _read_prior_state(entry)
-        should_start = prior_state in _AUTOSTART_STATES
+            if not dry_run:
+                _cleanup_stale_runtime_files(entry)
+                _register_service(scandir, entry.name, start=should_start)
 
-        if not dry_run:
-            _cleanup_stale_runtime_files(entry)
-            _register_service(scandir, entry.name, start=should_start)
-
-        actions.append(ReconcileAction(
-            profile=entry.name,
-            prior_state=prior_state,
-            action="started" if should_start else "registered",
-        ))
+            actions.append(ReconcileAction(
+                profile=entry.name,
+                prior_state=prior_state,
+                action="started" if should_start else "registered",
+            ))
 
     if not dry_run:
         _write_reconcile_log(hermes_home, actions)

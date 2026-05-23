@@ -31,7 +31,7 @@ from agent.anthropic_adapter import _is_oauth_token
 from agent.auxiliary_client import set_runtime_main
 from agent.codex_responses_adapter import _summarize_user_message_for_log
 from agent.display import KawaiiSpinner
-from agent.error_classifier import FailoverReason, classify_api_error
+from agent.error_classifier import ClassifiedError, FailoverReason, classify_api_error
 from agent.iteration_budget import IterationBudget
 from agent.memory_manager import build_memory_context_block
 from agent.message_sanitization import (
@@ -1018,6 +1018,14 @@ def run_conversation(
         anthropic_auth_retry_attempted=False
         nous_auth_retry_attempted=False
         copilot_auth_retry_attempted=False
+        # See issue #30331: when the credential pool has nothing to rotate
+        # to and any provider-specific OAuth refresh has already run without
+        # fixing the underlying credential, retrying max_retries × 5–120s
+        # backoff is pure latency on a key that is not going to fix itself.
+        # We allow at most one fresh-connection retry, then upgrade the
+        # classification to auth_permanent so the existing non-retryable
+        # abort path takes over.
+        single_key_auth_retry_attempted = False
         thinking_sig_retry_attempted = False
         image_shrink_retry_attempted = False
         multimodal_tool_content_retry_attempted = False
@@ -2268,6 +2276,53 @@ def run_conversation(
                     print(f"{agent.log_prefix}     • For Claude Code: run 'claude /login' to refresh, then retry")
                     print(f"{agent.log_prefix}     • Legacy cleanup: hermes config set ANTHROPIC_TOKEN \"\"")
                     print(f"{agent.log_prefix}     • Clear stale keys: hermes config set ANTHROPIC_API_KEY \"\"")
+
+                # ── Single-key auth fail-fast (issue #30331) ──────────
+                # When the credential pool has nothing to rotate to and the
+                # provider-specific OAuth refresh paths above either don't
+                # apply or have already run without fixing the underlying
+                # 401/403, the generic retry loop would burn max_retries ×
+                # 5–120 s backoff on a key that is not going to start
+                # working on its own.  Give one fresh-connection retry to
+                # rule out a transient hiccup, then upgrade the
+                # classification to ``auth_permanent`` so the existing
+                # non-retryable abort path emits an actionable error
+                # immediately instead of after multiple minutes.
+                if (
+                    classified.is_auth
+                    and not recovered_with_pool
+                ):
+                    if not single_key_auth_retry_attempted:
+                        single_key_auth_retry_attempted = True
+                        agent._vprint(
+                            f"{agent.log_prefix}🔐 Auth failure with no credential to rotate to — "
+                            f"retrying once with a fresh connection in case it was transient...",
+                            force=True,
+                        )
+                        continue
+                    # The fresh-connection retry also failed.  Upgrade the
+                    # error to a non-retryable classification so the
+                    # downstream ``is_client_error`` branch surfaces a
+                    # clear "key is invalid" message instead of starting
+                    # the backoff loop.  Status code / provider / model /
+                    # context are preserved so the abort path's diagnostic
+                    # output stays accurate.
+                    classified = ClassifiedError(
+                        reason=FailoverReason.auth_permanent,
+                        status_code=classified.status_code,
+                        provider=classified.provider,
+                        model=classified.model,
+                        message=(
+                            classified.message
+                            or "Authentication failed after one fresh-connection retry — "
+                            "the configured API credential appears invalid or revoked."
+                        ),
+                        error_context=classified.error_context,
+                        retryable=False,
+                        should_compress=False,
+                        should_rotate_credential=False,
+                        should_fallback=classified.should_fallback,
+                    )
 
                 # ── Thinking block signature recovery ─────────────────
                 # Anthropic signs thinking blocks against the full turn

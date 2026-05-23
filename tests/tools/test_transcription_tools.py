@@ -202,6 +202,247 @@ class TestTranscribeGroq:
         assert "language" not in kwargs
 
 
+class TestRemoteAudioUrl:
+    def test_groq_remote_url_resolves_redirect_before_transcribing(self, monkeypatch):
+        monkeypatch.setenv("GROQ_API_KEY", "gsk-test")
+
+        class FakeResponse:
+            status_code = 200
+            url = "https://cdn.example.test/final.mp3"
+            headers = {"Content-Type": "audio/mpeg", "Content-Length": "13"}
+            text = ""
+
+            def close(self):
+                pass
+
+        class FakeSession:
+            def __init__(self):
+                self.head_calls = []
+                self.get_calls = []
+
+            def head(self, url, **kwargs):
+                self.head_calls.append((url, kwargs))
+                return FakeResponse()
+
+            def get(self, url, **kwargs):
+                self.get_calls.append((url, kwargs))
+                raise AssertionError("GET fallback should not run when HEAD succeeds")
+
+            def close(self):
+                pass
+
+        fake_session = FakeSession()
+        captured_post = {}
+
+        def fake_post(url, **kwargs):
+            captured_post["url"] = url
+            captured_post["kwargs"] = kwargs
+            response = MagicMock()
+            response.status_code = 200
+            response.text = "hello remote"
+            return response
+
+        with patch("tools.transcription_tools._load_stt_config", return_value={"provider": "groq"}), \
+             patch("tools.transcription_tools._HAS_OPENAI", True), \
+             patch("tools.transcription_tools.is_safe_url", return_value=True), \
+             patch("requests.Session", return_value=fake_session), \
+             patch("requests.post", side_effect=fake_post):
+            from tools.transcription_tools import transcribe_audio
+            result = transcribe_audio("https://media.example.test/redirect")
+
+        assert result["success"] is True
+        assert result["transcript"] == "hello remote"
+        assert result["provider"] == "groq"
+        assert result["source_url"] == "https://cdn.example.test/final.mp3"
+        assert fake_session.head_calls == [
+            ("https://media.example.test/redirect", {"allow_redirects": False, "timeout": (5, 30)})
+        ]
+        assert fake_session.get_calls == []
+        assert captured_post["url"].endswith("/audio/transcriptions")
+        post_files = captured_post["kwargs"]["files"]
+        assert post_files["url"] == (None, "https://cdn.example.test/final.mp3")
+        assert "file" not in post_files
+
+    def test_remote_audio_probe_blocks_private_initial_url(self):
+        from tools.transcription_tools import _probe_remote_audio_url
+
+        with patch("tools.transcription_tools.is_safe_url", return_value=False):
+            result = _probe_remote_audio_url("http://127.0.0.1/audio.mp3")
+
+        assert result["success"] is False
+        assert "URL safety policy" in result["error"]
+
+    def test_remote_audio_probe_blocks_redirect_to_private_url(self):
+        class FakeResponse:
+            def __init__(self, status_code, url, headers=None):
+                self.status_code = status_code
+                self.url = url
+                self.headers = headers or {}
+                self.text = ""
+                self.closed = False
+
+            def close(self):
+                self.closed = True
+
+        class FakeSession:
+            def __init__(self):
+                self.head_calls = []
+
+            def head(self, url, **kwargs):
+                self.head_calls.append((url, kwargs))
+                if len(self.head_calls) == 1:
+                    return FakeResponse(
+                        302,
+                        "https://media.example.test/audio",
+                        {"Location": "http://127.0.0.1/audio.mp3"},
+                    )
+                return FakeResponse(200, url, {"Content-Type": "audio/mpeg"})
+
+            def get(self, url, **kwargs):
+                raise AssertionError("GET fallback should not run after unsafe redirect")
+
+            def close(self):
+                pass
+
+        fake_session = FakeSession()
+
+        def fake_is_safe_url(url):
+            return not str(url).startswith("http://127.0.0.1")
+
+        with patch("tools.transcription_tools.is_safe_url", side_effect=fake_is_safe_url), \
+             patch("requests.Session", return_value=fake_session):
+            from tools.transcription_tools import _probe_remote_audio_url
+            result = _probe_remote_audio_url("https://media.example.test/audio")
+
+        assert result["success"] is False
+        assert "URL safety policy" in result["error"]
+        assert fake_session.head_calls == [
+            ("https://media.example.test/audio", {"allow_redirects": False, "timeout": (5, 30)})
+        ]
+
+    def test_remote_audio_limits_use_config_values(self):
+        from tools.transcription_tools import MAX_FILE_SIZE, _remote_audio_limits
+
+        max_download, chunk = _remote_audio_limits(
+            {
+                "remote_audio": {
+                    "max_download_bytes": 123,
+                    "chunk_bytes": MAX_FILE_SIZE * 2,
+                }
+            }
+        )
+
+        assert max_download == 123
+        assert chunk == MAX_FILE_SIZE - 1024 * 1024
+
+    def test_ffprobe_duration_uses_subprocess_safeguards(self):
+        captured = {}
+
+        def fake_run(command, **kwargs):
+            captured["command"] = command
+            captured["kwargs"] = kwargs
+            return subprocess.CompletedProcess(command, 0, stdout="12.5\n", stderr="")
+
+        with patch("tools.transcription_tools._find_ffprobe_binary", return_value="/usr/bin/ffprobe"), \
+             patch("tools.transcription_tools.windows_hide_flags", return_value=0), \
+             patch("tools.transcription_tools.subprocess.run", side_effect=fake_run):
+            from tools.transcription_tools import _probe_audio_duration_for_chunk
+            duration, error = _probe_audio_duration_for_chunk("/tmp/audio.mp3")
+
+        assert error is None
+        assert duration == 12.5
+        assert captured["kwargs"]["timeout"] == 300
+        assert captured["kwargs"]["stdin"] == subprocess.DEVNULL
+        assert captured["kwargs"]["creationflags"] == 0
+
+    def test_ffmpeg_split_uses_subprocess_safeguards(self, tmp_path):
+        from tools.transcription_tools import MAX_FILE_SIZE, _split_audio_file_for_stt
+
+        audio_path = tmp_path / "large.mp3"
+        audio_path.write_bytes(b"0" * (MAX_FILE_SIZE + 1))
+        captured = {}
+
+        def fake_run(command, **kwargs):
+            captured["command"] = command
+            captured["kwargs"] = kwargs
+            output_pattern = command[-1]
+            output_dir = os.path.dirname(output_pattern)
+            os.makedirs(output_dir, exist_ok=True)
+            with open(os.path.join(output_dir, "chunk-000.mp3"), "wb") as handle:
+                handle.write(b"audio")
+            return subprocess.CompletedProcess(command, 0, stdout="", stderr="")
+
+        with patch("tools.transcription_tools._find_ffmpeg_binary", return_value="/usr/bin/ffmpeg"), \
+             patch("tools.transcription_tools._probe_audio_duration_for_chunk", return_value=(60.0, None)), \
+             patch("tools.transcription_tools.windows_hide_flags", return_value=0), \
+             patch("tools.transcription_tools.subprocess.run", side_effect=fake_run):
+            chunks, error = _split_audio_file_for_stt(str(audio_path), str(tmp_path / "chunks"))
+
+        assert error is None
+        assert chunks
+        assert captured["kwargs"]["timeout"] == 300
+        assert captured["kwargs"]["stdin"] == subprocess.DEVNULL
+        assert captured["kwargs"]["creationflags"] == 0
+
+    def test_local_file_path_keeps_existing_file_upload_path(self, sample_ogg):
+        with patch("tools.transcription_tools._load_stt_config", return_value={"provider": "groq"}), \
+             patch("tools.transcription_tools._get_provider", return_value="groq"), \
+             patch("tools.transcription_tools._probe_remote_audio_url") as mock_probe, \
+             patch(
+                 "tools.transcription_tools._transcribe_groq",
+                 return_value={"success": True, "transcript": "local", "provider": "groq"},
+             ) as mock_groq:
+            from tools.transcription_tools import transcribe_audio, DEFAULT_GROQ_STT_MODEL
+            result = transcribe_audio(sample_ogg)
+
+        assert result["success"] is True
+        mock_probe.assert_not_called()
+        mock_groq.assert_called_once_with(
+            sample_ogg,
+            DEFAULT_GROQ_STT_MODEL,
+            language=None,
+            prompt=None,
+        )
+
+    def test_large_remote_audio_uses_chunk_fallback(self, tmp_path):
+        from tools.transcription_tools import MAX_FILE_SIZE
+
+        big_audio = tmp_path / "big.mp3"
+        with open(big_audio, "wb") as handle:
+            handle.truncate(MAX_FILE_SIZE + 1)
+
+        probe = {
+            "success": True,
+            "url": "https://cdn.example.test/big.mp3",
+            "content_type": "audio/mpeg",
+            "content_length": MAX_FILE_SIZE + 1,
+        }
+
+        with patch("tools.transcription_tools._load_stt_config", return_value={"provider": "groq"}), \
+             patch("tools.transcription_tools._get_provider", return_value="groq"), \
+             patch("tools.transcription_tools._probe_remote_audio_url", return_value=probe), \
+             patch("tools.transcription_tools._download_remote_audio", return_value=(str(big_audio), None)), \
+             patch("tools.transcription_tools._transcribe_groq_remote_url") as mock_direct_url, \
+             patch(
+                 "tools.transcription_tools._transcribe_audio_file_chunks",
+                 return_value={
+                     "success": True,
+                     "transcript": "chunk one\nchunk two",
+                     "provider": "groq",
+                     "chunks": 2,
+                 },
+             ) as mock_chunks:
+            from tools.transcription_tools import transcribe_audio
+            result = transcribe_audio("https://example.test/big")
+
+        assert result["success"] is True
+        assert result["chunks"] == 2
+        mock_direct_url.assert_not_called()
+        mock_chunks.assert_called_once()
+        assert mock_chunks.call_args[0][0] == str(big_audio)
+        assert mock_chunks.call_args[0][1] == "groq"
+
+
 # ============================================================================
 # _transcribe_openai — additional tests
 # ============================================================================

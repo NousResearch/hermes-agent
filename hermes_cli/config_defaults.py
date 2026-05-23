@@ -1638,6 +1638,10 @@ DEFAULT_CONFIG = {
             "model": "",  # empty = first stt-tagged model from the live catalog
             # "base_url": "",  # override DEEPINFRA_BASE_URL for STT only
         },
+        "remote_audio": {
+            "max_download_bytes": 250 * 1024 * 1024,
+            "chunk_bytes": 20 * 1024 * 1024,
+        },
     },
 
     "voice": {

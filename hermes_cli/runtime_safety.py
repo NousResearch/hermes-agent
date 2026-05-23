@@ -77,7 +77,11 @@ def _parse_dt(value: Any) -> datetime | None:
     except (TypeError, ValueError):
         return None
     if dt.tzinfo is None:
-        dt = dt.replace(tzinfo=timezone.utc)
+        # Hermes session timestamps are written as local naive datetimes.
+        # Treating them as UTC makes fresh/stale checks wrong by the local UTC
+        # offset and can hide old resume_pending flags from preflight.
+        local_tz = _now().tzinfo or timezone.utc
+        dt = dt.replace(tzinfo=local_tz)
     return dt.astimezone(_now().tzinfo)
 
 

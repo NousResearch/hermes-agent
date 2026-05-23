@@ -2191,9 +2191,22 @@ def build_anthropic_kwargs(
             effort = str(reasoning_config.get("effort", "medium")).lower()
             budget = THINKING_BUDGET.get(effort, 8000)
             if _supports_adaptive_thinking(model):
+                # Operators can override the default "summarized" display via
+                # HERMES_ADAPTIVE_THINKING_DISPLAY. Valid values per Anthropic
+                # adaptive-thinking docs: "summarized", "expanded", "omitted".
+                # Invalid values silently fall back to "summarized"
+                # (back-compat-safe). Setting "omitted" reduces operator-
+                # perceived latency on xhigh-effort calls by suppressing the
+                # streamed reasoning chunks while preserving server-side
+                # thinking depth.
+                _display_override = os.getenv(
+                    "HERMES_ADAPTIVE_THINKING_DISPLAY", "summarized"
+                ).strip().lower()
+                if _display_override not in ("summarized", "expanded", "omitted"):
+                    _display_override = "summarized"
                 kwargs["thinking"] = {
                     "type": "adaptive",
-                    "display": "summarized",
+                    "display": _display_override,
                 }
                 adaptive_effort = ADAPTIVE_EFFORT_MAP.get(effort, "medium")
                 # Downgrade xhigh→max on models that don't list xhigh as a

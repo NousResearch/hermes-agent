@@ -13,6 +13,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import sqlite3
 import subprocess
 import threading
 import time
@@ -79,6 +80,126 @@ def test_no_idempotency_key_never_collides(kanban_home):
 
 
 # ---------------------------------------------------------------------------
+# Dispatcher lease
+# ---------------------------------------------------------------------------
+
+def test_dispatcher_lease_allows_single_owner_until_expiry(kanban_home, monkeypatch):
+    """Only one gateway dispatcher should own a board at a time.
+
+    Multiple profile gateways can run against the shared Kanban DB.  The
+    dispatcher lease prevents every gateway from spawning the same ready
+    queue on its own interval; ownership renews for the same process and
+    fails over after the lease expires.
+    """
+    now = [1_700_000_000]
+    monkeypatch.setattr(kb.time, "time", lambda: now[0])
+    conn_a = kb.connect()
+    conn_b = kb.connect()
+    try:
+        assert kb.acquire_dispatcher_lease(
+            conn_a, board="default", owner="gateway-a", ttl_seconds=60,
+        )
+        assert kb.owns_dispatcher_lease(
+            conn_a, board="default", owner="gateway-a",
+        )
+        assert not kb.owns_dispatcher_lease(
+            conn_b, board="default", owner="gateway-b",
+        )
+        assert not kb.acquire_dispatcher_lease(
+            conn_b, board="default", owner="gateway-b", ttl_seconds=60,
+        )
+        assert kb.acquire_dispatcher_lease(
+            conn_a, board="default", owner="gateway-a", ttl_seconds=60,
+        )
+
+        now[0] += 61
+        assert kb.acquire_dispatcher_lease(
+            conn_b, board="default", owner="gateway-b", ttl_seconds=60,
+        )
+        assert not kb.release_dispatcher_lease(
+            conn_a, board="default", owner="gateway-a",
+        )
+        assert kb.release_dispatcher_lease(
+            conn_b, board="default", owner="gateway-b",
+        )
+        assert kb.acquire_dispatcher_lease(
+            conn_a, board="default", owner="gateway-a", ttl_seconds=60,
+        )
+    finally:
+        conn_a.close()
+        conn_b.close()
+
+
+# ---------------------------------------------------------------------------
+# Completion reconciliation manifest
+# ---------------------------------------------------------------------------
+
+def test_completion_reconciliation_manifest_marks_done_task_noop(kanban_home, tmp_path):
+    """Dry-run reconciliation should not propose mutating already-fixed rows."""
+    conn = kb.connect()
+    try:
+        tid = kb.create_task(conn, title="already reconciled", assignee="worker")
+        kb.claim_task(conn, tid)
+        assert kb.complete_task(conn, tid, summary="Report saved at /tmp/report.md")
+
+        report = tmp_path / "report.md"
+        report.write_text("# done\n", encoding="utf-8")
+        log_path = kb.worker_log_path(tid)
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        log_path.write_text(
+            "work complete\n"
+            "kanban_complete: database disk image is malformed\n"
+            f"report saved {report}\n",
+            encoding="utf-8",
+        )
+
+        manifest = kb.build_completion_reconciliation_manifest(conn, [tid])
+    finally:
+        conn.close()
+
+    item = manifest["items"][0]
+    assert manifest["integrity_check"] == "ok"
+    assert manifest["mode"] == "dry-run"
+    assert item["task_id"] == tid
+    assert item["current_status"] == "done"
+    assert item["proposed_action"] == "skip"
+    assert item["reason"] == "task already terminal (done)"
+    assert item["artifact_paths"] == [str(report)]
+    assert "database disk image is malformed" in item["evidence_excerpt"]
+
+
+def test_completion_reconciliation_manifest_proposes_completion_for_active_evidence(kanban_home, tmp_path):
+    """Dry-run reconciliation names evidence and action for stale active rows."""
+    conn = kb.connect()
+    try:
+        tid = kb.create_task(conn, title="stale active", assignee="worker")
+        kb.claim_task(conn, tid)
+        conn.execute("UPDATE tasks SET claim_expires = 0, worker_pid = NULL WHERE id = ?", (tid,))
+        report = tmp_path / "report.md"
+        report.write_text("# done\n", encoding="utf-8")
+        log_path = kb.worker_log_path(tid)
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        log_path.write_text(
+            "Completed the task work and wrote the required report:\n"
+            f"{report}\n"
+            "kanban_complete: database disk image is malformed\n",
+            encoding="utf-8",
+        )
+
+        manifest = kb.build_completion_reconciliation_manifest(conn, [tid])
+    finally:
+        conn.close()
+
+    item = manifest["items"][0]
+    assert item["current_status"] == "running"
+    assert item["proposed_action"] == "complete"
+    assert item["evidence_source"].endswith(f"{tid}.log")
+    assert item["evidence_status"] == "malformed_db_completion_log"
+    assert item["artifact_paths"] == [str(report)]
+    assert item["metadata"]["evidence_source"].endswith(f"{tid}.log")
+
+
+# ---------------------------------------------------------------------------
 # Spawn-failure circuit breaker
 # ---------------------------------------------------------------------------
 
@@ -90,20 +211,21 @@ def test_spawn_failure_auto_blocks_after_limit(kanban_home, all_assignees_spawna
     conn = kb.connect()
     try:
         tid = kb.create_task(conn, title="x", assignee="worker")
-        assert kb.DEFAULT_FAILURE_LIMIT == 2
-        # One default-limit failure → still ready, counter grows.
-        res1 = kb.dispatch_once(conn, spawn_fn=_bad_spawn)
-        assert tid not in res1.auto_blocked
-        task = kb.get_task(conn, tid)
-        assert task.status == "ready"
-        assert task.consecutive_failures == 1
+        assert kb.DEFAULT_FAILURE_LIMIT == 4
+        # Default-limit failures before the threshold → still ready, counter grows.
+        for expected_failures in range(1, kb.DEFAULT_FAILURE_LIMIT):
+            res = kb.dispatch_once(conn, spawn_fn=_bad_spawn)
+            assert tid not in res.auto_blocked
+            task = kb.get_task(conn, tid)
+            assert task.status == "ready"
+            assert task.consecutive_failures == expected_failures
 
-        # Second default-limit failure trips the guard.
+        # Fourth default-limit failure trips the guard.
         res2 = kb.dispatch_once(conn, spawn_fn=_bad_spawn)
         assert tid in res2.auto_blocked
         task = kb.get_task(conn, tid)
         assert task.status == "blocked"
-        assert task.consecutive_failures >= 2
+        assert task.consecutive_failures >= kb.DEFAULT_FAILURE_LIMIT
         assert task.last_failure_error and "no PATH" in task.last_failure_error
     finally:
         conn.close()
@@ -236,7 +358,7 @@ def test_per_task_max_retries_overrides_dispatcher_limit(kanban_home, all_assign
 
 def test_per_task_max_retries_allows_more_than_default(kanban_home, all_assignees_spawnable):
     """A task with ``max_retries=5`` does NOT auto-block at the default
-    limit of 2 — it must reach the per-task override first."""
+    limit of 4 — it must reach the per-task override first."""
     conn = kb.connect()
     try:
         tid = kb.create_task(
@@ -981,7 +1103,7 @@ def test_max_runtime_terminates_overrun_worker(kanban_home):
 
 
 def test_repeated_timeouts_auto_block_at_default_limit(kanban_home):
-    """Two timed_out outcomes on the same task/profile trip the retry guard."""
+    """Default-limit timed_out outcomes on the same task/profile trip the retry guard."""
     import hermes_cli.kanban_db as _kb
     original_alive = _kb._pid_alive
     _kb._pid_alive = lambda pid: False
@@ -1002,7 +1124,7 @@ def test_repeated_timeouts_auto_block_at_default_limit(kanban_home):
                 conn, title="long job", assignee="worker",
                 max_runtime_seconds=1,
             )
-            for expected_failures in (1, 2):
+            for expected_failures in range(1, kb.DEFAULT_FAILURE_LIMIT + 1):
                 kb.claim_task(conn, tid)
                 kb._set_worker_pid(conn, tid, os.getpid())
                 _age_active_run(conn, tid)
@@ -1013,7 +1135,7 @@ def test_repeated_timeouts_auto_block_at_default_limit(kanban_home):
             task = kb.get_task(conn, tid)
             assert task.status == "blocked"
             events = kb.list_events(conn, tid)
-            assert [e.kind for e in events].count("timed_out") == 2
+            assert [e.kind for e in events].count("timed_out") == kb.DEFAULT_FAILURE_LIMIT
             gave_up = [e for e in events if e.kind == "gave_up"]
             assert gave_up and gave_up[-1].payload["trigger_outcome"] == "timed_out"
         finally:
@@ -3362,8 +3484,64 @@ def test_config_default_dispatch_in_gateway_is_true():
         f"{kanban.get('dispatch_in_gateway')!r}"
     )
     interval = kanban.get("dispatch_interval_seconds")
-    assert isinstance(interval, (int, float)) and interval >= 1, (
-        f"dispatch_interval_seconds must be a positive number, got {interval!r}"
+    assert interval == 120, (
+        f"dispatch_interval_seconds should default to safe retry cadence 120, got {interval!r}"
+    )
+    assert kanban.get("max_spawn") == 3, (
+        f"max_spawn should default to anti-stampede cap 3, got {kanban.get('max_spawn')!r}"
+    )
+    assert kanban.get("failure_limit") == 4, (
+        f"failure_limit should default to 4, got {kanban.get('failure_limit')!r}"
+    )
+    assert kb.DEFAULT_FAILURE_LIMIT == 4
+
+
+def test_gateway_dispatcher_config_parsers_are_defensive():
+    """Malformed retry-policy config should not crash the gateway dispatcher."""
+    from gateway.run import (
+        _parse_kanban_failure_limit,
+        _parse_kanban_max_spawn,
+        _parse_positive_float_or_default,
+        _parse_positive_int_or_default,
+    )
+
+    assert _parse_kanban_max_spawn(None, default=3) is None
+    assert _parse_kanban_max_spawn("3", default=3) == 3
+    assert _parse_kanban_max_spawn("bad", default=3) == 3
+    assert _parse_kanban_max_spawn(0, default=3) == 3
+    assert _parse_kanban_max_spawn(float("inf"), default=3) == 3
+
+    assert _parse_kanban_failure_limit("4", default=2) == 4
+    assert _parse_kanban_failure_limit("bad", default=4) == 4
+    assert _parse_kanban_failure_limit(0, default=4) == 4
+    assert _parse_kanban_failure_limit(float("inf"), default=4) == 4
+
+    assert _parse_positive_float_or_default("120.5", 120.0, label="x") == 120.5
+    assert _parse_positive_float_or_default("bad", 120.0, label="x") == 120.0
+    assert _parse_positive_float_or_default(0, 120.0, label="x") == 120.0
+    assert _parse_positive_float_or_default("nan", 120.0, label="x") == 120.0
+    assert _parse_positive_float_or_default("inf", 120.0, label="x") == 120.0
+
+    assert _parse_positive_int_or_default("240", 240, label="x") == 240
+    assert _parse_positive_int_or_default("bad", 240, label="x") == 240
+    assert _parse_positive_int_or_default(0, 240, label="x") == 240
+    assert _parse_positive_int_or_default(float("inf"), 240, label="x") == 240
+
+
+def test_gateway_corrupt_board_classifier_catches_truncated_sqlite_files():
+    from gateway.run import _is_corrupt_kanban_board_db_error
+
+    assert _is_corrupt_kanban_board_db_error(
+        sqlite3.DatabaseError("truncated SQLite file for board.db: size_bytes=42")
+    )
+    assert _is_corrupt_kanban_board_db_error(
+        sqlite3.DatabaseError("file is not a database: invalid SQLite header")
+    )
+    assert _is_corrupt_kanban_board_db_error(
+        sqlite3.DatabaseError("database disk image is malformed")
+    )
+    assert not _is_corrupt_kanban_board_db_error(
+        sqlite3.DatabaseError("database is locked")
     )
 
 
@@ -3673,13 +3851,10 @@ def test_gateway_dispatcher_disables_corrupt_board_without_traceback(
     assert sum("not a valid SQLite database" in msg for msg in messages) == 1
     assert not any("tick failed on board" in msg for msg in messages)
     assert not any(record.exc_info for record in caplog.records)
-    # First tick connect (dispatch) + two probes per `_has_ready_work` call
-    # (ready then review, both via _kb.connect). The second dispatch tick
-    # skips the dispatch connect because the corrupt board fingerprint is
-    # disabled, but the ready/review probes still each connect. PR f55d94a1e
-    # added the review-column probe alongside the existing ready-column
-    # probe, bumping this from 3 → 5.
-    assert calls["connect"] == 5
+    # Auto-decompose performs the first connect/lease check and disables the
+    # corrupt board fingerprint. Later dispatch ticks skip that board entirely;
+    # the health probe still attempts one connect per loop and suppresses it.
+    assert calls["connect"] == 3
 
 
 # ---------------------------------------------------------------------------
@@ -4285,6 +4460,44 @@ def test_detect_crashed_workers_protocol_violation_auto_blocks(kanban_home):
         conn.close()
 
 
+def test_protocol_violation_ignores_per_task_max_retries(kanban_home):
+    """Protocol violations are deterministic loops, not flaky task failures.
+
+    Even if a task requests a larger retry budget, a clean worker exit without
+    kanban_complete/kanban_block must park the task immediately for review.
+    """
+    import hermes_cli.kanban_db as _kb
+
+    conn = kb.connect()
+    try:
+        tid = kb.create_task(
+            conn, title="quiet-with-budget", assignee="worker", max_retries=5,
+        )
+        host_prefix = _kb._claimer_id().split(":", 1)[0]
+        kb.claim_task(conn, tid, claimer=f"{host_prefix}:mock")
+        fake_pid = 999996
+        kb._set_worker_pid(conn, tid, fake_pid)
+
+        _kb._record_worker_exit(fake_pid, 0)
+        original_alive = _kb._pid_alive
+        _kb._pid_alive = lambda p: False
+        try:
+            kb.detect_crashed_workers(conn)
+        finally:
+            _kb._pid_alive = original_alive
+
+        task = kb.get_task(conn, tid)
+        assert task.status == "blocked"
+        assert task.consecutive_failures == 1
+        events = kb.list_events(conn, tid)
+        gave_up = [e for e in events if e.kind == "gave_up"]
+        assert gave_up
+        assert gave_up[-1].payload.get("effective_limit") == 1
+        assert gave_up[-1].payload.get("limit_source") == "dispatcher"
+    finally:
+        conn.close()
+
+
 def test_detect_crashed_workers_nonzero_exit_uses_default_limit(kanban_home):
     """A worker that exited non-zero (real error / crash) uses the
     normal counter path — one failure doesn't trip the breaker.
@@ -4316,6 +4529,48 @@ def test_detect_crashed_workers_nonzero_exit_uses_default_limit(kanban_home):
         kinds = [e.kind for e in events]
         assert "crashed" in kinds
         assert "protocol_violation" not in kinds
+    finally:
+        conn.close()
+
+
+def test_detect_crashed_workers_pid_not_alive_batch_uses_default_limit(kanban_home):
+    """A host/gateway incident can make many worker PIDs disappear at once.
+
+    Those batch ``pid not alive`` crashes are systemic infrastructure evidence,
+    not deterministic task protocol violations. They should consume one normal
+    retry budget entry and return tasks to ready so the dispatcher can retry at
+    the configured cadence instead of auto-blocking every affected task at
+    effective_limit=1.
+    """
+    import hermes_cli.kanban_db as _kb
+    conn = kb.connect()
+    try:
+        tids = []
+        host_prefix = _kb._claimer_id().split(":", 1)[0]
+        for idx in range(3):
+            tid = kb.create_task(conn, title=f"batch-crash-{idx}", assignee="worker")
+            kb.claim_task(conn, tid, claimer=f"{host_prefix}:mock-{idx}")
+            kb._set_worker_pid(conn, tid, 990000 + idx)
+            tids.append(tid)
+
+        original_alive = _kb._pid_alive
+        _kb._pid_alive = lambda p: False
+        try:
+            crashed = kb.detect_crashed_workers(conn)
+        finally:
+            _kb._pid_alive = original_alive
+
+        assert set(crashed) == set(tids)
+        for tid in tids:
+            task = kb.get_task(conn, tid)
+            assert task.status == "ready", (
+                f"batch pid-not-alive crash should retry normally, got {task.status} for {tid}"
+            )
+            assert task.consecutive_failures == 1
+            events = kb.list_events(conn, tid)
+            kinds = [e.kind for e in events]
+            assert "crashed" in kinds
+            assert "gave_up" not in kinds
     finally:
         conn.close()
 

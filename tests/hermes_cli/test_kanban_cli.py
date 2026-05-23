@@ -166,6 +166,141 @@ def test_run_slash_json_output(kanban_home):
     assert payload["status"] == "ready"
 
 
+def _write_malformed_completion_log(task_id: str, artifact: Path) -> None:
+    artifact.write_text("# done\n", encoding="utf-8")
+    log_path = kb.worker_log_path(task_id)
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+    log_path.write_text(
+        "Completed the task work and wrote the required report:\n"
+        f"{artifact}\n"
+        "kanban_complete: database disk image is malformed\n",
+        encoding="utf-8",
+    )
+
+
+def _run_kanban_tokens(tokens: list[str]) -> tuple[int, str, str]:
+    import contextlib
+    import io
+
+    wrap = argparse.ArgumentParser(prog="/kanban-wrap", add_help=False)
+    top_sub = wrap.add_subparsers(dest="_top")
+    parser = kc.build_parser(top_sub)
+    args = parser.parse_args(tokens)
+    out = io.StringIO()
+    err = io.StringIO()
+    with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+        rc = kc.kanban_command(args)
+    return rc, out.getvalue().strip(), err.getvalue().strip()
+
+
+def test_run_slash_reconcile_completions_dry_run_writes_aligned_manifest(kanban_home, tmp_path):
+    with kb.connect() as conn:
+        tid = kb.create_task(conn, title="reconcile me", assignee="worker")
+        kb.claim_task(conn, tid)
+        conn.execute("UPDATE tasks SET claim_expires = 0, worker_pid = NULL WHERE id = ?", (tid,))
+    artifact = tmp_path / "report.md"
+    _write_malformed_completion_log(tid, artifact)
+    manifest_path = tmp_path / "manifest.json"
+
+    out = kc.run_slash(f"reconcile-completions {tid} --json --output {manifest_path}")
+
+    payload = json.loads(out)
+    assert payload["mode"] == "dry-run"
+    assert payload["integrity_check"] == "ok"
+    assert payload["output_path"] == str(manifest_path)
+    assert manifest_path.exists()
+    written = json.loads(manifest_path.read_text(encoding="utf-8"))
+    assert written["output_path"] == str(manifest_path)
+    assert written["items"] == payload["items"]
+    item = payload["items"][0]
+    assert item["task_id"] == tid
+    assert item["current_status"] == "running"
+    assert item["evidence_status"] == "malformed_db_completion_log"
+    assert item["proposed_action"] == "complete"
+    assert item["artifact_paths"] == [str(artifact)]
+
+
+def test_run_slash_reconcile_completions_apply_requires_manifest_and_makes_backup(kanban_home, tmp_path):
+    missing_manifest = kc.run_slash("reconcile-completions --apply")
+    assert "--apply requires --manifest" in missing_manifest
+
+    with kb.connect() as conn:
+        tid = kb.create_task(conn, title="apply reconcile", assignee="worker")
+        kb.claim_task(conn, tid)
+        conn.execute("UPDATE tasks SET claim_expires = 0, worker_pid = NULL WHERE id = ?", (tid,))
+    _write_malformed_completion_log(tid, tmp_path / "apply-report.md")
+    manifest_path = tmp_path / "manifest.json"
+    kc.run_slash(f"reconcile-completions {tid} --json --output {manifest_path}")
+    apply_output = tmp_path / "apply-result.json"
+
+    out = kc.run_slash(
+        f"reconcile-completions --apply --manifest {manifest_path} --json --output {apply_output}"
+    )
+
+    payload = json.loads(out)
+    assert payload["mode"] == "apply"
+    assert payload["manifest_path"] == str(manifest_path)
+    assert payload["integrity_before"] == "ok"
+    assert payload["integrity_after"] == "ok"
+    assert payload["result"]["completed"] == [tid]
+    assert payload["result"]["failed"] == []
+    assert Path(payload["backup_path"]).is_file()
+    assert Path(payload["output_path"]) == apply_output
+    written = json.loads(apply_output.read_text(encoding="utf-8"))
+    assert written["output_path"] == str(apply_output)
+    assert written["result"]["completed"] == [tid]
+    with kb.connect() as conn:
+        task = kb.get_task(conn, tid)
+        assert task is not None
+        assert task.status == "done"
+
+
+def test_kanban_command_reconcile_completions_apply_reports_stale_manifest_failure(kanban_home, tmp_path):
+    with kb.connect() as conn:
+        tid = kb.create_task(conn, title="stale manifest", assignee="worker")
+        kb.claim_task(conn, tid)
+        conn.execute("UPDATE tasks SET claim_expires = 0, worker_pid = NULL WHERE id = ?", (tid,))
+    _write_malformed_completion_log(tid, tmp_path / "stale-report.md")
+    manifest_path = tmp_path / "manifest.json"
+    kc.run_slash(f"reconcile-completions {tid} --json --output {manifest_path}")
+    with kb.connect() as conn:
+        assert kb.complete_task(conn, tid, summary="completed before stale apply")
+
+    rc, out, err = _run_kanban_tokens(
+        ["reconcile-completions", "--apply", "--manifest", str(manifest_path), "--json"]
+    )
+
+    assert err == ""
+    assert rc == 1
+    payload = json.loads(out)
+    assert payload["integrity_after"] == "ok"
+    assert payload["result"]["completed"] == []
+    assert payload["result"]["failed"] == [
+        {"task_id": tid, "error": "task was not in a completable status or no longer exists"}
+    ]
+
+
+def test_kanban_command_reconcile_completions_apply_rejects_manifest_for_other_db(kanban_home, tmp_path):
+    with kb.connect() as conn:
+        tid = kb.create_task(conn, title="wrong db", assignee="worker")
+        kb.claim_task(conn, tid)
+    _write_malformed_completion_log(tid, tmp_path / "wrong-db-report.md")
+    manifest_path = tmp_path / "manifest.json"
+    kc.run_slash(f"reconcile-completions {tid} --json --output {manifest_path}")
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["db_path"] = str(tmp_path / "other-board.db")
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+
+    rc, out, err = _run_kanban_tokens(
+        ["reconcile-completions", "--apply", "--manifest", str(manifest_path), "--json"]
+    )
+
+    assert rc == 2
+    assert out == ""
+    assert "manifest board/db_path does not match the current board" in err
+    assert not list(kanban_home.glob("*.backup-*.db"))
+
+
 def test_run_slash_dispatch_dry_run_counts(kanban_home):
     kc.run_slash("create 'a' --assignee alice")
     kc.run_slash("create 'b' --assignee bob")

@@ -48,6 +48,237 @@ def test_init_creates_expected_tables(kanban_home):
     assert {"tasks", "task_links", "task_comments", "task_events"} <= names
 
 
+def test_completion_reconciliation_manifest_finds_malformed_db_completion(
+    kanban_home,
+):
+    """Dry-run reconciliation should identify completed work not persisted.
+
+    During a transient malformed-kanban.db incident workers could finish work,
+    print the artifact and completion evidence to their per-task log, and then
+    fail to persist kanban_complete. The reconciliation dry-run must surface a
+    non-destructive proposed action rather than silently mutating the board.
+    """
+    with kb.connect() as conn:
+        tid = kb.create_task(conn, title="write report", assignee="nora")
+        kb.claim_task(conn, tid)
+        conn.execute("UPDATE tasks SET claim_expires = 0, worker_pid = NULL WHERE id = ?", (tid,))
+        log_path = kb.worker_logs_dir() / f"{tid}.log"
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        log_path.write_text(
+            "Completed the task work and wrote the required report:\n"
+            "/tmp/reports/network-prereqs.md\n"
+            "kanban_complete: database disk image is malformed\n"
+            "So the work is done and the report is saved.\n",
+            encoding="utf-8",
+        )
+
+        manifest = kb.build_completion_reconciliation_manifest(conn, [tid])
+
+    assert manifest["integrity_check"] == "ok"
+    assert len(manifest["items"]) == 1
+    item = manifest["items"][0]
+    assert item["task_id"] == tid
+    assert item["current_status"] == "running"
+    assert item["evidence_status"] == "malformed_db_completion_log"
+    assert item["evidence_source"].endswith(f"{tid}.log")
+    assert item["artifact_paths"] == ["/tmp/reports/network-prereqs.md"]
+    assert item["proposed_action"] == "complete"
+    assert "dry-run" in manifest["mode"]
+
+
+def test_completion_reconciliation_manifest_does_not_count_kanban_complete_alone(
+    kanban_home,
+):
+    """The failing function name/error line is not enough completion evidence."""
+    with kb.connect() as conn:
+        tid = kb.create_task(conn, title="not actually done", assignee="nora")
+        kb.claim_task(conn, tid)
+        conn.execute("UPDATE tasks SET claim_expires = 0, worker_pid = NULL WHERE id = ?", (tid,))
+        log_path = kb.worker_logs_dir() / f"{tid}.log"
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        log_path.write_text(
+            "kanban_complete: database disk image is malformed\n"
+            "This task is incomplete and not completed; it still needs review.\n",
+            encoding="utf-8",
+        )
+
+        manifest = kb.build_completion_reconciliation_manifest(conn, [tid])
+
+    item = manifest["items"][0]
+    assert item["evidence_status"] == "no_completion_evidence"
+    assert item["proposed_action"] == "skip"
+
+
+def test_completion_reconciliation_skips_active_worker_claims(kanban_home):
+    """A live/current run log must not be auto-completed by reconciliation."""
+    with kb.connect() as conn:
+        tid = kb.create_task(conn, title="currently running", assignee="nora")
+        kb.claim_task(conn, tid)
+        log_path = kb.worker_logs_dir() / f"{tid}.log"
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        log_path.write_text(
+            "Completed the task work and wrote the required report:\n"
+            "/tmp/reports/current.md\n"
+            "kanban_complete: database disk image is malformed\n",
+            encoding="utf-8",
+        )
+
+        manifest = kb.build_completion_reconciliation_manifest(conn, [tid])
+        item = manifest["items"][0]
+        assert item["evidence_status"] == "active_worker_claim"
+        assert item["proposed_action"] == "skip"
+
+        item["proposed_action"] = "complete"
+        applied = kb.apply_completion_reconciliation_manifest(conn, manifest)
+
+        assert applied["completed"] == []
+        assert applied["failed"] == [
+            {
+                "task_id": tid,
+                "error": "task still has an active worker claim; refusing reconciliation",
+            }
+        ]
+        assert kb.get_task(conn, tid).status == "running"
+
+
+def test_completion_reconciliation_refuses_review_required_blocked_tasks_by_default(
+    kanban_home,
+):
+    """Review-gated blocked tasks must not be auto-completed by log reconciliation."""
+    with kb.connect() as conn:
+        tid = kb.create_task(conn, title="needs code review", assignee="cody")
+        kb.claim_task(conn, tid)
+        conn.execute("UPDATE tasks SET claim_expires = 0, worker_pid = NULL WHERE id = ?", (tid,))
+        assert kb.block_task(conn, tid, reason="review-required: reviewer must approve the diff")
+        log_path = kb.worker_logs_dir() / f"{tid}.log"
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        log_path.write_text(
+            "Completed the task work and wrote the required patch:\n"
+            "/tmp/reports/review-gated.diff\n"
+            "kanban_complete: database disk image is malformed\n",
+            encoding="utf-8",
+        )
+
+        manifest = kb.build_completion_reconciliation_manifest(conn, [tid])
+        item = manifest["items"][0]
+        assert item["current_status"] == "blocked"
+        assert item["evidence_status"] == "review_gate_blocked"
+        assert item["proposed_action"] == "skip"
+        assert "review-required" in item["reason"]
+
+        item["proposed_action"] = "complete"  # Simulates a stale/default manifest from before this guard.
+        applied = kb.apply_completion_reconciliation_manifest(conn, manifest)
+
+        assert applied["completed"] == []
+        assert applied["failed"] == [
+            {
+                "task_id": tid,
+                "error": "task is blocked on review/human decision; explicit override is required",
+            }
+        ]
+        assert kb.get_task(conn, tid).status == "blocked"
+
+
+def test_apply_completion_reconciliation_manifest_completes_only_manifested_tasks(
+    kanban_home,
+):
+    with kb.connect() as conn:
+        complete_tid = kb.create_task(conn, title="done elsewhere", assignee="sable")
+        kb.claim_task(conn, complete_tid)
+        conn.execute("UPDATE tasks SET claim_expires = 0, worker_pid = NULL WHERE id = ?", (complete_tid,))
+        missing_tid = kb.create_task(conn, title="needs review", assignee="quinn")
+        kb.claim_task(conn, missing_tid)
+        conn.execute("UPDATE tasks SET claim_expires = 0, worker_pid = NULL WHERE id = ?", (missing_tid,))
+        log_path = kb.worker_logs_dir() / f"{complete_tid}.log"
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        log_path.write_text(
+            "Completed the work for kanban task.\n"
+            "Report saved here:\n/tmp/reports/source-inventory.md\n"
+            "Kanban issue encountered: database disk image is malformed\n",
+            encoding="utf-8",
+        )
+        manifest = kb.build_completion_reconciliation_manifest(
+            conn, [complete_tid, missing_tid]
+        )
+
+        applied = kb.apply_completion_reconciliation_manifest(conn, manifest)
+
+        assert applied["completed"] == [complete_tid]
+        assert applied["skipped"] == [missing_tid]
+        assert kb.get_task(conn, complete_tid).status == "done"
+        assert kb.get_task(conn, missing_tid).status == "running"
+        run = conn.execute(
+            "SELECT outcome, summary, metadata FROM task_runs "
+            "WHERE task_id = ? ORDER BY id DESC LIMIT 1",
+            (complete_tid,),
+        ).fetchone()
+        assert run["outcome"] == "completed"
+        assert "reconciled" in (run["summary"] or "").lower()
+        assert "source-inventory.md" in (run["metadata"] or "")
+        assert '"artifacts"' in (run["metadata"] or "")
+
+
+def test_apply_completion_reconciliation_manifest_revalidates_current_log(
+    kanban_home,
+):
+    with kb.connect() as conn:
+        tid = kb.create_task(conn, title="stale evidence", assignee="sable")
+        kb.claim_task(conn, tid)
+        conn.execute("UPDATE tasks SET claim_expires = 0, worker_pid = NULL WHERE id = ?", (tid,))
+        log_path = kb.worker_logs_dir() / f"{tid}.log"
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        log_path.write_text(
+            "Completed the work.\n"
+            "Report saved: /tmp/reports/original.md\n"
+            "database disk image is malformed\n",
+            encoding="utf-8",
+        )
+        manifest = kb.build_completion_reconciliation_manifest(conn, [tid])
+        log_path.write_text(
+            "kanban_complete: database disk image is malformed\n"
+            "This task is incomplete now.\n",
+            encoding="utf-8",
+        )
+
+        applied = kb.apply_completion_reconciliation_manifest(conn, manifest)
+
+        assert applied["completed"] == []
+        assert applied["failed"] == [
+            {
+                "task_id": tid,
+                "error": "current worker log no longer contains malformed-db completion evidence",
+            }
+        ]
+        assert kb.get_task(conn, tid).status == "running"
+
+
+def test_apply_completion_reconciliation_manifest_reports_exception_once(kanban_home, monkeypatch):
+    with kb.connect() as conn:
+        tid = kb.create_task(conn, title="raises", assignee="worker")
+        kb.claim_task(conn, tid)
+        conn.execute("UPDATE tasks SET claim_expires = 0, worker_pid = NULL WHERE id = ?", (tid,))
+        log_path = kb.worker_logs_dir() / f"{tid}.log"
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        log_path.write_text(
+            "Completed the work.\n"
+            "Report saved: /tmp/reports/raises.md\n"
+            "database disk image is malformed\n",
+            encoding="utf-8",
+        )
+        manifest = kb.build_completion_reconciliation_manifest(conn, [tid])
+
+    def _raise(*args, **kwargs):
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(kb, "complete_task", _raise)
+    with kb.connect() as conn:
+        applied = kb.apply_completion_reconciliation_manifest(conn, manifest)
+
+    assert applied["completed"] == []
+    assert applied["skipped"] == []
+    assert applied["failed"] == [{"task_id": tid, "error": "boom"}]
+
+
 def test_connect_rejects_tls_record_in_sqlite_header(tmp_path, monkeypatch):
     """Kanban should classify TLS-looking page-0 clobbers before WAL setup."""
     home = tmp_path / ".hermes"
@@ -67,6 +298,35 @@ def test_connect_rejects_tls_record_in_sqlite_header(tmp_path, monkeypatch):
     assert "file is not a database" in msg
     assert "TLS record header detected at byte offset 5" in msg
     assert "53 51 4c 69 74 17 03 03 00 13" in msg
+
+
+def test_connect_rejects_truncated_sqlite_file_before_wal_setup(tmp_path, monkeypatch):
+    """Kanban should identify file-size/page-count truncation explicitly."""
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.delenv("HERMES_KANBAN_DB", raising=False)
+    monkeypatch.delenv("HERMES_KANBAN_HOME", raising=False)
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+
+    truncated = home / "kanban.db"
+    with sqlite3.connect(truncated) as conn:
+        conn.execute("CREATE TABLE t(x TEXT)")
+        conn.execute("INSERT INTO t VALUES ('ok')")
+
+    data = bytearray(truncated.read_bytes())
+    page_size = int.from_bytes(data[16:18], "big")
+    actual_pages = len(data) // page_size
+    data[28:32] = (actual_pages + 2).to_bytes(4, "big")
+    truncated.write_bytes(data)
+
+    with pytest.raises(sqlite3.DatabaseError) as exc_info:
+        kb.connect(board="default")
+
+    msg = str(exc_info.value)
+    assert "truncated SQLite file" in msg
+    assert f"header_pages={actual_pages + 2}" in msg
+    assert f"actual_pages={actual_pages}" in msg
 
 
 def test_connect_migrates_legacy_db_before_optional_column_indexes(tmp_path):
@@ -502,10 +762,16 @@ def test_stale_claim_reclaim_event_records_diagnostic_payload(
         assert payload["host_local"] is True
 
 
-def test_detect_crashed_workers_systemic_failure_fast_block(
+def test_detect_crashed_workers_systemic_pid_not_alive_uses_normal_retry(
     kanban_home, monkeypatch,
 ):
-    """When many tasks crash with the same error, trip the breaker faster."""
+    """A batch of disappeared PIDs should consume normal retry budget.
+
+    Gateway/host restarts can make many local worker PIDs disappear with the
+    same ``pid not alive`` fingerprint. That is infrastructure evidence, not a
+    deterministic task bug, so the dispatcher should return those tasks to
+    ready instead of fast-blocking the whole batch at effective_limit=1.
+    """
     import hermes_cli.kanban_db as _kb
 
     monkeypatch.setattr(_kb, "_pid_alive", lambda _pid: False)
@@ -528,9 +794,13 @@ def test_detect_crashed_workers_systemic_failure_fast_block(
 
         for tid in task_ids:
             task = kb.get_task(conn, tid)
-            assert task.status == "blocked", (
-                f"task {tid} should be blocked (systemic), got {task.status}"
+            assert task.status == "ready", (
+                f"task {tid} should retry normally, got {task.status}"
             )
+            assert task.consecutive_failures == 1
+            kinds = [e.kind for e in kb.list_events(conn, tid)]
+            assert "crashed" in kinds
+            assert "gave_up" not in kinds
 
 
 def test_detect_crashed_workers_isolated_failure_normal_retry(
@@ -1144,6 +1414,36 @@ def test_dispatch_max_spawn_fills_remaining_capacity(
         kb.claim_task(conn, running)
 
         res = kb.dispatch_once(conn, spawn_fn=fake_spawn, max_spawn=2)
+
+        assert len(res.spawned) == 1
+        assert spawns == [ready_a]
+        assert kb.get_task(conn, ready_a).status == "running"
+        assert kb.get_task(conn, ready_b).status == "ready"
+
+
+def test_dispatch_max_spawn_and_max_in_progress_fill_one_remaining_slot(
+    kanban_home, all_assignees_spawnable
+):
+    """Combining live caps should still fill the remaining worker slot."""
+    spawns = []
+
+    def fake_spawn(task, workspace):
+        spawns.append(task.id)
+
+    with kb.connect() as conn:
+        running_a = kb.create_task(conn, title="running-a", assignee="alice")
+        running_b = kb.create_task(conn, title="running-b", assignee="bob")
+        ready_a = kb.create_task(conn, title="ready-a", assignee="carol")
+        ready_b = kb.create_task(conn, title="ready-b", assignee="dave")
+        kb.claim_task(conn, running_a)
+        kb.claim_task(conn, running_b)
+
+        res = kb.dispatch_once(
+            conn,
+            spawn_fn=fake_spawn,
+            max_spawn=3,
+            max_in_progress=3,
+        )
 
         assert len(res.spawned) == 1
         assert spawns == [ready_a]
@@ -2680,6 +2980,65 @@ def test_dispatch_review_spawns_when_ready_empty(
         res = kb.dispatch_once(conn, spawn_fn=fake_spawn)
     assert len(res.spawned) == 1
     assert spawns[0] == t
+
+
+def test_dispatch_review_max_in_progress_skips_when_at_limit(
+    kanban_home, all_assignees_spawnable,
+):
+    """max_in_progress applies even when only review tasks are queued."""
+    spawns = []
+
+    def fake_spawn(task, workspace, board=None):
+        spawns.append(task.id)
+        return 42
+
+    with kb.connect() as conn:
+        running = kb.create_task(conn, title="running", assignee="alice")
+        review = kb.create_task(conn, title="review", assignee="bob")
+        kb.claim_task(conn, running)
+        _set_task_status(conn, review, "review")
+
+        res = kb.dispatch_once(
+            conn,
+            spawn_fn=fake_spawn,
+            max_spawn=3,
+            max_in_progress=1,
+        )
+
+        assert not res.spawned
+        assert spawns == []
+        assert kb.get_task(conn, review).status == "review"
+
+
+def test_dispatch_review_max_in_progress_fills_one_remaining_slot(
+    kanban_home, all_assignees_spawnable,
+):
+    """Review dispatch fills remaining max_in_progress capacity without over-spawning."""
+    spawns = []
+
+    def fake_spawn(task, workspace, board=None):
+        spawns.append(task.id)
+        return 42
+
+    with kb.connect() as conn:
+        running = kb.create_task(conn, title="running", assignee="alice")
+        review_a = kb.create_task(conn, title="review-a", assignee="bob")
+        review_b = kb.create_task(conn, title="review-b", assignee="carol")
+        kb.claim_task(conn, running)
+        _set_task_status(conn, review_a, "review")
+        _set_task_status(conn, review_b, "review")
+
+        res = kb.dispatch_once(
+            conn,
+            spawn_fn=fake_spawn,
+            max_spawn=3,
+            max_in_progress=2,
+        )
+
+        assert len(res.spawned) == 1
+        assert spawns == [review_a]
+        assert kb.get_task(conn, review_a).status == "running"
+        assert kb.get_task(conn, review_b).status == "review"
 
 
 def test_has_spawnable_review_true(kanban_home):

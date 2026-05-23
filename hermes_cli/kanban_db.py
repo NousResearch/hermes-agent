@@ -935,6 +935,17 @@ CREATE TABLE IF NOT EXISTS kanban_notify_subs (
     PRIMARY KEY (task_id, platform, chat_id, thread_id)
 );
 
+-- Per-board dispatcher lease. Multiple profile gateways may point at the
+-- same shared board; the lease elects one gateway process to run the
+-- dispatcher tick for a short TTL while allowing automatic failover if that
+-- process exits or stops renewing.
+CREATE TABLE IF NOT EXISTS dispatcher_leases (
+    board      TEXT PRIMARY KEY,
+    owner      TEXT NOT NULL,
+    expires_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL
+);
+
 CREATE INDEX IF NOT EXISTS idx_tasks_assignee_status ON tasks(assignee, status);
 CREATE INDEX IF NOT EXISTS idx_tasks_status          ON tasks(status);
 CREATE INDEX IF NOT EXISTS idx_links_child           ON task_links(child_id);
@@ -991,10 +1002,40 @@ def _validate_sqlite_header(path: Path) -> None:
         return
     try:
         with path.open("rb") as handle:
-            head = handle.read(64)
+            head = handle.read(100)
     except OSError:
         return
     if head.startswith(_SQLITE_HEADER):
+        if stat.st_size < 100:
+            raise sqlite3.DatabaseError(
+                "truncated SQLite file for "
+                f"{path}: size_bytes={stat.st_size} shorter than 100-byte header"
+            )
+        raw_page_size = int.from_bytes(head[16:18], "big")
+        page_size = 65536 if raw_page_size == 1 else raw_page_size
+        valid_page_size = page_size in {512, 1024, 2048, 4096, 8192, 16384, 32768, 65536}
+        if not valid_page_size:
+            raise sqlite3.DatabaseError(
+                "file is not a database: invalid SQLite page size for "
+                f"{path}; page_size={raw_page_size}; first_32={head[:32].hex(' ')}"
+            )
+        actual_pages, remainder = divmod(stat.st_size, page_size)
+        if remainder:
+            raise sqlite3.DatabaseError(
+                "truncated SQLite file for "
+                f"{path}: size_bytes={stat.st_size} is not a multiple of "
+                f"page_size={page_size}; remainder={remainder}"
+            )
+        header_pages = int.from_bytes(head[28:32], "big")
+        change_counter = int.from_bytes(head[24:28], "big")
+        version_valid_for = int.from_bytes(head[92:96], "big")
+        if header_pages and change_counter == version_valid_for and header_pages > actual_pages:
+            raise sqlite3.DatabaseError(
+                "truncated SQLite file for "
+                f"{path}: header_pages={header_pages} actual_pages={actual_pages} "
+                f"missing_pages={header_pages - actual_pages} page_size={page_size} "
+                f"size_bytes={stat.st_size}"
+            )
         return
     signature = ""
     if head.startswith(b"SQLit") and _looks_like_tls_record_at(head, 5):
@@ -1007,8 +1048,13 @@ def _validate_sqlite_header(path: Path) -> None:
     )
 
 
-class KanbanDbCorruptError(RuntimeError):
+class KanbanDbCorruptError(sqlite3.DatabaseError):
     """Raised when an existing kanban DB file fails integrity checks.
+
+    Subclasses :class:`sqlite3.DatabaseError` so callers that only care about
+    SQLite open failures can handle it with the standard sqlite exception tree,
+    while kanban-specific recovery paths can still inspect ``db_path`` and
+    ``backup_path``.
 
     Fail-closed guard against silent recreation of a corrupt board file,
     which would otherwise destroy the user's tasks. Carries both the
@@ -1161,8 +1207,19 @@ def connect(
         path = kanban_db_path(board=board)
     path.parent.mkdir(parents=True, exist_ok=True)
     # Cheap byte-level check first — catches the #29507 TLS-overwrite shape
-    # and other invalid-header cases without opening a sqlite connection.
-    _validate_sqlite_header(path)
+    # and other invalid-header cases without opening a sqlite connection.  Wrap
+    # any byte-level corruption in the same fail-closed backup/error type as the
+    # PRAGMA integrity probe so callers never see a raw sqlite3.DatabaseError.
+    try:
+        _validate_sqlite_header(path)
+    except sqlite3.DatabaseError as exc:
+        resolved_path = path.resolve()
+        backup = _backup_corrupt_db(resolved_path)
+        raise KanbanDbCorruptError(
+            resolved_path,
+            backup,
+            f"sqlite refused to open file: {exc}",
+        ) from exc
     # Full integrity probe — catches corruption past the header (malformed
     # pages, broken internal metadata). Cached per-path after first success
     # via _INITIALIZED_PATHS so it only runs once per process per path.
@@ -1509,6 +1566,92 @@ def _claimer_id() -> str:
     except Exception:
         host = "unknown"
     return f"{host}:{os.getpid()}"
+
+
+def _dispatcher_board_key(board: Optional[str]) -> str:
+    """Return a stable board key for the dispatcher lease table."""
+    return _normalize_board_slug(board) or get_current_board()
+
+
+def acquire_dispatcher_lease(
+    conn: sqlite3.Connection,
+    *,
+    board: Optional[str] = None,
+    owner: Optional[str] = None,
+    ttl_seconds: int = 120,
+) -> bool:
+    """Acquire or renew the short-lived dispatcher lease for ``board``.
+
+    Multiple profile gateways can point at the same shared board. Task-level
+    CAS still prevents duplicate claims, but without a process-level lease each
+    gateway independently scans/reaps/spawns on its own interval, which creates
+    retry waves after crashes or operator unblocks. The lease elects one
+    dispatcher owner at a time while allowing failover after ``ttl_seconds``.
+    """
+    lease_board = _dispatcher_board_key(board)
+    lease_owner = owner or _claimer_id()
+    ttl = max(1, int(ttl_seconds or 1))
+    now = int(time.time())
+    expires_at = now + ttl
+    acquired = False
+    with write_txn(conn):
+        row = conn.execute(
+            "SELECT owner, expires_at FROM dispatcher_leases WHERE board = ?",
+            (lease_board,),
+        ).fetchone()
+        if row is None:
+            conn.execute(
+                "INSERT INTO dispatcher_leases(board, owner, expires_at, updated_at) "
+                "VALUES (?, ?, ?, ?)",
+                (lease_board, lease_owner, expires_at, now),
+            )
+            acquired = True
+        elif row["owner"] == lease_owner or int(row["expires_at"] or 0) <= now:
+            conn.execute(
+                "UPDATE dispatcher_leases SET owner = ?, expires_at = ?, updated_at = ? "
+                "WHERE board = ?",
+                (lease_owner, expires_at, now, lease_board),
+            )
+            acquired = True
+    return acquired
+
+
+def release_dispatcher_lease(
+    conn: sqlite3.Connection,
+    *,
+    board: Optional[str] = None,
+    owner: Optional[str] = None,
+) -> bool:
+    """Release ``owner``'s dispatcher lease for ``board`` if it still owns it."""
+    lease_board = _dispatcher_board_key(board)
+    lease_owner = owner or _claimer_id()
+    with write_txn(conn):
+        cur = conn.execute(
+            "DELETE FROM dispatcher_leases WHERE board = ? AND owner = ?",
+            (lease_board, lease_owner),
+        )
+    return cur.rowcount > 0
+
+
+def owns_dispatcher_lease(
+    conn: sqlite3.Connection,
+    *,
+    board: Optional[str] = None,
+    owner: Optional[str] = None,
+) -> bool:
+    """Return whether ``owner`` currently holds an unexpired dispatcher lease."""
+    lease_board = _dispatcher_board_key(board)
+    lease_owner = owner or _claimer_id()
+    now = int(time.time())
+    row = conn.execute(
+        "SELECT owner, expires_at FROM dispatcher_leases WHERE board = ?",
+        (lease_board,),
+    ).fetchone()
+    return bool(
+        row
+        and row["owner"] == lease_owner
+        and int(row["expires_at"] or 0) > now
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -3770,7 +3913,7 @@ def schedule_task(
 # dispatcher stops retrying and parks the task in ``blocked`` with a reason so
 # a human can investigate. Prevents retry storms when a worker repeatedly times
 # out, crashes, or cannot spawn.
-DEFAULT_FAILURE_LIMIT = 2
+DEFAULT_FAILURE_LIMIT = 4
 # Legacy alias — callers / tests still reference the old name.
 DEFAULT_SPAWN_FAILURE_LIMIT = DEFAULT_FAILURE_LIMIT
 
@@ -4091,6 +4234,7 @@ def enforce_max_runtime(
     conn: sqlite3.Connection,
     *,
     signal_fn=None,
+    failure_limit: Optional[int] = None,
 ) -> list[str]:
     """Terminate workers whose per-task ``max_runtime_seconds`` has elapsed.
 
@@ -4102,10 +4246,13 @@ def enforce_max_runtime(
 
     Runs host-local: only tasks claimed by this host are candidates
     (same reasoning as ``detect_crashed_workers``). ``signal_fn`` is a
-    test hook; defaults to ``os.kill`` on POSIX.
+    test hook; defaults to ``os.kill`` on POSIX. ``failure_limit`` threads
+    the dispatcher/gateway retry budget into the unified failure counter for
+    timed-out workers; when omitted, the default Kanban retry budget applies.
     """
     import signal
     timed_out: list[str] = []
+    auto_blocked: list[str] = []
     now = int(time.time())
     host_prefix = f"{_claimer_id().split(':', 1)[0]}:"
 
@@ -4189,14 +4336,18 @@ def enforce_max_runtime(
         # emits a ``gave_up`` event on top of the ``timed_out`` we
         # already emitted.
         if cur.rowcount == 1:
-            _record_task_failure(
+            tripped = _record_task_failure(
                 conn, tid,
                 error=f"elapsed {int(elapsed)}s > limit {int(row['max_runtime_seconds'])}s",
                 outcome="timed_out",
+                failure_limit=failure_limit,
                 release_claim=False,
                 end_run=False,
                 event_payload_extra={"pid": pid, "sigkill": killed},
             )
+            if tripped:
+                auto_blocked.append(tid)
+    enforce_max_runtime._last_auto_blocked = auto_blocked  # type: ignore[attr-defined]
     return timed_out
 
 
@@ -4342,18 +4493,11 @@ def set_max_runtime(
     return cur.rowcount == 1
 
 
-def _error_fingerprint(error_text: str) -> str:
-    """Normalize an error message for grouping identical failures.
-
-    Strips host-specific details (PIDs, timestamps) so that errors
-    with the same root cause produce the same fingerprint.
-    """
-    fp = re.sub(r'\bpid \d+\b', 'pid N', error_text[:80])
-    fp = re.sub(r'\b\d{10,}\b', '<TS>', fp)
-    return fp.lower().strip()
-
-
-def detect_crashed_workers(conn: sqlite3.Connection) -> list[str]:
+def detect_crashed_workers(
+    conn: sqlite3.Connection,
+    *,
+    failure_limit: Optional[int] = None,
+) -> list[str]:
     """Reclaim ``running`` tasks whose worker PID is no longer alive.
 
     Appends a ``crashed`` event and drops the task back to ``ready``.
@@ -4456,27 +4600,19 @@ def detect_crashed_workers(conn: sqlite3.Connection) -> list[str]:
     #
     # Protocol-violation crashes force an immediate trip (failure_limit=1)
     # because clean-exit-without-transition is deterministic: the next
-    # respawn will do exactly the same thing. Better to surface to a
-    # human with a clear reason than to loop ``DEFAULT_FAILURE_LIMIT``
-    # times first.
+    # respawn will do exactly the same thing. Ordinary crashes — including
+    # a batch of ``pid not alive`` reports after a gateway/host incident —
+    # must use the configured retry budget so transient infrastructure
+    # failures do not auto-block every affected task at effective_limit=1.
     auto_blocked: list[str] = []
     if crash_details:
-        # Fingerprint errors to detect systemic failures.
-        _fp_counts: dict[str, int] = {}
-        for _, _, _, _, err_text in crash_details:
-            fp = _error_fingerprint(err_text)
-            _fp_counts[fp] = _fp_counts.get(fp, 0) + 1
         for tid, pid, claimer, protocol_violation, error_text in crash_details:
-            fp = _error_fingerprint(error_text)
-            is_systemic = (
-                not protocol_violation
-                and _fp_counts.get(fp, 0) >= 3
-            )
             tripped = _record_task_failure(
                 conn, tid,
                 error=error_text,
                 outcome="crashed",
-                failure_limit=1 if (protocol_violation or is_systemic) else None,
+                failure_limit=1 if protocol_violation else failure_limit,
+                ignore_task_max_retries=protocol_violation,
                 release_claim=False,
                 end_run=False,
                 event_payload_extra={"pid": pid, "claimer": claimer},
@@ -4497,7 +4633,8 @@ def _record_task_failure(
     error: str,
     *,
     outcome: str,
-    failure_limit: int = None,
+    failure_limit: Optional[int] = None,
+    ignore_task_max_retries: bool = False,
     release_claim: bool = False,
     end_run: bool = False,
     event_payload_extra: Optional[dict] = None,
@@ -4530,11 +4667,16 @@ def _record_task_failure(
     when the breaker trips, so callers can include outcome-specific
     context (e.g. pid on crash, elapsed on timeout).
 
+    ``ignore_task_max_retries`` is reserved for deterministic protocol
+    violations where the caller needs an immediate trip even if a task has a
+    larger per-task retry budget.
+
     Resolution order for the effective threshold:
-      1. per-task ``max_retries`` if set (nothing else overrides)
-      2. caller-supplied ``failure_limit`` (gateway passes the config
+      1. caller-supplied ``failure_limit`` when ``ignore_task_max_retries`` is set
+      2. per-task ``max_retries`` if set (normal non-protocol failure path)
+      3. caller-supplied ``failure_limit`` (gateway passes the config
          value from ``kanban.failure_limit``; tests pass fixed values)
-      3. ``DEFAULT_FAILURE_LIMIT``
+      4. ``DEFAULT_FAILURE_LIMIT``
     """
     if failure_limit is None:
         failure_limit = DEFAULT_FAILURE_LIMIT
@@ -4549,10 +4691,13 @@ def _record_task_failure(
         failures = int(row["consecutive_failures"]) + 1
         cur_status = row["status"]
 
-        # Per-task override wins over both caller-supplied and default
-        # thresholds. None (the common case) falls through.
+        # Per-task override usually wins over both caller-supplied and default
+        # thresholds. Protocol violations are the exception: a clean worker
+        # exit without kanban_complete/kanban_block is deterministic looping,
+        # so callers can force the immediate dispatcher threshold.
         task_override = (
-            row["max_retries"] if "max_retries" in row.keys() else None
+            None if ignore_task_max_retries
+            else row["max_retries"] if "max_retries" in row.keys() else None
         )
         if task_override is not None:
             effective_limit = int(task_override)
@@ -4910,7 +5055,7 @@ def dispatch_once(
     result.stale = detect_stale_running(
         conn, stale_timeout_seconds=stale_timeout_seconds,
     )
-    result.crashed = detect_crashed_workers(conn)
+    result.crashed = detect_crashed_workers(conn, failure_limit=failure_limit)
     # detect_crashed_workers stashes protocol-violation auto-blocks on
     # itself so the public list-return stays stable. Pull them into the
     # DispatchResult here so telemetry / tests see the trip.
@@ -4919,7 +5064,12 @@ def dispatch_once(
     )
     if _crash_auto_blocked:
         result.auto_blocked.extend(_crash_auto_blocked)
-    result.timed_out = enforce_max_runtime(conn)
+    result.timed_out = enforce_max_runtime(conn, failure_limit=failure_limit)
+    _timeout_auto_blocked = getattr(
+        enforce_max_runtime, "_last_auto_blocked", []
+    )
+    if _timeout_auto_blocked:
+        result.auto_blocked.extend(_timeout_auto_blocked)
     result.promoted = recompute_ready(conn)
 
     # Count tasks already running so max_spawn enforces concurrency rather
@@ -4930,32 +5080,34 @@ def dispatch_once(
     # they sit in status='running' until the worker calls
     # kanban_complete/kanban_block (or the dispatcher TTL-reclaims them).
     running_count = 0
-    if max_spawn is not None:
+    if max_spawn is not None or max_in_progress is not None:
         running_count = int(
             conn.execute(
                 "SELECT COUNT(*) FROM tasks WHERE status = 'running'"
             ).fetchone()[0]
         )
 
+    # Honour kanban.max_in_progress before either ready or review dispatch: if
+    # the board already has enough running tasks, skip spawning this tick so
+    # slow workers (local LLMs, resource-constrained hosts) can finish what they
+    # have before more tasks pile up and time out.
+    if max_in_progress is not None:
+        if running_count >= max_in_progress:
+            return result
+        # ``max_spawn`` is a live concurrency cap, so the loops below compare
+        # ``running_count + spawned`` against the cap. ``max_in_progress`` is a
+        # second live concurrency cap; combine them by lowering the cap itself,
+        # not by replacing it with the remaining slots. Otherwise a board with
+        # 2 running tasks, max_spawn=3, max_in_progress=3 would set max_spawn=1
+        # and then immediately stop because running_count + spawned >= 1.
+        if max_spawn is None or max_spawn > max_in_progress:
+            max_spawn = max_in_progress
+
     ready_rows = conn.execute(
         "SELECT id, assignee FROM tasks "
         "WHERE status = 'ready' AND claim_lock IS NULL "
         "ORDER BY priority DESC, created_at ASC"
     ).fetchall()
-    # Honour kanban.max_in_progress: if the board already has enough running
-    # tasks, skip spawning this tick so slow workers (local LLMs,
-    # resource-constrained hosts) can finish what they have before more tasks
-    # pile up and time out.
-    if max_in_progress is not None and ready_rows:
-        in_progress = conn.execute(
-            "SELECT COUNT(*) FROM tasks WHERE status = 'running'"
-        ).fetchone()[0]
-        if in_progress >= max_in_progress:
-            return result
-        # Only spawn enough to reach the cap, respecting max_spawn too.
-        remaining = max_in_progress - in_progress
-        if max_spawn is None or max_spawn > remaining:
-            max_spawn = remaining
     spawned = 0
     for row in ready_rows:
         if max_spawn is not None and running_count + spawned >= max_spawn:
@@ -5570,7 +5722,7 @@ def _default_spawn(
 
 def run_daemon(
     *,
-    interval: float = 60.0,
+    interval: float = 120.0,
     max_spawn: Optional[int] = None,
     failure_limit: int = DEFAULT_SPAWN_FAILURE_LIMIT,
     stop_event=None,
@@ -6219,6 +6371,303 @@ def read_worker_log(
         return data.decode("utf-8", errors="replace")
     except OSError:
         return None
+
+
+# ---------------------------------------------------------------------------
+# Completion reconciliation helpers
+# ---------------------------------------------------------------------------
+
+_COMPLETION_RECONCILE_PATH_RE = re.compile(
+    r"(?P<path>/(?:[^\s`'\"<>|]+/)*[^\s`'\"<>|]+\.(?:md|txt|json|csv|pdf|html|png|jpg|jpeg|gif))",
+    re.IGNORECASE,
+)
+_COMPLETION_RECONCILE_EVIDENCE_RE = re.compile(
+    r"(\bwork\s+complete\b|\bcompleted\s+(?:the\s+)?(?:task|work)\b|"
+    r"\breport\s+saved\b|\bwrote\s+the\s+required\s+report\b)",
+    re.IGNORECASE,
+)
+_COMPLETION_RECONCILE_TAIL_BYTES = 64 * 1024
+_REVIEW_GATE_BLOCK_REASON_RE = re.compile(
+    r"\b("
+    r"review[- ]required|requires review|awaiting review|review gate|"
+    r"human[- ]decision|human decision|requires human|human approval|manual approval"
+    r")\b",
+    re.IGNORECASE,
+)
+
+
+def _completion_log_has_evidence(text: str) -> bool:
+    lower = (text or "").lower()
+    return "database disk image is malformed" in lower and bool(
+        _COMPLETION_RECONCILE_EVIDENCE_RE.search(text or "")
+    )
+
+
+def _completion_artifact_paths(text: str) -> list[str]:
+    paths: list[str] = []
+    for match in _COMPLETION_RECONCILE_PATH_RE.finditer(text or ""):
+        candidate = match.group("path").strip().rstrip(".,;:)]}")
+        if not candidate or candidate.startswith("//"):
+            continue
+        if candidate not in paths:
+            paths.append(candidate)
+    return paths
+
+
+def _task_has_active_claim(task: Task) -> bool:
+    """Return True when reconciliation should not touch an active worker.
+
+    Completion reconciliation is for workers that likely finished but could not
+    persist ``kanban_complete`` during a malformed-DB incident. It must not turn
+    ordinary live worker logs into completion evidence while a current run is
+    still claimed.
+    """
+    if task.status != "running":
+        return False
+    now = int(time.time())
+    if task.claim_expires is not None and int(task.claim_expires) > now:
+        return True
+    lock = task.claim_lock or ""
+    host_prefix = f"{_claimer_id().split(':', 1)[0]}:"
+    return bool(
+        lock.startswith(host_prefix)
+        and task.worker_pid
+        and _pid_alive(task.worker_pid)
+    )
+
+
+def _sqlite_integrity_check(conn: sqlite3.Connection) -> str:
+    try:
+        row = conn.execute("PRAGMA integrity_check").fetchone()
+        return str(row[0] if row else "unknown")
+    except sqlite3.DatabaseError as exc:
+        return f"error: {exc}"
+
+
+def _latest_block_reason(conn: sqlite3.Connection, task_id: str) -> str:
+    """Return the most recent human-facing block reason for a task, if any."""
+    row = conn.execute(
+        """
+        SELECT summary
+          FROM task_runs
+         WHERE task_id = ?
+           AND outcome = 'blocked'
+           AND COALESCE(summary, '') != ''
+         ORDER BY COALESCE(ended_at, started_at) DESC, id DESC
+         LIMIT 1
+        """,
+        (task_id,),
+    ).fetchone()
+    if row and row["summary"]:
+        return str(row["summary"])
+
+    event = conn.execute(
+        """
+        SELECT payload
+          FROM task_events
+         WHERE task_id = ?
+           AND kind = 'blocked'
+         ORDER BY id DESC
+         LIMIT 1
+        """,
+        (task_id,),
+    ).fetchone()
+    if event and event["payload"]:
+        try:
+            payload = json.loads(event["payload"])
+        except (TypeError, ValueError):
+            return ""
+        if isinstance(payload, dict) and payload.get("reason"):
+            return str(payload["reason"])
+    return ""
+
+
+def _task_is_review_or_human_decision_blocked(
+    conn: sqlite3.Connection,
+    task: Task,
+) -> tuple[bool, str]:
+    """Return whether a blocked task is waiting on a review/human gate."""
+    if task.status != "blocked":
+        return False, ""
+    reason = _latest_block_reason(conn, task.id)
+    return bool(_REVIEW_GATE_BLOCK_REASON_RE.search(reason)), reason
+
+
+def _review_gate_override_reason(item: dict) -> str:
+    """Return an explicit manifest override reason, or an empty string."""
+    if item.get("override_review_gate") is not True:
+        return ""
+    reason = item.get("override_reason", item.get("review_gate_override_reason", ""))
+    return str(reason or "").strip()
+
+
+def build_completion_reconciliation_manifest(
+    conn: sqlite3.Connection,
+    task_ids: Optional[Iterable[str]] = None,
+) -> dict:
+    """Build a non-destructive manifest for workers that finished while
+    kanban_complete could not persist because the board DB was malformed.
+    """
+    if task_ids is None:
+        rows = conn.execute(
+            "SELECT id FROM tasks WHERE status IN ('running', 'ready', 'blocked') "
+            "ORDER BY created_at DESC"
+        ).fetchall()
+        resolved_task_ids = [r["id"] for r in rows]
+    else:
+        resolved_task_ids = list(task_ids)
+
+    items: list[dict] = []
+    for task_id in resolved_task_ids:
+        task = get_task(conn, task_id)
+        if task is None:
+            items.append({
+                "task_id": task_id,
+                "current_status": None,
+                "evidence_status": "task_missing",
+                "evidence_source": None,
+                "evidence_excerpt": "",
+                "artifact_paths": [],
+                "proposed_action": "skip",
+                "reason": "task not found",
+                "metadata": {},
+            })
+            continue
+        log_path = worker_log_path(task_id)
+        text = read_worker_log(task_id, tail_bytes=_COMPLETION_RECONCILE_TAIL_BYTES) or ""
+        has_evidence = _completion_log_has_evidence(text)
+        artifacts = _completion_artifact_paths(text)
+        metadata = {
+            "reconciled": True,
+            "evidence_source": str(log_path),
+            "artifact_paths": artifacts,
+            "artifacts": artifacts,
+        }
+        review_gate_blocked, block_reason = _task_is_review_or_human_decision_blocked(conn, task)
+        if task.status == "done":
+            proposed = "skip"
+            evidence_status = "already_done"
+            reason = "task already terminal (done)"
+        elif _task_has_active_claim(task):
+            proposed = "skip"
+            evidence_status = "active_worker_claim"
+            reason = "task still has an active worker claim; skipping reconciliation"
+        elif has_evidence and review_gate_blocked:
+            proposed = "skip"
+            evidence_status = "review_gate_blocked"
+            reason = (
+                "task is blocked on review/human decision; refusing completion reconciliation "
+                f"without explicit override (block reason: {block_reason})"
+            )
+            metadata["blocked_reason"] = block_reason
+        elif has_evidence:
+            proposed = "complete"
+            evidence_status = "malformed_db_completion_log"
+            reason = "worker log indicates completion but kanban_complete failed on malformed DB"
+        else:
+            proposed = "skip"
+            evidence_status = "no_completion_evidence"
+            reason = "no malformed-db completion evidence found in worker log"
+        items.append({
+            "task_id": task_id,
+            "current_status": task.status,
+            "evidence_status": evidence_status,
+            "evidence_source": str(log_path),
+            "evidence_excerpt": text[-2000:],
+            "artifact_paths": artifacts,
+            "proposed_action": proposed,
+            "reason": reason,
+            "metadata": metadata,
+        })
+    return {
+        "mode": "dry-run",
+        "board": get_current_board(),
+        "db_path": str(kanban_db_path()),
+        "integrity_check": _sqlite_integrity_check(conn),
+        "items": items,
+    }
+
+
+def apply_completion_reconciliation_manifest(
+    conn: sqlite3.Connection,
+    manifest: dict,
+) -> dict:
+    """Apply a previously reviewed completion-reconciliation manifest."""
+    completed: list[str] = []
+    skipped: list[str] = []
+    failed: list[dict] = []
+    for item in manifest.get("items", []):
+        task_id = item.get("task_id")
+        if not task_id or item.get("proposed_action") != "complete":
+            if task_id:
+                skipped.append(task_id)
+            continue
+        task = get_task(conn, task_id)
+        if task is None or task.status not in {"running", "ready", "blocked"}:
+            failed.append({
+                "task_id": task_id,
+                "error": "task was not in a completable status or no longer exists",
+            })
+            continue
+        if _task_has_active_claim(task):
+            failed.append({
+                "task_id": task_id,
+                "error": "task still has an active worker claim; refusing reconciliation",
+            })
+            continue
+        review_gate_blocked, block_reason = _task_is_review_or_human_decision_blocked(conn, task)
+        review_gate_override = _review_gate_override_reason(item)
+        if review_gate_blocked and not review_gate_override:
+            failed.append({
+                "task_id": task_id,
+                "error": "task is blocked on review/human decision; explicit override is required",
+            })
+            continue
+        current_log_text = read_worker_log(
+            task_id, tail_bytes=_COMPLETION_RECONCILE_TAIL_BYTES,
+        ) or ""
+        if not _completion_log_has_evidence(current_log_text):
+            failed.append({
+                "task_id": task_id,
+                "error": "current worker log no longer contains malformed-db completion evidence",
+            })
+            continue
+        manifest_artifacts = [str(p).strip() for p in item.get("artifact_paths", []) if str(p).strip()]
+        current_artifacts = _completion_artifact_paths(current_log_text)
+        if manifest_artifacts and manifest_artifacts != current_artifacts:
+            failed.append({
+                "task_id": task_id,
+                "error": "current worker log artifact paths differ from manifest",
+            })
+            continue
+        summary = "Reconciled completion from worker log evidence after malformed kanban DB write failure."
+        metadata = item.get("metadata") or {
+            "reconciled": True,
+            "evidence_source": item.get("evidence_source"),
+            "artifact_paths": current_artifacts,
+            "artifacts": current_artifacts,
+        }
+        if isinstance(metadata, dict):
+            metadata["artifact_paths"] = current_artifacts
+            metadata["artifacts"] = current_artifacts
+            if review_gate_override:
+                metadata["review_gate_override"] = {
+                    "reason": review_gate_override,
+                    "blocked_reason": block_reason,
+                }
+        try:
+            ok = complete_task(conn, task_id, summary=summary, metadata=metadata)
+        except Exception as exc:
+            failed.append({"task_id": task_id, "error": str(exc)})
+            continue
+        if ok:
+            completed.append(task_id)
+        else:
+            failed.append({
+                "task_id": task_id,
+                "error": "task was not in a completable status or no longer exists",
+            })
+    return {"completed": completed, "skipped": skipped, "failed": failed}
 
 
 # ---------------------------------------------------------------------------

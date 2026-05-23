@@ -1512,10 +1512,11 @@ DEFAULT_CONFIG = {
 
     # Kanban multi-agent coordination — controls the dispatcher loop that
     # spawns workers for ready tasks. The dispatcher ticks every N seconds
-    # (default 60), reclaims stale claims, promotes dependency-satisfied
+    # (default 120), reclaims stale claims, promotes dependency-satisfied
     # todos to ready, and fires `hermes -p <assignee> chat -q ...` for
     # each claimable ready task. One dispatcher per profile is sufficient;
-    # running more than one on the same kanban.db will race for claims.
+    # running more than one on the same kanban.db is coordinated by a
+    # short dispatcher lease so workers do not stampede.
     "kanban": {
         # Run the dispatcher inside the gateway process. On by default —
         # the cost is ~300µs every `dispatch_interval_seconds` when idle,
@@ -1524,12 +1525,17 @@ DEFAULT_CONFIG = {
         # don't want the gateway to spawn workers.
         "dispatch_in_gateway": True,
         # Seconds between dispatcher ticks (idle or not). Lower = snappier
-        # pickup of newly-ready tasks; higher = less SQL pressure.
-        "dispatch_interval_seconds": 60,
+        # pickup of newly-ready tasks; higher = less SQL pressure and gentler
+        # retry cadence when workers crash repeatedly.
+        "dispatch_interval_seconds": 120,
+        # Live worker concurrency cap across the board. Keeps a large
+        # crash-only retry wave from stampeding the host after an operator
+        # unblocks/requeues many tasks at once. None means unlimited.
+        "max_spawn": 3,
         # Auto-block after this many consecutive non-success attempts for the
         # same task/profile (spawn_failed, timed_out, or crashed). Reassignment
         # resets the streak for the new profile.
-        "failure_limit": 2,
+        "failure_limit": 4,
         # Worker stdout/stderr logs rotate at spawn time. Defaults preserve
         # the historical 2 MiB + one-backup behavior; long-running workers can
         # raise these to keep more early failure evidence.

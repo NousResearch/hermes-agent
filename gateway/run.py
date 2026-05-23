@@ -29,6 +29,7 @@ import dataclasses
 import inspect
 import json
 import logging
+import math
 import os
 import re
 import shlex
@@ -67,8 +68,110 @@ _PLATFORM_CONNECT_TIMEOUT_SECS_DEFAULT = 30.0
 _ADAPTER_DISCONNECT_TIMEOUT_SECS_DEFAULT = 5.0
 _TELEGRAM_COMMAND_MENTION_RE = re.compile(r"(?<![\w:/])/([A-Za-z0-9][A-Za-z0-9_-]*)")
 
-_TELEGRAM_NOISY_STATUS_RE = re.compile(
-    r"("  # transient/auxiliary status that should stay in logs, not Telegram chat
+
+_KANBAN_DEFAULT_DISPATCH_INTERVAL_SECONDS = 120.0
+_KANBAN_DEFAULT_MAX_SPAWN = 3
+
+
+def _parse_kanban_max_spawn(raw_value: Any, *, default: Optional[int] = None) -> Optional[int]:
+    """Return a safe live worker cap from ``kanban.max_spawn``.
+
+    ``None`` means explicitly unlimited. Invalid, zero, or negative values
+    fall back to the provided safe default rather than silently disabling the
+    anti-stampede cap.
+    """
+    if raw_value is None:
+        return None
+    try:
+        parsed = int(raw_value)
+    except (TypeError, ValueError, OverflowError):
+        logger.warning(
+            "kanban dispatcher: invalid kanban.max_spawn=%r; using default %r",
+            raw_value,
+            default,
+        )
+        return default
+    if parsed < 1:
+        logger.warning(
+            "kanban dispatcher: kanban.max_spawn=%r is below 1; using default %r",
+            raw_value,
+            default,
+        )
+        return default
+    return parsed
+
+
+def _parse_kanban_failure_limit(raw_value: Any, default: int) -> int:
+    """Return a safe circuit-breaker threshold from ``kanban.failure_limit``."""
+    try:
+        parsed = int(raw_value)
+    except (TypeError, ValueError, OverflowError):
+        logger.warning(
+            "kanban dispatcher: invalid kanban.failure_limit=%r; using default %d",
+            raw_value,
+            default,
+        )
+        return default
+    if parsed < 1:
+        logger.warning(
+            "kanban dispatcher: kanban.failure_limit=%r is below 1; using default %d",
+            raw_value,
+            default,
+        )
+        return default
+    return parsed
+
+
+def _parse_positive_int_or_default(raw_value: Any, default: int, *, label: str) -> int:
+    """Parse a positive integer config value with a warning fallback."""
+    try:
+        parsed = int(raw_value)
+    except (TypeError, ValueError, OverflowError):
+        logger.warning("kanban dispatcher: invalid %s=%r; using default %d", label, raw_value, default)
+        return default
+    if parsed < 1:
+        logger.warning("kanban dispatcher: %s=%r is below 1; using default %d", label, raw_value, default)
+        return default
+    return parsed
+
+
+def _parse_positive_float_or_default(raw_value: Any, default: float, *, label: str) -> float:
+    """Parse a positive numeric config value with a warning fallback."""
+    try:
+        parsed = float(raw_value)
+    except (TypeError, ValueError, OverflowError):
+        logger.warning("kanban dispatcher: invalid %s=%r; using default %s", label, raw_value, default)
+        return default
+    if not math.isfinite(parsed):
+        logger.warning("kanban dispatcher: %s=%r is not finite; using default %s", label, raw_value, default)
+        return default
+    if parsed < 1.0:
+        logger.warning("kanban dispatcher: %s=%r is below 1; using default %s", label, raw_value, default)
+        return default
+    return parsed
+
+
+def _is_corrupt_kanban_board_db_error(exc: Exception) -> bool:
+    """Return whether ``exc`` means a Kanban board DB should be quarantined.
+
+    The DB layer performs lightweight SQLite header validation before connect.
+    Invalid headers, malformed files, and truncated files are all persistent
+    board-file problems rather than transient dispatcher tick failures, so the
+    gateway should disable dispatch for that board fingerprint until the file
+    changes or the process restarts.
+    """
+    if not isinstance(exc, sqlite3.DatabaseError):
+        return False
+    msg = str(exc).lower()
+    return (
+        "file is not a database" in msg
+        or "database disk image is malformed" in msg
+        or "truncated sqlite file" in msg
+    )
+
+
+_GATEWAY_NOISY_STATUS_RE = re.compile(
+    r"("  # transient/auxiliary status that should stay in logs, not gateway chats
     r"auxiliary\s+.+\s+failed"
     r"|compression\s+summary\s+failed"
     r"|fallback\s+context\s+marker"
@@ -76,6 +179,8 @@ _TELEGRAM_NOISY_STATUS_RE = re.compile(
     r"|no\s+auxiliary\s+llm\s+provider\s+configured"
     r"|auto-lowered\s+compression\s+threshold"
     r"|preflight\s+compression"
+    r"|compacting\s+context"
+    r"|summarizing\s+earlier\s+conversation"
     r"|rate\s+limited\.\s+waiting\s+\d"
     r"|retrying\s+in\s+\d"
     r"|max\s+retries\s+\(\d+\).*(?:trying\s+fallback|exhausted|invalid\s+responses)"
@@ -232,7 +337,7 @@ def _prepare_gateway_status_message(platform: Any, event_type: str, message: str
         return text
 
     text = _redact_gateway_user_facing_secrets(text)
-    if _TELEGRAM_NOISY_STATUS_RE.search(text):
+    if _GATEWAY_NOISY_STATUS_RE.search(text):
         return None
     if _looks_like_gateway_provider_error(text):
         return _gateway_provider_error_reply(text)
@@ -5128,13 +5233,24 @@ class GatewayRunner:
             logger.warning("kanban dispatcher: kanban_db not importable; dispatcher disabled")
             return
 
-        interval = float(kanban_cfg.get("dispatch_interval_seconds", 60) or 60)
-        interval = max(interval, 1.0)  # sanity floor — tighter than this is a footgun
+        interval = _parse_positive_float_or_default(
+            kanban_cfg.get(
+                "dispatch_interval_seconds",
+                _KANBAN_DEFAULT_DISPATCH_INTERVAL_SECONDS,
+            ),
+            _KANBAN_DEFAULT_DISPATCH_INTERVAL_SECONDS,
+            label="kanban.dispatch_interval_seconds",
+        )
 
-        # Read max_spawn config to limit concurrent kanban tasks
-        max_spawn = kanban_cfg.get("max_spawn", None)
+        # Read max_spawn config to limit concurrent kanban tasks.
+        # Keep parsing defensive: a malformed config should not kill the
+        # gateway-hosted dispatcher loop or disable the anti-stampede cap.
+        max_spawn = _parse_kanban_max_spawn(
+            kanban_cfg.get("max_spawn", _KANBAN_DEFAULT_MAX_SPAWN),
+            default=_KANBAN_DEFAULT_MAX_SPAWN,
+        )
         if max_spawn is not None:
-            logger.info(f"kanban dispatcher: max_spawn={max_spawn}")
+            logger.info("kanban dispatcher: max_spawn=%s", max_spawn)
 
         # Cap the number of simultaneously running tasks so slow workers
         # (local LLMs, resource-constrained hosts) don't pile up and time
@@ -5145,7 +5261,7 @@ class GatewayRunner:
         if raw_max_in_progress is not None:
             try:
                 max_in_progress = int(raw_max_in_progress)
-            except (TypeError, ValueError):
+            except (TypeError, ValueError, OverflowError):
                 logger.warning(
                     "kanban dispatcher: invalid kanban.max_in_progress=%r; ignoring",
                     raw_max_in_progress,
@@ -5162,28 +5278,26 @@ class GatewayRunner:
                     logger.info(f"kanban dispatcher: max_in_progress={max_in_progress}")
 
         raw_failure_limit = kanban_cfg.get("failure_limit", _kb.DEFAULT_FAILURE_LIMIT)
-        try:
-            failure_limit = int(raw_failure_limit)
-        except (TypeError, ValueError):
-            logger.warning(
-                "kanban dispatcher: invalid kanban.failure_limit=%r; using default %d",
-                raw_failure_limit,
-                _kb.DEFAULT_FAILURE_LIMIT,
-            )
-            failure_limit = _kb.DEFAULT_FAILURE_LIMIT
-        if failure_limit < 1:
-            logger.warning(
-                "kanban dispatcher: kanban.failure_limit=%r is below 1; using default %d",
-                raw_failure_limit,
-                _kb.DEFAULT_FAILURE_LIMIT,
-            )
-            failure_limit = _kb.DEFAULT_FAILURE_LIMIT
+        failure_limit = _parse_kanban_failure_limit(
+            raw_failure_limit,
+            _kb.DEFAULT_FAILURE_LIMIT,
+        )
+
+        # A short DB-backed lease keeps multiple profile gateways from all
+        # running dispatcher ticks against the same shared board. The TTL must
+        # exceed one tick so the current owner can renew before failover.
+        dispatcher_owner = f"gateway:{_kb._claimer_id()}"
+        dispatcher_lease_ttl_seconds = _parse_positive_int_or_default(
+            kanban_cfg.get("dispatcher_lease_ttl_seconds", int(max(interval * 2, 30))),
+            int(max(interval * 2, 30)),
+            label="kanban.dispatcher_lease_ttl_seconds",
+        )
 
         # Read stale_timeout_seconds — 0 disables stale detection.
         raw_stale = kanban_cfg.get("dispatch_stale_timeout_seconds", 0)
         try:
             stale_timeout_seconds = int(raw_stale or 0)
-        except (TypeError, ValueError):
+        except (TypeError, ValueError, OverflowError):
             logger.warning(
                 "kanban dispatcher: invalid kanban.dispatch_stale_timeout_seconds=%r; "
                 "disabling stale detection",
@@ -5216,15 +5330,6 @@ class GatewayRunner:
                 return (resolved, None, None)
             return (resolved, stat.st_mtime_ns, stat.st_size)
 
-        def _is_corrupt_board_db_error(exc: Exception) -> bool:
-            if not isinstance(exc, sqlite3.DatabaseError):
-                return False
-            msg = str(exc).lower()
-            return (
-                "file is not a database" in msg
-                or "database disk image is malformed" in msg
-            )
-
         def _tick_once_for_board(slug: str) -> "Optional[object]":
             """Run one dispatch_once for a specific board.
 
@@ -5253,6 +5358,17 @@ class GatewayRunner:
                 # re-ran the migration on a second connection, racing
                 # the first. See the matching comment in
                 # `_kanban_notifier_watcher` and issue #21378.
+                if not _kb.acquire_dispatcher_lease(
+                    conn,
+                    board=slug,
+                    owner=dispatcher_owner,
+                    ttl_seconds=dispatcher_lease_ttl_seconds,
+                ):
+                    logger.debug(
+                        "kanban dispatcher: board %s lease held by another gateway; skipping tick",
+                        slug,
+                    )
+                    return None
                 return _kb.dispatch_once(
                     conn,
                     board=slug,
@@ -5262,7 +5378,7 @@ class GatewayRunner:
                     stale_timeout_seconds=stale_timeout_seconds,
                 )
             except sqlite3.DatabaseError as exc:
-                if _is_corrupt_board_db_error(exc):
+                if _is_corrupt_kanban_board_db_error(exc):
                     disabled_corrupt_boards[slug] = fingerprint
                     logger.error(
                         "kanban dispatcher: board %s database %s is not a valid "
@@ -5324,6 +5440,12 @@ class GatewayRunner:
                 conn = None
                 try:
                     conn = _kb.connect(board=slug)
+                    if not _kb.owns_dispatcher_lease(
+                        conn,
+                        board=slug,
+                        owner=dispatcher_owner,
+                    ):
+                        continue
                     if _kb.has_spawnable_ready(conn):
                         return True
                     if _kb.has_spawnable_review(conn):
@@ -5349,7 +5471,7 @@ class GatewayRunner:
             auto_decompose_per_tick = int(
                 kanban_cfg.get("auto_decompose_per_tick", 3) or 3
             )
-        except (TypeError, ValueError):
+        except (TypeError, ValueError, OverflowError):
             auto_decompose_per_tick = 3
         if auto_decompose_per_tick < 1:
             auto_decompose_per_tick = 1
@@ -5376,6 +5498,51 @@ class GatewayRunner:
                 slug = b.get("slug") or _kb.DEFAULT_BOARD
                 if attempted >= auto_decompose_per_tick:
                     break
+                fingerprint = _board_db_fingerprint(slug)
+                disabled_fingerprint = disabled_corrupt_boards.get(slug)
+                if disabled_fingerprint == fingerprint:
+                    continue
+                if disabled_fingerprint is not None:
+                    disabled_corrupt_boards.pop(slug, None)
+                lease_conn = None
+                try:
+                    lease_conn = _kb.connect(board=slug)
+                    if not _kb.acquire_dispatcher_lease(
+                        lease_conn,
+                        board=slug,
+                        owner=dispatcher_owner,
+                        ttl_seconds=dispatcher_lease_ttl_seconds,
+                    ):
+                        logger.debug(
+                            "kanban auto-decompose: board %s lease held by another gateway; skipping",
+                            slug,
+                        )
+                        continue
+                except sqlite3.DatabaseError as exc:
+                    if _is_corrupt_kanban_board_db_error(exc):
+                        disabled_corrupt_boards[slug] = fingerprint
+                        logger.error(
+                            "kanban dispatcher: board %s database %s is not a valid "
+                            "SQLite database; disabling dispatch for this board "
+                            "until the file changes or the gateway restarts. Move "
+                            "or restore the file, then run `hermes kanban init` if "
+                            "you need a fresh board.",
+                            slug,
+                            fingerprint[0],
+                        )
+                    else:
+                        logger.debug(
+                            "kanban auto-decompose: lease check failed on board %s (%s)",
+                            slug,
+                            exc,
+                        )
+                    continue
+                finally:
+                    if lease_conn is not None:
+                        try:
+                            lease_conn.close()
+                        except Exception:
+                            pass
                 # Pin this board for the duration of the call — same
                 # pattern as the dashboard specify endpoint. The
                 # decomposer module connects with no board kwarg and

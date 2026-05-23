@@ -477,6 +477,37 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
         help="Emit JSON (structured) instead of the default human table",
     )
 
+    # --- reconcile-completions ---
+    p_reconcile = sub.add_parser(
+        "reconcile-completions",
+        help="Dry-run/apply completed-work reconciliation after malformed DB incidents",
+    )
+    p_reconcile.add_argument(
+        "task_ids",
+        nargs="*",
+        help="Task ids to inspect. Omit to scan active running/ready/blocked tasks.",
+    )
+    p_reconcile.add_argument(
+        "--output",
+        default=None,
+        help="Write the dry-run/apply JSON result to this path",
+    )
+    p_reconcile.add_argument(
+        "--json",
+        action="store_true",
+        help="Print JSON instead of a concise human summary",
+    )
+    p_reconcile.add_argument(
+        "--apply",
+        action="store_true",
+        help="Apply a previously inspected manifest. Requires --manifest and makes a timestamped DB backup first.",
+    )
+    p_reconcile.add_argument(
+        "--manifest",
+        default=None,
+        help="Path to a dry-run manifest JSON to apply with --apply",
+    )
+
     # --- link / unlink ---
     p_link = sub.add_parser("link", help="Add a parent->child dependency")
     p_link.add_argument("parent_id")
@@ -586,8 +617,8 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
         "daemon",
         help="DEPRECATED — dispatcher now runs in the gateway. Use `hermes gateway start`.",
     )
-    p_daemon.add_argument("--interval", type=float, default=60.0,
-                          help="Seconds between dispatch ticks (default: 60)")
+    p_daemon.add_argument("--interval", type=float, default=120.0,
+                          help="Seconds between dispatch ticks (default: 120)")
     p_daemon.add_argument("--max", type=int, default=None,
                           help="Cap number of spawns per tick")
     p_daemon.add_argument("--failure-limit", type=int,
@@ -890,6 +921,7 @@ def kanban_command(args: argparse.Namespace) -> int:
         "reassign": _cmd_reassign,
         "diagnostics": _cmd_diagnostics,
         "diag":     _cmd_diagnostics,
+        "reconcile-completions": _cmd_reconcile_completions,
         "link":     _cmd_link,
         "unlink":   _cmd_unlink,
         "claim":    _cmd_claim,
@@ -1222,7 +1254,7 @@ def _cmd_init(args: argparse.Namespace) -> int:
     print("  hermes gateway start")
     print()
     print(
-        "The gateway hosts an embedded dispatcher that ticks every 60 seconds\n"
+        "The gateway hosts an embedded dispatcher that ticks every 120 seconds\n"
         "by default (config: kanban.dispatch_interval_seconds). Without a\n"
         "running gateway, tasks stay in 'ready' forever."
     )
@@ -1755,6 +1787,143 @@ def _cmd_diagnostics(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_reconcile_completions(args: argparse.Namespace) -> int:
+    """Dry-run or apply completed-work reconciliation for malformed-DB incidents."""
+    if getattr(args, "apply", False):
+        manifest_path = getattr(args, "manifest", None)
+        if not manifest_path:
+            print(
+                "kanban reconcile-completions: --apply requires --manifest from a prior dry-run",
+                file=sys.stderr,
+            )
+            return 2
+        if getattr(args, "task_ids", None):
+            print(
+                "kanban reconcile-completions: task ids are ignored in --apply mode; edit the manifest instead",
+                file=sys.stderr,
+            )
+            return 2
+        try:
+            manifest = json.loads(Path(manifest_path).expanduser().read_text(encoding="utf-8"))
+            if not isinstance(manifest, dict):
+                raise ValueError("manifest root must be a JSON object")
+        except (OSError, ValueError, json.JSONDecodeError) as exc:
+            print(f"kanban reconcile-completions: cannot read manifest: {exc}", file=sys.stderr)
+            return 1
+        if manifest.get("mode") != "dry-run" or not isinstance(manifest.get("items"), list):
+            print(
+                "kanban reconcile-completions: --manifest must be a dry-run JSON object with an items list",
+                file=sys.stderr,
+            )
+            return 2
+        if any(not isinstance(item, dict) for item in manifest.get("items", [])):
+            print(
+                "kanban reconcile-completions: --manifest items must be JSON objects",
+                file=sys.stderr,
+            )
+            return 2
+        current_board = kb.get_current_board()
+        current_db_path = kb.kanban_db_path().expanduser().resolve(strict=False)
+        manifest_board = manifest.get("board")
+        manifest_db = manifest.get("db_path")
+        try:
+            manifest_db_path = Path(str(manifest_db)).expanduser().resolve(strict=False)
+        except (OSError, TypeError, ValueError):
+            manifest_db_path = None
+        if manifest_board != current_board or manifest_db_path != current_db_path:
+            print(
+                "kanban reconcile-completions: manifest board/db_path does not match the current board; "
+                "rerun dry-run for this board before applying",
+                file=sys.stderr,
+            )
+            return 2
+        with kb.connect() as conn:
+            integrity_before = str(conn.execute("PRAGMA integrity_check").fetchone()[0])
+            if integrity_before != "ok":
+                print(
+                    f"kanban reconcile-completions: refusing to apply; integrity_check={integrity_before!r}",
+                    file=sys.stderr,
+                )
+                return 1
+            import sqlite3
+            db_path = kb.kanban_db_path()
+            backup_path = db_path.with_name(
+                f"{db_path.stem}.backup-{time.strftime('%Y%m%d-%H%M%S', time.localtime())}.{os.getpid()}.db"
+            )
+            backup_path.parent.mkdir(parents=True, exist_ok=True)
+            dst = sqlite3.connect(str(backup_path))
+            try:
+                conn.backup(dst)
+            finally:
+                dst.close()
+            result = kb.apply_completion_reconciliation_manifest(conn, manifest)
+            integrity_after = str(conn.execute("PRAGMA integrity_check").fetchone()[0])
+        payload = {
+            "mode": "apply",
+            "manifest_path": str(Path(manifest_path).expanduser()),
+            "backup_path": str(backup_path),
+            "integrity_before": integrity_before,
+            "integrity_after": integrity_after,
+            "result": result,
+        }
+        if getattr(args, "output", None):
+            out_path = Path(args.output).expanduser()
+            out_path.parent.mkdir(parents=True, exist_ok=True)
+            payload["output_path"] = str(out_path)
+            out_path.write_text(json.dumps(payload, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+        if getattr(args, "json", False):
+            print(json.dumps(payload, indent=2, ensure_ascii=False))
+        else:
+            print(f"Backup: {backup_path}")
+            print(f"Integrity: before={integrity_before} after={integrity_after}")
+            print(
+                "Applied reconciliation: "
+                f"completed={len(result.get('completed', []))} "
+                f"skipped={len(result.get('skipped', []))} "
+                f"failed={len(result.get('failed', []))}"
+            )
+            if getattr(args, "output", None):
+                print(f"Output: {payload['output_path']}")
+        return 0 if integrity_after == "ok" and not result.get("failed") else 1
+
+    with kb.connect() as conn:
+        manifest = kb.build_completion_reconciliation_manifest(
+            conn,
+            list(getattr(args, "task_ids", None) or []) or None,
+        )
+    if getattr(args, "output", None):
+        out_path = Path(args.output).expanduser()
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        manifest["output_path"] = str(out_path)
+        out_path.write_text(json.dumps(manifest, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+    if getattr(args, "json", False):
+        print(json.dumps(manifest, indent=2, ensure_ascii=False))
+        return 0
+
+    counts: dict[str, int] = {}
+    for item in manifest.get("items", []):
+        action = str(item.get("proposed_action", "unknown")) if isinstance(item, dict) else "unknown"
+        counts[action] = counts.get(action, 0) + 1
+    print("Completion reconciliation dry-run")
+    print(f"  Board: {manifest.get('board')}")
+    print(f"  DB: {manifest.get('db_path')}")
+    print(f"  Integrity: {manifest.get('integrity_check')}")
+    print("  Proposed: " + (", ".join(f"{k}={v}" for k, v in sorted(counts.items())) or "none"))
+    for item in manifest.get("items", []):
+        if not isinstance(item, dict):
+            continue
+        print(
+            f"  {item.get('task_id')}  {item.get('current_status')}  "
+            f"{item.get('evidence_status')}  -> {item.get('proposed_action')}"
+        )
+        print(f"      {item.get('reason')}")
+    if getattr(args, "output", None):
+        print(f"  Output: {manifest['output_path']}")
+    if counts.get("complete"):
+        print("Review the manifest, then apply with: hermes kanban reconcile-completions --apply --manifest <path>")
+    return 0
+
+
 def _cmd_link(args: argparse.Namespace) -> int:
     with kb.connect() as conn:
         kb.link_tasks(conn, args.parent_id, args.child_id)
@@ -2076,12 +2245,13 @@ def _cmd_daemon(args: argparse.Namespace) -> int:
             "    hermes gateway start       # starts the gateway + embedded dispatcher\n"
             "\n"
             "Ready tasks will be picked up on the next dispatcher tick\n"
-            "(default: every 60 seconds). Configure via config.yaml:\n"
+            "(default: every 120 seconds). Configure via config.yaml:\n"
             "\n"
             "    kanban:\n"
             "      dispatch_in_gateway: true      # default\n"
-            "      dispatch_interval_seconds: 60\n"
-            "      failure_limit: 2              # consecutive non-success attempts before auto-block\n"
+            "      dispatch_interval_seconds: 120\n"
+            "      max_spawn: 3                  # live worker concurrency cap\n"
+            "      failure_limit: 4              # consecutive non-success attempts before auto-block\n"
             "\n"
             "Running both the gateway AND this standalone daemon will\n"
             "race for claims. If you truly need the old standalone\n"

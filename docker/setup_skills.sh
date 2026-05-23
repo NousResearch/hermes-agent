@@ -2,9 +2,6 @@
 
 set -e
 
-# Use venv Python so PyYAML and other packages are available
-export PATH="/opt/hermes/.venv/bin:${PATH}"
-
 echo "========================================="
 echo "Agent Toolkit Setup Script"
 echo "========================================="
@@ -18,6 +15,23 @@ fi
 if [ -z "$AGENT_TOOLKIT_SERVER" ]; then
     echo "错误: 环境变量 AGENT_TOOLKIT_SERVER 未设置"
     exit 1
+fi
+
+if [ -z "$LOOP_AGENT_CENTER_URL" ]; then
+    echo "错误: 环境变量 LOOP_AGENT_CENTER_URL 未设置"
+    exit 1
+fi
+
+if [ -z "$HERMES_WORKSPACE" ]; then
+    echo "错误: 环境变量 HERMES_WORKSPACE 未设置"
+    exit 1
+fi
+
+# 确保工作空间目录存在
+if [ ! -d "$HERMES_WORKSPACE" ]; then
+    echo "创建工作空间目录: $HERMES_WORKSPACE"
+    mkdir -p "$HERMES_WORKSPACE"
+    echo "✓ 工作空间目录创建成功"
 fi
 
 CONFIG_FILE="$HERMES_HOME/config.yaml"
@@ -220,7 +234,24 @@ mkdir -p "$MEMORIES_DIR"
 if [ -f "$MEMORY_FILE" ]; then
     echo "memory.md 已存在，跳过（保留 Agent 运行数据）"
 else
-    MEMORY_CONTENT="# 环境事实
+    # 优先从 config.yaml 读取 memory 字段，fallback 到默认内容
+    MEMORY_CONTENT=$(python3 -c "
+import yaml
+import sys
+
+try:
+    with open('$CONFIG_FILE', 'r', encoding='utf-8') as f:
+        config = yaml.safe_load(f)
+
+    memory = config.get('memory', '')
+    if memory is None:
+        memory = ''
+
+    if memory:
+        print(memory, end='')
+    else:
+        # 默认环境事实
+        print(\"\"\"# 环境事实
 
 ## 浏览器
 - 当前环境已安装 Chrome 浏览器
@@ -230,7 +261,18 @@ else
 ## 网络
 - 运行在中国大陆
 - 仅访问中国大陆可达的网站
-- 优先使用国内镜像和 CDN 源"
+- 优先使用国内镜像和 CDN 源\"\"\")
+except Exception as e:
+    print(f'解析配置文件失败: {e}', file=sys.stderr)
+    sys.exit(1)
+" 2>&1)
+
+    if [ $? -ne 0 ]; then
+        echo "错误: 解析memory配置失败"
+        echo "$MEMORY_CONTENT"
+        exit 1
+    fi
+
     echo "$MEMORY_CONTENT" > "$MEMORY_FILE"
     echo "✓ memory.md文件生成成功"
 fi

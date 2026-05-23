@@ -443,6 +443,14 @@ _WAL_INCOMPAT_MARKERS = (
     "not authorized",         # Some FUSE mounts block WAL pragma outright
     "disk i/o error",         # ZFS SHM corruption under concurrent connections
 )
+_SQLITE_TRANSIENT_BUSY_MARKERS = (
+    "database is locked",
+    "database table is locked",
+    "database is busy",
+    "database schema is locked",
+)
+_WAL_SETUP_MAX_ATTEMPTS = 3
+_WAL_SETUP_RETRY_DELAY_S = 1.0
 
 # Last SessionDB() init error, per-process.  Surfaced in /resume and
 # related slash-command error strings so users know WHY the DB is
@@ -875,60 +883,53 @@ def apply_wal_with_fallback(
             )
         return actual
 
-    try:
-        # ``PRAGMA journal_mode=WAL`` is a query-that-sets: it RETURNS the
-        # resulting journal mode. Network filesystems that refuse WAL by
-        # *raising* SQLITE_PROTOCOL ("locking protocol") are handled in the
-        # except branch below. But macOS NFS — and SMB/CIFS, and the AgentFS
-        # NFS overlay — refuse the switch WITHOUT raising: the pragma simply
-        # returns the still-effective mode (e.g. ``delete``). Trust the
-        # returned row, not the mere absence of an exception; otherwise we
-        # report a false ``"wal"`` AND skip the fallback WARNING, leaving the
-        # DB silently in DELETE (reader-blocks-writer) with no signal.
-        row = conn.execute("PRAGMA journal_mode=WAL").fetchone()
-        mode = str(row[0]).strip().lower() if row and row[0] is not None else ""
-        if mode == "wal":
-            _apply_macos_checkpoint_barrier(conn)
-            _enforce_macos_synchronous_full(conn)
-            return "wal"
-        # Silent refusal (macOS NFS / SMB / AgentFS overlay): WAL was not
-        # honored, but nothing raised.
-        silent_exc = WalUnsupportedError(
-            f"journal_mode=WAL refused without raising (still {mode!r})"
-        )
-        if require_wal:
-            raise silent_exc
-        _log_wal_fallback_once(db_label, silent_exc)
-        return mode or "delete"
-    except sqlite3.OperationalError as exc:
-        # The require_wal silent-refusal raise above is a WalUnsupportedError
-        # (an OperationalError subclass) and lands here — propagate it
-        # unchanged rather than re-running it through the marker logic.
-        if isinstance(exc, WalUnsupportedError):
-            raise
-        msg = str(exc).lower()
-        if not any(marker in msg for marker in _WAL_INCOMPAT_MARKERS):
-            # Unrelated OperationalError — don't silently swallow.
-            raise
-        # ``disk i/o error`` is ambiguous: on ZFS / APFS-CoW it is a
-        # deterministic WAL-incompatibility (SHM corruption under concurrent
-        # connection bursts — #55305, #71498), but it can also be a one-shot
-        # transient EIO (page-cache pressure, brief lock contention).
-        # Treating a transient EIO as a permanent downgrade signal produced
-        # the mixed-journal-mode corruption pattern fixed in 5c49cd0ed0
-        # (process A downgrades to DELETE while sibling processes set WAL).
-        # Disambiguate by retrying the pragma a couple of times: transient
-        # EIO clears and we return "wal"; the deterministic filesystem cases
-        # keep failing and fall through to the guarded DELETE fallback.
-        if "disk i/o error" in msg:
-            for _ in range(2):
+    fallback_exc: Optional[sqlite3.OperationalError] = None
+    for attempt in range(_WAL_SETUP_MAX_ATTEMPTS):
+        try:
+            # ``PRAGMA journal_mode=WAL`` is a query-that-sets: it RETURNS the
+            # resulting journal mode. Network filesystems can refuse WAL by
+            # raising, or silently by returning the still-effective mode.
+            row = conn.execute("PRAGMA journal_mode=WAL").fetchone()
+            mode = (
+                str(row[0]).strip().lower()
+                if row and row[0] is not None
+                else ""
+            )
+            if mode == "wal":
+                _apply_macos_checkpoint_barrier(conn)
+                _enforce_macos_synchronous_full(conn)
+                return "wal"
+            silent_exc = WalUnsupportedError(
+                f"journal_mode=WAL refused without raising (still {mode!r})"
+            )
+            if require_wal:
+                raise silent_exc
+            _log_wal_fallback_once(db_label, silent_exc)
+            return mode or "delete"
+        except sqlite3.OperationalError as exc:
+            if isinstance(exc, WalUnsupportedError):
+                raise
+            msg = str(exc).lower()
+            is_transient = any(
+                marker in msg for marker in _SQLITE_TRANSIENT_BUSY_MARKERS
+            )
+            if is_transient and attempt < _WAL_SETUP_MAX_ATTEMPTS - 1:
+                time.sleep(_WAL_SETUP_RETRY_DELAY_S)
+                continue
+            if is_transient:
+                raise
+            if not any(marker in msg for marker in _WAL_INCOMPAT_MARKERS):
+                # Unrelated OperationalError — don't silently swallow.
+                raise
+            fallback_exc = exc
+            if "disk i/o error" in msg and attempt < _WAL_SETUP_MAX_ATTEMPTS - 1:
                 time.sleep(0.05)
                 try:
                     row = conn.execute("PRAGMA journal_mode=WAL").fetchone()
                 except sqlite3.OperationalError as retry_exc:
                     if "disk i/o error" not in str(retry_exc).lower():
                         raise
-                    exc = retry_exc
+                    fallback_exc = retry_exc
                     continue
                 mode = (
                     str(row[0]).strip().lower()
@@ -945,11 +946,13 @@ def apply_wal_with_fallback(
         # opener's locks) — ownership is not provably exclusive either way.
         existing = _on_disk_journal_mode(conn)
         if existing == "wal" or existing is None:
-            raise
+            raise fallback_exc or sqlite3.OperationalError(
+                "could not initialize WAL journal mode"
+            )
         if require_wal:
             # Caller mandates WAL — fail loudly instead of degrading to DELETE.
-            raise WalUnsupportedError(str(exc)) from exc
-        _log_wal_fallback_once(db_label, exc)
+            raise WalUnsupportedError(str(fallback_exc)) from fallback_exc
+        _log_wal_fallback_once(db_label, fallback_exc)
         _set_journal_mode_no_wait(conn, "DELETE")
         return "delete"
 

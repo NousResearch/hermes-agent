@@ -2589,7 +2589,6 @@ class TestFTS5ToolCallMigration:
         finally:
             session_db.close()
 
-
 class TestFTSExternalContentMigration:
     """v23 migration: inline-mode FTS tables (v11-v22) are rebuilt as
     external-content tables, and role='tool' rows are excluded from the
@@ -3036,7 +3035,6 @@ class TestFTSExternalContentMigration:
             assert hits[0]["role"] == "tool"
         finally:
             db.close()
-
 
 
 # ---------------------------------------------------------------------------
@@ -3693,6 +3691,10 @@ class TestLoneSurrogatePersistence:
         db.append_message("s1", "user", "turn text")
         assert db.set_latest_user_api_content("s1", "turn text", self.DIRTY) == 1
 
+    def test_session_title_survives_lone_surrogate(self, db):
+        db.create_session("s1", source="cli")
+        assert db.set_session_title("s1", "title \ud835 bad") is True
+        assert db.get_session("s1")["title"] == "title \ufffd bad"
 
 
 class TestDisplayMetadataPersistence:
@@ -3806,7 +3808,6 @@ class TestDisplayMetadataReadPaths:
             assert target.get_messages("s1")[0]["display_metadata"] == self.META
         finally:
             target.close()
-
 
 
 

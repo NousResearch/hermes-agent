@@ -746,6 +746,28 @@ class WeComAdapter(BasePlatformAdapter):
             filename = str(media.get("filename") or media.get("name") or "wecom_file")
             return cache_document_from_bytes(raw, filename), mimetypes.guess_type(filename)[0] or "application/octet-stream"
 
+        media_id = str(media.get("media_id") or "").strip()
+        if media_id:
+            try:
+                raw, headers = await self._download_media_by_id(media_id)
+            except Exception as exc:
+                logger.debug("[%s] Failed to download %s media_id %s: %s", self.name, kind, media_id, exc)
+                return None
+
+            content_type = str(headers.get("content-type") or "").split(";", 1)[0].strip() or "application/octet-stream"
+            if kind == "image":
+                ext = mimetypes.guess_extension(content_type) or self._detect_image_ext(raw)
+                try:
+                    return cache_image_from_bytes(raw, ext), content_type or self._mime_for_ext(ext, fallback="image/jpeg")
+                except ValueError as exc:
+                    logger.warning("[%s] Rejected non-image bytes for media_id %s: %s", self.name, media_id, exc)
+                    return None
+
+            filename = str(media.get("filename") or media.get("name") or media_id).strip() or "wecom_file"
+            if "." not in filename:
+                filename = f"{filename}{mimetypes.guess_extension(content_type) or '.bin'}"
+            return cache_document_from_bytes(raw, filename), content_type
+
         url = str(media.get("url") or "").strip()
         if not url:
             return None
@@ -775,6 +797,50 @@ class WeComAdapter(BasePlatformAdapter):
 
         filename = self._guess_filename(url, headers.get("content-disposition"), content_type)
         return cache_document_from_bytes(raw, filename), content_type
+
+    async def _download_media_by_id(
+        self,
+        media_id: str,
+    ) -> Tuple[bytes, Dict[str, str]]:
+        """Download inbound media referenced by WeCom ``media_id``."""
+        if not media_id:
+            raise ValueError("media_id is required")
+        if not HTTPX_AVAILABLE:
+            raise RuntimeError("httpx is required for WeCom media download")
+        if not self._bot_id or not self._secret:
+            raise RuntimeError("WECOM_BOT_ID and WECOM_SECRET are required for media download")
+
+        client = self._http_client or httpx.AsyncClient(timeout=30.0, follow_redirects=True)
+        created_client = client is not self._http_client
+        try:
+            response = await client.post(
+                "https://qyapi.weixin.qq.com/cgi-bin/aibot/media/get",
+                json={
+                    "robot_id": self._bot_id,
+                    "secret": self._secret,
+                    "media_id": media_id,
+                },
+                headers={
+                    "User-Agent": "HermesAgent/1.0",
+                    "Accept": "*/*",
+                },
+                timeout=REQUEST_TIMEOUT_SECONDS,
+            )
+            response.raise_for_status()
+            headers = {key.lower(): value for key, value in response.headers.items()}
+            content_type = str(headers.get("content-type") or "").split(";", 1)[0].strip().lower()
+            if content_type in {"application/json", "text/plain"}:
+                raise ValueError(
+                    f"WeCom media_id download returned non-binary content-type {content_type or 'unknown'}"
+                )
+            if len(response.content) > ABSOLUTE_MAX_BYTES:
+                raise ValueError(
+                    f"Remote media exceeds WeCom limit while downloading: {len(response.content)} bytes > {ABSOLUTE_MAX_BYTES} bytes"
+                )
+            return response.content, headers
+        finally:
+            if created_client:
+                await client.aclose()
 
     @staticmethod
     def _decode_base64(data: str) -> bytes:

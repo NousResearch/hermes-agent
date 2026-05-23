@@ -469,6 +469,52 @@ class TestMediaUpload:
         assert Path(cached_path).read_bytes() == plaintext
         assert content_type == "application/octet-stream"
 
+    @pytest.mark.asyncio
+    async def test_cache_media_downloads_image_by_media_id(self):
+        from gateway.platforms.wecom import WeComAdapter
+
+        adapter = WeComAdapter(
+            PlatformConfig(enabled=True, extra={"bot_id": "bot-1", "secret": "secret-1"})
+        )
+        png_bytes = base64.b64decode(
+            "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aB9sAAAAASUVORK5CYII="
+        )
+        adapter._download_media_by_id = AsyncMock(
+            return_value=(png_bytes, {"content-type": "image/png"})
+        )
+
+        cached = await adapter._cache_media("image", {"media_id": "media-image-1"})
+
+        assert cached is not None
+        cached_path, content_type = cached
+        assert Path(cached_path).read_bytes() == png_bytes
+        assert content_type == "image/png"
+
+    @pytest.mark.asyncio
+    async def test_cache_media_downloads_file_by_media_id(self):
+        from gateway.platforms.wecom import WeComAdapter
+
+        adapter = WeComAdapter(
+            PlatformConfig(enabled=True, extra={"bot_id": "bot-1", "secret": "secret-1"})
+        )
+        adapter._download_media_by_id = AsyncMock(
+            return_value=(
+                b"invoice-bytes",
+                {"content-type": "application/pdf"},
+            )
+        )
+
+        cached = await adapter._cache_media(
+            "file",
+            {"media_id": "media-file-1", "filename": "invoice.pdf"},
+        )
+
+        assert cached is not None
+        cached_path, content_type = cached
+        assert Path(cached_path).read_bytes() == b"invoice-bytes"
+        assert Path(cached_path).name.endswith(".pdf")
+        assert content_type == "application/pdf"
+
 
 class TestSend:
     @pytest.mark.asyncio
@@ -830,4 +876,3 @@ class TestWeComZombieSessionFix:
         adapter._send_request.assert_awaited_once()
         cmd = adapter._send_request.await_args.args[0]
         assert cmd == APP_CMD_SEND
-

@@ -173,7 +173,12 @@ def _job_profile_context(job_id: str, profile: Optional[str]):
     env_snapshot = os.environ.copy()
 
     from hermes_cli.profiles import normalize_profile_name, resolve_profile_env
-    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+    from hermes_constants import (
+        clear_gateway_baseline_env,
+        reset_hermes_home_override,
+        set_gateway_baseline_env,
+        set_hermes_home_override,
+    )
 
     normalized_profile = normalize_profile_name(raw_profile)
     try:
@@ -189,6 +194,12 @@ def _job_profile_context(job_id: str, profile: Optional[str]):
 
     override_token = None
     try:
+        # Pin the gateway thread's auth env reads to the pre-mutation snapshot
+        # BEFORE we let cron mutate os.environ via load_dotenv(override=True)
+        # downstream. Without this, the gateway's asyncio thread sees the
+        # profile-B env mid-job and rejects profile-A users, generating
+        # unwanted pairing codes in feishu-pending.json (#31026).
+        set_gateway_baseline_env(env_snapshot)
         override_token = set_hermes_home_override(profile_home)
         _hermes_home = profile_home
         logger.info(
@@ -210,6 +221,14 @@ def _job_profile_context(job_id: str, profile: Optional[str]):
         for k, v in env_snapshot.items():
             if os.environ.get(k) != v:
                 os.environ[k] = v
+        # Clear the baseline AFTER restoring os.environ. If we cleared first,
+        # there'd be a window where gateway_getenv falls back to a still-
+        # mutated os.environ — the exact leak we are guarding against (#31026).
+        # With this order, gateway readers either (a) see the baseline while
+        # the env restore is in flight, or (b) see the restored live env after
+        # the baseline clears. Both states equal the snapshot, so the
+        # gateway's view is consistent throughout.
+        clear_gateway_baseline_env()
 
 
 def _resolve_origin(job: dict) -> Optional[dict]:

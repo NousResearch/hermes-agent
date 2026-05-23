@@ -665,7 +665,7 @@ _ensure_ssl_certs()
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 # Resolve Hermes home directory (respects HERMES_HOME override)
-from hermes_constants import get_hermes_home
+from hermes_constants import gateway_getenv, get_hermes_home
 from utils import atomic_json_write, atomic_yaml_write, base_url_host_matches, is_truthy_value
 _hermes_home = get_hermes_home()
 
@@ -6209,7 +6209,10 @@ class GatewayRunner:
                 Platform.QQBOT: "QQ_GROUP_ALLOWED_USERS",
             }.get(source.platform, "")
             if chat_allowlist_env:
-                raw_chat_allowlist = os.getenv(chat_allowlist_env, "").strip()
+                # gateway_getenv (not os.getenv) so an in-process cron profile
+                # context mutating os.environ on another thread cannot flip
+                # the gateway's auth verdict mid-message (#31026).
+                raw_chat_allowlist = gateway_getenv(chat_allowlist_env, "").strip()
                 if raw_chat_allowlist:
                     allowed_group_ids = {
                         cid.strip()
@@ -6286,14 +6289,20 @@ class GatewayRunner:
             except Exception:
                 pass
 
+        # All env reads in this method use gateway_getenv (not os.getenv): the
+        # cron ticker runs as a background thread in this same process and
+        # may have mutated os.environ for a per-job profile context. Reading
+        # the live env here would flip the gateway's verdict on legitimate
+        # users mid-message (#31026).
+
         # Per-platform allow-all flag (e.g., DISCORD_ALLOW_ALL_USERS=true)
         platform_allow_all_var = platform_allow_all_map.get(source.platform, "")
-        if platform_allow_all_var and os.getenv(platform_allow_all_var, "").lower() in {"true", "1", "yes"}:
+        if platform_allow_all_var and gateway_getenv(platform_allow_all_var, "").lower() in {"true", "1", "yes"}:
             return True
 
         if getattr(source, "is_bot", False):
             allow_bots_var = platform_allow_bots_map.get(source.platform)
-            if allow_bots_var and os.getenv(allow_bots_var, "none").lower().strip() in {"mentions", "all"}:
+            if allow_bots_var and gateway_getenv(allow_bots_var, "none").lower().strip() in {"mentions", "all"}:
                 return True
 
         # Discord role-based access (DISCORD_ALLOWED_ROLES): the adapter's
@@ -6304,7 +6313,7 @@ class GatewayRunner:
         # (issue #7871).
         if (
             source.platform == Platform.DISCORD
-            and os.getenv("DISCORD_ALLOWED_ROLES", "").strip()
+            and gateway_getenv("DISCORD_ALLOWED_ROLES", "").strip()
         ):
             return True
 
@@ -6314,17 +6323,17 @@ class GatewayRunner:
             return True
 
         # Check platform-specific and global allowlists
-        platform_allowlist = os.getenv(platform_env_map.get(source.platform, ""), "").strip()
+        platform_allowlist = gateway_getenv(platform_env_map.get(source.platform, ""), "").strip()
         group_user_allowlist = ""
         group_chat_allowlist = ""
         if source.chat_type in {"group", "forum"}:
-            group_user_allowlist = os.getenv(platform_group_user_env_map.get(source.platform, ""), "").strip()
-            group_chat_allowlist = os.getenv(platform_group_chat_env_map.get(source.platform, ""), "").strip()
-        global_allowlist = os.getenv("GATEWAY_ALLOWED_USERS", "").strip()
+            group_user_allowlist = gateway_getenv(platform_group_user_env_map.get(source.platform, ""), "").strip()
+            group_chat_allowlist = gateway_getenv(platform_group_chat_env_map.get(source.platform, ""), "").strip()
+        global_allowlist = gateway_getenv("GATEWAY_ALLOWED_USERS", "").strip()
 
         if not platform_allowlist and not group_user_allowlist and not group_chat_allowlist and not global_allowlist:
             # No allowlists configured -- check global allow-all flag
-            return os.getenv("GATEWAY_ALLOW_ALL_USERS", "").lower() in {"true", "1", "yes"}
+            return gateway_getenv("GATEWAY_ALLOW_ALL_USERS", "").lower() in {"true", "1", "yes"}
 
         # Telegram can optionally authorize group traffic by chat ID.
         # Keep this separate from TELEGRAM_GROUP_ALLOWED_USERS, which gates
@@ -6459,13 +6468,15 @@ class GatewayRunner:
                 ),
                 Platform.QQBOT: ("QQ_GROUP_ALLOWED_USERS",),
             }
-            if os.getenv(platform_env_map.get(platform, ""), "").strip():
+            # gateway_getenv (not os.getenv) to stay isolated from the cron
+            # ticker's per-job profile-context env mutation (#31026).
+            if gateway_getenv(platform_env_map.get(platform, ""), "").strip():
                 return "ignore"
             for env_key in platform_group_env_map.get(platform, ()):
-                if os.getenv(env_key, "").strip():
+                if gateway_getenv(env_key, "").strip():
                     return "ignore"
 
-        if os.getenv("GATEWAY_ALLOWED_USERS", "").strip():
+        if gateway_getenv("GATEWAY_ALLOWED_USERS", "").strip():
             return "ignore"
 
         return "pair"

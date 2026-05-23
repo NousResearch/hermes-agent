@@ -354,6 +354,70 @@ class TestRunJobProfileContext:
         assert observed["hermes_home_during_init"] == str(root)
         assert os.environ["HERMES_HOME"] == str(root)
 
+    def test_gateway_baseline_env_is_isolated_during_profile_run(
+        self, isolated_cron_profile_home, monkeypatch
+    ):
+        """Regression for #31026.
+
+        While a per-job profile context is active, the cron thread mutates
+        ``os.environ`` (so the cron job's agent reads profile B's values),
+        but ``gateway_getenv`` on the same process must keep returning the
+        gateway thread's pre-context (profile A) values. Otherwise the
+        gateway's auth path flips its verdict on legitimate users mid-job
+        and emits unwanted pairing codes.
+        """
+        import dotenv
+        import cron.scheduler as sched
+        from hermes_constants import gateway_getenv
+
+        _root, profile_home = isolated_cron_profile_home
+        observed: dict = {}
+        self._install_agent_stubs(monkeypatch, observed)
+
+        # Profile A (the gateway thread's baseline) has alice authorized.
+        monkeypatch.setenv("FEISHU_ALLOWED_USERS", "alice")
+        # Sanity-check the precondition.
+        assert gateway_getenv("FEISHU_ALLOWED_USERS") == "alice"
+
+        def fake_load_dotenv(path, *_a, **_kw):
+            # Simulate the profile's .env switching the allowlist to bob.
+            observed.setdefault("dotenv_paths", []).append(str(path))
+            os.environ["FEISHU_ALLOWED_USERS"] = "bob"
+            return True
+
+        monkeypatch.setattr(dotenv, "load_dotenv", fake_load_dotenv)
+
+        # Capture both views from inside the running cron job.
+        fake_mod = __import__("sys").modules["run_agent"]
+        original_run = fake_mod.AIAgent.run_conversation
+
+        def capture_run(self, *_a, **_kw):
+            observed["os_env_during_run"] = os.environ.get("FEISHU_ALLOWED_USERS")
+            observed["gateway_view_during_run"] = gateway_getenv("FEISHU_ALLOWED_USERS")
+            return original_run(self, *_a, **_kw)
+
+        monkeypatch.setattr(fake_mod.AIAgent, "run_conversation", capture_run)
+
+        job = {
+            "id": "iso",
+            "name": "profile-isolation-job",
+            "profile": "support",
+            "schedule_display": "manual",
+        }
+
+        success, _output, _response, error = sched.run_job(job)
+
+        assert success is True, error
+        # The cron job sees the mutated env (intentional — its agent must
+        # use profile B's credentials).
+        assert observed["os_env_during_run"] == "bob"
+        # The gateway thread's auth path stays pinned to the baseline.
+        assert observed["gateway_view_during_run"] == "alice"
+        # After the context exits the env is restored and the snapshot is
+        # cleared, so gateway_getenv reads live env again.
+        assert os.environ["FEISHU_ALLOWED_USERS"] == "alice"
+        assert gateway_getenv("FEISHU_ALLOWED_USERS") == "alice"
+
     def test_run_job_falls_back_on_missing_runtime_profile(
         self, isolated_cron_profile_home, monkeypatch
     ):

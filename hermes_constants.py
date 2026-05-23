@@ -6,8 +6,10 @@ without risk of circular imports.
 
 import os
 import sysconfig
+import threading
 from contextvars import ContextVar, Token
 from pathlib import Path
+from typing import Dict, Mapping, Optional
 
 
 _profile_fallback_warned: bool = False
@@ -38,6 +40,66 @@ def get_hermes_home_override() -> str | None:
     if override is _UNSET or not override:
         return None
     return str(override)
+
+
+# ─── Gateway-baseline env snapshot ────────────────────────────────────────────
+#
+# The cron ticker runs as a background thread inside the gateway process and
+# may mutate ``os.environ`` for the duration of a per-job profile context
+# (see ``cron.scheduler._job_profile_context``). While that mutation is live,
+# the gateway's asyncio thread is still processing inbound messages and would
+# otherwise read the wrong profile's allowlist/auth env vars, rejecting
+# legitimate users and triggering an unwanted pairing flow (#31026).
+#
+# The cron context manager publishes a pre-mutation snapshot via
+# ``set_gateway_baseline_env`` and clears it on exit. Gateway auth code reads
+# env through ``gateway_getenv`` so its decisions stay pinned to the
+# gateway-process baseline regardless of what cron is doing on another thread.
+_baseline_env_lock = threading.RLock()
+_gateway_baseline_env: Optional[Dict[str, str]] = None
+
+
+def set_gateway_baseline_env(snapshot: Mapping[str, str]) -> None:
+    """Expose a pre-cron-context os.environ snapshot to the gateway thread.
+
+    Called by ``cron.scheduler._job_profile_context`` before it mutates
+    ``os.environ`` for a per-job profile. While this snapshot is set,
+    ``gateway_getenv`` reads from it instead of the live (cron-mutated)
+    environment, so the gateway's auth decisions remain isolated from
+    the cron job's profile context.
+    """
+    global _gateway_baseline_env
+    with _baseline_env_lock:
+        _gateway_baseline_env = dict(snapshot)
+
+
+def clear_gateway_baseline_env() -> None:
+    """Clear the gateway-baseline env snapshot.
+
+    Called by ``cron.scheduler._job_profile_context`` on exit, before it
+    restores ``os.environ``, so subsequent ``gateway_getenv`` reads fall
+    back to the (now-restored) live environment.
+    """
+    global _gateway_baseline_env
+    with _baseline_env_lock:
+        _gateway_baseline_env = None
+
+
+def gateway_getenv(key: str, default: str = "") -> str:
+    """Read an env var as the gateway thread should see it.
+
+    When a cron profile context has published a baseline snapshot (because
+    it is currently mutating ``os.environ`` on another thread), return the
+    snapshot's value. Otherwise fall back to ``os.getenv``.
+
+    Used by the gateway's auth path to keep user authorization decisions
+    immune to cron's per-job env mutations (#31026).
+    """
+    with _baseline_env_lock:
+        snapshot = _gateway_baseline_env
+    if snapshot is not None:
+        return snapshot.get(key, default)
+    return os.getenv(key, default)
 
 
 def get_hermes_home() -> Path:

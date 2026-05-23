@@ -1027,15 +1027,11 @@ def load_gateway_config() -> GatewayConfig:
                         group_allowed_chats = ",".join(str(v) for v in group_allowed_chats)
                     os.environ["TELEGRAM_GROUP_ALLOWED_CHATS"] = str(group_allowed_chats)
                 for _telegram_extra_key in ("guest_mode", "disable_link_previews", "observe_unmentioned_group_messages"):
+
                     if _telegram_extra_key in telegram_cfg:
-                        plat_data = platforms_data.setdefault(Platform.TELEGRAM.value, {})
-                        if not isinstance(plat_data, dict):
-                            plat_data = {}
-                            platforms_data[Platform.TELEGRAM.value] = plat_data
-                        extra = plat_data.setdefault("extra", {})
-                        if not isinstance(extra, dict):
-                            extra = {}
-                            plat_data["extra"] = extra
+                        _, extra = _ensure_platform_extra_dict(
+                            platforms_data, Platform.TELEGRAM.value
+                        )
                         extra[_telegram_extra_key] = telegram_cfg[_telegram_extra_key]
                 if _telegram_extra:
                     _plat_data, _plat_extra = _ensure_platform_extra_dict(
@@ -1829,16 +1825,47 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
         discover_plugins()  # idempotent
         from gateway.platform_registry import platform_registry
         for entry in platform_registry.plugin_entries():
+            platform = Platform(entry.name)
+            pconfig = config.platforms.get(platform)
+            explicitly_enabled = bool(pconfig and pconfig.enabled)
+
             try:
-                if not entry.check_fn():
-                    continue
+                requirements_ok = bool(entry.check_fn())
             except Exception as e:
                 logger.debug("check_fn for %s raised: %s", entry.name, e)
                 continue
-            platform = Platform(entry.name)
+
+            plugin_configured = False
+            if pconfig is not None:
+                try:
+                    if entry.is_connected is not None:
+                        plugin_configured = bool(entry.is_connected(pconfig))
+                    elif entry.validate_config is not None:
+                        plugin_configured = bool(entry.validate_config(pconfig))
+                    else:
+                        plugin_configured = requirements_ok
+                except Exception as e:
+                    logger.debug("config check for %s raised: %s", entry.name, e)
+                    plugin_configured = False
+
+            # check_fn() only proves dependencies are importable (for some
+            # plugins that means a lazy-installed Python package), not that
+            # the platform has credentials.  Do not turn a top-level YAML
+            # tuning section such as ``discord.require_mention`` into an
+            # enabled gateway adapter unless either:
+            #   1. the plugin reports it is actually configured, or
+            #   2. the user explicitly enabled it in config.yaml.
+            if not requirements_ok or (not plugin_configured and not explicitly_enabled):
+                continue
+
             if platform not in config.platforms:
                 config.platforms[platform] = PlatformConfig()
-            config.platforms[platform].enabled = True
+
+            if plugin_configured:
+                config.platforms[platform].enabled = True
+            elif not explicitly_enabled:
+                continue
+
             # Seed extras from env if the plugin opted in.
             if entry.env_enablement_fn is not None:
                 try:

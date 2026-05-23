@@ -842,7 +842,10 @@ def switch_model(
     # =================================================================
     # COMMON PATH: Resolve credentials, normalize, get metadata
     # =================================================================
-
+    # NOTE: provider_changed is computed AFTER Step e so it captures any
+    # re-targeting done by detect_provider_for_model(). Previously it was
+    # computed before Step e, causing credentials to resolve from the
+    # wrong provider when Step e changed target_provider silently.
     provider_changed = target_provider != current_provider
     provider_label = get_label(target_provider)
     if target_provider.startswith("custom:"):

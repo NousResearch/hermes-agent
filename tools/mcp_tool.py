@@ -164,8 +164,8 @@ def _write_stderr_log_header(server_name: str) -> None:
         ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         fh.write(f"\n===== [{ts}] starting MCP server '{server_name}' =====\n")
         fh.flush()
-    except Exception:
-        pass
+    except Exception as exc:
+        logger.debug("Failed to write MCP stderr log header: %s", exc)
 
 # ---------------------------------------------------------------------------
 # Graceful import -- MCP SDK is an optional dependency

@@ -494,7 +494,8 @@ def _shell_quote_context(command_template: str, position: int) -> Optional[str]:
         elif char == '"':
             quote = '"'
         elif char == "\\":
-            i += 1
+            if i + 1 < len(command_template):
+                i += 1  # skip escaped character
         i += 1
     return quote
 
@@ -959,9 +960,13 @@ def _apply_xai_auto_speech_tags(text: str) -> str:
     if not clean or _XAI_SPEECH_TAG_RE.search(clean):
         return text
 
+    # Guard: if the first sentence already ends with a [pause] (e.g. from a
+    # paragraph break that also terminated a sentence), skip to avoid a
+    # double-insertion such as "Hello. [pause] [pause] World."
     clean = re.sub(r"\n\s*\n+", " [pause] ", clean)
     clean = re.sub(r"\s*\n\s*", " ", clean)
-    clean = _XAI_FIRST_SENTENCE_RE.sub(r"\1 [pause] ", clean, count=1)
+    if not re.search(r"\]\s*\[pause\]\s", clean):
+        clean = _XAI_FIRST_SENTENCE_RE.sub(r"\1 [pause] ", clean, count=1)
     clean = re.sub(r"\s{2,}", " ", clean).strip()
     return clean
 
@@ -1020,17 +1025,20 @@ def _generate_xai_tts(text: str, output_path: str, tts_config: Dict[str, Any]) -
             output_format["bit_rate"] = bit_rate
         payload["output_format"] = output_format
 
-    response = requests.post(
-        f"{base_url}/tts",
-        headers={
-            "Authorization": f"Bearer {api_key}",
-            "Content-Type": "application/json",
-            "User-Agent": hermes_xai_user_agent(),
-        },
-        json=payload,
-        timeout=60,
-    )
-    response.raise_for_status()
+    try:
+        response = requests.post(
+            f"{base_url}/tts",
+            headers={
+                "Authorization": f"Bearer {api_key}",
+                "Content-Type": "application/json",
+                "User-Agent": hermes_xai_user_agent(),
+            },
+            json=payload,
+            timeout=60,
+        )
+        response.raise_for_status()
+    except requests.RequestException as exc:
+        raise RuntimeError(f"xAI TTS request failed: {exc}") from exc
 
     with open(output_path, "wb") as f:
         f.write(response.content)

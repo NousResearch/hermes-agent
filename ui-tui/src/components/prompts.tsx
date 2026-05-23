@@ -8,11 +8,12 @@ import type { ApprovalReq, ClarifyReq, ConfirmReq } from '../types.js'
 import { TextInput } from './textInput.js'
 
 const OPTS = ['once', 'session', 'always', 'deny'] as const
+const DEFAULT_APPROVAL_INDEX = OPTS.indexOf('deny')
 const LABELS = { always: 'Always allow', deny: 'Deny', once: 'Allow once', session: 'Allow this session' } as const
 const CMD_PREVIEW_LINES = 10
 
 export function ApprovalPrompt({ onChoice, req, t }: ApprovalPromptProps) {
-  const [sel, setSel] = useState(0)
+  const [sel, setSel] = useState(DEFAULT_APPROVAL_INDEX)
 
   useInput((ch, key) => {
     if (key.upArrow && sel > 0) {

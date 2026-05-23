@@ -259,3 +259,77 @@ def test_dispatch_all_unknown_action_returns_false(
         ),
     )
     assert gw._dispatch_all_via_service_manager_if_s6("start") is False
+
+
+# ---------------------------------------------------------------------------
+# Friendly error rendering — GatewayNotRegisteredError / S6CommandError
+# (PR #30136 review item I2)
+# ---------------------------------------------------------------------------
+
+
+def test_dispatch_renders_gateway_not_registered_friendly(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture,
+) -> None:
+    """`hermes -p typo gateway start` should print a clear message and
+    exit 1 — not dump a traceback at the user."""
+    from hermes_cli import gateway as gw
+    from hermes_cli.service_manager import GatewayNotRegisteredError
+
+    class _RaisesMissing:
+        kind = "s6"
+
+        def start(self, name: str) -> None:
+            raise GatewayNotRegisteredError("typo")
+
+    monkeypatch.setattr(
+        "hermes_cli.service_manager.detect_service_manager", lambda: "s6",
+    )
+    monkeypatch.setattr(
+        "hermes_cli.service_manager.get_service_manager", lambda: _RaisesMissing(),
+    )
+
+    with pytest.raises(SystemExit) as excinfo:
+        gw._dispatch_via_service_manager_if_s6("start", profile="typo")
+    assert excinfo.value.code == 1
+    out = capsys.readouterr().out
+    assert "no such gateway 'typo'" in out
+    assert "hermes profile create typo" in out
+    # And critically: no traceback prefix.
+    assert "Traceback" not in out
+
+
+def test_dispatch_renders_s6_command_error_friendly(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture,
+) -> None:
+    """An s6-svc failure (e.g. EACCES on the supervise FIFO) should
+    surface the stderr inline, not as an opaque traceback."""
+    from hermes_cli import gateway as gw
+    from hermes_cli.service_manager import S6CommandError
+
+    class _RaisesS6Error:
+        kind = "s6"
+
+        def start(self, name: str) -> None:
+            raise S6CommandError(
+                service=name,
+                action="start",
+                returncode=111,
+                stderr="s6-svc: fatal: Permission denied",
+            )
+
+    monkeypatch.setattr(
+        "hermes_cli.service_manager.detect_service_manager", lambda: "s6",
+    )
+    monkeypatch.setattr(
+        "hermes_cli.service_manager.get_service_manager", lambda: _RaisesS6Error(),
+    )
+
+    with pytest.raises(SystemExit) as excinfo:
+        gw._dispatch_via_service_manager_if_s6("start", profile="coder")
+    assert excinfo.value.code == 1
+    out = capsys.readouterr().out
+    assert "rc=111" in out
+    assert "Permission denied" in out
+    assert "Traceback" not in out

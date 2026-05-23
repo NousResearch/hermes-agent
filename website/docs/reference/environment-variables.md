@@ -483,6 +483,24 @@ Used by the bundled LINE platform plugin (`plugins/platforms/line/`). See [Messa
 | `LINE_DELIVERED_TEXT` | Reply when an already-delivered postback is tapped again (default: `Already replied ✅`). |
 | `LINE_INTERRUPTED_TEXT` | Reply when a `/stop`-orphaned postback button is tapped (default: `Run was interrupted before completion.`). |
 
+### ntfy (push notifications)
+
+[ntfy](https://ntfy.sh/) is a lightweight HTTP-based push notification service. Subscribe to a topic from the [ntfy mobile app](https://ntfy.sh/docs/subscribe/phone/), publish to that topic to talk to the agent.
+
+| Variable | Description |
+|----------|-------------|
+| `NTFY_TOPIC` | Topic to subscribe to (incoming messages). Required. |
+| `NTFY_SERVER_URL` | Server URL (default: `https://ntfy.sh`). Point at a self-hosted ntfy for privacy. |
+| `NTFY_TOKEN` | Optional auth token. Bearer token (e.g. `tk_xyz`) or `user:pass` for Basic auth. |
+| `NTFY_PUBLISH_TOPIC` | Topic for outgoing replies (defaults to `NTFY_TOPIC`). |
+| `NTFY_MARKDOWN` | Set `true` to send replies with `X-Markdown: true` header. Default: `false`. |
+| `NTFY_ALLOWED_USERS` | Allowlist (treated as user IDs; on ntfy these are topic names). Typically set to the same value as `NTFY_TOPIC`. |
+| `NTFY_ALLOW_ALL_USERS` | Dev-only escape hatch — only safe on access-controlled private topics. Default: `false`. |
+| `NTFY_HOME_CHANNEL` | Default delivery target for cron jobs with `deliver: ntfy`. |
+| `NTFY_HOME_CHANNEL_NAME` | Human label for the home channel (defaults to the topic name). |
+
+See [the ntfy messaging guide](/docs/user-guide/messaging/ntfy) — particularly the **identity model** section — before deploying with untrusted topics.
+
 ### Advanced Messaging Tuning
 
 Advanced per-platform knobs for throttling the outbound message batcher. Most users never need to touch these; defaults are set to respect each platform's rate limits without feeling sluggish.

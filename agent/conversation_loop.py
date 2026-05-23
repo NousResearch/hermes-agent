@@ -1788,6 +1788,7 @@ def run_conversation(
                         )
                 
                 has_retried_429 = False  # Reset on success
+                agent._hit_rate_limit = False  # Clear rate-limit flag on success
                 # Clear Nous rate limit state on successful request —
                 # proves the limit has reset and other sessions can
                 # resume hitting Nous.
@@ -2483,6 +2484,8 @@ def run_conversation(
                     FailoverReason.rate_limit,
                     FailoverReason.billing,
                 }
+                if is_rate_limited:
+                    agent._hit_rate_limit = True  # Signal to gateway
                 if is_rate_limited and agent._fallback_index < len(agent._fallback_chain):
                     # Don't eagerly fallback if credential pool rotation may
                     # still recover.  See _pool_may_recover_from_rate_limit
@@ -2496,6 +2499,7 @@ def run_conversation(
                     if not pool_may_recover:
                         agent._emit_status("⚠️ Rate limited — switching to fallback provider...")
                         if agent._try_activate_fallback(reason=classified.reason):
+                            agent._hit_rate_limit = False  # Fallback will handle it
                             retry_count = 0
                             compression_attempts = 0
                             primary_recovery_attempted = False

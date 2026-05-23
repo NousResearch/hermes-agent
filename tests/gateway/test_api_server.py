@@ -31,6 +31,7 @@ from gateway.platforms.api_server import (
     _IdempotencyCache,
     _CORS_HEADERS,
     _derive_chat_session_id,
+    _make_request_fingerprint,
     check_api_server_requirements,
     cors_middleware,
     security_headers_middleware,
@@ -195,6 +196,27 @@ class TestIdempotencyCache:
 
         gate.set()
         assert await second == "response"
+
+
+    def test_request_fingerprint_changes_with_session_context(self):
+        body = {
+            "model": "hermes-agent",
+            "messages": [{"role": "user", "content": "hi"}],
+            "stream": False,
+        }
+
+        fp_a = _make_request_fingerprint(
+            body,
+            keys=["model", "messages", "tools", "tool_choice", "stream"],
+            extra={"x_hermes_session_id": "api-aaaaaaaaaaaaaaaa"},
+        )
+        fp_b = _make_request_fingerprint(
+            body,
+            keys=["model", "messages", "tools", "tool_choice", "stream"],
+            extra={"x_hermes_session_id": "api-bbbbbbbbbbbbbbbb"},
+        )
+
+        assert fp_a != fp_b
 
 
 # ---------------------------------------------------------------------------

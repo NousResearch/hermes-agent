@@ -9,6 +9,30 @@ from typing import Any, Dict, Optional
 
 logger = logging.getLogger(__name__)
 
+
+def _check_ambiguous_auto_detect() -> str:
+    """Check if multiple providers have API keys, returning a warning string
+    if so (empty string otherwise).  Called only when provider=auto."""
+    candidates: list[str] = []
+    skip = {"copilot", "lmstudio"}
+    for pid, pconfig in PROVIDER_REGISTRY.items():
+        if pconfig.auth_type != "api_key":
+            continue
+        if pid in skip:
+            continue
+        for env_var in pconfig.api_key_env_vars:
+            if has_usable_secret(os.getenv(env_var, "")):
+                candidates.append(pid)
+                break
+    if len(candidates) > 1:
+        return (
+            f"Multiple providers have API keys ({', '.join(candidates)}) "
+            f"but no explicit provider set. Using '{candidates[0]}' (first match). "
+            f"Set model.provider in config.yaml to disambiguate."
+        )
+    return ""
+
+
 from hermes_cli import auth as auth_mod
 from agent.credential_pool import CredentialPool, PooledCredential, get_custom_provider_pool_key, load_pool
 from hermes_cli.auth import (

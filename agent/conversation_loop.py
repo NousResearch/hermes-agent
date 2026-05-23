@@ -2334,6 +2334,21 @@ def run_conversation(
                         force=True,
                     )
 
+                # Hint when auto-detect may have selected the wrong provider.
+                # Only on first timeout/connection error and only when multiple
+                # providers have API keys configured.
+                if retry_count == 1 and ("timed out" in error_msg or "timeout" in error_msg or "connection" in error_msg):
+                    try:
+                        from hermes_cli.runtime_provider import _check_ambiguous_auto_detect
+                        _ambig = _check_ambiguous_auto_detect()
+                        if _ambig:
+                            agent._vprint(
+                                f"{agent.log_prefix}   💡 {_ambig}",
+                                force=True,
+                            )
+                    except Exception:
+                        pass
+
                 # Check for interrupt before deciding to retry
                 if agent._interrupt_requested:
                     agent._vprint(f"{agent.log_prefix}⚡ Interrupt detected during error handling, aborting retries.", force=True)

@@ -1483,7 +1483,12 @@ def resolve_provider(
     if has_usable_secret(os.getenv("OPENAI_API_KEY")) or has_usable_secret(os.getenv("OPENROUTER_API_KEY")):
         return "openrouter"
 
-    # Auto-detect API-key providers by checking their env vars
+    # Auto-detect API-key providers by checking their env vars.
+    # Collect all candidates first so we can warn when multiple providers
+    # have keys — a common source of mis-routing (e.g. gemini selected
+    # over zai because it appears earlier in PROVIDER_REGISTRY).
+    _auto_skip = {"copilot", "lmstudio"}
+    _auto_candidates: list[str] = []
     for pid, pconfig in PROVIDER_REGISTRY.items():
         if pconfig.auth_type != "api_key":
             continue
@@ -1493,11 +1498,22 @@ def resolve_provider(
         # whose availability isn't implied by LM_API_KEY presence (it may be
         # offline, and the no-auth setup uses a placeholder value), so it
         # also requires explicit selection.
-        if pid in {"copilot", "lmstudio"}:
+        if pid in _auto_skip:
             continue
         for env_var in pconfig.api_key_env_vars:
             if has_usable_secret(os.getenv(env_var, "")):
-                return pid
+                _auto_candidates.append(pid)
+                break
+    if len(_auto_candidates) > 1:
+        logger.warning(
+            "Multiple providers have API keys configured (%s) but no explicit "
+            "provider set. Using '%s' (first match). "
+            "Set model.provider in config.yaml to disambiguate.",
+            ", ".join(_auto_candidates),
+            _auto_candidates[0],
+        )
+    if _auto_candidates:
+        return _auto_candidates[0]
 
     # AWS Bedrock — detect via boto3 credential chain (IAM roles, SSO, env vars).
     # This runs after API-key providers so explicit keys always win.

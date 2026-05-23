@@ -1,3 +1,5 @@
+import logging
+
 import pytest
 
 from hermes_cli import runtime_provider as rp
@@ -2701,3 +2703,77 @@ def test_host_derived_key_helper_basic_cases():
     for k in ("DEEPSEEK_API_KEY", "GROQ_API_KEY", "MISTRAL_API_KEY",
               "OPENAI_API_KEY", "OPENROUTER_API_KEY"):
         _os.environ.pop(k, None)
+
+
+# =============================================================================
+# resolve_provider("auto") — ambiguous multi-provider warning
+# =============================================================================
+
+
+def test_resolve_provider_auto_warns_on_multiple_keys(monkeypatch, caplog):
+    """When multiple providers have API keys, auto-detect should still return
+    the first match but emit a warning so the user knows to set model.provider."""
+    import hermes_cli.auth as auth_mod
+
+    # Clear all provider keys first
+    for _key in (
+        "OPENAI_API_KEY", "OPENROUTER_API_KEY",
+        "GOOGLE_API_KEY", "GEMINI_API_KEY",
+        "GLM_API_KEY", "ZAI_API_KEY", "Z_AI_API_KEY",
+        "KIMI_API_KEY", "KIMI_CODING_API_KEY",
+        "DEEPSEEK_API_KEY", "ANTHROPIC_API_KEY",
+        "STEPFUN_API_KEY", "MINIMAX_API_KEY",
+        "ARCEE_API_KEY", "GMI_API_KEY",
+        "LM_API_KEY", "COPILOT_GITHUB_TOKEN",
+        "GH_TOKEN", "GITHUB_TOKEN",
+        "XIAOMI_API_KEY", "TENCENT_TOKENHUB_API_KEY",
+    ):
+        monkeypatch.delenv(_key, raising=False)
+
+    # Clear auth store so OAuth providers don't interfere
+    monkeypatch.setattr(auth_mod, "_load_auth_store", lambda: {})
+
+    # Set keys for both gemini and zai
+    monkeypatch.setenv("GEMINI_API_KEY", "gemini-key-12345")
+    monkeypatch.setenv("GLM_API_KEY", "glm-key-12345")
+
+    with caplog.at_level(logging.WARNING, logger="hermes_cli.auth"):
+        result = auth_mod.resolve_provider("auto")
+
+    # gemini comes before zai in PROVIDER_REGISTRY → first match
+    assert result == "gemini"
+
+    # But a warning must have been logged
+    assert "Multiple providers have API keys configured" in caplog.text
+
+
+def test_resolve_provider_auto_single_key_no_warning(monkeypatch, caplog):
+    """When only one provider has an API key, auto-detect should return it
+    without any warning."""
+    import hermes_cli.auth as auth_mod
+
+    # Clear all provider keys first
+    for _key in (
+        "OPENAI_API_KEY", "OPENROUTER_API_KEY",
+        "GOOGLE_API_KEY", "GEMINI_API_KEY",
+        "GLM_API_KEY", "ZAI_API_KEY", "Z_AI_API_KEY",
+        "KIMI_API_KEY", "KIMI_CODING_API_KEY",
+        "DEEPSEEK_API_KEY", "ANTHROPIC_API_KEY",
+        "STEPFUN_API_KEY", "MINIMAX_API_KEY",
+        "ARCEE_API_KEY", "GMI_API_KEY",
+        "LM_API_KEY", "COPILOT_GITHUB_TOKEN",
+        "GH_TOKEN", "GITHUB_TOKEN",
+        "XIAOMI_API_KEY", "TENCENT_TOKENHUB_API_KEY",
+    ):
+        monkeypatch.delenv(_key, raising=False)
+
+    monkeypatch.setattr(auth_mod, "_load_auth_store", lambda: {})
+
+    # Only zai has a key
+    monkeypatch.setenv("GLM_API_KEY", "glm-key-12345")
+
+    with caplog.at_level(logging.WARNING, logger="hermes_cli.auth"):
+        result = auth_mod.resolve_provider("auto")
+
+    assert result == "zai"
+    assert "Multiple providers" not in caplog.text

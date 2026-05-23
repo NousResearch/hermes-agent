@@ -228,6 +228,10 @@ HTML_TEMPLATE = """<!DOCTYPE html>
             margin: 0;
         }}
 
+        .layout-multi .main-content {{
+            width: 0;
+        }}
+
         .session-view.active {{
             display: block;
         }}

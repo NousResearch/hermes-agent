@@ -127,8 +127,22 @@ class TestMemoryApi:
             assert resp.status == 200
             data = await resp.json()
 
+        # MEMORY.md entries (user-added structural data) survive the
+        # sanitiser — only the identity blocks are redacted.
         assert [entry["content"] for entry in data["memory"]["entries"]] == ["updated fact"]
-        assert data["user"]["content"] == "user profile"
+        # USER.md content is the identity block. After the sanitiser
+        # was introduced, the Remote Management API hard-redacts it
+        # on the wire regardless of who's holding the Bearer token.
+        # The PUT round-trips into the file on disk (next assertion
+        # below) — the Remote read just doesn't echo it back.
+        from gateway.platforms.api_sanitiser import REDACTED
+
+        assert data["user"]["content"] == REDACTED
+        # Sanity-check the write side: the file on disk did get
+        # written with the real value. The sanitiser is wire-only.
+        user_file_path = tmp_path / "memories" / "USER.md"
+        assert user_file_path.exists()
+        assert "user profile" in user_file_path.read_text()
 
     @pytest.mark.asyncio
     async def test_memory_requires_auth_when_api_key_configured(self, tmp_path, monkeypatch):

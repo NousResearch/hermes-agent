@@ -1117,6 +1117,8 @@ class APIServerAdapter(BasePlatformAdapter):
             logger.exception("GET /api/sessions failed")
             return _api_json_error(str(exc), status=500)
 
+        from gateway.platforms.api_sanitiser import sanitize_response
+
         normalized = []
         for item in sessions:
             row = dict(item)
@@ -1127,7 +1129,9 @@ class APIServerAdapter(BasePlatformAdapter):
             row["messageCount"] = row.get("message_count", 0)
             normalized.append(row)
         return web.json_response(
-            {"sessions": normalized, "total": total, "limit": limit, "offset": offset}
+            sanitize_response(
+                {"sessions": normalized, "total": total, "limit": limit, "offset": offset}
+            )
         )
 
     async def _handle_search_sessions(self, request: "web.Request") -> "web.Response":
@@ -1208,7 +1212,13 @@ class APIServerAdapter(BasePlatformAdapter):
             logger.exception("GET /api/sessions/%s/messages failed", session_id)
             return _api_json_error(str(exc), status=500)
 
-        return web.json_response({"session_id": resolved, "sessionId": resolved, "messages": messages})
+        from gateway.platforms.api_sanitiser import sanitize_response
+
+        return web.json_response(
+            sanitize_response(
+                {"session_id": resolved, "sessionId": resolved, "messages": messages}
+            )
+        )
 
     async def _handle_list_profiles(self, request: "web.Request") -> "web.Response":
         """GET /api/profiles — list Hermes profiles."""
@@ -1409,6 +1419,8 @@ class APIServerAdapter(BasePlatformAdapter):
         if auth_err:
             return auth_err
 
+        from gateway.platforms.api_sanitiser import declared_policy
+
         return web.json_response({
             "object": "hermes.api_server.capabilities",
             "platform": "hermes-agent",
@@ -1417,6 +1429,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 "type": "bearer",
                 "required": bool(self._api_key),
             },
+            "sanitisation": declared_policy(),
             "runtime": {
                 "mode": "server_agent",
                 "tool_execution": "server",
@@ -2889,25 +2902,29 @@ class APIServerAdapter(BasePlatformAdapter):
                 }
             except Exception:
                 pass
+            from gateway.platforms.api_sanitiser import sanitize_response
+
             return web.json_response(
-                {
-                    "memory": {
-                        **memory_file,
-                        "entries": entries,
-                        "charCount": len(memory_file["content"]),
-                        "char_count": len(memory_file["content"]),
-                        "charLimit": MEMORY_CHAR_LIMIT,
-                        "char_limit": MEMORY_CHAR_LIMIT,
-                    },
-                    "user": {
-                        **user_file,
-                        "charCount": len(user_file["content"]),
-                        "char_count": len(user_file["content"]),
-                        "charLimit": USER_PROFILE_CHAR_LIMIT,
-                        "char_limit": USER_PROFILE_CHAR_LIMIT,
-                    },
-                    "stats": stats,
-                }
+                sanitize_response(
+                    {
+                        "memory": {
+                            **memory_file,
+                            "entries": entries,
+                            "charCount": len(memory_file["content"]),
+                            "char_count": len(memory_file["content"]),
+                            "charLimit": MEMORY_CHAR_LIMIT,
+                            "char_limit": MEMORY_CHAR_LIMIT,
+                        },
+                        "user": {
+                            **user_file,
+                            "charCount": len(user_file["content"]),
+                            "char_count": len(user_file["content"]),
+                            "charLimit": USER_PROFILE_CHAR_LIMIT,
+                            "char_limit": USER_PROFILE_CHAR_LIMIT,
+                        },
+                        "stats": stats,
+                    }
+                )
             )
         except (FileNotFoundError, ValueError) as exc:
             return _api_json_error(str(exc), status=400)

@@ -308,11 +308,37 @@ class WebhookAdapter(BasePlatformAdapter):
             data = json.loads(subs_path.read_text(encoding="utf-8"))
             if not isinstance(data, dict):
                 return
-            # Merge: static routes take precedence over dynamic ones
-            self._dynamic_routes = {
-                k: v for k, v in data.items()
-                if k not in self._static_routes
-            }
+            # Merge: static routes take precedence over dynamic ones.
+            # Reject any dynamic route whose effective secret is empty —
+            # an empty secret would cause _handle_webhook to skip HMAC
+            # validation entirely, letting unauthenticated callers in.
+            new_dynamic: Dict[str, dict] = {}
+            for k, v in data.items():
+                if k in self._static_routes:
+                    continue
+                effective_secret = v.get("secret", self._global_secret)
+                if not effective_secret:
+                    logger.warning(
+                        "[webhook] Dynamic route '%s' skipped: 'secret' is "
+                        "missing or empty. Set a valid HMAC secret, or use "
+                        "'%s' to explicitly disable auth (testing only).",
+                        k,
+                        _INSECURE_NO_AUTH,
+                    )
+                    continue
+                if (
+                    effective_secret == _INSECURE_NO_AUTH
+                    and not _is_loopback_host(self._host)
+                ):
+                    logger.warning(
+                        "[webhook] Dynamic route '%s' skipped: INSECURE_NO_AUTH "
+                        "is only allowed on loopback hosts. Current host: '%s'.",
+                        k,
+                        self._host,
+                    )
+                    continue
+                new_dynamic[k] = v
+            self._dynamic_routes = new_dynamic
             self._routes = {**self._dynamic_routes, **self._static_routes}
             self._dynamic_routes_mtime = mtime
             logger.info(

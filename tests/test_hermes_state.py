@@ -161,6 +161,28 @@ class TestMessageStorage:
         session = db.get_session("s1")
         assert session["message_count"] == 2
 
+    def test_observed_flag_round_trips_for_gateway_replay(self, db):
+        db.create_session(session_id="s1", source="telegram:-100")
+        db.append_message(
+            "s1",
+            role="user",
+            content="[Alice|111]\nside chatter",
+            observed=True,
+        )
+        db.append_message("s1", role="assistant", content="ack")
+
+        messages = db.get_messages("s1")
+        assert messages[0]["observed"] == 1
+        assert messages[1]["observed"] == 0
+
+        conversation = db.get_messages_as_conversation("s1")
+        assert conversation[0] == {
+            "role": "user",
+            "content": "[Alice|111]\nside chatter",
+            "observed": True,
+        }
+        assert "observed" not in conversation[1]
+
     def test_tool_response_does_not_increment_tool_count(self, db):
         """Tool responses (role=tool) should not increment tool_call_count.
 

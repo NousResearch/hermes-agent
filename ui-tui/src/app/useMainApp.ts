@@ -1,4 +1,4 @@
-import { useApp, useHasSelection, useSelection, useStdout, useTerminalTitle, type ScrollBoxHandle } from '@hermes/ink'
+import { type ScrollBoxHandle, useApp, useHasSelection, useSelection, useStdout, useTerminalTitle } from '@hermes/ink'
 import { useStore } from '@nanostores/react'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
@@ -102,6 +102,7 @@ export function useMainApp(gw: GatewayClient) {
   const [stickyPrompt, setStickyPrompt] = useState('')
   const [catalog, setCatalog] = useState<null | SlashCatalog>(null)
   const [voiceEnabled, setVoiceEnabled] = useState(false)
+  const [voiceTts, setVoiceTts] = useState(false)
   const [voiceRecording, setVoiceRecording] = useState(false)
   const [voiceProcessing, setVoiceProcessing] = useState(false)
   const [voiceRecordKey, setVoiceRecordKey] = useState<ParsedVoiceRecordKey>(DEFAULT_VOICE_RECORD_KEY)
@@ -365,7 +366,7 @@ export function useMainApp(gw: GatewayClient) {
   const gateway = useMemo(() => ({ gw, rpc }), [gw, rpc])
 
   const die = useCallback(() => {
-    gw.kill()
+    gw.kill('app.die')
     exit()
     // Ink's exit() calls unmount() which resets terminal modes but does NOT
     // call process.exit().  Without an explicit exit the Node process stays
@@ -377,7 +378,7 @@ export function useMainApp(gw: GatewayClient) {
   }, [exit, gw])
 
   const dieWithCode = useCallback((code: number) => {
-    gw.kill()
+    gw.kill(`app.dieWithCode:${code}`)
     exit()
     process.exit(code)
   }, [exit, gw])
@@ -555,7 +556,8 @@ export function useMainApp(gw: GatewayClient) {
       recording: voiceRecording,
       setProcessing: setVoiceProcessing,
       setRecording: setVoiceRecording,
-      setVoiceEnabled
+      setVoiceEnabled,
+      setVoiceTts
     },
     wheelStep: WHEEL_SCROLL_STEP
   })
@@ -579,7 +581,8 @@ export function useMainApp(gw: GatewayClient) {
         voice: {
           setProcessing: setVoiceProcessing,
           setRecording: setVoiceRecording,
-          setVoiceEnabled
+          setVoiceEnabled,
+          setVoiceTts
         }
       }),
     [
@@ -736,10 +739,13 @@ export function useMainApp(gw: GatewayClient) {
   const anyPanelVisible = SECTION_NAMES.some(
     s => sectionMode(s, ui.detailsMode, ui.sections, ui.detailsModeCommandOverride) !== 'hidden'
   )
+
   const thinkingPanelVisible =
     sectionMode('thinking', ui.detailsMode, ui.sections, ui.detailsModeCommandOverride) !== 'hidden'
+
   const toolsPanelVisible =
     sectionMode('tools', ui.detailsMode, ui.sections, ui.detailsModeCommandOverride) !== 'hidden'
+
   const activityPanelVisible =
     sectionMode('activity', ui.detailsMode, ui.sections, ui.detailsModeCommandOverride) !== 'hidden'
 
@@ -827,7 +833,7 @@ export function useMainApp(gw: GatewayClient) {
       turnStartedAt: ui.sid ? turnStartedAt : null,
       // CLI parity: the classic prompt_toolkit status bar shows a red dot
       // on REC (cli.py:_get_voice_status_fragments line 2344).
-      voiceLabel: voiceRecording ? '● REC' : voiceProcessing ? '◉ STT' : `voice ${voiceEnabled ? 'on' : 'off'}`
+      voiceLabel: voiceRecording ? '● REC' : voiceProcessing ? '◉ STT' : `voice ${voiceEnabled ? 'on' : 'off'}${voiceTts ? ' [tts]' : ''}`
     }),
     [
       cwd,
@@ -839,7 +845,8 @@ export function useMainApp(gw: GatewayClient) {
       ui,
       voiceEnabled,
       voiceProcessing,
-      voiceRecording
+      voiceRecording,
+      voiceTts
     ]
   )
 

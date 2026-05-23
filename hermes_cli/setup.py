@@ -2034,74 +2034,6 @@ def _setup_telegram():
             save_env_value("TELEGRAM_HOME_CHANNEL", home_channel)
 
 
-def _setup_discord():
-    """Configure Discord bot credentials and allowlist."""
-    print_header("Discord")
-    existing = get_env_value("DISCORD_BOT_TOKEN")
-    if existing:
-        print_info("Discord: already configured")
-        if not prompt_yes_no("Reconfigure Discord?", False):
-            if not get_env_value("DISCORD_ALLOWED_USERS"):
-                print_info("⚠️  Discord has no user allowlist - anyone can use your bot!")
-                if prompt_yes_no("Add allowed users now?", True):
-                    print_info("   To find Discord ID: Enable Developer Mode, right-click name → Copy ID")
-                    allowed_users = prompt("Allowed user IDs (comma-separated)")
-                    if allowed_users:
-                        cleaned_ids = _clean_discord_user_ids(allowed_users)
-                        save_env_value("DISCORD_ALLOWED_USERS", ",".join(cleaned_ids))
-                        print_success("Discord allowlist configured")
-            return
-
-    print_info("Create a bot at https://discord.com/developers/applications")
-    token = prompt("Discord bot token", password=True)
-    if not token:
-        return
-    save_env_value("DISCORD_BOT_TOKEN", token)
-    print_success("Discord token saved")
-
-    print()
-    print_info("🔒 Security: Restrict who can use your bot")
-    print_info("   To find your Discord user ID:")
-    print_info("   1. Enable Developer Mode in Discord settings")
-    print_info("   2. Right-click your name → Copy ID")
-    print()
-    print_info("   You can also use Discord usernames (resolved on gateway start).")
-    print()
-    allowed_users = prompt(
-        "Allowed user IDs or usernames (comma-separated, leave empty for open access)"
-    )
-    if allowed_users:
-        cleaned_ids = _clean_discord_user_ids(allowed_users)
-        save_env_value("DISCORD_ALLOWED_USERS", ",".join(cleaned_ids))
-        print_success("Discord allowlist configured")
-    else:
-        print_info("⚠️  No allowlist set - anyone in servers with your bot can use it!")
-
-    print()
-    print_info("📬 Home Channel: where Hermes delivers cron job results,")
-    print_info("   cross-platform messages, and notifications.")
-    print_info("   To get a channel ID: right-click a channel → Copy Channel ID")
-    print_info("   (requires Developer Mode in Discord settings)")
-    print_info("   You can also set this later by typing /set-home in a Discord channel.")
-    home_channel = prompt("Home channel ID (leave empty to set later with /set-home)")
-    if home_channel:
-        save_env_value("DISCORD_HOME_CHANNEL", home_channel)
-
-
-def _clean_discord_user_ids(raw: str) -> list:
-    """Strip common Discord mention prefixes from a comma-separated ID string."""
-    cleaned = []
-    for uid in raw.replace(" ", "").split(","):
-        uid = uid.strip()
-        if uid.startswith("<@") and uid.endswith(">"):
-            uid = uid.lstrip("<@!").rstrip(">")
-        if uid.lower().startswith("user:"):
-            uid = uid[5:]
-        if uid:
-            cleaned.append(uid)
-    return cleaned
-
-
 def _setup_slack():
     """Configure Slack bot credentials."""
     print_header("Slack")
@@ -3128,6 +3060,119 @@ SETUP_SECTIONS = [
 ]
 
 
+def _run_portal_one_shot(config: dict) -> None:
+    """One-shot Nous Portal setup — OAuth + provider switch + Tool Gateway.
+
+    Wired into ``hermes setup --portal``. Does NOT prompt for anything
+    besides what the underlying OAuth + Tool Gateway prompts already need.
+    Designed to be shareable as a single command (``hermes setup --portal``)
+    that gets a brand-new user from zero to a fully working Hermes session
+    with web/image/tts/browser tools all routed via their Portal sub.
+    """
+    from types import SimpleNamespace
+
+    from hermes_cli.auth_commands import auth_add_command
+    from hermes_cli.config import save_config
+    from hermes_cli.auth import get_nous_auth_status
+    from hermes_cli.nous_subscription import prompt_enable_tool_gateway
+
+    print()
+    print(
+        color(
+            "┌─────────────────────────────────────────────────────────┐",
+            Colors.MAGENTA,
+        )
+    )
+    print(color("│     ⚕ Hermes Setup — Nous Portal (one-shot)             │", Colors.MAGENTA))
+    print(
+        color(
+            "└─────────────────────────────────────────────────────────┘",
+            Colors.MAGENTA,
+        )
+    )
+    print()
+    print_info("  One subscription, 300+ models, plus the Tool Gateway:")
+    print_info("    web search, image generation, TTS, browser automation")
+    print_info("    — all routed through your Nous Portal sub.")
+    print()
+    print_info("  Sign up: https://portal.nousresearch.com/manage-subscription")
+    print()
+
+    # Skip OAuth if already logged in (don't re-prompt every time the user
+    # runs `hermes setup --portal` after a successful first run).
+    already_logged_in = False
+    try:
+        already_logged_in = bool((get_nous_auth_status() or {}).get("logged_in"))
+    except Exception:
+        already_logged_in = False
+
+    if already_logged_in:
+        print_success("  Already logged into Nous Portal.")
+    else:
+        # Hand off to the shared auth wiring so the device-code flow is
+        # identical to `hermes auth add nous --type oauth`. SimpleNamespace
+        # mirrors the argparse Namespace contract that auth_add_command expects.
+        ns = SimpleNamespace(
+            provider="nous",
+            auth_type="oauth",
+            label=None,
+            api_key=None,
+            portal_url=None,
+            inference_url=None,
+            client_id=None,
+            scope=None,
+            no_browser=False,
+            timeout=None,
+            insecure=False,
+            ca_bundle=None,
+            min_key_ttl_seconds=5 * 60,
+        )
+        try:
+            auth_add_command(ns)
+        except SystemExit as e:
+            print()
+            print_error(f"  Nous Portal login failed (exit {e.code}).")
+            print_info("  You can retry later with `hermes auth add nous --type oauth`.")
+            return
+        except (KeyboardInterrupt, EOFError):
+            print()
+            print_info("  Setup cancelled.")
+            return
+        except Exception as exc:
+            print()
+            print_error(f"  Nous Portal login failed: {exc}")
+            print_info("  You can retry later with `hermes auth add nous --type oauth`.")
+            return
+
+    # Set provider → nous so the model picker, status surfaces, and
+    # managed-tool gating all light up. Leave model.model empty so the
+    # runtime picks Nous's default model; the user can change it later
+    # with `hermes model`.
+    model_cfg = config.get("model")
+    if not isinstance(model_cfg, dict):
+        model_cfg = {}
+        config["model"] = model_cfg
+    model_cfg["provider"] = "nous"
+    save_config(config)
+    print()
+    print_success("  Nous set as your inference provider.")
+
+    # Offer the Tool Gateway opt-in (single Y/n) — same flow that fires
+    # from `hermes model` after picking Nous.
+    print()
+    try:
+        prompt_enable_tool_gateway(config)
+    except (KeyboardInterrupt, EOFError):
+        pass
+    except Exception as exc:
+        print_warning(f"  Tool Gateway prompt skipped: {exc}")
+
+    print()
+    print_success("Portal setup complete.")
+    print_info("  Run `hermes portal status` to inspect routing.")
+    print_info("  Run `hermes` to start chatting.")
+
+
 def run_setup_wizard(args):
     """Run the interactive setup wizard.
 
@@ -3181,6 +3226,11 @@ def run_setup_wizard(args):
         print_noninteractive_setup_guidance(
             "Running in a non-interactive environment (no TTY detected)."
         )
+        return
+
+    # --portal: one-shot Nous Portal setup. Skips the rest of the wizard.
+    if bool(getattr(args, "portal", False)):
+        _run_portal_one_shot(config)
         return
 
     # Check if a specific section was requested

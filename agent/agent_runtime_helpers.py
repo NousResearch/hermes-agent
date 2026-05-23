@@ -1217,12 +1217,13 @@ def create_openai_client(agent, client_kwargs: dict, *, reason: str, shared: boo
     client_kwargs = dict(client_kwargs)
     _validate_proxy_env_urls()
     _validate_base_url(client_kwargs.get("base_url"))
-    if agent.provider == "copilot-acp" or str(client_kwargs.get("base_url", "")).startswith("acp://copilot"):
+    if agent.provider == "copilot-acp" or str(client_kwargs.get("base_url", "")).startswith("acp://"):
         from agent.copilot_acp_client import CopilotACPClient
 
         client = CopilotACPClient(**client_kwargs)
         _ra().logger.info(
-            "Copilot ACP client created (%s, shared=%s) %s",
+            "ACP client created via %s (%s, shared=%s) %s",
+            getattr(client, '_acp_command', 'acp'),
             reason,
             shared,
             agent._client_log_context(),

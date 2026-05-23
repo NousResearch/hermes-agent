@@ -25,6 +25,7 @@ from agent.file_safety import get_read_block_error, is_write_denied
 from agent.redact import redact_sensitive_text
 
 ACP_MARKER_BASE_URL = "acp://copilot"
+ACP_MARKER_BASE_URL_GENERIC = "acp://generic"
 _DEFAULT_TIMEOUT_SECONDS = 900.0
 
 _TOOL_CALL_BLOCK_RE = re.compile(r"<tool_call>\s*(\{.*?\})\s*</tool_call>", re.DOTALL)
@@ -55,13 +56,17 @@ def _is_gh_copilot_deprecation_message(stderr_text: str) -> bool:
 
 def _resolve_command() -> str:
     return (
-        os.getenv("HERMES_COPILOT_ACP_COMMAND", "").strip()
+        os.getenv("HERMES_ACP_COMMAND", "").strip()
+        or os.getenv("HERMES_COPILOT_ACP_COMMAND", "").strip()
         or os.getenv("COPILOT_CLI_PATH", "").strip()
         or "copilot"
     )
 
 
 def _resolve_args() -> list[str]:
+    if "HERMES_ACP_ARGS" in os.environ:
+        raw = os.environ["HERMES_ACP_ARGS"].strip()
+        return shlex.split(raw) if raw else []
     raw = os.getenv("HERMES_COPILOT_ACP_ARGS", "").strip()
     if not raw:
         return ["--acp", "--stdio"]
@@ -348,10 +353,18 @@ class CopilotACPClient:
         **_: Any,
     ):
         self.api_key = api_key or "copilot-acp"
-        self.base_url = base_url or ACP_MARKER_BASE_URL
+        self.base_url = base_url or (
+            ACP_MARKER_BASE_URL_GENERIC if (
+                (acp_command or command or "").strip() not in ("copilot", "", None)
+                and not (acp_command or command or "").strip().endswith("copilot")
+            ) else ACP_MARKER_BASE_URL
+        )
         self._default_headers = dict(default_headers or {})
         self._acp_command = acp_command or command or _resolve_command()
-        self._acp_args = list(acp_args or args or _resolve_args())
+        self._acp_args = list(
+            acp_args if acp_args is not None
+            else (args if args is not None else _resolve_args())
+        )
         self._acp_cwd = str(Path(acp_cwd or os.getcwd()).resolve())
         self.chat = _ACPChatNamespace(self)
         self.is_closed = False
@@ -436,9 +449,18 @@ class CopilotACPClient:
         )
 
     def _run_prompt(self, prompt_text: str, *, timeout_seconds: float) -> tuple[str, str]:
+        executable = self._acp_command
+        try:
+            import shutil as _shutil
+            resolved = _shutil.which(executable)
+            if resolved:
+                executable = resolved
+        except Exception:
+            pass
+
         try:
             proc = subprocess.Popen(
-                [self._acp_command] + self._acp_args,
+                [executable] + self._acp_args,
                 stdin=subprocess.PIPE,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
@@ -449,13 +471,13 @@ class CopilotACPClient:
             )
         except FileNotFoundError as exc:
             raise RuntimeError(
-                f"Could not start Copilot ACP command '{self._acp_command}'. "
-                "Install GitHub Copilot CLI or set HERMES_COPILOT_ACP_COMMAND/COPILOT_CLI_PATH."
+                f"Could not start ACP command '{self._acp_command}'. "
+                "或设置 HERMES_ACP_COMMAND 环境变量指向正确的可执行文件。"
             ) from exc
 
         if proc.stdin is None or proc.stdout is None:
             proc.kill()
-            raise RuntimeError("Copilot ACP process did not expose stdin/stdout pipes.")
+            raise RuntimeError("ACP process did not expose stdin/stdout pipes.")
 
         self.is_closed = False
         with self._active_process_lock:
@@ -522,7 +544,7 @@ class CopilotACPClient:
                 if "error" in msg:
                     err = msg.get("error") or {}
                     raise RuntimeError(
-                        f"Copilot ACP {method} failed: {err.get('message') or err}"
+                        f"ACP {method} failed: {err.get('message') or err}"
                     )
                 return msg.get("result")
 
@@ -543,8 +565,8 @@ class CopilotACPClient:
                         "directly with a Copilot subscription token) via `hermes setup`.\n\n"
                         f"Original error:\n{stderr_text}"
                     )
-                raise RuntimeError(f"Copilot ACP process exited early: {stderr_text}")
-            raise TimeoutError(f"Timed out waiting for Copilot ACP response to {method}.")
+                raise RuntimeError(f"ACP process exited early: {stderr_text}")
+            raise TimeoutError(f"Timed out waiting for ACP response to {method}.")
 
         try:
             _request(
@@ -573,7 +595,7 @@ class CopilotACPClient:
             ) or {}
             session_id = str(session.get("sessionId") or "").strip()
             if not session_id:
-                raise RuntimeError("Copilot ACP did not return a sessionId.")
+                raise RuntimeError("ACP did not return a sessionId.")
 
             text_parts: list[str] = []
             reasoning_parts: list[str] = []

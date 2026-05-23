@@ -1052,8 +1052,9 @@ def _build_child_agent(
         effective_acp_args = []
 
     if override_acp_command:
-        # If explicitly forcing an ACP transport override, the provider MUST be copilot-acp
-        # so run_agent.py initializes the CopilotACPClient.
+        # ACP transport override — route to the ACP client backend.
+        # "copilot-acp" is the internal provider marker that triggers
+        # CopilotACPClient creation (works for any ACP-compatible CLI).
         effective_provider = "copilot-acp"
         effective_api_mode = "chat_completions"
 

@@ -1299,12 +1299,34 @@ def check_all_command_guards(command: str, env_type: str,
             )
 
             if not resolved or choice is None or choice == "deny":
-                reason = "timed out" if not resolved else "denied by user"
+                # Consent contract: silence is NOT consent, and an explicit
+                # deny is also a hard halt — both produce a BLOCKED outcome
+                # that names the agent's most common evasion paths (retry,
+                # rephrase, achieve the same outcome via a different command).
+                # See issue #24912 for the original incident.
+                if not resolved:
+                    reason = "timed out without user response"
+                    timeout_addendum = " Silence is not consent."
+                    outcome = "timeout"
+                else:
+                    reason = "denied by user"
+                    timeout_addendum = ""
+                    outcome = "denied"
                 return {
                     "approved": False,
-                    "message": f"BLOCKED: Command {reason}. Do NOT retry this command.",
+                    "message": (
+                        f"BLOCKED: Command {reason}. The user has NOT consented "
+                        f"to this action. Do NOT retry this command, do NOT "
+                        f"rephrase it, and do NOT attempt the same outcome via "
+                        f"a different command. Stop the current workflow and "
+                        f"wait for the user to respond before taking any "
+                        f"further destructive or irreversible action."
+                        f"{timeout_addendum}"
+                    ),
                     "pattern_key": primary_key,
                     "description": combined_desc,
+                    "outcome": outcome,
+                    "user_consent": False,
                 }
 
             # User approved — persist based on scope (same logic as CLI)
@@ -1369,9 +1391,18 @@ def check_all_command_guards(command: str, env_type: str,
     if choice == "deny":
         return {
             "approved": False,
-            "message": "BLOCKED: User denied. Do NOT retry.",
+            "message": (
+                "BLOCKED: User denied this command. The user has NOT consented "
+                "to this action. Do NOT retry this command, do NOT rephrase "
+                "it, and do NOT attempt the same outcome via a different "
+                "command. Stop the current workflow and wait for the user "
+                "to respond before taking any further destructive or "
+                "irreversible action."
+            ),
             "pattern_key": primary_key,
             "description": combined_desc,
+            "outcome": "denied",
+            "user_consent": False,
         }
 
     # Persist approval for each warning individually

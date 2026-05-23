@@ -4823,3 +4823,85 @@ class TestFeishuMentionEndToEnd(unittest.TestCase):
         # Body: leading @Hermes stripped, Alice preserved, trailing text intact.
         self.assertIn("@Alice review the spec with Alice", event.text)
         self.assertNotIn("@Hermes @Alice", event.text)
+
+
+class TestFeishuOutboundCardPayload(unittest.TestCase):
+    def _build_adapter(self, upload_result="img_v2_key"):
+        from gateway.platforms.feishu import FeishuAdapter
+
+        adapter = FeishuAdapter.__new__(FeishuAdapter)
+        adapter._upload_image_for_post = AsyncMock(return_value=upload_result)
+        return adapter
+
+    def test_schema_first_card_routes_to_interactive(self):
+        adapter = self._build_adapter()
+        card = {
+            "schema": "2.0",
+            "header": {
+                "title": {"tag": "plain_text", "content": "每日金价播报"}
+            },
+            "elements": [],
+        }
+
+        msg_type, payload = asyncio.run(
+            adapter._build_outbound_payload(json.dumps(card, ensure_ascii=False))
+        )
+
+        self.assertEqual(msg_type, "interactive")
+        self.assertEqual(json.loads(payload)["schema"], "2.0")
+
+    def test_card_img_url_is_uploaded_to_img_key(self):
+        adapter = self._build_adapter(upload_result="img_gold_chart")
+        card = {
+            "schema": "2.0",
+            "elements": [
+                {
+                    "tag": "image",
+                    "img_url": "https://img.huilvbiao.com/chart_img/30.png",
+                    "alt": {"tag": "plain_text", "content": "黄金30天走势图"},
+                }
+            ],
+        }
+
+        msg_type, payload = asyncio.run(
+            adapter._build_outbound_payload(json.dumps(card, ensure_ascii=False))
+        )
+        parsed = json.loads(payload)
+
+        self.assertEqual(msg_type, "interactive")
+        self.assertEqual(parsed["elements"][0]["img_key"], "img_gold_chart")
+        self.assertNotIn("img_url", parsed["elements"][0])
+        adapter._upload_image_for_post.assert_awaited_once_with(
+            "https://img.huilvbiao.com/chart_img/30.png"
+        )
+
+    def test_card_img_url_upload_failure_keeps_valid_json(self):
+        adapter = self._build_adapter(upload_result=None)
+        card = {
+            "schema": "2.0",
+            "elements": [
+                {
+                    "tag": "image",
+                    "img_url": "https://example.com/missing.png",
+                    "alt": {"tag": "plain_text", "content": "chart"},
+                }
+            ],
+        }
+
+        msg_type, payload = asyncio.run(
+            adapter._build_outbound_payload(json.dumps(card, ensure_ascii=False))
+        )
+        parsed = json.loads(payload)
+
+        self.assertEqual(msg_type, "interactive")
+        self.assertNotIn("img_url", parsed["elements"][0])
+        self.assertNotIn("img_key", parsed["elements"][0])
+        self.assertEqual(parsed["elements"][0]["alt"]["content"], "chart")
+
+    def test_non_card_json_stays_text(self):
+        adapter = self._build_adapter()
+
+        msg_type, payload = asyncio.run(adapter._build_outbound_payload('{"text": "hello"}'))
+
+        self.assertEqual(msg_type, "text")
+        self.assertEqual(json.loads(payload)["text"], '{"text": "hello"}')

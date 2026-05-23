@@ -160,8 +160,21 @@ _MARKDOWN_LINK_RE = re.compile(r"\[([^\]]+)\]\(([^)]+)\)")
 _MARKDOWN_FENCE_OPEN_RE = re.compile(r"^```([^\n`]*)\s*$")
 _MARKDOWN_FENCE_CLOSE_RE = re.compile(r"^```\s*$")
 _MENTION_RE = re.compile(r"@_user_\d+")
+_MARKDOWN_IMAGE_RE = re.compile(r"!\[([^\]]*)\]\(([^)\s]+)\)")
 _MULTISPACE_RE = re.compile(r"[ \t]{2,}")
 _POST_CONTENT_INVALID_RE = re.compile(r"content format of the post type is incorrect", re.IGNORECASE)
+# Interactive card hints: card payloads are JSON objects; the final decision is
+# made by parsing and checking Feishu card-ish top-level keys.
+_CARD_JSON_HINT_RE = re.compile(r"^\s*\{")
+_CARD_TOP_LEVEL_KEYS = frozenset({
+    "config",
+    "elements",
+    "header",
+    "schema",
+    "i18n_elements",
+    "i18n_header",
+    "card_link",
+})
 # ---------------------------------------------------------------------------
 # Media type sets and upload constants
 # ---------------------------------------------------------------------------
@@ -539,6 +552,26 @@ def _coerce_int(value: Any, default: Optional[int] = None, min_value: int = 0) -
 def _coerce_required_int(value: Any, default: int, min_value: int = 0) -> int:
     parsed = _coerce_int(value, default=default, min_value=min_value)
     return default if parsed is None else parsed
+
+
+# ---------------------------------------------------------------------------
+# Interactive card payload helpers
+# ---------------------------------------------------------------------------
+
+
+def _load_interactive_card_payload(content: str) -> Optional[Dict[str, Any]]:
+    """Return parsed Feishu card JSON when *content* looks like a card."""
+    if not _CARD_JSON_HINT_RE.search(content):
+        return None
+    try:
+        payload = json.loads(content)
+    except (TypeError, json.JSONDecodeError):
+        return None
+    if not isinstance(payload, dict):
+        return None
+    if not (_CARD_TOP_LEVEL_KEYS & set(payload.keys())):
+        return None
+    return payload
 
 
 # ---------------------------------------------------------------------------
@@ -1408,6 +1441,11 @@ class FeishuAdapter(BasePlatformAdapter):
     """Feishu/Lark bot adapter."""
 
     MAX_MESSAGE_LENGTH = 8000
+    # Feishu post-type messages can hold significantly more content than
+    # plain text — the post JSON payload limit is ~30 KB.  Use a higher
+    # ceiling so tabular / rich content stays in a single message instead
+    # of being split into multiple chunks.
+    _MAX_POST_CONTENT_CHARS = 28000
     # Threshold for detecting Feishu client-side message splits.
     # When a chunk is near the ~4096-char practical limit, a continuation
     # is almost certain.
@@ -1766,12 +1804,20 @@ class FeishuAdapter(BasePlatformAdapter):
             return SendResult(success=False, error="Not connected")
 
         formatted = self.format_message(content)
-        chunks = self.truncate_message(formatted, self.MAX_MESSAGE_LENGTH)
+        # Post-type messages can hold much more content than plain text
+        # (~30 KB vs ~8 KB).  Detect the likely outbound message type
+        # before splitting so rich content stays in a single message.
+        post_likely = bool(
+            _MARKDOWN_HINT_RE.search(formatted)
+            or _MARKDOWN_IMAGE_RE.search(formatted)
+        )
+        max_len = self._MAX_POST_CONTENT_CHARS if post_likely else self.MAX_MESSAGE_LENGTH
+        chunks = self.truncate_message(formatted, max_len)
         last_response = None
 
         try:
             for chunk in chunks:
-                msg_type, payload = self._build_outbound_payload(chunk)
+                msg_type, payload = await self._build_outbound_payload(chunk)
                 try:
                     response = await self._feishu_send_with_retry(
                         chat_id=chat_id,
@@ -1825,7 +1871,7 @@ class FeishuAdapter(BasePlatformAdapter):
 
         content = self.format_message(content)
         try:
-            msg_type, payload = self._build_outbound_payload(content)
+            msg_type, payload = await self._build_outbound_payload(content)
             body = self._build_update_message_body(msg_type=msg_type, content=payload)
             request = self._build_update_message_request(message_id=message_id, request_body=body)
             response = await asyncio.to_thread(self._client.im.v1.message.update, request)
@@ -4221,15 +4267,145 @@ class FeishuAdapter(BasePlatformAdapter):
     # Outbound payload construction and send pipeline
     # =========================================================================
 
-    def _build_outbound_payload(self, content: str) -> tuple[str, str]:
-        # Feishu post-type 'md' elements do not render markdown tables; sending
-        # table content as post causes the message to appear blank on the client.
-        # Force plain text for anything that looks like a markdown table.
+    async def _upload_image_for_post(self, image_url: str) -> Optional[str]:
+        """Download remote image and upload to Feishu, returning an image_key.
+
+        Returns None if download or upload fails so the caller can fall back
+        to showing the alt text / URL as plain text instead of silently losing
+        the image.
+        """
+        try:
+            image_path = await self._download_remote_image(image_url)
+        except Exception:
+            logger.warning(
+                "[Feishu] Failed to download markdown image %s", image_url,
+                exc_info=True,
+            )
+            return None
+
+        try:
+            import io as _io
+            with open(image_path, "rb") as f:
+                image_bytes = f.read()
+            image_file = _io.BytesIO(image_bytes)
+            image_file.name = os.path.basename(image_path)
+            body = self._build_image_upload_body(
+                image_type=_FEISHU_IMAGE_UPLOAD_TYPE,
+                image=image_file,
+            )
+            request = self._build_image_upload_request(body)
+            upload_response = await asyncio.to_thread(
+                self._client.im.v1.image.create, request,
+            )
+            image_key = self._extract_response_field(upload_response, "image_key")
+            if image_key:
+                return image_key
+            logger.warning(
+                "[Feishu] Image upload for %s returned no image_key", image_url,
+            )
+            return None
+        except Exception:
+            logger.warning(
+                "[Feishu] Failed to upload markdown image %s", image_url,
+                exc_info=True,
+            )
+            return None
+
+    async def _build_markdown_post_payload_with_images(self, content: str) -> str:
+        """Build a Feishu post payload, converting ``![](url)`` to native img tags.
+
+        Falls through to :func:`_build_markdown_post_payload` when no
+        markdown images are detected.
+        """
+        matches = list(_MARKDOWN_IMAGE_RE.finditer(content))
+        if not matches:
+            return _build_markdown_post_payload(content)
+
+        rows: List[List[Dict[str, str]]] = []
+        last_end = 0
+
+        for m in matches:
+            # Text before this image
+            text_before = content[last_end:m.start()]
+            if text_before.strip():
+                rows.extend(_build_markdown_post_rows(text_before))
+
+            # Download + upload the image
+            image_url = m.group(2)
+            image_key = await self._upload_image_for_post(image_url)
+            if image_key:
+                rows.append([{"tag": "img", "image_key": image_key}])
+            else:
+                # Preserve alt text + URL so the image is not silently lost
+                alt = m.group(1).strip() or "图片"
+                rows.append([{"tag": "md", "text": f"[{alt}]({image_url})"}])
+
+            last_end = m.end()
+
+        # Text after the last image
+        text_after = content[last_end:]
+        if text_after.strip():
+            rows.extend(_build_markdown_post_rows(text_after))
+
+        if not rows:
+            rows = _build_markdown_post_rows(content)
+
+        return json.dumps(
+            {"zh_cn": {"content": rows}},
+            ensure_ascii=False,
+        )
+
+    async def _process_card_images(self, card_payload: Dict[str, Any]) -> Dict[str, Any]:
+        """Replace card ``img_url`` placeholders with uploaded Feishu ``img_key``.
+
+        The card is parsed JSON by this point.  Walking the object avoids the
+        invalid-comma failure mode that string replacement can hit when image
+        upload fails and the ``img_url`` field must be removed.
+        """
+
+        async def walk(value: Any) -> Any:
+            if isinstance(value, list):
+                return [await walk(item) for item in value]
+            if not isinstance(value, dict):
+                return value
+
+            processed = dict(value)
+            img_url = processed.get("img_url")
+            if isinstance(img_url, str) and img_url.startswith(("http://", "https://")):
+                image_key = await self._upload_image_for_post(img_url)
+                processed.pop("img_url", None)
+                if image_key:
+                    processed["img_key"] = image_key
+
+            for key, child in list(processed.items()):
+                processed[key] = await walk(child)
+            return processed
+
+        return await walk(card_payload)
+
+    async def _build_outbound_payload(self, content: str) -> tuple[str, str]:
+        """Build the outbound message payload.
+
+        Supports three message types:
+
+        * **interactive** — JSON card objects (detected by ``_CARD_JSON_HINT_RE``).
+          Card images with ``img_url`` are downloaded, uploaded to Feishu,
+          and replaced with ``img_key`` before sending.
+        * **post** — rich content with markdown images/formatting.
+          ``![](url)`` images are converted to native ``img`` tags.
+        * **text** — plain text (tables also route here because Feishu
+          ``md`` tags do not render tables).
+        """
+        # Interactive card JSON detection (before markdown hints)
+        card_payload = _load_interactive_card_payload(content)
+        if card_payload is not None:
+            processed = await self._process_card_images(card_payload)
+            return "interactive", json.dumps(processed, ensure_ascii=False)
         if _MARKDOWN_TABLE_RE.search(content):
             text_payload = {"text": content}
             return "text", json.dumps(text_payload, ensure_ascii=False)
-        if _MARKDOWN_HINT_RE.search(content):
-            return "post", _build_markdown_post_payload(content)
+        if _MARKDOWN_HINT_RE.search(content) or _MARKDOWN_IMAGE_RE.search(content):
+            return "post", await self._build_markdown_post_payload_with_images(content)
         text_payload = {"text": content}
         return "text", json.dumps(text_payload, ensure_ascii=False)
 

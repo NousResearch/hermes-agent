@@ -986,6 +986,37 @@ def skill_view(
                 if found_md.name != "SKILL.md":
                     _record(None, found_md)
 
+        # Strategy 4: fall back to the skill's frontmatter `name`. Skills are
+        # listed and displayed by `frontmatter.name` (see _find_all_skills),
+        # but Strategies 1-3 only match on directory/path. When a skill's
+        # on-disk directory name differs from its frontmatter name (e.g. the
+        # directory was renamed while the display name was kept), it is
+        # otherwise impossible to load by the name the agent actually sees in
+        # listings. Only consulted when no path strategy matched, so path/dir
+        # matches always take precedence; multiple frontmatter-name matches
+        # fall through to the collision guard below. (_find_all_skills dedupes
+        # display names by first-seen, so surfacing every match here means a
+        # name that looks unique in listings can still report ambiguity — that
+        # is intentional: refuse over silently guessing which skill was meant.)
+        if not candidates:
+            for search_dir in all_dirs:
+                for found_skill_md in iter_skill_index_files(search_dir, "SKILL.md"):
+                    try:
+                        fm, _ = _parse_frontmatter(
+                            found_skill_md.read_text(encoding="utf-8")[:4000]
+                        )
+                    except Exception:
+                        continue
+                    # Mirror listing semantics: skills hidden from listings by a
+                    # platform mismatch must stay unresolvable here too, so a
+                    # name the agent never sees can't resolve to an "unsupported
+                    # platform" error.
+                    if not skill_matches_platform(fm):
+                        continue
+                    fm_name = fm.get("name")
+                    if fm_name and str(fm_name)[:MAX_NAME_LENGTH] == name:
+                        _record(found_skill_md.parent, found_skill_md)
+
         if len(candidates) > 1:
             paths = [str(smd) for _, smd in candidates]
             logging.getLogger(__name__).warning(

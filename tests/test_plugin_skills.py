@@ -266,6 +266,86 @@ class TestSkillViewQualifiedName:
         assert "no longer exists" in result["error"]
         assert self.pm.find_plugin_skill("superpowers:writing-plans") is None
 
+    def test_resolves_by_frontmatter_name_when_dir_differs(self, tmp_path, monkeypatch):
+        """A skill whose frontmatter `name` differs from its directory name must
+        still resolve when called by the name shown in skills listings.
+
+        Regression: listings display `frontmatter.name` (e.g. a Chinese name),
+        but skill_view only matched by directory/path. Skills whose dir was
+        renamed (e.g. by the curator) became impossible to load by their
+        displayed name.
+        """
+        from tools.skills_tool import skill_view
+
+        local = tmp_path / "local-skills"
+        skill_dir = local / "productivity" / "getnote"
+        skill_dir.mkdir(parents=True)
+        (skill_dir / "SKILL.md").write_text(
+            "---\nname: Get笔记\ndescription: note keeper\n---\nGetNote body.\n"
+        )
+        monkeypatch.setattr("tools.skills_tool.SKILLS_DIR", local)
+
+        result = json.loads(skill_view("Get笔记"))
+        assert result["success"] is True
+        assert "GetNote body." in result["content"]
+
+    def test_dir_name_takes_precedence_over_frontmatter_name(self, tmp_path, monkeypatch):
+        """Path/dir-name matching wins; the frontmatter-name fallback only fires
+        when no path strategy matched (must not change existing behavior)."""
+        from tools.skills_tool import skill_view
+
+        local = tmp_path / "local-skills"
+        # Skill whose DIRECTORY name is "alpha".
+        d1 = local / "alpha"
+        d1.mkdir(parents=True)
+        (d1 / "SKILL.md").write_text("---\nname: alpha-display\n---\nAlpha by dir.\n")
+        # Different skill whose FRONTMATTER name is "alpha" (dir is "beta").
+        d2 = local / "beta"
+        d2.mkdir(parents=True)
+        (d2 / "SKILL.md").write_text("---\nname: alpha\n---\nBeta by frontmatter.\n")
+        monkeypatch.setattr("tools.skills_tool.SKILLS_DIR", local)
+
+        result = json.loads(skill_view("alpha"))
+        assert result["success"] is True
+        assert "Alpha by dir." in result["content"]
+
+    def test_ambiguous_frontmatter_name_refuses(self, tmp_path, monkeypatch):
+        """Two skills sharing the same frontmatter name (no path match) must
+        refuse rather than silently guessing."""
+        from tools.skills_tool import skill_view
+
+        local = tmp_path / "local-skills"
+        for d in ("note-a", "note-b"):
+            sd = local / d
+            sd.mkdir(parents=True)
+            (sd / "SKILL.md").write_text(f"---\nname: 笔记\n---\n{d} body.\n")
+        monkeypatch.setattr("tools.skills_tool.SKILLS_DIR", local)
+
+        result = json.loads(skill_view("笔记"))
+        assert result["success"] is False
+        assert "ambiguous" in result["error"].lower()
+
+    def test_frontmatter_name_fallback_respects_platform(self, tmp_path, monkeypatch):
+        """A skill hidden from listings by a platform mismatch must not be
+        resolvable via the frontmatter-name fallback either. Listings filter
+        by platform, so the fallback must too — otherwise skill_view reports
+        'unsupported platform' for a name the agent never sees in listings."""
+        import sys
+        from tools.skills_tool import skill_view
+
+        other = "linux" if sys.platform.startswith("darwin") else "macos"
+        local = tmp_path / "local-skills"
+        skill_dir = local / "platform-only"
+        skill_dir.mkdir(parents=True)
+        (skill_dir / "SKILL.md").write_text(
+            f"---\nname: 平台限定\nplatforms: [{other}]\n---\nBody.\n"
+        )
+        monkeypatch.setattr("tools.skills_tool.SKILLS_DIR", local)
+
+        result = json.loads(skill_view("平台限定"))
+        assert result["success"] is False
+        assert "not found" in result["error"].lower()
+
 
 class TestSkillViewPluginGuards:
     @pytest.fixture(autouse=True)

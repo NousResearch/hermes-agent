@@ -21,6 +21,8 @@ from __future__ import annotations
 import copy
 from typing import Any, Dict, List, Optional
 
+from hermes_cli.fallback_config import get_fallback_chain
+
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -30,20 +32,11 @@ def _read_chain(config: Dict[str, Any]) -> List[Dict[str, Any]]:
     """Return the normalized fallback chain as a list of dicts.
 
     Accepts both the new list format (``fallback_providers``) and the legacy
-    single-dict format (``fallback_model``).  The returned list is always a
-    fresh copy — callers can mutate without touching the config dict.
+    ``fallback_model`` format. When both are present, the effective chain is
+    merged with ``fallback_providers`` entries kept first. The returned list is
+    always a fresh copy — callers can mutate without touching the config dict.
     """
-    chain = config.get("fallback_providers") or []
-    if isinstance(chain, list):
-        result = [dict(e) for e in chain if isinstance(e, dict) and e.get("provider") and e.get("model")]
-        if result:
-            return result
-    legacy = config.get("fallback_model")
-    if isinstance(legacy, dict) and legacy.get("provider") and legacy.get("model"):
-        return [dict(legacy)]
-    if isinstance(legacy, list):
-        return [dict(e) for e in legacy if isinstance(e, dict) and e.get("provider") and e.get("model")]
-    return []
+    return get_fallback_chain(config)
 
 
 def _write_chain(config: Dict[str, Any], chain: List[Dict[str, Any]]) -> None:

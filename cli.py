@@ -51,6 +51,8 @@ os.environ["HERMES_QUIET"] = "1"  # Our own modules
 
 import yaml
 
+from hermes_cli.fallback_config import get_fallback_chain
+
 # prompt_toolkit for fixed input area TUI
 from prompt_toolkit.history import FileHistory
 from prompt_toolkit.styles import Style as PTStyle
@@ -3049,12 +3051,9 @@ class HermesCLI:
                 pass
         
         # Fallback provider chain — tried in order when primary fails after retries.
-        # Supports new list format (fallback_providers) and legacy single-dict (fallback_model).
-        fb = CLI_CONFIG.get("fallback_providers") or CLI_CONFIG.get("fallback_model") or []
-        # Normalize legacy single-dict to a one-element list
-        if isinstance(fb, dict):
-            fb = [fb] if fb.get("provider") and fb.get("model") else []
-        self._fallback_model = fb
+        # Merge new ``fallback_providers`` entries with any legacy
+        # ``fallback_model`` entries so old configs still participate.
+        self._fallback_model = get_fallback_chain(CLI_CONFIG)
 
         # Signature of the currently-initialised agent's runtime.  Used to
         # rebuild the agent when provider / model / base_url changes across

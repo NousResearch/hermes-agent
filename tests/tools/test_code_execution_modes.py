@@ -185,6 +185,18 @@ class TestResolveChildPython(unittest.TestCase):
         _is_usable_python.cache_clear()
         self.assertFalse(_is_usable_python("/does/not/exist/python"))
 
+
+    def test_is_usable_python_probe_uses_scrubbed_env(self):
+        _is_usable_python.cache_clear()
+        with patch("tools.code_execution_tool.subprocess.run") as mock_run:
+            mock_run.return_value.returncode = 0
+            self.assertTrue(_is_usable_python(sys.executable))
+            kwargs = mock_run.call_args.kwargs
+            self.assertIn("env", kwargs)
+            env = kwargs["env"]
+            self.assertIsInstance(env, dict)
+            self.assertNotIn("OPENAI_API_KEY", env)
+
     def test_is_usable_python_accepts_real_python(self):
         _is_usable_python.cache_clear()
         self.assertTrue(_is_usable_python(sys.executable))

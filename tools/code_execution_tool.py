@@ -1583,11 +1583,24 @@ def _is_usable_python(python_path: str) -> bool:
     Cached so we don't fork a subprocess on every execute_code call.
     """
     try:
+        _probe_env = {"PYTHONDONTWRITEBYTECODE": "1"}
+        # Keep minimal runtime discovery stable across platforms while
+        # avoiding parent-process secret exposure during interpreter probing.
+        if _IS_WINDOWS:
+            for key in ("SYSTEMROOT", "COMSPEC", "WINDIR", "PATHEXT"):
+                val = os.environ.get(key)
+                if val:
+                    _probe_env[key] = val
+        _path_val = os.environ.get("PATH")
+        if _path_val:
+            _probe_env["PATH"] = _path_val
+
         result = subprocess.run(
             [python_path, "-c",
              "import sys; sys.exit(0 if sys.version_info >= (3, 8) else 1)"],
             timeout=5,
             capture_output=True,
+            env=_probe_env,
         )
         return result.returncode == 0
     except (OSError, subprocess.TimeoutExpired, subprocess.SubprocessError):

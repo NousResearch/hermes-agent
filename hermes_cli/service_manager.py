@@ -122,16 +122,34 @@ def detect_service_manager() -> ServiceManagerKind:
 def _s6_running() -> bool:
     """True when s6-svscan is running as PID 1 in this container.
 
-    s6-overlay's /init exec's s6-svscan, so ``/proc/1/exe`` resolves
-    to it (or to ``init`` on some kernel configurations that hide the
-    exe link). The ``/run/s6/`` directory is created by stage1, so its
-    presence is a second necessary signal.
+    Detection has to work for **both** root and the unprivileged hermes
+    user (UID 10000). The obvious probe — ``Path('/proc/1/exe').resolve()``
+    — only works as root: for any other UID, the symlink at
+    ``/proc/1/exe`` is unreadable and ``resolve()`` silently returns the
+    path unchanged, so the resolved name is the literal ``"exe"`` and
+    detection always fails. Since every Hermes runtime call inside the
+    container drops to hermes via ``s6-setuidgid``, that silent failure
+    made the entire service-manager runtime-registration path inert in
+    production (PR #30136 review).
+
+    Probe instead via:
+      * ``/proc/1/comm`` — world-readable, contains the process comm
+        (``s6-svscan`` when s6-overlay is PID 1).
+      * ``/run/s6/basedir`` — s6-overlay-specific directory created by
+        stage1. World-readable. More specific than ``/run/s6`` (which
+        other tools occasionally create).
+
+    Both signals are required; either alone could false-positive
+    (e.g. a container with the s6 binaries installed but a different
+    init, or an unrelated process named ``s6-svscan``).
     """
     try:
-        exe = Path("/proc/1/exe").resolve()
-        return exe.name in ("s6-svscan", "init") and Path("/run/s6").exists()
-    except (OSError, RuntimeError):
+        comm = Path("/proc/1/comm").read_text().strip()
+    except OSError:
         return False
+    if comm != "s6-svscan":
+        return False
+    return Path("/run/s6/basedir").is_dir()
 
 
 # ---------------------------------------------------------------------------

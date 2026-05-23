@@ -9,6 +9,10 @@ auto-start only those whose last state was `running`.
 These tests stand up a container with a named volume, create profiles
 inside it in various gateway states, restart the container, and
 assert the reconciler did the right thing.
+
+Every ``docker exec`` here runs as the unprivileged ``hermes`` user
+(via :func:`docker_exec` / :func:`docker_exec_sh` in conftest); see
+the conftest module docstring.
 """
 from __future__ import annotations
 
@@ -16,6 +20,8 @@ import subprocess
 import time
 
 import pytest
+
+from tests.docker.conftest import docker_exec, docker_exec_sh
 
 
 def _docker(*args: str, **kw) -> subprocess.CompletedProcess[str]:
@@ -27,11 +33,11 @@ def _docker(*args: str, **kw) -> subprocess.CompletedProcess[str]:
 
 
 def _exec(container: str, *args: str, timeout: int = 30) -> subprocess.CompletedProcess[str]:
-    return _docker("exec", container, *args, timeout=timeout)
+    return docker_exec(container, *args, timeout=timeout)
 
 
 def _sh(container: str, cmd: str, timeout: int = 30) -> subprocess.CompletedProcess[str]:
-    return _docker("exec", container, "sh", "-c", cmd, timeout=timeout)
+    return docker_exec_sh(container, cmd, timeout=timeout)
 
 
 @pytest.fixture

@@ -10,11 +10,19 @@ gateway actually starting (the binary will refuse to start without a
 valid profile config). The full register → start → supervised-restart
 → unregister cycle is covered by Phase 4 once profile create/delete
 hooks land.
+
+Every ``docker exec`` here runs as the unprivileged ``hermes`` user
+(via :func:`docker_exec` in conftest); see the conftest module
+docstring. ``/run/service`` is chowned hermes-writable by the
+``02-reconcile-profiles`` cont-init.d script, so register/unregister
+operations work correctly under UID 10000.
 """
 from __future__ import annotations
 
 import subprocess
 import time
+
+from tests.docker.conftest import docker_exec
 
 
 _REGISTER_SCRIPT = """
@@ -38,10 +46,7 @@ print("UNREGISTERED")
 
 
 def _exec(container: str, *args: str, timeout: int = 30) -> subprocess.CompletedProcess:
-    return subprocess.run(
-        ["docker", "exec", container, *args],
-        capture_output=True, text=True, timeout=timeout,
-    )
+    return docker_exec(container, *args, timeout=timeout)
 
 
 def test_s6_register_creates_service_dir_in_live_container(

@@ -84,3 +84,56 @@ def container_name(request) -> Iterator[str]:
         ["docker", "rm", "-f", name],
         capture_output=True, timeout=10,
     )
+
+
+# ---------------------------------------------------------------------------
+# docker_exec — default to the unprivileged hermes user
+# ---------------------------------------------------------------------------
+#
+# Background: every Hermes runtime path inside the container drops to UID
+# 10000 (the ``hermes`` user) via ``s6-setuidgid hermes``. ``docker exec``
+# without ``-u`` runs as root, which is **not** representative of how
+# production code executes. PR #30136 review caught a real regression
+# this way — ``Path('/proc/1/exe').resolve()`` works as root and silently
+# fails (PermissionError swallowed) for hermes, so a test that ran as root
+# couldn't catch a feature that was inert for the actual runtime user.
+#
+# Tests in this directory MUST exercise the realistic user context. The
+# helpers below run every probe under ``-u hermes`` unless a specific
+# test explicitly opts into ``user="root"`` (rare — e.g. inspecting
+# /proc/1/exe itself, chowning a volume).
+# ---------------------------------------------------------------------------
+
+
+def docker_exec(
+    container: str,
+    *args: str,
+    user: str = "hermes",
+    timeout: int = 30,
+    extra_docker_args: tuple[str, ...] = (),
+) -> subprocess.CompletedProcess[str]:
+    """Run a command inside ``container`` as ``user`` (default: hermes).
+
+    Returns the CompletedProcess with text=True, capture_output=True.
+
+    Pass ``user="root"`` only when the test specifically needs root
+    capabilities (e.g. reading /proc/1/exe, manipulating ownership).
+    Most tests should use the default.
+    """
+    cmd = ["docker", "exec", "-u", user, *extra_docker_args, container, *args]
+    return subprocess.run(
+        cmd, capture_output=True, text=True, timeout=timeout,
+    )
+
+
+def docker_exec_sh(
+    container: str,
+    command: str,
+    *,
+    user: str = "hermes",
+    timeout: int = 30,
+) -> subprocess.CompletedProcess[str]:
+    """Run ``sh -c <command>`` inside the container as ``user``."""
+    return docker_exec(
+        container, "sh", "-c", command, user=user, timeout=timeout,
+    )

@@ -70,6 +70,101 @@ def test_detect_service_manager_returns_known_value() -> None:
 
 
 # ---------------------------------------------------------------------------
+# _s6_running — must work for unprivileged users, not just root
+# ---------------------------------------------------------------------------
+
+
+def _patch_s6_paths(
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    comm: str | OSError | None,
+    basedir_is_dir: bool,
+) -> None:
+    """Stub /proc/1/comm and /run/s6/basedir for _s6_running tests."""
+    from pathlib import Path as _Path
+
+    real_read_text = _Path.read_text
+    real_is_dir = _Path.is_dir
+
+    def fake_read_text(self, *args, **kwargs):  # type: ignore[override]
+        if str(self) == "/proc/1/comm":
+            if isinstance(comm, OSError):
+                raise comm
+            if comm is None:
+                raise FileNotFoundError(2, "No such file or directory")
+            return comm + "\n"
+        return real_read_text(self, *args, **kwargs)
+
+    def fake_is_dir(self):  # type: ignore[override]
+        if str(self) == "/run/s6/basedir":
+            return basedir_is_dir
+        return real_is_dir(self)
+
+    monkeypatch.setattr(_Path, "read_text", fake_read_text)
+    monkeypatch.setattr(_Path, "is_dir", fake_is_dir)
+
+
+def test_s6_running_true_when_comm_and_basedir_match(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from hermes_cli.service_manager import _s6_running
+
+    _patch_s6_paths(monkeypatch, comm="s6-svscan", basedir_is_dir=True)
+    assert _s6_running() is True
+
+
+def test_s6_running_false_when_comm_is_wrong(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from hermes_cli.service_manager import _s6_running
+
+    # systemd as PID 1, basedir present from some stray s6 install
+    _patch_s6_paths(monkeypatch, comm="systemd", basedir_is_dir=True)
+    assert _s6_running() is False
+
+
+def test_s6_running_false_when_basedir_missing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from hermes_cli.service_manager import _s6_running
+
+    # The comm matches but the basedir is missing — e.g. an unrelated
+    # process happens to be named "s6-svscan"
+    _patch_s6_paths(monkeypatch, comm="s6-svscan", basedir_is_dir=False)
+    assert _s6_running() is False
+
+
+def test_s6_running_false_when_comm_unreadable(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Regression: /proc/1/exe was unreadable to UID 10000 and
+    resolve() silently returned the unresolved path, making detection
+    always-False inside the container under the hermes user. The new
+    probe must FAIL CLOSED — not raise — when /proc/1/comm can't be
+    read.
+    """
+    from hermes_cli.service_manager import _s6_running
+
+    _patch_s6_paths(
+        monkeypatch,
+        comm=PermissionError(13, "Permission denied"),
+        basedir_is_dir=True,
+    )
+    assert _s6_running() is False
+
+
+def test_s6_running_handles_missing_proc(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """On macOS / Windows / WSL-without-procfs, /proc/1/comm doesn't
+    exist. Must return False, not raise."""
+    from hermes_cli.service_manager import _s6_running
+
+    _patch_s6_paths(monkeypatch, comm=None, basedir_is_dir=False)
+    assert _s6_running() is False
+
+
+# ---------------------------------------------------------------------------
 # Backend wrappers — kind + registration unsupported on hosts
 # ---------------------------------------------------------------------------
 

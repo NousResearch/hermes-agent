@@ -13,11 +13,17 @@ so the gateway process itself will exit with code 1 on every start
 attempt (s6 will keep restarting it). We assert against s6's
 ``want up`` / ``want down`` state — which reflects the lifecycle
 command's intent, not the supervised process's health.
+
+Every ``docker exec`` here runs as the unprivileged ``hermes`` user
+(via :func:`docker_exec_sh` in conftest); see the conftest module
+docstring.
 """
 from __future__ import annotations
 
 import subprocess
 import time
+
+from tests.docker.conftest import docker_exec_sh
 
 PROFILE = "test-harness-profile"
 
@@ -25,10 +31,7 @@ PROFILE = "test-harness-profile"
 def _sh(
     container: str, command: str, timeout: int = 30,
 ) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(
-        ["docker", "exec", container, "sh", "-c", command],
-        capture_output=True, text=True, timeout=timeout,
-    )
+    return docker_exec_sh(container, command, timeout=timeout)
 
 
 def _svstat(container: str) -> str:

@@ -2994,6 +2994,83 @@ class AIAgent:
         except Exception:
             logger.debug("interim_assistant_callback error", exc_info=True)
 
+    def _emit_synthesized_final_response(self, text: str) -> None:
+        """Surface a turn-ending response that Hermes generated locally.
+
+        Several turn-exit branches in ``conversation_loop`` produce a
+        ``final_response`` that the model never streamed — the most
+        visible one being ``guardrail_halt`` (#30770), where the
+        tool-call loop guardrail stops the agent and synthesizes a
+        short user-facing explanation. The text lands in the returned
+        result dict, so callers that read ``result["final_response"]``
+        (e.g. TUI prints, REST ``/v1/chat/completions`` non-streaming
+        path) deliver it fine.
+
+        Streaming clients are different. They watch the agent's
+        ``stream_delta_callback`` queue and the gateway translates each
+        item into an SSE ``delta.content`` chunk. If we never fire the
+        synthesized text through the callback, the Chat Completions
+        SSE writer receives no content delta between the role chunk
+        and the finish chunk, so OpenWebUI / curl / the OpenAI SDK see
+        an empty assistant message and the conversation appears to
+        silently die. Same problem in the TUI streaming path.
+
+        This helper fans the synthesized text out to every consumer in
+        a single safe call:
+
+        * ``_fire_stream_delta`` — fans out to ``stream_delta_callback``
+          (gateway SSE queue, TUI streaming display) AND ``_stream_callback``
+          (TTS), with the existing think-block / context-leak scrubbers.
+          Because the scrubber accumulates state, we feed the text in
+          one go so partial-tag artefacts cannot leak.
+        * ``_emit_interim_assistant_message`` — fans out to platforms
+          that want the message as a structured object (non-streaming
+          adapters, transcript saver).
+
+        Every call is wrapped in try/except so a misbehaving callback
+        cannot prevent the turn from finishing — the underlying bug
+        (#30770) is precisely that we'd rather deliver an imperfect
+        explanation than silence.
+        """
+        if not isinstance(text, str):
+            return
+        body = text.strip()
+        if not body:
+            return
+        try:
+            self._fire_stream_delta(body)
+        except Exception:
+            logger.debug(
+                "_fire_stream_delta failed inside synthesized response emit",
+                exc_info=True,
+            )
+        # Closing the stream-delta channel after a synthesized message
+        # mirrors what the streaming code does after each tool-call
+        # batch (see conversation_loop.py around the ``stream_delta_callback(None)``
+        # flush). It tells the display layer to close the current text
+        # box so the finish chunk lands cleanly instead of being
+        # appended onto the synthesized message in a single visual
+        # blob. We intentionally do NOT close the TTS ``_stream_callback``
+        # — ``None`` is its end-of-stream sentinel and other
+        # synthesized branches may still fire after this one.
+        if self.stream_delta_callback:
+            try:
+                self.stream_delta_callback(None)
+            except Exception:
+                logger.debug(
+                    "stream_delta_callback(None) flush failed after synthesized emit",
+                    exc_info=True,
+                )
+        try:
+            self._emit_interim_assistant_message(
+                {"role": "assistant", "content": body}
+            )
+        except Exception:
+            logger.debug(
+                "_emit_interim_assistant_message failed inside synthesized response emit",
+                exc_info=True,
+            )
+
     def _fire_stream_delta(self, text: str) -> None:
         """Fire all registered stream delta callbacks (display + TTS)."""
         # If a tool iteration set the break flag, prepend a single paragraph

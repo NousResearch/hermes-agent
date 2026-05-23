@@ -1195,6 +1195,10 @@ class PluginManager:
     # Hook invocation
     # -----------------------------------------------------------------------
 
+    def has_hook(self, hook_name: str) -> bool:
+        """Return True when any enabled plugin registered *hook_name*."""
+        return bool(self._hooks.get(hook_name))
+
     def invoke_hook(self, hook_name: str, **kwargs: Any) -> List[Any]:
         """Call all registered callbacks for *hook_name*.
 
@@ -1309,6 +1313,11 @@ def invoke_hook(hook_name: str, **kwargs: Any) -> List[Any]:
     Returns a list of non-``None`` return values from plugin callbacks.
     """
     return get_plugin_manager().invoke_hook(hook_name, **kwargs)
+
+
+def has_hook(hook_name: str) -> bool:
+    """Return True when any enabled plugin registered *hook_name*."""
+    return get_plugin_manager().has_hook(hook_name)
 
 
 

@@ -1400,6 +1400,8 @@ class APIServerAdapter(BasePlatformAdapter):
             await response.write(f"data: {json.dumps(role_chunk)}\n\n".encode())
             last_activity = time.monotonic()
 
+            emitted_content = False
+
             # Helper — route a queue item to the correct SSE event.
             async def _emit(item):
                 """Write a single queue item to the SSE stream.
@@ -1411,12 +1413,14 @@ class APIServerAdapter(BasePlatformAdapter):
                 conversation history.  See #6972 for the original event,
                 #16588 for the ``toolCallId``/``status`` lifecycle fields.
                 """
+                nonlocal emitted_content
                 if isinstance(item, tuple) and len(item) == 2 and item[0] == "__tool_progress__":
                     event_data = json.dumps(item[1])
                     await response.write(
                         f"event: hermes.tool.progress\ndata: {event_data}\n\n".encode()
                     )
                 else:
+                    emitted_content = True
                     content_chunk = {
                         "id": completion_id, "object": "chat.completion.chunk",
                         "created": created, "model": model,
@@ -1457,6 +1461,9 @@ class APIServerAdapter(BasePlatformAdapter):
             try:
                 result, agent_usage = await agent_task
                 usage = agent_usage or usage
+                final_response = result.get("final_response", "") if isinstance(result, dict) else ""
+                if final_response and not emitted_content:
+                    last_activity = await _emit(final_response)
             except Exception as exc:
                 logger.warning("Agent task %s failed, usage data lost: %s", completion_id, exc)
 
@@ -1939,7 +1946,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 agent_final = result.get("final_response", "") if isinstance(result, dict) else ""
                 if agent_final and not final_text_parts:
                     await _emit_text_delta(agent_final)
-                if agent_final and not final_response_text:
+                if agent_final:
                     final_response_text = agent_final
                 if isinstance(result, dict) and result.get("error") and not final_response_text:
                     agent_error = result["error"]
@@ -1947,8 +1954,10 @@ class APIServerAdapter(BasePlatformAdapter):
                 logger.error("Error running agent for streaming responses: %s", e, exc_info=True)
                 agent_error = str(e)
 
-            # Close the message item if it was opened
-            final_response_text = "".join(final_text_parts) or final_response_text
+            # Close the message item if it was opened. Prefer the agent's
+            # final_response because output hooks may have transformed it after
+            # any raw provider deltas were assembled.
+            final_response_text = final_response_text or "".join(final_text_parts)
             if message_opened:
                 await _write_event("response.output_text.done", {
                     "type": "response.output_text.done",

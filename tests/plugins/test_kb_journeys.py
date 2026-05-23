@@ -189,8 +189,8 @@ def test_kb_command_renders_live_dashboard_without_calling_todo_count_queue(monk
     assert result == {"action": "skip", "reason": "kb_journeys"}
     assert ctx.calls[0][0] == "mcp_kb_engine_prod_dashboard_live"
     text = adapter.sent[0]["text"]
-    assert "KB Dashboard" in text
-    assert "Readiness: degraded" in text
+    assert "KB Cockpit" in text
+    assert "Runtime: degraded" in text
     assert "Publication: dirty" in text
     assert "TODOs 309" in text
     assert "Queue 309" not in text
@@ -253,8 +253,8 @@ def test_dashboard_command_prefers_live_dashboard_packet(monkeypatch):
         )
     ]
     text = adapter.sent[0]["text"]
-    assert "KB Dashboard" in text
-    assert "Readiness: ready" in text
+    assert "KB Cockpit" in text
+    assert "Runtime: ready" in text
     assert "Publication: clean" in text
     assert "Proposals 2" in text
     assert "Review one proposal" in text

@@ -34,6 +34,21 @@
   gap: 10px;
 }
 
+.kb-human-dashboard-frame {
+  width: 100%;
+  min-height: 720px;
+  border: 1px solid hsl(var(--border));
+  border-radius: 8px;
+  background: white;
+}
+
+.kb-live-diagnostics-title {
+  margin: 4px 0 -6px;
+  font-size: 18px;
+  line-height: 1.2;
+  letter-spacing: 0;
+}
+
 .kb-live-metric,
 .kb-live-section,
 .kb-live-card,

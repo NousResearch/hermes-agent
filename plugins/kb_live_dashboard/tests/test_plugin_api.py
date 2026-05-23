@@ -141,3 +141,56 @@ async def test_live_dashboard_reports_command_failure(monkeypatch):
         await module.live_dashboard(limit=5)
 
     assert excinfo.value.status_code == 502
+
+
+@pytest.mark.asyncio
+async def test_html_dashboard_reads_configured_artifact(monkeypatch, tmp_path):
+    module = _load_module()
+    html_path = tmp_path / "DASHBOARD.html"
+    html_path.write_text(
+        '<html><body><h1>Dashboard</h1>'
+        '<script type="application/json" id="kb-dashboard-metadata">'
+        '{"source_surfaces":["attention.cockpit","dashboard.live"]}'
+        "</script></body></html>"
+    )
+    monkeypatch.setenv("HERMES_KB_DASHBOARD_HTML_PATH", str(html_path))
+    monkeypatch.delenv("HERMES_KB_DASHBOARD_HTML_COMMAND", raising=False)
+
+    result = await module.html_dashboard()
+
+    assert result["ok"] is True
+    assert result["source"] == "kb.dashboard.html"
+    assert "<html" in result["html"].lower()
+    assert result["metadata"]["source_surfaces"] == ["attention.cockpit", "dashboard.live"]
+
+
+@pytest.mark.asyncio
+async def test_html_dashboard_reports_missing_artifact(monkeypatch, tmp_path):
+    module = _load_module()
+    monkeypatch.setenv("HERMES_KB_DASHBOARD_HTML_PATH", str(tmp_path / "missing.html"))
+    monkeypatch.delenv("HERMES_KB_DASHBOARD_HTML_COMMAND", raising=False)
+
+    with pytest.raises(HTTPException) as excinfo:
+        await module.html_dashboard()
+
+    assert excinfo.value.status_code == 503
+    assert "KB dashboard HTML artifact is not available" in excinfo.value.detail
+
+
+@pytest.mark.asyncio
+async def test_html_dashboard_uses_configured_command(monkeypatch):
+    module = _load_module()
+    html = '<html><body><h1>Dashboard</h1></body></html>'
+
+    def fake_run(*_args, **_kwargs):
+        return SimpleNamespace(returncode=0, stdout=html, stderr="")
+
+    monkeypatch.setenv("HERMES_KB_DASHBOARD_HTML_COMMAND", "cat /tmp/DASHBOARD.html")
+    monkeypatch.delenv("HERMES_KB_DASHBOARD_HTML_PATH", raising=False)
+    monkeypatch.setattr(module.subprocess, "run", fake_run)
+
+    result = await module.html_dashboard()
+
+    assert result["ok"] is True
+    assert result["source"] == "kb.dashboard.html"
+    assert result["metadata"] == {}

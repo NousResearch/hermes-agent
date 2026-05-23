@@ -11,17 +11,31 @@
 
   function Dashboard() {
     const [payload, setPayload] = useState(null);
+    const [html, setHtml] = useState("");
+    const [metadata, setMetadata] = useState({});
     const [error, setError] = useState("");
+    const [htmlError, setHtmlError] = useState("");
     const [loading, setLoading] = useState(false);
 
     const load = useCallback(async () => {
       setLoading(true);
       setError("");
+      setHtmlError("");
       try {
-        const data = await fetchJSON("/api/plugins/kb-live-dashboard/live?limit=8");
-        setPayload(data && data.payload ? data.payload : data);
+        const htmlData = await fetchJSON("/api/plugins/kb-live-dashboard/html");
+        setHtml(htmlData && htmlData.html ? htmlData.html : "");
+        setMetadata(htmlData && htmlData.metadata ? htmlData.metadata : {});
       } catch (err) {
-        setError(err && err.message ? err.message : "Dashboard unavailable");
+        setHtml("");
+        setMetadata({});
+        setHtmlError(err && err.message ? err.message : "Dashboard artifact unavailable");
+      }
+      try {
+        const liveData = await fetchJSON("/api/plugins/kb-live-dashboard/live?limit=8");
+        setPayload(liveData && liveData.payload ? liveData.payload : liveData);
+      } catch (err) {
+        setPayload(null);
+        setError(err && err.message ? err.message : "Live packet diagnostics unavailable");
       } finally {
         setLoading(false);
       }
@@ -38,18 +52,30 @@
     return h("div", { className: "kb-live" },
       h("div", { className: "kb-live-header" },
         h("div", null,
-          h("h1", null, "KB Dashboard"),
-          h("p", null, "Live attention, queue, workflow, and publication state from kb-engine.")
+          h("h1", null, "Production KB Dashboard"),
+          h("p", null, "Human dashboard snapshot from kb-engine, with compact packet diagnostics below.")
         ),
         h(Button, { onClick: load, disabled: loading }, loading ? "Refreshing" : "Refresh")
       ),
+      htmlError ? h("div", { className: "kb-live-error" }, htmlError) : null,
+      html ? h("iframe", {
+        className: "kb-human-dashboard-frame",
+        title: "Production KB Dashboard HTML",
+        srcDoc: html,
+        sandbox: ""
+      }) : null,
+      metadata && metadata.generated_at ? h("div", { className: "kb-live-footer" },
+        "Dashboard generated " + metadata.generated_at +
+        (metadata.git_commit ? " · commit " + String(metadata.git_commit).slice(0, 12) : "")
+      ) : null,
       error ? h("div", { className: "kb-live-error" }, error) : null,
+      h("h2", { className: "kb-live-diagnostics-title" }, "Live Packet Diagnostics"),
       h("div", { className: "kb-live-metrics" },
-        metric("Readiness", summary.readiness_status || "unknown"),
+        metric("Runtime", summary.runtime_readiness_status || summary.readiness_status || "unknown"),
+        metric("Sources", summary.source_coverage_status || "unknown"),
         metric("Publication", summary.publication_status || "unknown"),
         metric("Queue", summary.queue_item_count),
-        metric("TODOs", summary.active_todo_count || summary.triage_todo_count),
-        metric("Runs", summary.active_run_count)
+        metric("Runs", summary.run_attention_status || summary.active_run_count)
       ),
       h("div", { className: "kb-live-sections" },
         sections.map((section) => sectionView(section))

@@ -345,7 +345,7 @@ def _render_today(data: Any) -> dict[str, Any]:
 
 def _render_dashboard(data: Any, *, ctx: Any, target: str) -> dict[str, Any]:
     if not isinstance(data, dict):
-        return {"title": "KB Dashboard", "text": f"KB Dashboard\n{_short(data, 'No dashboard details returned.')}", "actions": []}
+        return {"title": "KB Cockpit", "text": f"KB Cockpit\n{_short(data, 'No cockpit details returned.')}", "actions": []}
 
     summary = data.get("summary") if isinstance(data.get("summary"), dict) else {}
     readiness = _short(
@@ -361,8 +361,8 @@ def _render_dashboard(data: Any, *, ctx: Any, target: str) -> dict[str, Any]:
     todo_count = _todo_count_from_summary(summary)
     active_runs = summary.get("active_run_count")
     lines = [
-        "KB Dashboard",
-        f"Readiness: {readiness}",
+        "KB Cockpit",
+        f"Runtime: {readiness}",
         f"Publication: {publication}",
     ]
     counts: list[str] = []
@@ -1938,7 +1938,7 @@ def _kb_command_help() -> dict[str, Any]:
         "text": "\n".join(
             [
                 "KB Commands",
-                "/kb - dashboard",
+                "/kb - compact cockpit/status",
                 "/kb queue - proposal review list",
                 "/kb queue review 1 - inspect one queue item",
                 "/kb queue reject 1 - preview a decision",

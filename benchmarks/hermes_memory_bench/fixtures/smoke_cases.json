@@ -261,5 +261,53 @@
         }
       }
     ]
+  },
+  {
+    "id": "memory_compiler_review_only_procedure",
+    "dimension": "memory_compiler",
+    "description": "Stable facts compile into a review-only procedure candidate.",
+    "query": "Can Hermes Memory Fabric compile evidence into a procedure candidate?",
+    "project_scope": "memory-fabric",
+    "expected_answer": "review_required",
+    "memories": [
+      {
+        "fact_id": "compiler-procedure-1",
+        "subject": "Hermes Memory Fabric",
+        "predicate": "procedure",
+        "object": "compile review-only procedure candidates",
+        "project_id": "memory-fabric",
+        "source_episode_id": "episode-memory-compiler-a",
+        "provenance": "bench:memory-compiler:a",
+        "confidence": 0.92,
+        "valid_from": "2026-05-23T00:00:00Z",
+        "system_created_at": "2026-05-23T09:00:00Z",
+        "governance": {
+          "read_only": true,
+          "would_write_memory": false,
+          "would_modify_config": false,
+          "would_write_graph": false,
+          "does_not_create_operation_events": true
+        }
+      },
+      {
+        "fact_id": "compiler-procedure-2",
+        "subject": "Hermes Memory Fabric",
+        "predicate": "procedure",
+        "object": "compile review-only procedure candidates",
+        "project_id": "memory-fabric",
+        "source_episode_id": "episode-memory-compiler-b",
+        "provenance": "bench:memory-compiler:b",
+        "confidence": 0.91,
+        "valid_from": "2026-05-23T00:00:00Z",
+        "system_created_at": "2026-05-23T10:00:00Z",
+        "governance": {
+          "read_only": true,
+          "would_write_memory": false,
+          "would_modify_config": false,
+          "would_write_graph": false,
+          "does_not_create_operation_events": true
+        }
+      }
+    ]
   }
 ]

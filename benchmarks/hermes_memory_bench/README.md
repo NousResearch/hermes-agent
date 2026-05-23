@@ -27,6 +27,7 @@ python -m benchmarks.hermes_memory_bench.run --suite smoke --output /tmp/hermes-
 - `hybrid_retrieval_fusion`
 - `bitemporal_fact_graph`
 - `contradiction_engine`
+- `memory_compiler`
 - `latency_ms`
 
 ## Hybrid Retrieval Fusion v0.1
@@ -88,6 +89,24 @@ proposals, or create operation-ledger events.
 The smoke suite includes `contradiction_engine`, proving that a candidate fact
 which conflicts with an existing fact returns a review recommendation rather
 than being merged directly.
+
+## Memory Compiler v0.1
+
+Memory Compiler v0.1 lives in `agent.memory_compiler`. It compiles normalized
+Bi-temporal Fact Graph facts and Contradiction Engine groups into review-only
+methodology and procedure candidates. The compiler detects stable repeated
+claims, superseded lineage evolution, and contradiction groups without writing
+durable memory, writing the Memory Graph, modifying config, approving
+allowlists, creating proposals, or creating operation-ledger events.
+
+Compiler output includes the project scope, input and current fact counts,
+contradiction group count, extracted patterns, methodology candidate, procedure
+block candidate, review recommendation, trace, and read-only policy. Candidates
+always use `review_required` status and explicitly state that they have not
+been applied.
+
+The smoke suite includes `memory_compiler`, proving that facts can compile into
+a review-only procedure candidate while preserving the benchmark schema.
 
 ## Report Schema
 

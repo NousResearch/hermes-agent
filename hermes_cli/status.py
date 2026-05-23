@@ -309,7 +309,7 @@ def show_status(args):
         print()
         print(color("◆ Nous Tool Gateway", Colors.CYAN, Colors.BOLD))
         print("  Your free-tier Nous account does not include Tool Gateway access.")
-        print("  Upgrade your subscription to unlock managed web, image, TTS, and browser tools.")
+        print("  Upgrade your subscription to unlock managed web, image, TTS, STT, and browser tools.")
         try:
             portal_url = nous_status.get("portal_base_url", "").rstrip("/")
             if portal_url:

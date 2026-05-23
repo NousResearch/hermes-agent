@@ -442,6 +442,7 @@ class TestBuildNousSubscriptionPrompt:
                     "web": NousFeatureState("web", "Web tools", True, True, True, True, False, True, "firecrawl"),
                     "image_gen": NousFeatureState("image_gen", "Image generation", True, True, True, True, False, True, "Nous Subscription"),
                     "tts": NousFeatureState("tts", "OpenAI TTS", True, True, True, True, False, True, "OpenAI TTS"),
+                    "stt": NousFeatureState("stt", "Speech-to-text", True, True, True, True, False, True, "OpenAI Whisper"),
                     "browser": NousFeatureState("browser", "Browser automation", True, True, True, True, False, True, "Browser Use"),
                     "modal": NousFeatureState("modal", "Modal execution", False, True, False, False, False, True, "local"),
                 },
@@ -452,7 +453,7 @@ class TestBuildNousSubscriptionPrompt:
 
         assert "Browser Use" in prompt
         assert "Modal execution is optional" in prompt
-        assert "do not ask the user for Firecrawl, FAL, OpenAI TTS, or Browser-Use API keys" in prompt
+        assert "do not ask the user for Firecrawl, FAL, OpenAI TTS, OpenAI Whisper, or Browser-Use API keys" in prompt
 
     def test_non_subscriber_prompt_includes_relevant_upgrade_guidance(self, monkeypatch):
         monkeypatch.setattr("tools.tool_backend_helpers.managed_nous_tools_enabled", lambda: True)
@@ -466,6 +467,7 @@ class TestBuildNousSubscriptionPrompt:
                     "web": NousFeatureState("web", "Web tools", True, False, False, False, False, True, ""),
                     "image_gen": NousFeatureState("image_gen", "Image generation", True, False, False, False, False, True, ""),
                     "tts": NousFeatureState("tts", "OpenAI TTS", True, False, False, False, False, True, ""),
+                    "stt": NousFeatureState("stt", "Speech-to-text", True, False, False, False, False, True, ""),
                     "browser": NousFeatureState("browser", "Browser automation", True, False, False, False, False, True, ""),
                     "modal": NousFeatureState("modal", "Modal execution", False, False, False, False, False, True, ""),
                 },
@@ -784,12 +786,29 @@ class TestPromptBuilderConstants:
 
     def test_platform_hints_known_platforms(self):
         assert "whatsapp" in PLATFORM_HINTS
+        assert "whatsapp_cloud" in PLATFORM_HINTS
         assert "telegram" in PLATFORM_HINTS
         assert "discord" in PLATFORM_HINTS
         assert "cron" in PLATFORM_HINTS
         assert "cli" in PLATFORM_HINTS
         assert "api_server" in PLATFORM_HINTS
         assert "webui" in PLATFORM_HINTS
+
+    def test_whatsapp_cloud_hint_mentions_24h_window(self):
+        """The Cloud API's 24-hour conversation window is a hard rule the
+        agent should know about. Phase 5 (template fallback) was deferred,
+        so the model needs to know free-form replies outside the window
+        will fail with Graph error 131047 — otherwise it'll cheerfully
+        try to schedule delayed messages that silently break."""
+        hint = PLATFORM_HINTS["whatsapp_cloud"]
+        assert "24-hour" in hint or "24h" in hint or "24 hour" in hint
+        assert "131047" in hint
+
+    def test_whatsapp_cloud_hint_advertises_media(self):
+        """Cloud adapter supports the same MEDIA:/path/ convention as
+        Baileys for outbound attachments."""
+        hint = PLATFORM_HINTS["whatsapp_cloud"]
+        assert "MEDIA:" in hint
 
     def test_cli_hint_does_not_suggest_media_tags(self):
         # Regression: MEDIA:/path tags are intercepted only by messaging

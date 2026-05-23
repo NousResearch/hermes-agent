@@ -1981,6 +1981,25 @@ def cmd_whatsapp(args):
         print("⚠ Pairing may not have completed. Run 'hermes whatsapp' to try again.")
 
 
+def cmd_whatsapp_cloud(args):
+    """Set up WhatsApp Business Cloud API (official Meta integration).
+
+    Walks the user through the Meta-side credentials (Phone Number ID,
+    Access Token, App Secret, optional App/WABA IDs) plus webhook
+    configuration. Includes field-shape validators that catch the most
+    common setup mistakes (e.g. pasting a phone number into the Phone
+    Number ID field).
+
+    Distinct from ``hermes whatsapp`` (the Baileys bridge wizard) — the
+    two adapters are complementary, not alternatives. See
+    ``hermes_cli/setup_whatsapp_cloud.py``.
+    """
+    _require_tty("whatsapp-cloud")
+    from hermes_cli.setup_whatsapp_cloud import run_whatsapp_cloud_setup
+
+    return run_whatsapp_cloud_setup()
+
+
 def cmd_setup(args):
     """Interactive setup wizard."""
     from hermes_cli.setup import run_setup_wizard
@@ -9699,6 +9718,7 @@ def _coalesce_session_name_args(argv: list) -> list:
         "gateway",
         "setup",
         "whatsapp",
+        "whatsapp-cloud",
         "login",
         "logout",
         "auth",
@@ -10560,7 +10580,7 @@ _BUILTIN_SUBCOMMANDS = frozenset(
         "model", "pairing", "plugins", "postinstall", "profile", "proxy",
         "send", "sessions", "setup",
         "skills", "slack", "status", "tools", "uninstall", "update",
-        "version", "webhook", "whatsapp", "chat", "secrets",
+        "version", "webhook", "whatsapp", "whatsapp-cloud", "chat", "secrets",
         # Help-ish invocations — plugin commands not being listed in
         # top-level --help is an acceptable trade-off for skipping an
         # expensive eager import of every bundled plugin module.
@@ -11310,6 +11330,21 @@ def main():
         description="Configure WhatsApp and pair via QR code",
     )
     whatsapp_parser.set_defaults(func=cmd_whatsapp)
+
+    # =========================================================================
+    # whatsapp-cloud command (official Meta Cloud API; complement to Baileys)
+    # =========================================================================
+    whatsapp_cloud_parser = subparsers.add_parser(
+        "whatsapp-cloud",
+        help="Set up WhatsApp Business Cloud API integration",
+        description=(
+            "Configure the official Meta WhatsApp Business Cloud API "
+            "adapter (Business account required, public webhook URL "
+            "required). Distinct from `hermes whatsapp` which sets up "
+            "the Baileys bridge for personal accounts."
+        ),
+    )
+    whatsapp_cloud_parser.set_defaults(func=cmd_whatsapp_cloud)
 
     # =========================================================================
     # slack command

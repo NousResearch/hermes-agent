@@ -521,7 +521,7 @@ def _cmd_auth(args) -> None:
     if auth_action == "status":
         if _os.path.exists(token_path):
             import json
-            with open(token_path) as f:
+            with open(token_path, encoding="utf-8") as f:
                 tokens = json.load(f)
             import time
             expires_at = tokens.get("expires_at", 0)

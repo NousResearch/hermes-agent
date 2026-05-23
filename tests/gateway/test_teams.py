@@ -538,12 +538,16 @@ class TestTeamsSummaryWriter:
 
     @pytest.mark.anyio
     async def test_existing_record_is_reused_without_force_resend(self):
+        from plugins.platforms.teams.adapter import _compute_summary_hash
+
         graph_client = SimpleNamespace(post_json=AsyncMock())
         writer = TeamsSummaryWriter(graph_client=graph_client)
-        existing = {"delivery_mode": "graph", "message_id": "msg-existing"}
+        payload = _make_summary_payload()
+        content_hash = _compute_summary_hash(payload)
+        existing = {"delivery_mode": "graph", "message_id": "msg-existing", "content_hash": content_hash}
 
         result = await writer.write_summary(
-            _make_summary_payload(),
+            payload,
             {
                 "delivery_mode": "graph",
                 "team_id": "team-1",

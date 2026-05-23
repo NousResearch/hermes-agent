@@ -770,5 +770,61 @@
         }
       }
     ]
+  },
+  {
+    "id": "memory_real_proposal_write_lock_gate_human_token_eligible",
+    "dimension": "memory_real_proposal_write_lock_gate",
+    "description": "Valid dry run becomes eligible for a separate human approval token flow.",
+    "query": "Can Hermes Memory Fabric unlock a real proposal write without creating a proposal or ledger event?",
+    "project_scope": "memory-fabric",
+    "reviewer": "memory-fabric-reviewer",
+    "author": "memory-fabric-author",
+    "governance_reviewer": "memory-fabric-governance-reviewer",
+    "packet_reviewer": "memory-fabric-packet-reviewer",
+    "human_reviewer": "memory-fabric-human-reviewer",
+    "planner": "memory-fabric-plan-reviewer",
+    "operator": "memory-fabric-final-preflight-operator",
+    "write_lock_operator": "memory-fabric-write-lock-operator",
+    "expected_answer": "eligible_for_human_approval_token",
+    "memories": [
+      {
+        "fact_id": "real-proposal-write-lock-procedure-1",
+        "subject": "Hermes Memory Fabric",
+        "predicate": "procedure",
+        "object": "create read-only real proposal write-lock gate candidates",
+        "project_id": "memory-fabric",
+        "source_episode_id": "episode-memory-real-proposal-write-lock-gate-a",
+        "provenance": "bench:memory-real-proposal-write-lock-gate:a",
+        "confidence": 0.92,
+        "valid_from": "2026-05-23T00:00:00Z",
+        "system_created_at": "2026-05-23T09:00:00Z",
+        "governance": {
+          "read_only": true,
+          "would_write_memory": false,
+          "would_modify_config": false,
+          "would_write_graph": false,
+          "does_not_create_operation_events": true
+        }
+      },
+      {
+        "fact_id": "real-proposal-write-lock-procedure-2",
+        "subject": "Hermes Memory Fabric",
+        "predicate": "procedure",
+        "object": "create read-only real proposal write-lock gate candidates",
+        "project_id": "memory-fabric",
+        "source_episode_id": "episode-memory-real-proposal-write-lock-gate-b",
+        "provenance": "bench:memory-real-proposal-write-lock-gate:b",
+        "confidence": 0.91,
+        "valid_from": "2026-05-23T00:00:00Z",
+        "system_created_at": "2026-05-23T10:00:00Z",
+        "governance": {
+          "read_only": true,
+          "would_write_memory": false,
+          "would_modify_config": false,
+          "would_write_graph": false,
+          "does_not_create_operation_events": true
+        }
+      }
+    ]
   }
 ]

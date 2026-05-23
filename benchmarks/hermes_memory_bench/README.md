@@ -37,6 +37,7 @@ python -m benchmarks.hermes_memory_bench.run --suite smoke --output /tmp/hermes-
 - `memory_human_review_outcome_gate`
 - `memory_real_proposal_creation_plan`
 - `memory_real_proposal_dry_run`
+- `memory_real_proposal_write_lock_gate`
 - `latency_ms`
 
 ## Hybrid Retrieval Fusion v0.1
@@ -287,6 +288,25 @@ config.
 
 The smoke suite includes `memory_real_proposal_dry_run`, proving that a valid
 manual creation plan becomes a `manual_final_preflight_required` dry run without
+creating a real proposal or operation event.
+
+## Memory Real Proposal Write Lock Gate v0.1
+
+Memory Real Proposal Write Lock Gate v0.1 lives in
+`agent.memory_real_proposal_write_lock_gate`. It turns a valid
+`manual_final_preflight_required` dry-run candidate into a deterministic
+write-lock gate candidate.
+
+Valid dry runs with preview-only proposal, operation-ledger, and target-path
+previews become `eligible_for_human_approval_token`. Invalid dry runs, missing
+previews, missing source evidence, or preview artifacts with written/created
+flags remain `locked` with explicit reasons. The gate creates write-lock
+candidates only; it does not create real proposals, write proposal files, write
+operation-ledger events, submit to governance, persist approvals, apply
+proposals, write memory, write the Memory Graph, or modify config.
+
+The smoke suite includes `memory_real_proposal_write_lock_gate`, proving that a
+valid dry run becomes eligible for a separate human approval token flow without
 creating a real proposal or operation event.
 
 ## Report Schema

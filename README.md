@@ -178,6 +178,12 @@ candidates and never creates real proposals, persists approvals, writes memory,
 writes graph state, modifies config, submits to governance, or creates
 operation-ledger events.
 
+Memory Real Proposal Write Lock Gate v0.1 lives in
+`agent.memory_real_proposal_write_lock_gate`. It turns valid dry-run previews
+into read-only write-lock candidates that are only eligible for a separate human
+approval token flow; it never creates real proposals, writes proposal files, or
+creates operation-ledger events.
+
 ---
 
 ## Migrating from OpenClaw

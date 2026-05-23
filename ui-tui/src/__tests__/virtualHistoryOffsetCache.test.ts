@@ -129,7 +129,7 @@ describe('useVirtualHistory offset cache reuse', () => {
 
     try {
       await delay(20)
-      instance.rerender(React.createElement(Harness, { expose, height: 24, items, maxMounted: 80 }))
+      instance.rerender(React.createElement(Harness, { expose, height: 9, items, maxMounted: 80 }))
       await delay(80)
 
       expect(viewportIsMounted(items, expose.current!.virtualHistory, expose.current!.scroll!)).toBe(true)

@@ -45,21 +45,30 @@ jobs:
     if: github.event_name == 'push'
     runs-on: ubuntu-latest
     timeout-minutes: 25
+    env:
+      HAS_APP_TOKEN: ${{ secrets.APP_ID != '' && secrets.APP_PRIVATE_KEY != '' }}
     concurrency:
       group: auto-fix-main
       cancel-in-progress: true
     steps:
       - name: Generate GitHub App token
         id: app-token
+        if: env.HAS_APP_TOKEN == 'true'
         uses: actions/create-github-app-token@7bfa3a4717ef143a604ee0a99d859b8886a96d00  # v1.9.3
         with:
           app-id: ${{ secrets.APP_ID }}
           private-key: ${{ secrets.APP_PRIVATE_KEY }}
 
+      - name: Note GitHub token fallback
+        if: env.HAS_APP_TOKEN != 'true'
+        run: |
+          echo "::notice::APP_ID/APP_PRIVATE_KEY are not configured; using GITHUB_TOKEN fallback."
+          echo "::notice::Fallback commits may not trigger downstream workflows; configure the GitHub App secrets to restore full auto-fix behavior."
+
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
         with:
           ref: main
-          token: ${{ steps.app-token.outputs.token }}
+          token: ${{ steps.app-token.outputs.token || secrets.GITHUB_TOKEN }}
 
       - uses: ./.github/actions/nix-setup
         with:

@@ -39,6 +39,25 @@ def _msys_to_windows_path(cwd: str) -> str:
     return f"{drive}:{tail or chr(92)}"  # chr(92) = backslash, avoid raw-string escape
 
 
+def _windows_path_for_bash_cd(cwd: str) -> str:
+    """Return a Windows path spelling that Git Bash can use in ``cd``.
+
+    ``subprocess.Popen(cwd=...)`` needs native Windows paths, but the in-band
+    shell wrapper's ``cd`` is interpreted by bash. Backslash drive paths work
+    for native Python and fail for Git Bash, so only the shell-facing value is
+    normalized here.
+    """
+    if not _IS_WINDOWS or not cwd:
+        return cwd
+    if cwd == "~" or cwd == "~/" or cwd.startswith("~/"):
+        return cwd
+    if cwd.startswith("\\\\"):
+        return "//" + cwd.lstrip("\\").replace("\\", "/")
+    if re.match(r"^[A-Za-z]:[\\/]", cwd):
+        return cwd.replace("\\", "/")
+    return cwd.replace("\\", "/")
+
+
 def _resolve_safe_cwd(cwd: str) -> str:
     """Return ``cwd`` if it exists as a directory, else the nearest existing
     ancestor.  Falls back to ``tempfile.gettempdir()`` only if walking up the
@@ -443,6 +462,10 @@ class LocalEnvironment(BaseEnvironment):
             cwd = os.path.expanduser(cwd)
         super().__init__(cwd=cwd or os.getcwd(), timeout=timeout, env=env)
         self.init_session()
+
+    @staticmethod
+    def _quote_cwd_for_cd(cwd: str) -> str:
+        return BaseEnvironment._quote_cwd_for_cd(_windows_path_for_bash_cd(cwd))
 
     def get_temp_dir(self) -> str:
         """Return a shell-safe writable temp dir for local execution.

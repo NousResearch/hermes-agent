@@ -1,42 +1,224 @@
+# Register / unregister Hermes logon autostart via Task Scheduler.
+#
+# Default: llama.cpp RTX3080 fallback + Hermes Gateway (gateway script also
+# ensures llama if the dedicated task has not finished yet; both exit early
+# when port 8080 / gateway is already up).
+#
+# Usage:
+#   powershell -NoProfile -ExecutionPolicy Bypass -File scripts/windows/register-hermes-autostart.ps1
+#   powershell ... -File scripts/windows/register-hermes-autostart.ps1 -Unregister
+#   powershell ... -File scripts/windows/register-hermes-autostart.ps1 -GatewayOnly
+#   powershell ... -File scripts/windows/register-hermes-autostart.ps1 -IncludeLegacyStack
+
+[CmdletBinding()]
 param(
-    [string]$TaskName = "HermesAgentStackAutoStart"
+    [switch]$Unregister,
+    [switch]$GatewayOnly,
+    [switch]$IncludeLegacyStack,
+    [string]$LlamaTaskName = "HermesLlamaFallbackRTX3080",
+    [string]$GatewayTaskName = "HermesGatewayAutoStart",
+    [string]$LegacyStackTaskName = "HermesAgentStackAutoStart"
 )
 
 $ErrorActionPreference = "Stop"
 
 $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
-$StartScript = Resolve-Path (Join-Path $ScriptDir "start-hermes-stack.ps1")
+$RepoRoot = Resolve-Path (Join-Path $ScriptDir "..\..")
+$LlamaScript = Resolve-Path (Join-Path $ScriptDir "start-hermes-llama-fallback-rtx3080.ps1")
+$GatewayScript = Resolve-Path (Join-Path $ScriptDir "start-hermes-gateway.ps1")
+$StackScript = Resolve-Path (Join-Path $ScriptDir "start-hermes-stack.ps1")
 
-$actionArgs = "-NoProfile -ExecutionPolicy Bypass -File `"$StartScript`""
-$registered = $false
+$LogonAccount = [System.Security.Principal.WindowsIdentity]::GetCurrent().Name
 
-try {
-    $action = New-ScheduledTaskAction -Execute "powershell.exe" -Argument $actionArgs
-    $trigger = New-ScheduledTaskTrigger -AtLogOn
+$StaleRunValueNames = @(
+    "HermesLlamaFallbackRTX3060",
+    "HermesLlamaFallbackRTX3080",
+    "HermesGatewayAutoStart",
+    "HermesAgentStackAutoStart"
+)
+
+$StaleScheduledTaskNames = @(
+    "HermesLlamaFallbackRTX3060Watchdog",
+    "HermesLlamaFallbackRTX3060"
+)
+
+$StaleStartupFiles = @(
+    "HermesAgentStackAutoStart.cmd",
+    "HermesGatewayAutoStart.cmd",
+    "HermesLlamaFallbackRTX3080.cmd",
+    "HermesLlamaFallbackRTX3060.cmd"
+)
+
+function Remove-HkcuRunEntries {
+    param([string[]]$Names)
+
+    $runKey = "HKCU:\Software\Microsoft\Windows\CurrentVersion\Run"
+    if (-not (Test-Path -LiteralPath $runKey)) { return @() }
+
+    $removed = @()
+    foreach ($name in $Names) {
+        $existing = Get-ItemProperty -Path $runKey -Name $name -ErrorAction SilentlyContinue
+        if ($null -ne $existing) {
+            Remove-ItemProperty -Path $runKey -Name $name -Force
+            $removed += $name
+        }
+    }
+    return $removed
+}
+
+function Remove-StartupFolderLaunchers {
+    param([string[]]$FileNames)
+
+    $startupDir = Join-Path $env:APPDATA "Microsoft\Windows\Start Menu\Programs\Startup"
+    $removed = @()
+    foreach ($fileName in $FileNames) {
+        $path = Join-Path $startupDir $fileName
+        if (Test-Path -LiteralPath $path) {
+            Remove-Item -LiteralPath $path -Force
+            $removed += $path
+        }
+    }
+    return $removed
+}
+
+function Unregister-HermesScheduledTask {
+    param([string]$Name)
+
+    $existing = Get-ScheduledTask -TaskName $Name -ErrorAction SilentlyContinue
+    if ($null -eq $existing) {
+        return $false
+    }
+    Unregister-ScheduledTask -TaskName $Name -Confirm:$false
+    return $true
+}
+
+function New-HermesTaskSettings {
+    $settings = New-ScheduledTaskSettingsSet `
+        -AllowStartIfOnBatteries `
+        -DontStopIfGoingOnBatteries `
+        -StartWhenAvailable `
+        -MultipleInstances IgnoreNew `
+        -ExecutionTimeLimit ([TimeSpan]::Zero)
+    return $settings
+}
+
+function Register-HermesScheduledTask {
+    param(
+        [string]$TaskName,
+        [string]$Description,
+        [string]$ScriptPath,
+        [hashtable]$Env = @{},
+        [int]$DelaySeconds = 0
+    )
+
+    $envPrefix = ""
+    foreach ($key in ($Env.Keys | Sort-Object)) {
+        $value = $Env[$key]
+        if ($null -eq $value) { continue }
+        $envPrefix += "`$env:$key='$($value -replace "'", "''")'; "
+    }
+
+    $psCommand = "$envPrefix& '$ScriptPath'"
+    $argumentList = "-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -Command $psCommand"
+
+    $action = New-ScheduledTaskAction -Execute "powershell.exe" -Argument $argumentList -WorkingDirectory $RepoRoot
+    $trigger = New-ScheduledTaskTrigger -AtLogOn -User $LogonAccount
+    if ($DelaySeconds -gt 0) {
+        $trigger.Delay = "PT${DelaySeconds}S"
+    }
+
+    $principal = New-ScheduledTaskPrincipal -UserId $LogonAccount -LogonType Interactive -RunLevel Limited
+    $settings = New-HermesTaskSettings
+
     Register-ScheduledTask `
         -TaskName $TaskName `
         -Action $action `
         -Trigger $trigger `
-        -Description "Auto start Hermes stack at logon" `
+        -Principal $principal `
+        -Settings $settings `
+        -Description $Description `
         -Force | Out-Null
-    $registered = $true
-} catch {
-    Write-Warning "Task Scheduler registration failed: $($_.Exception.Message)"
+
+    return [PSCustomObject]@{
+        TaskName    = $TaskName
+        ScriptPath  = $ScriptPath
+        DelaySeconds = $DelaySeconds
+        Env         = $Env
+    }
 }
 
-if ($registered) {
-    Write-Host "Registered task: $TaskName"
-    Write-Host "Action: powershell.exe $actionArgs"
+if ($Unregister) {
+    $removedTasks = @()
+    foreach ($name in @($LlamaTaskName, $GatewayTaskName, $LegacyStackTaskName) + $StaleScheduledTaskNames) {
+        if (Unregister-HermesScheduledTask -Name $name) {
+            $removedTasks += $name
+        }
+    }
+
+    $removedRun = Remove-HkcuRunEntries -Names $StaleRunValueNames
+    $removedStartup = Remove-StartupFolderLaunchers -FileNames $StaleStartupFiles
+
+    Write-Host "Unregistered tasks: $(if ($removedTasks) { $removedTasks -join ', ' } else { '(none)' })"
+    Write-Host "Removed HKCU Run: $(if ($removedRun) { $removedRun -join ', ' } else { '(none)' })"
+    foreach ($path in $removedStartup) {
+        Write-Host "Removed startup launcher: $path"
+    }
     exit 0
 }
 
-# Fallback: Startup folder launcher.
-$startupDir = Join-Path $env:APPDATA "Microsoft\Windows\Start Menu\Programs\Startup"
-New-Item -ItemType Directory -Path $startupDir -Force | Out-Null
-$startupCmd = Join-Path $startupDir "HermesAgentStackAutoStart.cmd"
-@(
-    "@echo off"
-    "powershell.exe -NoProfile -ExecutionPolicy Bypass -File `"$StartScript`""
-) | Set-Content -Path $startupCmd -Encoding ASCII
+# Prefer Task Scheduler; remove fragile HKCU Run / Startup-folder duplicates.
+$removedRun = Remove-HkcuRunEntries -Names $StaleRunValueNames
+$removedStartup = Remove-StartupFolderLaunchers -FileNames $StaleStartupFiles
+if ($removedRun) {
+    Write-Host "Cleaned HKCU Run entries: $($removedRun -join ', ')"
+}
+foreach ($path in $removedStartup) {
+    Write-Host "Removed legacy startup launcher: $path"
+}
 
-Write-Host "Created startup launcher: $startupCmd"
+
+foreach ($staleTask in $StaleScheduledTaskNames) {
+    if (Unregister-HermesScheduledTask -Name $staleTask) {
+        Write-Host "Removed stale scheduled task: $staleTask"
+    }
+}
+
+$registered = @()
+
+if (-not $GatewayOnly) {
+    $registered += Register-HermesScheduledTask `
+        -TaskName $LlamaTaskName `
+        -Description "Auto-start llama.cpp fallback (RTX 3080, port 8080) at logon" `
+        -ScriptPath $LlamaScript `
+        -DelaySeconds 10
+}
+
+$registered += Register-HermesScheduledTask `
+    -TaskName $GatewayTaskName `
+    -Description "Auto-start Hermes Gateway at logon (llama fallback first if needed)" `
+    -ScriptPath $GatewayScript `
+    -Env @{
+        HERMES_STARTUP_DELAY_SECONDS = "30"
+        HERMES_GATEWAY_WINDOW_STYLE    = "Minimized"
+    } `
+    -DelaySeconds 20
+
+if ($IncludeLegacyStack) {
+    $registered += Register-HermesScheduledTask `
+        -TaskName $LegacyStackTaskName `
+        -Description "Legacy full Hermes stack autostart (Hypura, TUI, ngrok, ...)" `
+        -ScriptPath $StackScript `
+        -DelaySeconds 30
+}
+
+Write-Host ""
+Write-Host "Registered Hermes autostart tasks:" -ForegroundColor Green
+$registered | Format-Table -AutoSize TaskName, ScriptPath, DelaySeconds
+
+Write-Host "Disable autostart:" -ForegroundColor Cyan
+Write-Host "  powershell -NoProfile -ExecutionPolicy Bypass -File `"$($MyInvocation.MyCommand.Path)`" -Unregister"
+Write-Host ""
+Write-Host "Manual task control:" -ForegroundColor Cyan
+Write-Host "  Get-ScheduledTask -TaskName '$LlamaTaskName','$GatewayTaskName' | Format-Table TaskName,State"
+Write-Host "  Disable-ScheduledTask -TaskName '$GatewayTaskName'"
+Write-Host "  Enable-ScheduledTask -TaskName '$GatewayTaskName'"

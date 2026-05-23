@@ -18,7 +18,7 @@ param(
     [string]$ShortcutFolderName = "Hermes Agent",
     [switch]$IncludePublicDesktop,
     [switch]$CreateVenv,
-    [switch]$RecreateSo8tLlamaShortcut,
+    [switch]$IncludeLegacySo8tLlamaShortcut,
     [switch]$KeepLegacyDesktopRootShortcuts,
     [switch]$KeepLegacyOpenClawRootShortcuts,
     [switch]$DesktopRoot
@@ -30,12 +30,17 @@ $ErrorActionPreference = "Stop"
 $HermesShortcutNames = @(
     "Hermes Agent CLI.lnk",
     "Hermes Gateway.lnk",
+    "Hermes Llama Fallback (RTX3080).lnk",
+    "Hermes llama-server RTX3080.lnk",
+    "Hermes Autostart (register).lnk",
+    "Hermes Autostart (unregister).lnk",
     "Hermes Harness.lnk",
     "Hermes Grok OAuth.lnk",
     "Hermes Doctor.lnk",
     "Hermes Config (.hermes).lnk",
     "Hermes Stack.lnk",
-    "Hermes Hypura Stack.lnk"
+    "Hermes Hypura Stack.lnk",
+    "SuperGemma4 llama-server (RTX3060).lnk"
 )
 
 # Legacy OpenClaw launchers are still useful, but should not live on the
@@ -219,6 +224,25 @@ function New-HermesConsoleShortcut {
         -IconLocation $icon
 }
 
+function New-HermesPowerShellScriptShortcut {
+    param(
+        [string]$LinkPath,
+        [string]$RepoRoot,
+        [string]$StartScript,
+        [string]$Description,
+        [switch]$NoExit
+    )
+
+    $exitFlag = if ($NoExit) { "-NoExit " } else { "" }
+    return New-HermesShortcut `
+        -LinkPath $LinkPath `
+        -TargetPath "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe" `
+        -Arguments "${exitFlag}-NoProfile -ExecutionPolicy Bypass -File `"$StartScript`"" `
+        -WorkingDirectory $RepoRoot `
+        -Description $Description `
+        -IconLocation "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe,0"
+}
+
 function New-HermesStackShortcut {
     param(
         [string]$LinkPath,
@@ -226,13 +250,12 @@ function New-HermesStackShortcut {
         [string]$StartScript
     )
 
-    return New-HermesShortcut `
+    return New-HermesPowerShellScriptShortcut `
         -LinkPath $LinkPath `
-        -TargetPath "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe" `
-        -Arguments "-NoExit -NoProfile -ExecutionPolicy Bypass -File `"$StartScript`"" `
-        -WorkingDirectory $RepoRoot `
+        -RepoRoot $RepoRoot `
+        -StartScript $StartScript `
         -Description "Hermes full stack (Gateway, Hypura, proxies, TUI, FastAPI, ngrok, ...)" `
-        -IconLocation "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe,0"
+        -NoExit
 }
 
 function Remove-StaleHermesShortcuts {
@@ -310,8 +333,8 @@ function Ensure-So8tLlamaShortcut {
 
     $name = "SuperGemma4 llama-server (RTX3060).lnk"
     $lnkPath = Join-Path $Desktop $name
-    $so8tScript = "C:\Users\downl\Desktop\SO8T\scripts\start-supergemma-server.ps1"
-    $so8tRoot = "C:\Users\downl\Desktop\SO8T"
+    $so8tRoot = if ($env:SO8T_ROOT) { $env:SO8T_ROOT } else { Join-Path $env:USERPROFILE "Desktop\SO8T" }
+    $so8tScript = Join-Path $so8tRoot "scripts\start-supergemma-server.ps1"
 
     if ((Test-Path -LiteralPath $lnkPath) -and -not $Force) {
         return [PSCustomObject]@{
@@ -373,11 +396,6 @@ $definitions = @(
         Name        = "Hermes Agent CLI.lnk"
         SubArgs     = ""
         Description = "Hermes Agent interactive CLI (hermes)"
-    },
-    @{
-        Name        = "Hermes Gateway.lnk"
-        SubArgs     = "gateway run --replace"
-        Description = "Hermes messaging gateway (foreground, replacing any stale instance)"
     },
     @{
         Name        = "Hermes Harness.lnk"
@@ -508,6 +526,87 @@ else {
     }
 }
 
+$startGatewayScript = Join-Path $RepoRoot "scripts\windows\start-hermes-gateway.ps1"
+$startLlama3080Script = Join-Path $RepoRoot "scripts\windows\start-hermes-llama-fallback-rtx3080.ps1"
+$registerAutostartScript = Join-Path $RepoRoot "scripts\windows\register-hermes-autostart.ps1"
+$installAutostartScript = Join-Path $RepoRoot "scripts\windows\install-hermes-autostart.ps1"
+
+$psShortcutDefs = @(
+    @{
+        Name        = "Hermes Gateway.lnk"
+        Script      = $startGatewayScript
+        Description = "Start Hermes Gateway (llama RTX3080 fallback first, skip if already running)"
+        NoExit      = $false
+    },
+    @{
+        Name        = "Hermes Llama Fallback (RTX3080).lnk"
+        Script      = $startLlama3080Script
+        Description = "Start llama.cpp fallback server on RTX 3080 (port 8080)"
+        NoExit      = $true
+    },
+    @{
+        Name        = "Hermes Autostart (register).lnk"
+        Script      = $(if (Test-Path -LiteralPath $installAutostartScript) { $installAutostartScript } else { $registerAutostartScript })
+        Description = "Register Hermes llama + gateway logon autostart (Task Scheduler)"
+        NoExit      = $true
+    },
+    @{
+        Name        = "Hermes Autostart (unregister).lnk"
+        Script      = $registerAutostartScript
+        Description = "Remove Hermes logon autostart tasks and stale Run entries"
+        NoExit      = $true
+        ExtraArgs   = "-Unregister"
+    }
+)
+
+foreach ($psDef in $psShortcutDefs) {
+    if (-not (Test-Path -LiteralPath $psDef.Script)) {
+        $results += [PSCustomObject]@{
+            Path   = (Join-Path $shortcutDir $psDef.Name)
+            Status = "skipped-missing-script"
+            Error  = "Not found: $($psDef.Script)"
+        }
+        continue
+    }
+
+    $lnk = Join-Path $shortcutDir $psDef.Name
+    try {
+        $startScript = $psDef.Script
+        if ($psDef.ExtraArgs) {
+            $row = New-HermesShortcut `
+                -LinkPath $lnk `
+                -TargetPath "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe" `
+                -Arguments "-NoExit -NoProfile -ExecutionPolicy Bypass -File `"$startScript`" $($psDef.ExtraArgs)" `
+                -WorkingDirectory $RepoRoot `
+                -Description $psDef.Description `
+                -IconLocation "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe,0"
+        }
+        else {
+            $row = New-HermesPowerShellScriptShortcut `
+                -LinkPath $lnk `
+                -RepoRoot $RepoRoot `
+                -StartScript $startScript `
+                -Description $psDef.Description `
+                -NoExit:($psDef.NoExit)
+        }
+        $results += [PSCustomObject]@{
+            Path             = $row.Path
+            Status           = "created"
+            TargetPath       = $row.TargetPath
+            Arguments        = $row.Arguments
+            WorkingDirectory = $row.WorkingDirectory
+            LauncherSource   = (Split-Path -Leaf $startScript)
+        }
+    }
+    catch {
+        $results += [PSCustomObject]@{
+            Path   = $lnk
+            Status = "error"
+            Error  = $_.Exception.Message
+        }
+    }
+}
+
 if ($DesktopRoot) {
     $folderOpenerName = "Hermes Agent (open folder).lnk"
     $desktopHermesDir = Join-Path $userDesktop "01_Hermes_Discord_Setup"
@@ -539,8 +638,8 @@ if ($DesktopRoot) {
     }
 }
 
-if ($RecreateSo8tLlamaShortcut) {
-    $so8t = Ensure-So8tLlamaShortcut -Desktop $userDesktop -Force:$RecreateSo8tLlamaShortcut
+if ($IncludeLegacySo8tLlamaShortcut) {
+    $so8t = Ensure-So8tLlamaShortcut -Desktop $userDesktop -Force:$IncludeLegacySo8tLlamaShortcut
     $results += $so8t
 }
 
@@ -566,3 +665,4 @@ if ($errors) {
 }
 
 exit 0
+

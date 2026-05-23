@@ -44,6 +44,18 @@ if ($DelaySeconds -gt 0) {
     Start-Sleep -Seconds $DelaySeconds
 }
 
+$llamaScript = Join-Path $ScriptDir "start-hermes-llama-fallback-rtx3080.ps1"
+if (-not (Test-Path -LiteralPath $llamaScript)) {
+    $llamaScript = Join-Path $ScriptDir "start-hermes-llama-fallback.ps1"
+}
+if (Test-Path -LiteralPath $llamaScript) {
+    try {
+        & $llamaScript | Out-Null
+    } catch {
+        Write-Warning "llama.cpp fallback autostart failed: $_"
+    }
+}
+
 Start-Process `
     -FilePath "cmd.exe" `
     -ArgumentList "/c", "set PYTHONIOENCODING=utf-8&& set PYTHONUTF8=1&& py -3 -m hermes_cli gateway run" `

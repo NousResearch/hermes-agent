@@ -9,6 +9,16 @@ from unittest.mock import AsyncMock, Mock, patch
 from fastapi.testclient import TestClient
 
 
+def test_health_returns_200_without_dependency_probe() -> None:
+    from harness_daemon import app
+
+    with patch("harness_daemon._probe_http_ok", side_effect=AssertionError):
+        client = TestClient(app)
+        resp = client.get("/health")
+    assert resp.status_code == 200
+    assert resp.json() == {"ok": True, "daemon_version": "0.1.0"}
+
+
 def test_status_returns_200() -> None:
     from harness_daemon import app
 

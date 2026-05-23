@@ -71,7 +71,8 @@ class TestProviderModelIdsPreferred:
     def test_opencode_go_includes_fresh_models_dev_entries(self):
         """provider_model_ids('opencode-go') adds models.dev entries on top."""
         mdev = ["mimo-v2.5-pro", "mimo-v2.5", "mimo-v2-pro", "kimi-k2.6"]
-        with patch("agent.models_dev.list_agentic_models", return_value=mdev):
+        with patch("agent.models_dev.list_agentic_models", return_value=mdev), \
+             patch("hermes_cli.models._fetch_opencode_live_models", return_value=None):
             out = provider_model_ids("opencode-go")
         # Fresh models must surface (this is exactly the reported bug fix:
         # mimo-v2.5-pro should be pickable on opencode-go).
@@ -83,7 +84,8 @@ class TestProviderModelIdsPreferred:
 
     def test_opencode_go_offline_falls_back_to_curated(self):
         """Offline models.dev → curated-only list, no crash."""
-        with patch("agent.models_dev.list_agentic_models", return_value=[]):
+        with patch("agent.models_dev.list_agentic_models", return_value=[]), \
+             patch("hermes_cli.models._fetch_opencode_live_models", return_value=None):
             out = provider_model_ids("opencode-go")
         # Curated floor (see hermes_cli/models.py _PROVIDER_MODELS["opencode-go"])
         assert "mimo-v2-pro" in out
@@ -93,7 +95,8 @@ class TestProviderModelIdsPreferred:
         """opencode-zen follows the same pattern as opencode-go."""
         assert "opencode-zen" in _MODELS_DEV_PREFERRED
         mdev = ["claude-opus-4-7", "kimi-k2.6", "glm-5.1"]
-        with patch("agent.models_dev.list_agentic_models", return_value=mdev):
+        with patch("agent.models_dev.list_agentic_models", return_value=mdev), \
+             patch("hermes_cli.models._fetch_opencode_live_models", return_value=None):
             out = provider_model_ids("opencode-zen")
         assert "claude-opus-4-7" in out
         assert "kimi-k2.6" in out

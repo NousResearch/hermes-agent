@@ -1,0 +1,34 @@
+# Hermes config example — OpenCode Zen free primary + llama.cpp rollback
+# Copy relevant sections into ~/.hermes/config.yaml
+#
+# Requires in ~/.hermes/.env:
+#   OPENCODE_ZEN_API_KEY=<from https://opencode.ai/auth>
+#
+# Optional llama autostart env (Windows RTX3080 defaults):
+#   HERMES_LLAMA_FALLBACK_AUTOSTART=auto
+#   HERMES_LLAMA_MODEL_PATH=C:/path/to/models/your-fallback.gguf
+#   HERMES_LLAMA_GPU_PROFILE=rtx3080
+
+model:
+  provider: opencode-zen
+  # Virtual sentinel — resolved to the first live OpenCode Zen free model at runtime.
+  default: auto-free
+
+# When a free model hits token / usage limits, Hermes walks this chain in order.
+# The auto-free entry expands to the current OpenCode Zen free catalog from
+# https://opencode.ai/zen/v1/models (deduped against the primary model).
+fallback_providers:
+  - provider: opencode-zen
+    model: auto-free
+  - provider: llama-cpp
+    model: your-fallback.gguf
+    base_url: http://127.0.0.1:8080/v1
+
+providers:
+  llama-cpp:
+    api: http://127.0.0.1:8080/v1
+    default_model: your-fallback.gguf
+
+agent:
+  # Fail over faster when rotating across many free models.
+  api_max_retries: 1

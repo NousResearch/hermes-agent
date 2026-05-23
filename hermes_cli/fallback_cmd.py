@@ -35,14 +35,36 @@ def _read_chain(config: Dict[str, Any]) -> List[Dict[str, Any]]:
     """
     chain = config.get("fallback_providers") or []
     if isinstance(chain, list):
-        result = [dict(e) for e in chain if isinstance(e, dict) and e.get("provider") and e.get("model")]
+        from hermes_cli.fallback_chain import is_opencode_free_fallback_entry
+
+        result = [
+            dict(e)
+            for e in chain
+            if isinstance(e, dict)
+            and (
+                (e.get("provider") and e.get("model"))
+                or is_opencode_free_fallback_entry(e)
+            )
+        ]
         if result:
             return result
     legacy = config.get("fallback_model")
+    from hermes_cli.fallback_chain import is_opencode_free_fallback_entry
+
+    if isinstance(legacy, dict) and is_opencode_free_fallback_entry(legacy):
+        return [dict(legacy)]
     if isinstance(legacy, dict) and legacy.get("provider") and legacy.get("model"):
         return [dict(legacy)]
     if isinstance(legacy, list):
-        return [dict(e) for e in legacy if isinstance(e, dict) and e.get("provider") and e.get("model")]
+        return [
+            dict(e)
+            for e in legacy
+            if isinstance(e, dict)
+            and (
+                (e.get("provider") and e.get("model"))
+                or is_opencode_free_fallback_entry(e)
+            )
+        ]
     return []
 
 
@@ -56,6 +78,10 @@ def _write_chain(config: Dict[str, Any], chain: List[Dict[str, Any]]) -> None:
 
 def _format_entry(entry: Dict[str, Any]) -> str:
     """One-line human-readable rendering of a fallback entry."""
+    from hermes_cli.fallback_chain import is_opencode_free_fallback_entry
+
+    if is_opencode_free_fallback_entry(entry):
+        return "OpenCode Zen free models (auto)"
     provider = entry.get("provider", "?")
     model = entry.get("model", "?")
     base = entry.get("base_url")

@@ -619,6 +619,11 @@ async def status() -> dict:
     }
 
 
+@app.get("/health")
+async def health() -> dict[str, Any]:
+    return {"ok": True, "daemon_version": "0.1.0"}
+
+
 @app.get("/channels/readiness")
 async def channels_readiness() -> dict[str, Any]:
     return build_channel_readiness(_resolve_gateway_config_path(), REPO_ROOT)

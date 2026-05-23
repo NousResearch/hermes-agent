@@ -7,3 +7,6 @@
 [submodule "vendor/openclaw-mirror/ShinkaEvolve"]
 	path = vendor/openclaw-mirror/ShinkaEvolve
 	url = https://github.com/SakanaAI/ShinkaEvolve.git
+[submodule "vendor/neuro-sdk"]
+	path = vendor/neuro-sdk
+	url = https://github.com/VedalAI/neuro-sdk.git

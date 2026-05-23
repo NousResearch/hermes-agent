@@ -24,6 +24,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from gateway.platforms.base import MessageType
 from tests.gateway._plugin_adapter_loader import load_plugin_adapter
 
 # Load plugins/platforms/line/adapter.py under plugin_adapter_line so it
@@ -186,6 +187,75 @@ class TestDedup:
 # ---------------------------------------------------------------------------
 # 5. RequestCache state machine
 # ---------------------------------------------------------------------------
+
+class TestInboundMessageEvent:
+
+    @pytest.fixture
+    def adapter(self, monkeypatch):
+        monkeypatch.delenv("LINE_CHANNEL_ACCESS_TOKEN", raising=False)
+        monkeypatch.delenv("LINE_CHANNEL_SECRET", raising=False)
+        from gateway.config import PlatformConfig
+
+        cfg = PlatformConfig(enabled=True, extra={
+            "channel_access_token": "tok",
+            "channel_secret": "sec",
+        })
+        ad = LineAdapter(cfg)
+        ad._client = None
+        ad.handle_message = AsyncMock()
+        return ad
+
+    def _event_for(self, message):
+        return {
+            "type": "message",
+            "replyToken": "reply-token",
+            "source": {"type": "user", "userId": "U123"},
+            "message": message,
+        }
+
+    def test_image_message_maps_to_photo(self, adapter):
+        adapter._download_media = AsyncMock(return_value=r"C:\tmp\line-image.png")
+
+        asyncio.run(adapter._handle_message_event(
+            self._event_for({"id": "m-image", "type": "image"})
+        ))
+
+        event_obj = adapter.handle_message.call_args.args[0]
+        assert event_obj.message_type is MessageType.PHOTO
+        assert event_obj.text == "[image]"
+        assert event_obj.media_urls == [r"C:\tmp\line-image.png"]
+        assert event_obj.media_types == ["image"]
+
+    @pytest.mark.parametrize(
+        ("message", "expected_type", "expected_text"),
+        [
+            ({"id": "m-text", "type": "text", "text": "hello"}, MessageType.TEXT, "hello"),
+            (
+                {"id": "m-sticker", "type": "sticker", "keywords": ["hello", "wave"]},
+                MessageType.STICKER,
+                "[sticker: hello, wave]",
+            ),
+            (
+                {"id": "m-location", "type": "location", "title": "Tokyo", "address": "Chiyoda"},
+                MessageType.LOCATION,
+                "[location: Tokyo Chiyoda]",
+            ),
+            ({"id": "m-audio", "type": "audio"}, MessageType.AUDIO, "[audio]"),
+            ({"id": "m-video", "type": "video"}, MessageType.VIDEO, "[video]"),
+            ({"id": "m-file", "type": "file"}, MessageType.DOCUMENT, "[file]"),
+        ],
+    )
+    def test_supported_message_types_map_to_base_enum(
+        self, adapter, message, expected_type, expected_text,
+    ):
+        adapter._download_media = AsyncMock(return_value=r"C:\tmp\line-media.bin")
+
+        asyncio.run(adapter._handle_message_event(self._event_for(message)))
+
+        event_obj = adapter.handle_message.call_args.args[0]
+        assert event_obj.message_type is expected_type
+        assert event_obj.text == expected_text
+
 
 class TestRequestCache:
 

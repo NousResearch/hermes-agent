@@ -36,3 +36,4 @@ hermes hypura ollama-status
 - The Hypura daemon is expected at `vendor/openclaw-mirror/extensions/hypura-harness/scripts/harness_daemon.py` unless overridden.
 - `hermes hypura vrchat-chatbox` uses Hypura `/osc` action `chatbox`.
 - This integration is native Hermes CLI orchestration and does not require OpenClaw runtime.
+- For the safer Neuro-sama-style autonomy path, see `docs/migration/vrchat_neurosama_autonomy.md`.

@@ -28,6 +28,45 @@ COPILOT_EDITOR_VERSION = "vscode/1.104.1"
 COPILOT_REASONING_EFFORTS_GPT5 = ["minimal", "low", "medium", "high"]
 COPILOT_REASONING_EFFORTS_O_SERIES = ["low", "medium", "high"]
 
+_OPENCODE_LIVE_MODEL_BASE_URLS = {
+    "opencode-zen": "https://opencode.ai/zen/v1",
+    "opencode-go": "https://opencode.ai/zen/go/v1",
+}
+_OPENCODE_LIVE_CACHE_TTL = 3600
+_OPENCODE_LIVE_MODEL_CACHE: dict[str, tuple[float, list[str]]] = {}
+OPENCODE_FREE_FALLBACK_MODEL_ALIASES = frozenset({
+    "free",
+    "auto-free",
+    "current-free",
+    "opencode-free",
+    "@free",
+    "$free",
+    "*free",
+})
+OPENCODE_FREE_FALLBACK_PROVIDER_ALIASES = frozenset({
+    "opencode-free",
+    "opencode-zen-free",
+    "zen-free",
+})
+_OPENCODE_STATIC_FREE_MODELS = [
+    "big-pickle",
+    "deepseek-v4-flash-free",
+    "qwen3.6-plus-free",
+    "minimax-m2.5-free",
+    "nemotron-3-super-free",
+    "kimi-k2.5-free",
+    "glm-5-free",
+    "minimax-m2.1-free",
+    "mimo-v2-flash-free",
+    "trinity-large-preview-free",
+    "mimo-v2-pro-free",
+    "ling-2.6-flash-free",
+    "glm-4.7-free",
+    "hy3-preview-free",
+    "ring-2.6-1t-free",
+    "mimo-v2-omni-free",
+]
+
 
 # Fallback OpenRouter snapshot used when the live catalog is unavailable.
 # (model_id, display description shown in menus)
@@ -366,7 +405,21 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
         "gemini-3-flash",
         "minimax-m2.7",
         "minimax-m2.5",
+        "deepseek-v4-flash-free",
+        "qwen3.6-plus-free",
         "minimax-m2.5-free",
+        "nemotron-3-super-free",
+        "kimi-k2.5-free",
+        "glm-5-free",
+        "minimax-m2.1-free",
+        "mimo-v2-flash-free",
+        "trinity-large-preview-free",
+        "mimo-v2-pro-free",
+        "ling-2.6-flash-free",
+        "glm-4.7-free",
+        "hy3-preview-free",
+        "ring-2.6-1t-free",
+        "mimo-v2-omni-free",
         "minimax-m2.1",
         "glm-5",
         "glm-4.7",
@@ -1076,6 +1129,10 @@ def get_default_model_for_provider(provider: str) -> str:
     selected a model (e.g. ``hermes auth add openai-codex`` without
     ``hermes model``).
     """
+    if normalize_provider(provider) == "opencode-zen":
+        free_models = opencode_free_model_ids()
+        if free_models:
+            return free_models[0]
     models = _PROVIDER_MODELS.get(provider, [])
     return models[0] if models else ""
 
@@ -2154,6 +2211,95 @@ def _merge_with_models_dev(provider: str, curated: list[str]) -> list[str]:
     return merged
 
 
+def _dedupe_model_ids(*catalogs: list[str]) -> list[str]:
+    """Return model IDs in first-seen order with case-insensitive deduping."""
+    out: list[str] = []
+    seen: set[str] = set()
+    for catalog in catalogs:
+        for raw in catalog or []:
+            mid = str(raw or "").strip()
+            if not mid:
+                continue
+            key = mid.lower()
+            if key in seen:
+                continue
+            seen.add(key)
+            out.append(mid)
+    return out
+
+
+def _fetch_opencode_live_models(
+    provider: Optional[str],
+    *,
+    force_refresh: bool = False,
+    timeout: float = 5.0,
+) -> Optional[list[str]]:
+    """Fetch OpenCode's live model catalog without requiring local auth state."""
+    normalized = normalize_provider(provider)
+    base_url = _OPENCODE_LIVE_MODEL_BASE_URLS.get(normalized)
+    if not base_url:
+        return None
+
+    now = time.time()
+    cached = _OPENCODE_LIVE_MODEL_CACHE.get(normalized)
+    if (
+        cached
+        and not force_refresh
+        and now - cached[0] <= _OPENCODE_LIVE_CACHE_TTL
+    ):
+        return list(cached[1])
+
+    try:
+        live = fetch_api_models(None, base_url, timeout=timeout)
+    except Exception:
+        live = None
+    if live:
+        models = _dedupe_model_ids(live)
+        _OPENCODE_LIVE_MODEL_CACHE[normalized] = (now, models)
+        return list(models)
+    return None
+
+
+def is_opencode_free_model_id(model_id: Optional[str]) -> bool:
+    """Return True when an OpenCode Zen model belongs to the free tier."""
+    mid = normalize_opencode_model_id("opencode-zen", model_id).strip().lower()
+    if not mid:
+        return False
+    return mid == "big-pickle" or mid.endswith("-free") or mid.endswith(":free")
+
+
+def opencode_free_model_ids(*, force_refresh: bool = False) -> list[str]:
+    """Return OpenCode Zen free models, using the live catalog when available."""
+    live_or_curated = provider_model_ids("opencode-zen", force_refresh=force_refresh)
+    free_models = [mid for mid in live_or_curated if is_opencode_free_model_id(mid)]
+    if free_models:
+        return _dedupe_model_ids(free_models)
+    return list(_OPENCODE_STATIC_FREE_MODELS)
+
+
+def is_opencode_free_model_alias(model_id: Optional[str]) -> bool:
+    """Return True when *model_id* is a virtual OpenCode free sentinel."""
+    return str(model_id or "").strip().lower() in OPENCODE_FREE_FALLBACK_MODEL_ALIASES
+
+
+def resolve_config_model_id(
+    provider: Optional[str],
+    model_id: Optional[str],
+    *,
+    force_refresh: bool = False,
+) -> str:
+    """Resolve configured model ids, expanding OpenCode free sentinels."""
+    normalized_provider = normalize_provider(provider)
+    mid = str(model_id or "").strip()
+    if normalized_provider != "opencode-zen":
+        return mid
+    if not mid or is_opencode_free_model_alias(mid):
+        free_models = opencode_free_model_ids(force_refresh=force_refresh)
+        if free_models:
+            return free_models[0]
+    return mid
+
+
 def provider_model_ids(provider: Optional[str], *, force_refresh: bool = False) -> list[str]:
     """Return the best known model catalog for a provider.
 
@@ -2193,6 +2339,13 @@ def provider_model_ids(provider: Optional[str], *, force_refresh: bool = False) 
             pass
         if normalized == "copilot-acp":
             return list(_PROVIDER_MODELS.get("copilot", []))
+    if normalized in _OPENCODE_LIVE_MODEL_BASE_URLS:
+        curated_static = list(_PROVIDER_MODELS.get(normalized, []))
+        merged_static = _merge_with_models_dev(normalized, curated_static)
+        live = _fetch_opencode_live_models(normalized, force_refresh=force_refresh)
+        if live:
+            return _dedupe_model_ids(live, merged_static)
+        return merged_static
     if normalized == "nous":
         # Try live Nous Portal /models endpoint
         try:

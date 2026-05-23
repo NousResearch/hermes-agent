@@ -1512,6 +1512,13 @@ def cmd_chat(args):
     except Exception:
         pass
 
+    try:
+        from hermes_cli.llama_fallback_runtime import ensure_llama_fallback_server
+
+        ensure_llama_fallback_server(quiet=False)
+    except Exception:
+        pass
+
     # First-run guard: check if any provider is configured before launching
     if not _has_any_provider_configured():
         print()

@@ -137,6 +137,16 @@ LINE_AV_MAX_BYTES = 200 * 1024 * 1024  # 200 MB for voice/video
 # A 1×1 transparent PNG used as fallback video preview thumbnail when no
 # explicit preview is supplied — LINE requires ``previewImageUrl`` for
 # video messages. Sourced from the Python stdlib (no Pillow dependency).
+_LINE_INBOUND_MESSAGE_TYPES = {
+    "text": MessageType.TEXT,
+    "image": MessageType.PHOTO,
+    "audio": MessageType.AUDIO,
+    "video": MessageType.VIDEO,
+    "file": MessageType.DOCUMENT,
+    "sticker": MessageType.STICKER,
+    "location": MessageType.LOCATION,
+}
+
 _FALLBACK_PNG_PREVIEW = bytes.fromhex(
     "89504e470d0a1a0a0000000d49484452000000010000000108060000001f15c4"
     "890000000d49444154789c63000100000005000100377a7ff20000000049454e"
@@ -969,7 +979,7 @@ class LineAdapter(BasePlatformAdapter):
 
         event_obj = MessageEvent(
             text=text,
-            message_type=MessageType.TEXT if msg_type == "text" else MessageType.IMAGE,
+            message_type=_LINE_INBOUND_MESSAGE_TYPES.get(msg_type, MessageType.TEXT),
             source=source_obj,
             raw_message=event,
             message_id=message_id,

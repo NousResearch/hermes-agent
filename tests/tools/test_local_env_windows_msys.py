@@ -29,6 +29,7 @@ from tools.environments.local import (
     _find_bash,
     _msys_to_windows_path,
     _resolve_safe_cwd,
+    _windows_path_for_bash_cd,
 )
 
 
@@ -71,6 +72,49 @@ class TestMsysToWindowsPath:
     def test_empty_string(self, monkeypatch):
         monkeypatch.setattr(local_mod, "_IS_WINDOWS", True)
         assert _msys_to_windows_path("") == ""
+
+
+class TestWindowsPathForBashCd:
+    def test_noop_on_non_windows(self, monkeypatch):
+        monkeypatch.setattr(local_mod, "_IS_WINDOWS", False)
+        assert _windows_path_for_bash_cd(r"C:\Users\NVIDIA") == r"C:\Users\NVIDIA"
+
+    def test_drive_path_uses_forward_slashes_on_windows(self, monkeypatch):
+        monkeypatch.setattr(local_mod, "_IS_WINDOWS", True)
+        assert (
+            _windows_path_for_bash_cd(r"C:\Users\NVIDIA\Project Dir")
+            == "C:/Users/NVIDIA/Project Dir"
+        )
+        assert (
+            _windows_path_for_bash_cd("D:/Projects/Hermes")
+            == "D:/Projects/Hermes"
+        )
+
+    def test_preserves_tilde_expansion_forms(self, monkeypatch):
+        monkeypatch.setattr(local_mod, "_IS_WINDOWS", True)
+        assert _windows_path_for_bash_cd("~") == "~"
+        assert _windows_path_for_bash_cd("~/work dir") == "~/work dir"
+
+    def test_unc_path_uses_double_forward_slash(self, monkeypatch):
+        monkeypatch.setattr(local_mod, "_IS_WINDOWS", True)
+        assert (
+            _windows_path_for_bash_cd(r"\\server\share\Project Dir")
+            == "//server/share/Project Dir"
+        )
+
+    def test_wrap_command_uses_bash_compatible_cd_target(self, monkeypatch, tmp_path):
+        monkeypatch.setattr(local_mod, "_IS_WINDOWS", True)
+        start = tmp_path / "starting"
+        start.mkdir()
+
+        with patch.object(
+            LocalEnvironment, "init_session", autospec=True, return_value=None
+        ):
+            env = LocalEnvironment(cwd=str(start), timeout=10)
+
+        wrapped = env._wrap_command("pwd", r"C:\Users\NVIDIA\Project Dir")
+
+        assert "builtin cd -- 'C:/Users/NVIDIA/Project Dir' || exit 126" in wrapped
 
 
 class TestFindBashWindows:

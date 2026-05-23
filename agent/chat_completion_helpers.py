@@ -785,6 +785,10 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
         _fb_is_azure = agent._is_azure_openai_url(fb_base_url)
         if fb_provider == "openai-codex":
             fb_api_mode = "codex_responses"
+        elif fb_provider in {"opencode-zen", "opencode-go"}:
+            from hermes_cli.models import opencode_model_api_mode
+
+            fb_api_mode = opencode_model_api_mode(fb_provider, fb_model)
         elif fb_provider == "anthropic" or fb_base_url.rstrip("/").lower().endswith("/anthropic"):
             fb_api_mode = "anthropic_messages"
         elif _fb_is_azure:
@@ -806,6 +810,8 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
             and base_url_host_matches(fb_base_url, "amazonaws.com")
         ):
             fb_api_mode = "bedrock_converse"
+        if fb_api_mode == "anthropic_messages" and fb_provider in {"opencode-zen", "opencode-go"}:
+            fb_base_url = re.sub(r"/v1/?$", "", fb_base_url.rstrip("/"), flags=re.IGNORECASE)
 
         old_model = agent.model
 

@@ -21,6 +21,9 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 18794
+HEALTH_CHECK_PATH = "/health"
+LEGACY_STATUS_PATH = "/status"
+LEGACY_STATUS_TIMEOUT = 5.0
 _FALSE_ENV_VALUES = {"0", "false", "no", "off", "disabled"}
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_DAEMON_SCRIPT = (
@@ -101,10 +104,21 @@ def _harness_log_path() -> Path:
 
 
 def is_harness_running(timeout: float = 1.0) -> bool:
-    """Check whether the local harness responds on its status endpoint."""
+    """Check whether the local harness responds on its lightweight health endpoint."""
+    base_url = get_harness_url()
     try:
         with httpx.Client(timeout=timeout) as client:
-            response = client.get(f"{get_harness_url()}/status")
+            response = client.get(f"{base_url}{HEALTH_CHECK_PATH}")
+        if response.status_code == 200:
+            return True
+        if response.status_code != 404:
+            return False
+    except Exception:
+        return False
+
+    try:
+        with httpx.Client(timeout=max(timeout, LEGACY_STATUS_TIMEOUT)) as client:
+            response = client.get(f"{base_url}{LEGACY_STATUS_PATH}")
         return response.status_code == 200
     except Exception:
         return False

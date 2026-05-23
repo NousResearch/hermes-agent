@@ -196,6 +196,14 @@ def _get_model_config() -> Dict[str, Any]:
             detected = _auto_detect_local_model(base_url)
             if detected:
                 cfg["default"] = detected
+        try:
+            from hermes_cli.models import resolve_config_model_id
+
+            resolved_default = resolve_config_model_id(cfg.get("provider"), cfg.get("default"))
+            if resolved_default:
+                cfg["default"] = resolved_default
+        except Exception:
+            pass
         return cfg
     if isinstance(model_cfg, str) and model_cfg.strip():
         return {"default": model_cfg.strip()}

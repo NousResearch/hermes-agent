@@ -759,14 +759,12 @@ def init_agent(
                     except Exception:
                         pass
                     # --- Init-time fallback (#17929) ---
-                    _fb_entries = []
-                    if isinstance(fallback_model, list):
-                        _fb_entries = [
-                            f for f in fallback_model
-                            if isinstance(f, dict) and f.get("provider") and f.get("model")
-                        ]
-                    elif isinstance(fallback_model, dict) and fallback_model.get("provider") and fallback_model.get("model"):
-                        _fb_entries = [fallback_model]
+                    try:
+                        from hermes_cli.fallback_chain import normalize_fallback_entries
+
+                        _fb_entries = normalize_fallback_entries(fallback_model)
+                    except Exception:
+                        _fb_entries = []
                     _fb_resolved = False
                     for _fb in _fb_entries:
                         _fb_explicit_key = (_fb.get("api_key") or "").strip() or None
@@ -858,14 +856,11 @@ def init_agent(
     # when the primary is exhausted (rate-limit, overload, connection
     # failure).  Supports both legacy single-dict ``fallback_model`` and
     # new list ``fallback_providers`` format.
-    if isinstance(fallback_model, list):
-        agent._fallback_chain = [
-            f for f in fallback_model
-            if isinstance(f, dict) and f.get("provider") and f.get("model")
-        ]
-    elif isinstance(fallback_model, dict) and fallback_model.get("provider") and fallback_model.get("model"):
-        agent._fallback_chain = [fallback_model]
-    else:
+    try:
+        from hermes_cli.fallback_chain import normalize_fallback_entries
+
+        agent._fallback_chain = normalize_fallback_entries(fallback_model)
+    except Exception:
         agent._fallback_chain = []
     agent._fallback_index = 0
     agent._fallback_activated = getattr(agent, "_fallback_activated", False)

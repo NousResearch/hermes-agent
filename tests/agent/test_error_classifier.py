@@ -647,6 +647,13 @@ class TestClassifyApiError:
         result = classify_api_error(e)
         assert result.reason == FailoverReason.rate_limit
 
+    def test_message_opencode_free_usage_exceeded_is_rate_limit(self):
+        e = Exception("Free usage exceeded for this model")
+        result = classify_api_error(e, provider="opencode-zen", model="big-pickle")
+        assert result.reason == FailoverReason.rate_limit
+        assert result.should_rotate_credential is True
+        assert result.should_fallback is True
+
     def test_message_auth_pattern(self):
         e = Exception("invalid api key provided")
         result = classify_api_error(e)

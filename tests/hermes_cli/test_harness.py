@@ -95,6 +95,66 @@ def test_get_harness_url_falls_back_on_invalid_port(monkeypatch):
     assert harness_mod.get_harness_url() == "http://127.0.0.1:18794"
 
 
+def test_is_harness_running_uses_lightweight_health(monkeypatch):
+    calls = []
+
+    class FakeResponse:
+        status_code = 200
+
+    class FakeClient:
+        def __init__(self, timeout):
+            self.timeout = timeout
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def get(self, url):
+            calls.append((url, self.timeout))
+            return FakeResponse()
+
+    monkeypatch.setattr(harness_mod, "get_harness_url", lambda: "http://127.0.0.1:18794")
+    monkeypatch.setattr(harness_mod.httpx, "Client", FakeClient)
+
+    assert harness_mod.is_harness_running(timeout=0.25) is True
+    assert calls == [("http://127.0.0.1:18794/health", 0.25)]
+
+
+def test_is_harness_running_falls_back_to_legacy_status(monkeypatch):
+    calls = []
+
+    class FakeResponse:
+        def __init__(self, status_code):
+            self.status_code = status_code
+
+    class FakeClient:
+        def __init__(self, timeout):
+            self.timeout = timeout
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def get(self, url):
+            calls.append((url, self.timeout))
+            if url.endswith("/health"):
+                return FakeResponse(404)
+            return FakeResponse(200)
+
+    monkeypatch.setattr(harness_mod, "get_harness_url", lambda: "http://127.0.0.1:18794")
+    monkeypatch.setattr(harness_mod.httpx, "Client", FakeClient)
+
+    assert harness_mod.is_harness_running(timeout=0.25) is True
+    assert calls == [
+        ("http://127.0.0.1:18794/health", 0.25),
+        ("http://127.0.0.1:18794/status", harness_mod.LEGACY_STATUS_TIMEOUT),
+    ]
+
+
 def test_register_harness_subparser_wires_command():
     parser = argparse.ArgumentParser()
     subparsers = parser.add_subparsers(dest="command")

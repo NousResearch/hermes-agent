@@ -3218,6 +3218,20 @@ def run_gateway(verbose: int = 0, quiet: bool = False, replace: bool = False):
             pass  # best-effort; don't block gateway startup
     
     from gateway.run import start_gateway
+
+    try:
+        from hermes_cli.llama_fallback_runtime import ensure_llama_fallback_server
+
+        ensure_llama_fallback_server(quiet=quiet)
+    except Exception as exc:
+        if quiet:
+            import logging
+
+            logging.getLogger(__name__).warning(
+                "llama.cpp fallback autostart failed: %s", exc
+            )
+        else:
+            print(f"WARNING llama_fallback: autostart failed: {exc}")
     
     print("┌─────────────────────────────────────────────────────────┐")
     print("│           ⚕ Hermes Gateway Starting...                 │")

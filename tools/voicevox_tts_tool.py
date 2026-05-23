@@ -30,7 +30,7 @@ import sys
 import tempfile
 import threading
 from pathlib import Path
-from typing import Optional
+from typing import Any, Optional
 
 import requests
 
@@ -47,13 +47,21 @@ def _engine_url() -> str:
     return os.environ.get("VOICEVOX_URL", _VOICEVOX_URL).rstrip("/")
 
 
-def voicevox_speak(text: str, speaker: Optional[int] = None, blocking: bool = True) -> dict:
+def voicevox_speak(
+    text: str,
+    speaker: Optional[int] = None,
+    blocking: bool = True,
+    output_device: str | int | None = None,
+) -> dict:
     """Synthesise text with VOICEVOX and play through the system audio output.
 
     Args:
         text:     Text to speak (Japanese recommended; max ~200 chars per call).
         speaker:  Speaker/style ID. Defaults to VOICEVOX_SPEAKER env var (default: 8).
         blocking: If True, wait until playback finishes before returning.
+        output_device: Optional sounddevice output device index or name substring.
+                       Use this to route speech into a virtual cable selected as
+                       VRChat's microphone input.
 
     Returns:
         {"success": True, "duration_ms": <int>}  or  {"success": False, "error": "..."}
@@ -100,7 +108,7 @@ def voicevox_speak(text: str, speaker: Optional[int] = None, blocking: bool = Tr
 
     # Step 3: play the WAV
     try:
-        result = _play_wav(wav_bytes, blocking=blocking)
+        result = _play_wav(wav_bytes, blocking=blocking, output_device=output_device)
         return result
     except Exception as exc:
         return {"success": False, "error": f"playback failed: {exc}"}
@@ -188,9 +196,16 @@ def voicevox_status() -> dict:
 # Internal helpers
 # ---------------------------------------------------------------------------
 
-def _play_wav(wav_bytes: bytes, blocking: bool = True) -> dict:
+def _play_wav(
+    wav_bytes: bytes,
+    blocking: bool = True,
+    output_device: str | int | None = None,
+) -> dict:
     """Play WAV bytes through the system audio output."""
-    import wave, struct, time as _time
+    if output_device is not None and str(output_device).strip():
+        return _play_wav_to_output_device(wav_bytes, output_device, blocking=blocking)
+
+    import wave
 
     # Measure duration from WAV header
     try:
@@ -252,6 +267,92 @@ def _play_wav(wav_bytes: bytes, blocking: bool = True) -> dict:
     return {"success": True, "duration_ms": duration_ms}
 
 
+def _play_wav_to_output_device(
+    wav_bytes: bytes,
+    output_device: str | int,
+    *,
+    blocking: bool = True,
+) -> dict:
+    """Play WAV bytes through a named/indexed sounddevice output."""
+    try:
+        import sounddevice as sd
+    except Exception as exc:
+        return {
+            "success": False,
+            "error": "sounddevice_unavailable",
+            "detail": str(exc),
+            "output_device": output_device,
+        }
+
+    try:
+        data, samplerate, duration_ms = _wav_bytes_to_float32(wav_bytes)
+        device_index, device_name = _resolve_output_device(sd, output_device)
+        sd.play(data, samplerate, device=device_index, blocking=blocking)
+        return {
+            "success": True,
+            "duration_ms": duration_ms,
+            "output_device": device_name,
+            "output_device_index": device_index,
+        }
+    except Exception as exc:
+        return {
+            "success": False,
+            "error": "output_device_playback_failed",
+            "detail": str(exc),
+            "output_device": output_device,
+        }
+
+
+def _wav_bytes_to_float32(wav_bytes: bytes) -> tuple[Any, int, int]:
+    import wave
+
+    import numpy as np
+
+    with wave.open(io.BytesIO(wav_bytes)) as wf:
+        channels = wf.getnchannels()
+        width = wf.getsampwidth()
+        samplerate = wf.getframerate()
+        frames = wf.readframes(wf.getnframes())
+        frame_count = wf.getnframes()
+
+    if width == 2:
+        data = np.frombuffer(frames, dtype=np.int16).astype(np.float32) / 32768.0
+    elif width == 4:
+        data = np.frombuffer(frames, dtype=np.int32).astype(np.float32) / 2147483648.0
+    else:
+        raise ValueError(f"unsupported WAV sample width: {width}")
+
+    if channels > 1:
+        data = data.reshape(-1, channels)
+
+    duration_ms = int(frame_count / samplerate * 1000) if samplerate else 0
+    return data, samplerate, duration_ms
+
+
+def _resolve_output_device(sd: Any, output_device: str | int) -> tuple[int, str]:
+    devices = sd.query_devices()
+    if isinstance(output_device, int) or str(output_device).strip().isdigit():
+        index = int(output_device)
+        try:
+            device = devices[index]
+        except (IndexError, TypeError) as exc:
+            raise ValueError(f"output device index not found: {index}") from exc
+        name = str(device.get("name", index))
+        channels = int(device.get("max_output_channels", 0) or 0)
+        if channels <= 0:
+            raise ValueError(f"device has no output channels: {name}")
+        return index, name
+
+    needle = str(output_device).strip().casefold()
+    for index, device in enumerate(devices):
+        name = str(device.get("name", ""))
+        channels = int(device.get("max_output_channels", 0) or 0)
+        if channels > 0 and needle in name.casefold():
+            return index, name
+
+    raise ValueError(f"output device not found: {output_device}")
+
+
 def _cmd_exists(cmd: str) -> bool:
     import shutil
     return shutil.which(cmd) is not None
@@ -304,6 +405,12 @@ registry.register(
                     "type": "boolean",
                     "description": "Wait for playback to finish before returning. Default: true",
                 },
+                "output_device": {
+                    "description": (
+                        "Optional sounddevice output device index or name substring. "
+                        "Use a virtual cable output device when VRChat is listening to the matching cable input."
+                    ),
+                },
             },
             "required": ["text"],
         },
@@ -312,6 +419,7 @@ registry.register(
         text=args["text"],
         speaker=args.get("speaker"),
         blocking=args.get("blocking", True),
+        output_device=args.get("output_device"),
     ),
     check_fn=_check_voicevox_requirements,
     emoji="🔊",

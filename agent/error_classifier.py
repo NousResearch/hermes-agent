@@ -113,6 +113,8 @@ _RATE_LIMIT_PATTERNS = [
     "requests per minute",
     "tokens per minute",
     "requests per day",
+    "free usage exceeded",
+    "free tier usage exceeded",
     "try again in",
     "please retry after",
     "resource_exhausted",

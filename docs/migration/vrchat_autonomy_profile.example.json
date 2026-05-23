@@ -1,0 +1,45 @@
+{
+  "enabled": false,
+  "mode": "observe",
+  "dry_run": true,
+  "consume_queue": true,
+  "max_observations": 12,
+  "min_turn_interval_sec": 10,
+  "voicevox_url": "http://127.0.0.1:50021",
+  "harness_url": "http://127.0.0.1:18794",
+  "audio_output_device": "",
+  "vrchat_microphone_device": "",
+  "require_harness": false,
+  "allow_voice": false,
+  "allow_chatbox": false,
+  "allow_movement": false,
+  "allow_interrupt": false,
+  "output_device": "",
+  "voicevox_speaker": 8,
+  "chatbox_immediate": true,
+  "persona": "Calm, concise VRChat companion. Do not mention hidden reasoning.",
+  "task": "Choose one safe response to the latest VRChat observations.",
+  "allowed_avatar_actions": [
+    "wave"
+  ],
+  "avatar_action_descriptions": {
+    "wave": "Pulse the approved Wave avatar parameter once."
+  },
+  "avatar_action_profiles": {
+    "wave": [
+      {
+        "name": "Wave",
+        "value": true,
+        "reset_after_sec": 0.5,
+        "reset_value": false
+      }
+    ]
+  },
+  "provider": "",
+  "model": "",
+  "base_url": "",
+  "timeout": null,
+  "temperature": 0.0,
+  "max_tokens": 320,
+  "live_actuation_ack": ""
+}

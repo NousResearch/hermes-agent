@@ -81,6 +81,20 @@ class TestFallbackChainInit:
         agent = _make_agent(fallback_model={"model": "gpt-4o"})
         assert agent._fallback_chain == []
 
+    def test_opencode_free_alias_expands_at_init(self):
+        with patch(
+            "hermes_cli.models.opencode_free_model_ids",
+            return_value=["big-pickle", "qwen3.6-plus-free"],
+        ):
+            agent = _make_agent(
+                fallback_model={"provider": "opencode-zen", "model": "auto-free"}
+            )
+
+        assert agent._fallback_chain == [
+            {"provider": "opencode-zen", "model": "big-pickle"},
+            {"provider": "opencode-zen", "model": "qwen3.6-plus-free"},
+        ]
+
 
 # ── Chain advancement ─────────────────────────────────────────────────────
 
@@ -181,6 +195,41 @@ class TestFallbackChainAdvancement:
         ):
             assert agent._try_activate_fallback() is True
             assert mock_rpc.call_args.kwargs["explicit_api_key"] == "env-secret"
+
+    def test_opencode_zen_gpt_fallback_uses_responses_api(self):
+        fbs = [{"provider": "opencode-zen", "model": "gpt-5.4"}]
+        agent = _make_agent(fallback_model=fbs)
+        with patch(
+            "agent.auxiliary_client.resolve_provider_client",
+            return_value=(
+                _mock_client(base_url="https://opencode.ai/zen/v1"),
+                "gpt-5.4",
+            ),
+        ):
+            assert agent._try_activate_fallback() is True
+
+        assert agent.provider == "opencode-zen"
+        assert agent.api_mode == "codex_responses"
+        assert agent.base_url == "https://opencode.ai/zen/v1"
+
+    def test_opencode_go_minimax_fallback_strips_v1_for_messages(self):
+        fbs = [{"provider": "opencode-go", "model": "minimax-m2.5"}]
+        agent = _make_agent(fallback_model=fbs)
+        with (
+            patch(
+                "agent.auxiliary_client.resolve_provider_client",
+                return_value=(
+                    _mock_client(base_url="https://opencode.ai/zen/go/v1"),
+                    "minimax-m2.5",
+                ),
+            ),
+            patch("agent.anthropic_adapter.build_anthropic_client", return_value=MagicMock()),
+        ):
+            assert agent._try_activate_fallback() is True
+
+        assert agent.provider == "opencode-go"
+        assert agent.api_mode == "anthropic_messages"
+        assert agent.base_url == "https://opencode.ai/zen/go"
 
 
 # ── Pool-rotation vs fallback gating (#11314) ────────────────────────────

@@ -572,15 +572,15 @@ class ShellFileOperations(FileOperations):
 
     def _is_write_denied(self, path: str) -> bool:
         """Return True if a write path is denied locally or for this backend."""
-        exec_cwd = self._effective_cwd(None)
+        # Resolve effective cwd (same logic as _exec)
+        exec_cwd = getattr(self.env, 'cwd', None) or self.cwd
+        
         if _is_write_denied(path, base_dir=exec_cwd):
             return True
 
         environment_home = self._get_environment_home()
         if environment_home:
-            return _shared_is_write_denied(
-                path, home=environment_home, base_dir=exec_cwd
-            )
+            return _shared_is_write_denied(path, home=environment_home, base_dir=exec_cwd)
         return False
 
     def _expand_path(self, path: str) -> str:

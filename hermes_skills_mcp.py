@@ -16,8 +16,9 @@ read-only tools that let MCP clients discover and read:
 Paths resolve via HERMES_AGENTS_DIR (runtime fleet), then HERMES_REPO,
 then HERMES_HOME — same profile conventions as mcp_serve.py.
 
-Tool surface (8 tools; read-only by design):
+Tool surface (9 tools; read-only by design):
   fleet_context_snapshot — one-call bounded fleet bootstrap for IDEs
+  agent_health_summary — compact actionable fleet health anomalies
   skills_list          — list available agent SOUL.md files and repo skills
   skills_read          — read a specific skill/SOUL.md document
   agents_list          — list agents from registry with status summary
@@ -418,6 +419,47 @@ def build_fleet_context_snapshot() -> dict:
     }
 
 
+def build_agent_health_summary() -> dict:
+    """Build a compact, actionable, read-only fleet health summary."""
+    snapshot = build_fleet_context_snapshot()
+    stale_heartbeats = list(snapshot.get("stale_heartbeats") or [])
+    missing_layers = list(snapshot.get("missing_layers") or [])
+    warnings = list(snapshot.get("warnings") or [])
+    held_flags = list(snapshot.get("held_spec_flags") or [])
+
+    anomaly_count = (
+        len(stale_heartbeats)
+        + len(missing_layers)
+        + len(warnings)
+        + len(held_flags)
+        + (0 if snapshot.get("registry_present") else 1)
+    )
+
+    return {
+        "as_of": datetime.now(timezone.utc).isoformat(),
+        "status": "attention" if anomaly_count else "ok",
+        "mode": snapshot.get("mode"),
+        "gateway_reachable": bool(snapshot.get("gateway_reachable")),
+        "writes_allowed": False,
+        "source_of_truth": snapshot.get("source_of_truth"),
+        "agents_dir": snapshot.get("agents_dir"),
+        "registry_present": bool(snapshot.get("registry_present")),
+        "agent_count": int(snapshot.get("agent_count") or 0),
+        "stale_heartbeats": stale_heartbeats[:_SNAPSHOT_LIST_CAP],
+        "stale_heartbeats_truncated": len(stale_heartbeats) > _SNAPSHOT_LIST_CAP,
+        "missing_layers": missing_layers,
+        "held_spec_flags_count": len(held_flags),
+        "held_spec_flags_sample": held_flags[:10],
+        "warnings": warnings[:_SNAPSHOT_LIST_CAP],
+        "warning_count": len(warnings),
+        "next_action": (
+            "Review stale/missing layers before changing governed code."
+            if anomaly_count else
+            "No actionable fleet health anomalies in local MCP snapshot."
+        ),
+    }
+
+
 def _find_heartbeat(agent_name: str) -> Optional[dict]:
     """Find and parse an agent's HEARTBEAT.md for status info."""
     agents_dir = _find_agents_dir()
@@ -588,6 +630,17 @@ def register_skills_tools(mcp) -> None:
         Cursor can continue with partial but trustworthy context.
         """
         return json.dumps(build_fleet_context_snapshot(), indent=2)
+
+    # -- agent_health_summary ---------------------------------------------
+
+    @mcp.tool()
+    def agent_health_summary() -> str:
+        """Return compact actionable fleet health anomalies.
+
+        Use this when a Cursor session needs a fast "is anything broken?"
+        answer instead of the full fleet context snapshot. Read-only.
+        """
+        return json.dumps(build_agent_health_summary(), indent=2)
 
     # -- skills_list -------------------------------------------------------
 
@@ -1016,4 +1069,4 @@ def register_skills_tools(mcp) -> None:
             "entries": entries,
         }, indent=2)
 
-    logger.debug("Registered 8 skills/knowledge MCP tools")
+    logger.debug("Registered 9 skills/knowledge MCP tools")

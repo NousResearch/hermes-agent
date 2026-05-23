@@ -562,7 +562,7 @@ Restart Cursor after changing MCP settings. First connection can take several se
 
 ### Available tools
 
-The MCP server exposes **18 tools** when the optional skills module is installed (default in this repo): **10 messaging tools** plus **8 read-only skills/knowledge tools**.
+The MCP server exposes **19 tools** when the optional skills module is installed (default in this repo): **10 messaging tools** plus **9 read-only skills/knowledge tools**.
 
 #### Messaging (10 tools)
 
@@ -581,13 +581,14 @@ Matches OpenClaw's channel bridge surface plus a Hermes-specific channel browser
 | `permissions_list_open` | List approval requests observed by this MCP bridge process. |
 | `permissions_respond` | Resolve an approval observed by this MCP bridge process. This is best-effort bridge-local state, not a durable gateway approval API. |
 
-#### Skills and knowledge (8 tools, read-only)
+#### Skills and knowledge (9 tools, read-only)
 
 Registered from `hermes_skills_mcp` when the module is importable (bundled with `hermes-agent` installs). Paths resolve via `HERMES_AGENTS_DIR`, then `HERMES_REPO`, then `HERMES_HOME`. See [Cursor & Hermes](./cursor-hermes.md) for skills-only vs gateway mode and source-of-truth hierarchy.
 
 | Tool | Description |
 |------|-------------|
 | `fleet_context_snapshot` | One bounded bootstrap payload for Cursor/IDE clients: mode, paths, registry summary, stale heartbeats, HOT memory excerpt, latest-state digest, held-spec flags, gateway reachability, missing layers, warnings, and source-of-truth hierarchy reference. |
+| `agent_health_summary` | Compact actionable health summary: missing layers, stale or missing heartbeats, held-spec flag count, gateway reachability, and warnings. |
 | `skills_list` | List custom agent `SOUL.md` files and repo skills. |
 | `skills_read` | Read a skill document or agent `SOUL.md`. |
 | `agents_list` | List agents from `AGENT_REGISTRY.json` with status summary. |

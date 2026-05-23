@@ -297,7 +297,7 @@ def memory_evolution_status() -> dict[str, Any]:
             if isinstance(recall_quality.get("summary"), dict)
             else None,
         },
-        "recommended_next_actions": _memory_evolution_next_actions(current, next_item, outcome),
+        "recommended_next_actions": _memory_evolution_next_actions(current, next_item, outcome, evidence),
         "policy": {
             "taxonomy_is_fixed": True,
             "status_is_read_only": True,
@@ -1437,6 +1437,7 @@ def create_memory_write_proposal(
         "status": "proposed",
         "would_write_memory": False,
         "would_modify_graph": False,
+        "would_modify_config": False,
     }
     path = _proposal_path(get_hermes_home())
     event = _append_jsonl(path, proposal)
@@ -1705,6 +1706,7 @@ def _memory_evolution_evidence(
     codex = clients.get("codex", {}) if isinstance(clients.get("codex"), dict) else {}
     routing_metrics = routing_metrics if isinstance(routing_metrics, Mapping) else {}
     policy_outcome = _policy_closed_loop_evidence(outcome)
+    star_soul_evidence = _star_soul_continuity_evidence()
     return {
         "has_basic_memory_home": bool(bridge.get("hermes_home")),
         "has_graph": bool(graph.get("exists")) and _safe_int(graph.get("node_count")) > 0,
@@ -1741,6 +1743,7 @@ def _memory_evolution_evidence(
         if isinstance(outcome.get("metrics"), dict)
         else 0,
         **policy_outcome,
+        **star_soul_evidence,
     }
 
 
@@ -1775,6 +1778,75 @@ def _policy_closed_loop_evidence(outcome: Mapping[str, Any]) -> dict[str, Any]:
     }
 
 
+STAR_SOUL_CONTINUITY_TERMS = {
+    "preference",
+    "preferences",
+    "persona",
+    "collaboration",
+    "style",
+    "continuity",
+    "long-term",
+    "long_term",
+    "星魂",
+    "偏好",
+    "人格",
+    "协作风格",
+    "长期",
+}
+
+
+def _star_soul_continuity_evidence() -> dict[str, Any]:
+    """Read proposal-only continuity evidence without mutating memory."""
+
+    home = get_hermes_home()
+    proposals = [row for row in _read_jsonl(_proposal_path(home)) if not row.get("_parse_error")]
+    ledger = memory_operation_ledger(limit=500, event_type="write_proposal_created")
+    events = ledger.get("events", []) if isinstance(ledger.get("events"), list) else []
+    persona_proposals = [proposal for proposal in proposals if _is_persona_continuity_write_proposal(proposal)]
+    persona_proposal_ids = {
+        _clean_text(proposal.get("proposal_id"))
+        for proposal in persona_proposals
+        if _clean_text(proposal.get("proposal_id"))
+    }
+    governed_events = [
+        event
+        for event in events
+        if _clean_text(event.get("event_type")) == "write_proposal_created"
+        and _clean_text(event.get("operation")) == "write_proposal"
+        and _clean_text(event.get("proposal_id")) in persona_proposal_ids
+        and event.get("would_write_memory") is not True
+        and event.get("would_modify_config") is not True
+        and event.get("would_modify_graph") is not True
+    ]
+    governed_proposal_ids = sorted({_clean_text(event.get("proposal_id")) for event in governed_events})
+    return {
+        "write_proposal_count": len(proposals),
+        "write_proposal_operation_event_count": len(events),
+        "persona_continuity_write_proposal_count": len(persona_proposals),
+        "persona_continuity_governed_proposal_ids": governed_proposal_ids,
+        "persona_continuity_governed_event_count": len(governed_events),
+        "persona_continuity_governed": bool(governed_events),
+    }
+
+
+def _is_persona_continuity_write_proposal(proposal: Mapping[str, Any]) -> bool:
+    if proposal.get("would_write_memory") is not False:
+        return False
+    if proposal.get("would_modify_graph") is not False:
+        return False
+    if proposal.get("would_modify_config") is True:
+        return False
+    searchable = " ".join(
+        [
+            " ".join(_list_of_str(proposal.get("tags"))),
+            _clean_text(proposal.get("content")),
+            _clean_text(proposal.get("rationale")),
+            _clean_text(proposal.get("target_scope")),
+        ]
+    ).lower()
+    return any(term.lower() in searchable for term in STAR_SOUL_CONTINUITY_TERMS)
+
+
 def _tier_readiness(tier: Mapping[str, Any], evidence: Mapping[str, Any]) -> dict[str, Any]:
     level = _safe_int(tier.get("level"))
     criteria: list[tuple[str, bool]] = []
@@ -1806,7 +1878,7 @@ def _tier_readiness(tier: Mapping[str, Any], evidence: Mapping[str, Any]) -> dic
     if level >= 12:
         criteria.append(("Policy proposals close automatically after human approval and guarded checks", bool(evidence.get("policy_closed_loop_ready"))))
     if level >= 13:
-        criteria.append(("Long-term preference/persona continuity is governed", False))
+        criteria.append(("Long-term preference/persona continuity is governed", bool(evidence.get("persona_continuity_governed"))))
     if level >= 14:
         criteria.append(("Temporal evolution metrics exist across projects", False))
     if level >= 15:
@@ -1830,6 +1902,7 @@ def _memory_evolution_next_actions(
     current: Mapping[str, Any],
     next_item: Mapping[str, Any] | None,
     outcome: Mapping[str, Any],
+    evidence: Mapping[str, Any],
 ) -> list[str]:
     actions = []
     policy_outcome = _policy_closed_loop_evidence(outcome)
@@ -1840,6 +1913,8 @@ def _memory_evolution_next_actions(
         actions.append("Keep external-channel automatic recall blocked until exact allowlists are reviewed.")
     if not policy_outcome["policy_closed_loop_ready"]:
         actions.append("Run guarded non-mutating policy apply checks with explicit confirmation for approved proposals before claiming 星律记忆.")
+    if next_item and next_item.get("name") == "星魂记忆" and not evidence.get("persona_continuity_governed"):
+        actions.append("Create a governed memory_write_proposal for long-term preference/persona/collaboration-style continuity; do not write memory directly.")
     if not actions:
         actions.append("Continue with the next read-only governance/readiness capability before any durable write.")
     return actions[:5]

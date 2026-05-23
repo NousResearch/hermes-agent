@@ -1,3 +1,5 @@
+import json
+
 import agent.memory_fabric_bridge as memory_fabric_bridge
 from agent.memory_fabric_bridge import (
     memory_boundary_allowlist_audit,
@@ -9,6 +11,11 @@ from agent.memory_fabric_bridge import (
     memory_policy_outcome_monitor,
     memory_recall_quality_evaluate,
 )
+
+
+def _write_jsonl(path, rows):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("".join(json.dumps(row, ensure_ascii=False) + "\n" for row in rows), encoding="utf-8")
 
 
 def test_memory_evolution_tiers_are_fixed():
@@ -641,6 +648,167 @@ def test_memory_evolution_claims_star_law_after_guarded_policy_checks(monkeypatc
     assert star_law["achieved"] is True
     assert "Policy proposals close automatically after human approval and guarded checks" in star_law["passed_criteria"]
     assert not any("guarded non-mutating policy apply checks" in action for action in result["recommended_next_actions"])
+
+
+def test_memory_evolution_keeps_star_soul_blocked_without_write_proposal(tmp_path, monkeypatch):
+    monkeypatch.setattr(memory_fabric_bridge, "get_hermes_home", lambda: tmp_path)
+    _patch_star_law_prerequisites(monkeypatch, _star_law_ready_policy_outcome)
+
+    result = memory_evolution_status()
+    star_soul = next(item for item in result["readiness"] if item["level"] == 13)
+
+    assert result["current"]["level"] == 12
+    assert result["next"]["level"] == 13
+    assert result["evidence"]["write_proposal_count"] == 0
+    assert result["evidence"]["write_proposal_operation_event_count"] == 0
+    assert result["evidence"]["persona_continuity_write_proposal_count"] == 0
+    assert result["evidence"]["persona_continuity_governed"] is False
+    assert star_soul["achieved"] is False
+    assert "Long-term preference/persona continuity is governed" in star_soul["gaps"]
+    assert any("memory_write_proposal" in action and "do not write memory directly" in action for action in result["recommended_next_actions"])
+
+
+def test_memory_evolution_keeps_star_soul_blocked_for_generic_write_proposal(tmp_path, monkeypatch):
+    monkeypatch.setattr(memory_fabric_bridge, "get_hermes_home", lambda: tmp_path)
+    _patch_star_law_prerequisites(monkeypatch, _star_law_ready_policy_outcome)
+    _write_jsonl(
+        memory_fabric_bridge._proposal_path(tmp_path),
+        [
+            {
+                "proposal_id": "memory-write-proposal-generic",
+                "target_scope": "project",
+                "content": "Store deployment checklist notes.",
+                "rationale": "Improve release handoff.",
+                "tags": ["release"],
+                "status": "proposed",
+                "would_write_memory": False,
+                "would_modify_graph": False,
+            }
+        ],
+    )
+    _write_jsonl(
+        memory_fabric_bridge._operation_ledger_path(tmp_path),
+        [
+            {
+                "event_type": "write_proposal_created",
+                "operation": "write_proposal",
+                "proposal_id": "memory-write-proposal-generic",
+                "would_write_memory": False,
+                "would_modify_config": False,
+            }
+        ],
+    )
+
+    result = memory_evolution_status()
+    star_soul = next(item for item in result["readiness"] if item["level"] == 13)
+
+    assert result["current"]["level"] == 12
+    assert result["evidence"]["write_proposal_count"] == 1
+    assert result["evidence"]["write_proposal_operation_event_count"] == 1
+    assert result["evidence"]["persona_continuity_write_proposal_count"] == 0
+    assert result["evidence"]["persona_continuity_governed"] is False
+    assert star_soul["achieved"] is False
+
+
+def test_memory_evolution_keeps_star_soul_blocked_for_mismatched_persona_proposal_event(tmp_path, monkeypatch):
+    monkeypatch.setattr(memory_fabric_bridge, "get_hermes_home", lambda: tmp_path)
+    _patch_star_law_prerequisites(monkeypatch, _star_law_ready_policy_outcome)
+    _write_jsonl(
+        memory_fabric_bridge._proposal_path(tmp_path),
+        [
+            {
+                "proposal_id": "memory-write-proposal-star-soul",
+                "source_agent": "codex",
+                "target_scope": "user",
+                "content": "Proposal for long-term collaboration style and preference continuity.",
+                "rationale": "Govern 星魂记忆 persona continuity without writing memory directly.",
+                "tags": ["persona", "preferences", "collaboration"],
+                "status": "proposed",
+                "would_write_memory": False,
+                "would_modify_graph": False,
+            }
+        ],
+    )
+    _write_jsonl(
+        memory_fabric_bridge._operation_ledger_path(tmp_path),
+        [
+            {
+                "event_type": "write_proposal_created",
+                "operation": "write_proposal",
+                "proposal_id": "memory-write-proposal-other",
+                "would_write_memory": False,
+                "would_modify_config": False,
+            }
+        ],
+    )
+
+    result = memory_evolution_status()
+    star_soul = next(item for item in result["readiness"] if item["level"] == 13)
+
+    assert result["current"]["level"] == 12
+    assert result["evidence"]["write_proposal_count"] == 1
+    assert result["evidence"]["write_proposal_operation_event_count"] == 1
+    assert result["evidence"]["persona_continuity_write_proposal_count"] == 1
+    assert result["evidence"]["persona_continuity_governed_proposal_ids"] == []
+    assert result["evidence"]["persona_continuity_governed_event_count"] == 0
+    assert result["evidence"]["persona_continuity_governed"] is False
+    assert star_soul["achieved"] is False
+    assert "Long-term preference/persona continuity is governed" in star_soul["gaps"]
+
+
+def test_memory_evolution_claims_star_soul_for_governed_persona_continuity_proposal(tmp_path, monkeypatch):
+    monkeypatch.setattr(memory_fabric_bridge, "get_hermes_home", lambda: tmp_path)
+    _patch_star_law_prerequisites(monkeypatch, _star_law_ready_policy_outcome)
+    _write_jsonl(
+        memory_fabric_bridge._proposal_path(tmp_path),
+        [
+            {
+                "proposal_id": "memory-write-proposal-star-soul",
+                "source_agent": "codex",
+                "target_scope": "user",
+                "content": "Proposal for long-term collaboration style and preference continuity.",
+                "rationale": "Govern 星魂记忆 persona continuity without writing memory directly.",
+                "tags": ["persona", "preferences", "collaboration"],
+                "status": "proposed",
+                "would_write_memory": False,
+                "would_modify_graph": False,
+            }
+        ],
+    )
+    _write_jsonl(
+        memory_fabric_bridge._operation_ledger_path(tmp_path),
+        [
+            {
+                "event_type": "write_proposal_created",
+                "operation": "write_proposal",
+                "proposal_id": "memory-write-proposal-star-soul",
+                "would_write_memory": False,
+                "would_modify_config": False,
+            }
+        ],
+    )
+
+    result = memory_evolution_status()
+    star_soul = next(item for item in result["readiness"] if item["level"] == 13)
+
+    assert result["current"]["level"] == 13
+    assert result["current"]["name"] == "星魂记忆"
+    assert result["evidence"]["write_proposal_count"] == 1
+    assert result["evidence"]["write_proposal_operation_event_count"] == 1
+    assert result["evidence"]["persona_continuity_write_proposal_count"] == 1
+    assert result["evidence"]["persona_continuity_governed_proposal_ids"] == ["memory-write-proposal-star-soul"]
+    assert result["evidence"]["persona_continuity_governed_event_count"] == 1
+    assert result["evidence"]["persona_continuity_governed"] is True
+    assert star_soul["achieved"] is True
+    assert "Long-term preference/persona continuity is governed" in star_soul["passed_criteria"]
+    assert not any("memory_write_proposal" in action for action in result["recommended_next_actions"])
+    assert result["read_only"] is True
+    assert result["policy"]["status_is_read_only"] is True
+    assert result["policy"]["does_not_modify_config"] is True
+    assert result["policy"]["does_not_write_memory"] is True
+    assert result["policy"]["persistent_changes_must_use_proposals"] is True
+    assert result["would_mutate_memory"] is False
+    assert result["would_modify_config"] is False
 
 
 def test_memory_evolution_keeps_star_law_blocked_without_policy_execution(monkeypatch):

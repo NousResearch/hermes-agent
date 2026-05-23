@@ -1550,7 +1550,7 @@ class GatewayRunner:
     # Class-level defaults so partial construction in tests doesn't
     # blow up on attribute access.
     _running_agents_ts: Dict[str, float] = {}
-    _busy_input_mode: str = "interrupt"
+    _busy_input_mode: str = "queue"
     _restart_drain_timeout: float = DEFAULT_GATEWAY_RESTART_DRAIN_TIMEOUT
     _exit_code: Optional[int] = None
     _draining: bool = False
@@ -2821,7 +2821,7 @@ class GatewayRunner:
             return "queue"
         if mode == "steer":
             return "steer"
-        return "interrupt"
+        return "queue"
 
     @staticmethod
     def _load_restart_drain_timeout() -> float:

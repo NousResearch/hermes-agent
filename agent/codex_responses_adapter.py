@@ -248,19 +248,14 @@ def _chat_messages_to_responses_input(
     messages: List[Dict[str, Any]],
     *,
     is_xai_responses: bool = False,
+    suppress_reasoning_replay: bool = False,
 ) -> List[Dict[str, Any]]:
     """Convert internal chat-style messages to Responses input items.
 
-    ``is_xai_responses`` is kept for transport signature compatibility but
-    no longer suppresses encrypted reasoning replay.  Earlier (PR #26644,
-    May 2026) we believed xAI's OAuth/SuperGrok ``/v1/responses`` surface
-    rejected replayed ``encrypted_content`` reasoning items minted by
-    prior turns, and we stripped them.  That decision was wrong — xAI
-    explicitly relies on Hermes threading encrypted reasoning back across
-    turns for cross-turn coherence (the whole point of their partnership
-    integration).  We now replay encrypted reasoning on every Responses
-    transport (xAI, native Codex, custom relays) and let xAI tell us
-    explicitly if a specific surface ever rejects a payload.
+    ``is_xai_responses`` is kept for transport signature compatibility.
+    ``suppress_reasoning_replay`` is used to protect the xAI OAuth/SuperGrok
+    surface, which rejects replayed encrypted_content reasoning items
+    (see #30310).  API-key xAI and native Codex surfaces require replay.
     """
     items: List[Dict[str, Any]] = []
     seen_item_ids: set = set()
@@ -287,12 +282,11 @@ def _chat_messages_to_responses_input(
             if role == "assistant":
                 # Replay encrypted reasoning items from previous turns
                 # so the API can maintain coherent reasoning chains.
-                # This applies to every Responses transport including
-                # xAI — see _chat_messages_to_responses_input docstring
-                # for the May 2026 reversal of the earlier xAI gate.
+                # Suppressed for xAI OAuth (see #30310); allowed for
+                # API-key xAI and native Codex surfaces.
                 codex_reasoning = msg.get("codex_reasoning_items")
                 has_codex_reasoning = False
-                if isinstance(codex_reasoning, list):
+                if isinstance(codex_reasoning, list) and not suppress_reasoning_replay:
                     for ri in codex_reasoning:
                         if isinstance(ri, dict) and ri.get("encrypted_content"):
                             item_id = ri.get("id")
@@ -368,7 +362,9 @@ def _chat_messages_to_responses_input(
                     # When the assistant produced only reasoning with no visible
                     # content, emit an empty assistant message as the required
                     # following item.
-                    items.append({"role": "assistant", "content": ""})
+                    tool_calls_follow = bool(msg.get("tool_calls"))
+                    if not tool_calls_follow:
+                        items.append({"role": "assistant", "content": ""})
 
                 tool_calls = msg.get("tool_calls")
                 if isinstance(tool_calls, list):

@@ -342,6 +342,60 @@ S6_SERVICE_PREFIX = "gateway-"
 _S6_BIN_DIR = "/command"
 
 
+class S6Error(RuntimeError):
+    """Base error for S6ServiceManager lifecycle failures.
+
+    Concrete subclasses carry the slot name (and, where useful, the
+    underlying subprocess output) so the CLI can render an actionable
+    message instead of leaking a raw ``CalledProcessError`` traceback.
+    """
+
+    def __init__(self, message: str, *, service: str | None = None) -> None:
+        super().__init__(message)
+        self.service = service
+
+
+class GatewayNotRegisteredError(S6Error):
+    """Raised when a lifecycle method targets a slot that doesn't exist.
+
+    Most commonly: ``hermes -p typo gateway start`` when no profile
+    ``typo`` exists. Carries the unprefixed profile name (not the
+    full ``gateway-<profile>`` service-dir name) so callers can phrase
+    a user-facing message like "no such gateway 'typo'".
+    """
+
+    def __init__(self, profile: str) -> None:
+        self.profile = profile
+        super().__init__(
+            f"no such gateway {profile!r}: register it with "
+            f"`hermes profile create {profile}` first, or pass "
+            "an existing profile name via `-p <name>`",
+            service=f"gateway-{profile}",
+        )
+
+
+class S6CommandError(S6Error):
+    """Raised when an s6 command fails for a reason other than a
+    missing slot — e.g. permission denied on the supervise control
+    FIFO, or s6-svc returning a non-zero exit for an unexpected
+    reason. Carries the stderr from the failing command so callers
+    can surface it.
+    """
+
+    def __init__(
+        self, *, service: str, action: str, returncode: int, stderr: str,
+    ) -> None:
+        self.action = action
+        self.returncode = returncode
+        self.stderr = stderr
+        message = (
+            f"s6-svc {action} on {service!r} failed (rc={returncode})"
+        )
+        if stderr.strip():
+            message += f": {stderr.strip()}"
+        super().__init__(message, service=service)
+
+
 class S6ServiceManager:
     """Per-profile gateway supervision via s6-overlay.
 
@@ -446,29 +500,79 @@ class S6ServiceManager:
 
     # -- lifecycle ---------------------------------------------------------
 
-    def start(self, name: str) -> None:
-        """Bring up a registered service (``s6-svc -u``)."""
+    def _run_svc(self, action_flag: str, action_label: str, name: str) -> None:
+        """Shared lifecycle dispatch for start / stop / restart.
+
+        Translates the two failure modes operators care about into
+        named errors:
+
+        * ``GatewayNotRegisteredError`` — the service directory at
+          ``<scandir>/<name>/`` doesn't exist. ``s6-svc`` would
+          exit non-zero with a fairly opaque message; we pre-empt
+          it with a clear "no such gateway 'X'" tied to the profile
+          name (without the ``gateway-`` prefix).
+        * ``S6CommandError`` — anything else (EACCES on the
+          supervise control FIFO, timeout, etc.). Carries the
+          subprocess return code and stderr so callers can render
+          them inline.
+
+        ``action_flag`` is the ``s6-svc`` flag (``-u`` / ``-d`` /
+        ``-t``); ``action_label`` is the human verb (``start`` /
+        ``stop`` / ``restart``) used in error messages.
+        """
         import subprocess
-        subprocess.run(
-            [f"{_S6_BIN_DIR}/s6-svc", "-u", str(self.scandir / name)],
-            check=True, capture_output=True, timeout=5,
-        )
+
+        service_dir = self.scandir / name
+        if not service_dir.is_dir():
+            # Strip the gateway- prefix back off so the message
+            # matches what the user typed on the CLI (``-p <profile>``).
+            profile = (
+                name[len(S6_SERVICE_PREFIX):]
+                if name.startswith(S6_SERVICE_PREFIX)
+                else name
+            )
+            raise GatewayNotRegisteredError(profile)
+
+        try:
+            subprocess.run(
+                [f"{_S6_BIN_DIR}/s6-svc", action_flag, str(service_dir)],
+                check=True, capture_output=True, text=True, timeout=5,
+            )
+        except subprocess.CalledProcessError as exc:
+            raise S6CommandError(
+                service=name,
+                action=action_label,
+                returncode=exc.returncode,
+                stderr=exc.stderr or "",
+            ) from exc
+
+    def start(self, name: str) -> None:
+        """Bring up a registered service (``s6-svc -u``).
+
+        Raises:
+            GatewayNotRegisteredError: no service directory for ``name``.
+            S6CommandError: s6-svc exited non-zero for any other reason
+                (permission denied on the supervise FIFO, timeout, etc.).
+        """
+        self._run_svc("-u", "start", name)
 
     def stop(self, name: str) -> None:
-        """Bring down a registered service (``s6-svc -d``)."""
-        import subprocess
-        subprocess.run(
-            [f"{_S6_BIN_DIR}/s6-svc", "-d", str(self.scandir / name)],
-            check=True, capture_output=True, timeout=5,
-        )
+        """Bring down a registered service (``s6-svc -d``).
+
+        Raises:
+            GatewayNotRegisteredError: no service directory for ``name``.
+            S6CommandError: s6-svc exited non-zero for any other reason.
+        """
+        self._run_svc("-d", "stop", name)
 
     def restart(self, name: str) -> None:
-        """Restart a registered service (``s6-svc -t`` = SIGTERM)."""
-        import subprocess
-        subprocess.run(
-            [f"{_S6_BIN_DIR}/s6-svc", "-t", str(self.scandir / name)],
-            check=True, capture_output=True, timeout=5,
-        )
+        """Restart a registered service (``s6-svc -t`` = SIGTERM).
+
+        Raises:
+            GatewayNotRegisteredError: no service directory for ``name``.
+            S6CommandError: s6-svc exited non-zero for any other reason.
+        """
+        self._run_svc("-t", "restart", name)
 
     def is_running(self, name: str) -> bool:
         """True iff ``s6-svstat`` reports the service as up."""

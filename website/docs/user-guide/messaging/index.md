@@ -507,9 +507,23 @@ Scheduled auto-resume for N restart-interrupted session(s)
 
 No configuration is required. If you don't want the heads-up, set `gateway_restart_notification: false` on the platform.
 
+### Mobile-friendly progress defaults
+
+Telegram defaults to final-answer-first output: no tool-progress stream, no periodic "still working…" heartbeat, no interim assistant status messages, and concise busy acknowledgments. Opt back into any of those per platform:
+
+```yaml
+display:
+  platforms:
+    telegram:
+      tool_progress: new
+      interim_assistant_messages: true
+      long_running_notifications: true
+      busy_ack_detail: true
+```
+
 ### Progress bubble cleanup (opt-in)
 
-Tool-progress messages, the "still working…" heartbeat, and status-callback bubbles can be auto-deleted after the final response lands. Enable per-platform via `display.platforms.<platform>.cleanup_progress`:
+Tool-progress messages, the "still working…" heartbeat, and status-callback bubbles can also be auto-deleted after the final response lands. Enable per-platform via `display.platforms.<platform>.cleanup_progress`:
 
 ```yaml
 display:

@@ -3223,9 +3223,22 @@ class GatewayRunner:
 
         self._busy_ack_ts[session_key] = now
 
-        # Build a status-rich acknowledgment
+        # Build a status-rich acknowledgment. Mobile chat defaults keep this
+        # terse; detailed iteration/tool state is still available in logs and
+        # can be opted in per platform via display.platforms.<platform>.busy_ack_detail.
         status_parts = []
-        if running_agent and running_agent is not _AGENT_PENDING_SENTINEL:
+        busy_ack_detail_enabled = True
+        try:
+            from gateway.display_config import resolve_display_setting as _resolve_display_setting
+            _user_cfg = _load_gateway_config()
+            _platform_key = _platform_config_key(event.source.platform)
+            busy_ack_detail_enabled = bool(
+                _resolve_display_setting(_user_cfg, _platform_key, "busy_ack_detail", True)
+            )
+        except Exception:
+            busy_ack_detail_enabled = True
+
+        if busy_ack_detail_enabled and running_agent and running_agent is not _AGENT_PENDING_SENTINEL:
             try:
                 summary = running_agent.get_activity_summary()
                 iteration = summary.get("api_call_count", 0)
@@ -15874,9 +15887,13 @@ class GatewayRunner:
         # in chat platforms while opting into concise mid-turn updates.
         interim_assistant_messages_enabled = (
             source.platform != Platform.WEBHOOK
-            and is_truthy_value(
-                display_config.get("interim_assistant_messages"),
-                default=True,
+            and bool(
+                resolve_display_setting(
+                    user_config,
+                    platform_key,
+                    "interim_assistant_messages",
+                    True,
+                )
             )
         )
         
@@ -17413,6 +17430,19 @@ class GatewayRunner:
         # 0 = disable notifications.
         _NOTIFY_INTERVAL_RAW = _float_env("HERMES_AGENT_NOTIFY_INTERVAL", 180)
         _NOTIFY_INTERVAL = _NOTIFY_INTERVAL_RAW if _NOTIFY_INTERVAL_RAW > 0 else None
+        try:
+            _notify_enabled = bool(
+                resolve_display_setting(
+                    user_config,
+                    platform_key,
+                    "long_running_notifications",
+                    True,
+                )
+            )
+        except Exception:
+            _notify_enabled = True
+        if not _notify_enabled:
+            _NOTIFY_INTERVAL = None
         _notify_start = time.time()
 
         async def _notify_long_running():

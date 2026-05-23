@@ -129,11 +129,14 @@ class TestKeepaliveProbe:
 
         import tools.mcp_tool as mcp_mod
         orig = mcp_mod.asyncio.wait
+        orig_jitter = mcp_mod._mcp_keepalive_jitter_seconds
         mcp_mod.asyncio.wait = fake_wait
+        mcp_mod._mcp_keepalive_jitter_seconds = lambda _name: 0.0
         try:
             return await task._wait_for_lifecycle_event()
         finally:
             mcp_mod.asyncio.wait = orig
+            mcp_mod._mcp_keepalive_jitter_seconds = orig_jitter
 
     async def test_keepalive_uses_ping_for_prompt_only_server(self):
         task = MCPServerTask("test")
@@ -376,5 +379,4 @@ class TestKeepaliveProbeFallback:
         await task._discover_tools()
 
         assert task._ping_unsupported is False
-
 

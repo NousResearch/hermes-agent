@@ -459,6 +459,23 @@ json.dump(load_config(), sys.stdout, default=str)
           echo "PASS: Scenario G"
 
           # ═══════════════════════════════════════════════════════════════
+          # Scenario H: Symlinked config is rejected, not followed
+          # ═══════════════════════════════════════════════════════════════
+          echo "=== Scenario H: Symlink rejection ==="
+          H_HOME=$(mktemp -d)
+          H_TARGET=$(mktemp)
+          echo 'root_owned: true' > "$H_TARGET"
+          ln -s "$H_TARGET" "$H_HOME/config.yaml"
+          if ${configMergeScript} ${nixSettings} "$H_HOME/config.yaml" 2>/tmp/hermes-merge-symlink.err; then
+            fail "H: symlinked config.yaml was merged instead of rejected"
+          fi
+          grep -q "refusing to follow symlink" /tmp/hermes-merge-symlink.err \
+            || fail "H: symlink rejection error missing"
+          grep -q "root_owned: true" "$H_TARGET" \
+            || fail "H: symlink target was modified"
+          echo "PASS: Scenario H"
+
+          # ═══════════════════════════════════════════════════════════════
           # Report
           # ═══════════════════════════════════════════════════════════════
           if [ -n "$ERRORS" ]; then
@@ -469,7 +486,7 @@ json.dump(load_config(), sys.stdout, default=str)
           fi
 
           echo ""
-          echo "=== All 7 merge scenarios passed ==="
+          echo "=== All 8 merge scenarios passed ==="
           mkdir -p $out
           echo "ok" > $out/result
         '';

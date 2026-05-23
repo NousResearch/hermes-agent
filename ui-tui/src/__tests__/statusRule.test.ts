@@ -22,4 +22,11 @@ describe('statusRuleWidths', () => {
   it('omits the cwd segment when there is no room for it', () => {
     expect(statusRuleWidths(2, 'abcdef')).toEqual({ leftWidth: 2, rightWidth: 0, separatorWidth: 0 })
   })
+
+  it('budgets the cwd segment by display width, not utf-16 length', () => {
+    const widths = statusRuleWidths(30, '目录/分支')
+
+    expect(widths.leftWidth + widths.separatorWidth + widths.rightWidth).toBeLessThanOrEqual(30)
+    expect(widths.rightWidth).toBeGreaterThan('目录/分支'.length)
+  })
 })

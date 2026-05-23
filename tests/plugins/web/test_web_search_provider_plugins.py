@@ -48,6 +48,7 @@ def _clear_web_env(monkeypatch: pytest.MonkeyPatch) -> None:
         "TOOL_GATEWAY_DOMAIN",
         "TOOL_GATEWAY_USER_TOKEN",
         "XAI_API_KEY",
+        "SCRAPECREATORS_API_KEY",
     ):
         monkeypatch.delenv(k, raising=False)
 
@@ -84,6 +85,7 @@ class TestBundledPluginsRegister:
             "exa",
             "firecrawl",
             "parallel",
+            "scrapecreators",
             "searxng",
             "tavily",
             "xai",
@@ -102,6 +104,8 @@ class TestBundledPluginsRegister:
             # disabled in the migration (fell through to a legacy inline
             # path); the follow-up commit enabled it natively.
             ("firecrawl", True, True, True),
+            # scrapecreators: search-only Google Search API.
+            ("scrapecreators", True, False, False),
             # xai: search-only via Grok's agentic web_search tool.
             ("xai", True, False, False),
         ],
@@ -124,7 +128,7 @@ class TestBundledPluginsRegister:
 
     @pytest.mark.parametrize(
         "plugin_name",
-        ["brave-free", "ddgs", "searxng", "exa", "parallel", "tavily", "firecrawl", "xai"],
+        ["brave-free", "ddgs", "searxng", "exa", "parallel", "tavily", "firecrawl", "scrapecreators", "xai"],
     )
     def test_each_plugin_has_name_and_display_name(self, plugin_name: str) -> None:
         _ensure_plugins_loaded()
@@ -137,7 +141,7 @@ class TestBundledPluginsRegister:
 
     @pytest.mark.parametrize(
         "plugin_name",
-        ["brave-free", "ddgs", "searxng", "exa", "parallel", "tavily", "firecrawl", "xai"],
+        ["brave-free", "ddgs", "searxng", "exa", "parallel", "tavily", "firecrawl", "scrapecreators", "xai"],
     )
     def test_each_plugin_has_setup_schema(self, plugin_name: str) -> None:
         """``get_setup_schema()`` returns a dict the picker can consume."""
@@ -252,6 +256,16 @@ class TestIsAvailable:
         assert p is not None
         assert p.is_available() is False  # no XAI_API_KEY, no auth.json
         monkeypatch.setenv("XAI_API_KEY", "real")
+        assert p.is_available() is True
+
+    def test_scrapecreators_requires_api_key(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        _ensure_plugins_loaded()
+        from agent.web_search_registry import get_provider
+
+        p = get_provider("scrapecreators")
+        assert p is not None
+        assert p.is_available() is False
+        monkeypatch.setenv("SCRAPECREATORS_API_KEY", "real")
         assert p.is_available() is True
 
 
@@ -495,6 +509,17 @@ class TestErrorResponseShapes:
         from agent.web_search_registry import get_provider
 
         p = get_provider("xai")
+        assert p is not None
+        result = p.search("test", limit=5)
+        assert isinstance(result, dict)
+        assert result.get("success") is False
+        assert "error" in result
+
+    def test_scrapecreators_search_returns_error_dict_when_unconfigured(self) -> None:
+        _ensure_plugins_loaded()
+        from agent.web_search_registry import get_provider
+
+        p = get_provider("scrapecreators")
         assert p is not None
         result = p.search("test", limit=5)
         assert isinstance(result, dict)

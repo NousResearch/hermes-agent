@@ -259,6 +259,7 @@ class TestBackendSelection:
         "TOOL_GATEWAY_SCHEME",
         "TOOL_GATEWAY_USER_TOKEN",
         "TAVILY_API_KEY",
+        "SCRAPECREATORS_API_KEY",
     )
 
     def setup_method(self):
@@ -324,6 +325,12 @@ class TestBackendSelection:
         with patch("tools.web_tools._load_web_config", return_value={"backend": "Tavily"}):
             assert _get_backend() == "tavily"
 
+    def test_config_scrapecreators(self):
+        """web.backend=scrapecreators in config → 'scrapecreators'."""
+        from tools.web_tools import _get_backend
+        with patch("tools.web_tools._load_web_config", return_value={"backend": "scrapecreators"}):
+            assert _get_backend() == "scrapecreators"
+
     # ── Fallback (no web.backend in config) ───────────────────────────
 
     def test_fallback_parallel_only_key(self):
@@ -353,6 +360,13 @@ class TestBackendSelection:
         with patch("tools.web_tools._load_web_config", return_value={}), \
              patch.dict(os.environ, {"TAVILY_API_KEY": "tvly-test"}):
             assert _get_backend() == "tavily"
+
+    def test_fallback_scrapecreators_only_key(self):
+        """Only SCRAPECREATORS_API_KEY set → 'scrapecreators'."""
+        from tools.web_tools import _get_backend
+        with patch("tools.web_tools._load_web_config", return_value={}), \
+             patch.dict(os.environ, {"SCRAPECREATORS_API_KEY": "sc-test"}):
+            assert _get_backend() == "scrapecreators"
 
     def test_fallback_tavily_with_firecrawl_prefers_firecrawl(self):
         """Tavily + Firecrawl keys, no config → 'firecrawl' (backward compat)."""
@@ -558,6 +572,7 @@ class TestCheckWebApiKey:
         "TOOL_GATEWAY_SCHEME",
         "TOOL_GATEWAY_USER_TOKEN",
         "TAVILY_API_KEY",
+        "SCRAPECREATORS_API_KEY",
     )
 
     def setup_method(self):

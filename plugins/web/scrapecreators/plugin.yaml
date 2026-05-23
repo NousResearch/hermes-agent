@@ -1,0 +1,7 @@
+name: web-scrapecreators
+version: 1.0.0
+description: "ScrapeCreators Google Search — search via /v1/google/search. Requires SCRAPECREATORS_API_KEY (https://scrapecreators.com)."
+author: NousResearch
+kind: backend
+provides_web_providers:
+  - scrapecreators

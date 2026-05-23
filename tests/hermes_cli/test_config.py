@@ -485,6 +485,22 @@ class TestOptionalEnvVarsRegistry:
             all_vars.extend(vars_list)
         assert "TAVILY_API_KEY" in all_vars
 
+    def test_scrapecreators_api_key_registered(self):
+        """SCRAPECREATORS_API_KEY is listed in OPTIONAL_ENV_VARS."""
+        from hermes_cli.config import OPTIONAL_ENV_VARS
+        assert "SCRAPECREATORS_API_KEY" in OPTIONAL_ENV_VARS
+        assert OPTIONAL_ENV_VARS["SCRAPECREATORS_API_KEY"]["category"] == "tool"
+        assert OPTIONAL_ENV_VARS["SCRAPECREATORS_API_KEY"]["password"] is True
+        assert OPTIONAL_ENV_VARS["SCRAPECREATORS_API_KEY"]["tools"] == ["web_search"]
+
+    def test_scrapecreators_in_env_vars_by_version(self):
+        """SCRAPECREATORS_API_KEY is listed in ENV_VARS_BY_VERSION."""
+        from hermes_cli.config import ENV_VARS_BY_VERSION
+        all_vars = []
+        for vars_list in ENV_VARS_BY_VERSION.values():
+            all_vars.extend(vars_list)
+        assert "SCRAPECREATORS_API_KEY" in all_vars
+
 
 class TestAnthropicTokenMigration:
     """Test that config version 8→9 clears ANTHROPIC_TOKEN."""

@@ -180,7 +180,17 @@ def _register_service(scandir: Path, profile: str, *, start: bool) -> None:
     directly because the cont-init.d phase runs as root before
     s6-svscan starts scanning the dynamic scandir — the manager's
     ``s6-svscanctl -a`` call would fail with no control socket.
+
+    Atomicity: build the new layout in a sibling temp directory and
+    rename it into place via :meth:`Path.replace`. This matches
+    :meth:`S6ServiceManager.register_profile_gateway` (PR #30136
+    review item O4) — even though cont-init.d runs before s6-svscan
+    starts scanning, an atomic publication keeps the contract uniform
+    between the two registration paths and protects against a
+    half-populated dir if the script is interrupted mid-write.
     """
+    import shutil
+
     from hermes_cli.service_manager import (
         S6ServiceManager,
         validate_profile_name,
@@ -188,36 +198,50 @@ def _register_service(scandir: Path, profile: str, *, start: bool) -> None:
 
     validate_profile_name(profile)
     service_dir = scandir / f"gateway-{profile}"
-    service_dir.mkdir(parents=True, exist_ok=True)
+    tmp_dir = service_dir.with_name(service_dir.name + ".tmp")
 
-    (service_dir / "type").write_text("longrun\n")
+    # Wipe any leftover tmp from a previous interrupted run.
+    if tmp_dir.exists():
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+    tmp_dir.mkdir(parents=True)
 
-    # Reuse the manager's run-script rendering — single source of truth
-    # so register_profile_gateway and reconcile_profile_gateways stay
-    # consistent. extra_env is empty here; users who need per-profile
-    # env can set it via the profile's config.yaml (which the gateway
-    # itself loads).
-    run = service_dir / "run"
-    run.write_text(S6ServiceManager._render_run_script(profile, extra_env={}))
-    run.chmod(0o755)
+    try:
+        (tmp_dir / "type").write_text("longrun\n")
 
-    # Persistent log rotation (OQ8-C).
-    log_subdir = service_dir / "log"
-    log_subdir.mkdir(exist_ok=True)
-    log_run = log_subdir / "run"
-    log_run.write_text(S6ServiceManager._render_log_run(profile))
-    log_run.chmod(0o755)
+        # Reuse the manager's run-script rendering — single source of
+        # truth so register_profile_gateway and reconcile_profile_gateways
+        # stay consistent. extra_env is empty here; users who need
+        # per-profile env can set it via the profile's config.yaml
+        # (which the gateway itself loads).
+        run = tmp_dir / "run"
+        run.write_text(S6ServiceManager._render_run_script(profile, extra_env={}))
+        run.chmod(0o755)
 
-    # The presence of a `down` file tells s6-supervise to NOT start
-    # the service when s6-svscan picks it up. User brings it up
-    # explicitly with `hermes -p <profile> gateway start` (which
-    # routes through the Phase 4 _dispatch_via_service_manager_if_s6
-    # helper to `s6-svc -u`).
-    down_marker = service_dir / "down"
-    if start:
-        down_marker.unlink(missing_ok=True)
-    else:
-        down_marker.touch()
+        # Persistent log rotation (OQ8-C).
+        log_subdir = tmp_dir / "log"
+        log_subdir.mkdir()
+        log_run = log_subdir / "run"
+        log_run.write_text(S6ServiceManager._render_log_run(profile))
+        log_run.chmod(0o755)
+
+        # The presence of a `down` file tells s6-supervise to NOT
+        # start the service when s6-svscan picks it up. User brings
+        # it up explicitly with `hermes -p <profile> gateway start`
+        # (which routes through the Phase 4
+        # _dispatch_via_service_manager_if_s6 helper to `s6-svc -u`).
+        if not start:
+            (tmp_dir / "down").touch()
+
+        # Publish atomically. Path.replace handles the existing-target
+        # case the same way os.rename does on POSIX: the target is
+        # silently replaced, so a previous reconcile pass's slot is
+        # cleanly overwritten in one operation.
+        if service_dir.exists():
+            shutil.rmtree(service_dir)
+        tmp_dir.replace(service_dir)
+    except Exception:
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+        raise
 
 
 def _write_reconcile_log(

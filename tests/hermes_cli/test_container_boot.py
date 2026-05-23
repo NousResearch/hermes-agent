@@ -354,6 +354,81 @@ def test_invalid_profile_name_in_directory_raises(tmp_path: Path) -> None:
         )
 
 
+def test_register_service_publishes_atomically(tmp_path: Path) -> None:
+    """The reconciler should build the new service dir in a sibling
+    tmp directory and rename it into place — never leaving a half-
+    populated slot visible to a concurrent s6-svscan rescan.
+
+    We verify the invariant indirectly: after a clean reconcile, the
+    target directory exists with all required files, and no sibling
+    .tmp leftovers remain. (Atomic publication is the only way to
+    achieve both with mkdir + write.)
+    """
+    scandir = tmp_path / "run-service"; scandir.mkdir()
+    _make_profile(tmp_path, "coder", state="running")
+
+    reconcile_profile_gateways(
+        hermes_home=tmp_path, scandir=scandir, dry_run=False,
+    )
+
+    # No leftover tmp dir.
+    leftover = list(scandir.glob("*.tmp"))
+    assert leftover == [], f"leftover tmp directories: {leftover}"
+
+    # Target is fully populated.
+    svc = scandir / "gateway-coder"
+    assert (svc / "type").exists()
+    assert (svc / "run").exists()
+    assert (svc / "log" / "run").exists()
+
+
+def test_register_service_overwrites_existing_slot(tmp_path: Path) -> None:
+    """A second reconciliation pass cleanly replaces an existing
+    slot (the tmp+rename publication overwrites the previous one)."""
+    scandir = tmp_path / "run-service"; scandir.mkdir()
+    profile = _make_profile(tmp_path, "coder", state="running")
+
+    # First pass.
+    reconcile_profile_gateways(
+        hermes_home=tmp_path, scandir=scandir, dry_run=False,
+    )
+    first_run = (scandir / "gateway-coder" / "run").read_text()
+
+    # Mutate the profile state so the run-script changes (extra_env
+    # rendering would differ if we wired profile config through, but
+    # for now just exercise the overwrite path).
+    (profile / "gateway_state.json").write_text(
+        '{"gateway_state": "stopped"}',
+    )
+    reconcile_profile_gateways(
+        hermes_home=tmp_path, scandir=scandir, dry_run=False,
+    )
+
+    # Slot still exists, no .tmp remnants.
+    assert (scandir / "gateway-coder" / "run").read_text() == first_run
+    assert list(scandir.glob("*.tmp")) == []
+    # Down marker now present (state went from running → stopped).
+    assert (scandir / "gateway-coder" / "down").exists()
+
+
+def test_register_service_cleans_up_stale_tmp_dir(tmp_path: Path) -> None:
+    """If a previous interrupted run left a .tmp sibling directory,
+    a fresh reconcile must clean it up rather than failing on mkdir."""
+    scandir = tmp_path / "run-service"; scandir.mkdir()
+    # Simulate a leftover from an interrupted run.
+    stale_tmp = scandir / "gateway-coder.tmp"
+    stale_tmp.mkdir()
+    (stale_tmp / "stale-file").write_text("garbage")
+
+    _make_profile(tmp_path, "coder", state="running")
+    reconcile_profile_gateways(
+        hermes_home=tmp_path, scandir=scandir, dry_run=False,
+    )
+
+    assert not stale_tmp.exists()
+    assert (scandir / "gateway-coder" / "run").exists()
+
+
 # ---------------------------------------------------------------------------
 # Default-profile slot — always registered (PR #30136 review item I1)
 # ---------------------------------------------------------------------------

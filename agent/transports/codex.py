@@ -27,6 +27,7 @@ class ResponsesApiTransport(ProviderTransport):
         return _chat_messages_to_responses_input(
             messages,
             is_xai_responses=bool(kwargs.get("is_xai_responses")),
+            reasoning_provider=kwargs.get("provider"),
         )
 
     def convert_tools(self, tools: List[Dict[str, Any]]) -> Any:
@@ -99,6 +100,7 @@ class ResponsesApiTransport(ProviderTransport):
             "input": _chat_messages_to_responses_input(
                 payload_messages,
                 is_xai_responses=is_xai_responses,
+                reasoning_provider=params.get("provider"),
             ),
             "tools": response_tools,
             "store": False,
@@ -200,6 +202,7 @@ class ResponsesApiTransport(ProviderTransport):
 
         # _normalize_codex_response returns (SimpleNamespace, finish_reason_str)
         msg, finish_reason = _normalize_codex_response(response)
+        provider = kwargs.get("provider")
 
         tool_calls = None
         if msg and msg.tool_calls:
@@ -220,7 +223,18 @@ class ResponsesApiTransport(ProviderTransport):
         # Extract reasoning items for provider_data
         provider_data = {}
         if msg and hasattr(msg, "codex_reasoning_items") and msg.codex_reasoning_items:
-            provider_data["codex_reasoning_items"] = msg.codex_reasoning_items
+            if isinstance(provider, str) and provider.strip():
+                tagged_items = []
+                for item in msg.codex_reasoning_items:
+                    if isinstance(item, dict):
+                        tagged = dict(item)
+                        tagged.setdefault("source_provider", provider.strip().lower())
+                        tagged_items.append(tagged)
+                    else:
+                        tagged_items.append(item)
+                provider_data["codex_reasoning_items"] = tagged_items
+            else:
+                provider_data["codex_reasoning_items"] = msg.codex_reasoning_items
         if msg and hasattr(msg, "codex_message_items") and msg.codex_message_items:
             provider_data["codex_message_items"] = msg.codex_message_items
         if msg and hasattr(msg, "reasoning_details") and msg.reasoning_details:

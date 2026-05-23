@@ -504,6 +504,19 @@ class TestVerifySession:
         with pytest.raises(ProviderError, match="verification failed"):
             provider.verify_session(access_token=token)
 
+    def test_verification_failure_message_surfaces_token_claims(
+        self, provider, rsa_keypair
+    ):
+        """Operators need to see the actual iss/aud the token carries to debug
+        config drift between HERMES_DASHBOARD_PORTAL_URL/CLIENT_ID and Portal."""
+        token = _mint_token(rsa_keypair, iss="https://evil.example")
+        with pytest.raises(ProviderError) as excinfo:
+            provider.verify_session(access_token=token)
+        msg = str(excinfo.value)
+        # Both the observed (token) and expected (configured) values appear.
+        assert "'https://evil.example'" in msg
+        assert "'https://portal.example.com'" in msg  # configured portal URL
+
     def test_missing_sub_raises(self, provider, rsa_keypair):
         # PyJWT's "require" set includes sub, so this surfaces as
         # InvalidTokenError → ProviderError before we ever touch _session_from_claims.

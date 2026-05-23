@@ -356,8 +356,28 @@ class NousDashboardAuthProvider(DashboardAuthProvider):
             # verify_session() catches this and returns None per protocol.
             raise InvalidCodeError(f"access token expired: {exc}") from exc
         except jwt.InvalidTokenError as exc:
+            # Surface the actual claim values that failed verification so
+            # operators don't have to dig into the JWT to debug config drift
+            # between HERMES_DASHBOARD_PORTAL_URL / HERMES_DASHBOARD_OAUTH_CLIENT_ID
+            # and what Portal is actually emitting. Decoding without verification
+            # is safe here: we've already failed to verify, and we never trust
+            # these values — they're surfaced for diagnostics only.
+            details = ""
+            try:
+                unverified = jwt.decode(
+                    access_token,
+                    options={"verify_signature": False, "verify_exp": False},
+                )
+                details = (
+                    f" [token iss={unverified.get('iss')!r} "
+                    f"aud={unverified.get('aud')!r}; "
+                    f"expected iss={self._portal_url!r} "
+                    f"aud={self._client_id!r}]"
+                )
+            except Exception:
+                pass
             raise ProviderError(
-                f"access token verification failed: {exc}"
+                f"access token verification failed: {exc}{details}"
             ) from exc
 
         self._check_agent_instance_id(claims)

@@ -1,16 +1,18 @@
-"""
-ntfy platform adapter.
+"""ntfy platform adapter (Hermes plugin).
 
-Uses httpx streaming to receive messages published to a subscribed topic,
-and HTTP POST to publish replies. Works with ntfy.sh or any self-hosted
-ntfy server.
+Subscribes to a topic on ntfy.sh or any self-hosted ntfy server via
+HTTP streaming (``/json`` endpoint with ``poll=false``) and publishes
+replies via HTTP POST. No external SDK — only httpx, which is already
+a Hermes dependency.
 
-Requires:
-    pip install httpx  (already a dependency)
-    NTFY_TOPIC env var (and optionally NTFY_SERVER_URL, NTFY_TOKEN,
-    NTFY_PUBLISH_TOPIC)
+This adapter ships as a Hermes platform plugin under
+``plugins/platforms/ntfy/``. The Hermes plugin loader scans the
+directory at startup, calls :func:`register`, and the platform becomes
+available to ``gateway/run.py`` and ``tools/send_message_tool`` through
+the registry — no edits to core files required.
 
-Configuration in config.yaml:
+Configuration in config.yaml::
+
     platforms:
       ntfy:
         enabled: true
@@ -19,7 +21,27 @@ Configuration in config.yaml:
           topic: "hermes-in"              # subscribe topic (incoming)
           publish_topic: "hermes-out"     # optional — defaults to topic
           token: "..."                    # optional Bearer / Basic auth token
-          markdown: true                  # optional — enable markdown formatting (default: false)
+          markdown: true                  # optional — enable markdown (default: false)
+
+Environment variables (all read at adapter construct time, env wins over
+config.yaml ``extra``):
+
+    NTFY_TOPIC                 Topic to subscribe to (required)
+    NTFY_SERVER_URL            Server URL (default: https://ntfy.sh)
+    NTFY_TOKEN                 Bearer token or 'user:pass' for Basic auth
+    NTFY_PUBLISH_TOPIC         Reply topic (defaults to NTFY_TOPIC)
+    NTFY_MARKDOWN              "true"/"1"/"yes" enables X-Markdown header
+    NTFY_ALLOWED_USERS         Allowlist (treated by gateway as user IDs;
+                               on ntfy these are topic names)
+    NTFY_ALLOW_ALL_USERS       Allow any topic — dev only
+    NTFY_HOME_CHANNEL          Default topic for cron / notification delivery
+    NTFY_HOME_CHANNEL_NAME     Human label for the home channel
+
+Identity model: ntfy has no native authenticated user identity. The
+``title`` field is publisher-controlled and is NOT used for
+authorization. Each topic is treated as a single trusted channel —
+``user_id`` is fixed to the topic name. Use a private topic protected
+by a read token for any real trust boundary.
 """
 
 import asyncio
@@ -29,7 +51,7 @@ import os
 import time
 import uuid
 from datetime import datetime, timezone
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
 try:
     import httpx
@@ -52,6 +74,7 @@ logger = logging.getLogger(__name__)
 class _FatalStreamError(Exception):
     """Raised when a stream error is unrecoverable (e.g. 401, 404)."""
 
+
 DEFAULT_SERVER = "https://ntfy.sh"
 MAX_MESSAGE_LENGTH = 4096  # ntfy message body limit
 DEDUP_WINDOW_SECONDS = 300
@@ -60,27 +83,45 @@ RECONNECT_BACKOFF = [2, 5, 10, 30, 60]
 STREAM_TIMEOUT_SECONDS = 90  # ntfy keepalive default is 55s; give margin
 
 
-def check_ntfy_requirements() -> bool:
-    """Check if ntfy adapter dependencies are available and configured."""
+def check_requirements() -> bool:
+    """Check whether the ntfy adapter is installable and minimally configured.
+
+    Reads ``NTFY_TOPIC`` directly to avoid the cost of a full
+    ``load_gateway_config()`` (which also writes to ``os.environ``) on
+    every pre-flight check.
+    """
     if not HTTPX_AVAILABLE:
         return False
-    # Check env var directly — avoids the full config load (which also
-    # writes to os.environ) on every adapter pre-check call.
     topic = os.getenv("NTFY_TOPIC", "").strip()
+    return bool(topic)
+
+
+def validate_config(config) -> bool:
+    """Validate that the configured ntfy platform has a topic set."""
+    extra = getattr(config, "extra", {}) or {}
+    topic = extra.get("topic") or os.getenv("NTFY_TOPIC", "")
+    return bool(topic)
+
+
+def is_connected(config) -> bool:
+    """Check whether ntfy is configured (env or config.yaml)."""
+    extra = getattr(config, "extra", {}) or {}
+    topic = os.getenv("NTFY_TOPIC") or extra.get("topic", "")
     return bool(topic)
 
 
 class NtfyAdapter(BasePlatformAdapter):
     """ntfy adapter.
 
-    Subscribes to a topic via HTTP streaming (/json endpoint) and publishes
-    replies via HTTP POST. No external SDK — only httpx is required.
+    Subscribes to a topic via HTTP streaming (``/json`` endpoint) and
+    publishes replies via HTTP POST. No external SDK — only httpx.
     """
 
     MAX_MESSAGE_LENGTH = MAX_MESSAGE_LENGTH
 
     def __init__(self, config: PlatformConfig):
-        super().__init__(config, Platform.NTFY)
+        platform = Platform("ntfy")
+        super().__init__(config=config, platform=platform)
 
         extra = config.extra or {}
         self._server: str = (
@@ -167,10 +208,16 @@ class NtfyAdapter(BasePlatformAdapter):
             timeout=httpx.Timeout(connect=15.0, read=STREAM_TIMEOUT_SECONDS, write=15.0, pool=15.0),
         ) as response:
             if response.status_code == 401:
-                logger.error("[%s] Authentication failed (401) — stopping reconnect loop. Check NTFY_TOKEN.", self.name)
+                logger.error(
+                    "[%s] Authentication failed (401) — stopping reconnect loop. Check NTFY_TOKEN.",
+                    self.name,
+                )
                 raise _FatalStreamError("401 Unauthorized")
             if response.status_code == 404:
-                logger.error("[%s] Topic not found (404): %s — stopping reconnect loop.", self.name, self._topic)
+                logger.error(
+                    "[%s] Topic not found (404): %s — stopping reconnect loop.",
+                    self.name, self._topic,
+                )
                 raise _FatalStreamError("404 Not Found")
             response.raise_for_status()
 
@@ -226,8 +273,8 @@ class NtfyAdapter(BasePlatformAdapter):
         # publisher-controlled and must NOT be used for authorization — any
         # publisher who knows the topic can set title to an allowed username.
         # Treat ntfy as a single trusted channel; user_id is fixed to the
-        # topic name. Document that NTFY_ALLOWED_USERS is only a real trust
-        # boundary when the topic has a read token protecting it.
+        # topic name. NTFY_ALLOWED_USERS is only a real trust boundary when
+        # the topic itself is protected by a read token.
         user_id = topic
         user_name = topic
 
@@ -239,10 +286,12 @@ class NtfyAdapter(BasePlatformAdapter):
             user_name=user_name,
         )
 
-        # Parse timestamp
         unix_ts = event.get("time")
         try:
-            timestamp = datetime.fromtimestamp(int(unix_ts), tz=timezone.utc) if unix_ts else datetime.now(tz=timezone.utc)
+            timestamp = (
+                datetime.fromtimestamp(int(unix_ts), tz=timezone.utc)
+                if unix_ts else datetime.now(tz=timezone.utc)
+            )
         except (ValueError, OSError, TypeError):
             timestamp = datetime.now(tz=timezone.utc)
 
@@ -302,7 +351,9 @@ class NtfyAdapter(BasePlatformAdapter):
         body = content[:self.MAX_MESSAGE_LENGTH]
 
         try:
-            resp = await self._http_client.post(url, content=body.encode("utf-8"), headers=headers, timeout=15.0)
+            resp = await self._http_client.post(
+                url, content=body.encode("utf-8"), headers=headers, timeout=15.0,
+            )
             if resp.status_code < 300:
                 try:
                     data = resp.json()
@@ -334,9 +385,169 @@ class NtfyAdapter(BasePlatformAdapter):
         if not self._token:
             return {}
         # ntfy supports both Bearer tokens and Base64-encoded Basic auth;
-        # prefer Bearer for API tokens, Basic for username:password pairs.
+        # 'user:pass' pairs become Basic, anything else is treated as Bearer.
         if ":" in self._token:
             import base64
             encoded = base64.b64encode(self._token.encode()).decode()
             return {"Authorization": f"Basic {encoded}"}
         return {"Authorization": f"Bearer {self._token}"}
+
+
+# ---------------------------------------------------------------------------
+# Plugin registration
+# ---------------------------------------------------------------------------
+
+
+def _env_enablement() -> dict | None:
+    """Seed ``PlatformConfig.extra`` from env vars during gateway config load.
+
+    Called by the platform registry's env-enablement hook BEFORE adapter
+    construction, so ``gateway status`` and ``get_connected_platforms()``
+    reflect env-only configuration without instantiating the HTTP client.
+    Returns ``None`` when ntfy isn't minimally configured; the caller skips
+    auto-enabling.
+
+    The special ``home_channel`` key in the returned dict is handled by the
+    core hook — it becomes a proper ``HomeChannel`` dataclass on the
+    ``PlatformConfig`` rather than being merged into ``extra``.
+    """
+    topic = os.getenv("NTFY_TOPIC", "").strip()
+    if not topic:
+        return None
+    seed: dict = {
+        "topic": topic,
+        "server": os.getenv("NTFY_SERVER_URL", DEFAULT_SERVER).rstrip("/"),
+    }
+    publish_topic = os.getenv("NTFY_PUBLISH_TOPIC", "").strip()
+    if publish_topic:
+        seed["publish_topic"] = publish_topic
+    token = os.getenv("NTFY_TOKEN", "").strip()
+    if token:
+        seed["token"] = token
+    markdown = os.getenv("NTFY_MARKDOWN", "").strip().lower()
+    if markdown:
+        seed["markdown"] = markdown in ("1", "true", "yes")
+    home = os.getenv("NTFY_HOME_CHANNEL", "").strip() or topic
+    if home:
+        seed["home_channel"] = {
+            "chat_id": home,
+            "name": os.getenv("NTFY_HOME_CHANNEL_NAME", home),
+        }
+    return seed
+
+
+async def _standalone_send(
+    pconfig,
+    chat_id: str,
+    message: str,
+    *,
+    thread_id: Optional[str] = None,
+    media_files: Optional[List[str]] = None,
+    force_document: bool = False,
+) -> Dict[str, Any]:
+    """Out-of-process publish for cron / send_message_tool fallbacks.
+
+    Used by ``tools/send_message_tool._send_via_adapter`` and the cron
+    scheduler when the gateway runner is not in this process (e.g.
+    ``hermes cron`` running standalone). Without this hook,
+    ``deliver=ntfy`` cron jobs fail with ``No live adapter for platform``.
+
+    ``thread_id`` and ``media_files`` are accepted for signature parity
+    only — ntfy has no thread or attachment primitive. Markdown is
+    honored if ``NTFY_MARKDOWN`` is set OR ``pconfig.extra["markdown"]``
+    is True.
+    """
+    if not HTTPX_AVAILABLE:
+        return {"error": "ntfy standalone send: httpx not installed"}
+
+    extra = getattr(pconfig, "extra", {}) or {}
+    server = (
+        extra.get("server")
+        or os.getenv("NTFY_SERVER_URL", DEFAULT_SERVER)
+    ).rstrip("/")
+    publish_topic = (
+        chat_id
+        or extra.get("publish_topic")
+        or os.getenv("NTFY_PUBLISH_TOPIC", "").strip()
+        or extra.get("topic")
+        or os.getenv("NTFY_TOPIC", "").strip()
+    )
+    if not publish_topic:
+        return {"error": "ntfy standalone send: NTFY_TOPIC not configured"}
+
+    token = extra.get("token") or os.getenv("NTFY_TOKEN", "")
+    markdown_env = os.getenv("NTFY_MARKDOWN", "").strip().lower()
+    markdown_enabled = bool(extra.get("markdown")) or markdown_env in ("1", "true", "yes")
+
+    headers = {"Content-Type": "text/plain; charset=utf-8"}
+    if token:
+        if ":" in token:
+            import base64
+            headers["Authorization"] = f"Basic {base64.b64encode(token.encode()).decode()}"
+        else:
+            headers["Authorization"] = f"Bearer {token}"
+    if markdown_enabled:
+        headers["X-Markdown"] = "true"
+
+    if len(message) > MAX_MESSAGE_LENGTH:
+        logger.warning(
+            "ntfy standalone: truncating message from %d to %d chars",
+            len(message), MAX_MESSAGE_LENGTH,
+        )
+    body = message[:MAX_MESSAGE_LENGTH]
+
+    url = f"{server}/{publish_topic}"
+    try:
+        async with httpx.AsyncClient(timeout=15.0) as client:
+            resp = await client.post(url, content=body.encode("utf-8"), headers=headers)
+        if resp.status_code >= 300:
+            return {"error": f"ntfy HTTP {resp.status_code}: {resp.text[:200]}"}
+        try:
+            data = resp.json()
+            msg_id = data.get("id") or uuid.uuid4().hex[:12]
+        except Exception:
+            msg_id = uuid.uuid4().hex[:12]
+        return {"success": True, "platform": "ntfy", "chat_id": publish_topic, "message_id": msg_id}
+    except Exception as e:
+        return {"error": f"ntfy standalone send failed: {e}"}
+
+
+def register(ctx) -> None:
+    """Plugin entry point — called by the Hermes plugin system at startup."""
+    ctx.register_platform(
+        name="ntfy",
+        label="ntfy",
+        adapter_factory=lambda cfg: NtfyAdapter(cfg),
+        check_fn=check_requirements,
+        validate_config=validate_config,
+        is_connected=is_connected,
+        required_env=["NTFY_TOPIC"],
+        install_hint="pip install httpx   # already a Hermes dependency",
+        # Env-driven auto-configuration: seeds PlatformConfig.extra so
+        # env-only setups show up in `hermes gateway status` without
+        # instantiating the HTTP client.
+        env_enablement_fn=_env_enablement,
+        # Cron home-channel delivery support — `deliver=ntfy` cron jobs
+        # route to NTFY_HOME_CHANNEL when set.
+        cron_deliver_env_var="NTFY_HOME_CHANNEL",
+        # Out-of-process cron delivery. Without this hook, deliver=ntfy
+        # cron jobs fail with "No live adapter" when cron runs separately
+        # from the gateway.
+        standalone_sender_fn=_standalone_send,
+        # Auth env vars for _is_user_authorized() integration.
+        allowed_users_env="NTFY_ALLOWED_USERS",
+        allow_all_env="NTFY_ALLOW_ALL_USERS",
+        max_message_length=MAX_MESSAGE_LENGTH,
+        emoji="🔔",
+        # ntfy publishers have no persistent identity — topic names are
+        # the only identifier, no phone numbers / emails to redact.
+        pii_safe=True,
+        allow_update_command=True,
+        platform_hint=(
+            "You are communicating via ntfy push notifications. "
+            "Use plain text by default — ntfy supports optional markdown "
+            "(set markdown: true in config or NTFY_MARKDOWN=true). "
+            "Keep responses concise; ntfy is a push notification service "
+            "with a 4096-character per-message limit."
+        ),
+    )

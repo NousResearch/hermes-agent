@@ -777,8 +777,6 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
             result = await _send_bluebubbles(pconfig.extra, chat_id, chunk)
         elif platform == Platform.QQBOT:
             result = await _send_qqbot(pconfig, chat_id, chunk)
-        elif platform == Platform.NTFY:
-            result = await _send_ntfy(pconfig, chat_id, chunk)
         elif platform == Platform.YUANBAO:
             result = await _send_yuanbao(chat_id, chunk)
         else:
@@ -1770,28 +1768,6 @@ async def _send_qqbot(pconfig, chat_id, message):
             return _error(f"QQBot send failed: channel={resp.status_code} c2c={resp_c2c.status_code} group={resp_group.status_code}")
     except Exception as e:
         return _error(f"QQBot send failed: {e}")
-
-
-async def _send_ntfy(pconfig, chat_id, message):
-    """Send a message via ntfy HTTP POST."""
-    try:
-        extra = pconfig.extra or {}
-        server = extra.get("server") or os.getenv("NTFY_SERVER_URL", "https://ntfy.sh").rstrip("/")
-        topic = chat_id or extra.get("topic") or os.getenv("NTFY_TOPIC", "")
-        token = extra.get("token") or os.getenv("NTFY_TOKEN", "")
-        if not topic:
-            return _error("ntfy topic not configured.")
-        import httpx
-        headers = {"Content-Type": "text/plain; charset=utf-8"}
-        if token:
-            headers["Authorization"] = f"Bearer {token}"
-        url = f"{server}/{topic}"
-        async with httpx.AsyncClient(timeout=15.0) as client:
-            resp = await client.post(url, content=message.encode("utf-8"), headers=headers)
-            resp.raise_for_status()
-        return {"success": True, "platform": "ntfy", "chat_id": topic}
-    except Exception as e:
-        return _error(f"ntfy send failed: {e}")
 
 
 async def _send_yuanbao(chat_id, message, media_files=None):

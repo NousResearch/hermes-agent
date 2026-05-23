@@ -79,6 +79,9 @@ def test_profile_policy_blocks_token_leak_text_and_media(monkeypatch, tmp_path):
     token = "123456789:" + "A" * 35
     with pytest.raises(ProfilePolicyError):
         check_outbound("telegram", "123", f"leak {token}", kind="text")
+    high_entropy = "B6jT9qN2vX8mP5rL0sY4wC7zK1aD3fG6hJ9kM2nQ5pR8tV1x"
+    with pytest.raises(ProfilePolicyError):
+        check_outbound("telegram", "123", f"leak {high_entropy}", kind="text")
     media = tmp_path / "report.txt"
     media.write_text(f"secret {token}")
     with pytest.raises(ProfilePolicyError):

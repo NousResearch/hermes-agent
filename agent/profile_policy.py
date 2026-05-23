@@ -6,6 +6,7 @@ require a gateway restart.
 """
 from __future__ import annotations
 
+import logging
 import math
 import os
 import re
@@ -18,6 +19,7 @@ from typing import Any, Mapping
 try:
     import yaml
 except Exception:  # pragma: no cover
+    logging.getLogger(__name__).warning("PyYAML import failed; profile policy loading disabled", exc_info=True)
     yaml = None  # type: ignore
 
 GUARDED_PROFILES = {"hephaestus-h", "cassandra-h"}

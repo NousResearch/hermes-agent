@@ -105,8 +105,8 @@ timezone, locale, and worker count.
 | `gateway/run.py` | Messaging gateway runner |
 | `hermes_cli/config.py` | Default config and config migration |
 | `mcp_serve.py` | MCP server entry point (stdio) |
-| `hermes_skills_mcp.py` | 7 read-only skills/knowledge MCP tools |
-| `agents/AGENT_REGISTRY.json` | Authoritative agent fleet manifest |
+| `hermes_skills_mcp.py` | 8 read-only skills/knowledge MCP tools |
+| `agents/AGENT_REGISTRY.json` | Agent index/discovery manifest |
 | `AGENTS.md` | Full agent fleet documentation |
 
 ---

@@ -235,8 +235,8 @@ export function useMainApp(gw: GatewayClient) {
   }, [])
 
   const virtualRows = useMemo<TranscriptRow[]>(
-    () => historyItems.map((msg, index) => ({ index, key: messageId(msg), msg })),
-    [historyItems, messageId]
+    () => historyItems.map((msg, index) => ({ index, key: `${messageId(msg)}:c${cols}`, msg })),
+    [cols, historyItems, messageId]
   )
 
   const detailsLayoutKey = useMemo(() => {
@@ -425,10 +425,20 @@ export function useMainApp(gw: GatewayClient) {
 
     let timer: ReturnType<typeof setTimeout> | undefined
 
+    // Resize reflows wrapped lines; if the user was pinned to the tail we need
+    // to re-snap once React has remeasured. virtualRows is keyed on cols so
+    // every column change forces a fresh measurement pass before this fires.
     const onResize = () => {
+      const wasSticky = scrollRef.current?.isSticky() ?? false
+
       clearTimeout(timer)
       timer = setTimeout(() => {
         timer = undefined
+
+        if (wasSticky) {
+          scrollRef.current?.scrollToBottom()
+        }
+
         void rpc<TerminalResizeResponse>('terminal.resize', { cols: stdout.columns ?? 80, session_id: ui.sid })
       }, 100)
     }

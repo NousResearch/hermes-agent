@@ -183,6 +183,35 @@ describe('useVirtualHistory offset cache reuse', () => {
     }
   })
 
+  it('keeps sticky scroll at the bottom when one tall tail row resizes', async () => {
+    const items = [{ height: 90, heightAfterResize: 50, key: 'tail' }]
+    const expose = { current: null as Exposed | null }
+    const streams = makeStreams()
+
+    const instance = renderSync(
+      React.createElement(Harness, { columns: 70, expose, height: 18, items, maxMounted: 80 }),
+      {
+        patchConsole: false,
+        stderr: streams.stderr as NodeJS.WriteStream,
+        stdin: streams.stdin as NodeJS.ReadStream,
+        stdout: streams.stdout as NodeJS.WriteStream
+      }
+    )
+
+    try {
+      await delay(20)
+      instance.rerender(React.createElement(Harness, { columns: 120, expose, height: 36, items, maxMounted: 80 }))
+      await delay(80)
+
+      const scroll = expose.current!.scroll!
+
+      expect(scroll.getScrollTop()).toBe(scroll.getScrollHeight() - scroll.getViewportHeight())
+    } finally {
+      instance.unmount()
+      instance.cleanup()
+    }
+  })
+
   it('recomputes offsets after a mounted row height changes', async () => {
     const tall = [
       { height: 6, key: 'a' },

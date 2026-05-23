@@ -1475,6 +1475,25 @@ def _resolve_gateway_model(config: dict | None = None) -> str:
     return ""
 
 
+def _can_import_hermes_cli() -> bool:
+    """Return ``True`` when ``hermes_cli`` resolves under the current interpreter.
+
+    ``importlib.util.find_spec`` is the supported probe but it can raise
+    ``ImportError`` / ``ValueError`` when a malformed parent package shadows
+    ``hermes_cli`` on ``sys.path`` (rare but observed during partial editable
+    installs). A failed probe means we cannot safely spawn ``-m
+    hermes_cli.main`` from this interpreter, so the caller should fall back
+    to the PATH-based shim.
+    """
+    try:
+        import importlib.util
+
+        return importlib.util.find_spec("hermes_cli") is not None
+    except (ImportError, ValueError) as exc:
+        logger.debug("hermes_cli find_spec probe failed: %r", exc)
+        return False
+
+
 def _resolve_hermes_bin() -> Optional[list[str]]:
     """Resolve the Hermes update command as argv parts.
 
@@ -1493,29 +1512,22 @@ def _resolve_hermes_bin() -> Optional[list[str]]:
     """
     import shutil
 
-    if sys.platform == "win32" and (
-        os.environ.get("VIRTUAL_ENV")
-        or sys.prefix != getattr(sys, "base_prefix", sys.prefix)
+    if (
+        sys.platform == "win32"
+        and (
+            os.environ.get("VIRTUAL_ENV")
+            or sys.prefix != getattr(sys, "base_prefix", sys.prefix)
+        )
+        and _can_import_hermes_cli()
     ):
-        try:
-            import importlib.util
-
-            if importlib.util.find_spec("hermes_cli") is not None:
-                return [sys.executable, "-m", "hermes_cli.main"]
-        except Exception:
-            pass
+        return [sys.executable, "-m", "hermes_cli.main"]
 
     hermes_bin = shutil.which("hermes")
     if hermes_bin:
         return [hermes_bin]
 
-    try:
-        import importlib.util
-
-        if importlib.util.find_spec("hermes_cli") is not None:
-            return [sys.executable, "-m", "hermes_cli.main"]
-    except Exception:
-        pass
+    if _can_import_hermes_cli():
+        return [sys.executable, "-m", "hermes_cli.main"]
 
     return None
 

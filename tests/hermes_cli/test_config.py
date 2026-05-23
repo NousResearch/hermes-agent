@@ -214,8 +214,18 @@ class TestSaveEnvValueSecure:
     def test_save_env_value_updates_process_environment(self, tmp_path):
         with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}, clear=False):
             os.environ.pop("TENOR_API_KEY", None)
-            save_env_value("TENOR_API_KEY", "sk-test-secret")
-            assert os.environ["TENOR_API_KEY"] == "sk-test-secret"
+            save_env_value("TENOR_API_KEY", "***")
+            assert os.environ["TENOR_API_KEY"] == "***"
+
+    def test_save_env_value_quotes_hash_values_only_when_needed(self, tmp_path):
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}, clear=False):
+            os.environ.pop("TENOR_API_KEY", None)
+            save_env_value("TENOR_API_KEY", "abc#def")
+
+            env_content = (tmp_path / ".env").read_text(encoding="utf-8")
+            assert "TENOR_API_KEY='abc#def'" in env_content
+            assert load_env()["TENOR_API_KEY"] == "abc#def"
+            assert os.environ["TENOR_API_KEY"] == "abc#def"
 
     def test_save_env_value_hardens_file_permissions_on_posix(self, tmp_path):
         if os.name == "nt":

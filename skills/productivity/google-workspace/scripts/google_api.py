@@ -37,10 +37,30 @@ if _SCRIPTS_DIR not in sys.path:
     sys.path.insert(0, _SCRIPTS_DIR)
 
 from _hermes_home import get_hermes_home
+import google_account
 
 HERMES_HOME = get_hermes_home()
+# Legacy module-level constant — kept for any external callers that import
+# it. The actual token used at runtime is resolved per-call via TOKEN_PATH()
+# below so the --account flag and HERMES_GOOGLE_ACCOUNT env are honored.
 TOKEN_PATH = HERMES_HOME / "google_token.json"
 CLIENT_SECRET_PATH = HERMES_HOME / "google_client_secret.json"
+
+
+def _resolve_account() -> str | None:
+    """Resolve the active Google account for this invocation.
+
+    Reads ``--account`` (parked on os.environ by main()) → HERMES_GOOGLE_ACCOUNT
+    env → default pointer → legacy file. See google_account.resolve_account.
+    """
+    explicit = os.environ.get("_HERMES_GOOGLE_ACCOUNT_OVERRIDE", "").strip() or None
+    return google_account.resolve_account(explicit)
+
+
+def _resolve_token_path() -> Path:
+    """Token path for the active account — refreshed every call."""
+    explicit = os.environ.get("_HERMES_GOOGLE_ACCOUNT_OVERRIDE", "").strip() or None
+    return google_account.resolve_token_path(explicit)
 
 SCOPES = [
     "https://www.googleapis.com/auth/gmail.readonly",
@@ -62,7 +82,8 @@ def _normalize_authorized_user_payload(payload: dict) -> dict:
 
 
 def _ensure_authenticated():
-    if not TOKEN_PATH.exists():
+    token_path = _resolve_token_path()
+    if not token_path.exists():
         print("Not authenticated. Run the setup script first:", file=sys.stderr)
         print(f"  python {Path(__file__).parent / 'setup.py'}", file=sys.stderr)
         sys.exit(1)
@@ -70,7 +91,7 @@ def _ensure_authenticated():
 
 def _stored_token_scopes() -> list[str]:
     try:
-        data = json.loads(TOKEN_PATH.read_text())
+        data = json.loads(_resolve_token_path().read_text())
     except Exception:
         return list(SCOPES)
     scopes = data.get("scopes")
@@ -88,7 +109,7 @@ def _gws_binary() -> str | None:
 
 def _gws_env() -> dict[str, str]:
     env = os.environ.copy()
-    env["GOOGLE_WORKSPACE_CLI_CREDENTIALS_FILE"] = str(TOKEN_PATH)
+    env["GOOGLE_WORKSPACE_CLI_CREDENTIALS_FILE"] = str(_resolve_token_path())
     return env
 
 
@@ -181,10 +202,11 @@ def get_credentials():
     from google.oauth2.credentials import Credentials
     from google.auth.transport.requests import Request
 
-    creds = Credentials.from_authorized_user_file(str(TOKEN_PATH), _stored_token_scopes())
+    token_path = _resolve_token_path()
+    creds = Credentials.from_authorized_user_file(str(token_path), _stored_token_scopes())
     if creds.expired and creds.refresh_token:
         creds.refresh(Request())
-        TOKEN_PATH.write_text(
+        token_path.write_text(
             json.dumps(
                 _normalize_authorized_user_payload(json.loads(creds.to_json())),
                 indent=2,
@@ -1049,6 +1071,15 @@ def _docs_insert_text(doc_id: str, text: str, index: int) -> None:
 
 def main():
     parser = argparse.ArgumentParser(description="Google Workspace API for Hermes Agent")
+    parser.add_argument(
+        "--account",
+        metavar="EMAIL",
+        default=None,
+        help="Google account to use (multi-account setups). If omitted, "
+        "falls back to HERMES_GOOGLE_ACCOUNT env, then the default account, "
+        "then the legacy single-account token. Run setup.py --list-accounts "
+        "to see configured accounts.",
+    )
     sub = parser.add_subparsers(dest="service", required=True)
 
     # --- Gmail ---
@@ -1214,6 +1245,16 @@ def main():
     p.set_defaults(func=docs_append)
 
     args = parser.parse_args()
+    # Park --account on the env so the per-call resolver picks it up. We use
+    # an internal env var (not HERMES_GOOGLE_ACCOUNT) so an explicit --account
+    # flag overrides whatever's in the user's environment.
+    if args.account:
+        try:
+            normalized = google_account.normalize_email(args.account)
+        except ValueError as e:
+            print(f"ERROR: {e}", file=sys.stderr)
+            sys.exit(1)
+        os.environ["_HERMES_GOOGLE_ACCOUNT_OVERRIDE"] = normalized
     args.func(args)
 
 

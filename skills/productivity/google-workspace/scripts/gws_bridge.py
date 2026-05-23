@@ -2,6 +2,13 @@
 """Bridge between Hermes OAuth token and gws CLI.
 
 Refreshes the token if expired, then executes gws with the valid access token.
+
+Multi-account support: pass ``--account EMAIL`` BEFORE the gws args, e.g.:
+
+    gws_bridge.py --account user@example.com gmail +triage
+
+If ``--account`` is omitted, the resolution chain (HERMES_GOOGLE_ACCOUNT env →
+default pointer → legacy single-account token) decides which account is used.
 """
 import json
 import os
@@ -10,16 +17,33 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
-# Ensure sibling modules (_hermes_home) are importable when run standalone.
+# Ensure sibling modules (_hermes_home, google_account) are importable when
+# run standalone.
 _SCRIPTS_DIR = str(Path(__file__).resolve().parent)
 if _SCRIPTS_DIR not in sys.path:
     sys.path.insert(0, _SCRIPTS_DIR)
 
 from _hermes_home import get_hermes_home
+import google_account
+
+
+# The active account is resolved once at process start so all helper functions
+# below see the same value (matters when the user passes --account).
+_ACCOUNT: "str | None" = None
+
+
+def _set_active_account(account: "str | None") -> None:
+    global _ACCOUNT
+    _ACCOUNT = account
 
 
 def get_token_path() -> Path:
-    return get_hermes_home() / "google_token.json"
+    """Token path for the active account.
+
+    Resolution: explicit ``--account`` (parsed in main()) → HERMES_GOOGLE_ACCOUNT
+    env → default account pointer → legacy ``~/.hermes/google_token.json``.
+    """
+    return google_account.resolve_token_path(_ACCOUNT)
 
 
 def _normalize_authorized_user_payload(payload: dict) -> dict:
@@ -78,7 +102,11 @@ def get_valid_token() -> str:
     """Return a valid access token, refreshing if needed."""
     token_path = get_token_path()
     if not token_path.exists():
-        print("ERROR: No Google token found. Run setup.py --auth-url first.", file=sys.stderr)
+        print(
+            f"ERROR: No Google token found at {token_path}. "
+            "Run setup.py --auth-url first.",
+            file=sys.stderr,
+        )
         sys.exit(1)
 
     token_data = json.loads(token_path.read_text())
@@ -93,17 +121,50 @@ def get_valid_token() -> str:
     return token_data["token"]
 
 
+def _split_account_arg(argv: list[str]) -> tuple["str | None", list[str]]:
+    """Strip a leading ``--account EMAIL`` (or ``--account=EMAIL``) from argv.
+
+    Anything after this is passed verbatim to gws. We do this manually rather
+    than with argparse because gws has its own arg syntax (subcommands,
+    positional flags) and we don't want to interpret it.
+    """
+    if not argv:
+        return None, argv
+    first = argv[0]
+    if first == "--account":
+        if len(argv) < 2:
+            print("ERROR: --account requires an email address.", file=sys.stderr)
+            sys.exit(2)
+        return argv[1], argv[2:]
+    if first.startswith("--account="):
+        return first.split("=", 1)[1], argv[1:]
+    return None, argv
+
+
 def main():
     """Refresh token if needed, then exec gws with remaining args."""
     if len(sys.argv) < 2:
-        print("Usage: gws_bridge.py <gws args...>", file=sys.stderr)
+        print("Usage: gws_bridge.py [--account EMAIL] <gws args...>", file=sys.stderr)
+        sys.exit(1)
+
+    account, gws_args = _split_account_arg(sys.argv[1:])
+    if account is not None:
+        try:
+            account = google_account.normalize_email(account)
+        except ValueError as e:
+            print(f"ERROR: {e}", file=sys.stderr)
+            sys.exit(2)
+    _set_active_account(account)
+
+    if not gws_args:
+        print("Usage: gws_bridge.py [--account EMAIL] <gws args...>", file=sys.stderr)
         sys.exit(1)
 
     access_token = get_valid_token()
     env = os.environ.copy()
     env["GOOGLE_WORKSPACE_CLI_TOKEN"] = access_token
 
-    result = subprocess.run(["gws"] + sys.argv[1:], env=env)
+    result = subprocess.run(["gws"] + gws_args, env=env)
     sys.exit(result.returncode)
 
 

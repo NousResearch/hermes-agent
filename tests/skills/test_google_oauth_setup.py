@@ -110,15 +110,34 @@ def setup_module(monkeypatch, tmp_path):
     monkeypatch.setitem(sys.modules, "google_auth_oauthlib", google_auth_module)
     monkeypatch.setitem(sys.modules, "google_auth_oauthlib.flow", flow_module)
 
+    # Point HERMES_HOME at a per-test tmpdir so the script's path constants
+    # (CLIENT_SECRET_PATH, the resolved token paths, pending-auth paths) all
+    # land under tmp_path. This mirrors how the script runs in the wild.
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.delenv("HERMES_GOOGLE_ACCOUNT", raising=False)
+    monkeypatch.delenv("_HERMES_GOOGLE_ACCOUNT_OVERRIDE", raising=False)
+
+    # google_account caches HERMES_HOME at import time (via get_hermes_home()),
+    # so we have to reload it after the env tweak.
+    sys.modules.pop("google_account", None)
+
     spec = importlib.util.spec_from_file_location("google_workspace_setup_test", SCRIPT_PATH)
     module = importlib.util.module_from_spec(spec)
     assert spec.loader is not None
     spec.loader.exec_module(module)
 
     monkeypatch.setattr(module, "_ensure_deps", lambda: None)
+    # CLIENT_SECRET_PATH is captured at import time; re-bind it under tmp_path
+    # to be safe even if HERMES_HOME indirection ever changes.
     monkeypatch.setattr(module, "CLIENT_SECRET_PATH", tmp_path / "google_client_secret.json")
-    monkeypatch.setattr(module, "TOKEN_PATH", tmp_path / "google_token.json")
-    monkeypatch.setattr(module, "PENDING_AUTH_PATH", tmp_path / "google_oauth_pending.json", raising=False)
+    # Provide TOKEN_PATH / PENDING_AUTH_PATH attribute shims pointing at the
+    # legacy single-account file. The legacy flow (account=None) still reads
+    # and writes these exact paths, so the existing test assertions remain
+    # valid against the new resolution code.
+    legacy_token = tmp_path / "google_token.json"
+    legacy_pending = tmp_path / "google_oauth_pending.json"
+    monkeypatch.setattr(module, "TOKEN_PATH", legacy_token, raising=False)
+    monkeypatch.setattr(module, "PENDING_AUTH_PATH", legacy_pending, raising=False)
 
     client_secret = {
         "installed": {

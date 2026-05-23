@@ -1,7 +1,7 @@
 ---
 name: google-workspace
 description: "Gmail, Calendar, Drive, Docs, Sheets via gws CLI or Python."
-version: 1.1.0
+version: 1.2.0
 author: Nous Research
 license: MIT
 platforms: [linux, macos, windows]
@@ -163,6 +163,102 @@ Should print `AUTHENTICATED`. Setup is complete — token refreshes automaticall
 - Pending OAuth session state/verifier are stored temporarily at `~/.hermes/google_oauth_pending.json` until exchange completes.
 - If `gws` is installed, `google_api.py` points it at the same `~/.hermes/google_token.json` credentials file. Users do not need to run a separate `gws auth login` flow.
 - To revoke: `$GSETUP --revoke`
+
+## Multi-Account Support
+
+The skill supports multiple Google accounts on the same Hermes profile. The
+default flow above uses a single account; the multi-account commands below
+let you authorize, manage, and switch between accounts.
+
+### Adding a second account
+
+If the user already has one Google account set up and wants to add another
+(e.g. personal + work), do this first ONCE to migrate their existing token
+into the multi-account layout:
+
+```bash
+$GSETUP --migrate-legacy
+```
+
+This is non-destructive — the legacy `~/.hermes/google_token.json` becomes
+a symlink to the per-account token, so anything that reads the legacy path
+keeps working. Then authorize the second account:
+
+```bash
+$GSETUP --account second@example.com --auth-url
+# Send URL to user, get redirect/code back, then:
+$GSETUP --account second@example.com --auth-code "PASTED_URL_OR_CODE"
+```
+
+The OAuth consent screen will be pre-populated with the requested email
+(via `login_hint`), but the user can still pick a different one. If they
+do, the script refuses to save the token to the wrong account file and
+prints which account was actually authorized.
+
+### Listing and switching accounts
+
+```bash
+# Show all configured accounts (the default is marked with *)
+$GSETUP --list-accounts
+
+# Make a different account the default
+$GSETUP --set-default user@example.com
+```
+
+Setting the default also refreshes the legacy `~/.hermes/google_token.json`
+symlink, so cron jobs and tools that hard-code the legacy path continue to
+hit the new default account automatically.
+
+### Per-call account selection
+
+All three CLI entry points accept `--account EMAIL` to operate on a
+specific account for a single invocation:
+
+```bash
+# Read mail from the work account regardless of the default
+$GAPI --account work@company.com gmail search "is:unread" --max 10
+
+# Calendar from the personal account
+$GAPI --account me@gmail.com calendar list
+
+# gws bridge (the --account flag must come BEFORE the gws args)
+python ${HERMES_HOME:-$HOME/.hermes}/skills/productivity/google-workspace/scripts/gws_bridge.py \
+    --account work@company.com gmail messages list
+```
+
+When `--account` is omitted, the resolution chain is:
+
+1. `HERMES_GOOGLE_ACCOUNT` environment variable (handy in cron jobs)
+2. Default account (set with `--set-default`)
+3. Legacy `~/.hermes/google_token.json` (un-migrated single-account installs)
+
+So a cron job that always wants to operate on the work account can
+`export HERMES_GOOGLE_ACCOUNT=work@company.com` once, and every subsequent
+`$GAPI ...` call honors it without changes to the rest of the shell script.
+
+### Removing an account
+
+```bash
+$GSETUP --remove-account user@example.com
+```
+
+This revokes the token with Google and deletes the per-account file. If
+the removed account was the default, the next remaining account is
+promoted automatically.
+
+### File layout
+
+After migration:
+
+```
+~/.hermes/
+├── google_client_secret.json          # shared OAuth client (one for all accounts)
+├── google_token.json                  # symlink → google_tokens/<default>.json
+└── google_tokens/
+    ├── default                         # plain text, holds the default email
+    ├── user@example.com.json           # per-account tokens
+    └── work@company.com.json
+```
 
 ## Usage
 

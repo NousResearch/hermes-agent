@@ -652,6 +652,11 @@ def _generate_messages_html(messages: List[Dict[str, Any]]) -> str:
     html_list = []
     for i, msg in enumerate(messages):
         role = msg.get("role", "unknown")
+        
+        # Skip internal metadata messages
+        if role == "session_meta":
+            continue
+            
         content = msg.get("content") or ""
         timestamp = _format_timestamp(msg.get("timestamp", 0))
         

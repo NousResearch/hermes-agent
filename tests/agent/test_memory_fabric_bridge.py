@@ -479,6 +479,20 @@ def _star_soul_operation_event():
     }
 
 
+def _star_universe_operation_event():
+    return {
+        "event_type": "temporal_evolution_metrics",
+        "operation": "temporal_evolution_metrics",
+        "client": "hermes",
+        "project_ids": ["lovart", "openclaw"],
+        "surfaces": ["operation_ledger", "memory_graph", "knowledge"],
+        "days": ["2026-05-20", "2026-05-21"],
+        "would_write_memory": False,
+        "would_modify_config": False,
+        "would_modify_graph": False,
+    }
+
+
 def test_memory_boundary_allowlist_audit_requires_manual_review_evidence(monkeypatch):
     monkeypatch.setattr(memory_fabric_bridge, "memory_federation_status", _ready_federation_status)
     monkeypatch.setattr(memory_fabric_bridge, "memory_federation_audit", _ready_federation_audit)
@@ -1013,6 +1027,239 @@ def test_memory_evolution_status_star_universe_check_is_read_only(tmp_path, monk
     assert result["would_modify_config"] is False
     assert operation_path.read_text(encoding="utf-8") == before_operation
     assert proposal_path.read_text(encoding="utf-8") == before_proposal
+
+
+def test_memory_evolution_keeps_star_source_blocked_without_explicit_source_methodology_event(tmp_path, monkeypatch):
+    monkeypatch.setattr(memory_fabric_bridge, "get_hermes_home", lambda: tmp_path)
+    _patch_star_law_prerequisites(monkeypatch, _star_law_ready_policy_outcome)
+    _seed_star_soul_governed(tmp_path)
+    _write_jsonl(
+        memory_fabric_bridge._operation_ledger_path(tmp_path),
+        [_star_soul_operation_event(), _star_universe_operation_event()],
+    )
+
+    result = memory_evolution_status()
+    star_source = next(item for item in result["readiness"] if item["level"] == 15)
+
+    assert result["current"]["level"] == 14
+    assert result["next"]["level"] == 15
+    assert result["evidence"]["source_reasoning_event_count"] == 0
+    assert result["evidence"]["methodology_generation_event_count"] == 0
+    assert result["evidence"]["self_evolution_event_count"] == 0
+    assert result["evidence"]["source_methodology_ready"] is False
+    assert star_source["achieved"] is False
+    assert "Source reasoning and methodology self-evolution are implemented" in star_source["gaps"]
+    assert any("read-only source reasoning and methodology self-evolution audit event" in action for action in result["recommended_next_actions"])
+
+
+def test_memory_evolution_keeps_star_source_blocked_for_generic_surfaces_snapshot_and_temporal_metrics(tmp_path, monkeypatch):
+    monkeypatch.setattr(memory_fabric_bridge, "get_hermes_home", lambda: tmp_path)
+    _patch_star_law_prerequisites(monkeypatch, _star_law_ready_policy_outcome)
+    _seed_star_soul_governed(tmp_path)
+    _write_jsonl(
+        memory_fabric_bridge._operation_ledger_path(tmp_path),
+        [
+            _star_soul_operation_event(),
+            _star_universe_operation_event(),
+            {
+                "event_type": "snapshot_export_created",
+                "operation": "snapshot_export",
+                "project_ids": ["lovart", "openclaw"],
+                "surfaces": ["graph_provenance", "knowledge", "operation_ledger"],
+                "would_write_memory": False,
+                "would_modify_config": False,
+                "would_modify_graph": False,
+            },
+        ],
+    )
+
+    result = memory_evolution_status()
+    star_source = next(item for item in result["readiness"] if item["level"] == 15)
+
+    assert result["current"]["level"] == 14
+    assert result["evidence"]["temporal_evolution_metrics_ready"] is True
+    assert result["evidence"]["source_methodology_project_count"] == 0
+    assert result["evidence"]["source_methodology_surface_count"] == 0
+    assert result["evidence"]["source_methodology_ready"] is False
+    assert star_source["achieved"] is False
+
+
+def test_memory_evolution_keeps_star_source_blocked_for_source_reasoning_without_methodology_self_evolution(tmp_path, monkeypatch):
+    monkeypatch.setattr(memory_fabric_bridge, "get_hermes_home", lambda: tmp_path)
+    _patch_star_law_prerequisites(monkeypatch, _star_law_ready_policy_outcome)
+    _seed_star_soul_governed(tmp_path)
+    _write_jsonl(
+        memory_fabric_bridge._operation_ledger_path(tmp_path),
+        [
+            _star_soul_operation_event(),
+            _star_universe_operation_event(),
+            {
+                "event_type": "source_reasoning",
+                "operation": "source_reasoning",
+                "project_id": "lovart",
+                "surfaces": ["operation_ledger", "graph_provenance"],
+                "tags": ["source_reasoning"],
+                "would_write_memory": False,
+                "would_modify_config": False,
+                "would_modify_graph": False,
+            },
+        ],
+    )
+
+    result = memory_evolution_status()
+    star_source = next(item for item in result["readiness"] if item["level"] == 15)
+
+    assert result["current"]["level"] == 14
+    assert result["evidence"]["source_reasoning_event_count"] == 1
+    assert result["evidence"]["methodology_generation_event_count"] == 0
+    assert result["evidence"]["self_evolution_event_count"] == 0
+    assert result["evidence"]["source_methodology_project_ids"] == ["lovart"]
+    assert result["evidence"]["source_methodology_surface_count"] >= 2
+    assert result["evidence"]["source_methodology_ready"] is False
+    assert star_source["achieved"] is False
+
+
+def test_memory_evolution_keeps_star_source_blocked_when_semantics_are_split_across_events(tmp_path, monkeypatch):
+    monkeypatch.setattr(memory_fabric_bridge, "get_hermes_home", lambda: tmp_path)
+    _patch_star_law_prerequisites(monkeypatch, _star_law_ready_policy_outcome)
+    _seed_star_soul_governed(tmp_path)
+    _write_jsonl(
+        memory_fabric_bridge._operation_ledger_path(tmp_path),
+        [
+            _star_soul_operation_event(),
+            _star_universe_operation_event(),
+            {
+                "event_id": "source-only",
+                "event_type": "source_reasoning",
+                "operation": "source_reasoning",
+                "project_id": "lovart",
+                "surfaces": ["operation_ledger", "graph_provenance"],
+                "tags": ["source_reasoning"],
+                "would_write_memory": False,
+                "would_modify_config": False,
+                "would_modify_graph": False,
+                "would_write_graph": False,
+            },
+            {
+                "event_id": "methodology-self-only",
+                "event_type": "methodology_self_evolution",
+                "operation": "methodology_self_evolution",
+                "project_id": "lovart",
+                "surfaces": ["operation_ledger", "knowledge"],
+                "tags": ["methodology_generation", "self_evolution"],
+                "would_write_memory": False,
+                "would_modify_config": False,
+                "would_modify_graph": False,
+                "would_write_graph": False,
+            },
+        ],
+    )
+
+    result = memory_evolution_status()
+    star_source = next(item for item in result["readiness"] if item["level"] == 15)
+
+    assert result["current"]["level"] == 14
+    assert result["evidence"]["source_reasoning_event_count"] == 1
+    assert result["evidence"]["methodology_generation_event_count"] == 1
+    assert result["evidence"]["self_evolution_event_count"] == 1
+    assert result["evidence"]["source_methodology_project_ids"] == ["lovart"]
+    assert result["evidence"]["source_methodology_surface_count"] >= 2
+    assert result["evidence"]["source_methodology_governed_event_count"] == 0
+    assert result["evidence"]["source_methodology_governed_event_ids"] == []
+    assert result["evidence"]["source_methodology_ready"] is False
+    assert star_source["achieved"] is False
+
+
+def test_memory_evolution_claims_star_source_for_explicit_read_only_source_methodology_self_evolution(tmp_path, monkeypatch):
+    monkeypatch.setattr(memory_fabric_bridge, "get_hermes_home", lambda: tmp_path)
+    _patch_star_law_prerequisites(monkeypatch, _star_law_ready_policy_outcome)
+    _seed_star_soul_governed(tmp_path)
+    _write_jsonl(
+        memory_fabric_bridge._operation_ledger_path(tmp_path),
+        [
+            _star_soul_operation_event(),
+            _star_universe_operation_event(),
+            {
+                "event_id": "source-methodology-self",
+                "event_type": "source_methodology_self_evolution",
+                "operation": "source_methodology_self_evolution",
+                "project_id": "lovart",
+                "surfaces": ["graph_provenance", "knowledge", "prompt_cases"],
+                "metadata": {
+                    "source_reasoning": True,
+                    "methodology_generation": True,
+                    "self_evolution": True,
+                },
+                "would_write_memory": False,
+                "would_modify_config": False,
+                "would_modify_graph": False,
+                "would_write_graph": False,
+            },
+        ],
+    )
+
+    result = memory_evolution_status()
+    star_source = next(item for item in result["readiness"] if item["level"] == 15)
+
+    assert result["current"]["level"] == 15
+    assert result["current"]["name"] == "星源记忆"
+    assert result["evidence"]["source_reasoning_event_count"] == 1
+    assert result["evidence"]["methodology_generation_event_count"] == 1
+    assert result["evidence"]["self_evolution_event_count"] == 1
+    assert result["evidence"]["source_methodology_project_count"] == 1
+    assert result["evidence"]["source_methodology_project_ids"] == ["lovart"]
+    assert result["evidence"]["source_methodology_surface_count"] >= 2
+    assert result["evidence"]["source_methodology_governed_event_count"] == 1
+    assert result["evidence"]["source_methodology_governed_event_ids"] == ["source-methodology-self"]
+    assert result["evidence"]["source_methodology_ready"] is True
+    assert star_source["achieved"] is True
+    assert "Source reasoning and methodology self-evolution are implemented" in star_source["passed_criteria"]
+    assert not any("source reasoning and methodology self-evolution audit event" in action for action in result["recommended_next_actions"])
+
+
+def test_memory_evolution_status_star_source_check_is_read_only(tmp_path, monkeypatch):
+    monkeypatch.setattr(memory_fabric_bridge, "get_hermes_home", lambda: tmp_path)
+    _patch_star_law_prerequisites(monkeypatch, _star_law_ready_policy_outcome)
+    _seed_star_soul_governed(tmp_path)
+    operation_path = memory_fabric_bridge._operation_ledger_path(tmp_path)
+    proposal_path = memory_fabric_bridge._proposal_path(tmp_path)
+    config_path = tmp_path / "config.yaml"
+    graph_path = tmp_path / "memory_graph.db"
+    config_path.write_text("memory:\n  provider: hermes\n", encoding="utf-8")
+    _write_jsonl(
+        operation_path,
+        [
+            _star_soul_operation_event(),
+            _star_universe_operation_event(),
+            {
+                "event_type": "source_methodology_self_evolution",
+                "operation": "source_methodology_self_evolution",
+                "project_id": "lovart",
+                "surfaces": ["graph_provenance", "knowledge"],
+                "tags": ["source_reasoning", "methodology_generation", "self_evolution"],
+                "would_write_memory": False,
+                "would_modify_config": False,
+                "would_modify_graph": False,
+            },
+        ],
+    )
+    before_operation = operation_path.read_text(encoding="utf-8")
+    before_proposal = proposal_path.read_text(encoding="utf-8")
+    before_config = config_path.read_text(encoding="utf-8")
+
+    result = memory_evolution_status()
+
+    assert result["read_only"] is True
+    assert result["read_only_memory"] is True
+    assert result["policy"]["status_is_read_only"] is True
+    assert result["policy"]["does_not_modify_config"] is True
+    assert result["policy"]["does_not_write_memory"] is True
+    assert result["would_mutate_memory"] is False
+    assert result["would_modify_config"] is False
+    assert operation_path.read_text(encoding="utf-8") == before_operation
+    assert proposal_path.read_text(encoding="utf-8") == before_proposal
+    assert config_path.read_text(encoding="utf-8") == before_config
+    assert not graph_path.exists()
 
 
 def test_memory_evolution_keeps_star_law_blocked_without_policy_execution(monkeypatch):

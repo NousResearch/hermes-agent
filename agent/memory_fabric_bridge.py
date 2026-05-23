@@ -1708,6 +1708,7 @@ def _memory_evolution_evidence(
     policy_outcome = _policy_closed_loop_evidence(outcome)
     star_soul_evidence = _star_soul_continuity_evidence()
     star_universe_evidence = _star_universe_temporal_evolution_evidence()
+    star_source_evidence = _star_source_methodology_evidence()
     return {
         "has_basic_memory_home": bool(bridge.get("hermes_home")),
         "has_graph": bool(graph.get("exists")) and _safe_int(graph.get("node_count")) > 0,
@@ -1746,6 +1747,7 @@ def _memory_evolution_evidence(
         **policy_outcome,
         **star_soul_evidence,
         **star_universe_evidence,
+        **star_source_evidence,
     }
 
 
@@ -1907,6 +1909,74 @@ TEMPORAL_EVOLUTION_DATE_LIST_KEYS = {
     "temporal_evolution_days",
 }
 
+STAR_SOURCE_EXPLICIT_TYPES = {
+    "source_reasoning_methodology",
+    "source_methodology_self_evolution",
+    "methodology_self_evolution",
+    "source_reasoning",
+}
+STAR_SOURCE_SOURCE_TERMS = {
+    "source_reasoning",
+    "source-reasoning",
+    "source reasoning",
+    "source_provenance_reasoning",
+    "provenance_reasoning",
+    "来源推理",
+    "源推理",
+}
+STAR_SOURCE_METHODOLOGY_TERMS = {
+    "methodology_generation",
+    "methodology-generation",
+    "methodology generation",
+    "generate_methodology",
+    "generated_methodology",
+    "方法论生成",
+}
+STAR_SOURCE_SELF_EVOLUTION_TERMS = {
+    "self_evolution",
+    "self-evolution",
+    "self evolution",
+    "methodology_self_evolution",
+    "source_methodology_self_evolution",
+    "自进化",
+    "自我进化",
+}
+STAR_SOURCE_PROJECT_KEYS = {
+    "project",
+    "project_id",
+    "project_scope",
+    "target_project",
+    "target_project_id",
+    "target_project_scope",
+    "source_project",
+    "source_project_id",
+    "source_project_scope",
+}
+STAR_SOURCE_PROJECT_LIST_KEYS = {
+    "projects",
+    "project_ids",
+    "project_scopes",
+    "target_projects",
+    "target_project_ids",
+    "target_project_scopes",
+    "source_projects",
+    "source_project_ids",
+    "source_project_scopes",
+}
+STAR_SOURCE_SURFACE_KEYS = {
+    "surface",
+    "source_surface",
+    "target_surface",
+    "evidence_surface",
+}
+STAR_SOURCE_SURFACE_LIST_KEYS = {
+    "surfaces",
+    "surface_ids",
+    "memory_surfaces",
+    "evidence_surfaces",
+    "contributing_surfaces",
+}
+
 
 def _star_universe_temporal_evolution_evidence() -> dict[str, Any]:
     """Read explicit temporal evolution metric evidence without mutating state."""
@@ -1980,6 +2050,161 @@ def _star_universe_temporal_evolution_evidence() -> dict[str, Any]:
         "temporal_evolution_surface_count": len(surfaces),
         "temporal_evolution_metrics_ready": ready,
     }
+
+
+def _star_source_methodology_evidence() -> dict[str, Any]:
+    """Read explicit source/methodology self-evolution evidence without mutation."""
+
+    home = get_hermes_home()
+    source_reasoning_count = 0
+    methodology_generation_count = 0
+    self_evolution_count = 0
+    governed_event_ids: list[str] = []
+    project_ids: set[str] = set()
+    surfaces: set[str] = set()
+
+    for row in _read_jsonl(_operation_ledger_path(home)):
+        if row.get("_parse_error") or not _is_explicit_star_source_record(row):
+            continue
+        event_surfaces = {"operation_ledger"}
+        semantic_text = _star_source_semantic_text(row)
+        has_source_reasoning = _star_source_has_semantic(row, semantic_text, STAR_SOURCE_SOURCE_TERMS)
+        has_methodology_generation = _star_source_has_semantic(row, semantic_text, STAR_SOURCE_METHODOLOGY_TERMS)
+        has_self_evolution = _star_source_has_semantic(row, semantic_text, STAR_SOURCE_SELF_EVOLUTION_TERMS)
+        if has_source_reasoning:
+            source_reasoning_count += 1
+        if has_methodology_generation:
+            methodology_generation_count += 1
+        if has_self_evolution:
+            self_evolution_count += 1
+        event_project_ids = _temporal_evolution_values(
+            row,
+            STAR_SOURCE_PROJECT_KEYS,
+            STAR_SOURCE_PROJECT_LIST_KEYS,
+        )
+        event_surfaces.update(
+            _temporal_evolution_values(
+                row,
+                STAR_SOURCE_SURFACE_KEYS,
+                STAR_SOURCE_SURFACE_LIST_KEYS,
+            )
+        )
+        event_is_read_only = _star_source_record_is_read_only(row)
+        project_ids.update(event_project_ids)
+        surfaces.update(event_surfaces)
+        if (
+            has_source_reasoning
+            and has_methodology_generation
+            and has_self_evolution
+            and len(event_project_ids) >= 1
+            and len(event_surfaces) >= 2
+            and event_is_read_only
+        ):
+            governed_event_ids.append(_star_source_event_id(row))
+
+    sorted_project_ids = sorted(project_ids)
+    ready = len(governed_event_ids) >= 1
+    return {
+        "source_reasoning_event_count": source_reasoning_count,
+        "methodology_generation_event_count": methodology_generation_count,
+        "self_evolution_event_count": self_evolution_count,
+        "source_methodology_project_count": len(sorted_project_ids),
+        "source_methodology_project_ids": sorted_project_ids,
+        "source_methodology_surface_count": len(surfaces),
+        "source_methodology_governed_event_count": len(governed_event_ids),
+        "source_methodology_governed_event_ids": governed_event_ids,
+        "source_methodology_ready": ready,
+    }
+
+
+def _is_explicit_star_source_record(row: Mapping[str, Any]) -> bool:
+    for key in (
+        "event_type",
+        "operation",
+        "metrics_type",
+        "record_type",
+        "evidence_type",
+        "type",
+    ):
+        value = _clean_text(row.get(key)).lower().replace("-", "_").replace(" ", "_")
+        if value in STAR_SOURCE_EXPLICIT_TYPES:
+            return True
+    return False
+
+
+def _star_source_record_is_read_only(row: Mapping[str, Any]) -> bool:
+    operation = _clean_text(row.get("operation")).lower()
+    return (
+        operation not in DURABLE_WRITE_OPERATIONS
+        and operation != "policy_apply_execute"
+        and row.get("would_modify_config") is not True
+        and row.get("would_write_memory") is not True
+        and row.get("would_mutate_memory") is not True
+        and row.get("would_modify_graph") is not True
+        and row.get("would_write_graph") is not True
+    )
+
+
+def _star_source_event_id(row: Mapping[str, Any]) -> str:
+    for key in ("event_id", "operation_id", "record_id", "id"):
+        value = _clean_text(row.get(key))
+        if value:
+            return value
+    return _digest(row)
+
+
+def _star_source_has_semantic(row: Mapping[str, Any], semantic_text: str, terms: set[str]) -> bool:
+    if any(row.get(term) is True for term in terms):
+        return True
+    normalized_text = semantic_text.lower().replace("-", "_").replace(" ", "_")
+    normalized_terms = {term.lower().replace("-", "_").replace(" ", "_") for term in terms}
+    return any(term in normalized_text for term in normalized_terms)
+
+
+def _star_source_semantic_text(row: Mapping[str, Any]) -> str:
+    values: list[str] = []
+    for key in (
+        "event_type",
+        "operation",
+        "record_type",
+        "evidence_type",
+        "type",
+        "capability",
+        "reasoning_type",
+        "methodology_type",
+        "evolution_type",
+        "description",
+        "summary",
+        "rationale",
+    ):
+        values.append(_clean_text(row.get(key)))
+    values.extend(_list_of_str(row.get("tags")))
+    values.extend(_list_of_str(row.get("labels")))
+    values.extend(_star_source_metadata_terms(row.get("metadata")))
+    values.extend(_star_source_metadata_terms(row.get("evidence")))
+    values.extend(_star_source_metadata_terms(row.get("governance")))
+    return " ".join(value for value in values if value)
+
+
+def _star_source_metadata_terms(value: Any) -> list[str]:
+    if isinstance(value, Mapping):
+        terms: list[str] = []
+        for key, item in value.items():
+            terms.append(_clean_text(key))
+            if isinstance(item, (Mapping, list, tuple, set)):
+                terms.extend(_star_source_metadata_terms(item))
+            elif item is True:
+                terms.append(_clean_text(key))
+            else:
+                terms.append(_clean_text(item))
+        return [term for term in terms if term]
+    if isinstance(value, (list, tuple, set)):
+        terms: list[str] = []
+        for item in value:
+            terms.extend(_star_source_metadata_terms(item))
+        return terms
+    text = _clean_text(value)
+    return [text] if text else []
 
 
 def _is_explicit_temporal_evolution_metrics_record(row: Mapping[str, Any]) -> bool:
@@ -2092,7 +2317,7 @@ def _tier_readiness(tier: Mapping[str, Any], evidence: Mapping[str, Any]) -> dic
     if level >= 14:
         criteria.append(("Temporal evolution metrics exist across projects", bool(evidence.get("temporal_evolution_metrics_ready"))))
     if level >= 15:
-        criteria.append(("Source reasoning and methodology self-evolution are implemented", False))
+        criteria.append(("Source reasoning and methodology self-evolution are implemented", bool(evidence.get("source_methodology_ready"))))
     passed = [name for name, ok in criteria if ok]
     gaps = [name for name, ok in criteria if not ok]
     readiness_score = round(len(passed) / len(criteria), 3) if criteria else 0.0
@@ -2127,6 +2352,8 @@ def _memory_evolution_next_actions(
         actions.append("Create a governed memory_write_proposal for long-term preference/persona/collaboration-style continuity; do not write memory directly.")
     if next_item and next_item.get("name") == "星宙记忆" and not evidence.get("temporal_evolution_metrics_ready"):
         actions.append("Create or export a governed read-only temporal evolution metrics snapshot across projects; do not write Memory Graph or durable memory.")
+    if next_item and next_item.get("name") == "星源记忆" and not evidence.get("source_methodology_ready"):
+        actions.append("Create a governed read-only source reasoning and methodology self-evolution audit event; do not write Memory Graph or durable memory.")
     if not actions:
         actions.append("Continue with the next read-only governance/readiness capability before any durable write.")
     return actions[:5]

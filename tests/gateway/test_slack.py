@@ -3210,8 +3210,8 @@ class TestSlashEphemeralAck:
         assert ("C_H", "U_H") in adapter._slash_command_contexts
 
     @pytest.mark.asyncio
-    async def test_freeform_hermes_question_does_not_stash_context(self, adapter):
-        """Free-form /hermes <question> must NOT route agent reply ephemeral."""
+    async def test_freeform_hermes_question_stashes_context(self, adapter):
+        """Free-form /hermes <question> routes agent reply ephemerally."""
         command = {
             "command": "/hermes",
             "text": "what's the weather",
@@ -3226,8 +3226,9 @@ class TestSlashEphemeralAck:
         # Free-form text — not a command
         assert event.message_type == MessageType.TEXT
         assert event.text == "what's the weather"
-        # Context must NOT be stashed — agent reply should be public
-        assert len(adapter._slash_command_contexts) == 0
+        # Context is stashed so the slash reply replaces the private ack instead
+        # of posting the answer publicly to the channel.
+        assert ("C_FREE", "U_FREE") in adapter._slash_command_contexts
 
     @pytest.mark.asyncio
     async def test_concurrent_users_same_channel_isolates_contexts(self, adapter):

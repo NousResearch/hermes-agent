@@ -2854,14 +2854,14 @@ class SlackAdapter(BasePlatformAdapter):
             raw_message=command,
         )
 
-        # Stash the Slack response_url so the first reply for this
-        # channel+user can be routed ephemerally (replaces the initial
-        # "Running /cmd…" ack shown by handle_hermes_command).
-        # Only stash for COMMAND events (text starts with "/") — free-form
-        # questions via "/hermes <question>" must produce public replies so
-        # the whole channel can see the agent's answer.
+        # Stash the Slack response_url so the first reply for this slash
+        # invocation can be routed ephemerally (replaces the initial
+        # "Running /cmd…" ack shown by handle_hermes_command).  This applies
+        # to both command-shaped text and legacy free-form /hermes prompts,
+        # because slash-command interactions are initially acknowledged as
+        # private and may contain sensitive prompt or tool output.
         response_url = command.get("response_url", "")
-        if response_url and user_id and channel_id and text.startswith("/"):
+        if response_url and user_id and channel_id:
             self._slash_command_contexts[(channel_id, user_id)] = {
                 "response_url": response_url,
                 "ts": time.monotonic(),

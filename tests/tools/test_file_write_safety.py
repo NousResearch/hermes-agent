@@ -89,6 +89,14 @@ class TestSafeWriteRoot:
         assert _is_write_denied("nested/file.txt", base_dir=str(safe_root)) is False
         assert _is_write_denied("../outside/file.txt", base_dir=str(safe_root)) is True
 
+    def test_tilde_path_with_nonlocal_home_override_remains_denied(self, tmp_path: Path, monkeypatch):
+        """A caller-supplied home must not let local expanduser semantics bypass static deny rules."""
+        remote_home = tmp_path / "remote-home"
+        os.makedirs(remote_home, exist_ok=True)
+        monkeypatch.delenv("HERMES_WRITE_SAFE_ROOT", raising=False)
+
+        assert _is_write_denied("~/.ssh/id_rsa", home=str(remote_home)) is True
+
 
 class TestCheckSensitivePathMacOSBypass:
     """Verify _check_sensitive_path blocks /private/etc paths (issue #8734)."""

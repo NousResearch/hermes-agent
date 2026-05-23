@@ -473,6 +473,54 @@ class TestLoadGatewayConfig:
             "C01ABC": "Code review mode",
         }
 
+    def test_plugin_tuning_section_without_credentials_does_not_enable_adapter(self, tmp_path, monkeypatch):
+        """A plugin's top-level YAML settings should not start its adapter
+        unless credentials/configuration are actually present.
+
+        Regression: discord.py being installed made the Discord plugin
+        check_fn() return True, so a harmless ``discord.require_mention``
+        config block enabled Discord without DISCORD_BOT_TOKEN and caused the
+        gateway to retry forever with "No bot token configured".
+        """
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        (hermes_home / "config.yaml").write_text(
+            "discord:\n"
+            "  require_mention: true\n"
+            "  free_response_channels: ''\n",
+            encoding="utf-8",
+        )
+
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.delenv("DISCORD_BOT_TOKEN", raising=False)
+
+        config = load_gateway_config()
+
+        assert config.platforms[Platform.DISCORD].enabled is False
+        assert Platform.DISCORD not in config.get_connected_platforms()
+
+    def test_explicitly_enabled_plugin_section_is_preserved_without_credentials(self, tmp_path, monkeypatch):
+        """If a user explicitly writes platforms.discord.enabled: true,
+        preserve that intent so startup can surface the adapter's own error.
+        """
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        (hermes_home / "config.yaml").write_text(
+            "platforms:\n"
+            "  discord:\n"
+            "    enabled: true\n"
+            "discord:\n"
+            "  require_mention: true\n",
+            encoding="utf-8",
+        )
+
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.delenv("DISCORD_BOT_TOKEN", raising=False)
+
+        config = load_gateway_config()
+
+        assert config.platforms[Platform.DISCORD].enabled is True
+
     def test_bridges_feishu_allow_bots_from_config_yaml_to_env(self, tmp_path, monkeypatch):
         hermes_home = tmp_path / ".hermes"
         hermes_home.mkdir()

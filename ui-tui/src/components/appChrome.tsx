@@ -1,4 +1,4 @@
-import { Box, type ScrollBoxHandle, Text } from '@hermes/ink'
+import { Box, type ScrollBoxHandle, stringWidth, Text } from '@hermes/ink'
 import { useStore } from '@nanostores/react'
 import { type ReactNode, type RefObject, useEffect, useMemo, useRef, useState } from 'react'
 import unicodeSpinners from 'unicode-animations'
@@ -160,7 +160,7 @@ export function statusRuleWidths(cols: number, cwdLabel: string) {
     return { leftWidth: width, rightWidth: 0, separatorWidth: 0 }
   }
 
-  const rightWidth = Math.max(0, Math.min(cwdLabel.length, maxRightWidth))
+  const rightWidth = Math.max(0, Math.min(stringWidth(cwdLabel), maxRightWidth))
   const separatorWidth = rightWidth > 0 ? desiredSeparatorWidth : 0
   const leftWidth = Math.max(1, width - separatorWidth - rightWidth)
 

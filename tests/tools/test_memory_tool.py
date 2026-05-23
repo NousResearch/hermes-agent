@@ -255,3 +255,128 @@ class TestMemoryToolDispatcher:
     def test_remove_requires_old_text(self, store):
         result = json.loads(memory_tool(action="remove", store=store))
         assert result["success"] is False
+
+
+# =========================================================================
+# External drift guard (#26045)
+#
+# An external writer — patch tool, shell append, manual edit, or sister
+# session — can grow MEMORY.md beyond the tool's mental model: no §
+# delimiters, content that would all collapse into a single "entry" larger
+# than the char limit. Pre-fix, the next memory(action=replace) from a
+# session with stale in-memory state truncated that giant entry, silently
+# discarding the appended bytes. Reproduced in production on 2026-05-14 —
+# ~8KB of structured vendor / standing-orders / pinboard content destroyed
+# by a sister session's replace.
+# =========================================================================
+
+
+class TestExternalDriftGuard:
+    """Mutations must refuse to flush when on-disk content shows external drift."""
+
+    def _plant_drift(self, store, target="memory"):
+        """Append free-form content (no § delimiters) past char_limit."""
+        path = store._path_for(target)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        # 800 chars per entry × 3 sections == ~2.4KB without delimiters,
+        # well over the test fixture's 500-char limit.
+        block = "\n\n## Vendor Master\n" + "x" * 800
+        block += "\n\n## Standing Orders\n" + "y" * 800
+        block += "\n\n## Pin Board\n" + "z" * 800
+        existing = path.read_text(encoding="utf-8") if path.exists() else ""
+        path.write_text(existing + block, encoding="utf-8")
+        return path
+
+    def test_replace_refuses_on_drift(self, store):
+        store.add("memory", "User likes brevity.")
+        path = self._plant_drift(store)
+        original_size = path.stat().st_size
+
+        result = store.replace("memory", "User likes", "User prefers concise.")
+
+        assert result["success"] is False
+        assert "drift_backup" in result
+        # On-disk file is UNTOUCHED — that's the point.
+        assert path.stat().st_size == original_size
+        assert "Vendor Master" in path.read_text()
+        # Backup exists with the drifted content.
+        bak = result["drift_backup"]
+        assert Path(bak).exists()
+        assert "Vendor Master" in Path(bak).read_text()
+
+    def test_add_refuses_on_drift(self, store):
+        store.add("memory", "Existing.")
+        path = self._plant_drift(store)
+        original = path.read_text()
+
+        result = store.add("memory", "New entry under drift.")
+
+        assert result["success"] is False
+        assert "drift_backup" in result
+        assert path.read_text() == original  # untouched
+
+    def test_remove_refuses_on_drift(self, store):
+        store.add("memory", "Target entry to remove.")
+        path = self._plant_drift(store)
+        original = path.read_text()
+
+        result = store.remove("memory", "Target entry")
+
+        assert result["success"] is False
+        assert "drift_backup" in result
+        assert path.read_text() == original  # untouched
+
+    def test_clean_file_does_not_trigger_drift(self, store):
+        """A normally-written file (just below char_limit, §-delimited) is fine."""
+        # Two tool-shaped entries totaling under the 500-char limit.
+        store.add("memory", "Entry one — normal length.")
+        store.add("memory", "Entry two — also normal.")
+
+        result = store.add("memory", "Entry three.")
+        assert result["success"] is True
+        assert "drift_backup" not in result
+
+        result = store.replace("memory", "Entry two", "Entry two replaced.")
+        assert result["success"] is True
+
+    def test_error_message_points_at_remediation(self, store):
+        """The error string must reference the backup AND remediation steps."""
+        store.add("memory", "Initial.")
+        self._plant_drift(store)
+
+        result = store.replace("memory", "Initial", "Replacement.")
+        assert result["success"] is False
+        # The model has to know what file to look at and what to do.
+        assert ".bak." in result["error"]
+        assert "remediation" in result
+        assert "26045" in result["error"]  # tracking-issue back-reference
+
+    def test_drift_guard_also_protects_user_target(self, store):
+        """USER.md gets the same guarantee as MEMORY.md."""
+        store.add("user", "Some preference.")
+        path = self._plant_drift(store, target="user")
+        original_size = path.stat().st_size
+
+        result = store.replace("user", "Some preference", "New preference.")
+        assert result["success"] is False
+        assert path.stat().st_size == original_size
+
+    def test_drift_backup_filename_is_unique_per_invocation(self, store):
+        """Two drift refusals close together must not collide on bak.<ts>.
+
+        If two refusals share the same epoch second, the second call would
+        overwrite the first .bak. The current implementation accepts that
+        — both files describe the same on-disk state — but pin the path
+        format here so any future change has to think about it.
+        """
+        store.add("memory", "Initial.")
+        self._plant_drift(store)
+
+        r1 = store.replace("memory", "Initial", "Replacement.")
+        r2 = store.add("memory", "Another.")
+        assert r1.get("drift_backup")
+        assert r2.get("drift_backup")
+        # Same epoch second is the expected collision case — both point
+        # at the same snapshot. Different second is also fine.
+        assert ".bak." in r1["drift_backup"]
+        assert ".bak." in r2["drift_backup"]

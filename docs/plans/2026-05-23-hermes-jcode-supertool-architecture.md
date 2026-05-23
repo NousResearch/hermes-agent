@@ -54,6 +54,9 @@ needed to build it without permanently forking both upstreams:
 
 - `bridges/jcode-native-hermes-tool/` is the intended supertool path: a native
   jcode `Tool` implementation for Hermes-backed capabilities.
+- `patches/jcode/register-external-toolset.patch` is the upstream-facing jcode
+  hook: a generic namespaced native toolset registration method plus a registry
+  test. It does not mention Hermes, so it can support future bridge crates too.
 - `contracts/hermes_service/v1/` defines the service envelope between Rust
   jcode tools and the Python Hermes capability host.
 - `bridges/hermes-mcp-server/` is only a no-patch bootstrap path for jcode's
@@ -64,17 +67,20 @@ needed to build it without permanently forking both upstreams:
   shape with pinned upstreams, native tool scaffolding, contracts, and gates.
 - `scripts/jcode_native_tool_check.py` verifies that the native tool crate
   still compiles against jcode's Rust `Tool` architecture.
+- `scripts/jcode_native_registration_check.py` verifies that the jcode
+  registration patch still applies to the pinned jcode checkout.
 
 ## Migration Path
 
 1. Keep upstream Hermes and jcode pinned and replaceable.
-2. Add Hermes capabilities to jcode as native tools using
+2. Apply or upstream the generic jcode external-toolset registration hook.
+3. Add Hermes capabilities to jcode as native tools using
    `bridges/jcode-native-hermes-tool/`.
-3. Route local interactive work, browser/session workflows, and swarm tasks
+4. Route local interactive work, browser/session workflows, and swarm tasks
    through jcode's Rust runtime by default.
-4. Route provider-rich research, external messaging, webhook delivery, cron,
+5. Route provider-rich research, external messaging, webhook delivery, cron,
    and memory-provider features through the Hermes capability host.
-5. Collapse bootstrap adapters over time once native jcode-hosted capability
+6. Collapse bootstrap adapters over time once native jcode-hosted capability
    modules cover the workflows.
 
 The success criterion is not "Hermes can call jcode" or "jcode can call

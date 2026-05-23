@@ -29,6 +29,8 @@ HERMES_SERVICE_FIXTURE_DIR = ROOT / "tests" / "fixtures" / "hermes_service"
 HERMES_MCP_FIXTURE_DIR = ROOT / "tests" / "fixtures" / "hermes_mcp"
 LATENCY_PROBE = ROOT / "scripts" / "jcode_bridge_latency_probe.py"
 NATIVE_TOOL_CHECK = ROOT / "scripts" / "jcode_native_tool_check.py"
+NATIVE_REGISTRATION_CHECK = ROOT / "scripts" / "jcode_native_registration_check.py"
+JCODE_PATCH_DIR = ROOT / "patches" / "jcode"
 PLAN_DOCS = (
     ROOT / "docs" / "plans" / "2026-05-22-hermes-jcode-comparison.md",
     ROOT / "docs" / "plans" / "2026-05-22-hermes-jcode-bridge-implementation.md",
@@ -213,6 +215,11 @@ Then wire `bridges/jcode-native-hermes-tool` into upstream jcode's native tool
 registry. That is the supertool path: Hermes-backed capabilities appear inside
 jcode's normal Rust agent loop rather than as a second agent.
 
+The patch queue in `patches/jcode/` contains the minimal upstream-facing hook
+for that native integration. It is intentionally generic: jcode gets a
+namespaced external toolset registration point, while Hermes-specific code stays
+in this scaffold.
+
 `bridges/hermes-plugin-jcode`, `bridges/jcode-tool-hermes`, and
 `bridges/hermes-mcp-server` are compatibility/bootstrap layers. They keep both
 upstreams testable while the native jcode-hosted tool surface matures.
@@ -245,6 +252,9 @@ can remain the Rust hot path while Hermes contributes higher-level autonomy.
 Use `scripts/jcode_native_tool_check.py --jcode upstreams/jcode` after pinning
 or symlinking jcode into `upstreams/jcode`. That check proves the native Hermes
 tool crate still compiles against jcode's Rust tool architecture.
+
+Use `scripts/jcode_native_registration_check.py --jcode upstreams/jcode` to
+verify the patch queue still applies to the pinned jcode commit.
 """
 
 
@@ -373,9 +383,15 @@ def build_manifest(hermes: Path, jcode: Path) -> dict[str, Any]:
             "run bridges/hermes-mcp-server/hermes_mcp_server.py --check --live",
             "run scripts/jcode_bridge_latency_probe.py --iterations 50",
             "run scripts/jcode_native_tool_check.py --jcode <jcode checkout>",
+            "run scripts/jcode_native_registration_check.py --jcode <jcode checkout>",
             "run Hermes-side jcode_bridge_smoke.py in the Hermes checkout",
             "generate and archive an upstream-sync report",
         ],
+        "jcode_patch_queue": {
+            "path": "patches/jcode",
+            "registration_hook": "patches/jcode/register-external-toolset.patch",
+            "check": "scripts/jcode_native_registration_check.py --jcode <jcode checkout>",
+        },
     }
 
 
@@ -459,6 +475,8 @@ def scaffold(output: Path, manifest: dict[str, Any], *, force: bool) -> dict[str
     copied.append("bridges/jcode-native-hermes-tool")
     _copy_dir(HERMES_MCP_SERVER, output / "bridges" / "hermes-mcp-server", force=force)
     copied.append("bridges/hermes-mcp-server")
+    _copy_dir(JCODE_PATCH_DIR, output / "patches" / "jcode", force=force)
+    copied.append("patches/jcode")
     _copy_dir(CONTRACT_DIR, output / "contracts" / "jcode_bridge" / "v1", force=force)
     copied.append("contracts/jcode_bridge/v1")
     _copy_dir(HERMES_SERVICE_CONTRACT_DIR, output / "contracts" / "hermes_service" / "v1", force=force)
@@ -486,6 +504,12 @@ def scaffold(output: Path, manifest: dict[str, Any], *, force: bool) -> dict[str
     copied.append("scripts/jcode_bridge_latency_probe.py")
     _copy_file(NATIVE_TOOL_CHECK, output / "scripts" / "jcode_native_tool_check.py", force=force)
     copied.append("scripts/jcode_native_tool_check.py")
+    _copy_file(
+        NATIVE_REGISTRATION_CHECK,
+        output / "scripts" / "jcode_native_registration_check.py",
+        force=force,
+    )
+    copied.append("scripts/jcode_native_registration_check.py")
     _write_text(
         output / "configs" / "jcode-mcp.hermes.json",
         json.dumps(_jcode_mcp_config(output), indent=2, ensure_ascii=True, sort_keys=True) + "\n",

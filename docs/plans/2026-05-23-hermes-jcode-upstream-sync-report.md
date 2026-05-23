@@ -1,12 +1,12 @@
 # Hermes/jcode upstream sync report
 
-Generated: 2026-05-23T19:05:42+00:00
+Generated: 2026-05-23T19:13:21+00:00
 
 ## Repositories
 
 | Repo | Branch | Commit | Dirty |
 | --- | --- | --- | --- |
-| hermes | codex/hermes-jcode-bridge | a83fac4dae3ac86a8a557b5f059cb8f8443f51e7 | True |
+| hermes | codex/hermes-jcode-bridge | ceb0e34f35b81b95ba3a4226f5f59b91e62620fd | True |
 | jcode | master | 7951a2ddb91bad10155b911ccd0971de5baeafc8 | True |
 
 ## Graphify
@@ -53,6 +53,7 @@ Success: True
 | jcode_tool_hermes_client | True |
 | hermes_mcp_server | True |
 | hermes_mcp_contract | True |
+| jcode_native_registration_patch | True |
 | mother_repo_scaffold | True |
 | webhook_preflight_pass | True |
 | webhook_preflight_blocks | True |
@@ -97,10 +98,10 @@ Iterations: 30
 
 | Metric | ms |
 | --- | ---: |
-| min | 0.035 |
-| p50 | 0.037 |
-| p95 | 0.071 |
-| max | 0.119 |
+| min | 0.041 |
+| p50 | 0.049 |
+| p95 | 0.125 |
+| max | 0.175 |
 
 ## jcode Native Hermes Tool
 
@@ -118,6 +119,22 @@ jcode path: /Users/aayu/Workspace/developer/hermes/.codex-research/jcode
 | jcode_checkout:exists | True |
 | workspace:manifest_exists | True |
 | cargo:check | True |
+
+## jcode Native Registration Patch
+
+Success: True
+Patch path: /Users/aayu/Workspace/developer/hermes/patches/jcode/register-external-toolset.patch
+jcode path: /Users/aayu/Workspace/developer/hermes/.codex-research/jcode
+
+| Check | OK |
+| --- | --- |
+| jcode_checkout:exists | True |
+| patch:exists | True |
+| jcode_registry:has_dynamic_register | True |
+| patch:adds_register_toolset | True |
+| patch:adds_namespace_test | True |
+| jcode_tests:expected_anchor_present | True |
+| patch:git_apply_check | True |
 
 ## Recommendations
 

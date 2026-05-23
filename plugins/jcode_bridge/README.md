@@ -239,6 +239,11 @@ cargo run --manifest-path bridges/jcode-tool-hermes/Cargo.toml -- \
 That client is intentionally standalone. A later jcode patch can wrap the same
 request/response logic in a native jcode `Tool`.
 
+The native path now has a concrete jcode-side patch queue at
+`patches/jcode/register-external-toolset.patch`. It adds a generic
+`Registry::register_toolset` hook so external Rust crates can register
+namespaced native tools without teaching jcode about Hermes.
+
 For integration without patching jcode, use the dependency-free MCP wrapper at
 `bridges/hermes-mcp-server/`:
 
@@ -287,6 +292,12 @@ Validate the native jcode Tool scaffold against a jcode checkout:
 scripts/jcode_native_tool_check.py --jcode /absolute/path/to/jcode
 ```
 
+Validate that the jcode native registration hook still applies:
+
+```bash
+scripts/jcode_native_registration_check.py --jcode /absolute/path/to/jcode
+```
+
 Run the contract fixture gate:
 
 ```bash
@@ -316,7 +327,7 @@ scripts/jcode_bridge_upstream_report.py --smoke --format markdown \
 Use that report before bumping either upstream. It records both SHAs, Graphify
 summaries, artifact paths/sizes, bridge contract/schema status, MCP transport
 status, reverse Hermes service status, latency-probe metrics, native jcode tool
-status, and optional smoke status.
+status, jcode registration-patch status, and optional smoke status.
 
 Create a standalone mother-repo scaffold:
 
@@ -326,12 +337,13 @@ python3 /path/to/mother-agent/scripts/check_bridge_contract.py
 ```
 
 The scaffold carries the bridge plugin, Rust service client, native jcode tool
-crate, MCP server, schemas, fixtures, copied research docs, reverse-service
-wrapper, generated jcode MCP config, latency probe, and a manifest with the
-pinned Hermes/jcode state. Its contract check validates `jcode-bridge.v1`,
-`hermes-service.v1`, and `hermes-mcp.v1`. The native tool crate is the practical
-path for combining jcode's Rust hot path with Hermes integrations while still
-being able to pull future upstream updates cleanly.
+crate, jcode patch queue, MCP server, schemas, fixtures, copied research docs,
+reverse-service wrapper, generated jcode MCP config, latency probe, and a
+manifest with the pinned Hermes/jcode state. Its contract check validates
+`jcode-bridge.v1`, `hermes-service.v1`, and `hermes-mcp.v1`. The native tool
+crate plus registration hook is the practical path for combining jcode's Rust
+hot path with Hermes integrations while still being able to pull future
+upstream updates cleanly.
 
 ## Current Limits
 
@@ -340,9 +352,10 @@ being able to pull future upstream updates cleanly.
   browser provider.
 - The bridge does not yet mirror jcode memory or swarm state into Hermes
   memory/kanban surfaces.
-- `bridges/jcode-native-hermes-tool` is a native jcode `Tool` scaffold, but it
-  still needs a small upstream jcode registration patch before it is available
-  in jcode's default tool registry.
+- `bridges/jcode-native-hermes-tool` is a native jcode `Tool` scaffold. The
+  patch queue provides the small upstream-facing registry hook, but the default
+  jcode binary still needs to apply or accept that hook before the tools appear
+  in every jcode session.
 - `debug_socket` requires a running jcode server with debug socket enabled.
 - `preflight_live_run` can spend model/API budget and should be reserved for
   deliberate compatibility checks.

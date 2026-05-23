@@ -1,0 +1,74 @@
+diff --git a/src/tool/mod.rs b/src/tool/mod.rs
+--- a/src/tool/mod.rs
++++ b/src/tool/mod.rs
+@@ -573,0 +574,39 @@ impl Registry {
++    /// Register a namespaced batch of native tools supplied by an extension crate.
++    ///
++    /// External tool providers should construct normal `Arc<dyn Tool>` values and
++    /// let the registry keep ownership of naming, definitions, execution logging,
++    /// and context guards. This gives bridge crates a small native extension point
++    /// without forcing jcode to know about any particular upstream integration.
++    pub async fn register_toolset<I>(&self, namespace: &str, tools: I) -> Vec<String>
++    where
++        I: IntoIterator<Item = (String, Arc<dyn Tool>)>,
++    {
++        let namespace = namespace.trim_matches('_');
++        let prefix = if namespace.is_empty() {
++            String::new()
++        } else {
++            format!("{namespace}_")
++        };
++        let mut registered = Vec::new();
++        let mut registry_tools = self.tools.write().await;
++
++        for (name, tool) in tools {
++            let name = name.trim_matches('_');
++            if name.is_empty() {
++                continue;
++            }
++
++            let registry_name = if prefix.is_empty() || name.starts_with(&prefix) {
++                name.to_string()
++            } else {
++                format!("{prefix}{name}")
++            };
++
++            registry_tools.insert(registry_name.clone(), tool);
++            registered.push(registry_name);
++        }
++
++        registered.sort();
++        registered
++    }
++
+diff --git a/src/tool/tests.rs b/src/tool/tests.rs
+--- a/src/tool/tests.rs
++++ b/src/tool/tests.rs
+@@ -96,0 +97,27 @@ fn tool_definitions_do_not_auto_inject_intent() {
++#[tokio::test]
++async fn register_toolset_namespaces_external_tools() {
++    let provider: Arc<dyn Provider> = Arc::new(MockProvider);
++    let registry = Registry::new(provider).await;
++
++    let registered = registry
++        .register_toolset(
++            "hermes",
++            vec![
++                (
++                    "web_search".to_string(),
++                    Arc::new(BareSchemaTool) as Arc<dyn Tool>,
++                ),
++                (
++                    "hermes_memory".to_string(),
++                    Arc::new(BareSchemaTool) as Arc<dyn Tool>,
++                ),
++            ],
++        )
++        .await;
++
++    assert_eq!(registered, vec!["hermes_memory", "hermes_web_search"]);
++    let names = registry.tool_names().await;
++    assert!(names.contains(&"hermes_memory".to_string()));
++    assert!(names.contains(&"hermes_web_search".to_string()));
++}
++

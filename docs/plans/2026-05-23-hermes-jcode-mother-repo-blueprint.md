@@ -53,6 +53,8 @@ mother-agent/
 |   |-- hermes-mcp-server/        # stdio MCP wrapper for jcode's MCP manager
 |   |-- browser-provider/         # future common browser provider adapter
 |   `-- memory-sync/              # future one-way then two-way memory bridge
+|-- patches/
+|   `-- jcode/                    # tiny upstream-facing jcode patch queue
 |-- contracts/
 |   |-- jcode_bridge/v1/          # current portable schemas
 |   |-- hermes_service/v1/        # reverse jcode -> Hermes service schemas
@@ -131,6 +133,12 @@ jcode's `jcode_tool_core::Tool` trait, so jcode keeps ownership of the
 model-facing tool registry, session context, TUI rendering, and low-latency
 execution path while Hermes supplies the capability result.
 
+`patches/jcode/register-external-toolset.patch` is the current jcode-side hook.
+It adds a generic `Registry::register_toolset` method for namespaced native
+extension crates. The patch deliberately does not import Hermes. The mother repo
+can apply it while the hook is proposed upstream, and future upstream updates
+must pass `scripts/jcode_native_registration_check.py`.
+
 `bridges/hermes-mcp-server/` exposes the same `hermes-service.v1` boundary as a
 small dependency-free stdio MCP server. jcode already has an MCP manager, so
 this is the first no-upstream-patch bootstrap route for jcode to call Hermes
@@ -205,13 +213,14 @@ For every Hermes or jcode bump:
 7. Run `python3 bridges/hermes-mcp-server/hermes_mcp_server.py --check --live`.
 8. Run `scripts/jcode_bridge_latency_probe.py --iterations 50`.
 9. Run `scripts/jcode_native_tool_check.py --jcode <jcode checkout>`.
-10. Run any mother-repo contract tests against `contracts/*/v*`.
-11. Run smoke routes:
+10. Run `scripts/jcode_native_registration_check.py --jcode <jcode checkout>`.
+11. Run any mother-repo contract tests against `contracts/*/v*`.
+12. Run smoke routes:
    - Hermes webhook -> jcode sidecar
    - jcode local task -> Hermes research tool
    - browser/profile task with explicit outbound-action approval
    - memory read/write sync dry run
-12. Record the generated report next to the upstream SHA bump.
+13. Record the generated report next to the upstream SHA bump.
 
 If a contract breaks, prefer one of these in order:
 

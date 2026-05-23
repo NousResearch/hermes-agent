@@ -228,6 +228,25 @@ def _native_tool_report(jcode_path: Path, *, cargo: bool) -> dict[str, Any]:
     return payload
 
 
+def _native_registration_report(jcode_path: Path) -> dict[str, Any]:
+    script = ROOT / "scripts" / "jcode_native_registration_check.py"
+    completed = _run([sys.executable, str(script), "--jcode", str(jcode_path)], cwd=ROOT)
+    try:
+        payload = json.loads(completed.stdout)
+    except json.JSONDecodeError:
+        payload = {
+            "success": False,
+            "error": "failed to parse native jcode registration output",
+            "stdout": completed.stdout,
+        }
+    payload["returncode"] = completed.returncode
+    if completed.stderr:
+        payload["stderr"] = completed.stderr
+    if completed.returncode != 0:
+        payload["success"] = False
+    return payload
+
+
 def _recommendations(report: dict[str, Any]) -> list[str]:
     items: list[str] = []
     contract = report.get("bridge_contract", {})
@@ -245,6 +264,9 @@ def _recommendations(report: dict[str, Any]) -> list[str]:
     native_tool = report.get("jcode_native_tool", {})
     if isinstance(native_tool, dict) and not native_tool.get("success"):
         items.append("Do not bump upstreams until the native jcode Hermes tool check passes.")
+    native_registration = report.get("jcode_native_registration", {})
+    if isinstance(native_registration, dict) and not native_registration.get("success"):
+        items.append("Refresh the jcode native registration patch before pinning upstreams.")
     smoke = report.get("bridge_smoke")
     if isinstance(smoke, dict) and not smoke.get("success"):
         items.append("Do not bump upstreams until jcode-bridge smoke checks pass.")
@@ -282,6 +304,7 @@ def build_report(args: argparse.Namespace) -> dict[str, Any]:
             jcode_path,
             cargo=not args.skip_native_cargo,
         ),
+        "jcode_native_registration": _native_registration_report(jcode_path),
     }
     if args.smoke:
         report["bridge_smoke"] = _smoke_report()
@@ -300,6 +323,7 @@ def build_report(args: argparse.Namespace) -> dict[str, Any]:
         and bool(report["hermes_mcp_contract"].get("success"))
         and bool(report["bridge_latency"].get("success"))
         and bool(report["jcode_native_tool"].get("success"))
+        and bool(report["jcode_native_registration"].get("success"))
         and repos_present
         and graph_reports_present
         and smoke_ok
@@ -438,6 +462,21 @@ def _markdown(report: dict[str, Any]) -> str:
         "| --- | --- |",
     ])
     for check in native_tool.get("checks", []):
+        lines.append(f"| {check.get('name')} | {check.get('ok')} |")
+
+    native_registration = report.get("jcode_native_registration", {})
+    lines.extend([
+        "",
+        "## jcode Native Registration Patch",
+        "",
+        f"Success: {native_registration.get('success')}",
+        f"Patch path: {native_registration.get('patch_path')}",
+        f"jcode path: {native_registration.get('jcode_path')}",
+        "",
+        "| Check | OK |",
+        "| --- | --- |",
+    ])
+    for check in native_registration.get("checks", []):
         lines.append(f"| {check.get('name')} | {check.get('ok')} |")
 
     lines.extend([

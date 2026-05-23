@@ -82,6 +82,14 @@ EXPOSED_TOOLS: tuple[str, ...] = (
     "image_generate",
     "skill_view",
     "skills_list",
+    # Ideas boards (Hermes markdown ideas toolset)
+    "ideas_list",
+    "ideas_boards",
+    "ideas_show",
+    "ideas_create",
+    "ideas_update",
+    "ideas_delete",
+    "ideas_convert",
     "text_to_speech",
     # Kanban worker handoff tools — gated on HERMES_KANBAN_TASK env var
     # (set by the kanban dispatcher when spawning a worker). Without these

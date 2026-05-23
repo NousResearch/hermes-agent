@@ -9,6 +9,7 @@ Condensed from real failures: agents confused Ideas with Kanban, read `~/.hermes
 | Create an idea on the default board | `hermes kanban create "…" --triage` | Creates a **task** (`t_…`) in Kanban, not a markdown idea (`i_…`) |
 | List ideas on all boards | `read_file` / `grep` under `~/.hermes/ideas` | Bypasses SQLite index; slow and board-scoped paths are easy to miss |
 | List ideas on all boards | `ideas boards` + N× `ideas list --board X` | Works in shell but wastes turns; use `ideas_list(all_boards=true)` |
+| `ideas_list` empty but `ideas_boards` shows ideas | `hermes ideas list` shell (silent fallback) | Data exists; MCP args likely nested under `kwargs` — see `cursor-hermes-tools-mcp.md` |
 | Create idea | Assume board slug is `default` | Current board may differ (`ideas_boards()` shows `*` on current) |
 
 ## Right path (agents)

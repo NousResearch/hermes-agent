@@ -7,6 +7,7 @@ and returns a turn result for :func:`agent.cursor_runtime.run_cursor_sdk_turn`.
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 import subprocess
@@ -15,6 +16,7 @@ import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any, Callable, Mapping, Optional
 
 from agent.transports.cursor_event_projector import CursorEventProjector
@@ -90,11 +92,71 @@ def _ensure_cursor_sdk_installed() -> None:
     preflight_cursor_sdk()
 
 
-def build_hermes_tools_mcp_servers() -> dict[str, dict[str, Any]]:
-    """Stdio MCP entry so Cursor can call back into Hermes tools."""
+def _hermes_package_root() -> str:
+    """Directory containing the ``agent`` package (for hermes-tools MCP cwd)."""
+    import agent
+
+    return str(Path(agent.__file__).resolve().parent.parent)
+
+
+def _translate_hermes_mcp_for_cursor(name: str, cfg: dict[str, Any]) -> Optional[dict[str, Any]]:
+    """Map one Hermes ``config.yaml`` MCP server entry to Cursor SDK shape."""
+    from hermes_cli.codex_runtime_plugin_migration import _translate_one_server
+
+    translated, _skipped = _translate_one_server(name, cfg or {})
+    if not translated:
+        return None
+    # Codex uses http_headers; Cursor SDK expects headers on HTTP transports.
+    if "http_headers" in translated:
+        translated["headers"] = translated.pop("http_headers")
+    # Cursor ignores codex-only timeout keys; drop so they are not mistaken
+    # for transport fields after normalization.
+    translated.pop("startup_timeout_sec", None)
+    translated.pop("tool_timeout_sec", None)
+    translated.pop("enabled", None)
+    return translated
+
+
+def build_cursor_mcp_servers(
+    hermes_config: Optional[Mapping[str, Any]] = None,
+) -> dict[str, dict[str, Any]]:
+    """Inline MCP servers for Cursor SDK (hermes-tools + config.yaml servers).
+
+    The hermes-tools stdio server always uses the Hermes package root as cwd
+    so ``python -m agent.transports.hermes_tools_mcp_server`` works even when
+    the Cursor agent's workspace is the user's project directory.
+    """
     from hermes_cli.codex_runtime_plugin_migration import _build_hermes_tools_mcp_entry
 
-    return {"hermes-tools": _build_hermes_tools_mcp_entry()}
+    pkg_root = _hermes_package_root()
+    hermes_tools = _build_hermes_tools_mcp_entry()
+    hermes_tools["cwd"] = pkg_root
+
+    servers: dict[str, dict[str, Any]] = {"hermes-tools": hermes_tools}
+
+    if hermes_config is None:
+        try:
+            from hermes_cli.config import load_config
+
+            hermes_config = load_config() or {}
+        except Exception:
+            hermes_config = {}
+
+    for name, cfg in (hermes_config.get("mcp_servers") or {}).items():
+        if str(name) == "hermes-tools":
+            continue
+        if not isinstance(cfg, dict) or cfg.get("enabled") is False:
+            continue
+        translated = _translate_hermes_mcp_for_cursor(str(name), cfg)
+        if translated:
+            servers[str(name)] = translated
+
+    return servers
+
+
+def build_hermes_tools_mcp_servers() -> dict[str, dict[str, Any]]:
+    """Stdio MCP entry so Cursor can call back into Hermes tools."""
+    return build_cursor_mcp_servers(hermes_config={})
 
 
 def _cursor_error_message(exc: BaseException) -> str:
@@ -260,6 +322,12 @@ class CursorSDKSession:
         self._interrupt_event = threading.Event()
         self._active_run: Any = None
         self._closed = False
+        self._mcp_servers: Optional[dict[str, dict[str, Any]]] = None
+
+    def _resolve_mcp_servers(self) -> dict[str, dict[str, Any]]:
+        if self._mcp_servers is None:
+            self._mcp_servers = build_cursor_mcp_servers()
+        return self._mcp_servers
 
     def _notify_progress(self, text: str) -> None:
         if not text or self._progress_callback is None:
@@ -288,10 +356,113 @@ class CursorSDKSession:
         return {"input": raw}
 
     @staticmethod
+    def _coerce_mapping(value: Any) -> dict[str, Any]:
+        if isinstance(value, Mapping):
+            return dict(value)
+        if isinstance(value, str):
+            text = value.strip()
+            if text.startswith("{"):
+                try:
+                    parsed = json.loads(text)
+                    if isinstance(parsed, dict):
+                        return parsed
+                except json.JSONDecodeError:
+                    pass
+        return {}
+
+    @classmethod
+    def _mcp_tool_name_from_payload(cls, payload: Mapping[str, Any]) -> str:
+        """Extract the concrete MCP tool id from a Cursor MCP wrapper payload."""
+        if not payload:
+            return ""
+
+        for key in (
+            "toolName",
+            "tool_name",
+            "mcpToolName",
+            "mcp_tool_name",
+            "functionName",
+            "function_name",
+        ):
+            val = str(payload.get(key) or "").strip()
+            if val and val.lower() not in {"mcp", "tool"}:
+                return val
+
+        server = (
+            payload.get("server")
+            or payload.get("serverName")
+            or payload.get("server_name")
+            or payload.get("mcpServer")
+            or payload.get("mcp_server")
+            or payload.get("provider")
+        )
+        tool = payload.get("tool") or payload.get("name")
+        if tool:
+            tool_s = str(tool).strip()
+            if tool_s and tool_s.lower() not in {"mcp", "tool"}:
+                if server:
+                    server_s = str(server).strip()
+                    if server_s:
+                        return f"mcp_{server_s}_{tool_s}"
+                return tool_s
+
+        for nest_key in ("mcpToolCall", "mcp_tool_call", "mcp", "data", "payload"):
+            nested = payload.get(nest_key)
+            if isinstance(nested, Mapping):
+                found = cls._mcp_tool_name_from_payload(nested)
+                if found:
+                    return found
+
+        fn = payload.get("function")
+        if isinstance(fn, Mapping):
+            fn_name = str(fn.get("name") or "").strip()
+            if fn_name and fn_name.lower() not in {"mcp", "tool"}:
+                return fn_name
+
+        return ""
+
+    @classmethod
+    def _resolve_cursor_tool_name(
+        cls,
+        raw_name: str,
+        tc: Mapping[str, Any],
+        args: Mapping[str, Any],
+    ) -> str:
+        """Map Cursor native + MCP wrapper events to a Hermes display tool name."""
+        name = (raw_name or "").strip()
+        if not name:
+            name = str(
+                tc.get("name")
+                or tc.get("toolName")
+                or tc.get("tool_name")
+                or tc.get("tool")
+                or ""
+            ).strip()
+
+        if name.lower().startswith("mcp_") and name.lower() not in {"mcp", "mcp_"}:
+            display = cls._display_tool_name(name)
+            if display:
+                return display
+
+        if name.lower() in {"", "mcp", "tool"}:
+            for payload in (tc, args):
+                found = cls._mcp_tool_name_from_payload(payload)
+                if found:
+                    return cls._display_tool_name(found)
+            for key in ("input", "arguments", "args"):
+                nested = cls._coerce_mapping(tc.get(key))
+                if nested:
+                    found = cls._mcp_tool_name_from_payload(nested)
+                    if found:
+                        return cls._display_tool_name(found)
+
+        return cls._display_tool_name(name)
+
+    @staticmethod
     def _display_tool_name(name: str) -> str:
         """Normalize Cursor / MCP tool ids for Hermes scrollback display."""
         cleaned = (name or "").strip()
-        if not cleaned or cleaned.lower() == "tool":
+        if not cleaned or cleaned.lower() in {"tool", "mcp"}:
             return ""
         lowered = cleaned.lower()
         for prefix in (
@@ -301,6 +472,9 @@ class CursorSDKSession:
         ):
             if lowered.startswith(prefix):
                 return cleaned[len(prefix) :]
+        # Hermes MCP registration: mcp_{server}_{tool} (server may contain hyphens).
+        if lowered.startswith("mcp_") and "_" in cleaned[4:]:
+            return cleaned.split("_", 2)[-1]
         return cleaned
 
     @classmethod
@@ -334,15 +508,10 @@ class CursorSDKSession:
             (call_id or "").strip()
             or str(tc.get("callId") or tc.get("call_id") or "").strip()
         )
-        resolved_name = cls._display_tool_name(
-            (name or "").strip()
-            or str(
-                tc.get("name")
-                or tc.get("toolName")
-                or tc.get("tool_name")
-                or tc.get("tool")
-                or ""
-            ).strip()
+        resolved_name = cls._resolve_cursor_tool_name(
+            (name or "").strip(),
+            tc,
+            parsed_args,
         )
         return resolved_id, resolved_name, parsed_args
 
@@ -354,7 +523,7 @@ class CursorSDKSession:
         if cid and cid in self._active_tool_calls:
             return self._active_tool_calls.pop(cid)
 
-        display = self._display_tool_name(name)
+        display = name.strip() or self._display_tool_name(name)
         if display:
             for key, entry in list(self._active_tool_calls.items()):
                 if entry.get("name") == display:
@@ -383,7 +552,11 @@ class CursorSDKSession:
         if not resolved_name:
             return
         key = self._tool_call_key(resolved_id, resolved_name)
-        if key in self._active_tool_calls:
+        existing = self._active_tool_calls.get(key)
+        if existing is not None:
+            # partial-tool-call / late deltas may supply the real MCP tool name
+            if existing.get("name") in {"", "mcp", "tool"} and resolved_name:
+                existing["name"] = resolved_name
             return
         self._active_tool_calls[key] = {
             "name": resolved_name,
@@ -500,7 +673,7 @@ class CursorSDKSession:
 
     def _start_agent_blocking(self) -> str:
         """Create the Cursor SDK agent (must run off the prompt_toolkit thread)."""
-        from cursor_sdk import Agent, LocalAgentOptions
+        from cursor_sdk import Agent, AgentOptions, LocalAgentOptions
 
         if not self._api_key:
             raise RuntimeError(
@@ -508,18 +681,23 @@ class CursorSDKSession:
                 "Create a key at https://cursor.com/dashboard/integrations"
             )
 
+        mcp_servers = self._resolve_mcp_servers()
         logger.info(
-            "cursor SDK Agent.create starting model=%s selection=%r cwd=%s",
+            "cursor SDK Agent.create starting model=%s selection=%r cwd=%s mcp=%s",
             self._model,
             self._model_selection,
             self._cwd,
+            sorted(mcp_servers.keys()),
         )
         self._notify_progress("Starting Cursor agent…")
         client = self._resolve_sdk_client()
         self._agent_cm = Agent.create(
-            model=self._model_selection,
-            api_key=self._api_key,
-            local=LocalAgentOptions(cwd=self._cwd),
+            AgentOptions(
+                model=self._model_selection,
+                api_key=self._api_key,
+                local=LocalAgentOptions(cwd=self._cwd),
+                mcp_servers=mcp_servers,
+            ),
             client=client,
         )
         self._agent = self._agent_cm.__enter__()
@@ -591,7 +769,7 @@ class CursorSDKSession:
     def _handle_cursor_delta(self, update: Any) -> None:
         """Mirror Cursor low-level tool events into Hermes tool_progress_callback."""
         update_type = str(getattr(update, "type", "") or "")
-        if update_type == "tool-call-started":
+        if update_type in {"tool-call-started", "partial-tool-call"}:
             self._notify_tool_started(
                 call_id=str(getattr(update, "call_id", "") or ""),
                 name="",
@@ -616,10 +794,15 @@ class CursorSDKSession:
 
         result = TurnResult()
         result_holder["result"] = result
+        servers = mcp_servers if mcp_servers else self._resolve_mcp_servers()
         try:
+            logger.info(
+                "cursor SDK send mcp_servers=%s",
+                sorted(servers.keys()) if servers else [],
+            )
             send_options = SendOptions(
                 model=self._model_selection,
-                mcp_servers=mcp_servers or None,
+                mcp_servers=servers,
                 on_delta=self._handle_cursor_delta,
             )
             run = self._agent.send(user_input, send_options)
@@ -727,7 +910,9 @@ class CursorSDKSession:
     ) -> TurnResult:
         result = TurnResult()
         self._interrupt_event.clear()
-        servers = mcp_servers if mcp_servers is not None else build_hermes_tools_mcp_servers()
+        if mcp_servers is not None:
+            self._mcp_servers = mcp_servers
+        servers = self._resolve_mcp_servers()
         holder: dict[str, Any] = {}
         startup_holder: dict[str, Any] = {}
         self._active_tool_calls.clear()

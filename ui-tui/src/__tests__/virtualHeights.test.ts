@@ -24,6 +24,13 @@ describe('virtual height estimates', () => {
     expect(estimatedMsgHeight(msg, 26, { compact: false, details: false, userPrompt: 'Ψ >' })).toBe(4)
   })
 
+  it('counts wide CJK cells and mixed skill names like the terminal renderer', () => {
+    const text = '不对 不是这个skill，应该是一个叫 launched-site-analytics 这个skill 你应该有在你全局目录下看看'
+
+    expect(wrappedLines(text, 42)).toBe(3)
+    expect(estimatedMsgHeight({ role: 'user', text }, 50, { compact: false, details: false, userPrompt: '❯' })).toBe(5)
+  })
+
   it('includes detail sections when visible', () => {
     const msg: Msg = { role: 'assistant', text: 'ok', thinking: 'line 1\nline 2', tools: ['Tool A', 'Tool B'] }
 

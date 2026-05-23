@@ -2,7 +2,13 @@ import { wrapAnsi } from '@hermes/ink'
 import { describe, expect, it } from 'vitest'
 
 import { offsetFromPosition } from '../components/textInput.js'
-import { composerPromptWidth, cursorLayout, inputVisualHeight, stableComposerColumns } from '../lib/inputMetrics.js'
+import {
+  composerPromptWidth,
+  cursorLayout,
+  inputVisualHeight,
+  stableComposerColumns,
+  terminalCursorLayout
+} from '../lib/inputMetrics.js'
 
 // Helper: compute the "end of text" position that wrap-ansi would render
 // the input to. This is what Ink's <Text wrap="wrap"> uses, so cursorLayout
@@ -98,6 +104,21 @@ describe('input metrics helpers', () => {
     expect(inputVisualHeight('one\ntwo', 40)).toBe(2)
     // Multi-line wrap case sanity
     expect(inputVisualHeight('hello world', 8)).toBe(2)
+  })
+
+  it('can reserve a native-cursor row at exact-width boundaries for Apple Terminal IME preedit', () => {
+    const env = { TERM_PROGRAM: 'Apple_Terminal' }
+
+    expect(cursorLayout('abcdefgh', 8, 8)).toEqual({ column: 8, line: 0 })
+    expect(terminalCursorLayout('abcdefgh', 8, 8, env)).toEqual({ column: 0, line: 1 })
+    expect(inputVisualHeight('abcdefgh', 8, env)).toBe(2)
+  })
+
+  it('keeps wrap-ansi parity for native cursor layout on terminals without the wrap guard', () => {
+    const env = { TERM_PROGRAM: 'iTerm.app' }
+
+    expect(terminalCursorLayout('abcdefgh', 8, 8, env)).toEqual(cursorLayout('abcdefgh', 8, 8))
+    expect(inputVisualHeight('abcdefgh', 8, env)).toBe(1)
   })
 
   it('counts the prompt gap as its own cell', () => {

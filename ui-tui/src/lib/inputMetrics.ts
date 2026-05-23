@@ -144,6 +144,36 @@ export function cursorLayout(value: string, cursor: number, cols: number) {
   return { column, line: lineIndex }
 }
 
+export function needsNativeCursorWrapGuard(env: NodeJS.ProcessEnv = {}): boolean {
+  const override = String(env.HERMES_TUI_NATIVE_CURSOR_WRAP_GUARD ?? '')
+    .trim()
+    .toLowerCase()
+
+  if (override) {
+    return /^(?:1|true|yes|on)$/i.test(override)
+  }
+
+  return (env.TERM_PROGRAM ?? '').trim() === 'Apple_Terminal'
+}
+
+/**
+ * Layout for the physical terminal cursor, not for rendered text.
+ *
+ * Keep cursorLayout() in strict wrap-ansi parity for painting, but avoid
+ * parking the native cursor in the terminal's pending-wrap column on hosts
+ * whose IME preedit renderer treats that state inconsistently.
+ */
+export function terminalCursorLayout(value: string, cursor: number, cols: number, env: NodeJS.ProcessEnv = {}) {
+  const layout = cursorLayout(value, cursor, cols)
+  const width = Math.max(1, cols)
+
+  if (needsNativeCursorWrapGuard(env) && layout.column >= width) {
+    return { column: 0, line: layout.line + 1 }
+  }
+
+  return layout
+}
+
 export function offsetFromPosition(value: string, row: number, col: number, cols: number) {
   if (!value.length) {
     return 0
@@ -165,8 +195,8 @@ export function offsetFromPosition(value: string, row: number, col: number, cols
   return target.end
 }
 
-export function inputVisualHeight(value: string, columns: number) {
-  return cursorLayout(value, value.length, columns).line + 1
+export function inputVisualHeight(value: string, columns: number, env: NodeJS.ProcessEnv = {}) {
+  return terminalCursorLayout(value, value.length, columns, env).line + 1
 }
 
 export function composerPromptWidth(promptText: string) {

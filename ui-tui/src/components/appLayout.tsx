@@ -100,10 +100,17 @@ const TranscriptPane = memo(function TranscriptPane({
         stickyScroll
       >
         <Box flexDirection="column" paddingX={1}>
-          {transcript.virtualHistory.topSpacer > 0 ? <Box height={transcript.virtualHistory.topSpacer} /> : null}
+          {transcript.virtualHistory.topSpacer > 0 ? (
+            <Box flexShrink={0} height={transcript.virtualHistory.topSpacer} />
+          ) : null}
 
           {transcript.virtualRows.slice(transcript.virtualHistory.start, transcript.virtualHistory.end).map(row => (
-            <Box flexDirection="column" key={row.key} ref={transcript.virtualHistory.measureRef(row.key)}>
+            <Box
+              flexDirection="column"
+              flexShrink={0}
+              key={row.key}
+              ref={transcript.virtualHistory.measureRef(row.key)}
+            >
               {row.msg.role === 'user' && firstUserIdx >= 0 && row.index > firstUserIdx && (
                 <Box marginTop={1}>
                   <Text color={ui.theme.color.border}>───</Text>
@@ -134,7 +141,9 @@ const TranscriptPane = memo(function TranscriptPane({
             </Box>
           ))}
 
-          {transcript.virtualHistory.bottomSpacer > 0 ? <Box height={transcript.virtualHistory.bottomSpacer} /> : null}
+          {transcript.virtualHistory.bottomSpacer > 0 ? (
+            <Box flexShrink={0} height={transcript.virtualHistory.bottomSpacer} />
+          ) : null}
 
           <StreamingAssistant
             cols={composer.cols}
@@ -169,11 +178,17 @@ const ComposerPane = memo(function ComposerPane({
   const ui = useStore($uiState)
   const isBlocked = useStore($isBlocked)
   const sh = (composer.inputBuf[0] ?? composer.input).startsWith('!')
-  const promptText = composerPromptText(ui.theme.brand.prompt, ui.info?.profile_name, sh, TERMUX_TUI_MODE, composer.cols)
+  const promptText = composerPromptText(
+    ui.theme.brand.prompt,
+    ui.info?.profile_name,
+    sh,
+    TERMUX_TUI_MODE,
+    composer.cols
+  )
   const promptWidth = composerPromptWidth(promptText)
   const promptBlank = ' '.repeat(promptWidth)
   const inputColumns = stableComposerColumns(composer.cols, promptWidth, TERMUX_TUI_MODE)
-  const inputHeight = inputVisualHeight(composer.input, inputColumns)
+  const inputHeight = inputVisualHeight(composer.input, inputColumns, process.env)
   const inputMouseRef = useRef<null | TextInputMouseApi>(null)
 
   const captureInputDrag = (e: GutterMouseEvent) => {

@@ -10,6 +10,28 @@ import { markCommitStart } from '../reconciler.js'
 import type { Styles } from '../styles.js'
 
 import Box from './Box.js'
+
+const scrollContentHeight = (content: DOMElement | undefined): number => {
+  if (!content) {
+    return 0
+  }
+
+  let bottom = content.yogaNode?.getComputedHeight() ?? 0
+
+  for (const child of content.childNodes) {
+    const el = child as DOMElement
+    const yoga = el.yogaNode
+
+    if (!yoga) {
+      continue
+    }
+
+    bottom = Math.max(bottom, yoga.getComputedTop() + scrollContentHeight(el))
+  }
+
+  return bottom
+}
+
 export type ScrollBoxHandle = {
   scrollTo: (y: number) => void
   scrollBy: (dy: number) => void
@@ -200,7 +222,7 @@ function ScrollBox({ children, ref, stickyScroll, ...style }: PropsWithChildren<
       getFreshScrollHeight() {
         const content = domRef.current?.childNodes[0] as DOMElement | undefined
 
-        return content?.yogaNode?.getComputedHeight() ?? domRef.current?.scrollHeight ?? 0
+        return Math.max(scrollContentHeight(content), domRef.current?.scrollHeight ?? 0)
       },
       getViewportHeight() {
         return domRef.current?.scrollViewportHeight ?? 0

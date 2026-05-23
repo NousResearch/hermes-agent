@@ -41,7 +41,11 @@ const mountedSpan = (items: readonly Item[], virtualHistory: ReturnType<typeof u
   return { bottom: virtualHistory.topSpacer + height, top: virtualHistory.topSpacer }
 }
 
-const viewportIsMounted = (items: readonly Item[], virtualHistory: ReturnType<typeof useVirtualHistory>, scroll: ScrollBoxHandle) => {
+const viewportIsMounted = (
+  items: readonly Item[],
+  virtualHistory: ReturnType<typeof useVirtualHistory>,
+  scroll: ScrollBoxHandle
+) => {
   const span = mountedSpan(items, virtualHistory)
   const top = scroll.getScrollTop()
   const bottom = top + scroll.getViewportHeight()
@@ -49,14 +53,25 @@ const viewportIsMounted = (items: readonly Item[], virtualHistory: ReturnType<ty
   return top >= span.top && bottom <= span.bottom
 }
 
-function Harness({ expose, items }: { expose: React.MutableRefObject<Exposed | null>; items: readonly Item[] }) {
+function Harness({
+  columns = 80,
+  expose,
+  items,
+  viewportHeightHint = 0
+}: {
+  columns?: number
+  expose: React.MutableRefObject<Exposed | null>
+  items: readonly Item[]
+  viewportHeightHint?: number
+}) {
   const scrollRef = useRef<ScrollBoxHandle | null>(null)
 
-  const virtualHistory = useVirtualHistory(scrollRef, items, 80, {
+  const virtualHistory = useVirtualHistory(scrollRef, items, columns, {
     coldStartCount: 16,
     estimateHeight: index => items[index]?.height ?? 1,
     maxMounted: 16,
-    overscan: 2
+    overscan: 2,
+    viewportHeightHint
   })
 
   useLayoutEffect(() => {
@@ -147,6 +162,112 @@ describe('useVirtualHistory offset cache reuse', () => {
 
       expect(scroll.getPendingDelta()).toBe(0)
       expect(viewportIsMounted(afterShrink, expose.current!.virtualHistory, scroll)).toBe(true)
+    } finally {
+      instance.unmount()
+      instance.cleanup()
+    }
+  })
+
+  it('mounts enough sticky tail rows immediately when a resize reports a taller viewport before ScrollBox measurement catches up', async () => {
+    const items = Array.from({ length: 40 }, (_, index) => ({ height: 1, key: `row${index}` }))
+    const expose = { current: null as Exposed | null }
+    const streams = makeStreams()
+
+    const instance = renderSync(React.createElement(Harness, { expose, items, viewportHeightHint: 10 }), {
+      patchConsole: false,
+      stderr: streams.stderr as NodeJS.WriteStream,
+      stdin: streams.stdin as NodeJS.ReadStream,
+      stdout: streams.stdout as NodeJS.WriteStream
+    })
+
+    try {
+      await delay(20)
+
+      instance.rerender(React.createElement(Harness, { expose, items, viewportHeightHint: 24 }))
+      await delay(20)
+
+      const vh = expose.current!.virtualHistory
+
+      expect(vh.end).toBe(items.length)
+      expect(vh.end - vh.start).toBeGreaterThanOrEqual(16)
+    } finally {
+      instance.unmount()
+      instance.cleanup()
+    }
+  })
+
+  it('restores sticky mode after a manual scroll returns to the bottom before resize', async () => {
+    const items = Array.from({ length: 40 }, (_, index) => ({ height: 2, key: `row${index}` }))
+    const expose = { current: null as Exposed | null }
+    const streams = makeStreams()
+
+    const instance = renderSync(React.createElement(Harness, { expose, items, viewportHeightHint: 10 }), {
+      patchConsole: false,
+      stderr: streams.stderr as NodeJS.WriteStream,
+      stdin: streams.stdin as NodeJS.ReadStream,
+      stdout: streams.stdout as NodeJS.WriteStream
+    })
+
+    try {
+      await delay(40)
+
+      const scroll = expose.current!.scroll!
+      expect(scroll.isSticky()).toBe(true)
+
+      scroll.scrollBy(-4)
+      await delay(80)
+      expect(scroll.isSticky()).toBe(false)
+
+      scroll.scrollBy(400)
+      await delay(160)
+
+      expect(scroll.getPendingDelta()).toBe(0)
+      expect(scroll.getScrollTop()).toBe(scroll.getScrollHeight() - scroll.getViewportHeight())
+      expect(scroll.isSticky()).toBe(true)
+
+      instance.rerender(React.createElement(Harness, { expose, items, columns: 120, viewportHeightHint: 10 }))
+      await delay(40)
+
+      expect(expose.current!.virtualHistory.end).toBe(items.length)
+      expect(viewportIsMounted(items, expose.current!.virtualHistory, scroll)).toBe(true)
+    } finally {
+      instance.unmount()
+      instance.cleanup()
+    }
+  })
+
+  it('keeps the tail mounted across narrow-then-wide height changes while sticky', async () => {
+    const wide = Array.from({ length: 40 }, (_, index) => ({ height: 2, key: `row${index}` }))
+    const narrow = wide.map(item => ({ ...item, height: 5 }))
+    const expose = { current: null as Exposed | null }
+    const streams = makeStreams()
+
+    const instance = renderSync(
+      React.createElement(Harness, { columns: 120, expose, items: wide, viewportHeightHint: 10 }),
+      {
+        patchConsole: false,
+        stderr: streams.stderr as NodeJS.WriteStream,
+        stdin: streams.stdin as NodeJS.ReadStream,
+        stdout: streams.stdout as NodeJS.WriteStream
+      }
+    )
+
+    try {
+      await delay(40)
+
+      const scroll = expose.current!.scroll!
+
+      instance.rerender(React.createElement(Harness, { columns: 60, expose, items: narrow, viewportHeightHint: 10 }))
+      await delay(60)
+      expect(expose.current!.virtualHistory.end).toBe(narrow.length)
+      expect(expose.current!.virtualHistory.bottomSpacer).toBe(0)
+      expect(viewportIsMounted(narrow, expose.current!.virtualHistory, scroll)).toBe(true)
+
+      instance.rerender(React.createElement(Harness, { columns: 120, expose, items: wide, viewportHeightHint: 10 }))
+      await delay(60)
+      expect(expose.current!.virtualHistory.end).toBe(wide.length)
+      expect(expose.current!.virtualHistory.bottomSpacer).toBe(0)
+      expect(viewportIsMounted(wide, expose.current!.virtualHistory, scroll)).toBe(true)
     } finally {
       instance.unmount()
       instance.cleanup()

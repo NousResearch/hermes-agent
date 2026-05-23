@@ -1,5 +1,7 @@
 import type { Msg } from '../types.js'
 
+import { wrapAnsi } from '@hermes/ink'
+
 import { TERMUX_TUI_MODE } from '../config/env.js'
 import { transcriptBodyWidth } from './inputMetrics.js'
 
@@ -48,22 +50,14 @@ export const wrappedLines = (text: string, width: number, maxLines: number = MAX
   // cannot increase n any further once n is already past maxLines, so
   // bail. Saves O(text) walks on multi-megabyte single-line messages.
   const budget = Math.min(text.length, maxLines * w + maxLines)
-  let n = 0
-  let start = 0
 
-  for (let i = 0; i <= budget; i++) {
-    if (i === text.length || i === budget || text.charCodeAt(i) === 10) {
-      const rows = Math.max(1, Math.ceil((i - start) / w))
-      n += rows >= maxLines - n ? maxLines - n : rows
-      start = i + 1
-
-      if (n >= maxLines) {
-        return maxLines
-      }
-    }
+  if (text.length > budget) {
+    return maxLines
   }
 
-  return n
+  const lines = wrapAnsi(text || ' ', w, { hard: true, trim: false }).split('\n').length
+
+  return Math.min(maxLines, Math.max(1, lines))
 }
 
 export const estimatedMsgHeight = (

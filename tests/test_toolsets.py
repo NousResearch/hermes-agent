@@ -105,6 +105,15 @@ class TestResolveToolset:
         tools = resolve_toolset("*")
         assert len(tools) > 10
 
+    def test_file_read_excludes_mutating_file_tools(self):
+        assert resolve_toolset("file-read") == ["read_file", "search_files"]
+
+    def test_skills_read_excludes_skill_mutation(self):
+        assert resolve_toolset("skills-read") == ["skill_view", "skills_list"]
+
+    def test_vault_publish_exposes_only_restricted_publication_tool(self):
+        assert resolve_toolset("vault-publish") == ["publish_research_artifact"]
+
 
 class TestResolveMultipleToolsets:
     def test_combines_and_deduplicates(self):
@@ -130,6 +139,11 @@ class TestValidateToolset:
 
     def test_invalid(self):
         assert validate_toolset("nonexistent") is False
+
+    def test_scout_least_privilege_toolsets_are_valid(self):
+        assert validate_toolset("file-read") is True
+        assert validate_toolset("skills-read") is True
+        assert validate_toolset("vault-publish") is True
 
     def test_mcp_alias_uses_live_registry(self, monkeypatch):
         reg = ToolRegistry()

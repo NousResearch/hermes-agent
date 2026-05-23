@@ -156,6 +156,12 @@ TOOLSETS = {
         "tools": ["skills_list", "skill_view", "skill_manage"],
         "includes": []
     },
+
+    "skills-read": {
+        "description": "Read-only access to skill documents and workflow instructions",
+        "tools": ["skills_list", "skill_view"],
+        "includes": []
+    },
     
     "browser": {
         "description": "Browser automation for web interaction (navigate, click, type, scroll, iframes, hold-click) with web search for finding URLs",
@@ -185,6 +191,18 @@ TOOLSETS = {
     "file": {
         "description": "File manipulation tools: read, write, patch (with fuzzy matching), and search (content + files)",
         "tools": ["read_file", "write_file", "patch", "search_files"],
+        "includes": []
+    },
+
+    "file-read": {
+        "description": "Read-only file discovery and content inspection tools",
+        "tools": ["read_file", "search_files"],
+        "includes": []
+    },
+
+    "vault-publish": {
+        "description": "Publish validated Scout research artifacts only to approved vault paths",
+        "tools": ["publish_research_artifact"],
         "includes": []
     },
     

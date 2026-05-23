@@ -8,11 +8,19 @@ import pytest
 from model_tools import (
     handle_function_call,
     get_all_tool_names,
+    get_tool_definitions,
     get_toolset_for_tool,
     _AGENT_LOOP_TOOLS,
     _LEGACY_TOOLSET_MAP,
     TOOL_TO_TOOLSET_MAP,
 )
+
+
+def _definition_names(toolsets):
+    return {
+        definition["function"]["name"]
+        for definition in get_tool_definitions(enabled_toolsets=toolsets, quiet_mode=True)
+    }
 
 
 # =========================================================================
@@ -127,6 +135,28 @@ class TestAgentLoopTools:
     def test_no_regular_tools_in_set(self):
         assert "web_search" not in _AGENT_LOOP_TOOLS
         assert "terminal" not in _AGENT_LOOP_TOOLS
+
+
+class TestScoutResearchToolSurfaces:
+    def test_collector_toolsets_do_not_expose_mutation_or_execution(self):
+        names = _definition_names(["file-read", "skills-read", "session_search", "todo"])
+
+        assert {"read_file", "search_files", "skills_list", "skill_view"} <= names
+        assert {
+            "write_file",
+            "patch",
+            "skill_manage",
+            "terminal",
+            "process",
+            "image_generate",
+            "publish_research_artifact",
+        }.isdisjoint(names)
+
+    def test_publisher_toolsets_expose_scoped_publication_not_general_write(self):
+        names = _definition_names(["file-read", "skills-read", "vault-publish", "session_search"])
+
+        assert {"read_file", "search_files", "skills_list", "skill_view", "publish_research_artifact"} <= names
+        assert {"write_file", "patch", "skill_manage", "terminal", "process"}.isdisjoint(names)
 
 
 # =========================================================================

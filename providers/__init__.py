@@ -57,9 +57,23 @@ def register_provider(profile: ProviderProfile) -> None:
     plugins under ``$HERMES_HOME/plugins/model-providers/`` can override
     bundled profiles without editing repo code.
     """
-    _REGISTRY[profile.name] = profile
+    if profile.name in _REGISTRY:
+        logger.warning(
+            "Provider '%s' is being re-registered (last writer wins). "
+            "This usually means a user plugin is overriding a bundled one.",
+            profile.name,
+        )
     for alias in profile.aliases:
+        if alias in _ALIASES:
+            logger.warning(
+                "Alias '%s' is being re-registered to provider '%s' (was '%s').",
+                alias,
+                profile.name,
+                _ALIASES[alias],
+            )
         _ALIASES[alias] = profile.name
+
+    _REGISTRY[profile.name] = profile
 
 
 def get_provider_profile(name: str) -> ProviderProfile | None:

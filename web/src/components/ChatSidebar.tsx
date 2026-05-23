@@ -42,6 +42,8 @@ interface SessionInfo {
   model?: string;
   provider?: string;
   credential_warning?: string;
+  /** The active profile name, emitted by the PTY-side TUI gateway in session.info. */
+  profile_name?: string;
 }
 
 interface RpcEnvelope {
@@ -126,6 +128,13 @@ export function ChatSidebar({
 
       if (ev.payload) {
         setInfo((prev) => ({ ...prev, ...ev.payload }));
+        // The PTY's TUI gateway tells us the profile it's actually running under.
+        // Use this as the authoritative label — it's what the user sees in the
+        // agent loop, so the sidebar label should match it without needing a
+        // separate HTTP round-trip.
+        if (ev.payload.profile_name) {
+          setActiveProfile(ev.payload.profile_name);
+        }
       }
     });
 

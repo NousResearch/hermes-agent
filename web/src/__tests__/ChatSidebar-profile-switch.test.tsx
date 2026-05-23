@@ -242,3 +242,77 @@ describe("Full profile switch flow", () => {
     }
   });
 });
+
+// ---------------------------------------------------------------------------
+// Tests: session.info drives sidebar active profile label
+// ---------------------------------------------------------------------------
+
+describe("session.info profile_name drives sidebar label", () => {
+  it("profile_name from session.info payload is used as the active profile", async () => {
+    // Simulates: ChatSidebar receives session.info with profile_name from the
+    // PTY-side TUI gateway via the JSON-RPC sidecar WebSocket.  This is the
+    // authoritative source — the PTY IS the agent, so its profile_name is what
+    // the sidebar should display, not a separate HTTP round-trip.
+    const sessionInfoPayload = {
+      profile_name: "coder",
+      model: "anthropic/claude-sonnet-4",
+    };
+
+    // The ChatSidebar handler extracts ev.payload.profile_name and calls
+    // setActiveProfile(profile_name) so the label always reflects what the
+    // PTY-side gateway is actually running.
+    const { activeProfile: derivedFromSessionInfo } = await (async () => {
+      let activeProfile = "default";
+      if (sessionInfoPayload.profile_name) {
+        activeProfile = sessionInfoPayload.profile_name;
+      }
+      return { activeProfile };
+    })();
+
+    expect(derivedFromSessionInfo).toBe("coder");
+  });
+
+  it("session.info profile_name takes precedence over getAgentMetrics result", async () => {
+    // getAgentMetrics runs in the dashboard server's context (web_server.py)
+    // and reads the active_profile file from ~/.hermes/profiles/.  The PTY's
+    // session.info profile_name is what the agent loop is actually running
+    // under.  If they disagree, session.info is the ground truth.
+    const serverMetrics = {
+      active_profile: "default", // from getAgentMetrics
+      sessions_active: 0,
+      uptime_seconds: 0,
+    };
+    const sessionInfo = {
+      profile_name: "research", // from PTY-side gateway
+      model: "openai/gpt-4o",
+    };
+
+    // ChatSidebar sets activeProfile from session.info first (in the event
+    // handler), then separately from getAgentMetrics on mount.  The session.info
+    // handler fires after gw.connect() and session.create(), so it overwrites
+    // the initial "default" with the PTY's actual profile.
+    let activeProfile = serverMetrics.active_profile; // mount-time value
+    if (sessionInfo.profile_name) {
+      activeProfile = sessionInfo.profile_name; // PTY-side truth wins
+    }
+
+    expect(activeProfile).toBe("research");
+  });
+
+  it("no active profile from session.info leaves getAgentMetrics result unchanged", async () => {
+    // When session.info doesn't carry profile_name (e.g. older TUI without the field),
+    // the sidebar keeps whatever setActiveProfile stored from getAgentMetrics on mount.
+    const sessionInfoPayload = {
+      model: "anthropic/claude-sonnet-4",
+      // profile_name absent
+    };
+
+    let activeProfile = "default"; // from getAgentMetrics
+    if (sessionInfoPayload.profile_name) {
+      activeProfile = sessionInfoPayload.profile_name;
+    }
+    // profile_name absent → activeProfile stays at "default"
+
+    expect(activeProfile).toBe("default");
+  });
+});

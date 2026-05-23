@@ -1918,9 +1918,11 @@ def _resolve_copilot_catalog_api_key() -> str:
     Without (2), users whose only Copilot credential is in the pool see
     the ``/model`` picker fall back to a stale hardcoded list because the
     live catalog fetch silently 401s. To avoid wedging on a malformed pool
-    entry, each candidate is exchanged via ``exchange_copilot_token`` —
-    only entries that actually exchange successfully are returned, so a
-    later valid entry is reachable when an earlier one is unsupported.
+    entry, each candidate is exchanged via ``exchange_copilot_token`` first,
+    so a later valid entry is reachable when an earlier one is unsupported.
+    If no exchange succeeds, the first validated raw pool token is returned
+    as a catalog-only fallback because ``/models`` can accept raw Copilot
+    credentials even when ``/copilot_internal/v2/token`` is unavailable.
     """
     try:
         from hermes_cli.auth import resolve_api_key_provider_credentials
@@ -1939,6 +1941,7 @@ def _resolve_copilot_catalog_api_key() -> str:
             validate_copilot_token,
         )
 
+        raw_catalog_fallback = ""
         for entry in read_credential_pool("copilot"):
             if not isinstance(entry, dict):
                 continue
@@ -1951,9 +1954,15 @@ def _resolve_copilot_catalog_api_key() -> str:
             try:
                 api_token, _expires_at = exchange_copilot_token(raw)
             except Exception:
+                if not raw_catalog_fallback:
+                    raw_catalog_fallback = raw
                 continue
             if api_token:
                 return api_token
+            if not raw_catalog_fallback:
+                raw_catalog_fallback = raw
+        if raw_catalog_fallback:
+            return raw_catalog_fallback
     except Exception:
         pass
 

@@ -415,3 +415,98 @@ class TestGetModelCapabilities:
         with patch("agent.models_dev.fetch_models_dev", return_value=CAPS_REGISTRY):
             caps = get_model_capabilities("anthropic", "nonexistent-model")
         assert caps is None
+
+    def test_custom_provider_capabilities_from_config_entry(self):
+        """Local/custom providers can declare tool and vision capabilities in config.yaml."""
+        from hermes_constants import get_hermes_home
+
+        config_path = get_hermes_home() / "config.yaml"
+        config_path.write_text(
+            "model:\n"
+            "  provider: custom:qwen-local\n"
+            "  default: qwen36-35b-oq4-mtp\n"
+            "providers:\n"
+            "  qwen-local:\n"
+            "    name: qwen-local\n"
+            "    base_url: http://127.0.0.1:18089/v1\n"
+            "    api_mode: chat_completions\n"
+            "    model: qwen36-35b-oq4-mtp\n"
+            "    supports_tools: true\n"
+            "    supports_vision: true\n"
+            "    context_length: 32768\n"
+        )
+
+        caps = get_model_capabilities("custom", "qwen36-35b-oq4-mtp")
+
+        assert caps is not None
+        assert caps.supports_tools is True
+        assert caps.supports_vision is True
+        assert caps.context_window == 32768
+
+    def test_named_custom_provider_capabilities_from_config_entry(self):
+        """Provider labels like custom:qwen-local use the same custom metadata."""
+        from hermes_constants import get_hermes_home
+
+        config_path = get_hermes_home() / "config.yaml"
+        config_path.write_text(
+            "providers:\n"
+            "  qwen-local:\n"
+            "    name: qwen-local\n"
+            "    base_url: http://127.0.0.1:18089/v1\n"
+            "    model: qwen36-35b-oq4-mtp\n"
+            "    supports_tools: true\n"
+            "    supports_vision: true\n"
+            "    context_length: 32768\n"
+        )
+
+        caps = get_model_capabilities("custom:qwen-local", "qwen36-35b-oq4-mtp")
+
+        assert caps is not None
+        assert caps.supports_vision is True
+        assert caps.context_window == 32768
+
+    def test_custom_provider_per_model_capability_overrides(self):
+        """One local custom provider can declare separate 35B and 27B model caps."""
+        from hermes_constants import get_hermes_home
+
+        config_path = get_hermes_home() / "config.yaml"
+        config_path.write_text(
+            "providers:\n"
+            "  qwen-local:\n"
+            "    name: qwen-local\n"
+            "    base_url: http://127.0.0.1:18089/v1\n"
+            "    supports_tools: true\n"
+            "    supports_vision: true\n"
+            "    context_length: 8192\n"
+            "    models:\n"
+            "      qwen36-35b-oq4-mtp:\n"
+            "        context_length: 32768\n"
+            "      qwen36-27b-oq4-mtp:\n"
+            "        context_length: 8192\n"
+        )
+
+        caps_35b = get_model_capabilities("custom", "qwen36-35b-oq4-mtp")
+        caps_27b = get_model_capabilities("custom", "qwen36-27b-oq4-mtp")
+
+        assert caps_35b is not None
+        assert caps_27b is not None
+        assert caps_35b.supports_vision is True
+        assert caps_27b.supports_vision is True
+        assert caps_35b.context_window == 32768
+        assert caps_27b.context_window == 8192
+
+    def test_custom_provider_context_lookup_uses_config_context_length(self):
+        """Context lookup should use custom provider config before models.dev fallback."""
+        from hermes_constants import get_hermes_home
+
+        config_path = get_hermes_home() / "config.yaml"
+        config_path.write_text(
+            "providers:\n"
+            "  qwen-local:\n"
+            "    name: qwen-local\n"
+            "    base_url: http://127.0.0.1:18089/v1\n"
+            "    model: qwen36-27b-oq4-mtp\n"
+            "    context_length: 8192\n"
+        )
+
+        assert lookup_models_dev_context("custom", "qwen36-27b-oq4-mtp") == 8192

@@ -3106,7 +3106,8 @@ def _normalize_custom_provider_entry(
     _KNOWN_KEYS = {
         "name", "api", "url", "base_url", "api_key", "key_env", "api_key_env",
         "api_mode", "transport", "model", "default_model", "models",
-        "context_length", "rate_limit_delay",
+        "context_length", "rate_limit_delay", "supports_tools", "supports_vision",
+        "supports_reasoning", "max_output_tokens", "max_output",
         "request_timeout_seconds", "stale_timeout_seconds",
         "discover_models", "extra_body",
     }
@@ -3194,6 +3195,15 @@ def _normalize_custom_provider_entry(
     context_length = entry.get("context_length")
     if isinstance(context_length, int) and context_length > 0:
         normalized["context_length"] = context_length
+
+    for bool_key in ("supports_tools", "supports_vision", "supports_reasoning"):
+        value = entry.get(bool_key)
+        if isinstance(value, bool):
+            normalized[bool_key] = value
+
+    max_output_tokens = entry.get("max_output_tokens", entry.get("max_output"))
+    if isinstance(max_output_tokens, int) and max_output_tokens > 0:
+        normalized["max_output_tokens"] = max_output_tokens
 
     rate_limit_delay = entry.get("rate_limit_delay")
     if isinstance(rate_limit_delay, (int, float)) and rate_limit_delay >= 0:

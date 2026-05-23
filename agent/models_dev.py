@@ -319,12 +319,109 @@ def fetch_models_dev(force_refresh: bool = False) -> Dict[str, Any]:
     return _models_dev_cache
 
 
+def _normalize_provider_label(provider: str) -> str:
+    return (provider or "").strip().lower()
+
+
+def _is_custom_provider_label(provider: str) -> bool:
+    normalized = _normalize_provider_label(provider)
+    return normalized == "custom" or normalized.startswith("custom:")
+
+
+def _custom_provider_name_from_label(provider: str) -> str:
+    normalized = _normalize_provider_label(provider)
+    if normalized.startswith("custom:"):
+        return normalized.split(":", 1)[1].strip()
+    return ""
+
+
+def _coerce_positive_int(value: Any) -> Optional[int]:
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, (int, float)) and value > 0:
+        return int(value)
+    if isinstance(value, str):
+        try:
+            parsed = int(value.strip())
+        except ValueError:
+            return None
+        return parsed if parsed > 0 else None
+    return None
+
+
+def _custom_provider_model_metadata(provider: str, model: str) -> Optional[Dict[str, Any]]:
+    """Return config-declared metadata for a local/custom provider model.
+
+    Custom OpenAI-compatible endpoints do not exist in models.dev, so users need
+    a config-level way to declare safe capabilities for local models such as
+    Qwen 3.6 27B/35B. Provider-level values act as defaults; per-model entries
+    under ``models:`` can override limits/capabilities for one served model.
+    """
+    if not _is_custom_provider_label(provider) or not model:
+        return None
+
+    try:
+        from hermes_cli.config import get_compatible_custom_providers, load_config
+    except Exception:
+        return None
+
+    try:
+        custom_providers = get_compatible_custom_providers(load_config())
+    except Exception:
+        return None
+
+    requested_name = _custom_provider_name_from_label(provider)
+    model_lower = model.strip().lower()
+
+    for entry in custom_providers:
+        if not isinstance(entry, dict):
+            continue
+        entry_name = str(entry.get("name") or entry.get("provider_key") or "").strip().lower()
+        provider_key = str(entry.get("provider_key") or "").strip().lower()
+        if requested_name and requested_name not in {entry_name, provider_key}:
+            continue
+
+        entry_model = str(entry.get("model") or "").strip()
+        models = entry.get("models") if isinstance(entry.get("models"), dict) else {}
+        model_meta = None
+        if isinstance(models, dict):
+            for mid, meta in models.items():
+                if str(mid).strip().lower() == model_lower:
+                    model_meta = meta if isinstance(meta, dict) else {}
+                    break
+
+        if model_meta is None and entry_model and entry_model.lower() != model_lower:
+            # Bare ``custom`` can have several saved local providers.  Skip
+            # providers that explicitly serve another model unless this model
+            # is listed under the provider's ``models`` map.
+            continue
+
+        merged = dict(entry)
+        merged.pop("models", None)
+        if isinstance(model_meta, dict):
+            merged.update(model_meta)
+        return merged
+
+    return None
+
+
+def _custom_context_length(provider: str, model: str) -> Optional[int]:
+    meta = _custom_provider_model_metadata(provider, model)
+    if not meta:
+        return None
+    return _coerce_positive_int(meta.get("context_length") or meta.get("context_window"))
+
+
 def lookup_models_dev_context(provider: str, model: str) -> Optional[int]:
     """Look up context_length for a provider+model combo in models.dev.
 
     Returns the context window in tokens, or None if not found.
     Handles case-insensitive matching and filters out context=0 entries.
     """
+    custom_ctx = _custom_context_length(provider, model)
+    if custom_ctx:
+        return custom_ctx
+
     mdev_provider_id = PROVIDER_TO_MODELS_DEV.get(provider)
     if not mdev_provider_id:
         return None
@@ -462,6 +559,23 @@ def get_model_capabilities(provider: str, model: str) -> Optional[ModelCapabilit
       - limit.output  (int) → max_output_tokens
       - family     (str)   → model_family
     """
+    custom_meta = _custom_provider_model_metadata(provider, model)
+    if custom_meta is not None:
+        return ModelCapabilities(
+            supports_tools=bool(custom_meta.get("supports_tools", True)),
+            supports_vision=bool(custom_meta.get("supports_vision", False)),
+            supports_reasoning=bool(custom_meta.get("supports_reasoning", False)),
+            context_window=(
+                _coerce_positive_int(custom_meta.get("context_length") or custom_meta.get("context_window"))
+                or 200000
+            ),
+            max_output_tokens=(
+                _coerce_positive_int(custom_meta.get("max_output_tokens") or custom_meta.get("max_output"))
+                or 8192
+            ),
+            model_family=str(custom_meta.get("family") or custom_meta.get("model_family") or ""),
+        )
+
     models = _get_provider_models(provider)
     if models is None:
         return None

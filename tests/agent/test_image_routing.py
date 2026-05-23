@@ -127,6 +127,29 @@ class TestDecideImageInputMode:
         with patch("agent.models_dev.fetch_models_dev", return_value=registry):
             assert decide_image_input_mode("xiaomi", "mimo-v2.5-pro", {}) == "text"
 
+    def test_auto_uses_native_for_configured_custom_vision_model(self):
+        """Local custom models can opt into native screenshot routing via config."""
+        from hermes_constants import get_hermes_home
+
+        config_path = get_hermes_home() / "config.yaml"
+        config_path.write_text(
+            "providers:\n"
+            "  qwen-local:\n"
+            "    name: qwen-local\n"
+            "    base_url: http://127.0.0.1:18089/v1\n"
+            "    supports_tools: true\n"
+            "    supports_vision: true\n"
+            "    context_length: 8192\n"
+            "    models:\n"
+            "      qwen36-35b-oq4-mtp:\n"
+            "        context_length: 32768\n"
+            "      qwen36-27b-oq4-mtp:\n"
+            "        context_length: 8192\n"
+        )
+
+        assert decide_image_input_mode("custom:qwen-local", "qwen36-35b-oq4-mtp", {}) == "native"
+        assert decide_image_input_mode("custom", "qwen36-27b-oq4-mtp", {}) == "native"
+
 
 # ─── _coerce_capability_bool ─────────────────────────────────────────────────
 

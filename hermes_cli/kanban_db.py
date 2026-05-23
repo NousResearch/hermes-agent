@@ -630,7 +630,7 @@ def create_board(
         default_workdir=default_workdir,
     )
     # Touch the DB so list_boards() sees it immediately.
-    init_db(board=normed)
+    init_db(board=normed, allow_recreate=True)
     return meta
 
 
@@ -1412,10 +1412,88 @@ def _guard_existing_db_is_healthy(path: Path) -> None:
     raise KanbanDbCorruptError(resolved, backup, reason)
 
 
+def _resolved_board_slug(board: Optional[str]) -> Optional[str]:
+    """Return the board slug a non-explicit DB path is meant to serve."""
+    slug = _normalize_board_slug(board)
+    if slug is not None:
+        return slug
+    try:
+        return get_current_board()
+    except Exception:
+        return None
+
+
+def _has_tasks_table(path: Path) -> bool:
+    uri = path.resolve().as_uri() + "?mode=ro"
+    with contextlib.closing(sqlite3.connect(uri, uri=True)) as probe:
+        row = probe.execute(
+            "SELECT 1 FROM sqlite_master "
+            "WHERE type = 'table' AND name = 'tasks' LIMIT 1"
+        ).fetchone()
+    return row is not None
+
+
+def _guard_against_suspicious_auto_init(
+    path: Path,
+    *,
+    board_slug: Optional[str],
+    known_board_before_open: bool,
+    path_existed_before_open: bool,
+    allow_recreate: bool,
+) -> None:
+    """Refuse implicit schema creation when it would mask lost board data."""
+    if allow_recreate:
+        return
+    if not path_existed_before_open:
+        if known_board_before_open and board_slug != DEFAULT_BOARD:
+            raise sqlite3.DatabaseError(
+                "refusing to initialize missing Kanban DB for existing board "
+                f"{board_slug!r} at {path}. This can hide board data loss; "
+                "restore the database from backup or run "
+                f"`hermes kanban --board {board_slug} init` only if you "
+                "intentionally want to create an empty board."
+            )
+        return
+
+    try:
+        size = path.stat().st_size
+    except OSError:
+        return
+    if size == 0:
+        board_hint = f" for board {board_slug!r}" if board_slug else ""
+        init_hint = (
+            f"`hermes kanban --board {board_slug} init`"
+            if board_slug and board_slug != DEFAULT_BOARD
+            else "`hermes kanban init`"
+        )
+        raise sqlite3.DatabaseError(
+            f"refusing to initialize empty Kanban DB{board_hint} at {path}. "
+            "A zero-byte database can indicate truncation or a failed write; "
+            f"restore it from backup or run {init_hint} only if you "
+            "intentionally want to create an empty board."
+        )
+
+    if not _has_tasks_table(path):
+        board_hint = f" for board {board_slug!r}" if board_slug else ""
+        init_hint = (
+            f"`hermes kanban --board {board_slug} init`"
+            if board_slug and board_slug != DEFAULT_BOARD
+            else "`hermes kanban init`"
+        )
+        raise sqlite3.DatabaseError(
+            f"refusing to initialize Kanban DB{board_hint} at {path}: "
+            "SQLite file is missing the required 'tasks' table. This can "
+            "mean the board DB is corrupted or an alternate/top-level DB was "
+            f"selected by mistake; restore the expected DB or run {init_hint} "
+            "only if you intentionally want to create an empty board."
+        )
+
+
 def connect(
     db_path: Optional[Path] = None,
     *,
     board: Optional[str] = None,
+    allow_recreate: bool = False,
 ) -> sqlite3.Connection:
     """Open (and initialize if needed) the kanban DB.
 
@@ -1434,11 +1512,30 @@ def connect(
     * Neither → :func:`kanban_db_path` resolves via
       ``HERMES_KANBAN_DB`` env → ``HERMES_KANBAN_BOARD`` env →
       ``<root>/kanban/current`` → ``default``.
+
+    ``allow_recreate`` is reserved for explicit initialization paths such as
+    ``hermes kanban init`` and ``create_board``. Normal command auto-init
+    refuses empty or schema-less DB files for known boards so a corrupted board
+    cannot be silently replaced with a fresh empty schema.
     """
+    guard_board_slug: Optional[str] = None
+    known_board_before_open = False
+    path_existed_before_open = False
+
     if db_path is not None:
         path = db_path
+        if board is not None:
+            guard_board_slug = _resolved_board_slug(board)
+            known_board_before_open = (
+                board_exists(guard_board_slug) if guard_board_slug else False
+            )
     else:
+        guard_board_slug = _resolved_board_slug(board)
+        known_board_before_open = (
+            board_exists(guard_board_slug) if guard_board_slug else False
+        )
         path = kanban_db_path(board=board)
+    path_existed_before_open = path.exists()
     path.parent.mkdir(parents=True, exist_ok=True)
     with _cross_process_init_lock(path):
         # Cheap byte-level check first — catches the #29507 TLS-overwrite shape
@@ -1448,6 +1545,13 @@ def connect(
         # pages, broken internal metadata). Cached per-path after first success
         # via _INITIALIZED_PATHS so it only runs once per process per path.
         _guard_existing_db_is_healthy(path)
+        _guard_against_suspicious_auto_init(
+            path,
+            board_slug=guard_board_slug,
+            known_board_before_open=known_board_before_open,
+            path_existed_before_open=path_existed_before_open,
+            allow_recreate=allow_recreate,
+        )
         resolved = str(path.resolve())
         conn = _sqlite_connect(path)
         try:
@@ -1528,6 +1632,7 @@ def init_db(
     db_path: Optional[Path] = None,
     *,
     board: Optional[str] = None,
+    allow_recreate: bool = False,
 ) -> Path:
     """Create the schema if it doesn't exist; return the path used.
 
@@ -1538,6 +1643,10 @@ def init_db(
     may have drifted — tests that write legacy event kinds directly,
     external tools that upgrade an old DB file — can call this to
     force re-migration.
+
+    Set ``allow_recreate`` only for explicit user intent to initialize a
+    missing/empty board DB. The default keeps command startup from masking
+    board data loss.
     """
     if db_path is not None:
         path = db_path
@@ -1549,7 +1658,7 @@ def init_db(
     # schema + migration pass unconditionally.
     with _INIT_LOCK:
         _INITIALIZED_PATHS.discard(resolved)
-    with contextlib.closing(connect(path)):
+    with contextlib.closing(connect(path, board=board, allow_recreate=allow_recreate)):
         pass
     return path
 

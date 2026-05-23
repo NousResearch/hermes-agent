@@ -109,6 +109,120 @@ def test_connect_rejects_tls_record_in_sqlite_header(tmp_path, monkeypatch):
     assert "53 51 4c 69 74 17 03 03 00 13" in msg
 
 
+def test_connect_refuses_zero_byte_db_for_existing_named_board(tmp_path, monkeypatch):
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.delenv("HERMES_KANBAN_DB", raising=False)
+    monkeypatch.delenv("HERMES_KANBAN_HOME", raising=False)
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    kb._INITIALIZED_PATHS.clear()
+
+    board = kb.board_dir("incident")
+    board.mkdir(parents=True)
+    kb.write_board_metadata("incident", name="Incident")
+    db_path = board / "kanban.db"
+    db_path.touch()
+
+    with pytest.raises(sqlite3.DatabaseError) as exc_info:
+        kb.connect(board="incident")
+
+    msg = str(exc_info.value)
+    assert "refusing to initialize empty Kanban DB for board 'incident'" in msg
+    assert "zero-byte database" in msg
+    assert db_path.read_bytes() == b""
+
+
+def test_connect_refuses_schema_less_sqlite_for_existing_named_board(
+    tmp_path, monkeypatch,
+):
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.delenv("HERMES_KANBAN_DB", raising=False)
+    monkeypatch.delenv("HERMES_KANBAN_HOME", raising=False)
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    kb._INITIALIZED_PATHS.clear()
+
+    board = kb.board_dir("incident")
+    board.mkdir(parents=True)
+    kb.write_board_metadata("incident", name="Incident")
+    db_path = board / "kanban.db"
+    with sqlite3.connect(str(db_path)) as conn:
+        conn.execute("CREATE TABLE unrelated (id INTEGER PRIMARY KEY)")
+
+    with pytest.raises(sqlite3.DatabaseError) as exc_info:
+        kb.connect(board="incident")
+
+    msg = str(exc_info.value)
+    assert "missing the required 'tasks' table" in msg
+    with sqlite3.connect(str(db_path)) as conn:
+        tables = {
+            row[0]
+            for row in conn.execute(
+                "SELECT name FROM sqlite_master WHERE type = 'table'"
+            )
+        }
+    assert tables == {"unrelated"}
+
+
+def test_connect_refuses_alternate_empty_db_for_existing_current_board(
+    tmp_path, monkeypatch,
+):
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.delenv("HERMES_KANBAN_DB", raising=False)
+    monkeypatch.delenv("HERMES_KANBAN_HOME", raising=False)
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    kb._INITIALIZED_PATHS.clear()
+
+    kb.create_board("incident")
+    canonical = kb.kanban_db_path(board="incident")
+    kb.set_current_board("incident")
+    alternate = home / "kanban.db"
+    alternate.touch()
+    monkeypatch.setenv("HERMES_KANBAN_DB", str(alternate))
+
+    with pytest.raises(sqlite3.DatabaseError) as exc_info:
+        kb.connect()
+
+    msg = str(exc_info.value)
+    assert "refusing to initialize empty Kanban DB for board 'incident'" in msg
+    assert str(alternate) in msg
+    assert canonical.exists()
+
+
+def test_init_db_allow_recreate_initializes_known_empty_named_board(
+    tmp_path, monkeypatch,
+):
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.delenv("HERMES_KANBAN_DB", raising=False)
+    monkeypatch.delenv("HERMES_KANBAN_HOME", raising=False)
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    kb._INITIALIZED_PATHS.clear()
+
+    board = kb.board_dir("incident")
+    board.mkdir(parents=True)
+    kb.write_board_metadata("incident", name="Incident")
+    db_path = board / "kanban.db"
+    db_path.touch()
+
+    kb.init_db(board="incident", allow_recreate=True)
+
+    with sqlite3.connect(str(db_path)) as conn:
+        tables = {
+            row[0]
+            for row in conn.execute(
+                "SELECT name FROM sqlite_master WHERE type = 'table'"
+            )
+        }
+    assert "tasks" in tables
+    assert "task_events" in tables
+
+
 def test_connect_migrates_legacy_db_before_optional_column_indexes(tmp_path):
     """Legacy DBs missing additive indexed columns must migrate cleanly.
 

@@ -914,11 +914,12 @@ def kanban_command(args: argparse.Namespace) -> int:
     # schema creation; `create` / `list` / every other command would
     # error out on a fresh install.
     with board_scope:
-        try:
-            kb.init_db()
-        except Exception as exc:
-            print(f"kanban: could not initialize database: {exc}", file=sys.stderr)
-            return 1
+        if action != "init":
+            try:
+                kb.init_db()
+            except Exception as exc:
+                print(f"kanban: could not initialize database: {exc}", file=sys.stderr)
+                return 1
 
         handlers = {
             "init":     _cmd_init,
@@ -1220,7 +1221,7 @@ def _parse_duration(val) -> Optional[int]:
 
 
 def _cmd_init(args: argparse.Namespace) -> int:
-    path = kb.init_db()
+    path = kb.init_db(allow_recreate=True)
     print(f"Kanban DB initialized at {path}")
 
     # Seed bundled skills (e.g. kanban-worker) into the active profile so

@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import json
 import os
+import sqlite3
 import subprocess
 import sys
 from pathlib import Path
@@ -546,6 +547,49 @@ class TestCLI:
         ghost.mkdir(parents=True)
         r = _cli(["--board", "ghost", "list"], env_extra=env)
         assert "does not exist" in r.stderr
+
+    def test_list_refuses_empty_db_for_current_board(self, tmp_path):
+        env = {"HERMES_HOME": str(tmp_path)}
+        board = tmp_path / "kanban" / "boards" / "incident"
+        board.mkdir(parents=True)
+        (board / "board.json").write_text(
+            json.dumps({"slug": "incident", "name": "Incident"}) + "\n",
+            encoding="utf-8",
+        )
+        db_path = board / "kanban.db"
+        db_path.touch()
+        current = tmp_path / "kanban" / "current"
+        current.write_text("incident\n", encoding="utf-8")
+
+        r = _cli(["list"], env_extra=env)
+
+        assert "could not initialize database" in r.stderr
+        assert "zero-byte database" in r.stderr
+        assert db_path.read_bytes() == b""
+
+    def test_init_allows_recreate_for_existing_empty_board_db(self, tmp_path):
+        env = {"HERMES_HOME": str(tmp_path)}
+        board = tmp_path / "kanban" / "boards" / "incident"
+        board.mkdir(parents=True)
+        (board / "board.json").write_text(
+            json.dumps({"slug": "incident", "name": "Incident"}) + "\n",
+            encoding="utf-8",
+        )
+        db_path = board / "kanban.db"
+        db_path.touch()
+
+        r = _cli(["--board", "incident", "init"], env_extra=env)
+
+        assert r.returncode == 0, r.stderr
+        assert "Kanban DB initialized" in r.stdout
+        with sqlite3.connect(str(db_path)) as conn:
+            tables = {
+                row[0]
+                for row in conn.execute(
+                    "SELECT name FROM sqlite_master WHERE type = 'table'"
+                )
+            }
+        assert "tasks" in tables
 
     def test_boards_rm_archives(self, tmp_path):
         env = {"HERMES_HOME": str(tmp_path)}

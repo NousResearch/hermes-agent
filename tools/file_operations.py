@@ -23,6 +23,7 @@ from typing import Optional, Dict
 from pathlib import Path
 
 from tools.binary_extensions import BINARY_EXTENSIONS
+from agent.redact import looks_like_redacted_secret
 from agent.file_safety import get_write_denied_error
 from tools.file_operations_common import (
     ExecuteResult, PatchResult, ReadResult, SearchResult, WriteResult,
@@ -35,6 +36,18 @@ logger = logging.getLogger(__name__)
 
 # Controller home; SearchMixin reads it (tests monkeypatch it here).
 _HOME = str(Path.home())
+
+# Shared remediation text for #30962 rejections (patch_replace, patch_v4a,
+# write_file). The redaction toggle ``_REDACT_ENABLED`` is snapshotted at
+# import time (``agent/redact.py:_REDACT_ENABLED``), so the "restart" hint
+# is load-bearing — otherwise the agent will flip the config and immediately
+# retry into the same error.
+_REDACTED_PATCH_REMEDIATION = (
+    "Re-read the file with a tight offset/limit that excludes the secret "
+    "lines and edit only the non-secret surroundings. To edit the secret "
+    "value itself, set `security.redact_secrets: false` and restart Hermes "
+    "(the flag is read at process start)."
+)
 
 # --- Binary-content identification -------------------------------------------
 
@@ -1223,6 +1236,19 @@ class ShellFileOperations(LintMixin, SearchMixin, FileOperations):
         refused = self._reject_unencodable(path, content)
         if refused is not None:
             return refused
+        # Reject redacted-secret placeholders in `content` (#30962). The
+        # write_file path is the more obvious footgun than patch_replace:
+        # an agent that reads a redacted file, edits in-memory, and writes
+        # the whole thing back overwrites every masked credential on disk
+        # with its placeholder. The guard runs before any pre-content
+        # capture or lint plumbing, so a rejected write has no side effects.
+        _hit = looks_like_redacted_secret(content)
+        if _hit:
+            return WriteResult(error=(
+                f"Refusing write: content contains what looks like a "
+                f"redacted-secret placeholder ({_hit!r}). "
+                f"{_REDACTED_PATCH_REMEDIATION}"
+            ))
         ext = os.path.splitext(path)[1].lower()
         refused = self._fail_closed_syntax_error(path, ext, content)
         if refused is not None:
@@ -1316,6 +1342,22 @@ class ShellFileOperations(LintMixin, SearchMixin, FileOperations):
         denied = get_write_denied_error(path)
         if denied:
             return PatchResult(error=denied)
+
+        # Reject redacted-secret placeholders in patch input (#30962).
+        # When `security.redact_secrets: true` is on, `read_file` returns
+        # masked tokens like `sk-exa...hars`. If the agent feeds those back
+        # in here, the raw bytes on disk won't match (silent `old_string not
+        # found`) or, worse, a `new_string` block containing the placeholder
+        # would overwrite a real secret with the literal masked string.
+        for _arg_name, _arg_value in (("old_string", old_string), ("new_string", new_string)):
+            _hit = looks_like_redacted_secret(_arg_value)
+            if _hit:
+                return PatchResult(error=(
+                    f"Refusing patch: {_arg_name} contains what looks like a "
+                    f"redacted-secret placeholder ({_hit!r}). "
+                    f"{_REDACTED_PATCH_REMEDIATION}"
+                ))
+
         read_result = self._cat(path)
         if read_result.exit_code != 0:
             return PatchResult(error=f"Failed to read file: {path}")
@@ -1350,6 +1392,20 @@ class ShellFileOperations(LintMixin, SearchMixin, FileOperations):
     def patch_v4a(self, patch_content: str) -> PatchResult:
         """Apply a V4A format patch (``*** Begin Patch`` / ``*** Update File:`` /
         ``@@ hint @@`` hunks / ``*** End Patch``)."""
+        # Reject redacted-secret placeholders anywhere in the V4A payload
+        # (#30962). Same rationale as patch_replace: a masked token copied
+        # from read_file output won't match the file's raw bytes, and would
+        # corrupt the secret if it appeared on an inserted line (especially
+        # in an `*** Add File` block where there's no context-matching step
+        # to fail first).
+        _hit = looks_like_redacted_secret(patch_content)
+        if _hit:
+            return PatchResult(error=(
+                f"Refusing patch: V4A patch contains what looks like a "
+                f"redacted-secret placeholder ({_hit!r}). "
+                f"{_REDACTED_PATCH_REMEDIATION}"
+            ))
+
         from tools.patch_parser import parse_v4a_patch, apply_v4a_operations
         operations, parse_error = parse_v4a_patch(patch_content)
         if parse_error:

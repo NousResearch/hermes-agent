@@ -197,6 +197,10 @@ class _AsyncBridge:
             raise RuntimeError("cua-driver asyncio bridge failed to start")
 
     def run(self, coro, timeout: Optional[float] = 30.0) -> Any:
+        fut = self.submit(coro)
+        return fut.result(timeout=timeout)
+
+    def submit(self, coro) -> Future:
         from agent.async_utils import safe_schedule_threadsafe
         if not self._loop or not self._thread or not self._thread.is_alive():
             if asyncio.iscoroutine(coro):
@@ -205,7 +209,12 @@ class _AsyncBridge:
         fut = safe_schedule_threadsafe(coro, self._loop)
         if fut is None:
             raise RuntimeError("cua-driver bridge not started")
-        return fut.result(timeout=timeout)
+        return fut
+
+    def call_soon(self, callback, *args) -> None:
+        if not self._loop or not self._thread or not self._thread.is_alive():
+            raise RuntimeError("cua-driver bridge not started")
+        self._loop.call_soon_threadsafe(callback, *args)
 
     def stop(self) -> None:
         if self._loop and self._loop.is_running():
@@ -226,15 +235,18 @@ class _CuaDriverSession:
     def __init__(self, bridge: _AsyncBridge) -> None:
         self._bridge = bridge
         self._session = None
-        self._exit_stack = None
         self._lock = threading.Lock()
+        self._ready = threading.Event()
+        self._start_error: Optional[BaseException] = None
+        self._shutdown_event: Optional[asyncio.Event] = None
+        self._task: Optional[Future] = None
         self._started = False
 
     def _require_started(self) -> None:
         if not self._started:
             raise RuntimeError("cua-driver session not started")
 
-    async def _aenter(self) -> None:
+    async def _run_session(self) -> None:
         from contextlib import AsyncExitStack
         from mcp import ClientSession, StdioServerParameters
         from mcp.client.stdio import stdio_client
@@ -247,37 +259,66 @@ class _CuaDriverSession:
             args=_CUA_DRIVER_ARGS,
             env={**os.environ},
         )
-        stack = AsyncExitStack()
-        read, write = await stack.enter_async_context(stdio_client(params))
-        session = await stack.enter_async_context(ClientSession(read, write))
-        await session.initialize()
-        self._exit_stack = stack
-        self._session = session
-
-    async def _aexit(self) -> None:
-        if self._exit_stack is not None:
-            try:
-                await self._exit_stack.aclose()
-            except Exception as e:
-                logger.warning("cua-driver shutdown error: %s", e)
-        self._exit_stack = None
-        self._session = None
+        self._shutdown_event = asyncio.Event()
+        try:
+            async with AsyncExitStack() as stack:
+                read, write = await stack.enter_async_context(stdio_client(params))
+                session = await stack.enter_async_context(ClientSession(read, write))
+                await session.initialize()
+                self._session = session
+                self._start_error = None
+                self._ready.set()
+                await self._shutdown_event.wait()
+        except Exception as exc:
+            self._start_error = exc
+            self._ready.set()
+            raise
+        finally:
+            self._shutdown_event = None
+            self._session = None
 
     def start(self) -> None:
         with self._lock:
             if self._started:
                 return
             self._bridge.start()
-            self._bridge.run(self._aenter(), timeout=15.0)
+            self._ready.clear()
+            self._start_error = None
+            self._task = self._bridge.submit(self._run_session())
+            if not self._ready.wait(timeout=15.0):
+                raise RuntimeError("cua-driver session failed to start")
+            if self._start_error is not None:
+                task = self._task
+                self._task = None
+                if task is not None and task.done():
+                    try:
+                        task.result(timeout=0)
+                    except Exception:
+                        pass
+                raise self._start_error
             self._started = True
 
     def stop(self) -> None:
         with self._lock:
             if not self._started:
                 return
+            task = self._task
+            shutdown_event = self._shutdown_event
             try:
-                self._bridge.run(self._aexit(), timeout=5.0)
+                if shutdown_event is not None:
+                    try:
+                        self._bridge.call_soon(shutdown_event.set)
+                    except Exception:
+                        pass
+                if task is not None:
+                    try:
+                        task.result(timeout=5.0)
+                    except Exception as e:
+                        logger.warning("cua-driver shutdown error: %s", e)
             finally:
+                self._task = None
+                self._shutdown_event = None
+                self._session = None
                 self._started = False
 
     async def _call_tool_async(self, name: str, args: Dict[str, Any]) -> Dict[str, Any]:
@@ -343,7 +384,11 @@ class CuaDriverBackend(ComputerUseBackend):
 
     # ── Lifecycle ──────────────────────────────────────────────────
     def start(self) -> None:
-        self._session.start()
+        try:
+            self._session.start()
+        except Exception:
+            self._bridge.stop()
+            raise
 
     def stop(self) -> None:
         try:

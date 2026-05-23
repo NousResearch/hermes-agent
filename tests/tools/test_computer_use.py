@@ -154,6 +154,48 @@ class TestBackendRecovery:
 # Dispatch & action routing
 # ---------------------------------------------------------------------------
 
+class TestCuaDriverSessionLifecycle:
+    def test_stop_signals_background_task_and_does_not_run_async_exit_in_new_task(self):
+        from tools.computer_use.cua_backend import _AsyncBridge, _CuaDriverSession
+
+        bridge = MagicMock(spec=_AsyncBridge)
+        session = _CuaDriverSession(bridge)
+        session._started = True
+        session._shutdown_event = MagicMock()
+        session._task = MagicMock()
+
+        session.stop()
+
+        bridge.call_soon.assert_called_once_with(session._shutdown_event.set)
+        session._task.result.assert_called_once_with(timeout=5.0)
+        bridge.run.assert_not_called()
+        assert session._task is None
+        assert session._shutdown_event is None
+        assert session._started is False
+
+    def test_start_launches_long_lived_session_task_via_submit(self):
+        from tools.computer_use.cua_backend import _AsyncBridge, _CuaDriverSession
+
+        bridge = MagicMock(spec=_AsyncBridge)
+        session = _CuaDriverSession(bridge)
+        fake_future = MagicMock()
+
+        def _submit(coro):
+            session._ready.set()
+            coro.close()
+            return fake_future
+
+        bridge.submit.side_effect = _submit
+
+        session.start()
+
+        bridge.start.assert_called_once_with()
+        bridge.submit.assert_called_once()
+        bridge.run.assert_not_called()
+        assert session._task is fake_future
+        assert session._started is True
+
+
 class TestDispatch:
     def test_missing_action_returns_error(self):
         from tools.computer_use.tool import handle_computer_use

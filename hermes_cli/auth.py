@@ -3351,43 +3351,22 @@ def resolve_codex_runtime_credentials(
     refresh_if_expiring: bool = True,
     refresh_skew_seconds: int = CODEX_ACCESS_TOKEN_REFRESH_SKEW_SECONDS,
 ) -> Dict[str, Any]:
-    """Resolve runtime credentials from Hermes's own Codex token store."""
-    data = _read_codex_tokens()
-    tokens = dict(data["tokens"])
-    access_token = str(tokens.get("access_token", "") or "").strip()
-    refresh_timeout_seconds = float(os.getenv("HERMES_CODEX_REFRESH_TIMEOUT_SECONDS", "20"))
+    """Resolve runtime credentials for the Codex provider.
 
-    should_refresh = bool(force_refresh)
-    if (not should_refresh) and refresh_if_expiring:
-        should_refresh = _codex_access_token_is_expiring(access_token, refresh_skew_seconds)
-    if should_refresh:
-        # Re-read under lock to avoid racing with other Hermes processes
-        with _auth_store_lock(timeout_seconds=max(float(AUTH_LOCK_TIMEOUT_SECONDS), refresh_timeout_seconds + 5.0)):
-            data = _read_codex_tokens(_lock=False)
-            tokens = dict(data["tokens"])
-            access_token = str(tokens.get("access_token", "") or "").strip()
+    Backwards-compatible dict shim over the unified resolver. The
+    chain (env override → Hermes auth store → read-only Codex CLI
+    borrow) and the ownership contract live in ``agent/auth/codex.py``;
+    this function exists so historical callers keep compiling.
+    """
+    # Imported lazily so the unified resolver (which imports primitives
+    # from this module) cannot induce an import cycle.
+    from agent.auth.codex import resolve_codex_credentials
 
-            should_refresh = bool(force_refresh)
-            if (not should_refresh) and refresh_if_expiring:
-                should_refresh = _codex_access_token_is_expiring(access_token, refresh_skew_seconds)
-
-            if should_refresh:
-                tokens = _refresh_codex_auth_tokens(tokens, refresh_timeout_seconds)
-                access_token = str(tokens.get("access_token", "") or "").strip()
-
-    base_url = (
-        os.getenv("HERMES_CODEX_BASE_URL", "").strip().rstrip("/")
-        or DEFAULT_CODEX_BASE_URL
-    )
-
-    return {
-        "provider": "openai-codex",
-        "base_url": base_url,
-        "api_key": access_token,
-        "source": "hermes-auth-store",
-        "last_refresh": data.get("last_refresh"),
-        "auth_mode": "chatgpt",
-    }
+    return resolve_codex_credentials(
+        force_refresh=force_refresh,
+        refresh_if_expiring=refresh_if_expiring,
+        refresh_skew_seconds=refresh_skew_seconds,
+    ).as_runtime_dict()
 
 
 # =============================================================================

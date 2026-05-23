@@ -6,6 +6,7 @@ __pycache__/
 .venv/
 .vscode/
 .env
+.env.*
 .env.local
 .env.development.local
 .env.test.local
@@ -75,3 +76,6 @@ models-dev-upstream/
 hermes_cli/tui_dist/*
 hermes_cli/scripts/
 docs/superpowers/*
+.gitnexus
+.claude/
+CLAUDE.md

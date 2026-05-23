@@ -337,13 +337,17 @@ def cmd_setup(args) -> None:
                 # Prompt for secret
                 existing = os.environ.get(env_var, "") if env_var else ""
                 if existing:
+                    # An existing value already satisfies "required"; blank
+                    # input intentionally keeps it.
                     masked = f"...{existing[-4:]}" if len(existing) > 4 else "set"
                     val = _prompt(f"{desc} (current: {masked}, blank to keep)", secret=True)
                 else:
                     hint = f"  Get yours at {url}" if url else ""
                     if hint:
                         print(hint)
-                    val = _prompt(desc, secret=True)
+                    val, aborted = _prompt_field(field, desc, secret=True)
+                    if aborted:
+                        return
                 if val and env_var:
                     env_writes[env_var] = val
             else:

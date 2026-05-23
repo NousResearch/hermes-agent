@@ -20,6 +20,6 @@ describe('statusRuleWidths', () => {
   })
 
   it('omits the cwd segment when there is no room for it', () => {
-    expect(statusRuleWidths(2, 'abcdef')).toEqual({ leftWidth: 1, rightWidth: 0, separatorWidth: 1 })
+    expect(statusRuleWidths(2, 'abcdef')).toEqual({ leftWidth: 2, rightWidth: 0, separatorWidth: 0 })
   })
 })

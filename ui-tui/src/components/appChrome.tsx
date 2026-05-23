@@ -152,10 +152,16 @@ function ctxBar(pct: number | undefined, w = 10) {
 
 export function statusRuleWidths(cols: number, cwdLabel: string) {
   const width = Math.max(1, Math.floor(cols || 1))
-  const separatorWidth = width >= 24 ? 3 : 1
+  const desiredSeparatorWidth = width >= 24 ? 3 : 1
   const minLeftWidth = width >= 24 ? 8 : 1
-  const maxRightWidth = Math.max(0, width - separatorWidth - minLeftWidth)
+  const maxRightWidth = Math.max(0, width - desiredSeparatorWidth - minLeftWidth)
+
+  if (!cwdLabel || maxRightWidth <= 0) {
+    return { leftWidth: width, rightWidth: 0, separatorWidth: 0 }
+  }
+
   const rightWidth = Math.max(0, Math.min(cwdLabel.length, maxRightWidth))
+  const separatorWidth = rightWidth > 0 ? desiredSeparatorWidth : 0
   const leftWidth = Math.max(1, width - separatorWidth - rightWidth)
 
   return { leftWidth, rightWidth, separatorWidth }

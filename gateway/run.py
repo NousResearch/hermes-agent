@@ -65,6 +65,29 @@ _AGENT_CACHE_MAX_SIZE = 128
 _AGENT_CACHE_IDLE_TTL_SECS = 3600.0  # evict agents idle for >1h
 _PLATFORM_CONNECT_TIMEOUT_SECS_DEFAULT = 30.0
 _ADAPTER_DISCONNECT_TIMEOUT_SECS_DEFAULT = 5.0
+
+# Kanban terminal-event notification truncation caps. The kanban notifier
+# loop (see ``_kanban_notifier_watcher`` below) inlines snippets of the
+# worker's handoff / blocked-reason / error into a single chat message so
+# the human doesn't need to open the dashboard for routine pings. Each
+# cap is sized for the kind of payload it gates and the worst-case
+# platform message limit (Telegram: 4096 chars per message;
+# Discord/Slack: ~2000). Bump these here — they're intentionally
+# per-kind so a chatty ``done`` summary can't crowd out a critical
+# ``blocked`` reason and vice versa.
+#
+# ``blocked`` is the one users actually act on (it's a question waiting
+# for a human answer), so it gets the largest budget. ``done`` summaries
+# are the next-most-useful (they tell you whether the work landed and
+# what shipped). Error and timeout payloads are usually tracebacks /
+# stderr; we want enough to triage at a glance but not so much that the
+# message overflows. ``result`` is the legacy ``task.result`` field that
+# pre-dates structured run summaries — kept smaller because anything
+# new should be using ``summary`` instead.
+NOTIFY_BLOCKED_REASON_MAX = 1500
+NOTIFY_DONE_SUMMARY_MAX = 800
+NOTIFY_DONE_RESULT_LEGACY_MAX = 400
+NOTIFY_GAVE_UP_ERROR_MAX = 600
 _TELEGRAM_COMMAND_MENTION_RE = re.compile(r"(?<![\w:/])/([A-Za-z0-9][A-Za-z0-9_-]*)")
 
 _TELEGRAM_NOISY_STATUS_RE = re.compile(
@@ -4777,10 +4800,14 @@ class GatewayRunner:
                             if ev.payload and ev.payload.get("summary"):
                                 payload_summary = str(ev.payload["summary"])
                             if payload_summary:
-                                h = payload_summary.strip().splitlines()[0][:200]
+                                h = payload_summary.strip().splitlines()[0][
+                                    :NOTIFY_DONE_SUMMARY_MAX
+                                ]
                                 handoff = f"\n{h}"
                             elif task and task.result:
-                                r = task.result.strip().splitlines()[0][:160]
+                                r = task.result.strip().splitlines()[0][
+                                    :NOTIFY_DONE_RESULT_LEGACY_MAX
+                                ]
                                 handoff = f"\n{r}"
                             msg = (
                                 f"✔ {tag}Kanban {sub['task_id']} done"
@@ -4789,12 +4816,14 @@ class GatewayRunner:
                         elif kind == "blocked":
                             reason = ""
                             if ev.payload and ev.payload.get("reason"):
-                                reason = f": {str(ev.payload['reason'])[:160]}"
+                                reason = (
+                                    f": {str(ev.payload['reason'])[:NOTIFY_BLOCKED_REASON_MAX]}"
+                                )
                             msg = f"⏸ {tag}Kanban {sub['task_id']} blocked{reason}"
                         elif kind == "gave_up":
                             err = ""
                             if ev.payload and ev.payload.get("error"):
-                                err = f"\n{str(ev.payload['error'])[:200]}"
+                                err = f"\n{str(ev.payload['error'])[:NOTIFY_GAVE_UP_ERROR_MAX]}"
                             msg = (
                                 f"✖ {tag}Kanban {sub['task_id']} gave up "
                                 f"after repeated spawn failures{err}"

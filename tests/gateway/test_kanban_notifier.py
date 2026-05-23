@@ -234,3 +234,175 @@ def test_notifier_redelivers_same_kind_on_dispatch_cycle(tmp_path, monkeypatch):
         f"deliveries (texts: {[d['text'] for d in adapter.sent]})"
     )
     assert "crashed" in adapter.sent[1]["text"].lower()
+
+
+def _create_blocked_subscription(reason: str):
+    conn = kb.connect()
+    try:
+        tid = kb.create_task(conn, title="needs human input", assignee="worker")
+        kb.add_notify_sub(conn, task_id=tid, platform="telegram", chat_id="chat-1")
+        kb._append_event(conn, tid, kind="blocked", payload={"reason": reason})
+        return tid
+    finally:
+        conn.close()
+
+
+def _create_gave_up_subscription(error: str):
+    conn = kb.connect()
+    try:
+        tid = kb.create_task(conn, title="dead worker", assignee="worker")
+        kb.add_notify_sub(conn, task_id=tid, platform="telegram", chat_id="chat-1")
+        kb._append_event(conn, tid, kind="gave_up", payload={"error": error})
+        return tid
+    finally:
+        conn.close()
+
+
+def test_blocked_reason_carries_full_actionable_context(tmp_path, monkeypatch):
+    """Blocked reasons must survive up to NOTIFY_BLOCKED_REASON_MAX chars.
+
+    Regression for the 160-char truncation that made blocked notifications
+    routinely unactionable — users couldn't see the question without
+    opening the dashboard. Caller-supplied 800-char reason must land in
+    the chat message intact.
+    """
+    from gateway.run import NOTIFY_BLOCKED_REASON_MAX
+
+    db_path = tmp_path / "blocked-cap.db"
+    monkeypatch.setenv("HERMES_KANBAN_DB", str(db_path))
+    kb.init_db()
+
+    reason = (
+        "Rate limit key choice needs a human call. "
+        "Option A: IP from Cloudflare headers — simple, but NAT-unsafe "
+        "(false positives for users behind shared egress). "
+        "Option B: user_id — requires auth, skips anonymous endpoints "
+        "(login, signup, forgot-password). "
+        "Option C: hybrid — IP for anonymous endpoints, user_id for "
+        "authenticated, with a per-IP burst budget to soften shared-NAT "
+        "false-positives. Each option has a different blast radius and a "
+        "different impl cost; I need a decision before wiring anything in."
+    )
+    assert 160 < len(reason) <= NOTIFY_BLOCKED_REASON_MAX
+    _create_blocked_subscription(reason)
+
+    adapter = RecordingAdapter()
+    runner = _make_runner(adapter)
+    asyncio.run(_run_one_notifier_tick(monkeypatch, runner))
+
+    assert len(adapter.sent) == 1
+    text = adapter.sent[0]["text"]
+    # Full reason should be present — every distinctive substring lands.
+    assert "Cloudflare headers" in text
+    assert "forgot-password" in text
+    assert "blast radius" in text
+
+
+def test_blocked_reason_is_truncated_at_documented_cap(tmp_path, monkeypatch):
+    """A reason longer than the cap is truncated at NOTIFY_BLOCKED_REASON_MAX."""
+    from gateway.run import NOTIFY_BLOCKED_REASON_MAX
+
+    db_path = tmp_path / "blocked-overflow.db"
+    monkeypatch.setenv("HERMES_KANBAN_DB", str(db_path))
+    kb.init_db()
+
+    reason = "x" * (NOTIFY_BLOCKED_REASON_MAX + 500)
+    _create_blocked_subscription(reason)
+
+    adapter = RecordingAdapter()
+    runner = _make_runner(adapter)
+    asyncio.run(_run_one_notifier_tick(monkeypatch, runner))
+
+    assert len(adapter.sent) == 1
+    text = adapter.sent[0]["text"]
+    # The reason substring (xs) is capped; assert exact cap length.
+    x_run = text.count("x")
+    assert x_run == NOTIFY_BLOCKED_REASON_MAX
+
+
+def test_done_summary_carries_extended_handoff(tmp_path, monkeypatch):
+    """Done summaries support up to NOTIFY_DONE_SUMMARY_MAX chars (first line)."""
+    from gateway.run import NOTIFY_DONE_SUMMARY_MAX
+
+    db_path = tmp_path / "done-cap.db"
+    monkeypatch.setenv("HERMES_KANBAN_DB", str(db_path))
+    kb.init_db()
+
+    summary = (
+        "shipped token-bucket rate limiter on /api/* — keyed primarily on "
+        "user_id with IP fallback for anonymous endpoints; per-IP burst "
+        "budget of 60 rpm to soften shared-NAT false positives; 14/14 "
+        "tests pass including a NAT-collision regression and a "
+        "Cloudflare-header-stripping test; redis-backed counters with "
+        "60s TTL; metrics emitted to statsd under rate_limit.{hit,miss}."
+    )
+    assert 200 < len(summary) <= NOTIFY_DONE_SUMMARY_MAX
+    conn = kb.connect()
+    try:
+        tid = kb.create_task(conn, title="rate limit", assignee="worker")
+        kb.add_notify_sub(conn, task_id=tid, platform="telegram", chat_id="chat-1")
+        kb.complete_task(conn, tid, summary=summary)
+    finally:
+        conn.close()
+
+    adapter = RecordingAdapter()
+    runner = _make_runner(adapter)
+    asyncio.run(_run_one_notifier_tick(monkeypatch, runner))
+
+    assert len(adapter.sent) == 1
+    text = adapter.sent[0]["text"]
+    assert "token-bucket" in text
+    assert "rate_limit.{hit,miss}" in text
+
+
+def test_gave_up_error_carries_extended_traceback_snippet(tmp_path, monkeypatch):
+    """gave_up errors carry up to NOTIFY_GAVE_UP_ERROR_MAX chars."""
+    from gateway.run import NOTIFY_GAVE_UP_ERROR_MAX
+
+    db_path = tmp_path / "gaveup-cap.db"
+    monkeypatch.setenv("HERMES_KANBAN_DB", str(db_path))
+    kb.init_db()
+
+    err = (
+        "spawn_failed after 5 attempts: profile 'worker' missing "
+        "HERMES_ANTHROPIC_API_KEY in profile env; subprocess exited 2 "
+        "with stderr 'authentication failed: no credentials configured'. "
+        "Check ~/.hermes/profiles/worker/.env or set the key in the "
+        "global ~/.hermes/.env. See logs at ~/.hermes/logs/agent.log "
+        "around 2026-05-23T14:30:00Z for the full traceback."
+    )
+    assert 200 < len(err) <= NOTIFY_GAVE_UP_ERROR_MAX
+    _create_gave_up_subscription(err)
+
+    adapter = RecordingAdapter()
+    runner = _make_runner(adapter)
+    asyncio.run(_run_one_notifier_tick(monkeypatch, runner))
+
+    assert len(adapter.sent) == 1
+    text = adapter.sent[0]["text"]
+    assert "HERMES_ANTHROPIC_API_KEY" in text
+    assert "agent.log" in text
+
+
+def test_notification_caps_are_ordered_so_blocked_wins(tmp_path, monkeypatch):
+    """Sanity-check the cap budget: blocked > done > error > legacy result.
+
+    The whole point of per-kind caps (rather than one shared limit) is
+    that ``blocked`` — the one users actually answer — should never lose
+    budget to a chatty ``done`` summary. Pin the ordering so future
+    tuning can't accidentally invert it.
+    """
+    from gateway.run import (
+        NOTIFY_BLOCKED_REASON_MAX,
+        NOTIFY_DONE_RESULT_LEGACY_MAX,
+        NOTIFY_DONE_SUMMARY_MAX,
+        NOTIFY_GAVE_UP_ERROR_MAX,
+    )
+
+    assert NOTIFY_BLOCKED_REASON_MAX > NOTIFY_DONE_SUMMARY_MAX
+    assert NOTIFY_DONE_SUMMARY_MAX > NOTIFY_GAVE_UP_ERROR_MAX
+    assert NOTIFY_GAVE_UP_ERROR_MAX > NOTIFY_DONE_RESULT_LEGACY_MAX
+    # Stay under Discord/Slack's ~2000-char single-message ceiling so
+    # even the largest cap fits in one chat message on the tightest
+    # platform we currently target.
+    assert NOTIFY_BLOCKED_REASON_MAX < 2000

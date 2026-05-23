@@ -391,7 +391,7 @@ class TestBlockingApprovalE2E:
             os.environ["HERMES_SESSION_KEY"] = session_key
             try:
                 result_holder[0] = check_all_command_guards(
-                    "rm -rf /important", "local"
+                    "rm -rf /tmp/hermes-important", "local"
                 )
             finally:
                 os.environ.pop("HERMES_GATEWAY_SESSION", None)
@@ -408,7 +408,7 @@ class TestBlockingApprovalE2E:
             time.sleep(0.05)
 
         assert len(notified) == 1
-        assert "rm -rf /important" in notified[0]["command"]
+        assert "rm -rf /tmp/hermes-important" in notified[0]["command"]
 
         resolve_gateway_approval(session_key, "once")
         t.join(timeout=5)
@@ -439,7 +439,7 @@ class TestBlockingApprovalE2E:
             os.environ["HERMES_SESSION_KEY"] = session_key
             try:
                 result_holder[0] = check_all_command_guards(
-                    "rm -rf /important", "local"
+                    "rm -rf /tmp/hermes-important", "local"
                 )
             finally:
                 os.environ.pop("HERMES_GATEWAY_SESSION", None)
@@ -484,7 +484,7 @@ class TestBlockingApprovalE2E:
                 with patch("tools.approval._get_approval_config",
                            return_value={"gateway_timeout": 1}):
                     result_holder[0] = check_all_command_guards(
-                        "rm -rf /important", "local"
+                        "rm -rf /tmp/hermes-important", "local"
                     )
             finally:
                 os.environ.pop("HERMES_GATEWAY_SESSION", None)
@@ -532,9 +532,9 @@ class TestBlockingApprovalE2E:
             return run
 
         threads = [
-            threading.Thread(target=make_agent(0, "rm -rf /a")),
-            threading.Thread(target=make_agent(1, "rm -rf /b")),
-            threading.Thread(target=make_agent(2, "rm -rf /c")),
+            threading.Thread(target=make_agent(0, "rm -rf /tmp/hermes-a")),
+            threading.Thread(target=make_agent(1, "rm -rf /tmp/hermes-b")),
+            threading.Thread(target=make_agent(2, "rm -rf /tmp/hermes-c")),
         ]
         for t in threads:
             t.start()
@@ -589,8 +589,8 @@ class TestBlockingApprovalE2E:
             return run
 
         threads = [
-            threading.Thread(target=make_agent(0, "rm -rf /x")),
-            threading.Thread(target=make_agent(1, "rm -rf /y")),
+            threading.Thread(target=make_agent(0, "rm -rf /tmp/hermes-x")),
+            threading.Thread(target=make_agent(1, "rm -rf /tmp/hermes-y")),
         ]
         for t in threads:
             t.start()
@@ -640,7 +640,7 @@ class TestFallbackNoCallback:
         os.environ["HERMES_EXEC_ASK"] = "1"
         os.environ["HERMES_SESSION_KEY"] = "no-callback-test"
         try:
-            result = check_all_command_guards("rm -rf /important", "local")
+            result = check_all_command_guards("rm -rf /tmp/hermes-important", "local")
         finally:
             os.environ.pop("HERMES_EXEC_ASK", None)
             os.environ.pop("HERMES_SESSION_KEY", None)

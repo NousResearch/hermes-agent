@@ -27,15 +27,311 @@ Design notes:
 from __future__ import annotations
 
 import argparse
+import hashlib
+import importlib.util
 import json
+import os
+import re
 import sys
 from pathlib import Path
-from typing import Optional
+from typing import Any, Optional
 
 
 _USAGE_EXIT = 2
 _FAILURE_EXIT = 1
 _SUCCESS_EXIT = 0
+_TELEGRAM_TARGET_RE = re.compile(r"^\s*(-?\d+)(?::(\d+))?\s*$")
+
+
+def _hash_identifier(value: Any) -> dict[str, Any]:
+    """Return non-reversible metadata for a private identifier."""
+    text = "" if value is None else str(value)
+    if not text:
+        return {"present": False}
+    digest = hashlib.sha256(text.encode("utf-8", errors="replace")).hexdigest()
+    return {
+        "present": True,
+        "sha256_12": digest[:12],
+        "length": len(text),
+    }
+
+
+def _redact_error_text(value: Any) -> str:
+    """Redact exception text before it reaches dry-run output."""
+    try:
+        from agent.redact import redact_sensitive_text
+
+        return redact_sensitive_text(str(value), force=True)
+    except Exception:
+        return str(value)
+
+
+def _message_preflight_summary(
+    message: str,
+    *,
+    positional: Optional[str],
+    file_path: Optional[str],
+) -> dict[str, Any]:
+    """Summarize message input without echoing the message body."""
+    if file_path:
+        source = "stdin" if file_path == "-" else "file"
+    elif positional is not None:
+        source = "argument"
+    else:
+        source = "stdin"
+
+    encoded = message.encode("utf-8", errors="replace")
+    summary: dict[str, Any] = {
+        "source": source,
+        "chars": len(message),
+        "bytes": len(encoded),
+        "lines": 0 if not message else message.count("\n") + 1,
+        "body_sha256_12": hashlib.sha256(encoded).hexdigest()[:12],
+        "content_printed": False,
+    }
+
+    if file_path and file_path != "-":
+        path = Path(file_path).expanduser()
+        summary["file"] = {
+            "name": path.name,
+            "path_sha256_12": hashlib.sha256(
+                str(path).encode("utf-8", errors="replace")
+            ).hexdigest()[:12],
+            "path_printed": False,
+        }
+        try:
+            summary["file"]["bytes_on_disk"] = path.stat().st_size
+        except OSError:
+            pass
+
+    return summary
+
+
+def _append_check(
+    checks: list[dict[str, str]],
+    name: str,
+    passed: bool,
+    detail: str,
+) -> bool:
+    checks.append(
+        {"name": name, "status": "pass" if passed else "fail", "detail": detail}
+    )
+    return passed
+
+
+def _parse_target_for_preflight(
+    target: str,
+) -> tuple[str, Optional[str], Optional[str], Optional[str], bool]:
+    """Parse enough target metadata for a redacted dry-run."""
+    parts = target.split(":", 1)
+    platform_name = parts[0].strip().lower()
+    target_ref = parts[1].strip() if len(parts) > 1 else None
+    chat_id = None
+    thread_id = None
+    explicit = False
+
+    if platform_name == "telegram" and target_ref:
+        match = _TELEGRAM_TARGET_RE.fullmatch(target_ref)
+        if match:
+            chat_id = match.group(1)
+            thread_id = match.group(2)
+            explicit = True
+
+    return platform_name, target_ref, chat_id, thread_id, explicit
+
+
+def _build_send_preflight(
+    *,
+    target: str,
+    message: str,
+    positional: Optional[str],
+    file_path: Optional[str],
+) -> dict[str, Any]:
+    """Build a redacted, no-network send dry-run result."""
+    checks: list[dict[str, str]] = []
+    warnings: list[str] = []
+    platform_name, target_ref, chat_id, thread_id, explicit = (
+        _parse_target_for_preflight(target)
+    )
+    ok = True
+
+    ok &= _append_check(
+        checks, "target_present", bool(target), "delivery target was supplied"
+    )
+    ok &= _append_check(
+        checks, "message_present", bool(message.strip()), "message body was supplied"
+    )
+    ok &= _append_check(
+        checks, "no_network", True, "dry-run does not call platform APIs"
+    )
+
+    target_summary: dict[str, Any] = {
+        "platform": platform_name,
+        "target_mode": (
+            "explicit" if explicit else ("named_or_alias" if target_ref else "home_channel")
+        ),
+        "target_ref_present": bool(target_ref),
+        "target_ref_printed": False,
+        "chat_id": _hash_identifier(chat_id),
+        "thread_id": _hash_identifier(thread_id),
+    }
+
+    if platform_name != "telegram":
+        ok &= _append_check(
+            checks,
+            "telegram_scope",
+            False,
+            "post-campaign dry-run preflight is currently limited to Telegram",
+        )
+    else:
+        _append_check(checks, "telegram_scope", True, "Telegram target selected")
+
+    try:
+        from gateway.config import Platform, load_gateway_config
+
+        config = load_gateway_config()
+        try:
+            platform = Platform(platform_name)
+        except (ValueError, KeyError) as exc:
+            ok &= _append_check(
+                checks, "platform_known", False, _redact_error_text(exc)
+            )
+            platform = None
+
+        pconfig = config.platforms.get(platform) if platform is not None else None
+        configured = bool(pconfig and getattr(pconfig, "enabled", False))
+        ok &= _append_check(
+            checks,
+            "platform_configured",
+            configured,
+            (
+                f"{platform_name} platform is configured"
+                if configured
+                else f"{platform_name} platform is not configured"
+            ),
+        )
+
+        credential_present = bool(getattr(pconfig, "token", None)) or bool(
+            os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
+        )
+        ok &= _append_check(
+            checks,
+            "credential_present",
+            credential_present,
+            "Telegram bot credential is present" if credential_present else "Telegram bot credential is missing",
+        )
+
+        home = None
+        if platform is not None and hasattr(config, "get_home_channel"):
+            try:
+                home = config.get_home_channel(platform)
+            except Exception as exc:
+                warnings.append(
+                    f"home channel lookup failed: {_redact_error_text(exc)}"
+                )
+
+        if explicit:
+            target_summary["chat_id"] = _hash_identifier(chat_id)
+            target_summary["thread_id"] = _hash_identifier(thread_id)
+            _append_check(
+                checks, "target_resolved", True, "explicit Telegram target parsed"
+            )
+        elif target_ref:
+            warnings.append(
+                "named or alias targets are not resolved in dry-run to avoid "
+                "reading channel directory contents"
+            )
+            _append_check(
+                checks,
+                "target_resolved",
+                True,
+                "named or alias target left unresolved by design",
+            )
+        else:
+            home_chat_id = getattr(home, "chat_id", None)
+            target_summary["chat_id"] = _hash_identifier(home_chat_id)
+            home_present = bool(home_chat_id)
+            ok &= _append_check(
+                checks,
+                "home_channel_present",
+                home_present,
+                "Telegram home channel is configured" if home_present else "Telegram home channel is missing",
+            )
+
+    except Exception as exc:
+        ok &= _append_check(checks, "config_load", False, _redact_error_text(exc))
+
+    client_present = importlib.util.find_spec("telegram") is not None
+    ok &= _append_check(
+        checks,
+        "telegram_client_library_present",
+        client_present,
+        "python-telegram-bot import is available" if client_present else "python-telegram-bot import is missing",
+    )
+
+    return {
+        "ok": bool(ok),
+        "dry_run": True,
+        "would_send": False,
+        "network_performed": False,
+        "target": target_summary,
+        "message": _message_preflight_summary(
+            message,
+            positional=positional,
+            file_path=file_path,
+        ),
+        "checks": checks,
+        "warnings": warnings,
+    }
+
+
+def _format_preflight_result(payload: dict[str, Any], *, json_mode: bool) -> str:
+    """Format a dry-run preflight result without private target/body data."""
+    if json_mode:
+        return json.dumps(payload, indent=2, sort_keys=True) + "\n"
+
+    status = "PASS" if payload.get("ok") else "FAIL"
+    target = payload.get("target") or {}
+    message = payload.get("message") or {}
+    lines = [
+        f"hermes send dry-run: {status}",
+        f"platform: {target.get('platform', '?')}",
+        f"target: {target.get('target_mode', '?')} (redacted)",
+        (
+            "message: "
+            f"{message.get('chars', 0)} chars, "
+            f"{message.get('bytes', 0)} bytes, "
+            f"{message.get('lines', 0)} lines"
+        ),
+        "network: none; no message sent",
+    ]
+    for check in payload.get("checks", []):
+        lines.append(f"- {check['status']}: {check['name']} - {check['detail']}")
+    for warning in payload.get("warnings", []):
+        lines.append(f"- warning: {warning}")
+    return "\n".join(lines) + "\n"
+
+
+def _emit_preflight_result(
+    payload: dict[str, Any],
+    *,
+    json_mode: bool,
+    quiet: bool,
+    output_path: Optional[str] = None,
+) -> int:
+    """Print or privately write a dry-run preflight result."""
+    text = _format_preflight_result(payload, json_mode=json_mode)
+    if output_path:
+        from hermes_cli.private_artifacts import write_private_text
+
+        target = write_private_text(output_path, text)
+        if not quiet:
+            status = "PASS" if payload.get("ok") else "FAIL"
+            print(f"hermes send dry-run: {status}; receipt written to {target}")
+    elif not quiet:
+        print(text, end="")
+
+    return _SUCCESS_EXIT if payload.get("ok") else _FAILURE_EXIT
 
 
 def _read_message_body(
@@ -320,6 +616,29 @@ def cmd_send(args: argparse.Namespace) -> None:
     if subject:
         message = f"{subject}\n\n{message.lstrip()}"
 
+    if getattr(args, "dry_run", False):
+        payload = _build_send_preflight(
+            target=target,
+            message=message,
+            positional=getattr(args, "message", None),
+            file_path=getattr(args, "file", None),
+        )
+        sys.exit(
+            _emit_preflight_result(
+                payload,
+                json_mode=getattr(args, "json", False),
+                quiet=getattr(args, "quiet", False),
+                output_path=getattr(args, "output", None),
+            )
+        )
+
+    if getattr(args, "output", None):
+        print(
+            "hermes send: --output is only valid with --dry-run/--preflight",
+            file=sys.stderr,
+        )
+        sys.exit(_USAGE_EXIT)
+
     # Import lazily so `hermes send --help` stays fast and does not pull in
     # the full tool registry / gateway config stack.
     from tools.send_message_tool import send_message_tool
@@ -367,6 +686,8 @@ def register_send_subparser(subparsers) -> argparse.ArgumentParser:
             "  echo \"RAM 92%\" | hermes send --to telegram:-1001234567890\n"
             "  hermes send --to discord:#ops --file /tmp/report.md\n"
             "  hermes send --to slack:#eng --subject \"[CI]\" --file build.log\n"
+            "  hermes send --to telegram --file docs/HERMES_FINAL_REPORT.md "
+            "--dry-run --json --output /tmp/hermes-telegram-preflight.json\n"
             "  hermes send --list                  # all platforms\n"
             "  hermes send --list telegram         # filter by platform\n"
             "\n"
@@ -429,6 +750,29 @@ def register_send_subparser(subparsers) -> argparse.ArgumentParser:
         action="store_true",
         default=False,
         help="Suppress stdout on success (exit code only).",
+    )
+
+    parser.add_argument(
+        "--dry-run",
+        "--preflight",
+        dest="dry_run",
+        action="store_true",
+        default=False,
+        help=(
+            "Validate Telegram send readiness and print redacted target/message "
+            "metadata without calling the platform API or sending a message."
+        ),
+    )
+
+    parser.add_argument(
+        "-o",
+        "--output",
+        metavar="PATH",
+        default=None,
+        help=(
+            "With --dry-run/--preflight, write the redacted receipt to PATH "
+            "using owner-only file permissions."
+        ),
     )
 
     parser.add_argument(

@@ -26,6 +26,7 @@ except ModuleNotFoundError:
 import logging
 import os
 import shutil
+import shlex
 import sys
 import json
 import re
@@ -8416,13 +8417,29 @@ class HermesCLI:
                     exec_cmd = qcmd.get("command", "")
                     if exec_cmd:
                         try:
+                            user_args = cmd_original[len(base_cmd):].strip()
+                            if user_args:
+                                try:
+                                    parts = shlex.split(user_args)
+                                except ValueError:
+                                    parts = [user_args]
+                                exec_cmd = f"{exec_cmd} " + " ".join(
+                                    shlex.quote(part) for part in parts
+                                )
                             # shell=True is intentional: quick_commands are user-defined
                             # shell snippets from config.yaml — not agent/LLM controlled.
                             result = subprocess.run(
                                 exec_cmd, shell=True, capture_output=True,
-                                text=True, timeout=30
+                                text=True, timeout=30,
+                                env=__import__(
+                                    "tools.environments.local",
+                                    fromlist=["_sanitize_subprocess_env"],
+                                )._sanitize_subprocess_env(os.environ.copy()),
                             )
                             output = result.stdout.strip() or result.stderr.strip()
+                            if output:
+                                from agent.redact import redact_sensitive_text
+                                output = redact_sensitive_text(output)
                             if output:
                                 self._console_print(_rich_text_from_ansi(output))
                             else:
@@ -10902,7 +10919,10 @@ class HermesCLI:
         return ""
 
     def _approval_callback(self, command: str, description: str,
-                           *, allow_permanent: bool = True) -> str:
+                           *, allow_permanent: bool = True,
+                           typed_confirmation_phrase: str | None = None,
+                           risk_class: str | None = None,
+                           risk_tier: str | None = None) -> str:
         """
         Prompt for dangerous command approval through the prompt_toolkit UI.
 
@@ -10921,13 +10941,18 @@ class HermesCLI:
         with self._approval_lock:
             timeout = int(CLI_CONFIG.get("approvals", {}).get("timeout", 60))
             response_queue = queue.Queue()
+            typed_phrase = typed_confirmation_phrase or ""
+            choices = [] if typed_phrase else self._approval_choices(command, allow_permanent=allow_permanent)
 
             self._approval_state = {
                 "command": command,
                 "description": description,
-                "choices": self._approval_choices(command, allow_permanent=allow_permanent),
+                "choices": choices,
                 "selected": 0,
                 "response_queue": response_queue,
+                "typed_confirmation_phrase": typed_phrase,
+                "risk_class": risk_class,
+                "risk_tier": risk_tier,
             }
             self._approval_deadline = _time.monotonic() + timeout
 
@@ -11054,8 +11079,10 @@ class HermesCLI:
         choices = state["choices"]
         selected = state.get("selected", 0)
         show_full = state.get("show_full", False)
+        typed_phrase = state.get("typed_confirmation_phrase") or ""
+        risk_class = state.get("risk_class") or "high-risk"
 
-        title = "⚠️  Dangerous Command"
+        title = "⚠️  High-Risk Command" if typed_phrase else "⚠️  Dangerous Command"
         cmd_display = command if show_full or len(command) <= 70 else command[:70] + '...'
         choice_labels = {
             "once": "Allow once",
@@ -11067,6 +11094,22 @@ class HermesCLI:
 
         preview_lines = _wrap_panel_text(description, 60)
         preview_lines.extend(_wrap_panel_text(cmd_display, 60))
+        if typed_phrase:
+            preview_lines.extend(_wrap_panel_text(
+                f"Type exactly: {typed_phrase}",
+                60,
+                subsequent_indent="  ",
+            ))
+            preview_lines.extend(_wrap_panel_text(
+                "Press Enter to submit the phrase. Esc/Ctrl+C denies.",
+                60,
+                subsequent_indent="  ",
+            ))
+            preview_lines.extend(_wrap_panel_text(
+                f"Risk class: {risk_class}",
+                60,
+                subsequent_indent="  ",
+            ))
         for i, choice in enumerate(choices):
             prefix = '❯ ' if i == selected else '  '
             preview_lines.extend(_wrap_panel_text(
@@ -11080,6 +11123,23 @@ class HermesCLI:
 
         # Pre-wrap the mandatory content — command + choices must always render.
         cmd_wrapped = _wrap_panel_text(cmd_display, inner_text_width)
+        typed_wrapped: list[str] = []
+        if typed_phrase:
+            typed_wrapped.extend(_wrap_panel_text(
+                f"Type exactly: {typed_phrase}",
+                inner_text_width,
+                subsequent_indent="  ",
+            ))
+            typed_wrapped.extend(_wrap_panel_text(
+                "Press Enter to submit the phrase. Esc/Ctrl+C denies.",
+                inner_text_width,
+                subsequent_indent="  ",
+            ))
+            typed_wrapped.extend(_wrap_panel_text(
+                f"Risk class: {risk_class}",
+                inner_text_width,
+                subsequent_indent="  ",
+            ))
 
         # (choice_index, wrapped_line) so we can re-apply selected styling below
         choice_wrapped: list[tuple[int, str]] = []
@@ -11116,7 +11176,7 @@ class HermesCLI:
         reserved_below = 6
 
         available = max(0, term_rows - reserved_below)
-        mandatory_full = chrome_full + len(cmd_wrapped) + len(choice_wrapped)
+        mandatory_full = chrome_full + len(cmd_wrapped) + len(typed_wrapped) + len(choice_wrapped)
 
         # If the full-chrome panel doesn't fit, drop the separator blanks.
         # This keeps the command and every choice on-screen in compact terminals.
@@ -11126,14 +11186,14 @@ class HermesCLI:
         # If the command itself is too long to leave room for choices (e.g. user
         # hit "view" on a multi-hundred-character command), truncate it so the
         # approve/deny buttons still render. Keep at least 1 row of command.
-        max_cmd_rows = max(1, available - chrome_rows - len(choice_wrapped))
+        max_cmd_rows = max(1, available - chrome_rows - len(typed_wrapped) - len(choice_wrapped))
         if len(cmd_wrapped) > max_cmd_rows:
             keep = max(1, max_cmd_rows - 1) if max_cmd_rows > 1 else 1
             cmd_wrapped = cmd_wrapped[:keep] + ["… (command truncated — use /logs or /debug for full text)"]
 
         # Allocate any remaining rows to description. The extra -1 in full mode
         # accounts for the blank separator between choices and description.
-        mandatory_no_desc = chrome_rows + len(cmd_wrapped) + len(choice_wrapped)
+        mandatory_no_desc = chrome_rows + len(cmd_wrapped) + len(typed_wrapped) + len(choice_wrapped)
         desc_sep_cost = 0 if use_compact_chrome else 1
         available_for_desc = available - mandatory_no_desc - desc_sep_cost
         # Even on huge terminals, cap description height so the panel stays compact.
@@ -11158,6 +11218,8 @@ class HermesCLI:
 
         for wrapped in cmd_wrapped:
             _append_panel_line(lines, 'class:approval-border', 'class:approval-cmd', wrapped, box_width)
+        for wrapped in typed_wrapped:
+            _append_panel_line(lines, 'class:approval-border', 'class:approval-desc', wrapped, box_width)
         if not use_compact_chrome:
             _append_blank_panel_line(lines, 'class:approval-border', box_width)
 
@@ -12310,6 +12372,16 @@ class HermesCLI:
 
             # --- Approval selection: confirm the highlighted choice ---
             if self._approval_state:
+                typed_phrase = self._approval_state.get("typed_confirmation_phrase")
+                if typed_phrase:
+                    text = event.app.current_buffer.text
+                    self._approval_state["response_queue"].put(
+                        text if text == typed_phrase else "deny"
+                    )
+                    self._approval_state = None
+                    event.app.current_buffer.reset()
+                    event.app.invalidate()
+                    return
                 self._handle_approval_selection()
                 event.app.invalidate()
                 return
@@ -12578,13 +12650,19 @@ class HermesCLI:
         @kb.add('up', filter=Condition(lambda: bool(self._approval_state)))
         def approval_up(event):
             if self._approval_state:
+                choices = self._approval_state.get("choices") or []
+                if not choices:
+                    return
                 self._approval_state["selected"] = max(0, self._approval_state["selected"] - 1)
                 event.app.invalidate()
 
         @kb.add('down', filter=Condition(lambda: bool(self._approval_state)))
         def approval_down(event):
             if self._approval_state:
-                max_idx = len(self._approval_state["choices"]) - 1
+                choices = self._approval_state.get("choices") or []
+                if not choices:
+                    return
+                max_idx = len(choices) - 1
                 self._approval_state["selected"] = min(max_idx, self._approval_state["selected"] + 1)
                 event.app.invalidate()
 
@@ -13283,6 +13361,9 @@ class HermesCLI:
             if cli_ref._secret_state:
                 return "type secret (hidden), Enter to submit · ESC to skip"
             if cli_ref._approval_state:
+                phrase = cli_ref._approval_state.get("typed_confirmation_phrase")
+                if phrase:
+                    return "type exact phrase and press Enter · Esc denies"
                 return ""
             if cli_ref._slash_confirm_state:
                 return "type 1/2/3, or use ↑/↓ then Enter"

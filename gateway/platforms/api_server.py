@@ -14,7 +14,7 @@ Exposes an HTTP server with endpoints:
 - POST /v1/runs/{run_id}/approval — resolve a pending run approval
 - POST /v1/runs/{run_id}/stop       — interrupt a running agent
 - GET  /health                     — health check
-- GET  /health/detailed            — rich status for cross-container dashboard probing
+- GET  /health/detailed            — authenticated rich status for dashboards when API key is configured
 
 Any OpenAI-compatible frontend (Open WebUI, LobeChat, LibreChat,
 AnythingLLM, NextChat, ChatBox, etc.) can connect to hermes-agent
@@ -924,8 +924,12 @@ class APIServerAdapter(BasePlatformAdapter):
 
         Returns gateway state, connected platforms, PID, and uptime so the
         dashboard can display full status without needing a shared PID file or
-        /proc access.  No authentication required.
+        /proc access. Requires API-key authentication when a key is configured.
         """
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+
         from gateway.status import read_runtime_status
 
         runtime = read_runtime_status() or {}

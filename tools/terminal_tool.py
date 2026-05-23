@@ -39,6 +39,7 @@ import logging
 import os
 import platform
 import re
+import shlex
 import time
 import threading
 import atexit
@@ -523,6 +524,84 @@ def _looks_like_env_assignment(token: str) -> bool:
         return False
     name, _value = token.split("=", 1)
     return bool(re.match(r"^[A-Za-z_][A-Za-z0-9_]*$", name))
+
+
+_CODEX_RUN_WRAPPER = "/Users/agent1/Operator/scripts/codex-run.sh"
+_CODEX_HOME_REQUIRED = "/Users/agent1/.codex"
+_SHELL_SEPARATORS = {";", "&&", "||", "|", "&", "(", ")"}
+
+
+def _shell_words_for_guard(command: str) -> list[str]:
+    """Tokenize shell-ish commands well enough for pre-exec guard checks."""
+    try:
+        lexer = shlex.shlex(command, posix=True, punctuation_chars=True)
+        lexer.whitespace_split = True
+        lexer.commenters = "#"
+        return list(lexer)
+    except ValueError:
+        return re.findall(r"[^\s;&|()]+|&&|\|\||[;&|()]", command)
+
+
+def _token_basename(token: str) -> str:
+    return token.rstrip("/").rsplit("/", 1)[-1]
+
+
+def _segment_until_separator(tokens: list[str], start: int) -> list[str]:
+    segment: list[str] = []
+    for token in tokens[start:]:
+        if token in _SHELL_SEPARATORS:
+            break
+        segment.append(token)
+    return segment
+
+
+def _raw_codex_guard(command: str) -> str | None:
+    """Block raw Codex CLI execution unless the Operator wrapper is used.
+
+    The Operator wrapper preserves the real Codex auth home and verifies the
+    expected binary before running Codex. Raw `codex exec` from Hermes terminal
+    calls can accidentally inherit rewritten HOME/CODEX_HOME state.
+    """
+    if env_var_enabled("HERMES_ALLOW_RAW_CODEX"):
+        return None
+
+    tokens = _shell_words_for_guard(command)
+    for idx, token in enumerate(tokens):
+        if token in _SHELL_SEPARATORS:
+            continue
+
+        base = _token_basename(token)
+        if base == "codex-run.sh":
+            continue
+
+        segment = _segment_until_separator(tokens, idx)
+        if base == "codex" and "exec" in segment[1:]:
+            return (
+                "Raw Codex CLI execution is blocked. Use "
+                f"{_CODEX_RUN_WRAPPER} so CODEX_HOME={_CODEX_HOME_REQUIRED} "
+                "and Operator auth guardrails are preserved. Set "
+                "HERMES_ALLOW_RAW_CODEX=1 only after explicit operator review."
+            )
+
+        if base in {"npx", "pnpx", "bunx"}:
+            if "@openai/codex" in segment and "exec" in segment:
+                return (
+                    "Raw npm-based Codex execution is blocked. Use "
+                    f"{_CODEX_RUN_WRAPPER} so CODEX_HOME={_CODEX_HOME_REQUIRED} "
+                    "and Operator auth guardrails are preserved. Set "
+                    "HERMES_ALLOW_RAW_CODEX=1 only after explicit operator review."
+                )
+
+        if base in {"npm", "pnpm", "yarn"} and len(segment) >= 3:
+            if segment[1] in {"exec", "x", "dlx"} and "@openai/codex" in segment and "exec" in segment[2:]:
+                return (
+                    "Raw package-manager Codex execution is blocked. Use "
+                    f"{_CODEX_RUN_WRAPPER} so CODEX_HOME={_CODEX_HOME_REQUIRED} "
+                    "and Operator auth guardrails are preserved. Set "
+                    "HERMES_ALLOW_RAW_CODEX=1 only after explicit operator review."
+                )
+
+    return None
 
 
 def _read_shell_token(command: str, start: int) -> tuple[str, int]:
@@ -1753,6 +1832,15 @@ def terminal_tool(
 
         # Guardrail: long-lived server/watch commands should run as managed
         # background sessions, not foreground shell hacks.
+        raw_codex_error = _raw_codex_guard(command)
+        if raw_codex_error:
+            return json.dumps({
+                "output": "",
+                "exit_code": -1,
+                "error": raw_codex_error,
+                "status": "blocked",
+            }, ensure_ascii=False)
+
         if not background:
             guidance = _foreground_background_guidance(command)
             if guidance:

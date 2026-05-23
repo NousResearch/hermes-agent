@@ -58,6 +58,87 @@ def _fire_approval_hook(hook_name: str, **kwargs) -> None:
         logger.debug("Approval hook %s dispatch failed: %s", hook_name, exc)
 
 
+def _record_approval_audit(**kwargs) -> None:
+    """Write a redacted approval audit event without affecting approval flow."""
+    try:
+        from hermes_cli.audit_log import record_approval_audit_event
+        record_approval_audit_event(**kwargs)
+    except Exception as exc:
+        logger.debug("Approval audit write failed: %s", exc, exc_info=True)
+
+
+def _current_approval_surface() -> str:
+    if _is_gateway_approval_context():
+        return "gateway"
+    if env_var_enabled("HERMES_EXEC_ASK"):
+        return "exec_ask"
+    if env_var_enabled("HERMES_CRON_SESSION"):
+        return "cron"
+    if env_var_enabled("HERMES_INTERACTIVE"):
+        return "cli"
+    return "noninteractive"
+
+
+def _audit_decision(
+    *,
+    decision: str,
+    command: str,
+    description: str | None = None,
+    pattern_key: str | None = None,
+    pattern_keys: list[str] | None = None,
+    approval_scope: str | None = None,
+    reason: str | None = None,
+    risk_tier: str = "R3",
+    status: str | None = None,
+    choice: str | None = None,
+    surface: str | None = None,
+    risk_class: str | None = None,
+    extra: dict | None = None,
+) -> None:
+    audit_extra = dict(extra or {})
+    if risk_class:
+        audit_extra["risk_class"] = risk_class
+    _record_approval_audit(
+        decision=decision,
+        command=command,
+        description=description,
+        pattern_key=pattern_key,
+        pattern_keys=pattern_keys,
+        approval_scope=approval_scope,
+        reason=reason,
+        risk_tier=risk_tier,
+        status=status,
+        choice=choice,
+        session_key=get_current_session_key(default=""),
+        surface=surface or _current_approval_surface(),
+        extra=audit_extra or None,
+    )
+
+
+_APPROVAL_CHOICE_ALIASES = {
+    "o": "once",
+    "once": "once",
+    "s": "session",
+    "session": "session",
+    "a": "always",
+    "always": "always",
+    "n": "deny",
+    "no": "deny",
+    "d": "deny",
+    "deny": "deny",
+    "cancel": "deny",
+}
+
+
+def normalize_approval_choice(choice, *, allow_permanent: bool = True) -> str:
+    """Normalize exact approval choices; near-misses fail closed to deny."""
+    normalized = str(choice or "").strip().lower()
+    mapped = _APPROVAL_CHOICE_ALIASES.get(normalized, "deny")
+    if mapped == "always" and not allow_permanent:
+        return "session"
+    return mapped
+
+
 
 def set_current_session_key(session_key: str) -> contextvars.Token[str]:
     """Bind the active approval session key to the current context."""
@@ -698,7 +779,10 @@ def save_permanent_allowlist(patterns: set):
 def prompt_dangerous_approval(command: str, description: str,
                               timeout_seconds: int | None = None,
                               allow_permanent: bool = True,
-                              approval_callback=None) -> str:
+                              approval_callback=None,
+                              typed_confirmation_phrase: str | None = None,
+                              risk_class: str | None = None,
+                              risk_tier: str | None = None) -> str:
     """Prompt the user to approve a dangerous command (CLI only).
 
     Args:
@@ -708,16 +792,45 @@ def prompt_dangerous_approval(command: str, description: str,
         approval_callback: Optional callback registered by the CLI for
             prompt_toolkit integration. Signature:
             (command, description, *, allow_permanent=True) -> str.
+        typed_confirmation_phrase: When set, only this exact typed phrase
+            approves the command; selection aliases and yes/no are denied.
 
     Returns: 'once', 'session', 'always', or 'deny'
     """
     if timeout_seconds is None:
         timeout_seconds = _get_approval_timeout()
 
+    typed_phrase = typed_confirmation_phrase or ""
+    if typed_phrase:
+        allow_permanent = False
+
     if approval_callback is not None:
         try:
-            return approval_callback(command, description,
-                                     allow_permanent=allow_permanent)
+            if typed_phrase:
+                raw_choice = approval_callback(
+                    command,
+                    description,
+                    allow_permanent=False,
+                    typed_confirmation_phrase=typed_phrase,
+                    risk_class=risk_class,
+                    risk_tier=risk_tier,
+                )
+                return "once" if _validate_typed_confirmation(raw_choice, typed_phrase) else "deny"
+            raw_choice = approval_callback(command, description,
+                                           allow_permanent=allow_permanent)
+            return normalize_approval_choice(
+                raw_choice,
+                allow_permanent=allow_permanent,
+            )
+        except TypeError as e:
+            if typed_phrase:
+                logger.warning(
+                    "Approval callback does not support typed confirmation; denying high-risk command. %s",
+                    e,
+                )
+                return "deny"
+            logger.error("Approval callback failed: %s", e, exc_info=True)
+            return "deny"
         except Exception as e:
             logger.error("Approval callback failed: %s", e, exc_info=True)
             return "deny"
@@ -759,7 +872,10 @@ def prompt_dangerous_approval(command: str, description: str,
             print(f"  {t('approval.dangerous_header', description=description)}")
             print(f"      {command}")
             print()
-            if allow_permanent:
+            if typed_phrase:
+                print(f"Type exactly to approve: {typed_phrase}")
+                print("Any other input denies the command.")
+            elif allow_permanent:
                 print(t("approval.choose_long"))
             else:
                 print(t("approval.choose_short"))
@@ -770,8 +886,12 @@ def prompt_dangerous_approval(command: str, description: str,
 
             def get_input():
                 try:
-                    prompt = t("approval.prompt_long") if allow_permanent else t("approval.prompt_short")
-                    result["choice"] = input(prompt).strip().lower()
+                    if typed_phrase:
+                        prompt = "Confirm phrase: "
+                        result["choice"] = input(prompt)
+                    else:
+                        prompt = t("approval.prompt_long") if allow_permanent else t("approval.prompt_short")
+                        result["choice"] = input(prompt).strip().lower()
                 except (EOFError, OSError):
                     result["choice"] = ""
 
@@ -783,17 +903,24 @@ def prompt_dangerous_approval(command: str, description: str,
                 print("\n" + t("approval.timeout"))
                 return "deny"
 
-            choice = result["choice"]
-            if choice in {'o', 'once'}:
+            if typed_phrase:
+                if _validate_typed_confirmation(result["choice"], typed_phrase):
+                    print(t("approval.allowed_once"))
+                    return "once"
+                print(t("approval.denied"))
+                return "deny"
+
+            choice = normalize_approval_choice(
+                result["choice"],
+                allow_permanent=allow_permanent,
+            )
+            if choice == "once":
                 print(t("approval.allowed_once"))
                 return "once"
-            elif choice in {'s', 'session'}:
+            elif choice == "session":
                 print(t("approval.allowed_session"))
                 return "session"
-            elif choice in {'a', 'always'}:
-                if not allow_permanent:
-                    print(t("approval.allowed_session"))
-                    return "session"
+            elif choice == "always":
                 print(t("approval.allowed_always"))
                 return "always"
             else:
@@ -848,6 +975,35 @@ def _get_approval_timeout() -> int:
         return int(_get_approval_config().get("timeout", 60))
     except (ValueError, TypeError):
         return 60
+
+
+def _risk_decision_for_command(command: str, description: str | None = None):
+    """Classify command risk without making the approval module import-heavy."""
+    from hermes_cli.security_policy import classify_command
+
+    return classify_command(command, description=description)
+
+
+def _typed_confirmation_phrase_for_risk(risk_decision) -> str:
+    from hermes_cli.security_policy import typed_confirmation_phrase
+
+    return typed_confirmation_phrase(risk_decision)
+
+
+def _validate_typed_confirmation(raw_value: object, expected_phrase: str) -> bool:
+    from hermes_cli.security_policy import validate_typed_confirmation
+
+    return validate_typed_confirmation(raw_value, expected_phrase)
+
+
+def _risk_audit_extra(risk_decision, *, typed_phrase_required: bool = False) -> dict:
+    return {
+        "risk_class": getattr(risk_decision, "risk_class", "unknown"),
+        "approval_policy": getattr(risk_decision, "approval_policy", "unknown"),
+        "typed_confirmation_required": bool(typed_phrase_required),
+        "default_restricted": bool(getattr(risk_decision, "default_restricted", False)),
+        "risk_reason": getattr(risk_decision, "reason", ""),
+    }
 
 
 def _get_cron_approval_mode() -> str:
@@ -926,6 +1082,19 @@ def check_dangerous_command(command: str, env_type: str,
         {"approved": True/False, "message": str or None, ...}
     """
     if env_type in {"docker", "singularity", "modal", "daytona", "vercel_sandbox"}:
+        is_hardline, hardline_desc = detect_hardline_command(command)
+        is_dangerous, pattern_key, description = detect_dangerous_command(command)
+        if is_hardline or is_dangerous:
+            _audit_decision(
+                decision="skipped",
+                command=command,
+                description=hardline_desc or description,
+                pattern_key=pattern_key,
+                reason=f"containerized backend bypass: {env_type}",
+                risk_tier="R2",
+                status="allowed_container_backend",
+                surface="tool",
+            )
         return {"approved": True, "message": None}
 
     # Hardline floor: commands with no recovery path (rm -rf /, mkfs, dd
@@ -936,28 +1105,173 @@ def check_dangerous_command(command: str, env_type: str,
     is_hardline, hardline_desc = detect_hardline_command(command)
     if is_hardline:
         logger.warning("Hardline block: %s (command: %s)", hardline_desc, command[:200])
+        _audit_decision(
+            decision="blocked",
+            command=command,
+            description=hardline_desc,
+            reason="hardline_blocklist",
+            risk_tier="R5",
+            status="blocked_hardline",
+        )
         return _hardline_block_result(hardline_desc)
+
+    is_dangerous, pattern_key, description = detect_dangerous_command(command)
+    risk_decision = _risk_decision_for_command(command, description)
+    typed_phrase = (
+        _typed_confirmation_phrase_for_risk(risk_decision)
+        if risk_decision.requires_typed_confirmation
+        else None
+    )
+    risk_extra = _risk_audit_extra(
+        risk_decision,
+        typed_phrase_required=bool(typed_phrase),
+    )
+    if risk_decision.approval_policy == "deny":
+        _audit_decision(
+            decision="blocked",
+            command=command,
+            description=description or risk_decision.reason,
+            pattern_key=pattern_key,
+            reason="risk_policy_deny",
+            risk_tier=risk_decision.risk_tier,
+            risk_class=risk_decision.risk_class,
+            status="blocked_risk_policy",
+            extra=risk_extra,
+        )
+        return {
+            "approved": False,
+            "message": (
+                f"BLOCKED: Command is in denied risk class "
+                f"{risk_decision.risk_class}. Run it manually outside the agent "
+                "only if you have verified it is safe."
+            ),
+            "pattern_key": pattern_key,
+            "description": description or risk_decision.reason,
+        }
 
     # --yolo: bypass all approval prompts. Gateway /yolo is session-scoped;
     # CLI --yolo remains process-scoped via the env var for local use.
     if is_truthy_value(os.getenv("HERMES_YOLO_MODE")) or is_current_session_yolo_enabled():
+        scope = "yolo" if is_truthy_value(os.getenv("HERMES_YOLO_MODE")) else "session_yolo"
+        if typed_phrase:
+            _audit_decision(
+                decision="blocked",
+                command=command,
+                description=description or risk_decision.reason,
+                pattern_key=pattern_key,
+                approval_scope=scope,
+                reason="typed_confirmation_required_despite_bypass",
+                risk_tier=risk_decision.risk_tier,
+                risk_class=risk_decision.risk_class,
+                status="blocked_typed_confirmation_bypass_attempt",
+                extra=risk_extra,
+            )
+            return {
+                "approved": False,
+                "status": "blocked_typed_confirmation_bypass_attempt",
+                "message": (
+                    f"BLOCKED: {scope} cannot bypass exact typed confirmation "
+                    f"for {risk_decision.risk_class} actions."
+                ),
+                "pattern_key": pattern_key,
+                "description": description or risk_decision.reason,
+            }
+        if is_dangerous:
+            _audit_decision(
+                decision="skipped",
+                command=command,
+                description=description,
+                pattern_key=pattern_key,
+                approval_scope=scope,
+                reason="approval bypass mode",
+                risk_tier=risk_decision.risk_tier,
+                risk_class=risk_decision.risk_class,
+                status="allowed_yolo",
+                extra=risk_extra,
+            )
         return {"approved": True, "message": None}
 
-    is_dangerous, pattern_key, description = detect_dangerous_command(command)
+    if not is_dangerous and not typed_phrase and risk_decision.approval_policy != "deny":
+        return {"approved": True, "message": None}
+
     if not is_dangerous:
-        return {"approved": True, "message": None}
-
+        pattern_key = f"risk:{risk_decision.risk_class}"
+        description = risk_decision.reason
     session_key = get_current_session_key()
-    if is_approved(session_key, pattern_key):
+    if risk_decision.approval_policy == "deny":
+        _audit_decision(
+            decision="blocked",
+            command=command,
+            description=description,
+            pattern_key=pattern_key,
+            reason="risk_policy_deny",
+            risk_tier=risk_decision.risk_tier,
+            risk_class=risk_decision.risk_class,
+            status="blocked_risk_policy",
+            extra=risk_extra,
+        )
+        return {
+            "approved": False,
+            "message": (
+                f"BLOCKED: Command is in denied risk class "
+                f"{risk_decision.risk_class}. Run it manually outside the agent "
+                "only if you have verified it is safe."
+            ),
+            "pattern_key": pattern_key,
+            "description": description,
+        }
+    if not typed_phrase and is_approved(session_key, pattern_key):
+        _audit_decision(
+            decision="approved",
+            command=command,
+            description=description,
+            pattern_key=pattern_key,
+            approval_scope="previously_approved",
+            reason="session_or_permanent_allowlist",
+            risk_tier=risk_decision.risk_tier,
+            risk_class=risk_decision.risk_class,
+            status="allowed_preapproved",
+            extra=risk_extra,
+        )
         return {"approved": True, "message": None}
 
     is_cli = env_var_enabled("HERMES_INTERACTIVE")
     is_gateway = _is_gateway_approval_context()
 
     if not is_cli and not is_gateway:
+        if typed_phrase or risk_decision.approval_policy == "deny":
+            _audit_decision(
+                decision="blocked",
+                command=command,
+                description=description,
+                pattern_key=pattern_key,
+                reason="typed_confirmation_unavailable_noninteractive",
+                risk_tier=risk_decision.risk_tier,
+                risk_class=risk_decision.risk_class,
+                status="blocked_typed_confirmation_required",
+                extra=risk_extra,
+            )
+            return {
+                "approved": False,
+                "message": (
+                    f"BLOCKED: Command requires typed confirmation "
+                    f"({risk_decision.risk_class}) but no interactive user is present."
+                ),
+                "pattern_key": pattern_key,
+                "description": description,
+            }
         # Cron sessions: respect cron_mode config
         if env_var_enabled("HERMES_CRON_SESSION"):
             if _get_cron_approval_mode() == "deny":
+                _audit_decision(
+                    decision="blocked",
+                    command=command,
+                    description=description,
+                    pattern_key=pattern_key,
+                    reason="cron_no_user_approval",
+                    status="blocked_cron_policy",
+                    surface="cron",
+                )
                 return {
                     "approved": False,
                     "message": (
@@ -968,9 +1282,51 @@ def check_dangerous_command(command: str, env_type: str,
                         "approvals.cron_mode: approve in config.yaml."
                     ),
                 }
+        _audit_decision(
+            decision="skipped",
+            command=command,
+            description=description,
+            pattern_key=pattern_key,
+            reason="legacy_noninteractive_auto_allow",
+            status="allowed_noninteractive",
+        )
         return {"approved": True, "message": None}
 
     if is_gateway or env_var_enabled("HERMES_EXEC_ASK"):
+        if typed_phrase or risk_decision.approval_policy == "deny":
+            _audit_decision(
+                decision="blocked",
+                command=command,
+                description=description,
+                pattern_key=pattern_key,
+                reason="typed_confirmation_unavailable_gateway",
+                risk_tier=risk_decision.risk_tier,
+                risk_class=risk_decision.risk_class,
+                status="blocked_typed_confirmation_required",
+                surface="gateway" if is_gateway else "exec_ask",
+                extra=risk_extra,
+            )
+            return {
+                "approved": False,
+                "pattern_key": pattern_key,
+                "status": "blocked_typed_confirmation_required",
+                "command": command,
+                "description": description,
+                "message": (
+                    f"BLOCKED: This command requires exact typed confirmation "
+                    f"for {risk_decision.risk_class}; gateway approval buttons "
+                    "are not sufficient for this risk class."
+                ),
+            }
+        _audit_decision(
+            decision="skipped",
+            command=command,
+            description=description,
+            pattern_key=pattern_key,
+            reason="approval_required_pending",
+            status="approval_required",
+            surface="gateway" if is_gateway else "exec_ask",
+        )
         submit_pending(session_key, {
             "command": command,
             "pattern_key": pattern_key,
@@ -989,9 +1345,25 @@ def check_dangerous_command(command: str, env_type: str,
         }
 
     choice = prompt_dangerous_approval(command, description,
-                                       approval_callback=approval_callback)
+                                       approval_callback=approval_callback,
+                                       typed_confirmation_phrase=typed_phrase,
+                                       risk_class=risk_decision.risk_class,
+                                       risk_tier=risk_decision.risk_tier)
 
     if choice == "deny":
+        _audit_decision(
+            decision="denied",
+            command=command,
+            description=description,
+            pattern_key=pattern_key,
+            reason="user_denied",
+            risk_tier=risk_decision.risk_tier,
+            risk_class=risk_decision.risk_class,
+            status="blocked_user_denied",
+            choice=choice,
+            surface="cli",
+            extra=risk_extra,
+        )
         return {
             "approved": False,
             "message": f"BLOCKED: User denied this potentially dangerous command (matched '{description}' pattern). Do NOT retry this command - the user has explicitly rejected it.",
@@ -999,13 +1371,27 @@ def check_dangerous_command(command: str, env_type: str,
             "description": description,
         }
 
-    if choice == "session":
+    if choice == "session" and not typed_phrase:
         approve_session(session_key, pattern_key)
-    elif choice == "always":
+    elif choice == "always" and not typed_phrase:
         approve_session(session_key, pattern_key)
         approve_permanent(pattern_key)
         save_permanent_allowlist(_permanent_approved)
 
+    _audit_decision(
+        decision="approved",
+        command=command,
+        description=description,
+        pattern_key=pattern_key,
+        approval_scope=choice,
+        reason="user_approved",
+        risk_tier=risk_decision.risk_tier,
+        risk_class=risk_decision.risk_class,
+        status="allowed_user_approved",
+        choice=choice,
+        surface="cli",
+        extra=risk_extra,
+    )
     return {"approved": True, "message": None}
 
 
@@ -1051,6 +1437,19 @@ def check_all_command_guards(command: str, env_type: str,
     """
     # Skip containers for both checks
     if env_type in {"docker", "singularity", "modal", "daytona", "vercel_sandbox"}:
+        is_hardline, hardline_desc = detect_hardline_command(command)
+        is_dangerous, pattern_key, description = detect_dangerous_command(command)
+        if is_hardline or is_dangerous:
+            _audit_decision(
+                decision="skipped",
+                command=command,
+                description=hardline_desc or description,
+                pattern_key=pattern_key,
+                reason=f"containerized backend bypass: {env_type}",
+                risk_tier="R2",
+                status="allowed_container_backend",
+                surface="tool",
+            )
         return {"approved": True, "message": None}
 
     # Hardline floor: unconditional block for catastrophic commands
@@ -1060,6 +1459,14 @@ def check_all_command_guards(command: str, env_type: str,
     is_hardline, hardline_desc = detect_hardline_command(command)
     if is_hardline:
         logger.warning("Hardline block: %s (command: %s)", hardline_desc, command[:200])
+        _audit_decision(
+            decision="blocked",
+            command=command,
+            description=hardline_desc,
+            reason="hardline_blocklist",
+            risk_tier="R5",
+            status="blocked_hardline",
+        )
         return _hardline_block_result(hardline_desc)
 
     # == Sudo stdin guard ==
@@ -1071,12 +1478,93 @@ def check_all_command_guards(command: str, env_type: str,
     if is_sudo_guess:
         logger.warning("Sudo stdin guard block: %s (command: %s)",
                        sudo_guess_desc, command[:200])
+        _audit_decision(
+            decision="blocked",
+            command=command,
+            description=sudo_guess_desc,
+            reason="sudo_stdin_guard",
+            risk_tier="R5",
+            status="blocked_sudo_stdin",
+        )
         return _sudo_stdin_block_result(sudo_guess_desc)
+
+    risk_decision = _risk_decision_for_command(command)
+    typed_phrase = (
+        _typed_confirmation_phrase_for_risk(risk_decision)
+        if risk_decision.requires_typed_confirmation
+        else None
+    )
+    risk_extra = _risk_audit_extra(
+        risk_decision,
+        typed_phrase_required=bool(typed_phrase),
+    )
+    if risk_decision.approval_policy == "deny":
+        _audit_decision(
+            decision="blocked",
+            command=command,
+            description=risk_decision.reason,
+            reason="risk_policy_deny",
+            risk_tier=risk_decision.risk_tier,
+            risk_class=risk_decision.risk_class,
+            status="blocked_risk_policy",
+            extra=risk_extra,
+        )
+        return {
+            "approved": False,
+            "message": (
+                f"BLOCKED: Command is in denied risk class "
+                f"{risk_decision.risk_class}. Run it manually outside the agent "
+                "only if you have verified it is safe."
+            ),
+            "description": risk_decision.reason,
+        }
 
     # --yolo or approvals.mode=off: bypass all approval prompts.
     # Gateway /yolo is session-scoped; CLI --yolo remains process-scoped.
     approval_mode = _get_approval_mode()
     if is_truthy_value(os.getenv("HERMES_YOLO_MODE")) or is_current_session_yolo_enabled() or approval_mode == "off":
+        is_dangerous, pattern_key, description = detect_dangerous_command(command)
+        scope = (
+            "mode_off" if approval_mode == "off"
+            else "yolo" if is_truthy_value(os.getenv("HERMES_YOLO_MODE"))
+            else "session_yolo"
+        )
+        if typed_phrase:
+            _audit_decision(
+                decision="blocked",
+                command=command,
+                description=description or risk_decision.reason,
+                pattern_key=pattern_key,
+                approval_scope=scope,
+                reason="typed_confirmation_required_despite_bypass",
+                risk_tier=risk_decision.risk_tier,
+                risk_class=risk_decision.risk_class,
+                status="blocked_typed_confirmation_bypass_attempt",
+                extra=risk_extra,
+            )
+            return {
+                "approved": False,
+                "status": "blocked_typed_confirmation_bypass_attempt",
+                "message": (
+                    f"BLOCKED: {scope} cannot bypass exact typed confirmation "
+                    f"for {risk_decision.risk_class} actions."
+                ),
+                "pattern_key": pattern_key,
+                "description": description or risk_decision.reason,
+            }
+        if is_dangerous:
+            _audit_decision(
+                decision="skipped",
+                command=command,
+                description=description,
+                pattern_key=pattern_key,
+                approval_scope=scope,
+                reason="approval bypass mode",
+                risk_tier=risk_decision.risk_tier,
+                risk_class=risk_decision.risk_class,
+                status="allowed_approval_bypass",
+                extra=risk_extra,
+            )
         return {"approved": True, "message": None}
 
     is_cli = env_var_enabled("HERMES_INTERACTIVE")
@@ -1086,12 +1574,40 @@ def check_all_command_guards(command: str, env_type: str,
     # Preserve the existing non-interactive behavior: outside CLI/gateway/ask
     # flows, we do not block on approvals and we skip external guard work.
     if not is_cli and not is_gateway and not is_ask:
+        if typed_phrase:
+            _audit_decision(
+                decision="blocked",
+                command=command,
+                description=risk_decision.reason,
+                reason="typed_confirmation_unavailable_noninteractive",
+                risk_tier=risk_decision.risk_tier,
+                risk_class=risk_decision.risk_class,
+                status="blocked_typed_confirmation_required",
+                extra=risk_extra,
+            )
+            return {
+                "approved": False,
+                "message": (
+                    f"BLOCKED: Command requires typed confirmation "
+                    f"({risk_decision.risk_class}) but no interactive user is present."
+                ),
+                "description": risk_decision.reason,
+            }
         # Cron sessions: respect cron_mode config
         if env_var_enabled("HERMES_CRON_SESSION"):
             if _get_cron_approval_mode() == "deny":
                 # Run detection to get a description for the block message
                 is_dangerous, _pk, description = detect_dangerous_command(command)
                 if is_dangerous:
+                    _audit_decision(
+                        decision="blocked",
+                        command=command,
+                        description=description,
+                        pattern_key=_pk,
+                        reason="cron_no_user_approval",
+                        status="blocked_cron_policy",
+                        surface="cron",
+                    )
                     return {
                         "approved": False,
                         "message": (
@@ -1102,6 +1618,16 @@ def check_all_command_guards(command: str, env_type: str,
                             "approvals.cron_mode: approve in config.yaml."
                         ),
                     }
+        is_dangerous, _pk, description = detect_dangerous_command(command)
+        if is_dangerous:
+            _audit_decision(
+                decision="skipped",
+                command=command,
+                description=description,
+                pattern_key=_pk,
+                reason="legacy_noninteractive_auto_allow",
+                status="allowed_noninteractive",
+            )
         return {"approved": True, "message": None}
 
     # --- Phase 1: Gather findings from both checks ---
@@ -1138,18 +1664,30 @@ def check_all_command_guards(command: str, env_type: str,
             warnings.append((tirith_key, tirith_desc, True))
 
     if is_dangerous:
-        if not is_approved(session_key, pattern_key):
+        if typed_phrase or not is_approved(session_key, pattern_key):
             warnings.append((pattern_key, description, False))
+    elif typed_phrase:
+        warnings.append((f"risk:{risk_decision.risk_class}", risk_decision.reason, False))
 
     # Nothing to warn about
     if not warnings:
+        if is_dangerous:
+            _audit_decision(
+                decision="approved",
+                command=command,
+                description=description,
+                pattern_key=pattern_key,
+                approval_scope="previously_approved",
+                reason="session_or_permanent_allowlist",
+                status="allowed_preapproved",
+            )
         return {"approved": True, "message": None}
 
     # --- Phase 2.5: Smart approval (auxiliary LLM risk assessment) ---
     # When approvals.mode=smart, ask the aux LLM before prompting the user.
     # Inspired by OpenAI Codex's Smart Approvals guardian subagent
     # (openai/codex#13860).
-    if approval_mode == "smart":
+    if approval_mode == "smart" and not typed_phrase:
         combined_desc_for_llm = "; ".join(desc for _, desc, _ in warnings)
         verdict = _smart_approve(command, combined_desc_for_llm)
         if verdict == "approve":
@@ -1158,11 +1696,31 @@ def check_all_command_guards(command: str, env_type: str,
                 approve_session(session_key, key)
             logger.debug("Smart approval: auto-approved '%s' (%s)",
                          command[:60], combined_desc_for_llm)
+            _audit_decision(
+                decision="approved",
+                command=command,
+                description=combined_desc_for_llm,
+                pattern_key=warnings[0][0],
+                pattern_keys=[key for key, _, _ in warnings],
+                approval_scope="smart",
+                reason="smart_approval_approved",
+                status="allowed_smart_approval",
+            )
             return {"approved": True, "message": None,
                     "smart_approved": True,
                     "description": combined_desc_for_llm}
         elif verdict == "deny":
             combined_desc_for_llm = "; ".join(desc for _, desc, _ in warnings)
+            _audit_decision(
+                decision="denied",
+                command=command,
+                description=combined_desc_for_llm,
+                pattern_key=warnings[0][0],
+                pattern_keys=[key for key, _, _ in warnings],
+                approval_scope="smart",
+                reason="smart_approval_denied",
+                status="blocked_smart_approval",
+            )
             return {
                 "approved": False,
                 "message": f"BLOCKED by smart approval: {combined_desc_for_llm}. "
@@ -1184,6 +1742,31 @@ def check_all_command_guards(command: str, env_type: str,
     # input() flow.  The agent never sees "approval_required"; it either
     # gets the command output (approved) or a definitive "BLOCKED" message.
     if is_gateway or is_ask:
+        if typed_phrase:
+            _audit_decision(
+                decision="blocked",
+                command=command,
+                description=combined_desc,
+                pattern_key=primary_key,
+                pattern_keys=list(all_keys),
+                reason="typed_confirmation_unavailable_gateway",
+                risk_tier=risk_decision.risk_tier,
+                risk_class=risk_decision.risk_class,
+                status="blocked_typed_confirmation_required",
+                surface="gateway" if is_gateway else "exec_ask",
+                extra=risk_extra,
+            )
+            return {
+                "approved": False,
+                "status": "blocked_typed_confirmation_required",
+                "message": (
+                    f"BLOCKED: This command requires exact typed confirmation "
+                    f"for {risk_decision.risk_class}; gateway approval buttons "
+                    "are not sufficient for this risk class."
+                ),
+                "pattern_key": primary_key,
+                "description": combined_desc,
+            }
         notify_cb = None
         with _lock:
             notify_cb = _gateway_notify_cbs.get(session_key)
@@ -1214,6 +1797,16 @@ def check_all_command_guards(command: str, env_type: str,
                 session_key=session_key,
                 surface="gateway",
             )
+            _audit_decision(
+                decision="skipped",
+                command=command,
+                description=combined_desc,
+                pattern_key=primary_key,
+                pattern_keys=list(all_keys),
+                reason="waiting_for_user_approval",
+                status="approval_requested",
+                surface="gateway",
+            )
 
             # Notify the user (bridges sync agent thread → async gateway)
             try:
@@ -1226,6 +1819,16 @@ def check_all_command_guards(command: str, env_type: str,
                         queue.remove(entry)
                     if not queue:
                         _gateway_queues.pop(session_key, None)
+                _audit_decision(
+                    decision="blocked",
+                    command=command,
+                    description=combined_desc,
+                    pattern_key=primary_key,
+                    pattern_keys=list(all_keys),
+                    reason="gateway_notify_failed",
+                    status="blocked_notify_failed",
+                    surface="gateway",
+                )
                 return {
                     "approved": False,
                     "message": "BLOCKED: Failed to send approval request to user. Do NOT retry.",
@@ -1300,6 +1903,17 @@ def check_all_command_guards(command: str, env_type: str,
 
             if not resolved or choice is None or choice == "deny":
                 reason = "timed out" if not resolved else "denied by user"
+                _audit_decision(
+                    decision="denied" if resolved else "blocked",
+                    command=command,
+                    description=combined_desc,
+                    pattern_key=primary_key,
+                    pattern_keys=list(all_keys),
+                    reason="gateway_approval_timeout" if not resolved else "user_denied",
+                    status="blocked_approval_timeout" if not resolved else "blocked_user_denied",
+                    choice=_outcome,
+                    surface="gateway",
+                )
                 return {
                     "approved": False,
                     "message": f"BLOCKED: Command {reason}. Do NOT retry this command.",
@@ -1318,11 +1932,33 @@ def check_all_command_guards(command: str, env_type: str,
                 # choice == "once": no persistence — command allowed this
                 # single time only, matching the CLI's behavior.
 
+            _audit_decision(
+                decision="approved",
+                command=command,
+                description=combined_desc,
+                pattern_key=primary_key,
+                pattern_keys=list(all_keys),
+                approval_scope=choice,
+                reason="user_approved",
+                status="allowed_user_approved",
+                choice=choice,
+                surface="gateway",
+            )
             return {"approved": True, "message": None,
                     "user_approved": True, "description": combined_desc}
 
         # Fallback: no gateway callback registered (e.g. cron, batch).
         # Return approval_required for backward compat.
+        _audit_decision(
+            decision="skipped",
+            command=command,
+            description=combined_desc,
+            pattern_key=primary_key,
+            pattern_keys=list(all_keys),
+            reason="gateway_no_notify_callback",
+            status="pending_approval",
+            surface="gateway" if is_gateway else "exec_ask",
+        )
         submit_pending(session_key, {
             "command": command,
             "pattern_key": primary_key,
@@ -1352,9 +1988,25 @@ def check_all_command_guards(command: str, env_type: str,
         session_key=session_key,
         surface="cli",
     )
+    _audit_decision(
+        decision="skipped",
+        command=command,
+        description=combined_desc,
+        pattern_key=primary_key,
+        pattern_keys=list(all_keys),
+        reason="waiting_for_user_approval",
+        risk_tier=risk_decision.risk_tier,
+        risk_class=risk_decision.risk_class,
+        status="approval_requested",
+        surface="cli",
+        extra=risk_extra,
+    )
     choice = prompt_dangerous_approval(command, combined_desc,
-                                       allow_permanent=not has_tirith,
-                                       approval_callback=approval_callback)
+                                       allow_permanent=not has_tirith and not typed_phrase,
+                                       approval_callback=approval_callback,
+                                       typed_confirmation_phrase=typed_phrase,
+                                       risk_class=risk_decision.risk_class,
+                                       risk_tier=risk_decision.risk_tier)
     _fire_approval_hook(
         "post_approval_response",
         command=command,
@@ -1367,6 +2019,20 @@ def check_all_command_guards(command: str, env_type: str,
     )
 
     if choice == "deny":
+        _audit_decision(
+            decision="denied",
+            command=command,
+            description=combined_desc,
+            pattern_key=primary_key,
+            pattern_keys=list(all_keys),
+            reason="user_denied",
+            risk_tier=risk_decision.risk_tier,
+            risk_class=risk_decision.risk_class,
+            status="blocked_user_denied",
+            choice=choice,
+            surface="cli",
+            extra=risk_extra,
+        )
         return {
             "approved": False,
             "message": "BLOCKED: User denied. Do NOT retry.",
@@ -1376,6 +2042,8 @@ def check_all_command_guards(command: str, env_type: str,
 
     # Persist approval for each warning individually
     for key, _, is_tirith in warnings:
+        if typed_phrase:
+            continue
         if choice == "session" or (choice == "always" and is_tirith):
             # tirith: session only (no permanent broad allowlisting)
             approve_session(session_key, key)
@@ -1385,6 +2053,21 @@ def check_all_command_guards(command: str, env_type: str,
             approve_permanent(key)
             save_permanent_allowlist(_permanent_approved)
 
+    _audit_decision(
+        decision="approved",
+        command=command,
+        description=combined_desc,
+        pattern_key=primary_key,
+        pattern_keys=list(all_keys),
+        approval_scope=choice,
+        reason="user_approved",
+        risk_tier=risk_decision.risk_tier,
+        risk_class=risk_decision.risk_class,
+        status="allowed_user_approved",
+        choice=choice,
+        surface="cli",
+        extra=risk_extra,
+    )
     return {"approved": True, "message": None,
             "user_approved": True, "description": combined_desc}
 

@@ -823,11 +823,16 @@ from tools.registry import registry, tool_error
 IMAGE_GENERATE_SCHEMA = {
     "name": "image_generate",
     "description": (
-        "Generate high-quality images from text prompts. The underlying "
+        "Generate high-quality images from text prompts. Use this tool by "
+        "default whenever the user asks for imagery, design mockups, visual "
+        "concepts, logos, brand assets, thumbnails, packaging, UI mockups, "
+        "or other design elements to be created or mocked up. The underlying "
         "backend (FAL, OpenAI, etc.) and model are user-configured and not "
-        "selectable by the agent. Returns either a URL or an absolute file "
-        "path in the `image` field; display it with markdown "
-        "![description](url-or-path) and the gateway will deliver it."
+        "selectable by the agent; on this system it is configured for "
+        "OpenAI/ChatGPT GPT Image 2. Returns either a URL or an absolute "
+        "file path in the `image` field. If a `media` field is present, "
+        "include it in the final response so messaging gateways deliver the "
+        "image natively."
     ),
     "parameters": {
         "type": "object",

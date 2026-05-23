@@ -177,6 +177,27 @@ class TestCliApprovalUi:
         assert "keyring.gpg" in rendered
         assert "status=progress" in rendered
 
+    def test_typed_approval_display_uses_phrase_input_not_selection(self):
+        cli = _make_cli_stub()
+        cli._approval_state = {
+            "command": "git reset --hard HEAD~1",
+            "description": "destructive local operation",
+            "choices": [],
+            "selected": 0,
+            "response_queue": queue.Queue(),
+            "typed_confirmation_phrase": "CONFIRM DESTRUCTIVE",
+            "risk_class": "destructive",
+        }
+
+        fragments = cli._get_approval_display_fragments()
+        rendered = "".join(text for _style, text in fragments)
+
+        assert "High-Risk Command" in rendered
+        assert "Type exactly: CONFIRM DESTRUCTIVE" in rendered
+        assert "Press Enter to submit the phrase. Esc/Ctrl+C denies." in rendered
+        assert "Deny" not in rendered
+        assert "Allow once" not in rendered
+
     def test_approval_display_preserves_command_and_choices_with_long_description(self):
         """Regression: long tirith descriptions used to push approve/deny off-screen.
 

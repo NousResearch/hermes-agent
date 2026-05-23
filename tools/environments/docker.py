@@ -14,6 +14,11 @@ import sys
 import uuid
 from typing import Optional
 
+from hermes_cli.docker_security import (
+    DockerSecurityPolicyError,
+    analyze_docker_backend_options,
+    enforce_no_high_severity_findings,
+)
 from tools.environments.base import BaseEnvironment, _popen_bash
 from tools.environments.local import _HERMES_PROVIDER_ENV_BLOCKLIST
 
@@ -31,6 +36,9 @@ _DOCKER_SEARCH_PATHS = [
 
 _docker_executable: Optional[str] = None  # resolved once, cached
 _ENV_VAR_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+_DOCKER_ENV_FLAGS = {"-e", "--env"}
+_DOCKER_ENV_FILE_FLAGS = {"--env-file"}
+_DOCKER_MOUNT_FLAGS = {"-v", "--volume", "--mount"}
 
 
 def _normalize_forward_env_names(forward_env: list[str] | None) -> list[str]:
@@ -40,14 +48,14 @@ def _normalize_forward_env_names(forward_env: list[str] | None) -> list[str]:
 
     for item in forward_env or []:
         if not isinstance(item, str):
-            logger.warning("Ignoring non-string docker_forward_env entry: %r", item)
+            logger.warning("Ignoring non-string docker_forward_env entry: <%s>", type(item).__name__)
             continue
 
         key = item.strip()
         if not key:
             continue
         if not _ENV_VAR_NAME_RE.match(key):
-            logger.warning("Ignoring invalid docker_forward_env entry: %r", item)
+            logger.warning("Ignoring invalid docker_forward_env entry: <invalid-env-name>")
             continue
         if key in seen:
             continue
@@ -66,13 +74,13 @@ def _normalize_env_dict(env: dict | None) -> dict[str, str]:
     if not env:
         return {}
     if not isinstance(env, dict):
-        logger.warning("docker_env is not a dict: %r", env)
+        logger.warning("docker_env is not a dict: <%s>", type(env).__name__)
         return {}
 
     normalized: dict[str, str] = {}
     for key, value in env.items():
         if not isinstance(key, str) or not _ENV_VAR_NAME_RE.match(key.strip()):
-            logger.warning("Ignoring invalid docker_env key: %r", key)
+            logger.warning("Ignoring invalid docker_env key: <invalid-env-name>")
             continue
         key = key.strip()
         if not isinstance(value, str):
@@ -81,11 +89,97 @@ def _normalize_env_dict(env: dict | None) -> dict[str, str]:
             if isinstance(value, (int, float, bool)):
                 value = str(value)
             else:
-                logger.warning("Ignoring non-string docker_env value for %r: %r", key, value)
+                logger.warning("Ignoring non-string docker_env value for %r: <%s>", key, type(value).__name__)
                 continue
         normalized[key] = value
 
     return normalized
+
+
+def _redact_env_assignment_for_log(value: str) -> str:
+    name = value.split("=", 1)[0].strip()
+    if not name:
+        return "<env>"
+    return f"{name}=<redacted>"
+
+
+def _redact_mount_spec_for_log(value: str) -> str:
+    text = value.strip()
+    if not text:
+        return "<empty>"
+
+    if "," in text and "=" in text:
+        parts = []
+        for part in text.split(","):
+            key, sep, part_value = part.partition("=")
+            if sep and key.strip().lower() in {"source", "src"}:
+                parts.append(f"{key}=<host-path>")
+            else:
+                parts.append(part)
+        return ",".join(parts)
+
+    if ":" in text:
+        _, remainder = text.split(":", 1)
+        return f"<host-path>:{remainder}"
+    return "<host-path>"
+
+
+def _redact_docker_arg_for_log(flag: str, value: object) -> str:
+    text = str(value)
+    if flag in _DOCKER_ENV_FLAGS:
+        return _redact_env_assignment_for_log(text)
+    if flag in _DOCKER_ENV_FILE_FLAGS:
+        return "<env-file>"
+    if flag in _DOCKER_MOUNT_FLAGS:
+        return _redact_mount_spec_for_log(text)
+    return text
+
+
+def _redact_docker_token_for_log(token: object) -> str:
+    text = str(token)
+    if text.startswith("-e") and text != "-e" and not text.startswith("--"):
+        return "-e" + _redact_env_assignment_for_log(text[2:])
+    if text.startswith("-v") and text != "-v" and not text.startswith("--"):
+        return "-v" + _redact_mount_spec_for_log(text[2:])
+    if text.startswith("--env="):
+        return "--env=" + _redact_env_assignment_for_log(text.split("=", 1)[1])
+    if text.startswith("--env-file="):
+        return "--env-file=<env-file>"
+    if text.startswith(("-v=", "--volume=")):
+        flag, value = text.split("=", 1)
+        return f"{flag}={_redact_mount_spec_for_log(value)}"
+    if text.startswith("--mount="):
+        return "--mount=" + _redact_mount_spec_for_log(text.split("=", 1)[1])
+    return text
+
+
+def _redact_docker_args_for_log(args: list | tuple | None) -> list[str]:
+    redacted: list[str] = []
+    pending_flag: str | None = None
+    for item in args or []:
+        if pending_flag:
+            redacted.append(_redact_docker_arg_for_log(pending_flag, item))
+            pending_flag = None
+            continue
+        text = str(item)
+        redacted.append(_redact_docker_token_for_log(item))
+        if text in _DOCKER_ENV_FLAGS | _DOCKER_ENV_FILE_FLAGS | _DOCKER_MOUNT_FLAGS:
+            pending_flag = text
+    return redacted
+
+
+def _redact_docker_config_for_log(value: object) -> object:
+    if isinstance(value, (list, tuple)):
+        return [
+            _redact_mount_spec_for_log(item) if isinstance(item, str)
+            else f"<{type(item).__name__}>"
+            for item in value
+        ]
+    if isinstance(value, str):
+        return _redact_mount_spec_for_log(value)
+    if value is None:
+        return None
+    return f"<{type(value).__name__}>"
 
 
 def _load_hermes_env_vars() -> dict[str, str]:
@@ -260,10 +354,9 @@ def _ensure_docker_available() -> None:
         if result.returncode != 0:
             logger.error(
                 "Docker backend selected but '%s version' failed "
-                "(exit code %d, stderr=%s)",
+                "(exit code %d, stderr omitted)",
                 docker_exe,
                 result.returncode,
-                result.stderr.strip(),
             )
             raise RuntimeError(
                 "Docker command is available but 'docker version' failed. "
@@ -310,11 +403,23 @@ class DockerEnvironment(BaseEnvironment):
         self._forward_env = _normalize_forward_env_names(forward_env)
         self._env = _normalize_env_dict(env)
         self._container_id: Optional[str] = None
-        logger.info(f"DockerEnvironment volumes: {volumes}")
+        logger.info("DockerEnvironment volumes: %s", _redact_docker_config_for_log(volumes))
         # Ensure volumes is a list (config.yaml could be malformed)
         if volumes is not None and not isinstance(volumes, list):
-            logger.warning(f"docker_volumes config is not a list: {volumes!r}")
+            logger.warning("docker_volumes config is not a list: <%s>", type(volumes).__name__)
             volumes = []
+
+        self._docker_security_findings = analyze_docker_backend_options(
+            forward_env=self._forward_env,
+            env_keys=self._env.keys(),
+            volumes=volumes or [],
+            extra_args=extra_args or [],
+            auto_mount_cwd=auto_mount_cwd,
+        )
+        enforce_no_high_severity_findings(
+            self._docker_security_findings,
+            context="Docker backend",
+        )
 
         # Fail fast if Docker is not available.
         _ensure_docker_available()
@@ -346,7 +451,7 @@ class DockerEnvironment(BaseEnvironment):
         workspace_explicitly_mounted = False
         for vol in (volumes or []):
             if not isinstance(vol, str):
-                logger.warning(f"Docker volume entry is not a string: {vol!r}")
+                logger.warning("Docker volume entry is not a string: <%s>", type(vol).__name__)
                 continue
             vol = vol.strip()
             if not vol:
@@ -356,7 +461,10 @@ class DockerEnvironment(BaseEnvironment):
                 if ":/workspace" in vol:
                     workspace_explicitly_mounted = True
             else:
-                logger.warning(f"Docker volume '{vol}' missing colon, skipping")
+                logger.warning(
+                    "Docker volume %s missing colon, skipping",
+                    _redact_mount_spec_for_log(vol),
+                )
 
         host_cwd_abs = os.path.abspath(os.path.expanduser(host_cwd)) if host_cwd else ""
         bind_host_cwd = (
@@ -366,7 +474,10 @@ class DockerEnvironment(BaseEnvironment):
             and not workspace_explicitly_mounted
         )
         if auto_mount_cwd and host_cwd and not os.path.isdir(host_cwd_abs):
-            logger.debug(f"Skipping docker cwd mount: host_cwd is not a valid directory: {host_cwd}")
+            logger.debug(
+                "Skipping docker cwd mount: host_cwd is not a valid directory: %s",
+                "<host-path>",
+            )
 
         self._workspace_dir: Optional[str] = None
         self._home_dir: Optional[str] = None
@@ -395,7 +506,7 @@ class DockerEnvironment(BaseEnvironment):
             ])
 
         if bind_host_cwd:
-            logger.info(f"Mounting configured host cwd to /workspace: {host_cwd_abs}")
+            logger.info("Mounting configured host cwd to /workspace: %s", "<host-path>")
             volume_args = ["-v", f"{host_cwd_abs}:/workspace", *volume_args]
         elif workspace_explicitly_mounted:
             logger.debug("Skipping docker cwd mount: /workspace already mounted by user config")
@@ -416,7 +527,7 @@ class DockerEnvironment(BaseEnvironment):
                 ])
                 logger.info(
                     "Docker: mounting credential %s -> %s",
-                    mount_entry["host_path"],
+                    "<host-path>",
                     mount_entry["container_path"],
                 )
 
@@ -429,7 +540,7 @@ class DockerEnvironment(BaseEnvironment):
                 ])
                 logger.info(
                     "Docker: mounting skills dir %s -> %s",
-                    skills_mount["host_path"],
+                    "<host-path>",
                     skills_mount["container_path"],
                 )
 
@@ -444,11 +555,11 @@ class DockerEnvironment(BaseEnvironment):
                 ])
                 logger.info(
                     "Docker: mounting cache dir %s -> %s",
-                    cache_mount["host_path"],
+                    "<host-path>",
                     cache_mount["container_path"],
                 )
         except Exception as e:
-            logger.debug("Docker: could not load credential file mounts: %s", e)
+            logger.debug("Docker: could not load credential file mounts: <%s>", type(e).__name__)
 
         # Explicit environment variables (docker_env config) — set at container
         # creation so they're available to all processes (including entrypoint).
@@ -476,13 +587,13 @@ class DockerEnvironment(BaseEnvironment):
                 # entrypoint may still need gosu/su to drop privileges.
         security_args = _build_security_args(run_as_host_user and bool(user_args))
 
-        logger.info(f"Docker volume_args: {volume_args}")
+        logger.info("Docker volume_args: %s", _redact_docker_args_for_log(volume_args))
         # User-supplied extra docker run flags (docker_extra_args in config.yaml).
         # Appended last so they can override defaults if needed.
         validated_extra = []
         for arg in (extra_args or []):
             if not isinstance(arg, str):
-                logger.warning("Ignoring non-string docker_extra_args entry: %r", arg)
+                logger.warning("Ignoring non-string docker_extra_args entry: <%s>", type(arg).__name__)
                 continue
             validated_extra.append(arg)
 
@@ -495,7 +606,7 @@ class DockerEnvironment(BaseEnvironment):
             + env_args
             + validated_extra
         )
-        logger.info(f"Docker run_args: {all_run_args}")
+        logger.info("Docker run_args: %s", _redact_docker_args_for_log(all_run_args))
 
         # Resolve the docker executable once so it works even when
         # /usr/local/bin is not in PATH (common on macOS gateway/service).
@@ -512,14 +623,27 @@ class DockerEnvironment(BaseEnvironment):
             image,
             "sleep", "infinity",  # no fixed lifetime — idle reaper handles cleanup
         ]
-        logger.debug(f"Starting container: {' '.join(run_cmd)}")
-        result = subprocess.run(
-            run_cmd,
-            capture_output=True,
-            text=True,
-            timeout=120,  # image pull may take a while
-            check=True,
-        )
+        logger.debug("Starting container: %s", " ".join(_redact_docker_args_for_log(run_cmd)))
+        try:
+            result = subprocess.run(
+                run_cmd,
+                capture_output=True,
+                text=True,
+                timeout=120,  # image pull may take a while
+                check=True,
+            )
+        except subprocess.CalledProcessError as exc:
+            redacted_cmd = " ".join(_redact_docker_args_for_log(run_cmd))
+            logger.error(
+                "Docker container startup failed (exit code %s): %s; stderr omitted",
+                exc.returncode,
+                redacted_cmd,
+            )
+            raise RuntimeError(
+                f"Docker container startup failed (exit code {exc.returncode}). "
+                f"Command: {redacted_cmd}. "
+                "Stderr omitted from exception to avoid leaking Docker args."
+            ) from None
         self._container_id = result.stdout.strip()
         logger.info(f"Started container {container_name} ({self._container_id[:12]})")
 

@@ -2269,6 +2269,36 @@ def _normalize_launchd_plist_for_comparison(text: str) -> str:
     )
 
 
+def _launchd_plist_uses_operator_wrapper(text: str) -> bool:
+    """True when the installed macOS service intentionally uses Agent1's wrapper.
+
+    The wrapper loads Keychain-backed secrets before starting Hermes. Treating
+    it as stale would push repair paths toward replacing the secret-loading
+    entrypoint with a bare generated plist.
+    """
+    import plistlib
+
+    try:
+        payload = plistlib.loads(text.encode("utf-8"))
+    except Exception:
+        return False
+    if not isinstance(payload, dict):
+        return False
+    if payload.get("Label") != get_launchd_label():
+        return False
+
+    try:
+        wrapper = _launchd_user_home() / "Operator" / "scripts" / "hermes-gateway.sh"
+    except Exception:
+        wrapper = Path.home() / "Operator" / "scripts" / "hermes-gateway.sh"
+    expected = str(wrapper)
+
+    program = payload.get("Program")
+    args = payload.get("ProgramArguments")
+    first_arg = args[0] if isinstance(args, list) and args else None
+    return program == expected or first_arg == expected
+
+
 def systemd_unit_is_current(system: bool = False) -> bool:
     unit_path = get_systemd_unit_path(system=system)
     if not unit_path.exists():
@@ -2873,6 +2903,8 @@ def launchd_plist_is_current() -> bool:
         return False
 
     installed = plist_path.read_text(encoding="utf-8")
+    if _launchd_plist_uses_operator_wrapper(installed):
+        return True
     expected = generate_launchd_plist()
     return _normalize_launchd_plist_for_comparison(installed) == _normalize_launchd_plist_for_comparison(expected)
 
@@ -5433,6 +5465,20 @@ def _gateway_command_inner(args):
 
         # Show other profiles' gateway status for multi-profile awareness
         _print_other_profiles_gateway_status()
+
+    elif subcmd == "validate":
+        from hermes_cli.gateway_validation import run_gateway_validation
+
+        ok = run_gateway_validation(args)
+        if not ok:
+            sys.exit(1)
+
+    elif subcmd == "incident-bundle":
+        from hermes_cli.gateway_incident import run_gateway_incident_bundle
+
+        ok = run_gateway_incident_bundle(args)
+        if not ok:
+            sys.exit(1)
 
     elif subcmd == "list":
         _gateway_list()

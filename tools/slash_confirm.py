@@ -46,6 +46,26 @@ _lock = threading.RLock()
 # the adapter drops the callback_data (Telegram: ~48h; Discord: ephemeral;
 # Slack: 3s ack + long-lived actions).
 DEFAULT_TIMEOUT_SECONDS = 300
+_VALID_CHOICES = frozenset({"once", "always", "cancel"})
+
+
+def _record_slash_confirm_audit(**kwargs) -> None:
+    try:
+        from hermes_cli.audit_log import record_approval_audit_event
+        record_approval_audit_event(
+            event_type="slash_confirmation.decision",
+            **kwargs,
+        )
+    except Exception as exc:
+        logger.debug("Slash confirmation audit write failed: %s", exc, exc_info=True)
+
+
+def normalize_confirmation_choice(choice: str) -> str | None:
+    """Return an exact slash-confirm choice, or None for near-misses."""
+    normalized = str(choice or "").strip().lower()
+    if normalized in _VALID_CHOICES:
+        return normalized
+    return None
 
 
 def register(
@@ -112,22 +132,82 @@ async def resolve(
     Safe to call from an asyncio callback (button click) or from the
     gateway's message intercept path.
     """
+    normalized_choice = normalize_confirmation_choice(choice)
+    if normalized_choice is None:
+        _record_slash_confirm_audit(
+            decision="blocked",
+            status="blocked_invalid_choice",
+            reason="invalid_confirmation_choice",
+            choice=str(choice or ""),
+            command=None,
+            session_key=session_key,
+            surface="gateway",
+            risk_tier="R3",
+            extra={"confirm_id": confirm_id},
+        )
+        return None
+    choice = normalized_choice
+
     with _lock:
         entry = _pending.get(session_key)
         if not entry:
+            _record_slash_confirm_audit(
+                decision="skipped",
+                status="skipped_no_pending_confirmation",
+                reason="no_pending_confirmation",
+                choice=choice,
+                command=None,
+                session_key=session_key,
+                surface="gateway",
+                risk_tier="R3",
+                extra={"confirm_id": confirm_id},
+            )
             return None
         if entry.get("confirm_id") != confirm_id:
             # Stale confirm_id — superseded by a newer prompt on the same session.
+            _record_slash_confirm_audit(
+                decision="blocked",
+                status="blocked_stale_confirmation_id",
+                reason="stale_confirmation_id",
+                choice=choice,
+                command=entry.get("command", "?"),
+                session_key=session_key,
+                surface="gateway",
+                risk_tier="R3",
+                extra={"confirm_id": confirm_id},
+            )
             return None
         # Pop before we run the handler to prevent duplicate callbacks
         # (e.g. button double-click) from running it twice.
         _pending.pop(session_key, None)
         if time.time() - float(entry.get("created_at", 0) or 0) > timeout:
+            _record_slash_confirm_audit(
+                decision="blocked",
+                status="blocked_confirmation_timeout",
+                reason="confirmation_timeout",
+                choice=choice,
+                command=entry.get("command", "?"),
+                session_key=session_key,
+                surface="gateway",
+                risk_tier="R3",
+                extra={"confirm_id": confirm_id},
+            )
             return None
         handler = entry.get("handler")
         command = entry.get("command", "?")
 
     if not handler:
+        _record_slash_confirm_audit(
+            decision="blocked",
+            status="blocked_missing_handler",
+            reason="missing_confirmation_handler",
+            choice=choice,
+            command=command,
+            session_key=session_key,
+            surface="gateway",
+            risk_tier="R3",
+            extra={"confirm_id": confirm_id},
+        )
         return None
     try:
         result = await handler(choice)
@@ -136,7 +216,30 @@ async def resolve(
             "Slash-confirm handler for /%s raised: %s",
             command, exc, exc_info=True,
         )
+        _record_slash_confirm_audit(
+            decision="blocked",
+            status="blocked_handler_error",
+            reason="confirmation_handler_error",
+            choice=choice,
+            command=command,
+            session_key=session_key,
+            surface="gateway",
+            risk_tier="R3",
+            extra={"confirm_id": confirm_id},
+        )
         return f"❌ Error handling confirmation: {exc}"
+    _record_slash_confirm_audit(
+        decision="denied" if choice == "cancel" else "approved",
+        status="cancelled_by_user" if choice == "cancel" else "allowed_user_approved",
+        reason="user_cancelled" if choice == "cancel" else "user_approved",
+        approval_scope=choice,
+        choice=choice,
+        command=command,
+        session_key=session_key,
+        surface="gateway",
+        risk_tier="R3",
+        extra={"confirm_id": confirm_id},
+    )
     return result if isinstance(result, str) else None
 
 

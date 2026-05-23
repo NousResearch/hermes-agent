@@ -1200,10 +1200,12 @@ def _dump_subagent_timeout_diagnostic(
         import sys as _sys
         import traceback as _traceback
 
+        from hermes_cli.private_artifacts import ensure_private_dir, write_private_text
+
         hermes_home = get_hermes_home()
         logs_dir = hermes_home / "logs"
         try:
-            logs_dir.mkdir(parents=True, exist_ok=True)
+            ensure_private_dir(logs_dir)
         except Exception:
             return None
 
@@ -1311,7 +1313,7 @@ def _dump_subagent_timeout_diagnostic(
         _w("  Common causes: oversized prompt rejected by provider, transport hang,")
         _w("  credential resolution stuck. See issue #14726 for context.")
 
-        dump_path.write_text("\n".join(lines), encoding="utf-8")
+        write_private_text(dump_path, "\n".join(lines))
         return str(dump_path)
     except Exception as exc:
         logger.warning("Subagent timeout diagnostic dump failed: %s", exc)

@@ -214,6 +214,8 @@ def success_response(
         "aspect_ratio": aspect_ratio,
         "provider": provider,
     }
+    if Path(image).is_absolute():
+        payload["media"] = f"MEDIA:{image}"
     if extra:
         for k, v in extra.items():
             payload.setdefault(k, v)

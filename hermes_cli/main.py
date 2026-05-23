@@ -13,6 +13,7 @@ Usage:
     hermes gateway uninstall   # Uninstall gateway service
     hermes setup               # Interactive setup wizard
     hermes logout              # Clear stored authentication
+    hermes ops status          # Redacted operator status
     hermes status              # Show status of all components
     hermes cron                # Manage cron jobs
     hermes cron list           # List cron jobs
@@ -268,6 +269,42 @@ def _apply_profile_override() -> None:
 
 _apply_profile_override()
 
+
+def _is_readonly_memory_audit_invocation() -> bool:
+    """Detect the metadata-only audit path before startup side effects run."""
+    args = list(sys.argv[1:])
+    index = 0
+    value_flags = {
+        "-m",
+        "--model",
+        "--provider",
+        "--profile",
+        "-p",
+        "--toolsets",
+        "-z",
+        "--source",
+        "--agent-context",
+    }
+    while index < len(args):
+        arg = args[index]
+        if arg == "--":
+            index += 1
+            break
+        if arg.startswith("--") and "=" in arg:
+            index += 1
+            continue
+        if arg in value_flags:
+            index += 2
+            continue
+        if arg.startswith("-"):
+            index += 1
+            continue
+        break
+    return index + 1 < len(args) and args[index:index + 2] == ["memory", "audit"]
+
+
+_READONLY_MEMORY_AUDIT_INVOCATION = _is_readonly_memory_audit_invocation()
+
 # Load .env from ~/.hermes/.env first, then project root as dev fallback.
 # User-managed env files should override stale shell exports on restart.
 from hermes_cli.config import get_hermes_home
@@ -299,25 +336,27 @@ except Exception:
 
 # Initialize centralized file logging early — all `hermes` subcommands
 # (chat, setup, gateway, config, etc.) write to agent.log + errors.log.
-try:
-    from hermes_logging import setup_logging as _setup_logging
+if not _READONLY_MEMORY_AUDIT_INVOCATION:
+    try:
+        from hermes_logging import setup_logging as _setup_logging
 
-    _setup_logging(mode="cli")
-except Exception:
-    pass  # best-effort — don't crash the CLI if logging setup fails
+        _setup_logging(mode="cli")
+    except Exception:
+        pass  # best-effort — don't crash the CLI if logging setup fails
 
 # Apply IPv4 preference early, before any HTTP clients are created.
-try:
-    from hermes_cli.config import load_config as _load_config_early
-    from hermes_constants import apply_ipv4_preference as _apply_ipv4
+if not _READONLY_MEMORY_AUDIT_INVOCATION:
+    try:
+        from hermes_cli.config import load_config as _load_config_early
+        from hermes_constants import apply_ipv4_preference as _apply_ipv4
 
-    _early_cfg = _load_config_early()
-    _net = _early_cfg.get("network", {})
-    if isinstance(_net, dict) and _net.get("force_ipv4"):
-        _apply_ipv4(force=True)
-    del _early_cfg, _net
-except Exception:
-    pass  # best-effort — don't crash if config isn't available yet
+        _early_cfg = _load_config_early()
+        _net = _early_cfg.get("network", {})
+        if isinstance(_net, dict) and _net.get("force_ipv4"):
+            _apply_ipv4(force=True)
+        del _early_cfg, _net
+    except Exception:
+        pass  # best-effort — don't crash if config isn't available yet
 
 import logging
 import threading
@@ -6083,6 +6122,13 @@ def cmd_status(args):
     show_status(args)
 
 
+def cmd_ops(args):
+    """Show redacted operator diagnostics."""
+    from hermes_cli.ops_status import ops_command
+
+    ops_command(args)
+
+
 def cmd_cron(args):
     """Cron job management."""
     from hermes_cli.cron import cron_command
@@ -9792,6 +9838,7 @@ def _coalesce_session_name_args(argv: list) -> list:
         "login",
         "logout",
         "auth",
+        "ops",
         "status",
         "cron",
         "doctor",
@@ -10643,11 +10690,11 @@ def _build_provider_choices() -> list[str]:
 _BUILTIN_SUBCOMMANDS = frozenset(
     {
         "acp", "auth", "backup", "bundles", "checkpoints", "claw", "completion",
-        "computer-use",
+        "computer-use", "control",
         "config", "cron", "curator", "dashboard", "debug", "doctor",
         "dump", "fallback", "gateway", "hooks", "import", "insights",
         "kanban", "login", "logout", "logs", "lsp", "mcp", "memory", "migrate",
-        "model", "pairing", "plugins", "postinstall", "profile", "proxy",
+        "model", "ops", "pairing", "plugins", "postinstall", "profile", "proxy",
         "send", "sessions", "setup",
         "skills", "slack", "status", "tools", "uninstall", "update",
         "version", "webhook", "whatsapp", "chat", "secrets",
@@ -11034,6 +11081,25 @@ def main():
         "clear",
         help="Remove all fallback entries",
     )
+    configure_openrouter_parser = fallback_subparsers.add_parser(
+        "configure-openrouter",
+        help="Ensure OpenRouter is the first fallback provider",
+    )
+    configure_openrouter_parser.add_argument(
+        "--model",
+        default="google/gemini-3-flash-preview",
+        help="OpenRouter model to use as the first fallback",
+    )
+    configure_openrouter_parser.add_argument(
+        "--replace",
+        action="store_true",
+        help="Replace the fallback chain instead of preserving existing fallbacks after OpenRouter",
+    )
+    configure_openrouter_parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Print the planned chain without writing config",
+    )
     fallback_parser.set_defaults(func=cmd_fallback)
 
     # =========================================================================
@@ -11198,6 +11264,87 @@ def main():
         "--system",
         action="store_true",
         help="Target the Linux system-level gateway service",
+    )
+
+    # gateway validate
+    gateway_validate = gateway_subparsers.add_parser(
+        "validate",
+        help="Read-only startup validation for the gateway service",
+    )
+    gateway_validate.add_argument(
+        "--json",
+        action="store_true",
+        help="Emit redacted JSON validation output",
+    )
+    gateway_validate.add_argument(
+        "--markdown",
+        action="store_true",
+        help="Emit redacted Markdown validation output",
+    )
+    gateway_validate.add_argument(
+        "--no-health",
+        action="store_true",
+        help="Skip local API health probes",
+    )
+    gateway_validate.add_argument(
+        "--launchctl-timeout",
+        type=float,
+        default=5.0,
+        help="Seconds to wait for launchctl status probes",
+    )
+    gateway_validate.add_argument(
+        "--health-timeout",
+        type=float,
+        default=2.0,
+        help="Seconds to wait for local API health probes",
+    )
+
+    # gateway incident-bundle
+    gateway_incident_bundle = gateway_subparsers.add_parser(
+        "incident-bundle",
+        help="Create a redacted local gateway incident bundle",
+    )
+    gateway_incident_bundle.add_argument(
+        "-o",
+        "--output",
+        help="Output directory for the bundle; defaults to /tmp/hermes-gateway-incident-*",
+    )
+    gateway_incident_bundle.add_argument(
+        "--force",
+        action="store_true",
+        help="Overwrite known bundle files in a non-empty output directory",
+    )
+    gateway_incident_bundle.add_argument(
+        "--json",
+        action="store_true",
+        help="Emit redacted JSON command output",
+    )
+    gateway_incident_bundle.add_argument(
+        "--no-health",
+        action="store_true",
+        help="Skip local API health probes inside the validation receipt",
+    )
+    gateway_incident_bundle.add_argument(
+        "--no-log-metadata",
+        action="store_true",
+        help="Skip metadata for known Hermes log files",
+    )
+    gateway_incident_bundle.add_argument(
+        "--no-health-loop-metadata",
+        action="store_true",
+        help="Skip metadata for Operator health-loop receipts",
+    )
+    gateway_incident_bundle.add_argument(
+        "--launchctl-timeout",
+        type=float,
+        default=5.0,
+        help="Seconds to wait for launchctl status probes",
+    )
+    gateway_incident_bundle.add_argument(
+        "--health-timeout",
+        type=float,
+        default=2.0,
+        help="Seconds to wait for local API health probes",
     )
 
     # gateway install
@@ -11635,6 +11782,53 @@ def main():
         "--deep", action="store_true", help="Run deep checks (may take longer)"
     )
     status_parser.set_defaults(func=cmd_status)
+
+    # =========================================================================
+    # ops command
+    # =========================================================================
+    ops_parser = subparsers.add_parser(
+        "ops",
+        help="Redacted operator status and diagnostics",
+        description="Inspect local Hermes operational status without printing secrets or raw logs",
+    )
+    ops_subparsers = ops_parser.add_subparsers(dest="ops_command")
+    ops_status = ops_subparsers.add_parser(
+        "status",
+        help="Show redacted local operator status",
+        description=(
+            "Summarize gateway startup validation, API health, cron metadata, "
+            "health-loop receipts, disk usage, and log metadata without raw "
+            "secrets, private memory, or log lines."
+        ),
+    )
+    ops_status.add_argument(
+        "--json",
+        action="store_true",
+        help="Print machine-readable JSON",
+    )
+    ops_status.add_argument(
+        "--markdown",
+        action="store_true",
+        help="Print a redacted Markdown status receipt",
+    )
+    ops_status.add_argument(
+        "--no-health",
+        action="store_true",
+        help="Skip live local API health probes",
+    )
+    ops_status.add_argument(
+        "--launchctl-timeout",
+        type=float,
+        default=5.0,
+        help="launchctl timeout in seconds for gateway validation (default: 5)",
+    )
+    ops_status.add_argument(
+        "--health-timeout",
+        type=float,
+        default=2.0,
+        help="HTTP timeout in seconds for local health probes (default: 2)",
+    )
+    ops_parser.set_defaults(func=cmd_ops)
 
     # =========================================================================
     # cron command
@@ -12448,6 +12642,22 @@ Examples:
     plugins_parser.set_defaults(func=cmd_plugins)
 
     # =========================================================================
+    # control command — redacted read-only system inventory
+    # =========================================================================
+    control_parser = subparsers.add_parser(
+        "control",
+        help="Redacted read-only Hermes control-plane inventory",
+        description=(
+            "Inspect Hermes tools, plugins, MCP servers, quick commands, cron "
+            "metadata, launchd labels, and operator scripts without executing "
+            "tools or printing credential values."
+        ),
+    )
+    from hermes_cli.control import register_cli as _register_control_cli
+
+    _register_control_cli(control_parser)
+
+    # =========================================================================
     # Plugin CLI commands — dynamically registered by memory/general plugins.
     # Plugins provide a register_cli(subparser) function that builds their
     # own argparse tree.  No hardcoded plugin commands in main.py.
@@ -12532,6 +12742,30 @@ Examples:
         "setup", help="Interactive provider selection and configuration"
     )
     memory_sub.add_parser("status", help="Show current memory provider config")
+    _audit_parser = memory_sub.add_parser(
+        "audit",
+        help="Print a redacted read-only memory capacity and deletion audit",
+    )
+    _audit_fmt = _audit_parser.add_mutually_exclusive_group()
+    _audit_fmt.add_argument(
+        "--json",
+        dest="format",
+        action="store_const",
+        const="json",
+        default="json",
+    )
+    _audit_fmt.add_argument(
+        "--markdown",
+        dest="format",
+        action="store_const",
+        const="markdown",
+    )
+    _audit_parser.add_argument(
+        "--redact",
+        action="store_true",
+        default=True,
+        help="Always enabled; memory contents are never printed.",
+    )
     memory_sub.add_parser("off", help="Disable external provider (built-in only)")
     _reset_parser = memory_sub.add_parser(
         "reset",
@@ -12607,6 +12841,10 @@ Examples:
                 f"\n  Memory reset complete. New sessions will start with a blank slate."
             )
             print(f"  Files were in: {display_hermes_home()}/memories/\n")
+        elif sub == "audit":
+            from hermes_cli.memory_audit import memory_audit_command
+
+            return memory_audit_command(args)
         else:
             from hermes_cli.memory_setup import memory_command
 
@@ -12963,6 +13201,8 @@ Examples:
                     print(f"{preview:<50} {last_active:<13} {s['source']:<6} {sid}")
 
         elif action == "export":
+            from hermes_cli.private_artifacts import private_text_writer
+
             if args.session_id:
                 resolved_session_id = db.resolve_session_id(args.session_id)
                 if not resolved_session_id:
@@ -12977,7 +13217,7 @@ Examples:
 
                     sys.stdout.write(line)
                 else:
-                    with open(args.output, "w", encoding="utf-8") as f:
+                    with private_text_writer(args.output) as f:
                         f.write(line)
                     print(f"Exported 1 session to {args.output}")
             else:
@@ -12987,7 +13227,7 @@ Examples:
                     for s in sessions:
                         sys.stdout.write(_json.dumps(s, ensure_ascii=False) + "\n")
                 else:
-                    with open(args.output, "w", encoding="utf-8") as f:
+                    with private_text_writer(args.output) as f:
                         for s in sessions:
                             f.write(_json.dumps(s, ensure_ascii=False) + "\n")
                     print(f"Exported {len(sessions)} sessions to {args.output}")

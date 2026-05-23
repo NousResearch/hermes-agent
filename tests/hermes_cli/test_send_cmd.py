@@ -9,7 +9,9 @@ from __future__ import annotations
 
 import io
 import json
+import os
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -58,6 +60,44 @@ def fake_tool(monkeypatch):
     # entry so attribute lookup works.
     monkeypatch.setitem(sys.modules, "tools.send_message_tool", mod)
     return fake
+
+
+def _install_gateway_config(
+    monkeypatch,
+    *,
+    enabled: bool = True,
+    token: str = "present-token",
+    home_chat_id: str | None = "1234567890",
+):
+    import sys
+    import types
+
+    fake_gateway = types.ModuleType("gateway.config")
+
+    def _platform(name):
+        if name not in {"telegram", "discord"}:
+            raise ValueError(f"unknown platform: {name}")
+        return name
+
+    class _Config:
+        platforms = {
+            "telegram": SimpleNamespace(enabled=enabled, token=token),
+            "discord": SimpleNamespace(enabled=enabled, token=token),
+        }
+
+        def get_home_channel(self, platform):
+            if platform == "telegram" and home_chat_id:
+                return SimpleNamespace(chat_id=home_chat_id)
+            return None
+
+    fake_gateway.Platform = _platform
+    fake_gateway.load_gateway_config = lambda: _Config()
+    monkeypatch.setitem(sys.modules, "gateway.config", fake_gateway)
+    monkeypatch.setattr(
+        send_cmd.importlib.util,
+        "find_spec",
+        lambda name: object() if name == "telegram" else None,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -135,6 +175,155 @@ def test_quiet_suppresses_stdout(fake_tool, capsys):
     assert exc.value.code == 0
     out = capsys.readouterr()
     assert out.out == ""
+
+
+def test_dry_run_preflight_does_not_call_tool_or_print_private_values(
+    fake_tool,
+    monkeypatch,
+    capsys,
+):
+    _install_gateway_config(monkeypatch, home_chat_id="1234567890")
+
+    args = _parse(["--to", "telegram", "--dry-run", "--json", "private report body"])
+    with pytest.raises(SystemExit) as exc:
+        send_cmd.cmd_send(args)
+
+    assert exc.value.code == 0
+    assert fake_tool.calls == []
+    out = capsys.readouterr().out
+    payload = json.loads(out)
+    assert payload["ok"] is True
+    assert payload["dry_run"] is True
+    assert payload["would_send"] is False
+    assert payload["network_performed"] is False
+    assert payload["target"]["target_mode"] == "home_channel"
+    assert payload["target"]["chat_id"]["present"] is True
+    assert payload["message"]["chars"] == len("private report body")
+    assert payload["message"]["content_printed"] is False
+    assert "private report body" not in out
+    assert "1234567890" not in out
+    assert "present-token" not in out
+
+
+def test_dry_run_preflight_redacts_file_path_and_explicit_target(
+    fake_tool,
+    monkeypatch,
+    tmp_path,
+    capsys,
+):
+    _install_gateway_config(monkeypatch, home_chat_id=None)
+    report = tmp_path / "final-report.md"
+    report.write_text("report body\n")
+
+    args = _parse(
+        [
+            "--to",
+            "telegram:-1001234567890:17585",
+            "--file",
+            str(report),
+            "--preflight",
+            "--json",
+        ]
+    )
+    with pytest.raises(SystemExit) as exc:
+        send_cmd.cmd_send(args)
+
+    assert exc.value.code == 0
+    assert fake_tool.calls == []
+    out = capsys.readouterr().out
+    payload = json.loads(out)
+    assert payload["target"]["target_mode"] == "explicit"
+    assert payload["target"]["chat_id"]["present"] is True
+    assert payload["target"]["thread_id"]["present"] is True
+    assert payload["message"]["source"] == "file"
+    assert payload["message"]["file"]["name"] == "final-report.md"
+    assert payload["message"]["file"]["path_printed"] is False
+    assert "report body" not in out
+    assert str(report) not in out
+    assert "-1001234567890" not in out
+    assert "17585" not in out
+
+
+def test_dry_run_preflight_fails_without_home_channel(fake_tool, monkeypatch, capsys):
+    _install_gateway_config(monkeypatch, home_chat_id=None)
+
+    args = _parse(["--to", "telegram", "--dry-run", "--json", "hello"])
+    with pytest.raises(SystemExit) as exc:
+        send_cmd.cmd_send(args)
+
+    assert exc.value.code == 1
+    assert fake_tool.calls == []
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["ok"] is False
+    assert any(
+        check["name"] == "home_channel_present" and check["status"] == "fail"
+        for check in payload["checks"]
+    )
+
+
+def test_dry_run_preflight_is_telegram_scoped(fake_tool, monkeypatch, capsys):
+    _install_gateway_config(monkeypatch)
+
+    args = _parse(["--to", "discord:#ops", "--dry-run", "--json", "hello"])
+    with pytest.raises(SystemExit) as exc:
+        send_cmd.cmd_send(args)
+
+    assert exc.value.code == 1
+    assert fake_tool.calls == []
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["ok"] is False
+    assert any(
+        check["name"] == "telegram_scope" and check["status"] == "fail"
+        for check in payload["checks"]
+    )
+
+
+def test_dry_run_output_receipt_is_private_under_permissive_umask(
+    fake_tool,
+    monkeypatch,
+    tmp_path,
+    capsys,
+):
+    _install_gateway_config(monkeypatch)
+    output = tmp_path / "preflight" / "receipt.json"
+
+    old_umask = os.umask(0)
+    try:
+        args = _parse(
+            [
+                "--to",
+                "telegram",
+                "--dry-run",
+                "--json",
+                "--output",
+                str(output),
+                "hello",
+            ]
+        )
+        with pytest.raises(SystemExit) as exc:
+            send_cmd.cmd_send(args)
+    finally:
+        os.umask(old_umask)
+
+    assert exc.value.code == 0
+    assert fake_tool.calls == []
+    assert oct(output.stat().st_mode & 0o777) == "0o600"
+    assert oct(output.parent.stat().st_mode & 0o777) == "0o700"
+    payload = json.loads(output.read_text())
+    assert payload["ok"] is True
+    out = capsys.readouterr().out
+    assert "receipt written" in out
+    assert "hello" not in out
+
+
+def test_output_without_dry_run_is_usage_error(fake_tool, capsys):
+    args = _parse(["--to", "telegram", "--output", "/tmp/receipt.json", "hello"])
+    with pytest.raises(SystemExit) as exc:
+        send_cmd.cmd_send(args)
+
+    assert exc.value.code == 2
+    assert fake_tool.calls == []
+    assert "only valid" in capsys.readouterr().err
 
 
 # ---------------------------------------------------------------------------

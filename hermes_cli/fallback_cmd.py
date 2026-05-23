@@ -19,7 +19,11 @@ Storage: ``fallback_providers`` in ``~/.hermes/config.yaml`` (top-level, list of
 from __future__ import annotations
 
 import copy
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
+
+
+OPENROUTER_DEFAULT_FALLBACK_MODEL = "google/gemini-3-flash-preview"
+OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
 
 
 # ---------------------------------------------------------------------------
@@ -52,6 +56,51 @@ def _write_chain(config: Dict[str, Any], chain: List[Dict[str, Any]]) -> None:
     # Drop the legacy single-dict key on write so there's only one source of truth.
     if "fallback_model" in config:
         config.pop("fallback_model", None)
+
+
+def _openrouter_entry(model: str = OPENROUTER_DEFAULT_FALLBACK_MODEL) -> Dict[str, str]:
+    """Return Hermes' default OpenRouter fallback entry."""
+    return {
+        "provider": "openrouter",
+        "model": model.strip() or OPENROUTER_DEFAULT_FALLBACK_MODEL,
+        "base_url": OPENROUTER_BASE_URL,
+        "api_mode": "chat_completions",
+    }
+
+
+def _entry_identity(entry: Dict[str, Any]) -> Tuple[str, str]:
+    """Return the provider/model identity used for de-duplication."""
+    return (
+        str(entry.get("provider") or "").strip(),
+        str(entry.get("model") or "").strip(),
+    )
+
+
+def _ensure_openrouter_first(
+    config: Dict[str, Any],
+    *,
+    model: str = OPENROUTER_DEFAULT_FALLBACK_MODEL,
+    replace: bool = False,
+) -> tuple[List[Dict[str, Any]], bool]:
+    """Return a chain with the OpenRouter policy entry first.
+
+    The operation is deterministic and idempotent.  By default it preserves
+    existing non-duplicate fallbacks after the OpenRouter entry; ``replace``
+    narrows the chain to the OpenRouter entry only.
+    """
+    desired = _openrouter_entry(model)
+    if replace:
+        chain = [desired]
+    else:
+        desired_identity = _entry_identity(desired)
+        chain = [desired]
+        for entry in _read_chain(config):
+            if _entry_identity(entry) == desired_identity:
+                continue
+            chain.append(entry)
+
+    changed = _read_chain(config) != chain or "fallback_model" in config
+    return chain, changed
 
 
 def _format_entry(entry: Dict[str, Any]) -> str:
@@ -318,6 +367,42 @@ def cmd_fallback_clear(args) -> None:  # noqa: ARG001
     print()
 
 
+def cmd_fallback_configure_openrouter(args) -> None:
+    """Ensure OpenRouter is the first configured fallback provider."""
+    from hermes_cli.config import load_config, save_config
+
+    config = load_config()
+    model = getattr(args, "model", None) or OPENROUTER_DEFAULT_FALLBACK_MODEL
+    replace = bool(getattr(args, "replace", False))
+    dry_run = bool(getattr(args, "dry_run", False))
+    chain, changed = _ensure_openrouter_first(config, model=model, replace=replace)
+
+    print()
+    print("  OpenRouter fallback policy:")
+    print(f"    model: {_openrouter_entry(model)['model']}")
+    print(f"    mode:  {'replace' if replace else 'preserve existing fallbacks after OpenRouter'}")
+    print(f"    dry-run: {'yes' if dry_run else 'no'}")
+    print()
+
+    if dry_run:
+        print("  Planned fallback chain:")
+        for i, entry in enumerate(chain, 1):
+            print(f"    {i}. {_format_entry(entry)}")
+        print()
+        print("  No config changes written.")
+        return
+
+    if not changed:
+        print("  OpenRouter is already the first fallback — no change.")
+        return
+
+    _write_chain(config, chain)
+    save_config(config)
+    print("  OpenRouter fallback configured.")
+    print(f"  Chain is now {len(chain)} {'entry' if len(chain) == 1 else 'entries'} long.")
+    print()
+
+
 def _numbered_pick(question: str, choices: List[str]) -> Optional[int]:
     """Fallback numbered-list picker when curses is unavailable."""
     print(question)
@@ -355,7 +440,9 @@ def cmd_fallback(args) -> None:
         cmd_fallback_remove(args)
     elif sub == "clear":
         cmd_fallback_clear(args)
+    elif sub == "configure-openrouter":
+        cmd_fallback_configure_openrouter(args)
     else:
         print(f"Unknown fallback subcommand: {sub}")
-        print("Use one of: list, add, remove, clear")
+        print("Use one of: list, add, remove, clear, configure-openrouter")
         raise SystemExit(2)

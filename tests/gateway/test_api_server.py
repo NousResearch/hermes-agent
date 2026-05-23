@@ -518,13 +518,27 @@ class TestHealthDetailedEndpoint:
                 assert data["platforms"] == {}
 
     @pytest.mark.asyncio
-    async def test_health_detailed_does_not_require_auth(self, auth_adapter):
-        """Health detailed endpoint should be accessible without auth, like /health."""
+    async def test_health_detailed_requires_auth_when_key_configured(self, auth_adapter):
+        """Detailed runtime status should not leak without bearer auth."""
         app = _create_app(auth_adapter)
         with patch("gateway.status.read_runtime_status", return_value=None):
             async with TestClient(TestServer(app)) as cli:
                 resp = await cli.get("/health/detailed")
+                assert resp.status == 401
+
+    @pytest.mark.asyncio
+    async def test_health_detailed_accepts_valid_auth(self, auth_adapter):
+        """Authorized clients, including Hermes Portal, can read detailed health."""
+        app = _create_app(auth_adapter)
+        with patch("gateway.status.read_runtime_status", return_value=None):
+            async with TestClient(TestServer(app)) as cli:
+                resp = await cli.get(
+                    "/health/detailed",
+                    headers={"Authorization": "Bearer sk-secret"},
+                )
                 assert resp.status == 200
+                data = await resp.json()
+                assert data["status"] == "ok"
 
 
 # ---------------------------------------------------------------------------

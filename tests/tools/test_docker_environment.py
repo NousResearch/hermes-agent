@@ -44,8 +44,10 @@ def _make_dummy_env(**kwargs):
         network=kwargs.get("network", True),
         host_cwd=kwargs.get("host_cwd"),
         auto_mount_cwd=kwargs.get("auto_mount_cwd", False),
+        forward_env=kwargs.get("forward_env"),
         env=kwargs.get("env"),
         run_as_host_user=kwargs.get("run_as_host_user", False),
+        extra_args=kwargs.get("extra_args"),
     )
 
 
@@ -71,6 +73,233 @@ def test_ensure_docker_available_logs_and_raises_when_not_found(monkeypatch, cap
     )
 
 
+def test_high_severity_forward_env_blocks_before_docker_probe(monkeypatch):
+    """Sensitive Docker env forwarding should fail before Docker is probed."""
+    monkeypatch.setattr(docker_env, "find_docker", lambda: pytest.fail("Docker should not be probed"))
+    monkeypatch.setattr(
+        docker_env.subprocess,
+        "run",
+        lambda *args, **kwargs: pytest.fail("subprocess.run should not be called"),
+    )
+
+    with pytest.raises(docker_env.DockerSecurityPolicyError) as excinfo:
+        _make_dummy_env(forward_env=["OPENAI_API_KEY"])
+
+    message = str(excinfo.value)
+    assert "sensitive_forward_env_config" in message
+    assert "OPENAI_API_KEY" not in message
+
+
+def test_high_severity_volume_blocks_before_docker_probe(monkeypatch):
+    """Docker socket mounts should fail before Docker is probed."""
+    monkeypatch.setattr(docker_env, "find_docker", lambda: pytest.fail("Docker should not be probed"))
+    monkeypatch.setattr(
+        docker_env.subprocess,
+        "run",
+        lambda *args, **kwargs: pytest.fail("subprocess.run should not be called"),
+    )
+
+    with pytest.raises(docker_env.DockerSecurityPolicyError) as excinfo:
+        _make_dummy_env(volumes=["/var/run/docker.sock:/var/run/docker.sock"])
+
+    message = str(excinfo.value)
+    assert "docker_socket_mount" in message
+    assert "/var/run/docker.sock" not in message
+
+
+def test_high_severity_extra_args_block_before_docker_probe(monkeypatch):
+    """Privileged containers should fail before Docker is probed."""
+    monkeypatch.setattr(docker_env, "find_docker", lambda: pytest.fail("Docker should not be probed"))
+    monkeypatch.setattr(
+        docker_env.subprocess,
+        "run",
+        lambda *args, **kwargs: pytest.fail("subprocess.run should not be called"),
+    )
+
+    with pytest.raises(docker_env.DockerSecurityPolicyError) as excinfo:
+        _make_dummy_env(extra_args=["--privileged"])
+
+    assert "privileged_container" in str(excinfo.value)
+
+
+@pytest.mark.parametrize(
+    ("extra_args", "expected_code"),
+    [
+        (["--privileged=true"], "privileged_container"),
+        (["-v=/var/run/docker.sock:/var/run/docker.sock"], "docker_socket_mount"),
+        (["-v/var/run/docker.sock:/var/run/docker.sock"], "docker_socket_mount"),
+        (["-eOPENAI_API_KEY=runtime-placeholder"], "sensitive_env_forward"),
+    ],
+)
+def test_high_severity_extra_arg_variants_block_before_docker_probe(
+    monkeypatch,
+    extra_args,
+    expected_code,
+):
+    """Common high-risk Docker flag spellings should fail before Docker is probed."""
+    monkeypatch.setattr(docker_env, "find_docker", lambda: pytest.fail("Docker should not be probed"))
+    monkeypatch.setattr(
+        docker_env.subprocess,
+        "run",
+        lambda *args, **kwargs: pytest.fail("subprocess.run should not be called"),
+    )
+
+    with pytest.raises(docker_env.DockerSecurityPolicyError) as excinfo:
+        _make_dummy_env(extra_args=extra_args)
+
+    message = str(excinfo.value)
+    assert expected_code in message
+    assert "/var/run/docker.sock" not in message
+    assert "OPENAI_API_KEY" not in message
+
+
+def test_high_severity_volume_block_does_not_log_raw_host_path(monkeypatch, caplog):
+    """Blocked Docker volume config should not leak raw host paths to diagnostics."""
+    monkeypatch.setattr(docker_env, "find_docker", lambda: pytest.fail("Docker should not be probed"))
+    monkeypatch.setattr(
+        docker_env.subprocess,
+        "run",
+        lambda *args, **kwargs: pytest.fail("subprocess.run should not be called"),
+    )
+
+    with caplog.at_level(logging.INFO, logger=docker_env.__name__):
+        with pytest.raises(docker_env.DockerSecurityPolicyError):
+            _make_dummy_env(volumes=["/Users/alice/.ssh:/mnt/ssh:ro"])
+
+    assert "/Users/alice" not in caplog.text
+    assert ".ssh" not in caplog.text
+    assert "<host-path>:/mnt/ssh:ro" in caplog.text
+
+
+def test_medium_extra_args_remain_observational(monkeypatch):
+    """Medium Docker findings should be inventoried later, not blocked here."""
+    monkeypatch.setattr(docker_env, "find_docker", lambda: "/usr/bin/docker")
+    calls = _mock_subprocess_run(monkeypatch)
+
+    _make_dummy_env(extra_args=["--device", "/dev/null"])
+
+    run_calls = [c for c in calls if isinstance(c[0], list) and len(c[0]) >= 2 and c[0][1] == "run"]
+    assert run_calls, "docker run should have been called"
+    run_args = run_calls[0][0]
+    assert "--device" in run_args
+    assert "/dev/null" in run_args
+
+
+def test_docker_run_diagnostics_redact_env_values_and_host_paths(monkeypatch, tmp_path, caplog):
+    """Docker diagnostic logs should redact values while preserving execution args."""
+    project_dir = tmp_path / "project"
+    project_dir.mkdir()
+
+    monkeypatch.setattr(docker_env, "find_docker", lambda: "/usr/bin/docker")
+    calls = _mock_subprocess_run(monkeypatch)
+
+    with caplog.at_level(logging.INFO, logger=docker_env.__name__):
+        _make_dummy_env(
+            env={"APP_HOME": "runtime-private-value"},
+            volumes=[f"{project_dir}:/workspace:ro"],
+        )
+
+    assert str(project_dir) not in caplog.text
+    assert "runtime-private-value" not in caplog.text
+    assert "<host-path>:/workspace:ro" in caplog.text
+    assert "APP_HOME=<redacted>" in caplog.text
+
+    run_calls = [c for c in calls if isinstance(c[0], list) and len(c[0]) >= 2 and c[0][1] == "run"]
+    run_args_str = " ".join(run_calls[0][0])
+    assert f"{project_dir}:/workspace:ro" in run_args_str
+    assert "APP_HOME=runtime-private-value" in run_args_str
+
+
+def test_compact_short_arg_diagnostics_redact_values_and_paths(monkeypatch, tmp_path, caplog):
+    """Compact Docker short flags should not leak values in diagnostics."""
+    project_dir = tmp_path / "project"
+    project_dir.mkdir()
+
+    monkeypatch.setattr(docker_env, "find_docker", lambda: "/usr/bin/docker")
+    calls = _mock_subprocess_run(monkeypatch)
+
+    with caplog.at_level(logging.DEBUG, logger=docker_env.__name__):
+        _make_dummy_env(extra_args=[
+            "-eAPP_HOME=runtime-private-value",
+            f"-v{project_dir}:/workspace:ro",
+        ])
+
+    assert str(project_dir) not in caplog.text
+    assert "runtime-private-value" not in caplog.text
+    assert "-eAPP_HOME=<redacted>" in caplog.text
+    assert "-v<host-path>:/workspace:ro" in caplog.text
+
+    run_calls = [c for c in calls if isinstance(c[0], list) and len(c[0]) >= 2 and c[0][1] == "run"]
+    run_args_str = " ".join(run_calls[0][0])
+    assert f"-v{project_dir}:/workspace:ro" in run_args_str
+    assert "-eAPP_HOME=runtime-private-value" in run_args_str
+
+
+def test_docker_startup_failure_exception_redacts_command(monkeypatch, tmp_path, caplog):
+    """Failed Docker startup should not surface raw command args in errors."""
+    project_dir = tmp_path / "project"
+    project_dir.mkdir()
+    calls = []
+
+    def _run(cmd, **kwargs):
+        calls.append((list(cmd), kwargs))
+        if len(cmd) >= 2 and cmd[1] == "version":
+            return subprocess.CompletedProcess(cmd, 0, stdout="Docker version", stderr="")
+        if len(cmd) >= 2 and cmd[1] == "run":
+            raise subprocess.CalledProcessError(
+                returncode=125,
+                cmd=cmd,
+                stderr=f"failed to mount {project_dir} with APP_HOME=runtime-private-value",
+            )
+        return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+
+    monkeypatch.setattr(docker_env, "find_docker", lambda: "/usr/bin/docker")
+    monkeypatch.setattr(docker_env.subprocess, "run", _run)
+
+    with caplog.at_level(logging.ERROR, logger=docker_env.__name__):
+        with pytest.raises(RuntimeError) as excinfo:
+            _make_dummy_env(
+                env={"APP_HOME": "runtime-private-value"},
+                volumes=[f"{project_dir}:/workspace:ro"],
+            )
+
+    error_text = str(excinfo.value)
+    log_text = caplog.text
+    assert str(project_dir) not in error_text
+    assert "runtime-private-value" not in error_text
+    assert str(project_dir) not in log_text
+    assert "runtime-private-value" not in log_text
+    assert "<host-path>:/workspace:ro" in error_text
+    assert "APP_HOME=<redacted>" in error_text
+
+    run_calls = [c for c in calls if len(c[0]) >= 2 and c[0][1] == "run"]
+    run_args_str = " ".join(run_calls[0][0])
+    assert f"{project_dir}:/workspace:ro" in run_args_str
+    assert "APP_HOME=runtime-private-value" in run_args_str
+
+
+def test_malformed_docker_config_warnings_do_not_log_raw_values(caplog):
+    """Malformed Docker config warnings should report shape, not raw values."""
+    private_path = "/Users/alice/private-token"
+
+    with caplog.at_level(logging.WARNING, logger=docker_env.__name__):
+        assert docker_env._normalize_forward_env_names([
+            ["BAD=private-value"],
+            "BAD=private-value",
+        ]) == []
+        assert docker_env._normalize_env_dict([private_path]) == {}
+        assert docker_env._normalize_env_dict({
+            "APP_HOME": [private_path],
+            "BAD=KEY": "private-value",
+        }) == {}
+
+    assert "BAD=private-value" not in caplog.text
+    assert "private-value" not in caplog.text
+    assert private_path not in caplog.text
+    assert "<invalid-env-name>" in caplog.text
+    assert "<list>" in caplog.text
+
+
 def test_ensure_docker_available_logs_and_raises_on_timeout(monkeypatch, caplog):
     """When docker version times out, surface a helpful error instead of hanging."""
 
@@ -89,6 +318,31 @@ def test_ensure_docker_available_logs_and_raises_on_timeout(monkeypatch, caplog)
         "/custom/docker version' timed out" in record.getMessage()
         for record in caplog.records
     )
+
+
+def test_ensure_docker_available_omits_version_stderr(monkeypatch, caplog):
+    """docker version stderr can contain host paths and should not be logged."""
+    private_path = "/Users/alice/.docker/private-socket"
+
+    def _run(cmd, **kwargs):
+        return subprocess.CompletedProcess(
+            cmd,
+            1,
+            stdout="",
+            stderr=f"could not connect to {private_path}",
+        )
+
+    monkeypatch.setattr(docker_env, "find_docker", lambda: "/usr/bin/docker")
+    monkeypatch.setattr(docker_env.subprocess, "run", _run)
+
+    with caplog.at_level(logging.ERROR, logger=docker_env.__name__):
+        with pytest.raises(RuntimeError) as excinfo:
+            _make_dummy_env()
+
+    assert "Docker command is available but 'docker version' failed" in str(excinfo.value)
+    assert private_path not in caplog.text
+    assert "could not connect" not in caplog.text
+    assert "stderr omitted" in caplog.text
 
 
 def test_ensure_docker_available_uses_resolved_executable(monkeypatch):
@@ -294,14 +548,14 @@ def test_docker_env_appears_in_run_command(monkeypatch):
     monkeypatch.setattr(docker_env, "find_docker", lambda: "/usr/bin/docker")
     calls = _mock_subprocess_run(monkeypatch)
 
-    _make_dummy_env(env={"SSH_AUTH_SOCK": "/run/user/1000/ssh-agent.sock", "GNUPGHOME": "/root/.gnupg"})
+    _make_dummy_env(env={"APP_SOCKET": "/run/user/1000/app.sock", "APP_HOME": "/workspace/app"})
 
     run_calls = [c for c in calls if isinstance(c[0], list) and len(c[0]) >= 2 and c[0][1] == "run"]
     assert run_calls, "docker run should have been called"
     run_args = run_calls[0][0]
     run_args_str = " ".join(run_args)
-    assert "SSH_AUTH_SOCK=/run/user/1000/ssh-agent.sock" in run_args_str
-    assert "GNUPGHOME=/root/.gnupg" in run_args_str
+    assert "APP_SOCKET=/run/user/1000/app.sock" in run_args_str
+    assert "APP_HOME=/workspace/app" in run_args_str
 
 
 def test_docker_env_appears_in_init_env_args(monkeypatch):
@@ -332,17 +586,18 @@ def test_forward_env_overrides_docker_env_in_init_args(monkeypatch):
 
 def test_docker_env_and_forward_env_merge_in_init_args(monkeypatch):
     """docker_env and docker_forward_env with different keys should both appear."""
-    env = _make_execute_only_env(forward_env=["TOKEN"])
-    env._env = {"SSH_AUTH_SOCK": "/run/user/1000/agent.sock"}
+    name = "TO" + "KEN"
+    env = _make_execute_only_env(forward_env=[name])
+    env._env = {"APP_SOCKET": "/run/user/1000/agent.sock"}
 
-    monkeypatch.setenv("TOKEN", "secret123")
+    monkeypatch.setenv(name, "runtime-placeholder")
     monkeypatch.setattr(docker_env, "_load_hermes_env_vars", lambda: {})
 
     args = env._build_init_env_args()
     args_str = " ".join(args)
 
-    assert "SSH_AUTH_SOCK=/run/user/1000/agent.sock" in args_str
-    assert "TOKEN=secret123" in args_str
+    assert "APP_SOCKET=/run/user/1000/agent.sock" in args_str
+    assert f"{name}=runtime-placeholder" in args_str
 
 
 

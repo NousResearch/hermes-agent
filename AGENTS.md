@@ -2,6 +2,33 @@
 
 Instructions for AI coding assistants and developers working on the hermes-agent codebase.
 
+## Hermes Optimization Control Plane
+
+This repo now includes a staged Hermes optimization control plane. Before
+runtime, security, tool, memory, gateway, provider, or deployment-handoff
+changes, read the matching `docs/HERMES_*` plan and update
+`docs/HERMES_BUILD_LOG.md` when behavior changes.
+
+Key campaign references:
+
+- `docs/HERMES_DEVELOPER_GUIDE.md`
+- `docs/HERMES_OPERATOR_QUICKSTART.md`
+- `docs/HERMES_SYSTEM_AUDIT.md`
+- `docs/HERMES_TARGET_ARCHITECTURE.md`
+- `docs/HERMES_EXECUTION_PLAN.md`
+- `docs/HERMES_JUDGE_RUBRIC.md`
+- `docs/HERMES_TOOL_REGISTRY.md`
+- `docs/HERMES_MEMORY_PLAN.md`
+- `docs/HERMES_SECURITY_MODEL.md`
+- `docs/HERMES_TESTING_PLAN.md`
+- `docs/HERMES_BUILD_LOG.md`
+- `docs/HERMES_REPOSITORY_HANDOFF.md`
+
+Do not print, commit, or move secrets, credentials, tokens, private keys, raw
+private memory, raw logs, or provider facts. Preserve documented gateway
+startup boundaries unless a replacement migration is explicitly approved and
+validated.
+
 ## Development Environment
 
 ```bash

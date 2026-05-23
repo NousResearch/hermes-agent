@@ -14,6 +14,22 @@ def test_show_status_includes_tavily_key(monkeypatch, capsys, tmp_path):
     assert "tvly...cdef" in output
 
 
+def test_show_status_all_still_redacts_api_keys(monkeypatch, capsys, tmp_path):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    openrouter_key = "sk-" + "or-v1-exampleexampleexample"
+    github_token = "gho_" + "exampleexampleexample"
+    monkeypatch.setenv("OPENROUTER_API_KEY", openrouter_key)
+    monkeypatch.setenv("GITHUB_TOKEN", github_token)
+
+    show_status(SimpleNamespace(all=True, deep=False))
+
+    output = capsys.readouterr().out
+    assert "secret values remain redacted" in output
+    assert openrouter_key not in output
+    assert github_token not in output
+    assert "sk-o...mple" in output
+
+
 def test_show_status_termux_gateway_section_skips_systemctl(monkeypatch, capsys, tmp_path):
     from hermes_cli import status as status_mod
     import hermes_cli.auth as auth_mod

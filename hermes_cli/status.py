@@ -121,6 +121,8 @@ def show_status(args):
     # =========================================================================
     print()
     print(color("◆ API Keys", Colors.CYAN, Colors.BOLD))
+    if show_all:
+        print(color("  --all requested; secret values remain redacted by policy.", Colors.DIM))
 
     # Values may be a single env var name (str) or a tuple of alternates (first found wins).
     keys: dict[str, str | tuple[str, ...]] = {
@@ -163,12 +165,12 @@ def show_status(args):
             continue
         value = _resolve_env(env_ref)
         has_key = bool(value)
-        display = redact_key(value) if not show_all else value
+        display = redact_key(value)
         print(f"  {name:<12}  {check_mark(has_key)} {display}")
 
     from hermes_cli.auth import get_anthropic_key
     anthropic_value = get_anthropic_key()
-    anthropic_display = redact_key(anthropic_value) if not show_all else anthropic_value
+    anthropic_display = redact_key(anthropic_value)
     print(f"  {'Anthropic':<12}  {check_mark(bool(anthropic_value))} {anthropic_display}")
 
     # =========================================================================

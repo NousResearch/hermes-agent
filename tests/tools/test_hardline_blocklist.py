@@ -265,8 +265,9 @@ def test_recoverable_dangerous_commands_still_pass_yolo(clean_session, monkeypat
     """
     monkeypatch.setenv("HERMES_YOLO_MODE", "1")
 
-    # These are dangerous but NOT hardline — yolo should still pass them.
-    for cmd in ["rm -rf /tmp/x", "chmod -R 777 .", "git reset --hard", "git push --force"]:
+    # These are dangerous but NOT hardline or typed-confirmation high-risk —
+    # yolo should still pass them.
+    for cmd in ["rm -rf /tmp/x", "chmod -R 777 .", "bash -lc 'echo ok'"]:
         # Sanity: still flagged as dangerous
         is_dangerous, _, _ = detect_dangerous_command(cmd)
         assert is_dangerous, f"precondition: {cmd!r} should be in DANGEROUS_PATTERNS"

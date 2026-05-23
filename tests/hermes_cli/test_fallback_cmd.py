@@ -424,6 +424,99 @@ class TestClearCommand:
 
 
 # ---------------------------------------------------------------------------
+# cmd_fallback_configure_openrouter
+# ---------------------------------------------------------------------------
+
+class TestConfigureOpenRouter:
+    def test_configures_openrouter_as_first_fallback(self, isolated_home, capsys):
+        _write_config(isolated_home, {
+            "model": {"provider": "openai-codex", "default": "gpt-5.5"},
+        })
+
+        from hermes_cli.fallback_cmd import cmd_fallback_configure_openrouter
+        cmd_fallback_configure_openrouter(types.SimpleNamespace(
+            model=None,
+            replace=False,
+            dry_run=False,
+        ))
+
+        cfg = _read_config(isolated_home)
+        assert cfg["fallback_providers"] == [{
+            "provider": "openrouter",
+            "model": "google/gemini-3-flash-preview",
+            "base_url": "https://openrouter.ai/api/v1",
+            "api_mode": "chat_completions",
+        }]
+        out = capsys.readouterr().out
+        assert "OpenRouter fallback configured" in out
+
+    def test_configure_openrouter_preserves_existing_non_duplicate_fallbacks(self, isolated_home):
+        _write_config(isolated_home, {
+            "fallback_providers": [
+                {"provider": "ollama-cloud", "model": "gpt-oss-120b"},
+                {"provider": "openrouter", "model": "google/gemini-3-flash-preview"},
+                {"provider": "nous", "model": "Hermes-4"},
+            ],
+        })
+
+        from hermes_cli.fallback_cmd import cmd_fallback_configure_openrouter
+        cmd_fallback_configure_openrouter(types.SimpleNamespace(
+            model=None,
+            replace=False,
+            dry_run=False,
+        ))
+
+        cfg = _read_config(isolated_home)
+        assert cfg["fallback_providers"] == [
+            {
+                "provider": "openrouter",
+                "model": "google/gemini-3-flash-preview",
+                "base_url": "https://openrouter.ai/api/v1",
+                "api_mode": "chat_completions",
+            },
+            {"provider": "ollama-cloud", "model": "gpt-oss-120b"},
+            {"provider": "nous", "model": "Hermes-4"},
+        ]
+
+    def test_configure_openrouter_can_replace_existing_chain(self, isolated_home):
+        _write_config(isolated_home, {
+            "fallback_model": {"provider": "ollama-cloud", "model": "gpt-oss-120b"},
+            "fallback_providers": [{"provider": "nous", "model": "Hermes-4"}],
+        })
+
+        from hermes_cli.fallback_cmd import cmd_fallback_configure_openrouter
+        cmd_fallback_configure_openrouter(types.SimpleNamespace(
+            model="anthropic/claude-sonnet-4.6",
+            replace=True,
+            dry_run=False,
+        ))
+
+        cfg = _read_config(isolated_home)
+        assert "fallback_model" not in cfg
+        assert cfg["fallback_providers"] == [{
+            "provider": "openrouter",
+            "model": "anthropic/claude-sonnet-4.6",
+            "base_url": "https://openrouter.ai/api/v1",
+            "api_mode": "chat_completions",
+        }]
+
+    def test_configure_openrouter_dry_run_does_not_write(self, isolated_home, capsys):
+        _write_config(isolated_home, {})
+
+        from hermes_cli.fallback_cmd import cmd_fallback_configure_openrouter
+        cmd_fallback_configure_openrouter(types.SimpleNamespace(
+            model=None,
+            replace=False,
+            dry_run=True,
+        ))
+
+        assert _read_config(isolated_home) == {}
+        out = capsys.readouterr().out
+        assert "No config changes written" in out
+        assert "google/gemini-3-flash-preview" in out
+
+
+# ---------------------------------------------------------------------------
 # cmd_fallback dispatcher
 # ---------------------------------------------------------------------------
 
@@ -455,6 +548,19 @@ class TestDispatcher:
         with pytest.raises(SystemExit):
             cmd_fallback(types.SimpleNamespace(fallback_command="nope"))
 
+    def test_dispatches_configure_openrouter(self, isolated_home):
+        _write_config(isolated_home, {})
+        from hermes_cli.fallback_cmd import cmd_fallback
+        cmd_fallback(types.SimpleNamespace(
+            fallback_command="configure-openrouter",
+            model=None,
+            replace=False,
+            dry_run=False,
+        ))
+
+        cfg = _read_config(isolated_home)
+        assert cfg["fallback_providers"][0]["provider"] == "openrouter"
+
 
 # ---------------------------------------------------------------------------
 # argparse wiring — verify the subparser is registered
@@ -479,8 +585,9 @@ class TestArgparseWiring:
         # --help exits 0
         assert result.returncode == 0, f"stderr: {result.stderr}"
         out = result.stdout + result.stderr
-        # All four subcommands should appear in help
+        # All fallback subcommands should appear in help
         assert "list" in out
         assert "add" in out
         assert "remove" in out
         assert "clear" in out
+        assert "configure-openrouter" in out

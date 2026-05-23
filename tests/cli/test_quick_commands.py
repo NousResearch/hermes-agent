@@ -39,6 +39,25 @@ class TestCLIQuickCommands:
         printed = self._printed_plain(cli.console.print.call_args[0][0])
         assert printed == "daily-note"
 
+    def test_exec_command_forwards_user_args(self):
+        cmd = "python3 -c 'import sys; print(\"|\".join(sys.argv[1:]))'"
+        cli = self._make_cli({"mc": {"type": "exec", "command": cmd}})
+        result = cli.process_command("/mc alpha 'two words'")
+        assert result is True
+        cli.console.print.assert_called_once()
+        printed = self._printed_plain(cli.console.print.call_args[0][0])
+        assert printed == "alpha|two words"
+
+    def test_exec_command_output_is_redacted(self, monkeypatch):
+        monkeypatch.setattr("agent.redact._REDACT_ENABLED", True)
+        synthetic_key = "sk-" + "ant-api03-" + "supersecretkey1234567890"
+        cli = self._make_cli({"token": {"type": "exec", "command": f"echo {synthetic_key}"}})
+        result = cli.process_command("/token")
+        assert result is True
+        cli.console.print.assert_called_once()
+        printed = self._printed_plain(cli.console.print.call_args[0][0])
+        assert "supersecretkey1234567890" not in printed
+
     def test_exec_command_uses_chat_console_when_tui_is_live(self):
         cli = self._make_cli({"dn": {"type": "exec", "command": "echo daily-note"}})
         cli._app = object()
@@ -161,6 +180,20 @@ class TestGatewayQuickCommands:
         assert result == "ok"
 
     @pytest.mark.asyncio
+    async def test_exec_command_forwards_user_args(self):
+        from gateway.run import GatewayRunner
+        runner = GatewayRunner.__new__(GatewayRunner)
+        cmd = "python3 -c 'import sys; print(\"|\".join(sys.argv[1:]))'"
+        runner.config = {"quick_commands": {"mc": {"type": "exec", "command": cmd}}}
+        runner._running_agents = {}
+        runner._pending_messages = {}
+        runner._is_user_authorized = MagicMock(return_value=True)
+
+        event = self._make_event("mc", "alpha 'two words'")
+        result = await runner._handle_message(event)
+        assert result == "alpha|two words"
+
+    @pytest.mark.asyncio
     async def test_exec_command_does_not_leak_credentials(self):
         """Quick command exec must sanitize env — API keys must not appear in output."""
         from gateway.run import GatewayRunner
@@ -172,10 +205,11 @@ class TestGatewayQuickCommands:
         runner._is_user_authorized = MagicMock(return_value=True)
 
         event = self._make_event("leak")
-        with patch.dict(os.environ, {"OPENROUTER_API_KEY": "sk-or-secret-12345"}):
+        synthetic_key = "sk-" + "or-secret-12345"
+        with patch.dict(os.environ, {"OPENROUTER_API_KEY": synthetic_key}):
             result = await runner._handle_message(event)
 
-        assert "sk-or-secret-12345" not in result, \
+        assert synthetic_key not in result, \
             "Quick command leaked OPENROUTER_API_KEY — exec runs without env sanitization"
 
     @pytest.mark.asyncio
@@ -189,7 +223,8 @@ class TestGatewayQuickCommands:
         monkeypatch.setattr("agent.redact._REDACT_ENABLED", True)
 
         runner = GatewayRunner.__new__(GatewayRunner)
-        runner.config = {"quick_commands": {"token": {"type": "exec", "command": "echo sk-ant-api03-supersecretkey1234567890"}}}
+        synthetic_key = "sk-" + "ant-api03-" + "supersecretkey1234567890"
+        runner.config = {"quick_commands": {"token": {"type": "exec", "command": f"echo {synthetic_key}"}}}
         runner._running_agents = {}
         runner._pending_messages = {}
         runner._is_user_authorized = MagicMock(return_value=True)

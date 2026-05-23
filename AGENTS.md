@@ -2,6 +2,27 @@
 
 Instructions for AI coding assistants and developers working on the hermes-agent codebase.
 
+## Repository Instruction Files
+
+`AGENTS.md` is the canonical, shared repo instruction file. Keep durable
+cross-agent guidance here and avoid maintaining a second full copy in
+`CLAUDE.md`, `.cursorrules`, or tool-specific files. If a tool requires its own
+filename, make that file a tiny pointer/import back to `AGENTS.md` so guidance
+doesn't drift.
+
+Hermes loads project context with this priority in
+`agent/prompt_builder.py::build_context_files_prompt()` (first match wins):
+
+1. `.hermes.md` / `HERMES.md` (walks upward to the git root)
+2. `AGENTS.md` / `agents.md` (current working directory only)
+3. `CLAUDE.md` / `claude.md` (current working directory only)
+4. `.cursorrules` / `.cursor/rules/*.mdc` (current working directory only)
+
+Implication: in this repo, `AGENTS.md` is enough for Hermes and other agents
+that understand the standard file. A `CLAUDE.md` may exist only as a
+Claude-Code compatibility shim that points Claude back to `AGENTS.md`; do not
+put unique repo policy there unless it is truly Claude-specific.
+
 ## Development Environment
 
 ```bash
@@ -21,15 +42,22 @@ entry points you'll actually edit.
 
 ```
 hermes-agent/
-├── run_agent.py          # AIAgent class — core conversation loop (~12k LOC)
-├── model_tools.py        # Tool orchestration, discover_builtin_tools(), handle_function_call()
+├── run_agent.py          # AIAgent compatibility facade + provider/tool helpers (~4k LOC)
+├── model_tools.py        # Tool discovery, registry import, handle_function_call()
 ├── toolsets.py           # Toolset definitions, _HERMES_CORE_TOOLS list
 ├── cli.py                # HermesCLI class — interactive CLI orchestrator (~11k LOC)
 ├── hermes_state.py       # SessionDB — SQLite session store (FTS5 search)
 ├── hermes_constants.py   # get_hermes_home(), display_hermes_home() — profile-aware paths
 ├── hermes_logging.py     # setup_logging() — agent.log / errors.log / gateway.log (profile-aware)
 ├── batch_runner.py       # Parallel batch processing
-├── agent/                # Agent internals (provider adapters, memory, caching, compression, etc.)
+├── agent/                # Agent internals extracted from run_agent.py
+│   ├── agent_init.py     # AIAgent.__init__ implementation
+│   ├── conversation_loop.py  # run_conversation loop (model calls, tools, retries)
+│   ├── chat_completion_helpers.py  # API kwargs, streaming calls, fallback helpers
+│   ├── tool_executor.py  # Sequential/parallel tool-call execution
+│   ├── system_prompt.py  # System-prompt assembly from identity/context/memory/etc.
+│   ├── prompt_builder.py # Context files, environment hints, guidance blocks
+│   └── <adapters>.py     # Anthropic, Codex Responses, Bedrock, Azure, Copilot ACP, etc.
 ├── hermes_cli/           # CLI subcommands, setup wizard, plugins loader, skin engine
 ├── tools/                # Tool implementations — auto-discovered via tools/registry.py
 │   └── environments/     # Terminal backends (local, docker, ssh, modal, daytona, singularity)
@@ -42,11 +70,15 @@ hermes-agent/
 ├── plugins/              # Plugin system (see "Plugins" section below)
 │   ├── memory/           # Memory-provider plugins (honcho, mem0, supermemory, ...)
 │   ├── context_engine/   # Context-engine plugins
-│   ├── model-providers/  # Inference backend plugins (openrouter, anthropic, gmi, ...)
+│   ├── model-providers/  # Inference backend plugins (openrouter, anthropic, azure-foundry, ...)
+│   ├── browser/          # Browser provider plugins (browserbase, browser_use, firecrawl)
+│   ├── web/              # Web-search/extraction provider plugins (ddgs, exa, tavily, xai, ...)
+│   ├── platforms/        # Pluginized gateway platforms (discord, irc, line, teams, ...)
 │   ├── kanban/           # Multi-agent board dispatcher + worker plugin
 │   ├── hermes-achievements/  # Gamified achievement tracking
 │   ├── observability/    # Metrics / traces / logs plugin
-│   ├── image_gen/        # Image-generation providers
+│   ├── image_gen/        # Image-generation providers (fal, openai, xai, ...)
+│   ├── video_gen/        # Video-generation providers
 │   └── <others>/         # disk-cleanup, example-dashboard, google_meet, platforms,
 │                         #   spotify, strike-freedom-cockpit, ...
 ├── optional-skills/      # Heavier/niche skills shipped but NOT active by default
@@ -58,7 +90,7 @@ hermes-agent/
 ├── cron/                 # Scheduler — jobs.py, scheduler.py
 ├── scripts/              # run_tests.sh, release.py, auxiliary scripts
 ├── website/              # Docusaurus docs site
-└── tests/                # Pytest suite (~17k tests across ~900 files as of May 2026)
+└── tests/                # Pytest suite; use scripts/run_tests.sh for CI-like runs
 ```
 
 **User config:** `~/.hermes/config.yaml` (settings), `~/.hermes/.env` (API keys only).
@@ -75,16 +107,39 @@ tools/*.py  (each calls registry.register() at import time)
        ↑
 model_tools.py  (imports tools/registry + triggers tool discovery)
        ↑
-run_agent.py, cli.py, batch_runner.py, environments/
+agent/tool_executor.py  (executes model-emitted tool calls)
+       ↑
+agent/conversation_loop.py  (drives model/tool iterations)
+       ↑
+run_agent.AIAgent.run_conversation()  (thin forwarder for compatibility)
+       ↑
+cli.py, gateway/session.py, tui_gateway/server.py, batch_runner.py, delegate/cron paths
+```
+
+System-prompt assembly is split separately:
+
+```
+agent/system_prompt.py
+       ├─ agent/prompt_builder.py        # identity/context files/environment/guidance
+       ├─ agent/memory_manager.py        # memory context blocks
+       └─ agent/skill_preprocessing.py   # skill/user-message expansion paths
 ```
 
 ---
 
 ## AIAgent Class (run_agent.py)
 
-The real `AIAgent.__init__` takes ~60 parameters (credentials, routing, callbacks,
-session context, budget, credential pool, etc.). The signature below is the
-minimum subset you'll usually touch — read `run_agent.py` for the full list.
+`run_agent.AIAgent` is now intentionally a compatibility facade: the public
+methods and many monkeypatch-friendly symbols still live on `run_agent.py`, but
+the heavy bodies are extracted into `agent/` modules. Preserve that patch
+contract when refactoring — many tests and plugins patch `run_agent.OpenAI`,
+`run_agent.handle_function_call`, or `AIAgent._...` methods directly.
+
+The real `AIAgent.__init__` takes 60+ parameters (credentials, routing,
+callbacks, session context, budgets, credential pools, checkpoints, etc.) and
+forwards to `agent.agent_init.init_agent(self, ...)`. The signature below is the
+minimum subset you'll usually touch — read `run_agent.py` and
+`agent/agent_init.py` for the full list.
 
 ```python
 class AIAgent:
@@ -93,18 +148,31 @@ class AIAgent:
         api_key: str = None,
         provider: str = None,
         api_mode: str = None,              # "chat_completions" | "codex_responses" | ...
+        acp_command: str = None,
+        acp_args: list[str] | None = None,
+        command: str = None,               # ACP-compatible command override
+        args: list[str] | None = None,
         model: str = "",                   # empty → resolved from config/provider later
         max_iterations: int = 90,          # tool-calling iterations (shared with subagents)
+        tool_delay: float = 1.0,
         enabled_toolsets: list = None,
         disabled_toolsets: list = None,
-        quiet_mode: bool = False,
         save_trajectories: bool = False,
+        verbose_logging: bool = False,
+        quiet_mode: bool = False,
+        ephemeral_system_prompt: str = None,
         platform: str = None,              # "cli", "telegram", etc.
+        user_id: str = None,
+        chat_id: str = None,
+        thread_id: str = None,
+        gateway_session_key: str = None,
         session_id: str = None,
         skip_context_files: bool = False,
+        load_soul_identity: bool = False,
         skip_memory: bool = False,
         credential_pool=None,
-        # ... plus callbacks, thread/user/chat IDs, iteration_budget, fallback_model,
+        # ... plus callbacks, provider routing, max_tokens, request_overrides,
+        # iteration_budget, fallback_model, session_db/parent_session_id,
         # checkpoints config, prefill_messages, service_tier, reasoning_config, etc.
     ): ...
 
@@ -112,31 +180,46 @@ class AIAgent:
         """Simple interface — returns final response string."""
 
     def run_conversation(self, user_message: str, system_message: str = None,
-                         conversation_history: list = None, task_id: str = None) -> dict:
-        """Full interface — returns dict with final_response + messages."""
+                         conversation_history: list = None, task_id: str = None,
+                         stream_callback: callable | None = None,
+                         persist_user_message: str | None = None) -> dict:
+        """Forwarder to agent.conversation_loop.run_conversation()."""
 ```
 
 ### Agent Loop
 
-The core loop is inside `run_conversation()` — entirely synchronous, with
-interrupt checks, budget tracking, and a one-turn grace call:
+The core loop is `agent/conversation_loop.py::run_conversation(agent, ...)`.
+It is synchronous and handles system-prompt restore/build, memory prefetch,
+preflight compression, `/steer`, retries/fallbacks, streaming, tool dispatch,
+post-turn persistence, and background review hooks. The high-level shape is:
 
 ```python
+# run_agent.AIAgent.run_conversation(...) forwards here
+messages = restore_or_build_system_prompt_and_history(...)
+maybe_prefetch_memory_and_compress(messages)
+
+if agent.api_mode == "codex_app_server":
+    return agent._run_codex_app_server_turn(...)
+
 while (api_call_count < self.max_iterations and self.iteration_budget.remaining > 0) \
         or self._budget_grace_call:
     if self._interrupt_requested: break
-    response = client.chat.completions.create(model=model, messages=messages, tools=tool_schemas)
-    if response.tool_calls:
-        for tool_call in response.tool_calls:
-            result = handle_function_call(tool_call.name, tool_call.args, task_id)
-            messages.append(tool_result_message(result))
-        api_call_count += 1
-    else:
-        return response.content
+    api_kwargs = agent._build_api_kwargs(api_messages)
+    response = agent._interruptible_streaming_api_call(**api_kwargs)  # preferred path
+    assistant_message = agent._build_assistant_message(response)
+    messages.append(assistant_message)
+    if assistant_message.tool_calls:
+        agent._execute_tool_calls(assistant_message, messages, effective_task_id, api_call_count)
+        continue
+    return {"final_response": assistant_message.content, "messages": messages}
 ```
 
 Messages follow OpenAI format: `{"role": "system/user/assistant/tool", ...}`.
 Reasoning content is stored in `assistant_msg["reasoning"]`.
+
+Tool execution lives in `agent/tool_executor.py` and may run safe tool batches in
+parallel. It still calls `run_agent.handle_function_call()` via a lazy `run_agent`
+reference so tests/plugins that patch `run_agent` continue to see the call.
 
 ---
 
@@ -343,10 +426,17 @@ Reference: #2810 (bounds pass), #9801 (SHA pinning + audit CI).
 
 ### Top-level `config.yaml` sections (non-exhaustive):
 
-`model`, `agent`, `terminal`, `compression`, `display`, `stt`, `tts`,
-`memory`, `security`, `delegation`, `smart_model_routing`, `checkpoints`,
-`auxiliary`, `curator`, `skills`, `gateway`, `logging`, `cron`, `profiles`,
-`plugins`, `honcho`.
+`model`, `providers`, `fallback_providers`, `credential_pool_strategies`,
+`toolsets`, `agent`, `terminal`, `web`, `browser`, `checkpoints`,
+`file_read_max_chars`, `tool_output`, `tool_loop_guardrails`, `compression`,
+`prompt_caching`, `openrouter`, `bedrock`, `auxiliary`, `display`, `dashboard`,
+`privacy`, `tts`, `stt`, `voice`, `human_delay`, `context`, `memory`,
+`delegation`, `prefill_messages_file`, `goals`, `skills`, `curator`, `honcho`,
+`timezone`, platform sections (`slack`, `discord`, `whatsapp`, `telegram`,
+`mattermost`, `matrix`), `approvals`, `command_allowlist`, `quick_commands`,
+`hooks`, `hooks_auto_accept`, `personalities`, `security`, `cron`, `kanban`,
+`code_execution`, `logging`, `model_catalog`, `network`, `sessions`,
+`onboarding`, `updates`, `lsp`, `x_search`, `secrets`.
 
 `auxiliary` holds per-task overrides for side-LLM work (curator, vision,
 embedding, title generation, session_search, etc.) — each task can pin
@@ -356,6 +446,10 @@ its own provider/model/base_url/max_tokens/reasoning_effort. See
 `curator` holds the background skill-maintenance config —
 `enabled`, `interval_hours`, `min_idle_hours`, `stale_after_days`,
 `archive_after_days`, `backup` (nested).
+
+`secrets` configures external secret-source integrations such as Bitwarden
+Secrets Manager. Keep secret *values* out of config and `.md` docs; store only
+provider names, project IDs, key references, or enablement flags in YAML.
 
 ### .env variables (SECRETS ONLY — API keys, tokens, passwords):
 1. Add to `OPTIONAL_ENV_VARS` in `hermes_cli/config.py` with metadata:
@@ -378,9 +472,10 @@ the env var in code (see `gateway_timeout`, `terminal.cwd` → `TERMINAL_CWD`).
 
 | Loader | Used by | Location |
 |--------|---------|----------|
-| `load_cli_config()` | CLI mode | `cli.py` — merges CLI-specific defaults + user YAML |
-| `load_config()` | `hermes tools`, `hermes setup`, most CLI subcommands | `hermes_cli/config.py` — merges `DEFAULT_CONFIG` + user YAML |
-| Direct YAML load | Gateway runtime | `gateway/run.py` + `gateway/config.py` — reads user YAML raw |
+| `load_cli_config()` | Classic prompt_toolkit CLI mode | `cli.py` — merges CLI-specific defaults + user YAML |
+| `load_config()` / `cfg_get()` | `hermes tools`, `hermes setup`, most CLI subcommands, helpers | `hermes_cli/config.py` — merges `DEFAULT_CONFIG` + user YAML |
+| `GatewayConfig.load()` | Gateway runtime | `gateway/config.py`, consumed by `gateway/run.py` |
+| TUI config sync | Ink TUI + dashboard-embedded TUI | `tui_gateway/server.py` + `ui-tui/src/app/useConfigSync.ts` |
 
 If you add a new key and the CLI sees it but the gateway doesn't (or vice
 versa), you're on the wrong loader. Check `DEFAULT_CONFIG` coverage.
@@ -496,19 +591,23 @@ repo-shipped plugins can be discovered alongside user-installed ones in
 and pip entry points. Each plugin exposes a `register(ctx)` function that
 can:
 
-- Register Python-callback lifecycle hooks:
-  `pre_tool_call`, `post_tool_call`, `pre_llm_call`, `post_llm_call`,
-  `on_session_start`, `on_session_end`
+- Register Python-callback lifecycle hooks. Common hooks include
+  `pre_tool_call`, `post_tool_call`, `transform_tool_result`,
+  `pre_llm_call`, `post_llm_call`, `pre_api_request`, `post_api_request`,
+  `on_session_start`, `on_session_end`, `on_session_reset`, and
+  `on_session_finalize`.
 - Register new tools via `ctx.register_tool(...)`
 - Register CLI subcommands via `ctx.register_cli_command(...)` — the
   plugin's argparse tree is wired into `hermes` at startup so
   `hermes <pluginname> <subcmd>` works with no change to `main.py`
 
-Hooks are invoked from `model_tools.py` (pre/post tool) and `run_agent.py`
-(lifecycle). **Discovery timing pitfall:** `discover_plugins()` only runs
-as a side effect of importing `model_tools.py`. Code paths that read plugin
-state without importing `model_tools.py` first must call `discover_plugins()`
-explicitly (it's idempotent).
+Hooks are invoked from `model_tools.py` / `tools/terminal_tool.py` (tool and
+shell-hook paths), `agent/conversation_loop.py` (per-API-call and turn hooks),
+`cli.py`, `gateway/run.py`, `tui_gateway/server.py`, and delegate/cron paths.
+**Discovery timing pitfall:** `discover_plugins()` usually runs as a side effect
+of importing `model_tools.py`, but code paths that read plugin state without
+importing `model_tools.py` first must call `discover_plugins()` explicitly (it's
+idempotent).
 
 ### Memory-provider plugins (`plugins/memory/<name>/`)
 
@@ -571,15 +670,25 @@ without an explicit `kind:` get auto-coerced via a source-text heuristic
 
 Full authoring guide: `website/docs/developer-guide/model-provider-plugin.md`.
 
-### Dashboard / context-engine / image-gen plugin directories
+### Specialized provider plugin directories
 
-`plugins/context_engine/`, `plugins/image_gen/`, etc. follow the same
-pattern (ABC + orchestrator + per-plugin directory). Context engines
-plug into `agent/context_engine.py`; image-gen providers into
-`agent/image_gen_provider.py`. Reference / docs-companion plugins
-(`example-dashboard`, `strike-freedom-cockpit`, `plugin-llm-example`,
-`plugin-llm-async-example`) live in the
-[`hermes-example-plugins`](https://github.com/NousResearch/hermes-example-plugins)
+`plugins/context_engine/`, `plugins/image_gen/`, `plugins/video_gen/`,
+`plugins/browser/`, `plugins/web/`, and `plugins/platforms/` each use a
+specialized orchestrator/ABC in addition to the manifest. Examples:
+
+- Browser providers plug into `agent/browser_provider.py` and are registered by
+  `agent/browser_registry.py`.
+- Web-search/extraction providers live under `plugins/web/<name>/` and are
+  selected by the `web` / `x_search` configuration paths.
+- Image providers plug into `agent/image_gen_provider.py`; video providers use
+  the analogous video provider path.
+- Gateway platform plugins (for example Discord) live under
+  `plugins/platforms/<platform>/` and keep optional/heavy platform dependencies
+  out of core imports.
+
+Reference / docs-companion plugins (`example-dashboard`,
+`strike-freedom-cockpit`, `plugin-llm-example`, `plugin-llm-async-example`) live
+in the [`hermes-example-plugins`](https://github.com/NousResearch/hermes-example-plugins)
 companion repo, not in this tree.
 
 ---

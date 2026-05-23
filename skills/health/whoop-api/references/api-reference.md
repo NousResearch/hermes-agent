@@ -50,7 +50,7 @@ GET /v2/cycle
 | `limit` | int | Max results (default 25, max 25) |
 | `offset` | int | Pagination offset |
 
-Response fields: `id`, `strain`, `recovery_score`, `kiljoule`, `average_heart_rate`, `max_heart_rate`, `start`, `end`, `updated_at`
+Response fields: `id`, `strain`, `recovery_score`, `kilojoule`, `average_heart_rate`, `max_heart_rate`, `start`, `end`, `updated_at`
 
 ### Recovery
 
@@ -80,7 +80,7 @@ Response fields: `id`, `score{stage_summary{total, light, deep, rem, wake}, dura
 
 Same pagination params.
 
-Response fields: `id`, `strain`, `average_heart_rate`, `max_heart_rate`, `kiljoule`, `start`, `end`, `updated_at`
+Response fields: `id`, `strain`, `average_heart_rate`, `max_heart_rate`, `kilojoule`, `start`, `end`, `updated_at`
 
 ### Body Measurement
 

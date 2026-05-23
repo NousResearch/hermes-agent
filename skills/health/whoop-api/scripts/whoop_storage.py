@@ -201,9 +201,14 @@ def _load_from_json_file(path: Path, required_fields: tuple = TOKEN_FIELDS) -> d
 
 
 def _save_to_json_file(path: Path, data: dict) -> None:
-    """Write JSON to file with restricted permissions."""
+    """Write JSON to file with restricted permissions.
+
+    Uses atomic write (temp + rename) to prevent partial reads
+    during concurrent access (e.g. cron refresh vs agent pull).
+    """
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(data, indent=2))
-    # Restrict permissions (no-op on Windows)
+    tmp_path = path.with_suffix(".tmp")
+    tmp_path.write_text(json.dumps(data, indent=2))
     if platform.system() != "Windows":
-        path.chmod(0o600)
+        tmp_path.chmod(0o600)
+    os.replace(tmp_path, path)

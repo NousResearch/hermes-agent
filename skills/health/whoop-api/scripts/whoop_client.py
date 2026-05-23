@@ -15,7 +15,7 @@ from pathlib import Path
 import requests
 
 from whoop_endpoints import ENDPOINTS, Endpoint, all_endpoints
-from whoop_storage import load_tokens, save_tokens, load_client_credentials
+from whoop_storage import load_tokens, save_tokens, load_client_credentials, clear_tokens
 
 API_BASE = "https://api.prod.whoop.com"
 RATE_LIMIT = 100  # requests per minute
@@ -83,11 +83,22 @@ class WhoopClient:
         )
 
         if response.status_code == 401:
+            # Refresh token is invalid — clear stored tokens so status
+            # reports a clean re-auth requirement instead of silent stale state
+            clear_tokens()
             raise TokenExpiredError(
                 "Refresh token expired. Run `whoop_sync.py setup` to re-authenticate."
             )
-        response.raise_for_status()
+
+        # Catch OAuth error responses (e.g. invalid_grant) even on non-401 status
         token_data = response.json()
+        if "error" in token_data:
+            clear_tokens()
+            raise TokenExpiredError(
+                f"Token refresh failed: {token_data['error']}. Run `whoop_sync.py setup` to re-authenticate."
+            )
+
+        response.raise_for_status()
 
         new_expires_at = time.time() + token_data.get("expires_in", 3600)
         save_tokens(

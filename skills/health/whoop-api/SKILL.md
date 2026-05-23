@@ -80,7 +80,7 @@ All commands run from the skill directory. Use absolute paths when calling from 
 
 | Flag | Default | Description |
 |---|---|---|
-| `--data-dir PATH` | `./whoop_data` | Output directory for JSON files |
+| `--data-dir PATH` | `./whoop_data` | Output directory for JSON files (use absolute paths for cron) |
 
 ### API Endpoints
 

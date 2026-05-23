@@ -4490,9 +4490,16 @@ def _record_task_failure(
             else:
                 # Timeout/crash path: task is already at ``ready`` via
                 # its own UPDATE. Just bookkeep the counter + last error.
+                # CRITICAL: include status='ready' filter to prevent a
+                # cross-transaction race where the task was completed
+                # (->'done') between the caller's transition txn and
+                # this counter-increment txn. Without the status filter,
+                # we'd silently corrupt consecutive_failures on done
+                # tasks (false-done circuit breaker bug, 2026-05-23).
                 conn.execute(
                     "UPDATE tasks SET consecutive_failures = ?, "
-                    "last_failure_error = ? WHERE id = ?",
+                    "last_failure_error = ? "
+                    "WHERE id = ? AND status = 'ready'",
                     (failures, error[:500], task_id),
                 )
             if end_run:

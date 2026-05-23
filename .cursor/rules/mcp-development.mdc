@@ -15,7 +15,7 @@ alwaysApply: false
 ## Architecture
 
 - `mcp_serve.py` — Main MCP server entry point (stdio transport)
-- `hermes_skills_mcp.py` — Standalone module providing 8 read-only skills/knowledge tools
+- `hermes_skills_mcp.py` — Standalone module providing 9 read-only skills/knowledge tools
 - `.cursor/mcp.json` — Cursor auto-connects to the server defined here
 - Transport: stdio (no HTTP, no gateway dependency for skills tools)
 
@@ -23,7 +23,7 @@ alwaysApply: false
 
 | Surface | Module | Tools | Gateway Required |
 |---------|--------|-------|-----------------|
-| Skills & Knowledge | `hermes_skills_mcp.py` | 8 read-only | No |
+| Skills & Knowledge | `hermes_skills_mcp.py` | 9 read-only | No |
 | Messaging & Ops | `mcp_serve.py` core | 10 messaging tools | Yes |
 
 ### Skills tools (read-only, no gateway)
@@ -31,6 +31,7 @@ alwaysApply: false
 | Tool | Input | Returns |
 |------|-------|---------|
 | `fleet_context_snapshot()` | — | Bounded session bootstrap: mode, paths, registry, memory, knowledge, held-spec flags |
+| `agent_health_summary()` | — | Compact actionable fleet health anomalies |
 | `skills_list()` | — | All SOUL.md files and repo skills |
 | `skills_read(name)` | agent/skill name | Full SOUL.md or skill content |
 | `agents_list(include_heartbeat)` | bool | Registry + optional heartbeat |

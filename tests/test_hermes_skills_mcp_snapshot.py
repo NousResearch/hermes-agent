@@ -213,3 +213,43 @@ def test_fleet_context_snapshot_explicit_agents_dir_is_source_of_truth(snapshot_
         "source_of_truth": "HERMES_AGENTS_DIR",
         "gateway_reachable": False,
     }
+
+
+def test_agent_health_summary_reports_actionable_anomalies(snapshot_env):
+    repo, _home, mcp = snapshot_env
+    agents_dir = repo / "agents"
+    _write_registry(
+        agents_dir,
+        {
+            "alpha": {"status": "active"},
+            "beta": {"status": "active"},
+        },
+    )
+    beta = agents_dir / "beta"
+    beta.mkdir()
+    (beta / "HEARTBEAT.md").write_text("ok\n", encoding="utf-8")
+    stale_ts = time.time() - (mcp._HEARTBEAT_STALE_SECONDS + 3600)
+    os.utime(beta / "HEARTBEAT.md", (stale_ts, stale_ts))
+
+    summary = mcp.build_agent_health_summary()
+
+    assert summary["status"] == "attention"
+    assert summary["mode"] == "skills_only"
+    assert summary["writes_allowed"] is False
+    assert summary["registry_present"] is True
+    assert summary["agent_count"] == 2
+    assert {item["agent"] for item in summary["stale_heartbeats"]} == {"alpha", "beta"}
+    assert "latest_state" in summary["missing_layers"]
+    assert summary["next_action"]
+
+
+def test_agent_health_summary_registered_tool(snapshot_env):
+    repo, _home, mcp = snapshot_env
+    _write_registry(repo / "agents", {"alpha": {"status": "active"}})
+    tools = _registered_tools(mcp)
+
+    result = json.loads(tools.agent_health_summary())
+
+    assert result["mode"] == "skills_only"
+    assert result["agent_count"] == 1
+    assert result["writes_allowed"] is False

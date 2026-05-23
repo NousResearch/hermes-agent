@@ -52,6 +52,7 @@ Hermes MCP is really two products behind one server:
 | Tool | Purpose |
 |------|---------|
 | `fleet_context_snapshot` | One-call bounded fleet bootstrap for IDEs |
+| `agent_health_summary` | Compact actionable health anomalies without the full registry dump |
 | `skills_list` | Agent SOUL.md dirs + repo `skills/` catalog |
 | `skills_read` | Read SOUL.md or skill files |
 | `agents_list` | Registry + optional heartbeat files |

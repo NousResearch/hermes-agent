@@ -589,6 +589,7 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
 
     from tools.send_message_tool import _send_to_platform
     from gateway.config import load_gateway_config, Platform
+    from gateway.mirror import mirror_to_session
 
     # Optionally wrap the content with a header/footer so the user knows this
     # is a cron delivery.  Wrapping is on by default; set cron.wrap_response: false
@@ -723,6 +724,9 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
 
                 if adapter_ok:
                     logger.info("Job '%s': delivered to %s:%s via live adapter", job["id"], platform_name, chat_id)
+                    # Mirror cron output to target session so the main agent
+                    # sees it in conversation history on next user message.
+                    mirror_to_session(platform_name, chat_id, content, source_label="cron", thread_id=thread_id)
                     delivered = True
             except Exception as e:
                 logger.warning(
@@ -757,6 +761,9 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
                 continue
 
             logger.info("Job '%s': delivered to %s:%s", job["id"], platform_name, chat_id)
+            # Mirror cron output to target session so the main agent
+            # sees it in conversation history on next user message.
+            mirror_to_session(platform_name, chat_id, content, source_label="cron", thread_id=thread_id)
 
     if delivery_errors:
         return "; ".join(delivery_errors)

@@ -217,8 +217,8 @@ PUBLISH_RESEARCH_ARTIFACT_SCHEMA = {
     "description": (
         "Publish an evidence-backed Scout research artifact to an approved Obsidian vault path. "
         "This tool rejects paths outside its publication allowlist, traversal or symlink paths, "
-        "and research resources lacking evidence metadata and Markdown citations. It cannot "
-        "delete, move, or modify profile/system files."
+        "research resources lacking evidence metadata and Markdown citations, and attempts to "
+        "overwrite an existing resource. It cannot delete, move, or modify profile/system files."
     ),
     "parameters": {
         "type": "object",

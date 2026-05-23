@@ -3038,15 +3038,24 @@ def complete_task(
 # ---------------------------------------------------------------------------
 
 def _is_managed_scratch_path(p: Path) -> bool:
-    """Return True iff *p* lives inside a kanban-managed scratch root.
+    """Return True iff *p* is a strict descendant of a kanban-managed scratch root.
 
-    A managed root is one of:
+    A managed root is exclusively a ``workspaces/`` directory — never the
+    broader kanban home, a board root, or sibling subtrees like ``logs/`` or
+    ``boards/<slug>/`` itself. Allowed roots:
 
     * ``HERMES_KANBAN_WORKSPACES_ROOT`` when set (worker-side override
       injected by the dispatcher).
-    * The current kanban home's ``kanban/`` subtree, which covers both the
-      legacy default-board scratch root (``<kanban_home>/kanban/workspaces``)
-      and per-board roots (``<kanban_home>/kanban/boards/<slug>/workspaces``).
+    * ``<kanban_home>/kanban/workspaces`` — legacy default-board scratch root.
+    * ``<kanban_home>/kanban/boards/<slug>/workspaces`` for each board slug
+      that currently exists on disk.
+
+    The check requires strict descendancy: a path equal to one of these
+    roots is NOT managed (deleting the workspaces root would wipe every
+    task's scratch dir at once), and a path that resolves to ``<kanban_home>
+    /kanban`` itself, ``<kanban_home>/kanban/logs``, or
+    ``<kanban_home>/kanban/boards/<slug>`` is rejected because those
+    subtrees hold Hermes' own DB, metadata, and logs, not task workspaces.
 
     Used by :func:`_cleanup_workspace` to refuse to ``shutil.rmtree`` paths
     outside Hermes-managed storage. A board ``default_workdir`` pointing at a
@@ -3065,10 +3074,36 @@ def _is_managed_scratch_path(p: Path) -> bool:
         except OSError:
             pass
     try:
-        roots.append((kanban_home() / "kanban").resolve(strict=False))
+        home = kanban_home()
     except OSError:
-        pass
+        home = None
+    if home is not None:
+        try:
+            roots.append((home / "kanban" / "workspaces").resolve(strict=False))
+        except OSError:
+            pass
+        try:
+            boards_parent = (home / "kanban" / "boards").resolve(strict=False)
+        except OSError:
+            boards_parent = None
+        if boards_parent is not None:
+            try:
+                entries = list(boards_parent.iterdir())
+            except OSError:
+                entries = []
+            for entry in entries:
+                try:
+                    if not entry.is_dir():
+                        continue
+                except OSError:
+                    continue
+                try:
+                    roots.append((entry / "workspaces").resolve(strict=False))
+                except OSError:
+                    continue
     for root in roots:
+        if p_abs == root:
+            continue
         try:
             if p_abs.is_relative_to(root):
                 return True

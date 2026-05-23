@@ -1561,6 +1561,47 @@ def test_is_managed_scratch_path_rejects_real_source_tree(kanban_home, tmp_path)
     assert not kb._is_managed_scratch_path(real)
 
 
+def test_is_managed_scratch_path_rejects_kanban_metadata_subtrees(kanban_home):
+    """Hermes' own DB/metadata/log subtrees under ``<kanban_home>/kanban`` are NOT managed.
+
+    Regression guard for the Copilot finding on #28819: a scratch task whose
+    ``workspace_path`` was mis-set to the kanban home, the logs dir, or a
+    board's metadata dir (i.e. the board root itself, not its ``workspaces/``
+    child) must be refused. Without this, the containment check would happily
+    ``shutil.rmtree`` Hermes' DB/metadata/logs on task completion.
+    """
+    kanban_root = kanban_home / "kanban"
+    kanban_root.mkdir(parents=True, exist_ok=True)
+    assert not kb._is_managed_scratch_path(kanban_root)
+
+    logs_dir = kanban_root / "logs"
+    logs_dir.mkdir(parents=True, exist_ok=True)
+    assert not kb._is_managed_scratch_path(logs_dir)
+
+    board_root = kanban_root / "boards" / "my-board"
+    board_root.mkdir(parents=True, exist_ok=True)
+    # The board root itself is NOT a managed scratch dir — only the
+    # ``workspaces/`` child (and its descendants) are.
+    assert not kb._is_managed_scratch_path(board_root)
+
+    # Sibling subtrees of ``workspaces/`` under a board (e.g. its kanban.db
+    # or board.json living next to ``workspaces/``) are also not managed.
+    board_logs = board_root / "logs"
+    board_logs.mkdir(parents=True, exist_ok=True)
+    assert not kb._is_managed_scratch_path(board_logs)
+
+    # Now create the board's workspaces dir and a task scratch dir under it —
+    # the latter is the only thing the guard should allow.
+    board_workspaces = board_root / "workspaces"
+    board_workspaces.mkdir(parents=True, exist_ok=True)
+    # The workspaces root itself is also NOT managed — deleting it would
+    # wipe every task's scratch dir at once.
+    assert not kb._is_managed_scratch_path(board_workspaces)
+    task_dir = board_workspaces / "task-42"
+    task_dir.mkdir(parents=True, exist_ok=True)
+    assert kb._is_managed_scratch_path(task_dir)
+
+
 # ---------------------------------------------------------------------------
 # Tenancy
 # ---------------------------------------------------------------------------

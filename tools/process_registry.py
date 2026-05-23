@@ -857,10 +857,11 @@ class ProcessRegistry:
         7 minutes on Feishu).
 
         This helper closes that window: when `session.exited` is still False
-        but the direct child's `Popen.poll()` reports an exit code, drain any
-        readable bytes non-blocking and flip `session.exited`. The orphaned
-        reader thread remains stuck on its blocking `read()` but is a daemon
-        thread and will be reaped with the process.
+        but the direct child's `Popen.poll()` reports an exit code, flip
+        `session.exited` immediately. We intentionally do *not* read from
+        `proc.stdout` here: the reader thread may already be blocked in
+        `stdout.read()`, and concurrent reads on the same buffered stream can
+        block callers (poll/wait) behind the stream lock.
 
         Safe no-op on sessions without a local `Popen` (env/PTY), already-
         exited sessions, and detached-recovered sessions.
@@ -877,37 +878,7 @@ class ProcessRegistry:
         if rc is None:
             return  # Direct child still running — reader block is legitimate.
 
-        # Direct child exited. Try to drain any bytes the reader hasn't
-        # consumed yet. This is best-effort: if the pipe is held open by a
-        # descendant, the non-blocking read returns what's immediately
-        # available and we stop.
-        drained = ""
-        stdout = getattr(proc, "stdout", None)
-        if stdout is not None and not _IS_WINDOWS:
-            try:
-                import fcntl
-                fd = stdout.fileno()
-                flags = fcntl.fcntl(fd, fcntl.F_GETFL)
-                fcntl.fcntl(fd, fcntl.F_SETFL, flags | os.O_NONBLOCK)
-                try:
-                    chunk = stdout.read()
-                    if chunk:
-                        drained = chunk if isinstance(chunk, str) else chunk.decode("utf-8", errors="replace")
-                except (BlockingIOError, OSError, ValueError):
-                    pass
-                finally:
-                    try:
-                        fcntl.fcntl(fd, fcntl.F_SETFL, flags)
-                    except Exception:
-                        pass
-            except Exception as e:
-                logger.debug("Non-blocking drain failed for %s: %s", session.id, e)
-
         with session._lock:
-            if drained:
-                session.output_buffer += drained
-                if len(session.output_buffer) > session.max_output_chars:
-                    session.output_buffer = session.output_buffer[-session.max_output_chars:]
             session.exited = True
             session.exit_code = rc
         logger.info(

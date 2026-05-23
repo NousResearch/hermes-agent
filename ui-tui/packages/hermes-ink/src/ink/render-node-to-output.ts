@@ -22,6 +22,26 @@ function isXtermJsHost(): boolean {
   return process.env.TERM_PROGRAM === 'vscode' || isXtermJs()
 }
 
+function scrollContentHeight(content: DOMElement | undefined): number {
+  if (!content) {
+    return 0
+  }
+
+  let bottom = content.yogaNode?.getComputedHeight() ?? 0
+
+  for (const child of content.childNodes) {
+    const childYoga = (child as DOMElement).yogaNode
+
+    if (!childYoga) {
+      continue
+    }
+
+    bottom = Math.max(bottom, childYoga.getComputedTop() + scrollContentHeight(child as DOMElement))
+  }
+
+  return bottom
+}
+
 // Per-frame scratch: set when any node's yoga position/size differs from
 // its cached value, or a child was removed. Read by ink.tsx to decide
 // whether the full-damage sledgehammer (PR #20120) is needed this frame.
@@ -711,7 +731,7 @@ function renderNodeToOutput(
         // within the viewport (equal to the scroll container's
         // paddingTop), and innerHeight already subtracts padding, so
         // including it double-counts padding and inflates maxScroll.
-        const scrollHeight = contentYoga?.getComputedHeight() ?? 0
+        const scrollHeight = scrollContentHeight(content)
         // Capture previous scroll bounds BEFORE overwriting — the at-bottom
         // follow check compares against last frame's max.
         const prevScrollHeight = node.scrollHeight ?? scrollHeight

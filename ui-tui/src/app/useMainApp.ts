@@ -74,13 +74,17 @@ export function useMainApp(gw: GatewayClient) {
   const { exit } = useApp()
   const { stdout } = useStdout()
   const [cols, setCols] = useState(stdout?.columns ?? 80)
+  const [rows, setRows] = useState(stdout?.rows ?? 24)
 
   useEffect(() => {
     if (!stdout) {
       return
     }
 
-    const sync = () => setCols(stdout.columns ?? 80)
+    const sync = () => {
+      setCols(stdout.columns ?? 80)
+      setRows(stdout.rows ?? 24)
+    }
 
     stdout.on('resize', sync)
 
@@ -297,7 +301,8 @@ export function useMainApp(gw: GatewayClient) {
     estimateHeight: estimateRowHeight,
     initialHeights: heightCache,
     liveTailActive: turnLiveTailActive,
-    onHeightsChange: syncHeightCache
+    onHeightsChange: syncHeightCache,
+    viewportHeightHint: rows
   })
 
   const scrollWithSelection = useCallback(
@@ -376,11 +381,14 @@ export function useMainApp(gw: GatewayClient) {
     process.exit(0)
   }, [exit, gw])
 
-  const dieWithCode = useCallback((code: number) => {
-    gw.kill()
-    exit()
-    process.exit(code)
-  }, [exit, gw])
+  const dieWithCode = useCallback(
+    (code: number) => {
+      gw.kill()
+      exit()
+      process.exit(code)
+    },
+    [exit, gw]
+  )
 
   const session = useSessionLifecycle({
     colsRef,

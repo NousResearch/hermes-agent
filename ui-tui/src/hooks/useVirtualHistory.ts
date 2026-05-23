@@ -107,7 +107,8 @@ export function useVirtualHistory(
     onHeightsChange,
     overscan = OVERSCAN,
     maxMounted = MAX_MOUNTED,
-    coldStartCount = COLD_START
+    coldStartCount = COLD_START,
+    viewportHeightHint = 0
   }: VirtualHistoryOptions = {}
 ) {
   const nodes = useRef(new Map<string, unknown>())
@@ -157,16 +158,24 @@ export function useVirtualHistory(
 
   if (prevColumns.current !== columns && prevColumns.current > 0 && columns > 0) {
     const ratio = prevColumns.current / columns
+    const stickyNow = scrollRef.current?.isSticky() ?? true
 
     prevColumns.current = columns
 
-    for (const [k, h] of heights.current) {
-      heights.current.set(k, Math.max(1, Math.round(h * ratio)))
+    if (stickyNow) {
+      prevRange.current = null
+      freezeRenders.current = 0
+      skipMeasurement.current = false
+    } else {
+      for (const [k, h] of heights.current) {
+        heights.current.set(k, Math.max(1, Math.round(h * ratio)))
+      }
+
+      skipMeasurement.current = true
+      freezeRenders.current = FREEZE_RENDERS
     }
 
     offsetVersion.current++
-    skipMeasurement.current = true
-    freezeRenders.current = FREEZE_RENDERS
   }
 
   useLayoutEffect(() => {
@@ -242,7 +251,7 @@ export function useVirtualHistory(
   const top = Math.max(0, scrollRef.current?.getScrollTop() ?? 0)
   const pendingDelta = scrollRef.current?.getPendingDelta() ?? 0
   const target = Math.max(0, top + pendingDelta)
-  const vp = Math.max(0, scrollRef.current?.getViewportHeight() ?? 0)
+  const vp = Math.max(0, scrollRef.current?.getViewportHeight() ?? 0, Math.floor(viewportHeightHint))
   const sticky = scrollRef.current?.isSticky() ?? true
   const recentManual = Date.now() - (scrollRef.current?.getLastManualScrollAt() ?? 0) < 1200
 
@@ -533,4 +542,5 @@ interface VirtualHistoryOptions {
   maxMounted?: number
   onHeightsChange?: (heights: ReadonlyMap<string, number>) => void
   overscan?: number
+  viewportHeightHint?: number
 }

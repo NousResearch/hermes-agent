@@ -304,6 +304,7 @@ export default class Ink {
   // expensive tree rebuild defers.
   private pendingResizeRender = false
   private resizeSettleTimer: ReturnType<typeof setTimeout> | null = null
+  private resizeLateSettleTimer: ReturnType<typeof setTimeout> | null = null
 
   // Fold synchronous re-entry (selection fanout, onFrame callback)
   // into one follow-up microtask instead of stacking renders.
@@ -519,6 +520,11 @@ export default class Ink {
       this.resizeSettleTimer = null
     }
 
+    if (this.resizeLateSettleTimer !== null) {
+      clearTimeout(this.resizeLateSettleTimer)
+      this.resizeLateSettleTimer = null
+    }
+
     // Alt screen: reset frame buffers so the next render repaints from
     // scratch (prevFrameContaminated → every cell written, wrapped in
     // BSU/ESU — old content stays visible until the new frame swaps
@@ -573,6 +579,11 @@ export default class Ink {
       this.resizeSettleTimer = null
     }
 
+    if (this.resizeLateSettleTimer !== null) {
+      clearTimeout(this.resizeLateSettleTimer)
+      this.resizeLateSettleTimer = null
+    }
+
     // Mouse tracking — DISABLE first so we land in the exact preset state
     // even if an external app/terminal/tmux left DEC 1003 hover asserted.
     // DISABLE_MOUSE_TRACKING is idempotent (resets all four modes
@@ -582,8 +593,20 @@ export default class Ink {
     this.resetFramesForAltScreen()
     this.needsEraseBeforePaint = true
 
-    this.resizeSettleTimer = setTimeout(() => {
-      this.resizeSettleTimer = null
+    this.resizeSettleTimer = this.scheduleAltScreenResizeHeal(160, 'resizeSettleTimer')
+    this.resizeLateSettleTimer = this.scheduleAltScreenResizeHeal(360, 'resizeLateSettleTimer')
+  }
+
+  private scheduleAltScreenResizeHeal(
+    delayMs: number,
+    field: 'resizeSettleTimer' | 'resizeLateSettleTimer'
+  ): ReturnType<typeof setTimeout> {
+    return setTimeout(() => {
+      if (field === 'resizeSettleTimer') {
+        this.resizeSettleTimer = null
+      } else {
+        this.resizeLateSettleTimer = null
+      }
 
       if (!this.canAltScreenRepaint()) {
         return
@@ -592,7 +615,7 @@ export default class Ink {
       this.resetFramesForAltScreen()
       this.needsEraseBeforePaint = true
       this.render(this.currentNode!)
-    }, 160)
+    }, delayMs)
   }
 
   resolveExitPromise: () => void = () => {}
@@ -2431,6 +2454,11 @@ export default class Ink {
     if (this.resizeSettleTimer !== null) {
       clearTimeout(this.resizeSettleTimer)
       this.resizeSettleTimer = null
+    }
+
+    if (this.resizeLateSettleTimer !== null) {
+      clearTimeout(this.resizeLateSettleTimer)
+      this.resizeLateSettleTimer = null
     }
 
     reconciler.updateContainerSync(null, this.container, null, noop)

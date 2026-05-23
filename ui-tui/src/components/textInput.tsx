@@ -4,7 +4,7 @@ import { type MutableRefObject, useEffect, useMemo, useRef, useState } from 'rea
 
 import { setInputSelection } from '../app/inputSelectionStore.js'
 import { readClipboardText, writeClipboardText } from '../lib/clipboard.js'
-import { cursorLayout, offsetFromPosition } from '../lib/inputMetrics.js'
+import { cursorLayout, offsetFromPosition, terminalCursorLayout } from '../lib/inputMetrics.js'
 import {
   DEFAULT_VOICE_RECORD_KEY,
   isActionMod,
@@ -24,7 +24,8 @@ type InkExt = typeof Ink & {
 }
 
 const ink = Ink as unknown as InkExt
-const { Box, Text, useStdin, useInput, useStdout, stringWidth, useCursorAdvance, useDeclaredCursor, useTerminalFocus } = ink
+const { Box, Text, useStdin, useInput, useStdout, stringWidth, useCursorAdvance, useDeclaredCursor, useTerminalFocus } =
+  ink
 
 const ESC = '\x1b'
 const INV = `${ESC}[7m`
@@ -307,7 +308,9 @@ export function supportsFastEchoTerminal(env: NodeJS.ProcessEnv = process.env): 
   // stale paints at soft-wrap boundaries on tall/narrow viewports. Keep this
   // off by default in Termux mode; allow explicit opt-in for local debugging.
   if (isTermuxTuiMode(env)) {
-    const override = String(env.HERMES_TUI_TERMUX_FAST_ECHO ?? '').trim().toLowerCase()
+    const override = String(env.HERMES_TUI_TERMUX_FAST_ECHO ?? '')
+      .trim()
+      .toLowerCase()
     if (override) {
       return /^(?:1|true|yes|on)$/i.test(override)
     }
@@ -442,7 +445,7 @@ export function TextInput({
   // for layout. The cursorLayout call is cheap (one wrap-text pass
   // over a single-line string in the common case), so dropping useMemo
   // is fine.
-  const layout = cursorLayout(display, curRef.current, columns)
+  const layout = terminalCursorLayout(display, curRef.current, columns, process.env)
 
   const boxRef = useDeclaredCursor({
     line: layout.line,
@@ -594,7 +597,8 @@ export function TextInput({
     }, 16)
   }
 
-  const canFastEchoBase = () => supportsFastEchoTerminal() && focus && termFocus && !selected && !mask && !!stdout?.isTTY
+  const canFastEchoBase = () =>
+    supportsFastEchoTerminal() && focus && termFocus && !selected && !mask && !!stdout?.isTTY
 
   const canFastAppend = (current: string, cursor: number, text: string) =>
     canFastEchoBase() && canFastAppendShape(current, cursor, text, columns, lineWidthRef.current)
@@ -1201,9 +1205,7 @@ interface TextInputProps {
   voiceRecordKey?: ParsedVoiceRecordKey
 }
 
-export type RightClickDecision =
-  | { action: 'copy'; text: string }
-  | { action: 'paste' }
+export type RightClickDecision = { action: 'copy'; text: string } | { action: 'paste' }
 
 /**
  * Decide what right-click should do on the composer:

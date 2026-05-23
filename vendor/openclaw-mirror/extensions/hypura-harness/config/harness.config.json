@@ -40,15 +40,15 @@
       ]
     },
     "chatBox": {
-      "enabled": false,
+      "enabled": true,
       "maxChars": 144,
       "maxLines": 9,
       "cooldownMs": 8000,
-      "publicEnabled": false
+      "publicEnabled": true
     },
     "movement": {
-      "enabled": false,
-      "allowAxes": false,
+      "enabled": true,
+      "allowAxes": true,
       "autoResetMs": 120,
       "privateOnly": true
     },

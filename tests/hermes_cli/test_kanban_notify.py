@@ -17,6 +17,11 @@ def kanban_home(tmp_path, monkeypatch):
     home.mkdir()
     monkeypatch.setenv("HERMES_HOME", str(home))
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    # Allow the kanban notifier path-validator to upload artifacts the
+    # tests write under ``tmp_path``. Without this, every artifact-delivery
+    # test silently drops files because ``tmp_path`` isn't inside the
+    # default ``MEDIA_DELIVERY_SAFE_ROOTS`` cache dirs.
+    monkeypatch.setenv("HERMES_MEDIA_ALLOW_DIRS", str(tmp_path))
     kb.init_db()
     return home
 

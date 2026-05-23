@@ -22,6 +22,54 @@ def test_cron_blocks_gateway_lifecycle_command(monkeypatch):
     assert "not allowed from cron" in (decision.message or "")
 
 
+def test_blocks_systemctl_options_before_gateway_lifecycle(monkeypatch):
+    monkeypatch.setenv("HERMES_CRON_SESSION", "1")
+
+    decision = check_gateway_control_guard(
+        "systemctl --no-pager --user restart hermes-gateway.service",
+        "session-a",
+    )
+
+    assert decision.is_gateway_control is True
+    assert decision.approved is False
+    assert decision.reason == "systemctl_gateway_lifecycle"
+
+
+def test_blocks_mainpid_sigkill_compound(monkeypatch):
+    monkeypatch.setenv("HERMES_CRON_SESSION", "1")
+
+    decision = check_gateway_control_guard(
+        "PID=$(systemctl --user show hermes-gateway.service -p MainPID --value); kill -9 \"$PID\"",
+        "session-a",
+    )
+
+    assert decision.is_gateway_control is True
+    assert decision.approved is False
+    assert decision.reason == "gateway_pid_sigkill"
+
+
+def test_blocks_hermes_gateway_update(monkeypatch):
+    monkeypatch.setenv("HERMES_CRON_SESSION", "1")
+
+    decision = check_gateway_control_guard("hermes gateway update", "session-a")
+
+    assert decision.is_gateway_control is True
+    assert decision.approved is False
+
+
+def test_adjacent_gateway_lifecycle_text_blocks_not_yolo(monkeypatch):
+    monkeypatch.delenv("HERMES_CRON_SESSION", raising=False)
+
+    decision = check_gateway_control_guard(
+        "please stop hermes-gateway.service now",
+        "session-a",
+    )
+
+    assert decision.is_gateway_control is True
+    assert decision.approved is False
+    assert decision.reason == "gateway_control_adjacent"
+
+
 def test_exact_session_approval_allows_matching_gateway_command(monkeypatch):
     monkeypatch.delenv("HERMES_CRON_SESSION", raising=False)
     command = "systemctl --user restart hermes-gateway.service"

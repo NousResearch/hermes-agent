@@ -174,6 +174,59 @@ class TestRunJobScript:
         parsed = json.loads(output)
         assert parsed["new_prs"][0]["number"] == 42
 
+    def test_blocks_gateway_lifecycle_script_before_execution(self, cron_env, monkeypatch):
+        from cron import scheduler as sched_mod
+        from cron.scheduler import _run_job_script
+
+        script = cron_env / "scripts" / "unsafe.sh"
+        script.write_text("systemctl --no-pager --user restart hermes-gateway.service\n")
+
+        def fail_run(*_args, **_kwargs):
+            raise AssertionError("unsafe cron script should not execute")
+
+        monkeypatch.setattr(sched_mod.subprocess, "run", fail_run)
+
+        success, output = _run_job_script(str(script))
+
+        assert success is False
+        assert "BLOCKED" in output
+        assert "systemctl_gateway_lifecycle" in output
+
+    def test_adjacent_alert_only_script_still_executes(self, cron_env):
+        from cron.scheduler import _run_job_script
+
+        script = cron_env / "scripts" / "alert_only.py"
+        script.write_text("""
+print('hermes-gateway memory guard: never restarts the gateway')
+""")
+
+        success, output = _run_job_script(str(script))
+
+        assert success is True
+        assert "never restarts" in output
+
+    def test_runtime_safety_scans_script_body_not_just_name(self, cron_env):
+        from datetime import datetime, timedelta, timezone
+
+        from hermes_cli.runtime_safety import classify_cron_job
+
+        script = cron_env / "scripts" / "innocent_name.sh"
+        script.write_text("systemctl --user kill hermes-gateway.service\n")
+        now = datetime.now(timezone.utc)
+        risk = classify_cron_job({
+            "id": "job-1",
+            "name": "safe looking job",
+            "enabled": True,
+            "state": "scheduled",
+            "schedule": {"kind": "interval", "value": 30, "unit": "m"},
+            "next_run_at": (now + timedelta(minutes=30)).isoformat(),
+            "script": str(script),
+        }, now)
+
+        assert risk is not None
+        assert risk.reason == "unsafe_gateway_control_scheduled"
+        assert risk.script == "innocent_name.sh"
+
 
 class TestBuildJobPromptWithScript:
     """Test that script output is injected into the prompt."""

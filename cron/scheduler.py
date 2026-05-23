@@ -759,6 +759,20 @@ def _run_job_script(script_path: str) -> tuple[bool, str]:
     if not path.is_file():
         return False, f"Script path is not a file: {path}"
 
+    try:
+        from hermes_cli.runtime_safety import classify_gateway_control_text
+
+        script_body = path.read_text(encoding="utf-8", errors="ignore")[:20000]
+        gateway_reason = classify_gateway_control_text(script_body)
+        if gateway_reason and gateway_reason != "gateway_control_adjacent":
+            return False, (
+                "BLOCKED: cron script contains Hermes gateway lifecycle control "
+                f"({gateway_reason}). Run gateway stop/restart/kill commands manually "
+                "outside cron after explicit review."
+            )
+    except Exception as exc:
+        logger.debug("Failed to scan cron script for gateway lifecycle controls: %s", exc)
+
     script_timeout = _get_script_timeout()
 
     # Pick an interpreter by extension.  Bash for .sh/.bash, Python for

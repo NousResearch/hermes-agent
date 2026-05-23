@@ -33,11 +33,18 @@ _READONLY_JOURNAL_RE = re.compile(
 _MUTATING_GATEWAY_PATTERNS: tuple[tuple[re.Pattern[str], str], ...] = tuple(
     (re.compile(pattern, re.IGNORECASE | re.DOTALL), reason)
     for pattern, reason in (
-        (r"\bsystemctl\s+(?:--user\s+)?(?:restart|stop|kill|disable|mask|try-restart|reload-or-restart)\b[^\n;|&]*\bhermes-gateway(?:\.service)?\b", "systemctl_gateway_lifecycle"),
-        (r"\bhermes\s+gateway\s+(?:stop|restart)\b", "hermes_gateway_lifecycle"),
+        (
+            r"\bsystemctl\b(?=[^\n;|&]*\b(?:restart|stop|kill|disable|mask|try-restart|reload-or-restart)\b)(?=[^\n;|&]*\bhermes-gateway(?:\.service)?\b)[^\n;|&]*",
+            "systemctl_gateway_lifecycle",
+        ),
+        (r"\bhermes\s+gateway\s+(?:stop|restart|update)\b", "hermes_gateway_lifecycle"),
         (r"\bhermes\s+update\b", "hermes_update_gateway_restart"),
         (r"\b(?:pkill|killall)\b[^\n]*\b(?:hermes(?:-gateway)?|gateway\.run|gateway/run\.py)\b", "name_based_gateway_kill"),
         (r"\bkill\b[^\n]*(?:-9|-KILL|-SIGKILL|-s\s+(?:9|KILL|SIGKILL))[^\n]*(?:\$\([^)]*hermes-gateway[^)]*\)|`[^`]*hermes-gateway[^`]*`)", "gateway_pid_sigkill"),
+        (
+            r"(?=.*\bhermes-gateway(?:\.service)?\b)(?=.*\bkill\b[^\n;|&]*(?:-9|-KILL|-SIGKILL|-s\s+(?:9|KILL|SIGKILL)))(?=.*\bMainPID\b)",
+            "gateway_pid_sigkill",
+        ),
     )
 )
 
@@ -225,6 +232,9 @@ def classify_cron_job(job: dict[str, Any], now: datetime | None = None) -> CronR
         _safe_text(job.get(key))
         for key in ("name", "script", "prompt")
     )
+    script_body = _script_body_for_scan(job.get("script"))
+    if script_body:
+        scan_text = f"{scan_text}\n{script_body}"
     reason = classify_gateway_control_text(scan_text)
     if not reason:
         return None

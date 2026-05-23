@@ -76,7 +76,7 @@ def has_fresh_gateway_control_approval(session_key: str, command: str, *, now: f
 
 def check_gateway_control_guard(command: str, session_key: str, *, cron: bool | None = None) -> GatewayControlDecision:
     reason = classify_gateway_control_text(command)
-    if not reason or reason == "gateway_control_adjacent":
+    if not reason:
         return GatewayControlDecision(False, True)
     if cron is None:
         cron = env_var_enabled("HERMES_CRON_SESSION") or os.getenv("HERMES_CRON_SESSION") == "1"

@@ -862,7 +862,12 @@ function renderNodeToOutput(
           scrollDrainNode = node
         }
 
-        if ((node.scrollTop ?? 0) !== scrollTopBeforeFollow || node.stickyScroll !== stickyBeforeFollow) {
+        if (
+          (node.scrollTop ?? 0) !== scrollTopBeforeFollow ||
+          node.stickyScroll !== stickyBeforeFollow ||
+          scrollHeight !== prevScrollHeight ||
+          innerHeight !== prevInnerHeight
+        ) {
           node.notifyScrollChange?.()
         }
 

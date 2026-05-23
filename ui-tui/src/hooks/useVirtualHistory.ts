@@ -51,6 +51,18 @@ const SLIDE_STEP = 12
 
 const NOOP = () => {}
 
+export const virtualHistorySnapshotKey = (s?: ScrollBoxHandle | null): string => {
+  if (!s) {
+    return 'none'
+  }
+
+  const target = s.getScrollTop() + s.getPendingDelta()
+  const bin = Math.floor(target / QUANTUM)
+  const viewportHeight = Math.max(0, s.getViewportHeight())
+
+  return `${s.isSticky() ? ~bin : bin}:${viewportHeight}`
+}
+
 const upperBound = (arr: ArrayLike<number>, target: number, length = arr.length) => {
   let lo = 0
   let hi = length
@@ -186,19 +198,8 @@ export function useVirtualHistory(
 
   useSyncExternalStore(
     subscribe,
-    () => {
-      const s = scrollRef.current
-
-      if (!s) {
-        return NaN
-      }
-
-      const target = s.getScrollTop() + s.getPendingDelta()
-      const bin = Math.floor(target / QUANTUM)
-
-      return s.isSticky() ? ~bin : bin
-    },
-    () => NaN
+    () => virtualHistorySnapshotKey(scrollRef.current),
+    () => 'none'
   )
 
   useEffect(() => {

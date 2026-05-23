@@ -10735,6 +10735,22 @@ def cmd_dashboard(args):
             sys.exit(1)
         print(f"→ Skipping web UI build (--skip-build); using dist at {_dist_root}")
 
+    # Discover and load plugins so any DashboardAuthProvider plugin
+    # (e.g. plugins/dashboard_auth/nous) registers BEFORE start_server's
+    # fail-closed gate check runs. The top-level argparse setup skips
+    # plugin discovery for built-in subcommands like ``dashboard`` to
+    # save ~500ms startup; we have to trigger it explicitly here because
+    # the dashboard's server-side runtime depends on plugin-registered
+    # providers (image_gen, web, dashboard_auth, …).
+    try:
+        from hermes_cli.plugins import discover_plugins
+        discover_plugins()
+    except Exception as exc:
+        # Discovery failures must not block dashboard startup outright —
+        # log and proceed; the gate's fail-closed branch will surface
+        # the missing-provider state if it matters.
+        print(f"⚠ Plugin discovery failed: {exc}", file=sys.stderr)
+
     from hermes_cli.web_server import start_server
 
     embedded_chat = args.tui or os.environ.get("HERMES_DASHBOARD_TUI") == "1"

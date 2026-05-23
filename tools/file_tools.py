@@ -35,6 +35,13 @@ _EXPECTED_WRITE_ERRNOS = {errno.EACCES, errno.EPERM, errno.EROFS}
 _DEFAULT_MAX_READ_CHARS = 100_000
 _max_read_chars_cached: int | None = None
 
+_DEFAULT_MAX_SEARCH_CHARS = 40_000
+_DEFAULT_LARGE_OUTPUT_WARNING_CHARS = 25_000
+_SEARCH_DISCOVERY_HINT = (
+    "For broad content searches, prefer output_mode='files_only' or "
+    "output_mode='count' first, then read targeted line ranges with read_file."
+)
+
 
 def _get_max_read_chars() -> int:
     """Return the configured max characters per file read.
@@ -57,6 +64,78 @@ def _get_max_read_chars() -> int:
         pass
     _max_read_chars_cached = _DEFAULT_MAX_READ_CHARS
     return _max_read_chars_cached
+
+
+_max_search_chars_cached: int | None = None
+
+
+def _get_max_search_chars() -> int:
+    """Return the configured max characters for non-explicit search output."""
+    global _max_search_chars_cached
+    if _max_search_chars_cached is not None:
+        return _max_search_chars_cached
+    try:
+        from hermes_cli.config import load_config
+        cfg = load_config()
+        val = cfg.get("file_search_max_chars")
+        if isinstance(val, (int, float)) and val > 0:
+            _max_search_chars_cached = int(val)
+            return _max_search_chars_cached
+    except Exception:
+        pass
+    _max_search_chars_cached = _DEFAULT_MAX_SEARCH_CHARS
+    return _max_search_chars_cached
+
+
+def _search_result_summary(result_dict: dict, *, pattern: str, target: str,
+                           path: str, file_glob: str | None, limit: int,
+                           offset: int, output_mode: str, context: int,
+                           serialized_chars: int, max_chars: int) -> dict:
+    """Summarize an oversized search result without dumping match content."""
+    matches = result_dict.get("matches") or []
+    files = result_dict.get("files") or []
+    counts = result_dict.get("counts") or {}
+    paths: list[str] = []
+    if isinstance(matches, list):
+        for match in matches:
+            if isinstance(match, dict):
+                file_path = match.get("path")
+                if file_path and file_path not in paths:
+                    paths.append(file_path)
+    if isinstance(files, list):
+        for file_path in files:
+            if file_path and file_path not in paths:
+                paths.append(file_path)
+    if isinstance(counts, dict):
+        for file_path in counts:
+            if file_path and file_path not in paths:
+                paths.append(file_path)
+
+    return {
+        "error": (
+            f"Search output would return {serialized_chars:,} characters, "
+            f"exceeding the routine safety limit ({max_chars:,} chars). "
+            + _SEARCH_DISCOVERY_HINT +
+            " Re-run with allow_large_output=true if you intentionally need the full output."
+        ),
+        "content_returned": False,
+        "pattern": pattern,
+        "target": target,
+        "path": path,
+        "file_glob": file_glob,
+        "output_mode": output_mode,
+        "context": context,
+        "limit": limit,
+        "offset": offset,
+        "total_count": result_dict.get("total_count", 0),
+        "truncated": result_dict.get("truncated", False),
+        "sample_paths": paths[:20],
+        "suggested_next_steps": [
+            "search_files(..., output_mode='files_only') to identify candidate files",
+            "search_files(..., output_mode='count') to rank noisy files",
+            "read_file(path, offset=<line>, limit=<small range>) for targeted context",
+        ],
+    }
 
 # If the total file size exceeds this AND the caller didn't specify a narrow
 # range (limit <= 200), we include a hint encouraging targeted reads.
@@ -444,7 +523,8 @@ def clear_file_ops_cache(task_id: str = None):
             _file_ops_cache.clear()
 
 
-def read_file_tool(path: str, offset: int = 1, limit: int = 500, task_id: str = "default") -> str:
+def read_file_tool(path: str, offset: int = 1, limit: int = 500, task_id: str = "default",
+                   allow_large_output: bool = False) -> str:
     """Read a file with pagination and line numbers."""
     try:
         offset, limit = normalize_read_pagination(offset, limit)
@@ -554,19 +634,27 @@ def read_file_tool(path: str, offset: int = 1, limit: int = 500, task_id: str = 
         content_len = len(result.content or "")
         file_size = result_dict.get("file_size", 0)
         max_chars = _get_max_read_chars()
-        if content_len > max_chars:
+        if content_len > max_chars and not allow_large_output:
             total_lines = result_dict.get("total_lines", "unknown")
             return json.dumps({
                 "error": (
                     f"Read produced {content_len:,} characters which exceeds "
                     f"the safety limit ({max_chars:,} chars). "
                     "Use offset and limit to read a smaller range. "
-                    f"The file has {total_lines} lines total."
+                    f"The file has {total_lines} lines total. "
+                    "Re-run with allow_large_output=true if you intentionally need this full read."
                 ),
+                "content_returned": False,
                 "path": path,
                 "total_lines": total_lines,
                 "file_size": file_size,
             }, ensure_ascii=False)
+        if content_len > _DEFAULT_LARGE_OUTPUT_WARNING_CHARS and not allow_large_output:
+            result_dict.setdefault("_warning", (
+                f"This read returned {content_len:,} characters. For routine debugging, "
+                "prefer narrower offset/limit ranges so only relevant lines enter context. "
+                "Set allow_large_output=true when a deliberately broad read is needed."
+            ))
 
         # ── Redact secrets (after guard check to skip oversized content) ──
         if result.content:
@@ -946,7 +1034,7 @@ def patch_tool(mode: str = "replace", path: str = None, old_string: str = None,
 def search_tool(pattern: str, target: str = "content", path: str = ".",
                 file_glob: str = None, limit: int = 50, offset: int = 0,
                 output_mode: str = "content", context: int = 0,
-                task_id: str = "default") -> str:
+                task_id: str = "default", allow_large_output: bool = False) -> str:
     """Search for content or files."""
     try:
         offset, limit = normalize_search_pagination(offset, limit)
@@ -1003,6 +1091,32 @@ def search_tool(pattern: str, target: str = "content", path: str = ".",
             )
 
         result_json = json.dumps(result_dict, ensure_ascii=False)
+        max_search_chars = _get_max_search_chars()
+        if (target == "content" and output_mode == "content"
+                and len(result_json) > max_search_chars
+                and not allow_large_output):
+            return json.dumps(_search_result_summary(
+                result_dict,
+                pattern=pattern,
+                target=target,
+                path=path,
+                file_glob=file_glob,
+                limit=limit,
+                offset=offset,
+                output_mode=output_mode,
+                context=context,
+                serialized_chars=len(result_json),
+                max_chars=max_search_chars,
+            ), ensure_ascii=False)
+        if (target == "content" and output_mode == "content"
+                and len(result_json) > _DEFAULT_LARGE_OUTPUT_WARNING_CHARS
+                and not allow_large_output):
+            result_dict.setdefault("_warning", (
+                f"This search returned {len(result_json):,} characters. "
+                + _SEARCH_DISCOVERY_HINT +
+                " Set allow_large_output=true when a deliberately broad content dump is needed."
+            ))
+            result_json = json.dumps(result_dict, ensure_ascii=False)
         # Hint when results were truncated — explicit next offset is clearer
         # than relying on the model to infer it from total_count vs match count.
         if result_dict.get("truncated"):
@@ -1028,13 +1142,14 @@ def _check_file_reqs():
 
 READ_FILE_SCHEMA = {
     "name": "read_file",
-    "description": "Read a text file with line numbers and pagination. Use this instead of cat/head/tail in terminal. Output format: 'LINE_NUM|CONTENT'. Suggests similar filenames if not found. Use offset and limit for large files. Reads exceeding ~100K characters are rejected; use offset and limit to read specific sections of large files. NOTE: Cannot read images or binary files — use vision_analyze for images.",
+    "description": "Read a text file with line numbers and pagination. Use this instead of cat/head/tail in terminal. Output format: 'LINE_NUM|CONTENT'. Suggests similar filenames if not found. Use offset and limit for large files. Reads exceeding ~100K characters are rejected unless allow_large_output=true; use offset and limit to read specific sections of large files. NOTE: Cannot read images or binary files — use vision_analyze for images.",
     "parameters": {
         "type": "object",
         "properties": {
             "path": {"type": "string", "description": "Path to the file to read (absolute, relative, or ~/path)"},
             "offset": {"type": "integer", "description": "Line number to start reading from (1-indexed, default: 1)", "default": 1, "minimum": 1},
-            "limit": {"type": "integer", "description": "Maximum number of lines to read (default: 500, max: 2000)", "default": 500, "maximum": 2000}
+            "limit": {"type": "integer", "description": "Maximum number of lines to read (default: 500, max: 2000)", "default": 500, "maximum": 2000},
+            "allow_large_output": {"type": "boolean", "description": "Deliberately allow oversized output when a full broad read is necessary (default: false)", "default": False}
         },
         "required": ["path"]
     }
@@ -1101,7 +1216,7 @@ PATCH_SCHEMA = {
 
 SEARCH_FILES_SCHEMA = {
     "name": "search_files",
-    "description": "Search file contents or find files by name. Use this instead of grep/rg/find/ls in terminal. Ripgrep-backed, faster than shell equivalents.\n\nContent search (target='content'): Regex search inside files. Output modes: full matches with line numbers, file paths only, or match counts.\n\nFile search (target='files'): Find files by glob pattern (e.g., '*.py', '*config*'). Also use this instead of ls — results sorted by modification time.",
+    "description": "Search file contents or find files by name. Use this instead of grep/rg/find/ls in terminal. Ripgrep-backed, faster than shell equivalents.\n\nContent search (target='content'): Prefer output_mode='files_only' or output_mode='count' first for broad/routine searches, then read targeted line ranges with read_file. Use output_mode='content' for focused queries. Oversized content output is summarized unless allow_large_output=true.\n\nFile search (target='files'): Find files by glob pattern (e.g., '*.py', '*config*'). Also use this instead of ls — results sorted by modification time.",
     "parameters": {
         "type": "object",
         "properties": {
@@ -1111,8 +1226,9 @@ SEARCH_FILES_SCHEMA = {
             "file_glob": {"type": "string", "description": "Filter files by pattern in grep mode (e.g., '*.py' to only search Python files)"},
             "limit": {"type": "integer", "description": "Maximum number of results to return (default: 50)", "default": 50},
             "offset": {"type": "integer", "description": "Skip first N results for pagination (default: 0)", "default": 0},
-            "output_mode": {"type": "string", "enum": ["content", "files_only", "count"], "description": "Output format for grep mode: 'content' shows matching lines with line numbers, 'files_only' lists file paths, 'count' shows match counts per file", "default": "content"},
-            "context": {"type": "integer", "description": "Number of context lines before and after each match (grep mode only)", "default": 0}
+            "output_mode": {"type": "string", "enum": ["content", "files_only", "count"], "description": "Output format for grep mode: 'files_only' lists matching files, 'count' ranks matches per file, 'content' shows matching lines. Prefer files_only/count before broad content dumps.", "default": "content"},
+            "context": {"type": "integer", "description": "Number of context lines before and after each match (grep mode only)", "default": 0},
+            "allow_large_output": {"type": "boolean", "description": "Deliberately allow oversized output for a broad content search (default: false)", "default": False}
         },
         "required": ["pattern"]
     }
@@ -1121,7 +1237,13 @@ SEARCH_FILES_SCHEMA = {
 
 def _handle_read_file(args, **kw):
     tid = kw.get("task_id") or "default"
-    return read_file_tool(path=args.get("path", ""), offset=args.get("offset", 1), limit=args.get("limit", 500), task_id=tid)
+    return read_file_tool(
+        path=args.get("path", ""),
+        offset=args.get("offset", 1),
+        limit=args.get("limit", 500),
+        task_id=tid,
+        allow_large_output=bool(args.get("allow_large_output", False)),
+    )
 
 
 def _handle_write_file(args, **kw):
@@ -1163,7 +1285,8 @@ def _handle_search_files(args, **kw):
     return search_tool(
         pattern=args.get("pattern", ""), target=target, path=args.get("path", "."),
         file_glob=args.get("file_glob"), limit=args.get("limit", 50), offset=args.get("offset", 0),
-        output_mode=args.get("output_mode", "content"), context=args.get("context", 0), task_id=tid)
+        output_mode=args.get("output_mode", "content"), context=args.get("context", 0), task_id=tid,
+        allow_large_output=bool(args.get("allow_large_output", False)))
 
 
 registry.register(name="read_file", toolset="file", schema=READ_FILE_SCHEMA, handler=_handle_read_file, check_fn=_check_file_reqs, emoji="📖", max_result_size_chars=100_000)

@@ -196,9 +196,9 @@ _TOOL_STUBS = {
     ),
     "read_file": (
         "read_file",
-        "path: str, offset: int = 1, limit: int = 500",
+        "path: str, offset: int = 1, limit: int = 500, allow_large_output: bool = False",
         '"""Read a file (1-indexed lines). Returns dict with "content" and "total_lines"."""',
-        '{"path": path, "offset": offset, "limit": limit}',
+        '{"path": path, "offset": offset, "limit": limit, "allow_large_output": allow_large_output}',
     ),
     "write_file": (
         "write_file",
@@ -208,9 +208,9 @@ _TOOL_STUBS = {
     ),
     "search_files": (
         "search_files",
-        'pattern: str, target: str = "content", path: str = ".", file_glob: str = None, limit: int = 50, offset: int = 0, output_mode: str = "content", context: int = 0',
+        'pattern: str, target: str = "content", path: str = ".", file_glob: str = None, limit: int = 50, offset: int = 0, output_mode: str = "content", context: int = 0, allow_large_output: bool = False',
         '"""Search file contents (target="content") or find files by name (target="files"). Returns dict with "matches"."""',
-        '{"pattern": pattern, "target": target, "path": path, "file_glob": file_glob, "limit": limit, "offset": offset, "output_mode": output_mode, "context": context}',
+        '{"pattern": pattern, "target": target, "path": path, "file_glob": file_glob, "limit": limit, "offset": offset, "output_mode": output_mode, "context": context, "allow_large_output": allow_large_output}',
     ),
     "patch": (
         "patch",
@@ -1653,14 +1653,14 @@ _TOOL_DOC_LINES = [
      "  web_extract(urls: list[str]) -> dict\n"
      "    Returns {\"results\": [{\"url\", \"title\", \"content\", \"error\"}, ...]} where content is markdown"),
     ("read_file",
-     "  read_file(path: str, offset: int = 1, limit: int = 500) -> dict\n"
-     "    Lines are 1-indexed. Returns {\"content\": \"...\", \"total_lines\": N}"),
+     "  read_file(path: str, offset: int = 1, limit: int = 500, allow_large_output: bool = False) -> dict\n"
+     "    Returns {content, total_lines, ...}; oversized reads are rejected unless allow_large_output=True."),
     ("write_file",
      "  write_file(path: str, content: str) -> dict\n"
      "    Always overwrites the entire file."),
     ("search_files",
-     "  search_files(pattern: str, target=\"content\", path=\".\", file_glob=None, limit=50) -> dict\n"
-     "    target: \"content\" (search inside files) or \"files\" (find files by name). Returns {\"matches\": [...]}"),
+     "  search_files(pattern: str, target=\"content\", path=\".\", file_glob=None, limit=50, allow_large_output=False) -> dict\n"
+     "    target: \"content\" (search inside files) or \"files\" (find files by name). Prefer files_only/count before broad content dumps."),
     ("patch",
      "  patch(path: str, old_string: str, new_string: str, replace_all: bool = False) -> dict\n"
      "    Replaces old_string with new_string in the file."),

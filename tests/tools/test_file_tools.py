@@ -67,6 +67,42 @@ class TestReadFileHandler:
         assert "error" in result
         assert "terminal not available" in result["error"]
 
+    @patch("tools.file_tools._get_max_read_chars", return_value=100)
+    @patch("tools.file_tools._get_file_ops")
+    def test_large_read_is_blocked_with_targeted_hint(self, mock_get, mock_max):
+        mock_ops = MagicMock()
+        result_obj = MagicMock()
+        result_obj.content = "x" * 101
+        result_obj.to_dict.return_value = {
+            "content": "x" * 101,
+            "total_lines": 10,
+            "file_size": 101,
+        }
+        mock_ops.read_file.return_value = result_obj
+        mock_get.return_value = mock_ops
+
+        from tools.file_tools import read_file_tool
+        result = json.loads(read_file_tool("/tmp/large.txt"))
+        assert "error" in result
+        assert result["content_returned"] is False
+        assert "offset and limit" in result["error"]
+        assert "allow_large_output=true" in result["error"]
+
+    @patch("tools.file_tools._get_max_read_chars", return_value=100)
+    @patch("tools.file_tools._get_file_ops")
+    def test_large_read_can_be_requested_deliberately(self, mock_get, mock_max):
+        mock_ops = MagicMock()
+        result_obj = MagicMock()
+        result_obj.content = "x" * 101
+        result_obj.to_dict.return_value = {"content": "x" * 101, "total_lines": 10}
+        mock_ops.read_file.return_value = result_obj
+        mock_get.return_value = mock_ops
+
+        from tools.file_tools import read_file_tool
+        result = json.loads(read_file_tool("/tmp/large.txt", allow_large_output=True))
+        assert result["content"] == "x" * 101
+        assert "error" not in result
+
 
 class TestWriteFileHandler:
     @patch("tools.file_tools._get_file_ops")
@@ -359,6 +395,65 @@ class TestSearchHints:
         raw = search_tool(pattern="foo", offset=50, limit=50)
         assert "[Hint:" in raw
         assert "offset=100" in raw
+
+    @patch("tools.file_tools._get_max_search_chars", return_value=500)
+    @patch("tools.file_tools._get_file_ops")
+    def test_oversized_content_search_returns_summary_not_dump(self, mock_get, mock_max):
+        mock_ops = MagicMock()
+        result_obj = MagicMock()
+        result_obj.to_dict.return_value = {
+            "total_count": 2,
+            "matches": [
+                {"path": "big.py", "line": 1, "content": "x" * 400},
+                {"path": "big.py", "line": 2, "content": "y" * 400},
+            ],
+        }
+        mock_ops.search.return_value = result_obj
+        mock_get.return_value = mock_ops
+
+        from tools.file_tools import search_tool
+        result = json.loads(search_tool(pattern="foo", output_mode="content"))
+        assert result["content_returned"] is False
+        assert result["sample_paths"] == ["big.py"]
+        assert "files_only" in result["error"]
+        assert "allow_large_output=true" in result["error"]
+        assert "matches" not in result
+
+    @patch("tools.file_tools._get_max_search_chars", return_value=500)
+    @patch("tools.file_tools._get_file_ops")
+    def test_oversized_content_search_can_be_requested_deliberately(self, mock_get, mock_max):
+        mock_ops = MagicMock()
+        result_obj = MagicMock()
+        result_obj.to_dict.return_value = {
+            "total_count": 1,
+            "matches": [{"path": "big.py", "line": 1, "content": "x" * 600}],
+        }
+        mock_ops.search.return_value = result_obj
+        mock_get.return_value = mock_ops
+
+        from tools.file_tools import search_tool
+        result = json.loads(search_tool(
+            pattern="foo", output_mode="content", allow_large_output=True
+        ))
+        assert result["matches"][0]["content"] == "x" * 600
+        assert "error" not in result
+
+    @patch("tools.file_tools._get_max_search_chars", return_value=500)
+    @patch("tools.file_tools._get_file_ops")
+    def test_files_only_search_not_summarized_by_content_guard(self, mock_get, mock_max):
+        mock_ops = MagicMock()
+        result_obj = MagicMock()
+        result_obj.to_dict.return_value = {
+            "total_count": 100,
+            "files": [f"file_{i}.py" for i in range(100)],
+        }
+        mock_ops.search.return_value = result_obj
+        mock_get.return_value = mock_ops
+
+        from tools.file_tools import search_tool
+        result = json.loads(search_tool(pattern="foo", output_mode="files_only"))
+        assert "files" in result
+        assert "error" not in result
 
 
 # ---------------------------------------------------------------------------

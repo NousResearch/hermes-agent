@@ -116,6 +116,40 @@ class TestRegistration:
             assert entry.check_fn() is False
 
 
+class TestBackendRecovery:
+    def test_get_backend_does_not_cache_unstarted_backend_after_start_failure(self, monkeypatch):
+        import tools.computer_use.tool as cu_tool
+        import tools.computer_use.cua_backend as cua_backend
+
+        class FakeBackend:
+            attempts = 0
+
+            def __init__(self):
+                self.started = False
+                self.stopped = False
+
+            def start(self):
+                type(self).attempts += 1
+                if type(self).attempts == 1:
+                    raise RuntimeError("boom")
+                self.started = True
+
+            def stop(self):
+                self.stopped = True
+
+        monkeypatch.setenv("HERMES_COMPUTER_USE_BACKEND", "cua")
+        monkeypatch.setattr(cua_backend, "CuaDriverBackend", FakeBackend)
+
+        with pytest.raises(RuntimeError, match="boom"):
+            cu_tool._get_backend()
+
+        assert cu_tool._backend is None
+
+        backend = cu_tool._get_backend()
+        assert isinstance(backend, FakeBackend)
+        assert backend.started is True
+
+
 # ---------------------------------------------------------------------------
 # Dispatch & action routing
 # ---------------------------------------------------------------------------

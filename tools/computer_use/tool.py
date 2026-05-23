@@ -133,12 +133,20 @@ def _get_backend() -> ComputerUseBackend:
             backend_name = os.environ.get("HERMES_COMPUTER_USE_BACKEND", "cua").lower()
             if backend_name in {"cua", "cua-driver", ""}:
                 from tools.computer_use.cua_backend import CuaDriverBackend
-                _backend = CuaDriverBackend()
+                backend = CuaDriverBackend()
             elif backend_name == "noop":  # pragma: no cover
-                _backend = _NoopBackend()
+                backend = _NoopBackend()
             else:
                 raise RuntimeError(f"Unknown HERMES_COMPUTER_USE_BACKEND={backend_name!r}")
-            _backend.start()
+            try:
+                backend.start()
+            except Exception:
+                # Do not cache a half-initialized backend. A transient startup
+                # failure (for example missing dependencies that get installed
+                # later in the same session) must allow a clean retry.
+                _backend = None
+                raise
+            _backend = backend
         return _backend
 
 

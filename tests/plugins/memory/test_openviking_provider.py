@@ -1,4 +1,5 @@
 import json
+import threading
 import zipfile
 from types import SimpleNamespace
 from unittest.mock import MagicMock
@@ -399,6 +400,154 @@ def test_viking_client_headers_sent_with_real_tenant_values():
     headers = client._headers()
     assert headers["X-OpenViking-Account"] == "real-account"
     assert headers["X-OpenViking-User"] == "real-user"
+
+
+# on_memory_write — see #31000
+# ---------------------------------------------------------------------------
+
+
+def _build_mirror_provider(monkeypatch, *, post_side_effect=None):
+    """Return a provider wired to a recording fake _VikingClient.
+
+    The hook spawns a daemon thread that constructs a fresh _VikingClient,
+    so we patch the class symbol in the module rather than ``provider._client``.
+    Returns (provider, posts) where ``posts`` is a list of recorded
+    ``(path, payload)`` tuples populated as the background thread runs.
+    """
+    posts: list = []
+
+    class _FakeClient:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def post(self, path, payload=None, **kwargs):
+            posts.append((path, payload))
+            if post_side_effect is not None:
+                result = post_side_effect(len(posts), payload)
+                if isinstance(result, BaseException):
+                    raise result
+                return result or {"result": {"written_bytes": len(payload.get("content", ""))}}
+            return {"result": {"written_bytes": len(payload.get("content", ""))}}
+
+    import plugins.memory.openviking as ov_mod
+
+    monkeypatch.setattr(ov_mod, "_VikingClient", _FakeClient)
+    provider = OpenVikingMemoryProvider()
+    # Mark client as initialized so the hook proceeds. The fake replaces the
+    # class the hook instantiates, so the value of provider._client is unused
+    # past the truthiness gate.
+    provider._client = MagicMock()
+    provider._endpoint = "http://127.0.0.1:1933"
+    provider._api_key = ""
+    provider._account = "default"
+    provider._user = "default"
+    provider._agent = "hermes"
+    return provider, posts
+
+
+def _join_mirror_threads():
+    """Wait for any openviking-memwrite threads to finish before asserting."""
+    for t in threading.enumerate():
+        if t.name == "openviking-memwrite":
+            t.join(timeout=2.0)
+
+
+def test_on_memory_write_add_writes_under_target_subdir(monkeypatch):
+    provider, posts = _build_mirror_provider(monkeypatch)
+
+    provider.on_memory_write("add", "user", "Jordan prefers concise commits")
+    _join_mirror_threads()
+
+    assert len(posts) == 1
+    path, payload = posts[0]
+    assert path == "/api/v1/content/write"
+    assert payload["content"] == "Jordan prefers concise commits"
+    assert payload["mode"] == "create"
+    # user → preferences subdir
+    assert "/memories/preferences/" in payload["uri"]
+
+
+def test_on_memory_write_replace_now_mirrors(monkeypatch):
+    """Regression for #31000 bug 1: 'replace' previously dropped silently."""
+    provider, posts = _build_mirror_provider(monkeypatch)
+
+    provider.on_memory_write("replace", "memory", "updated agent note")
+    _join_mirror_threads()
+
+    assert len(posts) == 1
+    _, payload = posts[0]
+    assert payload["content"] == "updated agent note"
+    # memory → patterns subdir
+    assert "/memories/patterns/" in payload["uri"]
+
+
+def test_on_memory_write_remove_skips_but_logs(monkeypatch, caplog):
+    """Regression for #31000 bug 1: 'remove' must not silently no-op."""
+    provider, posts = _build_mirror_provider(monkeypatch)
+
+    with caplog.at_level("INFO", logger="plugins.memory.openviking"):
+        provider.on_memory_write("remove", "user", "old fact")
+    _join_mirror_threads()
+
+    assert posts == []
+    assert any(
+        "remove" in r.message and "skipped" in r.message
+        for r in caplog.records
+    ), f"expected an INFO log for remove; got: {[r.message for r in caplog.records]}"
+
+
+def test_on_memory_write_unknown_action_skips(monkeypatch):
+    provider, posts = _build_mirror_provider(monkeypatch)
+
+    provider.on_memory_write("rebuild", "memory", "x")
+    _join_mirror_threads()
+
+    assert posts == []
+
+
+def test_on_memory_write_empty_content_skips(monkeypatch):
+    provider, posts = _build_mirror_provider(monkeypatch)
+
+    provider.on_memory_write("add", "user", "")
+    _join_mirror_threads()
+
+    assert posts == []
+
+
+def test_on_memory_write_retries_on_busy_error(monkeypatch):
+    """Regression for #31000 bug 2: transient busy errors get one retry."""
+
+    def _side_effect(call_no, _payload):
+        if call_no == 1:
+            return RuntimeError("INVALID_ARGUMENT: resource is busy and cannot be written now")
+        return {"result": {"written_bytes": 0}}
+
+    provider, posts = _build_mirror_provider(monkeypatch, post_side_effect=_side_effect)
+    monkeypatch.setattr("plugins.memory.openviking.time.sleep", lambda _s: None)
+
+    provider.on_memory_write("add", "user", "retry me")
+    _join_mirror_threads()
+
+    assert len(posts) == 2, "expected one retry after a 'busy' error"
+
+
+def test_on_memory_write_failure_logs_at_warning(monkeypatch, caplog):
+    """Regression for #31000 bug 3: failures must be visible at WARNING."""
+
+    def _always_fail(_call_no, _payload):
+        return RuntimeError("kaboom")
+
+    provider, _ = _build_mirror_provider(monkeypatch, post_side_effect=_always_fail)
+
+    with caplog.at_level("WARNING", logger="plugins.memory.openviking"):
+        provider.on_memory_write("add", "user", "needs visibility")
+    _join_mirror_threads()
+
+    warnings = [r for r in caplog.records if r.levelname == "WARNING"]
+    assert any("OpenViking memory mirror failed" in r.message for r in warnings), (
+        f"expected a WARNING log for the final failure; got: "
+        f"{[(r.levelname, r.message) for r in caplog.records]}"
+    )
 
 
 def test_viking_client_health_sends_auth_headers(monkeypatch):

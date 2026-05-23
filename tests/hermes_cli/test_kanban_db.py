@@ -2981,3 +2981,104 @@ def test_detect_stale_does_not_tick_failure_counter(kanban_home, monkeypatch):
         assert "stale" in kinds, (
             f"Expected 'stale' event in task_events; got {kinds!r}"
         )
+
+
+# ---------------------------------------------------------------------------
+# Corruption guard (issue #30687)
+# ---------------------------------------------------------------------------
+
+def _write_corrupt_db(path: Path) -> bytes:
+    """Write a kanban DB with a VALID SQLite header but malformed page content.
+
+    This is the corruption shape the integrity guard specifically targets
+    (e.g. issue #29507 follow-up reports where the file's first 16 bytes
+    pass the header byte check but ``PRAGMA integrity_check`` then fails
+    because the internal pages are damaged). It's what main's header-only
+    validator was letting through, and what this PR adds the full guard
+    for.
+    """
+    # 100-byte SQLite header (magic + minimal valid-looking fields) so the
+    # cheap header check passes, then deliberate garbage so sqlite refuses
+    # to read the file past the header.
+    header = b"SQLite format 3\x00" + b"\x10\x00\x02\x02\x00\x40\x20\x20"
+    header += b"\x00\x00\x00\x0c\x00\x00\x23\x46\x00\x00\x00\x00"
+    header = header.ljust(100, b"\x00")
+    payload = b"definitely not a valid sqlite page \x00\x01\x02\x03" * 64
+    blob = header + payload
+    path.write_bytes(blob)
+    return blob
+
+
+def test_init_db_refuses_corrupt_existing_file(tmp_path):
+    db_path = tmp_path / "kanban.db"
+    original = _write_corrupt_db(db_path)
+    # Ensure the cache doesn't mask the guard.
+    kb._INITIALIZED_PATHS.discard(str(db_path.resolve()))
+
+    with pytest.raises(kb.KanbanDbCorruptError) as excinfo:
+        kb.init_db(db_path=db_path)
+
+    err = excinfo.value
+    assert err.db_path == db_path
+    assert err.backup_path is not None
+    assert err.backup_path.exists()
+    assert err.backup_path.read_bytes() == original
+    # Original bytes untouched — no schema was written on top.
+    assert db_path.read_bytes() == original
+    assert str(db_path) in str(err)
+    assert str(err.backup_path) in str(err)
+
+
+def test_connect_refuses_corrupt_existing_file(tmp_path):
+    db_path = tmp_path / "kanban.db"
+    _write_corrupt_db(db_path)
+    kb._INITIALIZED_PATHS.discard(str(db_path.resolve()))
+
+    with pytest.raises(kb.KanbanDbCorruptError):
+        kb.connect(db_path=db_path)
+
+
+def test_locked_healthy_db_does_not_classify_as_corrupt(tmp_path, monkeypatch):
+    """A transient lock during the probe must not produce a .corrupt backup
+    and must not be reported as :class:`KanbanDbCorruptError`. Raw sqlite
+    ``OperationalError`` (lock/busy) is acceptable and expected."""
+    db_path = tmp_path / "kanban.db"
+    kb.init_db(db_path=db_path)
+    kb._INITIALIZED_PATHS.discard(str(db_path.resolve()))
+
+    real_connect = sqlite3.connect
+
+    def flaky_connect(*args, **kwargs):
+        # First call is the integrity probe — simulate a lock.
+        raise sqlite3.OperationalError("database is locked")
+
+    monkeypatch.setattr(kb.sqlite3, "connect", flaky_connect)
+
+    with pytest.raises(sqlite3.OperationalError):
+        kb.connect(db_path=db_path)
+
+    # No .corrupt backup may be produced for a healthy-but-locked DB.
+    backups = list(tmp_path.glob("*.corrupt.*"))
+    assert backups == [], f"unexpected corrupt backups: {backups}"
+
+    # And once the lock clears, normal access still works.
+    monkeypatch.setattr(kb.sqlite3, "connect", real_connect)
+    with kb.connect(db_path=db_path) as conn:
+        kb.create_task(conn, title="still here")
+        titles = [t.title for t in kb.list_tasks(conn)]
+    assert "still here" in titles
+
+
+def test_init_db_allows_missing_then_healthy(tmp_path):
+    db_path = tmp_path / "fresh.db"
+    assert not db_path.exists()
+    kb.init_db(db_path=db_path)
+    assert db_path.exists() and db_path.stat().st_size > 0
+
+    # Idempotent on a healthy DB: data survives a second init.
+    with kb.connect(db_path=db_path) as conn:
+        kb.create_task(conn, title="keeps")
+    kb.init_db(db_path=db_path)
+    with kb.connect(db_path=db_path) as conn:
+        tasks = kb.list_tasks(conn)
+    assert [t.title for t in tasks] == ["keeps"]

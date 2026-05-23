@@ -559,6 +559,12 @@ class AIAgent:
         # Turn counter (added after reset_session_state was first written — #2635)
         self._user_turn_count = 0
 
+        # Context-refresh handoff state is session-scoped. If `/new` (manual or
+        # automatic) rotates the session, the freshly-started session should not
+        # inherit the old session's pending refresh marker.
+        self._pending_context_refresh = None
+        self._context_refresh_handoff_prepared_for_count = 0
+
         # Context engine reset (works for both built-in compressor and plugins)
         if hasattr(self, "context_compressor") and self.context_compressor:
             self.context_compressor.on_session_reset()

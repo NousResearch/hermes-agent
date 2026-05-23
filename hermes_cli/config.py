@@ -519,7 +519,8 @@ DEFAULT_CONFIG = {
     "context_refresh": {
         "enabled": True,
         "handoff_after_compressions": 2,
-        "mode": "prepare_only",
+        "mode": "auto_new",
+        "auto_new_policy": "phase_boundary",
         "require_safe_turn_boundary": True,
         "require_no_running_processes": True,
         "write_session_handoff": True,

@@ -8850,6 +8850,14 @@ class GatewayRunner:
             if self._should_send_voice_reply(event, response, agent_messages, already_sent=_already_sent):
                 await self._send_voice_reply(event, response)
 
+            response = await self._maybe_auto_new_after_context_refresh(
+                event,
+                agent_result,
+                response,
+                session_key,
+                session_entry,
+            )
+
             # If streaming already delivered the response, extract and
             # deliver any MEDIA: files before returning None.  Streaming
             # sends raw text chunks that include MEDIA: tags — the normal
@@ -9068,6 +9076,144 @@ class GatewayRunner:
             lines.append(f"◆ Endpoint: {base_url}")
 
         return "\n".join(lines)
+
+    async def _maybe_auto_new_after_context_refresh(
+        self,
+        event: MessageEvent,
+        agent_result: Dict[str, Any],
+        response: str,
+        session_key: str,
+        session_entry: Any,
+    ) -> str:
+        """Safely rotate a gateway session after completed work if requested."""
+        pending = agent_result.get("pending_context_refresh")
+        if not isinstance(pending, dict):
+            return response
+        try:
+            from types import SimpleNamespace
+            from agent.session_handoff import (
+                build_context_refresh_resume_note,
+                should_auto_new_after_context_refresh,
+            )
+
+            cfg = (_load_gateway_config() or {}).get("context_refresh", {})
+            probe_agent = SimpleNamespace(
+                _pending_context_refresh=pending,
+                context_refresh_config=cfg if isinstance(cfg, dict) else {},
+            )
+            decision = should_auto_new_after_context_refresh(
+                probe_agent,
+                agent_result,
+                session_key=session_key,
+            )
+            if not decision.should_auto_new:
+                logger.debug(
+                    "Context refresh auto-new skipped for %s: %s",
+                    session_key or "?",
+                    decision.reason,
+                )
+                return response
+
+            source = event.source
+            old_entry = self.session_store._entries.get(session_key)
+            old_session_id = str(
+                pending.get("session_id")
+                or getattr(old_entry, "session_id", None)
+                or getattr(session_entry, "session_id", "")
+            )
+
+            _cache_lock = getattr(self, "_agent_cache_lock", None)
+            if _cache_lock is not None:
+                with _cache_lock:
+                    cached = self._agent_cache.get(session_key)
+                    old_agent = cached[0] if isinstance(cached, tuple) else cached if cached else None
+                if old_agent is not None:
+                    self._cleanup_agent_resources(old_agent)
+            self._evict_cached_agent(session_key)
+
+            queued_events = getattr(self, "_queued_events", None)
+            if queued_events is not None:
+                queued_events.pop(session_key, None)
+
+            new_entry = self.session_store.reset_session(session_key)
+            if new_entry is None:
+                new_entry = self.session_store.get_or_create_session(source, force_new=True)
+
+            self._session_model_overrides.pop(session_key, None)
+            self._set_session_reasoning_override(session_key, None)
+            if hasattr(self, "_pending_model_notes"):
+                self._pending_model_notes.pop(session_key, None)
+            self._clear_session_boundary_security_state(session_key)
+
+            try:
+                from hermes_cli.plugins import invoke_hook as _invoke_hook
+                _invoke_hook(
+                    "on_session_finalize",
+                    session_id=old_session_id or None,
+                    platform=source.platform.value if source.platform else "",
+                )
+                _invoke_hook(
+                    "on_session_reset",
+                    session_id=getattr(new_entry, "session_id", None),
+                    platform=source.platform.value if source.platform else "",
+                )
+            except Exception:
+                pass
+
+            await self.hooks.emit("session:end", {
+                "platform": source.platform.value if source.platform else "",
+                "user_id": source.user_id,
+                "session_key": session_key,
+            })
+            await self.hooks.emit("session:reset", {
+                "platform": source.platform.value if source.platform else "",
+                "user_id": source.user_id,
+                "session_key": session_key,
+            })
+
+            if self._is_telegram_topic_lane(source) and new_entry is not None:
+                try:
+                    self._record_telegram_topic_binding(source, new_entry)
+                except Exception:
+                    logger.debug("Failed to rebind Telegram topic after auto context refresh", exc_info=True)
+
+            resume_note = build_context_refresh_resume_note(pending)
+            if resume_note:
+                notes = getattr(self, "_pending_context_refresh_notes", None)
+                if notes is None:
+                    notes = {}
+                    self._pending_context_refresh_notes = notes
+                notes[session_key] = resume_note
+
+            handoff_path = str(pending.get("handoff_path") or "")
+            notice = (
+                "↻ Context refreshed automatically after a completed phase. "
+                f"Previous session: `{old_session_id}`. "
+                f"Handoff: `{handoff_path}`. "
+                "Your next message will start fresh and receive the handoff note."
+            )
+            logger.info(
+                "Auto context refresh rotated session %s → %s using %s",
+                old_session_id,
+                getattr(new_entry, "session_id", ""),
+                handoff_path,
+            )
+            if agent_result.get("already_sent"):
+                adapter = self.adapters.get(source.platform)
+                if adapter:
+                    try:
+                        await adapter.send(
+                            source.chat_id,
+                            notice,
+                            metadata=self._thread_metadata_for_source(source, self._reply_anchor_for_event(event)),
+                        )
+                    except Exception:
+                        logger.debug("Auto context-refresh notice send failed", exc_info=True)
+                return response
+            return (response or "").rstrip() + "\n\n" + notice
+        except Exception:
+            logger.debug("Gateway auto context-refresh failed", exc_info=True)
+            return response
 
     async def _handle_reset_command(self, event: MessageEvent) -> Union[str, EphemeralReply]:
         """Handle /new or /reset command."""
@@ -16748,6 +16894,14 @@ class GatewayRunner:
                     + message
                 )
 
+            # Consume one-shot automatic context-refresh note generated by an
+            # auto `/new` after the previous completed turn.
+            _pending_cr_notes = getattr(self, "_pending_context_refresh_notes", None)
+            if _pending_cr_notes and session_key and session_key in _pending_cr_notes:
+                _crn = _pending_cr_notes.pop(session_key, None)
+                if _crn:
+                    message = _crn + "\n\n" + message
+
             # Consume one-shot /reload-skills note (if the user ran
             # /reload-skills since their last turn in this session). Same
             # queue pattern as CLI: prepend to the NEXT user message, then
@@ -16858,6 +17012,7 @@ class GatewayRunner:
                     "output_tokens": _output_toks,
                     "model": _resolved_model,
                     "context_length": _context_length,
+                    "pending_context_refresh": getattr(_agent, "_pending_context_refresh", None),
                 }
             
             # Scan tool results for MEDIA:<path> tags that need to be delivered
@@ -17019,6 +17174,7 @@ class GatewayRunner:
                 "model": _resolved_model,
                 "context_length": _context_length,
                 "session_id": effective_session_id,
+                "pending_context_refresh": getattr(agent, "_pending_context_refresh", None),
                 "response_previewed": result.get("response_previewed", False),
             }
         

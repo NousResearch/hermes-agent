@@ -6358,6 +6358,42 @@ class HermesCLI:
             else:
                 print("(^_^)v New session started!")
 
+    def _maybe_auto_new_after_context_refresh(
+        self,
+        result: Optional[dict],
+        *,
+        pending_message=None,
+        pending_steer=None,
+    ) -> bool:
+        """Rotate to a fresh session after a completed auto context-refresh turn."""
+        if pending_message or pending_steer or not self.agent:
+            return False
+        try:
+            from agent.session_handoff import (
+                build_context_refresh_resume_note,
+                should_auto_new_after_context_refresh,
+            )
+
+            decision = should_auto_new_after_context_refresh(self.agent, result)
+            if not decision.should_auto_new:
+                return False
+            pending = dict(decision.pending or {})
+            resume_note = build_context_refresh_resume_note(pending)
+            handoff_path = pending.get("handoff_path") or ""
+            old_session_id = self.session_id
+            self.new_session(silent=True)
+            if resume_note:
+                self._pending_context_refresh_note = resume_note
+            _cprint(
+                f"\n{_DIM}↻ Context refreshed automatically after a completed phase. "
+                f"Previous session: {old_session_id}. "
+                f"Handoff: {handoff_path}. The next turn will receive the handoff note.{_RST}"
+            )
+            return True
+        except Exception as exc:
+            logging.debug("auto context-refresh /new failed: %s", exc, exc_info=True)
+            return False
+
     def _handle_handoff_command(self, cmd_original: str) -> bool:
         """Handle ``/handoff <platform>`` — transfer this CLI session to a gateway platform.
 
@@ -11461,6 +11497,12 @@ class HermesCLI:
                 if _msn:
                     agent_message = _msn + "\n\n" + agent_message
                     self._pending_model_switch_note = None
+                # Prepend automatic context-refresh note so the first turn
+                # after an auto `/new` starts by reading the prepared handoff.
+                _crn = getattr(self, '_pending_context_refresh_note', None)
+                if _crn:
+                    agent_message = _crn + "\n\n" + agent_message
+                    self._pending_context_refresh_note = None
                 # Prepend pending /reload-skills note so the model sees which
                 # skills were added/removed before handling this turn. Same
                 # one-shot queue pattern as the model-switch note above.
@@ -11801,6 +11843,12 @@ class HermesCLI:
                 preview = _leftover_steer[:60] + ("..." if len(_leftover_steer) > 60 else "")
                 print(f"\n⏩ Delivering leftover /steer as next turn: '{preview}'")
                 self._pending_input.put(_leftover_steer)
+
+            self._maybe_auto_new_after_context_refresh(
+                result,
+                pending_message=pending_message,
+                pending_steer=_leftover_steer,
+            )
 
             return response
             

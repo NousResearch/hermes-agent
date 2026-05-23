@@ -1,14 +1,16 @@
 """Automatic context-refresh handoff helpers.
 
 This module writes a lightweight `/new` continuation handoff when a logical
-conversation has been compressed repeatedly. It is intentionally conservative:
-prepare a verified file and notify the caller; do not reset the session here.
+conversation has been compressed repeatedly. Reset/session-rotation is still
+owned by the CLI or gateway caller so it can happen only at a safe turn
+boundary, after the visible work for the current turn is complete.
 """
 
 from __future__ import annotations
 
 import hashlib
 import os
+import re
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -18,7 +20,8 @@ from typing import Any, Dict, Optional
 _DEFAULT_CONTEXT_REFRESH_CONFIG: Dict[str, Any] = {
     "enabled": True,
     "handoff_after_compressions": 2,
-    "mode": "prepare_only",
+    "mode": "auto_new",
+    "auto_new_policy": "phase_boundary",
     "require_safe_turn_boundary": True,
     "require_no_running_processes": True,
     "write_session_handoff": True,
@@ -37,6 +40,13 @@ class HandoffResult:
     byte_count: int
     sha256: str
     resume_prompt: str
+
+
+@dataclass(frozen=True)
+class ContextRefreshDecision:
+    should_auto_new: bool
+    reason: str
+    pending: Optional[Dict[str, Any]] = None
 
 
 def _effective_config(agent: Any) -> Dict[str, Any]:
@@ -119,7 +129,7 @@ Mode: {mode}
 
 ## What This File Is
 
-This is an automatic prepare-only context refresh handoff created after repeated context compression. It preserves continuity for a fresh `/new` session. It does not prove that implementation, repo, GitHub, scheduler, runtime, publication, or audit state is complete.
+This is an automatic context refresh handoff created after repeated context compression. It preserves continuity for a fresh `/new` session. In `auto_new` mode, Hermes may rotate automatically only after a safe completed phase boundary. It does not prove that implementation, repo, GitHub, scheduler, runtime, publication, or audit state is complete.
 
 ## Recent Conversation Excerpt
 
@@ -136,7 +146,7 @@ This is an automatic prepare-only context refresh handoff created after repeated
 
 ## Next Valid Actions
 
-1. Start a fresh `/new` session if context drift is becoming a risk.
+1. If this handoff was prepared in `auto_new` mode, allow automatic `/new` only after the current phase is complete and the next phase is about to begin.
 2. Read this handoff first.
 3. Verify current source-of-truth state with tools before making claims or taking side effects.
 4. Continue from the user's latest explicit objective, not from stale compacted transcript requests.
@@ -144,8 +154,8 @@ This is an automatic prepare-only context refresh handoff created after repeated
 ## What Not To Do Accidentally
 
 - Do not claim repo/GitHub/runtime/scheduler/publication/test status unless verified.
-- Do not treat this prepare-only handoff as proof the task is complete.
-- Do not auto-`/new` in the middle of a tool loop.
+- Do not treat this handoff as proof the task or phase is complete.
+- Do not auto-`/new` before a phase boundary or in the middle of a tool loop.
 - Do not overwrite manual session titles while resuming.
 """
 
@@ -156,6 +166,104 @@ def _handoff_path(cfg: Dict[str, Any], session_id: str) -> Path:
 
 def _resume_prompt(session_id: str, path: Path) -> str:
     return f"Reference session {session_id}. Read {path} first, then continue from the Next Valid Actions section."
+
+
+def build_context_refresh_resume_note(pending: Optional[Dict[str, Any]]) -> str:
+    """Build the one-shot note injected into the first turn of the new session."""
+    if not pending:
+        return ""
+    session_id = str(pending.get("session_id") or "")
+    handoff_path = str(pending.get("handoff_path") or "")
+    if not session_id or not handoff_path:
+        return ""
+    return (
+        "[Automatic context refresh: the previous session was safely rotated "
+        "after a completed phase. Before answering the user's new message, "
+        f"read {handoff_path} and use it to continue from session {session_id}.]"
+    )
+
+
+def _result_is_completed(result: Optional[Dict[str, Any]]) -> bool:
+    if result is None:
+        return True
+    if result.get("failed") or result.get("partial") or result.get("interrupted"):
+        return False
+    if result.get("completed") is False:
+        return False
+    return bool(result.get("final_response") or result.get("completed") is True)
+
+
+_PHASE_BOUNDARY_PATTERNS = (
+    re.compile(r"\bphase\s+(?:\d+|[a-z]+)\s+(?:is\s+)?(?:complete|completed|done|finished)\b", re.I),
+    re.compile(r"\b(?:complete|completed|done|finished)\s+(?:with\s+)?phase\s+(?:\d+|[a-z]+)\b", re.I),
+    re.compile(r"\bphase\s+(?:complete|completed|done|finished)\b", re.I),
+    re.compile(r"\bready\s+(?:to|for)\s+(?:begin|start|move\s+on\s+to|proceed\s+to)?\s*(?:the\s+)?next\s+phase\b", re.I),
+    re.compile(r"\bnext\s+phase\s+(?:can|will|should|is\s+ready\s+to)\b", re.I),
+)
+
+
+def _phase_boundary_detected(result: Optional[Dict[str, Any]]) -> bool:
+    if not result:
+        return False
+    if result.get("context_refresh_phase_boundary") is True or result.get("phase_complete") is True:
+        return True
+    text = result.get("final_response") or ""
+    if not isinstance(text, str):
+        text = str(text)
+    return any(pattern.search(text) for pattern in _PHASE_BOUNDARY_PATTERNS)
+
+
+def _has_running_background_processes(pending: Dict[str, Any], session_key: Optional[str]) -> bool:
+    try:
+        from tools.process_registry import process_registry
+
+        if session_key and process_registry.has_active_for_session(session_key):
+            return True
+        session_id = str(pending.get("session_id") or "")
+        if session_id and process_registry.has_active_processes(session_id):
+            return True
+    except Exception:
+        # Fail closed: if we cannot verify that no background process is tied to
+        # the old session, do not auto-reset it.
+        return True
+    return False
+
+
+def should_auto_new_after_context_refresh(
+    agent: Any,
+    result: Optional[Dict[str, Any]] = None,
+    *,
+    session_key: Optional[str] = None,
+) -> ContextRefreshDecision:
+    """Return whether a prepared context-refresh handoff should now rotate.
+
+    This is intentionally a *post-turn* decision helper. The compression hook
+    only prepares the handoff and sets ``agent._pending_context_refresh``; CLI
+    and gateway callers invoke this after the turn has completed and any queued
+    follow-up handling has drained.
+    """
+    pending = getattr(agent, "_pending_context_refresh", None)
+    if not isinstance(pending, dict):
+        return ContextRefreshDecision(False, "no_pending_context_refresh")
+
+    cfg = _effective_config(agent)
+    mode = str(pending.get("mode") or cfg.get("mode") or "prepare_only")
+    if mode != "auto_new":
+        return ContextRefreshDecision(False, f"mode_is_{mode}", pending)
+    if not _result_is_completed(result):
+        return ContextRefreshDecision(False, "turn_not_completed", pending)
+
+    policy = str(cfg.get("auto_new_policy") or "phase_boundary").strip().lower()
+    if policy in {"phase_boundary", "phase", "phase_complete"} and not _phase_boundary_detected(result):
+        return ContextRefreshDecision(False, "phase_boundary_not_detected", pending)
+    if policy in {"completed_turn", "turn_complete", "safe_turn_boundary"}:
+        boundary_reason = "safe_turn_boundary"
+    else:
+        boundary_reason = "phase_boundary"
+
+    if cfg.get("require_no_running_processes", True) and _has_running_background_processes(pending, session_key):
+        return ContextRefreshDecision(False, "running_background_processes", pending)
+    return ContextRefreshDecision(True, boundary_reason, pending)
 
 
 def write_handoff_file(path: Path, content: str, session_id: str) -> HandoffResult:

@@ -43,6 +43,7 @@ python -m benchmarks.hermes_memory_bench.run --suite smoke --output /tmp/hermes-
 - `memory_human_approval_token_issuance_plan`
 - `memory_human_approval_token_issuance_dry_run`
 - `memory_human_approval_token_write_lock_gate`
+- `memory_human_approval_token_final_confirmation_request`
 - `latency_ms`
 
 ## Hybrid Retrieval Fusion v0.1
@@ -408,6 +409,27 @@ The smoke suite includes `memory_human_approval_token_write_lock_gate`, proving
 that a valid token issuance dry run becomes eligible for a separate final human
 confirmation flow without issuing a token, persisting approval, creating a real
 proposal, or creating an operation event.
+
+### Memory Human Approval Token Final Confirmation Request v0.1
+
+Implemented in
+`agent.memory_human_approval_token_final_confirmation_request`. It turns an
+`eligible_for_final_human_confirmation` token write-lock gate candidate into a
+deterministic `final_confirmation_review_required` request candidate.
+
+Invalid or locked token write-lock gates, missing token/proposal/ledger/path
+previews, missing source evidence, or previews that are not preview-only remain
+`locked` with explicit reasons. The request never issues real approval tokens,
+persists approvals, creates real proposals, writes proposal files, writes
+operation-ledger events, writes token files, writes approval audit records,
+submits to governance, writes memory, writes the Memory Graph, or modifies
+config.
+
+The smoke suite includes
+`memory_human_approval_token_final_confirmation_request`, proving that a valid
+token write-lock gate becomes final-confirmation-review-required without
+issuing a token, persisting approval, creating a real proposal, or creating an
+operation event.
 
 ## Report Schema
 

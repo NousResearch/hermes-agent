@@ -196,6 +196,12 @@ issuance records and final token preflight without issuing tokens, persisting
 approvals, writing token files, creating real proposals, or creating
 operation-ledger events.
 
+Memory Human Approval Token Final Confirmation Request v0.1 lives in
+`agent.memory_human_approval_token_final_confirmation_request`. It turns
+eligible token write-lock gates into read-only final confirmation request
+candidates without issuing tokens, persisting approvals, writing token files,
+creating real proposals, or creating operation-ledger events.
+
 ---
 
 ## Migrating from OpenClaw

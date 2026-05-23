@@ -608,5 +608,58 @@
         }
       }
     ]
+  },
+  {
+    "id": "memory_human_review_outcome_gate_approve_real_proposal_creation",
+    "dimension": "memory_human_review_outcome_gate",
+    "description": "Valid human review packet becomes an approve-real-proposal-creation outcome candidate.",
+    "query": "Can Hermes Memory Fabric create a human review outcome candidate without creating a real proposal?",
+    "project_scope": "memory-fabric",
+    "reviewer": "memory-fabric-reviewer",
+    "author": "memory-fabric-author",
+    "governance_reviewer": "memory-fabric-governance-reviewer",
+    "packet_reviewer": "memory-fabric-packet-reviewer",
+    "human_reviewer": "memory-fabric-human-reviewer",
+    "expected_answer": "approve_real_proposal_creation",
+    "memories": [
+      {
+        "fact_id": "human-review-outcome-procedure-1",
+        "subject": "Hermes Memory Fabric",
+        "predicate": "procedure",
+        "object": "create read-only human review outcome candidates",
+        "project_id": "memory-fabric",
+        "source_episode_id": "episode-memory-human-review-outcome-gate-a",
+        "provenance": "bench:memory-human-review-outcome-gate:a",
+        "confidence": 0.92,
+        "valid_from": "2026-05-23T00:00:00Z",
+        "system_created_at": "2026-05-23T09:00:00Z",
+        "governance": {
+          "read_only": true,
+          "would_write_memory": false,
+          "would_modify_config": false,
+          "would_write_graph": false,
+          "does_not_create_operation_events": true
+        }
+      },
+      {
+        "fact_id": "human-review-outcome-procedure-2",
+        "subject": "Hermes Memory Fabric",
+        "predicate": "procedure",
+        "object": "create read-only human review outcome candidates",
+        "project_id": "memory-fabric",
+        "source_episode_id": "episode-memory-human-review-outcome-gate-b",
+        "provenance": "bench:memory-human-review-outcome-gate:b",
+        "confidence": 0.91,
+        "valid_from": "2026-05-23T00:00:00Z",
+        "system_created_at": "2026-05-23T10:00:00Z",
+        "governance": {
+          "read_only": true,
+          "would_write_memory": false,
+          "would_modify_config": false,
+          "would_write_graph": false,
+          "does_not_create_operation_events": true
+        }
+      }
+    ]
   }
 ]

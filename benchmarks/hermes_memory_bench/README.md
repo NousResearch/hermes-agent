@@ -34,6 +34,7 @@ python -m benchmarks.hermes_memory_bench.run --suite smoke --output /tmp/hermes-
 - `memory_proposal_draft_builder`
 - `memory_proposal_governance_gate`
 - `memory_governance_submission_packet`
+- `memory_human_review_outcome_gate`
 - `latency_ms`
 
 ## Hybrid Retrieval Fusion v0.1
@@ -226,6 +227,26 @@ write the Memory Graph, modify config, or create operation-ledger events.
 The smoke suite includes `memory_governance_submission_packet`, proving that a
 valid governance submission candidate becomes a `human_review_packet_required`
 packet candidate without creating a real proposal.
+
+## Memory Human Review Outcome Gate v0.1
+
+Memory Human Review Outcome Gate v0.1 lives in
+`agent.memory_human_review_outcome_gate`. It turns human-review packet
+candidates into deterministic `review_outcome_candidate` artifacts with outcome
+labels `approve_real_proposal_creation`, `request_changes`, `reject`, and
+`defer`.
+
+Invalid packets produce `reject` outcomes, missing payload previews or source
+evidence produce `request_changes`, and valid packets with payload preview plus
+source evidence produce `approve_real_proposal_creation`. Explicit supported
+outcome overrides are recorded only as read-only candidates. The gate does not
+create real proposals, submit to governance, apply proposal drafts, persist
+approvals, write memory, write the Memory Graph, modify config, or create
+operation-ledger events.
+
+The smoke suite includes `memory_human_review_outcome_gate`, proving that a
+valid human-review packet becomes an `approve_real_proposal_creation` outcome
+candidate without creating a real proposal.
 
 ## Report Schema
 

@@ -40,6 +40,11 @@ from agent.memory_governance_submission_packet import (
     create_governance_submission_packet,
     summarize_governance_submission_packets,
 )
+from agent.memory_human_review_outcome_gate import (
+    MEMORY_HUMAN_REVIEW_OUTCOME_GATE_POLICY,
+    create_human_review_outcome_candidate,
+    summarize_human_review_outcomes,
+)
 from agent.memory_retrieval_fusion import fuse_memory_retrieval
 
 
@@ -61,6 +66,7 @@ DIMENSIONS = (
     "memory_proposal_draft_builder",
     "memory_proposal_governance_gate",
     "memory_governance_submission_packet",
+    "memory_human_review_outcome_gate",
     "latency_ms",
 )
 POLICY = {
@@ -375,6 +381,44 @@ def _answer_case(case: dict[str, Any]) -> tuple[str, dict[str, Any]]:
             "submitted_to_governance": False,
             "converted_to_real_proposal": False,
             "policy": dict(MEMORY_GOVERNANCE_SUBMISSION_PACKET_POLICY),
+        }
+
+    if dimension == "memory_human_review_outcome_gate":
+        compiler_result = compile_memory_patterns(memories, project_scope=case.get("project_scope"))
+        blocks = compile_blocks_from_compiler_result(compiler_result, project_scope=case.get("project_scope"))
+        queue = build_review_queue(blocks, reviewer=case.get("reviewer"))
+        decisions = [evaluate_review_queue_item(item, reviewer=case.get("reviewer")) for item in queue]
+        drafts = [create_memory_proposal_draft(decision, author=case.get("author")) for decision in decisions]
+        submissions = [
+            create_governance_submission_candidate(draft, reviewer=case.get("governance_reviewer"))
+            for draft in drafts
+        ]
+        packets = [
+            create_governance_submission_packet(submission, reviewer=case.get("packet_reviewer"))
+            for submission in submissions
+        ]
+        outcomes = [
+            create_human_review_outcome_candidate(packet, reviewer=case.get("human_reviewer"))
+            for packet in packets
+        ]
+        outcome = outcomes[0] if outcomes else {}
+        return outcome.get("outcome", ""), {
+            "compiler": compiler_result,
+            "memory_blocks": blocks,
+            "review_queue": queue,
+            "decision_candidates": decisions,
+            "proposal_draft_candidates": drafts,
+            "governance_submission_candidates": submissions,
+            "governance_submission_packet_candidates": packets,
+            "human_review_outcome_candidates": outcomes,
+            "summary": summarize_human_review_outcomes(outcomes),
+            "candidate_count": len(memories),
+            "created_real_proposal": False,
+            "created_operation_event": False,
+            "submitted_to_governance": False,
+            "converted_to_real_proposal": False,
+            "persisted_approval": False,
+            "policy": dict(MEMORY_HUMAN_REVIEW_OUTCOME_GATE_POLICY),
         }
 
     selected = _newest(memories)

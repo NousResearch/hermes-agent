@@ -165,6 +165,12 @@ submission candidates into deterministic `human_review_packet_required` review
 packet candidates with evidence summaries, review checklists, and explicit
 read-only policy before any real proposal creation.
 
+Memory Human Review Outcome Gate v0.1 lives in
+`agent.memory_human_review_outcome_gate`. It turns review packet candidates into
+read-only outcome candidates such as `approve_real_proposal_creation`,
+`request_changes`, `reject`, and `defer`; it still requires manual real proposal
+creation and never persists approvals or creates proposal records.
+
 ---
 
 ## Migrating from OpenClaw

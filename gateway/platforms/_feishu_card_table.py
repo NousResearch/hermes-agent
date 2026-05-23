@@ -134,6 +134,16 @@ def _build_card_with_table_payload(content: str) -> str:
     for seg_kind, seg_text in segments:
         if seg_kind == "table":
             elements.append(_parse_markdown_table_to_card_element(seg_text))
+            # Native client UX hint: educate users about Feishu's built-in
+            # cell-copy gestures, plus the raw-markdown fallback they can
+            # long-press select. Lightweight zero-dependency enhancement —
+            # later iterations can replace this with a "Save to Sheet"
+            # button once OAuth scopes (sheets:spreadsheet) are granted.
+            elements.append(_build_table_hint_element())
+            # Append the raw markdown source itself so long-press select +
+            # copy works for the entire table at once on mobile clients
+            # that don't expose per-cell copy.
+            elements.append(_build_raw_source_disclosure(seg_text))
         elif seg_text.strip():
             elements.append({"tag": "markdown", "content": seg_text})
     if not elements:
@@ -178,6 +188,40 @@ _SCOUT_FEISHU_FRAGMENT = (
 )
 
 
+_TABLE_HINT_CONTENT = (
+    "💡 **复制 / 下载提示** · 长按 cell 复制单元格 · "
+    "长按下方原始数据可全选复制并粘贴到飞书表格 / Excel · "
+    "「保存到飞书表格」按钮 v3 上线中"
+)
+
+
+def _build_table_hint_element() -> Dict[str, Any]:
+    """Inline markdown hint educating users about native Feishu copy gestures.
+
+    Lightweight zero-dependency enhancement: explains that Feishu desktop
+    + mobile clients already support long-press copy on table cells, and
+    points to the raw-markdown disclosure block that follows for full
+    table copy / paste workflows.
+    """
+    return {"tag": "markdown", "content": _TABLE_HINT_CONTENT}
+
+
+def _build_raw_source_disclosure(table_text: str) -> Dict[str, Any]:
+    """Re-emit the original markdown table inside a fenced code block.
+
+    Feishu cards render fenced ``markdown`` content as plain monospace,
+    so long-press select-all on this block lets users copy the table as
+    valid markdown to paste into Lark Sheets, Excel, or any md-capable
+    surface. This is the closest we can ship without a backend Sheets
+    API integration.
+    """
+    stripped = table_text.rstrip("\n")
+    return {
+        "tag": "markdown",
+        "content": f"```markdown\n{stripped}\n```",
+    }
+
+
 def _run_selfcheck() -> int:
     raw = _build_card_with_table_payload(_SCOUT_FEISHU_FRAGMENT)
     card = json.loads(raw)
@@ -186,7 +230,16 @@ def _run_selfcheck() -> int:
     assert card["schema"] == "2.0", f"expected schema 2.0, got {card['schema']!r}"
     elements = card["body"]["elements"]
     tags = [e["tag"] for e in elements]
-    assert tags == ["markdown", "table", "markdown"], f"unexpected element order: {tags}"
+    # Order: intro-markdown / table / hint-markdown / raw-source-markdown / footer-markdown
+    assert tags == [
+        "markdown", "table", "markdown", "markdown", "markdown"
+    ], f"unexpected element order: {tags}"
+
+    # Hint element must contain the copy-affordance educational text.
+    assert "长按 cell 复制单元格" in elements[2]["content"], "hint element missing copy text"
+    # Raw-source disclosure must be a fenced markdown block preserving pipes.
+    assert elements[3]["content"].startswith("```markdown"), "raw-source missing fence"
+    assert "| 关键词 |" in elements[3]["content"], "raw-source missing original table"
 
     table = elements[1]
     assert len(table["columns"]) == 4, f"expected 4 columns, got {len(table['columns'])}"

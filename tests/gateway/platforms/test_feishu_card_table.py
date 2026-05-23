@@ -131,10 +131,14 @@ def test_build_card_with_table_payload_mixes_markdown_and_table_in_order():
     card = json.loads(raw)
     elements = card["body"]["elements"]
     tags = [e["tag"] for e in elements]
-    assert tags == ["markdown", "table", "markdown"]
+    # Order: intro / table / hint / raw-source / footer
+    assert tags == ["markdown", "table", "markdown", "markdown", "markdown"]
     assert "主要发现" in elements[0]["content"]
     assert elements[1]["rows"][1] == {"col1": "chair", "col2": "980", "col3": "✅"}
-    assert "Next" in elements[2]["content"]
+    # Hint and raw-source disclosure live at indices 2 and 3.
+    assert "长按 cell 复制单元格" in elements[2]["content"]
+    assert elements[3]["content"].startswith("```markdown")
+    assert "Next" in elements[4]["content"]
 
 
 def test_build_card_with_table_payload_pure_table_no_prose():
@@ -142,7 +146,8 @@ def test_build_card_with_table_payload_pure_table_no_prose():
     raw = _build_card_with_table_payload(content)
     card = json.loads(raw)
     tags = [e["tag"] for e in card["body"]["elements"]]
-    assert tags == ["table"]
+    # A bare table still emits the hint and raw-source disclosure after it.
+    assert tags == ["table", "markdown", "markdown"]
 
 
 # ---------------------------------------------------------------------------
@@ -173,7 +178,8 @@ def test_scout_feishu_office_furniture_fragment_round_trip():
     card = json.loads(raw)
     elements = card["body"]["elements"]
     tags = [e["tag"] for e in elements]
-    assert tags == ["markdown", "table", "markdown"]
+    # Order: intro / table / hint / raw-source / footer
+    assert tags == ["markdown", "table", "markdown", "markdown", "markdown"]
     table = elements[1]
     assert len(table["columns"]) == 4
     assert table["columns"][0]["display_name"] == "关键词"
@@ -182,6 +188,9 @@ def test_scout_feishu_office_furniture_fragment_round_trip():
     last = table["rows"][5]
     assert "criss cross office chair" in last["col1"]
     assert last["col4"] == "✅"
+    # Hint educates users; raw-source preserves the full markdown table.
+    assert "长按 cell 复制单元格" in elements[2]["content"]
+    assert "criss cross office chair" in elements[3]["content"]
 
 
 # ---------------------------------------------------------------------------

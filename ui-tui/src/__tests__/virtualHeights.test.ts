@@ -40,6 +40,14 @@ describe('virtual height estimates', () => {
     )
   })
 
+  it('does not account for a response separator without visible details', () => {
+    const msg: Msg = { role: 'assistant', text: 'ok' }
+
+    expect(estimatedMsgHeight(msg, 80, { compact: false, details: true })).toBe(
+      estimatedMsgHeight(msg, 80, { compact: false, details: false }) + 1
+    )
+  })
+
   it('reserves two extra rows for the inter-turn separator on non-first user messages', () => {
     const msg: Msg = { role: 'user', text: 'follow-up question' }
     const base = estimatedMsgHeight(msg, 80, { compact: false, details: false })

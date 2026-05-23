@@ -99,10 +99,12 @@ const TOOLSETS_MAX = 8
 export function SessionPanel({ info, sid, t }: SessionPanelProps) {
   const cols = useStdout().stdout?.columns ?? 100
   const heroLines = caduceus(t.color, t.bannerHero || undefined)
-  const leftW = Math.min((artWidth(heroLines) || CADUCEUS_WIDTH) + 4, Math.floor(cols * 0.4))
+  const artW = artWidth(heroLines) || CADUCEUS_WIDTH
+  const leftW = Math.min(artW + 4, Math.floor(cols * 0.4))
   const wide = cols >= 90 && leftW + 40 < cols
-  const w = Math.max(20, wide ? cols - leftW - 14 : cols - 12)
-  const lineBudget = Math.max(12, w - 2)
+  // Use flex layout instead of fixed width — right column fills remaining
+  // space, avoiding border misalignment when terminal is zoomed/resized.
+  const lineBudget = Math.max(12, cols - (wide ? leftW + 10 : 8))
   const strip = (s: string) => (s.endsWith('_tools') ? s.slice(0, -6) : s)
 
   // ── Local collapse state for each section ──
@@ -218,7 +220,7 @@ export function SessionPanel({ info, sid, t }: SessionPanelProps) {
   return (
     <Box borderColor={t.color.border} borderStyle="round" marginBottom={1} paddingX={2} paddingY={1}>
       {wide && (
-        <Box flexDirection="column" marginRight={2} width={leftW}>
+        <Box flexDirection="column" flexShrink={0} marginRight={2} width={leftW}>
           <ArtLines lines={heroLines} />
           <Text />
 
@@ -240,7 +242,7 @@ export function SessionPanel({ info, sid, t }: SessionPanelProps) {
         </Box>
       )}
 
-      <Box flexDirection="column" width={w}>
+      <Box flexDirection="column" flexGrow={1} flexShrink={1}>
         <Box justifyContent="center" marginBottom={1}>
           <Text bold color={t.color.primary}>
             {t.brand.name}

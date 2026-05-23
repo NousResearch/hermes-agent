@@ -350,7 +350,7 @@ export function StatusRule({
       </Box>
 
       <Text color={t.color.border}> ─ </Text>
-      <Text color={t.color.label}>{cwdLabel}</Text>
+      <Text color={t.color.label} wrap="truncate-end">{cwdLabel}</Text>
     </Box>
   )
 }

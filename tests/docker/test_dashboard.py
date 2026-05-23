@@ -5,11 +5,17 @@ it stays dead. After Phase 2 (s6): dashboard starts once; if it crashes
 it is restarted under supervision. The restart-after-crash test lives in
 Phase 2 Task 2.5; this file only locks the opt-in surface (which must
 not change between tini and s6).
+
+Every ``docker exec`` here runs as the unprivileged ``hermes`` user
+(via :func:`docker_exec`/:func:`docker_exec_sh` in conftest), matching
+the realistic runtime context. See the conftest module docstring.
 """
 from __future__ import annotations
 
 import subprocess
 import time
+
+from tests.docker.conftest import docker_exec, docker_exec_sh
 
 
 def _poll(container: str, probe: str, *, deadline_s: float = 30.0,
@@ -19,10 +25,7 @@ def _poll(container: str, probe: str, *, deadline_s: float = 30.0,
     end = time.monotonic() + deadline_s
     last = ""
     while time.monotonic() < end:
-        r = subprocess.run(
-            ["docker", "exec", container, "sh", "-c", probe],
-            capture_output=True, text=True, timeout=10,
-        )
+        r = docker_exec_sh(container, probe, timeout=10)
         last = r.stdout
         if r.returncode == 0:
             return True, last
@@ -42,11 +45,7 @@ def test_dashboard_not_running_by_default(
     # Give the entrypoint enough time to finish bootstrap; if a dashboard
     # were going to start it'd be visible by now.
     time.sleep(5)
-    r = subprocess.run(
-        ["docker", "exec", container_name,
-         "pgrep", "-f", "hermes dashboard"],
-        capture_output=True, text=True, timeout=10,
-    )
+    r = docker_exec(container_name, "pgrep", "-f", "hermes dashboard")
     # pgrep exits non-zero when no match found
     assert r.returncode != 0, (
         "Dashboard should not be running without HERMES_DASHBOARD"
@@ -121,10 +120,8 @@ def test_dashboard_restarts_after_crash(
     # a couple of times before giving up.
     first_pid: str | None = None
     for _attempt in range(10):
-        first_pid_result = subprocess.run(
-            ["docker", "exec", container_name,
-             "pgrep", "-f", "hermes dashboard"],
-            capture_output=True, text=True, timeout=10,
+        first_pid_result = docker_exec(
+            container_name, "pgrep", "-f", "hermes dashboard",
         )
         first_pids = first_pid_result.stdout.strip().split()
         if first_pids:
@@ -133,21 +130,15 @@ def test_dashboard_restarts_after_crash(
         time.sleep(0.5)
     assert first_pid is not None, "Could not capture initial dashboard PID"
 
-    # Kill the dashboard.
-    subprocess.run(
-        ["docker", "exec", container_name, "kill", "-9", first_pid],
-        capture_output=True, timeout=10,
-    )
+    # Kill the dashboard. The dashboard process runs as hermes, so the
+    # hermes user can kill it (same UID).
+    docker_exec(container_name, "kill", "-9", first_pid)
 
     # s6 backs off ~1s before restart; allow up to 15s for the new
     # process to appear with a different PID.
     deadline = time.monotonic() + 15.0
     while time.monotonic() < deadline:
-        r = subprocess.run(
-            ["docker", "exec", container_name,
-             "pgrep", "-f", "hermes dashboard"],
-            capture_output=True, text=True, timeout=10,
-        )
+        r = docker_exec(container_name, "pgrep", "-f", "hermes dashboard")
         pids = r.stdout.strip().split() if r.returncode == 0 else []
         if pids and pids[0] != first_pid:
             return  # success

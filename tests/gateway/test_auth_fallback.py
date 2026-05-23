@@ -9,6 +9,65 @@ import pytest
 class TestResolveRuntimeAgentKwargsAuthFallback:
     """_resolve_runtime_agent_kwargs should try fallback on AuthError."""
 
+    def test_config_model_provider_is_used_when_env_unset(self):
+        """Gateway should honor config.yaml model.provider even without env export."""
+        captured = {}
+
+        def _mock_resolve(**kwargs):
+            captured["requested"] = kwargs.get("requested")
+            return {
+                "api_key": "xai-key",
+                "base_url": "https://api.x.ai/v1",
+                "provider": "xai",
+                "api_mode": "codex_responses",
+                "command": None,
+                "args": None,
+                "credential_pool": None,
+            }
+
+        with patch(
+            "hermes_cli.runtime_provider.resolve_runtime_provider",
+            side_effect=_mock_resolve,
+        ):
+            from gateway.run import _resolve_runtime_agent_kwargs
+
+            result = _resolve_runtime_agent_kwargs(
+                config={"model": {"provider": "xai", "default": "xai/grok-code-fast-1"}}
+            )
+
+        assert captured["requested"] == "xai"
+        assert result["provider"] == "xai"
+
+    def test_config_model_provider_beats_env_provider(self, monkeypatch):
+        """Gateway precedence should match CLI: config provider > env provider."""
+        captured = {}
+        monkeypatch.setenv("HERMES_INFERENCE_PROVIDER", "openrouter")
+
+        def _mock_resolve(**kwargs):
+            captured["requested"] = kwargs.get("requested")
+            return {
+                "api_key": "xai-key",
+                "base_url": "https://api.x.ai/v1",
+                "provider": "xai",
+                "api_mode": "codex_responses",
+                "command": None,
+                "args": None,
+                "credential_pool": None,
+            }
+
+        with patch(
+            "hermes_cli.runtime_provider.resolve_runtime_provider",
+            side_effect=_mock_resolve,
+        ):
+            from gateway.run import _resolve_runtime_agent_kwargs
+
+            result = _resolve_runtime_agent_kwargs(
+                config={"model": {"provider": "xai", "default": "xai/grok-code-fast-1"}}
+            )
+
+        assert captured["requested"] == "xai"
+        assert result["provider"] == "xai"
+
     def test_auth_error_tries_fallback(self, tmp_path, monkeypatch):
         """When primary provider raises AuthError, fallback is attempted."""
         from hermes_cli.auth import AuthError

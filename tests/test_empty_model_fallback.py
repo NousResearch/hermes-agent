@@ -35,6 +35,36 @@ class TestGetDefaultModelForProvider:
 class TestGatewayEmptyModelFallback:
     """Test that _resolve_session_agent_runtime fills in empty model from provider catalog."""
 
+    def test_session_runtime_forwards_configured_provider(self):
+        """Gateway session runtime should pass model.provider into runtime resolution."""
+        from gateway.run import GatewayRunner
+
+        runner = object.__new__(GatewayRunner)
+        runner._session_model_overrides = {}
+
+        user_config = {
+            "model": {
+                "default": "xai/grok-code-fast-1",
+                "provider": "xai",
+            }
+        }
+
+        with patch("gateway.run._resolve_gateway_model", return_value="xai/grok-code-fast-1"), \
+             patch("gateway.run._resolve_runtime_agent_kwargs", return_value={
+                 "provider": "xai",
+                 "api_key": "xai-key",
+                 "base_url": "https://api.x.ai/v1",
+                 "api_mode": "codex_responses",
+             }) as mock_runtime:
+            model, kwargs = runner._resolve_session_agent_runtime(user_config=user_config)
+
+        mock_runtime.assert_called_once_with(
+            requested_provider="xai",
+            config=user_config,
+        )
+        assert model == "xai/grok-code-fast-1"
+        assert kwargs["provider"] == "xai"
+
     def test_empty_model_filled_from_provider(self):
         """When config has no model but provider is openai-codex, use first codex model."""
         from gateway.run import GatewayRunner

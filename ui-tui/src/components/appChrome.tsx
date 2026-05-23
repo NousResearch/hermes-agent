@@ -150,6 +150,17 @@ function ctxBar(pct: number | undefined, w = 10) {
   return '█'.repeat(filled) + '░'.repeat(w - filled)
 }
 
+export function statusRuleWidths(cols: number, cwdLabel: string) {
+  const width = Math.max(1, Math.floor(cols || 1))
+  const separatorWidth = width >= 24 ? 3 : 1
+  const minLeftWidth = width >= 24 ? 8 : 1
+  const maxRightWidth = Math.max(0, width - separatorWidth - minLeftWidth)
+  const rightWidth = Math.max(0, Math.min(cwdLabel.length, maxRightWidth))
+  const leftWidth = Math.max(1, width - separatorWidth - rightWidth)
+
+  return { leftWidth, rightWidth, separatorWidth }
+}
+
 function SpawnHud({ t }: { t: Theme }) {
   // Tight HUD that only appears when the session is actually fanning out.
   // Colour escalates to warn/error as depth or concurrency approaches the cap.
@@ -297,7 +308,7 @@ export function StatusRule({
       : ''
 
   const bar = usage.context_max ? ctxBar(pct) : ''
-  const leftWidth = Math.max(12, cols - cwdLabel.length - 3)
+  const { leftWidth, rightWidth, separatorWidth } = statusRuleWidths(cols, cwdLabel)
 
   return (
     <Box height={1}>
@@ -349,8 +360,16 @@ export function StatusRule({
         </Text>
       </Box>
 
-      <Text color={t.color.border}> ─ </Text>
-      <Text color={t.color.label}>{cwdLabel}</Text>
+      {rightWidth > 0 ? (
+        <>
+          <Text color={t.color.border}>{separatorWidth >= 3 ? ' ─ ' : ' '}</Text>
+          <Box flexShrink={0} width={rightWidth}>
+            <Text color={t.color.label} wrap="truncate-end">
+              {cwdLabel}
+            </Text>
+          </Box>
+        </>
+      ) : null}
     </Box>
   )
 }

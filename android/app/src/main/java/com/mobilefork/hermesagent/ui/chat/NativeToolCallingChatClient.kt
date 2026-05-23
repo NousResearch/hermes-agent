@@ -535,7 +535,7 @@ class NativeToolCallingChatClient(
             "file_write_tool", "write_file", "file_tool" -> executeFileWriteTool(toolCall)
             "android_system_tool", "android_system_action", "system_tool", "settings_tool", "phone_tool" ->
                 executeAndroidSystemTool(toolCall)
-            "android_device_diagnostics_tool", "device_diagnostics_tool", "diagnostics_tool", "resource_tool", "wifi_analyzer_tool", "bluetooth_scanner_tool", "bluetooth_analyzer_tool", "sensor_tool", "sensor_analyzer_tool", "camera_tool", "radio_signal_tool", "soc_backend_tool", "runtime_stability_tool", "device_performance_tool" ->
+            "android_device_diagnostics_tool", "device_diagnostics_tool", "diagnostics_tool", "resource_tool", "wifi_analyzer_tool", "bluetooth_scanner_tool", "bluetooth_analyzer_tool", "sensor_tool", "sensor_analyzer_tool", "camera_tool", "radio_signal_tool", "rf_coexistence_tool", "soc_backend_tool", "runtime_stability_tool", "device_performance_tool" ->
                 executeAndroidDeviceDiagnosticsTool(toolCall)
             "hindsight_memory_tool", "memory_tool", "recall_tool", "retain_tool" -> executeHindsightMemoryTool(toolCall)
             "android_automation_tool", "automation_tool", "tasker_tool", "kai_task_tool" -> executeAndroidAutomationTool(toolCall)
@@ -1282,9 +1282,9 @@ class NativeToolCallingChatClient(
             .put(
                 functionSpec(
                     name = "android_device_diagnostics_tool",
-                    description = "Inspect resource-heavy apps, storage/memory status, nearby Wi-Fi signals, filterable Wi-Fi Analyzer readiness/scan-policy reports, current Wi-Fi association/link-quality telemetry, channel ratings, inferred channel utilization/occupancy, access-point detail/export rows, AP semantic/risk labels, band coverage, signal history, vendor/OUI metadata and filter facets, Bluetooth Analyzer readiness/scan-policy reports, nearby Bluetooth devices plus service UUID labels/manufacturer names/proximity metadata, Bluetooth device detail/export rows, Bluetooth RSSI history/trends, Sensor Analyzer readiness/sampling-policy reports, accelerometer/gyroscope/ambient sensor snapshots, motion sensor history/trends, fused motion pose/heading/angular-motion/acceleration estimates, motion sensor quality gates for IMU source coverage, freshness, calibration, stability, cadence, and workflow readiness, camera capability, overlay status, passive local backend runtime health, dedicated MediaTek/Dimensity/Helio/Mali/PowerVR/non-Adreno readiness profiles, GPU/backend risk matrices, local inference compatibility scorecards, thermal/memory/power runtime stability guardrails, SOC/GPU compatibility and backend-policy reports, Gemma-visible signal evidence bundles, agent observation dashboards with fused signal-context matrices, direct diagnostic card manifests, Kai-style agent environment parity/readiness and tool sandbox/status matrices, cross-signal awareness routes, tool catalog, radio analyzer AM/FM band-plan rows, AM/FM signal graph rows, receiver profile schemas for vendor AM/FM and external SDR bridges, vendor radio hints, Wi-Fi/Bluetooth radio routes, external SDR constraints, RF/AM/FM hardware limits, and phone preflight readiness for TikTok/Instagram/Gmail end-to-end work.",
+                    description = "Inspect resource-heavy apps, storage/memory status, nearby Wi-Fi signals, filterable Wi-Fi Analyzer readiness/scan-policy reports, current Wi-Fi association/link-quality telemetry, channel ratings, inferred channel utilization/occupancy, access-point detail/export rows, AP semantic/risk labels, band coverage, signal history, vendor/OUI metadata and filter facets, Bluetooth Analyzer readiness/scan-policy reports, nearby Bluetooth devices plus service UUID labels/manufacturer names/proximity metadata, Bluetooth device detail/export rows, Bluetooth RSSI history/trends, Sensor Analyzer readiness/sampling-policy reports, accelerometer/gyroscope/ambient sensor snapshots, motion sensor history/trends, fused motion pose/heading/angular-motion/acceleration estimates, motion sensor quality gates for IMU source coverage, freshness, calibration, stability, cadence, and workflow readiness, camera capability, overlay status, passive local backend runtime health, dedicated MediaTek/Dimensity/Helio/Mali/PowerVR/non-Adreno readiness profiles, GPU/backend risk matrices, local inference compatibility scorecards, thermal/memory/power runtime stability guardrails, SOC/GPU compatibility and backend-policy reports, Gemma-visible signal evidence bundles, agent observation dashboards with fused signal-context matrices, direct diagnostic card manifests, Kai-style agent environment parity/readiness and tool sandbox/status matrices, cross-signal awareness routes, RF coexistence matrices for Wi-Fi/Bluetooth/radio/backend interference summaries, tool catalog, radio analyzer AM/FM band-plan rows, AM/FM signal graph rows, receiver profile schemas for vendor AM/FM and external SDR bridges, vendor radio hints, Wi-Fi/Bluetooth radio routes, external SDR constraints, RF/AM/FM hardware limits, and phone preflight readiness for TikTok/Instagram/Gmail end-to-end work.",
                     properties = JSONObject()
-                        .put("action", stringProp("status, top_apps, wifi_scan, wifi_filtered_scan, wifi_analyzer_report, wifi_connection_link, wifi_channel_graph, wifi_channel_rating, wifi_channel_utilization, wifi_ap_details, wifi_export, bluetooth_scan, bluetooth_analyzer_report, bluetooth_signal_history, bluetooth_device_details, bluetooth_export, sensor_analyzer_report, motion_sensor_quality, motion_sensor_history, motion_pose, sensor_snapshot, camera_status, radio_signal_status, radio_signal_graph, radio_analyzer_report, signal_capability_status, local_backend_runtime_report, mediatek_readiness_report, soc_compatibility_report, gpu_backend_risk_report, local_inference_compatibility_report, device_performance_report, signal_awareness_report, agent_signal_evidence_report, signal_evidence_bundle, agent_observation_report, agent_card_manifest_report, agent_environment_report, social_gmail_goal_preflight, show_active_overlay, tool_catalog, open_usage_access_settings, open_camera_permission_settings."))
+                        .put("action", stringProp("status, top_apps, wifi_scan, wifi_filtered_scan, wifi_analyzer_report, wifi_connection_link, wifi_channel_graph, wifi_channel_rating, wifi_channel_utilization, wifi_ap_details, wifi_export, bluetooth_scan, bluetooth_analyzer_report, bluetooth_signal_history, bluetooth_device_details, bluetooth_export, sensor_analyzer_report, motion_sensor_quality, motion_sensor_history, motion_pose, sensor_snapshot, camera_status, radio_signal_status, radio_signal_graph, radio_analyzer_report, signal_capability_status, local_backend_runtime_report, mediatek_readiness_report, soc_compatibility_report, gpu_backend_risk_report, local_inference_compatibility_report, device_performance_report, signal_awareness_report, rf_coexistence_report, agent_signal_evidence_report, signal_evidence_bundle, agent_observation_report, agent_card_manifest_report, agent_environment_report, social_gmail_goal_preflight, show_active_overlay, tool_catalog, open_usage_access_settings, open_camera_permission_settings."))
                         .put("limit", intProp("Maximum rows for top apps, Wi-Fi networks, or Bluetooth devices. Defaults to 5."))
                         .put("detail_limit", intProp("Maximum Wi-Fi access-point or Bluetooth device detail/export rows. Defaults to limit, or the action max for detail/export actions."))
                         .put("export_format", stringProp("Export format for wifi_export or bluetooth_export: json, csv, or both."))
@@ -3279,6 +3279,8 @@ class NativeToolCallingChatClient(
                 return null
             }
             return when {
+                lower.containsAny("rf coexistence", "wireless coexistence", "wifi bluetooth coexistence", "wi-fi bluetooth coexistence", "bluetooth wifi interference", "bluetooth wi-fi interference", "cross signal interference", "2.4 ghz coexistence", "2.4ghz coexistence") ->
+                    diagnosticArguments("rf_coexistence_report")
                 (lower.contains("export") && lower.containsAny("wifi", "wi-fi", "access point", "access points")) ||
                     lower.containsAny("export ap", "export aps", "ap export") ->
                     wifiDiagnosticArguments("wifi_export", userText)
@@ -3546,6 +3548,7 @@ class NativeToolCallingChatClient(
             "local_model_compatibility_scorecard",
             "device_performance_report",
             "signal_awareness_report",
+            "rf_coexistence_report",
             "agent_signal_evidence_report",
             "signal_evidence_bundle",
             "current_signal_evidence",
@@ -3993,6 +3996,11 @@ internal object NativeToolContextCompressor {
                 "ready_signal_awareness_count",
                 "signal_workflow_route_count",
                 "signal_constraint_count",
+                "rf_coexistence_count",
+                "ready_rf_coexistence_count",
+                "rf_coexistence_route_count",
+                "rf_coexistence_risk_score",
+                "rf_coexistence_risk_level",
                 "radio_band_plan_count",
                 "radio_signal_feature_count",
                 "ready_radio_signal_feature_count",
@@ -4157,6 +4165,8 @@ internal object NativeToolContextCompressor {
         "signal_awareness_matrix",
         "signal_workflow_routes",
         "signal_constraint_matrix",
+        "rf_coexistence_matrix",
+        "rf_coexistence_routes",
         "runtime_backend_matrix",
         "runtime_stability_matrix",
         "mediatek_readiness_matrix",

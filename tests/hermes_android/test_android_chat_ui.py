@@ -89,6 +89,7 @@ def test_signal_intelligence_quick_actions_launch_direct_diagnostic_cards():
         "motion_sensor_quality",
         "motion_sensor_history",
         "radio_signal_graph",
+        "rf_coexistence_report",
     ]:
         assert f"action={action}" in actions
         assert f'"{action}"' in chat_client
@@ -99,6 +100,7 @@ def test_signal_intelligence_quick_actions_launch_direct_diagnostic_cards():
     assert 'testTag("HermesSignalQuickAction_${action.id}")' in chat_screen
     assert 'id = "wifi_analyzer"' in actions
     assert 'id = "signal_evidence"' in actions
+    assert 'id = "rf_coexistence"' in actions
     assert 'id = "agent_observation"' in actions
     assert 'id = "soc_compatibility"' in actions
     assert 'id = "mediatek_readiness"' in actions

@@ -460,6 +460,31 @@ def test_android_diagnostics_exposes_signal_awareness_report_for_cross_signal_ca
     assert 'diagnosticAction = "radio_signal_graph"' in quick_actions
 
 
+def test_android_diagnostics_exposes_rf_coexistence_report_for_wifi_bluetooth_radio_context():
+    diagnostics_bridge = (REPO_ROOT / "android/app/src/main/java/com/mobilefork/hermesagent/device/HermesDeviceDiagnosticsBridge.kt").read_text(encoding="utf-8")
+    chat_client = (REPO_ROOT / "android/app/src/main/java/com/mobilefork/hermesagent/ui/chat/NativeToolCallingChatClient.kt").read_text(encoding="utf-8")
+    diagnostic_cards = (REPO_ROOT / "android/app/src/main/java/com/mobilefork/hermesagent/ui/chat/DiagnosticCards.kt").read_text(encoding="utf-8")
+    quick_actions = (REPO_ROOT / "android/app/src/main/java/com/mobilefork/hermesagent/ui/chat/SignalIntelligenceQuickActions.kt").read_text(encoding="utf-8")
+
+    assert '"rf_coexistence_report"' in diagnostics_bridge
+    assert 'rfCoexistenceReportJson(appContext)' in diagnostics_bridge
+    assert 'rfCoexistenceMatrixRows(' in diagnostics_bridge
+    assert 'rfCoexistenceRouteRows(' in diagnostics_bridge
+    assert '"rf_coexistence_matrix"' in diagnostics_bridge
+    assert '"rf_coexistence_routes"' in diagnostics_bridge
+    assert '"rf_coexistence_risk_score"' in diagnostics_bridge
+    assert '"wifi_channel_utilization"' in diagnostics_bridge
+    assert '"bluetooth_signal_history"' in diagnostics_bridge
+    assert '"radio_signal_graph_rows"' in diagnostics_bridge
+    assert '"mediatek_readiness_matrix"' in diagnostics_bridge
+    assert 'rf_coexistence_report' in chat_client
+    assert '"rf_coexistence_matrix"' in chat_client
+    assert '"rf_coexistence_routes"' in chat_client
+    assert '"rf_coexistence_matrix", "rf_coexistence_routes"' in diagnostic_cards
+    assert 'id = "rf_coexistence"' in quick_actions
+    assert 'diagnosticAction = "rf_coexistence_report"' in quick_actions
+
+
 def test_android_diagnostics_exposes_soc_compatibility_report_for_backend_policy_cards():
     diagnostics_bridge = (REPO_ROOT / "android/app/src/main/java/com/mobilefork/hermesagent/device/HermesDeviceDiagnosticsBridge.kt").read_text(encoding="utf-8")
     chat_client = (REPO_ROOT / "android/app/src/main/java/com/mobilefork/hermesagent/ui/chat/NativeToolCallingChatClient.kt").read_text(encoding="utf-8")

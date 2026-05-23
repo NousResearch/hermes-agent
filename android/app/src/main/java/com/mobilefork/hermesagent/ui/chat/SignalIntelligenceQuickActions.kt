@@ -26,6 +26,13 @@ val SIGNAL_INTELLIGENCE_QUICK_ACTIONS = listOf(
         iconRes = R.drawable.ic_nav_hermes,
     ),
     SignalIntelligenceQuickAction(
+        id = "rf_coexistence",
+        label = "RF Coexistence",
+        diagnosticAction = "rf_coexistence_report",
+        prompt = "Run android_device_diagnostics_tool action=rf_coexistence_report refresh=false",
+        iconRes = R.drawable.ic_nav_device,
+    ),
+    SignalIntelligenceQuickAction(
         id = "agent_environment",
         label = "Agent Environment",
         diagnosticAction = "agent_environment_report",

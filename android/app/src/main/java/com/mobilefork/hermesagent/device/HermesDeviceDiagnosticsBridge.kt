@@ -131,6 +131,8 @@ object HermesDeviceDiagnosticsBridge {
                 devicePerformanceReportJson(appContext).toString()
             "signal_awareness_report", "nearby_signal_report", "rf_sensor_fusion_report", "ambient_context_report" ->
                 signalAwarenessReportJson(appContext).toString()
+            "rf_coexistence_report", "wireless_coexistence_report", "wifi_bluetooth_coexistence", "cross_signal_interference_report" ->
+                rfCoexistenceReportJson(appContext).toString()
             "agent_signal_evidence_report", "signal_evidence_bundle", "current_signal_evidence", "gemma_signal_evidence" ->
                 agentSignalEvidenceReportJson(appContext).toString()
             "agent_observation_report", "agent_signal_dashboard", "gemma_observation_report", "multimodal_signal_dashboard" ->
@@ -2535,6 +2537,114 @@ object HermesDeviceDiagnosticsBridge {
             )
     }
 
+    fun rfCoexistenceReportJson(context: Context): JSONObject {
+        val appContext = context.applicationContext
+        val wifiReport = wifiAnalyzerReportJson(appContext, JSONObject().put("refresh", false))
+        val bluetoothReport = bluetoothAnalyzerReportJson(appContext, JSONObject().put("refresh", false))
+        val radioReport = radioSignalStatusJson(appContext)
+        val backendRiskReport = gpuBackendRiskReportJson(appContext)
+        val mediatekReport = mediatekReadinessReportJson(appContext)
+        val coexistenceRows = rfCoexistenceMatrixRows(
+            wifiReport = wifiReport,
+            bluetoothReport = bluetoothReport,
+            radioReport = radioReport,
+            backendRiskReport = backendRiskReport,
+            mediatekReport = mediatekReport,
+        )
+        val routeRows = rfCoexistenceRouteRows(
+            wifiReport = wifiReport,
+            bluetoothReport = bluetoothReport,
+            radioReport = radioReport,
+            backendRiskReport = backendRiskReport,
+        )
+        val riskScore = rfCoexistenceRiskScore(wifiReport, bluetoothReport, radioReport, backendRiskReport)
+        val riskLevel = rfCoexistenceRiskLevel(riskScore)
+        val wifiUtilization = wifiReport.optJSONArray("wifi_channel_utilization") ?: JSONArray()
+        val bluetoothHistory = bluetoothReport.optJSONArray("bluetooth_signal_history") ?: JSONArray()
+        val radioGraphRows = radioReport.optJSONArray("radio_signal_graph_rows") ?: JSONArray()
+        val radioSampleRows = radioReport.optJSONArray("radio_signal_graph_sample_rows") ?: JSONArray()
+        return JSONObject()
+            .put("success", true)
+            .put("action", "rf_coexistence_report")
+            .put("report_scope", "Fused RF coexistence view for Wi-Fi channel pressure, Bluetooth 2.4 GHz proximity/history, AM/FM or SDR bridge limits, and MediaTek/non-Adreno backend risk context.")
+            .put(
+                "source_report_actions",
+                JSONArray()
+                    .put("wifi_analyzer_report")
+                    .put("bluetooth_analyzer_report")
+                    .put("radio_signal_status")
+                    .put("gpu_backend_risk_report")
+                    .put("mediatek_readiness_report"),
+            )
+            .put("wifi_coexistence_summary", observationSummaryJson(wifiReport, "wifi_analyzer_report"))
+            .put("bluetooth_coexistence_summary", observationSummaryJson(bluetoothReport, "bluetooth_analyzer_report"))
+            .put("radio_coexistence_summary", observationSummaryJson(radioReport, "radio_signal_status"))
+            .put("backend_risk_coexistence_summary", observationSummaryJson(backendRiskReport, "gpu_backend_risk_report"))
+            .put("mediatek_readiness_coexistence_summary", observationSummaryJson(mediatekReport, "mediatek_readiness_report"))
+            .put("rf_coexistence_risk_score", riskScore)
+            .put("rf_coexistence_risk_level", riskLevel)
+            .put("wifi_channel_utilization", wifiUtilization)
+            .put("wifi_channel_utilization_count", wifiUtilization.length())
+            .put("bluetooth_signal_history", bluetoothHistory)
+            .put("bluetooth_signal_history_count", bluetoothHistory.length())
+            .put("radio_signal_graph_rows", radioGraphRows)
+            .put("radio_signal_graph_row_count", radioGraphRows.length())
+            .put("radio_signal_graph_sample_rows", radioSampleRows)
+            .put("radio_signal_graph_sample_count", radioSampleRows.length())
+            .put("radio_signal_graph_bridge_ready", radioReport.optBoolean("radio_signal_graph_bridge_ready", false))
+            .put("gpu_backend_risk_level", backendRiskReport.optString("gpu_backend_risk_level"))
+            .put("gpu_backend_risk_score", backendRiskReport.optInt("gpu_backend_risk_score", 0))
+            .put("mediatek_readiness_matrix", mediatekReport.optJSONArray("mediatek_readiness_matrix") ?: JSONArray())
+            .put("rf_coexistence_matrix", coexistenceRows)
+            .put("rf_coexistence_routes", routeRows)
+            .put("rf_coexistence_count", coexistenceRows.length())
+            .put("ready_rf_coexistence_count", countReadyRows(coexistenceRows))
+            .put("rf_coexistence_route_count", routeRows.length())
+            .put(
+                "gemma_observation_directives",
+                JSONArray()
+                    .put("Read rf_coexistence_matrix before summarizing nearby wireless interference so Wi-Fi occupancy, Bluetooth proximity, radio receiver limits, and backend risk stay fused.")
+                    .put("Use rf_coexistence_routes to choose the next exact analyzer card instead of guessing from a single Wi-Fi or Bluetooth row.")
+                    .put("Treat AM/FM and broad RF rows as receiver-schema context unless radio_signal_graph_bridge_ready is true."),
+            )
+            .put(
+                "cards",
+                JSONArray()
+                    .put(
+                        graphCard(
+                            title = "RF Coexistence",
+                            body = "${coexistenceRows.length()} fused row(s) combining Wi-Fi channel pressure, Bluetooth 2.4 GHz RSSI/history, radio bridge limits, and MediaTek/non-Adreno backend context.",
+                            graphType = "rf_coexistence_matrix",
+                            rows = coexistenceRows,
+                        ),
+                    )
+                    .put(
+                        graphCard(
+                            title = "RF Coexistence Routes",
+                            body = "${routeRows.length()} next-tool route row(s) for refreshing Wi-Fi occupancy, Bluetooth RSSI history, AM/FM or SDR samples, and backend risk cards.",
+                            graphType = "rf_coexistence_routes",
+                            rows = routeRows,
+                        ),
+                    )
+                    .put(
+                        graphCard(
+                            title = "Wi-Fi Channel Utilization",
+                            body = "${wifiUtilization.length()} WiFiAnalyzer-style channel pressure row(s) feeding the coexistence summary.",
+                            graphType = "wifi_channel_utilization",
+                            rows = wifiUtilization,
+                        ),
+                    )
+                    .put(
+                        graphCard(
+                            title = "Bluetooth Signal History",
+                            body = "${bluetoothHistory.length()} Bluetooth RSSI trend row(s) feeding 2.4 GHz coexistence context.",
+                            graphType = "bluetooth_signal_history",
+                            rows = bluetoothHistory,
+                        ),
+                    ),
+            )
+    }
+
     fun agentEnvironmentReportJson(context: Context): JSONObject {
         val appContext = context.applicationContext
         val settings = AppSettingsStore(appContext).load()
@@ -3322,6 +3432,193 @@ object HermesDeviceDiagnosticsBridge {
                     ),
                 ),
             )
+    }
+
+    private fun rfCoexistenceMatrixRows(
+        wifiReport: JSONObject,
+        bluetoothReport: JSONObject,
+        radioReport: JSONObject,
+        backendRiskReport: JSONObject,
+        mediatekReport: JSONObject,
+    ): JSONArray {
+        val wifiUtilization = wifiReport.optJSONArray("wifi_channel_utilization") ?: JSONArray()
+        val maxWifiPressure = maxIntFromRows(wifiUtilization, "channel_pressure_score")
+        val bluetoothHistory = bluetoothReport.optJSONArray("bluetooth_signal_history") ?: JSONArray()
+        val bluetoothDeviceCount = bluetoothReport.optInt("bluetooth_device_count", 0)
+        val radioGraphRows = radioReport.optJSONArray("radio_signal_graph_rows") ?: JSONArray()
+        val radioSampleRows = radioReport.optJSONArray("radio_signal_graph_sample_rows") ?: JSONArray()
+        val backendRiskScore = backendRiskReport.optInt("gpu_backend_risk_score", 0).coerceIn(0, 100)
+        val backendRiskLevel = backendRiskReport.optString("gpu_backend_risk_level").ifBlank { "unknown" }
+        val mediatekRows = mediatekReport.optJSONArray("mediatek_readiness_matrix") ?: JSONArray()
+        return JSONArray()
+            .put(
+                capabilityRow(
+                    category = "rf_coexistence",
+                    label = "Wi-Fi channel pressure",
+                    ready = wifiUtilization.length() > 0,
+                    valueLabel = maxWifiPressure?.let { "$it/100 pressure" } ?: "no passive rows",
+                    detail = "${wifiUtilization.length()} channel utilization row(s) summarize AP crowding, RSSI pressure, overlap, width, and security context.",
+                    recommendation = "Open wifi_channel_utilization before making placement, band, or channel-change recommendations.",
+                    fraction = maxWifiPressure?.let { ((100 - it) / 100f).coerceIn(0.15f, 1f) } ?: 0.3f,
+                    extra = JSONObject()
+                        .put("tool_action", "wifi_channel_utilization")
+                        .put("source_graph_type", "wifi_channel_utilization")
+                        .put("max_wifi_channel_pressure_score", maxWifiPressure ?: JSONObject.NULL),
+                ),
+            )
+            .put(
+                capabilityRow(
+                    category = "rf_coexistence",
+                    label = "Bluetooth 2.4 GHz proximity",
+                    ready = bluetoothHistory.length() > 0 || bluetoothDeviceCount > 0,
+                    valueLabel = "${bluetoothHistory.length()} history / $bluetoothDeviceCount device(s)",
+                    detail = "Bluetooth analyzer rows provide nearby device metadata, service/manufacturer labels, and RSSI history for the same 2.4 GHz neighborhood as Wi-Fi.",
+                    recommendation = "Open bluetooth_signal_history or bluetooth_analyzer_report before explaining Bluetooth/Wi-Fi coexistence or proximity changes.",
+                    fraction = if (bluetoothHistory.length() > 0 || bluetoothDeviceCount > 0) 0.8f else 0.35f,
+                    extra = JSONObject()
+                        .put("tool_action", "bluetooth_signal_history")
+                        .put("source_graph_type", "bluetooth_signal_history")
+                        .put("bluetooth_device_count", bluetoothDeviceCount),
+                ),
+            )
+            .put(
+                capabilityRow(
+                    category = "rf_coexistence",
+                    label = "AM/FM and broad RF boundary",
+                    ready = radioGraphRows.length() > 0,
+                    valueLabel = if (radioSampleRows.length() > 0) "${radioSampleRows.length()} bridge sample(s)" else "receiver schema",
+                    detail = "${radioGraphRows.length()} radio graph row(s) describe public Android limits, AM/FM receiver schemas, vendor bridge needs, and external SDR routes.",
+                    recommendation = "Treat radio rows as hardware-boundary evidence unless radio_signal_graph_bridge_ready is true.",
+                    fraction = if (radioSampleRows.length() > 0) 0.85f else 0.45f,
+                    extra = JSONObject()
+                        .put("tool_action", "radio_signal_graph")
+                        .put("source_graph_type", "radio_signal_graph")
+                        .put("radio_signal_graph_bridge_ready", radioReport.optBoolean("radio_signal_graph_bridge_ready", false)),
+                ),
+            )
+            .put(
+                capabilityRow(
+                    category = "rf_coexistence",
+                    label = "MediaTek/non-Adreno backend context",
+                    ready = countReadyRows(mediatekRows) > 0,
+                    valueLabel = "${countReadyRows(mediatekRows)}/${mediatekRows.length()} ready rows",
+                    detail = "MediaTek, Mali, PowerVR, and generic non-Adreno rows keep local model/backend claims separate from wireless-signal evidence.",
+                    recommendation = "Use mediatek_readiness_report and gpu_backend_risk_report before tying RF context to local Gemma runtime behavior.",
+                    fraction = if (mediatekRows.length() > 0) (countReadyRows(mediatekRows).toFloat() / mediatekRows.length()).coerceIn(0.2f, 1f) else 0.35f,
+                    extra = JSONObject()
+                        .put("tool_action", "mediatek_readiness_report")
+                        .put("source_graph_type", "mediatek_readiness_matrix"),
+                ),
+            )
+            .put(
+                capabilityRow(
+                    category = "rf_coexistence",
+                    label = "Backend risk overlay",
+                    ready = backendRiskScore < 70,
+                    valueLabel = "$backendRiskLevel / $backendRiskScore",
+                    detail = "GPU/backend risk rows flag cases where thermal, delegate, or non-Adreno fallback behavior can affect live diagnostics and local reasoning.",
+                    recommendation = "If backend risk is high, explain signal evidence independently from acceleration claims and prefer CPU-safe local inference fallback.",
+                    fraction = ((100 - backendRiskScore) / 100f).coerceIn(0.15f, 1f),
+                    extra = JSONObject()
+                        .put("tool_action", "gpu_backend_risk_report")
+                        .put("source_graph_type", "gpu_backend_risk_matrix"),
+                ),
+            )
+    }
+
+    private fun rfCoexistenceRouteRows(
+        wifiReport: JSONObject,
+        bluetoothReport: JSONObject,
+        radioReport: JSONObject,
+        backendRiskReport: JSONObject,
+    ): JSONArray {
+        val wifiUtilizationCount = wifiReport.optInt("wifi_channel_utilization_count", wifiReport.optJSONArray("wifi_channel_utilization")?.length() ?: 0)
+        val bluetoothHistoryCount = bluetoothReport.optInt("bluetooth_signal_history_count", bluetoothReport.optJSONArray("bluetooth_signal_history")?.length() ?: 0)
+        val radioSampleCount = radioReport.optInt("radio_signal_graph_sample_count", radioReport.optJSONArray("radio_signal_graph_sample_rows")?.length() ?: 0)
+        val backendRiskLevel = backendRiskReport.optString("gpu_backend_risk_level").ifBlank { "unknown" }
+        return JSONArray()
+            .put(
+                capabilityRow(
+                    category = "rf_coexistence_route",
+                    label = "Refresh Wi-Fi occupancy",
+                    ready = true,
+                    valueLabel = "wifi_channel_utilization",
+                    detail = "$wifiUtilizationCount passive channel utilization row(s) are available before any fresh scan.",
+                    recommendation = "Run wifi_channel_utilization refresh=true only when the user needs current AP pressure rather than cached/passive analyzer context.",
+                    fraction = 0.9f,
+                    extra = JSONObject().put("tool_action", "wifi_channel_utilization").put("refresh_policy", "passive_first"),
+                ),
+            )
+            .put(
+                capabilityRow(
+                    category = "rf_coexistence_route",
+                    label = "Refresh Bluetooth proximity",
+                    ready = true,
+                    valueLabel = "bluetooth_signal_history",
+                    detail = "$bluetoothHistoryCount Bluetooth RSSI history row(s) are available for 2.4 GHz coexistence context.",
+                    recommendation = "Run bluetooth_signal_history refresh=true when proximity or BLE advertising context must be live.",
+                    fraction = 0.85f,
+                    extra = JSONObject().put("tool_action", "bluetooth_signal_history").put("refresh_policy", "passive_first"),
+                ),
+            )
+            .put(
+                capabilityRow(
+                    category = "rf_coexistence_route",
+                    label = "Attach radio bridge samples",
+                    ready = radioSampleCount > 0,
+                    valueLabel = if (radioSampleCount > 0) "$radioSampleCount sample(s)" else "schema only",
+                    detail = "radio_signal_graph accepts vendor AM/FM or external SDR samples, but public Android APIs do not provide a general RF sweep.",
+                    recommendation = "Pass radio_samples_json or receiver fields to radio_signal_graph when a vendor bridge or SDR provides real samples.",
+                    fraction = if (radioSampleCount > 0) 0.85f else 0.45f,
+                    extra = JSONObject().put("tool_action", "radio_signal_graph").put("refresh_policy", "bridge_sample_required"),
+                ),
+            )
+            .put(
+                capabilityRow(
+                    category = "rf_coexistence_route",
+                    label = "Check backend risk",
+                    ready = backendRiskLevel !in setOf("high", "critical"),
+                    valueLabel = backendRiskLevel,
+                    detail = "Backend risk should be read before promising local multimodal interpretation on MediaTek, Mali, PowerVR, Xclipse, or other non-Adreno devices.",
+                    recommendation = "Open gpu_backend_risk_report when the RF explanation will trigger local Gemma or camera/sensor-heavy reasoning.",
+                    fraction = if (backendRiskLevel in setOf("high", "critical")) 0.35f else 0.8f,
+                    extra = JSONObject().put("tool_action", "gpu_backend_risk_report").put("refresh_policy", "passive"),
+                ),
+            )
+    }
+
+    private fun rfCoexistenceRiskScore(
+        wifiReport: JSONObject,
+        bluetoothReport: JSONObject,
+        radioReport: JSONObject,
+        backendRiskReport: JSONObject,
+    ): Int {
+        val wifiPressure = maxIntFromRows(wifiReport.optJSONArray("wifi_channel_utilization") ?: JSONArray(), "channel_pressure_score") ?: 15
+        val bluetoothHistoryCount = bluetoothReport.optInt("bluetooth_signal_history_count", bluetoothReport.optJSONArray("bluetooth_signal_history")?.length() ?: 0)
+        val bluetoothPressure = (bluetoothHistoryCount * 6 + bluetoothReport.optInt("bluetooth_device_count", 0) * 3).coerceIn(0, 30)
+        val radioPressure = if (radioReport.optBoolean("radio_signal_graph_bridge_ready", false)) 5 else 15
+        val backendPressure = (backendRiskReport.optInt("gpu_backend_risk_score", 0).coerceIn(0, 100) * 0.2f).roundToInt()
+        return (wifiPressure * 0.45f + bluetoothPressure * 0.2f + radioPressure * 0.15f + backendPressure).roundToInt().coerceIn(0, 100)
+    }
+
+    private fun rfCoexistenceRiskLevel(score: Int): String = when {
+        score >= 70 -> "high"
+        score >= 40 -> "medium"
+        else -> "low"
+    }
+
+    private fun maxIntFromRows(rows: JSONArray, key: String): Int? {
+        var maxValue: Int? = null
+        for (index in 0 until rows.length()) {
+            val row = rows.optJSONObject(index) ?: continue
+            if (!row.has(key) || row.isNull(key)) continue
+            val value = when (val raw = row.opt(key)) {
+                is Number -> raw.toInt()
+                else -> raw?.toString()?.toIntOrNull()
+            } ?: continue
+            maxValue = maxOf(maxValue ?: value, value)
+        }
+        return maxValue
     }
 
     private fun kaiParityMatrixRows(
@@ -13807,6 +14104,7 @@ object HermesDeviceDiagnosticsBridge {
         "local_inference_compatibility_report",
         "device_performance_report",
         "signal_awareness_report",
+        "rf_coexistence_report",
         "agent_signal_evidence_report",
         "agent_observation_report",
         "agent_card_manifest_report",

@@ -306,6 +306,17 @@ class MemoryManager:
         """All registered providers in order."""
         return list(self._providers)
 
+    @property
+    def has_external(self) -> bool:
+        """True iff a non-builtin (external) memory provider is registered.
+
+        Used by tool-injection gates to recognize that the user explicitly
+        opted into an external memory provider (via ``hermes memory setup``)
+        and therefore expects its tools on the agent surface — even when the
+        ``memory`` toolset is not in ``enabled_toolsets``. See #30979.
+        """
+        return self._has_external
+
     def get_provider(self, name: str) -> Optional[MemoryProvider]:
         """Get a provider by name, or None if not registered."""
         for p in self._providers:

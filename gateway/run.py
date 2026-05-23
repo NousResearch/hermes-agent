@@ -16330,6 +16330,15 @@ class GatewayRunner:
             agent.service_tier = self._service_tier
             agent.request_overrides = turn_route.get("request_overrides") or {}
 
+            _background_review_notifications_enabled = bool(
+                resolve_display_setting(
+                    user_config,
+                    platform_key,
+                    "background_review_notifications",
+                    True,
+                )
+            )
+
             _bg_review_release = threading.Event()
             _bg_review_pending: list[str] = []
             _bg_review_pending_lock = threading.Lock()
@@ -16367,10 +16376,12 @@ class GatewayRunner:
                             return
                 _deliver_bg_review_message(message)
 
-            agent.background_review_callback = _bg_review_send
+            agent.background_review_callback = (
+                _bg_review_send if _background_review_notifications_enabled else None
+            )
             # Register the release hook on the adapter so base.py's finally
             # block can fire it after delivering the main response.
-            if _status_adapter and session_key:
+            if _background_review_notifications_enabled and _status_adapter and session_key:
                 if getattr(type(_status_adapter), "register_post_delivery_callback", None) is not None:
                     _status_adapter.register_post_delivery_callback(
                         session_key,

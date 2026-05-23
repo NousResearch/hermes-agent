@@ -972,6 +972,49 @@ async def test_run_agent_defers_background_review_notification_until_release(mon
 
     assert result["final_response"] == "done"
     assert adapter.sent == []
+    assert adapter._post_delivery_callbacks
+
+
+@pytest.mark.asyncio
+async def test_run_agent_can_suppress_background_review_notifications(monkeypatch, tmp_path):
+    adapter, result = await _run_with_agent(
+        monkeypatch,
+        tmp_path,
+        BackgroundReviewAgent,
+        session_id="sess-bg-review-suppressed",
+        config_data={
+            "display": {
+                "background_review_notifications": False,
+                "interim_assistant_messages": True,
+            }
+        },
+    )
+
+    assert result["final_response"] == "done"
+    assert adapter.sent == []
+    assert adapter._post_delivery_callbacks == {}
+
+
+@pytest.mark.asyncio
+async def test_run_agent_platform_override_suppresses_background_review_notifications(monkeypatch, tmp_path):
+    adapter, result = await _run_with_agent(
+        monkeypatch,
+        tmp_path,
+        BackgroundReviewAgent,
+        session_id="sess-bg-review-platform-suppressed",
+        config_data={
+            "display": {
+                "background_review_notifications": True,
+                "platforms": {
+                    "telegram": {"background_review_notifications": False},
+                },
+            }
+        },
+    )
+
+    assert result["final_response"] == "done"
+    assert adapter.sent == []
+    assert adapter._post_delivery_callbacks == {}
 
 
 @pytest.mark.asyncio

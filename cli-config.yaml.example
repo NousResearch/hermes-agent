@@ -940,6 +940,15 @@ display:
   #   false: Only send the final response
   interim_assistant_messages: true
 
+  # Gateway-only background review notifications.
+  # Controls user-facing post-turn notices such as memory/skill update summaries.
+  # This does not disable background review itself; it only suppresses the extra
+  # chat notification. Per-platform override:
+  # display.platforms.slack.background_review_notifications
+  #   true:  Send background review notifications after the main response (default)
+  #   false: Suppress those notification messages
+  background_review_notifications: true
+
   # What Enter does when Hermes is already busy (CLI and gateway platforms).
   #   interrupt: Interrupt the current run and redirect Hermes (default)
   #   queue:     Queue your message for the next turn

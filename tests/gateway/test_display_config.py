@@ -171,6 +171,22 @@ class TestYAMLNormalisation:
         config = {"display": {"platforms": {"slack": {"tool_progress": False}}}}
         assert resolve_display_setting(config, "slack", "tool_progress") == "off"
 
+    @pytest.mark.parametrize("raw", [False, "false", "off", "no", "0"])
+    def test_background_review_notifications_false_values(self, raw):
+        """Background review notification toggles use boolean normalisation."""
+        from gateway.display_config import resolve_display_setting
+
+        config = {"display": {"background_review_notifications": raw}}
+        assert resolve_display_setting(config, "telegram", "background_review_notifications") is False
+
+    @pytest.mark.parametrize("raw", [True, "true", "on", "yes", "1"])
+    def test_background_review_notifications_true_values(self, raw):
+        """Background review notification toggles accept common true values."""
+        from gateway.display_config import resolve_display_setting
+
+        config = {"display": {"background_review_notifications": raw}}
+        assert resolve_display_setting(config, "telegram", "background_review_notifications") is True
+
 
 # ---------------------------------------------------------------------------
 # Built-in platform defaults (tier system)
@@ -228,6 +244,29 @@ class TestPlatformDefaults:
         from gateway.display_config import resolve_display_setting
 
         assert resolve_display_setting({}, "telegram", "streaming") is None
+
+    def test_background_review_notifications_default_enabled(self):
+        """Background review notifications remain enabled unless configured off."""
+        from gateway.display_config import resolve_display_setting
+
+        assert resolve_display_setting({}, "telegram", "background_review_notifications") is True
+        assert resolve_display_setting({}, "slack", "background_review_notifications") is True
+
+    def test_background_review_notifications_platform_override(self):
+        """A platform override can disable only that platform's notifications."""
+        from gateway.display_config import resolve_display_setting
+
+        config = {
+            "display": {
+                "background_review_notifications": True,
+                "platforms": {
+                    "slack": {"background_review_notifications": False},
+                },
+            }
+        }
+
+        assert resolve_display_setting(config, "slack", "background_review_notifications") is False
+        assert resolve_display_setting(config, "telegram", "background_review_notifications") is True
 
 
 # ---------------------------------------------------------------------------

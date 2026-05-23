@@ -35,6 +35,10 @@ _GLOBAL_DEFAULTS: dict[str, Any] = {
     "show_reasoning": False,
     "tool_preview_length": 0,
     "streaming": None,  # None = follow top-level streaming config
+    # User-facing summaries from background review, such as memory/skill update
+    # notices delivered after the main response. This controls notification
+    # delivery only; it does not disable the background review itself.
+    "background_review_notifications": True,
     # When true, delete tool-progress / "Still working..." / status bubbles
     # after the final response lands on platforms that support message
     # deletion (e.g. Telegram). Off by default — progress is still shown
@@ -190,7 +194,7 @@ def _normalise(setting: str, value: Any) -> Any:
         if value is True:
             return "all"
         return str(value).lower()
-    if setting in {"show_reasoning", "streaming"}:
+    if setting in {"show_reasoning", "streaming", "background_review_notifications"}:
         if isinstance(value, str):
             return value.lower() in {"true", "1", "yes", "on"}
         return bool(value)

@@ -1,0 +1,13 @@
+[package]
+name = "jcode-native-hermes-tool"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[dependencies]
+anyhow = "1"
+async-trait = "0.1"
+jcode-tool-core = { path = "../../upstreams/jcode/crates/jcode-tool-core" }
+jcode-tool-types = { path = "../../upstreams/jcode/crates/jcode-tool-types" }
+serde_json = "1"
+tokio = { version = "1", features = ["io-util", "process", "time"] }

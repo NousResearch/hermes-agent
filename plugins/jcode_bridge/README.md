@@ -1,7 +1,8 @@
 # jcode Bridge Plugin
 
-Use Hermes as the orchestrator and policy layer while running jcode as the
-fast local Rust sidecar.
+Use this plugin as the bootstrap layer for a Rust-first Hermes/jcode supertool.
+The final product should use jcode as the host runtime and expose Hermes
+capabilities as native-feeling jcode tools.
 
 This plugin is intentionally bridge-first. It does not fork Hermes or jcode,
 and it does not import jcode internals. Hermes calls stable wrapper/debug
@@ -9,9 +10,10 @@ surfaces, validates their output, and keeps the gateway/safety decisions on the
 Hermes side.
 
 The broader mother-repo plan is documented in
-`docs/plans/2026-05-23-hermes-jcode-mother-repo-blueprint.md`: keep upstream
-Hermes and jcode pinned separately, put bridges/contracts outside both, and
-let jcode keep the Rust hot path while Hermes owns autonomous orchestration.
+`docs/plans/2026-05-23-hermes-jcode-mother-repo-blueprint.md` and
+`docs/plans/2026-05-23-hermes-jcode-supertool-architecture.md`: keep upstream
+Hermes and jcode pinned separately, make jcode the Rust host, and import Hermes
+integrations through native jcode tool crates plus contracts.
 
 ## What This Gives You
 
@@ -26,13 +28,16 @@ let jcode keep the Rust hot path while Hermes owns autonomous orchestration.
 - `hermes-service.v1`: a reverse newline-JSON service contract so a local
   jcode client can call allowlisted Hermes services such as `web_search`,
   `web_extract`, `session_search`, and `memory`.
+- `bridges/jcode-native-hermes-tool`: the intended supertool path, implementing
+  jcode's native `Tool` trait for Hermes-backed capabilities.
 
 The intended split:
 
+- jcode owns the low-latency local runtime, primary UX, persistent server,
+  browser/session feel, swarm-aware work, and model-facing tool registry.
 - Hermes owns webhooks, messaging, policy, research/provider breadth, plugins,
-  cron, and update compatibility checks.
-- jcode owns the low-latency local runtime, persistent server, browser/session
-  feel, and swarm-aware work.
+  cron, memory-provider integrations, and the capability host behind native
+  jcode tools.
 
 ## Enable
 
@@ -314,13 +319,13 @@ scripts/hermes_jcode_mother_repo.py scaffold --output /path/to/mother-agent
 python3 /path/to/mother-agent/scripts/check_bridge_contract.py
 ```
 
-The scaffold carries the bridge plugin, Rust service client, MCP server,
-schemas, fixtures, copied research docs, reverse-service wrapper, generated
-jcode MCP config, latency probe, and a manifest with the pinned Hermes/jcode
-state. Its contract check validates `jcode-bridge.v1`, `hermes-service.v1`,
-and `hermes-mcp.v1`. This is the practical path for combining jcode's Rust hot
-path with Hermes' orchestration layer while still being able to pull future
-upstream updates cleanly.
+The scaffold carries the bridge plugin, Rust service client, native jcode tool
+crate, MCP server, schemas, fixtures, copied research docs, reverse-service
+wrapper, generated jcode MCP config, latency probe, and a manifest with the
+pinned Hermes/jcode state. Its contract check validates `jcode-bridge.v1`,
+`hermes-service.v1`, and `hermes-mcp.v1`. The native tool crate is the practical
+path for combining jcode's Rust hot path with Hermes integrations while still
+being able to pull future upstream updates cleanly.
 
 ## Current Limits
 
@@ -329,8 +334,9 @@ upstream updates cleanly.
   browser provider.
 - The bridge does not yet mirror jcode memory or swarm state into Hermes
   memory/kanban surfaces.
-- The reverse service has a standalone Rust client and an MCP wrapper for
-  jcode's current MCP manager, but it is not yet a native in-tree jcode `Tool`.
+- `bridges/jcode-native-hermes-tool` is a native jcode `Tool` scaffold, but it
+  still needs a small upstream jcode registration patch before it is available
+  in jcode's default tool registry.
 - `debug_socket` requires a running jcode server with debug socket enabled.
 - `preflight_live_run` can spend model/API budget and should be reserved for
   deliberate compatibility checks.

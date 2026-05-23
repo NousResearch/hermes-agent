@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Create a bridge-first Hermes/jcode mother-repo scaffold."""
+"""Create a Rust-first Hermes/jcode supertool scaffold."""
 
 from __future__ import annotations
 
@@ -19,6 +19,7 @@ SCAFFOLD_VERSION = "hermes-jcode-mother-scaffold.v1"
 
 BRIDGE_PLUGIN = ROOT / "plugins" / "jcode_bridge"
 JCODE_TOOL_HERMES = ROOT / "bridges" / "jcode-tool-hermes"
+JCODE_NATIVE_HERMES_TOOL = ROOT / "bridges" / "jcode-native-hermes-tool"
 HERMES_MCP_SERVER = ROOT / "bridges" / "hermes-mcp-server"
 CONTRACT_DIR = ROOT / "contracts" / "jcode_bridge" / "v1"
 HERMES_SERVICE_CONTRACT_DIR = ROOT / "contracts" / "hermes_service" / "v1"
@@ -31,6 +32,7 @@ PLAN_DOCS = (
     ROOT / "docs" / "plans" / "2026-05-22-hermes-jcode-comparison.md",
     ROOT / "docs" / "plans" / "2026-05-22-hermes-jcode-bridge-implementation.md",
     ROOT / "docs" / "plans" / "2026-05-23-hermes-jcode-mother-repo-blueprint.md",
+    ROOT / "docs" / "plans" / "2026-05-23-hermes-jcode-supertool-architecture.md",
     ROOT / "docs" / "plans" / "2026-05-23-hermes-jcode-upstream-sync-report.md",
 )
 
@@ -186,17 +188,19 @@ if __name__ == "__main__":
 
 README = """# Hermes/jcode Mother Repo
 
-This scaffold keeps Hermes and jcode as separate upstreams and puts the
-integration boundary in bridge code plus versioned contracts.
+This scaffold is for a Rust-first Hermes/jcode supertool. jcode is the host
+runtime: its TUI, server, tool loop, swarm/session model, browser path, and
+low-latency Rust crates are the product shell. Hermes capabilities are imported
+as native jcode tools and service modules.
 
 The intended split:
 
-- jcode owns the Rust hot path: low-latency local execution, TUI/session feel,
-  browser profile workflows, and swarm-aware work.
-- Hermes owns autonomous orchestration: webhooks, external messaging,
-  provider-rich research, plugins, cron, memory-provider integrations, and
-  policy/approval gates.
-- This repo owns glue, routing policy, contract tests, and update reports.
+- jcode owns the Rust hot path and primary UX.
+- Hermes owns provider-rich research, external integrations, webhooks,
+  plugins, cron, memory-provider integrations, and policy/approval gates.
+- This repo owns the fusion layer: native jcode tools for Hermes capabilities,
+  contracts, routing policy, update gates, and the small Python service host
+  needed for Hermes' existing plugin ecosystem.
 
 Start here:
 
@@ -204,11 +208,13 @@ Start here:
 python3 scripts/check_bridge_contract.py
 ```
 
-Then wire `bridges/hermes-plugin-jcode` into an upstream Hermes checkout as a
-Hermes plugin, or package it as a standalone plugin. Keep normal integration
-changes out of `upstreams/hermes` and `upstreams/jcode`; bridge code should live
-under `bridges/`, and shared compatibility artifacts should live under
-`contracts/`.
+Then wire `bridges/jcode-native-hermes-tool` into upstream jcode's native tool
+registry. That is the supertool path: Hermes-backed capabilities appear inside
+jcode's normal Rust agent loop rather than as a second agent.
+
+`bridges/hermes-plugin-jcode`, `bridges/jcode-tool-hermes`, and
+`bridges/hermes-mcp-server` are compatibility/bootstrap layers. They keep both
+upstreams testable while the native jcode-hosted tool surface matures.
 
 The generated contract check covers both directions:
 
@@ -219,6 +225,11 @@ The generated contract check covers both directions:
 The Rust client scaffold lives at `bridges/jcode-tool-hermes/`. It can call the
 generated `scripts/hermes_service_bridge.py stdio` wrapper from jcode-side
 experiments or from a future native jcode tool.
+
+The native jcode tool scaffold lives at `bridges/jcode-native-hermes-tool/`. It
+implements jcode's `Tool` trait and is the preferred route for the final
+supertool, because it keeps the UI, session, tool execution, and latency shape
+inside jcode's Rust architecture.
 
 The MCP server scaffold lives at `bridges/hermes-mcp-server/`. It exposes the
 same reverse service contract to jcode's existing MCP manager, so no jcode
@@ -316,8 +327,19 @@ def build_manifest(hermes: Path, jcode: Path) -> dict[str, Any]:
             "fixture_dir": "tests/fixtures/hermes_service",
             "stdio_command": "python3 scripts/hermes_service_bridge.py stdio",
             "jcode_client_dir": "bridges/jcode-tool-hermes",
+            "jcode_native_tool_dir": "bridges/jcode-native-hermes-tool",
             "mcp_server_dir": "bridges/hermes-mcp-server",
             "jcode_mcp_config": "configs/jcode-mcp.hermes.json",
+        },
+        "supertool_architecture": {
+            "primary_runtime": "jcode",
+            "native_extension_point": "jcode_tool_core::Tool",
+            "hermes_role": "capability host for integrations, providers, memory, webhooks, and policy",
+            "bootstrap_layers": [
+                "hermes-plugin-jcode",
+                "jcode-tool-hermes",
+                "hermes-mcp-server",
+            ],
         },
         "mcp_bridge_contract": {
             "name": "hermes-mcp",
@@ -427,6 +449,8 @@ def scaffold(output: Path, manifest: dict[str, Any], *, force: bool) -> dict[str
     copied.append("bridges/hermes-plugin-jcode/plugins/jcode_bridge")
     _copy_dir(JCODE_TOOL_HERMES, output / "bridges" / "jcode-tool-hermes", force=force)
     copied.append("bridges/jcode-tool-hermes")
+    _copy_dir(JCODE_NATIVE_HERMES_TOOL, output / "bridges" / "jcode-native-hermes-tool", force=force)
+    copied.append("bridges/jcode-native-hermes-tool")
     _copy_dir(HERMES_MCP_SERVER, output / "bridges" / "hermes-mcp-server", force=force)
     copied.append("bridges/hermes-mcp-server")
     _copy_dir(CONTRACT_DIR, output / "contracts" / "jcode_bridge" / "v1", force=force)

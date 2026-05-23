@@ -4,38 +4,40 @@ Date: 2026-05-23 PDT
 
 ## Decision
 
-Build a bridge-first mother repo, not a fork-merge. The combined tool should
-feel like jcode when latency matters and Hermes when autonomy, webhooks,
-research breadth, and policy matter.
+Build a Rust-first supertool, not a loose bridge between two agents. The
+combined tool should use jcode's underlying Rust architecture as the host
+runtime and import Hermes capabilities as native-feeling jcode tools and
+service modules.
 
 The split:
 
-- jcode is the hot Rust execution sidecar: low-latency TUI, persistent local
-  server, browser/session feel, swarm coordination, and performance-critical
-  loops.
-- Hermes is the orchestration and autonomy layer: webhooks, messaging gateway,
-  provider-rich research, plugins, cron, memory-provider integrations,
-  approvals, and update compatibility gates.
-- The mother repo owns the contracts, routing policy, and glue. It should not
-  edit either upstream directly for normal integration work.
+- jcode is the product shell: low-latency TUI, persistent local server,
+  browser/session feel, swarm coordination, Rust tool execution, and
+  performance-critical loops.
+- Hermes is the capability host: webhooks, messaging gateway, provider-rich
+  research, plugins, cron, memory-provider integrations, approvals, and policy.
+- The mother repo owns the fusion layer: native jcode tool crates for Hermes
+  capabilities, contracts, routing policy, update gates, and any tiny upstream
+  patch queues needed to register those native tools.
 
 ## Why this beats a merged fork
 
-A merged source tree would be fast to prototype and painful forever. Hermes and
-jcode have different languages, release mechanics, auth/provider stacks, and UI
-models. Pulling future upstream updates into a fork that rewrites internals on
-both sides would repeatedly recreate the same merge conflicts.
+A naive merged source tree would be fast to prototype and painful forever.
+Hermes and jcode have different languages, release mechanics, auth/provider
+stacks, and UI models. Pulling future upstream updates into a fork that rewrites
+internals on both sides would repeatedly recreate the same merge conflicts.
 
-A mother repo with pinned upstreams and versioned contracts has better
-properties:
+A mother repo with pinned upstreams, native jcode extension crates, and
+versioned contracts has better properties:
 
 - Upstream bumps are mechanical: update SHA, run Graphify, run contract gates,
   inspect the report.
-- Bridge code can evolve independently of Hermes and jcode internals.
-- The Rust hot path remains Rust. Hermes does not need to become Rust to
-  benefit from jcode's startup and TUI work.
-- Hermes remains the policy owner for webhooks, account actions, and
-  sensitive-data boundaries.
+- Native supertool code can evolve outside upstream directories until it is
+  ready to become a small jcode registration patch.
+- The Rust hot path remains Rust: the model-facing tool registry, TUI progress,
+  session state, and swarm hooks belong to jcode.
+- Hermes remains the owner of integration breadth and high-risk policy checks,
+  but those capabilities appear inside the jcode-hosted tool surface.
 
 ## Proposed repo layout
 
@@ -47,6 +49,7 @@ mother-agent/
 |-- bridges/
 |   |-- hermes-plugin-jcode/      # current plugins/jcode_bridge lifted out
 |   |-- jcode-tool-hermes/        # Rust client for Hermes service calls
+|   |-- jcode-native-hermes-tool/ # native jcode Tool implementations
 |   |-- hermes-mcp-server/        # stdio MCP wrapper for jcode's MCP manager
 |   |-- browser-provider/         # future common browser provider adapter
 |   `-- memory-sync/              # future one-way then two-way memory bridge
@@ -74,7 +77,8 @@ mother-agent/
 
 Submodules are best when exact upstream SHAs matter more than contributor
 ergonomics. Subtrees are best when contributors dislike submodule workflow. The
-key rule is the same either way: bridge code lives outside upstream directories.
+key rule is the same either way: supertool code lives outside upstream
+directories until a small, reviewable upstream registration patch is needed.
 
 ## Current portable boundary
 
@@ -121,10 +125,16 @@ is dependency-free and keeps the call path simple: start the Hermes service
 wrapper, send one request line, read one response line. This can be adapted into
 a native jcode `Tool` later without changing the contract.
 
+`bridges/jcode-native-hermes-tool/` is that native jcode tool direction. It is
+the important mesh point for the supertool: Hermes-backed capabilities implement
+jcode's `jcode_tool_core::Tool` trait, so jcode keeps ownership of the
+model-facing tool registry, session context, TUI rendering, and low-latency
+execution path while Hermes supplies the capability result.
+
 `bridges/hermes-mcp-server/` exposes the same `hermes-service.v1` boundary as a
 small dependency-free stdio MCP server. jcode already has an MCP manager, so
-this is the first no-upstream-patch route for jcode to call Hermes services as
-`mcp__hermes__...` tools.
+this is the first no-upstream-patch bootstrap route for jcode to call Hermes
+services as `mcp__hermes__...` tools. It is not the final product surface.
 
 jcode-facing MCP transport:
 
@@ -144,20 +154,21 @@ Hermes dispatch receives and returns.
 
 ```mermaid
 flowchart LR
-    Webhook["Webhook/chat/cron event"] --> Hermes["Hermes gateway + policy"]
-    Hermes --> Safety["Approval and safety gate"]
-    Safety --> Route{"Routing policy"}
-    Route -->|deep research/providers| HermesAgent["Hermes AIAgent"]
-    Route -->|low-latency local work| Jcode["jcode Rust sidecar"]
-    Jcode --> Browser["jcode browser/session/swarm"]
-    Jcode --> HermesTools["Hermes tools via stdio/MCP service"]
-    HermesAgent --> Delivery["Gateway delivery"]
-    Jcode --> Delivery
+    User["User / webhook / cron"] --> Supertool["jcode-hosted supertool"]
+    Supertool --> JcodeRuntime["jcode Rust runtime, TUI, server, swarm"]
+    JcodeRuntime --> NativeTools["Native jcode Tool registry"]
+    NativeTools --> JcodeTools["jcode local tools, browser, memory, swarm"]
+    NativeTools --> HermesNative["Hermes-backed native jcode tools"]
+    HermesNative --> HermesHost["Hermes capability host"]
+    HermesHost --> Integrations["web research, gateways, plugins, cron, memory providers"]
+    HermesHost --> Policy["approval and safety gates"]
+    JcodeRuntime --> Delivery["jcode UI / gateway delivery"]
 ```
 
-Interactive local work should start in jcode when speed and UI matter. Remote
-events should start in Hermes when auth, webhooks, delivery, and policy matter.
-The routing policy decides when one side calls the other.
+Interactive local work, browser/session workflows, and swarm tasks should stay
+inside jcode's Rust runtime. Remote integrations and provider-heavy research
+should enter through Hermes capability modules but surface as jcode-native
+tools whenever they are part of an agent turn.
 
 ## Routing policy
 
@@ -177,9 +188,9 @@ Use Hermes first for:
 - anything requiring explicit approval, audit, or policy enforcement before
   contacting people or handling sensitive private-person data
 
-The first implemented bridge is Hermes -> jcode. The first reverse bridge is
-now a local newline-JSON Hermes service that jcode can call for selected Hermes
-capabilities without importing Hermes Python internals.
+The first implemented compatibility layer is Hermes -> jcode. The first
+supertool-native layer is `bridges/jcode-native-hermes-tool/`, which uses the
+same Hermes service contract from inside jcode's `Tool` trait.
 
 ## Upstream update gate
 
@@ -240,10 +251,14 @@ Phase 1 is already scaffolded in Hermes:
 - `scripts/jcode_bridge_*` provide compatibility, smoke, and upstream-sync
   gates.
 
-Phase 2 should lift the bridge into the mother repo:
+Phase 2 should lift the work into the supertool mother repo:
 
 - run `scripts/hermes_jcode_mother_repo.py scaffold --output <mother-repo>`
   to generate the first workspace
+- use jcode as the primary runtime and register Hermes-backed capabilities as
+  native jcode tools
+- copy or package `bridges/jcode-native-hermes-tool/` as the first native
+  Hermes capability crate
 - copy or package `plugins/jcode_bridge/` as `bridges/hermes-plugin-jcode/`
 - copy `contracts/jcode_bridge/v1/`, `contracts/hermes_service/v1/`,
   `contracts/hermes_mcp/v1/`, `tests/fixtures/jcode_bridge/`,
@@ -263,14 +278,17 @@ Phase 3 now has its first scaffold:
   validators
 - `bridges/jcode-tool-hermes/` provides a standalone Rust client that can call
   the stdio service from the mother repo or from a future jcode tool wrapper
+- `bridges/jcode-native-hermes-tool/` provides the native jcode `Tool` template
+  for Hermes-backed capabilities; this is the preferred supertool surface
 - `bridges/hermes-mcp-server/` provides a stdio MCP server that jcode can load
-  through `.jcode/mcp.json` today
+  through `.jcode/mcp.json` today as a bootstrap path
 - `python3 bridges/hermes-mcp-server/hermes_mcp_server.py --check --live`
   validates the MCP fixtures, schemas, and a live mock roundtrip
 - `scripts/jcode_bridge_latency_probe.py --iterations 50` measures persistent
   local MCP bridge overhead without model or network calls
-- the scaffold still needs a native in-tree jcode `Tool` only if we want to
-  remove MCP as the reverse-bridge transport
+- the next upstream jcode patch should be small: register the native Hermes
+  tools in jcode's tool registry and wire configuration for the Hermes service
+  host
 
 Phase 4 should add browser and memory contracts:
 
@@ -289,13 +307,13 @@ Phase 5 should optimize the hot path:
 
 ## Stop conditions
 
-Stop merging ideas from one side into the other when a bridge keeps the same
+Stop merging ideas from one side into the other when a native module keeps the
 capability portable. Port only when the bridge proves repeated value and the
 target repo already has a natural extension point.
 
-Hermes does not currently encapsulate jcode. jcode does not currently replace
-Hermes. The combined product should make that a strength: Rust-speed local work
-inside a Hermes-grade autonomous orchestration shell.
+Hermes does not currently encapsulate jcode. jcode should be the host for the
+combined product. The combined product should feel like one Rust-speed local
+tool with Hermes-grade autonomous reach and integrations inside it.
 
 ## Scaffold command
 
@@ -312,6 +330,7 @@ The generated workspace includes:
   commits, dirty-state samples, routing policy, and update gate
 - `bridges/hermes-plugin-jcode/plugins/jcode_bridge/`
 - `bridges/jcode-tool-hermes/`
+- `bridges/jcode-native-hermes-tool/`
 - `bridges/hermes-mcp-server/`
 - `contracts/jcode_bridge/v1/`
 - `contracts/hermes_service/v1/`
@@ -339,9 +358,15 @@ cargo run --manifest-path bridges/jcode-tool-hermes/Cargo.toml -- \
   --args-json '{"query":"Hermes jcode bridge","limit":3}'
 ```
 
+Inspect the native jcode tool scaffold:
+
+```bash
+sed -n '1,220p' bridges/jcode-native-hermes-tool/src/lib.rs
+```
+
 This is intentionally a scaffold, not the final product. Its job is to make the
-future-update boundary concrete and testable before building deeper jcode ->
-Hermes service access.
+future-update boundary concrete and testable before registering Hermes-backed
+tools directly inside jcode's Rust tool registry.
 
 Smoke the no-patch MCP route:
 

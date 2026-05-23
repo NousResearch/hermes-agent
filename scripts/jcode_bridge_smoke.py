@@ -494,6 +494,18 @@ def check_mother_repo_scaffold() -> dict[str, Any]:
                 "stdout": latency_completed.stdout,
             }
         config_exists = (output / "configs" / "jcode-mcp.hermes.json").exists()
+        native_tool = (
+            output
+            / "bridges"
+            / "jcode-native-hermes-tool"
+            / "src"
+            / "lib.rs"
+        )
+        native_tool_text = (
+            native_tool.read_text(encoding="utf-8")
+            if native_tool.exists()
+            else ""
+        )
     return {
         "ok": (
             completed.returncode == 0
@@ -513,6 +525,8 @@ def check_mother_repo_scaffold() -> dict[str, Any]:
                 if isinstance(item, dict)
             )
             and config_exists
+            and "impl Tool for HermesNativeTool" in native_tool_text
+            and "jcode_tool_core" in native_tool_text
             and str(output) in str(payload.get("jcode_bridge", {}).get("schema_dir", ""))
         ),
         "payload": payload,
@@ -521,6 +535,7 @@ def check_mother_repo_scaffold() -> dict[str, Any]:
         "mcp_contract_payload": mcp_contract_payload,
         "latency_payload": latency_payload,
         "copied_count": len(result.get("copied", [])),
+        "native_tool_scaffold": str(native_tool),
     }
 
 

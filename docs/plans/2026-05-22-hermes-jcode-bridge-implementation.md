@@ -268,7 +268,9 @@ It covers the contract tool, safety confirmation block, bad jcode JSON
 rejection, `ensure_server` server-backed execution, reverse-service contract
 and safety behavior, the Rust jcode-side client, the stdio MCP wrapper and MCP
 contract, mother-repo scaffold generation, and webhook preflight pass/block
-behavior.
+behavior. The native jcode tool scaffold is source-validated by the scaffold
+copy checks and is designed to compile inside a mother repo that has
+`upstreams/jcode` checked out.
 
 For upstream bumps, generate a combined sync report:
 
@@ -290,13 +292,14 @@ scripts/hermes_jcode_mother_repo.py scaffold --output /path/to/mother-agent
 python3 /path/to/mother-agent/scripts/check_bridge_contract.py
 ```
 
-The scaffold copies the bridge plugin, portable schemas, fixtures, reverse
-service wrapper, MCP wrapper, generated jcode MCP config, latency probe, and
-plan docs into a separate workspace and records the current Hermes/jcode pins in
-`hermes-jcode.manifest.json`. Its generated contract check runs without
-importing Hermes gateway internals and validates `jcode-bridge.v1`,
-`hermes-service.v1`, and `hermes-mcp.v1`, which proves the integration
-boundary can move outside this checkout.
+The scaffold copies the bridge plugin, native jcode Hermes tool crate, portable
+schemas, fixtures, reverse service wrapper, MCP wrapper, generated jcode MCP
+config, latency probe, and plan docs into a separate workspace and records the
+current Hermes/jcode pins in `hermes-jcode.manifest.json`. Its generated
+contract check runs without importing Hermes gateway internals and validates
+`jcode-bridge.v1`, `hermes-service.v1`, and `hermes-mcp.v1`, which proves the
+compatibility boundary can move outside this checkout while the final product
+surface moves into jcode's native Rust tool architecture.
 
 ## Enabling
 

@@ -976,16 +976,14 @@ def init_agent(
 
     # Expose session ID to tools (terminal, execute_code) so agents can
     # reference their own session for --resume commands, cross-session
-    # coordination, and logging.  Uses the ContextVar system from
-    # session_context.py for concurrency safety (gateway runs multiple
-    # sessions in one process).  Also writes os.environ as fallback for
-    # CLI mode where ContextVars aren't used.
-    os.environ["HERMES_SESSION_ID"] = agent.session_id
+    # coordination, and logging. Keep the ContextVar and os.environ
+    # fallback synchronized because different tool paths still read both.
     try:
-        from gateway.session_context import _SESSION_ID
-        _SESSION_ID.set(agent.session_id)
+        from gateway.session_context import set_current_session_id
+
+        set_current_session_id(agent.session_id)
     except Exception:
-        pass  # CLI/test mode — ContextVar not needed
+        os.environ["HERMES_SESSION_ID"] = agent.session_id
 
     # Session logs go into ~/.hermes/sessions/ alongside gateway sessions
     hermes_home = get_hermes_home()

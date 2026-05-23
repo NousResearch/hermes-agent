@@ -775,8 +775,6 @@ from rich.markup import escape as _escape
 from rich.panel import Panel
 from rich.text import Text as _RichText
 
-import fire
-
 # Import agent and tool systems lazily. Bare interactive startup only needs the
 # prompt; the full agent/tool registry is initialized on first use.
 def AIAgent(*args, **kwargs):
@@ -817,6 +815,13 @@ def validate_toolset(*args, **kwargs):
     from toolsets import validate_toolset as _validate_toolset
 
     return _validate_toolset(*args, **kwargs)
+
+
+def _sync_process_session_id(session_id: str) -> None:
+    """Keep process-local session-id consumers aligned after CLI switches."""
+    from gateway.session_context import set_current_session_id
+
+    set_current_session_id(session_id)
 
 # Cron job system for scheduled tasks (execution is handled by the gateway)
 def get_job(*args, **kwargs):
@@ -6281,6 +6286,7 @@ class HermesCLI:
         self.conversation_history = []
         self._pending_title = None
         self._resumed = False
+        _sync_process_session_id(self.session_id)
 
         if self.agent:
             self.agent.session_id = self.session_id
@@ -6567,6 +6573,7 @@ class HermesCLI:
         self.session_id = target_id
         self._resumed = True
         self._pending_title = None
+        _sync_process_session_id(target_id)
 
         # Load conversation history (strip transcript-only metadata entries)
         restored = self._session_db.get_messages_as_conversation(target_id)
@@ -6740,6 +6747,7 @@ class HermesCLI:
         self.session_start = now
         self._pending_title = None
         self._resumed = True  # Prevents auto-title generation
+        _sync_process_session_id(new_session_id)
 
         # Sync the agent
         if self.agent:
@@ -14777,4 +14785,6 @@ def main(
 
 
 if __name__ == "__main__":
+    import fire
+
     fire.Fire(main)

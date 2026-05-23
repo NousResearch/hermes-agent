@@ -12,9 +12,10 @@ Config keys this provider responds to::
       extract_backend: "exa"     # explicit per-capability
       backend: "exa"             # shared fallback for both
 
-Env var::
+Env vars::
 
     EXA_API_KEY=...    # https://exa.ai (paid tier; free trial available)
+    EXA_BASE_URL=...   # optional override of https://api.exa.ai
 
 The previous in-tree implementation lived at
 ``tools.web_tools._exa_search`` / ``_exa_extract``; this file is the
@@ -69,7 +70,11 @@ def _get_exa_client() -> Any:
 
     from exa_py import Exa  # noqa: WPS433 — deliberately lazy
 
-    client = Exa(api_key=api_key)
+    base_url = os.getenv("EXA_BASE_URL", "").strip()
+    kwargs = {"api_key": api_key}
+    if base_url:
+        kwargs["base_url"] = base_url
+    client = Exa(**kwargs)
     client.headers["x-exa-integration"] = "hermes-agent"
     _wt._exa_client = client
     return client
@@ -207,6 +212,11 @@ class ExaWebSearchProvider(WebSearchProvider):
                     "key": "EXA_API_KEY",
                     "prompt": "Exa API key",
                     "url": "https://exa.ai",
+                },
+                {
+                    "key": "EXA_BASE_URL",
+                    "prompt": "Exa API base URL (optional, default https://api.exa.ai)",
+                    "url": "",
                 },
             ],
         }

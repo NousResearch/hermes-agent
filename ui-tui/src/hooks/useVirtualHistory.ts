@@ -186,11 +186,9 @@ export function useVirtualHistory(
   }, [scrollRef])
 
   // Quantized snapshot: same-bin scrolls (most wheel ticks) produce the same
-  // number → React.Object.is short-circuits the commit entirely. sticky state
-  // is folded in via the sign bit so sticky→broken transitions also trigger.
-  // Uses the TARGET (committed + pendingDelta), not committed scrollTop, so
-  // scrollBy notifications immediately remount for the destination before
-  // Ink's drain frames need the children.
+  // key → React.Object.is short-circuits the commit entirely. The key includes
+  // sticky state, target scroll position, and viewport height so resize-only
+  // changes still recompute the mounted transcript window.
   const subscribe = useCallback(
     (cb: () => void) => (hasScrollRef ? scrollRef.current?.subscribe(cb) : null) ?? NOOP,
     [hasScrollRef, scrollRef]

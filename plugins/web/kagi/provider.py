@@ -12,7 +12,7 @@ Configuration::
 
     # ~/.hermes/config.yaml
     web:
-      backend: "kagi"
+      search_backend: kagi
 """
 
 from __future__ import annotations

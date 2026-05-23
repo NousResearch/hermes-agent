@@ -3,7 +3,7 @@
 Exercises the full flow through the ACP server layer:
   new_session(mcpServers) → MCP tools registered → prompt() →
     tool_progress_callback (ToolCallStart) →
-    step_callback with results (ToolCallUpdate with rawOutput) →
+    step_callback with results (ToolCallUpdate with human-readable content) →
     session_update events arrive at the mock client
 """
 
@@ -173,7 +173,7 @@ class TestMcpRegistrationE2E:
         assert isinstance(start_event, ToolCallStart)
         assert start_event.title.startswith("terminal:")
 
-        # Should have at least one ToolCallUpdate (completion) with rawOutput
+        # Should have at least one ToolCallUpdate (completion) with readable content.
         assert len(completions) >= 1, f"Expected ToolCallUpdate, got updates: {[getattr(u, 'session_update', '?') for u in updates]}"
         complete_event = completions[0]
         assert isinstance(complete_event, ToolCallProgress)

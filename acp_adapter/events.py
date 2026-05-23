@@ -118,6 +118,7 @@ def make_tool_progress_cb(
     tool_call_ids: Dict[str, Deque[str]],
     tool_call_meta: Dict[str, Dict[str, Any]],
     edit_approval_policy_getter: Callable[[], tuple[str, str | None]] | None = None,
+    output_policy_getter: Callable[[], Any] | None = None,
 ) -> Callable:
     """Create a ``tool_progress_callback`` for AIAgent.
 
@@ -176,7 +177,8 @@ def make_tool_progress_cb(
             except Exception:
                 logger.debug("Failed to prepare auto-approved ACP edit diff for %s", name, exc_info=True)
 
-        update = build_tool_start(tc_id, name, args, edit_diff=edit_diff)
+        output_policy = output_policy_getter() if output_policy_getter is not None else None
+        update = build_tool_start(tc_id, name, args, edit_diff=edit_diff, output_policy=output_policy)
         _send_update(conn, session_id, loop, update)
 
     return _tool_progress
@@ -212,6 +214,7 @@ def make_step_cb(
     loop: asyncio.AbstractEventLoop,
     tool_call_ids: Dict[str, Deque[str]],
     tool_call_meta: Dict[str, Dict[str, Any]],
+    output_policy_getter: Callable[[], Any] | None = None,
 ) -> Callable:
     """Create a ``step_callback`` for AIAgent.
 
@@ -241,12 +244,14 @@ def make_step_cb(
                 if tool_name and queue:
                     tc_id = queue.popleft()
                     meta = tool_call_meta.pop(tc_id, {})
+                    output_policy = output_policy_getter() if output_policy_getter is not None else None
                     update = build_tool_complete(
                         tc_id,
                         tool_name,
                         result=str(result) if result is not None else None,
                         function_args=function_args or meta.get("args"),
                         snapshot=meta.get("snapshot"),
+                        output_policy=output_policy,
                     )
                     _send_update(conn, session_id, loop, update)
                     if tool_name == "todo":

@@ -70,6 +70,61 @@ async def test_new_session_exposes_edit_approvals_as_modes_not_config_options(ag
 
 
 @pytest.mark.asyncio
+async def test_new_session_can_advertise_output_detail_config_option(agent, monkeypatch):
+    monkeypatch.setattr(
+        HermesACPAgent,
+        "_load_config_for_output_policy",
+        staticmethod(lambda: {"acp": {"output": {"advertise_config_option": True}}}),
+    )
+
+    resp = await agent.new_session(cwd="/tmp")
+
+    assert resp.config_options is not None
+    assert len(resp.config_options) == 1
+    option = resp.config_options[0]
+    assert option.id == "acp_output_detail"
+    assert option.name == "Tool Output Detail"
+    assert option.current_value == "condensed"
+    assert [item.value for item in option.options] == ["condensed", "full"]
+
+
+@pytest.mark.asyncio
+async def test_set_config_option_returns_advertised_output_detail_state(agent, monkeypatch):
+    monkeypatch.setattr(
+        HermesACPAgent,
+        "_load_config_for_output_policy",
+        staticmethod(lambda: {"acp": {"output": {"advertise_config_option": True}}}),
+    )
+    resp = await agent.new_session(cwd="/tmp")
+
+    update = await agent.set_config_option("acp_output_detail", resp.session_id, "full")
+
+    assert isinstance(update, SetSessionConfigOptionResponse)
+    assert len(update.config_options) == 1
+    assert update.config_options[0].id == "acp_output_detail"
+    assert update.config_options[0].current_value == "full"
+
+
+@pytest.mark.asyncio
+async def test_load_resume_and_fork_include_advertised_output_detail(agent, monkeypatch):
+    monkeypatch.setattr(
+        HermesACPAgent,
+        "_load_config_for_output_policy",
+        staticmethod(lambda: {"acp": {"output": {"advertise_config_option": True}}}),
+    )
+    resp = await agent.new_session(cwd="/tmp")
+    await agent.set_config_option("acp_output_detail", resp.session_id, "full")
+
+    load_resp = await agent.load_session(cwd="/tmp", session_id=resp.session_id)
+    resume_resp = await agent.resume_session(cwd="/tmp", session_id=resp.session_id)
+    fork_resp = await agent.fork_session(cwd="/tmp", session_id=resp.session_id)
+
+    assert load_resp.config_options[0].current_value == "full"
+    assert resume_resp.config_options[0].current_value == "full"
+    assert fork_resp.config_options[0].current_value == "full"
+
+
+@pytest.mark.asyncio
 async def test_set_config_option_persists_edit_approval_policy_without_advertising_config(agent):
     resp = await agent.new_session(cwd="/tmp")
     update = await agent.set_config_option(
@@ -82,6 +137,106 @@ async def test_set_config_option_persists_edit_approval_policy_without_advertisi
     assert isinstance(update, SetSessionConfigOptionResponse)
     assert update.config_options == []
     assert getattr(state, "mode", None) == "accept_edits"
+
+
+@pytest.mark.asyncio
+async def test_set_config_option_persists_acp_output_detail_without_advertising_config(agent):
+    resp = await agent.new_session(cwd="/tmp")
+
+    update = await agent.set_config_option(
+        "acp_output_detail",
+        resp.session_id,
+        "full",
+    )
+    state = agent.session_manager.get_session(resp.session_id)
+
+    assert isinstance(update, SetSessionConfigOptionResponse)
+    assert update.config_options == []
+    assert getattr(state, "output_detail", None) == "full"
+
+
+@pytest.mark.asyncio
+async def test_set_config_option_ignores_raw_acp_output_detail(agent, monkeypatch):
+    monkeypatch.setenv("HERMES_ACP_OUTPUT_DETAIL", "full")
+    resp = await agent.new_session(cwd="/tmp")
+
+    update = await agent.set_config_option(
+        "acp_output_detail",
+        resp.session_id,
+        "raw",
+    )
+    state = agent.session_manager.get_session(resp.session_id)
+
+    assert isinstance(update, SetSessionConfigOptionResponse)
+    assert update.config_options == []
+    assert getattr(state, "output_detail", "") == ""
+    assert agent._output_policy_for_state(state).detail == "full"
+
+
+@pytest.mark.asyncio
+async def test_set_config_option_ignores_invalid_acp_output_detail(agent, monkeypatch):
+    monkeypatch.setenv("HERMES_ACP_OUTPUT_DETAIL", "full")
+    resp = await agent.new_session(cwd="/tmp")
+
+    update = await agent.set_config_option(
+        "acp_output_detail",
+        resp.session_id,
+        "bogus",
+    )
+    state = agent.session_manager.get_session(resp.session_id)
+
+    assert isinstance(update, SetSessionConfigOptionResponse)
+    assert update.config_options == []
+    assert getattr(state, "output_detail", "") == ""
+    assert agent._output_policy_for_state(state).detail == "full"
+
+
+@pytest.mark.asyncio
+async def test_load_session_replay_uses_session_output_policy(agent):
+    mock_conn = MagicMock(spec=acp.Client)
+    mock_conn.session_update = AsyncMock()
+    agent._conn = mock_conn
+
+    new_resp = await agent.new_session(cwd="/tmp")
+    await agent.set_config_option("acp_output_detail", new_resp.session_id, "full")
+    state = agent.session_manager.get_session(new_resp.session_id)
+    state.history = [
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+                {
+                    "id": "call_skill_1",
+                    "type": "function",
+                    "function": {
+                        "name": "skill_view",
+                        "arguments": '{"name":"github-pitfalls"}',
+                    },
+                }
+            ],
+        },
+        {
+            "role": "tool",
+            "tool_call_id": "call_skill_1",
+            "content": '{"success":true,"name":"github-pitfalls","content":"# GitHub Pitfalls\\nRaw replay body"}',
+        },
+    ]
+
+    mock_conn.session_update.reset_mock()
+    resp = await agent.load_session(cwd="/tmp", session_id=new_resp.session_id)
+
+    assert isinstance(resp, LoadSessionResponse)
+    tool_updates = [
+        call.kwargs["update"]
+        for call in mock_conn.session_update.await_args_list
+        if getattr(call.kwargs.get("update"), "session_update", None)
+        in {"tool_call", "tool_call_update"}
+    ]
+    assert isinstance(tool_updates[0], ToolCallStart)
+    assert tool_updates[0].raw_input is None
+    assert isinstance(tool_updates[1], ToolCallProgress)
+    assert tool_updates[1].raw_output is None
+    assert "Raw replay body" in tool_updates[1].content[0].content.text
 
 
 # ---------------------------------------------------------------------------

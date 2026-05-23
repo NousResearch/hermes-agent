@@ -181,6 +181,7 @@ class SessionState:
     runtime_lock: Any = field(default_factory=Lock)
     current_prompt_text: str = ""
     interrupted_prompt_text: str = ""
+    output_detail: str = ""
 
 
 class SessionManager:
@@ -272,6 +273,7 @@ class SessionManager:
             model=getattr(agent, "model", original.model) or original.model,
             history=copy.deepcopy(original.history),
             cancel_event=threading.Event(),
+            output_detail=getattr(original, "output_detail", ""),
         )
         with self._lock:
             self._sessions[new_id] = state
@@ -442,6 +444,9 @@ class SessionManager:
             session_meta["base_url"] = base_url.strip()
         if isinstance(api_mode, str) and api_mode.strip():
             session_meta["api_mode"] = api_mode.strip()
+        output_detail = getattr(state, "output_detail", "")
+        if isinstance(output_detail, str) and output_detail.strip():
+            session_meta["acp_output_detail"] = output_detail.strip()
         cwd_json = json.dumps(session_meta)
 
         try:
@@ -452,7 +457,7 @@ class SessionManager:
                     session_id=state.session_id,
                     source="acp",
                     model=model_str,
-                    model_config={"cwd": state.cwd},
+                    model_config=session_meta,
                 )
             else:
                 # Update model_config (contains cwd) if changed.
@@ -499,6 +504,7 @@ class SessionManager:
         requested_provider = row.get("billing_provider")
         restored_base_url = row.get("billing_base_url")
         restored_api_mode = None
+        restored_output_detail = ""
         mc = row.get("model_config")
         if mc:
             try:
@@ -508,6 +514,7 @@ class SessionManager:
                     requested_provider = meta.get("provider") or requested_provider
                     restored_base_url = meta.get("base_url") or restored_base_url
                     restored_api_mode = meta.get("api_mode") or restored_api_mode
+                    restored_output_detail = str(meta.get("acp_output_detail") or "").strip()
             except (json.JSONDecodeError, TypeError):
                 pass
 
@@ -540,6 +547,7 @@ class SessionManager:
             model=model or getattr(agent, "model", "") or "",
             history=history,
             cancel_event=threading.Event(),
+            output_detail=restored_output_detail,
         )
         with self._lock:
             self._sessions[session_id] = state

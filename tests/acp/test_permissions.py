@@ -81,10 +81,7 @@ class TestApprovalBridge:
         content_text = tool_call.content[0].content.text
         assert "$ rm -rf /" in content_text
         assert "dangerous command" in content_text
-        assert tool_call.raw_input == {
-            "command": "rm -rf /",
-            "description": "dangerous command",
-        }
+        assert tool_call.raw_input is None
         assert option_ids == [
             "allow_once",
             "allow_session",

@@ -33,7 +33,7 @@ def test_acp_permission_tool_call_uses_edit_kind_and_diff_content():
 
     assert tool_call.kind == "edit"
     assert tool_call.status == "pending"
-    assert tool_call.rawInput == {"tool": "write_file", "arguments": proposal.arguments}
+    assert tool_call.rawInput is None
     assert len(tool_call.content) == 1
     diff = tool_call.content[0]
     assert diff.path == "demo.txt"

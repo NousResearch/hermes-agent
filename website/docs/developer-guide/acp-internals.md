@@ -111,6 +111,26 @@ Examples:
 - `read_file` / `search_files` -> text previews
 - large results -> truncated text blocks for UI safety
 
+### Output detail policy
+
+`acp_adapter/output_policy.py` resolves ACP-visible output detail independently from the model-facing tool result. The resolved `ACPOutputPolicy` is threaded through:
+
+- `build_tool_start()` and `build_tool_complete()` in `acp_adapter/tools.py`
+- live `make_tool_progress_cb()` and `make_step_cb()` in `acp_adapter/events.py`
+- history replay in `HermesACPAgent._replay_session_history()`
+- prompt resource conversion in `_content_blocks_to_openai_user_content()`
+- session persistence/restore/fork through `SessionState.output_detail`
+- optional advertised `SessionConfigOptionSelect` responses when `acp.output.advertise_config_option` is enabled
+
+Resolution order is session override, then environment, then `acp.output` config, then the built-in `condensed` default. This keeps existing editor UX compact unless the client explicitly asks for more detail.
+
+Mode semantics:
+
+- `condensed`: preserve polished summaries and existing default truncation/suppression. ACP raw fields are omitted by default.
+- `full`: expand all ACP-controlled visible tool-start and tool-completion content while still respecting resource/model safety caps. ACP raw fields remain omitted; this mode only changes transcript-visible content.
+
+Resource inlining has its own `resource_max_bytes` cap because it affects prompt payload size and binary/image validity, not just transcript readability. Full output detail does not remove binary omission or resource safety behavior, and it cannot reconstruct content already paged/truncated by a tool before the ACP adapter sees the result. Invalid session output-detail values are ignored rather than normalized to `condensed`, so a bad client value cannot silently downgrade an env/config default.
+
 ## Session lifecycle
 
 ```text

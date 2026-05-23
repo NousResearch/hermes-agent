@@ -195,6 +195,9 @@ class TestImageRejectionPhraseIsolation:
         "does not support vision",
         "model does not support image",
         "image_url'. expected",
+        # Xiaomi MiMo: rejects requests where text content part is missing
+        "text is not set",
+        "`text` is not set",
     )
 
     def _matches(self, body: str) -> bool:
@@ -265,3 +268,14 @@ class TestImageRejectionPhraseIsolation:
         ]
         for body in bodies:
             assert self._matches(body) is False, f"false positive on: {body}"
+
+    def test_mimo_text_is_not_set_trips(self):
+        """Xiaomi MiMo 'text is not set' — model requires text content part
+        but the request only has image_url parts. Should trigger image
+        rejection recovery (strip all images from user messages)."""
+        bodies = [
+            "Error code: 400 - {'error': {'code': '400', 'message': 'Param Incorrect', 'param': 'text is not set', 'type': ''}}",
+            "{'error': {'code': '400', 'message': 'Param Incorrect', 'param': '`text` is not set', 'type': ''}}",
+        ]
+        for body in bodies:
+            assert self._matches(body) is True, f"false negative on: {body}"

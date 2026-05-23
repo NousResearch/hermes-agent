@@ -1981,6 +1981,10 @@ def run_conversation(
                     # "unknown variant `image_url`, expected `text`".
                     "unknown variant `image_url`, expected `text`",
                     "unknown variant image_url, expected text",
+                    # Xiaomi MiMo: rejects requests where text content part is missing
+                    "text is not set",
+                    # Xiaomi MiMo variant with backticks around text
+                    "`text` is not set",
                 )
                 _err_lower = _err_body.lower()
                 _looks_like_image_rejection = any(

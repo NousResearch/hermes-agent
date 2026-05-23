@@ -75,6 +75,21 @@ class TestDelegateRequirements(unittest.TestCase):
         self.assertNotIn("max_iterations", props)
         self.assertNotIn("maxItems", props["tasks"])  # removed — limit is now runtime-configurable
 
+    def test_resolve_workspace_hint_falls_back_to_parent_hint(self):
+        from tools.delegate_tool import _resolve_workspace_hint
+
+        with patch.dict(os.environ, {"TERMINAL_CWD": ""}, clear=False):
+            with patch("os.path.isdir", return_value=True):
+                with patch("gateway.session_context.get_terminal_cwd", return_value=""):
+                    parent = _make_mock_parent()
+                    # Disable MagicMock auto-attribute so _subdirectory_hints.working_dir
+                    # doesn't shadow the explicit terminal_cwd we want to test.
+                    parent._subdirectory_hints = None
+                    parent.terminal_cwd = "/parent/workdir"
+                    resolved = _resolve_workspace_hint(parent)
+
+        self.assertEqual(resolved, "/parent/workdir")
+
     def test_schema_description_advertises_runtime_limits(self):
         """The model must see the user's actual concurrency / spawn-depth caps,
         not the framework defaults. Without this, models that read 'default 3'
@@ -2593,6 +2608,103 @@ class TestFallbackModelInheritance(unittest.TestCase):
 
         _, kwargs = MockAgent.call_args
         self.assertIsNone(kwargs["fallback_model"])
+
+
+class TestContextVarPropagationToWorker(unittest.TestCase):
+    """Tests that copy_context() in _run_single_child propagates ContextVars
+    (like TERMINAL_CWD) from the calling thread into the worker thread.
+
+    The key correctness property: _run_single_child calls
+    contextvars.copy_context() immediately before submitting to the
+    ThreadPoolExecutor, then runs the work via _ctx.run(...).  This ensures
+    the child's run_conversation() sees the TERMINAL_CWD value that was live
+    in the calling thread at dispatch time, regardless of whether the worker
+    thread is reused across multiple tasks.
+    """
+
+    def test_terminal_cwd_propagated_to_child_run_conversation(self):
+        """TERMINAL_CWD set in the calling thread is visible inside
+        child.run_conversation() because _run_single_child wraps the task
+        with contextvars.copy_context().run()."""
+        from tools.delegate_tool import _run_single_child
+        from gateway.session_context import (
+            get_terminal_cwd,
+            reset_terminal_cwd,
+            set_terminal_cwd,
+        )
+
+        parent = _make_mock_parent()
+        captured = {}
+
+        token = set_terminal_cwd("/parent/workspace")
+        try:
+            child = MagicMock()
+            child._credential_pool = None
+
+            def capture_cwd(**kwargs):
+                captured["cwd"] = get_terminal_cwd()
+                return {
+                    "final_response": "done",
+                    "completed": True,
+                    "api_calls": 1,
+                    "messages": [],
+                }
+
+            child.run_conversation.side_effect = capture_cwd
+
+            _run_single_child(
+                task_index=0,
+                goal="Test context propagation",
+                child=child,
+                parent_agent=parent,
+            )
+        finally:
+            reset_terminal_cwd(token)
+
+        self.assertEqual(
+            captured.get("cwd"),
+            "/parent/workspace",
+            "TERMINAL_CWD was not propagated into the worker thread via copy_context()",
+        )
+
+    def test_terminal_cwd_not_visible_in_stale_copied_context(self):
+        """Demonstrates that a context snapshot taken BEFORE set_terminal_cwd()
+        does NOT contain the new value, so code that calls copy_context() too
+        early (or not at all) would fail to propagate TERMINAL_CWD correctly.
+
+        This is the 'without copy_context()' failure case: if the context were
+        captured before the gateway sets TERMINAL_CWD, the worker thread would
+        see None instead of the real path.
+        """
+        import contextvars
+
+        from gateway.session_context import (
+            get_terminal_cwd,
+            reset_terminal_cwd,
+            set_terminal_cwd,
+        )
+
+        captured = {}
+
+        # Capture context BEFORE setting TERMINAL_CWD (simulates stale snapshot).
+        stale_ctx = contextvars.copy_context()
+
+        token = set_terminal_cwd("/parent/workspace")
+        try:
+            def read_cwd():
+                captured["cwd"] = get_terminal_cwd()
+
+            # Running in the stale context should NOT see the new CWD value.
+            stale_ctx.run(read_cwd)
+        finally:
+            reset_terminal_cwd(token)
+
+        # The stale context falls back to os.environ (empty in the test env).
+        self.assertNotEqual(
+            captured.get("cwd"),
+            "/parent/workspace",
+            "Stale context should not see TERMINAL_CWD set after the snapshot",
+        )
 
 
 if __name__ == "__main__":

@@ -19,6 +19,7 @@ never the child's intermediate tool calls or reasoning.
 import enum
 import json
 import logging
+import contextvars
 
 logger = logging.getLogger(__name__)
 import os
@@ -663,8 +664,14 @@ def _resolve_workspace_hint(parent_agent) -> Optional[str]:
     teaching subagents a fake container path while still helping them avoid
     guessing `/workspace/...` for local repo tasks.
     """
+    try:
+        from gateway.session_context import get_terminal_cwd
+        session_cwd = get_terminal_cwd()
+    except ImportError:
+        session_cwd = os.getenv("TERMINAL_CWD")
+
     candidates = [
-        os.getenv("TERMINAL_CWD"),
+        session_cwd,
         getattr(
             getattr(parent_agent, "_subdirectory_hints", None), "working_dir", None
         ),
@@ -1516,7 +1523,8 @@ def _run_single_child(
                 task_id=child_task_id,
             )
 
-        _child_future = _timeout_executor.submit(_run_with_thread_capture)
+        _ctx = contextvars.copy_context()
+        _child_future = _timeout_executor.submit(_ctx.run, _run_with_thread_capture)
         try:
             result = _child_future.result(timeout=child_timeout)
         except Exception as _timeout_exc:

@@ -40,6 +40,49 @@ STORAGE_DIR = "/tmp/hermes-results"
 HEREDOC_MARKER = "HERMES_PERSIST_EOF"
 _BUDGET_TOOL_NAME = "__budget_enforcement__"
 
+# Layer 2a: defensive per-tool token cap. Layer 2 (maybe_persist_tool_result)
+# only fires for *very* large results (default 100K chars ≈ 25K tokens). A
+# 56K-char search_files dump (~14K tokens) slips through and quietly inflates
+# context. The cap below clamps any single tool result at ~8K estimated
+# tokens BEFORE it lands in conversation history.
+DEFAULT_TOOL_RESULT_SOFT_TOKEN_CAP = 8_000
+DEFAULT_TOOL_RESULT_HARD_TOKEN_TARGET = 6_000
+_CHARS_PER_TOKEN = 4  # matches estimate_messages_tokens_rough
+
+
+def cap_tool_result_tokens(
+    content,
+    *,
+    soft_token_cap: int = DEFAULT_TOOL_RESULT_SOFT_TOKEN_CAP,
+    hard_token_target: int = DEFAULT_TOOL_RESULT_HARD_TOKEN_TARGET,
+    tool_name: str = "",
+):
+    """Clamp a single tool result at ~`soft_token_cap` estimated tokens.
+
+    When `content` is a string and its char-based token estimate exceeds
+    `soft_token_cap`, the head is kept down to roughly `hard_token_target`
+    tokens and a `[truncated NNNN tokens]` marker is appended.
+
+    Non-string content (multimodal lists of parts) is returned unchanged —
+    image payloads must be left to `enforce_turn_budget` / image-shrink.
+    """
+    if not isinstance(content, str):
+        return content
+
+    est_tokens = len(content) // _CHARS_PER_TOKEN
+    if est_tokens <= soft_token_cap:
+        return content
+
+    keep_chars = max(0, hard_token_target * _CHARS_PER_TOKEN)
+    head = content[:keep_chars]
+    dropped_tokens = est_tokens - (keep_chars // _CHARS_PER_TOKEN)
+    truncated = f"{head}\n\n[truncated {dropped_tokens} tokens]"
+    logger.info(
+        "Capped tool result %s at ~%d tokens (was ~%d, dropped ~%d)",
+        tool_name or "?", hard_token_target, est_tokens, dropped_tokens,
+    )
+    return truncated
+
 
 def _resolve_storage_dir(env) -> str:
     """Return the best temp-backed storage dir for this environment."""

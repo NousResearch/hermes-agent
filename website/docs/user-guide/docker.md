@@ -51,7 +51,7 @@ docker run -d \
   -p 8642:8642 \
   -e API_SERVER_ENABLED=true \
   -e API_SERVER_HOST=0.0.0.0 \
-  -e API_SERVER_KEY=your_api_key_here \
+  -e API_SERVER_KEY="$(openssl rand -hex 32)" \
   -e API_SERVER_CORS_ORIGINS='*' \
   nousresearch/hermes-agent gateway run
 ```
@@ -60,7 +60,7 @@ Opening any port on an internet facing machine is a security risk. You should no
 
 ## Running the dashboard
 
-The built-in web dashboard runs as an optional side-process inside the same container as the gateway. Set `HERMES_DASHBOARD=1` and expose port `9119` alongside the gateway's `8642`:
+The built-in web dashboard runs as an optional side-process inside the same container as the gateway. Set `HERMES_DASHBOARD=1` to run the dashboard on container loopback (`127.0.0.1`) by default:
 
 ```sh
 docker run -d \
@@ -68,7 +68,6 @@ docker run -d \
   --restart unless-stopped \
   -v ~/.hermes:/opt/data \
   -p 8642:8642 \
-  -p 9119:9119 \
   -e HERMES_DASHBOARD=1 \
   nousresearch/hermes-agent gateway run
 ```
@@ -78,11 +77,11 @@ The entrypoint starts `hermes dashboard` in the background (running as the non-r
 | Environment variable | Description | Default |
 |---------------------|-------------|---------|
 | `HERMES_DASHBOARD` | Set to `1` (or `true` / `yes`) to launch the dashboard alongside the main command | *(unset — dashboard not started)* |
-| `HERMES_DASHBOARD_HOST` | Bind address for the dashboard HTTP server | `0.0.0.0` |
+| `HERMES_DASHBOARD_HOST` | Bind address for the dashboard HTTP server | `127.0.0.1` |
 | `HERMES_DASHBOARD_PORT` | Port for the dashboard HTTP server | `9119` |
 | `HERMES_DASHBOARD_TUI` | Set to `1` to expose the in-browser Chat tab (embedded `hermes --tui` via PTY/WebSocket) | *(unset)* |
 
-The default `HERMES_DASHBOARD_HOST=0.0.0.0` is required for the host to reach the dashboard through the published port; the entrypoint automatically passes `--insecure` to `hermes dashboard` in that case. Override to `127.0.0.1` if you want to restrict the dashboard to in-container access only (e.g. behind a reverse proxy in a sidecar).
+By default, the dashboard stays on loopback to avoid exposing the unauthenticated web surface over the network. To publish it intentionally, set `HERMES_DASHBOARD_HOST=0.0.0.0` and configure your own trusted network boundary/reverse proxy. In that case you must explicitly add `--insecure` behavior by passing host/flags in your command path (the entrypoint no longer auto-enables insecure mode).
 
 :::note
 The dashboard side-process is **not supervised** — if it crashes, it stays down until the container restarts. Running it as a separate container is not supported: the dashboard's gateway-liveness detection requires a shared PID namespace with the gateway process.

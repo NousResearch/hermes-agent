@@ -333,6 +333,33 @@ class TestHistoryDisplay:
         assert "Checking Running Hermes Agent" in output
         assert "Use /resume <session id or title> to continue" in output
 
+    def test_resume_updates_hermes_session_id_env_and_context(self, tmp_path):
+        from gateway.session_context import _UNSET, _VAR_MAP, get_session_env
+        from hermes_state import SessionDB
+
+        cli = _make_cli()
+        cli.session_id = "current_session"
+        cli.conversation_history = []
+        cli.agent = None
+        cli._session_db = SessionDB(db_path=tmp_path / "state.db")
+        cli._session_db.create_session("current_session", "cli")
+        cli._session_db.create_session("target_session", "cli")
+        cli._session_db.append_message("target_session", "user", "hello from resumed session")
+
+        os.environ["HERMES_SESSION_ID"] = "current_session"
+        _VAR_MAP["HERMES_SESSION_ID"].set("current_session")
+
+        try:
+            cli._handle_resume_command("/resume target_session")
+
+            assert cli.session_id == "target_session"
+            assert os.environ["HERMES_SESSION_ID"] == "target_session"
+            assert get_session_env("HERMES_SESSION_ID") == "target_session"
+        finally:
+            cli._session_db.close()
+            os.environ.pop("HERMES_SESSION_ID", None)
+            _VAR_MAP["HERMES_SESSION_ID"].set(_UNSET)
+
     def test_sessions_command_no_args_lists_recent_sessions(self, capsys):
         """/sessions with no args prints the recent-sessions table (TUI parity).
 

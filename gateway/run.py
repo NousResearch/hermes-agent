@@ -14940,6 +14940,10 @@ class GatewayRunner:
             agent._last_activity_ts = time.time()
             agent._last_activity_desc = "starting new turn (cached)"
         agent._api_call_count = 0
+        # Reset iteration budget so goal continuation turns get a fresh budget
+        if hasattr(agent, 'iteration_budget') and agent.iteration_budget is not None:
+            with agent.iteration_budget._lock:
+                agent.iteration_budget._used = 0
 
     def _release_evicted_agent_soft(self, agent: Any) -> None:
         """Soft cleanup for cache-evicted agents — preserves session tool state.

@@ -2065,7 +2065,10 @@ def resolve_qwen_runtime_credentials(
 def get_qwen_auth_status() -> Dict[str, Any]:
     auth_path = _qwen_cli_auth_path()
     try:
-        creds = resolve_qwen_runtime_credentials(refresh_if_expiring=False)
+        # Validate the runtime credentials, including refresh when the cached
+        # CLI token is expired. Otherwise stale tokens show up as "logged in"
+        # and `hermes model` walks users into a broken Qwen setup flow.
+        creds = resolve_qwen_runtime_credentials(refresh_if_expiring=True)
         return {
             "logged_in": True,
             "auth_file": str(auth_path),

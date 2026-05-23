@@ -1,9 +1,12 @@
 """Entry point for the `computer_use` tool.
 
-Universal (any-model) macOS desktop control via cua-driver's background
-computer-use primitive. Replaces #4562's Anthropic-native `computer_20251124`
-approach — the schema here is standard OpenAI function-calling so every
-tool-capable model can drive it.
+Universal (any-model) desktop control across macOS + Windows via
+cua-driver's background computer-use primitive. Replaces #4562's
+Anthropic-native `computer_20251124` approach — the schema here is standard
+OpenAI function-calling so every tool-capable model can drive it.
+
+Linux support exists in cua-driver-rs (alpha — PARITY rows are mostly
+OPEN today, not VERIFIED) and is gated off here until it flips upstream.
 
 Return contract
 ---------------
@@ -693,7 +696,7 @@ def _route_capture_through_aux_vision(
         temp_image_path.write_bytes(raw)
 
         prompt = (
-            "Describe what is visible in this macOS application screenshot in "
+            "Describe what is visible in this desktop application screenshot in "
             "concise but specific terms. Mention the app name and window "
             "title if visible, the overall layout, any labelled buttons, "
             "menus or text fields, and any prominent text content the user "
@@ -810,9 +813,13 @@ def _element_to_dict(e: UIElement) -> Dict[str, Any]:
 def check_computer_use_requirements() -> bool:
     """Return True iff computer_use can run on this host.
 
-    Conditions: macOS + cua-driver binary installed (or override via env).
+    Conditions: macOS or Windows + cua-driver binary installed (or override
+    via env). cua-driver-rs (the cross-platform Rust port) has every action
+    tool marked VERIFIED on Windows in its PARITY matrix. Linux is alpha
+    today — Linux rows in PARITY are mostly OPEN — so it's gated off until
+    that flips to VERIFIED upstream.
     """
-    if sys.platform != "darwin":
+    if sys.platform not in ("darwin", "win32"):
         return False
     from tools.computer_use.cua_backend import cua_driver_binary_available
     return cua_driver_binary_available()

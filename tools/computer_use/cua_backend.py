@@ -1,18 +1,35 @@
-"""Cua-driver backend (macOS only).
+"""Cua-driver backend (macOS + Windows).
 
 Speaks MCP over stdio to `cua-driver`. The Python `mcp` SDK is async, so we
 run a dedicated asyncio event loop on a background thread and marshal sync
 calls through it.
 
-Install: `/bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/trycua/cua/main/libs/cua-driver/scripts/install.sh)"`
+The same `cua-driver call <tool>` surface (click, type_text, hotkey, drag,
+scroll, screenshot, launch_app, list_apps, list_windows, get_window_state,
+move_cursor, wait) works identically across macOS + Windows — cua-driver's
+PARITY matrix marks every action tool VERIFIED on Windows in the
+cross-platform Rust port (`cua-driver-rs`).
+
+Linux support exists in cua-driver-rs but is alpha today — Linux PARITY
+rows are mostly OPEN, not VERIFIED — so it's gated off in
+`check_computer_use_requirements` until that flips upstream. The plumbing
+in this file is OS-agnostic, so flipping that gate later is one-line.
+
+Install:
+  - **macOS**:
+      /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/trycua/cua/main/libs/cua-driver/scripts/install.sh)"
+  - **Windows** (PowerShell):
+      irm https://raw.githubusercontent.com/trycua/cua/main/libs/cua-driver/scripts/install.ps1 | iex
 
 After install, `cua-driver` is on $PATH and supports `cua-driver mcp` (stdio
 transport) which is what we invoke.
 
-The private SkyLight SPIs cua-driver uses (SLEventPostToPid, SLPSPostEvent-
-RecordTo, _AXObserverAddNotificationAndCheckRemote) are not Apple-public and
-can break on OS updates. Pin the installed version via `HERMES_CUA_DRIVER_
-VERSION` if you want reproducibility across an OS bump.
+The macOS path uses private SkyLight SPIs (SLEventPostToPid,
+SLPSPostEventRecordTo, _AXObserverAddNotificationAndCheckRemote) that aren't
+Apple-public and can break on OS updates. The Windows path in cua-driver-rs
+uses stable Win32 APIs (SendInput + UI Automation) — not subject to the
+same SPI breakage class. Pin the installed version via
+HERMES_CUA_DRIVER_VERSION if you want reproducibility across an OS bump.
 """
 
 from __future__ import annotations
@@ -84,12 +101,22 @@ def cua_driver_binary_available() -> bool:
 
 
 def cua_driver_install_hint() -> str:
+    if sys.platform == "win32":
+        installer = (
+            '  irm https://raw.githubusercontent.com/trycua/cua/main/'
+            'libs/cua-driver/scripts/install.ps1 | iex'
+        )
+    else:
+        installer = (
+            '  /bin/bash -c "$(curl -fsSL '
+            'https://raw.githubusercontent.com/trycua/cua/main/'
+            'libs/cua-driver/scripts/install.sh)"'
+        )
     return (
         "cua-driver is not installed. Install with one of:\n"
         "  hermes computer-use install\n"
         "Or run the upstream installer directly:\n"
-        '  /bin/bash -c "$(curl -fsSL '
-        'https://raw.githubusercontent.com/trycua/cua/main/libs/cua-driver/scripts/install.sh)"\n'
+        f"{installer}\n"
         "Or run `hermes tools` and enable the Computer Use toolset to install it automatically."
     )
 
@@ -396,7 +423,7 @@ def _extract_tool_result(mcp_result: Any) -> Dict[str, Any]:
 # ---------------------------------------------------------------------------
 
 class CuaDriverBackend(ComputerUseBackend):
-    """Default computer-use backend. macOS-only via cua-driver MCP."""
+    """Default computer-use backend. Cross-platform via cua-driver MCP (macOS + Windows)."""
 
     def __init__(self) -> None:
         self._bridge = _AsyncBridge()
@@ -417,7 +444,10 @@ class CuaDriverBackend(ComputerUseBackend):
             self._bridge.stop()
 
     def is_available(self) -> bool:
-        if not _is_macos():
+        # cua-driver itself is cross-platform; we constrain Hermes to
+        # macOS + Windows because cua-driver-rs Linux is alpha (most rows
+        # in its PARITY matrix are OPEN). Flip when Linux goes VERIFIED.
+        if sys.platform not in ("darwin", "win32"):
             return False
         return cua_driver_binary_available()
 

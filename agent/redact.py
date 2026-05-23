@@ -11,6 +11,7 @@ import logging
 import os
 import re
 import shlex
+from typing import Optional
 from urllib.parse import unquote_plus
 
 logger = logging.getLogger(__name__)
@@ -859,6 +860,182 @@ def _has_http_method_substring(text: str) -> bool:
     """Cheap pre-check before scanning for access-log request targets."""
     upper = text.upper()
     return any(method in upper for method in _HTTP_METHOD_SUBSTRINGS)
+
+
+# Regex matching a redaction placeholder produced by ``_mask_token`` — a known
+# credential prefix followed by up to a few token chars, ``...``, then a short
+# trailing slice (``_mask_token`` keeps 6 head / 4 tail by default, so e.g.
+# ``sk-example-real-key`` becomes ``sk-exa...-key``). Used by the patch tool to
+# reject ``old_string`` / ``new_string`` arguments that look like they were
+# copy-pasted from redacted ``read_file`` output (#30962) — those won't match
+# the raw bytes on disk and, worse, would corrupt the real secret if written
+# back through a replacement block.
+# JWTs are masked via ``_JWT_RE`` and don't appear in ``_PREFIX_PATTERNS``,
+# so we add ``eyJ`` (the universal JWT header prefix) explicitly here.
+_REDACTED_PLACEHOLDER_PREFIXES = tuple(
+    sorted(set(s for s in (*_PREFIX_SUBSTRINGS, "eyJ") if s), key=len, reverse=True)
+)
+
+# Shared "masked-token body" pattern: ``_mask_token`` keeps 6 head / 4 tail
+# (floor 18); ``mask_secret`` defaults to 4 head / 4 tail (floor 12). Both
+# slice the raw token chars, so the body characters are whatever the original
+# token alphabet was. Prefix patterns only ever produce ``[A-Za-z0-9_=+-]``
+# slices (no ``.`` or ``/``), so the class is tight enough to avoid matching
+# stray ``foo/bar.../baz.py`` paths in real source code. The trailing
+# ``{4,8}`` floor matches ``_mask_token``'s fixed 4-char tail; loosening
+# below 4 buys no recall and widens false-positive risk on prose like
+# ``foo=bar...ab``.
+_MASK_BODY = r"[A-Za-z0-9_=+-]{0,6}\.\.\.[A-Za-z0-9_=+-]{4,8}"
+
+# Prefix-based masked token: ``{known-credential-prefix}{0-6 chars}...{2-8 chars}``.
+# Catches values whose original form carried a recognisable vendor prefix
+# (``sk-``, ``ghp_``, ``eyJ``, ...) — the prefix slice survives masking.
+_REDACTED_PLACEHOLDER_RE = re.compile(
+    r"(?:"
+    + "|".join(re.escape(p) for p in _REDACTED_PLACEHOLDER_PREFIXES)
+    + r")"
+    + _MASK_BODY
+)
+
+# Sensitive-key context — when redaction strips an OPAQUE secret (no known
+# vendor prefix; e.g. an OAuth bearer, a random ``PASSWORD=…``), the leading
+# key name is the only signal that what follows used to be a secret. These
+# patterns mirror ``_ENV_ASSIGN_RE`` / ``_JSON_FIELD_RE`` / ``_AUTH_HEADER_RE``
+# so the guard sees the same surfaces the redactor writes through.
+_SENSITIVE_KEY_CONTEXT = (
+    r"(?:"
+    # YAML / JSON / TOML / config-style assignment: ``api_key: value``,
+    # ``"apiKey": "value"``, ``password = value``. Word-anchored so partial
+    # matches like ``not_a_token`` don't trigger.
+    r"\b(?i:api[_-]?key|apikey|access[_-]?token|refresh[_-]?token|id[_-]?token"
+    r"|token|secret(?:_value|_key|_input)?|raw_secret|password|passwd"
+    r"|credential|client[_-]?secret|private[_-]?key|key_material"
+    r"|auth(?:orization)?|bearer)"
+    r"['\"]?\s*[:=]\s*['\"]?"
+    # Authorization-header value: ``Authorization: Bearer <token>``.
+    r"|(?i:authorization:\s*bearer\s+)"
+    # ENV-style assignment: ``FOO_API_KEY=...`` (matches the same key shapes
+    # ``_ENV_ASSIGN_RE`` redacts — uppercase, sensitive suffix anywhere).
+    r"|\b[A-Z][A-Z0-9_]*(?:API_?KEY|TOKEN|SECRET|PASSWORD|PASSWD|CREDENTIAL|AUTH)"
+    r"[A-Z0-9_]*\s*=\s*['\"]?"
+    r")"
+)
+
+# Context-based masked token: sensitive key + masked-token body. Catches
+# opaque secrets (no recognised vendor prefix) that the prefix regex misses.
+_CONTEXT_MASKED_RE = re.compile(_SENSITIVE_KEY_CONTEXT + _MASK_BODY)
+
+# NOTE: a tempting fourth rule would be "sensitive key + bare ``***``" — that
+# shape IS emitted by the redactor for very short values (``_ENV_ASSIGN_RE`` /
+# ``_JSON_FIELD_RE`` /  ``_TELEGRAM_RE`` / query-string redaction all write
+# bare ``***``). It is **deliberately not detected**: the same shape is also
+# how real ``.env.example`` / ``README.md`` / config-template files document
+# placeholder secrets, and refusing every edit to such files is worse than
+# the (narrow) corruption window — real production secrets are almost always
+# long enough that the redactor masks them as ``head...tail`` (caught by
+# ``_CONTEXT_MASKED_RE``) rather than ``***``. Detection of ``***`` is kept
+# only where it is unambiguous: inside a DB / URL connection string, where
+# the position between ``:`` and ``@`` cannot legitimately be ``***``.
+
+# DB / URL connection string with masked password (``postgres://user:***@host``).
+# Emitted by ``_DB_CONNSTR_RE`` and ``_URL_USERINFO_RE``. Round-tripping this
+# through ``patch`` / ``write_file`` overwrites the real password with ``***``.
+_CONNSTRING_TRIPLE_STAR_RE = re.compile(
+    r"(?:postgres(?:ql)?|mysql|mongodb(?:\+srv)?|redis|amqp|https?|wss?|ftp)"
+    r"://[^:/\s@]+:\*\*\*@",
+    re.IGNORECASE,
+)
+
+# Distinctive literal placeholders that ``redact_sensitive_text`` emits for
+# whole secret blocks. These should never appear verbatim in real source code,
+# so any occurrence in patch input is almost certainly a copy-paste from
+# redacted output rather than the actual file bytes.
+_LITERAL_REDACTED_MARKERS = (
+    "[REDACTED PRIVATE KEY]",
+    # Prefix-matched credential with no recognised vendor prefix label,
+    # as emitted by ``_mask_token_nonreusable`` (file_read=True reads).
+    "«redacted-secret»",
+)
+
+# Non-reusable sentinel emitted by ``_mask_token_nonreusable`` for
+# prefix-matched credentials in file reads (``file_read=True`` — the format
+# agents actually see in ``read_file`` / ``search_files`` output since
+# #35519): ``«redacted:ghp_…»``, ``«redacted:sk-…»``, … The guillemets +
+# exact wording never occur in real file bytes, so this is the highest-
+# confidence shape of all — match the label loosely rather than enumerating
+# ``_PREFIX_SUBSTRINGS`` so the guard keeps working if new prefixes are
+# added to the redactor.
+_SENTINEL_REDACTED_RE = re.compile(r"«redacted:[^«»\n]{1,32}…»")
+
+
+def looks_like_redacted_secret(text: Optional[str]) -> Optional[str]:
+    """Return the offending substring if ``text`` looks like redacted output.
+
+    Detects the shapes produced by :func:`redact_sensitive_text`:
+
+      * non-reusable sentinels — ``«redacted:ghp_…»`` / ``«redacted-secret»``,
+        emitted by :func:`_mask_token_nonreusable` for prefix-matched
+        credentials in file reads (``file_read=True``). This is the shape an
+        agent copies out of ``read_file`` / ``search_files`` output today.
+      * prefix-based masked tokens — ``{known-prefix}…...{tail}`` for values
+        carrying a recognised vendor prefix (``sk-``, ``ghp_``, ``eyJ``, …).
+        File reads still emit this ASCII mask for JWTs, Authorization /
+        api-key headers, and URL bare tokens (only ``_PREFIX_RE`` switched to
+        the sentinel), and shell/log output redaction emits it everywhere —
+        both are realistic copy-paste sources for patch input.
+      * context-based masked tokens — opaque values redacted via the ENV /
+        JSON-field / Authorization-header paths, where only the surrounding
+        key name flags the secret.
+      * ``***`` inside a DB / URL connection string
+        (``postgres://user:***@host``) — the only ``***`` shape that cannot
+        plausibly be a documentation placeholder.
+      * literal markers like ``[REDACTED PRIVATE KEY]``.
+
+    Bare ``***`` next to a sensitive key (``api_key: ***``) is **not**
+    flagged: the same shape is how real ``.env.example`` / README / template
+    files document placeholders, and the corruption window it would close
+    is narrow (only fires for sub-floor-length values, which are rarely
+    real production secrets).
+
+    Returns the matched substring on detection (intended for inclusion in
+    the rejection error so the agent can see exactly what tripped the
+    check), or ``None`` if the text is safe to use as raw file content.
+
+    This is a heuristic — a sufficiently adversarial real file could include
+    a string of this exact shape. The point is to catch the realistic agent
+    bug where redacted ``read_file`` output is fed back into a write tool.
+    """
+    if not text:
+        return None
+
+    for marker in _LITERAL_REDACTED_MARKERS:
+        if marker in text:
+            return marker
+
+    # Non-reusable sentinel (file_read=True prefix redaction) — cheapest
+    # substring gate, highest confidence.
+    if "«redacted:" in text:
+        m = _SENTINEL_REDACTED_RE.search(text)
+        if m:
+            return m.group(0)
+
+    if "..." in text:
+        # Prefix-based first (cheap substring pre-check + tight regex).
+        if any(p in text for p in _REDACTED_PLACEHOLDER_PREFIXES):
+            m = _REDACTED_PLACEHOLDER_RE.search(text)
+            if m:
+                return m.group(0)
+        # Context-based (opaque tokens behind a sensitive key name).
+        m = _CONTEXT_MASKED_RE.search(text)
+        if m:
+            return m.group(0)
+
+    if "***" in text:
+        m = _CONNSTRING_TRIPLE_STAR_RE.search(text)
+        if m:
+            return m.group(0)
+
+    return None
 
 
 class RedactingFormatter(logging.Formatter):

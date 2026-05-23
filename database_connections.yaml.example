@@ -1,0 +1,60 @@
+# Example Universal Database Data Retriever configuration.
+# Copy the parts you need to ~/.hermes/database_connections.yaml.
+#
+# Enable the toolset with:
+#   hermes tools
+# Then select Database Retrieval, or include the "database" toolset explicitly.
+
+connections:
+  local_app:
+    dialect: sqlite
+    path: /absolute/path/to/app.db
+    allow_tables:
+      - users
+      - orders
+
+  local_analytics:
+    dialect: duckdb
+    path: /absolute/path/to/analytics.duckdb
+    schema:
+      tables:
+        events:
+          columns:
+            id: BIGINT
+            user_id: BIGINT
+            event_name: TEXT
+            created_at: TIMESTAMP
+
+  warehouse:
+    dialect: postgres
+    host: localhost
+    port: 5432
+    database: analytics
+    user: readonly_user
+    password: ${POSTGRES_READONLY_PASSWORD}
+    schema:
+      tables:
+        users:
+          columns:
+            id: BIGINT
+            email: TEXT
+            created_at: TIMESTAMP
+        orders:
+          columns:
+            id: BIGINT
+            user_id: BIGINT
+            total: NUMERIC
+            created_at: TIMESTAMP
+    allow_tables:
+      - users
+      - orders
+
+  metadata_only_bigquery:
+    dialect: bigquery
+    schema:
+      tables:
+        project.dataset.events:
+          columns:
+            id: STRING
+            event_name: STRING
+            created_at: TIMESTAMP

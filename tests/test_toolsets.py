@@ -105,6 +105,9 @@ class TestResolveToolset:
         tools = resolve_toolset("*")
         assert len(tools) > 10
 
+    def test_database_toolset_resolves_retriever(self):
+        assert resolve_toolset("database") == ["database_retrieve"]
+
 
 class TestResolveMultipleToolsets:
     def test_combines_and_deduplicates(self):
@@ -130,6 +133,9 @@ class TestValidateToolset:
 
     def test_invalid(self):
         assert validate_toolset("nonexistent") is False
+
+    def test_database_toolset_valid(self):
+        assert validate_toolset("database") is True
 
     def test_mcp_alias_uses_live_registry(self, monkeypatch):
         reg = ToolRegistry()

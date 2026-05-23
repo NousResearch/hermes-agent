@@ -308,6 +308,10 @@ class TestBackwardCompat:
         assert result is not None
         assert isinstance(result, str)
 
+    def test_database_retriever_registered(self):
+        assert get_toolset_for_tool("database_retrieve") == "database"
+        assert TOOL_TO_TOOLSET_MAP["database_retrieve"] == "database"
+
     def test_get_toolset_for_unknown_tool(self):
         result = get_toolset_for_tool("totally_nonexistent_tool")
         assert result is None

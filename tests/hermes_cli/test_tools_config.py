@@ -77,6 +77,27 @@ def test_get_platform_tools_uses_default_when_platform_not_configured():
 def test_configurable_toolsets_include_messaging():
     assert any(ts_key == "messaging" for ts_key, _, _ in CONFIGURABLE_TOOLSETS)
 
+
+def test_configurable_toolsets_include_database_retrieval():
+    assert any(ts_key == "database" for ts_key, _, _ in CONFIGURABLE_TOOLSETS)
+    assert "database" in _DEFAULT_OFF_TOOLSETS
+
+
+def test_get_platform_tools_database_retrieval_is_default_off():
+    enabled = _get_platform_tools({}, "cli")
+
+    assert "database" not in enabled
+
+
+def test_get_platform_tools_can_enable_database_retrieval():
+    config = {"platform_toolsets": {"cli": ["database"]}}
+
+    enabled = _get_platform_tools(config, "cli", include_default_mcp_servers=False)
+
+    assert "database" in enabled
+    assert "web" not in enabled
+
+
 def test_get_platform_tools_default_telegram_includes_messaging():
     enabled = _get_platform_tools({}, "telegram")
 

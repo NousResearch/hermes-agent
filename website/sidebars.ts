@@ -48,6 +48,7 @@ const sidebars: SidebarsConfig = {
           label: 'Core',
           items: [
             'user-guide/features/tools',
+            'user-guide/features/database-retriever',
             'user-guide/features/skills',
             'user-guide/features/lsp',
             'user-guide/features/curator',

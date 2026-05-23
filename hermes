@@ -6,6 +6,32 @@ This wrapper should behave like the installed `hermes` command, including
 subcommands such as `gateway`, `cron`, and `doctor`.
 """
 
+from __future__ import annotations
+
+import os
+import sys
+from pathlib import Path
+
+
+def _ensure_supported_python() -> None:
+    if sys.version_info >= (3, 11):
+        return
+
+    repo_python = Path(__file__).resolve().parent / "venv" / "bin" / "python"
+    if repo_python.exists() and Path(sys.executable).resolve() != repo_python.resolve():
+        os.execv(str(repo_python), [str(repo_python), *sys.argv])
+
+    version = ".".join(str(part) for part in sys.version_info[:3])
+    raise SystemExit(
+        "Hermes Agent requires Python 3.11 or newer. "
+        f"Current interpreter is Python {version} at {sys.executable}. "
+        "Run ./setup-hermes.sh to create ./venv, or launch with "
+        "./venv/bin/python ./hermes."
+    )
+
+
 if __name__ == "__main__":
+    _ensure_supported_python()
     from hermes_cli.main import main
+
     main()

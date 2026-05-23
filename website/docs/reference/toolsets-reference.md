@@ -56,6 +56,7 @@ Or in-session:
 | `clarify` | `clarify` | Ask the user a question when the agent needs clarification. |
 | `code_execution` | `execute_code` | Run Python scripts that call Hermes tools programmatically. |
 | `cronjob` | `cronjob` | Schedule and manage recurring tasks. |
+| `database` | `database_retrieve` | Read-only SQL validation, dialect transpilation, schema inspection, healthchecks, and retrieval from configured databases. Opt-in via `hermes tools`; see [Database Retrieval](/docs/user-guide/features/database-retriever). |
 | `debugging` | composite (`file` + `terminal` + `web`) | Debug bundle — file, process/terminal, web extract/search. |
 | `delegation` | `delegate_task` | Spawn isolated subagent instances for parallel work. |
 | `discord` | `discord` | Core Discord text/embed/DM actions (gateway-only). Active on the `hermes-discord` toolset. |

@@ -8,7 +8,7 @@
 // CI workflows still run the extraction explicitly, which is a no-op duplicate
 // but matches their historical behaviour.
 //
-// If python3 or its deps (pyyaml) aren't available on the local machine, we
+// If Python or its deps (pyyaml) aren't available on the local machine, we
 // fall back to writing an empty skills.json so `npm run build` still
 // succeeds — the Skills Hub page just shows an empty state, and llms.txt
 // generation is skipped. CI always has the deps installed, so production
@@ -21,16 +21,47 @@ import { fileURLToPath } from "node:url";
 
 const scriptDir = dirname(fileURLToPath(import.meta.url));
 const websiteDir = resolve(scriptDir, "..");
+const repoRoot = resolve(websiteDir, "..");
 const extractScript = join(scriptDir, "extract-skills.py");
 const llmsScript = join(scriptDir, "generate-llms-txt.py");
 const outputFile = join(websiteDir, "src", "data", "skills.json");
+const pythonCandidates = [
+  process.env.PYTHON,
+  join(repoRoot, "venv", "bin", "python"),
+  join(repoRoot, ".venv", "bin", "python"),
+  "python3",
+].filter(Boolean);
+
+function runWithPython(script) {
+  let lastResult = null;
+  let lastPython = pythonCandidates.join(", ");
+  for (const python of pythonCandidates) {
+    if (python.includes("/") && !existsSync(python)) {
+      continue;
+    }
+    const result = spawnSync(python, [script], {
+      stdio: "inherit",
+      cwd: websiteDir,
+    });
+    if (result.error && result.error.code === "ENOENT") {
+      lastResult = result;
+      continue;
+    }
+    if (result.status === 0) {
+      return { python, result };
+    }
+    lastPython = python;
+    lastResult = result;
+  }
+  return { python: lastPython, result: lastResult };
+}
 
 function writeEmptyFallback(reason) {
   mkdirSync(dirname(outputFile), { recursive: true });
   writeFileSync(outputFile, "[]\n");
   console.warn(
     `[prebuild] extract-skills.py skipped (${reason}); wrote empty skills.json. ` +
-      `Install python3 + pyyaml locally for a populated Skills Hub page.`,
+      `Install Python + pyyaml locally for a populated Skills Hub page.`,
   );
 }
 
@@ -39,13 +70,13 @@ function runPython(script, label) {
     console.warn(`[prebuild] ${label} skipped (script missing)`);
     return false;
   }
-  const r = spawnSync("python3", [script], { stdio: "inherit", cwd: websiteDir });
-  if (r.error && r.error.code === "ENOENT") {
-    console.warn(`[prebuild] ${label} skipped (python3 not found)`);
+  const { python, result: r } = runWithPython(script);
+  if (!r || (r.error && r.error.code === "ENOENT")) {
+    console.warn(`[prebuild] ${label} skipped (Python not found)`);
     return false;
   }
   if (r.status !== 0) {
-    console.warn(`[prebuild] ${label} exited with status ${r.status}`);
+    console.warn(`[prebuild] ${label} exited with status ${r.status} using ${python}`);
     return false;
   }
   return true;
@@ -55,14 +86,11 @@ function runPython(script, label) {
 if (!existsSync(extractScript)) {
   writeEmptyFallback("extract script missing");
 } else {
-  const r = spawnSync("python3", [extractScript], {
-    stdio: "inherit",
-    cwd: websiteDir,
-  });
-  if (r.error && r.error.code === "ENOENT") {
-    writeEmptyFallback("python3 not found");
+  const { python, result: r } = runWithPython(extractScript);
+  if (!r || (r.error && r.error.code === "ENOENT")) {
+    writeEmptyFallback("Python not found");
   } else if (r.status !== 0) {
-    writeEmptyFallback(`extract-skills.py exited with status ${r.status}`);
+    writeEmptyFallback(`extract-skills.py exited with status ${r.status} using ${python}`);
   }
 }
 

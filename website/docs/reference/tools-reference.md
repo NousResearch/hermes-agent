@@ -56,6 +56,14 @@ These two tools live in the `browser` toolset but only register when a Chrome De
 |------|-------------|----------------------|
 | `cronjob` | Unified scheduled-task manager. Use `action="create"`, `"list"`, `"update"`, `"pause"`, `"resume"`, `"run"`, or `"remove"` to manage jobs. Supports skill-backed jobs with one or more attached skills, and `skills=[]` on update clears attached skills. Cron runs happen in fresh sessions with no current-chat context. | — |
 
+## `database` toolset
+
+Opt-in toolset for read-only database retrieval. Enable it with `hermes tools` or include `database` in your configured toolsets. Connections are read from `~/.hermes/database_connections.yaml`; see [Database Retrieval](/docs/user-guide/features/database-retriever) for examples.
+
+| Tool | Description | Requires environment |
+|------|-------------|----------------------|
+| `database_retrieve` | List supported SQLGlot dialects, list configured database IDs, test connections, inspect schema, validate SQL, explain SQL, generate SQL from natural language, and execute read-only retrieval. Supports all configured SQLGlot dialects for parse/transpile validation; execution is built in for SQLite and optional for DuckDB and PostgreSQL. | `database` toolset enabled; SQLite path or configured database metadata. DuckDB requires `duckdb`; PostgreSQL requires `hermes-agent[database]`. |
+
 ## `delegation` toolset
 
 | Tool | Description | Requires environment |
@@ -264,5 +272,4 @@ Registered only on the `hermes-yuanbao` platform toolset. Yuanbao is Tencent's c
 | `yb_send_dm` | Send a private/direct message to a user in a group, with optional media files. | Yuanbao credentials |
 | `yb_search_sticker` | Search the built-in Yuanbao sticker (TIM face) catalogue by keyword. | Yuanbao credentials |
 | `yb_send_sticker` | Send a built-in sticker to the current Yuanbao chat. | Yuanbao credentials |
-
 

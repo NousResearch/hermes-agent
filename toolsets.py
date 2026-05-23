@@ -230,6 +230,16 @@ TOOLSETS = {
         "includes": []
     },
 
+    "database": {
+        "description": (
+            "Read-only database retrieval: inspect schemas, generate SQL from "
+            "natural language, validate/transpile with SQLGlot, and execute "
+            "safe SELECT queries against configured databases"
+        ),
+        "tools": ["database_retrieve"],
+        "includes": [],
+    },
+
     # "honcho" toolset removed — Honcho is now a memory provider plugin.
     # Tools are injected via MemoryManager, not the toolset system.
 

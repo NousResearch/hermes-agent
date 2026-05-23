@@ -30,6 +30,7 @@ python -m benchmarks.hermes_memory_bench.run --suite smoke --output /tmp/hermes-
 - `memory_compiler`
 - `memory_blocks`
 - `memory_block_review_queue`
+- `memory_review_decision_gate`
 - `latency_ms`
 
 ## Hybrid Retrieval Fusion v0.1
@@ -146,6 +147,23 @@ state blocks are low risk.
 The smoke suite includes `memory_block_review_queue`, proving that a
 `procedural_rules` block candidate becomes a `pending_review` queue item while
 the JSON report schema remains stable.
+
+## Memory Review Decision Gate v0.1
+
+Memory Review Decision Gate v0.1 lives in
+`agent.memory_review_decision_gate`. It evaluates pending review queue items
+into deterministic decision candidates with labels `approve_to_proposal`,
+`reject`, `request_more_evidence`, and `defer`.
+
+Decision candidates include queue and block identity, reviewer, rationale, risk,
+source ids, queue validation, decision validation, next-step recommendation,
+queue item snapshot, and explicit read-only policy. The gate does not apply
+decisions, create real proposals, write durable memory, write the Memory Graph,
+modify config, or create operation-ledger events.
+
+The smoke suite includes `memory_review_decision_gate`, proving that a sourced
+`procedural_rules` queue item becomes an `approve_to_proposal` decision
+candidate without creating a real proposal.
 
 ## Report Schema
 

@@ -20,6 +20,11 @@ from agent.memory_block_review_queue import (
     build_review_queue,
     summarize_review_queue,
 )
+from agent.memory_review_decision_gate import (
+    MEMORY_REVIEW_DECISION_GATE_POLICY,
+    evaluate_review_queue_item,
+    summarize_review_decisions,
+)
 from agent.memory_retrieval_fusion import fuse_memory_retrieval
 
 
@@ -37,6 +42,7 @@ DIMENSIONS = (
     "memory_compiler",
     "memory_blocks",
     "memory_block_review_queue",
+    "memory_review_decision_gate",
     "latency_ms",
 )
 POLICY = {
@@ -255,6 +261,24 @@ def _answer_case(case: dict[str, Any]) -> tuple[str, dict[str, Any]]:
             "summary": summarize_review_queue(queue),
             "candidate_count": len(memories),
             "policy": dict(MEMORY_BLOCK_REVIEW_QUEUE_POLICY),
+        }
+
+    if dimension == "memory_review_decision_gate":
+        compiler_result = compile_memory_patterns(memories, project_scope=case.get("project_scope"))
+        blocks = compile_blocks_from_compiler_result(compiler_result, project_scope=case.get("project_scope"))
+        queue = build_review_queue(blocks, reviewer=case.get("reviewer"))
+        decisions = [evaluate_review_queue_item(item, reviewer=case.get("reviewer")) for item in queue]
+        candidate = decisions[0] if decisions else {}
+        return candidate.get("decision", ""), {
+            "compiler": compiler_result,
+            "memory_blocks": blocks,
+            "review_queue": queue,
+            "decision_candidates": decisions,
+            "summary": summarize_review_decisions(decisions),
+            "candidate_count": len(memories),
+            "created_real_proposal": False,
+            "created_operation_event": False,
+            "policy": dict(MEMORY_REVIEW_DECISION_GATE_POLICY),
         }
 
     selected = _newest(memories)

@@ -86,6 +86,8 @@ LAZY_DEPS: dict[str, tuple[str, ...]] = {
     # when model.auth_mode=entra_id is selected; key-based azure-foundry
     # users never pay this import.
     "provider.azure_identity": ("azure-identity==1.25.3",),
+    # Cursor Agent SDK — local agent runtime (provider=cursor).
+    "provider.cursor": ("cursor-sdk==0.1.5",),
 
     # ─── Web search backends ───────────────────────────────────────────────
     "search.exa": ("exa-py==2.10.2",),

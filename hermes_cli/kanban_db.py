@@ -3531,6 +3531,86 @@ def set_workspace_path(
         )
 
 
+def update_task_workspace(
+    conn: sqlite3.Connection,
+    task_id: str,
+    *,
+    workspace_kind: str,
+    workspace_path: Optional[str] = None,
+    branch_name: Optional[str] = None,
+) -> bool:
+    """Change the workspace metadata for an un-specified triage task.
+
+    Workspace choice affects where the eventual worker will run. Once a card
+    leaves triage it may already be dependency-gated, claimed, or have a
+    resolved workspace path, so edits are intentionally limited to triage cards
+    before specify/decompose/promote.
+    """
+    if workspace_kind not in VALID_WORKSPACE_KINDS:
+        raise ValueError(
+            f"workspace_kind must be one of {sorted(VALID_WORKSPACE_KINDS)}, "
+            f"got {workspace_kind!r}"
+        )
+
+    new_path = str(workspace_path).strip() if workspace_path is not None else None
+    if new_path == "":
+        new_path = None
+    new_branch = str(branch_name).strip() if branch_name is not None else None
+    if new_branch == "":
+        new_branch = None
+
+    if workspace_kind == "scratch":
+        # Scratch workspaces are derived from the task id at claim time; clear
+        # stale explicit paths / branch names when switching back from dir or
+        # worktree so the worker gets a fresh isolated directory.
+        new_path = None
+        new_branch = None
+    elif workspace_kind == "dir":
+        if not new_path:
+            raise ValueError("workspace_path is required for dir workspaces")
+        new_branch = None
+    elif workspace_kind == "worktree":
+        # A worktree path is optional; resolve_workspace will derive
+        # .worktrees/<task_id> when it is omitted.
+        pass
+
+    if new_branch and workspace_kind != "worktree":
+        raise ValueError("branch_name is only valid for worktree workspaces")
+
+    with write_txn(conn):
+        row = conn.execute(
+            "SELECT workspace_kind, workspace_path, branch_name FROM tasks "
+            "WHERE id = ? AND status = 'triage'",
+            (task_id,),
+        ).fetchone()
+        if row is None:
+            return False
+
+        old_payload = {
+            "workspace_kind": row["workspace_kind"],
+            "workspace_path": row["workspace_path"],
+            "branch_name": row["branch_name"],
+        }
+        new_payload = {
+            "workspace_kind": workspace_kind,
+            "workspace_path": new_path,
+            "branch_name": new_branch,
+        }
+
+        conn.execute(
+            "UPDATE tasks SET workspace_kind = ?, workspace_path = ?, "
+            "branch_name = ? WHERE id = ? AND status = 'triage'",
+            (workspace_kind, new_path, new_branch, task_id),
+        )
+        _append_event(
+            conn,
+            task_id,
+            "workspace_changed",
+            {"old": old_payload, "new": new_payload},
+        )
+        return True
+
+
 # ---------------------------------------------------------------------------
 def schedule_task(
     conn: sqlite3.Connection,

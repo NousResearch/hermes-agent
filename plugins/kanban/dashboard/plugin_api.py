@@ -554,6 +554,7 @@ class CreateTaskBody(BaseModel):
     priority: int = 0
     workspace_kind: str = "scratch"
     workspace_path: Optional[str] = None
+    branch_name: Optional[str] = None
     parents: list[str] = Field(default_factory=list)
     triage: bool = False
     idempotency_key: Optional[str] = None
@@ -574,6 +575,7 @@ def create_task(payload: CreateTaskBody, board: Optional[str] = Query(None)):
             created_by="dashboard",
             workspace_kind=payload.workspace_kind,
             workspace_path=payload.workspace_path,
+            branch_name=payload.branch_name,
             tenant=payload.tenant,
             priority=payload.priority,
             parents=payload.parents,
@@ -617,6 +619,9 @@ class UpdateTaskBody(BaseModel):
     body: Optional[str] = None
     result: Optional[str] = None
     block_reason: Optional[str] = None
+    workspace_kind: Optional[str] = None
+    workspace_path: Optional[str] = None
+    branch_name: Optional[str] = None
     # Structured handoff fields — forwarded to complete_task when status
     # transitions to 'done'. Dashboard parity with ``hermes kanban
     # complete --summary ... --metadata ...``.
@@ -643,6 +648,24 @@ def update_task(task_id: str, payload: UpdateTaskBody, board: Optional[str] = Qu
                 raise HTTPException(status_code=409, detail=str(e))
             if not ok:
                 raise HTTPException(status_code=404, detail="task not found")
+
+        # --- workspace ---------------------------------------------------
+        if payload.workspace_kind is not None:
+            try:
+                ok = kanban_db.update_task_workspace(
+                    conn,
+                    task_id,
+                    workspace_kind=payload.workspace_kind,
+                    workspace_path=payload.workspace_path,
+                    branch_name=payload.branch_name,
+                )
+            except ValueError as e:
+                raise HTTPException(status_code=400, detail=str(e))
+            if not ok:
+                raise HTTPException(
+                    status_code=409,
+                    detail="workspace can only be changed while task is in triage",
+                )
 
         # --- status -------------------------------------------------------
         if payload.status is not None:

@@ -312,7 +312,7 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
                           help="scratch | worktree | worktree:<path> | dir:<path> "
                                "(default: scratch)")
     p_create.add_argument("--branch", default=None,
-                          help="Branch name for worktree tasks, e.g. wt/t6-wire")
+                          help="Branch name for worktree tasks")
     p_create.add_argument("--tenant", default=None, help="Tenant namespace")
     p_create.add_argument("--priority", type=int, default=0, help="Priority tiebreaker")
     p_create.add_argument("--triage", action="store_true",
@@ -348,6 +348,21 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
                                "that require immediate human ops (R3 gate) "
                                "to skip the brief running-to-blocked transition.")
     p_create.add_argument("--json", action="store_true", help="Emit JSON output")
+
+    p_workspace = sub.add_parser(
+        "workspace",
+        help="Change a triage task's workspace before specify/decompose",
+    )
+    p_workspace.add_argument("task_id")
+    p_workspace.add_argument(
+        "workspace",
+        help="scratch | worktree | worktree:<path> | dir:<path>",
+    )
+    p_workspace.add_argument(
+        "--branch",
+        default=None,
+        help="Branch name for worktree tasks",
+    )
 
     # --- swarm ---
     p_swarm = sub.add_parser(
@@ -885,6 +900,7 @@ def kanban_command(args: argparse.Namespace) -> int:
         "list":     _cmd_list,
         "ls":       _cmd_list,
         "show":     _cmd_show,
+        "workspace": _cmd_workspace,
         "assign":   _cmd_assign,
         "reclaim":  _cmd_reclaim,
         "reassign": _cmd_reassign,
@@ -1323,6 +1339,42 @@ def _cmd_create(args: argparse.Namespace) -> int:
             running, message = _check_dispatcher_presence()
             if not running and message:
                 print(f"\n⚠  {message}", file=sys.stderr)
+    return 0
+
+
+def _cmd_workspace(args: argparse.Namespace) -> int:
+    try:
+        ws_kind, ws_path = _parse_workspace_flag(args.workspace)
+        branch_name = _parse_branch_flag(getattr(args, "branch", None))
+    except argparse.ArgumentTypeError as exc:
+        print(f"kanban: {exc}", file=sys.stderr)
+        return 2
+    if branch_name and ws_kind != "worktree":
+        print("kanban: --branch is only valid with workspace worktree", file=sys.stderr)
+        return 2
+    with kb.connect() as conn:
+        try:
+            ok = kb.update_task_workspace(
+                conn,
+                args.task_id,
+                workspace_kind=ws_kind,
+                workspace_path=ws_path,
+                branch_name=branch_name,
+            )
+        except ValueError as exc:
+            print(f"kanban: {exc}", file=sys.stderr)
+            return 2
+        if not ok:
+            print(
+                f"cannot change workspace for {args.task_id} "
+                "(task must exist and still be in triage)",
+                file=sys.stderr,
+            )
+            return 1
+        task = kb.get_task(conn, args.task_id)
+    path_suffix = f" @ {task.workspace_path}" if task and task.workspace_path else ""
+    branch_suffix = f" (branch {task.branch_name})" if task and task.branch_name else ""
+    print(f"Workspace for {args.task_id}: {ws_kind}{path_suffix}{branch_suffix}")
     return 0
 
 

@@ -224,8 +224,17 @@ def init_agent(
     agent.provider = provider_name or ""
     agent.acp_command = acp_command or command
     agent.acp_args = list(acp_args or args or [])
-    if api_mode in {"chat_completions", "codex_responses", "anthropic_messages", "bedrock_converse", "codex_app_server"}:
+    if api_mode in {
+        "chat_completions",
+        "codex_responses",
+        "anthropic_messages",
+        "bedrock_converse",
+        "codex_app_server",
+        "cursor_sdk_runtime",
+    }:
         agent.api_mode = api_mode
+    elif agent.provider == "cursor":
+        agent.api_mode = "cursor_sdk_runtime"
     elif agent.provider == "openai-codex":
         agent.api_mode = "codex_responses"
     elif agent.provider in {"xai", "xai-oauth"}:
@@ -597,6 +606,21 @@ def init_agent(
         if not agent.quiet_mode:
             _gr_label = " + Guardrails" if agent._bedrock_guardrail_config else ""
             print(f"🤖 AI Agent initialized with model: {agent.model} (AWS Bedrock, {agent._bedrock_region}{_gr_label})")
+    elif agent.api_mode in {"codex_app_server", "cursor_sdk_runtime"}:
+        # External runtimes (Codex app-server, Cursor SDK) do not use the
+        # OpenAI chat-completions client.  Skipping client construction avoids
+        # bogus cursor://sdk httpx pools and pre-turn connection cleanup hangs.
+        agent.client = None
+        agent._client_kwargs = {}
+        if not agent.quiet_mode:
+            _runtime_label = (
+                "Cursor SDK"
+                if agent.api_mode == "cursor_sdk_runtime"
+                else "Codex app server"
+            )
+            print(
+                f"🤖 AI Agent initialized with model: {agent.model} ({_runtime_label})"
+            )
     else:
         if api_key and base_url:
             # Explicit credentials from CLI/gateway — construct directly.
@@ -1456,7 +1480,8 @@ def init_agent(
             agent._ollama_num_ctx,
         )
 
-    if not agent.quiet_mode:
+    # CLI shows context usage in the status bar — skip the duplicate startup line.
+    if not agent.quiet_mode and getattr(agent, "platform", "") != "cli":
         if compression_enabled:
             print(f"📊 Context limit: {agent.context_compressor.context_length:,} tokens (compress at {int(compression_threshold*100)}% = {agent.context_compressor.threshold_tokens:,})")
         else:

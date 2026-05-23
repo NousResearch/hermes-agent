@@ -295,7 +295,11 @@ def run_conversation(
     # Pre-turn connection health check: detect and clean up dead TCP
     # connections left over from provider outages or dropped streams.
     # This prevents the next API call from hanging on a zombie socket.
-    if agent.api_mode != "anthropic_messages":
+    if agent.api_mode not in {
+        "anthropic_messages",
+        "codex_app_server",
+        "cursor_sdk_runtime",
+    }:
         try:
             if agent._cleanup_dead_connections():
                 agent._emit_status(
@@ -398,6 +402,26 @@ def run_conversation(
     messages.append(user_msg)
     current_turn_user_idx = len(messages) - 1
     agent._persist_user_message_idx = current_turn_user_idx
+
+    # External agent runtimes own the full turn. Hand off before building the
+    # Hermes system prompt or running preflight compression.
+    if agent.api_mode == "codex_app_server":
+        return agent._run_codex_app_server_turn(
+            user_message=user_message,
+            original_user_message=original_user_message,
+            messages=messages,
+            effective_task_id=effective_task_id,
+            should_review_memory=_should_review_memory,
+        )
+
+    if agent.api_mode == "cursor_sdk_runtime":
+        return agent._run_cursor_sdk_turn(
+            user_message=user_message,
+            original_user_message=original_user_message,
+            messages=messages,
+            effective_task_id=effective_task_id,
+            should_review_memory=_should_review_memory,
+        )
     
     if not agent.quiet_mode:
         _print_preview = _summarize_user_message_for_log(user_message)
@@ -580,20 +604,6 @@ def run_conversation(
             _ext_prefetch_cache = agent._memory_manager.prefetch_all(_query) or ""
         except Exception:
             pass
-
-    # Optional opt-in runtime: if api_mode == codex_app_server, hand the
-    # turn to the codex app-server subprocess (terminal/file ops/patching
-    # all run inside Codex). Default Hermes path is bypassed entirely.
-    # See agent/transports/codex_app_server_session.py for the adapter
-    # and references/codex-app-server-runtime.md for the rationale.
-    if agent.api_mode == "codex_app_server":
-        return agent._run_codex_app_server_turn(
-            user_message=user_message,
-            original_user_message=original_user_message,
-            messages=messages,
-            effective_task_id=effective_task_id,
-            should_review_memory=_should_review_memory,
-        )
 
     while (api_call_count < agent.max_iterations and agent.iteration_budget.remaining > 0) or agent._budget_grace_call:
         # Reset per-turn checkpoint dedup so each iteration can take one snapshot

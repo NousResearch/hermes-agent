@@ -139,6 +139,46 @@ def test_scheduled_tasks_have_their_own_column_not_todo(client):
     assert not any(t["id"] == task["id"] for t in columns["todo"])
 
 
+def test_patch_workspace_on_triage_task_before_specification(client, tmp_path):
+    task = client.post(
+        "/api/plugins/kanban/tasks",
+        json={"title": "rough idea", "triage": True, "workspace_kind": "scratch"},
+    ).json()["task"]
+    assert task["status"] == "triage"
+
+    r = client.patch(
+        f"/api/plugins/kanban/tasks/{task['id']}",
+        json={
+            "workspace_kind": "worktree",
+            "workspace_path": str(tmp_path / "rough-idea"),
+            "branch_name": "feature/rough-idea",
+        },
+    )
+
+    assert r.status_code == 200, r.text
+    updated = r.json()["task"]
+    assert updated["status"] == "triage"
+    assert updated["workspace_kind"] == "worktree"
+    assert updated["workspace_path"] == str(tmp_path / "rough-idea")
+    assert updated["branch_name"] == "feature/rough-idea"
+
+
+def test_patch_workspace_rejected_after_triage(client, tmp_path):
+    task = client.post(
+        "/api/plugins/kanban/tasks",
+        json={"title": "ready task", "workspace_kind": "scratch"},
+    ).json()["task"]
+    assert task["status"] == "ready"
+
+    r = client.patch(
+        f"/api/plugins/kanban/tasks/{task['id']}",
+        json={"workspace_kind": "dir", "workspace_path": str(tmp_path)},
+    )
+
+    assert r.status_code == 409
+    assert "triage" in r.json()["detail"].lower()
+
+
 def test_tenant_filter(client):
     client.post("/api/plugins/kanban/tasks", json={"title": "A", "tenant": "t1"})
     client.post("/api/plugins/kanban/tasks", json={"title": "B", "tenant": "t2"})

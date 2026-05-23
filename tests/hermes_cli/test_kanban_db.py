@@ -345,6 +345,72 @@ def test_unblock_scheduled_rechecks_parent_gate(kanban_home):
         assert kb.get_task(conn, child).status == "ready"
 
 
+def test_update_workspace_allowed_for_triage_cards(kanban_home, tmp_path):
+    with kb.connect() as conn:
+        t = kb.create_task(conn, title="rough idea", triage=True)
+        worktree_path = tmp_path / "feature-worktree"
+
+        assert kb.update_task_workspace(
+            conn,
+            t,
+            workspace_kind="worktree",
+            workspace_path=str(worktree_path),
+            branch_name="feature/rough-idea",
+        ) is True
+
+        task = kb.get_task(conn, t)
+        assert task.status == "triage"
+        assert task.workspace_kind == "worktree"
+        assert task.workspace_path == str(worktree_path)
+        assert task.branch_name == "feature/rough-idea"
+
+        events = kb.list_events(conn, t)
+        changed = [e for e in events if e.kind == "workspace_changed"]
+        assert changed
+        assert changed[-1].payload["new"] == {
+            "workspace_kind": "worktree",
+            "workspace_path": str(worktree_path),
+            "branch_name": "feature/rough-idea",
+        }
+
+
+def test_update_workspace_rejects_non_triage_cards(kanban_home, tmp_path):
+    with kb.connect() as conn:
+        t = kb.create_task(conn, title="already ready")
+
+        assert kb.update_task_workspace(
+            conn,
+            t,
+            workspace_kind="dir",
+            workspace_path=str(tmp_path),
+        ) is False
+
+        task = kb.get_task(conn, t)
+        assert task.status == "ready"
+        assert task.workspace_kind == "scratch"
+
+
+def test_update_workspace_clears_path_and_branch_when_switching_to_scratch(
+    kanban_home, tmp_path,
+):
+    with kb.connect() as conn:
+        t = kb.create_task(
+            conn,
+            title="rough idea",
+            triage=True,
+            workspace_kind="worktree",
+            workspace_path=str(tmp_path / "wt"),
+            branch_name="feature/rough-idea",
+        )
+
+        assert kb.update_task_workspace(conn, t, workspace_kind="scratch") is True
+
+        task = kb.get_task(conn, t)
+        assert task.workspace_kind == "scratch"
+        assert task.workspace_path is None
+        assert task.branch_name is None
+
+
 def test_stale_claim_reclaimed(kanban_home, monkeypatch):
     import signal
     import hermes_cli.kanban_db as _kb

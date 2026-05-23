@@ -2995,6 +2995,52 @@ class HermesCLI:
             self._last_invalidate = now
             self._app.invalidate()
 
+    def _schedule_invalidate(self, min_interval: float = 0.25) -> None:
+        """Thread-safe wrapper around :meth:`_invalidate` for background agent threads."""
+        app = getattr(self, "_app", None)
+        if not app:
+            return
+        if getattr(self, "_resize_recovery_pending", False):
+            return
+
+        try:
+            loop = app.loop  # type: ignore[attr-defined]
+        except Exception:
+            loop = None
+        if loop is None:
+            try:
+                self._invalidate(min_interval=min_interval)
+            except Exception:
+                pass
+            return
+
+        import asyncio as _asyncio
+
+        try:
+            current_loop = _asyncio.get_running_loop()
+        except RuntimeError:
+            current_loop = None
+        except Exception:
+            current_loop = None
+
+        if current_loop is loop and loop.is_running():
+            self._invalidate(min_interval=min_interval)
+            return
+
+        def _do_invalidate() -> None:
+            try:
+                self._invalidate(min_interval=min_interval)
+            except Exception:
+                pass
+
+        try:
+            loop.call_soon_threadsafe(_do_invalidate)
+        except Exception:
+            try:
+                self._invalidate(min_interval=min_interval)
+            except Exception:
+                pass
+
     def _force_full_redraw(self) -> None:
         """Force a clean full-screen repaint of the prompt_toolkit UI.
 
@@ -3707,7 +3753,7 @@ class HermesCLI:
             self._flush_reasoning_preview(force=True)
         self._spinner_text = text or ""
         self._tool_start_time = 0.0  # clear tool timer when switching to thinking
-        self._invalidate()
+        self._schedule_invalidate()
 
     # ── Streaming display ────────────────────────────────────────────────
 

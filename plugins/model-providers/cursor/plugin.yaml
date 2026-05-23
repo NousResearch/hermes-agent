@@ -1,0 +1,5 @@
+name: cursor
+kind: model-provider
+version: 1.0.0
+description: Cursor Agent SDK — local runtime with Hermes tool callback via MCP
+author: Hermes Agent

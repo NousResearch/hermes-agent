@@ -191,6 +191,8 @@ _VALID_API_MODES = {
     # `model.openai_runtime == "codex_app_server"` AND provider in
     # {"openai", "openai-codex"}. Default is unchanged.
     "codex_app_server",
+    # Cursor SDK — hands turns to cursor_sdk.Agent (local runtime).
+    "cursor_sdk_runtime",
 }
 
 
@@ -261,6 +263,10 @@ def _resolve_runtime_from_pool_entry(
     elif provider == "google-gemini-cli":
         api_mode = "chat_completions"
         base_url = base_url or "cloudcode-pa://google"
+    elif provider == "cursor":
+        api_mode = "cursor_sdk_runtime"
+        pconfig = PROVIDER_REGISTRY.get(provider)
+        base_url = base_url or (pconfig.inference_base_url if pconfig else "cursor://sdk")
     elif provider == "minimax-oauth":
         # MiniMax OAuth tokens are valid only against the Anthropic Messages
         # compatible endpoint. Do not honor stale model.api_mode values from a
@@ -1243,6 +1249,17 @@ def resolve_runtime_provider(
             logger.info("Auto-detected Nous provider but credentials failed; "
                         "falling through to next provider.")
 
+    if provider == "cursor":
+        creds = resolve_api_key_provider_credentials(provider)
+        return {
+            "provider": "cursor",
+            "api_mode": "cursor_sdk_runtime",
+            "base_url": creds.get("base_url", "cursor://sdk").rstrip("/"),
+            "api_key": creds.get("api_key", ""),
+            "source": creds.get("source", "env"),
+            "requested_provider": requested_provider,
+        }
+
     if provider == "openai-codex":
         try:
             creds = resolve_codex_runtime_credentials()
@@ -1497,7 +1514,9 @@ def resolve_runtime_provider(
             cfg_base_url = (model_cfg.get("base_url") or "").strip().rstrip("/")
         base_url = cfg_base_url or creds.get("base_url", "").rstrip("/")
         api_mode = "chat_completions"
-        if provider == "copilot":
+        if provider == "cursor":
+            api_mode = "cursor_sdk_runtime"
+        elif provider == "copilot":
             api_mode = _copilot_runtime_api_mode(model_cfg, creds.get("api_key", ""))
         elif provider == "xai":
             api_mode = "codex_responses"

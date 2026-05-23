@@ -2990,10 +2990,7 @@
           h(AssigneeEditor, { task: t, assignees: props.assignees, onPatch: props.onPatch }),
           h(PriorityEditor, { task: t, onPatch: props.onPatch }),
           t.tenant ? h(MetaRow, { label: tx(i18n, "tenant", "Tenant"), value: t.tenant }) : null,
-          h(MetaRow, {
-            label: tx(i18n, "workspace", "Workspace"),
-            value: `${t.workspace_kind}${t.workspace_path ? ": " + t.workspace_path : ""}`,
-          }),
+          h(WorkspaceEditor, { task: t, onPatch: props.onPatch }),
           (t.skills && t.skills.length > 0) ? h(MetaRow, {
             label: tx(i18n, "skills", "Skills"),
             value: t.skills.join(", "),
@@ -3257,6 +3254,82 @@
       h(Button, { onClick: props.onCancel,
         size: "sm",
       }, tx(t, "cancel", "Cancel")),
+    );
+  }
+
+  function WorkspaceEditor(props) {
+    const { t } = useI18n();
+    const task = props.task;
+    const [editing, setEditing] = useState(false);
+    const [kind, setKind] = useState(task.workspace_kind || "scratch");
+    const [path, setPath] = useState(task.workspace_path || "");
+    const [branch, setBranch] = useState(task.branch_name || "");
+    useEffect(function () {
+      setKind(task.workspace_kind || "scratch");
+      setPath(task.workspace_path || "");
+      setBranch(task.branch_name || "");
+    }, [task.workspace_kind, task.workspace_path, task.branch_name]);
+
+    const label = tx(t, "workspace", "Workspace");
+    const value = `${task.workspace_kind}${task.workspace_path ? ": " + task.workspace_path : ""}${task.branch_name ? " (" + task.branch_name + ")" : ""}`;
+    if (task.status !== "triage") {
+      return h(MetaRow, { label: label, value: value });
+    }
+    if (!editing) {
+      return h("div", { className: "hermes-kanban-meta-row" },
+        h("span", { className: "hermes-kanban-meta-label" }, label),
+        h("span", {
+          className: "hermes-kanban-meta-value hermes-kanban-editable",
+          onClick: function () { setEditing(true); },
+          title: tx(t, "clickToEditWorkspace", "Click to change workspace before specify/decompose"),
+        }, value),
+      );
+    }
+    const save = function () {
+      const body = { workspace_kind: kind };
+      const trimmedPath = path.trim();
+      const trimmedBranch = branch.trim();
+      if (trimmedPath) body.workspace_path = trimmedPath;
+      if (kind === "worktree" && trimmedBranch) body.branch_name = trimmedBranch;
+      props.onPatch(body).then(function () { setEditing(false); });
+    };
+    const showPath = kind !== "scratch";
+    return h("div", { className: "hermes-kanban-meta-row" },
+      h("span", { className: "hermes-kanban-meta-label" }, label),
+      h("div", { className: "flex flex-col gap-1 flex-1" },
+        h("div", { className: "flex gap-1" },
+          h("select", {
+            value: kind,
+            onChange: function (e) {
+              setKind(e.target.value);
+              if (e.target.value === "scratch") { setPath(""); setBranch(""); }
+              if (e.target.value === "dir") setBranch("");
+            },
+            className: "hermes-kanban-recovery-select hermes-kanban-assignee-select",
+          },
+            ["scratch", "worktree", "dir"].map(function (k) {
+              return h("option", { key: k, value: k }, k);
+            }),
+          ),
+          h(Button, { onClick: save, size: "sm" }, tx(t, "save", "Save")),
+          h(Button, { onClick: function () { setEditing(false); }, size: "sm" },
+            tx(t, "cancel", "Cancel")),
+        ),
+        showPath ? h(Input, {
+          value: path,
+          onChange: function (e) { setPath(e.target.value); },
+          placeholder: kind === "dir"
+            ? tx(t, "workspacePathDir", "workspace path (required)")
+            : tx(t, "workspacePathOptional", "workspace path (optional)"),
+          className: "h-7 text-xs",
+        }) : null,
+        kind === "worktree" ? h(Input, {
+          value: branch,
+          onChange: function (e) { setBranch(e.target.value); },
+          placeholder: tx(t, "branchNameOptional", "branch name (optional)"),
+          className: "h-7 text-xs",
+        }) : null,
+      ),
     );
   }
 

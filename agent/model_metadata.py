@@ -168,6 +168,9 @@ DEFAULT_CONTEXT_LENGTHS = {
     "gpt-5.3-codex-spark": 128000,
     "gpt-5.1-chat": 128000,           # Chat variant has 128k context
     "gpt-5": 400000,                  # GPT-5.x base, mini, codex variants (400k)
+    "composer-2.5": 200000,
+    "composer-2.5-fast": 200000,
+    "auto": 200000,                   # Cursor SDK server-resolved default
     "gpt-4.1": 1047576,
     "gpt-4": 128000,
     # Google

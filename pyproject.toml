@@ -66,6 +66,8 @@ dependencies = [
 # Native Anthropic provider — only needed when provider=anthropic (not via
 # OpenRouter or other aggregators).
 anthropic = ["anthropic==0.86.0"]
+# Cursor Agent SDK — needed when provider=cursor (cursor_sdk_runtime).
+cursor = ["cursor-sdk==0.1.5"]
 # Web search backends — each only loaded when the user picks it as their
 # search provider (configured via `hermes tools` or config.yaml).
 exa = ["exa-py==2.10.2"]

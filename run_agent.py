@@ -1647,6 +1647,13 @@ class AIAgent:
                 child.interrupt(message)
             except Exception as e:
                 logger.debug("Failed to propagate interrupt to child agent: %s", e)
+        if self.api_mode == "cursor_sdk_runtime":
+            session = getattr(self, "_cursor_session", None)
+            if session is not None:
+                try:
+                    session.request_interrupt()
+                except Exception as exc:
+                    logger.debug("cursor session interrupt failed: %s", exc)
         if not self.quiet_mode:
             print("\n⚡ Interrupt requested" + (f": '{message[:40]}...'" if message and len(message) > 40 else f": '{message}'" if message else ""))
 
@@ -2101,7 +2108,16 @@ class AIAgent:
         except Exception:
             pass
 
-        # 5. Close the OpenAI/httpx client
+        # 5. Close Cursor SDK session if active
+        try:
+            session = getattr(self, "_cursor_session", None)
+            if session is not None:
+                session.close()
+                self._cursor_session = None
+        except Exception:
+            pass
+
+        # 6. Close the OpenAI/httpx client
         try:
             client = getattr(self, "client", None)
             if client is not None:
@@ -3917,6 +3933,26 @@ class AIAgent:
         """Forwarder — see ``agent.codex_runtime.run_codex_app_server_turn``."""
         from agent.codex_runtime import run_codex_app_server_turn
         return run_codex_app_server_turn(self, user_message=user_message, original_user_message=original_user_message, messages=messages, effective_task_id=effective_task_id, should_review_memory=should_review_memory)
+
+    def _run_cursor_sdk_turn(
+        self,
+        *,
+        user_message: str,
+        original_user_message: Any,
+        messages: List[Dict[str, Any]],
+        effective_task_id: str,
+        should_review_memory: bool = False,
+    ) -> Dict[str, Any]:
+        """Forwarder — see ``agent.cursor_runtime.run_cursor_sdk_turn``."""
+        from agent.cursor_runtime import run_cursor_sdk_turn
+        return run_cursor_sdk_turn(
+            self,
+            user_message=user_message,
+            original_user_message=original_user_message,
+            messages=messages,
+            effective_task_id=effective_task_id,
+            should_review_memory=should_review_memory,
+        )
 
 def main(
     query: str = None,

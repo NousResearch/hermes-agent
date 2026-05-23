@@ -461,13 +461,42 @@ def get_external_skills_dirs() -> List[Path]:
     return result
 
 
+def get_workspace_skills_dirs() -> List[Path]:
+    """Return workspace-local skill directories for the current session.
+
+    Reads the active session context (platform + chat_id + thread_id) and
+    discovers any workspace-local ``skills/`` directories under the resolved
+    workspace folder.  These are injected into ``get_all_skills_dirs()``
+    so workspace-specific skills are available without global installation.
+
+    Uses a 1-second stat cache so changes are picked up automatically —
+    no gateway restart required.
+    """
+    try:
+        from gateway.session_context import get_session_env
+    except ImportError:
+        return []
+    platform = get_session_env("HERMES_SESSION_PLATFORM", "")
+    chat_id = get_session_env("HERMES_SESSION_CHAT_ID", "")
+    if not platform or not chat_id:
+        return []
+    thread_id = get_session_env("HERMES_SESSION_THREAD_ID", "") or None
+    try:
+        from agent.workspace_resolver import get_workspace_skill_dirs
+    except ImportError:
+        return []
+    return get_workspace_skill_dirs(platform, chat_id, thread_id)
+
+
 def get_all_skills_dirs() -> List[Path]:
-    """Return all skill directories: local ``~/.hermes/skills/`` first, then external.
+    """Return all skill directories: local, workspace, then external.
 
     The local dir is always first (and always included even if it doesn't exist
-    yet — callers handle that).  External dirs follow in config order.
+    yet — callers handle that).  Workspace-local dirs follow so per-topic skills
+    can override global/external ones.  External dirs from config come last.
     """
     dirs = [get_skills_dir()]
+    dirs.extend(get_workspace_skills_dirs())
     dirs.extend(get_external_skills_dirs())
     return dirs
 

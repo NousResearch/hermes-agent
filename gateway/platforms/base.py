@@ -1456,6 +1456,10 @@ class MessageEvent:
     # Applied at API call time and never persisted to transcript history.
     channel_prompt: Optional[str] = None
 
+    # Workspace-specified model override.  Takes effect on every message
+    # (including after /new resets).  Priority: /model command > workspace > config.
+    workspace_model: Optional[str] = None
+
     # Channel context recovered by history backfill (e.g. messages between
     # bot turns that were missed due to require_mention).  Kept separate
     # from ``text`` so the sender-prefix logic in run.py can operate on the

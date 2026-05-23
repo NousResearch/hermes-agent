@@ -161,6 +161,9 @@ COMMAND_REGISTRY: list[CommandDef] = [
                subcommands=("queue", "steer", "interrupt", "status")),
 
     # Tools & Skills
+    CommandDef("workspace", "Manage workspaces: create, link, model, list, show, or remove",
+               "Configuration", args_hint="[create|link|model|list|show|remove] [args]",
+               subcommands=("create", "link", "model", "list", "show", "remove", "unlink")),
     CommandDef("tools", "Manage tools: /tools [list|disable|enable] [name...]", "Tools & Skills",
                args_hint="[list|disable|enable] [name...]", cli_only=True),
     CommandDef("toolsets", "List available toolsets", "Tools & Skills",

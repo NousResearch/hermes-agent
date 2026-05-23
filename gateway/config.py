@@ -983,6 +983,13 @@ def load_gateway_config() -> GatewayConfig:
                         bridged["channel_prompts"] = channel_prompts
                 if "gateway_restart_notification" in platform_cfg:
                     bridged["gateway_restart_notification"] = platform_cfg["gateway_restart_notification"]
+                if plat == Platform.TELEGRAM:
+                    # Bridge Telegram topic config from top-level to extra
+                    # so users can write: telegram: { group_topics: [...] }
+                    # instead of: telegram: { extra: { group_topics: [...] } }
+                    for _topic_key in ("group_topics", "dm_topics"):
+                        if _topic_key in platform_cfg:
+                            bridged[_topic_key] = platform_cfg[_topic_key]
                 enabled_was_explicit = _cfg_toplevel and "enabled" in platform_cfg
                 if not bridged and not enabled_was_explicit:
                     continue

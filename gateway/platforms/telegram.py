@@ -498,6 +498,8 @@ class TelegramAdapter(BasePlatformAdapter):
         # Clarify button state: clarify_id → session_key (for the clarify tool's
         # multiple-choice prompts; see GatewayRunner clarify_callback wiring).
         self._clarify_state: Dict[str, str] = {}
+        # Workspace creation interactive state per chat
+        self._workspace_create_state: Dict[str, dict] = {}
         # Notification mode for message sends.
         # "important" — only final responses, approvals, and slash confirmations
         #               trigger notifications; tool progress, streaming, status
@@ -3353,6 +3355,234 @@ class TelegramAdapter(BasePlatformAdapter):
             logger.warning("[%s] send_model_picker failed: %s", self.name, e)
             return SendResult(success=False, error=str(e))
 
+    async def send_workspace_create_picker(
+        self,
+        chat_id: str,
+        ws_name: str,
+        current_model: str,
+        config_default_model: str,
+        on_create_workspace,
+        suggested_prompt: str = "",
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> SendResult:
+        """Send an interactive inline-keyboard workspace creator.
+
+        Prompts the user to configure name, model, and prompt before creating.
+        Supports toggling the workspace model (if current != default),
+        editing the workspace name, and entering text-capture mode for
+        a custom prompt.  Accepts a suggested prompt for pre-fill.
+        """
+        if not self._bot:
+            return SendResult(success=False, error="Not connected")
+
+        # Build initial state
+        has_model_diff = current_model and config_default_model and current_model != config_default_model
+        state = {
+            "ws_name": ws_name,
+            "current_model": current_model,
+            "config_default_model": config_default_model,
+            "include_model": has_model_diff,  # pre-check if user already switched away from default
+            "has_model_diff": has_model_diff,
+            "prompt": suggested_prompt,
+            "awaiting_prompt": False,
+            "awaiting_name": False,
+            "on_create": on_create_workspace,
+        }
+        self._workspace_create_state[str(chat_id)] = state
+
+        text, keyboard = self._build_workspace_create_message(state)
+        try:
+            thread_id = metadata.get("thread_id") if metadata else None
+            reply_to_id = self._reply_to_message_id_for_send(None, metadata)
+            msg = await self._send_message_with_thread_fallback(
+                chat_id=int(chat_id),
+                text=text,
+                parse_mode=ParseMode.MARKDOWN_V2,
+                reply_markup=keyboard,
+                reply_to_message_id=reply_to_id,
+                **self._thread_kwargs_for_send(
+                    chat_id, thread_id, metadata, reply_to_message_id=reply_to_id,
+                ),
+                **self._link_preview_kwargs(),
+            )
+            state["msg_id"] = msg.message_id
+            return SendResult(success=True, message_id=str(msg.message_id))
+        except Exception as e:
+            self._workspace_create_state.pop(str(chat_id), None)
+            logger.warning("[%s] send_workspace_create_picker failed: %s", self.name, e)
+            return SendResult(success=False, error=str(e))
+
+    def _build_workspace_create_message(self, state: dict) -> tuple:
+        """Build text + InlineKeyboardMarkup for the workspace creation prompt."""
+        ws_name = state["ws_name"]
+        lines = [
+            f"📁 *Create Workspace*",
+            "",
+            f"📛 Name: `{ws_name}`",
+        ]
+
+        if state["has_model_diff"]:
+            if state["include_model"]:
+                lines.append(f"🌐 Model: *{state['current_model']}*")
+            else:
+                lines.append(f"🌐 Model: {state['config_default_model']} (default)")
+
+        if state.get("awaiting_prompt"):
+            lines.append("✏️ Prompt: _awaiting your text..._")
+        elif state["prompt"]:
+            preview = state["prompt"][:80] + ("…" if len(state["prompt"]) > 80 else "")
+            lines.append(f"✏️ Prompt: {preview}")
+        else:
+            lines.append("✏️ Prompt: _(none)_")
+
+        if state.get("awaiting_name"):
+            lines.append("")
+            lines.append("⏳ _Please type a new workspace name now..._")
+
+        lines.append("")
+        lines.append("Configure your workspace:")
+
+        text = self.format_message("\n".join(lines))
+
+        # Build keyboard
+        buttons: list = []
+
+        # Name edit button
+        if state.get("awaiting_name"):
+            buttons.append(InlineKeyboardButton("⌛ Awaiting name…", callback_data="wc:noop"))
+        else:
+            buttons.append(InlineKeyboardButton("📛 Edit name", callback_data="wc:n:edit"))
+
+        if state["has_model_diff"]:
+            label = "✅ Use model" if state["include_model"] else "☐ Use model"
+            buttons.append(InlineKeyboardButton(label, callback_data="wc:m:toggle"))
+
+        if state.get("awaiting_prompt"):
+            buttons.append(InlineKeyboardButton("⌛ Awaiting prompt…", callback_data="wc:noop"))
+        elif state["prompt"]:
+            buttons.append(InlineKeyboardButton("✏️ Edit prompt", callback_data="wc:p:edit"))
+        else:
+            buttons.append(InlineKeyboardButton("✏️ Add prompt", callback_data="wc:p:edit"))
+
+        # Action row
+        action_buttons = [
+            InlineKeyboardButton("✅ Create", callback_data="wc:c:create"),
+            InlineKeyboardButton("✗ Cancel", callback_data="wc:x:cancel"),
+        ]
+
+        rows = [buttons[i : i + 2] for i in range(0, len(buttons), 2)]
+        rows.append(action_buttons)
+
+        return text, InlineKeyboardMarkup(rows)
+
+    async def _handle_workspace_create_callback(
+        self, query, data: str, chat_id: str
+    ) -> None:
+        """Handle workspace creation inline keyboard callbacks (wc:*)."""
+        state = self._workspace_create_state.get(chat_id)
+        if not state:
+            await query.answer(text="Picker expired — use /workspace create again.")
+            return
+
+        if data == "wc:x:cancel":
+            self._workspace_create_state.pop(chat_id, None)
+            await query.edit_message_text(
+                text="Workspace creation cancelled.",
+                reply_markup=None,
+            )
+            await query.answer()
+            return
+
+        if data == "wc:noop":
+            await query.answer()
+            return
+
+        if data == "wc:m:toggle":
+            state["include_model"] = not state["include_model"]
+            text, keyboard = self._build_workspace_create_message(state)
+            await query.edit_message_text(
+                text=text,
+                parse_mode=ParseMode.MARKDOWN_V2,
+                reply_markup=keyboard,
+            )
+            await query.answer()
+            return
+
+        if data == "wc:n:edit":
+            # Enter text-capture mode for name
+            state["awaiting_name"] = True
+            await query.edit_message_text(
+                text=self.format_message(
+                    f"📁 *Create Workspace*\n\n"
+                    f"📛 Please type a new name for this workspace now.\n"
+                    f"Your next message will become the workspace name.\n\n"
+                    f"Use letters, numbers, hyphens, and underscores only."
+                ),
+                parse_mode=ParseMode.MARKDOWN_V2,
+                reply_markup=None,
+            )
+            await query.answer()
+            return
+
+        if data == "wc:p:edit":
+            # Enter text-capture mode for prompt
+            state["awaiting_prompt"] = True
+            await query.edit_message_text(
+                text=self.format_message(
+                    f"📁 *Create Workspace: `{state['ws_name']}`*\n\n"
+                    f"✏️ Please type the prompt text for this workspace now.\n"
+                    f"Your next message will become the SYSTEM.md body."
+                ),
+                parse_mode=ParseMode.MARKDOWN_V2,
+                reply_markup=None,
+            )
+            await query.answer()
+            return
+
+        if data == "wc:c:create":
+            # Call the creation callback
+            create_cb = state.get("on_create")
+            if not create_cb:
+                self._workspace_create_state.pop(chat_id, None)
+                await query.edit_message_text(
+                    text="Picker expired.",
+                    reply_markup=None,
+                )
+                await query.answer()
+                return
+
+            try:
+                result_text = await create_cb(
+                    chat_id,
+                    ws_name=state["ws_name"],
+                    model=state["current_model"] if state["include_model"] else None,
+                    prompt=state["prompt"] or None,
+                )
+            except Exception as exc:
+                logger.error("Workspace create callback failed: %s", exc, exc_info=True)
+                result_text = f"Error creating workspace: {exc}"
+
+            self._workspace_create_state.pop(chat_id, None)
+            try:
+                await query.edit_message_text(
+                    text=result_text,
+                    parse_mode=ParseMode.MARKDOWN_V2,
+                    reply_markup=None,
+                )
+            except Exception:
+                try:
+                    await query.edit_message_text(
+                        text=result_text,
+                        parse_mode=None,
+                        reply_markup=None,
+                    )
+                except Exception:
+                    pass
+            await query.answer(text="Workspace created!")
+            return
+
+        await query.answer()
+
     _MODEL_PAGE_SIZE = 8
 
     def _build_provider_keyboard(self, providers: list):
@@ -3778,6 +4008,13 @@ class TelegramAdapter(BasePlatformAdapter):
                 query_thread_id=query_thread_id,
                 query_user_name=query_user_name,
             )
+            return
+
+        # --- Workspace creation callbacks (wc:*) ---
+        if data.startswith("wc:"):
+            chat_id = str(query.message.chat_id) if query.message else None
+            if chat_id:
+                await self._handle_workspace_create_callback(query, data, chat_id)
             return
 
         # --- Exec approval callbacks (ea:choice:id) ---
@@ -5786,6 +6023,66 @@ class TelegramAdapter(BasePlatformAdapter):
             return
         await self._ensure_forum_commands(update.message)
 
+        # --- Workspace create text-capture intercept ---
+        chat_id = str(msg.chat_id)
+        ws_state = self._workspace_create_state.get(chat_id)
+        if ws_state and (ws_state.get("awaiting_name") or ws_state.get("awaiting_prompt")):
+            if ws_state.get("awaiting_name"):
+                # Capture user's text as the workspace name
+                new_name = msg.text.strip()
+                # Validate name
+                if not new_name.replace("-", "").replace("_", "").isalnum():
+                    # Invalid name — show error and keep awaiting
+                    try:
+                        wc_msg_id = ws_state.get("msg_id")
+                        if wc_msg_id and self._bot:
+                            await self._bot.edit_message_text(
+                                chat_id=msg.chat_id,
+                                message_id=wc_msg_id,
+                                text=self.format_message(
+                                    f"📁 *Create Workspace*\n\n"
+                                    f"❌ Invalid name `{new_name}`. Use letters, numbers, hyphens, underscores.\n"
+                                    f"Please try again:"
+                                ),
+                                parse_mode=ParseMode.MARKDOWN_V2,
+                            )
+                    except Exception:
+                        pass
+                    return
+                ws_state["ws_name"] = new_name
+                ws_state["awaiting_name"] = False
+
+            elif ws_state.get("awaiting_prompt"):
+                # Capture user's text as the workspace prompt
+                prompt_text = msg.text.strip()
+                ws_state["prompt"] = prompt_text
+                ws_state["awaiting_prompt"] = False
+
+            # Delete the captured message for cleanliness
+            try:
+                await self._bot.delete_message(
+                    chat_id=msg.chat_id,
+                    message_id=msg.message_id,
+                )
+            except Exception:
+                pass  # non-fatal
+
+            # Edit the workspace creation message with updated state + keyboard
+            text, keyboard = self._build_workspace_create_message(ws_state)
+            try:
+                wc_msg_id = ws_state.get("msg_id")
+                if wc_msg_id and self._bot:
+                    await self._bot.edit_message_text(
+                        chat_id=msg.chat_id,
+                        message_id=wc_msg_id,
+                        text=text,
+                        parse_mode=ParseMode.MARKDOWN_V2,
+                        reply_markup=keyboard,
+                    )
+            except Exception as e:
+                logger.warning("[%s] Failed to edit workspace create message: %s", self.name, e)
+            return
+
         event = self._build_message_event(msg, MessageType.TEXT, update_id=update.update_id)
         event.text = self._clean_bot_trigger_text(event.text)
         await self._cache_replied_media(msg, event)
@@ -6507,12 +6804,14 @@ class TelegramAdapter(BasePlatformAdapter):
             thread_id_str = self._GENERAL_TOPIC_THREAD_ID
         chat_topic = None
         topic_skill = None
+        topic_prompt = None
 
         if chat_type == "dm" and thread_id_str:
             topic_info = self._get_dm_topic_info(str(chat.id), thread_id_str)
             if topic_info:
                 chat_topic = topic_info.get("name")
                 topic_skill = topic_info.get("skill")
+                topic_prompt = topic_info.get("prompt")
 
             # Also check forum_topic_created service message for topic discovery
             if hasattr(message, "forum_topic_created") and message.forum_topic_created:
@@ -6523,7 +6822,7 @@ class TelegramAdapter(BasePlatformAdapter):
                         chat_topic = created_name
 
         elif chat_type == "group" and thread_id_str:
-            # Group/supergroup forum topic skill binding via config.extra['group_topics']
+            # Group/supergroup forum topic skill/prompt binding via config.extra['group_topics']
             group_topics_config: list = self.config.extra.get("group_topics", [])
             for chat_entry in group_topics_config:
                 if str(chat_entry.get("chat_id", "")) == str(chat.id):
@@ -6532,8 +6831,34 @@ class TelegramAdapter(BasePlatformAdapter):
                         if tid is not None and str(tid) == thread_id_str:
                             chat_topic = topic.get("name")
                             topic_skill = topic.get("skill")
+                            topic_prompt = topic.get("prompt")
                             break
                     break
+
+        # -----------------------------------------------------------------
+        # Workspace resolution (folder-based, hot-reload, survives /new)
+        # -----------------------------------------------------------------
+        from agent.workspace_resolver import resolve_workspace
+        ws = resolve_workspace("telegram", str(chat.id), thread_id_str)
+        workspace_model = None
+        if ws.prompt:
+            topic_prompt = ws.prompt
+        if ws.skills:
+            if topic_skill:
+                # Merge: workspace skills first, then config skill
+                merged = list(ws.skills)
+                if isinstance(topic_skill, str):
+                    if topic_skill not in merged:
+                        merged.append(topic_skill)
+                elif isinstance(topic_skill, list):
+                    for s in topic_skill:
+                        if s not in merged:
+                            merged.append(s)
+                topic_skill = merged
+            else:
+                topic_skill = ws.skills
+        if ws.model:
+            workspace_model = ws.model
 
         # Build source
         source = self.build_source(
@@ -6583,9 +6908,11 @@ class TelegramAdapter(BasePlatformAdapter):
                 )
 
         # Per-channel/topic ephemeral prompt
+        # Priority: topic-level prompt from group_topics/dm_topics config
+        #           > channel_prompts dict > None
         from gateway.platforms.base import resolve_channel_prompt
         _chat_id_str = str(chat.id)
-        _channel_prompt = resolve_channel_prompt(
+        _channel_prompt = topic_prompt or resolve_channel_prompt(
             self.config.extra,
             thread_id_str or _chat_id_str,
             _chat_id_str if thread_id_str else None,
@@ -6602,6 +6929,7 @@ class TelegramAdapter(BasePlatformAdapter):
             reply_to_text=reply_to_text,
             auto_skill=topic_skill,
             channel_prompt=_channel_prompt,
+            workspace_model=workspace_model,
             timestamp=message.date,
         )
 

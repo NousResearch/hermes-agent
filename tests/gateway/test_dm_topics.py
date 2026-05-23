@@ -757,6 +757,148 @@ def test_group_topic_no_skill_binding():
     assert event.source.chat_topic == "General"
 
 
+# ── _build_message_event: topic prompt resolution ──
+
+
+def test_group_topic_prompt_binding():
+    """Group topic with prompt config should set channel_prompt on the event."""
+    from gateway.platforms.base import MessageType
+
+    adapter = _make_adapter(group_topics_config=[
+        {
+            "chat_id": -1003682109119,
+            "topics": [
+                {
+                    "name": "news feed",
+                    "thread_id": 7695,
+                    "prompt": "Respond in Hebrew. Focus on regional news.",
+                },
+            ],
+        }
+    ])
+
+    msg = _make_mock_message(
+        chat_id=-1003682109119, chat_type=_ChatType.SUPERGROUP, thread_id=7695, text="latest news",
+        is_topic_message=True,
+    )
+    event = adapter._build_message_event(msg, MessageType.TEXT)
+
+    assert event.channel_prompt == "Respond in Hebrew. Focus on regional news."
+    assert event.source.chat_topic == "news feed"
+
+
+def test_group_topic_prompt_with_skill():
+    """Group topic with both skill and prompt should set both on the event."""
+    from gateway.platforms.base import MessageType
+
+    adapter = _make_adapter(group_topics_config=[
+        {
+            "chat_id": -1001234567890,
+            "topics": [
+                {
+                    "name": "Engineering",
+                    "thread_id": 42,
+                    "skill": "software-development",
+                    "prompt": "Follow conventional-commits and thinking-before-acting.",
+                },
+            ],
+        }
+    ])
+
+    msg = _make_mock_message(
+        chat_id=-1001234567890, chat_type=_ChatType.SUPERGROUP, thread_id=42, text="refactor the api",
+        is_topic_message=True,
+    )
+    event = adapter._build_message_event(msg, MessageType.TEXT)
+
+    assert event.auto_skill == "software-development"
+    assert event.channel_prompt == "Follow conventional-commits and thinking-before-acting."
+    assert event.source.chat_topic == "Engineering"
+
+
+def test_group_topic_prompt_takes_priority_over_channel_prompts():
+    """Topic-level prompt should override channel_prompts dict for the same thread_id."""
+    from gateway.platforms.base import MessageType
+
+    adapter = _make_adapter(group_topics_config=[
+        {
+            "chat_id": -1001234567890,
+            "topics": [
+                {
+                    "name": "Engineering",
+                    "thread_id": 42,
+                    "prompt": "Topic-level prompt takes priority",
+                },
+            ],
+        }
+    ])
+    # Also set a channel_prompts entry for the same thread_id
+    adapter.config.extra["channel_prompts"] = {"42": "Channel-level prompt"}
+
+    msg = _make_mock_message(
+        chat_id=-1001234567890, chat_type=_ChatType.SUPERGROUP, thread_id=42, text="hello",
+        is_topic_message=True,
+    )
+    event = adapter._build_message_event(msg, MessageType.TEXT)
+
+    # Topic-level prompt should take priority
+    assert event.channel_prompt == "Topic-level prompt takes priority"
+
+
+def test_group_topic_no_prompt_falls_back_to_channel_prompts():
+    """When topic has no prompt, channel_prompts dict should still be used."""
+    from gateway.platforms.base import MessageType
+
+    adapter = _make_adapter(group_topics_config=[
+        {
+            "chat_id": -1001234567890,
+            "topics": [
+                {"name": "General", "thread_id": 42},
+            ],
+        }
+    ])
+    adapter.config.extra["channel_prompts"] = {"42": "Channel-level prompt fallback"}
+
+    msg = _make_mock_message(
+        chat_id=-1001234567890, chat_type=_ChatType.SUPERGROUP, thread_id=42, text="hello",
+        is_topic_message=True,
+    )
+    event = adapter._build_message_event(msg, MessageType.TEXT)
+
+    # Falls back to channel_prompts since topic has no prompt field
+    assert event.channel_prompt == "Channel-level prompt fallback"
+
+
+def test_dm_topic_prompt_binding():
+    """DM topic with prompt config should set channel_prompt on the event."""
+    from gateway.platforms.base import MessageType
+
+    adapter = _make_adapter(dm_topics_config=[
+        {
+            "chat_id": 12345,
+            "topics": [
+                {
+                    "name": "projects",
+                    "thread_id": 100,
+                    "skill": "project-tracker",
+                    "prompt": "Track project status and deadlines.",
+                },
+            ],
+        }
+    ])
+    adapter._dm_topics["12345:projects"] = 100
+
+    msg = _make_mock_message(
+        chat_id=12345, chat_type=_ChatType.PRIVATE, thread_id=100,
+        is_topic_message=True, text="status update"
+    )
+    event = adapter._build_message_event(msg, MessageType.TEXT)
+
+    assert event.auto_skill == "project-tracker"
+    assert event.channel_prompt == "Track project status and deadlines."
+    assert event.source.chat_topic == "projects"
+
+
 def test_group_topic_unmapped_thread_id():
     """Thread ID not in config should fall through — no skill, no topic name."""
     from gateway.platforms.base import MessageType

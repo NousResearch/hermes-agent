@@ -7066,6 +7066,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         source=event.source,
                         message_id=event.message_id,
                         channel_prompt=event.channel_prompt,
+                        workspace_model=getattr(event, 'workspace_model', None),
                     )
                     self._enqueue_fifo(_quick_key, queued_event, adapter)
                 depth = self._queue_depth(_quick_key, adapter=self.adapters.get(source.platform))
@@ -7093,6 +7094,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                             source=event.source,
                             message_id=event.message_id,
                             channel_prompt=event.channel_prompt,
+                            workspace_model=getattr(event, 'workspace_model', None),
                         )
                         adapter._pending_messages[_quick_key] = queued_event
                     return "Agent still starting — /steer queued for the next turn."
@@ -7115,6 +7117,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         source=event.source,
                         message_id=event.message_id,
                         channel_prompt=event.channel_prompt,
+                        workspace_model=getattr(event, 'workspace_model', None),
                     )
                     adapter._pending_messages[_quick_key] = queued_event
                 return "No active agent — /steer queued for the next turn."
@@ -7508,6 +7511,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
         if canonical == "personality":
             return await self._handle_personality_command(event)
+
+        if canonical == "workspace":
+            return await self._handle_workspace_command(event)
 
         if canonical == "kanban":
             return await self._handle_kanban_command(event)
@@ -8383,7 +8389,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                             f"Adjust reset timing in config.yaml under session_reset."
                         )
                         try:
-                            session_info = self._format_session_info()
+                            session_info = self._format_session_info(
+                                workspace_model=getattr(event, 'workspace_model', None)
+                            )
                             if session_info:
                                 notice = f"{notice}\n\n{session_info}"
                         except Exception:
@@ -8882,6 +8890,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 run_generation=run_generation,
                 event_message_id=self._reply_anchor_for_event(event),
                 channel_prompt=event.channel_prompt,
+                workspace_model=getattr(event, 'workspace_model', None),
             )
 
             # Stop persistent typing indicator now that the agent is done
@@ -9411,16 +9420,28 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # Restore session context variables to their pre-handler state
             self._clear_session_env(_session_env_tokens)
 
-    def _format_session_info(self) -> str:
+    def _format_session_info(self, workspace_model: Optional[str] = None) -> str:
         """Resolve current model config and return a formatted info block.
 
         Surfaces model, provider, context length, and endpoint so gateway
         users can immediately see if context detection went wrong (e.g.
         local models falling to the 128K default).
+
+        When *workspace_model* is provided, the display shows the effective
+        model (workspace override if no /model session override is active)
+        rather than the config default, so gateway users see which model
+        will actually be used.
         """
         from agent.model_metadata import get_model_context_length, DEFAULT_FALLBACK_CONTEXT
 
-        model = _resolve_gateway_model()
+        config_model = _resolve_gateway_model()
+        effective_model = model = config_model
+        # If a workspace model is provided and differs from the config default,
+        # use it as the effective model so the user sees what will actually run.
+        model_source = "config"
+        if workspace_model and workspace_model != config_model:
+            effective_model = model = workspace_model
+            model_source = "workspace"
         config_context_length = None
         provider = None
         base_url = None
@@ -9519,7 +9540,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             ctx_display = str(context_length)
 
         lines = [
-            f"◆ Model: `{model}`",
+            f"◆ Model: `{effective_model}`{' (workspace)' if model_source == 'workspace' else ''}",
             f"◆ Provider: {provider or 'openrouter'}",
             f"◆ Context: {ctx_display} tokens ({ctx_source})",
         ]
@@ -9529,6 +9550,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             lines.append(f"◆ Endpoint: {base_url}")
 
         return "\n".join(lines)
+
+
 
 
 
@@ -9744,6 +9767,666 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             from hermes_cli.blueprint_cmd import BlueprintCommandResult
 
             return BlueprintCommandResult(f"Cron blueprint command failed: {e}")
+    # ------------------------------------------------------------------
+    # /workspace — manage workspaces (create, link, list, show, remove)
+    # ------------------------------------------------------------------
+
+    def _find_workspace_name_from_context(
+        self, platform: str, chat_id: str, thread_id: str | None
+    ) -> str | None:
+        """Resolve the workspace NAME from a platform/chat/thread context.
+
+        Reads topics.yaml to find the mapping, then returns the workspace name
+        (not the resolved prompt/skills). Returns None if no workspace is linked.
+        """
+        try:
+            from pathlib import Path
+            from agent.workspace_resolver import _safe_dir_name
+
+            topics_path = (
+                Path(_hermes_home)
+                / "platforms"
+                / platform
+                / _safe_dir_name(chat_id)
+                / "topics.yaml"
+            )
+            if not topics_path.exists():
+                return None
+
+            import yaml as _yaml
+            data = _yaml.safe_load(topics_path.read_text(encoding="utf-8")) or {}
+            topics = data.get("topics", {})
+            if isinstance(topics, list):
+                topics = {
+                    str(item.get("thread_id", "")): str(item.get("workspace", ""))
+                    for item in topics
+                    if isinstance(item, dict)
+                }
+            thread_key = str(thread_id) if thread_id else "default"
+            return topics.get(thread_key)
+        except Exception:
+            return None
+
+    async def _handle_workspace_command(self, event: MessageEvent) -> str:
+        """Handle /workspace command for workspace management."""
+        from agent.workspace_resolver import (
+            resolve_workspace,
+            _safe_dir_name,
+            _clear_stat_cache,
+            _parse_frontmatter,
+            _write_system_md,
+        )
+
+        raw_args = event.get_command_args().strip()
+        parts = raw_args.split(None, 1)
+        subcmd = parts[0].lower() if parts else ""
+        rest = parts[1].strip() if len(parts) > 1 else ""
+
+        hermes_home = _hermes_home
+        workspaces_dir = hermes_home / "workspaces"
+        platforms_dir = hermes_home / "platforms"
+
+        # Determine current platform/chat_id/thread_id for context-aware ops
+        source = event.source
+        platform = source.platform.value if source.platform else ""
+        chat_id = str(source.chat_id) if source.chat_id else ""
+        thread_id = source.thread_id or ""
+
+        if not subcmd or subcmd == "list":
+            # /workspace list — list all workspaces and current mapping
+            lines = ["📁 **Workspaces**\n"]
+
+            if not workspaces_dir.exists():
+                lines.append("  No workspaces found.")
+                lines.append("  Use `/workspace create <name>` to create one.")
+            else:
+                ws_dirs = sorted(d.name for d in workspaces_dir.iterdir() if d.is_dir())
+                if not ws_dirs:
+                    lines.append("  No workspaces found.")
+                else:
+                    for ws_name in ws_dirs:
+                        system_file = workspaces_dir / ws_name / "SYSTEM.md"
+                        skills_dir = workspaces_dir / ws_name / "skills"
+                        has_prompt = system_file.exists()
+                        has_skills = skills_dir.exists() and any(skills_dir.iterdir())
+                        # Check for model in frontmatter
+                        has_model = False
+                        model_name = ""
+                        if has_prompt:
+                            content = system_file.read_text(encoding="utf-8")
+                            fm, _ = _parse_frontmatter(content)
+                            model_name = fm.get("model", "")
+                            has_model = bool(model_name)
+                        flags = []
+                        if has_prompt:
+                            flags.append("prompt")
+                        if has_model:
+                            flags.append(f"model: {model_name}")
+                        if has_skills:
+                            n_skills = len([d for d in skills_dir.iterdir() if d.is_dir()])
+                            flags.append(f"{n_skills} skill{'s' if n_skills != 1 else ''}")
+                        desc = f" ({', '.join(flags)})" if flags else ""
+                        lines.append(f"  • **{ws_name}**{desc}")
+
+            # Show current context mapping
+            if platform and chat_id:
+                safe_id = _safe_dir_name(chat_id)
+                topics_file = platforms_dir / platform / safe_id / "topics.yaml"
+                if topics_file.exists():
+                    import yaml as _yaml
+                    data = _yaml.safe_load(topics_file.read_text(encoding="utf-8")) or {}
+                    topics = data.get("topics", {})
+                    ws_default = data.get("workspace", "")
+                    if topics or ws_default:
+                        lines.append(f"\n🔗 **{platform}/{chat_id}**")
+                        if ws_default:
+                            lines.append(f"  default → **{ws_default}**")
+                        for tid, ws in topics.items():
+                            marker = " ◀ you" if str(tid) == str(thread_id) else ""
+                            lines.append(f"  topic {tid} → **{ws}**{marker}")
+                else:
+                    lines.append(f"\n🔗 **{platform}/{chat_id}** — no topics linked yet")
+                    lines.append(f"  Use `/workspace link {platform} {chat_id} <thread_id> <workspace>`")
+
+            # Show active workspace for current topic
+            if platform and chat_id:
+                result = resolve_workspace(platform, chat_id, thread_id or None)
+                if result.prompt or result.skills or result.model:
+                    lines.append(f"\n✅ **Active workspace** for this topic:")
+                    if result.model:
+                        lines.append(f"  Model: **{result.model}**")
+                    if result.prompt:
+                        preview = result.prompt[:80] + ("..." if len(result.prompt) > 80 else "")
+                        lines.append(f"  Prompt: {preview}")
+                    if result.skills:
+                        lines.append(f"  Skills: {', '.join(result.skills)}")
+
+            return "\n".join(lines)
+
+        elif subcmd == "create":
+            # /workspace create <name> [prompt text]
+            # Auto-links to current topic if in one.
+            # When prompt text IS provided → create immediately (batch/script-friendly).
+            # When prompt text is NOT provided → interactive flow (if platform supports it).
+            # When NO name or minimal args → auto-generate name from context.
+            if not rest:
+                # Auto-generate workspace name from session/topic context
+                import re as _re
+                suggest_name = ""
+                # 1. Try session title from DB
+                try:
+                    session_key = self._session_key_for_source(source) if source else None
+                    if session_key and self._session_db:
+                        entry = self.session_store._entries.get(session_key) if self.session_store else None
+                        if entry:
+                            title = self._session_db.get_session_title(entry.session_id)
+                            if title:
+                                suggest_name = title
+                except Exception:
+                    pass
+                # 2. Fall back to chat_topic from source
+                if not suggest_name:
+                    ct = getattr(source, "chat_topic", None) if source else None
+                    if ct:
+                        suggest_name = ct
+                # 3. Fall back to workspace prompt first words
+                if not suggest_name:
+                    try:
+                        from agent.workspace_resolver import resolve_workspace
+                        ws = resolve_workspace(platform, chat_id, thread_id or None)
+                        if ws.prompt:
+                            words = ws.prompt.strip().split()
+                            suggest_name = " ".join(words[:3]) if words else ""
+                    except Exception:
+                        pass
+                # 4. Final fallback
+                if not suggest_name:
+                    suggest_name = f"topic-{thread_id}" if thread_id else "workspace"
+                # Slugify: lowercase, replace spaces/separators with hyphens, strip non-alnum
+                ws_name = _re.sub(r'[^a-zA-Z0-9_-]', '', suggest_name.lower().replace(" ", "-").replace(".", "-"))[:50]
+                if not ws_name or not ws_name.replace("-", "").replace("_", "").isalnum():
+                    ws_name = "workspace"
+                prompt_text = ""
+            else:
+                create_parts = rest.split(None, 1)
+                ws_name = create_parts[0]
+                prompt_text = create_parts[1].strip() if len(create_parts) > 1 else ""
+
+            # Validate name
+            if not ws_name.replace("-", "").replace("_", "").isalnum():
+                return f"❌ Invalid workspace name `{ws_name}`. Use letters, numbers, hyphens, underscores."
+
+            ws_dir = workspaces_dir / ws_name
+            if ws_dir.exists():
+                return f"❌ Workspace `{ws_name}` already exists. Use `/workspace show {ws_name}` to view it."
+
+            # Resolve current model vs default for model option
+            current_model = ""
+            config_default = ""
+            try:
+                resolved_model, _ = self._resolve_session_agent_runtime(
+                    source=source,
+                    session_key=self._session_key_for_source(source) if source else None,
+                    user_config=_load_gateway_config(),
+                )
+                config_default = _resolve_gateway_model(_load_gateway_config())
+                current_model = resolved_model or ""
+            except Exception:
+                pass
+
+            # --- Interactive flow (no prompt provided, platform supports it) ---
+            if not prompt_text:
+                adapter = self.adapters.get(source.platform)
+                has_picker = (
+                    adapter is not None
+                    and getattr(type(adapter), "send_workspace_create_picker", None) is not None
+                )
+
+                if has_picker:
+                    # Build workspace creation callback closure
+                    _self = self
+                    _ws_name = ws_name
+                    _platform = platform
+                    _chat_id = chat_id
+                    _thread_id = thread_id
+                    _workspaces_dir = workspaces_dir
+                    _platforms_dir = platforms_dir
+
+                    # --- Prompt suggestion: current workspace/channel prompt ---
+                    suggest_prompt = ""
+                    try:
+                        # Use current event's channel_prompt (set by workspace resolution)
+                        cp = getattr(event, "channel_prompt", None)
+                        if cp:
+                            suggest_prompt = cp.strip()
+                    except Exception:
+                        pass
+
+                    async def _on_workspace_create(
+                        picker_chat_id: str,
+                        ws_name: str = _ws_name,
+                        model: str | None = None,
+                        prompt: str | None = None,
+                    ) -> str:
+                        """Create the workspace and return confirmation text."""
+                        import yaml as _yaml
+
+                        ws_dir = _workspaces_dir / ws_name
+                        ws_dir.mkdir(parents=True, exist_ok=True)
+                        system_file = ws_dir / "SYSTEM.md"
+
+                        # Build SYSTEM.md with frontmatter
+                        frontmatter = {}
+                        if model:
+                            frontmatter["model"] = model
+                        body = prompt or f"# Workspace: {ws_name}\n"
+
+                        _write_system_md(system_file, frontmatter, body)
+                        _clear_stat_cache()
+
+                        # Auto-link to current topic if in one
+                        link_msg = ""
+                        if _platform and _chat_id and _thread_id and str(_thread_id) != "1":
+                            safe_id = _safe_dir_name(_chat_id)
+                            topic_dir = _platforms_dir / _platform / safe_id
+                            topic_dir.mkdir(parents=True, exist_ok=True)
+                            topics_file = topic_dir / "topics.yaml"
+                            data = {}
+                            if topics_file.exists():
+                                data = _yaml.safe_load(topics_file.read_text(encoding="utf-8")) or {}
+                            topics = data.get("topics", {})
+                            topics[str(_thread_id)] = ws_name
+                            data["topics"] = topics
+                            if "workspace" not in data:
+                                data["workspace"] = "default"
+                            topics_file.write_text(_yaml.safe_dump(data, default_flow_style=False), encoding="utf-8")
+                            _clear_stat_cache()
+                            link_msg = f"\n🔗 Auto-linked to {_platform}/{_chat_id} topic **{_thread_id}**"
+                        elif _platform and _chat_id and str(_thread_id) == "1":
+                            link_msg = f"\n⚠️  Skipped auto-link — you're in the **general topic** (thread 1).\nUse `/workspace link {_platform} {_chat_id} default {ws_name}` to set a channel default."
+
+                        lines = [f"✅ Created workspace **{ws_name}**"]
+                        lines.append(f"📄 `{system_file}`")
+                        if model:
+                            lines.append(f"🌐 Model: **{model}**")
+                        if prompt:
+                            preview = prompt[:80] + ("..." if len(prompt) > 80 else "")
+                            lines.append(f"✏️ Prompt: {preview}")
+                        lines.append(link_msg)
+                        return "\n".join(lines)
+
+                    metadata = self._thread_metadata_for_source(source, self._reply_anchor_for_event(event))
+                    result = await adapter.send_workspace_create_picker(
+                        chat_id=source.chat_id,
+                        ws_name=ws_name,
+                        current_model=current_model,
+                        config_default_model=config_default,
+                        on_create_workspace=_on_workspace_create,
+                        suggested_prompt=suggest_prompt,
+                        metadata=metadata,
+                    )
+                    if result.success:
+                        return None  # Picker sent — adapter handles the response
+
+                # Fallback: no interactive support → create with defaults
+                # (current behavior — creates with no model, no prompt)
+
+            # --- Direct creation (prompt provided or platform without interactive support) ---
+            model_hint = ""
+            if current_model and config_default and current_model != config_default:
+                model_hint = (
+                    f"\n\n💡 You're currently using model **{current_model}** (default is **{config_default}**).\n"
+                    f"To set this as the workspace model, add `model: {current_model}` to the frontmatter.\n"
+                    f"Or run: `/workspace model {ws_name} {current_model}`"
+                )
+
+            ws_dir.mkdir(parents=True, exist_ok=True)
+            system_file = ws_dir / "SYSTEM.md"
+            system_file.write_text(prompt_text + "\n" if prompt_text else f"# Workspace: {ws_name}\n", encoding="utf-8")
+            _clear_stat_cache()
+
+            # Auto-link to current topic if in one (skip Telegram general topic thread_id=1)
+            link_msg = ""
+            if platform and chat_id and thread_id and str(thread_id) != "1":
+                safe_id = _safe_dir_name(chat_id)
+                topic_dir = platforms_dir / platform / safe_id
+                topic_dir.mkdir(parents=True, exist_ok=True)
+                topics_file = topic_dir / "topics.yaml"
+                import yaml as _yaml
+                data = {}
+                if topics_file.exists():
+                    data = _yaml.safe_load(topics_file.read_text(encoding="utf-8")) or {}
+                topics = data.get("topics", {})
+                topics[str(thread_id)] = ws_name
+                data["topics"] = topics
+                if "workspace" not in data:
+                    data["workspace"] = "default"
+                topics_file.write_text(_yaml.safe_dump(data, default_flow_style=False), encoding="utf-8")
+                _clear_stat_cache()
+                link_msg = f"\n🔗 Auto-linked to {platform}/{chat_id} topic **{thread_id}**"
+            elif platform and chat_id and str(thread_id) == "1":
+                link_msg = f"\n⚠️  Skipped auto-link — you're in the **general topic** (thread 1).\nUse `/workspace link {platform} {chat_id} default {ws_name}` to set a channel default."
+
+            return f"✅ Created workspace **{ws_name}**{link_msg}\nEdit: `{system_file}`{model_hint}"
+
+        elif subcmd == "show":
+            # /workspace show <name>
+            ws_name = rest.strip()
+            if not ws_name:
+                # Show current resolved workspace
+                if platform and chat_id:
+                    result = resolve_workspace(platform, chat_id, thread_id or None)
+                    if result.prompt or result.skills or result.model:
+                        lines = ["📄 **Current workspace context:**\n"]
+                        if result.model:
+                            lines.append(f"**Model:** {result.model}")
+                        if result.prompt:
+                            lines.append(f"**Prompt:**\n```\n{result.prompt}\n```")
+                        if result.skills:
+                            lines.append(f"**Skills:** {', '.join(result.skills)}")
+                        return "\n".join(lines)
+                return "Usage: `/workspace show <name>` or use in a topic to see active workspace."
+
+            ws_dir = workspaces_dir / ws_name
+            if not ws_dir.exists():
+                return f"❌ Workspace `{ws_name}` not found."
+
+            lines = [f"📄 **Workspace: {ws_name}**\n"]
+            system_file = ws_dir / "SYSTEM.md"
+            if system_file.exists():
+                lines.append(f"**SYSTEM.md:**\n```\n{system_file.read_text(encoding='utf-8')}\n```")
+            skills_dir = ws_dir / "skills"
+            if skills_dir.exists():
+                skill_list = [d.name for d in skills_dir.iterdir() if d.is_dir()]
+                if skill_list:
+                    lines.append(f"**Skills:** {', '.join(skill_list)}")
+            return "\n".join(lines)
+
+        elif subcmd == "link":
+            # /workspace link <workspace>                          ← current topic
+            # /workspace link <thread_id> <workspace>               ← current chat, specific topic
+            # /workspace link <platform> <chat_id> <thread_id> <workspace>  ← full spec
+            # /workspace link <platform> <chat_id> default <workspace>      ← channel default
+            link_parts = rest.split()
+            if not link_parts:
+                return (
+                    "📁 **Link a workspace:**\n\n"
+                    "• `/workspace link <workspace>` — Link current topic\n"
+                    "• `/workspace link <thread_id> <workspace>` — Link a topic in this chat\n"
+                    "• `/workspace link <platform> <chat_id> <thread_id> <workspace>` — Full spec\n\n"
+                    "Example: `/workspace link news-feed` (from inside a topic)"
+                )
+
+            # Determine how many args to infer from current context
+            if len(link_parts) == 1:
+                # /workspace link <workspace> — use current context
+                if not platform or not chat_id:
+                    return "❌ Can't determine current chat. Use the full form: `/workspace link <platform> <chat_id> <thread_id> <workspace>`"
+                link_ws = link_parts[0]
+                if not thread_id:
+                    return f"❌ No topic/thread in current context for {platform}/{chat_id}. Use `/workspace link {platform} {chat_id} <thread_id> {link_ws}`"
+                # Telegram general topic has thread_id == 1 — not a real topic
+                if str(thread_id) == "1":
+                    return (
+                        f"❌ You're in the **general topic** (thread 1), which can't be linked like a regular topic.\n"
+                        f"Use channel default instead:\n"
+                        f"`/workspace link {platform} {chat_id} default {link_ws}`"
+                    )
+                link_platform, link_chat_id, link_thread_id = platform, chat_id, thread_id
+            elif len(link_parts) == 2:
+                # /workspace link <thread_id> <workspace> — current platform+chat
+                if not platform or not chat_id:
+                    return "❌ Can't determine current chat. Use the full form: `/workspace link <platform> <chat_id> <thread_id> <workspace>`"
+                link_thread_id, link_ws = link_parts
+                link_platform, link_chat_id = platform, chat_id
+            elif len(link_parts) >= 4:
+                # Full form: /workspace link <platform> <chat_id> <thread_id> <workspace>
+                link_platform, link_chat_id, link_thread_id, link_ws = link_parts[:4]
+            else:
+                # 3 args — ambiguous, could be <chat_id> <thread_id> <workspace>
+                # but also <platform> <chat_id> <workspace> (default). Prefer explicit.
+                return (
+                    "❌ Ambiguous args. Use one of:\n"
+                    "• `/workspace link <workspace>` — current topic\n"
+                    "• `/workspace link <thread_id> <workspace>` — this chat, specific topic\n"
+                    "• `/workspace link <platform> <chat_id> <thread_id> <workspace>` — full spec"
+                )
+
+            # Verify workspace exists
+            ws_dir = workspaces_dir / link_ws
+            if not ws_dir.exists():
+                return f"❌ Workspace `{link_ws}` not found. Create it first with `/workspace create {link_ws}`"
+
+            # Write/update topics.yaml
+            safe_id = _safe_dir_name(link_chat_id)
+            topic_dir = platforms_dir / link_platform / safe_id
+            topic_dir.mkdir(parents=True, exist_ok=True)
+            topics_file = topic_dir / "topics.yaml"
+
+            import yaml as _yaml
+            data = {}
+            if topics_file.exists():
+                data = _yaml.safe_load(topics_file.read_text(encoding="utf-8")) or {}
+            topics = data.get("topics", {})
+            if isinstance(topics, list):
+                # Convert list form to dict form
+                topics = {str(item.get("thread_id", "")): str(item.get("workspace", "")) for item in topics if isinstance(item, dict)}
+            topics[str(link_thread_id)] = link_ws
+            data["topics"] = topics
+            if "workspace" not in data:
+                data["workspace"] = "default"
+            topics_file.write_text(_yaml.safe_dump(data, default_flow_style=False), encoding="utf-8")
+            _clear_stat_cache()
+
+            if link_thread_id == "default":
+                return f"✅ Set **default workspace** for {link_platform}/{link_chat_id} → **{link_ws}**"
+            return f"✅ Linked {link_platform}/{link_chat_id} topic **{link_thread_id}** → **{link_ws}**"
+
+        elif subcmd == "model":
+            # /workspace model [name] [model_name] — set, show, or clear workspace model
+            # No ws name → auto-detect from current topic context
+            # No model_name → auto-detect current session model
+            if not rest:
+                # Try to resolve workspace from current context
+                if platform and chat_id:
+                    result = resolve_workspace(platform, chat_id, thread_id or None)
+                    if result.prompt is not None:
+                        # Find workspace name from topics.yaml
+                        ws_name = self._find_workspace_name_from_context(platform, chat_id, thread_id or None)
+                        if ws_name:
+                            rest = ws_name  # pretend user typed the workspace name
+                        else:
+                            return "❌ Can't determine workspace name from current topic. Use: `/workspace model <name>`"
+                    else:
+                        return "Usage: `/workspace model <workspace_name> [model_name]`\nOmit model to use current session model\nUse `clear` to remove: `/workspace model <name> clear`"
+                else:
+                    return "Usage: `/workspace model <workspace_name> [model_name]`\nOmit model to use current session model\nUse `clear` to remove: `/workspace model <name> clear`"
+
+            model_parts = rest.split(None, 1)
+            ws_name = model_parts[0]
+            second_arg = model_parts[1].strip() if len(model_parts) > 1 else ""
+
+            ws_dir = workspaces_dir / ws_name
+            if not ws_dir.exists():
+                # First arg isn't a workspace — maybe it's a model name for current workspace?
+                if platform and chat_id:
+                    current_ws = self._find_workspace_name_from_context(platform, chat_id, thread_id or None)
+                    if current_ws:
+                        # Treat the first arg as model name for the current workspace
+                        current_ws_dir = workspaces_dir / current_ws
+                        if current_ws_dir.exists():
+                            # Re-parse: ws_name=current_ws, model_value=original first arg
+                            second_arg = ws_name  # original first arg becomes the model
+                            ws_name = current_ws
+                            ws_dir = current_ws_dir
+                if not ws_dir.exists():
+                    return f"❌ Workspace `{ws_name}` not found. Create it first with `/workspace create {ws_name}`"
+
+            system_file = ws_dir / "SYSTEM.md"
+            import yaml as _yaml
+            if system_file.exists():
+                content = system_file.read_text(encoding="utf-8")
+                fm, body = _parse_frontmatter(content)
+            else:
+                fm, body = {}, ""
+
+            # Handle "clear"
+            if second_arg == "clear":
+                if "model" in fm:
+                    del fm["model"]
+                    _write_system_md(system_file, fm, body)
+                    _clear_stat_cache()
+                    return f"✅ Cleared model for workspace **{ws_name}**"
+                return f"No model set for **{ws_name}**."
+
+            # Handle "show" or no second arg → auto-detect current model
+            if second_arg in ("show", ""):
+                current = fm.get("model")
+                # Resolve the current session model
+                resolved_model = ""
+                try:
+                    resolved_model, _ = self._resolve_session_agent_runtime(
+                        source=source,
+                        session_key=self._session_key_for_source(source) if source else None,
+                        user_config=_load_gateway_config(),
+                    )
+                except Exception:
+                    pass
+                config_default = ""
+                try:
+                    config_default = _resolve_gateway_model(_load_gateway_config())
+                except Exception:
+                    pass
+
+                if second_arg == "" and not current:
+                    # Auto-set: use current session model
+                    if resolved_model:
+                        fm["model"] = resolved_model
+                        _write_system_md(system_file, fm, body)
+                        _clear_stat_cache()
+                        source_label = "current session" if resolved_model != config_default else "config default"
+                        return f"✅ Set model **{resolved_model}** for workspace **{ws_name}** ({source_label})"
+                    else:
+                        return f"❌ Couldn't determine current model. Set one explicitly:\n`/workspace model {ws_name} <model_name>`"
+
+                if second_arg == "show" or current:
+                    model_display = current or "(none)"
+                    session_info = f"\nSession model: **{resolved_model}**" if resolved_model else ""
+                    return f"Workspace **{ws_name}** model: **{model_display}**{session_info}\nUse `/workspace model {ws_name} <model>` to change, or `/workspace model {ws_name} clear` to remove."
+
+            # Normal case: second_arg is the model name
+            model_value = second_arg
+            fm["model"] = model_value
+            _write_system_md(system_file, fm, body)
+            _clear_stat_cache()
+            return f"✅ Set model **{model_value}** for workspace **{ws_name}**"
+
+        elif subcmd in ("remove", "unlink"):
+            # /workspace remove <name> — delete workspace
+            # /workspace unlink [platform chat_id] <thread_id> — unlink a topic
+            if subcmd == "unlink":
+                unlink_parts = rest.split()
+                if not unlink_parts:
+                    # /workspace unlink — use current context
+                    if not platform or not chat_id:
+                        return "❌ Can't determine current chat. Use `/workspace unlink <platform> <chat_id> <thread_id>`"
+                    if not thread_id:
+                        return f"❌ No topic/thread in current context. Use `/workspace unlink {platform} {chat_id} <thread_id>`"
+                    u_platform, u_chat_id, u_thread_id = platform, chat_id, thread_id
+                elif len(unlink_parts) == 1:
+                    # /workspace unlink <thread_id> — current chat
+                    if not platform or not chat_id:
+                        return "❌ Can't determine current chat. Use `/workspace unlink <platform> <chat_id> <thread_id>`"
+                    u_platform, u_chat_id = platform, chat_id
+                    u_thread_id = unlink_parts[0]
+                elif len(unlink_parts) >= 3:
+                    u_platform, u_chat_id, u_thread_id = unlink_parts[:3]
+                else:
+                    return (
+                        "❌ Ambiguous args. Use one of:\n"
+                        "• `/workspace unlink` — Unlink current topic\n"
+                        "• `/workspace unlink <thread_id>` — Unlink a topic in this chat\n"
+                        "• `/workspace unlink <platform> <chat_id> <thread_id>` — Full spec"
+                    )
+                safe_id = _safe_dir_name(u_chat_id)
+                topics_file = platforms_dir / u_platform / safe_id / "topics.yaml"
+                if not topics_file.exists():
+                    return f"❌ No topics.yaml found for {u_platform}/{u_chat_id}"
+                import yaml as _yaml
+                data = _yaml.safe_load(topics_file.read_text(encoding="utf-8")) or {}
+                topics = data.get("topics", {})
+                if str(u_thread_id) not in topics:
+                    return f"❌ Thread `{u_thread_id}` not linked in {u_platform}/{u_chat_id}"
+                del topics[str(u_thread_id)]
+                data["topics"] = topics
+                topics_file.write_text(_yaml.safe_dump(data, default_flow_style=False), encoding="utf-8")
+                _clear_stat_cache()
+                return f"✅ Unlinked thread **{u_thread_id}** from {u_platform}/{u_chat_id}"
+            else:
+                # /workspace remove <name>
+                ws_name = rest.strip()
+                if not ws_name:
+                    return "Usage: `/workspace remove <name>`"
+                ws_dir = workspaces_dir / ws_name
+                if not ws_dir.exists():
+                    return f"❌ Workspace `{ws_name}` not found."
+                import shutil
+                shutil.rmtree(ws_dir)
+                _clear_stat_cache()
+                return f"✅ Removed workspace **{ws_name}**\n⚠️ Any topic links pointing to it are now broken — use `/workspace unlink` to clean up."
+
+        else:
+            return (
+                "📁 **Workspace commands:**\n\n"
+                "• `/workspace` or `/workspace list` — List workspaces & current mapping\n"
+                "• `/workspace create <name> [prompt]` — Create a workspace (auto-links current topic)\n"
+                "• `/workspace show [name]` — Show workspace details (or current context)\n"
+                "• `/workspace model <name> [model]` — Set model (omit to use current session model)\n"
+                "• `/workspace model <name> show` — Show workspace model\n"
+                "• `/workspace model <name> clear` — Remove workspace model\n"
+                "• `/workspace link <workspace>` — Link current topic to a workspace\n"
+                "• `/workspace link <thread_id> <workspace>` — Link a topic in this chat\n"
+                "• `/workspace unlink` — Unlink current topic\n"
+                "• `/workspace unlink <thread_id>` — Unlink a topic in this chat\n"
+                "• `/workspace remove <name>` — Delete a workspace"
+            )
+
+    async def _handle_retry_command(self, event: MessageEvent) -> str:
+        """Handle /retry command - re-send the last user message."""
+        source = event.source
+        session_entry = self.session_store.get_or_create_session(source)
+        history = self.session_store.load_transcript(session_entry.session_id)
+        
+        # Find the last user message
+        last_user_msg = None
+        last_user_idx = None
+        for i in range(len(history) - 1, -1, -1):
+            if history[i].get("role") == "user":
+                last_user_msg = history[i].get("content", "")
+                last_user_idx = i
+                break
+        
+        if not last_user_msg:
+            return t("gateway.retry.no_previous")
+        
+        # Truncate history to before the last user message and persist
+        truncated = history[:last_user_idx]
+        self.session_store.rewrite_transcript(session_entry.session_id, truncated)
+        # Reset stored token count — transcript was truncated
+        session_entry.last_prompt_tokens = 0
+        
+        # Re-send by creating a fake text event with the old message
+        retry_event = MessageEvent(
+            text=last_user_msg,
+            message_type=MessageType.TEXT,
+            source=source,
+            raw_message=event.raw_message,
+            channel_prompt=event.channel_prompt,
+            workspace_model=getattr(event, 'workspace_model', None),
+        )
+        
+        # Let the normal message handler process it
+        return await self._handle_message(retry_event)
 
     # ────────────────────────────────────────────────────────────────
     # /goal — persistent cross-turn goals (Ralph-style loop)
@@ -9790,6 +10473,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             return None, None
         max_turns = self._goal_max_turns_from_config()
         return GoalManager(session_id=sid, default_max_turns=max_turns), session_entry
+
+
 
 
 
@@ -13542,6 +14227,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         _interrupt_depth: int = 0,
         event_message_id: Optional[str] = None,
         channel_prompt: Optional[str] = None,
+        workspace_model: Optional[str] = None,
     ) -> Dict[str, Any]:
         """
         Run the agent with the given message and context.
@@ -14366,6 +15052,28 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     session_key=session_key,
                     user_config=user_config,
                 )
+                # Workspace model override: takes effect when no /model session
+                # override is active.  On /new, session overrides are cleared,
+                # so workspace model kicks back in automatically.
+                if workspace_model:
+                    resolved_session_key = session_key
+                    if not resolved_session_key and source is not None:
+                        try:
+                            resolved_session_key = self._session_key_for_source(source)
+                        except Exception:
+                            resolved_session_key = None
+                    session_override = self._session_model_overrides.get(resolved_session_key) if resolved_session_key else None
+                    if not session_override:
+                        logger.info(
+                            "Workspace model override: session=%s config_model=%s -> workspace_model=%s",
+                            resolved_session_key or "", model, workspace_model,
+                        )
+                        model = workspace_model
+                    else:
+                        logger.debug(
+                            "Session /model override takes priority over workspace model: session=%s override=%s workspace=%s",
+                            resolved_session_key or "", session_override.get("model", "?"), workspace_model,
+                        )
                 logger.debug(
                     "run_agent resolved: model=%s provider=%s session=%s",
                     model, runtime_kwargs.get("provider"), session_key or "",
@@ -15905,6 +16613,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 next_message = pending
                 next_message_id = None
                 next_channel_prompt = None
+                next_workspace_model = None
                 if pending_event is not None:
                     next_source = getattr(pending_event, "source", None) or source
                     if self._is_goal_continuation_event(pending_event) and not self._goal_still_active_for_session(session_id):
@@ -15922,6 +16631,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         return result
                     next_message_id = self._reply_anchor_for_event(pending_event)
                     next_channel_prompt = getattr(pending_event, "channel_prompt", None)
+                    next_workspace_model = getattr(pending_event, "workspace_model", None)
 
                 # Restart typing indicator so the user sees activity while
                 # the follow-up turn runs.  The outer _process_message_background
@@ -15947,6 +16657,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     _interrupt_depth=_interrupt_depth + 1,
                     event_message_id=next_message_id,
                     channel_prompt=next_channel_prompt,
+                    workspace_model=next_workspace_model,
                 )
                 return _preserve_queued_followup_history_offset(result, followup_result)
         finally:

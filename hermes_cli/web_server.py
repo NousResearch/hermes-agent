@@ -23,7 +23,7 @@ import time
 import urllib.parse
 import urllib.request
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple, cast
 
 import yaml
 
@@ -54,7 +54,7 @@ try:
     from fastapi.middleware.cors import CORSMiddleware
     from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response
     from fastapi.staticfiles import StaticFiles
-    from pydantic import BaseModel
+    from pydantic import BaseModel, Field
 except ImportError:
     # First try lazy-installing the dashboard extras. Only the user actually
     # running `hermes dashboard` needs fastapi+uvicorn; lazy install keeps
@@ -66,7 +66,7 @@ except ImportError:
         from fastapi.middleware.cors import CORSMiddleware
         from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response
         from fastapi.staticfiles import StaticFiles
-        from pydantic import BaseModel
+        from pydantic import BaseModel, Field
     except Exception:
         raise SystemExit(
             "Web UI requires fastapi and uvicorn.\n"
@@ -474,6 +474,36 @@ class ModelAssignment(BaseModel):
     task: str = ""
 
 
+class PromptDraftCreate(BaseModel):
+    title: str
+    content: str
+    status: str = "draft"
+    priority: int = 50
+    project: Optional[str] = None
+    tags: List[str] = Field(default_factory=list)
+    provider: str = "openai-codex"
+    send_condition: Dict[str, Any] = Field(
+        default_factory=lambda: {"mode": "manual", "require_confirmation": True}
+    )
+    attachments: List[Dict[str, Any]] = Field(default_factory=list)
+    merged_from: List[str] = Field(default_factory=list)
+    retention_policy: str = "default"
+
+
+class PromptDraftUpdate(BaseModel):
+    title: Optional[str] = None
+    content: Optional[str] = None
+    status: Optional[str] = None
+    priority: Optional[int] = None
+    project: Optional[str] = None
+    tags: Optional[List[str]] = None
+    provider: Optional[str] = None
+    send_condition: Optional[Dict[str, Any]] = None
+    attachments: Optional[List[Dict[str, Any]]] = None
+    merged_from: Optional[List[str]] = None
+    retention_policy: Optional[str] = None
+
+
 _GATEWAY_HEALTH_URL = os.getenv("GATEWAY_HEALTH_URL")
 try:
     _GATEWAY_HEALTH_TIMEOUT = float(os.getenv("GATEWAY_HEALTH_TIMEOUT", "3"))
@@ -638,6 +668,147 @@ async def get_status():
         "gateway_updated_at": gateway_updated_at,
         "active_sessions": active_sessions,
     }
+
+
+def _isoformat_or_value(value: Any) -> Any:
+    formatter = getattr(value, "isoformat", None)
+    return formatter() if callable(formatter) else value
+
+
+def _quota_window_to_payload(window: Any) -> Dict[str, Any]:
+    reset_at = getattr(window, "reset_at", None)
+    return {
+        "label": getattr(window, "label", ""),
+        "remaining_percent": getattr(window, "remaining_percent", None),
+        "used_percent": getattr(window, "used_percent", None),
+        "reset_at": _isoformat_or_value(reset_at),
+    }
+
+
+def _quota_status_to_payload(status: Any) -> Dict[str, Any]:
+    checked_at = getattr(status, "checked_at", None)
+    windows = getattr(status, "windows", None) or {}
+    return {
+        "provider": getattr(status, "provider", "openai-codex"),
+        "ok": bool(getattr(status, "ok", False)),
+        "status": getattr(status, "status", "degraded"),
+        "checked_at": _isoformat_or_value(checked_at),
+        "remaining_percent": getattr(status, "remaining_percent", None),
+        "windows": {
+            key: _quota_window_to_payload(window)
+            for key, window in windows.items()
+        },
+        "plan": getattr(status, "plan", None),
+        "stale": bool(getattr(status, "stale", False)),
+        "error": getattr(status, "error", None),
+    }
+
+
+@app.get("/api/resources/codex-quota")
+async def get_codex_quota_resource(force_refresh: bool = False):
+    from agent.resource_policy import get_codex_quota_resource_status
+
+    status = get_codex_quota_resource_status(force_refresh=force_refresh)
+    return _quota_status_to_payload(status)
+
+
+def _prompt_to_payload(prompt: Any) -> Dict[str, Any]:
+    to_dict = getattr(prompt, "to_dict", None)
+    if callable(to_dict):
+        return to_dict()
+    return cast(Dict[str, Any], dict(prompt))
+
+
+def _open_prompt_outbox_store():
+    from agent.prompt_outbox import PromptDraftStore
+
+    return PromptDraftStore()
+
+
+@app.get("/api/outbox/prompts")
+async def list_outbox_prompts(
+    include_archived: bool = False,
+    status: Optional[str] = None,
+    project: Optional[str] = None,
+    limit: int = 100,
+):
+    store = _open_prompt_outbox_store()
+    try:
+        prompts = store.list_prompts(
+            include_archived=include_archived,
+            status=status,
+            project=project,
+            limit=limit,
+        )
+        return {"prompts": [_prompt_to_payload(prompt) for prompt in prompts]}
+    finally:
+        store.close()
+
+
+@app.post("/api/outbox/prompts")
+async def create_outbox_prompt(body: PromptDraftCreate):
+    store = _open_prompt_outbox_store()
+    try:
+        try:
+            prompt = store.create_prompt(
+                title=body.title,
+                content=body.content,
+                status=body.status,
+                priority=body.priority,
+                project=body.project,
+                tags=body.tags,
+                provider=body.provider,
+                send_condition=body.send_condition,
+                attachments=body.attachments,
+                merged_from=body.merged_from,
+                retention_policy=body.retention_policy,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        return _prompt_to_payload(prompt)
+    finally:
+        store.close()
+
+
+@app.get("/api/outbox/prompts/{prompt_id}")
+async def get_outbox_prompt(prompt_id: str):
+    store = _open_prompt_outbox_store()
+    try:
+        prompt = store.get_prompt(prompt_id)
+        if prompt is None:
+            raise HTTPException(status_code=404, detail="Prompt not found")
+        return _prompt_to_payload(prompt)
+    finally:
+        store.close()
+
+
+@app.patch("/api/outbox/prompts/{prompt_id}")
+async def update_outbox_prompt(prompt_id: str, body: PromptDraftUpdate):
+    store = _open_prompt_outbox_store()
+    try:
+        if hasattr(body, "model_dump"):
+            changes = body.model_dump(exclude_unset=True)
+        else:
+            changes = body.dict(exclude_unset=True)
+        try:
+            prompt = store.update_prompt(prompt_id, **changes)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        if prompt is None:
+            raise HTTPException(status_code=404, detail="Prompt not found")
+        return _prompt_to_payload(prompt)
+    finally:
+        store.close()
+
+
+@app.delete("/api/outbox/prompts/{prompt_id}")
+async def delete_outbox_prompt(prompt_id: str):
+    store = _open_prompt_outbox_store()
+    try:
+        deleted = store.delete_prompt(prompt_id)
+        return {"deleted": deleted}
+    finally:
+        store.close()
 
 
 # ---------------------------------------------------------------------------

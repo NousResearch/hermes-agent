@@ -125,6 +125,100 @@ class TestWebServerEndpoints:
         assert "hermes_home" in data
         assert "active_sessions" in data
 
+    def test_outbox_prompt_crud_endpoints(self):
+        create_resp = self.client.post(
+            "/api/outbox/prompts",
+            json={
+                "title": "Pause crons Graphit",
+                "content": "Suspendre les crons Graphit si quota critique.",
+                "project": "Graph'it",
+                "tags": ["graphit", "quota"],
+                "priority": 80,
+                "send_condition": {"mode": "quota_positive", "require_confirmation": True},
+            },
+        )
+
+        assert create_resp.status_code == 200
+        created = create_resp.json()
+        assert created["id"]
+        assert created["title"] == "Pause crons Graphit"
+        assert created["status"] == "draft"
+        assert created["send_condition"]["mode"] == "quota_positive"
+
+        list_resp = self.client.get("/api/outbox/prompts")
+        assert list_resp.status_code == 200
+        assert list_resp.json()["prompts"][0]["id"] == created["id"]
+
+        patch_resp = self.client.patch(
+            f"/api/outbox/prompts/{created['id']}",
+            json={
+                "status": "queued",
+                "priority": 10,
+                "send_condition": {"mode": "quota_above_threshold", "threshold_percent": 25},
+            },
+        )
+        assert patch_resp.status_code == 200
+        patched = patch_resp.json()
+        assert patched["status"] == "queued"
+        assert patched["priority"] == 10
+        assert patched["send_condition"]["threshold_percent"] == 25
+
+        delete_resp = self.client.delete(f"/api/outbox/prompts/{created['id']}")
+        assert delete_resp.status_code == 200
+        assert delete_resp.json() == {"deleted": True}
+
+        missing_resp = self.client.get(f"/api/outbox/prompts/{created['id']}")
+        assert missing_resp.status_code == 404
+
+    def test_get_codex_quota_resource(self, monkeypatch):
+        from dataclasses import dataclass
+        from datetime import datetime, timezone
+
+        import agent.resource_policy as resource_policy
+
+        @dataclass(frozen=True)
+        class _Window:
+            label: str
+            remaining_percent: float
+            used_percent: float
+            reset_at: datetime | None = None
+
+        @dataclass(frozen=True)
+        class _Status:
+            provider: str = "openai-codex"
+            ok: bool = True
+            status: str = "warning"
+            checked_at: datetime = datetime(2026, 5, 23, 12, 0, tzinfo=timezone.utc)
+            remaining_percent: float = 8.0
+            windows: dict | None = None
+            plan: str = "Pro"
+            stale: bool = False
+            error: str | None = None
+
+        quota_status = _Status(
+            windows={
+                "session": _Window("Session", 85.0, 15.0),
+                "weekly": _Window("Weekly", 8.0, 92.0),
+            }
+        )
+        monkeypatch.setattr(
+            resource_policy,
+            "get_codex_quota_resource_status",
+            lambda force_refresh=False: quota_status,
+        )
+
+        resp = self.client.get("/api/resources/codex-quota")
+
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["provider"] == "openai-codex"
+        assert data["ok"] is True
+        assert data["status"] == "warning"
+        assert data["remaining_percent"] == 8.0
+        assert data["windows"]["session"]["remaining_percent"] == 85.0
+        assert data["windows"]["weekly"]["remaining_percent"] == 8.0
+        assert data["checked_at"] == "2026-05-23T12:00:00+00:00"
+
     def test_get_status_filters_unconfigured_gateway_platforms(self, monkeypatch):
         import gateway.config as gateway_config
         import hermes_cli.web_server as web_server

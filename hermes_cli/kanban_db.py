@@ -1181,8 +1181,16 @@ def connect(
             # See hermes_state._WAL_INCOMPAT_MARKERS for detection logic.
             from hermes_state import apply_wal_with_fallback
             apply_wal_with_fallback(conn, db_label=f"kanban.db ({path.name})")
-            conn.execute("PRAGMA synchronous=NORMAL")
+            # FULL (was NORMAL): fsync before each checkpoint to narrow the
+            # crash window that can leave a b-tree page header torn.
+            conn.execute("PRAGMA synchronous=FULL")
             conn.execute("PRAGMA foreign_keys=ON")
+            # Zero freed pages so a later torn write cannot expose stale
+            # cell content; persisted in the DB header for new DBs.
+            conn.execute("PRAGMA secure_delete=ON")
+            # Surface corrupt cells as read errors instead of silent
+            # wrong-data returns.
+            conn.execute("PRAGMA cell_size_check=ON")
             needs_init = resolved not in _INITIALIZED_PATHS
             if needs_init:
                 # Idempotent: runs CREATE TABLE IF NOT EXISTS + the additive

@@ -280,3 +280,41 @@ def test_new_session_with_duplicate_title_surfaces_error(capsys):
     captured = capsys.readouterr()
     assert "New session started: Dup" not in captured.out
     assert "New session started!" in captured.out
+
+
+
+def test_auto_resume_last_cli_session_adopts_previous_session(tmp_path):
+    cli = _make_cli()
+    cli._session_db = SessionDB(db_path=tmp_path / "state.db")
+    old_id = "20260523_120000_old"
+    cli._session_db.create_session(session_id=old_id, source="cli", model="gpt-5.5")
+    cli._session_db.append_message(old_id, role="user", content="continue this")
+    cli._session_db.end_session(old_id, end_reason="user_exit")
+    cli._console_print = MagicMock()
+
+    cli._auto_resume_last_session()
+
+    assert cli.session_id == old_id
+    assert cli._resumed is True
+    assert cli._new_session_requested is True
+    assert cli.conversation_history == [{"role": "user", "content": "continue this"}]
+    session = cli._session_db.get_session(old_id)
+    assert session["ended_at"] is None
+    assert session["end_reason"] is None
+
+
+def test_auto_resume_skips_empty_or_non_cli_sessions(tmp_path):
+    cli = _make_cli()
+    cli._session_db = SessionDB(db_path=tmp_path / "state.db")
+    original_id = cli.session_id
+    cli._session_db.create_session(session_id="empty_cli", source="cli", model="gpt-5.5")
+    cli._session_db.end_session("empty_cli", end_reason="user_exit")
+    cli._session_db.create_session(session_id="gateway_session", source="telegram", model="gpt-5.5")
+    cli._session_db.append_message("gateway_session", role="user", content="not cli")
+    cli._session_db.end_session("gateway_session", end_reason="user_exit")
+
+    cli._auto_resume_last_session()
+
+    assert cli.session_id == original_id
+    assert cli._resumed is False
+    assert cli.conversation_history == []

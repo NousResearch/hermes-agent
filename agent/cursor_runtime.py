@@ -37,6 +37,17 @@ def run_cursor_sdk_turn(
             "interrupted": False,
         }
 
+    from agent.transports.cursor_usage import apply_cursor_usage_to_agent
+
+    def _on_cursor_usage(usage: dict) -> None:
+        applied = apply_cursor_usage_to_agent(agent, usage)
+        if applied and progress_callback is not None:
+            # Nudge the status bar to repaint with fresh context numbers.
+            try:
+                progress_callback("")
+            except Exception:
+                pass
+
     if not hasattr(agent, "_cursor_session") or agent._cursor_session is None:
         cwd = getattr(agent, "session_cwd", None) or os.getcwd()
         api_key = getattr(agent, "api_key", None) or os.environ.get("CURSOR_API_KEY")
@@ -46,9 +57,12 @@ def run_cursor_sdk_turn(
             api_key=api_key,
             model=model,
             progress_callback=progress_callback,
+            usage_callback=_on_cursor_usage,
         )
-    elif progress_callback is not None:
-        agent._cursor_session._progress_callback = progress_callback
+    else:
+        if progress_callback is not None:
+            agent._cursor_session._progress_callback = progress_callback
+        agent._cursor_session._usage_callback = _on_cursor_usage
 
     # Skills are available via the hermes-tools MCP callback (skill_view /
     # skills_list). Injecting the full skills system prompt here duplicates
@@ -88,6 +102,18 @@ def run_cursor_sdk_turn(
         except Exception:
             pass
         agent._cursor_session = None
+
+    if turn.usage:
+        logger.info(
+            "cursor SDK usage: prompt=%s completion=%s",
+            turn.usage.get("prompt_tokens"),
+            turn.usage.get("completion_tokens"),
+        )
+    elif getattr(agent.context_compressor, "last_prompt_tokens", 0) == 0:
+        # Usage normally arrives via on_delta during the stream; fallback if absent.
+        latest = getattr(agent._cursor_session, "_latest_usage", None)
+        if latest:
+            apply_cursor_usage_to_agent(agent, latest)
 
     if turn.projected_messages:
         messages.extend(turn.projected_messages)

@@ -39,6 +39,7 @@ class TurnResult:
     run_id: Optional[str] = None
     agent_id: Optional[str] = None
     should_retire: bool = False
+    usage: Optional[dict[str, int]] = None
 
 
 def _bridge_launch_needs_workaround() -> bool:
@@ -243,6 +244,7 @@ class CursorSDKSession:
         model: str = "composer-2.5",
         on_event: Optional[Callable[[Any], None]] = None,
         progress_callback: Optional[Callable[[str], None]] = None,
+        usage_callback: Optional[Callable[[Mapping[str, Any]], None]] = None,
     ) -> None:
         self._cwd = cwd or os.getcwd()
         self._api_key = (api_key or os.environ.get("CURSOR_API_KEY") or "").strip()
@@ -250,6 +252,8 @@ class CursorSDKSession:
         self._model_selection = build_cursor_model_selection(self._model)
         self._on_event = on_event
         self._progress_callback = progress_callback
+        self._usage_callback = usage_callback
+        self._latest_usage: Optional[Mapping[str, Any]] = None
         self._agent: Any = None
         self._agent_cm: Any = None
         self._sdk_client: Any = None
@@ -394,6 +398,26 @@ class CursorSDKSession:
             except Exception:
                 pass
 
+    def _handle_cursor_delta(self, update: Any, result: TurnResult) -> None:
+        """Capture context usage from Cursor interaction updates (via on_delta)."""
+        update_type = str(getattr(update, "type", "") or "")
+        if update_type == "turn-ended":
+            usage = getattr(update, "usage", None)
+            if isinstance(usage, Mapping) and usage:
+                self._latest_usage = usage
+                from agent.transports.cursor_usage import cursor_turn_usage_to_hermes
+
+                result.usage = cursor_turn_usage_to_hermes(usage)
+                if self._usage_callback is not None:
+                    try:
+                        self._usage_callback(usage)
+                    except Exception:
+                        pass
+            return
+        if update_type == "token-delta":
+            # Output token chunks only; context size comes from turn-ended usage.
+            return
+
     def _run_turn_worker(
         self,
         user_input: str,
@@ -407,13 +431,11 @@ class CursorSDKSession:
         result = TurnResult()
         result_holder["result"] = result
         try:
-            if mcp_servers:
-                send_options = SendOptions(
-                    mcp_servers=mcp_servers,
-                    model=self._model_selection,
-                )
-            else:
-                send_options = SendOptions(model=self._model_selection)
+            send_options = SendOptions(
+                model=self._model_selection,
+                mcp_servers=mcp_servers or None,
+                on_delta=lambda update: self._handle_cursor_delta(update, result),
+            )
             run = self._agent.send(user_input, send_options)
             self._active_run = run
             result.run_id = str(getattr(run, "id", "") or "")

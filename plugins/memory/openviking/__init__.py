@@ -31,6 +31,7 @@ import mimetypes
 import os
 import tempfile
 import threading
+import time
 import uuid
 import zipfile
 from pathlib import Path
@@ -638,26 +639,59 @@ class OpenVikingMemoryProvider(MemoryProvider):
         content: str,
         metadata: Optional[Dict[str, Any]] = None,
     ) -> None:
-        """Mirror built-in memory writes to OpenViking via content/write."""
-        if not self._client or action != "add" or not content:
+        """Mirror built-in memory writes to OpenViking via content/write.
+
+        Handles ``add`` and ``replace`` by writing to a fresh UUID-suffixed
+        URI (every call generates a new URI, so ``mode="create"`` cannot
+        collide).  ``remove`` is acknowledged at INFO and skipped — the
+        plugin does not persist a memory→URI mapping.
+
+        Transient write-lock errors (``INVALID_ARGUMENT: resource is
+        busy``) are retried once with a 200 ms backoff.  Final failures
+        surface at WARNING so silent mirror outages are detectable
+        without DEBUG logging.
+        """
+        if not self._client or not content:
+            return
+        if action == "remove":
+            logger.info(
+                "OpenViking mirror: 'remove' on target=%s skipped "
+                "(plugin does not track memory→URI mapping). "
+                "Stale entries may accumulate; consider periodic "
+                "viking_browse cleanup.",
+                target,
+            )
+            return
+        if action not in {"add", "replace"}:
             return
 
         subdir = _MEMORY_WRITE_TARGET_SUBDIR_MAP.get(target, _DEFAULT_MEMORY_SUBDIR)
         uri = self._build_memory_uri(subdir)
 
         def _write():
-            try:
-                client = _VikingClient(
-                    self._endpoint, self._api_key,
-                    account=self._account, user=self._user, agent=self._agent,
-                )
-                client.post("/api/v1/content/write", {
-                    "uri": uri,
-                    "content": content,
-                    "mode": "create",
-                })
-            except Exception as e:
-                logger.debug("OpenViking memory mirror failed: %s", e)
+            client = _VikingClient(
+                self._endpoint, self._api_key,
+                account=self._account, user=self._user, agent=self._agent,
+            )
+            payload = {"uri": uri, "content": content, "mode": "create"}
+            last_exc: Optional[BaseException] = None
+            for attempt in range(2):
+                try:
+                    client.post("/api/v1/content/write", payload)
+                    return
+                except RuntimeError as e:
+                    msg = str(e)
+                    # Retry only on transient write-lock conflicts
+                    if "INVALID_ARGUMENT" in msg and "busy" in msg and attempt == 0:
+                        time.sleep(0.2)
+                        last_exc = e
+                        continue
+                    last_exc = e
+                    break
+                except Exception as e:
+                    last_exc = e
+                    break
+            logger.warning("OpenViking memory mirror failed: %s", last_exc)
 
         t = threading.Thread(target=_write, daemon=True, name="openviking-memwrite")
         t.start()

@@ -11152,6 +11152,7 @@ class GatewayRunner:
         that the normal _process_message_background path would have caught.
         """
         from pathlib import Path
+
         from urllib.parse import quote as _quote
 
         try:
@@ -16516,7 +16517,7 @@ class GatewayRunner:
                     _hc = _hm.get("content", "")
                     if "MEDIA:" in _hc:
                         _TOOL_MEDIA_RE = re.compile(
-                            r'MEDIA:((?:/|~\/)\S+\.(?:png|jpe?g|gif|webp|'
+                            r'MEDIA:((?:[A-Za-z]:[\\/]|/|~\/)\S+\.(?:png|jpe?g|gif|webp|'
                             r'mp4|mov|avi|mkv|webm|ogg|opus|mp3|wav|m4a|'
                             r'flac|epub|pdf|zip|rar|7z|docx?|xlsx?|pptx?|'
                             r'txt|csv|apk|ipa))',
@@ -16812,7 +16813,7 @@ class GatewayRunner:
                         content = msg.get("content", "")
                         if "MEDIA:" in content:
                             _TOOL_MEDIA_RE = re.compile(
-                                r'MEDIA:((?:/|~\/)\S+\.(?:png|jpe?g|gif|webp|'
+                                r'MEDIA:((?:[A-Za-z]:[\\/]|/|~\/)\S+\.(?:png|jpe?g|gif|webp|'
                                 r'mp4|mov|avi|mkv|webm|ogg|opus|mp3|wav|m4a|'
                                 r'flac|epub|pdf|zip|rar|7z|docx?|xlsx?|pptx?|'
                                 r'txt|csv|apk|ipa))',

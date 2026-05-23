@@ -338,8 +338,30 @@ class TestEdgeCases:
         assert paths == []
 
     def test_windows_path_not_matched(self):
-        """Windows-style paths should not match."""
-        paths, _ = _extract("See C:\\Users\\test\\image.png")
+        """Bare drive letter without path separator should not match."""
+        paths, _ = _extract("See C:Users without slash")
+        assert paths == []
+
+    def test_windows_backslash_path_matched(self):
+        """Windows drive-letter paths with backslashes should match."""
+        paths, _ = _extract("See C:\\Users\\test\\image.png here")
+        assert paths == ["C:\\Users\\test\\image.png"]
+
+    def test_windows_forward_slash_path_matched(self):
+        """Windows drive-letter paths with forward slashes should match."""
+        paths, _ = _extract("See D:/dev/project/screenshot.png here")
+        assert paths == ["D:/dev/project/screenshot.png"]
+
+    def test_windows_path_cleaned_from_text(self):
+        """Windows path should be removed from cleaned text."""
+        paths, cleaned = _extract("Check D:\\reports\\chart.pdf for data")
+        assert paths == ["D:\\reports\\chart.pdf"]
+        assert "D:\\reports\\chart.pdf" not in cleaned
+        assert "Check" in cleaned
+
+    def test_windows_network_path_not_matched(self):
+        """UNC network paths (\\\\server\\share) should not match as drive-letter paths."""
+        paths, _ = _extract("File at \\\\server\\share\\file.png")
         assert paths == []
 
     def test_relative_path_not_matched(self):

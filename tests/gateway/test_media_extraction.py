@@ -180,5 +180,63 @@ class TestMediaExtraction:
         assert len(unique) == 2  # After dedup: same.ogg and different.ogg
 
 
+
+class TestWindowsPathMediaExtraction:
+    """Tests for MEDIA tag extraction with Windows drive-letter paths."""
+
+    def test_windows_backslash_path(self):
+        """MEDIA:D:\\path\\file.png should be extracted on Windows."""
+        from gateway.platforms.base import BasePlatformAdapter
+        media_files, cleaned = BasePlatformAdapter.extract_media(
+            "Check this MEDIA:D:\\dev\\test.png out"
+        )
+        assert len(media_files) == 1
+        path, is_voice = media_files[0]
+        assert path.endswith("test.png")
+        assert "D:" in path
+        assert not is_voice
+        assert "MEDIA:" not in cleaned
+
+    def test_windows_forward_slash_path(self):
+        """MEDIA:C:/Users/file.png should be extracted on Windows."""
+        from gateway.platforms.base import BasePlatformAdapter
+        media_files, cleaned = BasePlatformAdapter.extract_media(
+            "Here MEDIA:C:/Users/file.png now"
+        )
+        assert len(media_files) == 1
+        path, is_voice = media_files[0]
+        assert path.endswith("file.png")
+
+    def test_unix_abs_path_still_works(self):
+        """Unix absolute paths should still work after the fix."""
+        from gateway.platforms.base import BasePlatformAdapter
+        media_files, cleaned = BasePlatformAdapter.extract_media(
+            "MEDIA:/tmp/audio.ogg here"
+        )
+        assert len(media_files) == 1
+        path, is_voice = media_files[0]
+        assert path.endswith("audio.ogg")
+
+    def test_unix_home_path_still_works(self):
+        """Unix home-relative paths should still work after the fix."""
+        from gateway.platforms.base import BasePlatformAdapter
+        media_files, cleaned = BasePlatformAdapter.extract_media(
+            "Check MEDIA:~/docs/report.pdf out"
+        )
+        assert len(media_files) == 1
+        path, is_voice = media_files[0]
+        assert path.endswith("report.pdf")
+
+    def test_http_url_not_matched_as_windows_path(self):
+        """MEDIA:http://example.com/img.png should not match as drive-letter path."""
+        from gateway.platforms.base import BasePlatformAdapter
+        media_files, cleaned = BasePlatformAdapter.extract_media(
+            "MEDIA:http://example.com/img.png"
+        )
+        # Should not match — the trailing assertion rejects URLs
+        assert len(media_files) == 0
+
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

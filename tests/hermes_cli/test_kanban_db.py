@@ -1882,6 +1882,96 @@ class TestSharedBoardPaths:
         assert env["HERMES_KANBAN_TASK"] == "t_dispatch_env"
         assert env["HERMES_KANBAN_BRANCH"] == "wt/t_dispatch_env"
 
+    def test_dispatcher_spawn_injects_gh_config_dir_from_xdg_config_home(
+        self, tmp_path, monkeypatch
+    ):
+        default_home = tmp_path / ".hermes"
+        default_home.mkdir()
+        self._set_home(monkeypatch, tmp_path, default_home)
+        xdg_config_home = tmp_path / "xdg"
+        gh_config_dir = xdg_config_home / "gh"
+        gh_config_dir.mkdir(parents=True)
+        monkeypatch.setenv("XDG_CONFIG_HOME", str(xdg_config_home))
+        monkeypatch.delenv("GH_CONFIG_DIR", raising=False)
+
+        captured = {}
+
+        class _FakePopen:
+            def __init__(self, cmd, **kwargs):
+                captured["env"] = kwargs.get("env", {})
+                self.pid = 4242
+
+        monkeypatch.setattr("subprocess.Popen", _FakePopen)
+
+        task = kb.Task(
+            id="t_gh_xdg",
+            title="x",
+            body=None,
+            assignee="coder",
+            status="ready",
+            priority=0,
+            created_by=None,
+            created_at=0,
+            started_at=None,
+            completed_at=None,
+            workspace_kind="worktree",
+            workspace_path=str(tmp_path / "ws"),
+            claim_lock=None,
+            claim_expires=None,
+            tenant=None,
+            branch_name=None,
+        )
+        kb._default_spawn(task, str(tmp_path / "ws"))
+
+        assert captured["env"]["GH_CONFIG_DIR"] == str(gh_config_dir)
+
+    def test_dispatcher_spawn_injects_gh_config_dir_from_real_home_when_xdg_missing(
+        self, tmp_path, monkeypatch
+    ):
+        import pwd
+        from types import SimpleNamespace
+
+        default_home = tmp_path / ".hermes"
+        default_home.mkdir()
+        self._set_home(monkeypatch, tmp_path, default_home)
+        real_home = tmp_path / "real-home"
+        gh_config_dir = real_home / ".config" / "gh"
+        gh_config_dir.mkdir(parents=True)
+        monkeypatch.delenv("XDG_CONFIG_HOME", raising=False)
+        monkeypatch.delenv("GH_CONFIG_DIR", raising=False)
+        monkeypatch.setattr(pwd, "getpwuid", lambda _uid: SimpleNamespace(pw_dir=str(real_home)))
+
+        captured = {}
+
+        class _FakePopen:
+            def __init__(self, cmd, **kwargs):
+                captured["env"] = kwargs.get("env", {})
+                self.pid = 4242
+
+        monkeypatch.setattr("subprocess.Popen", _FakePopen)
+
+        task = kb.Task(
+            id="t_gh_pwd",
+            title="x",
+            body=None,
+            assignee="coder",
+            status="ready",
+            priority=0,
+            created_by=None,
+            created_at=0,
+            started_at=None,
+            completed_at=None,
+            workspace_kind="worktree",
+            workspace_path=str(tmp_path / "ws"),
+            claim_lock=None,
+            claim_expires=None,
+            tenant=None,
+            branch_name=None,
+        )
+        kb._default_spawn(task, str(tmp_path / "ws"))
+
+        assert captured["env"]["GH_CONFIG_DIR"] == str(gh_config_dir)
+
 
 # ---------------------------------------------------------------------------
 # latest_summary / latest_summaries — surface task_runs.summary handoffs

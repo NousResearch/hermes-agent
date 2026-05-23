@@ -109,6 +109,58 @@ _IS_WINDOWS = sys.platform == "win32"
 DEFAULT_CLAIM_TTL_SECONDS = 15 * 60
 
 
+def _maybe_inject_gh_config_dir(env: dict[str, str]) -> None:
+    """Bridge GitHub CLI auth into worker sessions without widening XDG scope.
+
+    Kanban workers intentionally redirect subprocess ``HOME`` into
+    ``{HERMES_HOME}/home`` for profile isolation. That keeps git/ssh/npm/gh
+    configs from bleeding between profiles, but it also means ``gh`` no longer
+    sees the operator's existing login under ``~/.config/gh/hosts.yml``.
+
+    Instead of repointing all XDG lookups at the operator's real home, inject
+    only ``GH_CONFIG_DIR`` when the operator already has a real gh config on
+    disk and the worker env hasn't set an explicit override. This keeps the fix
+    bounded to GitHub auth / PR creation while leaving the rest of the profile
+    isolation intact.
+    """
+    if env.get("GH_CONFIG_DIR"):
+        return
+
+    xdg_config_home = (env.get("XDG_CONFIG_HOME") or "").strip()
+    if xdg_config_home:
+        gh_config_dir = Path(xdg_config_home) / "gh"
+        if gh_config_dir.is_dir():
+            env["GH_CONFIG_DIR"] = str(gh_config_dir)
+        return
+
+    real_home: Optional[str] = None
+    try:
+        import pwd
+
+        resolved = pwd.getpwuid(os.getuid()).pw_dir.strip()  # windows-footgun: ok — POSIX fallback inside try/except (pwd import fails on Windows)
+        if resolved:
+            real_home = resolved
+    except Exception:
+        pass
+
+    if not real_home and _IS_WINDOWS:
+        candidate = (env.get("USERPROFILE") or "").strip()
+        if candidate:
+            real_home = candidate
+        else:
+            drive = (env.get("HOMEDRIVE") or "").strip()
+            path = (env.get("HOMEPATH") or "").strip()
+            if drive and path:
+                real_home = f"{drive}{path}"
+
+    if not real_home:
+        return
+
+    gh_config_dir = Path(real_home) / ".config" / "gh"
+    if gh_config_dir.is_dir():
+        env["GH_CONFIG_DIR"] = str(gh_config_dir)
+
+
 def _resolve_claim_ttl_seconds(ttl_seconds: Optional[int] = None) -> int:
     """Return the effective claim TTL, honoring the kanban env override.
 
@@ -5311,6 +5363,7 @@ def _default_spawn(
         # This only happens in test fixtures where the isolated
         # HERMES_HOME never had profiles created.
         pass
+    _maybe_inject_gh_config_dir(env)
     if task.tenant:
         env["HERMES_TENANT"] = task.tenant
     env["HERMES_KANBAN_TASK"] = task.id

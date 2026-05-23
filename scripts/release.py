@@ -464,6 +464,7 @@ AUTHOR_MAP = {
     "xiewenxuan462@gmail.com": "yule975",
     "yiweimeng.dlut@hotmail.com": "meng93",
     "hakanerten02@hotmail.com": "teyrebaz33",
+    "linux2010@github.com": "Linux2010",
     "linux2010@users.noreply.github.com": "Linux2010",
     "elmatadorgh@users.noreply.github.com": "elmatadorgh",
     "coktinbaran5@gmail.com": "elmatadorgh",

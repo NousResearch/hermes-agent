@@ -1,0 +1,16 @@
+name: on-demand-context
+version: 1.0.0
+description: |
+  On-demand context loading plugin.
+  Injects a lightweight index of available context documents on the first turn,
+  and provides a load_context() tool to fetch full content on demand.
+  Saves tokens by not injecting everything upfront.
+author: "Minksgo (contributed)"
+hooks:
+  - pre_llm_call
+tools:
+  - load_context
+config:
+  scan_dir: "~/.hermes/context-docs"
+  index_title: "📋 Available Knowledge"
+  file_pattern: "*.md"

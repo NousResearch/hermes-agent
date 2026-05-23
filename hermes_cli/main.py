@@ -324,28 +324,16 @@ def _apply_profile_override() -> None:
 
     # 3. If we found a profile, resolve and set HERMES_HOME
     if profile_name is not None:
-        try:
-            from hermes_cli.profiles import normalize_profile_name, resolve_profile_env
+        from hermes_cli.profiles import apply_profile_env
 
-            hermes_home = resolve_profile_env(profile_name)
-            canonical_name = normalize_profile_name(profile_name)
-        except (ValueError, FileNotFoundError) as exc:
-            print(f"Error: {exc}", file=sys.stderr)
-            sys.exit(1)
-        except Exception as exc:
-            # A bug in profiles.py must NEVER prevent hermes from starting
-            print(
-                f"Warning: profile override failed ({exc}), using default",
-                file=sys.stderr,
-            )
+        # ``apply_profile_env`` writes HERMES_HOME + HERMES_PROFILE on
+        # success, ``sys.exit(1)``s on user-typo errors, and returns False
+        # on unexpected resolver bugs (warning printed). When it returns
+        # False we must NOT strip the flag from argv — argparse will then
+        # surface the unknown flag instead of running with a half-applied
+        # profile override.
+        if not apply_profile_env(profile_name):
             return
-        os.environ["HERMES_HOME"] = hermes_home
-        # Also publish the canonical profile name so downstream code that
-        # branches on profile identity (kanban, gateway adapters, ACP entry)
-        # can pick it up without re-parsing HERMES_HOME. Honour any value the
-        # caller already exported — a deliberate ``HERMES_PROFILE=...`` on
-        # the spawning shell should win over this best-effort default.
-        os.environ.setdefault("HERMES_PROFILE", canonical_name)
         # Strip the flag from argv so argparse doesn't choke
         if consume > 0:
             for i, arg in enumerate(argv):
@@ -11931,6 +11919,39 @@ def _try_termux_fast_cli_launch() -> bool:
     return False
 
 
+def _build_acp_argv(args, env: dict[str, str] | None = None) -> list[str]:
+    """Build the argv that ``hermes acp`` forwards to ``hermes-acp``.
+
+    Extracted from the nested ``cmd_acp`` closure so the argv-shape can be
+    unit-tested without standing up the full argparse plumbing. ``args``
+    is the argparse Namespace returned for the ``acp`` subcommand; ``env``
+    defaults to ``os.environ`` so callers can pin a deterministic env in
+    tests.
+
+    Profile forwarding contract: ``--profile <name>`` is appended iff
+    ``HERMES_PROFILE`` is set, non-empty after stripping, and not the
+    literal string ``default`` (the default profile is implicit — passing
+    it explicitly would force a redundant resolver pass downstream).
+    """
+    if env is None:
+        env = os.environ
+    acp_argv: list[str] = []
+    if getattr(args, "acp_version", False):
+        acp_argv.append("--version")
+    if getattr(args, "check", False):
+        acp_argv.append("--check")
+    if getattr(args, "setup", False):
+        acp_argv.append("--setup")
+    if getattr(args, "setup_browser", False):
+        acp_argv.append("--setup-browser")
+    if getattr(args, "assume_yes", False):
+        acp_argv.append("--yes")
+    active_profile = env.get("HERMES_PROFILE", "").strip()
+    if active_profile and active_profile != "default":
+        acp_argv.extend(["--profile", active_profile])
+    return acp_argv
+
+
 def _try_termux_fast_tui_launch() -> bool:
     """Launch obvious Termux TUI invocations before building every subparser.
 
@@ -14626,26 +14647,12 @@ Examples:
         try:
             from acp_adapter.entry import main as acp_main
 
-            acp_argv = []
-            if getattr(args, "acp_version", False):
-                acp_argv.append("--version")
-            if getattr(args, "check", False):
-                acp_argv.append("--check")
-            if getattr(args, "setup", False):
-                acp_argv.append("--setup")
-            if getattr(args, "setup_browser", False):
-                acp_argv.append("--setup-browser")
-            if getattr(args, "assume_yes", False):
-                acp_argv.append("--yes")
-            # Forward the active profile name so ACP can announce it in logs
-            # and so direct ``hermes-acp`` invocations from editor configs
-            # behave the same as ``hermes -p <name> acp``. The env var is
-            # populated by ``_apply_profile_override`` when ``-p/--profile``
-            # was passed; absence means the default profile.
-            active_profile = os.environ.get("HERMES_PROFILE", "").strip()
-            if active_profile and active_profile != "default":
-                acp_argv.extend(["--profile", active_profile])
-            acp_main(acp_argv)
+            # Forward the active profile name so ACP can announce it in
+            # logs and so direct ``hermes-acp`` invocations from editor
+            # configs behave the same as ``hermes -p <name> acp``.
+            # HERMES_PROFILE is populated by ``_apply_profile_override``
+            # when ``-p/--profile`` was passed; absence means default.
+            acp_main(_build_acp_argv(args))
         except ImportError:
             print("ACP dependencies not installed.", file=sys.stderr)
             print("Install them with:  pip install -e '.[acp]'", file=sys.stderr)

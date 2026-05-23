@@ -27,7 +27,6 @@ except ModuleNotFoundError:
 import argparse
 import asyncio
 import logging
-import os
 import sys
 from pathlib import Path
 from hermes_constants import get_hermes_home
@@ -166,32 +165,16 @@ def _apply_profile_override(profile_name: str | None) -> None:
     ``hermes_cli.main._apply_profile_override`` ran first), the resolver is
     a no-op: ``setdefault`` preserves the inherited HERMES_PROFILE and the
     HERMES_HOME assignment writes the same string back.
+
+    Delegates to ``hermes_cli.profiles.apply_profile_env`` so the two ACP
+    entry points (``hermes acp`` and ``hermes-acp``) share validation,
+    exit semantics, and env writes verbatim.
     """
     if not profile_name:
         return
-    try:
-        from hermes_cli.profiles import normalize_profile_name, resolve_profile_env
+    from hermes_cli.profiles import apply_profile_env
 
-        hermes_home = resolve_profile_env(profile_name)
-        canonical_name = normalize_profile_name(profile_name)
-    except (ValueError, FileNotFoundError) as exc:
-        print(f"Error: {exc}", file=sys.stderr)
-        sys.exit(1)
-    except Exception as exc:
-        # Unexpected resolver bug must never prevent ACP from starting;
-        # surface the issue and fall back to whatever HERMES_HOME /
-        # HERMES_PROFILE the caller already had (which may itself be
-        # non-default — we don't know, so don't claim "default").
-        # ValueError / FileNotFoundError above are deliberately fatal so
-        # the user notices a typoed profile name.
-        print(
-            f"Warning: profile override failed ({exc}), "
-            f"using existing environment",
-            file=sys.stderr,
-        )
-        return
-    os.environ["HERMES_HOME"] = hermes_home
-    os.environ.setdefault("HERMES_PROFILE", canonical_name)
+    apply_profile_env(profile_name)
 
 
 def _print_version() -> None:

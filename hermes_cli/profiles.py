@@ -1605,3 +1605,38 @@ def resolve_profile_env(profile_name: str) -> str:
         )
 
     return str(profile_dir)
+
+
+def apply_profile_env(profile_name: str) -> bool:
+    """Resolve ``profile_name`` and publish HERMES_HOME / HERMES_PROFILE.
+
+    Shared between ``hermes_cli.main._apply_profile_override`` and
+    ``acp_adapter.entry._apply_profile_override`` so the two entry points
+    stay in lockstep on validation, exit semantics, and env writes.
+
+    On a malformed or missing profile (``ValueError`` / ``FileNotFoundError``
+    from the resolver), prints the resolver's user-facing message to stderr
+    and exits with status 1 — these are user-typo signals and the CLI
+    should not silently fall back. On any other resolver bug, prints a
+    warning and returns ``False`` so the caller can treat the override as a
+    no-op without taking the process down.
+
+    HERMES_HOME is overwritten unconditionally on success; HERMES_PROFILE
+    uses ``setdefault`` so a deliberate caller-set value wins.
+    """
+    try:
+        hermes_home = resolve_profile_env(profile_name)
+        canonical_name = normalize_profile_name(profile_name)
+    except (ValueError, FileNotFoundError) as exc:
+        print(f"Error: {exc}", file=sys.stderr)
+        sys.exit(1)
+    except Exception as exc:
+        print(
+            f"Warning: profile override failed ({exc}), "
+            f"using existing environment",
+            file=sys.stderr,
+        )
+        return False
+    os.environ["HERMES_HOME"] = hermes_home
+    os.environ.setdefault("HERMES_PROFILE", canonical_name)
+    return True

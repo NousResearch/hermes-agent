@@ -69,6 +69,24 @@ def test_store_metrics_expire_and_conflict_detection(tmp_path):
         procedural_id = store.add_memory("procedural", "Run old cleanup workflow", tags=["workflow"])
         semantic_id = store.add_memory("semantic", "Bud must use decision preflight", confidence=0.8)
         semantic_conflict_id = store.add_memory("semantic", "Bud must not use decision preflight", confidence=0.75)
+        should_id = store.add_memory("semantic", "Hermes should coordinate with Bud after approval", confidence=0.8)
+        should_noise_id = store.add_memory("semantic", "Routine reports should not mention Hindsight unless relevant", confidence=0.8)
+        store.add_memory(
+            "semantic",
+            '{"success": false, "error": "Bud must not use decision preflight"}',
+            tags=["hygiene:noisy"],
+            confidence=0.9,
+        )
+        store.add_memory("semantic", "Bud must not use decision preflight in a noisy draft", confidence=0.4)
+        store._conn.execute(
+            """
+            INSERT INTO detected_conflicts
+            (memory_id_1, memory_id_2, conflict_type, severity, detected_at)
+            VALUES (?, ?, 'should_vs_should_not', 'high', ?)
+            """,
+            (should_id, should_noise_id, datetime.now(timezone.utc).isoformat(timespec="seconds")),
+        )
+        store._conn.commit()
 
         rows = store._conn.execute(
             "SELECT id, ttl_days FROM memories WHERE id IN (?, ?, ?)",
@@ -88,7 +106,7 @@ def test_store_metrics_expire_and_conflict_detection(tmp_path):
 
         metrics = store.capture_metrics_snapshot()
         assert metrics["stale_memory_count"] == 2
-        assert metrics["total_memories"] == 4
+        assert metrics["total_memories"] == 8
 
         expired = store.expire_stale_memories()
         assert expired["expired_count"] == 2
@@ -97,6 +115,9 @@ def test_store_metrics_expire_and_conflict_detection(tmp_path):
         conflicts = store.detect_conflicts()
         assert conflicts["new_conflict_count"] == 1
         assert conflicts["conflict_count"] == 1
+        assert conflicts["skipped_memory_count"] == 2
+        assert conflicts["rejected_by_gate_count"] == 1
+        assert conflicts["stale_resolved_count"] == 1
         assert conflicts["conflicts"][0]["memory_id_1"] == semantic_id
         assert conflicts["conflicts"][0]["memory_id_2"] == semantic_conflict_id
         assert store.status()["conflict_count"] == 1

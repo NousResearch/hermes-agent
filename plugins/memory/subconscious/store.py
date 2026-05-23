@@ -15,6 +15,60 @@ from pathlib import Path
 from typing import Any, Iterable
 
 LAYERS = {"working", "episodic", "semantic", "procedural"}
+_CONFLICT_MIN_CONFIDENCE = 0.5
+_CONFLICT_EXCLUDED_TAGS = {"hygiene:noisy", "soft-decayed"}
+_CONFLICT_INCLUDE_TAGS = {"conflict:include", "promoted", "policy:promoted"}
+_CONFLICT_TYPES = {
+    "must_vs_must_not",
+    "always_vs_never",
+    "should_vs_should_not",
+    "requires_vs_prohibits",
+    "allowed_vs_blocked",
+    "executes_vs_coordinates_only",
+    "implements_vs_delegates",
+}
+_CONFLICT_STOPWORDS = {
+    "a",
+    "an",
+    "and",
+    "are",
+    "as",
+    "be",
+    "but",
+    "by",
+    "for",
+    "from",
+    "if",
+    "in",
+    "into",
+    "is",
+    "it",
+    "not",
+    "of",
+    "on",
+    "or",
+    "the",
+    "then",
+    "this",
+    "to",
+    "unless",
+    "until",
+    "with",
+    "must",
+    "should",
+    "always",
+    "never",
+    "requires",
+    "prohibits",
+    "allowed",
+    "blocked",
+    "executes",
+    "coordinates",
+    "only",
+    "implements",
+    "delegates",
+}
+_NEGATIVE_ACTION_TOKENS = {"avoid", "defer", "exclude", "ignore", "omit", "skip", "wait"}
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS memories (
@@ -148,6 +202,55 @@ def _recency_score(value: str | None) -> float:
         parsed = parsed.replace(tzinfo=timezone.utc)
     age_days = max(0.0, (datetime.now(timezone.utc) - parsed.astimezone(timezone.utc)).total_seconds() / 86400.0)
     return 1.0 / (1.0 + age_days / 14.0)
+
+
+def _load_json(value: str | None) -> dict[str, Any]:
+    try:
+        loaded = json.loads(value or "{}")
+    except (TypeError, json.JSONDecodeError):
+        return {}
+    return loaded if isinstance(loaded, dict) else {}
+
+
+def _split_tags(tags: str | None) -> set[str]:
+    return {tag.strip().lower() for tag in (tags or "").split(",") if tag.strip()}
+
+
+def _tokens(text: str) -> set[str]:
+    values = re.findall(r"[\w:-]+", (text or "").lower(), flags=re.UNICODE)
+    return {value for value in values if len(value) > 2 and value not in _CONFLICT_STOPWORDS}
+
+
+def _looks_like_tool_artifact(content: str) -> bool:
+    stripped = (content or "").strip()
+    if not stripped or stripped[0] not in "{[":
+        return False
+    try:
+        parsed = json.loads(stripped)
+    except json.JSONDecodeError:
+        return False
+    if isinstance(parsed, dict):
+        tool_keys = {"success", "error", "current_entries", "target", "entries", "result"}
+        if tool_keys.intersection(parsed):
+            return True
+        inner = parsed.get("content")
+        return isinstance(inner, str) and inner.lstrip().startswith(("{", "["))
+    return isinstance(parsed, list)
+
+
+def _conflict_phrase_tokens(content: str, phrase: str) -> set[str]:
+    match = re.search(rf"\b{re.escape(phrase)}\b", content.lower())
+    if not match:
+        return set()
+    tail = content[match.end():]
+    tail = re.split(r"[.;\n]", tail, maxsplit=1)[0]
+    return _tokens(" ".join(re.findall(r"[\w:-]+", tail, flags=re.UNICODE)[:14]))
+
+
+def _overlap_ratio(left: set[str], right: set[str]) -> float:
+    if not left or not right:
+        return 0.0
+    return len(left & right) / float(min(len(left), len(right)))
 
 
 def default_ttl_days(layer: str) -> int | None:
@@ -548,7 +651,7 @@ class SubconsciousStore:
         return {"success": True, "expired_count": len(expired_ids), "expired_ids": expired_ids}
 
     def detect_conflicts(self) -> dict[str, Any]:
-        """Find simple contradictory semantic/procedural memories."""
+        """Find contradictory semantic/procedural memories with basic subject gating."""
         negation_pairs = {
             "must": "must not",
             "always": "never",
@@ -563,7 +666,7 @@ class SubconsciousStore:
                 dict(row)
                 for row in self._conn.execute(
                     """
-                    SELECT id, layer, content, confidence
+                    SELECT id, layer, content, summary, tags, confidence, metadata_json
                     FROM memories
                     WHERE layer IN ('semantic', 'procedural')
                     ORDER BY layer, confidence DESC, id ASC
@@ -571,17 +674,46 @@ class SubconsciousStore:
                 ).fetchall()
             ]
 
-        indexed: dict[tuple[str, str, str], list[dict[str, Any]]] = {}
+        skipped_count = 0
+        eligible_rows: list[dict[str, Any]] = []
         for row in rows:
+            tags = _split_tags(str(row.get("tags") or ""))
+            metadata = _load_json(str(row.get("metadata_json") or "{}"))
+            row["_tags"] = tags
+            row["_metadata"] = metadata
+            row["_scope_tokens"] = _tokens(" ".join(
+                str(metadata.get(key) or "") for key in ("platform", "chat_id", "topic_id")
+            ))
+            row["_subject_tokens"] = _tokens(" ".join(
+                str(row.get(key) or "") for key in ("content", "summary", "tags")
+            ))
+            promoted = bool(tags.intersection(_CONFLICT_INCLUDE_TAGS) or metadata.get("conflict_detection") == "include")
+            if not promoted and (
+                float(row.get("confidence") or 0.0) < _CONFLICT_MIN_CONFIDENCE
+                or tags.intersection(_CONFLICT_EXCLUDED_TAGS)
+                or _looks_like_tool_artifact(str(row.get("content") or ""))
+            ):
+                skipped_count += 1
+                continue
+            eligible_rows.append(row)
+
+        indexed: dict[tuple[str, str, str], list[dict[str, Any]]] = {}
+        for row in eligible_rows:
             content = str(row.get("content") or "").lower()
             for positive, negative in negation_pairs.items():
                 if re.search(rf"\b{re.escape(negative)}\b", content):
-                    indexed.setdefault((row["layer"], positive, "negative"), []).append(row)
+                    entry = {**row, "_conflict_tokens": _conflict_phrase_tokens(content, negative)}
+                    indexed.setdefault((row["layer"], positive, "negative"), []).append(entry)
                 elif re.search(rf"\b{re.escape(positive)}\b", content):
-                    indexed.setdefault((row["layer"], positive, "positive"), []).append(row)
+                    phrase_tokens = _conflict_phrase_tokens(content, positive)
+                    if phrase_tokens.intersection(_NEGATIVE_ACTION_TOKENS):
+                        continue
+                    entry = {**row, "_conflict_tokens": phrase_tokens}
+                    indexed.setdefault((row["layer"], positive, "positive"), []).append(entry)
 
         candidates: list[dict[str, Any]] = []
         seen_pairs: set[tuple[int, int, str]] = set()
+        rejected_by_gate = 0
         for layer in ("semantic", "procedural"):
             for positive, negative in negation_pairs.items():
                 positives = indexed.get((layer, positive, "positive"), [])
@@ -593,6 +725,18 @@ class SubconsciousStore:
                         key = (first_id, second_id, conflict_type)
                         if first_id == second_id or key in seen_pairs:
                             continue
+                        same_scope = bool(pos_row.get("_scope_tokens") and pos_row.get("_scope_tokens") & neg_row.get("_scope_tokens"))
+                        phrase_overlap = _overlap_ratio(
+                            pos_row.get("_conflict_tokens") or set(),
+                            neg_row.get("_conflict_tokens") or set(),
+                        )
+                        subject_overlap = _overlap_ratio(
+                            pos_row.get("_subject_tokens") or set(),
+                            neg_row.get("_subject_tokens") or set(),
+                        )
+                        if phrase_overlap < 0.5 and subject_overlap < 0.55:
+                            rejected_by_gate += 1
+                            continue
                         seen_pairs.add(key)
                         confidence = max(float(pos_row.get("confidence") or 0.0), float(neg_row.get("confidence") or 0.0))
                         candidates.append({
@@ -600,9 +744,14 @@ class SubconsciousStore:
                             "memory_id_2": second_id,
                             "conflict_type": conflict_type,
                             "severity": "high" if confidence >= 0.7 else "medium",
+                            "phrase_overlap": round(phrase_overlap, 4),
+                            "subject_overlap": round(subject_overlap, 4),
+                            "same_scope": same_scope,
                         })
 
         inserted = 0
+        stale_resolved = 0
+        candidate_keys = {(c["memory_id_1"], c["memory_id_2"], c["conflict_type"]) for c in candidates}
         ts = now_iso()
         with self._lock:
             for conflict in candidates:
@@ -622,15 +771,37 @@ class SubconsciousStore:
                     ),
                 )
                 inserted += int(cur.rowcount > 0)
+            existing = self._conn.execute(
+                "SELECT id, memory_id_1, memory_id_2, conflict_type FROM detected_conflicts WHERE resolved = 0"
+            ).fetchall()
+            for row in existing:
+                key = (int(row["memory_id_1"]), int(row["memory_id_2"]), str(row["conflict_type"]))
+                if str(row["conflict_type"]) in _CONFLICT_TYPES and key not in candidate_keys:
+                    cur = self._conn.execute("UPDATE detected_conflicts SET resolved = 1 WHERE id = ?", (row["id"],))
+                    stale_resolved += int(cur.rowcount > 0)
             unresolved_count = int(self._conn.execute(
                 "SELECT COUNT(*) AS n FROM detected_conflicts WHERE resolved = 0"
             ).fetchone()["n"])
             self._conn.commit()
+        hub_counts: dict[int, int] = {}
+        for conflict in candidates:
+            hub_counts[conflict["memory_id_1"]] = hub_counts.get(conflict["memory_id_1"], 0) + 1
+            hub_counts[conflict["memory_id_2"]] = hub_counts.get(conflict["memory_id_2"], 0) + 1
+        hubs = [
+            {"memory_id": memory_id, "conflict_count": count}
+            for memory_id, count in sorted(hub_counts.items(), key=lambda item: (-item[1], item[0]))[:10]
+            if count > 1
+        ]
         return {
             "success": True,
             "detected_count": len(candidates),
             "new_conflict_count": inserted,
             "conflict_count": unresolved_count,
+            "eligible_memory_count": len(eligible_rows),
+            "skipped_memory_count": skipped_count,
+            "rejected_by_gate_count": rejected_by_gate,
+            "stale_resolved_count": stale_resolved,
+            "hubs": hubs,
             "conflicts": candidates,
         }
 

@@ -33,7 +33,7 @@ from gateway.whatsapp_identity import (
     expand_whatsapp_aliases,
     normalize_whatsapp_identifier,
 )
-from hermes_constants import get_hermes_dir
+from hermes_constants import get_hermes_dir, get_hermes_home
 from utils import atomic_replace
 
 logger = logging.getLogger(__name__)
@@ -161,6 +161,51 @@ def _sync_allowlist_remove(platform: str, user_id: str) -> None:
         pass
 
 
+def _load_json_file(path: Path) -> dict:
+    if path.exists():
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+            return data if isinstance(data, dict) else {}
+        except (json.JSONDecodeError, OSError):
+            return {}
+    return {}
+
+
+def _merge_pairing_dir(active_dir: Path, alternate_dir: Path) -> None:
+    """Merge split legacy/new pairing data into the active PairingStore dir.
+
+    Older installs use ``{HERMES_HOME}/pairing`` while newer code/docs may
+    write ``{HERMES_HOME}/platforms/pairing``. If both directories exist, the
+    gateway must not silently ignore approved users sitting in the inactive
+    location; otherwise already-paired Feishu users get asked for a fresh code.
+    """
+    if not alternate_dir.exists() or active_dir.resolve() == alternate_dir.resolve():
+        return
+    active_dir.mkdir(parents=True, exist_ok=True)
+    for src in alternate_dir.glob("*.json"):
+        if not src.is_file():
+            continue
+        dest = active_dir / src.name
+        merged = _load_json_file(src)
+        if not merged:
+            continue
+        current = _load_json_file(dest)
+        before = dict(current)
+        # Active data wins on key conflict; otherwise union the inactive data.
+        merged.update(current)
+        if merged != before:
+            _secure_write(dest, json.dumps(merged, indent=2, ensure_ascii=False))
+
+
+def _migrate_split_pairing_dirs() -> None:
+    home = get_hermes_home()
+    old_dir = home / "pairing"
+    new_dir = home / "platforms" / "pairing"
+    active = PAIRING_DIR
+    alternate = new_dir if active.resolve() == old_dir.resolve() else old_dir
+    _merge_pairing_dir(active, alternate)
+
+
 def _secure_write(path: Path, data: str) -> None:
     """Write data to file with restrictive permissions (owner read/write only).
 
@@ -212,6 +257,11 @@ class PairingStore:
         else:
             self._dir = PAIRING_DIR
         self._dir.mkdir(parents=True, exist_ok=True)
+        if not profile:
+            # Heal installs whose global pairing data ended up split across
+            # the legacy and new directories (per-profile stores never had
+            # the legacy/new split).
+            _migrate_split_pairing_dirs()
         # Protects all read-modify-write cycles. The gateway runs multiple
         # platform adapters concurrently in threads sharing one PairingStore.
         self._lock = threading.RLock()

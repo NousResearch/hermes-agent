@@ -953,3 +953,27 @@ class TestSaveJobOutput:
         assert output_file.exists()
         assert output_file.read_text() == "# Results\nEverything ok."
         assert "test123" in str(output_file)
+
+
+def test_get_due_jobs_expires_stale_oneshot_before_execution(tmp_path, monkeypatch):
+    from cron import jobs as jobs_mod
+
+    jobs_file = tmp_path / "jobs.json"
+    monkeypatch.setattr(jobs_mod, "JOBS_FILE", jobs_file)
+    stale_run_at = (datetime.now(timezone.utc) - timedelta(minutes=10)).isoformat()
+    jobs_mod.save_jobs([
+        {
+            "id": "old-once",
+            "name": "old once",
+            "enabled": True,
+            "schedule": {"kind": "once", "run_at": stale_run_at},
+            "next_run_at": stale_run_at,
+            "prompt": "do not run",
+        }
+    ])
+
+    assert jobs_mod.get_due_jobs() == []
+    saved = jobs_mod.load_jobs()[0]
+    assert saved["enabled"] is False
+    assert saved["state"] == "expired"
+    assert saved["next_run_at"] is None

@@ -949,6 +949,9 @@ def load_gateway_config() -> GatewayConfig:
                 hbl = discord_cfg.get("history_backfill_limit")
                 if hbl is not None and not os.getenv("DISCORD_HISTORY_BACKFILL_LIMIT"):
                     os.environ["DISCORD_HISTORY_BACKFILL_LIMIT"] = str(hbl)
+                hbmc = discord_cfg.get("history_backfill_max_chars")
+                if hbmc is not None and not os.getenv("DISCORD_HISTORY_BACKFILL_MAX_CHARS"):
+                    os.environ["DISCORD_HISTORY_BACKFILL_MAX_CHARS"] = str(hbmc)
                 # allow_mentions: granular control over what the bot can ping.
                 # Safe defaults (no @everyone/roles) are applied in the adapter;
                 # these YAML keys only override when set and let users opt back

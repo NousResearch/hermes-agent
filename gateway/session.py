@@ -138,6 +138,19 @@ def _now() -> datetime:
     return datetime.now()
 
 
+RESUME_PENDING_TTL_SECONDS = int(os.getenv("HERMES_RESUME_PENDING_TTL_SECONDS", "600"))
+
+
+def _resume_pending_is_fresh(entry: "SessionEntry", max_age_seconds: int = RESUME_PENDING_TTL_SECONDS) -> bool:
+    marked = entry.last_resume_marked_at
+    if marked is None:
+        return False
+    try:
+        return (_now() - marked).total_seconds() <= max_age_seconds
+    except Exception:
+        return False
+
+
 # ---------------------------------------------------------------------------
 # PII redaction helpers
 # ---------------------------------------------------------------------------
@@ -1164,15 +1177,17 @@ class SessionStore:
                 elif entry.suspended:
                     reset_reason = "suspended"
                 elif entry.resume_pending:
-                    # Restart-interrupted session: preserve the session_id
-                    # and return the existing entry so the transcript
-                    # reloads intact.  ``resume_pending`` is cleared after
-                    # the NEXT successful turn completes (not here), which
-                    # means a re-interrupted retry keeps trying — the
-                    # stuck-loop counter handles terminal escalation.
-                    entry.updated_at = now
-                    self._save()
-                    return entry
+                    # Restart-interrupted session: preserve the session_id only
+                    # while the marker is fresh. Stale/malformed flags are
+                    # cleared so old restart/kill work cannot replay forever.
+                    if _resume_pending_is_fresh(entry):
+                        entry.updated_at = now
+                        self._save()
+                        return entry
+                    entry.resume_pending = False
+                    entry.resume_reason = None
+                    entry.last_resume_marked_at = None
+                    reset_reason = self._should_reset(entry, source)
                 else:
                     reset_reason = self._should_reset(entry, source)
                 if not reset_reason:
@@ -1311,6 +1326,24 @@ class SessionStore:
             self._save()
             return True
 
+    def clear_stale_resume_pending(self, max_age_seconds: int = RESUME_PENDING_TTL_SECONDS) -> int:
+        """Clear stale resume_pending flags without deleting session history."""
+        cleared = 0
+        with self._lock:
+            self._ensure_loaded_locked()
+            for entry in self._entries.values():
+                if not entry.resume_pending:
+                    continue
+                if _resume_pending_is_fresh(entry, max_age_seconds=max_age_seconds):
+                    continue
+                entry.resume_pending = False
+                entry.resume_reason = None
+                entry.last_resume_marked_at = None
+                cleared += 1
+            if cleared:
+                self._save()
+        return cleared
+
     def prune_old_entries(self, max_age_days: int) -> int:
         """Drop SessionEntry records older than max_age_days.
 
@@ -1390,11 +1423,17 @@ class SessionStore:
 
         cutoff = _now() - timedelta(seconds=max_age_seconds)
         count = 0
+        changed = False
         with self._lock:
             self._ensure_loaded_locked()
             for entry in self._entries.values():
                 if entry.resume_pending:
-                    continue
+                    if _resume_pending_is_fresh(entry):
+                        continue
+                    entry.resume_pending = False
+                    entry.resume_reason = None
+                    entry.last_resume_marked_at = None
+                    changed = True
                 if entry.quarantined or entry.session_id in self._read_quarantine_index_locked():
                     continue
                 if not entry.suspended and entry.updated_at >= cutoff:
@@ -1402,7 +1441,8 @@ class SessionStore:
                     entry.resume_reason = "restart_interrupted"
                     entry.last_resume_marked_at = _now()
                     count += 1
-            if count:
+                    changed = True
+            if changed:
                 self._save()
         return count
 

@@ -22,6 +22,7 @@ from typing import Optional, Dict, List, Any, Union
 logger = logging.getLogger(__name__)
 
 from hermes_time import now as _hermes_now
+from hermes_cli.runtime_safety import ONESHOT_GRACE_SECONDS, is_expired_oneshot
 from utils import atomic_replace
 
 try:
@@ -912,6 +913,38 @@ def advance_next_run(job_id: str) -> bool:
         return False
 
 
+def expire_stale_oneshot_jobs(now: Optional[datetime] = None) -> List[Dict[str, Any]]:
+    """Disable stale, unrun one-shot jobs without deleting their records.
+
+    One-shot jobs are recoverable only inside ``ONESHOT_GRACE_SECONDS``. After
+    that, a gateway restart/startup tick must not execute them; mark them as
+    expired so status/doctor can surface what happened.
+    """
+    with _jobs_file_lock:
+        return _expire_stale_oneshot_jobs_locked(now=now)
+
+
+def _expire_stale_oneshot_jobs_locked(now: Optional[datetime] = None) -> List[Dict[str, Any]]:
+    if now is None:
+        now = _hermes_now()
+    raw_jobs = load_jobs()
+    expired: List[Dict[str, Any]] = []
+    changed = False
+    for job in raw_jobs:
+        if not is_expired_oneshot(job, now, grace_seconds=ONESHOT_GRACE_SECONDS):
+            continue
+        job["enabled"] = False
+        job["state"] = "expired"
+        job["expired_at"] = now.isoformat()
+        job["next_run_at"] = None
+        job["last_error"] = "one-shot expired before scheduler startup/tick"
+        expired.append(_normalize_job_record(job))
+        changed = True
+    if changed:
+        save_jobs(raw_jobs)
+    return expired
+
+
 def get_due_jobs() -> List[Dict[str, Any]]:
     """Get all jobs that are due to run now.
 
@@ -927,6 +960,9 @@ def get_due_jobs() -> List[Dict[str, Any]]:
 def _get_due_jobs_locked() -> List[Dict[str, Any]]:
     """Inner implementation of get_due_jobs(); must be called with _jobs_file_lock held."""
     now = _hermes_now()
+    expired = _expire_stale_oneshot_jobs_locked(now=now)
+    if expired:
+        logger.info("Expired %d stale one-shot cron job(s) before due selection", len(expired))
     raw_jobs = load_jobs()
     jobs = [_apply_skill_fields(j) for j in copy.deepcopy(raw_jobs)]
     due = []

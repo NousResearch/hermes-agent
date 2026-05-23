@@ -5577,6 +5577,13 @@ def cmd_doctor(args):
     run_doctor(args)
 
 
+def cmd_preflight(args):
+    """Run long-task runtime preflight checks."""
+    from hermes_cli.preflight import run_preflight
+
+    return run_preflight(args)
+
+
 def cmd_dump(args):
     """Dump setup summary for support/debugging."""
     from hermes_cli.dump import run_dump
@@ -10724,6 +10731,23 @@ def main():
         ),
     )
     doctor_parser.set_defaults(func=cmd_doctor)
+
+    # =========================================================================
+    # preflight command
+    # =========================================================================
+    preflight_parser = subparsers.add_parser(
+        "preflight",
+        help="Run long-task runtime safety checks",
+        description="Check Hermes runtime safety before long-running app-dev or maintenance work",
+    )
+    preflight_parser.add_argument(
+        "--mode",
+        choices=("app-dev", "hermes-maintenance"),
+        default="app-dev",
+        help="Expected task lane for workspace classification",
+    )
+    preflight_parser.add_argument("--json", action="store_true", help="Print JSON output")
+    preflight_parser.set_defaults(func=cmd_preflight)
 
     # =========================================================================
     # dump command

@@ -3672,6 +3672,25 @@ class DiscordAdapter(BasePlatformAdapter):
         except (ValueError, TypeError):
             return 50
 
+    def _discord_history_backfill_max_chars(self) -> int:
+        configured = self.config.extra.get("history_backfill_max_chars")
+        if configured is not None:
+            try:
+                return int(configured)
+            except (ValueError, TypeError):
+                pass
+        raw = os.getenv("DISCORD_HISTORY_BACKFILL_MAX_CHARS", "12000")
+        try:
+            return int(raw)
+        except (ValueError, TypeError):
+            return 12000
+
+    @staticmethod
+    def _truncate_context_line(line: str, max_chars: int) -> str:
+        if max_chars <= 0 or len(line) <= max_chars:
+            return line
+        return line[: max(0, max_chars - 14)].rstrip() + " ...[truncated]"
+
     async def _fetch_channel_context(
         self,
         channel: Any,
@@ -3694,6 +3713,10 @@ class DiscordAdapter(BasePlatformAdapter):
         limit = self._discord_history_backfill_limit()
         if limit <= 0:
             return ""
+        max_chars = self._discord_history_backfill_max_chars()
+        if max_chars <= 0:
+            return ""
+        max_line_chars = max(240, min(1800, max_chars // max(1, limit)))
 
         # Determine which bot messages to include in context
         allow_bots_raw = os.getenv("DISCORD_ALLOW_BOTS", "none").lower().strip()
@@ -3755,14 +3778,27 @@ class DiscordAdapter(BasePlatformAdapter):
                 name = msg.author.display_name
                 if getattr(msg.author, "bot", False):
                     name = f"{name} [bot]"
-                collected.append(f"[{name}] {content}")
+                line = self._truncate_context_line(f"[{name}] {content}", max_line_chars)
+                collected.append(line)
 
             if not collected:
                 return ""
 
             # channel.history returns newest-first (oldest_first=False); reverse for chronological order
             collected.reverse()
-            return "[Recent channel messages]\n" + "\n".join(collected)
+            budget = max(0, max_chars - len("[Recent channel messages]\n"))
+            bounded: list[str] = []
+            used = 0
+            for line in reversed(collected):
+                cost = len(line) + (1 if bounded else 0)
+                if used + cost > budget:
+                    break
+                bounded.append(line)
+                used += cost
+            bounded.reverse()
+            if not bounded:
+                return ""
+            return "[Recent channel messages]\n" + "\n".join(bounded)
 
         except discord.Forbidden:
             logger.debug("[%s] Missing permissions to fetch channel history", self.name)

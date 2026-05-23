@@ -987,6 +987,47 @@ def run_doctor(args):
     _check_gateway_service_linger(issues)
 
     # =========================================================================
+    # Runtime Safety
+    # =========================================================================
+    print()
+    print(color("◆ Runtime Safety", Colors.CYAN, Colors.BOLD))
+    try:
+        from hermes_cli.runtime_safety import build_runtime_safety_report
+        report = build_runtime_safety_report()
+        counts = report["counts"]
+        if counts["unsafe_gateway_control_due"]:
+            check_fail("Unsafe gateway-control cron job due", f"({counts['unsafe_gateway_control_due']} due)")
+            issues.append("Disable or rewrite due cron jobs that can stop/restart/kill hermes-gateway")
+        else:
+            check_ok("No unsafe gateway-control cron jobs due")
+        if counts["stale_resume_pending"]:
+            check_fail("Stale resume_pending session flags", f"({counts['stale_resume_pending']} stale)")
+            issues.append("Clear stale gateway resume_pending flags before long dev work")
+        else:
+            check_ok("No stale resume_pending flags")
+        if counts["unsafe_gateway_control_scheduled"]:
+            check_warn("Scheduled gateway-control cron jobs", f"({counts['unsafe_gateway_control_scheduled']} scheduled)")
+        if counts["gateway_control_adjacent"]:
+            check_info(f"Gateway-control-adjacent cron jobs: {counts['gateway_control_adjacent']}")
+        if counts["expired_oneshot"]:
+            check_warn("Expired one-shot cron jobs", f"({counts['expired_oneshot']} expired records)")
+        for row in report.get("cron_risks", [])[:5]:
+            check_info(
+                f"cron {row.get('severity')} {row.get('reason')}: "
+                f"id={row.get('job_id')} name={row.get('name')} "
+                f"state={row.get('state')} schedule={row.get('schedule')} "
+                f"script={row.get('script') or '-'}"
+            )
+        for row in report.get("stale_resume_pending", [])[:5]:
+            check_info(
+                f"resume {row.get('reason')}: session={row.get('session_key_hash')} "
+                f"age={row.get('age_seconds')}s ttl={row.get('ttl_seconds')}s"
+            )
+    except Exception as e:
+        check_fail("Runtime safety scan failed", f"({e})")
+        issues.append("Runtime safety scan failed; inspect cron/jobs.json and sessions.json")
+
+    # =========================================================================
     # Check: Command installation (hermes bin symlink)
     # =========================================================================
     if sys.platform != "win32":

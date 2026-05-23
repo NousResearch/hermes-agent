@@ -686,6 +686,27 @@ async def test_fetch_channel_context_skips_other_bots_when_allow_bots_none(adapt
 
     assert result == "[Recent channel messages]\n[Alice] human note"
 
+@pytest.mark.asyncio
+async def test_fetch_channel_context_caps_total_backfill_chars(adapter, monkeypatch):
+    monkeypatch.setenv("DISCORD_ALLOW_BOTS", "none")
+    adapter.config.extra["history_backfill_limit"] = 10
+    adapter.config.extra["history_backfill_max_chars"] = 320
+
+    human = SimpleNamespace(id=56, display_name="Alice", name="Alice", bot=False)
+    channel = FakeHistoryChannel(
+        [
+            make_history_message(author=human, content="old " + ("x" * 500), msg_id=1),
+            make_history_message(author=human, content="new " + ("y" * 500), msg_id=2),
+        ],
+        channel_id=123,
+    )
+
+    result = await adapter._fetch_channel_context(channel, before=make_message(channel=channel, content="trigger"))
+
+    assert len(result) <= 320
+    assert "...[truncated]" in result
+    assert "new " in result
+
 
 @pytest.mark.asyncio
 async def test_fetch_channel_context_uses_cache_to_narrow_window(adapter, monkeypatch):

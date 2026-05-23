@@ -531,6 +531,42 @@ def show_status(args):
         print("  Active:       0")
 
     # =========================================================================
+    # Runtime Safety
+    # =========================================================================
+    print()
+    print(color("◆ Runtime Safety", Colors.CYAN, Colors.BOLD))
+    try:
+        from hermes_cli.runtime_safety import build_runtime_safety_report
+        report = build_runtime_safety_report()
+        counts = report["counts"]
+        ok = report.get("ok", False)
+        print(
+            f"  Safety:      {check_mark(ok)} "
+            f"due_gateway={counts['unsafe_gateway_control_due']} "
+            f"scheduled_gateway={counts['unsafe_gateway_control_scheduled']} "
+            f"adjacent={counts['gateway_control_adjacent']} "
+            f"expired_oneshot={counts['expired_oneshot']} "
+            f"stale_resume={counts['stale_resume_pending']}"
+        )
+        rows = report.get("cron_risks", [])[:5]
+        for row in rows:
+            print(
+                "  Cron risk:   "
+                f"{row.get('severity')} {row.get('reason')} "
+                f"id={row.get('job_id')} name={row.get('name')} "
+                f"state={row.get('state')} schedule={row.get('schedule')} "
+                f"script={row.get('script') or '-'}"
+            )
+        for row in report.get("stale_resume_pending", [])[:5]:
+            print(
+                "  Resume risk: "
+                f"{row.get('reason')} session={row.get('session_key_hash')} "
+                f"age={row.get('age_seconds')}s ttl={row.get('ttl_seconds')}s"
+            )
+    except Exception as e:
+        print(f"  Safety:      {check_mark(False)} error reading runtime safety ({e})")
+
+    # =========================================================================
     # Deep checks
     # =========================================================================
     if deep:

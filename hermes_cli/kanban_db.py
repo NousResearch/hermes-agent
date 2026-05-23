@@ -4145,6 +4145,11 @@ def _default_spawn(
     # board slug still forces it to the right directory.
     resolved_board = _normalize_board_slug(board) or get_current_board()
     env["HERMES_KANBAN_BOARD"] = resolved_board
+    # Workers are durable task executors, not live Discord turns. Downstream
+    # prompt/memory/runtime code can use this to avoid pulling chat scrollback
+    # or interactive gateway affordances into long-running app-dev work.
+    env["HERMES_WORKER_CONTEXT"] = "kanban"
+    env["HERMES_CONTEXT_LANE"] = "worker"
     # HERMES_PROFILE is the author the kanban_comment tool defaults to.
     # `hermes -p <assignee>` activates the profile, but the env var is
     # what the tool reads — set it explicitly here so comments are

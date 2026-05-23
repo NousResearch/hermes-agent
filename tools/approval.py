@@ -627,6 +627,11 @@ def clear_session(session_key: str) -> None:
         _session_yolo.discard(session_key)
         _pending.pop(session_key, None)
         entries = _gateway_queues.pop(session_key, [])
+    try:
+        from tools.gateway_control_guard import clear_gateway_control_approvals
+        clear_gateway_control_approvals(session_key)
+    except Exception:
+        pass
     for entry in entries:
         # Session-boundary cleanup should cancel any blocked approval waits
         # immediately so the old run can unwind instead of idling until timeout.
@@ -954,6 +959,18 @@ def check_dangerous_command(command: str, env_type: str,
         logger.warning("Hardline block: %s (command: %s)", hardline_desc, command[:200])
         return _hardline_block_result(hardline_desc)
 
+    # Gateway lifecycle commands get a stricter exact-command/session guard
+    # than ordinary dangerous commands. Cron and yolo must not be able to kill
+    # the live gateway by default.
+    from tools.gateway_control_guard import (
+        check_gateway_control_guard,
+        gateway_control_block_result,
+    )
+    gateway_decision = check_gateway_control_guard(command, get_current_session_key())
+    if gateway_decision.is_gateway_control and not gateway_decision.approved:
+        logger.warning("Gateway-control block: %s (command: %s)", gateway_decision.reason, command[:200])
+        return gateway_control_block_result(gateway_decision)
+
     # --yolo: bypass all approval prompts. Gateway /yolo is session-scoped;
     # CLI --yolo remains process-scoped via the env var for local use.
     if is_truthy_value(os.getenv("HERMES_YOLO_MODE")) or is_current_session_yolo_enabled():
@@ -1088,6 +1105,18 @@ def check_all_command_guards(command: str, env_type: str,
         logger.warning("Sudo stdin guard block: %s (command: %s)",
                        sudo_guess_desc, command[:200])
         return _sudo_stdin_block_result(sudo_guess_desc)
+
+    # Gateway lifecycle protection is also below yolo/off/cron approve-mode:
+    # killing or restarting hermes-gateway from a cron/agent context can abort
+    # active work and corrupt session continuity.
+    from tools.gateway_control_guard import (
+        check_gateway_control_guard,
+        gateway_control_block_result,
+    )
+    gateway_decision = check_gateway_control_guard(command, get_current_session_key())
+    if gateway_decision.is_gateway_control and not gateway_decision.approved:
+        logger.warning("Gateway-control block: %s (command: %s)", gateway_decision.reason, command[:200])
+        return gateway_control_block_result(gateway_decision)
 
     # --yolo or approvals.mode=off: bypass all approval prompts.
     # Gateway /yolo is session-scoped; CLI --yolo remains process-scoped.

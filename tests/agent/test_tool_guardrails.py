@@ -46,22 +46,20 @@ def test_default_config_is_soft_warning_only_with_hard_stop_disabled():
 
 
 def test_config_parses_nested_warn_and_hard_stop_thresholds():
-    cfg = ToolCallGuardrailConfig.from_mapping(
-        {
-            "warnings_enabled": False,
-            "hard_stop_enabled": True,
-            "warn_after": {
-                "exact_failure": 3,
-                "same_tool_failure": 4,
-                "idempotent_no_progress": 5,
-            },
-            "hard_stop_after": {
-                "exact_failure": 6,
-                "same_tool_failure": 7,
-                "idempotent_no_progress": 8,
-            },
-        }
-    )
+    cfg = ToolCallGuardrailConfig.from_mapping({
+        "warnings_enabled": False,
+        "hard_stop_enabled": True,
+        "warn_after": {
+            "exact_failure": 3,
+            "same_tool_failure": 4,
+            "idempotent_no_progress": 5,
+        },
+        "hard_stop_after": {
+            "exact_failure": 6,
+            "same_tool_failure": 7,
+            "idempotent_no_progress": 8,
+        },
+    })
 
     assert cfg.warnings_enabled is False
     assert cfg.hard_stop_enabled is True
@@ -119,7 +117,11 @@ def test_hard_stop_enabled_blocks_repeated_exact_failure_before_next_execution()
 
 def test_success_resets_exact_signature_failure_streak():
     controller = ToolCallGuardrailController(
-        ToolCallGuardrailConfig(hard_stop_enabled=True, exact_failure_block_after=2, same_tool_failure_halt_after=99)
+        ToolCallGuardrailConfig(
+            hard_stop_enabled=True,
+            exact_failure_block_after=2,
+            same_tool_failure_halt_after=99,
+        )
     )
     args = {"query": "same"}
 
@@ -133,13 +135,23 @@ def test_success_resets_exact_signature_failure_streak():
 
 def test_same_tool_varying_args_warns_by_default_without_halting():
     controller = ToolCallGuardrailController(
-        ToolCallGuardrailConfig(same_tool_failure_warn_after=2, same_tool_failure_halt_after=3)
+        ToolCallGuardrailConfig(
+            same_tool_failure_warn_after=2, same_tool_failure_halt_after=3
+        )
     )
 
-    first = controller.after_call("terminal", {"command": "cmd-1"}, '{"exit_code":1}', failed=True)
-    second = controller.after_call("terminal", {"command": "cmd-2"}, '{"exit_code":1}', failed=True)
-    third = controller.after_call("terminal", {"command": "cmd-3"}, '{"exit_code":1}', failed=True)
-    fourth = controller.after_call("terminal", {"command": "cmd-4"}, '{"exit_code":1}', failed=True)
+    first = controller.after_call(
+        "terminal", {"command": "cmd-1"}, '{"exit_code":1}', failed=True
+    )
+    second = controller.after_call(
+        "terminal", {"command": "cmd-2"}, '{"exit_code":1}', failed=True
+    )
+    third = controller.after_call(
+        "terminal", {"command": "cmd-3"}, '{"exit_code":1}', failed=True
+    )
+    fourth = controller.after_call(
+        "terminal", {"command": "cmd-4"}, '{"exit_code":1}', failed=True
+    )
 
     assert first.action == "allow"
     assert [second.action, third.action, fourth.action] == ["warn", "warn", "warn"]
@@ -157,12 +169,18 @@ def test_hard_stop_enabled_halts_same_tool_varying_args_failure_streak():
         )
     )
 
-    first = controller.after_call("terminal", {"command": "cmd-1"}, '{"exit_code":1}', failed=True)
+    first = controller.after_call(
+        "terminal", {"command": "cmd-1"}, '{"exit_code":1}', failed=True
+    )
     assert first.action == "allow"
-    second = controller.after_call("terminal", {"command": "cmd-2"}, '{"exit_code":1}', failed=True)
+    second = controller.after_call(
+        "terminal", {"command": "cmd-2"}, '{"exit_code":1}', failed=True
+    )
     assert second.action == "warn"
     assert second.code == "same_tool_failure_warning"
-    third = controller.after_call("terminal", {"command": "cmd-3"}, '{"exit_code":1}', failed=True)
+    third = controller.after_call(
+        "terminal", {"command": "cmd-3"}, '{"exit_code":1}', failed=True
+    )
     assert third.action == "halt"
     assert third.code == "same_tool_failure_halt"
     assert third.count == 3
@@ -197,7 +215,9 @@ def test_hard_stop_enabled_blocks_idempotent_no_progress_future_repeat():
     result = "same file contents"
 
     assert controller.before_call("read_file", args).action == "allow"
-    assert controller.after_call("read_file", args, result, failed=False).action == "allow"
+    assert (
+        controller.after_call("read_file", args, result, failed=False).action == "allow"
+    )
     assert controller.before_call("read_file", args).action == "allow"
     warn = controller.after_call("read_file", args, result, failed=False)
     assert warn.action == "warn"
@@ -214,18 +234,39 @@ def test_mutating_or_unknown_tools_are_not_blocked_for_repeated_identical_succes
     )
 
     for _ in range(3):
-        assert controller.before_call("write_file", {"path": "/tmp/x", "content": "x"}).action == "allow"
-        assert controller.after_call("write_file", {"path": "/tmp/x", "content": "x"}, "ok", failed=False).action == "allow"
+        assert (
+            controller.before_call(
+                "write_file", {"path": "/tmp/x", "content": "x"}
+            ).action
+            == "allow"
+        )
+        assert (
+            controller.after_call(
+                "write_file", {"path": "/tmp/x", "content": "x"}, "ok", failed=False
+            ).action
+            == "allow"
+        )
         assert controller.before_call("custom_tool", {"x": 1}).action == "allow"
-        assert controller.after_call("custom_tool", {"x": 1}, "ok", failed=False).action == "allow"
+        assert (
+            controller.after_call("custom_tool", {"x": 1}, "ok", failed=False).action
+            == "allow"
+        )
 
 
 def test_reset_for_turn_clears_bounded_guardrail_state():
     controller = ToolCallGuardrailController(
-        ToolCallGuardrailConfig(hard_stop_enabled=True, exact_failure_block_after=2, no_progress_block_after=2)
+        ToolCallGuardrailConfig(
+            hard_stop_enabled=True,
+            exact_failure_block_after=2,
+            no_progress_block_after=2,
+        )
     )
-    controller.after_call("web_search", {"query": "same"}, '{"error":"boom"}', failed=True)
-    controller.after_call("web_search", {"query": "same"}, '{"error":"boom"}', failed=True)
+    controller.after_call(
+        "web_search", {"query": "same"}, '{"error":"boom"}', failed=True
+    )
+    controller.after_call(
+        "web_search", {"query": "same"}, '{"error":"boom"}', failed=True
+    )
     controller.after_call("read_file", {"path": "/tmp/x"}, "same", failed=False)
     controller.after_call("read_file", {"path": "/tmp/x"}, "same", failed=False)
 
@@ -236,3 +277,26 @@ def test_reset_for_turn_clears_bounded_guardrail_state():
 
     assert controller.before_call("web_search", {"query": "same"}).action == "allow"
     assert controller.before_call("read_file", {"path": "/tmp/x"}).action == "allow"
+
+
+def test_tool_call_guardrail_controller_init():
+    # Test initialization without config
+    controller_default = ToolCallGuardrailController()
+    assert isinstance(controller_default.config, ToolCallGuardrailConfig)
+    # Verify reset_for_turn side effects: collections must exist and be empty
+    assert hasattr(controller_default, "_exact_failure_counts") and not controller_default._exact_failure_counts
+    assert hasattr(controller_default, "_same_tool_failure_counts") and not controller_default._same_tool_failure_counts
+    assert hasattr(controller_default, "_no_progress") and not controller_default._no_progress
+
+    # Test initialization with specific config
+    custom_config = ToolCallGuardrailConfig(
+        hard_stop_enabled=True, no_progress_block_after=99
+    )
+    controller_custom = ToolCallGuardrailController(custom_config)
+    assert controller_custom.config is custom_config
+    assert controller_custom.config.hard_stop_enabled is True
+    assert controller_custom.config.no_progress_block_after == 99
+    # Verify reset_for_turn side effects: collections must exist and be empty
+    assert hasattr(controller_custom, "_exact_failure_counts") and not controller_custom._exact_failure_counts
+    assert hasattr(controller_custom, "_same_tool_failure_counts") and not controller_custom._same_tool_failure_counts
+    assert hasattr(controller_custom, "_no_progress") and not controller_custom._no_progress

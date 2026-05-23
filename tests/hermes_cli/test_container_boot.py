@@ -223,6 +223,88 @@ def test_reconcile_log_is_written(tmp_path: Path) -> None:
     assert "action=registered" in log
 
 
+def test_reconcile_log_rotates_when_size_exceeded(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """When container-boot.log exceeds _LOG_ROTATE_BYTES, the existing
+    file is rotated to .1 before the new entries are appended."""
+    from hermes_cli import container_boot
+
+    # Tighten the threshold so we don't have to write 256 KiB.
+    monkeypatch.setattr(container_boot, "_LOG_ROTATE_BYTES", 200)
+
+    log_path = tmp_path / "logs" / "container-boot.log"
+    log_path.parent.mkdir()
+    log_path.write_text("X" * 300)  # already over the threshold
+
+    scandir = tmp_path / "run-service"; scandir.mkdir()
+    _make_profile(tmp_path, "coder", state="running")
+
+    reconcile_profile_gateways(
+        hermes_home=tmp_path, scandir=scandir, dry_run=False,
+    )
+
+    rotated = tmp_path / "logs" / "container-boot.log.1"
+    assert rotated.exists(), "expected previous log to be rotated to .1"
+    assert rotated.read_text().startswith("X" * 300)
+    # The new entries land in a fresh container-boot.log (no leftover Xs).
+    new_contents = log_path.read_text()
+    assert "X" not in new_contents
+    assert "profile=coder" in new_contents
+
+
+def test_reconcile_log_does_not_rotate_below_threshold(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A small existing log is appended to in place; no .1 is created."""
+    from hermes_cli import container_boot
+    monkeypatch.setattr(container_boot, "_LOG_ROTATE_BYTES", 10_000_000)
+
+    log_path = tmp_path / "logs" / "container-boot.log"
+    log_path.parent.mkdir()
+    log_path.write_text("previous entry\n")
+
+    scandir = tmp_path / "run-service"; scandir.mkdir()
+    _make_profile(tmp_path, "coder", state="running")
+
+    reconcile_profile_gateways(
+        hermes_home=tmp_path, scandir=scandir, dry_run=False,
+    )
+
+    assert not (tmp_path / "logs" / "container-boot.log.1").exists()
+    contents = log_path.read_text()
+    assert contents.startswith("previous entry\n")
+    assert "profile=coder" in contents
+
+
+def test_reconcile_log_rotation_overwrites_existing_dot1(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Rotating again replaces the prior .1 — we keep at most one
+    rotated file (soft cap of ~2 × threshold)."""
+    from hermes_cli import container_boot
+    monkeypatch.setattr(container_boot, "_LOG_ROTATE_BYTES", 200)
+
+    log_dir = tmp_path / "logs"; log_dir.mkdir()
+    (log_dir / "container-boot.log.1").write_text("OLD ROTATION")
+    (log_dir / "container-boot.log").write_text("Y" * 300)
+
+    scandir = tmp_path / "run-service"; scandir.mkdir()
+    _make_profile(tmp_path, "coder", state="running")
+
+    reconcile_profile_gateways(
+        hermes_home=tmp_path, scandir=scandir, dry_run=False,
+    )
+
+    # .1 now contains the previous .log (Ys), not OLD ROTATION.
+    rotated = (log_dir / "container-boot.log.1").read_text()
+    assert "OLD ROTATION" not in rotated
+    assert rotated.startswith("Y" * 300)
+
+
 def test_dry_run_makes_no_filesystem_changes(tmp_path: Path) -> None:
     scandir = tmp_path / "run-service"; scandir.mkdir()
     profile = _make_profile(tmp_path, "coder", state="running", with_pid=True)

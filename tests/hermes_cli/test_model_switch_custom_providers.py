@@ -6,6 +6,7 @@ only looked at `providers:`.
 """
 
 import hermes_cli.providers as providers_mod
+import pytest
 from hermes_cli.model_switch import list_authenticated_providers, switch_model
 from hermes_cli.providers import resolve_provider_full
 
@@ -16,6 +17,12 @@ _MOCK_VALIDATION = {
     "recognized": True,
     "message": None,
 }
+
+
+@pytest.fixture(autouse=True)
+def _disable_live_custom_provider_model_probe(monkeypatch):
+    """Keep custom-provider picker fixtures independent of local model servers."""
+    monkeypatch.setattr("hermes_cli.models.fetch_api_models", lambda *_a, **_kw: None)
 
 
 def test_list_authenticated_providers_includes_custom_providers(monkeypatch):

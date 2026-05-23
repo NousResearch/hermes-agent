@@ -275,5 +275,45 @@ def test_check_lint_returns_error_for_real_ts_type_errors(tmp_path):
     assert "TS2322" in lint.output
 
 
+# ---------------------------------------------------------------------------
+# Fix 4: Windows npm bins prefer .cmd shims, not POSIX shell wrappers
+# ---------------------------------------------------------------------------
+
+
+def test_windows_cmd_shim_for_npm_bin_prefers_sibling_cmd(tmp_path, monkeypatch):
+    """Windows cannot Popen npm's extensionless shell wrapper directly."""
+    from agent.lsp import servers
+
+    wrapper = tmp_path / "pyright-langserver"
+    wrapper.write_text("#!/bin/sh\n")
+    shim = tmp_path / "pyright-langserver.cmd"
+    shim.write_text("@echo off\n")
+
+    monkeypatch.setattr(servers.os, "name", "nt")
+
+    assert servers._windows_cmd_shim_for_npm_bin(str(wrapper)) == str(shim)
+
+
+def test_windows_cmd_shim_for_npm_bin_leaves_native_executables_alone(tmp_path, monkeypatch):
+    from agent.lsp import servers
+
+    exe = tmp_path / "pyright-langserver.exe"
+    exe.write_text("")
+    monkeypatch.setattr(servers.os, "name", "nt")
+
+    assert servers._windows_cmd_shim_for_npm_bin(str(exe)) is None
+
+
+def test_windows_cmd_shim_for_npm_bin_noop_on_posix(tmp_path, monkeypatch):
+    from agent.lsp import servers
+
+    wrapper = tmp_path / "pyright-langserver"
+    wrapper.write_text("#!/bin/sh\n")
+    (tmp_path / "pyright-langserver.cmd").write_text("@echo off\n")
+    monkeypatch.setattr(servers.os, "name", "posix")
+
+    assert servers._windows_cmd_shim_for_npm_bin(str(wrapper)) is None
+
+
 if __name__ == "__main__":  # pragma: no cover
     pytest.main([__file__, "-v"])

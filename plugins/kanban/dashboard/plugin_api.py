@@ -1310,6 +1310,58 @@ def inspect_run_endpoint(
         return {"run_id": run_id, "alive": True, "pid": pid, "error": "access denied"}
 
 
+class TerminateRunBody(BaseModel):
+    reason: Optional[str] = None
+
+
+@router.post("/runs/{run_id}/terminate")
+def terminate_run_endpoint(
+    run_id: int,
+    payload: TerminateRunBody,
+    board: Optional[str] = Query(None, description="Kanban board slug (omit for current)"),
+):
+    """Terminate the worker process backing an in-flight run.
+
+    Resolves ``run_id`` to its parent ``task_id`` and routes through
+    :func:`kanban_db.reclaim_task` so the SIGTERM->SIGKILL flow,
+    run-outcome bookkeeping, and event-log append all match what the
+    existing ``POST /tasks/{task_id}/reclaim`` endpoint does.
+
+    Responses:
+      * 200 ``{"ok": true, "run_id": ..., "task_id": ...}`` on success.
+      * 404 when ``run_id`` is unknown.
+      * 409 when the run has already ended, or the task is no longer in
+        a claimable state.
+
+    Closes the gap left by PR #28432, which shipped the read-only
+    sibling endpoints (``/workers/active``, ``/runs/{run_id}``,
+    ``/runs/{run_id}/inspect``) but no termination control surface.
+    """
+    board = _resolve_board(board)
+    conn = _conn(board=board)
+    try:
+        r = kanban_db.get_run(conn, run_id)
+        if r is None:
+            raise HTTPException(status_code=404, detail=f"run {run_id} not found")
+        if r.ended_at is not None:
+            raise HTTPException(
+                status_code=409,
+                detail=f"run {run_id} already ended",
+            )
+        ok = kanban_db.reclaim_task(conn, r.task_id, reason=payload.reason)
+        if not ok:
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    f"cannot terminate run {run_id}: task {r.task_id} is no "
+                    "longer in a reclaimable state"
+                ),
+            )
+        return {"ok": True, "run_id": run_id, "task_id": r.task_id}
+    finally:
+        conn.close()
+
+
 # ---------------------------------------------------------------------------
 # Recovery actions — reclaim a running claim, reassign to a new profile
 # ---------------------------------------------------------------------------

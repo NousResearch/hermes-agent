@@ -166,6 +166,16 @@ class ChatCompletionsTransport(ProviderTransport):
                     if isinstance(tc, dict):
                         tc.pop("call_id", None)
                         tc.pop("response_item_id", None)
+        # Strict providers like Anthropic/Bedrock reject assistant messages with empty content.
+        for msg in sanitized:
+            if not isinstance(msg, dict):
+                continue
+            if msg.get("role") == "assistant":
+                c = msg.get("content")
+                if c is None or (isinstance(c, str) and not c.strip()):
+                    msg["content"] = "(tool call)" if msg.get("tool_calls") else "(empty)"
+                elif isinstance(c, list) and len(c) == 0:
+                    msg["content"] = "(tool call)" if msg.get("tool_calls") else "(empty)"
         return sanitized
 
     def convert_tools(self, tools: list[dict[str, Any]]) -> list[dict[str, Any]]:

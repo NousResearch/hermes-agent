@@ -97,6 +97,28 @@ class TestBlueBubblesHelpers:
         assert result.success is True
         assert sent == ["first thought", "second thought"]
 
+    @pytest.mark.asyncio
+    async def test_send_coalesces_excess_paragraphs_to_prevent_fanout(self, monkeypatch):
+        adapter = _make_adapter(monkeypatch)
+        sent = []
+
+        async def fake_resolve_chat_guid(chat_id):
+            return "iMessage;-;user@example.com"
+
+        async def fake_api_post(path, payload):
+            sent.append(payload["message"])
+            return {"data": {"guid": f"msg-{len(sent)}"}}
+
+        monkeypatch.setattr(adapter, "_resolve_chat_guid", fake_resolve_chat_guid)
+        monkeypatch.setattr(adapter, "_api_post", fake_api_post)
+
+        result = await adapter.send("user@example.com", "\n\n".join(["x"] * 3000))
+
+        assert result.success is True
+        assert len(sent) == 3
+        assert len(sent) <= adapter.MAX_OUTBOUND_TEXT_CHUNKS
+        assert all(len(chunk) <= adapter.MAX_MESSAGE_LENGTH for chunk in sent)
+
     def test_format_message_strips_markdown(self, monkeypatch):
         adapter = _make_adapter(monkeypatch)
         assert adapter.format_message("**Hello** `world`") == "Hello world"

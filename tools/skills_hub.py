@@ -3261,9 +3261,16 @@ class HermesIndexSource(SkillSource):
         if source != "official" or not path:
             return None
 
-        rel = str(PurePosixPath(str(path)))
-        if rel in {"", "."} or rel.startswith("../") or rel == "..":
+        raw_path = str(path)
+        pure_path = PurePosixPath(raw_path)
+        if (
+            raw_path in {"", "."}
+            or pure_path.is_absolute()
+            or "\\" in raw_path
+            or any(part == ".." for part in pure_path.parts)
+        ):
             return None
+        rel = str(pure_path)
         if not rel.startswith("optional-skills/"):
             rel = f"optional-skills/{rel}"
         return f"NousResearch/hermes-agent/{rel}"

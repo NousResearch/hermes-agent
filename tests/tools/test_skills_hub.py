@@ -1486,7 +1486,18 @@ class TestHermesIndexSource:
             == "owner/repo/skills/foo"
         )
 
-    @pytest.mark.parametrize("path", ["..", "../secret", ""])
+    @pytest.mark.parametrize(
+        "path",
+        [
+            "..",
+            "../secret",
+            "",
+            "/finance/3-statement-model",
+            "finance/foo/../../secret",
+            "optional-skills/../skills/foo",
+            r"finance\\foo",
+        ],
+    )
     def test_github_id_for_entry_rejects_bad_official_paths(self, path):
         assert HermesIndexSource._github_id_for_entry({
             "source": "official",

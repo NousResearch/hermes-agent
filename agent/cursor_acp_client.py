@@ -45,10 +45,28 @@ def _resolve_command() -> str:
     )
 
 
+def _normalize_cursor_model(model: str | None) -> str | None:
+    """Return the model id expected by Cursor's `agent --model` flag.
+
+    Hermes exposes Cursor ACP models with a provider prefix (for example
+    ``cursor/composer-2.5``) so they behave like other provider/model ids in
+    config. Cursor Agent's CLI expects the bare Cursor model id (for example
+    ``composer-2.5``). Keep this conversion at the ACP boundary so config stays
+    provider-qualified while the subprocess receives the exact Cursor id.
+    """
+    raw = (model or "").strip()
+    if not raw:
+        return None
+    if raw.startswith("cursor/"):
+        raw = raw.split("/", 1)[1].strip()
+    if raw in {"default", "cursor-acp"}:
+        return None
+    return raw or None
+
+
 def _resolve_model() -> str | None:
     """Return the Cursor model to request via --model, or None for account default."""
-    raw = os.getenv("CURSOR_ACP_MODEL", "").strip()
-    return raw or None
+    return _normalize_cursor_model(os.getenv("CURSOR_ACP_MODEL", ""))
 
 
 def _resolve_args() -> list[str]:
@@ -356,10 +374,12 @@ class CursorACPClient:
             self._acp_args = list(acp_args or args or [])
         else:
             self._acp_args = _resolve_args()
-            # Allow per-instance model override
-            explicit_model = (acp_model or model or "").strip()
-            if explicit_model and self._acp_args == ["acp"]:
-                self._acp_args = ["--model", explicit_model, "acp"]
+        # Allow per-instance model override whenever the caller did not provide
+        # a fully custom command line. Auth discovery returns ["acp"], and the
+        # configured Hermes model must still become Cursor's --model flag.
+        explicit_model = _normalize_cursor_model(acp_model or model)
+        if explicit_model and self._acp_args == ["acp"]:
+            self._acp_args = ["--model", explicit_model, "acp"]
         self._acp_cwd = str(Path(acp_cwd or os.getcwd()).resolve())
         self.chat = _ACPChatNamespace(self)
         self.is_closed = False

@@ -2,6 +2,7 @@
 
 from unittest.mock import patch
 
+from agent.cursor_acp_client import CursorACPClient, _normalize_cursor_model
 from hermes_cli import runtime_provider as rp
 from hermes_cli.model_switch import list_authenticated_providers
 from hermes_cli.models import provider_model_ids
@@ -16,6 +17,23 @@ def test_cursor_acp_model_catalog_contains_composer_models():
         "cursor/default",
         "cursor-acp",
     ]
+
+
+def test_cursor_acp_normalizes_provider_prefixed_model_for_agent_cli():
+    assert _normalize_cursor_model("cursor/composer-2.5") == "composer-2.5"
+    assert _normalize_cursor_model("composer-2.5") == "composer-2.5"
+    assert _normalize_cursor_model("cursor/default") is None
+    assert _normalize_cursor_model("cursor-acp") is None
+
+
+def test_cursor_acp_client_passes_configured_model_to_agent_cli():
+    client = CursorACPClient(
+        command="agent",
+        args=["acp"],
+        acp_model="cursor/composer-2.5",
+    )
+
+    assert client._acp_args == ["--model", "composer-2.5", "acp"]
 
 
 def test_cursor_alias_resolves_to_cursor_acp(monkeypatch):

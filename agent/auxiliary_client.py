@@ -3648,6 +3648,7 @@ def resolve_provider_client(
                 base_url=base_url,
                 command=command,
                 args=args,
+                acp_model=final_model,
             )
             logger.debug("resolve_provider_client: %s (%s)", provider, final_model)
             return (_to_async_client(client, final_model, is_vision=is_vision) if async_mode

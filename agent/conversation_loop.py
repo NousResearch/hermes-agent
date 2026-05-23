@@ -46,7 +46,6 @@ from agent.message_sanitization import (
     _strip_non_ascii,
 )
 from agent.model_metadata import (
-    MINIMUM_CONTEXT_LENGTH,
     estimate_messages_tokens_rough,
     estimate_request_tokens_rough,
     get_next_probe_tier,
@@ -72,50 +71,6 @@ from tools.skill_provenance import set_current_write_origin
 from utils import base_url_host_matches, env_var_enabled
 
 logger = logging.getLogger(__name__)
-
-
-def _ollama_context_limit_error(agent: Any, request_tokens: int) -> Optional[str]:
-    """Return a user-facing error when Ollama is loaded with too little context."""
-    if not getattr(agent, "tools", None):
-        return None
-
-    runtime_ctx = getattr(agent, "_ollama_num_ctx", None)
-    if not isinstance(runtime_ctx, int) or runtime_ctx <= 0:
-        return None
-    if runtime_ctx >= MINIMUM_CONTEXT_LENGTH:
-        return None
-
-    model = getattr(agent, "model", "") or "the selected model"
-    base_url = getattr(agent, "base_url", "") or "unknown base URL"
-    provider = getattr(agent, "provider", "") or "unknown"
-    tool_count = len(getattr(agent, "tools", None) or [])
-
-    logger.warning(
-        "Ollama runtime context too small for Hermes tool use: "
-        "model=%s provider=%s base_url=%s runtime_context=%d "
-        "minimum_context=%d estimated_request_tokens=%d tool_count=%d "
-        "session=%s",
-        model,
-        provider,
-        base_url,
-        runtime_ctx,
-        MINIMUM_CONTEXT_LENGTH,
-        request_tokens,
-        tool_count,
-        getattr(agent, "session_id", None) or "none",
-    )
-
-    return (
-        f"Ollama loaded `{model}` with only {runtime_ctx:,} tokens of runtime "
-        f"context, but Hermes needs at least {MINIMUM_CONTEXT_LENGTH:,} tokens "
-        "for reliable tool use.\n\n"
-        "Increase the Ollama context for this model and restart/reload the "
-        "model before trying again. A known-good starting point is 65,536 "
-        "tokens. In Hermes config, set `model.ollama_num_ctx: 65536` "
-        "(and `model.context_length: 65536` if you also override the displayed "
-        "model context). If you manage the model through an Ollama Modelfile, "
-        "set `PARAMETER num_ctx 65536` there instead."
-    )
 
 
 def _ra():
@@ -572,7 +527,6 @@ def run_conversation(
     api_call_count = 0
     final_response = None
     interrupted = False
-    failed = False
     codex_ack_continuations = 0
     length_continue_retries = 0
     truncated_tool_call_retries = 0
@@ -929,26 +883,6 @@ def run_conversation(
         # Calculate approximate request size for logging
         total_chars = sum(len(str(msg)) for msg in api_messages)
         approx_tokens = estimate_messages_tokens_rough(api_messages)
-        approx_request_tokens = estimate_request_tokens_rough(
-            api_messages, tools=agent.tools or None
-        )
-
-        _runtime_context_error = _ollama_context_limit_error(
-            agent, approx_request_tokens
-        )
-        if _runtime_context_error:
-            final_response = _runtime_context_error
-            failed = True
-            _turn_exit_reason = "ollama_runtime_context_too_small"
-            messages.append({"role": "assistant", "content": final_response})
-            agent._emit_status("❌ Ollama runtime context is too small for Hermes tool use")
-            api_call_count -= 1
-            agent._api_call_count = api_call_count
-            try:
-                agent.iteration_budget.refund()
-            except Exception:
-                pass
-            break
         
         # Thinking spinner for quiet mode (animated during API call)
         thinking_spinner = None
@@ -989,7 +923,6 @@ def run_conversation(
         copilot_auth_retry_attempted=False
         thinking_sig_retry_attempted = False
         image_shrink_retry_attempted = False
-        multimodal_tool_content_retry_attempted = False
         oauth_1m_beta_retry_attempted = False
         llama_cpp_grammar_retry_attempted = False
         has_retried_429 = False
@@ -1056,6 +989,7 @@ def run_conversation(
                 if agent.api_mode == "codex_responses":
                     api_kwargs = agent._get_transport().preflight_kwargs(api_kwargs, allow_stream=False)
 
+                _pre_results: list = []
                 try:
                     from hermes_cli.plugins import invoke_hook as _invoke_hook
                     request_messages = api_kwargs.get("messages")
@@ -1069,7 +1003,7 @@ def run_conversation(
                     # mutated by the agent loop, so a shallow copy is
                     # sufficient; a deepcopy would walk every tool result
                     # and base64 image on every API call.
-                    _invoke_hook(
+                    _pre_results = _invoke_hook(
                         "pre_api_request",
                         task_id=effective_task_id,
                         session_id=agent.session_id or "",
@@ -1091,11 +1025,30 @@ def run_conversation(
                 except Exception:
                     pass
 
+                # Allow plugins to override model/provider before the API call.
+                # Plugins inspect the request and return {"model": "...", "provider": "..."}.
+                # Only the first non-None override takes effect.
+                _model_overridden = False
+                for _result in _pre_results:
+                    if isinstance(_result, dict) and _result.get("model"):
+                        agent.model = _result["model"]
+                        if _result.get("provider"):
+                            agent.provider = _result["provider"]
+                        if _result.get("base_url"):
+                            agent.base_url = _result["base_url"]
+                        _model_overridden = True
+                        break
+                if _model_overridden:
+                    api_kwargs = agent._build_api_kwargs(api_messages)
+                    if agent._force_ascii_payload:
+                        _sanitize_structure_non_ascii(api_kwargs)
+                    if agent.api_mode == "codex_responses":
+                        api_kwargs = agent._get_transport().preflight_kwargs(api_kwargs, allow_stream=False)
+
                 if env_var_enabled("HERMES_DUMP_REQUESTS"):
                     agent._dump_api_request_debug(api_kwargs, reason="preflight")
 
-                # Always prefer the streaming path — even without stream
-                # consumers.  Streaming gives us fine-grained health
+                # Always prefer the streaming path
                 # checking (90s stale-stream detection, 60s read timeout)
                 # that the non-streaming path lacks.  Without this,
                 # subagents and other quiet-mode callers can hang
@@ -1521,6 +1474,7 @@ def run_conversation(
                                 }
                                 messages.append(continue_msg)
                                 agent._session_messages = messages
+                                agent._save_session_log(messages)
                                 restart_with_length_continuation = True
                                 break
 
@@ -1873,11 +1827,7 @@ def run_conversation(
                         # that survives message/tool sanitization (#6843).
                         _credential_sanitized = False
                         _raw_key = getattr(agent, "api_key", None) or ""
-                        # Entra ID bearer providers are callables — their
-                        # minted JWTs are always ASCII, so no sanitization
-                        # is needed (and ``_strip_non_ascii`` would crash
-                        # on a callable input).
-                        if _raw_key and isinstance(_raw_key, str):
+                        if _raw_key:
                             _clean_key = _strip_non_ascii(_raw_key)
                             if _clean_key != _raw_key:
                                 agent.api_key = _clean_key
@@ -2061,31 +2011,6 @@ def run_conversation(
                             "or shrink didn't reduce size; surfacing original error."
                         )
 
-                # Multimodal-tool-content recovery: providers that follow
-                # the OpenAI spec strictly (tool message content must be a
-                # string) reject our list-type content with a 400.  Strip
-                # image parts from any list-type tool messages, mark the
-                # (provider, model) as no-list-tool-content for the rest
-                # of this session so future tool results preemptively
-                # downgrade, and retry once.  See issue #27344.
-                if (
-                    classified.reason == FailoverReason.multimodal_tool_content_unsupported
-                    and not multimodal_tool_content_retry_attempted
-                ):
-                    multimodal_tool_content_retry_attempted = True
-                    if agent._try_strip_image_parts_from_tool_messages(api_messages):
-                        agent._vprint(
-                            f"{agent.log_prefix}📐 Provider rejected list-type tool content — "
-                            f"downgraded screenshots to text and retrying...",
-                            force=True,
-                        )
-                        continue
-                    else:
-                        logger.info(
-                            "multimodal-tool-content recovery: no list-type tool "
-                            "messages with image parts found; surfacing original error."
-                        )
-
                 # Anthropic OAuth subscription rejected the 1M-context beta
                 # header ("long context beta is not yet available for this
                 # subscription"). Disable the beta for the rest of this
@@ -2175,26 +2100,15 @@ def run_conversation(
                 ):
                     anthropic_auth_retry_attempted = True
                     from agent.anthropic_adapter import _is_oauth_token
-                    from agent.azure_identity_adapter import is_token_provider
                     if agent._try_refresh_anthropic_client_credentials():
                         print(f"{agent.log_prefix}🔐 Anthropic credentials refreshed after 401. Retrying request...")
                         continue
                     # Credential refresh didn't help — show diagnostic info
                     key = agent._anthropic_api_key
+                    auth_method = "Bearer (OAuth/setup-token)" if _is_oauth_token(key) else "x-api-key (API key)"
                     print(f"{agent.log_prefix}🔐 Anthropic 401 — authentication failed.")
-                    if is_token_provider(key):
-                        # Azure Foundry Entra ID — the bearer token is
-                        # minted per-request by an httpx event hook on a
-                        # custom http_client passed to the SDK. The 401
-                        # means Azure rejected the JWT (RBAC role missing,
-                        # az login expired, IMDS unreachable, etc.).
-                        print(f"{agent.log_prefix}   Auth method: Microsoft Entra ID (httpx event hook)")
-                        print(f"{agent.log_prefix}   Run `hermes doctor` for credential-chain diagnostics, or")
-                        print(f"{agent.log_prefix}   `az login` if your developer session expired.")
-                    else:
-                        auth_method = "Bearer (OAuth/setup-token)" if _is_oauth_token(key) else "x-api-key (API key)"
-                        print(f"{agent.log_prefix}   Auth method: {auth_method}")
-                        print(f"{agent.log_prefix}   Token prefix: {key[:12]}..." if isinstance(key, str) and len(key) > 12 else f"{agent.log_prefix}   Token: (empty or short)")
+                    print(f"{agent.log_prefix}   Auth method: {auth_method}")
+                    print(f"{agent.log_prefix}   Token prefix: {key[:12]}..." if key and len(key) > 12 else f"{agent.log_prefix}   Token: (empty or short)")
                     print(f"{agent.log_prefix}   Troubleshooting:")
                     from hermes_constants import display_hermes_home as _dhh_fn
                     _dhh = _dhh_fn()
@@ -2423,7 +2337,7 @@ def run_conversation(
                     # still recover.  See _pool_may_recover_from_rate_limit
                     # for the single-credential-pool and CloudCode-quota
                     # exceptions.  Fixes #11314 and #13636.
-                    pool_may_recover = _ra()._pool_may_recover_from_rate_limit(
+                    pool_may_recover = _pool_may_recover_from_rate_limit(
                         agent._credential_pool,
                         provider=agent.provider,
                         base_url=getattr(agent, "base_url", None),
@@ -3177,6 +3091,7 @@ def run_conversation(
                     if not agent.quiet_mode:
                         agent._vprint(f"{agent.log_prefix}↻ Codex response incomplete; continuing turn ({agent._codex_incomplete_retries}/3)")
                     agent._session_messages = messages
+                    agent._save_session_log(messages)
                     continue
 
                 agent._codex_incomplete_retries = 0
@@ -3501,6 +3416,7 @@ def run_conversation(
                 
                 # Save session log incrementally (so progress is visible even if interrupted)
                 agent._session_messages = messages
+                agent._save_session_log(messages)
                 
                 # Continue loop for next response
                 continue
@@ -3667,6 +3583,7 @@ def run_conversation(
                         interim_msg["_thinking_prefill"] = True
                         messages.append(interim_msg)
                         agent._session_messages = messages
+                        agent._save_session_log(messages)
                         continue
 
                     # ── Empty response retry ──────────────────────
@@ -3800,6 +3717,7 @@ def run_conversation(
                     }
                     messages.append(continue_msg)
                     agent._session_messages = messages
+                    agent._save_session_log(messages)
                     continue
 
                 codex_ack_continuations = 0
@@ -3940,11 +3858,7 @@ def run_conversation(
                 )
 
     # Determine if conversation completed successfully
-    completed = (
-        final_response is not None
-        and api_call_count < agent.max_iterations
-        and not failed
-    )
+    completed = final_response is not None and api_call_count < agent.max_iterations
 
     # Save trajectory if enabled.  ``user_message`` may be a multimodal
     # list of parts; the trajectory format wants a plain string.
@@ -4094,7 +4008,6 @@ def run_conversation(
         "api_calls": api_call_count,
         "completed": completed,
         "turn_exit_reason": _turn_exit_reason,
-        "failed": failed,
         "partial": False,  # True only when stopped due to invalid tool calls
         "interrupted": interrupted,
         "response_previewed": getattr(agent, "_response_was_previewed", False),

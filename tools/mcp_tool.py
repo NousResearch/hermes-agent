@@ -1179,11 +1179,14 @@ class MCPServerTask:
                 # Timeout — no lifecycle event fired.  Send a keepalive
                 # to exercise the connection and detect stale sockets.
                 if self.session:
+                    if self._rpc_lock.locked():
+                        continue
                     try:
-                        await asyncio.wait_for(
-                            self.session.list_tools(),
-                            timeout=30.0,
-                        )
+                        async with self._rpc_lock:
+                            await asyncio.wait_for(
+                                self.session.list_tools(),
+                                timeout=30.0,
+                            )
                     except Exception as exc:
                         logger.warning(
                             "MCP server '%s' keepalive failed, "

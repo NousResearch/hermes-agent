@@ -1242,16 +1242,13 @@ def list_authenticated_providers(
         if not has_creds:
             continue
 
-        # For preferred providers (nvidia, deepseek, etc.) use live API-backed
-        # discovery so the /model picker reflects what the provider currently
-        # has available — not a stale curated+merged snapshot.
-        # Falls back to curated+merged list when the live endpoint is down.
-        if hermes_id in _MODELS_DEV_PREFERRED:
-            # Use live provider API, deduplicate to avoid repeated model IDs
-            # from the provider's catalog (e.g. NVIDIA NIM returns duplicates
-            # for some model slugs).
-            model_ids = sorted(set(provider_model_ids(hermes_id)))
-        else:
+        # Use live API-backed discovery so the /model picker reflects
+        # what the provider currently has available — not a stale curated
+        # snapshot.  Section 1 already filters for auth_type == "api_key"
+        # only (line 1223), so all providers here support /v1/models.
+        try:
+            model_ids = provider_model_ids(hermes_id)
+        except Exception:
             model_ids = curated.get(hermes_id, [])
         total = len(model_ids)
         top = model_ids[:max_models]
@@ -1377,7 +1374,10 @@ def list_authenticated_providers(
             # curated catalog.  provider_model_ids() falls back to the curated
             # list when the live endpoint is unreachable, so this is safe for
             # offline / misconfigured cases too.
-            model_ids = sorted(set(provider_model_ids(hermes_slug)))
+            try:
+                model_ids = provider_model_ids(hermes_slug)
+            except Exception:
+                model_ids = curated.get(hermes_slug, []) or curated.get(pid, [])
         else:
             # Use curated list — look up by Hermes slug, fall back to overlay key
             model_ids = curated.get(hermes_slug, []) or curated.get(pid, [])

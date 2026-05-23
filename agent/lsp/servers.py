@@ -265,11 +265,12 @@ def _spawn_pyright(root: str, ctx: ServerContext) -> Optional[SpawnSpec]:
     if cmd_shim:
         bin_path = cmd_shim
     # If we got the cli ``pyright``, the langserver is its sibling.
-    base = os.path.basename(bin_path)
-    if base in {"pyright", "pyright.exe"}:
+    base = os.path.basename(bin_path).lower()
+    if base in {"pyright", "pyright.exe", "pyright.cmd", "pyright.bat"}:
         sibling = os.path.join(os.path.dirname(bin_path), "pyright-langserver")
-        if os.path.exists(sibling):
-            bin_path = sibling
+        sibling_shim = _windows_cmd_shim_for_npm_bin(sibling) or sibling
+        if os.path.exists(sibling_shim):
+            bin_path = sibling_shim
     init: Dict[str, Any] = {}
     # Pick the project's venv interpreter if there is one — otherwise
     # pyright defaults to "python on PATH" which is rarely the venv.

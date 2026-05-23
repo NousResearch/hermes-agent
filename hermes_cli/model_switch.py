@@ -1248,8 +1248,16 @@ def list_authenticated_providers(
         # only (line 1223), so all providers here support /v1/models.
         try:
             model_ids = provider_model_ids(hermes_id)
+            # Deduplicate while preserving order — some providers (e.g.
+            # NVIDIA NIM) return duplicate slugs from /v1/models.
+            seen = set()
+            model_ids = [x for x in model_ids if not (x in seen or seen.add(x))]
         except Exception:
             model_ids = curated.get(hermes_id, [])
+            # Re-apply models.dev enrichment so offline / firewalled users
+            # still get a richer list than the bare curated catalog.
+            if hermes_id in _MODELS_DEV_PREFERRED:
+                model_ids = _merge_with_models_dev(hermes_id, model_ids)
         total = len(model_ids)
         top = model_ids[:max_models]
 
@@ -1376,8 +1384,14 @@ def list_authenticated_providers(
             # offline / misconfigured cases too.
             try:
                 model_ids = provider_model_ids(hermes_slug)
+                # Deduplicate while preserving order — some providers
+                # return duplicate slugs from /v1/models.
+                _seen = set()
+                model_ids = [x for x in model_ids if not (x in _seen or _seen.add(x))]
             except Exception:
                 model_ids = curated.get(hermes_slug, []) or curated.get(pid, [])
+                if hermes_slug in _MODELS_DEV_PREFERRED:
+                    model_ids = _merge_with_models_dev(hermes_slug, model_ids)
         else:
             # Use curated list — look up by Hermes slug, fall back to overlay key
             model_ids = curated.get(hermes_slug, []) or curated.get(pid, [])

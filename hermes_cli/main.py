@@ -6097,6 +6097,13 @@ def cmd_webhook(args):
     webhook_command(args)
 
 
+def cmd_portal(args):
+    """Nous Portal status and Tool Gateway routing surface."""
+    from hermes_cli.portal_cli import portal_command
+
+    return portal_command(args)
+
+
 def cmd_slack(args):
     """Slack integration helpers.
 
@@ -11384,6 +11391,13 @@ def main():
         help="On existing installs: only prompt for items that are missing "
         "or unset, instead of running the full reconfigure wizard.",
     )
+    setup_parser.add_argument(
+        "--portal",
+        action="store_true",
+        help="One-shot Nous Portal setup: log in via OAuth, set Nous as the "
+        "inference provider, and opt into the Tool Gateway. Skips the "
+        "rest of the wizard.",
+    )
     setup_parser.set_defaults(func=cmd_setup)
 
     # =========================================================================
@@ -11858,6 +11872,12 @@ def main():
     )
 
     webhook_parser.set_defaults(func=cmd_webhook)
+
+    # =========================================================================
+    # portal command — Nous Portal status + Tool Gateway routing
+    # =========================================================================
+    from hermes_cli.portal_cli import add_parser as _add_portal_parser
+    _add_portal_parser(subparsers)
 
     # =========================================================================
     # kanban command — multi-profile collaboration board

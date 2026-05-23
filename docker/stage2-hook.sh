@@ -75,15 +75,29 @@ fi
 # --- Seed directory structure as hermes user ---
 # Run as hermes via s6-setuidgid so dirs end up owned correctly (matters
 # under rootless Podman where chown back to root would fail).
-s6-setuidgid hermes sh -c "mkdir -p \"$HERMES_HOME\"/cron \
-    \"$HERMES_HOME\"/sessions \"$HERMES_HOME\"/logs \"$HERMES_HOME\"/hooks \
-    \"$HERMES_HOME\"/memories \"$HERMES_HOME\"/skills \"$HERMES_HOME\"/skins \
-    \"$HERMES_HOME\"/plans \"$HERMES_HOME\"/workspace \"$HERMES_HOME\"/home"
+#
+# Use direct `mkdir -p` invocation (no `sh -c "..."` wrapper) so the
+# shell isn't a second interpreter — defends against $HERMES_HOME values
+# containing shell metacharacters. PR #30136 review item O2.
+s6-setuidgid hermes mkdir -p \
+    "$HERMES_HOME/cron" \
+    "$HERMES_HOME/sessions" \
+    "$HERMES_HOME/logs" \
+    "$HERMES_HOME/hooks" \
+    "$HERMES_HOME/memories" \
+    "$HERMES_HOME/skills" \
+    "$HERMES_HOME/skins" \
+    "$HERMES_HOME/plans" \
+    "$HERMES_HOME/workspace" \
+    "$HERMES_HOME/home"
 
 # --- Install-method stamp (read by detect_install_method() in hermes status) ---
 # Preserved from the tini-era entrypoint (PR #27843). Must be written as
 # the hermes user so ownership matches the file's documented owner.
-s6-setuidgid hermes sh -c "echo docker > \"$HERMES_HOME/.install_method\"" 2>/dev/null || true
+# tee is invoked directly via s6-setuidgid (no `sh -c` wrapper) for the
+# same shell-metacharacter safety described above.
+printf 'docker\n' | s6-setuidgid hermes tee "$HERMES_HOME/.install_method" >/dev/null \
+    || true
 
 # --- Seed config files (only on first boot) ---
 seed_one() {
@@ -107,9 +121,13 @@ if [ ! -f "$HERMES_HOME/auth.json" ] && [ -n "${HERMES_AUTH_JSON_BOOTSTRAP:-}" ]
 fi
 
 # --- Sync bundled skills ---
+# Invoke the venv's python by absolute path so we don't need a `sh -c`
+# wrapper to source the activate script. This is safe because
+# skills_sync.py doesn't depend on any environment exports beyond what
+# the python binary's own bin-stub already sets up (sys.path is rooted
+# at the venv's site-packages by virtue of running .venv/bin/python).
 if [ -d "$INSTALL_DIR/skills" ]; then
-    s6-setuidgid hermes sh -c \
-        ". $INSTALL_DIR/.venv/bin/activate && python3 $INSTALL_DIR/tools/skills_sync.py" \
+    s6-setuidgid hermes "$INSTALL_DIR/.venv/bin/python" "$INSTALL_DIR/tools/skills_sync.py" \
         || echo "[stage2] Warning: skills_sync.py failed; continuing"
 fi
 

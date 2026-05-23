@@ -38,6 +38,16 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from hermes_constants import get_hermes_home
 from hermes_cli._subprocess_compat import windows_hide_flags
+
+def _validate_script_path(path: str, cron_dir: str) -> bool:
+    """Validate that a resolved script path stays within the cron directory."""
+    try:
+        resolved = os.path.realpath(os.path.join(cron_dir, path))
+        cron_resolved = os.path.realpath(cron_dir)
+        return resolved.startswith(cron_resolved + "/") or resolved == cron_resolved
+    except (ValueError, OSError):
+        return False
+
 from hermes_cli.config import load_config, _expand_env_vars
 from hermes_time import now as _hermes_now
 

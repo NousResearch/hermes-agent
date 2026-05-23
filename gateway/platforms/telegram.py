@@ -4566,14 +4566,26 @@ class TelegramAdapter(BasePlatformAdapter):
         for source_text, entities in _iter_sources():
             for entity in entities:
                 entity_type = str(getattr(entity, "type", "")).split(".")[-1].lower()
-                if entity_type not in {"mention", "bot_command"}:
+                if entity_type not in {"mention", "text_mention", "bot_command"}:
                     continue
+
+                if entity_type == "text_mention":
+                    # Some Telegram clients emit bot-picker mentions as
+                    # text_mention(user=...) instead of a plain @username
+                    # mention. Use the attached bot user's username when
+                    # present so exclusive multi-bot routing still works.
+                    user = getattr(entity, "user", None)
+                    handle = (getattr(user, "username", None) or "").lstrip("@").lower()
+                    if handle and re.fullmatch(r"[a-z0-9_]{2,29}bot", handle, re.IGNORECASE):
+                        mentioned_bot_usernames.add(handle)
+                    continue
+
                 offset = int(getattr(entity, "offset", -1))
                 length = int(getattr(entity, "length", 0))
                 if offset < 0 or length <= 0:
                     continue
-
                 entity_text = source_text[offset:offset + length].strip()
+
                 if entity_type == "mention":
                     handle = entity_text.lstrip("@").lower()
                     if re.fullmatch(r"[a-z0-9_]{2,29}bot", handle, re.IGNORECASE):

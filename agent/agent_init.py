@@ -253,6 +253,15 @@ def init_agent(
     """
     _install_safe_stdio()
 
+    # Seed cleanup/session invariants before any fallible initialization
+    # path. AIAgent.__init__ delegates here directly, so partially
+    # constructed instances must still be safe for cleanup/destructor paths.
+    agent.session_id = session_id
+    agent._session_db = session_db
+    agent._session_db_created = False
+    agent._parent_session_id = parent_session_id
+    agent._compression_warning = None
+
     agent.model = model
     agent.max_iterations = max_iterations
     # Shared iteration budget — parent creates, children inherit.

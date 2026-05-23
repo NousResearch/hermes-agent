@@ -48,6 +48,42 @@ def test_init_creates_expected_tables(kanban_home):
     assert {"tasks", "task_links", "task_comments", "task_events"} <= names
 
 
+def test_connect_rejects_unisolated_pytest_default(monkeypatch):
+    monkeypatch.delenv("HERMES_KANBAN_HOME", raising=False)
+    monkeypatch.delenv("HERMES_KANBAN_DB", raising=False)
+    monkeypatch.delenv("HERMES_KANBAN_BOARD", raising=False)
+    monkeypatch.setenv("HERMES_HOME", str(Path.home() / ".hermes"))
+
+    with pytest.raises(RuntimeError, match="without any of HERMES_KANBAN_HOME"):
+        kb.connect()
+
+
+def test_connect_allows_explicit_db_path_under_pytest(tmp_path, monkeypatch):
+    monkeypatch.delenv("HERMES_KANBAN_HOME", raising=False)
+    monkeypatch.delenv("HERMES_KANBAN_DB", raising=False)
+    monkeypatch.delenv("HERMES_KANBAN_BOARD", raising=False)
+    monkeypatch.setenv("HERMES_HOME", str(Path.home() / ".hermes"))
+    db_path = tmp_path / "isolated-kanban.db"
+
+    with kb.connect(db_path=db_path) as conn:
+        kb.create_task(conn, title="isolated")
+
+    assert db_path.exists()
+
+
+def test_connect_allows_kanban_home_under_pytest(tmp_path, monkeypatch):
+    kanban_root = tmp_path / "kanban-root"
+    monkeypatch.setenv("HERMES_KANBAN_HOME", str(kanban_root))
+    monkeypatch.delenv("HERMES_KANBAN_DB", raising=False)
+    monkeypatch.delenv("HERMES_KANBAN_BOARD", raising=False)
+    monkeypatch.setenv("HERMES_HOME", str(Path.home() / ".hermes"))
+
+    with kb.connect() as conn:
+        kb.create_task(conn, title="isolated")
+
+    assert (kanban_root / "kanban.db").exists()
+
+
 def test_connect_rejects_tls_record_in_sqlite_header(tmp_path, monkeypatch):
     """Kanban should classify TLS-looking page-0 clobbers before WAL setup."""
     home = tmp_path / ".hermes"

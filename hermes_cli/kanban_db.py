@@ -1147,14 +1147,36 @@ def connect(
     directly don't have to remember a separate init step. Subsequent
     connections skip the schema check via a module-level path cache.
 
-    Path resolution:
-
-    * ``db_path`` explicit → used as-is (legacy callers, tests).
-    * ``board`` explicit → resolves to that board's DB.
-    * Neither → :func:`kanban_db_path` resolves via
-      ``HERMES_KANBAN_DB`` env → ``HERMES_KANBAN_BOARD`` env →
-      ``<root>/kanban/current`` → ``default``.
+    Safety guard: when running under pytest (PYTEST_CURRENT_TEST is set)
+    and no explicit db_path or board override is provided, fail closed if
+    no Kanban isolation env var is set and the caller still resolves to a
+    non-temporary Hermes home. This prevents tests from silently writing to
+    a live ~/.hermes/kanban board while preserving explicit test fixtures.
     """
+    if (
+        db_path is None
+        and board is None
+        and os.environ.get("PYTEST_CURRENT_TEST")
+        and not os.environ.get("HERMES_KANBAN_HOME", "").strip()
+        and not os.environ.get("HERMES_KANBAN_DB", "").strip()
+        and not os.environ.get("HERMES_KANBAN_BOARD", "").strip()
+    ):
+        real_home = str(Path.home())
+        hermes_home = os.environ.get("HERMES_HOME", "").strip()
+        is_isolated = (
+            real_home.startswith("/tmp")
+            or real_home.startswith("/var/folders")
+            or (bool(hermes_home) and hermes_home.startswith("/tmp"))
+        )
+        if not is_isolated:
+            raise RuntimeError(
+                "kanban.connect() called from a pytest session without any of "
+                "HERMES_KANBAN_HOME / HERMES_KANBAN_DB / HERMES_KANBAN_BOARD set. "
+                "This would write test data to the real ~/.hermes/kanban/ board. "
+                "Fix: ensure _hermetic_environment conftest fixture is active, or "
+                "pass db_path/board explicitly to this call."
+            )
+
     if db_path is not None:
         path = db_path
     else:

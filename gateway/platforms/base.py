@@ -27,11 +27,13 @@ logger = logging.getLogger(__name__)
 # Kept in sync with tools/send_message_tool.py and cron/scheduler.py via
 # should_send_media_as_audio() below.
 _AUDIO_EXTS = frozenset({'.ogg', '.opus', '.mp3', '.wav', '.m4a', '.flac'})
-# Telegram's Bot API sendAudio only accepts MP3 / M4A. Other audio
-# formats either need to go through sendVoice (Opus/OGG) or must be
-# delivered as a regular document.
+# Telegram's Bot API sendAudio only accepts MP3 / M4A. Opus/OGG can go
+# through sendVoice. WAV can be transcoded by the Telegram adapter into
+# Opus/OGG for native voice-note delivery; other audio formats fall back
+# to regular document delivery.
 _TELEGRAM_AUDIO_ATTACHMENT_EXTS = frozenset({'.mp3', '.m4a'})
 _TELEGRAM_VOICE_EXTS = frozenset({'.ogg', '.opus'})
+_TELEGRAM_CONVERTIBLE_VOICE_EXTS = frozenset({'.wav'})
 
 
 def _platform_name(platform) -> str:
@@ -96,8 +98,9 @@ def should_send_media_as_audio(platform, ext: str, is_voice: bool = False) -> bo
     Opus/OGG for sendVoice. Opus/OGG is only routed as audio when the
     caller flagged ``is_voice=True`` (so we don't turn a regular audio
     attachment into a voice bubble just because the file happens to be
-    Opus). Everything else falls through to document delivery by
-    returning ``False``.
+    Opus). WAV is routed to the Telegram audio sender so the adapter can
+    transcode it to Opus/OGG and send it natively. Everything else falls
+    through to document delivery by returning ``False``.
     """
     normalized_ext = (ext or "").lower()
     if normalized_ext not in _AUDIO_EXTS:
@@ -105,6 +108,8 @@ def should_send_media_as_audio(platform, ext: str, is_voice: bool = False) -> bo
     if _platform_name(platform) == "telegram":
         if normalized_ext in _TELEGRAM_VOICE_EXTS:
             return is_voice
+        if normalized_ext in _TELEGRAM_CONVERTIBLE_VOICE_EXTS:
+            return True
         return normalized_ext in _TELEGRAM_AUDIO_ATTACHMENT_EXTS
     return True
 
@@ -3347,7 +3352,13 @@ class BasePlatformAdapter(ABC):
                         await asyncio.sleep(human_delay)
                     try:
                         ext = Path(file_path).suffix.lower()
-                        if ext in _VIDEO_EXTS:
+                        if should_send_media_as_audio(self.platform, ext, is_voice=False):
+                            await self.send_voice(
+                                chat_id=event.source.chat_id,
+                                audio_path=file_path,
+                                metadata=_thread_metadata,
+                            )
+                        elif ext in _VIDEO_EXTS:
                             await self.send_video(
                                 chat_id=event.source.chat_id,
                                 video_path=file_path,

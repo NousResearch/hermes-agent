@@ -865,8 +865,22 @@ async def _send_telegram(token, chat_id, message, media_files=None, thread_id=No
                 continue
 
             ext = os.path.splitext(media_path)[1].lower()
+            converted_audio_path = None
+            send_media_path = media_path
+            if ext == ".wav":
+                try:
+                    from gateway.platforms.telegram import convert_audio_to_telegram_voice_ogg
+                    converted_audio_path = convert_audio_to_telegram_voice_ogg(media_path)
+                    if converted_audio_path:
+                        send_media_path = converted_audio_path
+                        ext = os.path.splitext(send_media_path)[1].lower()
+                except Exception as conv_exc:
+                    logger.warning(
+                        "Failed to convert WAV to Telegram voice; falling back to document: %s",
+                        conv_exc,
+                    )
             try:
-                with open(media_path, "rb") as f:
+                with open(send_media_path, "rb") as f:
                     if ext in _IMAGE_EXTS and not force_document:
                         last_msg = await bot.send_photo(
                             chat_id=int_chat_id, photo=f, **thread_kwargs
@@ -875,7 +889,7 @@ async def _send_telegram(token, chat_id, message, media_files=None, thread_id=No
                         last_msg = await bot.send_video(
                             chat_id=int_chat_id, video=f, **thread_kwargs
                         )
-                    elif ext in _VOICE_EXTS and is_voice:
+                    elif ext in _VOICE_EXTS and (is_voice or converted_audio_path):
                         last_msg = await bot.send_voice(
                             chat_id=int_chat_id, voice=f, **thread_kwargs
                         )
@@ -891,6 +905,12 @@ async def _send_telegram(token, chat_id, message, media_files=None, thread_id=No
                 warning = _sanitize_error_text(f"Failed to send media {media_path}: {e}")
                 logger.error(warning)
                 warnings.append(warning)
+            finally:
+                if converted_audio_path and converted_audio_path != media_path:
+                    try:
+                        os.unlink(converted_audio_path)
+                    except OSError:
+                        pass
 
         if last_msg is None:
             error = "No deliverable text or media remained after processing MEDIA tags"

@@ -3197,7 +3197,34 @@ def _apply_mcp_change(config: dict, targets: List[str], action: str) -> Set[str]
     return failed_servers
 
 
-def _print_tools_list(enabled_toolsets: set, mcp_servers: dict, platform: str = "cli"):
+def _active_memory_provider_tools(provider_name: str) -> List[str]:
+    """Return the tool names declared by an active memory provider plugin.
+
+    Returns ``[]`` if the provider can't be discovered/loaded or registers
+    no tools (e.g. context-only mode). All exceptions are swallowed —
+    listing must never fail because a memory plugin is misconfigured.
+    """
+    if not provider_name:
+        return []
+    try:
+        from plugins.memory import load_memory_provider
+        provider = load_memory_provider(provider_name)
+        if not provider:
+            return []
+        schemas = (
+            provider.get_tool_schemas() if hasattr(provider, "get_tool_schemas") else []
+        )
+        return [s.get("name", "") for s in schemas if s.get("name")]
+    except Exception:
+        return []
+
+
+def _print_tools_list(
+    enabled_toolsets: set,
+    mcp_servers: dict,
+    platform: str = "cli",
+    config: Optional[dict] = None,
+):
     """Print a summary of enabled/disabled toolsets and MCP tool filters."""
     effective_all = _get_effective_configurable_toolsets()
     effective = [
@@ -3223,6 +3250,26 @@ def _print_tools_list(enabled_toolsets: set, mcp_servers: dict, platform: str = 
             status = (color("✓ enabled", Colors.GREEN) if ts_key in enabled_toolsets
                       else color("✗ disabled", Colors.RED))
             print(f"  {status}  {ts_key}  {color(label, Colors.DIM)}")
+
+    # Memory provider tools (#30979) — show the active external memory
+    # provider and the tool names it injects on agent start, so users can
+    # verify their plugin reaches the agent surface even when the
+    # "memory" toolset is disabled (per the hindsight migration guide).
+    provider_name = ""
+    if isinstance(config, dict):
+        provider_name = (config.get("memory") or {}).get("provider", "") or ""
+    if provider_name:
+        tool_names = _active_memory_provider_tools(provider_name)
+        if not enabled_toolsets:
+            status = color("✗ skipped (empty toolset list)", Colors.YELLOW)
+        elif "memory" in enabled_toolsets:
+            status = color("✓ injected (memory toolset)", Colors.GREEN)
+        else:
+            status = color("✓ injected (external provider)", Colors.GREEN)
+        tools_label = ", ".join(tool_names) if tool_names else "no tools (context mode?)"
+        print()
+        print(f"Memory provider ({platform}):")
+        print(f"  {status}  {provider_name}  {color('— ' + tools_label, Colors.DIM)}")
 
     if mcp_servers:
         print()
@@ -3254,8 +3301,12 @@ def tools_disable_enable_command(args):
         return
 
     if action == "list":
-        _print_tools_list(_get_platform_tools(config, platform, include_default_mcp_servers=False),
-                          config.get("mcp_servers") or {}, platform)
+        _print_tools_list(
+            _get_platform_tools(config, platform, include_default_mcp_servers=False),
+            config.get("mcp_servers") or {},
+            platform,
+            config=config,
+        )
         return
 
     targets: List[str] = args.names

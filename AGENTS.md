@@ -991,6 +991,13 @@ Unused code that was never shipped was dead for a reason. Before wiring an
 unused module into a live code path, E2E test the real resolution chain
 with actual imports (not mocks) against a temp `HERMES_HOME`.
 
+### Prefer a thin E2E proof before broad feature work
+When starting a feature, ask whether a small end-to-end test, spike, or
+vertical slice can prove the core idea across the real boundary. Prefer
+that cheap validation before expanding into a larger implementation. If
+it is not feasible, state why and choose the narrowest focused tests that
+still exercise the main risk.
+
 ### Tests must not write to `~/.hermes/`
 The `_isolate_hermes_home` autouse fixture in `tests/conftest.py` redirects `HERMES_HOME` to a temp dir. Never hardcode `~/.hermes/` paths in tests.
 

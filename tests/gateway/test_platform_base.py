@@ -794,3 +794,39 @@ class TestProxyKwargsForAiohttp:
             sess_kw, req_kw = proxy_kwargs_for_aiohttp("http://proxy:8080")
             assert sess_kw == {}
             assert req_kw == {"proxy": "http://proxy:8080"}
+
+
+class TestExtractMediaExtensionCoverage:
+    """Regression: MEDIA: directive extension list must cover every extension
+    that ``extract_local_files`` accepts. A mismatch causes MEDIA tags for
+    common artifact types (e.g. ``.html`` exports) to be silently dropped —
+    ``send_message`` reports success while the document never ships.
+    """
+
+    @pytest.mark.parametrize("ext", [
+        # Originally-missing extensions that triggered the regression
+        "html", "htm", "md", "svg", "bmp", "tiff",
+        "json", "xml", "yaml", "yml", "tsv",
+        "ods", "odp", "odt", "rtf", "key",
+        "tar", "gz", "tgz", "bz2", "xz",
+        # Extensions that were already covered — keep matching
+        "png", "jpg", "jpeg", "gif", "webp",
+        "mp4", "mov", "mkv", "webm",
+        "mp3", "wav", "ogg", "m4a", "flac",
+        "pdf", "docx", "xlsx", "pptx", "txt", "csv", "zip", "7z",
+    ])
+    def test_media_tag_extracted_for_extension(self, ext):
+        text = f"Here you go MEDIA:/tmp/report.{ext} done"
+        media, cleaned = BasePlatformAdapter.extract_media(text)
+        assert media == [(f"/tmp/report.{ext}", False)], (
+            f"MEDIA: directive for .{ext} was silently dropped — extension"
+            f" missing from extract_media regex"
+        )
+        assert f"/tmp/report.{ext}" not in cleaned
+
+    def test_media_tag_html_real_world_path(self):
+        """Specific case that produced the user-visible bug."""
+        text = "MEDIA:/root/.hermes/media_cache/00-Visual-Report.html"
+        media, cleaned = BasePlatformAdapter.extract_media(text)
+        assert media == [("/root/.hermes/media_cache/00-Visual-Report.html", False)]
+        assert cleaned == ""

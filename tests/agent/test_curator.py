@@ -316,6 +316,25 @@ def test_llm_review_dry_run_uses_readonly_curator_toolset(curator_env, monkeypat
     assert result["summary"] == "dry report"
     assert captured["enabled_toolsets"] == ["curator_readonly"]
     assert captured["platform"] == "curator"
+    assert captured["max_iterations"] == c.CURATOR_REVIEW_MAX_ITERATIONS_DEFAULT
+
+
+def test_curator_review_iteration_budget_is_bounded(curator_env):
+    c = curator_env["curator"]
+
+    assert c._curator_review_max_iterations({}) == 100
+    assert c._curator_review_max_iterations(
+        {"curator": {"review_max_iterations": 25}}
+    ) == 25
+    assert c._curator_review_max_iterations(
+        {"curator": {"review_max_iterations": 0}}
+    ) == 1
+    assert c._curator_review_max_iterations(
+        {"curator": {"review_max_iterations": 9999}}
+    ) == 100
+    assert c._curator_review_max_iterations(
+        {"curator": {"review_max_iterations": "bad"}}
+    ) == 100
 
 
 def test_llm_review_live_uses_curator_only_toolset(curator_env, monkeypatch):
@@ -341,6 +360,8 @@ def test_llm_review_live_uses_curator_only_toolset(curator_env, monkeypatch):
     assert result["summary"] == "live report"
     assert captured["enabled_toolsets"] == ["curator"]
     assert captured["platform"] == "curator"
+    assert captured["max_iterations"] == c.CURATOR_REVIEW_MAX_ITERATIONS_DEFAULT
+
 
 def test_run_review_records_state(curator_env):
     c = curator_env["curator"]
@@ -641,6 +662,9 @@ def test_curator_review_prompt_is_umbrella_first():
     assert "use_count" in CURATOR_REVIEW_PROMPT or "counter" in lower, (
         "must pre-empt the 'usage counters are zero, I can't judge' bailout"
     )
+    assert "fewer than 10 archives" not in lower
+    assert "stopped too early" not in lower
+    assert "bounded curator" in lower or "review budget" in lower
 
 
 def test_curator_review_prompt_offers_support_file_actions():

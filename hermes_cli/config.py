@@ -1233,6 +1233,9 @@ DEFAULT_CONFIG = {
         # Archive a skill (move to skills/.archive/) after this many days
         # without use. Archived skills are recoverable — no auto-deletion.
         "archive_after_days": 90,
+        # Maximum LLM/tool turns for the background review fork. Values above
+        # the built-in hard cap are clamped to keep background spend bounded.
+        "review_max_iterations": 100,
         # Pre-run backup: before every real curator pass (dry-run is
         # skipped), snapshot ~/.hermes/skills/ into
         # ~/.hermes/skills/.curator_backups/<utc-iso>/skills.tar.gz so the

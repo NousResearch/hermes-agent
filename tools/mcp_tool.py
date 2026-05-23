@@ -1139,6 +1139,16 @@ class MCPServerTask:
         from tools.registry import registry
 
         async with self._refresh_lock:
+            # A list_changed notification can arrive after the session has
+            # already been torn down (e.g. server crash, reconnect cycle).
+            # Skip cleanly instead of raising AttributeError on None.session.
+            if self.session is None:
+                logger.debug(
+                    "MCP server '%s': skipping tools refresh — session not initialized",
+                    self.name,
+                )
+                return
+
             # Capture old tool names for change diff
             old_tool_names = set(self._registered_tool_names)
 

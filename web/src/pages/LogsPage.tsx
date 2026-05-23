@@ -43,8 +43,8 @@ const LINE_COLORS: Record<string, string> = {
   debug: "text-muted-foreground/60",
 };
 
-const toOptions = <T extends string>(values: readonly T[]) =>
-  values.map((v) => ({ value: v, label: v }));
+const toOptions = <T extends string>(values: readonly T[], labelMap?: Record<string, string>) =>
+  values.map((v) => ({ value: v, label: labelMap?.[v] ?? v }));
 
 const filterGroupClass =
   "flex min-w-0 w-full flex-col items-start gap-1.5 sm:w-auto sm:max-w-full sm:flex-row sm:items-center";
@@ -64,6 +64,9 @@ export default function LogsPage() {
   const [error, setError] = useState<string | null>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
   const { t } = useI18n();
+  const fileLabels: Record<string, string> = { agent: t.logs.fileAgent ?? "Agent", errors: t.logs.fileErrors ?? "Errors", gateway: t.logs.fileGateway ?? "Gateway" };
+  const levelLabels: Record<string, string> = { ALL: t.common.all ?? "All", DEBUG: t.logs.levelDebug ?? "Debug", INFO: t.logs.levelInfo ?? "Info", WARNING: t.logs.levelWarning ?? "Warning", ERROR: t.logs.levelError ?? "Error" };
+  const componentLabels: Record<string, string> = { all: t.common.all ?? "All", gateway: t.logs.compGateway ?? "Gateway", agent: t.logs.compAgent ?? "Agent", tools: t.logs.compTools ?? "Tools", cli: t.logs.compCli ?? "CLI", cron: t.logs.compCron ?? "Cron" };
   const { setAfterTitle, setEnd } = usePageHeader();
 
   const fetchLogs = useCallback(() => {
@@ -88,7 +91,7 @@ export default function LogsPage() {
       <span className="flex items-center gap-2">
         {loading && <Spinner className="shrink-0 text-base text-primary" />}
         <Badge tone="secondary" className="text-[10px]">
-          {file} · {level} · {component}
+          {fileLabels[file] ?? file} · {levelLabels[level] ?? level} · {componentLabels[component] ?? component}
         </Badge>
       </span>,
     );
@@ -163,7 +166,7 @@ export default function LogsPage() {
             className={segmentedClass}
             value={file}
             onChange={setFile}
-            options={toOptions(FILES)}
+            options={toOptions(FILES, fileLabels)}
           />
         </FilterGroup>
 
@@ -172,7 +175,7 @@ export default function LogsPage() {
             className={segmentedClass}
             value={level}
             onChange={setLevel}
-            options={toOptions(LEVELS)}
+            options={toOptions(LEVELS, levelLabels)}
           />
         </FilterGroup>
 
@@ -181,7 +184,7 @@ export default function LogsPage() {
             className={segmentedClass}
             value={component}
             onChange={setComponent}
-            options={toOptions(COMPONENTS)}
+            options={toOptions(COMPONENTS, componentLabels)}
           />
         </FilterGroup>
 

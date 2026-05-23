@@ -682,5 +682,22 @@ export const en: Translations = {
       night_shift_operator: { name: "Night Shift Operator", description: "Run sessions during gremlin hours repeatedly." },
       cache_hit_appreciator: { name: "Cache Hit Appreciator", description: "Notice or benefit from prompt/cache behavior." },
     },
+    categories: {
+      "Agent Autonomy": "Agent Autonomy",
+      "Debugging Chaos": "Debugging Chaos",
+      "Vibe Coding": "Vibe Coding",
+      "Hermes Native": "Hermes Native",
+      "Research / Web": "Research / Web",
+      "Tool Mastery": "Tool Mastery",
+      "Model Exploration": "Model Exploration",
+      "Endurance": "Endurance",
+    },
+    filters: {
+      all_categories: "All",
+      visibility_all: "all",
+      visibility_unlocked: "unlocked",
+      visibility_discovered: "discovered",
+      visibility_secret: "secret",
+    },
   },
 };

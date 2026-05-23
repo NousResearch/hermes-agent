@@ -42,6 +42,7 @@ export interface Translations {
     inactive: string;
     unknown: string;
     untitled: string;
+    all?: string;
     none: string;
     form: string;
     noResults: string;
@@ -112,6 +113,7 @@ export interface Translations {
     statusOverview: string;
     system: string;
     webUi: string;
+    pluginLabels?: Record<string, string>;
   };
 
   // ── Status page ──
@@ -264,6 +266,18 @@ export interface Translations {
     component: string;
     lines: string;
     noLogLines: string;
+    fileAgent?: string;
+    fileErrors?: string;
+    fileGateway?: string;
+    levelDebug?: string;
+    levelInfo?: string;
+    levelWarning?: string;
+    levelError?: string;
+    compGateway?: string;
+    compAgent?: string;
+    compTools?: string;
+    compCli?: string;
+    compCron?: string;
   };
 
   // ── Cron page ──
@@ -292,6 +306,14 @@ export interface Translations {
       slack: string;
       email: string;
     };
+    profile?: string;
+    allProfiles?: string;
+    jobStateIdle?: string;
+    jobStateRunning?: string;
+    jobStatePaused?: string;
+    jobStateError?: string;
+    jobStateScheduled?: string;
+    jobStateDisabled?: string;
   };
 
   // ── Plugins page ──
@@ -434,6 +456,10 @@ export interface Translations {
     configImported: string;
     invalidJson: string;
     confirmResetDescription: string;
+    themes?: {
+      labels: Record<string, string>;
+      descriptions: Record<string, string>;
+    };
     categories: {
       general: string;
       agent: string;
@@ -629,6 +655,84 @@ export interface Translations {
       no_secrets_body: string;
       check_guide: string;
     };
-    achievementData: Record<string, { name: string; description: string }>;
+    categories?: Record<string, string>;
+    filters?: {
+      all_categories?: string;
+      visibility_all?: string;
+      visibility_unlocked?: string;
+      visibility_discovered?: string;
+      visibility_secret?: string;
+    };
+    achievementData?: Record<string, { name?: string; description: string }>;
   };
-}
+
+  // ── Kanban (plugin) ──
+  kanban?: {
+    columnLabels: Record<string, string>;
+    columnHelp: Record<string, string>;
+    confirmDone: string;
+    confirmArchive: string;
+    confirmBlocked: string;
+    completionBlockedHallucination: string;
+    suspectedHallucinatedReferences: string;
+    trash: { label: string; title: string; confirm: string; confirmMany: string; dropHint: string; };
+    completionSummary: string;
+    completionSummaryRequired: string;
+    renderingError: string;
+    reloadView: string;
+    wsAuthFailed: string;
+    moveFailed: string;
+    taskCreatedWarning: string;
+    bulkFailed: string;
+    loading: string;
+    loadFailed: string;
+    loadFailedHint: string;
+    taskNeedsAttention: string;
+    tasksNeedAttention: string;
+    hide: string;
+    show: string;
+    untitled: string;
+    unassigned: string;
+    diagnostic: string;
+    open: string;
+    copyCommand: string;
+    copied: string;
+    unblockedMessage: string;
+    unblockFailed: string;
+    reclaimedMessage: string;
+    reclaimFailed: string;
+    pickProfileFirst: string;
+    reassignedMessage: string;
+    reassignFailed: string;
+    reassignTo: string;
+    diagnostics: string;
+    boardSwitcherHint: string;
+    newBoard: string;
+    board: string;
+    archiveBoardConfirm: string;
+    archiveBoardTitle: string;
+    archive: string;
+    newBoardTitle: string;
+    newBoardDescription: string;
+    slug: string;
+    slugHint: string;
+    displayName: string;
+    filterCards: string;
+    tenant: string;
+    assignee: string;
+    allTenants: string;
+    allProfiles: string;
+    showArchived: string;
+    lanesByProfile: string;
+    nudgeDispatcher: string;
+    refresh: string;
+    clearFilters: string;
+    selectAllTasks: string;
+    tasksInColumn: string;
+    noTasks: string;
+    needsAssignee: string;
+    needsAssigneeHint: string;
+    clickToEditAssignee: string;
+    emptyAssignee: string;
+  };
+};

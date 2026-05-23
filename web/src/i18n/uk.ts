@@ -621,5 +621,7 @@ export const uk: Translations = {
       check_guide: "Check the guide to learn more about how achievements work.",
     },
     achievementData: {},
+    categories: {},
+    filters: { all_categories: "All", visibility_all: "all", visibility_unlocked: "unlocked", visibility_discovered: "discovered", visibility_secret: "secret" },
   },
 };

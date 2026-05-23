@@ -63,82 +63,82 @@ def req(metric: str, gte: int) -> Dict[str, Any]:
 
 ACHIEVEMENTS: List[Dict[str, Any]] = [
     # Agent Autonomy — mostly best-session feats
-    {"id": "let_him_cook", "name": "Let Him Cook", "description": "Let Hermes run a serious autonomous tool chain in one session.", "category": "Agent Autonomy", "kind": "best_session", "icon": "flame", "threshold_metric": "max_tool_calls_in_session", "tiers": tiers([200, 500, 1200, 3000, 8000])},
-    {"id": "autonomous_avalanche", "name": "Autonomous Avalanche", "description": "Accumulate a lifetime avalanche of Hermes tool calls across sessions.", "category": "Agent Autonomy", "kind": "lifetime", "icon": "avalanche", "threshold_metric": "total_tool_calls", "tiers": tiers([1000, 3000, 8000, 20000, 50000])},
-    {"id": "toolchain_maxxer", "name": "Toolchain Maxxer", "description": "Use a wide spread of distinct Hermes tools in one session.", "category": "Agent Autonomy", "kind": "best_session", "icon": "nodes", "threshold_metric": "max_distinct_tools_in_session", "tiers": tiers([18, 28, 45, 70, 100])},
-    {"id": "full_send", "name": "Full Send", "description": "Terminal, files, and web/browser all get involved in one real run.", "category": "Agent Autonomy", "kind": "multi_condition", "icon": "rocket", "requirements": [req("max_terminal_calls_in_session", 180), req("max_file_tool_calls_in_session", 120), req("max_web_browser_calls_in_session", 60)]},
-    {"id": "subagent_commander", "name": "Subagent Commander", "description": "Coordinate delegated agent work.", "category": "Agent Autonomy", "kind": "lifetime", "icon": "branch", "threshold_metric": "total_delegate_calls", "tiers": tiers([5, 40, 100, 1000, 5000])},
-    {"id": "background_process_enjoyer", "name": "Background Process Enjoyer", "description": "Start or control enough long-running processes to deserve the title.", "category": "Agent Autonomy", "kind": "lifetime", "icon": "daemon", "threshold_metric": "total_process_calls", "tiers": tiers([300, 800, 2000, 6000, 15000])},
-    {"id": "cron_necromancer", "name": "Cron Necromancer", "description": "Raise scheduled autonomous jobs from the dead.", "category": "Agent Autonomy", "kind": "lifetime", "icon": "clock", "threshold_metric": "total_cron_calls", "tiers": tiers([1000, 3000, 8000, 20000, 50000])},
+    {"id": "let_him_cook", "name": "Let Him Cook", "description": "Let Hermes run a full toolchain autonomously in a single session.", "category": "Agent Autonomy", "kind": "best_session", "icon": "flame", "threshold_metric": "max_tool_calls_in_session", "tiers": tiers([200, 500, 1200, 3000, 8000])},
+    {"id": "autonomous_avalanche", "name": "Autonomous Avalanche", "description": "Accumulate an avalanche of Hermes tool calls across sessions.", "category": "Agent Autonomy", "kind": "lifetime", "icon": "avalanche", "threshold_metric": "total_tool_calls", "tiers": tiers([1000, 3000, 8000, 20000, 50000])},
+    {"id": "toolchain_maxxer", "name": "Toolchain Maxxer", "description": "Use many different Hermes tools in a single session.", "category": "Agent Autonomy", "kind": "best_session", "icon": "nodes", "threshold_metric": "max_distinct_tools_in_session", "tiers": tiers([18, 28, 45, 70, 100])},
+    {"id": "full_send", "name": "Full Send", "description": "Terminal, files, and web/browser all engage in one real run.", "category": "Agent Autonomy", "kind": "multi_condition", "icon": "rocket", "requirements": [req("max_terminal_calls_in_session", 180), req("max_file_tool_calls_in_session", 120), req("max_web_browser_calls_in_session", 60)]},
+    {"id": "subagent_commander", "name": "Subagent Commander", "description": "Orchestrate delegated agent work.", "category": "Agent Autonomy", "kind": "lifetime", "icon": "branch", "threshold_metric": "total_delegate_calls", "tiers": tiers([5, 40, 100, 1000, 5000])},
+    {"id": "background_process_enjoyer", "name": "Background Process Enjoyer", "description": "Launch or control enough long-lived processes to earn the title.", "category": "Agent Autonomy", "kind": "lifetime", "icon": "daemon", "threshold_metric": "total_process_calls", "tiers": tiers([300, 800, 2000, 6000, 15000])},
+    {"id": "cron_necromancer", "name": "Cron Necromancer", "description": "Bring scheduled automation back from the dead.", "category": "Agent Autonomy", "kind": "lifetime", "icon": "clock", "threshold_metric": "total_cron_calls", "tiers": tiers([1000, 3000, 8000, 20000, 50000])},
 
     # Debugging Chaos — higher thresholds + multi-condition events
-    {"id": "red_text_connoisseur", "name": "Red Text Connoisseur", "description": "Encounter enough errors to develop a palate for red text.", "category": "Debugging Chaos", "kind": "lifetime", "icon": "warning", "threshold_metric": "total_errors", "tiers": tiers([1500, 4000, 10000, 25000, 75000])},
-    {"id": "stack_trace_sommelier", "name": "Stack Trace Sommelier", "description": "Taste tracebacks by the flight, not by the sip.", "category": "Debugging Chaos", "kind": "lifetime", "icon": "wine", "threshold_metric": "traceback_events", "tiers": tiers([300, 1000, 3000, 8000, 20000])},
-    {"id": "actually_read_the_logs", "name": "Actually Read The Logs", "description": "Inspect logs repeatedly instead of guessing.", "category": "Debugging Chaos", "kind": "lifetime", "icon": "scroll", "threshold_metric": "log_read_events", "tiers": tiers([1000, 3000, 8000, 20000, 50000])},
-    {"id": "port_3000_taken", "name": "Port 3000 Is Taken", "description": "Discover dev-server port conflict patterns enough times to become numb.", "category": "Debugging Chaos", "kind": "lifetime", "icon": "plug", "secret": True, "threshold_metric": "port_conflict_events", "tiers": tiers([15, 40, 100, 300, 1000])},
+    {"id": "red_text_connoisseur", "name": "Red Text Connoisseur", "description": "Encounter enough errors to develop a taste for red text.", "category": "Debugging Chaos", "kind": "lifetime", "icon": "warning", "threshold_metric": "total_errors", "tiers": tiers([1500, 4000, 10000, 25000, 75000])},
+    {"id": "stack_trace_sommelier", "name": "Stack Trace Sommelier", "description": "Savor stack traces by the batch, not by the sip.", "category": "Debugging Chaos", "kind": "lifetime", "icon": "wine", "threshold_metric": "traceback_events", "tiers": tiers([300, 1000, 3000, 8000, 20000])},
+    {"id": "actually_read_the_logs", "name": "Actually Read the Logs", "description": "Check the logs repeatedly instead of guessing.", "category": "Debugging Chaos", "kind": "lifetime", "icon": "scroll", "threshold_metric": "log_read_events", "tiers": tiers([1000, 3000, 8000, 20000, 50000])},
+    {"id": "port_3000_taken", "name": "Port 3000 Already Taken", "description": "Hit dev server port conflicts repeatedly until numb.", "category": "Debugging Chaos", "kind": "lifetime", "icon": "plug", "secret": True, "threshold_metric": "port_conflict_events", "tiers": tiers([15, 40, 100, 300, 1000])},
     {"id": "permission_denied_any_percent", "name": "Permission Denied Any%", "description": "Speedrun into permission walls.", "category": "Debugging Chaos", "kind": "lifetime", "icon": "lock", "secret": True, "threshold_metric": "permission_denied_events", "tiers": tiers([25, 75, 200, 600, 1500])},
-    {"id": "dependency_hell_tourist", "name": "Dependency Hell Tourist", "description": "Package installs fail, then somehow life continues.", "category": "Debugging Chaos", "kind": "multi_condition", "icon": "package_skull", "requirements": [req("install_error_events", 25), req("install_success_events", 10)]},
-    {"id": "the_fix_was_restarting", "name": "The Fix Was Restarting It", "description": "Restart after enough error clusters to call it a technique.", "category": "Debugging Chaos", "kind": "multi_condition", "icon": "restart", "requirements": [req("restart_after_error_events", 50), req("total_errors", 4000)]},
-    {"id": "forgot_the_env_var", "name": "Forgot The Env Var", "description": "Auth or configuration failed because an environment variable was missing.", "category": "Debugging Chaos", "kind": "lifetime", "icon": "key", "secret": True, "threshold_metric": "env_var_error_events", "tiers": tiers([5000, 15000, 40000, 100000, 250000])},
-    {"id": "yaml_colon_incident", "name": "YAML Colon Incident", "description": "Configuration syntax bites back.", "category": "Debugging Chaos", "kind": "lifetime", "icon": "colon", "secret": True, "threshold_metric": "yaml_error_events", "tiers": tiers([1000, 3000, 8000, 20000, 50000])},
-    {"id": "docker_name_collision", "name": "Docker Name Collision", "description": "A container name already exists. Of course it does.", "category": "Debugging Chaos", "kind": "lifetime", "icon": "container", "secret": True, "threshold_metric": "docker_conflict_events", "tiers": tiers([75, 200, 600, 1500, 4000])},
+    {"id": "dependency_hell_tourist", "name": "Dependency Hell Tourist", "description": "Package installs fail, but life goes on.", "category": "Debugging Chaos", "kind": "multi_condition", "icon": "package_skull", "requirements": [req("install_error_events", 25), req("install_success_events", 10)]},
+    {"id": "the_fix_was_restarting", "name": "The Fix Was Restarting", "description": "Reboot after enough errors — it's practically a skill.", "category": "Debugging Chaos", "kind": "multi_condition", "icon": "restart", "requirements": [req("restart_after_error_events", 50), req("total_errors", 4000)]},
+    {"id": "forgot_the_env_var", "name": "Forgot the Env Var", "description": "Auth or config failure due to a missing environment variable.", "category": "Debugging Chaos", "kind": "lifetime", "icon": "key", "secret": True, "threshold_metric": "env_var_error_events", "tiers": tiers([5000, 15000, 40000, 100000, 250000])},
+    {"id": "yaml_colon_incident", "name": "YAML Colon Incident", "description": "Config file syntax bites back.", "category": "Debugging Chaos", "kind": "lifetime", "icon": "colon", "secret": True, "threshold_metric": "yaml_error_events", "tiers": tiers([1000, 3000, 8000, 20000, 50000])},
+    {"id": "docker_name_collision", "name": "Docker Name Collision", "description": "Container name already exists — of course it does.", "category": "Debugging Chaos", "kind": "lifetime", "icon": "container", "secret": True, "threshold_metric": "docker_conflict_events", "tiers": tiers([75, 200, 600, 1500, 4000])},
 
     # Vibe Coding
-    {"id": "supposed_to_be_quick", "name": "This Was Supposed To Be Quick", "description": "A tiny ask becomes an entire expedition.", "category": "Vibe Coding", "kind": "best_session", "icon": "melting_clock", "threshold_metric": "max_messages_in_session", "tiers": tiers([300, 600, 1200, 2500, 6000])},
-    {"id": "one_more_small_change", "name": "One More Small Change", "description": "Make enough file edits in one session to invalidate the phrase small change.", "category": "Vibe Coding", "kind": "best_session", "icon": "pencil", "threshold_metric": "max_file_tool_calls_in_session", "tiers": tiers([150, 400, 1000, 3000, 8000])},
-    {"id": "vibe_architect", "name": "Vibe Architect", "description": "Touch a broad surface area in one project session.", "category": "Vibe Coding", "kind": "best_session", "icon": "blueprint", "threshold_metric": "max_files_touched_in_session", "tiers": tiers([300, 700, 1500, 4000, 10000])},
-    {"id": "pixel_goblin", "name": "Pixel Goblin", "description": "Do sustained frontend, CSS, SVG, or visual tuning.", "category": "Vibe Coding", "kind": "lifetime", "icon": "pixel", "threshold_metric": "frontend_activity_events", "tiers": tiers([20000, 50000, 120000, 300000, 800000])},
-    {"id": "ship_first_ask_later", "name": "Ship First, Ask Later", "description": "Git activity after a serious tool chain.", "category": "Vibe Coding", "kind": "multi_condition", "icon": "ship", "requirements": [req("git_events", 50), req("max_tool_calls_in_session", 500)]},
-    {"id": "css_exorcist", "name": "CSS Exorcist", "description": "Cast repeated styling demons out of the interface.", "category": "Vibe Coding", "kind": "lifetime", "icon": "spark_cursor", "threshold_metric": "css_activity_events", "tiers": tiers([10000, 30000, 80000, 200000, 500000])},
-    {"id": "one_character_fix", "name": "One Character Fix", "description": "A tiny edit after a pile of errors. Painful. Beautiful.", "category": "Vibe Coding", "kind": "multi_condition", "icon": "needle", "secret": True, "requirements": [req("tiny_patch_after_errors_events", 5), req("total_errors", 4000)]},
+    {"id": "supposed_to_be_quick", "name": "Supposed to Be Quick", "description": "A small request turns into a whole expedition.", "category": "Vibe Coding", "kind": "best_session", "icon": "melting_clock", "threshold_metric": "max_messages_in_session", "tiers": tiers([300, 600, 1200, 2500, 6000])},
+    {"id": "one_more_small_change", "name": "One More Small Change", "description": "Make enough file edits in one session to invalidate the phrase 'small change'.", "category": "Vibe Coding", "kind": "best_session", "icon": "pencil", "threshold_metric": "max_file_tool_calls_in_session", "tiers": tiers([150, 400, 1000, 3000, 8000])},
+    {"id": "vibe_architect", "name": "Vibe Architect", "description": "Touch a wide surface area in one project session.", "category": "Vibe Coding", "kind": "best_session", "icon": "blueprint", "threshold_metric": "max_files_touched_in_session", "tiers": tiers([300, 700, 1500, 4000, 10000])},
+    {"id": "pixel_goblin", "name": "Pixel Goblin", "description": "Persist in frontend, CSS, SVG, or visual tuning.", "category": "Vibe Coding", "kind": "lifetime", "icon": "pixel", "threshold_metric": "frontend_activity_events", "tiers": tiers([20000, 50000, 120000, 300000, 800000])},
+    {"id": "ship_first_ask_later", "name": "Ship First, Ask Later", "description": "Git operations after a serious toolchain session.", "category": "Vibe Coding", "kind": "multi_condition", "icon": "ship", "requirements": [req("git_events", 50), req("max_tool_calls_in_session", 500)]},
+    {"id": "css_exorcist", "name": "CSS Exorcist", "description": "Repeatedly exorcise styling demons from the UI.", "category": "Vibe Coding", "kind": "lifetime", "icon": "spark_cursor", "threshold_metric": "css_activity_events", "tiers": tiers([10000, 30000, 80000, 200000, 500000])},
+    {"id": "one_character_fix", "name": "One-Character Fix", "description": "A tiny edit after a pile of errors — painful and beautiful.", "category": "Vibe Coding", "kind": "multi_condition", "icon": "needle", "secret": True, "requirements": [req("tiny_patch_after_errors_events", 5), req("total_errors", 4000)]},
 
     # Hermes Native
-    {"id": "skillsmith", "name": "Skillsmith", "description": "Work with Hermes skills enough to leave fingerprints.", "category": "Hermes Native", "kind": "lifetime", "icon": "hammer_scroll", "threshold_metric": "skill_events", "tiers": tiers([5000, 15000, 40000, 100000, 250000])},
-    {"id": "skill_issue_skill_created", "name": "Skill Issue? Skill Created.", "description": "Create or patch durable procedures instead of repeating yourself.", "category": "Hermes Native", "kind": "lifetime", "icon": "anvil", "threshold_metric": "skill_manage_events", "tiers": tiers([25, 75, 200, 600, 1500])},
-    {"id": "memory_keeper", "name": "Memory Keeper", "description": "Persist durable knowledge with memory or Mnemosyne.", "category": "Hermes Native", "kind": "lifetime", "icon": "crystal", "threshold_metric": "memory_events", "tiers": tiers([100, 300, 1000, 3000, 8000])},
-    {"id": "memory_palace", "name": "Memory Palace", "description": "Build a serious durable-memory trail.", "category": "Hermes Native", "kind": "lifetime", "icon": "palace", "threshold_metric": "memory_write_events", "tiers": tiers([100, 300, 1000, 3000, 8000])},
-    {"id": "context_dragon", "name": "Context Dragon", "description": "Brush against compression, huge context, or token pressure repeatedly.", "category": "Hermes Native", "kind": "lifetime", "icon": "dragon", "threshold_metric": "context_events", "tiers": tiers([5000, 15000, 40000, 100000, 250000])},
-    {"id": "gateway_dweller", "name": "Gateway Dweller", "description": "Live through gateway-connected Hermes workflows.", "category": "Hermes Native", "kind": "lifetime", "icon": "antenna", "threshold_metric": "gateway_events", "tiers": tiers([5000, 15000, 40000, 100000, 250000])},
-    {"id": "plugin_goblin", "name": "Plugin Goblin", "description": "Use or develop plugins enough that the dashboard notices.", "category": "Hermes Native", "kind": "lifetime", "icon": "puzzle", "threshold_metric": "plugin_events", "tiers": tiers([1000, 3000, 8000, 20000, 50000])},
-    {"id": "rollback_wizard", "name": "Rollback Wizard", "description": "Invoke rollback/checkpoint recovery magic.", "category": "Hermes Native", "kind": "lifetime", "icon": "rewind", "secret": True, "threshold_metric": "rollback_events", "tiers": tiers([500, 1500, 4000, 10000, 25000])},
+    {"id": "skillsmith", "name": "Skillsmith", "description": "Use Hermes skills enough to leave fingerprints.", "category": "Hermes Native", "kind": "lifetime", "icon": "hammer_scroll", "threshold_metric": "skill_events", "tiers": tiers([5000, 15000, 40000, 100000, 250000])},
+    {"id": "skill_issue_skill_created", "name": "Skill Issue? Skill Created.", "description": "Create or update a persisted workflow instead of repeating yourself.", "category": "Hermes Native", "kind": "lifetime", "icon": "anvil", "threshold_metric": "skill_manage_events", "tiers": tiers([25, 75, 200, 600, 1500])},
+    {"id": "memory_keeper", "name": "Memory Keeper", "description": "Persist knowledge with Memory or Mnemosyne.", "category": "Hermes Native", "kind": "lifetime", "icon": "crystal", "threshold_metric": "memory_events", "tiers": tiers([100, 300, 1000, 3000, 8000])},
+    {"id": "memory_palace", "name": "Memory Palace", "description": "Build a serious persistent memory trail.", "category": "Hermes Native", "kind": "lifetime", "icon": "palace", "threshold_metric": "memory_write_events", "tiers": tiers([100, 300, 1000, 3000, 8000])},
+    {"id": "context_dragon", "name": "Context Dragon", "description": "Repeatedly hit compression, large context, or token pressure.", "category": "Hermes Native", "kind": "lifetime", "icon": "dragon", "threshold_metric": "context_events", "tiers": tiers([5000, 15000, 40000, 100000, 250000])},
+    {"id": "gateway_dweller", "name": "Gateway Dweller", "description": "Experience gateway-connected Hermes workflows.", "category": "Hermes Native", "kind": "lifetime", "icon": "antenna", "threshold_metric": "gateway_events", "tiers": tiers([5000, 15000, 40000, 100000, 250000])},
+    {"id": "plugin_goblin", "name": "Plugin Goblin", "description": "Use or develop plugins enough for the dashboard to notice.", "category": "Hermes Native", "kind": "lifetime", "icon": "puzzle", "threshold_metric": "plugin_events", "tiers": tiers([1000, 3000, 8000, 20000, 50000])},
+    {"id": "rollback_wizard", "name": "Rollback Wizard", "description": "Call on the rollback/checkpoint restoration magic.", "category": "Hermes Native", "kind": "lifetime", "icon": "rewind", "secret": True, "threshold_metric": "rollback_events", "tiers": tiers([500, 1500, 4000, 10000, 25000])},
 
     # Research/Web
-    {"id": "rabbit_hole_certified", "name": "Rabbit Hole Certified", "description": "Search or extract enough web content to qualify as a research spiral.", "category": "Research/Web", "kind": "lifetime", "icon": "spiral", "threshold_metric": "total_web_calls", "tiers": tiers([400, 1200, 3000, 8000, 20000])},
-    {"id": "citation_goblin", "name": "Citation Goblin", "description": "Extract enough web pages to become a tiny librarian.", "category": "Research/Web", "kind": "lifetime", "icon": "quote", "threshold_metric": "total_web_extract_calls", "tiers": tiers([100, 300, 1000, 3000, 8000])},
-    {"id": "docs_archaeologist", "name": "Docs Archaeologist", "description": "Dig through documentation sources over and over.", "category": "Research/Web", "kind": "lifetime", "icon": "compass", "threshold_metric": "docs_activity_events", "tiers": tiers([5000, 15000, 40000, 100000, 250000])},
-    {"id": "browser_possession", "name": "Browser Possession", "description": "Possess a browser through automation repeatedly.", "category": "Research/Web", "kind": "lifetime", "icon": "browser", "threshold_metric": "browser_calls", "tiers": tiers([75, 200, 600, 1500, 4000])},
+    {"id": "rabbit_hole_certified", "name": "Rabbit Hole Certified", "description": "Search or extract enough web content to qualify as a research spiral.", "category": "Research / Web", "kind": "lifetime", "icon": "spiral", "threshold_metric": "total_web_calls", "tiers": tiers([400, 1200, 3000, 8000, 20000])},
+    {"id": "citation_goblin", "name": "Citation Goblin", "description": "Extract enough web pages to become a tiny librarian.", "category": "Research / Web", "kind": "lifetime", "icon": "quote", "threshold_metric": "total_web_extract_calls", "tiers": tiers([100, 300, 1000, 3000, 8000])},
+    {"id": "docs_archaeologist", "name": "Docs Archaeologist", "description": "Repeatedly dig through documentation.", "category": "Research / Web", "kind": "lifetime", "icon": "compass", "threshold_metric": "docs_activity_events", "tiers": tiers([5000, 15000, 40000, 100000, 250000])},
+    {"id": "browser_possession", "name": "Browser Possession", "description": "Repeatedly manipulate a browser through automation.", "category": "Research / Web", "kind": "lifetime", "icon": "browser", "threshold_metric": "browser_calls", "tiers": tiers([75, 200, 600, 1500, 4000])},
 
     # Tool Mastery
-    {"id": "terminal_goblin", "name": "Terminal Goblin", "description": "Spend serious time in shell-land.", "category": "Tool Mastery", "kind": "lifetime", "icon": "terminal", "threshold_metric": "total_terminal_calls", "tiers": tiers([750, 2000, 6000, 15000, 50000])},
-    {"id": "patch_wizard", "name": "Patch Wizard", "description": "Bend files to your will with targeted patches.", "category": "Tool Mastery", "kind": "lifetime", "icon": "wand", "threshold_metric": "total_patch_calls", "tiers": tiers([250, 750, 2000, 6000, 15000])},
-    {"id": "file_archaeologist", "name": "File Archaeologist", "description": "Dig through the filesystem with reads and searches.", "category": "Tool Mastery", "kind": "lifetime", "icon": "folder", "threshold_metric": "total_file_reads_searches", "tiers": tiers([750, 2000, 6000, 15000, 50000])},
+    {"id": "terminal_goblin", "name": "Terminal Goblin", "description": "Spend massive time in the shell domain.", "category": "Tool Mastery", "kind": "lifetime", "icon": "terminal", "threshold_metric": "total_terminal_calls", "tiers": tiers([750, 2000, 6000, 15000, 50000])},
+    {"id": "patch_wizard", "name": "Patch Wizard", "description": "Tame files with precision patches.", "category": "Tool Mastery", "kind": "lifetime", "icon": "wand", "threshold_metric": "total_patch_calls", "tiers": tiers([250, 750, 2000, 6000, 15000])},
+    {"id": "file_archaeologist", "name": "File Archaeologist", "description": "Excavate the filesystem through reads and searches.", "category": "Tool Mastery", "kind": "lifetime", "icon": "folder", "threshold_metric": "total_file_reads_searches", "tiers": tiers([750, 2000, 6000, 15000, 50000])},
     {"id": "image_whisperer", "name": "Image Whisperer", "description": "Use image generation or vision tools enough for visual work.", "category": "Tool Mastery", "kind": "lifetime", "icon": "eye", "threshold_metric": "image_vision_calls", "tiers": tiers([100, 300, 1000, 3000, 8000])},
-    {"id": "voice_of_the_machine", "name": "Voice Of The Machine", "description": "Use text-to-speech or voice tooling repeatedly.", "category": "Tool Mastery", "kind": "lifetime", "icon": "wave", "threshold_metric": "tts_calls", "tiers": tiers([10, 30, 100, 300, 800])},
+    {"id": "voice_of_the_machine", "name": "Voice of the Machine", "description": "Repeatedly use text-to-speech or voice tools.", "category": "Tool Mastery", "kind": "lifetime", "icon": "wave", "threshold_metric": "tts_calls", "tiers": tiers([10, 30, 100, 300, 800])},
 
     # Model Lore
-    {"id": "model_hopper", "name": "Model Hopper", "description": "Switch or inspect providers/models enough to count as a habit.", "category": "Model Lore", "kind": "lifetime", "icon": "swap", "threshold_metric": "model_events", "tiers": tiers([10000, 30000, 80000, 200000, 500000])},
-    {"id": "openrouter_enjoyer", "name": "OpenRouter Enjoyer", "description": "Route model work through OpenRouter repeatedly.", "category": "Model Lore", "kind": "lifetime", "icon": "router", "threshold_metric": "openrouter_events", "tiers": tiers([250, 750, 2000, 6000, 15000])},
-    {"id": "codex_conjurer", "name": "Codex Conjurer", "description": "Summon Codex-flavored assistance often enough for a ritual.", "category": "Model Lore", "kind": "lifetime", "icon": "codex", "threshold_metric": "codex_events", "tiers": tiers([500, 1500, 4000, 10000, 25000])},
-    {"id": "multi_model_mage", "name": "Multi-Model Mage", "description": "Use a real spread of distinct model names across Hermes history.", "category": "Model Lore", "kind": "lifetime", "icon": "prism", "threshold_metric": "distinct_model_count", "tiers": tiers([10, 20, 40, 80, 160])},
-    {"id": "five_model_flight", "name": "Five-Model Flight", "description": "Try at least five distinct LLMs instead of marrying the first model that answers.", "category": "Model Lore", "kind": "lifetime", "icon": "prism", "threshold_metric": "distinct_model_count", "tiers": tiers([5, 10, 20, 40, 80])},
-    {"id": "provider_polyglot", "name": "Provider Polyglot", "description": "Use models from multiple providers across Hermes history.", "category": "Model Lore", "kind": "lifetime", "icon": "swap", "threshold_metric": "distinct_provider_count", "tiers": tiers([2, 3, 5, 8, 12])},
-    {"id": "model_sommelier", "name": "Model Sommelier", "description": "Taste enough model/provider conversations to develop preferences.", "category": "Model Lore", "kind": "lifetime", "icon": "wine", "threshold_metric": "model_events", "tiers": tiers([250, 750, 2000, 6000, 15000])},
-    {"id": "claude_confidant", "name": "Claude Confidant", "description": "Bring Claude-flavored reasoning into the workflow repeatedly.", "category": "Model Lore", "kind": "lifetime", "icon": "quote", "threshold_metric": "claude_events", "tiers": tiers([50, 150, 500, 1500, 4000])},
-    {"id": "gemini_cartographer", "name": "Gemini Cartographer", "description": "Map enough Gemini-related workflows to know the terrain.", "category": "Model Lore", "kind": "lifetime", "icon": "compass", "threshold_metric": "gemini_events", "tiers": tiers([50, 150, 500, 1500, 4000])},
-    {"id": "open_weights_pilgrim", "name": "Open Weights Pilgrim", "description": "Actually chat with local/open-weight models through Hermes session metadata.", "category": "Model Lore", "kind": "lifetime", "icon": "terminal", "threshold_metric": "local_model_chat_sessions", "tiers": tiers([1, 3, 10, 30, 100])},
+    {"id": "model_hopper", "name": "Model Hopper", "description": "Switch or inspect providers/models enough that it becomes a habit.", "category": "Model Exploration", "kind": "lifetime", "icon": "swap", "threshold_metric": "model_events", "tiers": tiers([10000, 30000, 80000, 200000, 500000])},
+    {"id": "openrouter_enjoyer", "name": "OpenRouter Enthusiast", "description": "Repeatedly route model work through OpenRouter.", "category": "Model Exploration", "kind": "lifetime", "icon": "router", "threshold_metric": "openrouter_events", "tiers": tiers([250, 750, 2000, 6000, 15000])},
+    {"id": "codex_conjurer", "name": "Codex Conjurer", "description": "Summon Codex-style help frequently enough that it becomes a ritual.", "category": "Model Exploration", "kind": "lifetime", "icon": "codex", "threshold_metric": "codex_events", "tiers": tiers([500, 1500, 4000, 10000, 25000])},
+    {"id": "multi_model_mage", "name": "Multi-Model Mage", "description": "Use many different models across Hermes history.", "category": "Model Exploration", "kind": "lifetime", "icon": "prism", "threshold_metric": "distinct_model_count", "tiers": tiers([10, 20, 40, 80, 160])},
+    {"id": "five_model_flight", "name": "Five-Model Flight", "description": "Try at least five different LLMs instead of sticking with the first one that answers.", "category": "Model Exploration", "kind": "lifetime", "icon": "prism", "threshold_metric": "distinct_model_count", "tiers": tiers([5, 10, 20, 40, 80])},
+    {"id": "provider_polyglot", "name": "Provider Polyglot", "description": "Use models from multiple providers across Hermes history.", "category": "Model Exploration", "kind": "lifetime", "icon": "swap", "threshold_metric": "distinct_provider_count", "tiers": tiers([2, 3, 5, 8, 12])},
+    {"id": "model_sommelier", "name": "Model Sommelier", "description": "Sample enough model/provider conversations to develop a preference.", "category": "Model Exploration", "kind": "lifetime", "icon": "wine", "threshold_metric": "model_events", "tiers": tiers([250, 750, 2000, 6000, 15000])},
+    {"id": "claude_confidant", "name": "Claude Confidant", "description": "Repeatedly introduce Claude-style reasoning into workflows.", "category": "Model Exploration", "kind": "lifetime", "icon": "quote", "threshold_metric": "claude_events", "tiers": tiers([50, 150, 500, 1500, 4000])},
+    {"id": "gemini_cartographer", "name": "Gemini Cartographer", "description": "Chart enough Gemini-related workflows to know the terrain.", "category": "Model Exploration", "kind": "lifetime", "icon": "compass", "threshold_metric": "gemini_events", "tiers": tiers([50, 150, 500, 1500, 4000])},
+    {"id": "open_weights_pilgrim", "name": "Open-weights Pilgrim", "description": "Use local/open-weight models for conversations linked via Hermes session metadata.", "category": "Model Exploration", "kind": "lifetime", "icon": "terminal", "threshold_metric": "local_model_chat_sessions", "tiers": tiers([1, 3, 10, 30, 100])},
 
     # Workflow Intelligence
-    {"id": "toolset_cartographer", "name": "Toolset Cartographer", "description": "Navigate Hermes toolsets deliberately instead of treating tools as a blur.", "category": "Hermes Native", "kind": "lifetime", "icon": "compass", "threshold_metric": "toolset_events", "tiers": tiers([20, 60, 200, 600, 1500])},
-    {"id": "config_surgeon", "name": "Config Surgeon", "description": "Operate on real config files, manifests, env files, and dashboard settings without flinching.", "category": "Hermes Native", "kind": "lifetime", "icon": "key", "threshold_metric": "config_events", "tiers": tiers([100, 300, 1000, 3000, 10000])},
+    {"id": "toolset_cartographer", "name": "Toolset Cartographer", "description": "Consciously navigate the Hermes toolset instead of blurring through.", "category": "Hermes Native", "kind": "lifetime", "icon": "compass", "threshold_metric": "toolset_events", "tiers": tiers([20, 60, 200, 600, 1500])},
+    {"id": "config_surgeon", "name": "Config Surgeon", "description": "Operate on real config, manifest, and env files without flinching.", "category": "Hermes Native", "kind": "lifetime", "icon": "key", "threshold_metric": "config_events", "tiers": tiers([100, 300, 1000, 3000, 10000])},
     {"id": "rebase_acrobat", "name": "Rebase Acrobat", "description": "Handle real git history surgery: rebase, conflict, merge, fetch, push.", "category": "Vibe Coding", "kind": "lifetime", "icon": "branch", "threshold_metric": "git_history_events", "tiers": tiers([10, 30, 100, 300, 800])},
     {"id": "test_suite_tamer", "name": "Test Suite Tamer", "description": "Run enough verification commands that green text becomes part of the ritual.", "category": "Tool Mastery", "kind": "lifetime", "icon": "daemon", "threshold_metric": "test_events", "tiers": tiers([100, 300, 800, 2400, 6000])},
-    {"id": "screenshot_hunter", "name": "Screenshot Hunter", "description": "Capture, inspect, and polish visual proof instead of just claiming it works.", "category": "Tool Mastery", "kind": "lifetime", "icon": "eye", "threshold_metric": "screenshot_events", "tiers": tiers([50, 150, 500, 1500, 5000])},
+    {"id": "screenshot_hunter", "name": "Screenshot Hunter", "description": "Capture, inspect, and polish visual evidence instead of claiming it works.", "category": "Tool Mastery", "kind": "lifetime", "icon": "eye", "threshold_metric": "screenshot_events", "tiers": tiers([50, 150, 500, 1500, 5000])},
 
     # Lifestyle
-    {"id": "marathon_operator", "name": "Marathon Operator", "description": "Accumulate a serious number of Hermes sessions.", "category": "Lifestyle", "kind": "lifetime", "icon": "marathon", "threshold_metric": "session_count", "tiers": tiers([75, 200, 500, 1500, 5000])},
-    {"id": "weekend_warrior", "name": "Weekend Warrior", "description": "Run Hermes on weekends enough times to make it a lifestyle.", "category": "Lifestyle", "kind": "lifetime", "icon": "calendar", "threshold_metric": "weekend_sessions", "tiers": tiers([25, 75, 200, 600, 1500])},
-    {"id": "night_shift_operator", "name": "Night Shift Operator", "description": "Run sessions during gremlin hours repeatedly.", "category": "Lifestyle", "kind": "lifetime", "icon": "moon", "threshold_metric": "night_sessions", "tiers": tiers([25, 75, 200, 600, 1500])},
-    {"id": "cache_hit_appreciator", "name": "Cache Hit Appreciator", "description": "Notice or benefit from prompt/cache behavior.", "category": "Lifestyle", "kind": "lifetime", "icon": "cache", "secret": True, "threshold_metric": "cache_events", "tiers": tiers([100, 300, 1000, 3000, 8000])},
+    {"id": "marathon_operator", "name": "Marathon Operator", "description": "Accumulate a large number of Hermes sessions.", "category": "Endurance", "kind": "lifetime", "icon": "marathon", "threshold_metric": "session_count", "tiers": tiers([75, 200, 500, 1500, 5000])},
+    {"id": "weekend_warrior", "name": "Weekend Warrior", "description": "在周末运行 Hermes 足够多次，成为一种Endurance。", "category": "Endurance", "kind": "lifetime", "icon": "calendar", "threshold_metric": "weekend_sessions", "tiers": tiers([25, 75, 200, 600, 1500])},
+    {"id": "night_shift_operator", "name": "Night Shift Operator", "description": "Repeatedly run sessions during goblin hours.", "category": "Endurance", "kind": "lifetime", "icon": "moon", "threshold_metric": "night_sessions", "tiers": tiers([25, 75, 200, 600, 1500])},
+    {"id": "cache_hit_appreciator", "name": "Cache Hit Appreciator", "description": "Notice or benefit from prompt/caching behavior.", "category": "Endurance", "kind": "lifetime", "icon": "cache", "secret": True, "threshold_metric": "cache_events", "tiers": tiers([100, 300, 1000, 3000, 8000])},
 ]
 
 
@@ -462,68 +462,68 @@ def evaluate_boolean(definition: Dict[str, Any], aggregate: Dict[str, Any]) -> D
 
 
 METRIC_LABELS = {
-    "max_tool_calls_in_session": "tool calls in one session",
-    "max_distinct_tools_in_session": "distinct Hermes tools used in one session",
-    "max_terminal_calls_in_session": "terminal calls in one session",
-    "max_file_tool_calls_in_session": "file/search/patch calls in one session",
-    "max_web_browser_calls_in_session": "web search/extract or browser calls in one session",
-    "max_messages_in_session": "messages in one session",
-    "max_files_touched_in_session": "files touched in one session",
-    "total_delegate_calls": "lifetime delegate_task calls",
-    "total_process_calls": "lifetime background process operations",
-    "total_cron_calls": "lifetime scheduled-job operations",
-    "total_errors": "error/failed/traceback messages observed",
-    "traceback_events": "traceback or exception mentions",
-    "log_read_events": "log inspections",
-    "port_conflict_events": "dev-server port conflict detections",
-    "permission_denied_events": "permission-denied errors",
-    "install_error_events": "package-install failures",
-    "install_success_events": "successful package installs after package work",
-    "restart_after_error_events": "restart/reload actions after error clusters",
-    "env_var_error_events": "missing auth/config/environment-variable events",
-    "yaml_error_events": "YAML/config parse incidents",
-    "docker_conflict_events": "Docker/container-name conflicts",
-    "frontend_activity_events": "frontend/CSS/SVG/React activity mentions",
-    "css_activity_events": "CSS, styling, Tailwind, or className activity",
-    "git_events": "git workflow commands",
-    "tiny_patch_after_errors_events": "tiny typo-style fixes after error clusters",
-    "skill_events": "Hermes skill mentions or tool use",
-    "skill_manage_events": "skill_manage create/patch/delete operations",
-    "memory_events": "memory or Mnemosyne tool events",
-    "memory_write_events": "durable memory writes",
-    "context_events": "context, compression, token, or cache-pressure mentions",
-    "gateway_events": "gateway/API/chat-platform activity",
-    "plugin_events": "dashboard plugin development or usage signals",
-    "rollback_events": "rollback/checkpoint recovery mentions",
-    "docs_activity_events": "documentation/README/docs activity",
-    "model_events": "model/provider-related activity",
-    "openrouter_events": "OpenRouter mentions",
-    "codex_events": "Codex mentions",
-    "cache_events": "prompt-cache/cache-hit mentions",
-    "total_web_calls": "lifetime web_search/web_extract calls",
-    "total_web_extract_calls": "lifetime web_extract calls",
-    "browser_calls": "lifetime browser automation calls",
-    "total_tool_calls": "lifetime Hermes tool calls",
-    "total_terminal_calls": "lifetime terminal calls",
-    "total_patch_calls": "lifetime targeted patch edits",
-    "total_file_reads_searches": "lifetime read_file/search_files calls",
-    "image_vision_calls": "image generation or vision tool calls",
-    "tts_calls": "text-to-speech or voice tool calls",
-    "distinct_model_count": "distinct model names seen in session metadata",
-    "distinct_provider_count": "distinct model providers inferred from session metadata",
-    "claude_events": "Claude/Anthropic model mentions",
-    "gemini_events": "Gemini/Google model mentions",
-    "local_model_events": "local/open-weight model mentions",
-    "local_model_chat_sessions": "Hermes sessions whose model metadata is local/open-weight",
-    "toolset_events": "toolset or tool-family mentions",
-    "config_events": "configuration/environment/manifest activity",
-    "git_history_events": "git history operations such as rebase, merge, fetch, push, or tag",
-    "test_events": "test/check/verification command mentions",
-    "screenshot_events": "screenshot, Playwright, PNG, or vision-inspection activity",
-    "release_events": "release, version, publish, or git tag events",
-    "session_count": "Hermes sessions",
-    "weekend_sessions": "sessions started on weekends",
-    "night_sessions": "sessions started late night or before dawn",
+    "max_tool_calls_in_session": "一次会话中的工具调用",
+    "max_distinct_tools_in_session": "一次会话中使用的不同 Hermes 工具",
+    "max_terminal_calls_in_session": "一次会话中的终端调用",
+    "max_file_tool_calls_in_session": "一次会话中的文件/搜索/补丁调用",
+    "max_web_browser_calls_in_session": "一次会话中的网络搜索/提取或浏览器调用",
+    "max_messages_in_session": "一次会话中的消息",
+    "max_files_touched_in_session": "一次会话中涉及的文件",
+    "total_delegate_calls": "累计子代理调用",
+    "total_process_calls": "累计后台进程操作",
+    "total_cron_calls": "累计定时任务操作",
+    "total_errors": "检测到的错误/失败/回溯消息",
+    "traceback_events": "回溯或异常提及",
+    "log_read_events": "日志检查次数",
+    "port_conflict_events": "开发服务器端口冲突检测",
+    "permission_denied_events": "权限拒绝错误",
+    "install_error_events": "包安装失败",
+    "install_success_events": "包操作后的成功安装",
+    "restart_after_error_events": "错误集群后的重启/重新加载操作",
+    "env_var_error_events": "缺少认证/配置/环境变量事件",
+    "yaml_error_events": "YAML/配置解析事件",
+    "docker_conflict_events": "Docker/容器名称冲突",
+    "frontend_activity_events": "前端/CSS/SVG/React 活动提及",
+    "css_activity_events": "CSS、样式、Tailwind 或 className 活动",
+    "git_events": "Git 工作流命令",
+    "tiny_patch_after_errors_events": "错误集群后的小型拼写修复",
+    "skill_events": "Hermes 技能提及或工具使用",
+    "skill_manage_events": "skill_manage 创建/补丁/删除操作",
+    "memory_events": "记忆或 Mnemosyne 工具事件",
+    "memory_write_events": "持久化记忆写入",
+    "context_events": "上下文、压缩、Token 或缓存压力提及",
+    "gateway_events": "网关/API/聊天平台活动",
+    "plugin_events": "仪表盘插件开发或使用信号",
+    "rollback_events": "回滚/检查点恢复提及",
+    "docs_activity_events": "文档/README/docs 活动",
+    "model_events": "模型/提供商相关活动",
+    "openrouter_events": "OpenRouter 提及",
+    "codex_events": "Codex 提及",
+    "cache_events": "提示缓存/缓存命中提及",
+    "total_web_calls": "累计 web_search/web_extract 调用",
+    "total_web_extract_calls": "累计 web_extract 调用",
+    "browser_calls": "累计浏览器自动化调用",
+    "total_tool_calls": "累计 Hermes 工具调用",
+    "total_terminal_calls": "累计终端调用",
+    "total_patch_calls": "累计定向补丁编辑",
+    "total_file_reads_searches": "累计 read_file/search_files 调用",
+    "image_vision_calls": "图像生成或视觉工具调用",
+    "tts_calls": "文字转语音或语音工具调用",
+    "distinct_model_count": "会话元数据中看到的不同模型名称",
+    "distinct_provider_count": "从会话元数据推断的不同模型提供商",
+    "claude_events": "Claude/Anthropic 模型提及",
+    "gemini_events": "Gemini/Google 模型提及",
+    "local_model_events": "本地/开源权重模型提及",
+    "local_model_chat_sessions": "模型元数据为本地/开源权重的 Hermes 会话",
+    "toolset_events": "工具集或工具家族提及",
+    "config_events": "配置/环境/清单活动",
+    "git_history_events": "Git 历史操作，如变基、合并、获取、推送或标签",
+    "test_events": "测试/检查/验证命令提及",
+    "screenshot_events": "截图、Playwright、PNG 或视觉检查活动",
+    "release_events": "发布、版本、发布或 Git 标签事件",
+    "session_count": "Hermes 会话数",
+    "weekend_sessions": "周末启动的会话",
+    "night_sessions": "深夜或黎明前启动的会话",
 }
 
 
@@ -533,26 +533,27 @@ def metric_label(metric: str) -> str:
 
 def criteria_for(definition: Dict[str, Any]) -> str:
     if definition.get("secret") and definition.get("state") == "secret":
-        return "Secret: exact requirement hidden until Hermes sees the first matching signal. Keep using Hermes across debugging, tools, memory, skills, plugins, and model workflows to reveal it."
+        return "秘密：确切要求已隐藏，直到 Hermes 检测到首次相关信号。在调试、工具、记忆、技能、插件和模型工作流中持续使用 Hermes 即可揭示。"
     secret_prefix = ""
+    TIER_CN = {"Copper": "铜", "Silver": "银", "Gold": "金", "Diamond": "钻石", "Olympian": "奥金"}
     if "threshold_metric" in definition:
         tiers_list = sorted(definition.get("tiers", []), key=lambda t: t["threshold"])
         if not tiers_list:
-            return secret_prefix + "Requirement: use Hermes in the matching workflow."
+            return secret_prefix + "要求：在匹配的工作流中使用 Hermes。"
         metric = metric_label(definition["threshold_metric"])
-        ladder = ", ".join(f"{t['name']} {t['threshold']}" for t in tiers_list)
-        return secret_prefix + f"Requirement: {metric}. Tier ladder: {ladder}."
+        ladder = ", ".join(f"{TIER_CN.get(t['name'], t['name'])} {t['threshold']}" for t in tiers_list)
+        return secret_prefix + f"要求：{metric}。等级阶梯：{ladder}。"
     requirements = definition.get("requirements") or []
     if requirements:
         parts = [f"{metric_label(r['metric'])} ≥ {int(r.get('gte', 1))}" for r in requirements]
-        return secret_prefix + "Requirement: " + "; ".join(parts) + "."
-    return secret_prefix + "Requirement: complete the matching Hermes behavior."
+        return secret_prefix + "要求：" + "; ".join(parts) + "。"
+    return secret_prefix + "要求：完成匹配的 Hermes 行为。"
 
 
 def display_achievement(item: Dict[str, Any]) -> Dict[str, Any]:
     clean = dict(item)
     if clean.get("state") == "secret":
-        return {**clean, "name": "???", "description": "Secret achievement: hidden until Hermes detects the first relevant behavior in your session history.", "criteria": criteria_for(clean), "icon": "secret"}
+        return {**clean, "name": "???", "description": "Secret achievement: hidden until Hermes detects the first matching behavior in session history.", "criteria": criteria_for(clean), "icon": "secret"}
     clean["criteria"] = criteria_for(clean)
     return clean
 

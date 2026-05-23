@@ -682,5 +682,7 @@ export const zhHant: Translations = {
       night_shift_operator: { name: "Night Shift Operator", description: "Run sessions during gremlin hours repeatedly." },
       cache_hit_appreciator: { name: "Cache Hit Appreciator", description: "Notice or benefit from prompt/cache behavior." },
     },
+    categories: {},
+    filters: { all_categories: "All", visibility_all: "all", visibility_unlocked: "unlocked", visibility_discovered: "discovered", visibility_secret: "secret" },
   },
 };

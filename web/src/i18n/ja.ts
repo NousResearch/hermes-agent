@@ -1,625 +1,1251 @@
-import type { Translations } from "./types";
-
-export const ja: Translations = {
-  common: {
-    save: "Save",
-    saving: "Saving...",
-    cancel: "Cancel",
-    close: "Close",
-    confirm: "Confirm",
-    delete: "Delete",
-    refresh: "Refresh",
-    retry: "Retry",
-    search: "Search...",
-    loading: "Loading...",
-    create: "Create",
-    creating: "Creating...",
-    set: "Set",
-    replace: "Replace",
-    clear: "Clear",
-    live: "Live",
-    off: "Off",
-    enabled: "enabled",
-    disabled: "disabled",
-    active: "active",
-    inactive: "inactive",
-    unknown: "unknown",
-    untitled: "Untitled",
-    none: "None",
-    form: "Form",
-    noResults: "No results",
-    of: "of",
-    page: "Page",
-    msgs: "msgs",
-    tools: "tools",
-    match: "match",
-    other: "Other",
-    configured: "configured",
-    removed: "removed",
-    failedToToggle: "Failed to toggle",
-    failedToRemove: "Failed to remove",
-    failedToReveal: "Failed to reveal",
-    collapse: "Collapse",
-    expand: "Expand",
-    general: "General",
-    messaging: "Messaging",
-    pluginLoadFailed:
-      "Could not load this plugin's script. Check the Network tab (dashboard-plugins/…) and the server's plugin path.",
-    pluginNotRegistered:
-      "The plugin's script did not call register(), or the script errored. Open the browser console for details.",
-    copied: "Copied",
-    installSuccess: "{name} installed",
-    installFailed: "Install failed",
-    rescanFailed: "Rescan failed",
-    saveFailed: "Save failed",
-    removeSuccess: "{name} removed",
-  },
-
-  app: {
-    brand: "Hermes Agent",
-    brandShort: "HA",
-    closeNavigation: "Close navigation",
-    closeModelTools: "Close model and tools",
-    footer: {
-      org: "Nous Research",
-    },
-    activeSessionsLabel: "Active Sessions:",
-    gatewayStatusLabel: "Gateway Status:",
-    gatewayStrip: {
-      failed: "Start failed",
-      off: "Off",
-      running: "Running",
-      starting: "Starting",
-      stopped: "Stopped",
-    },
-    nav: {
-      analytics: "Analytics",
-      chat: "Chat",
-      config: "Config",
-      cron: "Cron",
-      documentation: "Documentation",
-      keys: "Keys",
-      logs: "Logs",
-      models: "Models",
-      profiles: "Profiles",
-      plugins: "Plugins",
-      sessions: "Sessions",
-      skills: "Skills",
-    },
-    modelToolsSheetSubtitle: "& tools",
-    modelToolsSheetTitle: "Model",
-    navigation: "Navigation",
-    openDocumentation: "Open documentation in a new tab",
-    openNavigation: "Open navigation",
-    pluginNavSection: "Plugins",
-    sessionsActiveCount: "{count} active",
-    statusOverview: "Status overview",
-    system: "System",
-    webUi: "Web UI",
-  },
-
-  status: {
-    actionFailed: "Action failed",
-    actionFinished: "Finished",
-    actions: "Actions",
-    agent: "Agent",
-    activeSessions: "Active Sessions",
-    connected: "Connected",
-    connectedPlatforms: "Connected Platforms",
-    disconnected: "Disconnected",
-    error: "Error",
-    failed: "Failed",
-    gateway: "Gateway",
-    gatewayFailedToStart: "Gateway failed to start",
-    lastUpdate: "Last update",
-    noneRunning: "None",
-    notRunning: "Not running",
-    pid: "PID",
-    platformDisconnected: "disconnected",
-    platformError: "error",
-    recentSessions: "Recent Sessions",
-    restartGateway: "Restart Gateway",
-    restartingGateway: "Restarting gateway…",
-    running: "Running",
-    runningRemote: "Running (remote)",
-    startFailed: "Start failed",
-    starting: "Starting",
-    startedInBackground: "Started in background — check logs for progress",
-    stopped: "Stopped",
-    updateHermes: "Update Hermes",
-    updatingHermes: "Updating Hermes…",
-    waitingForOutput: "Waiting for output…",
-  },
-
-  sessions: {
-    title: "Sessions",
-    searchPlaceholder: "Search message content...",
-    noSessions: "No sessions yet",
-    noMatch: "No sessions match your search",
-    startConversation: "Start a conversation to see it here",
-    noMessages: "No messages",
-    untitledSession: "Untitled session",
-    deleteSession: "Delete session",
-    confirmDeleteTitle: "Delete session?",
-    confirmDeleteMessage:
-      "This permanently removes the conversation and all of its messages. This cannot be undone.",
-    sessionDeleted: "Session deleted",
-    failedToDelete: "Failed to delete session",
-    resumeInChat: "Resume in Chat",
-    previousPage: "Previous page",
-    nextPage: "Next page",
-    sourceLocal: "local",
-    roles: {
-      user: "User",
-      assistant: "Assistant",
-      system: "System",
-      tool: "Tool",
-    },
-  },
-
-  analytics: {
-    period: "Period:",
-    totalTokens: "Total Tokens",
-    totalSessions: "Total Sessions",
-    apiCalls: "API Calls",
-    dailyTokenUsage: "Daily Token Usage",
-    dailyBreakdown: "Daily Breakdown",
-    perModelBreakdown: "Per-Model Breakdown",
-    topSkills: "Top Skills",
-    skill: "Skill",
-    loads: "Agent Loaded",
-    edits: "Agent Managed",
-    lastUsed: "Last Used",
-    input: "Input",
-    output: "Output",
-    total: "Total",
-    noUsageData: "No usage data for this period",
-    startSession: "Start a session to see analytics here",
-    date: "Date",
-    model: "Model",
-    tokens: "Tokens",
-    perDayAvg: "/day avg",
-    acrossModels: "across {count} models",
-    inOut: "{input} in / {output} out",
-    tokenAnalyticsHidden: "Token analytics hidden",
-    tokenAnalyticsDesc1:
-      "The token, cost, and per-day analytics on this page are hidden because the local usage counts exclude auxiliary model calls (compression, vision, web extract, …) and provider retries, so the numbers shown would be incomplete and could differ from your provider bill.",
-    tokenAnalyticsDesc2:
-      "On models with heavy auxiliary traffic the gap can be significant — what you see here would be a lower bound, not a true total.",
-    tokenAnalyticsDesc3: "Check your provider dashboard for accurate billing data.",
-    tokenAnalyticsConfigure: "Enable dashboard.show_token_analytics in Config to show the local debug estimate anyway.",
-  },
-
-  models: {
-    modelsUsed: "Models Used",
-    estimatedCost: "Est. Cost",
-    tokens: "tokens",
-    sessions: "sessions",
-    avgPerSession: "avg/session",
-    apiCalls: "API calls",
-    toolCalls: "tool calls",
-    noModelsData: "No model usage data for this period",
-    startSession: "Start a session to see model data here",
-    modelSettings: "Model Settings",
-    appliesToNewSessions: "applies to new sessions",
-    mainModel: "Main model",
-    unset: "(unset)",
-    change: "Change",
-    auxiliaryTasks: "Auxiliary tasks",
-    overrideCount: "{count} override{s} · {auto} auto",
-    allAuto: "{total} tasks · all auto",
-    configure: "Configure",
-    setMainModel: "Set Main Model",
-    tokenBarCacheRead: "Cache Read",
-    tokenBarReasoning: "Reasoning",
-    tokenBarInput: "Input",
-    tokenBarOutput: "Output",
-    badgeTools: "Tools",
-    badgeVision: "Vision",
-    badgeReasoning: "Reasoning",
-    useAs: "Use as",
-    current: "current",
-    auxiliaryTask: "Auxiliary task",
-    allAuxiliaryTasks: "All auxiliary tasks",
-    mainBadge: "main",
-    auxBadge: "aux",
-    ctxLabel: "ctx",
-    outLabel: "out",
-    auxTasksModalTitle: "Auxiliary Tasks",
-    resetAllToAuto: "Reset all to auto",
-    auxTasksDesc:
-      "Auxiliary tasks handle side-jobs like vision, session search, and compression. auto means \"use the main model\". Override per-task when you want a cheap/fast model for a specific job.",
-    autoUseMain: "auto (use main model)",
-    providerDefault: "(provider default)",
-    setAuxiliary: "Set Auxiliary:",
-    resetAuxTitle: "Reset auxiliary models",
-    resetAuxDesc:
-      "Reset every auxiliary task to 'auto'? This overrides any per-task overrides you've set.",
-    resetAll: "Reset all",
-    auxTasksSummary: "{count} task{s}",
-    sessionTokenUnavailable:
-      "Session token unavailable. Open this page through `hermes dashboard`, not directly.",
-  },
-
-  logs: {
-    title: "Logs",
-    autoRefresh: "Auto-refresh",
-    file: "File",
-    level: "Level",
-    component: "Component",
-    lines: "Lines",
-    noLogLines: "No log lines found",
-  },
-
-  cron: {
-    confirmDeleteMessage:
-      "This removes the job from the schedule. This cannot be undone.",
-    confirmDeleteTitle: "Delete scheduled job?",
-    newJob: "New Cron Job",
-    nameOptional: "Name (optional)",
-    namePlaceholder: "e.g. Daily summary",
-    prompt: "Prompt",
-    promptPlaceholder: "What should the agent do on each run?",
-    schedule: "Schedule (cron expression)",
-    schedulePlaceholder: "0 9 * * *",
-    deliverTo: "Deliver to",
-    scheduledJobs: "Scheduled Jobs",
-    noJobs: "No cron jobs configured. Create one above.",
-    last: "Last",
-    next: "Next",
-    pause: "Pause",
-    resume: "Resume",
-    triggerNow: "Trigger now",
-    delivery: {
-      local: "Local",
-      telegram: "Telegram",
-      discord: "Discord",
-      slack: "Slack",
-      email: "Email",
-    },
-  },
-
-  pluginsPage: {
-    contextEngineLabel: "Context engine",
-    dashboardSlots: "Dashboard slots",
-    disableRuntime: "Disable",
-    enableAfterInstall: "Enable after install",
-    enableRuntime: "Enable",
-    forceReinstall: "Force reinstall (delete existing folder first)",
-    headline:
-      "Discover, install, enable, and update Hermes plugins (`hermes plugins` parity).",
-    identifierLabel: "Git URL or owner/repo",
-    inactive: "inactive",
-    installBtn: "Install from Git",
-    installHeading: "Install from GitHub / Git URL",
-    installHint: "Use owner/repo shorthand or a full https:// or git@ clone URL.",
-    memoryProviderLabel: "Memory provider",
-    missingEnvWarn: "Set these in Keys before the plugin can run:",
-    noDashboardTab: "No dashboard tab",
-    openTab: "Open",
-    orphanHeading: "Dashboard-only extensions (no agent plugin.yaml match)",
-    pluginListHeading: "Installed plugins",
-    providerDefaults: "built-in / default",
-    providersHeading: "Runtime provider plugins",
-    providersHint:
-      "Writes memory.provider (empty = built-in) and context.engine to config.yaml. Takes effect next session.",
-    refreshDashboard: "Rescan dashboard extensions",
-    removeConfirm: "Remove this plugin from ~/.hermes/plugins/?",
-    removeHint: "Only user-installed plugins under ~/.hermes/plugins can be removed.",
-    removeConfirmDesc:
-      'This will remove the "{name}" plugin from your agent.',
-    rescanHeading: "SPA plugin registry",
-    rescanHint: "Rescan after adding files on disk so the dashboard sidebar picks up new manifests.",
-    runtimeHeading: "Gateway runtime (YAML plugins)",
-    saveProviders: "Save provider settings",
-    savedProviders: "Provider settings saved.",
-    sourceBadge: "Source",
-    authRequired: "Auth required",
-    authRequiredHint: "Run this command to authenticate:",
-    updateGit: "Git pull",
-    versionBadge: "Version",
-    showInSidebar: "Show in sidebar",
-    hideFromSidebar: "Hide from sidebar",
-    placeholderOwnerRepo: "owner/repo or https://...",
-    orphanSeparator: " — ",
-    compressorLabel: "compressor",
-    installSuccess: "{name} installed",
-    installFailed: "Install failed",
-    rescanFailed: "Rescan failed",
-    saveFailed: "Save failed",
-    failed: "Failed",
-    removeSuccess: "{name} removed",
-  },
-
-  profiles: {
-    newProfile: "New Profile",
-    name: "Name",
-    namePlaceholder: "e.g. coder, writer, etc.",
-    nameRequired: "Name is required",
-    nameRule:
-      "Lowercase letters, digits, _ and - only; must start with a letter or digit; up to 64 characters.",
-    invalidName: "Invalid profile name",
-    cloneFromDefault: "Clone config from default profile",
-    allProfiles: "Profiles",
-    noProfiles: "No profiles found.",
-    defaultBadge: "default",
-    hasEnv: "env",
-    model: "Model",
-    skills: "Skills",
-    rename: "Rename",
-    editSoul: "Edit SOUL.md",
-    soulSection: "SOUL.md (personality / system prompt)",
-    soulPlaceholder: "# How this agent should behave…",
-    saveSoul: "Save SOUL",
-    soulSaved: "SOUL.md saved",
-    openInTerminal: "Copy CLI command",
-    commandCopied: "Copied to clipboard",
-    copyFailed: "Could not copy",
-    confirmDeleteTitle: "Delete profile?",
-    confirmDeleteMessage:
-      "This permanently deletes profile '{name}' — config, keys, memories, sessions, skills, cron jobs. Cannot be undone.",
-    created: "Created",
-    deleted: "Deleted",
-    renamed: "Renamed",
-  },
-
-  skills: {
-    title: "Skills",
-    searchPlaceholder: "Search skills and toolsets...",
-    enabledOf: "{enabled}/{total} enabled",
-    all: "All",
-    categories: "Categories",
-    filters: "Filters",
-    noSkills: "No skills found. Skills are loaded from ~/.hermes/skills/",
-    noSkillsMatch: "No skills match your search or filter.",
-    skillCount: "{count} skill{s}",
-    resultCount: "{count} result{s}",
-    noDescription: "No description available.",
-    toolsets: "Toolsets",
-    toolsetLabel: "{name} toolset",
-    noToolsetsMatch: "No toolsets match the search.",
-    setupNeeded: "Setup needed",
-    disabledForCli: "Disabled for CLI",
-    more: "+{count} more",
-    categoryMlops: "MLOps",
-    categoryMlopsCloud: "MLOps / Cloud",
-    categoryMlopsEval: "MLOps / Evaluation",
-    categoryMlopsInference: "MLOps / Inference",
-    categoryMlopsModels: "MLOps / Models",
-    categoryMlopsTraining: "MLOps / Training",
-    categoryMlopsVdb: "MLOps / Vector DBs",
-    categoryMcp: "MCP",
-    categoryRedTeaming: "Red Teaming",
-    categoryOcr: "OCR",
-    categoryP5js: "p5.js",
-    categoryAi: "AI",
-    categoryUx: "UX",
-    categoryUi: "UI",
-  },
-
-  config: {
-    configPath: "~/.hermes/config.yaml",
-    filters: "Filters",
-    sections: "Sections",
-    exportConfig: "Export config as JSON",
-    importConfig: "Import config from JSON",
-    resetDefaults: "Reset to defaults",
-    resetScopeTooltip: "Reset {scope} to defaults",
-    confirmResetScope: "Reset all {scope} settings to their defaults? This only updates the form — changes aren't written to config.yaml until you press Save.",
-    resetScopeToast: "{scope} reset to defaults — review and Save to persist",
-    rawYaml: "Raw YAML Configuration",
-    rawYamlTab: "YAML",
-    searchResults: "Search Results",
-    fields: "field{s}",
-    noFieldsMatch: 'No fields match "{query}"',
-    configSaved: "Configuration saved",
-    yamlConfigSaved: "YAML config saved",
-    failedToSave: "Failed to save",
-    failedToSaveYaml: "Failed to save YAML",
-    failedToLoadRaw: "Failed to load raw config",
-    configImported: "Config imported — review and save",
-    invalidJson: "Invalid JSON file",
-    confirmResetDescription:
-      "This will reset {count} field{s} to their default values.",
-    categories: {
-      general: "General",
-      agent: "Agent",
-      terminal: "Terminal",
-      display: "Display",
-      delegation: "Delegation",
-      memory: "Memory",
-      compression: "Compression",
-      security: "Security",
-      browser: "Browser",
-      voice: "Voice",
-      tts: "Text-to-Speech",
-      stt: "Speech-to-Text",
-      logging: "Logging",
-      discord: "Discord",
-      auxiliary: "Auxiliary",
-    },
-  },
-
-  env: {
-    changesNote: "Changes are saved to disk immediately. Active sessions pick up new keys automatically.",
-    confirmClearMessage:
-      "The stored value for this variable will be removed from your .env file. This cannot be undone from the UI.",
-    confirmClearTitle: "Clear this key?",
-    description: "Manage API keys and secrets stored in",
-    hideAdvanced: "Hide Advanced",
-    showAdvanced: "Show Advanced",
-    llmProviders: "LLM Providers",
-    providersConfigured: "{configured} of {total} providers configured",
-    getKey: "Get key",
-    notConfigured: "{count} not configured",
-    notSet: "Not set",
-    keysCount: "{count} key{s}",
-    enterValue: "Enter value...",
-    replaceCurrentValue: "Replace current value ({preview})",
-    showValue: "Show real value",
-    hideValue: "Hide value",
-    providerGroupNous: "Nous Portal",
-    providerGroupAnthropic: "Anthropic",
-    providerGroupDashscope: "DashScope (Qwen)",
-    providerGroupDeepseek: "DeepSeek",
-    providerGroupGemini: "Gemini",
-    providerGroupZai: "GLM / Z.AI",
-    providerGroupHuggingface: "Hugging Face",
-    providerGroupKimi: "Kimi / Moonshot",
-    providerGroupMinimaxCn: "MiniMax (China)",
-    providerGroupMinimax: "MiniMax",
-    providerGroupOpenCodeGo: "OpenCode Go",
-    providerGroupOpenCodeZen: "OpenCode Zen",
-    providerGroupOpenrouter: "OpenRouter",
-    providerGroupXiaomi: "Xiaomi MiMo",
-    navOauth: "OAuth",
-    navProviders: "Providers",
-    navTools: "Tools",
-    navMessaging: "Messaging",
-    navSettings: "Settings",
-    navAria: "Jump to section",
-    ariaReveal: "Reveal {key}",
-    ariaHide: "Hide {key}",
-  },
-
-  oauth: {
-    title: "Provider Logins (OAuth)",
-    providerLogins: "Provider Logins (OAuth)",
-    description: "{connected} of {total} OAuth providers connected. Login flows currently run via the CLI; click Copy command and paste into a terminal to set up.",
-    connected: "Connected",
-    expired: "Expired",
-    notConnected: "Not connected. Run {command} in a terminal.",
-    runInTerminal: "in a terminal.",
-    noProviders: "No OAuth-capable providers detected.",
-    login: "Login",
-    disconnect: "Disconnect",
-    managedExternally: "Managed externally",
-    copied: "Copied ✓",
-    cli: "CLI",
-    copyCliCommand: "Copy CLI command (for external / fallback)",
-    connect: "Connect",
-    sessionExpires: "Session expires in {time}",
-    initiatingLogin: "Initiating login flow…",
-    exchangingCode: "Exchanging code for tokens…",
-    connectedClosing: "Connected! Closing…",
-    loginFailed: "Login failed.",
-    sessionExpired: "Session expired. Click Retry to start a new login.",
-    reOpenAuth: "Re-open auth page",
-    reOpenVerification: "Re-open verification page",
-    submitCode: "Submit code",
-    pasteCode: "Paste authorization code (with #state suffix is fine)",
-    waitingAuth: "Waiting for you to authorize in the browser…",
-    enterCodePrompt: "A new tab opened. Enter this code if prompted:",
-    pkceStep1: "A new tab opened to claude.ai. Sign in and click Authorize.",
-    pkceStep2: "Copy the authorization code shown after authorizing.",
-    pkceStep3: "Paste it below and submit.",
-    flowLabels: {
-      pkce: "Browser login (PKCE)",
-      device_code: "Device code",
-      external: "External CLI",
-    },
-    expiresIn: "expires in {time}",
-  },
-
-  language: {
-    switchTo: "Switch to Chinese",
-  },
-
-  theme: {
-    title: "Theme",
-    switchTheme: "Switch theme",
-  },
-
-  chat: {
-    authFailed: "Auth failed. Reload the page to refresh the session token.",
-    localhostOnly: "Chat is only reachable from localhost.",
-    sessionEnded: "[session ended]",
-    copyTooltip: "Copy last assistant response as raw markdown",
-    copyAria: "Copy last assistant response",
-    copyText: "copy last response",
-    copiedText: "copied",
-  },
-
-  achievements: {
-    hero: {
-      kicker: "Agentic Gamerscore",
-      title: "Hermes Achievements",
-      subtitle:
-        "Collectible Hermes badges earned from real session history. Known unfinished achievements are shown as Discovered; Secret achievements stay hidden until the first matching behavior appears.",
-      scan_subtitle:
-        "Scanning Hermes session history. First scan can take 5–10 seconds on large histories.",
-    },
-    actions: {
-      rescan: "Rescan",
-    },
-    stats: {
-      unlocked: "Unlocked",
-      unlocked_hint: "earned badges",
-      discovered: "Discovered",
-      discovered_hint: "known, not earned yet",
-      secrets: "Secrets",
-      secrets_hint: "hidden until first signal",
-      highest_tier: "Highest tier",
-      highest_tier_hint: "Copper → Silver → Gold → Diamond → Olympian",
-      latest: "Latest",
-      latest_hint_empty: "run Hermes more",
-      none_yet: "None yet",
-    },
-    state: {
-      unlocked: "Unlocked",
-      discovered: "Discovered",
-      secret: "Secret",
-    },
-    tier: {
-      target: "Target {tier}",
-      hidden: "Hidden",
-      complete: "Complete",
-      objective: "Objective",
-    },
-    progress: {
-      hidden: "hidden",
-    },
-    scan: {
-      building_headline: "Building achievement profile…",
-      building_detail:
-        "Reading sessions, tool calls, model metadata, and unlock state.",
-      starting_headline: "Starting achievement scan…",
-      progress_detail:
-        "Scanned {scanned} of {total} sessions · {pct}%. Badges unlock as more history streams in.",
-      idle_detail:
-        "Reading sessions, tool calls, model metadata, and unlock state. Badges appear here as they unlock.",
-    },
-    guide: {
-      tiers_header: "Tiers",
-      secret_header: "Secret achievements",
-      secret_body:
-        "Secrets hide their exact trigger. Once Hermes sees a related signal, the card becomes Discovered and shows its requirement.",
-      scan_status_header: "Scan status",
-      scan_status_body:
-        "Hermes is scanning local history once, then cards will appear automatically. Nothing is stuck if this takes a few seconds.",
-      what_scanned_header: "What is scanned",
-      what_scanned_body:
-        "Sessions, tool calls, model metadata, errors, achievements, and local unlock state.",
-    },
-    card: {
-      share_title: "Share this achievement",
-      share_label: "Share {name}",
-      share_text: "Share",
-      how_to_reveal: "How to reveal",
-      what_counts: "What counts",
-      evidence_label: "Evidence",
-      evidence_session_fallback: "session",
-      no_evidence: "No evidence yet",
-    },
-    latest: {
-      header: "Latest unlocks",
-    },
-    empty: {
-      no_secrets_header: "No more secrets hidden in this scan.",
-      no_secrets_body:
-        "All discovered achievements have been revealed. Run Hermes more and rescan to find new ones.",
-      check_guide: "Check the guide to learn more about how achievements work.",
-    },
-    achievementData: {},
-  },
+import type { Translations } from "./types";
+
+
+
+export const ja: Translations = {
+
+  common: {
+
+    save: "Save",
+
+    saving: "Saving...",
+
+    cancel: "Cancel",
+
+    close: "Close",
+
+    confirm: "Confirm",
+
+    delete: "Delete",
+
+    refresh: "Refresh",
+
+    retry: "Retry",
+
+    search: "Search...",
+
+    loading: "Loading...",
+
+    create: "Create",
+
+    creating: "Creating...",
+
+    set: "Set",
+
+    replace: "Replace",
+
+    clear: "Clear",
+
+    live: "Live",
+
+    off: "Off",
+
+    enabled: "enabled",
+
+    disabled: "disabled",
+
+    active: "active",
+
+    inactive: "inactive",
+
+    unknown: "unknown",
+
+    untitled: "Untitled",
+
+    none: "None",
+
+    form: "Form",
+
+    noResults: "No results",
+
+    of: "of",
+
+    page: "Page",
+
+    msgs: "msgs",
+
+    tools: "tools",
+
+    match: "match",
+
+    other: "Other",
+
+    configured: "configured",
+
+    removed: "removed",
+
+    failedToToggle: "Failed to toggle",
+
+    failedToRemove: "Failed to remove",
+
+    failedToReveal: "Failed to reveal",
+
+    collapse: "Collapse",
+
+    expand: "Expand",
+
+    general: "General",
+
+    messaging: "Messaging",
+
+    pluginLoadFailed:
+
+      "Could not load this plugin's script. Check the Network tab (dashboard-plugins/…) and the server's plugin path.",
+
+    pluginNotRegistered:
+
+      "The plugin's script did not call register(), or the script errored. Open the browser console for details.",
+
+    copied: "Copied",
+
+    installSuccess: "{name} installed",
+
+    installFailed: "Install failed",
+
+    rescanFailed: "Rescan failed",
+
+    saveFailed: "Save failed",
+
+    removeSuccess: "{name} removed",
+
+  },
+
+
+
+  app: {
+
+    brand: "Hermes Agent",
+
+    brandShort: "HA",
+
+    closeNavigation: "Close navigation",
+
+    closeModelTools: "Close model and tools",
+
+    footer: {
+
+      org: "Nous Research",
+
+    },
+
+    activeSessionsLabel: "Active Sessions:",
+
+    gatewayStatusLabel: "Gateway Status:",
+
+    gatewayStrip: {
+
+      failed: "Start failed",
+
+      off: "Off",
+
+      running: "Running",
+
+      starting: "Starting",
+
+      stopped: "Stopped",
+
+    },
+
+    nav: {
+
+      analytics: "Analytics",
+
+      chat: "Chat",
+
+      config: "Config",
+
+      cron: "Cron",
+
+      documentation: "Documentation",
+
+      keys: "Keys",
+
+      logs: "Logs",
+
+      models: "Models",
+
+      profiles: "Profiles",
+
+      plugins: "Plugins",
+
+      sessions: "Sessions",
+
+      skills: "Skills",
+
+    },
+
+    modelToolsSheetSubtitle: "& tools",
+
+    modelToolsSheetTitle: "Model",
+
+    navigation: "Navigation",
+
+    openDocumentation: "Open documentation in a new tab",
+
+    openNavigation: "Open navigation",
+
+    pluginNavSection: "Plugins",
+
+    sessionsActiveCount: "{count} active",
+
+    statusOverview: "Status overview",
+
+    system: "System",
+
+    webUi: "Web UI",
+
+  },
+
+
+
+  status: {
+
+    actionFailed: "Action failed",
+
+    actionFinished: "Finished",
+
+    actions: "Actions",
+
+    agent: "Agent",
+
+    activeSessions: "Active Sessions",
+
+    connected: "Connected",
+
+    connectedPlatforms: "Connected Platforms",
+
+    disconnected: "Disconnected",
+
+    error: "Error",
+
+    failed: "Failed",
+
+    gateway: "Gateway",
+
+    gatewayFailedToStart: "Gateway failed to start",
+
+    lastUpdate: "Last update",
+
+    noneRunning: "None",
+
+    notRunning: "Not running",
+
+    pid: "PID",
+
+    platformDisconnected: "disconnected",
+
+    platformError: "error",
+
+    recentSessions: "Recent Sessions",
+
+    restartGateway: "Restart Gateway",
+
+    restartingGateway: "Restarting gateway…",
+
+    running: "Running",
+
+    runningRemote: "Running (remote)",
+
+    startFailed: "Start failed",
+
+    starting: "Starting",
+
+    startedInBackground: "Started in background — check logs for progress",
+
+    stopped: "Stopped",
+
+    updateHermes: "Update Hermes",
+
+    updatingHermes: "Updating Hermes…",
+
+    waitingForOutput: "Waiting for output…",
+
+  },
+
+
+
+  sessions: {
+
+    title: "Sessions",
+
+    searchPlaceholder: "Search message content...",
+
+    noSessions: "No sessions yet",
+
+    noMatch: "No sessions match your search",
+
+    startConversation: "Start a conversation to see it here",
+
+    noMessages: "No messages",
+
+    untitledSession: "Untitled session",
+
+    deleteSession: "Delete session",
+
+    confirmDeleteTitle: "Delete session?",
+
+    confirmDeleteMessage:
+
+      "This permanently removes the conversation and all of its messages. This cannot be undone.",
+
+    sessionDeleted: "Session deleted",
+
+    failedToDelete: "Failed to delete session",
+
+    resumeInChat: "Resume in Chat",
+
+    previousPage: "Previous page",
+
+    nextPage: "Next page",
+
+    sourceLocal: "local",
+
+    roles: {
+
+      user: "User",
+
+      assistant: "Assistant",
+
+      system: "System",
+
+      tool: "Tool",
+
+    },
+
+  },
+
+
+
+  analytics: {
+
+    period: "Period:",
+
+    totalTokens: "Total Tokens",
+
+    totalSessions: "Total Sessions",
+
+    apiCalls: "API Calls",
+
+    dailyTokenUsage: "Daily Token Usage",
+
+    dailyBreakdown: "Daily Breakdown",
+
+    perModelBreakdown: "Per-Model Breakdown",
+
+    topSkills: "Top Skills",
+
+    skill: "Skill",
+
+    loads: "Agent Loaded",
+
+    edits: "Agent Managed",
+
+    lastUsed: "Last Used",
+
+    input: "Input",
+
+    output: "Output",
+
+    total: "Total",
+
+    noUsageData: "No usage data for this period",
+
+    startSession: "Start a session to see analytics here",
+
+    date: "Date",
+
+    model: "Model",
+
+    tokens: "Tokens",
+
+    perDayAvg: "/day avg",
+
+    acrossModels: "across {count} models",
+
+    inOut: "{input} in / {output} out",
+
+    tokenAnalyticsHidden: "Token analytics hidden",
+
+    tokenAnalyticsDesc1:
+
+      "The token, cost, and per-day analytics on this page are hidden because the local usage counts exclude auxiliary model calls (compression, vision, web extract, …) and provider retries, so the numbers shown would be incomplete and could differ from your provider bill.",
+
+    tokenAnalyticsDesc2:
+
+      "On models with heavy auxiliary traffic the gap can be significant — what you see here would be a lower bound, not a true total.",
+
+    tokenAnalyticsDesc3: "Check your provider dashboard for accurate billing data.",
+
+    tokenAnalyticsConfigure: "Enable dashboard.show_token_analytics in Config to show the local debug estimate anyway.",
+
+  },
+
+
+
+  models: {
+
+    modelsUsed: "Models Used",
+
+    estimatedCost: "Est. Cost",
+
+    tokens: "tokens",
+
+    sessions: "sessions",
+
+    avgPerSession: "avg/session",
+
+    apiCalls: "API calls",
+
+    toolCalls: "tool calls",
+
+    noModelsData: "No model usage data for this period",
+
+    startSession: "Start a session to see model data here",
+
+    modelSettings: "Model Settings",
+
+    appliesToNewSessions: "applies to new sessions",
+
+    mainModel: "Main model",
+
+    unset: "(unset)",
+
+    change: "Change",
+
+    auxiliaryTasks: "Auxiliary tasks",
+
+    overrideCount: "{count} override{s} · {auto} auto",
+
+    allAuto: "{total} tasks · all auto",
+
+    configure: "Configure",
+
+    setMainModel: "Set Main Model",
+
+    tokenBarCacheRead: "Cache Read",
+
+    tokenBarReasoning: "Reasoning",
+
+    tokenBarInput: "Input",
+
+    tokenBarOutput: "Output",
+
+    badgeTools: "Tools",
+
+    badgeVision: "Vision",
+
+    badgeReasoning: "Reasoning",
+
+    useAs: "Use as",
+
+    current: "current",
+
+    auxiliaryTask: "Auxiliary task",
+
+    allAuxiliaryTasks: "All auxiliary tasks",
+
+    mainBadge: "main",
+
+    auxBadge: "aux",
+
+    ctxLabel: "ctx",
+
+    outLabel: "out",
+
+    auxTasksModalTitle: "Auxiliary Tasks",
+
+    resetAllToAuto: "Reset all to auto",
+
+    auxTasksDesc:
+
+      "Auxiliary tasks handle side-jobs like vision, session search, and compression. auto means \"use the main model\". Override per-task when you want a cheap/fast model for a specific job.",
+
+    autoUseMain: "auto (use main model)",
+
+    providerDefault: "(provider default)",
+
+    setAuxiliary: "Set Auxiliary:",
+
+    resetAuxTitle: "Reset auxiliary models",
+
+    resetAuxDesc:
+
+      "Reset every auxiliary task to 'auto'? This overrides any per-task overrides you've set.",
+
+    resetAll: "Reset all",
+
+    auxTasksSummary: "{count} task{s}",
+
+    sessionTokenUnavailable:
+
+      "Session token unavailable. Open this page through `hermes dashboard`, not directly.",
+
+  },
+
+
+
+  logs: {
+
+    title: "Logs",
+
+    autoRefresh: "Auto-refresh",
+
+    file: "File",
+
+    level: "Level",
+
+    component: "Component",
+
+    lines: "Lines",
+
+    noLogLines: "No log lines found",
+
+  },
+
+
+
+  cron: {
+
+    confirmDeleteMessage:
+
+      "This removes the job from the schedule. This cannot be undone.",
+
+    confirmDeleteTitle: "Delete scheduled job?",
+
+    newJob: "New Cron Job",
+
+    nameOptional: "Name (optional)",
+
+    namePlaceholder: "e.g. Daily summary",
+
+    prompt: "Prompt",
+
+    promptPlaceholder: "What should the agent do on each run?",
+
+    schedule: "Schedule (cron expression)",
+
+    schedulePlaceholder: "0 9 * * *",
+
+    deliverTo: "Deliver to",
+
+    scheduledJobs: "Scheduled Jobs",
+
+    noJobs: "No cron jobs configured. Create one above.",
+
+    last: "Last",
+
+    next: "Next",
+
+    pause: "Pause",
+
+    resume: "Resume",
+
+    triggerNow: "Trigger now",
+
+    delivery: {
+
+      local: "Local",
+
+      telegram: "Telegram",
+
+      discord: "Discord",
+
+      slack: "Slack",
+
+      email: "Email",
+
+    },
+
+  },
+
+
+
+  pluginsPage: {
+
+    contextEngineLabel: "Context engine",
+
+    dashboardSlots: "Dashboard slots",
+
+    disableRuntime: "Disable",
+
+    enableAfterInstall: "Enable after install",
+
+    enableRuntime: "Enable",
+
+    forceReinstall: "Force reinstall (delete existing folder first)",
+
+    headline:
+
+      "Discover, install, enable, and update Hermes plugins (`hermes plugins` parity).",
+
+    identifierLabel: "Git URL or owner/repo",
+
+    inactive: "inactive",
+
+    installBtn: "Install from Git",
+
+    installHeading: "Install from GitHub / Git URL",
+
+    installHint: "Use owner/repo shorthand or a full https:// or git@ clone URL.",
+
+    memoryProviderLabel: "Memory provider",
+
+    missingEnvWarn: "Set these in Keys before the plugin can run:",
+
+    noDashboardTab: "No dashboard tab",
+
+    openTab: "Open",
+
+    orphanHeading: "Dashboard-only extensions (no agent plugin.yaml match)",
+
+    pluginListHeading: "Installed plugins",
+
+    providerDefaults: "built-in / default",
+
+    providersHeading: "Runtime provider plugins",
+
+    providersHint:
+
+      "Writes memory.provider (empty = built-in) and context.engine to config.yaml. Takes effect next session.",
+
+    refreshDashboard: "Rescan dashboard extensions",
+
+    removeConfirm: "Remove this plugin from ~/.hermes/plugins/?",
+
+    removeHint: "Only user-installed plugins under ~/.hermes/plugins can be removed.",
+
+    removeConfirmDesc:
+
+      'This will remove the "{name}" plugin from your agent.',
+
+    rescanHeading: "SPA plugin registry",
+
+    rescanHint: "Rescan after adding files on disk so the dashboard sidebar picks up new manifests.",
+
+    runtimeHeading: "Gateway runtime (YAML plugins)",
+
+    saveProviders: "Save provider settings",
+
+    savedProviders: "Provider settings saved.",
+
+    sourceBadge: "Source",
+
+    authRequired: "Auth required",
+
+    authRequiredHint: "Run this command to authenticate:",
+
+    updateGit: "Git pull",
+
+    versionBadge: "Version",
+
+    showInSidebar: "Show in sidebar",
+
+    hideFromSidebar: "Hide from sidebar",
+
+    placeholderOwnerRepo: "owner/repo or https://...",
+
+    orphanSeparator: " — ",
+
+    compressorLabel: "compressor",
+
+    installSuccess: "{name} installed",
+
+    installFailed: "Install failed",
+
+    rescanFailed: "Rescan failed",
+
+    saveFailed: "Save failed",
+
+    failed: "Failed",
+
+    removeSuccess: "{name} removed",
+
+  },
+
+
+
+  profiles: {
+
+    newProfile: "New Profile",
+
+    name: "Name",
+
+    namePlaceholder: "e.g. coder, writer, etc.",
+
+    nameRequired: "Name is required",
+
+    nameRule:
+
+      "Lowercase letters, digits, _ and - only; must start with a letter or digit; up to 64 characters.",
+
+    invalidName: "Invalid profile name",
+
+    cloneFromDefault: "Clone config from default profile",
+
+    allProfiles: "Profiles",
+
+    noProfiles: "No profiles found.",
+
+    defaultBadge: "default",
+
+    hasEnv: "env",
+
+    model: "Model",
+
+    skills: "Skills",
+
+    rename: "Rename",
+
+    editSoul: "Edit SOUL.md",
+
+    soulSection: "SOUL.md (personality / system prompt)",
+
+    soulPlaceholder: "# How this agent should behave…",
+
+    saveSoul: "Save SOUL",
+
+    soulSaved: "SOUL.md saved",
+
+    openInTerminal: "Copy CLI command",
+
+    commandCopied: "Copied to clipboard",
+
+    copyFailed: "Could not copy",
+
+    confirmDeleteTitle: "Delete profile?",
+
+    confirmDeleteMessage:
+
+      "This permanently deletes profile '{name}' — config, keys, memories, sessions, skills, cron jobs. Cannot be undone.",
+
+    created: "Created",
+
+    deleted: "Deleted",
+
+    renamed: "Renamed",
+
+  },
+
+
+
+  skills: {
+
+    title: "Skills",
+
+    searchPlaceholder: "Search skills and toolsets...",
+
+    enabledOf: "{enabled}/{total} enabled",
+
+    all: "All",
+
+    categories: "Categories",
+
+    filters: "Filters",
+
+    noSkills: "No skills found. Skills are loaded from ~/.hermes/skills/",
+
+    noSkillsMatch: "No skills match your search or filter.",
+
+    skillCount: "{count} skill{s}",
+
+    resultCount: "{count} result{s}",
+
+    noDescription: "No description available.",
+
+    toolsets: "Toolsets",
+
+    toolsetLabel: "{name} toolset",
+
+    noToolsetsMatch: "No toolsets match the search.",
+
+    setupNeeded: "Setup needed",
+
+    disabledForCli: "Disabled for CLI",
+
+    more: "+{count} more",
+
+    categoryMlops: "MLOps",
+
+    categoryMlopsCloud: "MLOps / Cloud",
+
+    categoryMlopsEval: "MLOps / Evaluation",
+
+    categoryMlopsInference: "MLOps / Inference",
+
+    categoryMlopsModels: "MLOps / Models",
+
+    categoryMlopsTraining: "MLOps / Training",
+
+    categoryMlopsVdb: "MLOps / Vector DBs",
+
+    categoryMcp: "MCP",
+
+    categoryRedTeaming: "Red Teaming",
+
+    categoryOcr: "OCR",
+
+    categoryP5js: "p5.js",
+
+    categoryAi: "AI",
+
+    categoryUx: "UX",
+
+    categoryUi: "UI",
+
+  },
+
+
+
+  config: {
+
+    configPath: "~/.hermes/config.yaml",
+
+    filters: "Filters",
+
+    sections: "Sections",
+
+    exportConfig: "Export config as JSON",
+
+    importConfig: "Import config from JSON",
+
+    resetDefaults: "Reset to defaults",
+
+    resetScopeTooltip: "Reset {scope} to defaults",
+
+    confirmResetScope: "Reset all {scope} settings to their defaults? This only updates the form — changes aren't written to config.yaml until you press Save.",
+
+    resetScopeToast: "{scope} reset to defaults — review and Save to persist",
+
+    rawYaml: "Raw YAML Configuration",
+
+    rawYamlTab: "YAML",
+
+    searchResults: "Search Results",
+
+    fields: "field{s}",
+
+    noFieldsMatch: 'No fields match "{query}"',
+
+    configSaved: "Configuration saved",
+
+    yamlConfigSaved: "YAML config saved",
+
+    failedToSave: "Failed to save",
+
+    failedToSaveYaml: "Failed to save YAML",
+
+    failedToLoadRaw: "Failed to load raw config",
+
+    configImported: "Config imported — review and save",
+
+    invalidJson: "Invalid JSON file",
+
+    confirmResetDescription:
+
+      "This will reset {count} field{s} to their default values.",
+
+    categories: {
+
+      general: "General",
+
+      agent: "Agent",
+
+      terminal: "Terminal",
+
+      display: "Display",
+
+      delegation: "Delegation",
+
+      memory: "Memory",
+
+      compression: "Compression",
+
+      security: "Security",
+
+      browser: "Browser",
+
+      voice: "Voice",
+
+      tts: "Text-to-Speech",
+
+      stt: "Speech-to-Text",
+
+      logging: "Logging",
+
+      discord: "Discord",
+
+      auxiliary: "Auxiliary",
+
+    },
+
+  },
+
+
+
+  env: {
+
+    changesNote: "Changes are saved to disk immediately. Active sessions pick up new keys automatically.",
+
+    confirmClearMessage:
+
+      "The stored value for this variable will be removed from your .env file. This cannot be undone from the UI.",
+
+    confirmClearTitle: "Clear this key?",
+
+    description: "Manage API keys and secrets stored in",
+
+    hideAdvanced: "Hide Advanced",
+
+    showAdvanced: "Show Advanced",
+
+    llmProviders: "LLM Providers",
+
+    providersConfigured: "{configured} of {total} providers configured",
+
+    getKey: "Get key",
+
+    notConfigured: "{count} not configured",
+
+    notSet: "Not set",
+
+    keysCount: "{count} key{s}",
+
+    enterValue: "Enter value...",
+
+    replaceCurrentValue: "Replace current value ({preview})",
+
+    showValue: "Show real value",
+
+    hideValue: "Hide value",
+
+    providerGroupNous: "Nous Portal",
+
+    providerGroupAnthropic: "Anthropic",
+
+    providerGroupDashscope: "DashScope (Qwen)",
+
+    providerGroupDeepseek: "DeepSeek",
+
+    providerGroupGemini: "Gemini",
+
+    providerGroupZai: "GLM / Z.AI",
+
+    providerGroupHuggingface: "Hugging Face",
+
+    providerGroupKimi: "Kimi / Moonshot",
+
+    providerGroupMinimaxCn: "MiniMax (China)",
+
+    providerGroupMinimax: "MiniMax",
+
+    providerGroupOpenCodeGo: "OpenCode Go",
+
+    providerGroupOpenCodeZen: "OpenCode Zen",
+
+    providerGroupOpenrouter: "OpenRouter",
+
+    providerGroupXiaomi: "Xiaomi MiMo",
+
+    navOauth: "OAuth",
+
+    navProviders: "Providers",
+
+    navTools: "Tools",
+
+    navMessaging: "Messaging",
+
+    navSettings: "Settings",
+
+    navAria: "Jump to section",
+
+    ariaReveal: "Reveal {key}",
+
+    ariaHide: "Hide {key}",
+
+  },
+
+
+
+  oauth: {
+
+    title: "Provider Logins (OAuth)",
+
+    providerLogins: "Provider Logins (OAuth)",
+
+    description: "{connected} of {total} OAuth providers connected. Login flows currently run via the CLI; click Copy command and paste into a terminal to set up.",
+
+    connected: "Connected",
+
+    expired: "Expired",
+
+    notConnected: "Not connected. Run {command} in a terminal.",
+
+    runInTerminal: "in a terminal.",
+
+    noProviders: "No OAuth-capable providers detected.",
+
+    login: "Login",
+
+    disconnect: "Disconnect",
+
+    managedExternally: "Managed externally",
+
+    copied: "Copied ✓",
+
+    cli: "CLI",
+
+    copyCliCommand: "Copy CLI command (for external / fallback)",
+
+    connect: "Connect",
+
+    sessionExpires: "Session expires in {time}",
+
+    initiatingLogin: "Initiating login flow…",
+
+    exchangingCode: "Exchanging code for tokens…",
+
+    connectedClosing: "Connected! Closing…",
+
+    loginFailed: "Login failed.",
+
+    sessionExpired: "Session expired. Click Retry to start a new login.",
+
+    reOpenAuth: "Re-open auth page",
+
+    reOpenVerification: "Re-open verification page",
+
+    submitCode: "Submit code",
+
+    pasteCode: "Paste authorization code (with #state suffix is fine)",
+
+    waitingAuth: "Waiting for you to authorize in the browser…",
+
+    enterCodePrompt: "A new tab opened. Enter this code if prompted:",
+
+    pkceStep1: "A new tab opened to claude.ai. Sign in and click Authorize.",
+
+    pkceStep2: "Copy the authorization code shown after authorizing.",
+
+    pkceStep3: "Paste it below and submit.",
+
+    flowLabels: {
+
+      pkce: "Browser login (PKCE)",
+
+      device_code: "Device code",
+
+      external: "External CLI",
+
+    },
+
+    expiresIn: "expires in {time}",
+
+  },
+
+
+
+  language: {
+
+    switchTo: "Switch to Chinese",
+
+  },
+
+
+
+  theme: {
+
+    title: "Theme",
+
+    switchTheme: "Switch theme",
+
+  },
+
+
+
+  chat: {
+
+    authFailed: "Auth failed. Reload the page to refresh the session token.",
+
+    localhostOnly: "Chat is only reachable from localhost.",
+
+    sessionEnded: "[session ended]",
+
+    copyTooltip: "Copy last assistant response as raw markdown",
+
+    copyAria: "Copy last assistant response",
+
+    copyText: "copy last response",
+
+    copiedText: "copied",
+
+  },
+
+
+
+  achievements: {
+
+    hero: {
+
+      kicker: "Agentic Gamerscore",
+
+      title: "Hermes Achievements",
+
+      subtitle:
+
+        "Collectible Hermes badges earned from real session history. Known unfinished achievements are shown as Discovered; Secret achievements stay hidden until the first matching behavior appears.",
+
+      scan_subtitle:
+
+        "Scanning Hermes session history. First scan can take 5–10 seconds on large histories.",
+
+    },
+
+    actions: {
+
+      rescan: "Rescan",
+
+    },
+
+    stats: {
+
+      unlocked: "Unlocked",
+
+      unlocked_hint: "earned badges",
+
+      discovered: "Discovered",
+
+      discovered_hint: "known, not earned yet",
+
+      secrets: "Secrets",
+
+      secrets_hint: "hidden until first signal",
+
+      highest_tier: "Highest tier",
+
+      highest_tier_hint: "Copper → Silver → Gold → Diamond → Olympian",
+
+      latest: "Latest",
+
+      latest_hint_empty: "run Hermes more",
+
+      none_yet: "None yet",
+
+    },
+
+    state: {
+
+      unlocked: "Unlocked",
+
+      discovered: "Discovered",
+
+      secret: "Secret",
+
+    },
+
+    tier: {
+
+      target: "Target {tier}",
+
+      hidden: "Hidden",
+
+      complete: "Complete",
+
+      objective: "Objective",
+
+    },
+
+    progress: {
+
+      hidden: "hidden",
+
+    },
+
+    scan: {
+
+      building_headline: "Building achievement profile…",
+
+      building_detail:
+
+        "Reading sessions, tool calls, model metadata, and unlock state.",
+
+      starting_headline: "Starting achievement scan…",
+
+      progress_detail:
+
+        "Scanned {scanned} of {total} sessions · {pct}%. Badges unlock as more history streams in.",
+
+      idle_detail:
+
+        "Reading sessions, tool calls, model metadata, and unlock state. Badges appear here as they unlock.",
+
+    },
+
+    guide: {
+
+      tiers_header: "Tiers",
+
+      secret_header: "Secret achievements",
+
+      secret_body:
+
+        "Secrets hide their exact trigger. Once Hermes sees a related signal, the card becomes Discovered and shows its requirement.",
+
+      scan_status_header: "Scan status",
+
+      scan_status_body:
+
+        "Hermes is scanning local history once, then cards will appear automatically. Nothing is stuck if this takes a few seconds.",
+
+      what_scanned_header: "What is scanned",
+
+      what_scanned_body:
+
+        "Sessions, tool calls, model metadata, errors, achievements, and local unlock state.",
+
+    },
+
+    card: {
+
+      share_title: "Share this achievement",
+
+      share_label: "Share {name}",
+
+      share_text: "Share",
+
+      how_to_reveal: "How to reveal",
+
+      what_counts: "What counts",
+
+      evidence_label: "Evidence",
+
+      evidence_session_fallback: "session",
+
+      no_evidence: "No evidence yet",
+
+    },
+
+    latest: {
+
+      header: "Latest unlocks",
+
+    },
+
+    empty: {
+
+      no_secrets_header: "No more secrets hidden in this scan.",
+
+      no_secrets_body:
+
+        "All discovered achievements have been revealed. Run Hermes more and rescan to find new ones.",
+
+      check_guide: "Check the guide to learn more about how achievements work.",
+
+    },
+
+    achievementData: {},
+    categories: {},
+    filters: { all_categories: "All", visibility_all: "all", visibility_unlocked: "unlocked", visibility_discovered: "discovered", visibility_secret: "secret" },
+
+  },
+
 };

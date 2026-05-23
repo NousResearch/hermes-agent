@@ -41,7 +41,7 @@ const DEFAULT_LAYOUT: ThemeLayout = {
 export const defaultTheme: DashboardTheme = {
   name: "default",
   label: "Hermes Teal",
-  description: "Classic dark teal — the canonical Hermes look",
+  description: "Classic deep teal — Hermes signature look",
   palette: {
     background: { hex: "#041c1c", alpha: 1 },
     midground: { hex: "#ffe6cb", alpha: 1 },
@@ -56,7 +56,7 @@ export const defaultTheme: DashboardTheme = {
 export const midnightTheme: DashboardTheme = {
   name: "midnight",
   label: "Midnight",
-  description: "Deep blue-violet with cool accents",
+  description: "Deep blue-purple with cool accents",
   palette: {
     background: { hex: "#0a0a1f", alpha: 1 },
     midground: { hex: "#d4c8ff", alpha: 1 },
@@ -81,7 +81,7 @@ export const midnightTheme: DashboardTheme = {
 export const emberTheme: DashboardTheme = {
   name: "ember",
   label: "Ember",
-  description: "Warm crimson and bronze — forge vibes",
+  description: "Warm copper — forge atmosphere",
   palette: {
     background: { hex: "#1a0a06", alpha: 1 },
     midground: { hex: "#ffd8b0", alpha: 1 },
@@ -109,7 +109,7 @@ export const emberTheme: DashboardTheme = {
 export const monoTheme: DashboardTheme = {
   name: "mono",
   label: "Mono",
-  description: "Clean grayscale — minimal and focused",
+  description: "Clean grayscale — minimal focus",
   palette: {
     background: { hex: "#0e0e0e", alpha: 1 },
     midground: { hex: "#eaeaea", alpha: 1 },
@@ -162,7 +162,7 @@ export const cyberpunkTheme: DashboardTheme = {
 export const roseTheme: DashboardTheme = {
   name: "rose",
   label: "Rosé",
-  description: "Soft pink and warm ivory — easy on the eyes",
+  description: "Soft pink on warm white — easy on eyes",
   palette: {
     background: { hex: "#1a0f15", alpha: 1 },
     midground: { hex: "#ffd4e1", alpha: 1 },
@@ -191,7 +191,7 @@ export const roseTheme: DashboardTheme = {
 export const defaultLargeTheme: DashboardTheme = {
   name: "default-large",
   label: "Hermes Teal (Large)",
-  description: "Hermes Teal with bigger fonts and roomier spacing",
+  description: "Hermes Teal in large, relaxed layout",
   palette: defaultTheme.palette,
   typography: {
     ...DEFAULT_TYPOGRAPHY,

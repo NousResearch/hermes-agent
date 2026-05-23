@@ -659,7 +659,7 @@ function SidebarNavLink({ closeMobile, item, t }: SidebarNavLinkProps) {
 
   const navLabel = labelKey
     ? ((t.app.nav as Record<string, string>)[labelKey] ?? label)
-    : label;
+    : ((t.app.pluginLabels as Record<string, string> | undefined)?.[label] ?? label);
 
   return (
     <li>

@@ -52,6 +52,7 @@ import { Badge } from "@nous-research/ui/ui/components/badge";
 import { useI18n } from "@/i18n";
 import { usePageHeader } from "@/contexts/usePageHeader";
 import { PluginSlot } from "@/plugins";
+import { cnConfigDescription } from "@/lib/configCnLabels";
 
 /* ------------------------------------------------------------------ */
 /*  Helpers                                                            */
@@ -123,7 +124,7 @@ export default function ConfigPage() {
   const [confirmReset, setConfirmReset] = useState(false);
   const { toast, showToast } = useToast();
   const fileInputRef = useRef<HTMLInputElement>(null);
-  const { t } = useI18n();
+  const { t, locale } = useI18n();
   const { setEnd } = usePageHeader();
 
   useLayoutEffect(() => {
@@ -159,7 +160,7 @@ export default function ConfigPage() {
   function prettyCategoryName(cat: string): string {
     const key = cat as keyof typeof t.config.categories;
     if (t.config.categories[key]) return t.config.categories[key];
-    return cat.charAt(0).toUpperCase() + cat.slice(1);
+    return cat.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
   }
 
   useEffect(() => {
@@ -394,7 +395,7 @@ export default function ConfigPage() {
           {showSection && (
             <div className="flex items-center gap-2 pt-4 pb-2 first:pt-0">
               <span className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
-                {section.replace(/_/g, " ")}
+                {prettyCategoryName(section)}
               </span>
               <div className="flex-1 border-t border-border" />
             </div>
@@ -402,7 +403,7 @@ export default function ConfigPage() {
           <div className="py-1">
             <AutoField
               schemaKey={key}
-              schema={s}
+              schema={locale === "zh" && typeof s.description === "string" && !/[\u4e00-\u9fff]/.test(s.description) ? { ...s, description: cnConfigDescription(key) } : s}
               value={getNestedValue(config, key)}
               onChange={(v) => setConfig(setNestedValue(config, key, v))}
             />

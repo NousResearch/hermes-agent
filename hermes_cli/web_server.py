@@ -269,7 +269,7 @@ _SCHEMA_OVERRIDES: Dict[str, Dict[str, Any]] = {
     },
     "terminal.vercel_runtime": {
         "type": "select",
-        "description": "Vercel Sandbox runtime",
+        "description": "Vercel sandbox runtime",
         "options": ["node24", "node22", "python3.13"],  # sync with _SUPPORTED_VERCEL_RUNTIMES in terminal_tool.py
     },
     "terminal.modal_mode": {
@@ -291,17 +291,17 @@ _SCHEMA_OVERRIDES: Dict[str, Dict[str, Any]] = {
     },
     "display.skin": {
         "type": "select",
-        "description": "CLI visual theme",
+        "description": "CLI color theme",
         "options": ["default", "ares", "mono", "slate"],
     },
     "dashboard.theme": {
         "type": "select",
-        "description": "Web dashboard visual theme",
+        "description": "Web dashboard color theme",
         "options": ["default", "midnight", "ember", "mono", "cyberpunk", "rose"],
     },
     "display.resume_display": {
         "type": "select",
-        "description": "How resumed sessions display history",
+        "description": "How to display history when resuming a session",
         "options": ["minimal", "full", "off"],
     },
     "display.busy_input_mode": {
@@ -331,7 +331,7 @@ _SCHEMA_OVERRIDES: Dict[str, Dict[str, Any]] = {
     },
     "logging.level": {
         "type": "select",
-        "description": "Log level for agent.log",
+        "description": "Log level (agent.log)",
         "options": ["DEBUG", "INFO", "WARNING", "ERROR"],
     },
     "agent.service_tier": {
@@ -341,7 +341,7 @@ _SCHEMA_OVERRIDES: Dict[str, Dict[str, Any]] = {
     },
     "delegation.reasoning_effort": {
         "type": "select",
-        "description": "Reasoning effort for delegated subagents",
+        "description": "Subagent reasoning effort",
         "options": ["", "low", "medium", "high"],
     },
 }
@@ -367,6 +367,8 @@ _CATEGORY_MERGE: Dict[str, str] = {
 }
 
 # Display order for tabs — unlisted categories sort alphabetically after these.
+
+
 _CATEGORY_ORDER = [
     "general", "agent", "terminal", "display", "delegation",
     "memory", "compression", "security", "browser", "voice",
@@ -3750,13 +3752,13 @@ def mount_spa(application: FastAPI):
 # Built-in dashboard themes — label + description only.  The actual color
 # definitions live in the frontend (web/src/themes/presets.ts).
 _BUILTIN_DASHBOARD_THEMES = [
-    {"name": "default",       "label": "Hermes Teal",         "description": "Classic dark teal — the canonical Hermes look"},
-    {"name": "default-large", "label": "Hermes Teal (Large)", "description": "Hermes Teal with bigger fonts and roomier spacing"},
-    {"name": "midnight",      "label": "Midnight",            "description": "Deep blue-violet with cool accents"},
-    {"name": "ember",     "label": "Ember",          "description": "Warm crimson and bronze — forge vibes"},
-    {"name": "mono",      "label": "Mono",           "description": "Clean grayscale — minimal and focused"},
-    {"name": "cyberpunk", "label": "Cyberpunk",      "description": "Neon green on black — matrix terminal"},
-    {"name": "rose",      "label": "Rosé",           "description": "Soft pink and warm ivory — easy on the eyes"},
+    {"name": "default",       "label": "Hermes Teal",         "description": "经典深青——Hermes 标志性外观"},
+    {"name": "default-large", "label": "Hermes Teal (Large)", "description": "Hermes Teal 大字号宽松版"},
+    {"name": "midnight",      "label": "Midnight",            "description": "深蓝紫——冷色点缀"},
+    {"name": "ember",     "label": "Ember",          "description": "暖红铜——熔炉氛围"},
+    {"name": "mono",      "label": "Mono",           "description": "干净灰度——极简专注"},
+    {"name": "cyberpunk", "label": "Cyberpunk",      "description": "霓虹绿黑底——矩阵终端"},
+    {"name": "rose",      "label": "Rosé",           "description": "柔粉暖白——护眼之选"},
 ]
 
 

@@ -8,6 +8,7 @@ import {
   type ReactNode,
 } from "react";
 import { BUILTIN_THEMES, defaultTheme } from "./presets";
+import { useI18n } from "@/i18n";
 import type {
   DashboardTheme,
   ThemeAssets,
@@ -304,6 +305,7 @@ function applyTheme(theme: DashboardTheme) {
 // ---------------------------------------------------------------------------
 
 export function ThemeProvider({ children }: { children: ReactNode }) {
+  const { t } = useI18n();
   /** Name of the currently active theme (built-in id or user YAML name). */
   const [themeName, setThemeName] = useState<string>(() => {
     if (typeof window === "undefined") return "default";
@@ -325,6 +327,17 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
   const [userThemeDefs, setUserThemeDefs] = useState<
     Record<string, DashboardTheme>
   >({});
+
+  /** Localized theme entries — uses i18n when locale is zh */
+  const localizedThemes = useMemo(
+    () =>
+      availableThemes.map((th) => ({
+        ...th,
+        label: t.config.themes?.labels?.[th.name] ?? th.label,
+        description: t.config.themes?.descriptions?.[th.name] ?? th.description,
+      })),
+    [availableThemes, t.config.themes],
+  );
 
   // Resolve a theme name to a full DashboardTheme, falling back to default
   // only when neither a built-in nor a user theme is found.
@@ -405,10 +418,10 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
     () => ({
       theme: resolveTheme(themeName),
       themeName,
-      availableThemes,
+      availableThemes: localizedThemes,
       setTheme,
     }),
-    [themeName, availableThemes, setTheme, resolveTheme],
+    [themeName, localizedThemes, setTheme, resolveTheme],
   );
 
   return <ThemeContext.Provider value={value}>{children}</ThemeContext.Provider>;

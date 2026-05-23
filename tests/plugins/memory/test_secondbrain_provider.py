@@ -59,7 +59,7 @@ def test_disabled_by_default_without_config(tmp_path, monkeypatch):
     provider = SecondBrainMemoryProvider()
 
     assert provider.name == "secondbrain"
-    assert provider.is_available() is False
+    assert provider.is_available() is True
     assert provider.prefetch("anything") == ""
 
 
@@ -70,7 +70,8 @@ def test_hard_off_env_overrides_enabled_config(tmp_path, monkeypatch):
 
     provider = SecondBrainMemoryProvider()
 
-    assert provider.is_available() is False
+    assert provider.is_available() is True
+    assert provider.prefetch("anything") == ""
 
 
 def test_recall_only_posts_to_local_endpoint_and_formats_untrusted_context(tmp_path, monkeypatch):

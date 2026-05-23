@@ -8107,6 +8107,8 @@ class GatewayRunner:
 
         # Load conversation history from transcript
         history = self.session_store.load_transcript(session_entry.session_id)
+        _context_guard_after_turn = False
+        _context_guard_notice = ""
         
         # -----------------------------------------------------------------
         # Session hygiene: auto-compress pathologically large transcripts
@@ -8267,6 +8269,32 @@ class GatewayRunner:
                 # Threshold is configurable via
                 # compression.hygiene_hard_message_limit.
                 # (#2153)
+                try:
+                    from gateway.context_guard import (
+                        build_context_guard_notice,
+                        resolve_context_guard_config,
+                        should_guard_context,
+                    )
+
+                    _guard_cfg = resolve_context_guard_config(
+                        _hyg_data,
+                        _platform_config_key(source.platform),
+                    )
+                    if should_guard_context(
+                        prompt_tokens=_approx_tokens,
+                        context_length=_hyg_context_length,
+                        config=_guard_cfg,
+                    ):
+                        _context_guard_after_turn = bool(
+                            _guard_cfg.auto_reset_next_turn
+                        )
+                        if _guard_cfg.append_notice:
+                            _context_guard_notice = build_context_guard_notice(
+                                _guard_cfg
+                            )
+                except Exception as _guard_err:
+                    logger.debug("context guard check failed: %s", _guard_err)
+
                 _HARD_MSG_LIMIT = _hyg_hard_msg_limit
                 _needs_compress = (
                     _approx_tokens >= _compress_token_threshold
@@ -8845,6 +8873,24 @@ class GatewayRunner:
                 last_prompt_tokens=agent_result.get("last_prompt_tokens", 0),
             )
 
+            if (
+                _context_guard_after_turn
+                and not agent_failed_early
+                and not is_context_overflow_failure
+                and session_key
+            ):
+                try:
+                    self.session_store.suspend_session(session_key)
+                    self._evict_cached_agent(session_key)
+                    logger.info(
+                        "Context guard: marked session %s for fresh next turn",
+                        session_entry.session_id,
+                    )
+                    if _context_guard_notice and response:
+                        response = f"{response}{_context_guard_notice}"
+                except Exception as _guard_err:
+                    logger.debug("context guard suspend failed: %s", _guard_err)
+
             # Auto voice reply: send TTS audio before the text response
             _already_sent = bool(agent_result.get("already_sent"))
             if self._should_send_voice_reply(event, response, agent_messages, already_sent=_already_sent):
@@ -8883,6 +8929,17 @@ class GatewayRunner:
                             )
                     except Exception as _e:
                         logger.debug("trailing footer send failed: %s", _e)
+                if _context_guard_notice:
+                    try:
+                        _guard_adapter = self.adapters.get(source.platform)
+                        if _guard_adapter:
+                            await _guard_adapter.send(
+                                source.chat_id,
+                                _context_guard_notice.strip(),
+                                metadata=self._thread_metadata_for_source(source, self._reply_anchor_for_event(event)),
+                            )
+                    except Exception as _e:
+                        logger.debug("context guard notice send failed: %s", _e)
                 return None
 
             return response

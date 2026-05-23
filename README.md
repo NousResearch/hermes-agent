@@ -190,6 +190,12 @@ into read-only human approval token request candidates for manual review without
 issuing tokens, persisting approvals, creating real proposals, writing proposal
 files, or creating operation-ledger events.
 
+Memory Human Approval Token Issuance Dry Run v0.1 lives in
+`agent.memory_human_approval_token_issuance_dry_run`. It previews approval token
+issuance records and final token preflight without issuing tokens, persisting
+approvals, writing token files, creating real proposals, or creating
+operation-ledger events.
+
 ---
 
 ## Migrating from OpenClaw

@@ -1,0 +1,55 @@
+#!/command/with-contenv sh
+# shellcheck shell=sh
+# Toggle the dashboard s6-rc service slot based on HERMES_DASHBOARD.
+#
+# Runs as root in cont-init.d, after 01-hermes-setup (stage2) and
+# 02-reconcile-profiles, BEFORE s6-rc starts user services.
+#
+# Background (PR #30136 review item I3): the dashboard service was
+# always declared as an s6-rc longrun, with its run script checking
+# HERMES_DASHBOARD and `exec sleep infinity` when unset. Trouble:
+# s6-svstat then reports the dashboard slot as "up" (because sleep
+# IS running) even though no dashboard process exists. `hermes
+# doctor` and any other s6-svstat-based health check sees a
+# false-positive up-state.
+#
+# Fix: write a `down` marker file into the live service-dir when
+# HERMES_DASHBOARD is unset / falsy. s6-supervise honors `down` by
+# not starting the service at all, so s6-svstat reports `down` —
+# matching reality.
+#
+# The run script's HERMES_DASHBOARD case-statement stays in place
+# as a belt-and-suspenders guard: even if the down marker is
+# removed at runtime and the service is brought up, the run script
+# still bails when HERMES_DASHBOARD is unset. Both layers agree.
+
+set -eu
+
+# Live service directory for the dashboard longrun. s6-overlay
+# compiles /etc/s6-overlay/s6-rc.d/dashboard/ into this location
+# at boot, before cont-init.d scripts run.
+DASHBOARD_LIVE_DIR="/run/service/dashboard"
+
+# If the live directory hasn't materialized yet (e.g. running in a
+# stripped-down test image), nothing to do — the run script's env
+# check still keeps things safe.
+if [ ! -d "$DASHBOARD_LIVE_DIR" ]; then
+    echo "[dashboard-toggle] $DASHBOARD_LIVE_DIR not present; skipping"
+    exit 0
+fi
+
+case "${HERMES_DASHBOARD:-}" in
+    1|true|TRUE|True|yes|YES|Yes)
+        # Enabled — remove any leftover down marker from a previous boot.
+        if [ -e "$DASHBOARD_LIVE_DIR/down" ]; then
+            rm -f "$DASHBOARD_LIVE_DIR/down"
+            echo "[dashboard-toggle] HERMES_DASHBOARD enabled; removed down marker"
+        fi
+        ;;
+    *)
+        # Disabled — write a down marker so s6-supervise won't start
+        # the service. s6-svstat will report it as down, matching reality.
+        touch "$DASHBOARD_LIVE_DIR/down"
+        echo "[dashboard-toggle] HERMES_DASHBOARD unset; marked dashboard slot down"
+        ;;
+esac

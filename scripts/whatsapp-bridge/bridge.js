@@ -23,7 +23,7 @@ import express from 'express';
 import { Boom } from '@hapi/boom';
 import pino from 'pino';
 import path from 'path';
-import { mkdirSync, readFileSync, writeFileSync, existsSync, readdirSync, unlinkSync, chmodSync } from 'fs';
+import { mkdirSync, readFileSync, writeFileSync, existsSync, readdirSync, unlinkSync, chmodSync, renameSync } from 'fs';
 import { randomBytes } from 'crypto';
 import { execSync } from 'child_process';
 import { tmpdir } from 'os';
@@ -65,10 +65,16 @@ const CHUNK_DELAY_MS = parseInt(process.env.WHATSAPP_CHUNK_DELAY_MS || '300', 10
 // fires. Fail fast instead so the gateway can surface a real error and retry.
 const SEND_TIMEOUT_MS = parseInt(process.env.WHATSAPP_SEND_TIMEOUT_MS || '60000', 10);
 let qrImageActive = false;
+let qrImageGeneration = 0;
+const qrTempImages = new Set();
 
 function cleanupQrImage() {
-  if (!qrImageActive) return;
+  qrImageGeneration += 1;
   try { unlinkSync(WHATSAPP_QR_IMAGE); } catch {}
+  for (const tmpImage of qrTempImages) {
+    try { unlinkSync(tmpImage); } catch {}
+  }
+  qrTempImages.clear();
   qrImageActive = false;
 }
 
@@ -225,13 +231,28 @@ async function startSocket() {
       console.log('\n📱 Scan this QR code with WhatsApp on your phone:\n');
       qrcode.generate(qr, { small: true });
       cleanupQrImage();
-      QRCode.toFile(WHATSAPP_QR_IMAGE, qr, { errorCorrectionLevel: 'M', margin: 2, width: 512 })
+      const qrGeneration = ++qrImageGeneration;
+      const qrTempImage = `${WHATSAPP_QR_IMAGE}.${process.pid}.${qrGeneration}.tmp`;
+      qrTempImages.add(qrTempImage);
+      qrImageActive = true;
+      QRCode.toFile(qrTempImage, qr, { errorCorrectionLevel: 'M', margin: 2, width: 512 })
         .then(() => {
-          try { chmodSync(WHATSAPP_QR_IMAGE, 0o600); } catch {}
-          qrImageActive = true;
+          qrTempImages.delete(qrTempImage);
+          if (qrGeneration !== qrImageGeneration || connectionState === 'connected') {
+            try { unlinkSync(qrTempImage); } catch {}
+            if (qrGeneration === qrImageGeneration) qrImageActive = false;
+            return;
+          }
+          try { chmodSync(qrTempImage, 0o600); } catch {}
+          renameSync(qrTempImage, WHATSAPP_QR_IMAGE);
           console.log(`\nQR image saved to: ${WHATSAPP_QR_IMAGE}`);
         })
-        .catch((err) => console.log(`\n⚠️  Could not write QR image: ${err.message}`));
+        .catch((err) => {
+          qrTempImages.delete(qrTempImage);
+          if (qrGeneration === qrImageGeneration) qrImageActive = false;
+          try { unlinkSync(qrTempImage); } catch {}
+          console.log(`\n⚠️  Could not write QR image: ${err.message}`);
+        });
       console.log('\nWaiting for scan...\n');
     }
 

@@ -98,12 +98,19 @@ def _redirect_cache(tmp_path, monkeypatch):
     monkeypatch.delenv("SLACK_RESTRICT_DM_CHANNELS", raising=False)
 
 
+class _FakeSlackResponse:
+    """SlackResponse-like object exposing error data via .data."""
+
+    def __init__(self, error: str):
+        self.data = {"error": error}
+
+
 class _FakeSlackApiError(Exception):
-    """Minimal SlackApiError stand-in with response.get('error')."""
+    """Minimal SlackApiError stand-in with SlackResponse-like .response.data."""
 
     def __init__(self, error: str):
         super().__init__(f"Slack API error: {error}")
-        self.response = {"error": error}
+        self.response = _FakeSlackResponse(error)
 
 
 # ---------------------------------------------------------------------------
@@ -2491,6 +2498,18 @@ class TestMessageSplitting:
 
 
 class TestInaccessibleDmFallback:
+    def test_slack_error_code_reads_slack_response_data(self):
+        assert SlackAdapter._slack_error_code(_FakeSlackApiError("channel_not_found")) == "channel_not_found"
+
+    def test_dm_user_map_is_bounded(self, adapter, monkeypatch):
+        monkeypatch.setattr(_slack_mod, "_MAX_DM_USER_CACHE_SIZE", 2)
+
+        adapter._remember_dm_user("D_ONE", "U1")
+        adapter._remember_dm_user("D_TWO", "U2")
+        adapter._remember_dm_user("D_THREE", "U3")
+
+        assert list(adapter._dm_user_by_channel) == ["D_TWO", "D_THREE"]
+
     @pytest.mark.asyncio
     async def test_dm_message_records_user_for_send_fallback(self, adapter):
         adapter._resolve_user_name = AsyncMock(return_value="Test User")

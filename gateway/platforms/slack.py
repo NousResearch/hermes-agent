@@ -15,6 +15,7 @@ import logging
 import os
 import re
 import time
+from collections import OrderedDict
 from dataclasses import dataclass, field
 from typing import Dict, Optional, Any, Tuple, List
 
@@ -62,14 +63,18 @@ _slash_user_id: contextvars.ContextVar[Optional[str]] = contextvars.ContextVar(
     "_slash_user_id", default=None,
 )
 
+_MAX_DM_USER_CACHE_SIZE = 1024
+
 
 @dataclass
 class _ThreadContextCache:
     """Cache entry for fetched thread context."""
+
     content: str
     fetched_at: float = field(default_factory=time.monotonic)
     message_count: int = 0
     parent_text: str = ""  # Raw text of the thread parent (for reply_to_text injection)
+
 
 
 def check_slack_requirements() -> bool:
@@ -319,18 +324,24 @@ class SlackAdapter(BasePlatformAdapter):
         # Slack Assistant/App surfaces can emit DM-like channel IDs that the bot
         # can read from Socket Mode but cannot post back to with chat.postMessage
         # (Slack returns channel_not_found). The user_id lets send() open the
-        # normal bot DM as a safe fallback instead of going silent.
-        self._dm_user_by_channel: Dict[str, str] = {}
+        # normal bot DM as a safe fallback instead of going silent. Bound the
+        # cache so transient App/Assistant DM surfaces cannot grow memory without
+        # limit in long-lived gateways.
+        self._dm_user_by_channel: OrderedDict[str, str] = OrderedDict()
+
         # Dedup cache: prevents duplicate bot responses when Socket Mode
         # reconnects redeliver events.
         self._dedup = MessageDeduplicator()
+
         # Track pending approval message_ts → resolved flag to prevent
         # double-clicks on approval buttons.
         self._approval_resolved: Dict[str, bool] = {}
+
         # Track timestamps of messages sent by the bot so we can respond
         # to thread replies even without an explicit @mention.
         self._bot_message_ts: set = set()
         self._BOT_TS_MAX = 5000  # cap to avoid unbounded growth
+
         # Track threads where the bot has been @mentioned — once mentioned,
         # respond to ALL subsequent messages in that thread automatically.
         self._mentioned_threads: set = set()
@@ -761,10 +772,26 @@ class SlackAdapter(BasePlatformAdapter):
             return self._team_clients[team_id]
         return self._app.client  # fallback to primary
 
+    def _remember_dm_user(self, channel_id: str, user_id: str) -> None:
+        """Remember a bounded DM channel → user mapping for fallback routing."""
+        if not channel_id or not user_id or not str(channel_id).startswith("D"):
+            return
+        key = str(channel_id)
+        if key in self._dm_user_by_channel:
+            self._dm_user_by_channel.move_to_end(key)
+        self._dm_user_by_channel[key] = str(user_id)
+        while len(self._dm_user_by_channel) > _MAX_DM_USER_CACHE_SIZE:
+            self._dm_user_by_channel.popitem(last=False)
+
     @staticmethod
     def _slack_error_code(exc: Exception) -> str:
         """Extract a Slack API error code from SlackApiError-like exceptions."""
         response = getattr(exc, "response", None)
+        response_data = getattr(response, "data", None)
+        if isinstance(response_data, dict):
+            error = response_data.get("error")
+            if error:
+                return str(error)
         if hasattr(response, "get"):
             try:
                 error = response.get("error")
@@ -820,7 +847,7 @@ class SlackAdapter(BasePlatformAdapter):
             )
             return None
 
-        self._dm_user_by_channel[str(fallback_chat_id)] = str(user_id)
+        self._remember_dm_user(str(fallback_chat_id), str(user_id))
         team_id = self._channel_team.get(chat_id)
         if team_id:
             self._channel_team[str(fallback_chat_id)] = team_id
@@ -2045,7 +2072,7 @@ class SlackAdapter(BasePlatformAdapter):
             channel_type = "im"
         is_dm = channel_type in {"im", "mpim"}  # Both 1:1 and group DMs
         if is_dm and channel_id and user_id:
-            self._dm_user_by_channel[channel_id] = user_id
+            self._remember_dm_user(channel_id, user_id)
 
         # Build thread_ts for session keying.
         # In channels: fall back to ts so each top-level @mention starts a
@@ -2925,7 +2952,7 @@ class SlackAdapter(BasePlatformAdapter):
         # session key.
         is_dm = str(channel_id).startswith("D")
         if is_dm and channel_id and user_id:
-            self._dm_user_by_channel[channel_id] = user_id
+            self._remember_dm_user(channel_id, user_id)
         source = self.build_source(
             chat_id=channel_id,
             chat_type="dm" if is_dm else "group",

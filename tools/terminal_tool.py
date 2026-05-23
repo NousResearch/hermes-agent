@@ -1031,6 +1031,21 @@ def _resolve_container_task_id(task_id: Optional[str]) -> str:
         overrides = _task_env_overrides[task_id]
         if set(overrides.keys()) & _ISOLATION_KEYS:
             return task_id
+    # Per-session isolation: when a session key is present (the WebUI streaming
+    # layer sets it per-session, the gateway per-message via contextvars), scope
+    # the container to it so switching profiles can't reuse a previous profile's
+    # SSHEnvironment and silently run commands on the wrong remote host. Subagents
+    # inherit the same session key, so they still collapse onto the parent's
+    # container (the #16177 shared-container intent). CLI mode has no session key
+    # and falls through to "default", behaviour unchanged. See commit e00f940a9.
+    try:
+        from gateway.session_context import get_session_env
+
+        session_key = get_session_env("HERMES_SESSION_KEY", "")
+    except Exception:
+        session_key = os.getenv("HERMES_SESSION_KEY", "")
+    if session_key:
+        return f"session:{session_key}"
     return "default"
 
 

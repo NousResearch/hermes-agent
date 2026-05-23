@@ -2747,6 +2747,19 @@ def test_default_spawn_auto_loads_kanban_worker_skill(kanban_home, monkeypatch):
     assert env.get("HERMES_PROFILE") == "some-profile"
 
 
+def test_kanban_worker_skill_unavailable_when_profile_disables_it(tmp_path):
+    home = tmp_path / "scout"
+    skill_dir = home / "skills" / "devops" / "kanban-worker"
+    skill_dir.mkdir(parents=True)
+    (skill_dir / "SKILL.md").write_text("# Worker\n", encoding="utf-8")
+    (home / "config.yaml").write_text(
+        "skills:\n  disabled:\n  - kanban-worker\n",
+        encoding="utf-8",
+    )
+
+    assert kb._kanban_worker_skill_available(str(home)) is False
+
+
 def test_default_spawn_raises_terminal_timeout_to_task_runtime(kanban_home, monkeypatch):
     """A task runtime cap should raise the worker's terminal default.
 

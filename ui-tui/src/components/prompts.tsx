@@ -8,7 +8,7 @@ import type { ApprovalReq, ClarifyReq, ConfirmReq } from '../types.js'
 import { TextInput } from './textInput.js'
 
 const OPTS = ['once', 'session', 'always', 'deny'] as const
-const LABELS = { always: 'Always allow', deny: 'Deny', once: 'Allow once', session: 'Allow this session' } as const
+const LABELS = { always: '总是允许', deny: '拒绝', once: '允许一次', session: '本次会话允许' } as const
 const CMD_PREVIEW_LINES = 10
 
 type ApprovalKey = {
@@ -80,7 +80,7 @@ export function ApprovalPrompt({ onChoice, req, t }: ApprovalPromptProps) {
   return (
     <Box borderColor={t.color.warn} borderStyle="double" flexDirection="column" paddingX={1}>
       <Text bold color={t.color.warn}>
-        ⚠ approval required · {req.description}
+        ⚠ 需要批准 · {req.description}
       </Text>
 
       <Box flexDirection="column" paddingLeft={1}>
@@ -108,7 +108,7 @@ export function ApprovalPrompt({ onChoice, req, t }: ApprovalPromptProps) {
         </Text>
       ))}
 
-      <Text color={t.color.muted}>↑/↓ select · Enter confirm · 1-4 quick pick · Esc/Ctrl+C deny</Text>
+      <Text color={t.color.muted}>↑/↓ 选择 · Enter 确认 · 1-4 快速选择 · Esc/Ctrl+C 拒绝</Text>
     </Box>
   )
 }

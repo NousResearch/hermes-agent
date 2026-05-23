@@ -11054,14 +11054,14 @@ class HermesCLI:
         selected = state.get("selected", 0)
         show_full = state.get("show_full", False)
 
-        title = "⚠️  Dangerous Command"
+        title = "⚠️  危险命令"
         cmd_display = command if show_full or len(command) <= 70 else command[:70] + '...'
         choice_labels = {
-            "once": "Allow once",
-            "session": "Allow for this session",
-            "always": "Add to permanent allowlist",
-            "deny": "Deny",
-            "view": "Show full command",
+            "once": "允许一次",
+            "session": "本次会话允许",
+            "always": "加入永久白名单",
+            "deny": "拒绝",
+            "view": "显示完整命令",
         }
 
         preview_lines = _wrap_panel_text(description, 60)

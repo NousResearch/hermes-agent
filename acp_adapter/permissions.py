@@ -41,13 +41,13 @@ def _permission_option_supports_kind(kind: str) -> bool:
 def _build_permission_options(*, allow_permanent: bool) -> list[PermissionOption]:
     """Return ACP options that match Hermes approval semantics."""
     options = [
-        PermissionOption(option_id="allow_once", kind="allow_once", name="Allow once"),
+        PermissionOption(option_id="allow_once", kind="allow_once", name="允许一次"),
         PermissionOption(
             option_id="allow_session",
             # ACP has no session-scoped kind, so use the closest persistent
             # hint while keeping Hermes semantics in the option id.
             kind="allow_always",
-            name="Allow for session",
+            name="本次会话允许",
         ),
     ]
     if allow_permanent:
@@ -55,10 +55,10 @@ def _build_permission_options(*, allow_permanent: bool) -> list[PermissionOption
             PermissionOption(
                 option_id="allow_always",
                 kind="allow_always",
-                name="Allow always",
+                name="总是允许",
             ),
         )
-    options.append(PermissionOption(option_id="deny", kind="reject_once", name="Deny"))
+    options.append(PermissionOption(option_id="deny", kind="reject_once", name="拒绝"))
     if _permission_option_supports_kind("reject_always"):
         options.append(
             PermissionOption(

@@ -48,5 +48,17 @@
   },
   "engines": {
     "node": ">=20.0"
+  },
+  "overrides": {
+    "serialize-javascript": "^7.0.5",
+    "lodash": "^4.18.1",
+    "lodash-es": "^4.18.1",
+    "undici": "^6.19.2",
+    "fast-uri": "^3.1.2",
+    "path-to-regexp": "^0.1.13",
+    "picomatch": "^2.3.2",
+    "postcss": "^8.5.10",
+    "@babel/plugin-transform-modules-systemjs": "^7.29.4",
+    "dompurify": "^3.1.7"
   }
 }

@@ -23,6 +23,7 @@ import time
 import urllib.parse
 import urllib.request
 from pathlib import Path
+from urllib.parse import urlsplit
 from typing import Any, Dict, List, Optional, Tuple
 
 import yaml
@@ -160,34 +161,62 @@ _LOOPBACK_HOST_VALUES: frozenset = frozenset({
 })
 
 
+def _normalize_host_value(value: str) -> str:
+    """Normalize a host value for comparison.
+
+    Handles raw Host headers and allowlist entries by stripping scheme, path,
+    query, fragment, whitespace, surrounding IPv6 brackets, port suffixes,
+    and a trailing dot. Comparison is case-insensitive.
+    """
+    v = value.strip().lower()
+    if not v:
+        return ""
+
+    if "://" in v:
+        v = urlsplit(v).hostname or ""
+    else:
+        v = v.split("/", 1)[0]
+        v = v.split("?", 1)[0].split("#", 1)[0]
+
+    if v.startswith("[") and "]" in v:
+        v = v[1 : v.find("]")]
+    elif v.count(":") == 1:
+        v = v.rsplit(":", 1)[0]
+
+    return v.rstrip(".")
+
+
+def _configured_dashboard_allowed_hosts() -> set[str]:
+    """Optional explicit allowlist for dashboard host headers.
+
+    This is primarily used when the dashboard is kept bound to localhost and
+    exposed via a proxy/Serve endpoint, where the incoming Host header is a
+    public hostname rather than the loopback bind target.
+    """
+    raw = os.environ.get("HERMES_DASHBOARD_ALLOWED_HOSTS", "")
+    if not raw:
+        return set()
+    return {
+        normalized
+        for item in raw.split(",")
+        if (normalized := _normalize_host_value(item))
+    }
+
+
 def _is_accepted_host(host_header: str, bound_host: str) -> bool:
     """True if the Host header targets the interface we bound to.
 
     Accepts:
     - Exact bound host (with or without port suffix)
     - Loopback aliases when bound to loopback
+    - Explicit allowlist entries from HERMES_DASHBOARD_ALLOWED_HOSTS
     - Any host when bound to 0.0.0.0 (explicit opt-in to non-loopback,
       no protection possible at this layer)
     """
     if not host_header:
         return False
-    # Strip port suffix. IPv6 addresses use bracket notation:
-    #   [::1]         — no port
-    #   [::1]:9119    — with port
-    # Plain hosts/v4:
-    #   localhost:9119
-    #   127.0.0.1:9119
-    h = host_header.strip()
-    if h.startswith("["):
-        # IPv6 bracketed — port (if any) follows "]:"
-        close = h.find("]")
-        if close != -1:
-            host_only = h[1:close]  # strip brackets
-        else:
-            host_only = h.strip("[]")
-    else:
-        host_only = h.rsplit(":", 1)[0] if ":" in h else h
-    host_only = host_only.lower()
+    host_only = _normalize_host_value(host_header)
+    allowed_hosts = _configured_dashboard_allowed_hosts()
 
     # 0.0.0.0 bind means operator explicitly opted into all-interfaces
     # (requires --insecure per web_server.start_server). No Host-layer
@@ -195,8 +224,11 @@ def _is_accepted_host(host_header: str, bound_host: str) -> bool:
     if bound_host in {"0.0.0.0", "::"}:
         return True
 
+    if host_only in allowed_hosts:
+        return True
+
     # Loopback bind: accept the loopback names
-    bound_lc = bound_host.lower()
+    bound_lc = _normalize_host_value(bound_host)
     if bound_lc in _LOOPBACK_HOST_VALUES:
         return host_only in _LOOPBACK_HOST_VALUES
 

@@ -185,6 +185,8 @@ Browse, search, and toggle skills and toolsets. Skills are loaded from `~/.herme
 The web dashboard reads and writes your `.env` file, which contains API keys and secrets. It binds to `127.0.0.1` by default — only accessible from your local machine. If you bind to `0.0.0.0`, anyone on your network can view and modify your credentials. The dashboard has no authentication of its own.
 :::
 
+If you keep the dashboard bound to localhost and expose it through a trusted proxy or Tailscale Serve HTTPS endpoint, set `HERMES_DASHBOARD_ALLOWED_HOSTS` to a comma-separated allowlist of public hostnames that should be accepted by the dashboard's Host-header validation. Each entry is normalized before comparison (scheme/path/port removed, lowercase, trailing dot stripped), and matching remains exact after normalization.
+
 ## `/reload` Slash Command
 
 The dashboard PR also adds a `/reload` slash command to the interactive CLI. After changing API keys via the web dashboard (or by editing `.env` directly), use `/reload` in an active CLI session to pick up the changes without restarting:

@@ -83,6 +83,28 @@ class TestHostHeaderValidator:
         assert _is_accepted_host("LOCALHOST", "127.0.0.1")
         assert _is_accepted_host("LocalHost:9119", "127.0.0.1")
 
+    def test_explicit_allowed_hosts_override_loopback_only_bind(self, monkeypatch):
+        from hermes_cli import web_server
+
+        monkeypatch.setenv(
+            "HERMES_DASHBOARD_ALLOWED_HOSTS",
+            "https://dashboard.example.com:443, dashboard.example.com., https://dashboard.example.com/path",
+        )
+        assert web_server._is_accepted_host("dashboard.example.com", "127.0.0.1")
+        assert web_server._is_accepted_host("https://dashboard.example.com:443", "127.0.0.1")
+
+    def test_explicit_allowed_hosts_do_not_widen_arbitrary_hosts(self, monkeypatch):
+        from hermes_cli import web_server
+
+        monkeypatch.setenv("HERMES_DASHBOARD_ALLOWED_HOSTS", "dashboard.example.com")
+        assert not web_server._is_accepted_host("evil.example.com", "127.0.0.1")
+
+    def test_normalizes_bound_host_and_host_header(self):
+        from hermes_cli.web_server import _is_accepted_host
+
+        assert _is_accepted_host("LOCALHOST:9119", "LocalHost")
+        assert _is_accepted_host("[::1]:9119", "[::1]")
+
 
 class TestHostHeaderMiddleware:
     """End-to-end test via the FastAPI app — verify the middleware

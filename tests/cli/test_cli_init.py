@@ -3,6 +3,7 @@ that only manifest at runtime (not in mocked unit tests)."""
 
 import os
 import sys
+import importlib
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
@@ -11,8 +12,6 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 def _make_cli(env_overrides=None, config_overrides=None, **kwargs):
     """Create a HermesCLI instance with minimal mocking."""
-    import importlib
-
     _clean_config = {
         "model": {
             "default": "anthropic/claude-opus-4.6",
@@ -100,6 +99,68 @@ class TestVerboseAndToolProgress:
         cli = _make_cli()
         assert isinstance(cli.tool_progress_mode, str)
         assert cli.tool_progress_mode in {"off", "new", "all", "verbose"}
+
+
+class TestToolsetValidation:
+    def test_plugin_toolset_is_discovered_before_warning(self):
+        _clean_config = {
+            "model": {
+                "default": "anthropic/claude-opus-4.6",
+                "base_url": "https://openrouter.ai/api/v1",
+                "provider": "auto",
+            },
+            "display": {"compact": False, "tool_progress": "all"},
+            "agent": {},
+            "terminal": {"env_type": "local"},
+        }
+        clean_env = {"LLM_MODEL": "", "HERMES_MAX_ITERATIONS": ""}
+        prompt_toolkit_stubs = {
+            "prompt_toolkit": MagicMock(),
+            "prompt_toolkit.history": MagicMock(),
+            "prompt_toolkit.styles": MagicMock(),
+            "prompt_toolkit.patch_stdout": MagicMock(),
+            "prompt_toolkit.application": MagicMock(),
+            "prompt_toolkit.layout": MagicMock(),
+            "prompt_toolkit.layout.processors": MagicMock(),
+            "prompt_toolkit.filters": MagicMock(),
+            "prompt_toolkit.layout.dimension": MagicMock(),
+            "prompt_toolkit.layout.menus": MagicMock(),
+            "prompt_toolkit.widgets": MagicMock(),
+            "prompt_toolkit.key_binding": MagicMock(),
+            "prompt_toolkit.completion": MagicMock(),
+            "prompt_toolkit.formatted_text": MagicMock(),
+            "prompt_toolkit.auto_suggest": MagicMock(),
+        }
+
+        discovered = {"ready": False}
+
+        def fake_validate_toolset(name):
+            return discovered["ready"] and name == "plugin-toolset"
+
+        def fake_discover_plugins():
+            discovered["ready"] = True
+
+        with patch.dict(sys.modules, prompt_toolkit_stubs), patch.dict(
+            "os.environ", clean_env, clear=False
+        ):
+            import cli as _cli_mod
+
+            _cli_mod = importlib.reload(_cli_mod)
+            with patch.object(_cli_mod, "get_tool_definitions", return_value=[]), patch.dict(
+                _cli_mod.__dict__, {"CLI_CONFIG": _clean_config}
+            ), patch.object(
+                _cli_mod, "validate_toolset", side_effect=fake_validate_toolset
+            ), patch(
+                "hermes_cli.plugins.discover_plugins", side_effect=fake_discover_plugins
+            ) as discover_mock, patch.object(_cli_mod.HermesCLI, "_console_print") as print_mock:
+                _cli_mod.HermesCLI(toolsets=["plugin-toolset"])
+
+        discover_mock.assert_called_once()
+        assert not any(
+            "Unknown toolsets" in str(call.args[0])
+            for call in print_mock.call_args_list
+            if call.args
+        )
 
 
 class TestBusyInputMode:

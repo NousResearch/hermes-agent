@@ -355,6 +355,91 @@ def _healthy_ledger(*, limit=500, client="", operation=""):
     return {"health_score": 100, "risk_level": "low", "findings": []}
 
 
+def _star_law_ready_policy_outcome(*, limit=50, stale_after_hours=72):
+    return {
+        "health_score": 100,
+        "risk_level": "low",
+        "metrics": {
+            "stale_proposed_count": 0,
+            "approved_not_executed_count": 0,
+            "execution_count": 1,
+            "execution_totals": {
+                "checked_count": 1,
+                "passed_count": 1,
+                "blocked_count": 0,
+                "failed_count": 0,
+                "manual_required_count": 0,
+            },
+        },
+    }
+
+
+def _star_law_blocked_policy_outcome(*, limit=50, stale_after_hours=72):
+    return {
+        "health_score": 90,
+        "risk_level": "medium",
+        "metrics": {
+            "stale_proposed_count": 0,
+            "approved_not_executed_count": 1,
+            "execution_count": 0,
+            "execution_totals": {
+                "checked_count": 0,
+                "passed_count": 0,
+                "blocked_count": 0,
+                "failed_count": 0,
+                "manual_required_count": 0,
+            },
+        },
+    }
+
+
+def _patch_star_law_prerequisites(monkeypatch, policy_outcome):
+    monkeypatch.setattr(
+        memory_fabric_bridge,
+        "memory_bridge_status",
+        lambda: {
+            "hermes_home": "/tmp/hermes",
+            "surfaces": {
+                "graph": {"exists": True, "node_count": 3, "edge_count": 2, "provenance_count": 1},
+                "gpt_image_prompt_cases": {"exists": True, "case_count": 1},
+                "knowledge": {"exists": True, "file_count": 1},
+                "operation_ledger": {"exists": True, "event_count": 3},
+                "policy_proposals": {"exists": True, "event_count": 1},
+            },
+        },
+    )
+    monkeypatch.setattr(memory_fabric_bridge, "memory_federation_status", _ready_federation_status)
+    monkeypatch.setattr(
+        memory_fabric_bridge,
+        "memory_boundary_allowlist_audit",
+        lambda *, log_limit=200: {"ready": True, "boundary_readiness_score": 100},
+    )
+    monkeypatch.setattr(
+        memory_fabric_bridge,
+        "memory_orchestration_routing_metrics",
+        lambda: {
+            "ready": True,
+            "active_routing_metrics": True,
+            "routing_readiness_score": 1.0,
+            "agent_count": 3,
+            "route_binding_count": 1,
+            "operation_routing_event_count": 1,
+            "gate_decision_count": 1,
+            "auto_precheck_operation_count": 1,
+        },
+    )
+    monkeypatch.setattr(memory_fabric_bridge, "memory_policy_outcome_monitor", policy_outcome)
+    monkeypatch.setattr(
+        memory_fabric_bridge,
+        "memory_recall_quality_evaluate",
+        lambda *, limit=5: {
+            "readiness": "ready",
+            "quality_score": 1.0,
+            "summary": {"passed_query_count": 5, "benchmark_query_count": 5},
+        },
+    )
+
+
 def test_memory_boundary_allowlist_audit_requires_manual_review_evidence(monkeypatch):
     monkeypatch.setattr(memory_fabric_bridge, "memory_federation_status", _ready_federation_status)
     monkeypatch.setattr(memory_fabric_bridge, "memory_federation_audit", _ready_federation_audit)
@@ -535,6 +620,43 @@ def test_memory_evolution_does_not_claim_star_hub_without_explicit_routing_event
     assert star_hub["achieved"] is False
     assert "Memory orchestration has active routing metrics" in star_hub["passed_criteria"]
     assert "Memory orchestration has explicit route/routing/orchestration operation evidence" in star_hub["gaps"]
+
+
+def test_memory_evolution_claims_star_law_after_guarded_policy_checks(monkeypatch):
+    _patch_star_law_prerequisites(monkeypatch, _star_law_ready_policy_outcome)
+
+    result = memory_evolution_status()
+    star_law = next(item for item in result["readiness"] if item["level"] == 12)
+
+    assert result["current"]["level"] == 12
+    assert result["current"]["name"] == "星律记忆"
+    assert result["evidence"]["policy_execution_count"] == 1
+    assert result["evidence"]["policy_approved_not_executed_count"] == 0
+    assert result["evidence"]["policy_execution_checked_count"] == 1
+    assert result["evidence"]["policy_execution_passed_count"] == 1
+    assert result["evidence"]["policy_execution_blocked_count"] == 0
+    assert result["evidence"]["policy_execution_failed_count"] == 0
+    assert result["evidence"]["policy_execution_manual_required_count"] == 0
+    assert result["evidence"]["policy_closed_loop_ready"] is True
+    assert star_law["achieved"] is True
+    assert "Policy proposals close automatically after human approval and guarded checks" in star_law["passed_criteria"]
+    assert not any("guarded non-mutating policy apply checks" in action for action in result["recommended_next_actions"])
+
+
+def test_memory_evolution_keeps_star_law_blocked_without_policy_execution(monkeypatch):
+    _patch_star_law_prerequisites(monkeypatch, _star_law_blocked_policy_outcome)
+
+    result = memory_evolution_status()
+    star_law = next(item for item in result["readiness"] if item["level"] == 12)
+
+    assert result["current"]["level"] == 11
+    assert result["next"]["level"] == 12
+    assert result["evidence"]["policy_execution_count"] == 0
+    assert result["evidence"]["policy_approved_not_executed_count"] == 1
+    assert result["evidence"]["policy_closed_loop_ready"] is False
+    assert star_law["achieved"] is False
+    assert "Policy proposals close automatically after human approval and guarded checks" in star_law["gaps"]
+    assert any("guarded non-mutating policy apply checks" in action for action in result["recommended_next_actions"])
 
 
 def test_memory_evolution_does_not_claim_star_realm_without_boundary_review():

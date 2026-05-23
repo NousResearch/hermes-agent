@@ -1704,6 +1704,7 @@ def _memory_evolution_evidence(
     openclaw = clients.get("openclaw", {}) if isinstance(clients.get("openclaw"), dict) else {}
     codex = clients.get("codex", {}) if isinstance(clients.get("codex"), dict) else {}
     routing_metrics = routing_metrics if isinstance(routing_metrics, Mapping) else {}
+    policy_outcome = _policy_closed_loop_evidence(outcome)
     return {
         "has_basic_memory_home": bool(bridge.get("hermes_home")),
         "has_graph": bool(graph.get("exists")) and _safe_int(graph.get("node_count")) > 0,
@@ -1739,6 +1740,38 @@ def _memory_evolution_evidence(
         "stale_policy_proposal_count": outcome.get("metrics", {}).get("stale_proposed_count", 0)
         if isinstance(outcome.get("metrics"), dict)
         else 0,
+        **policy_outcome,
+    }
+
+
+def _policy_closed_loop_evidence(outcome: Mapping[str, Any]) -> dict[str, Any]:
+    metrics = outcome.get("metrics", {}) if isinstance(outcome.get("metrics"), Mapping) else {}
+    totals = metrics.get("execution_totals", {}) if isinstance(metrics.get("execution_totals"), Mapping) else {}
+    stale_count = _safe_int(metrics.get("stale_proposed_count"))
+    approved_not_executed_count = _safe_int(metrics.get("approved_not_executed_count"))
+    execution_count = _safe_int(metrics.get("execution_count"))
+    checked_count = _safe_int(totals.get("checked_count"))
+    passed_count = _safe_int(totals.get("passed_count"))
+    blocked_count = _safe_int(totals.get("blocked_count"))
+    failed_count = _safe_int(totals.get("failed_count"))
+    manual_required_count = _safe_int(totals.get("manual_required_count"))
+    return {
+        "policy_execution_count": execution_count,
+        "policy_approved_not_executed_count": approved_not_executed_count,
+        "policy_execution_checked_count": checked_count,
+        "policy_execution_passed_count": passed_count,
+        "policy_execution_blocked_count": blocked_count,
+        "policy_execution_failed_count": failed_count,
+        "policy_execution_manual_required_count": manual_required_count,
+        "policy_closed_loop_ready": (
+            stale_count == 0
+            and approved_not_executed_count == 0
+            and execution_count >= 1
+            and blocked_count == 0
+            and failed_count == 0
+            and manual_required_count == 0
+            and (checked_count >= 1 or passed_count >= 1)
+        ),
     }
 
 
@@ -1771,7 +1804,7 @@ def _tier_readiness(tier: Mapping[str, Any], evidence: Mapping[str, Any]) -> dic
         criteria.append(("Memory orchestration has active routing metrics", bool(evidence.get("active_routing_metrics"))))
         criteria.append(("Memory orchestration has explicit route/routing/orchestration operation evidence", bool(evidence.get("has_explicit_routing_operation_event"))))
     if level >= 12:
-        criteria.append(("Policy proposals close automatically after human approval and guarded checks", False))
+        criteria.append(("Policy proposals close automatically after human approval and guarded checks", bool(evidence.get("policy_closed_loop_ready"))))
     if level >= 13:
         criteria.append(("Long-term preference/persona continuity is governed", False))
     if level >= 14:
@@ -1799,11 +1832,14 @@ def _memory_evolution_next_actions(
     outcome: Mapping[str, Any],
 ) -> list[str]:
     actions = []
+    policy_outcome = _policy_closed_loop_evidence(outcome)
     if outcome.get("metrics", {}).get("stale_proposed_count") if isinstance(outcome.get("metrics"), dict) else 0:
         actions.append("Resolve stale policy proposals through review/proposal workflow before claiming 星海记忆.")
     if next_item and next_item.get("name") == "星海记忆":
         actions.append("Use memory_recall_quality_evaluate to monitor graph, knowledge, prompt cases, and legacy recall quality.")
         actions.append("Keep external-channel automatic recall blocked until exact allowlists are reviewed.")
+    if not policy_outcome["policy_closed_loop_ready"]:
+        actions.append("Run guarded non-mutating policy apply checks with explicit confirmation for approved proposals before claiming 星律记忆.")
     if not actions:
         actions.append("Continue with the next read-only governance/readiness capability before any durable write.")
     return actions[:5]

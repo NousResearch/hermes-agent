@@ -36,6 +36,28 @@ class GeminiProfile(ProviderProfile):
         base_url = context.get("base_url") or self.base_url
 
         raw_thinking_config = _build_gemini_thinking_config(model, reasoning_config)
+
+        # Apply thinking_budget from providers.<name>.extra_body config if set.
+        # Only merge when thinking is being enabled (not when explicitly disabled).
+        try:
+            from hermes_cli.config import load_config
+            _cfg_extra = (
+                load_config().get("providers", {}).get(self.name, {}) or {}
+            ).get("extra_body") or {}
+            _budget = _cfg_extra.get("thinking_budget") if isinstance(_cfg_extra, dict) else None
+            if _budget is not None:
+                _budget = int(_budget)
+        except Exception:
+            _budget = None
+
+        if (
+            _budget is not None
+            and raw_thinking_config
+            and raw_thinking_config.get("includeThoughts") is not False
+        ):
+            raw_thinking_config = dict(raw_thinking_config)
+            raw_thinking_config["thinkingBudget"] = _budget
+
         if not raw_thinking_config:
             return {}
 

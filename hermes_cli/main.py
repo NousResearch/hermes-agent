@@ -180,6 +180,40 @@ sys.path.insert(0, str(PROJECT_ROOT))
 # The flag is stripped from sys.argv so argparse never sees it.
 # Falls back to ~/.hermes/active_profile for sticky default.
 # ---------------------------------------------------------------------------
+_BARE_HERMES_WARNING_EMITTED = False
+
+
+def _maybe_warn_bare_hermes(profile_name: str, hermes_home_was_set: bool) -> None:
+    """Emit a one-shot stderr warning when bare `hermes` silently resolves
+    to a non-default profile via the active_profile sticky default.
+
+    Suppressed when:
+      * already fired this process
+      * resolved profile is 'default' (no-op anyway)
+      * HERMES_HOME was already set before we ran (caller pinned it
+        explicitly — e.g. launchd plists)
+      * HERMES_QUIET_BARE_WARNING=1 in env (escape hatch for CI/scripts)
+    """
+    global _BARE_HERMES_WARNING_EMITTED
+    if _BARE_HERMES_WARNING_EMITTED:
+        return
+    if profile_name == "default":
+        return
+    if hermes_home_was_set:
+        return
+    if os.environ.get("HERMES_QUIET_BARE_WARNING") == "1":
+        return
+    _BARE_HERMES_WARNING_EMITTED = True
+    msg = (
+        f"⚠️  [hermes] No --profile flag; resolving via active_profile → {profile_name}.\n"
+        f"    Set --profile {profile_name} explicitly to silence this warning, or\n"
+        f"    `hermes profile use default` to switch the sticky default back."
+    )
+    if sys.stderr.isatty():
+        msg = "\033[33m" + msg + "\033[0m"
+    print(msg, file=sys.stderr, flush=True)
+
+
 def _apply_profile_override() -> None:
     """Pre-parse --profile/-p and set HERMES_HOME before module imports."""
     argv = sys.argv[1:]
@@ -253,6 +287,9 @@ def _apply_profile_override() -> None:
             )
             return
         os.environ["HERMES_HOME"] = hermes_home
+        # consume == 0 marks the active_profile fallback path (vs. -p/--profile)
+        if consume == 0:
+            _maybe_warn_bare_hermes(profile_name, bool(hermes_home_env))
         # Strip the flag from argv so argparse doesn't choke
         if consume > 0:
             for i, arg in enumerate(argv):
@@ -9933,6 +9970,7 @@ def cmd_profile(args):
             else:
                 dist = "—"
             print(f"{marker}{name:<15} {model:<28} {gw:<12} {alias:<12} {dist}")
+        print(" ◆ = active profile")
         print()
 
     elif action == "use":
@@ -11294,6 +11332,17 @@ def main():
         dest="yes",
         action="store_true",
         help="Skip the confirmation prompt",
+    )
+
+    # gateway revive-all
+    gateway_subparsers.add_parser(
+        "revive-all",
+        help="Revive all profile gateways that are not currently running",
+        description=(
+            "Check every profile's gateway and launch any that are down. "
+            "Safe to run when launchd's auto-restart didn't fire or pidfiles "
+            "are corrupt. Does not use launchctl."
+        ),
     )
 
     # =========================================================================

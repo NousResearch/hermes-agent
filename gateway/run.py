@@ -952,6 +952,36 @@ from gateway.whatsapp_identity import (
 logger = logging.getLogger(__name__)
 
 
+def _log_boot_announcement(log) -> None:
+    # Surfaces drift between this gateway's pinned profile and the
+    # sticky-default file that bare `hermes` invocations resolve via.
+    try:
+        hh = os.environ.get("HERMES_HOME") or str(Path.home() / ".hermes")
+        hh_path = Path(hh)
+        default_root = Path.home() / ".hermes"
+        if hh_path == default_root:
+            profile_name = "default"
+        elif hh_path.parent.name == "profiles":
+            profile_name = hh_path.name
+        else:
+            profile_name = hh
+        active_file = default_root / "active_profile"
+        if active_file.exists():
+            try:
+                active_contents = active_file.read_text().strip() or "(empty)"
+            except (UnicodeDecodeError, OSError):
+                active_contents = "(unreadable)"
+        else:
+            active_contents = "(missing)"
+        log.info(
+            "[hermes] starting profile=%s home=%s pid=%d active_profile_file=%s",
+            profile_name, hh, os.getpid(), active_contents,
+        )
+    except Exception:
+        # Never let the boot announcement break gateway startup.
+        pass
+
+
 # Sentinel placed into _running_agents immediately when a session starts
 # processing, *before* any await.  Prevents a second message for the same
 # session from bypassing the "already running" guard during the async gap
@@ -3170,7 +3200,7 @@ class GatewayRunner:
         action = "restarting" if self._restart_requested else "shutting down"
         hint = (
             "Your current task will be interrupted. "
-            "Send any message after restart and I'll try to resume where you left off."
+            "If it was mid-turn, I'll try to resume automatically after restart and report back here."
             if self._restart_requested
             else "Your current task will be interrupted."
         )
@@ -3660,6 +3690,16 @@ class GatewayRunner:
         """
         logger.info("Starting Hermes Gateway...")
         try:
+            from hermes_cli.profiles import get_active_profile_name as _gpn
+            _boot_profile = _gpn() or "default"
+        except Exception:
+            _boot_profile = "default"
+        logger.info(
+            "Gateway profile=%s home=%s hermes_home_env=%s",
+            _boot_profile, str(get_hermes_home()),
+            "set" if os.environ.get("HERMES_HOME") else "unset",
+        )
+        try:
             self._gateway_loop = asyncio.get_running_loop()
         except RuntimeError:
             self._gateway_loop = None
@@ -4093,6 +4133,8 @@ class GatewayRunner:
             "platforms": [p.value for p in self.adapters.keys()],
         })
         
+        _log_boot_announcement(logger)
+
         if connected_count > 0:
             logger.info("Gateway running with %s platform(s)", connected_count)
         
@@ -14129,7 +14171,10 @@ class GatewayRunner:
             metadata = {"thread_id": thread_id} if thread_id else None
             result = await adapter.send(
                 str(chat_id),
-                "♻ Gateway restarted successfully. Your session continues.",
+                (
+                    "♻ Gateway restarted successfully. I'm back online. "
+                    "If a turn was interrupted, it will auto-resume; otherwise I'm idle."
+                ),
                 metadata=metadata,
             )
             # adapter.send() catches provider errors (e.g. "Chat not found")

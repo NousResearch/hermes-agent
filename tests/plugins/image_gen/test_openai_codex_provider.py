@@ -108,6 +108,44 @@ class TestAvailability:
         monkeypatch.setattr(codex_plugin, "_read_codex_access_token", lambda: None)
         assert codex_plugin.OpenAICodexImageGenProvider().is_available() is False
 
+    def test_available_when_only_codex_cli_store_populated(
+        self, tmp_path, monkeypatch
+    ):
+        """Codex-CLI-only scenario: ~/.hermes/auth.json has no Codex
+        entry, but ~/.codex/auth.json does. After unification, the
+        plugin must see is_available()=True via the borrow path.
+        """
+        import base64
+        import json
+        import time
+
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+
+        # Empty Hermes store
+        hermes_home = tmp_path / "hermes_home"
+        hermes_home.mkdir()
+        (hermes_home / "auth.json").write_text(
+            json.dumps({"version": 1, "providers": {}})
+        )
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+        # Codex CLI store with a fresh JWT
+        codex_home = tmp_path / "codex-cli"
+        codex_home.mkdir()
+        payload = base64.urlsafe_b64encode(
+            json.dumps({"exp": int(time.time()) + 3600}).encode("utf-8")
+        ).rstrip(b"=").decode("utf-8")
+        cli_token = f"h.{payload}.s"
+        (codex_home / "auth.json").write_text(
+            json.dumps(
+                {"tokens": {"access_token": cli_token, "refresh_token": "rt"}}
+            )
+        )
+        monkeypatch.setenv("CODEX_HOME", str(codex_home))
+
+        provider = codex_plugin.OpenAICodexImageGenProvider()
+        assert provider.is_available() is True
+
 
 # ── Generate ────────────────────────────────────────────────────────────────
 

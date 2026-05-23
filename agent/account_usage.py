@@ -7,7 +7,7 @@ from typing import Any, Optional
 import httpx
 
 from agent.anthropic_adapter import _is_oauth_token, resolve_anthropic_token
-from hermes_cli.auth import _read_codex_tokens, resolve_codex_runtime_credentials
+from agent.auth.codex import resolve_codex_credentials
 from hermes_cli.runtime_provider import resolve_runtime_provider
 
 
@@ -125,19 +125,16 @@ def _resolve_codex_usage_url(base_url: str) -> str:
 
 
 def _fetch_codex_account_usage() -> Optional[AccountUsageSnapshot]:
-    creds = resolve_codex_runtime_credentials(refresh_if_expiring=True)
-    token_data = _read_codex_tokens()
-    tokens = token_data.get("tokens") or {}
-    account_id = str(tokens.get("account_id", "") or "").strip() or None
+    creds = resolve_codex_credentials(refresh_if_expiring=True)
     headers = {
-        "Authorization": f"Bearer {creds['api_key']}",
+        "Authorization": f"Bearer {creds.access_token}",
         "Accept": "application/json",
         "User-Agent": "codex-cli",
     }
-    if account_id:
-        headers["ChatGPT-Account-Id"] = account_id
+    if creds.account_id:
+        headers["ChatGPT-Account-Id"] = creds.account_id
     with httpx.Client(timeout=15.0) as client:
-        response = client.get(_resolve_codex_usage_url(creds.get("base_url", "")), headers=headers)
+        response = client.get(_resolve_codex_usage_url(creds.base_url), headers=headers)
         response.raise_for_status()
     payload = response.json() or {}
     rate_limit = payload.get("rate_limit") or {}

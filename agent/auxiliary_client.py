@@ -1349,13 +1349,20 @@ def _resolve_xai_oauth_for_aux() -> Optional[Tuple[str, str]]:
 
 
 def _read_codex_access_token() -> Optional[str]:
-    """Read a valid, non-expired Codex OAuth access token from Hermes auth store.
+    """Return a usable Codex OAuth access token, or None.
 
-    If a credential pool exists but currently has no selectable runtime entry
-    (for example all pool slots are marked exhausted), fall back to the
-    profile's auth.json token instead of hard-failing. This keeps explicit
-    fallback-to-Codex working when the pool state is stale but the stored OAuth
-    token is still valid.
+    The pool-first short-circuit stays because pool entries are
+    runtime-aware (rotated, exhausted-state-tracked). When no pool entry
+    is selectable, delegate to the unified resolver in
+    :mod:`agent.auth.codex` — same chain as the main agent path
+    (env override → Hermes auth store → read-only Codex CLI borrow), but
+    converted to a silent ``None`` on failure so the auxiliary client's
+    fall-through providers still get a turn.
+
+    Expiry guard: the resolver is called with ``refresh_if_expiring=False``
+    (compression should not block on a token refresh round-trip), so we
+    re-check the access token's exp claim here and return None if it's
+    already expired — the legacy contract for this entry point.
     """
     pool_present, entry = _select_pool_entry("openai-codex")
     if pool_present:
@@ -1364,31 +1371,29 @@ def _read_codex_access_token() -> Optional[str]:
             return token
 
     try:
-        from hermes_cli.auth import _read_codex_tokens
-        data = _read_codex_tokens()
-        tokens = data.get("tokens", {})
-        access_token = tokens.get("access_token")
-        if not isinstance(access_token, str) or not access_token.strip():
-            return None
-
-        # Check JWT expiry — expired tokens block the auto chain and
-        # prevent fallback to working providers (e.g. Anthropic).
-        try:
-            import base64
-            payload = access_token.split(".")[1]
-            payload += "=" * (-len(payload) % 4)
-            claims = json.loads(base64.urlsafe_b64decode(payload))
-            exp = claims.get("exp", 0)
-            if exp and time.time() > exp:
-                logger.debug("Codex access token expired (exp=%s), skipping", exp)
-                return None
-        except Exception:
-            pass  # Non-JWT token or decode error — use as-is
-
-        return access_token.strip()
+        from agent.auth.codex import resolve_codex_credentials
+        from hermes_cli.auth import AuthError, _codex_access_token_is_expiring
     except Exception as exc:
+        logger.debug("Could not import Codex resolver: %s", exc)
+        return None
+
+    try:
+        creds = resolve_codex_credentials(
+            refresh_if_expiring=False,
+            allow_codex_cli_fallback=True,
+        )
+    except AuthError as exc:
         logger.debug("Could not read Codex auth for auxiliary client: %s", exc)
         return None
+    token = creds.access_token.strip()
+    if not token:
+        return None
+    # Skew=0: only reject tokens that have *already* expired. Tokens
+    # near-expiry still work for the duration of one compression call.
+    if _codex_access_token_is_expiring(token, 0):
+        logger.debug("Codex access token expired, skipping")
+        return None
+    return token
 
 
 def _resolve_api_key_provider() -> Tuple[Optional[OpenAI], Optional[str]]:

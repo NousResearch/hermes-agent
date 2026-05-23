@@ -50,17 +50,17 @@ class _RoutingClient:
 
 
 def test_fetch_account_usage_codex(monkeypatch):
+    from agent.auth.codex import CodexCredentials
+
     monkeypatch.setattr(
-        "agent.account_usage.resolve_codex_runtime_credentials",
-        lambda refresh_if_expiring=True: {
-            "provider": "openai-codex",
-            "base_url": "https://chatgpt.com/backend-api/codex",
-            "api_key": "access-token",
-        },
-    )
-    monkeypatch.setattr(
-        "agent.account_usage._read_codex_tokens",
-        lambda: {"tokens": {"account_id": "acct_123"}},
+        "agent.account_usage.resolve_codex_credentials",
+        lambda refresh_if_expiring=True: CodexCredentials(
+            access_token="access-token",
+            base_url="https://chatgpt.com/backend-api/codex",
+            source="hermes-auth-store",
+            last_refresh=None,
+            account_id="acct_123",
+        ),
     )
     monkeypatch.setattr(
         "agent.account_usage.httpx.Client",

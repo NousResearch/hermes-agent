@@ -563,8 +563,8 @@ def find_profile_gateway_processes(
 
 def _gateway_run_args_for_profile(profile: str) -> list[str]:
     args = [get_python_path(), "-m", "hermes_cli.main"]
-    if profile != "default":
-        args.extend(["--profile", profile])
+    # Always emit --profile for symmetry: removes silent special-case, eases debugging
+    args.extend(["--profile", profile])
     args.extend(["gateway", "run", "--replace"])
     return args
 
@@ -5004,6 +5004,103 @@ def gateway_setup():
 
 
 # =============================================================================
+# revive-all: manual recovery for down gateways across all profiles
+# =============================================================================
+
+def _cmd_gateway_revive_all(args):
+    """Revive all profile gateways that are not currently running."""
+    import time
+    from hermes_cli.profiles import list_profiles, _check_gateway_running
+    from hermes_cli._subprocess_compat import windows_detach_popen_kwargs
+
+    print("Reviving gateways across all profiles…")
+
+    profiles = list_profiles()
+    if not profiles:
+        print("  (no profiles found)")
+        return
+
+    results = []
+    for prof in profiles:
+        profile_home = prof.path
+        running = _check_gateway_running(profile_home)
+
+        if running:
+            pid_display = ""
+            try:
+                from gateway.status import get_running_pid
+                pid = get_running_pid(profile_home / "gateway.pid", cleanup_stale=False)
+                if pid is not None:
+                    pid_display = f"pid={pid}"
+            except Exception:
+                pass
+            label = f"✓ already running ({pid_display})" if pid_display else "✓ already running"
+            print(f"  {prof.name:<12} {label}")
+            results.append(True)
+        else:
+            print(f"  {prof.name:<12} ▲ launching…", end="", flush=True)
+
+            launch_env = os.environ.copy()
+            if not prof.is_default:
+                launch_env["HERMES_HOME"] = str(profile_home)
+
+            log_dir = profile_home / "logs"
+            log_dir.mkdir(parents=True, exist_ok=True)
+            log_file_path = log_dir / "gateway.log"
+
+            cmd = _gateway_run_args_for_profile(prof.name)
+            start_t = time.monotonic()
+            launch_ok = True
+            try:
+                with open(log_file_path, "a") as _lf:
+                    subprocess.Popen(
+                        cmd,
+                        stdout=_lf,
+                        stderr=_lf,
+                        env=launch_env,
+                        **windows_detach_popen_kwargs(),
+                    )
+            except OSError as e:
+                print(f" ✗ failed to launch: {e}")
+                results.append(False)
+                launch_ok = False
+
+            if not launch_ok:
+                continue
+
+            time.sleep(3)
+            elapsed = time.monotonic() - start_t
+
+            now_running = _check_gateway_running(profile_home)
+            if now_running:
+                pid_display = ""
+                try:
+                    from gateway.status import get_running_pid
+                    pid = get_running_pid(profile_home / "gateway.pid", cleanup_stale=False)
+                    if pid is not None:
+                        pid_display = f"pid={pid}"
+                except Exception:
+                    pass
+                if pid_display:
+                    print(f" ✓ up ({pid_display}, took {elapsed:.1f}s)")
+                else:
+                    print(f" ✓ up (took {elapsed:.1f}s)")
+                results.append(True)
+            else:
+                log_display = str(log_file_path).replace(str(Path.home()), "~")
+                print(f" ✗ failed to start (see {log_display})")
+                results.append(False)
+
+    healthy = sum(results)
+    total = len(results)
+    print()
+    print(f"Result: {healthy}/{total} healthy")
+
+    if healthy < total:
+        sys.exit(1)
+
+
+# =============================================================================
 # Main Command Handler
 # =============================================================================
 
@@ -5447,3 +5544,6 @@ def _gateway_command_inner(args):
             print("Legacy unit migration only applies to systemd-based Linux hosts.")
             return
         remove_legacy_hermes_units(interactive=not yes, dry_run=dry_run)
+
+    elif subcmd == "revive-all":
+        _cmd_gateway_revive_all(args)

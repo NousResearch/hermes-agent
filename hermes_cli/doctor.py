@@ -207,6 +207,31 @@ def _fail_and_issue(text: str, detail: str, fix: str, issues: list[str]) -> None
     issues.append(fix)
 
 
+def _report_codex_credential_source() -> None:
+    """Show which store the unified Codex resolver would pick right now.
+
+    Diagnostic-only: must not raise. The borrow source ("codex-cli-borrow")
+    gets a WARN line because the user almost certainly wants to import the
+    token into the Hermes store rather than keep depending on Codex CLI's
+    file across upgrades.
+    """
+    try:
+        from agent.auth.codex import resolve_codex_credentials
+
+        creds = resolve_codex_credentials(refresh_if_expiring=False)
+    except Exception:
+        return
+    source = creds.source
+    check_info(f"Source: {source}")
+    if source == "codex-cli-borrow":
+        check_warn(
+            "Codex token borrowed from ~/.codex/auth.json",
+            "(Hermes is using a borrowed Codex CLI access token. "
+            "Run `hermes auth login codex` to import it into the Hermes "
+            "store and remove the dependency on ~/.codex/auth.json.)",
+        )
+
+
 def _check_gateway_service_linger(issues: list[str]) -> None:
     """Warn when a systemd user gateway service will stop after logout."""
     try:
@@ -821,10 +846,16 @@ def run_doctor(args):
         codex_status = get_codex_auth_status()
         if codex_status.get("logged_in"):
             check_ok("OpenAI Codex auth", "(logged in)")
+            _report_codex_credential_source()
         else:
             check_warn("OpenAI Codex auth", "(not logged in)")
             if codex_status.get("error"):
                 check_info(codex_status["error"])
+            # Even when the Hermes store is empty, the unified resolver
+            # can borrow a live access token from ~/.codex/auth.json. Show
+            # the user when that's happening — silent borrowing is exactly
+            # what we want diagnostics to expose.
+            _report_codex_credential_source()
             # Native OAuth uses Hermes' own device-code flow — the Codex CLI is
             # only needed to import existing tokens from ~/.codex/auth.json.
             # Attach the hint to the Codex auth row so it doesn't read as

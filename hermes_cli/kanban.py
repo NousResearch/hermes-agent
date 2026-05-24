@@ -166,10 +166,12 @@ def _check_dispatcher_presence() -> tuple[bool, str]:
     if pid and dispatch_on:
         return (True, f"gateway pid={pid}, dispatch enabled")
     if pid and not dispatch_on:
+        config_path = Path(os.environ.get("HERMES_HOME") or (Path.home() / ".hermes")) / "config.yaml"
+        config_hint = f" ({config_path})"
         return (
             False,
             "Gateway is running but kanban.dispatch_in_gateway=false in "
-            "config.yaml — the task will sit in 'ready' until you flip it "
+            f"config.yaml{config_hint} — the task will sit in 'ready' until you flip it "
             "back on and restart the gateway, OR run the legacy "
             "standalone daemon (`hermes kanban daemon --force`)."
         )
@@ -476,6 +478,36 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
         "--json", action="store_true",
         help="Emit JSON (structured) instead of the default human table",
     )
+
+    # --- SQLite integrity check (storage-level health) ---
+    p_check = sub.add_parser(
+        "check",
+        aliases=["integrity"],
+        help="Run PRAGMA quick_check/integrity_check on the board database",
+    )
+    p_check.add_argument(
+        "--full",
+        action="store_true",
+        help="Also run slower PRAGMA integrity_check",
+    )
+    p_check.add_argument("--json", action="store_true", help="Emit JSON output")
+
+    p_repair = sub.add_parser(
+        "repair-indexes",
+        help="Run REINDEX and VACUUM under the Kanban maintenance lock",
+    )
+    p_repair.add_argument(
+        "--no-vacuum",
+        action="store_true",
+        help="Skip VACUUM after REINDEX",
+    )
+    p_repair.add_argument(
+        "--timeout",
+        type=float,
+        default=30.0,
+        help="Seconds to wait for the exclusive maintenance lock (default: 30)",
+    )
+    p_repair.add_argument("--json", action="store_true", help="Emit JSON output")
 
     # --- link / unlink ---
     p_link = sub.add_parser("link", help="Add a parent->child dependency")
@@ -897,19 +929,20 @@ def kanban_command(args: argparse.Namespace) -> int:
         os.environ["HERMES_KANBAN_BOARD"] = normed
         restore_board_env = True
 
-    # Auto-initialize the DB before dispatching any subcommand. init_db
+    # Auto-initialize the DB before dispatching most subcommands. init_db
     # is idempotent, so running it every invocation is cheap (one
     # SELECT against sqlite_master when tables already exist) and
     # prevents "no such table: tasks" on first use from a fresh
     # HERMES_HOME. Previously only `init` and `daemon` triggered
     # schema creation; `create` / `list` / every other command would
     # error out on a fresh install.
-    try:
-        kb.init_db()
-    except Exception as exc:
-        print(f"kanban: could not initialize database: {exc}", file=sys.stderr)
-        _restore_board_env()
-        return 1
+    if action not in {"check", "integrity", "repair-indexes"}:
+        try:
+            kb.init_db()
+        except Exception as exc:
+            print(f"kanban: could not initialize database: {exc}", file=sys.stderr)
+            _restore_board_env()
+            return 1
 
     handlers = {
         "init":     _cmd_init,
@@ -923,6 +956,9 @@ def kanban_command(args: argparse.Namespace) -> int:
         "reassign": _cmd_reassign,
         "diagnostics": _cmd_diagnostics,
         "diag":     _cmd_diagnostics,
+        "check":    _cmd_check,
+        "integrity": _cmd_check,
+        "repair-indexes": _cmd_repair_indexes,
         "link":     _cmd_link,
         "unlink":   _cmd_unlink,
         "claim":    _cmd_claim,
@@ -1212,6 +1248,63 @@ def _parse_duration(val) -> Optional[int]:
             raise ValueError(f"malformed duration {val!r}") from exc
         return int(n * units[s[-1]])
     raise ValueError(f"malformed duration {val!r} (expected 30s, 5m, 2h, 1d, or a number)")
+
+
+def _cmd_check(args: argparse.Namespace) -> int:
+    result = kb.check_database_integrity(full=bool(getattr(args, "full", False)))
+    if getattr(args, "json", False):
+        print(json.dumps(result, indent=2, ensure_ascii=False))
+        return 0 if result.get("ok") else 1
+    status = "ok" if result.get("ok") else "FAILED"
+    print(f"Kanban DB integrity check: {status}")
+    print(f"Path: {result.get('path')}")
+    print(f"Size: {result.get('size_bytes')} bytes")
+    quick_rows = result.get("quick_check") or []
+    print("quick_check:")
+    for row in quick_rows:
+        print(f"  {row}")
+    integrity_rows = result.get("integrity_check")
+    if integrity_rows is not None:
+        print("integrity_check:")
+        for row in integrity_rows:
+            print(f"  {row}")
+    if result.get("repair_hint"):
+        print()
+        print("Repair guidance:")
+        print(f"  {result['repair_hint']}")
+    return 0 if result.get("ok") else 1
+
+
+def _cmd_repair_indexes(args: argparse.Namespace) -> int:
+    try:
+        result = kb.repair_database_indexes(
+            vacuum=not bool(getattr(args, "no_vacuum", False)),
+            timeout=float(getattr(args, "timeout", 30.0)),
+        )
+    except Exception as exc:
+        if getattr(args, "json", False):
+            print(json.dumps({"ok": False, "error": str(exc)}, indent=2, ensure_ascii=False))
+        else:
+            print(f"Kanban DB repair failed: {exc}", file=sys.stderr)
+        return 1
+    if getattr(args, "json", False):
+        print(json.dumps(result, indent=2, ensure_ascii=False))
+        return 0 if result.get("ok") else 1
+    status = "ok" if result.get("ok") else "FAILED"
+    print(f"Kanban DB index repair: {status}")
+    print(f"Path: {result.get('path')}")
+    print(f"Vacuum: {result.get('vacuum')}")
+    after = result.get("after") or {}
+    print("quick_check:")
+    for row in after.get("quick_check") or []:
+        print(f"  {row}")
+    integrity_rows = after.get("integrity_check")
+    if integrity_rows is not None:
+        print("integrity_check:")
+        for row in integrity_rows:
+            print(f"  {row}")
+    return 0 if result.get("ok") else 1
+
 
 
 def _cmd_init(args: argparse.Namespace) -> int:
@@ -1938,12 +2031,18 @@ def _cmd_block(args: argparse.Namespace) -> int:
         for tid in ids:
             if reason:
                 kb.add_comment(conn, tid, author, f"BLOCKED: {reason}")
-            if not kb.block_task(
-                conn,
-                tid,
-                reason=reason,
-                expected_run_id=_worker_run_id_for(tid),
-            ):
+            try:
+                ok = kb.block_task(
+                    conn,
+                    tid,
+                    reason=reason,
+                    expected_run_id=_worker_run_id_for(tid),
+                )
+            except ValueError as exc:
+                failed.append(tid)
+                print(f"cannot block {tid}: {exc}", file=sys.stderr)
+                continue
+            if not ok:
                 failed.append(tid)
                 print(f"cannot block {tid}", file=sys.stderr)
             else:

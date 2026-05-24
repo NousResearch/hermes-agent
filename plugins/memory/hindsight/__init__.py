@@ -1331,7 +1331,18 @@ class HindsightMemoryProvider(MemoryProvider):
                     resp = self._run_hindsight_operation(lambda client: client.arecall(**recall_kwargs))
                     num_results = len(resp.results) if resp.results else 0
                     logger.debug("Prefetch: recall returned %d results", num_results)
-                    text = "\n".join(f"- {r.text}" for r in resp.results if r.text) if resp.results else ""
+                    recall_lines: list[str] = []
+                    seen_texts: set[str] = set()
+                    for result in resp.results or []:
+                        raw_text = (result.text or "").strip()
+                        if not raw_text:
+                            continue
+                        normalized_text = " ".join(raw_text.split())
+                        if normalized_text in seen_texts:
+                            continue
+                        seen_texts.add(normalized_text)
+                        recall_lines.append(f"- {raw_text}")
+                    text = "\n".join(recall_lines)
                 if text:
                     with self._prefetch_lock:
                         self._prefetch_result = text

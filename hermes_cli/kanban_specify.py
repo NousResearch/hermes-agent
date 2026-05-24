@@ -8,6 +8,10 @@ the auxiliary LLM to produce:
     materially different one)
   * A concrete body: goal, proposed approach, acceptance criteria
 
+If the triage card is unassigned, the specifier also assigns it to the
+configured ``kanban.default_assignee`` (falling back to the active/default
+profile) before promotion, so the dispatcher can actually spawn a worker.
+
 and then flips the task ``triage -> todo`` via
 ``kanban_db.specify_triage_task``. The dispatcher promotes it to
 ``ready`` on its next tick (or immediately if there are no open parents).
@@ -39,6 +43,7 @@ from dataclasses import dataclass
 from typing import Optional
 
 from hermes_cli import kanban_db as kb
+from hermes_cli import profiles as profiles_mod
 
 HERMES_KANBAN_SPECIFY_MAX_TOKENS = max(
     1500,
@@ -135,6 +140,36 @@ def _profile_author() -> str:
         or os.environ.get("USER")
         or "specifier"
     )
+
+
+def _load_config() -> dict:
+    try:
+        from hermes_cli.config import load_config
+        return load_config() or {}
+    except Exception:
+        return {}
+
+
+def _resolve_default_assignee() -> str:
+    """Resolve the fallback profile used when specifying unassigned intake.
+
+    Manual ``specify`` should not strand a task in ``ready`` with no assignee.
+    Mirror the decomposer's fallback: configured ``kanban.default_assignee``
+    when it exists on disk, otherwise the active/default profile.
+    """
+    cfg = _load_config()
+    kanban_cfg = cfg.get("kanban", {}) if isinstance(cfg, dict) else {}
+    explicit = (kanban_cfg.get("default_assignee") or "").strip()
+    if explicit:
+        try:
+            if profiles_mod.profile_exists(explicit):
+                return explicit
+        except Exception:
+            pass
+    try:
+        return profiles_mod.get_active_profile_name() or "default"
+    except Exception:
+        return "default"
 
 
 def specify_task(
@@ -239,12 +274,17 @@ def specify_task(
                 task_id, False, "LLM response missing title and body"
             )
 
+    assignee = None
+    if not task.assignee:
+        assignee = _resolve_default_assignee()
+
     with kb.connect() as conn:
         ok = kb.specify_triage_task(
             conn,
             task_id,
             title=new_title,
             body=new_body,
+            assignee=assignee,
             author=author or _profile_author(),
         )
     if not ok:

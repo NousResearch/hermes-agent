@@ -40,6 +40,16 @@ def kanban_home(tmp_path, monkeypatch):
     return home
 
 
+def _add_review_requested_events(conn, task_id: str, count: int = 2) -> None:
+    for idx in range(count):
+        kb._append_event(
+            conn,
+            task_id,
+            "review_requested",
+            {"reason": f"review {idx + 1}"},
+        )
+
+
 # ---------------------------------------------------------------------------
 # Idempotency key
 # ---------------------------------------------------------------------------
@@ -105,6 +115,59 @@ def test_spawn_failure_auto_blocks_after_limit(kanban_home, all_assignees_spawna
         assert task.status == "blocked"
         assert task.consecutive_failures >= 2
         assert task.last_failure_error and "no PATH" in task.last_failure_error
+    finally:
+        conn.close()
+
+
+def test_missing_task_skill_blocks_before_spawn_and_stays_blocked(
+    kanban_home,
+    all_assignees_spawnable,
+):
+    """A task that requests an unknown skill should not crash-loop.
+
+    The dispatcher should catch the impossible worker preload before spawning,
+    sticky-block the task with a clear reason, and then leave it alone on the
+    next tick instead of promoting it back to ready.
+    """
+    def _must_not_spawn(task, ws):
+        raise AssertionError("dispatcher should block before spawning")
+
+    conn = kb.connect()
+    try:
+        tid = kb.create_task(
+            conn,
+            title="needs missing skill",
+            assignee="worker",
+            skills=["definitely-missing-skill"],
+        )
+
+        res = kb.dispatch_once(conn, spawn_fn=_must_not_spawn)
+
+        assert tid in res.auto_blocked
+        task = kb.get_task(conn, tid)
+        assert task is not None
+        assert task.status == "blocked"
+        assert task.last_failure_error is not None
+        assert "definitely-missing-skill" in task.last_failure_error
+        assert tid in task.last_failure_error
+
+        events = kb.list_events(conn, tid)
+        blocked_events = [e for e in events if e.kind == "blocked"]
+        assert len(blocked_events) == 1
+        payload = blocked_events[-1].payload
+        assert payload is not None
+        assert "definitely-missing-skill" in payload["reason"]
+        assert tid in payload["reason"]
+
+        before_kinds = [e.kind for e in events]
+        res2 = kb.dispatch_once(conn, spawn_fn=_must_not_spawn)
+        after_task = kb.get_task(conn, tid)
+        assert after_task is not None
+        after_kinds = [e.kind for e in kb.list_events(conn, tid)]
+
+        assert tid not in [spawned[0] for spawned in res2.spawned]
+        assert after_task.status == "blocked"
+        assert after_kinds == before_kinds
     finally:
         conn.close()
 
@@ -797,6 +860,8 @@ def test_cli_unblock_bulk(kanban_home):
     try:
         a = kb.create_task(conn, title="a")
         b = kb.create_task(conn, title="b")
+        _add_review_requested_events(conn, a)
+        _add_review_requested_events(conn, b)
         kb.block_task(conn, a)
         kb.block_task(conn, b)
     finally:
@@ -810,6 +875,8 @@ def test_cli_block_bulk_via_ids_flag(kanban_home):
     try:
         a = kb.create_task(conn, title="a")
         b = kb.create_task(conn, title="b")
+        _add_review_requested_events(conn, a)
+        _add_review_requested_events(conn, b)
     finally:
         conn.close()
     out = run_slash(f"block {a} need input --ids {b}")
@@ -1423,7 +1490,12 @@ def test_run_closed_on_complete_with_summary(kanban_home):
             conn, tid,
             result="shipped",
             summary="implemented rate limiter, tests pass",
-            metadata={"changed_files": ["limiter.py"], "tests_run": 12},
+            metadata={
+                "changed_files": ["limiter.py"],
+                "tests_run": 12,
+                "review_required": False,
+                "review_skip_reason": "legacy run-summary persistence test",
+            },
         )
         assert ok is True
 
@@ -1437,7 +1509,12 @@ def test_run_closed_on_complete_with_summary(kanban_home):
         assert r.status == "done"
         assert r.outcome == "completed"
         assert r.summary == "implemented rate limiter, tests pass"
-        assert r.metadata == {"changed_files": ["limiter.py"], "tests_run": 12}
+        assert r.metadata == {
+            "changed_files": ["limiter.py"],
+            "tests_run": 12,
+            "review_required": False,
+            "review_skip_reason": "legacy run-summary persistence test",
+        }
         assert r.ended_at is not None
     finally:
         conn.close()
@@ -1529,6 +1606,11 @@ def test_stale_run_cannot_complete_new_attempt(kanban_home, monkeypatch):
         task = kb.get_task(conn, tid)
         assert task.status == "running"
         assert task.current_run_id == run2.id
+        conflicts = [e for e in kb.list_events(conn, tid) if e.kind == "claim_conflict"]
+        assert conflicts
+        assert conflicts[-1].payload["attempted_run_id"] == run1.id
+        assert conflicts[-1].payload["current_run_id"] == run2.id
+        assert conflicts[-1].payload["operation"] == "complete"
 
         assert kb.complete_task(
             conn,
@@ -1562,6 +1644,7 @@ def test_stale_run_cannot_block_or_heartbeat_new_attempt(kanban_home, monkeypatc
         assert run2.id != run1.id
 
         assert not kb.heartbeat_worker(conn, tid, note="late", expected_run_id=run1.id)
+        _add_review_requested_events(conn, tid)
         assert not kb.block_task(conn, tid, reason="late block", expected_run_id=run1.id)
         task = kb.get_task(conn, tid)
         assert task.status == "running"
@@ -1580,6 +1663,7 @@ def test_run_on_block_with_reason(kanban_home):
     try:
         tid = kb.create_task(conn, title="x", assignee="worker")
         kb.claim_task(conn, tid)
+        _add_review_requested_events(conn, tid)
         kb.block_task(conn, tid, reason="needs API key")
 
         r = kb.latest_run(conn, tid)
@@ -1648,6 +1732,7 @@ def test_build_worker_context_includes_prior_attempts(kanban_home):
 
         # Attempt 1: blocked with a reason.
         kb.claim_task(conn, tid)
+        _add_review_requested_events(conn, tid)
         kb.block_task(conn, tid, reason="needs clarification on IP vs user_id")
         kb.unblock_task(conn, tid)
 
@@ -2066,6 +2151,7 @@ def test_block_never_claimed_task_synthesizes_run(kanban_home):
     conn = kb.connect()
     try:
         tid = kb.create_task(conn, title="drop this", assignee="worker")
+        _add_review_requested_events(conn, tid)
         ok = kb.block_task(conn, tid, reason="deprioritized")
         assert ok is True
 
@@ -2302,6 +2388,7 @@ def test_unblock_normal_path_no_spurious_run(kanban_home):
     try:
         tid = kb.create_task(conn, title="normal unblock", assignee="worker")
         kb.claim_task(conn, tid)
+        _add_review_requested_events(conn, tid)
         kb.block_task(conn, tid, reason="pause")
         runs_before = len(kb.list_runs(conn, tid))
         assert kb.unblock_task(conn, tid) is True
@@ -3367,6 +3454,17 @@ def test_config_default_dispatch_in_gateway_is_true():
     )
 
 
+def test_config_default_notify_in_gateway_is_true():
+    """Default config keeps Kanban notifications on unless explicitly disabled."""
+    from hermes_cli.config import DEFAULT_CONFIG
+
+    kanban = DEFAULT_CONFIG.get("kanban", {})
+    assert kanban.get("notify_in_gateway") is True, (
+        "kanban.notify_in_gateway default should be True; got "
+        f"{kanban.get('notify_in_gateway')!r}"
+    )
+
+
 def test_check_dispatcher_presence_silent_when_gateway_running(monkeypatch):
     from hermes_cli import kanban as kb_cli
     monkeypatch.setattr("gateway.status.get_running_pid", lambda: 12345)
@@ -3392,9 +3490,12 @@ def test_check_dispatcher_presence_warns_when_no_gateway(monkeypatch):
     assert "hermes gateway start" in msg
 
 
-def test_check_dispatcher_presence_warns_when_flag_off(monkeypatch):
+def test_check_dispatcher_presence_warns_when_flag_off(monkeypatch, tmp_path):
     """Gateway is up but dispatch_in_gateway=false -> warning."""
     from hermes_cli import kanban as kb_cli
+    profile_home = tmp_path / "profiles" / "vicky"
+    profile_home.mkdir(parents=True)
+    monkeypatch.setenv("HERMES_HOME", str(profile_home))
     monkeypatch.setattr("gateway.status.get_running_pid", lambda: 999)
     monkeypatch.setattr(
         "hermes_cli.config.load_config",
@@ -3403,6 +3504,7 @@ def test_check_dispatcher_presence_warns_when_flag_off(monkeypatch):
     running, msg = kb_cli._check_dispatcher_presence()
     assert running is False
     assert "dispatch_in_gateway" in msg
+    assert str(profile_home / "config.yaml") in msg
 
 
 def test_check_dispatcher_presence_silent_on_probe_error(monkeypatch):

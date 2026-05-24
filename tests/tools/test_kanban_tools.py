@@ -171,6 +171,13 @@ def worker_env(monkeypatch, tmp_path):
     return tid
 
 
+def _add_review_requested_events(conn, task_id: str, count: int = 2) -> None:
+    from hermes_cli import kanban_db as kb
+
+    for idx in range(count):
+        kb._append_event(conn, task_id, "review_requested", {"reason": f"review {idx + 1}"})
+
+
 def test_show_defaults_to_env_task_id(worker_env):
     from tools import kanban_tools as kt
     out = kt._handle_show({})
@@ -322,6 +329,8 @@ def test_complete_metadata_round_trips_through_show(worker_env):
         "blocked_reason": None,
         "retry_notes": "none",
         "residual_risk": ["dashboard rendering not exercised"],
+        "review_required": False,
+        "review_skip_reason": "legacy metadata round-trip test",
     }
 
     complete_out = kt._handle_complete({
@@ -406,6 +415,10 @@ def test_complete_with_artifacts_lands_in_event_payload(worker_env):
 
     out = kt._handle_complete({
         "summary": "rendered the chart",
+        "metadata": {
+            "review_required": False,
+            "review_skip_reason": "artifact payload regression test",
+        },
         "artifacts": ["/tmp/q3-revenue.png", "/tmp/q3-report.pdf"],
     })
     assert json.loads(out)["ok"] is True
@@ -597,16 +610,35 @@ def test_complete_retry_with_corrected_created_cards_succeeds(worker_env):
 
 
 def test_block_happy_path(worker_env):
+    from hermes_cli import kanban_db as kb
+    conn = kb.connect()
+    try:
+        kb._append_event(conn, worker_env, "review_requested", {"reason": "first"})
+        kb._append_event(conn, worker_env, "review_requested", {"reason": "second"})
+    finally:
+        conn.close()
+
     from tools import kanban_tools as kt
     out = kt._handle_block({"reason": "need clarification"})
     d = json.loads(out)
     assert d["ok"] is True
-    from hermes_cli import kanban_db as kb
     conn = kb.connect()
     try:
-        assert kb.get_task(conn, worker_env).status == "blocked"
+        task = kb.get_task(conn, worker_env)
+        assert task is not None
+        assert task.status == "blocked"
     finally:
         conn.close()
+
+
+def test_block_reports_review_prerequisite_error(worker_env):
+    from tools import kanban_tools as kt
+
+    out = kt._handle_block({"reason": "need clarification"})
+    d = json.loads(out)
+
+    assert d.get("error")
+    assert "requires at least 2 review_requested" in d["error"]
 
 
 def test_block_rejects_empty_reason(worker_env):
@@ -996,6 +1028,7 @@ def test_unblock_happy_path(monkeypatch, worker_env):
     conn = kb.connect()
     try:
         tid = kb.create_task(conn, title="blocked", assignee="worker")
+        _add_review_requested_events(conn, tid)
         kb.block_task(conn, tid, reason="waiting")
     finally:
         conn.close()
@@ -1293,6 +1326,7 @@ def test_worker_unblock_rejects_foreign_task_id(worker_env):
     conn = kb.connect()
     try:
         other = kb.create_task(conn, title="blocked sibling", assignee="peer")
+        _add_review_requested_events(conn, other)
         kb.block_task(conn, other, reason="waiting")
     finally:
         conn.close()
@@ -1582,6 +1616,7 @@ def test_board_param_routes_block_to_alt_board(multi_board_env):
 
     alt_seed = multi_board_env["alt_seed"]
     with kb.connect(board="alt") as conn:
+        _add_review_requested_events(conn, alt_seed)
         kb.claim_task(conn, alt_seed)
 
     out = kt._handle_block({
@@ -1603,6 +1638,7 @@ def test_board_param_routes_unblock_to_alt_board(multi_board_env):
 
     alt_seed = multi_board_env["alt_seed"]
     with kb.connect(board="alt") as conn:
+        _add_review_requested_events(conn, alt_seed)
         kb.block_task(conn, alt_seed, reason="waiting")
         assert kb.get_task(conn, alt_seed).status == "blocked"
 

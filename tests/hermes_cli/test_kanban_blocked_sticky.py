@@ -48,6 +48,16 @@ def kanban_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     return home
 
 
+def _add_review_requested_events(conn, task_id: str, count: int = 2) -> None:
+    for idx in range(count):
+        kb._append_event(
+            conn,
+            task_id,
+            "review_requested",
+            {"reason": f"review {idx + 1}"},
+        )
+
+
 # ---------------------------------------------------------------------------
 # Worker-initiated kanban_block must be sticky
 # ---------------------------------------------------------------------------
@@ -61,6 +71,7 @@ def test_worker_block_is_not_auto_promoted_by_recompute_ready(kanban_home: Path)
     with kb.connect() as conn:
         tid = kb.create_task(conn, title="needs human review")
         kb.claim_task(conn, tid)
+        _add_review_requested_events(conn, tid)
         assert kb.block_task(
             conn, tid,
             reason="review-required: please verify ACL change",
@@ -87,6 +98,7 @@ def test_worker_block_on_child_with_done_parents_is_still_sticky(kanban_home: Pa
         kb.complete_task(conn, parent, result="parent ok")
 
         kb.claim_task(conn, child)
+        _add_review_requested_events(conn, child)
         kb.block_task(
             conn, child,
             reason="review-required: child needs sign-off",
@@ -172,6 +184,7 @@ def test_unblock_clears_sticky_state_and_lets_block_recover(kanban_home: Path) -
     with kb.connect() as conn:
         tid = kb.create_task(conn, title="t")
         kb.claim_task(conn, tid)
+        _add_review_requested_events(conn, tid)
         kb.block_task(
             conn, tid,
             reason="review-required: ...",
@@ -223,6 +236,7 @@ def test_protocol_violation_loop_is_broken(kanban_home: Path) -> None:
     with kb.connect() as conn:
         tid = kb.create_task(conn, title="loop reproducer")
         kb.claim_task(conn, tid)
+        _add_review_requested_events(conn, tid)
         kb.block_task(
             conn, tid,
             reason="review-required: human eyes please",

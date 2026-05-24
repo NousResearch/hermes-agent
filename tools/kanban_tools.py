@@ -905,7 +905,12 @@ KANBAN_COMPLETE_SCHEMA = {
                     "Free-form dict of structured facts about this "
                     "attempt — {\"changed_files\": [...], \"tests_run\": 12, "
                     "\"findings\": [...]}. Surfaced to downstream "
-                    "workers alongside ``summary``."
+                    "workers alongside ``summary``. Substantial handoffs "
+                    "with fields such as changed_files, artifacts, PRs, "
+                    "recommendations, or risk markers are routed to the "
+                    "configured reviewer before user-facing completion; "
+                    "set review_required=false with review_skip_reason for "
+                    "trivial/already-reviewed cases."
                 ),
             },
             "result": {

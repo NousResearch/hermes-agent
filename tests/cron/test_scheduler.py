@@ -575,6 +575,44 @@ class TestDeliverResultWrapping:
         assert "Cronjob Response" not in sent_content
         assert "The agent cannot see" not in sent_content
 
+    def test_delivery_uses_notifications_telegram_token_even_with_live_adapter(self, monkeypatch):
+        """Cron Telegram notifications should use the dedicated Notifications bot when configured."""
+        from gateway.config import Platform
+
+        pconfig = MagicMock()
+        pconfig.enabled = True
+        pconfig.token = "ava-token"
+        pconfig.extra = {}
+        mock_cfg = MagicMock()
+        mock_cfg.platforms = {Platform.TELEGRAM: pconfig}
+
+        live_adapter = AsyncMock()
+        live_adapter.send.return_value = MagicMock(success=True)
+        loop = MagicMock()
+        loop.is_running.return_value = True
+        monkeypatch.setenv("NOTIFICATIONS_TELEGRAM_BOT_TOKEN", "noti-token")
+
+        with patch("gateway.config.load_gateway_config", return_value=mock_cfg), \
+             patch("cron.scheduler.load_config", return_value={"cron": {"wrap_response": False}}), \
+             patch("tools.send_message_tool._send_telegram", new=AsyncMock(return_value={"success": True})) as send_mock:
+            job = {
+                "id": "notify-job",
+                "deliver": "origin",
+                "origin": {"platform": "telegram", "chat_id": "123"},
+            }
+            _deliver_result(
+                job,
+                "Notifier output.",
+                adapters={Platform.TELEGRAM: live_adapter},
+                loop=loop,
+            )
+
+        live_adapter.send.assert_not_called()
+        send_mock.assert_called_once()
+        assert send_mock.call_args.args[0] == "noti-token"
+        assert send_mock.call_args.args[1] == "123"
+        assert "Notifier output." in send_mock.call_args.args[2]
+
     def test_delivery_extracts_media_tags_before_send(self, tmp_path, monkeypatch):
         """Cron delivery should pass MEDIA attachments separately to the send helper."""
         from gateway.config import Platform

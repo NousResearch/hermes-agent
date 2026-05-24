@@ -660,7 +660,10 @@ def update_task(task_id: str, payload: UpdateTaskBody, board: Optional[str] = Qu
                     metadata=payload.metadata,
                 )
             elif s == "blocked":
-                ok = kanban_db.block_task(conn, task_id, reason=payload.block_reason)
+                try:
+                    ok = kanban_db.block_task(conn, task_id, reason=payload.block_reason)
+                except ValueError as exc:
+                    raise HTTPException(status_code=409, detail=str(exc)) from exc
             elif s == "scheduled":
                 ok = kanban_db.schedule_task(conn, task_id, reason=payload.block_reason)
             elif s == "ready":

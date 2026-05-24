@@ -11,11 +11,21 @@ from unittest.mock import AsyncMock, MagicMock, patch
 # Fixtures
 # ---------------------------------------------------------------------------
 
+def _add_review_requested_events(conn, task_id: str, count: int = 2) -> None:
+    for idx in range(count):
+        kb._append_event(
+            conn,
+            task_id,
+            "review_requested",
+            {"reason": f"review {idx + 1}"},
+        )
+
 @pytest.fixture
 def kanban_home(tmp_path, monkeypatch):
     home = tmp_path / ".hermes"
     home.mkdir()
     monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setenv("HERMES_KANBAN_NOTIFY_IN_GATEWAY", "1")
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
     # Allow the kanban notifier path-validator to upload artifacts the
     # tests write under ``tmp_path``. Without this, every artifact-delivery
@@ -29,7 +39,7 @@ def kanban_home(tmp_path, monkeypatch):
 @pytest.mark.asyncio
 async def test_notifier_unsubs_after_completed_event(kanban_home):
     """
-    Subscription should be remove after completed event
+    Subscription should be removed after a terse completed-event ping.
     """
     import hermes_cli.kanban_db as kb
     from gateway.run import GatewayRunner
@@ -68,7 +78,8 @@ async def test_notifier_unsubs_after_completed_event(kanban_home):
 
     fake_adapter.send.assert_called_once()
     call_msg = fake_adapter.send.call_args[0][1]
-    assert "completed" in call_msg
+    assert call_msg == "✅ Done: test task"
+    assert "completed by agent" not in call_msg
 
     conn = kb.connect()
     try:
@@ -80,15 +91,11 @@ async def test_notifier_unsubs_after_completed_event(kanban_home):
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize('kind', ["gave_up", "crashed", "timed_out"])
-async def test_notifier_unsubs_after_abnormal_events(kind, kanban_home):
+async def test_notifier_ignores_abnormal_events(kind, kanban_home):
     """
-    Event kinds gave_up / crashed / timed_out send a notification but DO
-    NOT delete the subscription. The dispatcher may respawn the task and
-    fire the same event kind again (e.g. a worker that crashes, gets
-    reclaimed, and crashes a second time); the user must hear about the
-    second event too. Subscriptions are removed only when the task hits
-    a truly final status (done / archived) — see the comment on
-    TERMINAL_KINDS in gateway/run.py and PR #21398.
+    The dedicated notification bot is completion-only. Worker failure and
+    retry-loop events are handled by the separate Kanban monitor watchdog,
+    so this watcher must not claim or deliver them.
     """
     import hermes_cli.kanban_db as kb
     from gateway.run import GatewayRunner
@@ -110,15 +117,20 @@ async def test_notifier_unsubs_after_abnormal_events(kind, kanban_home):
     fake_adapter = MagicMock()
 
     async def _send_and_stop(chat_id, msg, metadata=None):
-        runner._running = False
+        raise AssertionError(f"notifier should ignore {kind}, got {msg!r}")
 
     fake_adapter.send = AsyncMock(side_effect=_send_and_stop)
     runner.adapters = {Platform.TELEGRAM: fake_adapter}
 
     _orig_sleep = asyncio.sleep
+    tick_count = 0
 
     async def _fast_sleep(_):
+        nonlocal tick_count
         await _orig_sleep(0)
+        tick_count += 1
+        if tick_count >= 3:
+            runner._running = False
 
     with patch("gateway.run.asyncio.sleep", side_effect=_fast_sleep):
         await asyncio.wait_for(
@@ -126,33 +138,26 @@ async def test_notifier_unsubs_after_abnormal_events(kind, kanban_home):
             timeout=10.0,
         )
 
-    # The user is notified about the abnormal event...
-    fake_adapter.send.assert_called_once()
-    assert kind.replace('_', ' ') in fake_adapter.send.call_args[0][1]
+    fake_adapter.send.assert_not_called()
 
-    # ...but the subscription survives so a respawn-then-same-event cycle
-    # reaches the user too. The cursor (last_event_id) advanced inside
-    # the same write txn as the claim, so the same event won't re-fire.
+    # The subscription survives and the cursor stays put because this watcher
+    # only claims completion events. A separate watchdog may inspect/report
+    # abnormal events without consuming this noti-bot cursor.
     conn = kb.connect()
     try:
         subs = kb.list_notify_subs(conn, tid)
     finally:
         conn.close()
     assert len(subs) == 1, (
-        f"Subscription should survive {kind!r} so the next cycle of the "
-        f"same event reaches the user; got {subs!r}"
+        f"Subscription should survive ignored {kind!r}; got {subs!r}"
     )
-    assert int(subs[0]["last_event_id"]) >= 1, (
-        "Cursor should have advanced past the delivered event "
-        "(claim_unseen_events_for_sub advances atomically inside the "
-        "same write txn as the read)."
-    )
+    assert int(subs[0]["last_event_id"]) == 0
 
 
 @pytest.mark.asyncio
-async def test_notifier_second_blocked_delivers(kanban_home):
+async def test_notifier_ignores_repeated_blocked_events(kanban_home):
     """
-    After the first blocked, should receive second blocked notification.
+    Blocked reminders belong to the separate watchdog, not the completion bot.
     """
     import hermes_cli.kanban_db as kb
     from gateway.run import GatewayRunner
@@ -166,6 +171,7 @@ async def test_notifier_second_blocked_delivers(kanban_home):
 
     async def _capture_send(chat_id, msg, metadata=None):
         delivered_msgs.append(msg)
+        raise AssertionError(f"notifier should ignore blocked events, got {msg!r}")
 
     fake_adapter = MagicMock()
     fake_adapter.send = AsyncMock(side_effect=_capture_send)
@@ -187,6 +193,7 @@ async def test_notifier_second_blocked_delivers(kanban_home):
         kb.add_notify_sub(conn, task_id=tid, platform="telegram", chat_id="chat1")
 
         # Cycle 1: blocked
+        _add_review_requested_events(conn, tid)
         kb.block_task(conn, tid, reason="first block")
     finally:
         conn.close()
@@ -214,13 +221,15 @@ async def test_notifier_second_blocked_delivers(kanban_home):
             timeout=10.0,
         )
 
-    blocked_deliveries = [m for m in delivered_msgs if "blocked" in m]
-    assert "second block" not in blocked_deliveries[0]
-    assert "second block" in blocked_deliveries[1]
-    assert len(blocked_deliveries) == 2, (
-        f"Should receive 2 blocked notification, but only get {len(blocked_deliveries)} count\n"
-        f"Message {delivered_msgs}"
-    )
+    assert delivered_msgs == []
+    conn = kb.connect()
+    try:
+        subs = kb.list_notify_subs(conn, tid)
+    finally:
+        conn.close()
+    assert len(subs) == 1
+    assert int(subs[0]["last_event_id"]) == 0
+
 
 
 # ---------------------------------------------------------------------------
@@ -527,6 +536,10 @@ async def test_notifier_uploads_artifacts_on_completion(kanban_home, tmp_path, m
         out = kt._handle_complete({
             "summary": "rendered the chart",
             "artifacts": [str(chart_path), str(report_path)],
+            "metadata": {
+                "review_required": False,
+                "review_skip_reason": "notifier artifact delivery regression test",
+            },
         })
     finally:
         os.environ.pop("HERMES_KANBAN_TASK", None)
@@ -613,6 +626,10 @@ async def test_notifier_artifact_delivery_skips_missing_files(kanban_home, tmp_p
         kt._handle_complete({
             "summary": "one real, one ghost",
             "artifacts": [str(real_pdf), "/tmp/definitely-does-not-exist.pdf"],
+            "metadata": {
+                "review_required": False,
+                "review_skip_reason": "notifier artifact delivery regression test",
+            },
         })
     finally:
         os.environ.pop("HERMES_KANBAN_TASK", None)

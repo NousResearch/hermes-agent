@@ -1101,6 +1101,45 @@ async def test_restart_notifies_home_channel_even_without_active_sessions():
 
 
 @pytest.mark.asyncio
+async def test_restart_shutdown_notifications_ignore_dedicated_notifications_bot(monkeypatch):
+    """Gateway restart warnings are operational notices, not Kanban completions."""
+    monkeypatch.setenv("NOTIFICATIONS_TELEGRAM_BOT_TOKEN", "notifier-token")
+    runner, adapter = make_restart_runner()
+    runner._restart_requested = True
+    runner._running_agents["agent:main:telegram:dm:999"] = MagicMock()
+
+    with patch("tools.send_message_tool._send_telegram", new=AsyncMock(return_value={"success": True})) as send_mock:
+        await runner._notify_active_sessions_of_shutdown()
+
+    sent = getattr(adapter, "sent")
+    assert len(sent) == 1
+    assert "Gateway restarting" in sent[0]
+    send_mock.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_restart_home_channel_notification_ignores_dedicated_notifications_bot(monkeypatch):
+    """Home-channel restart warnings should stay on the interactive adapter."""
+    monkeypatch.setenv("NOTIFICATIONS_TELEGRAM_BOT_TOKEN", "notifier-token")
+    runner, adapter = make_restart_runner()
+    runner._restart_requested = True
+    runner.config.platforms[Platform.TELEGRAM].home_channel = HomeChannel(
+        platform=Platform.TELEGRAM,
+        chat_id="home-42",
+        name="Ops Home",
+    )
+
+    with patch("tools.send_message_tool._send_telegram", new=AsyncMock(return_value={"success": True})) as send_mock:
+        await runner._notify_active_sessions_of_shutdown()
+
+    assert getattr(adapter, "sent") == [
+        "⚠️ Gateway restarting — Your current task will be interrupted. "
+        "Send any message after restart and I'll try to resume where you left off."
+    ]
+    send_mock.assert_not_called()
+
+
+@pytest.mark.asyncio
 async def test_restart_home_channel_notification_dedupes_active_chat():
     runner, adapter = make_restart_runner()
     runner._restart_requested = True

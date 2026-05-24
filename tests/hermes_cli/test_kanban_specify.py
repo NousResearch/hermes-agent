@@ -112,6 +112,31 @@ def test_specify_task_happy_path(kanban_home):
     assert "**Goal**" in (task.body or "")
 
 
+def test_specify_task_assigns_default_fallback_when_unassigned(kanban_home):
+    profiles_root = kanban_home / "profiles"
+    (profiles_root / "triage").mkdir(parents=True)
+    (kanban_home / "config.yaml").write_text(
+        "kanban:\n  default_assignee: triage\n",
+        encoding="utf-8",
+    )
+    with kb.connect() as conn:
+        tid = kb.create_task(conn, title="rough", triage=True)
+
+    content = jsonlib.dumps({
+        "title": "Refined rough",
+        "body": "**Goal**\nA concrete goal.",
+    })
+    p, _ = _patch_aux_client(content)
+    with p:
+        outcome = spec.specify_task(tid, author="ace")
+
+    assert outcome.ok is True
+    with kb.connect() as conn:
+        task = kb.get_task(conn, tid)
+    assert task.assignee == "triage"
+    assert task.status == "ready"
+
+
 def test_specify_task_falls_back_to_body_only_on_bad_json(kanban_home):
     with kb.connect() as conn:
         tid = kb.create_task(conn, title="keep title", triage=True)

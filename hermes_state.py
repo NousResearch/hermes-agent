@@ -73,6 +73,15 @@ _last_init_error_lock = threading.Lock()
 _wal_fallback_warned_paths: set[str] = set()
 _wal_fallback_warned_lock = threading.Lock()
 
+# DB labels that already proved WAL-incompatible in this process. Some
+# filesystems (notably flaky FUSE/network mounts) can leave a connection in a
+# bad state after a failed ``PRAGMA journal_mode=WAL`` attempt, so continuing to
+# retry WAL on every short-lived dashboard/API connection can produce a stream
+# of ``disk I/O error`` failures even though DELETE mode itself is viable.
+# Once a label falls back, future connections go straight to DELETE mode.
+_wal_fallback_delete_only_paths: set[str] = set()
+_wal_fallback_delete_only_lock = threading.Lock()
+
 
 def _set_last_init_error(msg: Optional[str]) -> None:
     """Record (or clear) the most recent state.db init failure.
@@ -148,6 +157,17 @@ def apply_wal_with_fallback(
     Shared by :class:`SessionDB` and ``hermes_cli.kanban_db.connect`` so
     both databases get identical fallback behavior.
     """
+    with _wal_fallback_delete_only_lock:
+        delete_only = db_label in _wal_fallback_delete_only_paths
+    if delete_only:
+        # The first fallback already switched this DB label to DELETE mode.
+        # Re-running PRAGMA journal_mode=DELETE on every short-lived connection
+        # can itself raise transient ``disk I/O error`` on flaky filesystems or
+        # while another process is holding SQLite state, which turns the
+        # fallback cache into per-tick dispatcher log spam.  Treat the cached
+        # label as authoritative and avoid touching journal_mode again.
+        return "delete"
+
     try:
         conn.execute("PRAGMA journal_mode=WAL")
         return "wal"
@@ -157,6 +177,8 @@ def apply_wal_with_fallback(
             # Unrelated OperationalError — don't silently swallow.
             raise
         _log_wal_fallback_once(db_label, exc)
+        with _wal_fallback_delete_only_lock:
+            _wal_fallback_delete_only_paths.add(db_label)
         conn.execute("PRAGMA journal_mode=DELETE")
         return "delete"
 

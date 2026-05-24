@@ -641,6 +641,43 @@ class TestPrefetch:
         assert call_kwargs["tags_match"] == "all"
         assert call_kwargs["types"] == ["world"]
 
+    def test_queue_prefetch_dedupes_exact_normalized_recall_texts(self, provider):
+        provider._client.arecall = AsyncMock(
+            return_value=SimpleNamespace(
+                results=[
+                    SimpleNamespace(text="User prefers concise answers."),
+                    SimpleNamespace(text="  User prefers concise answers.  "),
+                    SimpleNamespace(text="User prefers concise answers.\n"),
+                ]
+            )
+        )
+
+        provider.queue_prefetch("style preferences")
+        if provider._prefetch_thread:
+            provider._prefetch_thread.join(timeout=5.0)
+
+        assert provider._prefetch_result == "- User prefers concise answers."
+
+    def test_queue_prefetch_keeps_distinct_recall_texts_after_dedupe(self, provider):
+        provider._client.arecall = AsyncMock(
+            return_value=SimpleNamespace(
+                results=[
+                    SimpleNamespace(text="User prefers concise answers."),
+                    SimpleNamespace(text="User prefers plain-English explanations."),
+                    SimpleNamespace(text="User prefers concise answers."),
+                ]
+            )
+        )
+
+        provider.queue_prefetch("style preferences")
+        if provider._prefetch_thread:
+            provider._prefetch_thread.join(timeout=5.0)
+
+        assert provider._prefetch_result == (
+            "- User prefers concise answers.\n"
+            "- User prefers plain-English explanations."
+        )
+
 
 # ---------------------------------------------------------------------------
 # sync_turn tests

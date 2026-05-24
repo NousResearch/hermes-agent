@@ -6,6 +6,7 @@ human-friendly channel names to IDs. Works in both CLI and gateway contexts.
 """
 
 import asyncio
+import copy
 import json
 import logging
 import os
@@ -18,6 +19,8 @@ from typing import Dict, Optional
 from agent.redact import redact_sensitive_text
 
 logger = logging.getLogger(__name__)
+
+NOTIFICATIONS_TELEGRAM_BOT_TOKEN_ENV = "NOTIFICATIONS_TELEGRAM_BOT_TOKEN"
 
 _TELEGRAM_TOPIC_TARGET_RE = re.compile(r"^\s*(-?\d+)(?::(\d+))?\s*$")
 _FEISHU_TARGET_RE = re.compile(r"^\s*((?:oc|ou|on|chat|open)_[-A-Za-z0-9]+)(?::([-A-Za-z0-9_]+))?\s*$")
@@ -418,6 +421,77 @@ def _describe_media_for_mirror(media_files):
             return "[Sent audio attachment]"
         return "[Sent document attachment]"
     return f"[Sent {len(media_files)} media attachments]"
+
+
+def _get_notifications_telegram_token() -> str:
+    """Return the dedicated Telegram notification bot token, if configured.
+
+    The value is read from Hermes' secure env/config path via ``get_env_value``
+    so callers do not need to inspect or print secret files directly.
+    """
+    try:
+        from hermes_cli.config import get_env_value
+        return (get_env_value(NOTIFICATIONS_TELEGRAM_BOT_TOKEN_ENV) or "").strip()
+    except Exception:
+        return (os.getenv(NOTIFICATIONS_TELEGRAM_BOT_TOKEN_ENV) or "").strip()
+
+
+def _notification_platform_config(platform, pconfig):
+    """Return a platform config suitable for one-way notification sends.
+
+    For Telegram notifications, prefer the dedicated Notifications bot token
+    over the interactive gateway bot token. Other platforms keep their normal
+    config unchanged.
+    """
+    try:
+        from gateway.config import Platform
+        is_telegram = platform == Platform.TELEGRAM
+    except Exception:
+        value = getattr(platform, "value", str(platform)).lower()
+        is_telegram = value == "telegram"
+
+    if not is_telegram:
+        return pconfig
+
+    token = _get_notifications_telegram_token()
+    if not token:
+        return pconfig
+
+    try:
+        notification_config = copy.copy(pconfig)
+        notification_config.token = token
+        return notification_config
+    except Exception:
+        from types import SimpleNamespace
+        return SimpleNamespace(
+            enabled=getattr(pconfig, "enabled", True),
+            token=token,
+            api_key=getattr(pconfig, "api_key", ""),
+            home_channel=getattr(pconfig, "home_channel", None),
+            reply_to_mode=getattr(pconfig, "reply_to_mode", None),
+            extra=getattr(pconfig, "extra", {}) or {},
+        )
+
+
+async def _send_notification_to_platform(
+    platform,
+    pconfig,
+    chat_id,
+    message,
+    thread_id=None,
+    media_files=None,
+    force_document=False,
+):
+    """Send a system notification, using the dedicated notifier bot when set."""
+    return await _send_to_platform(
+        platform,
+        _notification_platform_config(platform, pconfig),
+        chat_id,
+        message,
+        thread_id=thread_id,
+        media_files=media_files,
+        force_document=force_document,
+    )
 
 
 def _get_cron_auto_delivery_target():

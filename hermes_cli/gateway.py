@@ -3320,6 +3320,8 @@ _PLATFORMS = [
         "vars": [
             {"name": "TELEGRAM_BOT_TOKEN", "prompt": "Bot token", "password": True,
              "help": "Paste the token from @BotFather (step 3 above)."},
+            {"name": "NOTIFICATIONS_TELEGRAM_BOT_TOKEN", "prompt": "Dedicated notifications bot token (optional)", "password": True,
+             "help": "Optional separate token for local notification senders/watchdogs. Store it in .env; never commit it."},
             {"name": "TELEGRAM_ALLOWED_USERS", "prompt": "Allowed user IDs (comma-separated)", "password": False,
              "is_allowlist": True,
              "help": "Paste your user ID from step 4 above."},

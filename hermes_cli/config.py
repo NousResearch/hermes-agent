@@ -1523,6 +1523,10 @@ DEFAULT_CONFIG = {
         # only if you run the dispatcher as a separate systemd unit or
         # don't want the gateway to spawn workers.
         "dispatch_in_gateway": True,
+        # Run the Kanban notifier inside the gateway process. On by default
+        # so users still receive completion pings; set to false during DB
+        # recovery or when another process owns Kanban notifications.
+        "notify_in_gateway": True,
         # Seconds between dispatcher ticks (idle or not). Lower = snappier
         # pickup of newly-ready tasks; higher = less SQL pressure.
         "dispatch_interval_seconds": 60,
@@ -1545,6 +1549,14 @@ DEFAULT_CONFIG = {
         # assignee to any installed profile. When unset, falls back to the
         # default profile. A task never ends up with assignee=None.
         "default_assignee": "",
+        # Profile that reviews substantial handoffs before user-facing
+        # completion. Workers route review-required completions to this
+        # profile's review lane; set blank to disable reviewer-first routing.
+        "reviewer_profile": "reviewer",
+        # Optional extra skills forced onto review-lane workers. Leave blank
+        # to rely on the reviewer profile's own configured skills plus the
+        # dispatcher-injected kanban-worker lifecycle skill.
+        "review_skills": [],
         # When true, the kanban dispatcher auto-runs the decomposer on
         # tasks that land in Triage (every dispatcher tick). When false,
         # decomposition is manual via `hermes kanban decompose <id>` or
@@ -2469,6 +2481,14 @@ OPTIONAL_ENV_VARS = {
         "url": "https://t.me/BotFather",
         "password": True,
         "category": "messaging",
+    },
+    "NOTIFICATIONS_TELEGRAM_BOT_TOKEN": {
+        "description": "Dedicated Telegram bot token for notification senders/watchdogs",
+        "prompt": "Notifications Telegram bot token",
+        "url": "https://t.me/BotFather",
+        "password": True,
+        "category": "messaging",
+        "advanced": True,
     },
     "TELEGRAM_ALLOWED_USERS": {
         "description": "Comma-separated Telegram user IDs allowed to use the bot (get ID from @userinfobot)",

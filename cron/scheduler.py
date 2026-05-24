@@ -587,7 +587,10 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
             return msg
         return None  # local-only jobs don't deliver — not a failure
 
-    from tools.send_message_tool import _send_to_platform
+    from tools.send_message_tool import (
+        _get_notifications_telegram_token,
+        _send_notification_to_platform,
+    )
     from gateway.config import load_gateway_config, Platform
 
     # Optionally wrap the content with a header/footer so the user knows this
@@ -666,9 +669,18 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
 
         # Prefer the live adapter when the gateway is running — this supports E2EE
         # rooms (e.g. Matrix) where the standalone HTTP path cannot encrypt.
+        # Telegram notification deliveries intentionally bypass the interactive
+        # gateway adapter when NOTIFICATIONS_TELEGRAM_BOT_TOKEN is configured,
+        # so cron pings come from the dedicated Notifications bot instead of Ava.
         runtime_adapter = (adapters or {}).get(platform)
         delivered = False
-        if runtime_adapter is not None and loop is not None and getattr(loop, "is_running", lambda: False)():
+        use_dedicated_telegram_notifier = platform == Platform.TELEGRAM and bool(_get_notifications_telegram_token())
+        if (
+            not use_dedicated_telegram_notifier
+            and runtime_adapter is not None
+            and loop is not None
+            and getattr(loop, "is_running", lambda: False)()
+        ):
             send_metadata = {"thread_id": thread_id} if thread_id else None
             try:
                 # Send cleaned text (MEDIA tags stripped) — not the raw content
@@ -732,7 +744,14 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
 
         if not delivered:
             # Standalone path: run the async send in a fresh event loop (safe from any thread)
-            coro = _send_to_platform(platform, pconfig, chat_id, cleaned_delivery_content, thread_id=thread_id, media_files=media_files)
+            coro = _send_notification_to_platform(
+                platform,
+                pconfig,
+                chat_id,
+                cleaned_delivery_content,
+                thread_id=thread_id,
+                media_files=media_files,
+            )
             try:
                 result = asyncio.run(coro)
             except RuntimeError:
@@ -742,7 +761,17 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
                 # fresh thread that has no running loop.
                 coro.close()
                 with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
-                    future = pool.submit(asyncio.run, _send_to_platform(platform, pconfig, chat_id, cleaned_delivery_content, thread_id=thread_id, media_files=media_files))
+                    future = pool.submit(
+                        asyncio.run,
+                        _send_notification_to_platform(
+                            platform,
+                            pconfig,
+                            chat_id,
+                            cleaned_delivery_content,
+                            thread_id=thread_id,
+                            media_files=media_files,
+                        ),
+                    )
                     result = future.result(timeout=30)
             except Exception as e:
                 msg = f"delivery to {platform_name}:{chat_id} failed: {e}"

@@ -31,12 +31,21 @@ from hermes_state import (
 # directly (``'sqlite3.Connection' object attribute 'execute' is read-only``).
 # A factory-built subclass lets us intercept journal_mode=WAL per-test with
 # its own mutable counter, avoiding the xdist-parallel class-state race.
-def _make_blocking_factory(reason: str, attempt_counter: list):
-    """Return a sqlite3.Connection subclass that raises on PRAGMA journal_mode=WAL."""
+def _make_blocking_factory(
+    reason: str,
+    attempt_counter: list,
+    *,
+    block_delete: bool = False,
+):
+    """Return a connection subclass that raises on journal-mode pragmas."""
 
     class _WalBlockingConnection(sqlite3.Connection):
         def execute(self, sql, *args, **kwargs):  # type: ignore[override]
-            if "journal_mode=wal" in sql.lower().replace(" ", ""):
+            normalized = sql.lower().replace(" ", "")
+            if "journal_mode=wal" in normalized:
+                attempt_counter[0] += 1
+                raise sqlite3.OperationalError(reason)
+            if block_delete and "journal_mode=delete" in normalized:
                 attempt_counter[0] += 1
                 raise sqlite3.OperationalError(reason)
             return super().execute(sql, *args, **kwargs)
@@ -44,14 +53,14 @@ def _make_blocking_factory(reason: str, attempt_counter: list):
     return _WalBlockingConnection
 
 
-def _open_blocking(path, reason="locking protocol", **kwargs):
+def _open_blocking(path, reason="locking protocol", *, block_delete=False, **kwargs):
     """Open a connection whose WAL pragma raises ``reason``.
 
     Returns ``(conn, attempt_counter_list)`` so callers can assert how many
-    times WAL was attempted.
+    times journal-mode pragmas were attempted.
     """
     attempts = [0]
-    factory = _make_blocking_factory(reason, attempts)
+    factory = _make_blocking_factory(reason, attempts, block_delete=block_delete)
     return sqlite3.connect(str(path), factory=factory, **kwargs), attempts
 
 
@@ -64,11 +73,13 @@ def _reset_last_init_error():
 
 
 @pytest.fixture(autouse=True)
-def _reset_wal_fallback_warned_paths():
-    """Reset the WAL-fallback warned-paths set so dedup doesn't leak between tests."""
+def _reset_wal_fallback_state():
+    """Reset WAL-fallback module state so tests don't leak across cases."""
     hermes_state._wal_fallback_warned_paths.clear()
+    hermes_state._wal_fallback_delete_only_paths.clear()
     yield
     hermes_state._wal_fallback_warned_paths.clear()
+    hermes_state._wal_fallback_delete_only_paths.clear()
 
 
 class TestApplyWalWithFallback:
@@ -158,6 +169,58 @@ class TestApplyWalWithFallback:
             f"Expected 1 deduplicated warning, got {len(warnings)}: "
             f"{[r.getMessage() for r in warnings]}"
         )
+
+    def test_repeated_fallback_skips_wal_after_first_failure(self, tmp_path):
+        """Once a DB label falls back, future connections go straight to DELETE.
+
+        This prevents dashboard/plugin endpoints that open many short-lived
+        kanban connections from repeatedly hitting the same flaky WAL setup
+        path and surfacing a stream of ``disk I/O error`` failures.
+        """
+        conn1, attempts1 = _open_blocking(
+            tmp_path / "first.db", reason="disk I/O error", isolation_level=None
+        )
+        assert apply_wal_with_fallback(conn1, db_label="flaky-kanban.db") == "delete"
+        conn1.close()
+        assert attempts1[0] == 1
+
+        conn2, attempts2 = _open_blocking(
+            tmp_path / "second.db", reason="disk I/O error", isolation_level=None
+        )
+        assert apply_wal_with_fallback(conn2, db_label="flaky-kanban.db") == "delete"
+        conn2.execute("CREATE TABLE t (x INTEGER)")
+        conn2.execute("INSERT INTO t VALUES (2)")
+        assert conn2.execute("SELECT x FROM t").fetchone()[0] == 2
+        conn2.close()
+        assert attempts2[0] == 0
+
+    def test_cached_fallback_does_not_touch_delete_pragma_again(self, tmp_path):
+        """Cached fallback must not turn DELETE mode into new per-tick failures.
+
+        Regression for gateway dispatcher noise: after one WAL fallback, the
+        cached path previously executed ``PRAGMA journal_mode=DELETE`` on every
+        connection.  On a flaky filesystem that DELETE pragma can raise the same
+        transient ``disk I/O error``, causing repeated dispatcher tracebacks.
+        """
+        conn1, attempts1 = _open_blocking(
+            tmp_path / "first.db", reason="disk I/O error", isolation_level=None
+        )
+        assert apply_wal_with_fallback(conn1, db_label="flaky-kanban.db") == "delete"
+        conn1.close()
+        assert attempts1[0] == 1
+
+        conn2, attempts2 = _open_blocking(
+            tmp_path / "second.db",
+            reason="disk I/O error",
+            block_delete=True,
+            isolation_level=None,
+        )
+        assert apply_wal_with_fallback(conn2, db_label="flaky-kanban.db") == "delete"
+        conn2.execute("CREATE TABLE t (x INTEGER)")
+        conn2.execute("INSERT INTO t VALUES (2)")
+        assert conn2.execute("SELECT x FROM t").fetchone()[0] == 2
+        conn2.close()
+        assert attempts2[0] == 0
 
     def test_warning_fires_independently_per_db_label(self, tmp_path, caplog):
         """Different db_labels each get their own one warning (not globally dedup'd)."""

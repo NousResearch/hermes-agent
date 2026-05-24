@@ -161,8 +161,8 @@ Manage skill config from the CLI:
 # Interactive config for a specific skill
 hermes skills config gif-search
 
-# View all skill config
-hermes config get skills.config
+# View all config and inspect the skills.config section
+hermes config show
 ```
 
 ---

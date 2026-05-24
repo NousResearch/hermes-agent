@@ -32,6 +32,14 @@ hermes profile create mybot
 
 Creates a fresh profile with bundled skills seeded. Run `mybot setup` to configure API keys, model, and gateway tokens.
 
+If you want a profile with no bundled skills at all, add `--no-skills`:
+
+```bash
+hermes profile create sandbox --no-skills
+```
+
+Hermes writes a marker in the profile so future `hermes update` runs do not re-seed the bundled skill catalog. This is useful for tightly scoped orchestrator, worker, or sandbox profiles. `--no-skills` cannot be combined with `--clone` or `--clone-all`, because those modes copy skills from an existing profile.
+
 If you plan to use this profile as a kanban worker (or want the kanban orchestrator to route work to it), pass `--description "<role>"` at create time so the orchestrator knows what it's good at:
 
 ```bash

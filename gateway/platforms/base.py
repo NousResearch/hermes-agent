@@ -872,8 +872,10 @@ def _path_is_within(path: Path, root: Path) -> bool:
 _MSYS_PATH_RE = re.compile(r"^/([A-Za-z])(/.*)$")
 # ``file:///c/Users/...`` (note: 3 slashes + lowercase drive letter, no
 # colon) is the MSYS / Git-Bash mistake; the canonical Windows file URL
-# is ``file:///C:/Users/...``.  We accept both shapes when stripping.
-_FILE_URL_PREFIX_RE = re.compile(r"^file://+")
+# is ``file:///C:/Users/...``.  Strip exactly the two-slash scheme
+# delimiter so the third slash — the actual path's leading ``/`` —
+# survives for the downstream MSYS rewrite to find.
+_FILE_URL_PREFIX_RE = re.compile(r"^file://")
 
 
 def normalize_msys_path(path: str) -> str:
@@ -938,10 +940,21 @@ def strip_file_url_prefix(url_or_path: str) -> str:
     stripped = _FILE_URL_PREFIX_RE.sub("", str(url_or_path), count=1)
     if stripped == url_or_path:
         return url_or_path
-    # ``file:///C:/Users/foo`` → ``C:/Users/foo`` after the strip; Windows
-    # Path() handles forward slashes fine so no further work needed.
-    # ``file:///c/Users/foo`` (MSYS) → ``/c/Users/foo`` after the strip;
-    # normalize_msys_path turns that into ``C:/Users/foo``.
+    # After ``^file://`` strips two slashes:
+    #   ``file:///c/Users/foo`` (MSYS)        → ``/c/Users/foo``
+    #   ``file:///C:/Users/foo`` (Windows)    → ``/C:/Users/foo``
+    # The leading ``/`` before a ``<drive>:`` segment is an artefact of
+    # the URL's third slash, not part of any real path on Windows; trim
+    # it so Path('/C:/...') doesn't surprise callers and so Path eats
+    # ``C:/...`` directly.  POSIX file URLs (``/srv/...``) are kept
+    # exactly as-is.
+    if (
+        len(stripped) >= 3
+        and stripped[0] == "/"
+        and stripped[1].isalpha()
+        and stripped[2] == ":"
+    ):
+        stripped = stripped[1:]
     return normalize_msys_path(stripped)
 
 

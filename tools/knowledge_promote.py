@@ -33,9 +33,17 @@ def _slugify(text: str) -> str:
     return text.strip('-') or "untitled"
 
 
+def _domain_root(vault: Path) -> Path:
+    """Return the canonical domain KB root for this vault."""
+    legacy = vault / "domains"
+    if legacy.exists():
+        return legacy
+    return vault / "knowledge" / "domain"
+
+
 def _update_domain_index(vault: Path, domain: str, increment: int = 1) -> None:
     """Update the domain index note count for a domain."""
-    index_path = vault / "domains" / "index.md"
+    index_path = _domain_root(vault) / "index.md"
     if not index_path.exists():
         return
     try:
@@ -106,7 +114,7 @@ def promote_knowledge(
         })
 
     vault = _resolve_vault_path()
-    domain_dir = vault / "domains" / target_domain
+    domain_dir = _domain_root(vault) / target_domain
     if not domain_dir.exists():
         domain_dir.mkdir(parents=True, exist_ok=True)
 
@@ -178,7 +186,8 @@ registry.register(
             "Promote knowledge from project-local KB to a shared domain KB. "
             "Valid domains: frontend, backend, devops, security, testing, data, mobile, infrastructure, "
             "business, marketing, sales, finance, operations, people. "
-            "Creates a note in the domain directory with frontmatter tracking origin and timestamp."
+            "Creates a note under knowledge/domain/<domain>/ in the restored Obsidian graph, "
+            "or domains/<domain>/ when a legacy domains directory already exists."
         ),
         "parameters": {
             "type": "object",

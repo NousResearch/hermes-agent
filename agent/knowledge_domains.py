@@ -193,7 +193,10 @@ class DomainRelevanceMatcher:
     def get_domain_notes(self, domains: List[str]) -> List[Path]:
         """Return paths to domain KB notes for the given domains.
 
-        Scans each domain directory for .md files (excluding README.md).
+        Scans each domain directory for .md files (excluding README.md). The
+        current restored Obsidian graph stores domain-scoped knowledge under
+        ``knowledge/domain/<domain>/``; the older standalone layout used
+        ``domains/<domain>/``. Both are supported for migration compatibility.
 
         Args:
             domains: List of domain slugs
@@ -202,17 +205,18 @@ class DomainRelevanceMatcher:
             List of Path objects to domain KB note files
         """
         notes: List[Path] = []
-        domains_dir = self.vault_path / "domains"
-        if not domains_dir.exists():
-            logger.warning("Domains dir not found: %s", domains_dir)
-            return notes
+        roots = [
+            self.vault_path / "knowledge" / "domain",
+            self.vault_path / "domains",
+        ]
         for domain_slug in domains:
-            domain_dir = domains_dir / domain_slug
-            if not domain_dir.exists():
-                logger.debug("Domain dir not found: %s", domain_dir)
-                continue
-            for note_file in sorted(domain_dir.glob("*.md")):
-                if note_file.name == "README.md":
+            for root in roots:
+                domain_dir = root / domain_slug
+                if not domain_dir.exists():
+                    logger.debug("Domain dir not found: %s", domain_dir)
                     continue
-                notes.append(note_file)
+                for note_file in sorted(domain_dir.glob("*.md")):
+                    if note_file.name == "README.md":
+                        continue
+                    notes.append(note_file)
         return notes

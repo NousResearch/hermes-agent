@@ -455,8 +455,8 @@ def render_dashboard(
         age = _age_label(item.latest_time, now)
         confidence = _confidence_label(item, now)
         row_signal = _row_signal(item)
-        href = html.escape(item.artifact_url, quote=True) if item.artifact_url else ""
-        open_label = "OPEN" if item.artifact_url else "NO PAGE"
+        href = html.escape(item.artifact_url, quote=True) if item.enabled and item.artifact_url else ""
+        open_label = "OPEN" if href else "NO PAGE"
         ask_link = (
             f'<a class="ask-label" href="{html.escape(item.telegram_url, quote=True)}" target="_blank" rel="noopener">ASK</a>'
             if item.telegram_url
@@ -464,9 +464,15 @@ def render_dashboard(
         )
         read_key = html.escape(_read_key(item), quote=True)
         open_attr = f' data-open-url="{href}"' if href else ' aria-disabled="true"'
+        open_overlay = (
+            f'<a class="row-open-overlay" href="{href}" aria-label="Open briefing: {html.escape(item.name, quote=True)}"></a>'
+            if href
+            else ""
+        )
         rows.append(
             f"""
 <section class="brief-row readable unread {status_class}" data-read-key="{read_key}"{open_attr}>
+  {open_overlay}
   <div class="swipe-action" aria-hidden="true">MARK READ</div>
   <div class="swipe-content">
     <div class="row-signal"><span class="read-dot"></span><span>{_safe_text(row_signal)}</span></div>
@@ -502,8 +508,13 @@ def render_dashboard(
 
     lead_title = lead_item.name if lead_item else "No briefing output yet"
     lead_excerpt = lead_item.excerpt if lead_item else "Acta is waiting for the next generated briefing packet."
-    lead_href = html.escape(lead_item.artifact_url, quote=True) if lead_item and lead_item.artifact_url else ""
+    lead_href = html.escape(lead_item.artifact_url, quote=True) if lead_item and lead_item.enabled and lead_item.artifact_url else ""
     lead_href_attr = f' data-open-url="{lead_href}"' if lead_href else ' aria-disabled="true"'
+    lead_open_overlay = (
+        f'<a class="row-open-overlay" href="{lead_href}" aria-label="Open briefing: {html.escape(lead_item.name, quote=True)}"></a>'
+        if lead_item and lead_href
+        else ""
+    )
     lead_ask_link = (
         f'<a class="ask-label" href="{html.escape(lead_item.telegram_url, quote=True)}" target="_blank" rel="noopener">ASK TELEGRAM</a>'
         if lead_item and lead_item.telegram_url
@@ -556,6 +567,9 @@ a {{ color:inherit; }}
 .lead > * {{ position:relative; }}
 .lead[aria-disabled='true'] {{ cursor:default; }}
 .lead:hover h1 {{ color:#fff; }}
+.row-open-overlay {{ position:absolute; inset:0; z-index:1; border:0; text-decoration:none; }}
+.lead .ask-label, .brief-row .ask-label, .card-actions, .lead > :not(.row-open-overlay), .brief-row > .swipe-content {{ position:relative; z-index:2; }}
+.row-open-overlay:focus-visible {{ outline:2px solid var(--acta2); outline-offset:2px; box-shadow:0 0 0 4px rgba(35,167,255,.14),0 10px 32px rgba(0,0,0,.26); border-radius:inherit; }}
 .label {{ grid-column:1/-1; display:flex; align-items:center; flex-wrap:wrap; gap:6px; font:750 10px var(--mono); letter-spacing:.09em; color:var(--muted); text-transform:uppercase; }}
 h1 {{ grid-column:1; font:720 clamp(18px,2.3vw,24px)/1.08 var(--ui); letter-spacing:-.025em; margin:0; color:#fff; max-width:980px; }}
 .lead p {{ grid-column:1; font:13px/1.32 var(--ui); color:var(--body); max-width:940px; margin:0; display:-webkit-box; -webkit-line-clamp:2; -webkit-box-orient:vertical; overflow:hidden; }}
@@ -663,6 +677,7 @@ footer {{ color:var(--faint); margin:24px 16px 36px; font:12px var(--mono); text
     <section class="content">
       <div>
         <article class="lead readable unread" data-read-key="{lead_read_key}"{lead_href_attr}>
+          {lead_open_overlay}
           <div class="label"><span class="read-dot"></span><span class="read-state">UNREAD</span><span>{_safe_text(lead_confidence)}</span><span>today</span><span>open first</span></div>
           <h1>{_safe_text(lead_title)}</h1>
           <p>{_safe_text(lead_excerpt)}</p>
@@ -778,6 +793,12 @@ footer {{ color:var(--faint); margin:24px 16px 36px; font:12px var(--mono); text
     apply(el);
     var content=el.querySelector('.swipe-content') || el;
     var sx=0, sy=0, dx=0, swiping=false, didSwipe=false, active=false;
+    function openReadable(){{
+      var k=el.dataset.readKey || '';
+      if(k){{ state[k]=true; save(); apply(el); }}
+      var openUrl=el.dataset.openUrl || '';
+      if(openUrl) window.location.href=openUrl;
+    }}
     function point(ev){{
       var t=(ev.touches&&ev.touches[0]) || ev;
       return {{x:t.clientX||0, y:t.clientY||0}};
@@ -813,11 +834,14 @@ footer {{ color:var(--faint); margin:24px 16px 36px; font:12px var(--mono); text
     el.addEventListener('click', function(ev){{
       if(didSwipe){{ ev.preventDefault(); ev.stopPropagation(); didSwipe=false; return; }}
       if(ev.target && ev.target.closest && ev.target.closest('a')) return;
-      var k=el.dataset.readKey || '';
-      if(k){{ state[k]=true; save(); apply(el); }}
-      var openUrl=el.dataset.openUrl || '';
-      if(openUrl) window.location.href=openUrl;
+      openReadable();
     }}, true);
+    el.querySelectorAll('.row-open-overlay').forEach(function(anchor){{
+      anchor.addEventListener('click', function(){{
+        var k=el.dataset.readKey || '';
+        if(k){{ state[k]=true; save(); apply(el); }}
+      }});
+    }});
     el.addEventListener('touchstart', start, {{passive:true}});
     el.addEventListener('touchmove', move, {{passive:false}});
     el.addEventListener('touchend', end, {{passive:false}});

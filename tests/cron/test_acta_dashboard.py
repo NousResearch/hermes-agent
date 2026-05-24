@@ -367,11 +367,78 @@ def test_lead_brief_is_clickable_and_read_state_enabled(tmp_path: Path):
 
     assert '<article class="lead readable unread"' in html
     assert 'data-open-url="https://acta.example/lead.html"' in html
+    assert '<a class="row-open-overlay" href="https://acta.example/lead.html" aria-label="Open briefing: Lead Brief"></a>' in html
+    assert 'aria-label="Open briefing: Lead Brief"' in html
     assert 'data-read-key="lead:' in html
     assert '<span class="read-state">UNREAD</span>' in html
     assert 'MARK READ' in html
+    assert ".row-open-overlay:focus-visible" in html
+    assert ".brief-row > .swipe-content" in html
+    assert ".brief-row > :not(.row-open-overlay)" not in html
+    assert "el.querySelectorAll('.row-open-overlay')" in html
     assert "script-src 'unsafe-inline'" in html
     assert "localStorage" in html
+
+
+def test_feed_rows_are_keyboard_accessible_signed_links():
+    item_cls = collect_situation_items.__globals__["CronSituationItem"]
+    lead = item_cls(
+        job_id="lead",
+        name="Lead Brief",
+        schedule="daily",
+        deliver="telegram",
+        enabled=True,
+        latest_md=Path("/tmp/2026-05-19_10-00-00.md"),
+        latest_html=None,
+        latest_time=datetime(2026, 5, 19, 10, tzinfo=timezone.utc),
+        status="fresh",
+        excerpt="Lead briefing.",
+        artifact_url="https://acta.example/lead.html",
+    )
+    second = item_cls(
+        job_id="second",
+        name="Second Brief",
+        schedule="hourly",
+        deliver="telegram",
+        enabled=True,
+        latest_md=Path("/tmp/2026-05-19_09-00-00.md"),
+        latest_html=None,
+        latest_time=datetime(2026, 5, 19, 9, tzinfo=timezone.utc),
+        status="fresh",
+        excerpt="Follow-up briefing.",
+        artifact_url="https://acta.example/second.html?exp=1&sig=abc",
+    )
+
+    html = render_dashboard([lead, second], generated_at=datetime(2026, 5, 19, 11, tzinfo=timezone.utc))
+
+    assert '<section class="brief-row readable unread fresh"' in html
+    assert 'data-open-url="https://acta.example/second.html?exp=1&amp;sig=abc"' in html
+    assert '<a class="row-open-overlay" href="https://acta.example/second.html?exp=1&amp;sig=abc" aria-label="Open briefing: Second Brief"></a>' in html
+    assert 'aria-label="Open briefing: Second Brief"' in html
+
+
+def test_disabled_today_rows_do_not_get_keyboard_open_overlay():
+    item_cls = collect_situation_items.__globals__["CronSituationItem"]
+    disabled = item_cls(
+        job_id="disabled",
+        name="Disabled Brief",
+        schedule="daily",
+        deliver="telegram",
+        enabled=False,
+        latest_md=Path("/tmp/2026-05-19_10-00-00.md"),
+        latest_html=None,
+        latest_time=datetime(2026, 5, 19, 10, tzinfo=timezone.utc),
+        status="fresh",
+        excerpt="Paused source with an old artifact.",
+        artifact_url="https://acta.example/disabled.html",
+    )
+
+    html = render_dashboard([disabled], generated_at=datetime(2026, 5, 19, 11, tzinfo=timezone.utc))
+
+    assert 'aria-disabled="true"' in html
+    assert 'data-open-url="https://acta.example/disabled.html"' not in html
+    assert 'href="https://acta.example/disabled.html"' not in html
+    assert 'aria-label="Open briefing: Disabled Brief"' not in html
 
 
 def test_read_state_has_cookie_fallback_and_applies_on_open(tmp_path: Path):

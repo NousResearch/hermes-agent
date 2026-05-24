@@ -1753,6 +1753,36 @@ def sanitize_api_messages(messages: List[Dict[str, Any]]) -> List[Dict[str, Any]
             "Pre-call sanitizer: added %d stub tool result(s)",
             len(missing_results),
         )
+
+    # [empty-content-with-tool-calls patch v1]
+    # 3. Normalize assistant messages where content is empty AND tool_calls
+    #    are present. Some OpenAI-compatible upstreams (notably Anthropic-
+    #    compatible shims and certain proxy gateways) hard-reject this with
+    #    400 "messages: text content blocks must be non-empty".
+    #    Both OpenAI and Anthropic accept content=None when tool_calls
+    #    carry the assistant turn, so coerce empty -> None.
+    _empty_fixed = 0
+    for _m in messages:
+        if _m.get("role") != "assistant":
+            continue
+        if not _m.get("tool_calls"):
+            continue
+        _c = _m.get("content")
+        if _c == "" or _c == [] or (isinstance(_c, list) and not any(
+            isinstance(_b, dict) and (
+                (_b.get("type") in ("text", "input_text", "output_text") and _b.get("text"))
+                or _b.get("type") not in (None, "text", "input_text", "output_text")
+            )
+            for _b in _c
+        )):
+            _m["content"] = None
+            _empty_fixed += 1
+    if _empty_fixed:
+        _ra().logger.debug(
+            "Pre-call sanitizer: coerced %d empty assistant content(s) -> None (tool_calls preserved)",
+            _empty_fixed,
+        )
+
     return messages
 
 

@@ -3033,11 +3033,14 @@ class TestRunConversation:
             return empty_stub
 
         status_messages = []
+        stream_deltas = []
+        agent.stream_delta_callback = stream_deltas.append
 
         def _capture_status(msg):
             status_messages.append(msg)
 
         with (
+            patch.object(agent, "_has_stream_consumers", return_value=False),
             patch.object(agent, "_interruptible_api_call", side_effect=_fake_api_call),
             patch.object(agent, "_persist_session"),
             patch.object(agent, "_save_trajectory"),
@@ -3049,6 +3052,7 @@ class TestRunConversation:
         assert result["completed"] is True
         assert result["final_response"] == "The answer to your question is that"
         assert result["api_calls"] == 1  # No wasted retries
+        assert "The answer to your question is that" in stream_deltas
         # Should emit the stream-interrupted status, NOT the empty-retry status
         recovery_msgs = [m for m in status_messages if "stream interrupted" in m.lower()]
         assert len(recovery_msgs) >= 1, f"Expected stream recovery status, got: {status_messages}"
@@ -3079,6 +3083,33 @@ class TestRunConversation:
         # Should use the streamed content, not the old prior-turn fallback
         assert result["final_response"] == "Fresh partial content from this turn"
         assert result["api_calls"] == 1
+
+    def test_prior_turn_fallback_emits_stream_delta(self, agent):
+        """SSE clients receive fallback text synthesized from the previous turn."""
+        self._setup_agent(agent)
+        tool_call = _mock_tool_call(name="memory", arguments='{"action":"add","text":"ok"}', call_id="mem1")
+        tool_resp = _mock_response(
+            content="Earlier housekeeping answer",
+            finish_reason="tool_calls",
+            tool_calls=[tool_call],
+        )
+        empty_stub = _mock_response(content="", finish_reason="stop")
+        agent.client.chat.completions.create.side_effect = [tool_resp, empty_stub]
+        agent.valid_tool_names.add("memory")
+        stream_deltas = []
+        agent.stream_delta_callback = stream_deltas.append
+
+        with (
+            patch.object(agent, "_has_stream_consumers", return_value=False),
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+        ):
+            result = agent.run_conversation("thanks")
+
+        assert result["final_response"] == "Earlier housekeeping answer"
+        assert result["api_calls"] == 2
+        assert "Earlier housekeeping answer" in stream_deltas
 
     def test_nous_401_refreshes_after_remint_and_retries(self, agent):
         self._setup_agent(agent)

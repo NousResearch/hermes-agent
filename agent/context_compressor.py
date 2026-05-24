@@ -75,6 +75,45 @@ _IMAGE_TOKEN_ESTIMATE = 1600
 _IMAGE_CHAR_EQUIVALENT = _IMAGE_TOKEN_ESTIMATE * _CHARS_PER_TOKEN
 _SUMMARY_FAILURE_COOLDOWN_SECONDS = 600
 
+# When an auxiliary provider can't satisfy the request (unknown model, refused
+# prompt, etc.) it sometimes returns a 200 OK with an error-text body rather
+# than raising an exception. Without this guard, ContextCompressor would accept
+# that text as the conversation summary and drop the real middle turns. The
+# patterns below are conservative — they only match phrases that look like a
+# control plane talking, not a model summarising a conversation about control
+# planes. Match is substring-based, case-insensitive, against the FULL summary.
+_PROVIDER_ERROR_SUMMARY_PATTERNS = (
+    # Generic OpenAI-compatible provider "model not found" responses (e.g. the
+    # claude-bridge / Codex-via-bridge case where literal 'auto' propagated to
+    # the wire and the bridge politely refused).
+    "there's an issue with the selected model",
+    "there is an issue with the selected model",
+    "run --model to pick a different model",
+    "may not exist or you may not have access",
+    # OpenAI / Anthropic / OpenRouter refusal-by-content patterns. Conservative
+    # — these phrases would not occur naturally in a faithful conversation
+    # summary; if they appear in summary output it means the auxiliary LLM
+    # refused the prompt rather than producing one.
+    "i can't help with that",
+    "i cannot help with that",
+    "i'm sorry, but i can't",
+    "i'm sorry, but i cannot",
+    "i am sorry, but i can't",
+    "i am sorry, but i cannot",
+)
+
+
+def _looks_like_provider_error_summary(summary: str) -> bool:
+    """True when the auxiliary LLM returned an error / refusal string instead of a summary.
+
+    Used to reject 200-OK responses whose body is actually the provider's
+    control plane talking. See ``_PROVIDER_ERROR_SUMMARY_PATTERNS``.
+    """
+    if not summary or not isinstance(summary, str):
+        return False
+    needle = summary.lower()
+    return any(p in needle for p in _PROVIDER_ERROR_SUMMARY_PATTERNS)
+
 
 def _content_length_for_budget(raw_content: Any) -> int:
     """Return the effective char-length of a message's content for token budgeting.
@@ -1077,6 +1116,44 @@ The user has requested that this compaction PRIORITISE preserving all informatio
             # Redact the summary output as well — the summarizer LLM may
             # ignore prompt instructions and echo back secrets verbatim.
             summary = redact_sensitive_text(content.strip())
+            # Provider-error guard: some OpenAI-compatible providers return a
+            # 200 OK with control-plane error text (e.g. "the model 'auto' does
+            # not exist, run --model to pick a different model") instead of
+            # raising. Without this check, ContextCompressor would store that
+            # text as the conversation summary, drop the real middle turns,
+            # and the user would see a corrupted handoff with no warning.
+            # Treat as a provider failure: short cooldown, no fallback summary,
+            # propagate the same _last_summary_error path the exception branch
+            # uses so downstream consumers can surface a warning.
+            if _looks_like_provider_error_summary(summary):
+                _preview = summary[:200].replace("\n", " ")
+                logger.error(
+                    "Context compression: auxiliary LLM returned a provider "
+                    "error/refusal string instead of a summary (preview: %r). "
+                    "Rejecting to avoid silent context corruption. Check "
+                    "auxiliary.compression.{provider,model} in config.yaml.",
+                    _preview,
+                )
+                self._last_summary_error = "provider returned error string as summary"
+                self._last_aux_model_failure_error = _preview
+                # If a distinct summary model is configured and we haven't
+                # already fallen back, retry once on the main model — losing N
+                # turns of context is almost always worse than one extra
+                # summary attempt. Mirrors the exception path retry logic.
+                if (
+                    self.summary_model
+                    and self.summary_model != self.model
+                    and not getattr(self, "_summary_model_fallen_back", False)
+                ):
+                    _fake_err = RuntimeError(
+                        f"summary returned provider error string: {_preview}"
+                    )
+                    self._fallback_to_main_for_compression(_fake_err, "provider-error-summary")
+                    return self._generate_summary(turns_to_summarize, focus_topic=focus_topic)
+                # No fallback path available — enter cooldown so we stop
+                # making the same broken call repeatedly.
+                self._summary_failure_cooldown_until = time.monotonic() + _SUMMARY_FAILURE_COOLDOWN_SECONDS
+                return None
             # Store for iterative updates on next compaction
             self._previous_summary = summary
             self._summary_failure_cooldown_until = 0.0

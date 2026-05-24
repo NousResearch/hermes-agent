@@ -1323,6 +1323,95 @@ def test_dispatch_respawn_guard_defers_auth_error_without_auto_block(
         assert kb.get_task(conn, t).status == "ready"
 
 
+def test_dispatch_preflight_defers_unhealthy_profile_before_claim(
+    kanban_home, all_assignees_spawnable, monkeypatch
+):
+    """dispatch_once leaves a task retryable when its profile runtime is unhealthy."""
+    reason = "Claude CLI is not logged in; run `claude auth login --claudeai`."
+    spawned_ids = []
+
+    def fake_spawn(task, workspace):
+        spawned_ids.append(task.id)
+
+    monkeypatch.setattr(
+        kb,
+        "_kanban_profile_runtime_preflight",
+        lambda assignee, cache: reason,
+        raising=False,
+    )
+
+    with kb.connect() as conn:
+        t = kb.create_task(conn, title="cli-auth", assignee="coding-agent")
+        res = kb.dispatch_once(conn, spawn_fn=fake_spawn)
+        task = kb.get_task(conn, t)
+        events = kb.list_events(conn, t)
+
+    assert task is not None
+    assert task.status == "ready"
+    assert task.claim_lock is None
+    assert task.current_run_id is None
+    assert spawned_ids == []
+    assert res.spawned == []
+    assert res.profile_unhealthy == [(t, reason)]
+
+    event = next(e for e in events if e.kind == "spawn_preflight_failed")
+    assert isinstance(event.payload, dict)
+    assert event.payload == {"assignee": "coding-agent", "reason": reason}
+
+
+def test_dispatch_review_preflight_defers_unhealthy_profile_before_claim(
+    kanban_home, all_assignees_spawnable, monkeypatch
+):
+    """Review tasks get the same profile-runtime preflight as ready tasks."""
+    reason = "Claude CLI auth check failed: expired token"
+    monkeypatch.setattr(
+        kb,
+        "_kanban_profile_runtime_preflight",
+        lambda assignee, cache: reason,
+        raising=False,
+    )
+
+    with kb.connect() as conn:
+        t = kb.create_task(conn, title="review-cli-auth", assignee="code-review-agent")
+        conn.execute("UPDATE tasks SET status = 'review' WHERE id = ?", (t,))
+        res = kb.dispatch_once(conn, spawn_fn=lambda task, ws: None)
+        task = kb.get_task(conn, t)
+        events = kb.list_events(conn, t)
+
+    assert task is not None
+    assert task.status == "review"
+    assert task.claim_lock is None
+    assert res.spawned == []
+    assert res.profile_unhealthy == [(t, reason)]
+    assert any(e.kind == "spawn_preflight_failed" for e in events)
+
+
+def test_config_uses_claude_cli_runtime_aliases():
+    assert kb._config_uses_claude_cli_runtime(
+        {"model": {"provider": "claude-cli"}}
+    )
+    assert kb._config_uses_claude_cli_runtime(
+        {"model": {"provider": "anthropic", "claude_runtime": "cli"}}
+    )
+    assert not kb._config_uses_claude_cli_runtime(
+        {"model": {"provider": "openai-codex"}}
+    )
+    assert not kb._config_uses_claude_cli_runtime({"model": "claude-sonnet-4"})
+
+
+def test_claude_cli_auth_preflight_parses_logged_out_json(monkeypatch):
+    class Result:
+        returncode = 1
+        stdout = '{"loggedIn": false, "authMethod": "none"}'
+        stderr = ""
+
+    monkeypatch.setattr(kb.subprocess, "run", lambda *args, **kwargs: Result())
+
+    assert kb._claude_cli_auth_preflight() == (
+        "Claude CLI is not logged in; run `claude auth login --claudeai`."
+    )
+
+
 def test_dispatch_respawn_guard_skips_recent_success(
     kanban_home, all_assignees_spawnable
 ):
@@ -3187,4 +3276,3 @@ def test_maybe_emit_scratch_tip_skips_non_scratch_workspaces(kanban_home, caplog
                 "SELECT kind FROM task_events WHERE task_id = ?", (tid,),
             ).fetchall()
             assert "tip_scratch_workspace" not in [e["kind"] for e in events]
-

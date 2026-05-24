@@ -1334,6 +1334,12 @@ class TestApprovalTimeoutIsNotConsent:
 
     SESSION_KEY = "test-no-consent-session"
 
+    def test_default_gateway_approval_timeout_is_one_hour(self):
+        from tools import approval as mod
+
+        assert mod.DEFAULT_GATEWAY_APPROVAL_TIMEOUT_SECONDS == 3600
+
+
     def setup_method(self):
         """Reset module state and force tight gateway_timeout for fast tests."""
         from tools import approval as mod

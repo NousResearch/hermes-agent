@@ -45,7 +45,7 @@ _lock = threading.RLock()
 # the next message arrives for the same session.  Buttons work up until
 # the adapter drops the callback_data (Telegram: ~48h; Discord: ephemeral;
 # Slack: 3s ack + long-lived actions).
-DEFAULT_TIMEOUT_SECONDS = 300
+DEFAULT_TIMEOUT_SECONDS = 3600
 
 
 def register(

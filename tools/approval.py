@@ -22,6 +22,7 @@ from hermes_cli.config import cfg_get
 from utils import env_var_enabled, is_truthy_value
 
 logger = logging.getLogger(__name__)
+DEFAULT_GATEWAY_APPROVAL_TIMEOUT_SECONDS = 3600
 
 # Per-thread/per-task gateway session identity.
 # Gateway runs agent turns concurrently in executor threads, so reading a
@@ -1233,7 +1234,7 @@ def check_all_command_guards(command: str, env_type: str,
                     "description": combined_desc,
                 }
 
-            # Block until the user responds or timeout (default 5 min).
+            # Block until the user responds or timeout (default 1 hour).
             # Poll in short slices so we can fire activity heartbeats every
             # ~10s to the agent's inactivity tracker.  Without this, the
             # blocking event.wait() never touches activity, and the
@@ -1241,11 +1242,13 @@ def check_all_command_guards(command: str, env_type: str,
             # 1800s) kills the agent while the user is still responding to
             # the approval prompt.  Mirrors the _wait_for_process() cadence
             # in tools/environments/base.py.
-            timeout = _get_approval_config().get("gateway_timeout", 300)
+            timeout = _get_approval_config().get(
+                "gateway_timeout", DEFAULT_GATEWAY_APPROVAL_TIMEOUT_SECONDS
+            )
             try:
                 timeout = int(timeout)
             except (ValueError, TypeError):
-                timeout = 300
+                timeout = DEFAULT_GATEWAY_APPROVAL_TIMEOUT_SECONDS
 
             try:
                 from tools.environments.base import touch_activity_if_due

@@ -38,6 +38,7 @@ from dataclasses import dataclass, field
 from typing import Callable, Dict, List, Optional
 
 logger = logging.getLogger(__name__)
+DEFAULT_CLARIFY_TIMEOUT_SECONDS = 3600
 
 
 # =========================================================================
@@ -231,7 +232,7 @@ def clear_session(session_key: str) -> int:
 def get_clarify_timeout() -> int:
     """Read the clarify response timeout (seconds) from config.
 
-    Defaults to 600 (10 minutes) — long enough for the user to type a
+    Defaults to 3600 (1 hour) — long enough for the user to type a
     thoughtful response, short enough that an abandoned prompt eventually
     unblocks the agent thread instead of pinning the running-agent guard
     forever.
@@ -242,9 +243,9 @@ def get_clarify_timeout() -> int:
         from hermes_cli.config import load_config
         cfg = load_config() or {}
         agent_cfg = cfg.get("agent", {}) or {}
-        return int(agent_cfg.get("clarify_timeout", 600))
+        return int(agent_cfg.get("clarify_timeout", DEFAULT_CLARIFY_TIMEOUT_SECONDS))
     except Exception:
-        return 600
+        return DEFAULT_CLARIFY_TIMEOUT_SECONDS
 
 
 # =========================================================================

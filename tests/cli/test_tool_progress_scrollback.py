@@ -125,14 +125,21 @@ class TestToolProgressScrollback:
         mock_print.assert_not_called()
 
     def test_error_suffix_on_failed_tool(self):
-        """When is_error=True, the stacked line includes [error]."""
+        """When a failed tool's result is forwarded, the stacked line surfaces
+        the specific error (e.g. ``[exit 1]`` or ``[File not found: x]``)
+        instead of the legacy generic ``[error]`` suffix."""
+        import json
         cli = _make_cli(tool_progress="all")
-        cli._on_tool_progress("tool.started", "terminal", "bad cmd", {"command": "bad cmd"})
+        cli._on_tool_progress("tool.started", "terminal", "false", {"command": "false"})
         with patch.object(_cli_mod, "_cprint") as mock_print:
-            cli._on_tool_progress("tool.completed", "terminal", None, None, duration=0.5, is_error=True)
+            cli._on_tool_progress(
+                "tool.completed", "terminal", None, None,
+                duration=0.5, is_error=True,
+                result=json.dumps({"output": "", "exit_code": 1}),
+            )
 
         line = mock_print.call_args[0][0]
-        assert "[error]" in line
+        assert "[exit 1]" in line
 
     def test_spinner_still_updates_on_started(self):
         """tool.started still updates the spinner text for live display."""

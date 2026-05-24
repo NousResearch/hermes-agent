@@ -27,8 +27,11 @@ class TestResolveRuntimeAgentKwargsAuthFallback:
 
         def _mock_resolve(**kwargs):
             call_count["n"] += 1
-            requested = kwargs.get("requested", "")
-            if requested and "codex" in str(requested).lower():
+            # First call = primary path (gateway reads model.provider from
+            # config.yaml internally; we simulate the auth failure here).
+            # Second call = fallback path with explicit_api_key + explicit_base_url
+            # supplied by gateway from fallback_model config.
+            if call_count["n"] == 1:
                 raise AuthError("Codex token refresh failed with status 401")
             return {
                 "api_key": "fallback-key",
@@ -39,8 +42,6 @@ class TestResolveRuntimeAgentKwargsAuthFallback:
                 "args": None,
                 "credential_pool": None,
             }
-
-        monkeypatch.setenv("HERMES_INFERENCE_PROVIDER", "openai-codex")
 
         with patch(
             "hermes_cli.runtime_provider.resolve_runtime_provider",
@@ -62,7 +63,6 @@ class TestResolveRuntimeAgentKwargsAuthFallback:
         config_path.write_text("model:\n  provider: openai-codex\n")
 
         monkeypatch.setattr("gateway.run._hermes_home", tmp_path)
-        monkeypatch.setenv("HERMES_INFERENCE_PROVIDER", "openai-codex")
 
         with patch(
             "hermes_cli.runtime_provider.resolve_runtime_provider",

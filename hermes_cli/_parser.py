@@ -129,7 +129,8 @@ def build_top_level_parser():
         default=None,
         help=(
             "Provider override for this invocation (e.g. openrouter, anthropic). "
-            "Applies to -z/--oneshot and --tui. Also settable via HERMES_INFERENCE_PROVIDER env var."
+            "Applies to -z/--oneshot and --tui. The persistent provider lives in config.yaml "
+            "under model.provider — use `hermes setup` or edit the file to change it."
         ),
     )
     parser.add_argument(

@@ -157,10 +157,10 @@ The `minimax-oauth` provider does **not** use `MINIMAX_API_KEY` or `MINIMAX_BASE
 | `MINIMAX_API_KEY` | Used by `minimax` provider only — ignored for `minimax-oauth` |
 | `MINIMAX_CN_API_KEY` | Used by `minimax-cn` provider only — ignored for `minimax-oauth` |
 
-To force the `minimax-oauth` provider at runtime:
+To use `minimax-oauth` as the active provider, set `model.provider: minimax-oauth` in `config.yaml` (use `hermes setup` for the guided flow), or pass `--provider minimax-oauth` for a single invocation:
 
 ```bash
-HERMES_INFERENCE_PROVIDER=minimax-oauth hermes
+hermes --provider minimax-oauth
 ```
 
 ## Models

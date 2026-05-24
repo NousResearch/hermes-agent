@@ -962,6 +962,12 @@ _AGENT_PENDING_SENTINEL = object()
 def _resolve_runtime_agent_kwargs() -> dict:
     """Resolve provider credentials for gateway-created AIAgent instances.
 
+    Provider is read from ``config.yaml`` ``model.provider`` (the single
+    source of truth). ``resolve_runtime_provider()`` falls through to env
+    var lookups internally for legacy compatibility, but the gateway does
+    not consult environment variables for behavioral config — config.yaml
+    is authoritative.
+
     If the primary provider fails with an authentication error, attempt to
     resolve credentials using the fallback provider chain from config.yaml
     before giving up.
@@ -973,9 +979,7 @@ def _resolve_runtime_agent_kwargs() -> dict:
     from hermes_cli.auth import AuthError
 
     try:
-        runtime = resolve_runtime_provider(
-            requested=os.getenv("HERMES_INFERENCE_PROVIDER"),
-        )
+        runtime = resolve_runtime_provider()
     except AuthError as auth_exc:
         # Primary provider auth failed (expired token, revoked key, etc.).
         # Try the fallback provider chain before raising.

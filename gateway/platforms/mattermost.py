@@ -280,18 +280,24 @@ class MattermostAdapter(BasePlatformAdapter):
         formatted = self.format_message(content)
         chunks = self.truncate_message(formatted, MAX_POST_LENGTH)
 
+        thread_root = None
+        if self._reply_mode == "thread":
+            if reply_to:
+                thread_root = await self._resolve_root_id(reply_to)
+            elif metadata:
+                meta_thread = metadata.get("thread_id")
+                if meta_thread:
+                    thread_root = str(meta_thread)
+
         last_id = None
         for chunk in chunks:
             payload: Dict[str, Any] = {
                 "channel_id": chat_id,
                 "message": chunk,
             }
-            # Thread support: reply_to is the root post ID.
-            if reply_to and self._reply_mode == "thread":
-                # Ensure root_id points to the thread root, not a reply.
-                # Mattermost rejects non-root post IDs as root_id.
-                resolved_root = await self._resolve_root_id(reply_to)
-                payload["root_id"] = resolved_root
+            # Thread support: root_id must point to the thread root.
+            if thread_root:
+                payload["root_id"] = thread_root
 
             data = await self._api_post("posts", payload)
             if not data or "id" not in data:
@@ -786,8 +792,11 @@ class MattermostAdapter(BasePlatformAdapter):
         sender_id = post.get("user_id", "")
         sender_name = data.get("sender_name", "").lstrip("@") or sender_id
 
-        # Thread support: if the post is in a thread, use root_id.
-        thread_id = post.get("root_id") or None
+        # Thread support: route every channel turn into a Mattermost thread.
+        # Mattermost only sets root_id on replies; for a root post we use the
+        # post's own ID as the session/thread root so tool progress, approvals,
+        # streamed chunks, and final replies all stay under one conversation.
+        thread_id = post.get("root_id") or post_id or None
 
         # Determine message type.
         file_ids = post.get("file_ids") or []

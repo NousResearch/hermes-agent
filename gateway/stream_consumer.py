@@ -514,9 +514,9 @@ class GatewayStreamConsumer:
                         _cp_budget = _custom_unit_to_cp(
                             self._accumulated, _safe_limit, _len_fn,
                         )
-                        split_at = self._accumulated.rfind("\n", 0, _cp_budget)
-                        if split_at < _safe_limit // 2:
-                            split_at = _safe_limit
+                        split_at = _BasePlatformAdapter._markdown_safe_split(
+                            self._accumulated, _cp_budget,
+                        )
                         chunk = self._accumulated[:split_at]
                         ok = await self._send_or_edit(chunk)
                         if self._fallback_final_send or not ok:
@@ -721,9 +721,7 @@ class GatewayStreamConsumer:
         remaining = text
         while len_fn(remaining) > limit:
             _cp_budget = _custom_unit_to_cp(remaining, limit, len_fn)
-            split_at = remaining.rfind("\n", 0, _cp_budget)
-            if split_at < limit // 2:
-                split_at = limit
+            split_at = _BasePlatformAdapter._markdown_safe_split(remaining, _cp_budget)
             chunks.append(remaining[:split_at])
             remaining = remaining[split_at:].lstrip("\n")
         if remaining:

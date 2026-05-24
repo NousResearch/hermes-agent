@@ -75,7 +75,7 @@ def _make_adapter():
     config = PlatformConfig(
         enabled=True,
         token="test-token",
-        extra={"url": "https://mm.example.com"},
+        extra={"url": "https://mm.example.com", "allowed_channels": []},
     )
     adapter = MattermostAdapter(config)
     return adapter
@@ -143,6 +143,16 @@ class TestMattermostTruncateMessage:
         msg = "x" * 4000
         chunks = self.adapter.truncate_message(msg, 4000)
         assert len(chunks) == 1
+
+    def test_table_block_not_split_when_it_can_fit_next_message(self):
+        intro = "Intro paragraph.\n\n"
+        table = "| A | B |\n| --- | --- |\n| 1 | 2 |\n| 3 | 4 |"
+        tail = "\n\n" + ("tail " * 20)
+        chunks = self.adapter.truncate_message(intro + table + tail, max_length=65)
+        assert len(chunks) > 1
+        assert chunks[0].startswith("Intro paragraph.")
+        assert "| A | B |" not in chunks[0]
+        assert "| A | B |" in chunks[1]
 
 
 # ---------------------------------------------------------------------------
@@ -236,6 +246,28 @@ class TestMattermostSend:
         assert result.success is True
         payload = self.adapter._session.post.call_args[1]["json"]
         assert "root_id" not in payload
+
+    @pytest.mark.asyncio
+    async def test_send_uses_metadata_thread_id_when_no_reply_to(self):
+        """Thread metadata should route sends even when reply_to is absent."""
+        self.adapter._reply_mode = "thread"
+
+        mock_resp = AsyncMock()
+        mock_resp.status = 200
+        mock_resp.json = AsyncMock(return_value={"id": "post_meta"})
+        mock_resp.text = AsyncMock(return_value="")
+        mock_resp.__aenter__ = AsyncMock(return_value=mock_resp)
+        mock_resp.__aexit__ = AsyncMock(return_value=False)
+
+        self.adapter._session.post = MagicMock(return_value=mock_resp)
+
+        result = await self.adapter.send(
+            "channel_1", "Metadata reply", metadata={"thread_id": "root_from_meta"}
+        )
+
+        assert result.success is True
+        payload = self.adapter._session.post.call_args[1]["json"]
+        assert payload["root_id"] == "root_from_meta"
 
     @pytest.mark.asyncio
     async def test_send_api_failure(self):
@@ -365,6 +397,29 @@ class TestMattermostWebSocketParsing:
         assert self.adapter.handle_message.called
         msg_event = self.adapter.handle_message.call_args[0][0]
         assert msg_event.source.chat_type == "dm"
+
+    @pytest.mark.asyncio
+    async def test_root_channel_post_uses_own_id_as_thread_id(self):
+        """Root channel posts should become their own Mattermost thread root."""
+        post_data = {
+            "id": "root_post_abc",
+            "user_id": "user_123",
+            "channel_id": "chan_456",
+            "message": "@bot_user_id Start a session",
+        }
+        event = {
+            "event": "posted",
+            "data": {
+                "post": json.dumps(post_data),
+                "channel_type": "O",
+                "sender_name": "@alice",
+            },
+        }
+
+        await self.adapter._handle_ws_event(event)
+        assert self.adapter.handle_message.called
+        msg_event = self.adapter.handle_message.call_args[0][0]
+        assert msg_event.source.thread_id == "root_post_abc"
 
     @pytest.mark.asyncio
     async def test_thread_id_from_root_id(self):

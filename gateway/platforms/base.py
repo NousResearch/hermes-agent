@@ -3790,6 +3790,70 @@ class BasePlatformAdapter(ABC):
         """
         return content
     
+
+    @staticmethod
+    def _is_markdown_table_line(line: str) -> bool:
+        stripped = line.strip()
+        if not stripped.startswith("|") or stripped.count("|") < 2:
+            return False
+        # Separator row: | --- | :---: | ---: |
+        cells = [cell.strip() for cell in stripped.strip("|").split("|")]
+        if cells and all(re.fullmatch(r":?-{3,}:?", cell or "") for cell in cells):
+            return True
+        return True
+
+    @staticmethod
+    def _markdown_safe_split(remaining: str, cp_limit: int) -> int:
+        """Choose a split point that avoids breaking markdown blocks when possible.
+
+        Preference order:
+        1. paragraph boundary,
+        2. line boundary,
+        3. word boundary,
+        4. hard limit.
+
+        If the chosen point lands inside a pipe-table block, move to the start
+        of the table when there is enough room. That keeps normal-sized tables
+        intact instead of splitting header/separator/body across messages.
+        Very large tables still split at row boundaries because no formatter can
+        keep an over-limit table in one platform message.
+        """
+        if cp_limit >= len(remaining):
+            return len(remaining)
+        region = remaining[:cp_limit]
+        split_at = region.rfind("\n\n")
+        if split_at >= cp_limit // 3:
+            return split_at + 2
+        split_at = region.rfind("\n")
+        if split_at < cp_limit // 2:
+            split_at = region.rfind(" ")
+        if split_at < 1:
+            split_at = cp_limit
+
+        # Avoid splitting a contiguous markdown table block.
+        line_starts = []
+        pos = 0
+        for line in remaining.splitlines(keepends=True):
+            line_starts.append((pos, pos + len(line), line))
+            pos += len(line)
+        table_start = table_end = None
+        for idx, (start, end, line) in enumerate(line_starts):
+            if start <= split_at <= end and BasePlatformAdapter._is_markdown_table_line(line):
+                table_start = start
+                table_end = end
+                j = idx - 1
+                while j >= 0 and BasePlatformAdapter._is_markdown_table_line(line_starts[j][2]):
+                    table_start = line_starts[j][0]
+                    j -= 1
+                j = idx + 1
+                while j < len(line_starts) and BasePlatformAdapter._is_markdown_table_line(line_starts[j][2]):
+                    table_end = line_starts[j][1]
+                    j += 1
+                break
+        if table_start is not None and table_start > cp_limit // 4:
+            return table_start
+        return split_at
+
     @staticmethod
     def truncate_message(
         content: str,
@@ -3856,12 +3920,7 @@ class BasePlatformAdapter(ABC):
                 _cp_limit = _custom_unit_to_cp(remaining, headroom, _len)
             else:
                 _cp_limit = headroom
-            region = remaining[:_cp_limit]
-            split_at = region.rfind("\n")
-            if split_at < _cp_limit // 2:
-                split_at = region.rfind(" ")
-            if split_at < 1:
-                split_at = _cp_limit
+            split_at = BasePlatformAdapter._markdown_safe_split(remaining, _cp_limit)
 
             # Avoid splitting inside an inline code span (`...`).
             # If the text before split_at has an odd number of unescaped

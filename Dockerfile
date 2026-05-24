@@ -117,4 +117,10 @@ ENV HERMES_HOME=/opt/data
 ENV PATH="/opt/data/.local/bin:${PATH}"
 RUN mkdir -p /opt/data
 VOLUME [ "/opt/data" ]
+
+# Drop to the non-root hermes user for runtime.  The entrypoint will
+# re-exec via gosu anyway, but setting USER here reduces the blast radius
+# if the entrypoint is ever bypassed (e.g. docker run --entrypoint bash).
+USER hermes
+
 ENTRYPOINT [ "/usr/bin/tini", "-g", "--", "/opt/hermes/docker/entrypoint.sh" ]

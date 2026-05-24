@@ -13,7 +13,7 @@ import threading
 import time
 from typing import Any, Callable, List, Optional
 
-from agent.auxiliary_client import call_llm
+from agent.auxiliary_client import call_llm, extract_content_or_reasoning
 
 logger = logging.getLogger(__name__)
 
@@ -134,14 +134,15 @@ def generate_title(
     for attempt in range(retry_count):
         try:
             if llm_client is not None:
-                # Use the caller's authenticated client directly — same
-                # provider, model, credentials, everything.
-                final_model = model or getattr(llm_client, "_model", None)
-                kwargs = {"messages": messages, "max_tokens": 100, "temperature": 0.3}
+                # Use a higher max_tokens for reasoning models (DeepSeek-R1,
+                # Qwen-QwQ, etc.) whose thinking tokens consume most of the
+                # budget before the final answer. 100 is too low.
+                kwargs = {"messages": messages, "max_tokens": 512, "temperature": 0.3}
                 if final_model:
                     kwargs["model"] = final_model
                 response = llm_client.chat.completions.create(**kwargs)
             else:
+                # call_llm path — same reasoning applies.
                 # Fallback: resolve provider via auxiliary client chain.
                 resolved_provider: Optional[str] = provider
                 resolved_model: Optional[str] = model
@@ -166,7 +167,7 @@ def generate_title(
                     api_key=resolved_api_key,
                     main_runtime=main_runtime,
                 )
-            title = (response.choices[0].message.content or "").strip()
+            title = (extract_content_or_reasoning(response) or "").strip()
             # Clean up: remove quotes, trailing punctuation, prefixes like "Title: "
             title = title.strip('"\'')
             if title.lower().startswith("title:"):

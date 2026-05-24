@@ -605,15 +605,3 @@ class TestThreadEngagement:
                 for t in to_remove:
                     adapter._mentioned_threads.discard(t)
         assert len(adapter._mentioned_threads) <= 10
-
-
-# ===========================================================================
-# Command palette de-scope
-# ===========================================================================
-
-class TestSlackCommandPaletteDeScoped:
-    """Slack no longer exposes native command-palette quick-action buttons."""
-
-    def test_slack_palette_runtime_is_de_scoped(self):
-        assert not hasattr(SlackAdapter, "send_command_palette")
-        assert not hasattr(SlackAdapter, "_handle_palette_action")

@@ -1148,10 +1148,6 @@ _SLACK_RESERVED_COMMANDS = frozenset({
     "who", "collapse", "expand", "leave", "join", "open", "search",
     "topic", "mute", "pro", "shortcuts",
 })
-_SLACK_DE_SCOPED_COMMANDS = frozenset({
-    # Quick-action palette UX is supported on Discord/Telegram only.
-    "palette",
-})
 
 
 def _sanitize_slack_name(raw: str) -> str:
@@ -1198,8 +1194,6 @@ def slack_native_slashes() -> list[tuple[str, str, str]]:
     def _add(name: str, desc: str, hint: str) -> None:
         slack_name = _sanitize_slack_name(name)
         if not slack_name or slack_name in seen:
-            return
-        if slack_name in _SLACK_DE_SCOPED_COMMANDS:
             return
         if slack_name in _SLACK_RESERVED_COMMANDS:
             return
@@ -1272,16 +1266,10 @@ def slack_subcommand_map() -> dict[str, str]:
     for cmd in COMMAND_REGISTRY:
         if not _is_gateway_available(cmd, overrides):
             continue
-        if cmd.name in _SLACK_DE_SCOPED_COMMANDS:
-            continue
         mapping[cmd.name] = f"/{cmd.name}"
         for alias in cmd.aliases:
-            if _sanitize_slack_name(alias) in _SLACK_DE_SCOPED_COMMANDS:
-                continue
             mapping[alias] = f"/{alias}"
     for name, _description, _args_hint in _iter_plugin_command_entries():
-        if _sanitize_slack_name(name) in _SLACK_DE_SCOPED_COMMANDS:
-            continue
         if name not in mapping:
             mapping[name] = f"/{name}"
     return mapping

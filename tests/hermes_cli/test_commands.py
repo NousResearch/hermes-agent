@@ -280,10 +280,6 @@ class TestSlackSubcommandMap:
             if cmd.cli_only and not cmd.gateway_config_gate:
                 assert cmd.name not in mapping
 
-    def test_excludes_palette_subcommand(self):
-        assert "palette" not in slack_subcommand_map()
-
-
 class TestSlackNativeSlashes:
     """Slack native slash command generation — used to register every
     COMMAND_REGISTRY entry as a first-class Slack slash, matching Discord
@@ -317,10 +313,6 @@ class TestSlackNativeSlashes:
     def test_under_fifty_command_cap(self):
         """Slack allows at most 50 slash commands per app."""
         assert len(slack_native_slashes()) <= 50
-
-    def test_excludes_palette_quick_action_surface(self):
-        names = {n for n, _d, _h in slack_native_slashes()}
-        assert "palette" not in names
 
     def test_unique_names(self):
         names = [n for n, _d, _h in slack_native_slashes()]
@@ -373,8 +365,7 @@ class TestSlackNativeSlashes:
         slack_norm = {_norm(n) for n in slack_names}
         tg_norm = {_norm(n) for n in tg_names}
         reserved_norm = {_norm(n) for n in _SLACK_RESERVED_COMMANDS}
-        slack_only_descope = {"palette"}
-        missing = (tg_norm - slack_norm) - reserved_norm - slack_only_descope
+        missing = (tg_norm - slack_norm) - reserved_norm
         assert not missing, (
             f"commands on Telegram but missing from Slack native slashes: {sorted(missing)}"
         )

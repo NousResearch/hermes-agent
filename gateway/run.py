@@ -15073,6 +15073,14 @@ class GatewayRunner:
         except Exception:
             pass
 
+
+    def request_interrupt(self, session_key: str) -> None:
+        """Request an interrupt for the given session key."""
+        logger.info("Interrupt requested for session: %s", session_key)
+        self._running_agents.pop(session_key, None)
+        # Here you would add logic to signal the agent associated with session_key
+        # For now, we just remove it from the running agents dict
+
     def _enforce_agent_cache_cap(self) -> None:
         """Evict oldest cached agents when cache exceeds _AGENT_CACHE_MAX_SIZE.
 

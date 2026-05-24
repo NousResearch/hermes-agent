@@ -13,8 +13,10 @@ import json
 import logging
 import os
 import re
+import sqlite3
 import uuid
 from datetime import datetime
+from pathlib import Path
 from typing import Any, Dict, List, Optional
 from urllib.parse import quote
 
@@ -42,6 +44,7 @@ DEFAULT_WEBHOOK_HOST = "127.0.0.1"
 DEFAULT_WEBHOOK_PORT = 8645
 DEFAULT_WEBHOOK_PATH = "/bluebubbles-webhook"
 MAX_TEXT_LENGTH = 4000
+DEFAULT_POLL_INTERVAL_SECONDS = 3.0
 
 # Tapback reaction codes (BlueBubbles associatedMessageType values)
 _TAPBACK_ADDED = {
@@ -129,6 +132,21 @@ class BlueBubblesAdapter(BasePlatformAdapter):
         self._private_api_enabled: Optional[bool] = None
         self._helper_connected: bool = False
         self._guid_cache: Dict[str, str] = {}
+        self._poll_task: Optional[asyncio.Task] = None
+        self._poll_checkpoint: int = 0
+        self._seen_inbound_message_ids: set[str] = set()
+        self._poll_interval = float(
+            extra.get("poll_interval")
+            or os.getenv("BLUEBUBBLES_POLL_INTERVAL", str(DEFAULT_POLL_INTERVAL_SECONDS))
+        )
+        self._poll_enabled = str(
+            extra.get("poll_messages")
+            or os.getenv("BLUEBUBBLES_POLL_MESSAGES", "true")
+        ).lower() in ("true", "1", "yes")
+        self._poll_allowed_users = self._parse_allowed_users(
+            str(extra.get("allowed_users") or os.getenv("BLUEBUBBLES_ALLOWED_USERS", ""))
+        )
+        self._messages_db_path = Path.home() / "Library" / "Messages" / "chat.db"
 
     # ------------------------------------------------------------------
     # API helpers
@@ -204,10 +222,13 @@ class BlueBubblesAdapter(BasePlatformAdapter):
         # Register webhook with BlueBubbles server
         # This is required for the server to know where to send events
         await self._register_webhook()
+        await self._start_message_polling()
 
         return True
 
     async def disconnect(self) -> None:
+        await self._stop_message_polling()
+
         # Unregister webhook before cleaning up
         await self._unregister_webhook()
 
@@ -269,7 +290,7 @@ class BlueBubblesAdapter(BasePlatformAdapter):
         existing = await self._find_registered_webhooks(webhook_url)
         if existing:
             logger.info(
-                "[bluebubbles] webhook already registered: %s", webhook_url
+                "[bluebubbles] webhook already registered: %s", self._webhook_url
             )
             return True
 
@@ -284,7 +305,7 @@ class BlueBubblesAdapter(BasePlatformAdapter):
             if 200 <= status < 300:
                 logger.info(
                     "[bluebubbles] webhook registered with server: %s",
-                    webhook_url,
+                    self._webhook_url,
                 )
                 return True
             else:
@@ -324,7 +345,7 @@ class BlueBubblesAdapter(BasePlatformAdapter):
                     removed = True
             if removed:
                 logger.info(
-                    "[bluebubbles] webhook unregistered: %s", webhook_url
+                    "[bluebubbles] webhook unregistered: %s", self._webhook_url
                 )
         except Exception as exc:
             logger.debug(
@@ -332,6 +353,189 @@ class BlueBubblesAdapter(BasePlatformAdapter):
                 exc,
             )
         return removed
+
+    # ------------------------------------------------------------------
+    # Local Messages DB polling fallback
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _parse_allowed_users(raw: str) -> set[str]:
+        return {item.strip().lower() for item in raw.split(",") if item.strip()}
+
+    @staticmethod
+    def _user_matches_allowed(value: Optional[str], allowed: set[str]) -> bool:
+        if not value:
+            return False
+        raw = value.strip().lower()
+        phoneish = re.sub(r"\D", "", raw)
+        for item in allowed:
+            if raw == item:
+                return True
+            item_phoneish = re.sub(r"\D", "", item)
+            if phoneish and item_phoneish and phoneish == item_phoneish:
+                return True
+        return False
+
+    def _latest_messages_date(self) -> int:
+        try:
+            db_uri = f"file:{quote(str(self._messages_db_path), safe='/')}?mode=ro"
+            conn = sqlite3.connect(db_uri, uri=True)
+            try:
+                row = conn.execute("SELECT COALESCE(MAX(date), 0) FROM message").fetchone()
+                return int(row[0] or 0)
+            finally:
+                conn.close()
+        except Exception as exc:
+            logger.debug("[bluebubbles] message poll checkpoint unavailable: %s", exc)
+            return 0
+
+    def _poll_messages_db(self, since_date: int) -> tuple[int, List[Dict[str, Any]]]:
+        db_uri = f"file:{quote(str(self._messages_db_path), safe='/')}?mode=ro"
+        conn = sqlite3.connect(db_uri, uri=True)
+        conn.row_factory = sqlite3.Row
+        try:
+            rows = conn.execute(
+                """
+                SELECT
+                    message.ROWID AS rowid,
+                    message.date AS date,
+                    message.guid AS message_guid,
+                    message.text AS text,
+                    handle.id AS sender,
+                    chat.guid AS chat_guid,
+                    chat.chat_identifier AS chat_identifier
+                FROM message
+                LEFT JOIN handle ON message.handle_id = handle.ROWID
+                LEFT JOIN chat_message_join cmj ON cmj.message_id = message.ROWID
+                LEFT JOIN chat ON cmj.chat_id = chat.ROWID
+                WHERE message.date > ?
+                  AND message.is_from_me = 0
+                  AND message.text IS NOT NULL
+                  AND TRIM(message.text) != ''
+                ORDER BY message.date ASC
+                LIMIT 100
+                """,
+                (since_date,),
+            ).fetchall()
+        finally:
+            conn.close()
+
+        newest = since_date
+        records: List[Dict[str, Any]] = []
+        for row in rows:
+            newest = max(newest, int(row["date"] or 0))
+            sender = row["sender"] or ""
+            chat_identifier = row["chat_identifier"] or ""
+            if self._poll_allowed_users and not (
+                self._user_matches_allowed(sender, self._poll_allowed_users)
+                or self._user_matches_allowed(chat_identifier, self._poll_allowed_users)
+            ):
+                continue
+            records.append(
+                {
+                    "rowid": str(row["rowid"]),
+                    "date": int(row["date"] or 0),
+                    "guid": row["message_guid"] or f"chatdb-{row['rowid']}",
+                    "text": row["text"] or "",
+                    "sender": sender,
+                    "chatGuid": row["chat_guid"] or chat_identifier,
+                    "chatIdentifier": chat_identifier,
+                    "source": "messages-db-poll",
+                }
+            )
+        return newest, records
+
+    async def _start_message_polling(self) -> None:
+        if not self._poll_enabled:
+            logger.info("[bluebubbles] local Messages polling disabled")
+            return
+        if not self._poll_allowed_users:
+            logger.info(
+                "[bluebubbles] local Messages polling disabled: BLUEBUBBLES_ALLOWED_USERS is empty"
+            )
+            return
+        self._poll_checkpoint = await self._latest_message_api_date()
+        self._poll_task = asyncio.create_task(self._poll_messages_loop())
+        logger.info(
+            "[bluebubbles] BlueBubbles message polling enabled for %d allowed sender(s)",
+            len(self._poll_allowed_users),
+        )
+
+    async def _stop_message_polling(self) -> None:
+        if not self._poll_task:
+            return
+        self._poll_task.cancel()
+        try:
+            await self._poll_task
+        except asyncio.CancelledError:
+            pass
+        self._poll_task = None
+
+    async def _poll_messages_loop(self) -> None:
+        while True:
+            try:
+                newest, records = await self._poll_messages_api(self._poll_checkpoint)
+                self._poll_checkpoint = max(self._poll_checkpoint, newest)
+                for record in records:
+                    await self._handle_inbound_record(record, {"source": "bluebubbles-api-poll"})
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                logger.warning("[bluebubbles] BlueBubbles message poll failed: %s", exc)
+            await asyncio.sleep(self._poll_interval)
+
+    async def _latest_message_api_date(self) -> int:
+        try:
+            payload = await self._api_post(
+                "/api/v1/message/query",
+                {"limit": 1, "offset": 0, "with": ["handle", "chats"]},
+            )
+            rows = payload.get("data") or []
+            if rows:
+                return int(rows[0].get("dateCreated") or 0)
+        except Exception as exc:
+            logger.debug("[bluebubbles] message poll checkpoint unavailable: %s", exc)
+        return 0
+
+    async def _poll_messages_api(self, since_date: int) -> tuple[int, List[Dict[str, Any]]]:
+        payload = await self._api_post(
+            "/api/v1/message/query",
+            {"limit": 50, "offset": 0, "with": ["handle", "chats"]},
+        )
+        rows = payload.get("data") or []
+        newest = since_date
+        records: List[Dict[str, Any]] = []
+        for row in sorted(rows, key=lambda item: int(item.get("dateCreated") or 0)):
+            date_created = int(row.get("dateCreated") or 0)
+            newest = max(newest, date_created)
+            if date_created <= since_date or row.get("isFromMe"):
+                continue
+            text = row.get("text") or ""
+            if not text.strip():
+                continue
+            handle = row.get("handle") if isinstance(row.get("handle"), dict) else {}
+            sender = handle.get("address") or ""
+            chats = row.get("chats") or []
+            chat = chats[0] if chats and isinstance(chats[0], dict) else {}
+            chat_guid = chat.get("guid") or row.get("chatGuid") or ""
+            chat_identifier = chat.get("chatIdentifier") or row.get("chatIdentifier") or sender
+            if self._poll_allowed_users and not (
+                self._user_matches_allowed(sender, self._poll_allowed_users)
+                or self._user_matches_allowed(chat_identifier, self._poll_allowed_users)
+            ):
+                continue
+            records.append(
+                {
+                    "guid": row.get("guid") or f"bb-{row.get('originalROWID')}",
+                    "text": text,
+                    "sender": sender,
+                    "chatGuid": chat_guid or chat_identifier,
+                    "chatIdentifier": chat_identifier,
+                    "isGroup": bool(";+;" in (chat_guid or "")),
+                    "source": "bluebubbles-api-poll",
+                }
+            )
+        return newest, records
 
     # ------------------------------------------------------------------
     # Chat GUID resolution
@@ -354,21 +558,48 @@ class BlueBubblesAdapter(BasePlatformAdapter):
         if target in self._guid_cache:
             return self._guid_cache[target]
         try:
-            payload = await self._api_post(
-                "/api/v1/chat/query",
-                {"limit": 100, "offset": 0, "with": ["participants"]},
-            )
-            for chat in payload.get("data", []) or []:
-                guid = chat.get("guid") or chat.get("chatGuid")
-                identifier = chat.get("chatIdentifier") or chat.get("identifier")
-                if identifier == target:
-                    if guid:
-                        self._guid_cache[target] = guid
-                    return guid
-                for part in chat.get("participants", []) or []:
-                    if (part.get("address") or "").strip() == target and guid:
-                        self._guid_cache[target] = guid
+            normalized_target = target.lower()
+            phone_target = re.sub(r"\D", "", target)
+            if phone_target and target.strip().startswith("+"):
+                direct_guid = f"any;-;{target.strip()}"
+                self._guid_cache[target] = direct_guid
+                return direct_guid
+            fallback_guid: Optional[str] = None
+            for offset in range(0, 2000, 100):
+                payload = await self._api_post(
+                    "/api/v1/chat/query",
+                    {"limit": 100, "offset": offset, "with": ["participants"]},
+                )
+                chats = payload.get("data", []) or []
+                if not chats:
+                    break
+                for chat in chats:
+                    guid = chat.get("guid") or chat.get("chatGuid")
+                    identifier = (chat.get("chatIdentifier") or chat.get("identifier") or "").strip()
+                    identifier_phone = re.sub(r"\D", "", identifier)
+                    if identifier and (
+                        identifier.lower() == normalized_target
+                        or (phone_target and identifier_phone == phone_target)
+                    ):
+                        if guid:
+                            self._guid_cache[target] = guid
                         return guid
+                    for part in chat.get("participants", []) or []:
+                        address = (part.get("address") or "").strip()
+                        address_phone = re.sub(r"\D", "", address)
+                        if address and (
+                            address.lower() == normalized_target
+                            or (phone_target and address_phone == phone_target)
+                        ) and guid:
+                            # Prefer a 1:1 chat identifier match. If the only
+                            # match is membership in a group, keep looking in
+                            # case a direct chat appears later in the page set.
+                            fallback_guid = fallback_guid or guid
+                if len(chats) < 100:
+                    break
+            if fallback_guid:
+                self._guid_cache[target] = fallback_guid
+                return fallback_guid
         except Exception:
             pass
         return None
@@ -434,24 +665,47 @@ class BlueBubblesAdapter(BasePlatformAdapter):
                     success=False,
                     error=f"BlueBubbles chat not found for target: {chat_id}",
                 )
-            payload: Dict[str, Any] = {
-                "chatGuid": guid,
-                "tempGuid": f"temp-{datetime.utcnow().timestamp()}",
-                "message": chunk,
-            }
-            if reply_to and self._private_api_enabled and self._helper_connected:
-                payload["method"] = "private-api"
-                payload["selectedMessageGuid"] = reply_to
-                payload["partIndex"] = 0
-            try:
-                res = await self._api_post("/api/v1/message/text", payload)
-                data = res.get("data") or {}
-                msg_id = data.get("guid") or data.get("messageGuid") or "ok"
-                last = SendResult(
-                    success=True, message_id=str(msg_id), raw_response=res
-                )
-            except Exception as exc:
-                return SendResult(success=False, error=str(exc))
+            candidate_guids = [guid]
+            # BlueBubbles can report chat GUIDs with a generic "any" service
+            # prefix (for example, "any;-;+15551234567"). Its AppleScript
+            # send path may then fail with "Can’t make any into type constant".
+            # Retry explicit services for outbound sends while keeping the
+            # original GUID as the first attempt.
+            if guid.startswith("any;"):
+                suffix = guid.split(";", 1)[1]
+                candidate_guids.extend([f"iMessage;{suffix}", f"SMS;{suffix}"])
+
+            last_error: Optional[str] = None
+            for candidate_guid in candidate_guids:
+                payload: Dict[str, Any] = {
+                    "chatGuid": candidate_guid,
+                    "tempGuid": f"temp-{datetime.utcnow().timestamp()}",
+                    "message": chunk,
+                }
+                if reply_to and self._private_api_enabled and self._helper_connected:
+                    payload["method"] = "private-api"
+                    payload["selectedMessageGuid"] = reply_to
+                    payload["partIndex"] = 0
+                try:
+                    res = await self._api_post("/api/v1/message/text", payload)
+                    data = res.get("data") or {}
+                    msg_id = data.get("guid") or data.get("messageGuid") or "ok"
+                    last = SendResult(
+                        success=True, message_id=str(msg_id), raw_response=res
+                    )
+                    last_error = None
+                    break
+                except Exception as exc:
+                    last_error = str(exc)
+                    # Only retry alternate service GUIDs for the generic
+                    # BlueBubbles "any" service failure. Other failures should
+                    # surface immediately so we do not accidentally duplicate
+                    # messages after a timeout or unrelated server error.
+                    if not guid.startswith("any;") or "500 Internal Server Error" not in last_error:
+                        return SendResult(success=False, error=last_error)
+                    continue
+            if last_error:
+                return SendResult(success=False, error=last_error)
         return last
 
     # ------------------------------------------------------------------
@@ -765,51 +1019,8 @@ class BlueBubblesAdapter(BasePlatformAdapter):
                 return candidate.strip()
         return None
 
-    async def _handle_webhook(self, request):
+    async def _handle_inbound_record(self, record: Dict[str, Any], payload: Dict[str, Any]):
         from aiohttp import web
-
-        token = (
-            request.query.get("password")
-            or request.query.get("guid")
-            or request.headers.get("x-password")
-            or request.headers.get("x-guid")
-            or request.headers.get("x-bluebubbles-guid")
-        )
-        if token != self.password:
-            return web.json_response({"error": "unauthorized"}, status=401)
-        try:
-            raw = await request.read()
-            body = raw.decode("utf-8", errors="replace")
-            try:
-                payload = json.loads(body)
-            except Exception:
-                from urllib.parse import parse_qs
-
-                form = parse_qs(body)
-                payload_str = (
-                    form.get("payload")
-                    or form.get("data")
-                    or form.get("message")
-                    or [""]
-                )[0]
-                payload = json.loads(payload_str) if payload_str else {}
-        except Exception as exc:
-            logger.error("[bluebubbles] webhook parse error: %s", exc)
-            return web.json_response({"error": "invalid payload"}, status=400)
-
-        event_type = self._value(payload.get("type"), payload.get("event")) or ""
-        # Only process message events; silently acknowledge everything else
-        if event_type and event_type not in _MESSAGE_EVENTS:
-            return web.Response(text="ok")
-
-        record = self._extract_payload_record(payload) or {}
-        is_from_me = bool(
-            record.get("isFromMe")
-            or record.get("fromMe")
-            or record.get("is_from_me")
-        )
-        if is_from_me:
-            return web.Response(text="ok")
 
         # Skip tapback reactions delivered as messages
         assoc_type = record.get("associatedMessageType")
@@ -898,6 +1109,16 @@ class BlueBubblesAdapter(BasePlatformAdapter):
         if not sender or not (chat_guid or chat_identifier) or not text:
             return web.json_response({"error": "missing message fields"}, status=400)
 
+        message_id = self._value(
+            record.get("guid"),
+            record.get("messageGuid"),
+            record.get("id"),
+        )
+        if message_id:
+            if message_id in self._seen_inbound_message_ids:
+                return web.Response(text="ok")
+            self._seen_inbound_message_ids.add(message_id)
+
         session_chat_id = chat_guid or chat_identifier
         is_group = bool(record.get("isGroup")) or (";+;" in (chat_guid or ""))
         source = self.build_source(
@@ -913,11 +1134,7 @@ class BlueBubblesAdapter(BasePlatformAdapter):
             message_type=msg_type,
             source=source,
             raw_message=payload,
-            message_id=self._value(
-                record.get("guid"),
-                record.get("messageGuid"),
-                record.get("id"),
-            ),
+            message_id=message_id,
             reply_to_message_id=self._value(
                 record.get("threadOriginatorGuid"),
                 record.get("associatedMessageGuid"),
@@ -935,3 +1152,50 @@ class BlueBubblesAdapter(BasePlatformAdapter):
 
         return web.Response(text="ok")
 
+    async def _handle_webhook(self, request):
+        from aiohttp import web
+
+        token = (
+            request.query.get("password")
+            or request.query.get("guid")
+            or request.headers.get("x-password")
+            or request.headers.get("x-guid")
+            or request.headers.get("x-bluebubbles-guid")
+        )
+        if token != self.password:
+            return web.json_response({"error": "unauthorized"}, status=401)
+        try:
+            raw = await request.read()
+            body = raw.decode("utf-8", errors="replace")
+            try:
+                payload = json.loads(body)
+            except Exception:
+                from urllib.parse import parse_qs
+
+                form = parse_qs(body)
+                payload_str = (
+                    form.get("payload")
+                    or form.get("data")
+                    or form.get("message")
+                    or [""]
+                )[0]
+                payload = json.loads(payload_str) if payload_str else {}
+        except Exception as exc:
+            logger.error("[bluebubbles] webhook parse error: %s", exc)
+            return web.json_response({"error": "invalid payload"}, status=400)
+
+        event_type = self._value(payload.get("type"), payload.get("event")) or ""
+        # Only process message events; silently acknowledge everything else
+        if event_type and event_type not in _MESSAGE_EVENTS:
+            return web.Response(text="ok")
+
+        record = self._extract_payload_record(payload) or {}
+        is_from_me = bool(
+            record.get("isFromMe")
+            or record.get("fromMe")
+            or record.get("is_from_me")
+        )
+        if is_from_me:
+            return web.Response(text="ok")
+
+        return await self._handle_inbound_record(record, payload)

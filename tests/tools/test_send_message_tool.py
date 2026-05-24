@@ -30,6 +30,7 @@ from gateway.config import Platform
 from tools.send_message_tool import (
     _is_telegram_thread_not_found,
     _parse_target_ref,
+    _send_bluebubbles,
     _send_matrix_via_adapter,
     _send_signal,
     _send_telegram,
@@ -162,6 +163,67 @@ def _ensure_slack_mock(monkeypatch):
         ("slack_sdk.web.async_client", slack_sdk.web.async_client),
     ]:
         monkeypatch.setitem(sys.modules, name, mod)
+
+
+class TestBlueBubblesSendMessageTool:
+    def test_standalone_send_does_not_start_gateway_webhook_listener(self, monkeypatch):
+        """send_message should use BlueBubbles REST send without binding webhook port."""
+        events = []
+
+        class FakeSendResult:
+            success = True
+            error = None
+            message_id = "msg-123"
+
+        class FakeClient:
+            async def aclose(self):
+                events.append("client_closed")
+
+        class FakeAdapter:
+            def __init__(self, pconfig):
+                events.append(("init", pconfig.extra))
+                self.client = None
+
+            async def connect(self):  # pragma: no cover - should never be called
+                raise OSError("address already in use")
+
+            async def disconnect(self):  # pragma: no cover - should never be called
+                events.append("disconnect")
+
+            async def send(self, chat_id, message):
+                events.append(("send", chat_id, message, self.client is not None))
+                return FakeSendResult()
+
+        monkeypatch.setattr(
+            "gateway.platforms.bluebubbles.BlueBubblesAdapter",
+            FakeAdapter,
+        )
+        monkeypatch.setattr(
+            "gateway.platforms.bluebubbles.check_bluebubbles_requirements",
+            lambda: True,
+        )
+        monkeypatch.setattr(
+            "httpx.AsyncClient",
+            lambda timeout=30.0: FakeClient(),
+        )
+
+        result = asyncio.run(
+            _send_bluebubbles(
+                {"server_url": "http://127.0.0.1:1234", "password": "secret"},
+                "ltdevin2518@gmail.com",
+                "hello",
+            )
+        )
+
+        assert result == {
+            "success": True,
+            "platform": "bluebubbles",
+            "chat_id": "ltdevin2518@gmail.com",
+            "message_id": "msg-123",
+        }
+        assert ("send", "ltdevin2518@gmail.com", "hello", True) in events
+        assert "client_closed" in events
+        assert "disconnect" not in events
 
 
 class TestSendMessageTool:

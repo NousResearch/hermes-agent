@@ -97,6 +97,43 @@ class TestBlueBubblesHelpers:
         assert result.success is True
         assert sent == ["first thought", "second thought"]
 
+    @pytest.mark.asyncio
+    async def test_send_retries_explicit_service_when_bluebubbles_returns_any_guid(self, monkeypatch):
+        adapter = _make_adapter(monkeypatch)
+        attempted_guids = []
+
+        async def fake_resolve_chat_guid(chat_id):
+            return "any;-;user@example.com"
+
+        async def fake_api_post(path, payload):
+            attempted_guids.append(payload["chatGuid"])
+            if payload["chatGuid"].startswith("any;"):
+                raise RuntimeError("Server error '500 Internal Server Error'")
+            return {"data": {"guid": "msg-ok"}}
+
+        monkeypatch.setattr(adapter, "_resolve_chat_guid", fake_resolve_chat_guid)
+        monkeypatch.setattr(adapter, "_api_post", fake_api_post)
+
+        result = await adapter.send("user@example.com", "hello")
+
+        assert result.success is True
+        assert result.message_id == "msg-ok"
+        assert attempted_guids == [
+            "any;-;user@example.com",
+            "iMessage;-;user@example.com",
+        ]
+
+    @pytest.mark.asyncio
+    async def test_resolve_phone_number_prefers_direct_any_guid(self, monkeypatch):
+        adapter = _make_adapter(monkeypatch)
+
+        async def fail_api_post(path, payload):  # pragma: no cover - should not be called
+            raise AssertionError("phone direct GUID should not require chat pagination")
+
+        monkeypatch.setattr(adapter, "_api_post", fail_api_post)
+
+        assert await adapter._resolve_chat_guid("+17176456359") == "any;-;+17176456359"
+
     def test_format_message_strips_markdown(self, monkeypatch):
         adapter = _make_adapter(monkeypatch)
         assert adapter.format_message("**Hello** `world`") == "Hello world"

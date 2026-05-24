@@ -35,6 +35,7 @@ import re
 import sqlite3
 import time
 import uuid
+from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 try:
@@ -337,10 +338,12 @@ class ResponseStore:
                 db_path = str(get_hermes_home() / "response_store.db")
             except Exception:
                 db_path = ":memory:"
+        self._db_path: Optional[str] = db_path if db_path != ":memory:" else None
         try:
             self._conn = sqlite3.connect(db_path, check_same_thread=False)
         except Exception:
             self._conn = sqlite3.connect(":memory:", check_same_thread=False)
+            self._db_path = None
         # Use shared WAL-fallback helper so response_store.db degrades
         # gracefully on NFS/SMB/FUSE-mounted HERMES_HOME (same filesystem
         # issue addressed for state.db/kanban.db — see
@@ -361,6 +364,31 @@ class ResponseStore:
             )"""
         )
         self._conn.commit()
+        # response_store.db contains conversation history (tool payloads,
+        # prompts, results). Tighten to owner-only after creation so other
+        # local users on a shared box can't read it. Run once at __init__
+        # rather than after every commit — chmod-on-every-write is wasted
+        # syscalls on a hot path.
+        self._tighten_file_permissions()
+
+    def _tighten_file_permissions(self) -> None:
+        """Force owner-only permissions on the DB and SQLite sidecars."""
+        if not self._db_path:
+            return
+        for candidate in (
+            Path(self._db_path),
+            Path(f"{self._db_path}-wal"),
+            Path(f"{self._db_path}-shm"),
+        ):
+            try:
+                if candidate.exists():
+                    candidate.chmod(0o600)
+            except OSError:
+                logger.debug(
+                    "Failed to restrict response store permissions for %s",
+                    candidate,
+                    exc_info=True,
+                )
 
     def get(self, response_id: str) -> Optional[Dict[str, Any]]:
         """Retrieve a stored response by ID (updates access time for LRU)."""

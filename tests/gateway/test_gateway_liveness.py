@@ -2,7 +2,15 @@ import asyncio
 import threading
 from types import SimpleNamespace
 
-from gateway.run import GatewayRunner
+from gateway.run import GatewayRunner, _parse_liveness_interval
+
+
+def test_parse_liveness_interval_defaults_invalid_values_and_enforces_floor():
+    assert _parse_liveness_interval(None) == 15.0
+    assert _parse_liveness_interval("not-a-number") == 15.0
+    assert _parse_liveness_interval("0") == 1.0
+    assert _parse_liveness_interval("0.5") == 1.0
+    assert _parse_liveness_interval("30") == 30.0
 
 
 def _runner_for_liveness() -> GatewayRunner:

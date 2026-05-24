@@ -14067,6 +14067,26 @@ Examples:
         subparsers.required = False
         args = parser.parse_args(_processed_argv)
 
+    # Path-authority flags are scoped to `hermes doctor --path-authority`.
+    # Rejecting them before cmd_doctor avoids silently running the broad doctor
+    # while the caller expected machine-readable/path-authority semantics.
+    if getattr(args, "command", None) == "doctor" and not getattr(args, "path_authority", False):
+        scoped_doctor_flags = [
+            flag
+            for attr, flag in (
+                ("json", "--json"),
+                ("no_live", "--no-live"),
+                ("strict", "--strict"),
+            )
+            if getattr(args, attr, False)
+        ]
+        if scoped_doctor_flags:
+            parser.error(
+                "doctor flag(s) "
+                + ", ".join(scoped_doctor_flags)
+                + " require --path-authority"
+            )
+
     # Handle --version flag
     if args.version:
         cmd_version(args)

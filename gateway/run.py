@@ -1653,6 +1653,15 @@ def _preserve_queued_followup_history_offset(
     return merged
 
 
+def _parse_liveness_interval(raw_value: str | None) -> float:
+    """Return a safe watchdog heartbeat interval in seconds."""
+    try:
+        parsed = float(raw_value if raw_value is not None else "15")
+    except (TypeError, ValueError):
+        parsed = 15.0
+    return max(1.0, parsed)
+
+
 class GatewayRunner:
     """
     Main gateway controller.
@@ -1726,7 +1735,7 @@ class GatewayRunner:
         self._liveness_lock = threading.Lock()
         self._liveness_stop = threading.Event()
         self._liveness_thread: Optional[threading.Thread] = None
-        self._liveness_interval = max(1.0, float(os.getenv("HERMES_WATCHDOG_HEARTBEAT_INTERVAL", "15")))
+        self._liveness_interval = _parse_liveness_interval(os.getenv("HERMES_WATCHDOG_HEARTBEAT_INTERVAL"))
         self._liveness_last_progress_tuple: Optional[tuple[int, int, int, int, int, int]] = None
         self._liveness_last_forward_progress_mono: Optional[float] = None
         self._liveness_last_forward_progress_at: Optional[str] = None
@@ -6202,7 +6211,7 @@ class GatewayRunner:
         if not hasattr(self, "_liveness_thread"):
             self._liveness_thread = None
         if not hasattr(self, "_liveness_interval"):
-            self._liveness_interval = max(1.0, float(os.getenv("HERMES_WATCHDOG_HEARTBEAT_INTERVAL", "15")))
+            self._liveness_interval = _parse_liveness_interval(os.getenv("HERMES_WATCHDOG_HEARTBEAT_INTERVAL"))
         if not hasattr(self, "_liveness_last_progress_tuple"):
             self._liveness_last_progress_tuple = None
         if not hasattr(self, "_liveness_last_forward_progress_mono"):

@@ -17,7 +17,7 @@ from urllib.parse import urlparse
 
 try:
     import yaml
-except Exception:  # pragma: no cover - yaml is a project dependency
+except ImportError:  # pragma: no cover - yaml is optional; _load_yaml handles absence
     yaml = None
 
 

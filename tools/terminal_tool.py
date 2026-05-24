@@ -1925,6 +1925,40 @@ def terminal_tool(
                     "status": "blocked"
                 }, ensure_ascii=False)
 
+            # Runtime guard: block forbidden patterns (legacy Hermes projects,
+            # forbidden ports) even if command passes allowlist/denylist.
+            try:
+                from agent.runtime_guard import RuntimeGuard
+                guard_result = RuntimeGuard.check_terminal_command(command)
+                if not guard_result.allowed:
+                    logger.info(
+                        "RuntimeGuard: blocked terminal command: %s (command: %s)",
+                        guard_result.reason, command[:200],
+                    )
+                    # Audit: blocked by runtime guard
+                    try:
+                        from tools.audit_log import write_audit_entry
+                        from tools.approval import get_current_session_key
+                        write_audit_entry(
+                            command=command,
+                            session_key=get_current_session_key(default=""),
+                            task_id=effective_task_id or "",
+                            workdir=workdir or "",
+                            blocked=True,
+                            block_reason=guard_result.reason,
+                            env_type=env_type,
+                        )
+                    except Exception:
+                        pass
+                    return json.dumps({
+                        "output": "",
+                        "exit_code": -1,
+                        "error": guard_result.reason,
+                        "status": "blocked"
+                    }, ensure_ascii=False)
+            except Exception as _guard_err:
+                logger.debug("RuntimeGuard check failed (non-fatal): %s", _guard_err)
+
         # Validate workdir against shell injection
         if workdir:
             workdir_error = _validate_workdir(workdir)

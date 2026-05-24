@@ -812,6 +812,20 @@ def handle_function_call(
             if function_name in {"write_file", "patch"}:
                 return json.dumps({"error": "Edit approval denied: approval guard failed"}, ensure_ascii=False)
 
+        # Runtime guard: block forbidden patterns (legacy Hermes projects,
+        # forbidden ports, etc.) at the tool-call level.
+        try:
+            from agent.runtime_guard import RuntimeGuard
+            guard_result = RuntimeGuard.check_tool_call(function_name, function_args)
+            if not guard_result.allowed:
+                logger.warning(
+                    "RuntimeGuard: blocked tool call '%s': %s",
+                    function_name, guard_result.reason,
+                )
+                return json.dumps({"error": guard_result.reason}, ensure_ascii=False)
+        except Exception as _guard_err:
+            logger.debug("RuntimeGuard check failed (non-fatal): %s", _guard_err)
+
         # Notify the read-loop tracker when a non-read/search tool runs,
         # so the *consecutive* counter resets (reads after other work are fine).
         if function_name not in _READ_SEARCH_TOOLS:

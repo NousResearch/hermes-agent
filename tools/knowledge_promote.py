@@ -96,6 +96,7 @@ def promote_knowledge(
     valid_domains = [
         "frontend", "backend", "devops", "security", "testing",
         "data", "mobile", "infrastructure",
+        "business", "marketing", "sales", "finance", "operations", "people",
     ]
 
     if target_domain not in valid_domains:
@@ -175,7 +176,8 @@ registry.register(
         "name": "promote_knowledge",
         "description": (
             "Promote knowledge from project-local KB to a shared domain KB. "
-            "Valid domains: frontend, backend, devops, security, testing, data, mobile, infrastructure. "
+            "Valid domains: frontend, backend, devops, security, testing, data, mobile, infrastructure, "
+            "business, marketing, sales, finance, operations, people. "
             "Creates a note in the domain directory with frontmatter tracking origin and timestamp."
         ),
         "parameters": {

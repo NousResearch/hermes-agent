@@ -10,7 +10,7 @@ from agent.knowledge_domains import DomainRelevanceMatcher
 from agent.knowledge_relevance import KnowledgeRelevanceEngine
 from agent.knowledge_preferences import KnowledgePreferenceManager
 from tools.knowledge_promote import promote_knowledge
-from tools.knowledge_review import review_knowledge
+from tools.knowledge_review import review_knowledge, _get_vault_path
 
 
 @pytest.fixture
@@ -24,6 +24,13 @@ def full_e2e_env(tmp_path: Path) -> dict:
     (domains_dir / "backend").mkdir()
     projects_dir = vault / "projects"
     projects_dir.mkdir()
+    (vault / "review-queue").mkdir()
+    (vault / "sources").mkdir()
+    (vault / "knowledge").mkdir()
+    (vault / "lessons").mkdir()
+    (vault / "patterns").mkdir()
+    (vault / "playbooks").mkdir()
+    (vault / "skills").mkdir()
 
     # Create project notes
     for slug, stack, domains in [
@@ -58,7 +65,7 @@ def test_e2e_full_knowledge_flow(full_e2e_env: dict) -> None:
     assert "proj-b" in matches
 
     # Step 3: No existing preference → add to review queue
-    with patch("tools.knowledge_review._get_queue_path", return_value=vault / "domains" / ".review_queue.json"):
+    with patch("tools.knowledge_review._get_vault_path", return_value=vault):
         with patch("tools.knowledge_promote._resolve_vault_path", return_value=vault):
             result_str = review_knowledge(
                 action="add",
@@ -73,7 +80,7 @@ def test_e2e_full_knowledge_flow(full_e2e_env: dict) -> None:
             knowledge_id = add_result["knowledge_id"]
 
     # Step 4: User approves → promoted to domain KB
-    with patch("tools.knowledge_review._get_queue_path", return_value=vault / "domains" / ".review_queue.json"):
+    with patch("tools.knowledge_review._get_vault_path", return_value=vault):
         with patch("tools.knowledge_promote._resolve_vault_path", return_value=vault):
             result_str = review_knowledge(action="approve", knowledge_id=knowledge_id)
             approve_result = json.loads(result_str)

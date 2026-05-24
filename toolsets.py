@@ -164,11 +164,12 @@ TOOLSETS = {
         "description": (
             "Knowledge Center intake and routing: classify raw knowledge into "
             "Skill/Agent/domain/playbook/project queues, promote shared domain "
-            "knowledge, and manage review/preferences."
+            "knowledge, manage review/preferences, and manage knowledge cards."
         ),
         "tools": [
             "capture_knowledge", "load_domain_knowledge", "promote_knowledge",
             "review_knowledge", "manage_knowledge_preference",
+            "manage_knowledge_card",
         ],
         "includes": []
     },
@@ -217,8 +218,8 @@ TOOLSETS = {
     },
     
     "memory": {
-        "description": "Persistent memory across sessions (personal notes + user profile)",
-        "tools": ["memory"],
+        "description": "Persistent memory across sessions (personal notes, user profile, and memory cards)",
+        "tools": ["memory", "manage_memory_card"],
         "includes": []
     },
     

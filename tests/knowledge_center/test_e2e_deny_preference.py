@@ -8,7 +8,7 @@ import pytest
 
 from agent.knowledge_preferences import KnowledgePreferenceManager
 from agent.knowledge_relevance import KnowledgeRelevanceEngine
-from tools.knowledge_review import review_knowledge, _get_queue_path
+from tools.knowledge_review import review_knowledge, _get_vault_path
 
 
 @pytest.fixture
@@ -24,6 +24,7 @@ def deny_env(tmp_path: Path) -> dict:
         (projects / f"{slug}.md").write_text(
             f"---\ntitle: {slug}\nproject_slug: {slug}\n---\n| Stack | `node/next` |\n\ndomain: [frontend, backend]\n"
         )
+    (vault / "review-queue").mkdir()
     hermes_home = tmp_path / ".hermes"
     hermes_home.mkdir()
     return {"vault": vault, "hermes_home": hermes_home}
@@ -57,8 +58,7 @@ def test_e2e_deny_preference_flow(deny_env: dict) -> None:
     assert pref["allow"] is False
 
     # Step 4: Preference match → skips silently (no ask, no promote)
-    queue_path = vault / "domains" / ".review_queue.json"
-    with patch("tools.knowledge_review._get_queue_path", return_value=queue_path):
+    with patch("tools.knowledge_review._get_vault_path", return_value=vault):
         # Simulate: preference check returns deny → skip
         if pref and not pref["allow"]:
             # Should NOT add to queue

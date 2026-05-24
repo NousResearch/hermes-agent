@@ -1482,6 +1482,11 @@ DEFAULT_CONFIG = {
             "domains": [],
             "shared_files": [],
         },
+        # Runtime guard: forbidden patterns blocked at tool/gateway/message level.
+        # Each entry is a regex pattern. Default set blocks references to legacy
+        # Hermes projects (Hermes Labs, HermesNous), forbidden ports (7421/7422),
+        # and hermes-mcp MCP server. Add custom patterns here.
+        "forbidden_patterns": [],
         # Acknowledged supply-chain security advisories. Each entry is the
         # ID of an advisory the user has read and acted on (uninstalled the
         # compromised package, rotated credentials). Acked advisories no

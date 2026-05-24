@@ -16,6 +16,7 @@ from tools.registry import registry
 _VALID_DOMAINS = [
     "frontend", "backend", "devops", "security", "testing",
     "data", "mobile", "infrastructure",
+    "business", "marketing", "sales", "finance", "operations", "people",
 ]
 
 
@@ -120,7 +121,8 @@ registry.register(
         "name": "load_domain_knowledge",
         "description": (
             "Load shared domain knowledge notes for the given domain slugs. "
-            "Valid domains: frontend, backend, devops, security, testing, data, mobile, infrastructure. "
+            "Valid domains: frontend, backend, devops, security, testing, data, mobile, infrastructure, "
+            "business, marketing, sales, finance, operations, people. "
             "Returns loaded notes as JSON with content, path, and status."
         ),
         "parameters": {

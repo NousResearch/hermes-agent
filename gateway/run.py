@@ -5407,6 +5407,30 @@ class GatewayRunner:
             except Exception as exc:
                 logger.debug("@ context reference expansion failed: %s", exc)
 
+        # Runtime guard: block forbidden patterns (legacy Hermes projects,
+        # forbidden ports) at the gateway message level.
+        try:
+            from agent.runtime_guard import RuntimeGuard
+            guard_result = RuntimeGuard.check_message(message_text)
+            if not guard_result.allowed:
+                logger.warning(
+                    "RuntimeGuard: blocked gateway message: %s (user=%s, chat=%s)",
+                    guard_result.reason,
+                    source.user_id,
+                    source.chat_id,
+                )
+                _rg_adapter = self.adapters.get(source.platform)
+                if _rg_adapter:
+                    _rg_meta = self._thread_metadata_for_source(source, self._reply_anchor_for_event(event))
+                    await _rg_adapter.send(
+                        source.chat_id,
+                        f"⛔ {guard_result.reason}",
+                        metadata=_rg_meta,
+                    )
+                return None
+        except Exception as _rg_err:
+            logger.debug("RuntimeGuard check failed (non-fatal): %s", _rg_err)
+
         return message_text
 
     def _consume_pending_native_image_paths(self, session_key: str) -> List[str]:

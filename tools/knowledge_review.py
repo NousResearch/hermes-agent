@@ -1,48 +1,61 @@
 """Knowledge review queue tool — manages the promote/reject/defer workflow.
 
+Now backed by Card Store (agent/card_store.py) and ReviewInbox (agent/review_inbox.py).
+The old JSON-based queue is migrated on first load.
+
 Tool name: review_knowledge
+Actions: list, add, approve, reject, defer, delete, mark_duplicate, request_revision
 """
 
 from __future__ import annotations
 
 import json
 import os
-import uuid
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from hermes_constants import get_hermes_home
+from agent.review_inbox import ReviewInbox
 from tools.registry import registry
 
 
-def _get_queue_path() -> Path:
-    """Get the review queue file path."""
+def _get_vault_path() -> Path:
+    """Get the Obsidian vault path."""
     vault_path = os.environ.get("OBSIDIAN_VAULT_PATH")
     if vault_path:
-        vault = Path(vault_path)
-    else:
-        vault = Path.home() / "ObsidianVault" / "HermesAgent"
-    return vault / "domains" / ".review_queue.json"
+        return Path(vault_path)
+    return Path.home() / "ObsidianVault" / "HermesAgent"
 
 
-def _load_queue() -> List[Dict[str, Any]]:
-    """Load the review queue from disk."""
-    queue_path = _get_queue_path()
+def _migrate_old_queue() -> None:
+    """Migrate old JSON queue entries to Card Store on first use."""
+    vault = _get_vault_path()
+    queue_path = vault / "domains" / ".review_queue.json"
     if not queue_path.exists():
-        return []
+        return
     try:
         text = queue_path.read_text(encoding="utf-8")
-        return json.loads(text)
-    except (json.JSONDecodeError, Exception):
-        return []
-
-
-def _save_queue(queue: List[Dict[str, Any]]) -> None:
-    """Save the review queue to disk."""
-    queue_path = _get_queue_path()
-    queue_path.parent.mkdir(parents=True, exist_ok=True)
-    queue_path.write_text(json.dumps(queue, indent=2), encoding="utf-8")
+        old_entries = json.loads(text)
+        if not old_entries:
+            return
+        inbox = ReviewInbox(vault_path=vault)
+        migrated = 0
+        for entry in old_entries:
+            if entry.get("status") == "pending":
+                inbox.queue_knowledge(
+                    title=entry.get("title", ""),
+                    body=entry.get("content", ""),
+                    source=entry.get("source_project", ""),
+                    domains=[entry.get("target_domain", "")] if entry.get("target_domain") else None,
+                    origin_project=entry.get("source_project", ""),
+                    summary=entry.get("summary", ""),
+                )
+                migrated += 1
+        if migrated:
+            # Rename old queue to mark as migrated
+            queue_path.rename(queue_path.with_suffix(".json.migrated"))
+    except Exception:
+        pass  # Non-fatal — old queue stays, Card Store used going forward
 
 
 def review_knowledge(
@@ -54,31 +67,27 @@ def review_knowledge(
     target_domain: Optional[str] = None,
     summary: Optional[str] = None,
     reason: Optional[str] = None,
+    duplicate_of: Optional[str] = None,
+    feedback: Optional[str] = None,
     task_id: str = None,
 ) -> str:
-    """Manage the knowledge review queue.
+    """Manage the knowledge review queue via Card Store.
 
-    Args:
-        action: One of 'list', 'add', 'approve', 'reject', 'defer', 'delete'
-        knowledge_id: ID of the knowledge entry (for approve/reject/defer/delete)
-        title: Title of knowledge (for add)
-        content: Content of knowledge (for add)
-        source_project: Source project slug (for add)
-        target_domain: Target domain (for add)
-        summary: Optional summary (for add)
-        reason: Reason for rejection/deferral (for reject/defer)
-        task_id: Optional task identifier
-
-    Returns:
-        JSON string with result
+    Actions: list, add, approve, reject, defer, delete, mark_duplicate, request_revision
     """
+    # Migrate old JSON queue on first use
+    _migrate_old_queue()
+
+    vault = _get_vault_path()
+    inbox = ReviewInbox(vault_path=vault)
+
     if action == "list":
-        queue = _load_queue()
+        items = inbox.list_pending()
         return json.dumps({
             "success": True,
             "action": "list",
-            "count": len(queue),
-            "items": queue,
+            "count": len(items),
+            "items": items,
         })
 
     elif action == "add":
@@ -87,103 +96,91 @@ def review_knowledge(
                 "success": False,
                 "error": "add requires title, content, source_project, target_domain",
             })
-        queue = _load_queue()
-        entry_id = str(uuid.uuid4())[:8]
-        entry = {
-            "id": entry_id,
-            "title": title,
-            "content": content,
-            "source_project": source_project,
-            "target_domain": target_domain,
-            "summary": summary or "",
-            "status": "pending",
-            "created_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-            "updated_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-        }
-        queue.append(entry)
-        _save_queue(queue)
+        result = inbox.queue_knowledge(
+            title=title,
+            body=content,
+            source=source_project,
+            domains=[target_domain],
+            origin_project=source_project,
+            summary=summary or "",
+        )
+        # Normalize Card Store response to match legacy API
         return json.dumps({
-            "success": True,
+            "success": result.get("success", True),
             "action": "add",
-            "knowledge_id": entry_id,
+            "knowledge_id": result.get("card_id", ""),
             "status": "pending",
         })
 
-    elif action in ("approve", "reject", "defer"):
+    elif action == "approve":
         if not knowledge_id:
-            return json.dumps({
-                "success": False,
-                "error": f"{action} requires knowledge_id",
-            })
-        queue = _load_queue()
-        for entry in queue:
-            if entry["id"] == knowledge_id:
-                entry["status"] = "approved" if action == "approve" else action
-                entry["updated_at"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                if reason:
-                    entry["reason"] = reason
-                _save_queue(queue)
+            return json.dumps({"success": False, "error": "approve requires knowledge_id"})
+        result = inbox.approve(knowledge_id)
+        # Also promote the knowledge to domain KB
+        if result.get("success"):
+            card = inbox.store.get_knowledge_card(knowledge_id)
+            if card:
+                from tools.knowledge_promote import promote_knowledge
+                promote_result = promote_knowledge(
+                    title=card["title"],
+                    content=card["body"],
+                    source_project=card.get("origin_project", ""),
+                    target_domain=(json.loads(card.get("domains", "[]"))[0] if card.get("domains") else "backend"),
+                    summary=summary,
+                )
+                result["promote_result"] = json.loads(promote_result)
+        result.setdefault("action", "approve")
+        return json.dumps(result)
 
-                # If approved, actually promote the knowledge
-                if action == "approve":
-                    from tools.knowledge_promote import promote_knowledge
-                    promote_result = promote_knowledge(
-                        title=entry["title"],
-                        content=entry["content"],
-                        source_project=entry["source_project"],
-                        target_domain=entry["target_domain"],
-                        summary=entry.get("summary"),
-                    )
-                    return json.dumps({
-                        "success": True,
-                        "action": action,
-                        "knowledge_id": knowledge_id,
-                        "promote_result": json.loads(promote_result),
-                    })
+    elif action == "reject":
+        if not knowledge_id:
+            return json.dumps({"success": False, "error": "reject requires knowledge_id"})
+        result = inbox.reject(knowledge_id, reason=reason or "")
+        result.setdefault("action", "reject")
+        return json.dumps(result)
 
-                return json.dumps({
-                    "success": True,
-                    "action": action,
-                    "knowledge_id": knowledge_id,
-                })
-        return json.dumps({
-            "success": False,
-            "error": f"Knowledge ID {knowledge_id} not found in queue",
-        })
+    elif action == "defer":
+        if not knowledge_id:
+            return json.dumps({"success": False, "error": "defer requires knowledge_id"})
+        result = inbox.defer(knowledge_id, reason=reason or "")
+        result.setdefault("action", "defer")
+        return json.dumps(result)
+
+    elif action == "mark_duplicate":
+        if not knowledge_id:
+            return json.dumps({"success": False, "error": "mark_duplicate requires knowledge_id"})
+        if not duplicate_of:
+            return json.dumps({"success": False, "error": "mark_duplicate requires duplicate_of"})
+        result = inbox.mark_duplicate(knowledge_id, duplicate_of)
+        result.setdefault("action", "mark_duplicate")
+        return json.dumps(result)
+
+    elif action == "request_revision":
+        if not knowledge_id:
+            return json.dumps({"success": False, "error": "request_revision requires knowledge_id"})
+        result = inbox.request_revision(knowledge_id, feedback=feedback or "")
+        result.setdefault("action", "request_revision")
+        return json.dumps(result)
 
     elif action == "delete":
         if not knowledge_id:
-            return json.dumps({
-                "success": False,
-                "error": "delete requires knowledge_id",
-            })
-        queue = _load_queue()
-        new_queue = [e for e in queue if e["id"] != knowledge_id]
-        if len(new_queue) == len(queue):
-            return json.dumps({
-                "success": False,
-                "error": f"Knowledge ID {knowledge_id} not found",
-            })
-        _save_queue(new_queue)
-        return json.dumps({
-            "success": True,
-            "action": "delete",
-            "knowledge_id": knowledge_id,
-        })
+            return json.dumps({"success": False, "error": "delete requires knowledge_id"})
+        ok = inbox.store.delete_knowledge_card(knowledge_id)
+        return json.dumps({"success": ok, "action": "delete", "knowledge_id": knowledge_id})
 
     else:
         return json.dumps({
             "success": False,
-            "error": f"Invalid action: {action}. Valid: list, add, approve, reject, defer, delete",
+            "error": (
+                f"Invalid action: {action}. "
+                "Valid: list, add, approve, reject, defer, delete, mark_duplicate, request_revision"
+            ),
         })
 
 
 def check_requirements() -> bool:
     """Check if vault path exists."""
-    vault_path = os.environ.get("OBSIDIAN_VAULT_PATH")
-    if vault_path:
-        return Path(vault_path).exists()
-    return (Path.home() / "ObsidianVault" / "HermesAgent").exists()
+    return _get_vault_path().exists()
 
 
 # Register the tool
@@ -193,24 +190,28 @@ registry.register(
     schema={
         "name": "review_knowledge",
         "description": (
-            "Manage the knowledge review queue. Actions: list, add, approve, reject, defer, delete. "
-            "Approved entries are automatically promoted to the domain KB."
+            "Manage the knowledge review queue via Card Store. "
+            "Actions: list, add, approve, reject, defer, delete, mark_duplicate, request_revision. "
+            "Approved entries are automatically promoted to the domain KB. "
+            "Rejected entries are archived to domains/.rejected/."
         ),
         "parameters": {
             "type": "object",
             "properties": {
                 "action": {
                     "type": "string",
-                    "enum": ["list", "add", "approve", "reject", "defer", "delete"],
+                    "enum": ["list", "add", "approve", "reject", "defer", "delete", "mark_duplicate", "request_revision"],
                     "description": "Action to perform",
                 },
-                "knowledge_id": {"type": "string", "description": "Knowledge entry ID"},
+                "knowledge_id": {"type": "string", "description": "Knowledge card ID"},
                 "title": {"type": "string", "description": "Title (for add)"},
                 "content": {"type": "string", "description": "Content (for add)"},
                 "source_project": {"type": "string", "description": "Source project (for add)"},
                 "target_domain": {"type": "string", "description": "Target domain (for add)"},
                 "summary": {"type": "string", "description": "Summary (for add)"},
                 "reason": {"type": "string", "description": "Reason (for reject/defer)"},
+                "duplicate_of": {"type": "string", "description": "Card ID this duplicates (for mark_duplicate)"},
+                "feedback": {"type": "string", "description": "Feedback (for request_revision)"},
             },
             "required": ["action"],
         },
@@ -224,6 +225,8 @@ registry.register(
         target_domain=args.get("target_domain"),
         summary=args.get("summary"),
         reason=args.get("reason"),
+        duplicate_of=args.get("duplicate_of"),
+        feedback=args.get("feedback"),
         task_id=kw.get("task_id"),
     ),
     check_fn=check_requirements,

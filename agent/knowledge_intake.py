@@ -2,9 +2,10 @@
 
 This module classifies raw knowledge snippets into the next best home:
 skill candidate, agent candidate, shared domain knowledge, workspace-level
-knowledge, playbook, or project-local note. It also writes lightweight
-Obsidian queue notes and syncs Skill/Agent relation maps into the
-HermesAgent vault.
+knowledge, playbook, or project-local note. The Obsidian source of truth is
+the recovered HermesNous graph renamed as the HermesAgent vault: MOC,
+AI_MEMORY, OBSIDIAN_LINK_INDEX, AI_SKILL_ROUTER, SKILL_GRAPH, and the existing
+sources/knowledge/lessons/patterns/playbooks/review-queue/skills layers.
 """
 
 from __future__ import annotations
@@ -38,6 +39,27 @@ _INTAKE_DIRS = {
     "workspace_knowledge": "workspace-knowledge",
     "playbook_candidate": "playbook-candidates",
     "project_note": "project-notes",
+}
+
+_PRIMARY_LAYER_DIRS = [
+    "sources",
+    "knowledge",
+    "lessons",
+    "patterns",
+    "playbooks",
+    "skills",
+    "training-packs",
+    "docs",
+    "review-queue",
+]
+
+_DESTINATION_MERGE_DIRS = {
+    "skill_candidate": ["skills", "docs", "review-queue"],
+    "agent_candidate": ["docs", "skills/conductor", "review-queue"],
+    "domain_knowledge": ["knowledge", "patterns", "lessons", "sources", "review-queue"],
+    "workspace_knowledge": ["knowledge", "docs", "patterns", "sources", "review-queue"],
+    "playbook_candidate": ["playbooks", "patterns", "lessons", "review-queue"],
+    "project_note": ["sources", "knowledge", "lessons", "reports", "review-queue"],
 }
 
 _DESTINATION_KEYWORDS = {
@@ -199,26 +221,60 @@ def _find_related_files(
     related: List[Dict[str, str]] = []
     query_tokens = _tokens(f"{title}\n{content}")
 
-    if source_project:
-        project_note = vault / "projects" / f"{source_project}.md"
-        if project_note.exists():
+    seed_files = [
+        vault / "MOC.md",
+        vault / "AI_MEMORY.md",
+        vault / "docs" / "OBSIDIAN_LINK_INDEX.md",
+        vault / "docs" / "AI_SKILL_ROUTER.md",
+        vault / "docs" / "SKILL_GRAPH.md",
+        vault / "knowledge" / "Knowledge Operating Rules.md",
+    ]
+    if destination == "agent_candidate":
+        seed_files.extend([
+            vault / "docs" / "SYSTEM_AGENTS_AND_FLOW.md",
+            vault / "skills" / "conductor" / "routing-table.md",
+            vault / "skills" / "conductor" / "nous-conductor.md",
+        ])
+    if destination == "workspace_knowledge":
+        seed_files.extend([
+            vault / "docs" / "HERMESNOUS_ALL_PROJECTS_PLAN.md",
+            vault / "knowledge" / "owner-context-v0.1.md",
+            vault / "knowledge" / "README.md",
+        ])
+    if destination == "playbook_candidate":
+        seed_files.append(vault / "playbooks" / "README.md")
+
+    for seed in seed_files:
+        if seed.exists():
             related.append({
-                "kind": "project",
-                "path": str(project_note),
-                "link": _vault_link(vault, project_note, source_project),
-                "reason": "source_project",
+                "kind": "hub",
+                "path": str(seed),
+                "link": _vault_link(vault, seed),
+                "reason": "source_of_truth_hub",
             })
 
-    for domain in domains:
-        readme = vault / "domains" / domain / "README.md"
-        if readme.exists():
-            related.append({
-                "kind": "domain",
-                "path": str(readme),
-                "link": _vault_link(vault, readme, f"{domain} domain"),
-                "reason": "classified_domain",
-            })
+    layer_hits: List[Tuple[int, Path]] = []
+    for dirname in _DESTINATION_MERGE_DIRS.get(destination, _PRIMARY_LAYER_DIRS):
+        directory = vault / dirname
+        if not directory.exists():
+            continue
+        for note_file in sorted(directory.glob("**/*.md")):
+            try:
+                text = note_file.read_text(encoding="utf-8", errors="ignore")
+            except OSError:
+                continue
+            overlap = len(query_tokens & _tokens(f"{note_file.stem}\n{text}"))
+            if overlap or (source_project and source_project.lower() in note_file.stem.lower()):
+                layer_hits.append((overlap, note_file))
+    for _, note_file in sorted(layer_hits, key=lambda row: row[0], reverse=True)[:8]:
+        related.append({
+            "kind": "vault_note",
+            "path": str(note_file),
+            "link": _vault_link(vault, note_file),
+            "reason": "knowledge_graph_overlap",
+        })
 
+    # Backward-compatible support for the short-lived standalone vault shape.
     if destination == "agent_candidate":
         for role_note in sorted((vault / "roles").glob("*.md")) if (vault / "roles").exists() else []:
             if role_note.name == "README.md":
@@ -284,22 +340,13 @@ def find_merge_candidates(
     if not query and not source_url:
         return []
 
-    candidate_dirs: List[Path] = []
-    if classification.destination == "workspace_knowledge":
-        candidate_dirs.append(vault / "workspace")
-    elif classification.destination == "domain_knowledge":
-        for domain in classification.domains:
-            candidate_dirs.append(vault / "domains" / domain)
-    elif classification.destination == "playbook_candidate":
-        candidate_dirs.append(vault / "playbooks")
-    elif classification.destination == "project_note":
-        candidate_dirs.append(vault / "projects")
-    else:
-        candidate_dirs.append(vault / "intake" / _INTAKE_DIRS.get(classification.destination, ""))
-
-    # Always compare against same-destination intake notes to prevent duplicates
-    # while an item is still awaiting review.
-    candidate_dirs.append(vault / "intake" / _INTAKE_DIRS.get(classification.destination, ""))
+    candidate_dirs = [
+        vault / dirname
+        for dirname in _DESTINATION_MERGE_DIRS.get(classification.destination, ["review-queue"])
+    ]
+    # Always compare against review-queue notes to prevent duplicates while an
+    # item is still awaiting review.
+    candidate_dirs.append(vault / "review-queue")
 
     candidates: List[Dict[str, Any]] = []
     seen: set[str] = set()
@@ -322,9 +369,9 @@ def find_merge_candidates(
             jaccard = overlap / union
             score = 1.0 if same_source else jaccard
 
-            if classification.destination == "workspace_knowledge" and note.parent.name == "workspace":
+            if classification.destination == "workspace_knowledge" and note.parts[-2] in {"knowledge", "docs"}:
                 score += 0.12
-            if note.parent.name == _INTAKE_DIRS.get(classification.destination):
+            if note.parent.name == "review-queue":
                 score += 0.08
             score = min(1.0, score)
 
@@ -465,19 +512,12 @@ def write_intake_note(
     source_title: Optional[str] = None,
     vault_path: Optional[Path] = None,
 ) -> Path:
-    """Write a pending intake note into the Obsidian vault."""
+    """Write or merge a pending intake note into the recovered Obsidian graph."""
     vault = resolve_vault_path(vault_path)
     now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     date = datetime.now().strftime("%Y-%m-%d")
-    intake_dir = vault / "intake" / _INTAKE_DIRS[classification.destination]
-    intake_dir.mkdir(parents=True, exist_ok=True)
-
-    base_slug = _slugify(classification.title)
-    note_path = intake_dir / f"{base_slug}.md"
-    counter = 1
-    while note_path.exists():
-        note_path = intake_dir / f"{base_slug}-{counter}.md"
-        counter += 1
+    queue_dir = vault / "review-queue"
+    queue_dir.mkdir(parents=True, exist_ok=True)
 
     domains = "[" + ", ".join(classification.domains) + "]"
     related_lines = "\n".join(
@@ -506,6 +546,39 @@ def write_intake_note(
         f"- {item['link']} score `{item['score']}` ({item['reason']})"
         for item in classification.merge_candidates
     ) or "- None"
+
+    for candidate in classification.merge_candidates:
+        if not candidate.get("recommended_merge"):
+            continue
+        note_path = Path(candidate["path"])
+        if not note_path.exists():
+            continue
+        source = _source_block(source_url, source_title, content)
+        source_lines = "\n".join(f"- `{key}`: {value}" for key, value in source.items()) or "- None"
+        update = (
+            f"\n\n## Hermes Intake Update - {date} - {classification.title}\n\n"
+            f"- Intake type: `{classification.destination}`\n"
+            f"- Confidence: `{classification.confidence}`\n"
+            f"- Recommended action: {classification.recommended_action}\n\n"
+            "### Source\n\n"
+            f"{source_lines}\n\n"
+            "### Captured Content\n\n"
+            f"{content.strip()}\n\n"
+            f"_Merged by Hermes Knowledge Intake Router at {now}._\n"
+        )
+        note_path.write_text(
+            note_path.read_text(encoding="utf-8", errors="ignore").rstrip() + update,
+            encoding="utf-8",
+        )
+        _update_intake_index(vault)
+        return note_path
+
+    base_slug = _slugify(classification.title)
+    note_path = queue_dir / f"intake-{classification.destination}-{base_slug}.md"
+    counter = 1
+    while note_path.exists():
+        note_path = queue_dir / f"intake-{classification.destination}-{base_slug}-{counter}.md"
+        counter += 1
 
     body = (
         "---\n"
@@ -547,29 +620,31 @@ def write_intake_note(
 
 
 def _update_intake_index(vault: Path) -> None:
-    intake_root = vault / "intake"
-    intake_root.mkdir(parents=True, exist_ok=True)
+    queue_root = vault / "review-queue"
+    queue_root.mkdir(parents=True, exist_ok=True)
     lines = [
         "---",
-        "title: Knowledge Intake",
+        "title: Knowledge Intake Index",
         "tags:",
         "  - hermes-agent/intake",
         "status: active",
         f"updated: {datetime.now().strftime('%Y-%m-%d')}",
         "---",
         "",
-        "# Knowledge Intake",
+        "# Knowledge Intake Index",
         "",
-        "Pending routing queues for knowledge that may become a Skill, Agent, workspace note, domain KB note, playbook, or project note.",
+        "Pending routing index for knowledge that may become a Skill, Agent, knowledge note, playbook, pattern, source, or project note.",
+        "",
+        "Source of truth stays in [[MOC]], [[AI_MEMORY]], [[docs/OBSIDIAN_LINK_INDEX]], [[docs/AI_SKILL_ROUTER]], and [[docs/SKILL_GRAPH]].",
         "",
         "| Queue | Notes |",
         "|---|---:|",
     ]
-    for destination, dirname in _INTAKE_DIRS.items():
-        count = len(list((intake_root / dirname).glob("*.md"))) if (intake_root / dirname).exists() else 0
-        lines.append(f"| [[intake/{dirname}|{destination}]] | {count} |")
+    for destination in sorted(DESTINATIONS):
+        count = len(list(queue_root.glob(f"intake-{destination}-*.md")))
+        lines.append(f"| `{destination}` | {count} |")
     lines.append("")
-    (intake_root / "README.md").write_text("\n".join(lines), encoding="utf-8")
+    (queue_root / "intake-index.md").write_text("\n".join(lines), encoding="utf-8")
 
 
 def list_intake_notes(
@@ -577,12 +652,11 @@ def list_intake_notes(
     vault_path: Optional[Path] = None,
 ) -> List[Dict[str, str]]:
     vault = resolve_vault_path(vault_path)
-    intake_root = vault / "intake"
+    queue_root = vault / "review-queue"
     destinations = [destination] if destination in _INTAKE_DIRS else list(_INTAKE_DIRS)
     notes: List[Dict[str, str]] = []
     for dest in destinations:
-        dirname = _INTAKE_DIRS[dest]
-        for note in sorted((intake_root / dirname).glob("*.md")) if (intake_root / dirname).exists() else []:
+        for note in sorted(queue_root.glob(f"intake-{dest}-*.md")) if queue_root.exists() else []:
             notes.append({
                 "destination": dest,
                 "title": _read_title(note),
@@ -597,15 +671,13 @@ def sync_obsidian_maps(
     skills_root: Optional[Path] = None,
     write_runtime_db: bool = True,
 ) -> Dict[str, Any]:
-    """Sync lightweight Skill and Agent maps into Obsidian."""
+    """Sync lightweight route metadata into the recovered Obsidian graph."""
     vault = resolve_vault_path(vault_path)
     skills_dir = resolve_skills_root(skills_root)
     vault.mkdir(parents=True, exist_ok=True)
 
-    skill_to_roles = _skill_role_map(vault)
-    skill_cards = _sync_skill_cards(vault, skills_dir, skill_to_roles)
-    agent_cards = _sync_agent_cards(vault, skill_to_roles)
-    workspace_index = _sync_workspace_index(vault)
+    skill_cards = _existing_skill_cards(vault, skills_dir)
+    agent_cards = _existing_agent_cards(vault)
     _update_intake_index(vault)
     relation_path = _write_relation_index(vault, skill_cards, agent_cards)
 
@@ -615,11 +687,11 @@ def sync_obsidian_maps(
         "skills_root": str(skills_dir),
         "skill_cards": skill_cards,
         "agent_cards": agent_cards,
-        "workspace_index": str(workspace_index),
+        "workspace_index": str(vault / "docs" / "OBSIDIAN_LINK_INDEX.md"),
         "relation_index": str(relation_path),
         "routing_destinations": sorted(DESTINATIONS),
     }
-    db_path = vault / "relations" / "knowledge-routes.json"
+    db_path = vault / "review-queue" / "knowledge-routes.json"
     db_path.parent.mkdir(parents=True, exist_ok=True)
     db_path.write_text(json.dumps(route_db, indent=2), encoding="utf-8")
 
@@ -630,6 +702,32 @@ def sync_obsidian_maps(
 
     _ensure_moc_links(vault)
     return route_db
+
+
+def _existing_skill_cards(vault: Path, skills_dir: Path) -> List[Dict[str, str]]:
+    cards: List[Dict[str, str]] = []
+    for note in sorted((vault / "skills").glob("**/*.md")) if (vault / "skills").exists() else []:
+        if note.name == "README.md":
+            continue
+        cards.append({"name": note.stem, "path": str(note), "source_path": str(note)})
+    if skills_dir.exists():
+        for skill_file in sorted(skills_dir.glob("**/SKILL.md")):
+            meta = _skill_metadata(skill_file)
+            cards.append({"name": meta["name"], "path": str(skill_file), "source_path": str(skill_file)})
+    return cards
+
+
+def _existing_agent_cards(vault: Path) -> List[Dict[str, str]]:
+    candidates = [
+        vault / "docs" / "SYSTEM_AGENTS_AND_FLOW.md",
+        vault / "docs" / "AI_SKILL_ROUTER.md",
+        vault / "docs" / "SKILL_GRAPH.md",
+    ]
+    return [
+        {"name": path.stem, "path": str(path), "role_path": str(path)}
+        for path in candidates
+        if path.exists()
+    ]
 
 
 def _skill_role_map(vault: Path) -> Dict[str, List[str]]:
@@ -768,20 +866,16 @@ def _sync_agent_cards(vault: Path, skill_to_roles: Dict[str, List[str]]) -> List
 
 
 def _write_relation_index(vault: Path, skill_cards: List[Dict[str, str]], agent_cards: List[Dict[str, str]]) -> Path:
-    relations_dir = vault / "relations"
-    relations_dir.mkdir(parents=True, exist_ok=True)
-    path = relations_dir / "index.md"
+    path = vault / "docs" / "OBSIDIAN_LINK_INDEX.md"
+    if not path.exists():
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("# Obsidian Link Index\n", encoding="utf-8")
+    existing = path.read_text(encoding="utf-8", errors="ignore").rstrip()
+    marker = "\n## Knowledge Intake Routing\n"
     body = (
-        "---\n"
-        "title: Knowledge Routing Relations\n"
-        "tags:\n"
-        "  - hermes-agent/relations\n"
-        "status: active\n"
-        f"updated: {datetime.now().strftime('%Y-%m-%d')}\n"
-        "---\n\n"
-        "# Knowledge Routing Relations\n\n"
-        "This index connects intake queues, agent profiles, runtime skills, project cards, and domain knowledge.\n\n"
-        "## Routing Destinations\n\n"
+        marker +
+        "\n"
+        "This section connects intake decisions to the existing HermesAgent source-of-truth graph.\n\n"
         "| Destination | Meaning | Next Action |\n"
         "|---|---|---|\n"
         "| `skill_candidate` | Repeatable procedural capability | Review, then create/patch a Skill |\n"
@@ -791,16 +885,21 @@ def _write_relation_index(vault: Path, skill_cards: List[Dict[str, str]], agent_
         "| `playbook_candidate` | Global operating procedure | Review, then write playbook |\n"
         "| `project_note` | Project-specific context | Keep with project card/context pack |\n\n"
         "## Indexes\n\n"
-        "- [[intake/README|Knowledge Intake]]\n"
+        "- [[review-queue/intake-index|Knowledge Intake Index]]\n"
+        "- [[review-queue/queue|Review Queue]]\n"
         "- [[skills/README|Runtime Skills]]\n"
-        "- [[agents/README|Agent Profiles]]\n"
-        "- [[workspace/README|Workspace Knowledge]]\n"
-        "- [[domains/index|Domain Knowledge]]\n"
-        "- [[projects/README|Projects]]\n\n"
+        "- [[docs/AI_SKILL_ROUTER|AI Skill Router]]\n"
+        "- [[docs/SKILL_GRAPH|Skill Graph]]\n"
+        "- [[knowledge/README|Knowledge]]\n"
+        "- [[sources/README|Sources]]\n"
+        "- [[patterns/README|Patterns]]\n"
+        "- [[playbooks/README|Playbooks]]\n\n"
         f"Synced skill cards: {len(skill_cards)}\n\n"
-        f"Synced agent cards: {len(agent_cards)}\n"
+        f"Synced agent/router hubs: {len(agent_cards)}\n"
     )
-    path.write_text(body, encoding="utf-8")
+    if marker in existing:
+        existing = existing.split(marker, 1)[0].rstrip()
+    path.write_text(existing + "\n" + body, encoding="utf-8")
     return path
 
 
@@ -875,11 +974,12 @@ def _ensure_moc_links(vault: Path) -> None:
         return
     text = moc.read_text(encoding="utf-8", errors="ignore")
     additions = [
-        "- [[intake/README|Knowledge Intake]]",
+        "- [[review-queue/intake-index|Knowledge Intake Index]]",
+        "- [[review-queue/queue|Review Queue]]",
         "- [[skills/README|Runtime Skills]]",
-        "- [[agents/README|Agent Profiles]]",
-        "- [[workspace/README|Workspace Knowledge]]",
-        "- [[relations/index|Knowledge Routing Relations]]",
+        "- [[docs/AI_SKILL_ROUTER|AI Skill Router]]",
+        "- [[docs/SKILL_GRAPH|Skill Graph]]",
+        "- [[docs/OBSIDIAN_LINK_INDEX|Knowledge Center / Link Index]]",
     ]
     missing = [line for line in additions if line not in text]
     if not missing:

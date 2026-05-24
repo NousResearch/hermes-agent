@@ -61,6 +61,38 @@ _DOMAIN_KEYWORDS: Dict[str, List[str]] = {
         "dns", "load balancer", "cdn", "capacity", "scaling",
         "infrastructure", "provisioning", "ssh", "firewall",
     ],
+    "business": [
+        "business", "company", "synerry", "owner", "md", "strategy",
+        "positioning", "proposal", "pitch", "pitching", "tor",
+        "go/no-go", "case study", "client", "customer", "stakeholder",
+        "ธุรกิจ", "บริษัท", "ประมูล", "ข้อเสนอ", "ลูกค้า",
+    ],
+    "marketing": [
+        "marketing", "market research", "persona", "fgd", "survey",
+        "competitive", "competitor", "positioning map", "sentiment",
+        "trend", "concept testing", "brand", "campaign", "content",
+        "การตลาด", "แบรนด์", "กลุ่มเป้าหมาย", "คู่แข่ง",
+    ],
+    "sales": [
+        "sales", "pipeline", "lead", "deal", "revenue", "upsell",
+        "cross-sell", "crm", "account", "proposal", "quote", "close",
+        "win rate", "pitch", "client revenue", "ขาย", "รายได้",
+    ],
+    "finance": [
+        "finance", "margin", "cash", "budget", "cost", "profit",
+        "loss", "invoice", "accounting", "pricing", "burn", "runway",
+        "เงิน", "บัญชี", "กำไร", "ต้นทุน", "งบประมาณ",
+    ],
+    "operations": [
+        "operations", "production", "qc", "delivery", "workflow",
+        "process", "sla", "support", "handoff", "timeline", "resource",
+        "capacity", "pm", "project manager", "ส่งมอบ", "กระบวนการ",
+    ],
+    "people": [
+        "hr", "people", "employee", "staff", "culture", "performance",
+        "1on1", "swot", "feedback", "hiring", "role", "team",
+        "พนักงาน", "ทีม", "วัฒนธรรม", "บุคลากร",
+    ],
 }
 
 

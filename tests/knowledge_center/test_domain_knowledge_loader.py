@@ -38,8 +38,12 @@ def mock_vault(tmp_path: Path) -> Path:
 def test_valid_domains_constant() -> None:
     assert "frontend" in _VALID_DOMAINS
     assert "backend" in _VALID_DOMAINS
+    assert "business" in _VALID_DOMAINS
+    assert "marketing" in _VALID_DOMAINS
+    assert "finance" in _VALID_DOMAINS
+    assert "people" in _VALID_DOMAINS
     assert "invalid-domain" not in _VALID_DOMAINS
-    assert len(_VALID_DOMAINS) == 8
+    assert len(_VALID_DOMAINS) == 14
 
 
 def test_check_requirements_missing() -> None:

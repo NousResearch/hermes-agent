@@ -18,6 +18,9 @@ def _make_vault(tmp_path: Path) -> Path:
     vault = tmp_path / "vault"
     (vault / "projects").mkdir(parents=True)
     (vault / "roles").mkdir()
+    (vault / "docs").mkdir()
+    (vault / "knowledge").mkdir()
+    (vault / "review-queue").mkdir()
     (vault / "domains" / "frontend").mkdir(parents=True)
     (vault / "domains" / "backend").mkdir(parents=True)
     (vault / "domains" / "frontend" / "README.md").write_text(
@@ -38,6 +41,11 @@ def _make_vault(tmp_path: Path) -> Path:
         "---\ntitle: MOC\n---\n# MOC\n\n## Entry Points\n\n- [[projects/README|Projects]]\n",
         encoding="utf-8",
     )
+    (vault / "AI_MEMORY.md").write_text("# AI Memory\n", encoding="utf-8")
+    (vault / "docs" / "OBSIDIAN_LINK_INDEX.md").write_text("# Link Index\n", encoding="utf-8")
+    (vault / "docs" / "AI_SKILL_ROUTER.md").write_text("# Router\n", encoding="utf-8")
+    (vault / "docs" / "SKILL_GRAPH.md").write_text("# Skill Graph\n", encoding="utf-8")
+    (vault / "knowledge" / "README.md").write_text("# Knowledge\n", encoding="utf-8")
     return vault
 
 
@@ -167,9 +175,7 @@ def test_source_url_written_to_intake_note(tmp_path: Path) -> None:
 
 def test_merge_candidates_same_source_url(tmp_path: Path) -> None:
     vault = _make_vault(tmp_path)
-    workspace = vault / "workspace"
-    workspace.mkdir()
-    existing = workspace / "strategy.md"
+    existing = vault / "knowledge" / "strategy.md"
     existing.write_text(
         "---\ntitle: Strategy\nsource:\n  url: https://www.facebook.com/example/posts/123\n---\n"
         "# Strategy\nClaude Code SaaS ARR pricing moat portfolio strategy.\n",
@@ -200,10 +206,9 @@ def test_sync_obsidian_maps(tmp_path: Path) -> None:
     result = sync_obsidian_maps(vault_path=vault, skills_root=skills, write_runtime_db=False)
     assert result["skill_cards"]
     assert result["agent_cards"]
-    assert (vault / "skills" / "README.md").exists()
-    assert (vault / "agents" / "README.md").exists()
-    assert (vault / "workspace" / "README.md").exists()
-    assert (vault / "relations" / "index.md").exists()
+    assert (vault / "review-queue" / "intake-index.md").exists()
+    assert (vault / "review-queue" / "knowledge-routes.json").exists()
+    assert "Knowledge Intake Routing" in (vault / "docs" / "OBSIDIAN_LINK_INDEX.md").read_text(encoding="utf-8")
     assert "Knowledge Intake" in (vault / "MOC.md").read_text(encoding="utf-8")
 
 

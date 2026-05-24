@@ -61,6 +61,21 @@ def _view_or_skip():
     return adapter, discord_platform.CommandQuickActionsView(adapter)
 
 
+def _button_for(view, command_name: str):
+    button = next(child for child in view.children if child.command_name == command_name)
+    # The lightweight discord.py test double does not attach item.view like
+    # real discord.py does, so set it explicitly for direct callback tests.
+    button.view = view
+    return button
+
+
+async def _click_quick_button(button, interaction):
+    callback = getattr(type(button), "callback", None)
+    if not callable(callback):
+        pytest.skip("discord.py Button callback binding is not available")
+    await callback(button, interaction)
+
+
 def test_quick_action_button_styles_use_semantic_groups():
     _adapter, view = _view_or_skip()
     buttons = {child.command_name: child for child in view.children}
@@ -74,18 +89,101 @@ def test_quick_action_button_styles_use_semantic_groups():
 async def test_quick_action_button_dispatches_through_slash_pipeline():
     adapter, view = _view_or_skip()
     adapter._run_simple_slash = AsyncMock()
-    status_button = next(child for child in view.children if child.command_name == "status")
-    if not callable(getattr(status_button, "callback", None)):
-        pytest.skip("discord.py Button callback binding is not available")
+    status_button = _button_for(view, "status")
 
     interaction = object()
-    await status_button.callback(interaction)
+    await _click_quick_button(status_button, interaction)
 
     adapter._run_simple_slash.assert_awaited_once_with(
         interaction,
         "/status",
         cleanup_response=False,
     )
+
+
+@pytest.mark.asyncio
+async def test_model_quick_action_opens_existing_interactive_picker_flow():
+    adapter, view = _view_or_skip()
+    adapter._run_simple_slash = AsyncMock()
+    model_button = _button_for(view, "model")
+
+    interaction = object()
+    await _click_quick_button(model_button, interaction)
+
+    adapter._run_simple_slash.assert_awaited_once_with(interaction, "/model")
+
+
+@pytest.mark.asyncio
+async def test_fast_quick_action_opens_select_menu():
+    adapter, view = _view_or_skip()
+    adapter._run_simple_slash = AsyncMock()
+    fast_button = _button_for(view, "fast")
+
+    response = type("ResponseStub", (), {})()
+    response.send_message = AsyncMock()
+    interaction = type("InteractionStub", (), {"response": response})()
+    await _click_quick_button(fast_button, interaction)
+
+    adapter._run_simple_slash.assert_not_awaited()
+    response.send_message.assert_awaited_once()
+    kwargs = response.send_message.await_args.kwargs
+    assert kwargs["ephemeral"] is True
+    assert isinstance(kwargs["view"], discord_platform.FastQuickActionView)
+    select = kwargs["view"].children[0]
+    assert [option.value for option in select.options] == ["status", "fast", "normal"]
+
+
+@pytest.mark.asyncio
+async def test_personality_quick_action_opens_select_menu(monkeypatch):
+    adapter, view = _view_or_skip()
+    adapter._run_simple_slash = AsyncMock()
+    monkeypatch.setattr(
+        discord_platform,
+        "_load_quick_action_personalities",
+        lambda: {"friendly": "warm", "concise": {"description": "short"}},
+        raising=False,
+    )
+    personality_button = _button_for(view, "personality")
+
+    response = type("ResponseStub", (), {})()
+    response.send_message = AsyncMock()
+    interaction = type("InteractionStub", (), {"response": response})()
+    await _click_quick_button(personality_button, interaction)
+
+    adapter._run_simple_slash.assert_not_awaited()
+    response.send_message.assert_awaited_once()
+    kwargs = response.send_message.await_args.kwargs
+    assert kwargs["ephemeral"] is True
+    assert isinstance(kwargs["view"], discord_platform.PersonalityQuickActionView)
+    select = kwargs["view"].children[0]
+    assert [option.value for option in select.options] == ["none", "friendly", "concise"]
+
+
+@pytest.mark.asyncio
+async def test_quick_action_selects_dispatch_existing_commands():
+    if not hasattr(discord_platform, "FastQuickActionView"):
+        pytest.skip("discord.py UI classes are not available")
+    adapter = discord_platform.DiscordAdapter(PlatformConfig(enabled=True, token="***"))
+    adapter._run_simple_slash = AsyncMock()
+    view = discord_platform.FastQuickActionView(adapter)
+    interaction = type(
+        "InteractionStub",
+        (),
+        {
+            "data": {"values": ["normal"]},
+            "response": type("ResponseStub", (), {"send_message": AsyncMock()})(),
+            "edit_original_response": AsyncMock(),
+        },
+    )()
+
+    await view._on_selected(interaction)
+
+    adapter._run_simple_slash.assert_awaited_once_with(
+        interaction,
+        "/fast normal",
+        cleanup_response=False,
+    )
+    interaction.edit_original_response.assert_awaited_once()
 
 
 @pytest.mark.asyncio

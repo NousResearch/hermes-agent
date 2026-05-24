@@ -345,6 +345,22 @@ class TestStdinHelpers:
         assert isinstance(written, str)
         assert written == "hello\n"
 
+    def test_write_stdin_pty_returns_actual_bytes_written(self, registry):
+        """Both ptyprocess and pywinpty's ``write()`` return the count
+        actually written; prefer that over ``len(data)`` which under-
+        reports multi-byte UTF-8 on POSIX."""
+        pty = MagicMock()
+        pty.write.return_value = 7  # actual byte count from POSIX backend
+        s = _make_session()
+        s._pty = pty
+        registry._running[s.id] = s
+
+        with patch("tools.process_registry._IS_WINDOWS", False):
+            result = registry.write_stdin(s.id, "héllo")  # 6 UTF-8 bytes
+
+        assert result["status"] == "ok"
+        assert result["bytes_written"] == 7
+
     def test_close_stdin_allows_eof_driven_process_to_finish(self, registry, tmp_path):
         """PTY mode: writing data + sending EOF lets an EOF-driven child finish.
 

@@ -1193,15 +1193,23 @@ class ProcessRegistry:
         # bytes; Windows ``pywinpty`` is a PyO3 binding whose ``write()``
         # signature is ``write(to_write: str) -> int`` and raises
         # ``"argument 'to_write': 'bytes' object cannot be converted to
-        # 'PyString'"`` if handed bytes (#31675).
+        # 'PyString'"`` if handed bytes (#31675).  Both backends return the
+        # count actually written (bytes on POSIX, chars on Windows); prefer
+        # that over ``len(data)`` which under-reports multi-byte UTF-8 on
+        # POSIX.
         if hasattr(session, '_pty') and session._pty:
             try:
                 if _IS_WINDOWS:
-                    pty_data = data if isinstance(data, str) else data.decode("utf-8", errors="replace")
+                    # Strict decode: callers are typed ``data: str``; surface
+                    # contract violations rather than silently corrupting
+                    # input via ``errors="replace"``.
+                    pty_data = data if isinstance(data, str) else data.decode("utf-8")
                 else:
                     pty_data = data.encode("utf-8") if isinstance(data, str) else data
-                session._pty.write(pty_data)
-                return {"status": "ok", "bytes_written": len(data)}
+                written = session._pty.write(pty_data)
+                if not isinstance(written, int):
+                    written = len(pty_data)
+                return {"status": "ok", "bytes_written": written}
             except Exception as e:
                 return {"status": "error", "error": str(e)}
 

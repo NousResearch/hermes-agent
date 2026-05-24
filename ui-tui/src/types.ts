@@ -25,6 +25,7 @@ export interface SubagentProgress {
   costUsd?: number
   depth: number
   durationSeconds?: number
+  executionMode?: string
   filesRead?: string[]
   filesWritten?: string[]
   goal: string
@@ -37,7 +38,11 @@ export interface SubagentProgress {
   outputTail?: SubagentOutputEntry[]
   outputTokens?: number
   parentId: null | string
+  provider?: string
+  reasoningEffort?: string
   reasoningTokens?: number
+  role?: string
+  routeReason?: string
   startedAt?: number
   status: SubagentStatus
   summary?: string
@@ -76,9 +81,14 @@ export interface SubagentAggregate {
 export interface DelegationStatus {
   active: {
     depth?: number
+    execution_mode?: string
     goal?: string
     model?: null | string
     parent_id?: null | string
+    provider?: null | string
+    reasoning_effort?: null | string
+    role?: null | string
+    route_reason?: null | string
     started_at?: number
     status?: string
     subagent_id?: string
@@ -150,8 +160,10 @@ export interface SessionInfo {
   mcp_servers?: McpServerStatus[]
   model: string
   profile_name?: string
+  provider?: string
   reasoning_effort?: string
   release_date?: string
+  route?: RouteInfo
   service_tier?: string
   skills: Record<string, string[]>
   system_prompt?: string
@@ -160,6 +172,17 @@ export interface SessionInfo {
   update_command?: string
   usage?: Usage
   version?: string
+}
+
+export interface RouteInfo {
+  execution_mode?: string
+  model?: string
+  origin_profile?: string
+  provider?: string
+  reason?: string
+  reasoning_effort?: string
+  service_tier?: string
+  target_profile?: string
 }
 
 export interface Usage {

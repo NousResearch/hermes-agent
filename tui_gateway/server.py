@@ -1419,17 +1419,42 @@ def _current_profile_name() -> str:
         return "default"
 
 
-def _session_info(agent) -> dict:
+def _agent_reasoning_effort(agent) -> str:
     reasoning_config = getattr(agent, "reasoning_config", None)
-    reasoning_effort = ""
-    if (
-        isinstance(reasoning_config, dict)
-        and reasoning_config.get("enabled") is not False
-    ):
-        reasoning_effort = str(reasoning_config.get("effort", "") or "")
+    if not isinstance(reasoning_config, dict):
+        return ""
+    if reasoning_config.get("enabled") is False:
+        return "none"
+    return str(reasoning_config.get("effort", "") or "")
+
+
+def _agent_route_info(agent) -> dict:
+    reasoning_effort = _agent_reasoning_effort(agent)
     service_tier = getattr(agent, "service_tier", None) or ""
+    provider = getattr(agent, "provider", None) or ""
+    model = getattr(agent, "model", "")
+    profile_name = _current_profile_name()
+    return {
+        "origin_profile": profile_name,
+        "target_profile": profile_name,
+        "execution_mode": "inline",
+        "provider": provider,
+        "model": model,
+        "reasoning_effort": reasoning_effort,
+        "service_tier": service_tier,
+        "reason": "active session profile",
+    }
+
+
+def _session_info(agent) -> dict:
+    reasoning_effort = _agent_reasoning_effort(agent)
+    service_tier = getattr(agent, "service_tier", None) or ""
+    provider = getattr(agent, "provider", None) or ""
+    profile_name = _current_profile_name()
+    route = _agent_route_info(agent)
     info: dict = {
         "model": getattr(agent, "model", ""),
+        "provider": provider,
         "reasoning_effort": reasoning_effort,
         "service_tier": service_tier,
         "fast": service_tier == "priority",
@@ -1441,7 +1466,8 @@ def _session_info(agent) -> dict:
         "update_behind": None,
         "update_command": "",
         "usage": _get_usage(agent),
-        "profile_name": _current_profile_name(),
+        "profile_name": profile_name,
+        "route": route,
     }
     try:
         from hermes_cli import __version__, __release_date__
@@ -1717,6 +1743,16 @@ def _on_tool_progress(
             payload["depth"] = int(_kwargs["depth"])
         if _kwargs.get("model"):
             payload["model"] = str(_kwargs["model"])
+        if _kwargs.get("provider"):
+            payload["provider"] = str(_kwargs["provider"])
+        if _kwargs.get("reasoning_effort") is not None:
+            payload["reasoning_effort"] = str(_kwargs["reasoning_effort"])
+        if _kwargs.get("role"):
+            payload["role"] = str(_kwargs["role"])
+        if _kwargs.get("execution_mode"):
+            payload["execution_mode"] = str(_kwargs["execution_mode"])
+        if _kwargs.get("route_reason"):
+            payload["route_reason"] = str(_kwargs["route_reason"])
         if _kwargs.get("tool_count") is not None:
             payload["tool_count"] = int(_kwargs["tool_count"])
         if _kwargs.get("toolsets"):
@@ -2576,9 +2612,15 @@ def _(rid, params: dict) -> dict:
             updated = _dt(meta.get(field), created)
             break
 
+    route = _agent_route_info(agent) if agent is not None else {}
     usage = _get_usage(agent) if agent is not None else {}
-    provider = getattr(agent, "provider", None) or "unknown"
-    model = getattr(agent, "model", None) or "(unknown)"
+    provider = route.get("provider") or getattr(agent, "provider", None) or "unknown"
+    model = route.get("model") or getattr(agent, "model", None) or "(unknown)"
+    effort = route.get("reasoning_effort") or "default"
+    execution_mode = route.get("execution_mode") or "inline"
+    target_profile = route.get("target_profile") or "default"
+    origin_profile = route.get("origin_profile") or "default"
+    route_reason = route.get("reason") or "active session profile"
     lines = [
         "Hermes TUI Status",
         "",
@@ -2591,6 +2633,9 @@ def _(rid, params: dict) -> dict:
     lines.extend(
         [
             f"Model: {model} ({provider})",
+            f"Route: {execution_mode} {origin_profile} → {target_profile}",
+            f"Reasoning: {effort}",
+            f"Route Reason: {route_reason}",
             f"Created: {created.strftime('%Y-%m-%d %H:%M')}",
             f"Last Activity: {updated.strftime('%Y-%m-%d %H:%M')}",
             f"Tokens: {int(usage.get('total') or 0):,}",

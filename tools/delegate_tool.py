@@ -155,6 +155,14 @@ _active_subagents_lock = threading.Lock()
 _active_subagents: Dict[str, Dict[str, Any]] = {}
 
 
+def _reasoning_effort_label(config: Any) -> str:
+    if not isinstance(config, dict):
+        return ""
+    if config.get("enabled") is False:
+        return "none"
+    return str(config.get("effort", "") or "")
+
+
 def set_spawn_paused(paused: bool) -> bool:
     """Globally block/unblock new delegate_task spawns.
 
@@ -690,6 +698,11 @@ def _build_child_progress_callback(
     parent_id: Optional[str] = None,
     depth: Optional[int] = None,
     model: Optional[str] = None,
+    provider: Optional[str] = None,
+    reasoning_effort: Optional[str] = None,
+    role: Optional[str] = None,
+    execution_mode: Optional[str] = None,
+    route_reason: Optional[str] = None,
     toolsets: Optional[List[str]] = None,
 ) -> Optional[callable]:
     """Build a callback that relays child agent tool calls to the parent display.
@@ -736,6 +749,16 @@ def _build_child_progress_callback(
             kw["depth"] = depth
         if model is not None:
             kw["model"] = model
+        if provider is not None:
+            kw["provider"] = provider
+        if reasoning_effort is not None:
+            kw["reasoning_effort"] = reasoning_effort
+        if role is not None:
+            kw["role"] = role
+        if execution_mode is not None:
+            kw["execution_mode"] = execution_mode
+        if route_reason is not None:
+            kw["route_reason"] = route_reason
         if toolsets is not None:
             kw["toolsets"] = list(toolsets)
         kw["tool_count"] = _tool_count[0]
@@ -981,41 +1004,15 @@ def _build_child_agent(
     if (not parent_api_key) and hasattr(parent_agent, "_client_kwargs"):
         parent_api_key = parent_agent._client_kwargs.get("api_key")
 
-    # Resolve the child's effective model early so it can ride on every event.
-    effective_model_for_cb = model or getattr(parent_agent, "model", None)
-
-    # Build progress callback to relay tool calls to parent display.
-    # Identity kwargs thread the subagent_id through every emitted event so the
-    # TUI can reconstruct the spawn tree and route per-branch controls.
-    child_progress_cb = _build_child_progress_callback(
-        task_index,
-        goal,
-        parent_agent,
-        task_count,
-        subagent_id=subagent_id,
-        parent_id=parent_subagent_id,
-        depth=tui_depth,
-        model=effective_model_for_cb,
-        toolsets=child_toolsets,
-    )
+    # Resolve the child's effective route metadata after model/provider/reasoning
+    # overrides are known, then thread it through every progress event.
+    effective_model_for_cb = None
+    child_progress_cb = None
 
     # Each subagent gets its own iteration budget capped at max_iterations
     # (configurable via delegation.max_iterations, default 50).  This means
     # total iterations across parent + subagents can exceed the parent's
     # max_iterations.  The user controls the per-subagent cap in config.yaml.
-
-    child_thinking_cb = None
-    if child_progress_cb:
-
-        def _child_thinking(text: str) -> None:
-            if not text:
-                return
-            try:
-                child_progress_cb("_thinking", text)
-            except Exception as e:
-                logger.debug("Child thinking callback relay failed: %s", e)
-
-        child_thinking_cb = _child_thinking
 
     # Resolve effective credentials: config override > parent inherit
     effective_model = model or parent_agent.model
@@ -1060,6 +1057,7 @@ def _build_child_agent(
     # Resolve reasoning config: delegation override > parent inherit
     parent_reasoning = getattr(parent_agent, "reasoning_config", None)
     child_reasoning = parent_reasoning
+    delegation_reasoning_applied = False
     try:
         delegation_effort = str(delegation_cfg.get("reasoning_effort") or "").strip()
         if delegation_effort:
@@ -1068,6 +1066,7 @@ def _build_child_agent(
             parsed = parse_reasoning_effort(delegation_effort)
             if parsed is not None:
                 child_reasoning = parsed
+                delegation_reasoning_applied = True
             else:
                 logger.warning(
                     "Unknown delegation.reasoning_effort '%s', inheriting parent level",
@@ -1102,6 +1101,46 @@ def _build_child_agent(
         # Note: openrouter_min_coding_score is model-gated (only emitted on
         # openrouter/pareto-code), so we keep it inherited even when the
         # provider is overridden — it's a no-op on any other model.
+
+    effective_model_for_cb = effective_model
+    child_reasoning_effort = _reasoning_effort_label(child_reasoning)
+    route_reason_bits = []
+    if override_provider:
+        route_reason_bits.append("delegation provider override")
+    if model:
+        route_reason_bits.append("delegation model override")
+    if child_reasoning_effort:
+        route_reason_bits.append("delegation reasoning override" if delegation_reasoning_applied else "inherited reasoning")
+    route_reason = ", ".join(route_reason_bits) or "delegate_task default route"
+    child_progress_cb = _build_child_progress_callback(
+        task_index,
+        goal,
+        parent_agent,
+        task_count,
+        subagent_id=subagent_id,
+        parent_id=parent_subagent_id,
+        depth=tui_depth,
+        model=effective_model_for_cb,
+        provider=effective_provider,
+        reasoning_effort=child_reasoning_effort,
+        role=effective_role,
+        execution_mode="delegate_task",
+        route_reason=route_reason,
+        toolsets=child_toolsets,
+    )
+
+    child_thinking_cb = None
+    if child_progress_cb:
+
+        def _child_thinking(text: str) -> None:
+            if not text:
+                return
+            try:
+                child_progress_cb("_thinking", text)
+            except Exception as e:
+                logger.debug("Child thinking callback relay failed: %s", e)
+
+        child_thinking_cb = _child_thinking
 
     child = AIAgent(
         base_url=effective_base_url,
@@ -1141,6 +1180,7 @@ def _build_child_agent(
     # Stash the post-degrade role for introspection (leaf if the
     # kill switch or depth bounded the caller's requested role).
     child._delegate_role = effective_role
+    setattr(child, "_delegate_route_reason", route_reason)
     # Stash subagent identity for nested-delegation event propagation and
     # for _run_single_child / interrupt_subagent to look up by id.
     child._subagent_id = subagent_id
@@ -1458,6 +1498,15 @@ def _run_single_child(
                     if isinstance(getattr(child, "model", None), str)
                     else None
                 ),
+                "provider": (
+                    getattr(child, "provider", None)
+                    if isinstance(getattr(child, "provider", None), str)
+                    else None
+                ),
+                "reasoning_effort": _reasoning_effort_label(getattr(child, "reasoning_config", None)),
+                "role": getattr(child, "_delegate_role", None),
+                "execution_mode": "delegate_task",
+                "route_reason": getattr(child, "_delegate_route_reason", None),
                 "started_at": time.time(),
                 "status": "running",
                 "tool_count": 0,
@@ -1600,6 +1649,12 @@ def _run_single_child(
                 "exit_reason": "timeout" if is_timeout else "error",
                 "api_calls": child_api_calls,
                 "duration_seconds": duration,
+                "model": getattr(child, "model", None),
+                "provider": getattr(child, "provider", None),
+                "reasoning_effort": _reasoning_effort_label(getattr(child, "reasoning_config", None)),
+                "role": getattr(child, "_delegate_role", None),
+                "execution_mode": "delegate_task",
+                "route_reason": getattr(child, "_delegate_route_reason", None),
                 "_child_role": getattr(child, "_delegate_role", None),
                 "diagnostic_path": diagnostic_path,
             }
@@ -1680,6 +1735,8 @@ def _run_single_child(
         _input_tokens = getattr(child, "session_prompt_tokens", 0)
         _output_tokens = getattr(child, "session_completion_tokens", 0)
         _model = getattr(child, "model", None)
+        _provider = getattr(child, "provider", None)
+        _reasoning_effort = _reasoning_effort_label(getattr(child, "reasoning_config", None))
 
         entry: Dict[str, Any] = {
             "task_index": task_index,
@@ -1688,6 +1745,11 @@ def _run_single_child(
             "api_calls": api_calls,
             "duration_seconds": duration,
             "model": _model if isinstance(_model, str) else None,
+            "provider": _provider if isinstance(_provider, str) else None,
+            "reasoning_effort": _reasoning_effort,
+            "role": getattr(child, "_delegate_role", None),
+            "execution_mode": "delegate_task",
+            "route_reason": getattr(child, "_delegate_route_reason", None),
             "exit_reason": exit_reason,
             "tokens": {
                 "input": (
@@ -1836,6 +1898,12 @@ def _run_single_child(
             "error": str(exc),
             "api_calls": 0,
             "duration_seconds": duration,
+            "model": getattr(child, "model", None),
+            "provider": getattr(child, "provider", None),
+            "reasoning_effort": _reasoning_effort_label(getattr(child, "reasoning_config", None)),
+            "role": getattr(child, "_delegate_role", None),
+            "execution_mode": "delegate_task",
+            "route_reason": getattr(child, "_delegate_route_reason", None),
             "_child_role": getattr(child, "_delegate_role", None),
         }
 

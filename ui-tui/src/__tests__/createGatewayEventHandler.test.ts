@@ -881,6 +881,37 @@ describe('createGatewayEventHandler', () => {
     expect(getTurnState().subagents.find(s => s.id === 'sa-error')?.status).toBe('error')
   })
 
+  it('maps subagent route metadata into turn state', () => {
+    const appended: Msg[] = []
+    const onEvent = createGatewayEventHandler(buildCtx(appended))
+
+    onEvent({
+      payload: {
+        execution_mode: 'delegate_task',
+        goal: 'route child',
+        model: 'deepseek-v4-pro',
+        provider: 'deepseek',
+        reasoning_effort: 'low',
+        role: 'leaf',
+        route_reason: 'delegation provider override',
+        subagent_id: 'sa-route',
+        task_index: 2,
+        toolsets: ['terminal', 'file']
+      },
+      type: 'subagent.start'
+    } as any)
+
+    expect(getTurnState().subagents.find(s => s.id === 'sa-route')).toMatchObject({
+      executionMode: 'delegate_task',
+      model: 'deepseek-v4-pro',
+      provider: 'deepseek',
+      reasoningEffort: 'low',
+      role: 'leaf',
+      routeReason: 'delegation provider override',
+      toolsets: ['terminal', 'file']
+    })
+  })
+
   it('normalizes unknown subagent.complete statuses to completed', () => {
     const appended: Msg[] = []
     const onEvent = createGatewayEventHandler(buildCtx(appended))

@@ -11,11 +11,12 @@ import { FACES } from '../content/faces.js'
 import { VERBS } from '../content/verbs.js'
 import { fmtDuration } from '../domain/messages.js'
 import { stickyPromptFromViewport } from '../domain/viewport.js'
+import { sessionRouteLabel } from '../lib/route.js'
 import { buildSubagentTree, treeTotals, widthByDepth } from '../lib/subagentTree.js'
 import { fmtK } from '../lib/text.js'
 import { useScrollbarSnapshot, useViewportSnapshot } from '../lib/viewportStore.js'
 import type { Theme } from '../theme.js'
-import type { Msg, Usage } from '../types.js'
+import type { Msg, RouteInfo, Usage } from '../types.js'
 
 const FACE_TICK_MS = 2500
 const HEART_COLORS = ['#ff5fa2', '#ff4d6d']
@@ -224,27 +225,6 @@ function SessionDuration({ startedAt }: { startedAt: number }) {
   return fmtDuration(now - startedAt)
 }
 
-const effortLabel = (effort?: string) => {
-  const value = String(effort ?? '')
-    .trim()
-    .toLowerCase()
-
-  return value && value !== 'medium' && value !== 'normal' && value !== 'default' ? value : ''
-}
-
-const shortModelLabel = (model: string) =>
-  model
-    .split('/')
-    .pop()!
-    .replace(/^claude[-_]/, '')
-    .replace(/^anthropic[-_]/, '')
-    .replace(/[-_]/g, ' ')
-    .replace(/\b(\d+)\s+(\d+)\b/g, '$1.$2')
-    .trim()
-
-const modelLabel = (model: string, effort?: string, fast?: boolean) =>
-  [shortModelLabel(model), effortLabel(effort), fast ? 'fast' : ''].filter(Boolean).join(' ')
-
 export function GoodVibesHeart({ tick, t }: { tick: number; t: Theme }) {
   const [active, setActive] = useState(false)
   const [color, setColor] = useState(t.color.accent)
@@ -261,7 +241,7 @@ export function GoodVibesHeart({ tick, t }: { tick: number; t: Theme }) {
     const id = setTimeout(() => setActive(false), 650)
 
     return () => clearTimeout(id)
-  }, [t.color.accent, tick])
+  }, [t.color.accent, t.color.error, t.color.warn, tick])
 
   if (!active) {
     return null
@@ -279,6 +259,7 @@ export function StatusRule({
   model,
   modelFast,
   modelReasoningEffort,
+  route,
   usage,
   bgCount,
   sessionStartedAt,
@@ -297,6 +278,14 @@ export function StatusRule({
       : ''
 
   const bar = usage.context_max ? ctxBar(pct) : ''
+
+  const routeLabel = sessionRouteLabel({
+    fast: modelFast,
+    model,
+    reasoning_effort: modelReasoningEffort,
+    route
+  })
+
   const leftWidth = Math.max(12, cols - cwdLabel.length - 3)
 
   return (
@@ -309,7 +298,7 @@ export function StatusRule({
           ) : (
             <Text color={statusColor}>{status}</Text>
           )}
-          <Text color={t.color.muted}> │ {modelLabel(model, modelReasoningEffort, modelFast)}</Text>
+          {routeLabel ? <Text color={t.color.muted}> │ {routeLabel}</Text> : null}
           {ctxLabel ? <Text color={t.color.muted}> │ {ctxLabel}</Text> : null}
           {bar ? (
             <Text color={t.color.muted}>
@@ -461,6 +450,7 @@ interface StatusRuleProps {
   model: string
   modelFast?: boolean
   modelReasoningEffort?: string
+  route?: RouteInfo
   sessionStartedAt?: null | number
   showCost: boolean
   status: string

@@ -13,6 +13,7 @@ import { $spawnDiff, $spawnHistory, clearDiffPair, type SpawnSnapshot } from '..
 import { useTurnSelector } from '../app/turnStore.js'
 import type { GatewayClient } from '../gatewayClient.js'
 import type { DelegationPauseResponse, DelegationStatusResponse, SubagentInterruptResponse } from '../gatewayTypes.js'
+import { subagentRouteLabel } from '../lib/route.js'
 import { asRpcResult } from '../lib/rpc.js'
 import {
   buildSubagentTree,
@@ -417,6 +418,7 @@ function Detail({ id, node, t }: { id?: string; node: SubagentNode; t: Theme }) 
   // that stream is often empty even when tool_count > 0, so fall back to
   // the tool names captured in outputTail at subagent.complete time.
   const toolLines = item.tools.length > 0 ? item.tools : outputTail.map(e => e.tool).filter(Boolean)
+  const routeLabel = subagentRouteLabel(item)
 
   const filesOverflow = Math.max(0, filesRead.length - 8) + Math.max(0, filesWritten.length - 8)
 
@@ -429,6 +431,9 @@ function Detail({ id, node, t }: { id?: string; node: SubagentNode; t: Theme }) 
 
       <Box flexDirection="column" marginTop={1}>
         <Field name="depth" t={t} value={`${item.depth} · ${item.status}`} />
+        {routeLabel ? <Field name="route" t={t} value={routeLabel} /> : null}
+        {item.routeReason ? <Field name="route reason" t={t} value={item.routeReason} /> : null}
+        {item.executionMode ? <Field name="exec" t={t} value={item.executionMode} /> : null}
         {item.model ? <Field name="model" t={t} value={item.model} /> : null}
         {item.toolsets?.length ? <Field name="toolsets" t={t} value={item.toolsets.join(', ')} /> : null}
         <Field name="tools" t={t} value={`${item.toolCount ?? 0} (subtree ${agg.totalTools})`} />
@@ -562,7 +567,9 @@ function ListRow({
   const line = node.item.status === 'running' ? node.item.tools.at(-1) : undefined
   const paren = line ? line.indexOf('(') : -1
   const toolShort = line ? (paren > 0 ? line.slice(0, paren) : line).trim() : ''
-  const trailing = toolShort ? ` · ${compactPreview(toolShort, 14)}` : ''
+  const route = width > 80 ? subagentRouteLabel(node.item) : ''
+  const routeTail = route ? ` · ${compactPreview(route, 24)}` : ''
+  const trailing = `${routeTail}${toolShort ? ` · ${compactPreview(toolShort, 14)}` : ''}`
   const fg = active ? t.color.accent : t.color.text
 
   return (

@@ -2305,6 +2305,8 @@ def test_session_status_reads_live_gateway_agent(monkeypatch):
     agent = types.SimpleNamespace(
         model="live-model",
         provider="live-provider",
+        reasoning_config={"enabled": True, "effort": "high"},
+        service_tier="priority",
         session_total_tokens=1234,
     )
     server._sessions["sid"] = _session(agent=agent, running=True)
@@ -2331,6 +2333,10 @@ def test_session_status_reads_live_gateway_agent(monkeypatch):
     assert "Session ID: session-key" in out
     assert "Title: Live TUI" in out
     assert "Model: live-model (live-provider)" in out
+    assert "Route: inline " in out
+    assert "→" in out
+    assert "Reasoning: high" in out
+    assert "Route Reason: active session profile" in out
     assert "Tokens: 1,234" in out
     assert "Agent Running: Yes" in out
 
@@ -2625,6 +2631,93 @@ def test_session_info_includes_mcp_servers(monkeypatch):
     info = server._session_info(types.SimpleNamespace(tools=[], model=""))
 
     assert info["mcp_servers"] == fake_status
+
+
+def test_session_info_includes_route_metadata():
+    agent = types.SimpleNamespace(
+        model="gpt-5.5",
+        provider="openai-codex",
+        reasoning_config={"enabled": True, "effort": "xhigh"},
+        service_tier="priority",
+        tools=[],
+    )
+
+    info = server._session_info(agent)
+
+    assert info["provider"] == "openai-codex"
+    assert info["reasoning_effort"] == "xhigh"
+    assert info["route"] == {
+        "origin_profile": info["profile_name"],
+        "target_profile": info["profile_name"],
+        "execution_mode": "inline",
+        "provider": "openai-codex",
+        "model": "gpt-5.5",
+        "reasoning_effort": "xhigh",
+        "service_tier": "priority",
+        "reason": "active session profile",
+    }
+
+
+def test_session_info_reports_disabled_reasoning_as_none():
+    agent = types.SimpleNamespace(
+        model="gpt-5.5",
+        provider="openai-codex",
+        reasoning_config={"enabled": False},
+        service_tier="",
+        tools=[],
+    )
+
+    info = server._session_info(agent)
+
+    assert info["reasoning_effort"] == "none"
+    assert info["route"]["reasoning_effort"] == "none"
+
+
+def test_subagent_progress_relay_includes_route_metadata(monkeypatch):
+    emitted = []
+    monkeypatch.setattr(server, "_emit", lambda *args: emitted.append(args))
+
+    server._on_tool_progress(
+        "sid",
+        "subagent.start",
+        preview="inspect repo",
+        goal="inspect repo",
+        task_count=1,
+        task_index=0,
+        subagent_id="sa-1",
+        parent_id="sa-parent",
+        depth=1,
+        model="deepseek-v4-pro",
+        provider="deepseek",
+        reasoning_effort="low",
+        role="leaf",
+        execution_mode="delegate_task",
+        route_reason="delegation provider override",
+        toolsets=["terminal", "file"],
+    )
+
+    assert emitted == [
+        (
+            "subagent.start",
+            "sid",
+            {
+                "goal": "inspect repo",
+                "task_count": 1,
+                "task_index": 0,
+                "subagent_id": "sa-1",
+                "parent_id": "sa-parent",
+                "depth": 1,
+                "model": "deepseek-v4-pro",
+                "provider": "deepseek",
+                "reasoning_effort": "low",
+                "role": "leaf",
+                "execution_mode": "delegate_task",
+                "route_reason": "delegation provider override",
+                "toolsets": ["terminal", "file"],
+                "text": "inspect repo",
+            },
+        )
+    ]
 
 
 # ---------------------------------------------------------------------------

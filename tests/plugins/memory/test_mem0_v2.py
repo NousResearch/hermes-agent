@@ -12,11 +12,13 @@ from plugins.memory.mem0 import Mem0MemoryProvider
 class FakeClientV2:
     """Fake Mem0 client that returns v2-style dict responses and captures call kwargs."""
 
-    def __init__(self, search_results=None, all_results=None):
+    def __init__(self, search_results=None, all_results=None, all_pages=None):
         self._search_results = search_results or {"results": []}
         self._all_results = all_results or {"results": []}
+        self._all_pages = all_pages
         self.captured_search = {}
         self.captured_get_all = {}
+        self.captured_get_all_calls = []
         self.captured_add = []
 
     def search(self, **kwargs):
@@ -25,6 +27,10 @@ class FakeClientV2:
 
     def get_all(self, **kwargs):
         self.captured_get_all = kwargs
+        self.captured_get_all_calls.append(kwargs)
+        if self._all_pages is not None:
+            page = kwargs.get("page", 1)
+            return self._all_pages[page - 1] if page - 1 < len(self._all_pages) else {"results": []}
         return self._all_results
 
     def add(self, messages, **kwargs):
@@ -60,6 +66,25 @@ class TestMem0FiltersV2:
         # Must NOT have bare user_id kwarg
         assert "user_id" not in {k for k in client.captured_search if k != "filters"}
 
+    def test_search_passes_supported_options(self, monkeypatch):
+        client = FakeClientV2()
+        provider = self._make_provider(monkeypatch, client)
+
+        provider.handle_tool_call("mem0_search", {
+            "query": "hello",
+            "top_k": 99,
+            "rerank": True,
+            "threshold": 0.0,
+            "categories": ["preferences"],
+            "fields": "memory,score,created_at,categories",
+        })
+
+        assert client.captured_search["top_k"] == 50
+        assert client.captured_search["rerank"] is True
+        assert client.captured_search["threshold"] == 0.0
+        assert client.captured_search["categories"] == ["preferences"]
+        assert client.captured_search["fields"] == ["memory", "score", "created_at", "categories"]
+
     def test_profile_uses_filters(self, monkeypatch):
         client = FakeClientV2()
         provider = self._make_provider(monkeypatch, client)
@@ -68,6 +93,24 @@ class TestMem0FiltersV2:
 
         assert client.captured_get_all["filters"] == {"user_id": "u123"}
         assert "user_id" not in {k for k in client.captured_get_all if k != "filters"}
+
+    def test_profile_paginates_and_reports_truncation(self, monkeypatch):
+        client = FakeClientV2(all_pages=[
+            {"count": 3, "results": [{"memory": "alpha"}, {"memory": "beta"}]},
+            {"count": 3, "results": [{"memory": "gamma"}]},
+        ])
+        provider = self._make_provider(monkeypatch, client)
+
+        result = json.loads(provider.handle_tool_call("mem0_profile", {"limit": 2, "categories": "preferences"}))
+
+        assert result["count"] == 2
+        assert result["total_count"] == 3
+        assert result["truncated"] is True
+        assert "alpha" in result["result"]
+        assert "beta" in result["result"]
+        assert len(client.captured_get_all_calls) == 1
+        assert client.captured_get_all_calls[0]["page_size"] == 2
+        assert client.captured_get_all_calls[0]["categories"] == ["preferences"]
 
     def test_prefetch_uses_filters(self, monkeypatch):
         client = FakeClientV2()

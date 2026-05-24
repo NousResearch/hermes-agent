@@ -76,7 +76,18 @@ PROFILE_SCHEMA = {
         "Retrieve all stored memories about the user — preferences, facts, "
         "project context. Fast, no reranking. Use at conversation start."
     ),
-    "parameters": {"type": "object", "properties": {}, "required": []},
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "limit": {"type": "integer", "description": "Max memories to return (default: 100, max: 200)."},
+            "categories": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": "Optional Mem0 categories to filter by.",
+            },
+        },
+        "required": [],
+    },
 }
 
 SEARCH_SCHEMA = {
@@ -91,6 +102,17 @@ SEARCH_SCHEMA = {
             "query": {"type": "string", "description": "What to search for."},
             "rerank": {"type": "boolean", "description": "Enable reranking for precision (default: false)."},
             "top_k": {"type": "integer", "description": "Max results (default: 10, max: 50)."},
+            "threshold": {"type": "number", "description": "Optional relevance threshold; pass 0.0 to disable filtering."},
+            "categories": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": "Optional Mem0 categories to filter by.",
+            },
+            "fields": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": "Optional fields to request from Mem0, e.g. memory,score,created_at,categories.",
+            },
         },
         "required": ["query"],
     },
@@ -218,6 +240,25 @@ class Mem0MemoryProvider(MemoryProvider):
         return {"user_id": self._user_id, "agent_id": self._agent_id}
 
     @staticmethod
+    def _optional_list(value: Any) -> list | None:
+        """Normalize optional list-like tool arguments."""
+        if value is None or value == "":
+            return None
+        if isinstance(value, list):
+            return [str(v) for v in value if str(v)]
+        if isinstance(value, str):
+            return [part.strip() for part in value.split(",") if part.strip()]
+        return None
+
+    @staticmethod
+    def _bounded_int(value: Any, *, default: int, minimum: int, maximum: int) -> int:
+        try:
+            parsed = int(value)
+        except Exception:
+            parsed = default
+        return max(minimum, min(parsed, maximum))
+
+    @staticmethod
     def _unwrap_results(response: Any) -> list:
         """Normalize Mem0 API response — v2 wraps results in {"results": [...]}."""
         if isinstance(response, dict):
@@ -310,12 +351,39 @@ class Mem0MemoryProvider(MemoryProvider):
 
         if tool_name == "mem0_profile":
             try:
-                memories = self._unwrap_results(client.get_all(filters=self._read_filters()))
+                limit = self._bounded_int(args.get("limit", 100), default=100, minimum=1, maximum=200)
+                categories = self._optional_list(args.get("categories"))
+                page_size = min(limit, 100)
+                page = 1
+                memories = []
+                total_count = None
+                while len(memories) < limit:
+                    call_kwargs = {
+                        "filters": self._read_filters(),
+                        "page": page,
+                        "page_size": min(page_size, limit - len(memories)),
+                    }
+                    if categories is not None:
+                        call_kwargs["categories"] = categories
+                    response = client.get_all(**call_kwargs)
+                    if isinstance(response, dict):
+                        total_count = response.get("count", total_count)
+                    page_results = self._unwrap_results(response)
+                    if not page_results:
+                        break
+                    memories.extend(page_results)
+                    if len(page_results) < call_kwargs["page_size"]:
+                        break
+                    page += 1
                 self._record_success()
                 if not memories:
                     return json.dumps({"result": "No memories stored yet."})
                 lines = [m.get("memory", "") for m in memories if m.get("memory")]
-                return json.dumps({"result": "\n".join(lines), "count": len(lines)})
+                payload = {"result": "\n".join(lines), "count": len(lines)}
+                if total_count is not None:
+                    payload["total_count"] = total_count
+                    payload["truncated"] = len(lines) < total_count
+                return json.dumps(payload)
             except Exception as e:
                 self._record_failure()
                 return tool_error(f"Failed to fetch profile: {e}")
@@ -325,14 +393,23 @@ class Mem0MemoryProvider(MemoryProvider):
             if not query:
                 return tool_error("Missing required parameter: query")
             rerank = args.get("rerank", False)
-            top_k = min(int(args.get("top_k", 10)), 50)
+            top_k = self._bounded_int(args.get("top_k", 10), default=10, minimum=1, maximum=50)
+            categories = self._optional_list(args.get("categories"))
+            fields = self._optional_list(args.get("fields"))
             try:
-                results = self._unwrap_results(client.search(
-                    query=query,
-                    filters=self._read_filters(),
-                    rerank=rerank,
-                    top_k=top_k,
-                ))
+                call_kwargs = {
+                    "query": query,
+                    "filters": self._read_filters(),
+                    "rerank": rerank,
+                    "top_k": top_k,
+                }
+                if "threshold" in args and args.get("threshold") is not None:
+                    call_kwargs["threshold"] = float(args.get("threshold"))
+                if categories is not None:
+                    call_kwargs["categories"] = categories
+                if fields is not None:
+                    call_kwargs["fields"] = fields
+                results = self._unwrap_results(client.search(**call_kwargs))
                 self._record_success()
                 if not results:
                     return json.dumps({"result": "No relevant memories found."})

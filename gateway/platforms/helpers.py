@@ -8,6 +8,7 @@ and thread participation tracking.
 import asyncio
 import json
 import logging
+import os
 import re
 import time
 from pathlib import Path
@@ -360,16 +361,67 @@ class BotLoopFuse:
         self,
         platform_name: str,
         *,
-        window_seconds: float = 60.0,
-        max_messages: int = 3,
-        suppress_seconds: float = 10 * 60,
+        window_seconds: Optional[float] = None,
+        max_messages: Optional[int] = None,
+        suppress_seconds: Optional[float] = None,
     ):
+        # Defaults are intentionally conservative but less brittle than the
+        # previous 3/60s/600s setting, which dropped legitimate PM→Galt
+        # escalation bursts. Worst-case accepted loop throughput is roughly
+        # max_messages * 3600 / (window_seconds + suppress_seconds):
+        # 5 * 3600 / 300 ≈ 60 accepted messages/hour per sender/receiver/thread.
         self._platform = platform_name
-        self._window_seconds = max(1.0, float(window_seconds))
-        self._max_messages = max(1, int(max_messages))
-        self._suppress_seconds = max(1.0, float(suppress_seconds))
+        self._window_seconds = max(
+            1.0,
+            float(
+                self._env_float(
+                    "DISCORD_BOT_LOOP_FUSE_WINDOW_SECONDS",
+                    60.0 if window_seconds is None else window_seconds,
+                )
+            ),
+        )
+        self._max_messages = max(
+            1,
+            int(
+                self._env_int(
+                    "DISCORD_BOT_LOOP_FUSE_MAX_MESSAGES",
+                    5 if max_messages is None else max_messages,
+                )
+            ),
+        )
+        self._suppress_seconds = max(
+            1.0,
+            float(
+                self._env_float(
+                    "DISCORD_BOT_LOOP_FUSE_SUPPRESS_SECONDS",
+                    4 * 60 if suppress_seconds is None else suppress_seconds,
+                )
+            ),
+        )
         self._state: Dict[str, Dict[str, Any]] = self._load()
         self._evict_old(save=True)
+
+    @staticmethod
+    def _env_float(name: str, default: float) -> float:
+        raw = os.getenv(name)
+        if raw is None or raw.strip() == "":
+            return float(default)
+        try:
+            return float(raw)
+        except ValueError:
+            logger.warning("Ignoring invalid %s=%r; using %s", name, raw, default)
+            return float(default)
+
+    @staticmethod
+    def _env_int(name: str, default: int) -> int:
+        raw = os.getenv(name)
+        if raw is None or raw.strip() == "":
+            return int(default)
+        try:
+            return int(raw)
+        except ValueError:
+            logger.warning("Ignoring invalid %s=%r; using %s", name, raw, default)
+            return int(default)
 
     def _state_path(self) -> Path:
         from hermes_constants import get_hermes_home

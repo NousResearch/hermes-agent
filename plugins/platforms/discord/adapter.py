@@ -567,8 +567,10 @@ class DiscordAdapter(BasePlatformAdapter):
     MAX_MESSAGE_LENGTH = 2000
     _SPLIT_THRESHOLD = 1900  # near the 2000-char split point
 
-    # Auto-disconnect from voice channel after this many seconds of inactivity
-    VOICE_TIMEOUT = 300
+    # Optional auto-disconnect from voice channel after this many seconds of
+    # inactivity. 0/None disables the timeout: live voice chat should stay
+    # joined until an explicit leave/disconnect or gateway shutdown.
+    VOICE_TIMEOUT = 0
 
     def __init__(self, config: PlatformConfig):
         super().__init__(config, Platform.DISCORD)
@@ -588,6 +590,7 @@ class DiscordAdapter(BasePlatformAdapter):
         self._voice_text_channels: Dict[int, int] = {}  # guild_id -> text_channel_id
         self._voice_sources: Dict[int, Dict[str, Any]] = {}  # guild_id -> linked text channel source metadata
         self._voice_timeout_tasks: Dict[int, asyncio.Task] = {}  # guild_id -> timeout task
+        self._voice_timeout_seconds = self._resolve_voice_timeout_seconds()
         # Phase 2: voice listening
         self._voice_receivers: Dict[int, VoiceReceiver] = {}  # guild_id -> VoiceReceiver
         self._voice_listen_tasks: Dict[int, asyncio.Task] = {}  # guild_id -> listen loop
@@ -2229,19 +2232,55 @@ class DiscordAdapter(BasePlatformAdapter):
             return None
         return member.voice.channel
 
+    def _resolve_voice_timeout_seconds(self) -> Optional[float]:
+        """Return optional Discord voice inactivity timeout in seconds.
+
+        Live Discord voice chat defaults to a persistent connection. Set
+        ``discord.voice_timeout_seconds`` in platform config or
+        ``HERMES_DISCORD_VOICE_TIMEOUT_SECONDS`` to a positive value to restore
+        auto-disconnect behavior.
+        """
+        raw = None
+        config = getattr(self, "config", None)
+        extra = getattr(config, "extra", {}) or {}
+        for key in ("voice_timeout_seconds", "voice_timeout"):
+            if key in extra:
+                raw = extra.get(key)
+                break
+        if raw is None:
+            raw = os.getenv("HERMES_DISCORD_VOICE_TIMEOUT_SECONDS")
+        if raw is None:
+            raw = self.VOICE_TIMEOUT
+        try:
+            timeout = float(raw)
+        except (TypeError, ValueError):
+            logger.warning("Invalid Discord voice timeout %r; disabling inactivity disconnect", raw)
+            return None
+        return timeout if timeout > 0 else None
+
+    def _voice_timeout_seconds_value(self) -> Optional[float]:
+        if not hasattr(self, "_voice_timeout_seconds"):
+            self._voice_timeout_seconds = self._resolve_voice_timeout_seconds()
+        return self._voice_timeout_seconds
+
     def _reset_voice_timeout(self, guild_id: int) -> None:
-        """Reset the auto-disconnect inactivity timer."""
+        """Reset optional auto-disconnect inactivity timer."""
         task = self._voice_timeout_tasks.pop(guild_id, None)
         if task:
             task.cancel()
+        if self._voice_timeout_seconds_value() is None:
+            return
         self._voice_timeout_tasks[guild_id] = asyncio.ensure_future(
             self._voice_timeout_handler(guild_id)
         )
 
     async def _voice_timeout_handler(self, guild_id: int) -> None:
-        """Auto-disconnect after VOICE_TIMEOUT seconds of inactivity."""
+        """Auto-disconnect after configured inactivity timeout, if enabled."""
+        timeout = self._voice_timeout_seconds_value()
+        if timeout is None:
+            return
         try:
-            await asyncio.sleep(self.VOICE_TIMEOUT)
+            await asyncio.sleep(timeout)
         except asyncio.CancelledError:
             return
         text_ch_id = self._voice_text_channels.get(guild_id)

@@ -826,6 +826,23 @@ from gateway.restart import (
 )
 
 
+def _is_running_under_service_manager() -> bool:
+    """Return True when the gateway should restart via its supervisor.
+
+    Systemd advertises itself with INVOCATION_ID, but macOS launchd does not
+    inject a comparable environment variable. A launchd-managed user service
+    runs with launchd as its parent (PID 1), so a gateway /restart on macOS
+    must use the service-manager exit-code path instead of the detached helper.
+    Otherwise the gateway can exit cleanly, launchd will not relaunch it
+    (KeepAlive.SuccessfulExit=false), and the service may be left unloaded.
+    """
+    if os.environ.get("INVOCATION_ID"):
+        return True
+    if sys.platform == "darwin" and os.getppid() == 1:
+        return True
+    return False
+
+
 from gateway.whatsapp_identity import (
     canonical_whatsapp_identifier as _canonical_whatsapp_identifier,  # noqa: F401
     expand_whatsapp_aliases as _expand_whatsapp_auth_aliases,
@@ -9714,9 +9731,10 @@ class GatewayRunner:
         # Docker/Podman container, use the service restart path: exit with
         # code 75 so the service manager / container restart policy restarts
         # us.  The detached subprocess approach (setsid + bash) doesn't work
-        # under systemd (KillMode=mixed kills the cgroup) or Docker (tini
-        # exits when the gateway dies, taking the detached helper with it).
-        _under_service = bool(os.environ.get("INVOCATION_ID"))  # systemd sets this
+        # under systemd (KillMode=mixed kills the cgroup), launchd (a clean
+        # exit with KeepAlive.SuccessfulExit=false is not relaunched), or Docker
+        # (tini exits when the gateway dies, taking the detached helper with it).
+        _under_service = _is_running_under_service_manager()
         _in_container = os.path.exists("/.dockerenv") or os.path.exists("/run/.containerenv")
         if _under_service or _in_container:
             self.request_restart(detached=False, via_service=True)
@@ -11070,9 +11088,9 @@ class GatewayRunner:
         audio_path = None
         actual_path = None
         try:
-            from tools.tts_tool import text_to_speech_tool, _strip_markdown_for_tts
+            from tools.tts_tool import text_to_speech_tool, prepare_voice_mode_tts_text_for_current_provider
 
-            tts_text = _strip_markdown_for_tts(text[:4000])
+            tts_text = prepare_voice_mode_tts_text_for_current_provider(text)
             if not tts_text:
                 return
 

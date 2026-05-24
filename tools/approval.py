@@ -9,6 +9,7 @@ This module is the single source of truth for the dangerous command system:
 """
 
 import contextvars
+import json
 import logging
 import os
 import re
@@ -837,9 +838,141 @@ def _get_approval_config() -> dict:
 
 
 def _get_approval_mode() -> str:
-    """Read the approval mode from config. Returns 'manual', 'smart', or 'off'."""
+    """Read the approval mode from config. Returns 'manual', 'smart', 'policy', or 'off'."""
     mode = _get_approval_config().get("mode", "manual")
     return _normalize_approval_mode(mode)
+
+
+def _load_approval_policy() -> dict:
+    """Load deterministic approval policy rules from config.
+
+    Supported locations, in precedence/merge order:
+    - top-level ``approval_policy``
+    - ``approvals.policy``
+
+    Policy shape:
+        approval_policy:
+          allow|ask|block:
+            - id: scoped-name
+              commands: ["regex"]
+              description: optional prompt text
+              scope:
+                env_types: [local]
+                cwd_under: [/repo/path]
+    """
+    try:
+        from hermes_cli.config import load_config
+        config = load_config()
+    except Exception as exc:
+        logger.warning("Failed to load approval policy config: %s", exc)
+        return {}
+
+    policy = {}
+    for source in (
+        config.get("approval_policy"),
+        cfg_get(config, "approvals", "policy", default=None),
+    ):
+        if not isinstance(source, dict):
+            continue
+        for action in ("allow", "ask", "block"):
+            rules = source.get(action)
+            if isinstance(rules, list):
+                policy.setdefault(action, []).extend(r for r in rules if isinstance(r, dict))
+    return policy
+
+
+def _normalize_policy_list(value) -> list[str]:
+    if value is None:
+        return []
+    if isinstance(value, str):
+        return [value]
+    if isinstance(value, (list, tuple, set)):
+        return [str(v) for v in value if v is not None]
+    return [str(value)]
+
+
+def _cwd_under(cwd: str | None, roots: list[str]) -> bool:
+    if not roots:
+        return True
+    if not cwd:
+        return False
+    try:
+        cwd_real = os.path.realpath(os.path.abspath(os.path.expanduser(cwd)))
+        for root in roots:
+            root_real = os.path.realpath(os.path.abspath(os.path.expanduser(str(root))))
+            if cwd_real == root_real or cwd_real.startswith(root_real.rstrip(os.sep) + os.sep):
+                return True
+    except Exception:
+        return False
+    return False
+
+
+def _policy_rule_matches(rule: dict, command: str, env_type: str, cwd: str | None) -> bool:
+    scope_obj = rule.get("scope") if isinstance(rule.get("scope"), dict) else {}
+    scope: dict = scope_obj or {}
+    env_types = _normalize_policy_list(scope.get("env_types") or rule.get("env_types"))
+    if env_types and env_type not in env_types:
+        return False
+    cwd_roots = _normalize_policy_list(scope.get("cwd_under") or rule.get("cwd_under"))
+    if not _cwd_under(cwd, cwd_roots):
+        return False
+
+    patterns = _normalize_policy_list(
+        rule.get("commands") or rule.get("command") or rule.get("pattern") or rule.get("regex")
+    )
+    if not patterns:
+        return False
+    for pattern in patterns:
+        try:
+            if re.search(pattern, command, _RE_FLAGS):
+                return True
+        except re.error as exc:
+            logger.warning(
+                "Ignoring invalid approval_policy regex in rule %r: %s",
+                rule.get("id") or rule.get("name") or "unnamed",
+                exc,
+            )
+    return False
+
+
+def _match_policy(action: str, command: str, env_type: str, cwd: str | None) -> dict | None:
+    for rule in _load_approval_policy().get(action, []) or []:
+        if _policy_rule_matches(rule, command, env_type, cwd):
+            return rule
+    return None
+
+
+def _policy_rule_id(rule: dict | None) -> str:
+    if not isinstance(rule, dict):
+        return ""
+    return str(rule.get("id") or rule.get("name") or "unnamed")
+
+
+def _policy_description(rule: dict, fallback: str) -> str:
+    desc = rule.get("description") or rule.get("reason")
+    return str(desc) if desc else fallback
+
+
+def _audit_approval_policy(action: str, command: str, env_type: str, cwd: str | None, rule: dict | None, outcome: str) -> None:
+    """Best-effort JSONL audit ledger for deterministic policy decisions."""
+    try:
+        from hermes_constants import get_hermes_home
+        log_dir = os.path.join(str(get_hermes_home()), "logs")
+        os.makedirs(log_dir, exist_ok=True)
+        record = {
+            "ts": time.time(),
+            "action": action,
+            "outcome": outcome,
+            "rule": _policy_rule_id(rule),
+            "env_type": env_type,
+            "cwd": cwd,
+            "command": command,
+            "session_key": get_current_session_key(default=""),
+        }
+        with open(os.path.join(log_dir, "approval-policy.jsonl"), "a", encoding="utf-8") as fh:
+            fh.write(json.dumps(record, ensure_ascii=False) + "\n")
+    except Exception as exc:
+        logger.debug("Approval policy audit write failed: %s", exc)
 
 
 def _get_approval_timeout() -> int:
@@ -1041,7 +1174,8 @@ def _format_tirith_description(tirith_result: dict) -> str:
 
 
 def check_all_command_guards(command: str, env_type: str,
-                             approval_callback=None) -> dict:
+                             approval_callback=None,
+                             cwd: str | None = None) -> dict:
     """Run all pre-exec security checks and return a single approval decision.
 
     Gathers findings from tirith and dangerous-command detection, then
@@ -1083,9 +1217,46 @@ def check_all_command_guards(command: str, env_type: str,
     is_gateway = _is_gateway_approval_context()
     is_ask = env_var_enabled("HERMES_EXEC_ASK")
 
+    policy_ask_rule = None
+    if approval_mode == "policy":
+        block_rule = _match_policy("block", command, env_type, cwd)
+        if block_rule is not None:
+            description = _policy_description(block_rule, "approval policy blocked this command")
+            _audit_approval_policy("block", command, env_type, cwd, block_rule, "blocked")
+            return {
+                "approved": False,
+                "message": f"BLOCKED by approval policy rule '{_policy_rule_id(block_rule)}': {description}. Do NOT retry.",
+                "policy_blocked": True,
+                "policy_rule": _policy_rule_id(block_rule),
+                "description": description,
+            }
+
+        allow_rule = _match_policy("allow", command, env_type, cwd)
+        if allow_rule is not None:
+            _audit_approval_policy("allow", command, env_type, cwd, allow_rule, "approved")
+            return {
+                "approved": True,
+                "message": None,
+                "policy_approved": True,
+                "policy_rule": _policy_rule_id(allow_rule),
+                "description": _policy_description(allow_rule, "approved by deterministic approval policy"),
+            }
+
+        policy_ask_rule = _match_policy("ask", command, env_type, cwd)
+
     # Preserve the existing non-interactive behavior: outside CLI/gateway/ask
     # flows, we do not block on approvals and we skip external guard work.
     if not is_cli and not is_gateway and not is_ask:
+        if policy_ask_rule is not None:
+            description = _policy_description(policy_ask_rule, "approval policy requires user approval")
+            _audit_approval_policy("ask", command, env_type, cwd, policy_ask_rule, "blocked_no_user")
+            return {
+                "approved": False,
+                "message": f"BLOCKED by approval policy rule '{_policy_rule_id(policy_ask_rule)}': {description}. No user approval channel is active.",
+                "policy_asked": True,
+                "policy_rule": _policy_rule_id(policy_ask_rule),
+                "description": description,
+            }
         # Cron sessions: respect cron_mode config
         if env_var_enabled("HERMES_CRON_SESSION"):
             if _get_cron_approval_mode() == "deny":
@@ -1141,6 +1312,15 @@ def check_all_command_guards(command: str, env_type: str,
         if not is_approved(session_key, pattern_key):
             warnings.append((pattern_key, description, False))
 
+    if policy_ask_rule is not None:
+        policy_key = f"policy:{_policy_rule_id(policy_ask_rule)}"
+        if not is_approved(session_key, policy_key):
+            warnings.append((
+                policy_key,
+                _policy_description(policy_ask_rule, "approval policy requires user approval"),
+                False,
+            ))
+
     # Nothing to warn about
     if not warnings:
         return {"approved": True, "message": None}
@@ -1162,14 +1342,13 @@ def check_all_command_guards(command: str, env_type: str,
                     "smart_approved": True,
                     "description": combined_desc_for_llm}
         elif verdict == "deny":
-            combined_desc_for_llm = "; ".join(desc for _, desc, _ in warnings)
-            return {
-                "approved": False,
-                "message": f"BLOCKED by smart approval: {combined_desc_for_llm}. "
-                           "The command was assessed as genuinely dangerous. Do NOT retry.",
-                "smart_denied": True,
-            }
-        # verdict == "escalate" → fall through to manual prompt
+            # Smart approval is an advisory classifier, not an authority.  A
+            # deterministic hardline guard may block outright; an LLM DENY
+            # only means "ask the human" so false positives do not strand
+            # legitimate operator work like gateway maintenance.
+            logger.debug("Smart approval: denied '%s' (%s); escalating to user",
+                         command[:60], combined_desc_for_llm)
+        # verdict == "escalate" or "deny" → fall through to manual/gateway prompt
 
     # --- Phase 3: Approval ---
 

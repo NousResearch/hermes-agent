@@ -70,6 +70,9 @@ class TestDiscordBotFilter(unittest.TestCase):
             "HERMES_HOME": tmp.name,
             "DISCORD_ALLOWED_BOT_USERS": "",
             "DISCORD_BOT_CONTROL_CHANNELS": "",
+            "DISCORD_BOT_LOOP_FUSE_WINDOW_SECONDS": "",
+            "DISCORD_BOT_LOOP_FUSE_MAX_MESSAGES": "",
+            "DISCORD_BOT_LOOP_FUSE_SUPPRESS_SECONDS": "",
         }
         baseline_env.update(env)
         patcher = patch.dict(os.environ, baseline_env, clear=False)
@@ -109,6 +112,23 @@ class TestDiscordBotFilter(unittest.TestCase):
         adapter = self._adapter(DISCORD_ALLOW_BOTS="mentions")
         bot = _make_author(bot=True)
         results = []
+        for idx in range(6):
+            msg = _make_message(author=bot, content=f"<@99999> msg {idx}", mentions=[])
+            msg.id = idx
+            results.append(adapter._should_accept_bot_message(msg, "mentions"))
+        self.assertEqual(results, [True, True, True, True, True, True])
+        seventh = _make_message(author=bot, content="<@99999> msg 6", mentions=[])
+        seventh.id = 6
+        self.assertFalse(adapter._should_accept_bot_message(seventh, "mentions"))
+
+    def test_bot_loop_fuse_env_override_restores_strict_threshold(self):
+        adapter = self._adapter(
+            DISCORD_ALLOW_BOTS="mentions",
+            DISCORD_BOT_LOOP_FUSE_MAX_MESSAGES="3",
+            DISCORD_BOT_LOOP_FUSE_SUPPRESS_SECONDS="600",
+        )
+        bot = _make_author(bot=True)
+        results = []
         for idx in range(4):
             msg = _make_message(author=bot, content=f"<@99999> msg {idx}", mentions=[])
             msg.id = idx
@@ -117,6 +137,38 @@ class TestDiscordBotFilter(unittest.TestCase):
         fifth = _make_message(author=bot, content="<@99999> msg 5", mentions=[])
         fifth.id = 5
         self.assertFalse(adapter._should_accept_bot_message(fifth, "mentions"))
+
+    def test_bot_loop_fuse_suppression_is_scoped_by_thread(self):
+        adapter = self._adapter(DISCORD_ALLOW_BOTS="mentions", DISCORD_BOT_CONTROL_CHANNELS="333")
+        receiver = "99999"
+        sender = "12345"
+        for _ in range(6):
+            adapter._bot_loop_fuse.record_and_check(
+                receiver_bot_id=receiver,
+                sender_bot_id=sender,
+                thread_id="thread-a",
+            )
+        self.assertTrue(
+            adapter._bot_loop_fuse.is_suppressed(
+                receiver_bot_id=receiver,
+                sender_bot_id=sender,
+                thread_id="thread-a",
+            )
+        )
+        self.assertFalse(
+            adapter._bot_loop_fuse.is_suppressed(
+                receiver_bot_id=receiver,
+                sender_bot_id=sender,
+                thread_id="thread-b",
+            )
+        )
+        self.assertFalse(
+            adapter._bot_loop_fuse.is_suppressed(
+                receiver_bot_id=receiver,
+                sender_bot_id="67890",
+                thread_id="thread-a",
+            )
+        )
 
     def test_registered_bot_thread_followup_requires_explicit_bot_control_scope(self):
         class FakeThread:

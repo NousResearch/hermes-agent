@@ -695,6 +695,10 @@ export const ru: Translations = {
     workspacePathDir: "путь к рабочей области (обязательно, например ~/projects/my-app)",
     workspacePathOptional:
       "путь к рабочей области (необязательно, выводится из исполнителя, если не указан)",
+    browseFolder: "Browse…",
+    browseFolderTitle: "Choose workspace folder",
+    browseFolderUnavailable:
+      "Folder picker is not available on this host. Enter the path manually.",
     logTruncated: "(показаны последние 100 KB — полный журнал в ",
     logAt: ")",
   },

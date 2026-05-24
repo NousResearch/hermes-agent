@@ -695,6 +695,10 @@ export const ga: Translations = {
     workspacePathDir: "conair workspace (riachtanach, m.sh. ~/projects/my-app)",
     workspacePathOptional:
       "conair workspace (roghnach, díorthaithe ón sannaí má tá sé folamh)",
+    browseFolder: "Browse…",
+    browseFolderTitle: "Choose workspace folder",
+    browseFolderUnavailable:
+      "Folder picker is not available on this host. Enter the path manually.",
     logTruncated: "(taispeántar an 100 KB deireanach — loga iomlán ag ",
     logAt: ")",
   },

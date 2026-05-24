@@ -45,7 +45,7 @@ import time
 from dataclasses import asdict
 from typing import Any, Optional
 
-from fastapi import APIRouter, HTTPException, Query, WebSocket, WebSocketDisconnect, status as http_status
+from fastapi import APIRouter, Body, HTTPException, Query, WebSocket, WebSocketDisconnect, status as http_status
 from pydantic import BaseModel, Field
 
 from hermes_cli import kanban_db
@@ -661,6 +661,34 @@ def list_git_branches(
         "default": DEFAULT_WORKTREE_BASE_BRANCH,
         "repo_root": str(repo_root),
     }
+
+
+@router.get("/meta")
+def kanban_meta():
+    """Expose server process metadata for the dashboard UI."""
+    from hermes_cli.directory_picker import server_cwd
+
+    return {"cwd": server_cwd()}
+
+
+class PickDirectoryBody(BaseModel):
+    initial_dir: Optional[str] = None
+
+
+@router.post("/pick-directory")
+def pick_directory_endpoint(
+    payload: PickDirectoryBody = Body(default_factory=PickDirectoryBody),
+):
+    """Open a native folder picker on the host running the dashboard."""
+    from hermes_cli.directory_picker import DirectoryPickerUnavailable, pick_directory
+
+    try:
+        chosen = pick_directory(initial_dir=payload.initial_dir)
+    except DirectoryPickerUnavailable as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    if chosen is None:
+        return {"cancelled": True, "path": None}
+    return {"cancelled": False, "path": chosen}
 
 
 # ---------------------------------------------------------------------------

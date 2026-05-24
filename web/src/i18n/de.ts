@@ -694,6 +694,10 @@ export const de: Translations = {
     workspacePathDir: "Arbeitsbereichs-Pfad (erforderlich, z. B. ~/projects/my-app)",
     workspacePathOptional:
       "Arbeitsbereichs-Pfad (optional, wird aus zuständiger Person abgeleitet, wenn leer)",
+    browseFolder: "Durchsuchen…",
+    browseFolderTitle: "Arbeitsbereichsordner wählen",
+    browseFolderUnavailable:
+      "Ordnerauswahl ist auf diesem Host nicht verfügbar. Pfad manuell eingeben.",
     logTruncated: "(zeige die letzten 100 KB — vollständiges Log unter ",
     logAt: ")",
   },

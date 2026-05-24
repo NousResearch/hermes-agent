@@ -213,6 +213,58 @@ def test_git_branches_endpoint_lists_refs(client, tmp_path):
     assert "origin/main" in body["branches"]
 
 
+def test_meta_returns_server_cwd(client, monkeypatch, tmp_path):
+    """GET /meta exposes the web server's absolute cwd for dir prefill."""
+    work = tmp_path / "kanban-cwd"
+    work.mkdir()
+    monkeypatch.chdir(work)
+
+    r = client.get("/api/plugins/kanban/meta")
+    assert r.status_code == 200, r.text
+    cwd = r.json()["cwd"]
+    assert os.path.isabs(cwd)
+    assert Path(cwd) == work.resolve()
+
+
+def test_pick_directory_cancelled(client, monkeypatch):
+    monkeypatch.setattr(
+        "hermes_cli.directory_picker.pick_directory",
+        lambda **kwargs: None,
+    )
+    r = client.post("/api/plugins/kanban/pick-directory", json={})
+    assert r.status_code == 200, r.text
+    assert r.json() == {"cancelled": True, "path": None}
+
+
+def test_pick_directory_returns_absolute_path(client, monkeypatch, tmp_path):
+    chosen = tmp_path / "picked"
+    chosen.mkdir()
+
+    def _fake_pick(**kwargs):
+        assert kwargs.get("initial_dir") == str(tmp_path)
+        return str(chosen)
+
+    monkeypatch.setattr("hermes_cli.directory_picker.pick_directory", _fake_pick)
+    r = client.post(
+        "/api/plugins/kanban/pick-directory",
+        json={"initial_dir": str(tmp_path)},
+    )
+    assert r.status_code == 200, r.text
+    assert r.json() == {"cancelled": False, "path": str(chosen)}
+
+
+def test_pick_directory_unavailable_returns_503(client, monkeypatch):
+    from hermes_cli.directory_picker import DirectoryPickerUnavailable
+
+    def _raise(**kwargs):
+        raise DirectoryPickerUnavailable("no picker")
+
+    monkeypatch.setattr("hermes_cli.directory_picker.pick_directory", _raise)
+    r = client.post("/api/plugins/kanban/pick-directory", json={})
+    assert r.status_code == 503
+    assert "no picker" in r.json()["detail"]
+
+
 def test_patch_workspace_rejected_after_triage(client, tmp_path):
     task = client.post(
         "/api/plugins/kanban/tasks",

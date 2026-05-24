@@ -701,6 +701,9 @@ export interface Translations {
     noParent: string;
     workspacePathDir: string;
     workspacePathOptional: string;
+    browseFolder: string;
+    browseFolderTitle: string;
+    browseFolderUnavailable: string;
     logTruncated: string;
     logAt: string;
   };

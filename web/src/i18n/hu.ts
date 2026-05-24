@@ -695,6 +695,10 @@ export const hu: Translations = {
     workspacePathDir: "munkaterület útvonala (kötelező, pl. ~/projects/my-app)",
     workspacePathOptional:
       "munkaterület útvonala (opcionális, üresen a felelősből származtatva)",
+    browseFolder: "Browse…",
+    browseFolderTitle: "Choose workspace folder",
+    browseFolderUnavailable:
+      "Folder picker is not available on this host. Enter the path manually.",
     logTruncated: "(az utolsó 100 KB látható — teljes napló: ",
     logAt: ")",
   },

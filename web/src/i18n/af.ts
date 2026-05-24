@@ -695,6 +695,10 @@ export const af: Translations = {
     workspacePathDir: "werkruimtepad (verpligtend, bv. ~/projects/my-app)",
     workspacePathOptional:
       "werkruimtepad (opsioneel, afgelei van toegewysde indien leeg)",
+    browseFolder: "Browse…",
+    browseFolderTitle: "Choose workspace folder",
+    browseFolderUnavailable:
+      "Folder picker is not available on this host. Enter the path manually.",
     logTruncated: "(toon laaste 100 KB — volledige log by ",
     logAt: ")",
   },

@@ -378,6 +378,27 @@
   min-width: 0;
 }
 
+.hermes-kanban-path-input-group {
+  display: flex;
+  align-items: stretch;
+  flex: 1;
+  min-width: 0;
+}
+
+.hermes-kanban-path-input-group > input {
+  flex: 1;
+  min-width: 0;
+  border-top-right-radius: 0;
+  border-bottom-right-radius: 0;
+}
+
+.hermes-kanban-path-browse {
+  flex-shrink: 0;
+  border-top-left-radius: 0;
+  border-bottom-left-radius: 0;
+  white-space: nowrap;
+}
+
 /* ---- Drawer (task detail side panel) --------------------------------- */
 
 .hermes-kanban-drawer-shade {

@@ -695,6 +695,10 @@ export const zhHant: Translations = {
     workspacePathDir: "工作區路徑（必填，例如 ~/projects/my-app）",
     workspacePathOptional:
       "工作區路徑（選填，留空則依負責人推導）",
+    browseFolder: "瀏覽…",
+    browseFolderTitle: "選擇工作區資料夾",
+    browseFolderUnavailable:
+      "此主機無法使用資料夾選擇器，請手動輸入路徑。",
     logTruncated: "（顯示最後 100 KB — 完整日誌位於 ",
     logAt: "）",
   },

@@ -695,6 +695,10 @@ export const ja: Translations = {
     workspacePathDir: "ワークスペースのパス（必須、例: ~/projects/my-app）",
     workspacePathOptional:
       "ワークスペースのパス（任意、空の場合は担当者から導出）",
+    browseFolder: "参照…",
+    browseFolderTitle: "ワークスペースフォルダを選択",
+    browseFolderUnavailable:
+      "このホストではフォルダ選択を利用できません。パスを手入力してください。",
     logTruncated: "（最後の 100 KB を表示中 — 完全なログは ",
     logAt: "）",
   },

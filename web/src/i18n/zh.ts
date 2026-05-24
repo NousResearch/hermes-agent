@@ -691,6 +691,10 @@ export const zh: Translations = {
     workspacePathDir: "工作区路径（必填，例如 ~/projects/my-app）",
     workspacePathOptional:
       "工作区路径（可选，留空则根据负责人推导）",
+    browseFolder: "浏览…",
+    browseFolderTitle: "选择工作区文件夹",
+    browseFolderUnavailable:
+      "此主机无法使用文件夹选择器，请手动输入路径。",
     logTruncated: "（显示最后 100 KB — 完整日志位于 ",
     logAt: "）",
   },

@@ -695,6 +695,10 @@ export const tr: Translations = {
     workspacePathDir: "workspace yolu (zorunlu, ör. ~/projects/my-app)",
     workspacePathOptional:
       "workspace yolu (isteğe bağlı, boşsa atanan kişiden türetilir)",
+    browseFolder: "Browse…",
+    browseFolderTitle: "Choose workspace folder",
+    browseFolderUnavailable:
+      "Folder picker is not available on this host. Enter the path manually.",
     logTruncated: "(son 100 KB gösteriliyor — tam günlük şurada: ",
     logAt: ")",
   },

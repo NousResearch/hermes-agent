@@ -2953,6 +2953,81 @@
   }
 
   // -------------------------------------------------------------------------
+  // Server cwd + dir workspace path input (prefill + native browse)
+  // -------------------------------------------------------------------------
+
+  var _serverCwdCache = null;
+  var _serverCwdPromise = null;
+
+  function fetchServerCwd() {
+    if (_serverCwdCache) return Promise.resolve(_serverCwdCache);
+    if (!_serverCwdPromise) {
+      _serverCwdPromise = SDK.fetchJSON(API + "/meta")
+        .then(function (res) {
+          _serverCwdCache = (res && res.cwd) ? String(res.cwd) : null;
+          return _serverCwdCache;
+        })
+        .catch(function () { return null; });
+    }
+    return _serverCwdPromise;
+  }
+
+  function prefillDirPathIfEmpty(setPath, currentPath) {
+    if (currentPath && String(currentPath).trim()) return;
+    fetchServerCwd().then(function (cwd) {
+      if (cwd) setPath(cwd);
+    });
+  }
+
+  function WorkspacePathInput(props) {
+    const t = props.t;
+    const [busy, setBusy] = useState(false);
+    const [pickerErr, setPickerErr] = useState(null);
+    const showBrowse = props.kind === "dir";
+
+    const browse = function () {
+      setBusy(true);
+      setPickerErr(null);
+      var body = {};
+      var trimmed = (props.value || "").trim();
+      if (trimmed) body.initial_dir = trimmed;
+      SDK.fetchJSON(API + "/pick-directory", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      }).then(function (res) {
+        if (res && !res.cancelled && res.path) {
+          props.onChange(res.path);
+        }
+      }).catch(function (err) {
+        setPickerErr(parseApiErrorMessage(err));
+      }).finally(function () { setBusy(false); });
+    };
+
+    return h("div", { className: "flex flex-col gap-0.5 flex-1 min-w-0" },
+      h("div", { className: "hermes-kanban-path-input-group" },
+        h(Input, {
+          value: props.value,
+          onChange: function (e) {
+            if (pickerErr) setPickerErr(null);
+            props.onChange(e.target.value);
+          },
+          placeholder: props.placeholder,
+          className: props.inputClassName || "h-7 text-xs",
+        }),
+        showBrowse ? h(Button, {
+          onClick: browse,
+          size: "sm",
+          disabled: busy,
+          className: "hermes-kanban-path-browse",
+          title: tx(t, "browseFolderTitle", "Choose workspace folder"),
+        }, tx(t, "browseFolder", "Browse…")) : null,
+      ),
+      pickerErr ? h("span", { className: "text-[10px] text-amber-600" }, pickerErr) : null,
+    );
+  }
+
+  // -------------------------------------------------------------------------
   // Inline create (with parent selector)
   // -------------------------------------------------------------------------
 
@@ -3063,16 +3138,21 @@
           value: workspaceKind,
           title: "scratch: isolated temp dir (default). worktree: git worktree on the assignee profile. dir: exact path (required below).",
           className: "h-7 text-xs w-28",
-        }, selectChangeHandler(setWorkspaceKind)),
+        }, selectChangeHandler(function (next) {
+          setWorkspaceKind(next);
+          if (next === "dir") prefillDirPathIfEmpty(setWorkspacePath, workspacePath);
+        })),
           h(SelectOption, { value: "scratch" }, "scratch"),
           h(SelectOption, { value: "worktree" }, "worktree"),
           h(SelectOption, { value: "dir" }, "dir"),
         ),
-        showPathInput ? h(Input, {
+        showPathInput ? h(WorkspacePathInput, {
+          t: t,
+          kind: workspaceKind,
           value: workspacePath,
-          onChange: function (e) { setWorkspacePath(e.target.value); },
+          onChange: setWorkspacePath,
           placeholder: pathPlaceholder,
-          className: "h-7 text-xs flex-1",
+          inputClassName: "h-7 text-xs",
         }) : null,
       ),
       workspaceKind === "worktree" ? h(GitBranchSelect, {
@@ -3717,6 +3797,11 @@
       setBaseBranch(task.base_branch || DEFAULT_WORKTREE_BASE_BRANCH);
     }, [task.workspace_kind, task.workspace_path, task.branch_name, task.base_branch]);
 
+    useEffect(function () {
+      if (!editing || kind !== "dir" || (path && path.trim())) return;
+      prefillDirPathIfEmpty(setPath, path);
+    }, [editing, kind]);
+
     const label = tx(t, "workspace", "Workspace");
     var value = task.workspace_kind || "scratch";
     if (task.workspace_path) value += ": " + task.workspace_path;
@@ -3758,11 +3843,15 @@
           h("select", {
             value: kind,
             onChange: function (e) {
-              setKind(e.target.value);
-              if (e.target.value === "scratch") {
+              var next = e.target.value;
+              setKind(next);
+              if (next === "scratch") {
                 setPath(""); setBranch(""); setBaseBranch(DEFAULT_WORKTREE_BASE_BRANCH);
               }
-              if (e.target.value === "dir") setBranch("");
+              if (next === "dir") {
+                setBranch("");
+                prefillDirPathIfEmpty(setPath, path);
+              }
             },
             className: "hermes-kanban-recovery-select hermes-kanban-assignee-select",
           },
@@ -3774,13 +3863,15 @@
           h(Button, { onClick: function () { setEditing(false); }, size: "sm" },
             tx(t, "cancel", "Cancel")),
         ),
-        showPath ? h(Input, {
+        showPath ? h(WorkspacePathInput, {
+          t: t,
+          kind: kind,
           value: path,
-          onChange: function (e) { setPath(e.target.value); },
+          onChange: setPath,
           placeholder: kind === "dir"
             ? tx(t, "workspacePathDir", "workspace path (required)")
             : tx(t, "workspacePathOptional", "workspace path (optional)"),
-          className: "h-7 text-xs",
+          inputClassName: "h-7 text-xs",
         }) : null,
         kind === "worktree" ? h(GitBranchSelect, {
           t: t,

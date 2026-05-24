@@ -695,6 +695,10 @@ export const uk: Translations = {
     workspacePathDir: "шлях робочої області (обов'язково, напр. ~/projects/my-app)",
     workspacePathOptional:
       "шлях робочої області (необов'язково, виводиться з виконавця, якщо порожньо)",
+    browseFolder: "Browse…",
+    browseFolderTitle: "Choose workspace folder",
+    browseFolderUnavailable:
+      "Folder picker is not available on this host. Enter the path manually.",
     logTruncated: "(показано останні 100 KB — повний журнал у ",
     logAt: ")",
   },

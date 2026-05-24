@@ -694,6 +694,10 @@ export const fr: Translations = {
     workspacePathDir: "chemin du workspace (requis, par ex. ~/projects/my-app)",
     workspacePathOptional:
       "chemin du workspace (facultatif, dérivé de l'assigné si vide)",
+    browseFolder: "Parcourir…",
+    browseFolderTitle: "Choisir le dossier du workspace",
+    browseFolderUnavailable:
+      "Le sélecteur de dossier n’est pas disponible sur cet hôte. Saisissez le chemin manuellement.",
     logTruncated: "(affichage des derniers 100 KB — log complet à ",
     logAt: ")",
   },

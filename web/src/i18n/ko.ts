@@ -695,6 +695,10 @@ export const ko: Translations = {
     workspacePathDir: "작업 공간 경로 (필수, 예: ~/projects/my-app)",
     workspacePathOptional:
       "작업 공간 경로 (선택, 비어 있으면 담당자에서 파생됨)",
+    browseFolder: "찾아보기…",
+    browseFolderTitle: "작업 공간 폴더 선택",
+    browseFolderUnavailable:
+      "이 호스트에서는 폴더 선택기를 사용할 수 없습니다. 경로를 직접 입력하세요.",
     logTruncated: "(마지막 100 KB 표시 중 — 전체 로그 위치: ",
     logAt: ")",
   },

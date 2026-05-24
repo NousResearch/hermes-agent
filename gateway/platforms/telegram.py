@@ -107,6 +107,16 @@ _TELEGRAM_IMAGE_EXT_TO_MIME = {
 
 MAX_COMMANDS_PER_SCOPE = 30
 
+TELEGRAM_QUICK_ACTIONS: tuple[str, ...] = (
+    "status", "usage", "help", "model", "agents", "personality", "whoami", "insights",
+    "new", "retry", "undo", "stop", "compress", "fast", "yolo",
+)
+TELEGRAM_QUICK_CONFIRM = {"new", "undo", "stop", "yolo"}
+
+
+def _telegram_quick_action_command_text(command_name: str) -> str:
+    return {"new": "/reset", "fast": "/fast fast"}.get(command_name, f"/{command_name}")
+
 
 def check_telegram_requirements() -> bool:
     """Check if Telegram dependencies are available.
@@ -2619,6 +2629,109 @@ class TelegramAdapter(BasePlatformAdapter):
             logger.warning("[%s] send_clarify failed: %s", self.name, e)
             return SendResult(success=False, error=str(e))
 
+    async def send_palette(
+        self, chat_id: str, metadata: Optional[Dict[str, Any]] = None,
+    ) -> SendResult:
+        """Render Telegram quick-action buttons."""
+        if not self._bot:
+            return SendResult(success=False, error="Not connected")
+        try:
+            buttons = [InlineKeyboardButton({"whoami": "Who Am I", "yolo": "YOLO"}.get(c, c.title()), callback_data=f"qa:{c}") for c in TELEGRAM_QUICK_ACTIONS]
+            thread_id = self._metadata_thread_id(metadata)
+            reply_to_id = self._reply_to_message_id_for_send(None, metadata, reply_to_mode=self._reply_to_mode)
+            msg = await self._send_message_with_thread_fallback(
+                chat_id=int(chat_id),
+                text="Hermes Quick Actions\n\nChoose a button below. Sensitive actions ask for confirmation first.",
+                reply_markup=InlineKeyboardMarkup([buttons[i:i + 3] for i in range(0, len(buttons), 3)]),
+                reply_to_message_id=reply_to_id,
+                **self._thread_kwargs_for_send(chat_id, thread_id, metadata, reply_to_message_id=reply_to_id, reply_to_mode=self._reply_to_mode),
+                **self._link_preview_kwargs(),
+            )
+            return SendResult(success=True, message_id=str(msg.message_id))
+        except Exception as e:
+            logger.warning("[%s] send_palette failed: %s", self.name, e)
+            return SendResult(success=False, error=str(e))
+
+    def _build_fast_palette_keyboard(self):
+        return InlineKeyboardMarkup([[InlineKeyboardButton(label, callback_data=f"qaf:{value}")] for label, value in (
+            ("Show current mode", "status"), ("Fast / priority", "fast"), ("Normal", "normal"),
+        )])
+
+    def _build_personality_palette_keyboard(self):
+        try:
+            from hermes_cli.config import cfg_get, load_config
+            personalities = cfg_get(load_config(), "agent", "personalities", default={})
+        except Exception:
+            personalities = {}
+        names = ["none", *(personalities.keys() if isinstance(personalities, dict) else [])]
+        return InlineKeyboardMarkup([
+            [InlineKeyboardButton("None / default" if name == "none" else str(name)[:64], callback_data=f"qap:{name}"[:64])]
+            for name in names[:25]
+        ])
+
+    async def _dispatch_palette_command(self, query, command_text: str, *, preconfirmed_destructive: bool = False) -> None:
+        event = self._build_message_event(query.message, MessageType.COMMAND)
+        event.text = command_text
+        caller = query.from_user
+        event.source.user_id = str(getattr(caller, "id", "")) or event.source.user_id
+        event.source.user_name = getattr(caller, "full_name", None) or getattr(caller, "first_name", None) or event.source.user_name
+        if preconfirmed_destructive:
+            setattr(event, "preconfirmed_destructive", True)
+        await self.handle_message(event)
+
+    async def _handle_palette_callback(self, query, data: str) -> None:
+        msg = getattr(query, "message", None)
+        chat_id = getattr(msg, "chat_id", None)
+        chat = getattr(msg, "chat", None)
+        caller = getattr(query, "from_user", None)
+        if not self._is_callback_user_authorized(
+            str(getattr(caller, "id", "")),
+            chat_id=chat_id,
+            chat_type=str(getattr(chat, "type", "")) if chat is not None else None,
+            thread_id=str(getattr(msg, "message_thread_id", "")) if getattr(msg, "message_thread_id", None) is not None else None,
+            user_name=getattr(caller, "first_name", None),
+        ):
+            await query.answer(text="⛔ You are not authorized to use this action.")
+            return
+
+        async def run(command_text: str, *, preconfirmed: bool = False, label: str = "Quick action sent"):
+            await query.edit_message_text(text=f"{label}: {command_text}", reply_markup=None)
+            await query.answer()
+            await self._dispatch_palette_command(query, command_text, preconfirmed_destructive=preconfirmed)
+
+        if data.startswith("qa:"):
+            command_name = data[3:]
+            if command_name in TELEGRAM_QUICK_CONFIRM:
+                await query.edit_message_text(text=f"Run {_telegram_quick_action_command_text(command_name)}?", reply_markup=InlineKeyboardMarkup([[
+                    InlineKeyboardButton("Confirm", callback_data=f"qac:confirm:{command_name}"),
+                    InlineKeyboardButton("Cancel", callback_data=f"qac:cancel:{command_name}"),
+                ]]))
+                await query.answer()
+            elif command_name == "fast":
+                await query.edit_message_text(text="Choose a fast-mode action:", reply_markup=self._build_fast_palette_keyboard())
+                await query.answer()
+            elif command_name == "personality":
+                await query.edit_message_text(text="Choose a personality:", reply_markup=self._build_personality_palette_keyboard())
+                await query.answer()
+            else:
+                await run("/model" if command_name == "model" else _telegram_quick_action_command_text(command_name))
+            return
+
+        if data.startswith("qaf:"):
+            await run(f"/fast {data[4:]}", label="Fast mode action sent")
+            return
+        if data.startswith("qap:"):
+            choice = data[4:] or "none"
+            await run(f"/personality {choice}", label="Personality action sent")
+            return
+        if data.startswith("qac:"):
+            _, choice, command_name = data.split(":", 2)
+            if choice == "cancel":
+                await query.edit_message_text(text="Quick action cancelled.", reply_markup=None)
+                await query.answer()
+            else:
+                await run(_telegram_quick_action_command_text(command_name), preconfirmed=True)
+
     async def send_model_picker(
         self,
         chat_id: str,
@@ -2945,6 +3058,11 @@ class TelegramAdapter(BasePlatformAdapter):
         query_chat_type = getattr(query_chat, "type", None)
         query_thread_id = getattr(query_message, "message_thread_id", None)
         query_user_name = getattr(query.from_user, "first_name", None)
+
+        # --- Quick-action palette callbacks ---
+        if data.startswith(("qa:", "qaf:", "qap:", "qac:")):
+            await self._handle_palette_callback(query, data)
+            return
 
         # --- Model picker callbacks ---
         if data.startswith(("mp:", "mm:", "mb", "mx", "mg:")):
@@ -4813,6 +4931,14 @@ class TelegramAdapter(BasePlatformAdapter):
         event = self._build_message_event(msg, MessageType.COMMAND, update_id=update.update_id)
         event.text = self._clean_bot_trigger_text(event.text)
         event = self._apply_telegram_group_observe_attribution(event)
+        if event.get_command() == "palette":
+            from gateway.platforms.base import _reply_anchor_for_event, _thread_metadata_for_source
+
+            await self.send_palette(
+                event.source.chat_id,
+                metadata=_thread_metadata_for_source(event.source, _reply_anchor_for_event(event)),
+            )
+            return
         await self.handle_message(event)
 
     async def _handle_location_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:

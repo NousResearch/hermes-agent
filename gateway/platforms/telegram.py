@@ -4664,14 +4664,17 @@ class TelegramAdapter(BasePlatformAdapter):
         title = title[: max_len - reserved].rstrip()
         return f"{prefix} {title}".strip()[:128] or "New request"
 
-    async def _create_inbox_auto_topic(self, message) -> Optional[int]:
+    async def _create_inbox_auto_topic(self, message, *, title_text: Optional[str] = None) -> Optional[int]:
         """Create a fresh Telegram forum topic for an Inbox request."""
         if not self._bot:
             return None
         chat = getattr(message, "chat", None)
         if not chat:
             return None
-        title = self._title_for_inbox_auto_topic(getattr(message, "text", ""), getattr(message, "message_id", None))
+        opener_text = title_text if title_text is not None else (
+            getattr(message, "text", "") or getattr(message, "caption", "") or ""
+        )
+        title = self._title_for_inbox_auto_topic(opener_text, getattr(message, "message_id", None))
         cfg = self._inbox_auto_topic_config()
         kwargs: Dict[str, Any] = {"chat_id": int(chat.id), "name": title}
         if cfg.get("icon_color") is not None:
@@ -4703,21 +4706,53 @@ class TelegramAdapter(BasePlatformAdapter):
         )
         return int(thread_id) if thread_id is not None else None
 
+    async def _copy_inbox_opener_to_topic(self, message, new_thread_id: int) -> Optional[str]:
+        """Copy the original Inbox opener into the newly-created topic.
+
+        Returning the copied message id lets the agent reply to the visible
+        opener in the topic instead of replying to the source Inbox message.
+        """
+        if not self._bot:
+            return None
+        chat = getattr(message, "chat", None)
+        message_id = getattr(message, "message_id", None)
+        if not chat or message_id is None:
+            return None
+        try:
+            copied = await self._bot.copy_message(
+                chat_id=int(chat.id),
+                from_chat_id=int(chat.id),
+                message_id=int(message_id),
+                message_thread_id=int(new_thread_id),
+            )
+        except Exception as exc:
+            logger.warning(
+                "[%s] Inbox opener copy to topic %s failed: %s",
+                self.name,
+                new_thread_id,
+                exc,
+            )
+            return None
+        copied_message_id = getattr(copied, "message_id", None)
+        return str(copied_message_id) if copied_message_id is not None else None
+
     async def _route_inbox_message_to_new_topic(self, event: MessageEvent) -> MessageEvent:
         """Rewrite an Inbox MessageEvent so the agent works in a new topic."""
         message = event.raw_message
         if not message or not self._is_inbox_auto_topic_message(message):
             return event
-        new_thread_id = await self._create_inbox_auto_topic(message)
+        opener_text = event.text or getattr(message, "text", "") or getattr(message, "caption", "") or ""
+        new_thread_id = await self._create_inbox_auto_topic(message, title_text=opener_text)
         if not new_thread_id:
             return event
         event.source.thread_id = str(new_thread_id)
         event.source.chat_topic = self._title_for_inbox_auto_topic(
-            getattr(message, "text", ""), getattr(message, "message_id", None)
+            opener_text, getattr(message, "message_id", None)
         )
-        # Do not reply to the Inbox message itself; topic metadata is enough for
-        # Telegram forum routing and keeps the response inside the new topic.
-        event.reply_to_message_id = None
+        # Repeat/copy the original Inbox opener into the new topic so the topic
+        # contains the user's prompt/attachment, then reply to that copied
+        # opener rather than the source Inbox message.
+        event.reply_to_message_id = await self._copy_inbox_opener_to_topic(message, new_thread_id)
         return event
 
     def _should_process_message(self, message: Message, *, is_command: bool = False) -> bool:
@@ -5091,6 +5126,8 @@ class TelegramAdapter(BasePlatformAdapter):
         # Add caption as text
         if msg.caption:
             event.text = self._clean_bot_trigger_text(msg.caption)
+
+        event = await self._route_inbox_message_to_new_topic(event)
         
         # Handle stickers: describe via vision tool with caching
         if msg.sticker:

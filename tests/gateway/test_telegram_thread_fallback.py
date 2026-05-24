@@ -112,6 +112,10 @@ def _inject_fake_telegram(monkeypatch):
     monkeypatch.setitem(sys.modules, "telegram.constants", _fake_telegram_constants)
     monkeypatch.setitem(sys.modules, "telegram.ext", _fake_telegram_ext)
     monkeypatch.setitem(sys.modules, "telegram.request", _fake_telegram_request)
+    loaded_adapter = sys.modules.get("gateway.platforms.telegram")
+    if loaded_adapter is not None:
+        monkeypatch.setattr(loaded_adapter, "ChatType", _fake_telegram_constants.ChatType, raising=False)
+        monkeypatch.setattr(loaded_adapter, "ParseMode", _fake_telegram_constants.ParseMode, raising=False)
 
 
 def _make_adapter():

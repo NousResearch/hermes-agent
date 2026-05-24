@@ -14721,7 +14721,13 @@ class AIAgent:
             str: Final assistant response
         """
         result = self.run_conversation(message, stream_callback=stream_callback)
-        return result["final_response"]
+        # Defensive: return.get() so a missing key (model declined mid-conversation,
+        # upstream API failure, etc.) returns empty string instead of crashing with
+        # KeyError. Pre-patch this killed the entire hermes subprocess and burned a
+        # dispatch slot; meshctl_launcher_hermes_goal_implementer would surface it
+        # as "Hermes exited 1 with no diff. stderr: ... KeyError: final_response".
+        # Mac has the same patch on its run_agent.py:15192 (different line, same fix).
+        return result.get("final_response", "") or ""
 
 
 def main(

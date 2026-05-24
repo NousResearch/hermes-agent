@@ -670,6 +670,32 @@ def _mcp_image_extension_for_mime_type(mime_type: str) -> str:
     return mimetypes.guess_extension(normalized) or ".png"
 
 
+def _extract_mcp_text_block(block) -> str:
+    """Return text carried by an MCP content block.
+
+    Plain ``TextContent`` blocks expose text directly as ``block.text``. MCP
+    ``EmbeddedResource`` blocks instead wrap payloads under ``block.resource``;
+    for text resources, the model-facing content lives at
+    ``block.resource.text``.  Blob resources (``resource.blob``) return a
+    human-readable placeholder so the agent sees *something* instead of
+    silence.  Keep this duck-typed so tests and older/newer MCP
+    SDK objects do not need exact class imports.
+    """
+    text = getattr(block, "text", None)
+    if text:
+        return text
+    resource = getattr(block, "resource", None)
+    if resource is not None:
+        resource_text = getattr(resource, "text", None)
+        if resource_text:
+            return resource_text
+        resource_blob = getattr(resource, "blob", None)
+        if resource_blob:
+            uri = getattr(resource, "uri", "unknown")
+            return f"[binary resource: {uri}]"
+    return ""
+
+
 def _cache_mcp_image_block(block) -> str:
     """Cache an MCP ``ImageContent`` block to the shared image cache and
     return a ``MEDIA:<path>`` tag that Hermes gateways know how to render.
@@ -3947,8 +3973,7 @@ def _make_tool_handler(server_name: str, tool_name: str, tool_timeout: float):
             if result.isError:
                 error_text = ""
                 for block in (result.content or []):
-                    if hasattr(block, "text"):
-                        error_text += block.text
+                    error_text += _extract_mcp_text_block(block)
                 return json.dumps({
                     "error": _sanitize_error(
                         error_text or "MCP tool returned an error"
@@ -3968,8 +3993,9 @@ def _make_tool_handler(server_name: str, tool_name: str, tool_timeout: float):
             # the two — plugs into existing infrastructure.
             parts: List[str] = []
             for block in (result.content or []):
-                if hasattr(block, "text") and block.text:
-                    parts.append(block.text)
+                text = _extract_mcp_text_block(block)
+                if text:
+                    parts.append(text)
                     continue
                 image_tag = _cache_mcp_image_block(block)
                 if image_tag:

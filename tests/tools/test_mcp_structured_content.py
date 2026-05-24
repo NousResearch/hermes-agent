@@ -18,6 +18,18 @@ class _FakeContentBlock:
         self.type = block_type
 
 
+class _FakeEmbeddedResourceBlock:
+    """Minimal EmbeddedResource block with text under .resource.text."""
+
+    def __init__(self, text: str, mime_type: str = "text/markdown"):
+        self.type = "resource"
+        self.resource = SimpleNamespace(
+            uri="qmd://obsidian/note.md",
+            mimeType=mime_type,
+            text=text,
+        )
+
+
 class _FakeCallToolResult:
     """Minimal CallToolResult stand-in.
 
@@ -77,6 +89,55 @@ class TestStructuredContentPreservation:
         raw = handler({})
         data = json.loads(raw)
         assert data == {"result": "hello"}
+
+    def test_embedded_resource_text_result(self, _patch_mcp_server):
+        """MCP EmbeddedResource text blocks are surfaced to the agent."""
+        session = _patch_mcp_server
+        resource_text = "# Note\n\nThis text lives under block.resource.text."
+        session.call_tool = AsyncMock(
+            return_value=_FakeCallToolResult(
+                content=[_FakeEmbeddedResourceBlock(resource_text)],
+            )
+        )
+        handler = mcp_tool._make_tool_handler("test-server", "my-tool", 30.0)
+        raw = handler({})
+        data = json.loads(raw)
+        assert data == {"result": resource_text}
+
+    def test_error_embedded_resource_text_result(self, _patch_mcp_server):
+        """Error results may also carry text under EmbeddedResource."""
+        session = _patch_mcp_server
+        error_text = "resource-backed failure details"
+        session.call_tool = AsyncMock(
+            return_value=_FakeCallToolResult(
+                content=[_FakeEmbeddedResourceBlock(error_text)],
+                is_error=True,
+            )
+        )
+        handler = mcp_tool._make_tool_handler("test-server", "my-tool", 30.0)
+        raw = handler({})
+        data = json.loads(raw)
+        assert data == {"error": error_text}
+
+    def test_embedded_resource_blob_result(self, _patch_mcp_server):
+        """Binary EmbeddedResource blocks produce a human-readable placeholder."""
+        session = _patch_mcp_server
+        blob_block = SimpleNamespace(
+            type="resource",
+            resource=SimpleNamespace(
+                uri="qmd://wiki/diagram.png",
+                mimeType="image/png",
+                blob="iVBORw0KGgoAAAANSUhEUg==",
+            ),
+        )
+        session.call_tool = AsyncMock(
+            return_value=_FakeCallToolResult(content=[blob_block]),
+        )
+        handler = mcp_tool._make_tool_handler("test-server", "my-tool", 30.0)
+        raw = handler({})
+        data = json.loads(raw)
+        assert "binary resource" in data["result"]
+        assert "qmd://wiki/diagram.png" in data["result"]
 
     def test_both_content_and_structured(self, _patch_mcp_server):
         """When both content and structuredContent are present, combine them."""

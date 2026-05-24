@@ -2,6 +2,28 @@
 
 Instructions for AI coding assistants and developers working on the hermes-agent codebase.
 
+## Obsidian Context Bridge
+
+Before substantial work in this repo, load the shared Obsidian context:
+
+- `/Users/rattanasak/ObsidianVault/HermesAgent/ai-context/session-start-contract.md`
+- `/Users/rattanasak/ObsidianVault/HermesAgent/ai-context/global-context.md`
+- `/Users/rattanasak/ObsidianVault/HermesAgent/ai-context/prompt-shortcut-registry.md`
+- `/Users/rattanasak/ObsidianVault/HermesAgent/context-packs/hermes-agent-dev.md`
+- `/Users/rattanasak/ObsidianVault/HermesAgent/projects/hermes-agent-dev/project-context.md`
+- `/Users/rattanasak/ObsidianVault/HermesAgent/projects/hermes-agent-dev/active-memory.md`
+- `/Users/rattanasak/ObsidianVault/HermesAgent/projects/hermes-agent-dev/handoff.md`
+
+Do not load the entire vault by default. Read the listed context first, then search only when task-specific context is missing. New or uncertain memory should go to Obsidian `review-queue/` before becoming durable knowledge.
+
+## Prompt Shortcut Registry
+
+Reusable long prompts are centralized in:
+
+- `/Users/rattanasak/ObsidianVault/HermesAgent/ai-context/prompt-shortcut-registry.md`
+
+If the user invokes `Use Act-As`, `Use Comply`, `Go to Sleep`, `Review Chat`, or an alias, read the registry and then the mapped prompt file before answering. Do not guess or summarize the shortcut from memory.
+
 ## Development Environment
 
 ```bash

@@ -154,6 +154,43 @@ _SENSITIVE_PATH_PREFIXES = (
 )
 _SENSITIVE_EXACT_PATHS = {"/var/run/docker.sock", "/run/docker.sock"}
 
+# User-level persistence and credential targets. These are not always system
+# paths, but an LLM-controlled arbitrary-file-write sink can turn them into
+# code execution on the next shell, GUI login, cron tick, or agent restart.
+# Keep these refusals in the file tools themselves so write_file/patch cannot
+# bypass the terminal approval layer.
+_USER_PERSISTENCE_PREFIXES = (
+    ".ssh/",
+    "Library/LaunchAgents/",
+    ".config/systemd/user/",
+    ".config/autostart/",
+    ".local/share/systemd/user/",
+)
+_USER_PERSISTENCE_EXACT = {
+    ".bashrc", ".bash_profile", ".profile", ".zshrc", ".zprofile",
+    ".zlogin", ".zshenv", ".config/fish/config.fish", ".netrc",
+    ".pgpass", ".npmrc", ".pypirc", ".hermes/.env", ".hermes/config.yaml",
+}
+
+
+def _user_relative_path(path: str) -> str | None:
+    """Return *path* relative to the current home directory when applicable."""
+    try:
+        home = Path.home().resolve()
+        resolved = Path(path).expanduser().resolve()
+        return resolved.relative_to(home).as_posix()
+    except (OSError, ValueError):
+        return None
+
+
+def _is_user_persistence_path(path: str) -> bool:
+    rel = _user_relative_path(path)
+    if rel is None:
+        return False
+    return rel in _USER_PERSISTENCE_EXACT or any(
+        rel.startswith(prefix) for prefix in _USER_PERSISTENCE_PREFIXES
+    )
+
 
 def _check_sensitive_path(filepath: str, task_id: str = "default") -> str | None:
     """Return an error message if the path targets a sensitive system location."""
@@ -171,6 +208,11 @@ def _check_sensitive_path(filepath: str, task_id: str = "default") -> str | None
             return _err
     if resolved in _SENSITIVE_EXACT_PATHS or normalized in _SENSITIVE_EXACT_PATHS:
         return _err
+    if _is_user_persistence_path(resolved) or _is_user_persistence_path(normalized):
+        return (
+            f"Refusing to write to sensitive user persistence/credential path: {filepath}\n"
+            "Use the terminal tool so the approval system can review the write."
+        )
     return None
 
 

@@ -92,6 +92,26 @@ class TestDetectDangerousSudo:
         assert is_dangerous is True
         assert key is not None
 
+    def test_prompt_shell_python_traversal_markers_are_detected(self):
+        cmd = "python3 - <<'PY'\n().__class__.__base__.__subclasses__()\nPY"
+        is_dangerous, key, desc = detect_dangerous_command(cmd)
+        assert is_dangerous is True
+        assert key is not None
+        assert "traversal" in desc.lower() or "script execution" in desc.lower()
+
+    def test_import_loader_traversal_marker_is_detected(self):
+        is_dangerous, key, desc = detect_dangerous_command("grep BuiltinImporter exploit.py")
+        assert is_dangerous is True
+        assert key is not None
+        assert "import-loader" in desc.lower()
+
+    def test_write_to_user_launchagent_requires_approval(self):
+        cmd = "cat payload.plist > ~/Library/LaunchAgents/com.evil.plist"
+        is_dangerous, key, desc = detect_dangerous_command(cmd)
+        assert is_dangerous is True
+        assert key is not None
+        assert "system file" in desc.lower() or "sensitive" in desc.lower()
+
 
 class TestDetectSqlPatterns:
     def test_drop_table(self):

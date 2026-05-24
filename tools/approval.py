@@ -127,7 +127,12 @@ _PROJECT_ENV_PATH = r'(?:(?:/|\.{1,2}/)?(?:[^\s/"\'`]+/)*\.env(?:\.[^/\s"\'`]+)*
 _PROJECT_CONFIG_PATH = r'(?:(?:/|\.{1,2}/)?(?:[^\s/"\'`]+/)*config\.yaml)'
 _SHELL_RC_FILES = (
     r'(?:~|\$home|\$\{home\})/\.'
-    r'(?:bashrc|zshrc|profile|bash_profile|zprofile)\b'
+    r'(?:bashrc|zshrc|profile|bash_profile|zprofile|zlogin|zshenv)\b'
+)
+_USER_PERSISTENCE_PATH = (
+    r'(?:~|\$home|\$\{home\})/(?:'
+    r'Library/LaunchAgents/|\.config/systemd/user/|\.config/autostart/|'
+    r'\.local/share/systemd/user/|\.ssh/)'
 )
 _CREDENTIAL_FILES = (
     r'(?:~|\$home|\$\{home\})/\.'
@@ -149,6 +154,7 @@ _SENSITIVE_WRITE_TARGET = (
     rf'{_SSH_SENSITIVE_PATH}|'
     rf'{_HERMES_ENV_PATH}|'
     rf'{_SHELL_RC_FILES}|'
+    rf'{_USER_PERSISTENCE_PATH}|'
     rf'{_CREDENTIAL_FILES})'
 )
 _PROJECT_SENSITIVE_WRITE_TARGET = rf'(?:{_PROJECT_ENV_PATH}|{_PROJECT_CONFIG_PATH})'
@@ -344,6 +350,9 @@ DANGEROUS_PATTERNS = [
     # Any shell invocation via -c or combined flags like -lc, -ic, etc.
     (r'\b(bash|sh|zsh|ksh)\s+-[^\s]*c(\s+|$)', "shell command via -c/-lc flag"),
     (r'\b(python[23]?|perl|ruby|node)\s+-[ec]\s+', "script execution via -e/-c flag"),
+    (r'\b(?:eval|exec)\s*\(', "dynamic code evaluation"),
+    (r'__(?:class|base|mro|subclasses|globals|builtins|import)__', "Python object graph / builtins traversal"),
+    (r'\b(?:BuiltinImporter|load_module)\b', "Python import-loader traversal"),
     (r'\b(curl|wget)\b.*\|\s*(ba)?sh\b', "pipe remote content to shell"),
     (r'\b(bash|sh|zsh|ksh)\s+<\s*<?\s*\(\s*(curl|wget)\b', "execute remote script via process substitution"),
     (rf'\btee\b.*["\']?{_SENSITIVE_WRITE_TARGET}', "overwrite system file via tee"),

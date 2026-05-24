@@ -142,6 +142,26 @@ class TestWriteFileHandler:
         assert "error" in result
         assert "string" in result["error"].lower() or "content" in result["error"].lower()
 
+    @patch("tools.file_tools._get_file_ops")
+    def test_write_refuses_user_persistence_paths(self, mock_get):
+        from tools.file_tools import write_file_tool
+
+        result = json.loads(write_file_tool("~/Library/LaunchAgents/com.evil.plist", "plist"))
+
+        assert "error" in result
+        assert "persistence/credential" in result["error"]
+        mock_get.assert_not_called()
+
+    @patch("tools.file_tools._get_file_ops")
+    def test_write_refuses_agent_credential_paths(self, mock_get):
+        from tools.file_tools import write_file_tool
+
+        result = json.loads(write_file_tool("~/.hermes/.env", "TOKEN=bad"))
+
+        assert "error" in result
+        assert "persistence/credential" in result["error"]
+        mock_get.assert_not_called()
+
 
 class TestPatchHandler:
     @patch("tools.file_tools._get_file_ops")

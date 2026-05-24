@@ -74,7 +74,7 @@ def get_hermes_home() -> Path:
             # in 30+ files; we cannot afford to trigger logging setup here).
             active_path = (Path.home() / ".hermes" / "active_profile")
             active = active_path.read_text().strip() if active_path.exists() else ""
-        except (UnicodeDecodeError, OSError):
+        except (RuntimeError, UnicodeDecodeError, OSError):
             active = ""
         if active and active != "default":
             _profile_fallback_warned = True

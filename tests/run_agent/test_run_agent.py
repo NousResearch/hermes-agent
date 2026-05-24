@@ -4214,7 +4214,7 @@ class TestRunConversation:
             f"recovered text was never streamed; callback only saw {deltas!r}"
         )
         # Callback should also have been closed so the SSE writer can drain.
-        assert deltas[-1] is None, (
+        assert deltas and deltas[-1] is None, (
             f"stream_delta_callback was not closed with None; deltas={deltas!r}"
         )
         # response_previewed must be set so the gateway suppresses its own

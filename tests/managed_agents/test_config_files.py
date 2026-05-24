@@ -17,7 +17,6 @@ def test_managed_agents_config_loads_all_declared_runtime_agents():
     registry = load_agent_registry(CONFIG_DIR / "agents.yaml")
 
     assert set(registry.agents) == {
-        "nesta",
         "claude",
         "codex",
         "deepseek-tui",
@@ -26,13 +25,59 @@ def test_managed_agents_config_loads_all_declared_runtime_agents():
         "ambrosini",
         "agent-tars",
         "hermes-internal",
-        "kanban",
     }
     assert all(agent.can_delegate is False for agent in registry.agents.values())
     assert registry.get("codex").permission is PermissionMode.READ_ONLY
     assert registry.get("ambrosini").permission is PermissionMode.READ_ONLY
     assert not registry.get("deepseek-tui").allows_risk(RiskLevel.R4)
     assert "visual_gui_automation" in registry.get("agent-tars").capabilities
+    assert registry.resolve_agent_id("nesta") == "hermes-internal"
+    assert registry.resolve_agent_id("技术翻译官") == "hermes-internal"
+    assert registry.resolve_agent_id("低成本快工") == "deepseek-tui"
+    assert registry.resolve_agent_id("kanban") is None
+
+
+def test_managed_agents_aliases_and_user_facing_fields_are_consistent():
+    registry = load_agent_registry(CONFIG_DIR / "agents.yaml")
+    alias_map = registry.alias_map()
+
+    assert alias_map["nesta"] == "hermes-internal"
+    assert "kanban" not in registry.agents
+    assert "nesta" not in registry.agents
+    for agent in registry.agents.values():
+        assert agent.name
+        assert agent.aliases
+        assert agent.role_summary
+        assert agent.model_ref
+
+
+def test_managed_agents_model_refs_are_declared_in_models_config():
+    registry = load_agent_registry(CONFIG_DIR / "agents.yaml")
+    models_path = Path("/Users/gu/.hermes/config/models.yaml")
+    models = yaml.safe_load(models_path.read_text(encoding="utf-8"))["models"]
+
+    expected = {
+        "claude": "claude_opus",
+        "deepseek-tui": "deepseek_pro",
+        "intelligence": "deepseek_flash",
+        "agent-tars": "tars_gpt54",
+        "codex": "codex_cli",
+    }
+    for agent_id, model_ref in expected.items():
+        assert registry.get(agent_id).model_ref == model_ref
+    for agent in registry.agents.values():
+        assert agent.model_ref in models
+    assert registry.get("agent-tars").model_ref != "tars_glm"
+    assert models["tars_gpt54"]["model"] == "gpt-5.4"
+
+
+def test_codegraph_is_scoped_to_code_understanding_agents():
+    registry = load_agent_registry(CONFIG_DIR / "agents.yaml")
+
+    assert "mcp-codegraph" in registry.get("hermes-internal").tools
+    assert "mcp-codegraph" in registry.get("codex").tools
+    assert "mcp-codegraph" in registry.get("claude").tools
+    assert "mcp-codegraph" not in registry.get("deepseek-tui").tools
 
 
 def test_managed_agents_policy_config_loads_and_enforces_priority():
@@ -84,3 +129,17 @@ def test_routes_yaml_references_registered_agents():
                 referenced.update(value)
 
     assert referenced <= set(registry.agents)
+    assert "nesta" not in referenced
+    assert "kanban" not in referenced
+
+
+def test_embedded_routes_do_not_reference_retired_delegate_agents():
+    data = yaml.safe_load((CONFIG_DIR / "agents.yaml").read_text(encoding="utf-8"))
+
+    referenced: set[str] = set()
+    for route in data["routing"]["rules"]:
+        value = route.get("agents") or []
+        referenced.update(value if isinstance(value, list) else [value])
+
+    assert "nesta" not in referenced
+    assert "kanban" not in referenced

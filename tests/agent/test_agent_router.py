@@ -30,6 +30,8 @@ def _write_test_registry(hermes_home: Path) -> Path:
             },
             "claude": {
                 "id": "claude",
+                "display_name": "Claude 主程执行官",
+                "aliases": ["主程", "主执行人"],
                 "type": "file_executor",
                 "capabilities": ["file_modification", "script_execution", "system_operations"],
             },
@@ -45,13 +47,27 @@ def _write_test_registry(hermes_home: Path) -> Path:
             },
             "hermes-internal": {
                 "id": "hermes-internal",
+                "display_name": "Hermes 技术翻译官",
+                "aliases": ["技术翻译官", "技术中间层", "nesta"],
                 "type": "analyst",
-                "capabilities": ["analysis", "decision_making", "creative_planning", "web_search", "file_reading"],
+                "capabilities": ["analysis", "decision_making", "creative_planning", "web_search", "file_reading", "technical_decomposition"],
+            },
+            "intelligence": {
+                "id": "intelligence",
+                "type": "researcher",
+                "capabilities": ["web_research", "file_reading_analysis"],
             },
             "deepseek-worker": {
                 "id": "deepseek-worker",
                 "type": "persistent_worker",
                 "capabilities": ["background_execution", "file_operations"],
+            },
+            "deepseek-tui": {
+                "id": "deepseek-tui",
+                "display_name": "DeepSeek 低成本快工",
+                "aliases": ["低成本快工", "快工", "deepseek"],
+                "type": "fast_worker",
+                "capabilities": ["small_fix", "test_generation"],
             },
             "hybrid-worker": {
                 "id": "hybrid-worker",
@@ -65,14 +81,16 @@ def _write_test_registry(hermes_home: Path) -> Path:
             },
         },
         "routing_rules": {
-            "web_research": "hermes-internal",
-            "file_reading_analysis": "hermes-internal",
+            "web_research": "intelligence",
+            "file_reading_analysis": "intelligence",
             "file_modification": "claude",
             "script_execution": "claude",
             "code_review": "codex",
             "desktop_control": "agent-tars",
             "strategy_decision": "hermes-internal",
             "creative_direction": "hermes-internal",
+            "technical_decomposition": "hermes-internal",
+            "test_generation": "deepseek-tui",
         },
     }
     path = config_dir / "agent-registry.json"
@@ -119,7 +137,7 @@ class TestRouting:
         router = AgentRouter()
         decision = router.route("research")
         assert decision.mode == "single_agent"
-        assert "hermes-internal" in decision.agents
+        assert "intelligence" in decision.agents
 
     def test_route_unknown_category_self_execute(self, hermetic_registry):
         router = AgentRouter()
@@ -132,6 +150,25 @@ class TestRouting:
         assert decision.mode == "single_agent"
         assert decision.agents == ["claude"]
         assert "user_override" in decision.routing_basis
+
+    def test_user_override_resolves_chinese_alias(self, hermetic_registry):
+        router = AgentRouter()
+        decision = router.route("research", user_agent_override="技术翻译官")
+        assert decision.mode == "single_agent"
+        assert decision.agents == ["hermes-internal"]
+        assert "user_override" in decision.routing_basis
+
+    def test_user_override_resolves_legacy_nesta_alias(self, hermetic_registry):
+        router = AgentRouter()
+        decision = router.route("research", user_agent_override="nesta")
+        assert decision.mode == "single_agent"
+        assert decision.agents == ["hermes-internal"]
+
+    def test_user_override_resolves_low_cost_worker_alias(self, hermetic_registry):
+        router = AgentRouter()
+        decision = router.route("research", user_agent_override="低成本快工")
+        assert decision.mode == "single_agent"
+        assert decision.agents == ["deepseek-tui"]
 
     def test_user_override_unknown_agent(self, hermetic_registry):
         router = AgentRouter()
@@ -168,6 +205,12 @@ class TestRouting:
         info = router.get_agent_info("kimi")
         assert info is not None
         assert info.get("id") == "kimi"
+
+    def test_get_agent_info_resolves_alias(self, hermetic_registry):
+        router = AgentRouter()
+        info = router.get_agent_info("技术中间层")
+        assert info is not None
+        assert info.get("id") == "hermes-internal"
 
     def test_get_agent_info_unknown(self, hermetic_registry):
         router = AgentRouter()
@@ -229,19 +272,17 @@ class TestRouting:
         assert "hermes-internal" in decision.agents
         assert decision.risk_level == "high"
 
-    def test_pipeline_with_missing_route_falls_back_to_self_execute(self, hermetic_registry):
+    def test_single_agent_with_missing_route_returns_explicit_error(self, hermetic_registry):
         router = AgentRouter()
         decision = router.route("code_analysis")
-        assert decision.mode == "pipeline"
+        assert decision.mode == "single_agent"
         assert decision.agents
 
         # Remove route in the live router instance to exercise the invariant.
         router._routing_rules["file_reading_analysis"] = "missing-agent"
-        router._registry = None
         decision = router.route("code_analysis")
-        assert decision.mode in {"self_execute", "pipeline"}
-        if decision.mode == "pipeline":
-            assert decision.agents
+        assert decision.mode == "review_only"
+        assert decision.agents == []
 
     def test_required_capabilities_can_be_covered_by_agent_combination(self, hermetic_registry):
         router = AgentRouter()

@@ -30,6 +30,7 @@ _KIMI_CONFIG = {
     "capabilities": ["web_search", "file_reading", "information_synthesis"],
     "subagent_profile": {
         "model": "default",
+        "model_ref": "legacy_research",
         "toolsets": ["file", "web"],
         "blocked_tools": ["write_file", "patch", "delegate_task", "terminal"],
         "permission_mode": "read_only",
@@ -45,6 +46,7 @@ _CLAUDE_CONFIG = {
     "capabilities": ["file_modification", "script_execution", "git_operations"],
     "subagent_profile": {
         "model": "default",
+        "model_ref": "claude_opus",
         "toolsets": ["file", "terminal"],
         "blocked_tools": ["delegate_task", "send_message", "memory"],
         "permission_mode": "ask",
@@ -133,8 +135,33 @@ class TestLoadSubagentProfile:
     def test_load_claude_profile(self, hermes_registry):
         config, profile = _load_subagent_profile("claude")
         assert config["id"] == "claude"
+        assert config["model_ref"] == "claude_opus"
+        assert profile["model_ref"] == "claude_opus"
         assert "file" in profile["toolsets"]
         assert "terminal" in profile["toolsets"]
+
+    def test_load_profile_resolves_legacy_alias(self, hermes_registry):
+        hermes_home = Path(os.environ["HERMES_HOME"])
+        _write_registry(hermes_home, agents={
+            "hermes-internal": {
+                "id": "hermes-internal",
+                "display_name": "Hermes 技术翻译官",
+                "aliases": ["技术翻译官", "nesta"],
+                "capabilities": ["technical_decomposition"],
+                "subagent_profile": {
+                    "model": "default",
+                    "toolsets": ["file"],
+                    "blocked_tools": [],
+                    "permission_mode": "read_only",
+                    "isolation": "readonly",
+                },
+            },
+        })
+
+        config, profile = _load_subagent_profile("nesta")
+
+        assert config["id"] == "hermes-internal"
+        assert profile["isolation"] == "readonly"
 
     def test_nonexistent_agent_raises(self, hermes_registry):
         with pytest.raises(ValueError, match="not found"):

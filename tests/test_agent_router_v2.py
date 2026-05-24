@@ -50,7 +50,12 @@ def mock_registry():
             "hermes-internal": {
                 "id": "hermes-internal",
                 "display_name": "Hermes Internal Reasoning",
-                "capabilities": ["analysis", "decision_making", "creative_planning", "prioritization"],
+                "capabilities": ["analysis", "decision_making", "creative_planning", "prioritization", "strategy_decision"],
+            },
+            "intelligence": {
+                "id": "intelligence",
+                "display_name": "Intelligence",
+                "capabilities": ["web_research", "file_reading_analysis"],
             },
             "deepseek-worker": {
                 "id": "deepseek-worker",
@@ -71,8 +76,8 @@ def mock_registry():
             "implementation_planning": "codex",
             "desktop_control": "agent-tars",
             "app_operation": "agent-tars",
-            "web_research": "hermes-internal",
-            "file_reading_analysis": "hermes-internal",
+            "web_research": "intelligence",
+            "file_reading_analysis": "intelligence",
             "strategy_decision": "hermes-internal",
             "creative_direction": "hermes-internal",
             "background_task": "deepseek-worker",
@@ -99,16 +104,17 @@ class TestNewTaskTypes:
         result = router.route("marketing_deck")
         assert result.mode == "pipeline"
         assert "hermes-internal" in result.agents
+        assert "intelligence" in result.agents
 
     def test_file_work_routes_to_reading(self, router):
         result = router.route("file_work")
         assert result.mode == "single_agent"
-        assert "hermes-internal" in result.agents
+        assert "intelligence" in result.agents
 
-    def test_code_maintenance_routes_to_codex(self, router):
+    def test_code_maintenance_routes_to_writable_executor(self, router):
         result = router.route("code_maintenance")
         assert result.mode == "single_agent"
-        assert "codex" in result.agents
+        assert result.agents == ["claude"]
 
     def test_desktop_operation_routes_to_agent_tars(self, router):
         result = router.route("desktop_operation")

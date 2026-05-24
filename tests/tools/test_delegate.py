@@ -78,8 +78,7 @@ class TestDelegateRequirements(unittest.TestCase):
 
     def test_named_agent_schema_matches_current_agent_roster(self):
         props = DELEGATE_TASK_SCHEMA["parameters"]["properties"]
-        expected = {
-            "nesta",
+        canonical = {
             "claude",
             "codex",
             "pirlo",
@@ -88,17 +87,25 @@ class TestDelegateRequirements(unittest.TestCase):
             "agent-tars",
             "deepseek-tui",
             "hermes-internal",
-            "kanban",
         }
-        self.assertEqual(set(props["agent_id"]["enum"]), expected)
-        self.assertEqual(set(props["tasks"]["items"]["properties"]["agent_id"]["enum"]), expected)
+        top_enum = set(props["agent_id"]["enum"])
+        task_enum = set(props["tasks"]["items"]["properties"]["agent_id"]["enum"])
+        self.assertTrue(canonical <= top_enum)
+        self.assertTrue(canonical <= task_enum)
+        self.assertIn("技术翻译官", top_enum)
+        self.assertIn("低成本快工", top_enum)
+        self.assertIn("nesta", top_enum)
+        self.assertNotIn("kanban", top_enum)
+        self.assertNotIn("kanban", task_enum)
 
     @patch("tools.delegate_tool._load_agent_registry")
     def test_delegation_guidance_reflects_current_roster(self, mock_registry):
         mock_registry.return_value = {
             "agents": {
-                "nesta": {
-                    "type": "technical_analyst",
+                "hermes-internal": {
+                    "display_name": "Hermes 技术翻译官",
+                    "role_summary": "技术中间层、需求拆解、策略判断",
+                    "type": "internal_reasoner",
                     "capabilities": ["technical_decomposition"],
                     "subagent_profile": {"toolsets": ["file", "terminal"]},
                 },
@@ -108,7 +115,8 @@ class TestDelegateRequirements(unittest.TestCase):
                     "subagent_profile": {"toolsets": ["file", "terminal"]},
                 },
                 "codex": {
-                    "type": "code_executor",
+                    "display_name": "Codex 代码审查官",
+                    "type": "code_reviewer",
                     "capabilities": ["code_review", "implementation_planning"],
                     "subagent_profile": {"toolsets": ["file", "terminal"]},
                 },
@@ -128,9 +136,12 @@ class TestDelegateRequirements(unittest.TestCase):
         guidance = get_delegation_guidance()
 
         self.assertIn("agent_id='codex'", guidance)
+        self.assertIn("Hermes 技术翻译官", guidance)
         self.assertIn("agent_id='agent-tars'", guidance)
         self.assertIn("agent_id='intelligence'", guidance)
+        self.assertIn("delegate_task(agent_id='hermes-internal'", guidance)
         self.assertNotIn("When the user names kimi, ALWAYS delegate", guidance)
+        self.assertNotIn("agent_id='kanban'", guidance)
 
     def test_schema_description_advertises_runtime_limits(self):
         """The model must see the user's actual concurrency / spawn-depth caps,

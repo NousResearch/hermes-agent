@@ -21,13 +21,15 @@ def write_router_config(tmp_path: Path) -> Path:
         """
         version: "2026-05-21"
         agents:
-          - agent_id: nesta
-            name: Nesta
-            role: technical_analyst
-            tools: [file, terminal]
-            permission: ask
-            capabilities: [technical_analysis, code_review]
-            risk_allowed: [R0, R1, R2]
+          - agent_id: hermes-internal
+            name: Hermes 技术翻译官
+            role: internal_reasoner
+            aliases: [技术翻译官, 技术中间层, nesta]
+            role_summary: 技术中间层、需求拆解、策略判断。
+            tools: [file]
+            permission: read_only
+            capabilities: [technical_analysis, code_review, technical_decomposition]
+            risk_allowed: [R0, R1, R2, R3]
           - agent_id: claude
             name: Claude Code
             role: lead_implementer
@@ -63,7 +65,7 @@ def write_router_config(tmp_path: Path) -> Path:
               when:
                 risk_level: R4
               mode: pipeline
-              agents: [codex, claude, nesta]
+              agents: [codex, claude, hermes-internal]
               require_gate: review
               reason: risk_escalation
             - id: feature_implementation
@@ -148,6 +150,23 @@ def test_user_override_wins_when_agent_exists_and_allows_risk(tmp_path):
     ]
 
 
+def test_user_override_resolves_alias_to_canonical_agent_id(tmp_path):
+    router = load_managed_agent_router(write_router_config(tmp_path))
+
+    decision = router.route(
+        {
+            "task_id": "T-user-override-alias",
+            "task_category": "feature",
+            "risk_level": "R2",
+            "user_override": "技术翻译官",
+        }
+    )
+
+    assert decision.mode == "single_agent"
+    assert decision.agents == ["hermes-internal"]
+    assert decision.routing_basis[0] == "user_override:hermes-internal"
+
+
 def test_high_risk_escalates_to_pipeline_even_with_user_override(tmp_path):
     router = load_managed_agent_router(write_router_config(tmp_path))
 
@@ -161,7 +180,7 @@ def test_high_risk_escalates_to_pipeline_even_with_user_override(tmp_path):
     )
 
     assert decision.mode == "pipeline"
-    assert decision.agents == ["codex", "claude", "nesta"]
+    assert decision.agents == ["codex", "claude", "hermes-internal"]
     assert decision.matched_rule == "high_risk_pipeline"
     assert decision.require_gate == "review"
     assert decision.requires_plan is True

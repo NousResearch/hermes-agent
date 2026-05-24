@@ -164,3 +164,27 @@ class TestSubagentEvents:
         assert not t.is_alive()
         assert error == []
         assert len(self.elog.get_events_for_task("task-thread")) == 2
+
+    def test_event_log_handles_concurrent_thread_writes(self):
+        """Concurrent gateway workers should not trip SQLite thread affinity."""
+        errors = []
+
+        def worker(index):
+            try:
+                self.elog.log_subagent_started(
+                    task_id="task-concurrent",
+                    session_id="sess-concurrent",
+                    subagent_id=f"sa-{index}",
+                    goal_preview=f"worker {index}",
+                )
+            except Exception as exc:
+                errors.append(exc)
+
+        threads = [threading.Thread(target=worker, args=(i,)) for i in range(8)]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join(timeout=5)
+
+        assert errors == []
+        assert len(self.elog.get_events_for_task("task-concurrent")) == 8

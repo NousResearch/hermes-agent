@@ -168,6 +168,24 @@ def test_runtime_bridge_walks_states():
     assert runtime.state == "done"
 
 
+def test_runtime_complete_review_alias_matches_conversation_loop_call_site():
+    runtime = build_kanban_bridge(FakeTask(task_id="task-10b"))
+    runtime.delegate("claude")
+    runtime.start()
+    runtime.request_review(["codex"])
+
+    runtime.complete_review(
+        ReviewResult(
+            task_id="task-10b",
+            reviewer="codex",
+            decision="approved",
+            severity=ReviewSeverity(),
+        )
+    )
+
+    assert runtime.state == "approved"
+
+
 def test_runtime_sync_execution_plan_covers_single_agent_and_pipeline():
     task = FakeTask(task_id="task-11")
     runtime = build_kanban_bridge(task)

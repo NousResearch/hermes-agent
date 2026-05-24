@@ -502,6 +502,20 @@ hermes mcp serve
 
 This starts a stdio MCP server. The MCP client (not you) manages the process lifecycle.
 
+If you install from PyPI for MCP clients or registries, include the MCP extra:
+
+```bash
+pip install "hermes-agent[mcp]"
+```
+
+Some MCP clients do not yet understand Python package extras in registry metadata. For those clients, preinstall Hermes with the command above, then configure the explicit `hermes mcp serve` command shown below.
+
+### Registry metadata
+
+Hermes includes a root [`server.json`](https://github.com/NousResearch/hermes-agent/blob/main/server.json) for MCP registries and MCP-aware clients. The metadata points clients at the PyPI package `hermes-agent[mcp]` and encodes the fixed launch arguments `mcp serve`, so clients start the MCP server instead of the normal interactive Hermes CLI.
+
+Open-source usage remains fully supported. For production gateway/MCP deployment help, use the [Nous Research Discord](https://discord.gg/NousResearch) for community support or contact [Nous Research](https://nousresearch.com) about commercial support.
+
 ### MCP client configuration
 
 Add Hermes to your MCP client config. For example, in Claude Code's `~/.claude/claude_desktop_config.json`:

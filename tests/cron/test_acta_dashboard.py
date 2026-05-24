@@ -13,6 +13,7 @@ from cron.acta_dashboard import (
     render_archive_index,
     render_dashboard,
     render_jobs_page,
+    render_outputs_page,
 )
 
 
@@ -533,3 +534,78 @@ def test_jobs_subpage_shows_active_relevant_last_runs(tmp_path: Path):
     assert "2026-05-19T08" in html
     assert "Disabled Brief" not in html
     assert "Hidden Brief" not in html
+
+
+def test_outputs_page_uses_v9_shell_and_signed_source_rows():
+    item_cls = collect_situation_items.__globals__["CronSituationItem"]
+    item = item_cls(
+        job_id="lead",
+        name="Lead Brief",
+        schedule="daily",
+        deliver="telegram:-1003566991387:86",
+        enabled=True,
+        latest_md=Path("/tmp/2026-05-19_10-00-00.md"),
+        latest_html=None,
+        latest_time=datetime(2026, 5, 19, 10, tzinfo=timezone.utc),
+        status="fresh",
+        excerpt="Most important signed briefing.",
+        artifact_url="https://acta.imperatr.com/r/lead/detail.html?exp=1&sig=abc",
+        telegram_url="https://t.me/c/3566991387/86",
+    )
+
+    html = render_outputs_page([item], generated_at=datetime(2026, 5, 19, 11, tzinfo=timezone.utc))
+
+    assert "Acta Outputs" in html
+    assert "#03060b" in html
+    assert "#756cff" in html
+    assert "#23a7ff" in html
+    assert '<a class="active" href="/outputs">Outputs</a>' in html
+    assert 'href="https://acta.imperatr.com/r/lead/detail.html?exp=1&amp;sig=abc"' in html
+    assert 'href="https://t.me/c/3566991387/86"' in html
+    assert "ASK" in html
+    assert (
+        '<a class="followup-meta" href="https://t.me/c/3566991387/86" target="_blank" rel="noopener" '
+        'aria-label="Ask follow-up in Telegram" title="Ask follow-up in Telegram">FOLLOW-UP</a>'
+        in html
+    )
+    assert "fresh" in html
+    assert "daily" in html
+    assert "lead" in html
+    assert "2026-05-19T10:00:00+00:00" in html
+    assert "SOURCE" in html
+    assert "#f5a400" not in html
+    assert "Bloomberg" not in html
+    assert "generated-file" not in html.lower()
+    assert "Generated files" not in html
+
+
+def test_build_dashboard_publishes_outputs_index(tmp_path: Path, monkeypatch):
+    (tmp_path / "cron" / "output" / "lead").mkdir(parents=True)
+    (tmp_path / "cron" / "jobs.json").write_text(
+        json.dumps([{"id": "lead", "name": "Lead Brief", "deliver": "telegram:-1003566991387:86"}])
+    )
+    (tmp_path / "cron" / "output" / "lead" / "2026-05-19_10-00-00.md").write_text("## Response\n\nMost important")
+    (tmp_path / "config.yaml").write_text(
+        "cron:\n  html_artifacts:\n    publish:\n      enabled: true\n      endpoint: https://acta.imperatr.com\n"
+    )
+    published = []
+
+    def fake_publish(path, job, settings):
+        published.append({"path": Path(path), "object_key": settings.get("object_key"), "html": Path(path).read_text()})
+        if settings.get("object_key") == "public/outputs/index.html":
+            return "https://acta.imperatr.com/outputs/"
+        if settings.get("object_key") == "public/index.html":
+            return "https://acta.imperatr.com/"
+        return "https://acta.imperatr.com/r/lead/detail.html?exp=1&sig=abc"
+
+    monkeypatch.setattr("cron.acta_dashboard.publish_html_artifact", fake_publish)
+
+    path, url = build_dashboard(tmp_path, publish=True)
+
+    assert path.exists()
+    assert url == "https://acta.imperatr.com/"
+    output_publish = next(item for item in published if item["object_key"] == "public/outputs/index.html")
+    assert output_publish["path"].name == "outputs.html"
+    assert "Acta Outputs" in output_publish["html"]
+    assert '<a class="active" href="/outputs">Outputs</a>' in output_publish["html"]
+    assert "https://acta.imperatr.com/r/lead/detail.html?exp=1&amp;sig=abc" in output_publish["html"]

@@ -833,7 +833,7 @@ main { width:min(1180px, calc(100vw - 32px)); margin:0 auto; padding:24px 0 88px
 h1 { margin:8px 0 10px; color:var(--text); font:600 clamp(38px,6.5vw,70px)/.95 var(--read); letter-spacing:-.06em; }
 .lede { max-width:780px; margin:0 0 22px; color:var(--body); font:18px/1.5 var(--read); }
 .stats, .quick-nav { display:flex; flex-wrap:wrap; gap:8px; margin:18px 0; }
-.stat, .archive-card, .job-row, .report-shell, .detail-card { border:1px solid var(--line); background:linear-gradient(135deg,rgba(117,108,255,.10),rgba(255,255,255,.04)); border-radius:18px; box-shadow:0 18px 50px rgba(0,0,0,.24); }
+.stat, .archive-card, .job-row, .output-row, .report-shell, .detail-card { border:1px solid var(--line); background:linear-gradient(135deg,rgba(117,108,255,.10),rgba(255,255,255,.04)); border-radius:18px; box-shadow:0 18px 50px rgba(0,0,0,.24); }
 .stat { padding:9px 11px; color:var(--muted); font:11px var(--mono); text-transform:uppercase; }
 .stat b { color:#fff; font-size:14px; margin-left:6px; }
 .jobs-panel { margin-top:20px; border-top:1px solid var(--line); }
@@ -851,6 +851,20 @@ h1 { margin:8px 0 10px; color:var(--text); font:600 clamp(38px,6.5vw,70px)/.95 v
 .job-last time { color:#fff; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
 .job-last small { color:var(--acta2); font:10px var(--mono); text-transform:uppercase; }
 .silent .job-rank, .missing .job-rank { color:var(--red); }
+.outputs-panel { margin-top:20px; display:flex; flex-direction:column; gap:9px; }
+.output-row { display:grid; grid-template-columns:44px minmax(0,1fr) auto; gap:12px; align-items:center; padding:12px 14px; position:relative; overflow:hidden; }
+.output-row:before { content:""; width:4px; height:44px; border-radius:999px; background:linear-gradient(180deg,var(--acta),var(--acta2)); box-shadow:0 0 16px rgba(117,108,255,.42); position:absolute; left:0; top:50%; transform:translateY(-50%); }
+.output-rank { color:var(--acta2); font:800 11px var(--mono); }
+.output-main b { display:block; color:#fff; font:700 17px/1.18 var(--read); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+.output-main p { margin:4px 0 0; color:var(--body); display:-webkit-box; -webkit-line-clamp:2; -webkit-box-orient:vertical; overflow:hidden; }
+.output-meta { display:flex; flex-wrap:wrap; gap:6px; margin-top:8px; color:var(--muted); font:10px var(--mono); text-transform:uppercase; }
+.output-meta span, .output-meta .followup-meta { border:1px solid var(--line); border-radius:999px; padding:4px 6px; background:rgba(255,255,255,.045); }
+.output-meta .followup-meta { color:var(--body); text-decoration:none; border-color:rgba(35,167,255,.44); }
+.output-actions { display:flex; gap:7px; align-items:center; }
+.output-actions a, .output-actions span { color:#fff; text-decoration:none; border:1px solid var(--line); border-radius:999px; padding:7px 9px; font:800 11px var(--mono); text-transform:uppercase; white-space:nowrap; }
+.output-actions .open { background:rgba(117,108,255,.22); border-color:rgba(117,108,255,.46); }
+.output-actions .ask { background:linear-gradient(135deg,rgba(117,108,255,.70),rgba(35,167,255,.48)); border-color:rgba(35,167,255,.44); }
+.output-actions .muted { color:var(--muted); background:rgba(255,255,255,.035); }
 .prompt { font:14px/1.45 var(--read); color:var(--body); border-left:2px solid var(--accent); padding-left:10px; }
 .grid { display:grid; grid-template-columns:repeat(3, minmax(0,1fr)); gap:14px; }
 .archive-card { display:block; text-decoration:none; padding:20px; min-height:120px; }
@@ -883,7 +897,7 @@ pre { overflow-x:auto; background:rgba(0,0,0,.24); border:1px solid var(--line);
 code { font-family:var(--mono); color:#b9dfff; }
 p code, li code { background:rgba(255,255,255,.055); border:1px solid var(--line); padding:1px 5px; border-radius:6px; }
 footer { color:var(--faint); margin-top:24px; font:12px var(--mono); text-align:center; }
-@media (max-width:760px) { .top { height:50px; padding:0 14px; gap:8px; } .ticker { font-size:11px; } .nav { gap:6px; overflow:auto; } .nav a { min-height:36px; display:inline-flex; align-items:center; white-space:nowrap; padding:0 10px; } main { width:100%; padding:18px 14px 96px; } h1 { font-size:clamp(34px,11vw,50px); } .lede { font-size:16px; } .grid { grid-template-columns:1fr; } .job-row { grid-template-columns:34px minmax(0,1fr); gap:8px 10px; padding:13px 12px; } .job-schedule, .job-last { grid-column:2; } .job-main b { font-size:14px; } .actions { gap:6px; } .followup { max-width:132px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; padding:7px 9px; } .back { padding:7px 9px; } .report-shell { border-radius:22px; padding:14px; } h1.report-title { font-size:clamp(31px,9vw,45px); } article.report-body { font-size:15.5px; line-height:1.54; } .section-title { font-size:22px; } }
+@media (max-width:760px) { .top { height:50px; padding:0 14px; gap:8px; } .ticker { font-size:11px; } .nav { gap:6px; overflow:auto; } .nav a { min-height:36px; display:inline-flex; align-items:center; white-space:nowrap; padding:0 10px; } main { width:100%; padding:18px 14px 96px; } h1 { font-size:clamp(34px,11vw,50px); } .lede { font-size:16px; } .grid { grid-template-columns:1fr; } .job-row, .output-row { grid-template-columns:34px minmax(0,1fr); gap:8px 10px; padding:13px 12px; } .job-schedule, .job-last, .output-actions { grid-column:2; } .job-main b { font-size:14px; } .output-actions { justify-self:start; } .actions { gap:6px; } .followup { max-width:132px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; padding:7px 9px; } .back { padding:7px 9px; } .report-shell { border-radius:22px; padding:14px; } h1.report-title { font-size:clamp(31px,9vw,45px); } article.report-body { font-size:15.5px; line-height:1.54; } .section-title { font-size:22px; } }
 """.strip()
 
 
@@ -928,6 +942,87 @@ def render_jobs_page(
     {''.join(jobs_rows) or '<p class="prompt">No active relevant jobs.</p>'}
   </section>
   <footer>Generated {html.escape(now.isoformat())}.</footer>
+</main>
+</body>
+</html>
+"""
+
+
+def render_outputs_page(
+    items: Sequence[CronSituationItem],
+    generated_at: datetime | None = None,
+    feed_preferences: Mapping[str, Any] | None = None,
+) -> str:
+    now = generated_at or datetime.now(timezone.utc)
+    ordered_items = apply_feed_preferences(items, feed_preferences)
+    rows: list[str] = []
+    signed = 0
+    fresh = 0
+    silent = 0
+    missing = 0
+    for index, item in enumerate(ordered_items, start=1):
+        status_label = "paused" if not item.enabled else item.status
+        if item.status == "fresh":
+            fresh += 1
+        elif item.status == "silent":
+            silent += 1
+        elif item.status == "missing":
+            missing += 1
+        if item.artifact_url:
+            signed += 1
+        latest = item.latest_time.isoformat() if item.latest_time else "No run yet"
+        age = _age_label(item.latest_time, now)
+        category = "system" if _is_system_item(item) else "brief"
+        source = item.latest_md.name if item.latest_md else (item.latest_html.name if item.latest_html else item.job_id)
+        open_action = (
+            f'<a class="open" href="{html.escape(item.artifact_url, quote=True)}">Open signed</a>'
+            if item.artifact_url
+            else '<span class="muted">No signed link</span>'
+        )
+        ask_action = (
+            f'<a class="ask" href="{html.escape(item.telegram_url, quote=True)}" target="_blank" rel="noopener" '
+            'aria-label="Ask follow-up in Telegram">ASK</a>'
+            if item.telegram_url
+            else ""
+        )
+        followup_meta = (
+            f'<a class="followup-meta" href="{html.escape(item.telegram_url, quote=True)}" target="_blank" rel="noopener" '
+            'aria-label="Ask follow-up in Telegram" title="Ask follow-up in Telegram">FOLLOW-UP</a>'
+            if item.telegram_url
+            else '<span>NO FOLLOW-UP</span>'
+        )
+        rows.append(
+            f"""
+<article class="output-row {_status_class(item)}">
+  <div class="output-rank">{index:02d}</div>
+  <div class="output-main">
+    <b>{_safe_text(item.name)}</b>
+    <p>{_safe_text(item.excerpt or "No visible response was produced for this run.")}</p>
+    <div class="output-meta"><span>{_safe_text(status_label)}</span><span>{_safe_text(category)}</span><span>{_safe_text(age)}</span><span>SCHEDULE {_safe_text(item.schedule or "manual")}</span><span>SOURCE {_safe_text(source)}</span><span>JOB {_safe_text(item.job_id)}</span><span>{_safe_text(item.deliver or "local")}</span><span>{_safe_text(latest)}</span>{followup_meta}</div>
+  </div>
+  <div class="output-actions">{open_action}{ask_action}</div>
+</article>"""
+        )
+    return f"""<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, viewport-fit=cover, user-scalable=no">
+<meta http-equiv="Content-Security-Policy" content="{html.escape(CSP, quote=False)}">
+<title>Acta Outputs</title>
+<style>{_acta_page_css()}</style>
+</head>
+<body>
+{_acta_top_nav('outputs', 'Outputs')}
+<main>
+  <p class="kicker">Acta Situation Room · Outputs</p>
+  <h1>Signed source objects.</h1>
+  <p class="lede">Compact source-backed output rows with artifact links, Telegram follow-up, freshness, category, and provenance in the Acta Imperatr surface.</p>
+  <section class="stats"><div class="stat">Outputs <b>{len(rows)}</b></div><div class="stat">Signed <b>{signed}</b></div><div class="stat">Fresh <b>{fresh}</b></div><div class="stat">Silent <b>{silent}</b></div><div class="stat">Missing <b>{missing}</b></div></section>
+  <section class="outputs-panel">
+    {''.join(rows) or '<p class="prompt">No source outputs yet.</p>'}
+  </section>
+  <footer>Generated {html.escape(now.isoformat())}. Signed Acta links expire automatically.</footer>
 </main>
 </body>
 </html>
@@ -1010,7 +1105,7 @@ def render_acta_detail_report(
     <div class="meta">{''.join(footer_bits)}</div>
     <article class="report-body">{rendered}</article>
   </section>
-  <footer>Signed Acta detail. Same app shell, no legacy generated-file UI.</footer>
+  <footer>Signed Acta detail. Same Imperatr app shell across every drill-in.</footer>
 </main>
 </body>
 </html>
@@ -1134,6 +1229,20 @@ def build_dashboard(
             jobs_path,
             {"id": "acta-situation-room"},
             {**publish_settings, "object_key": "public/jobs/index.html"},
+        )
+        outputs_path = output_dir / "outputs.html"
+        outputs_path.write_text(
+            render_outputs_page(
+                items,
+                generated_at=generated_at,
+                feed_preferences=acta_dashboard_config(config),
+            ),
+            encoding="utf-8",
+        )
+        publish_html_artifact(
+            outputs_path,
+            {"id": "acta-situation-room"},
+            {**publish_settings, "object_key": "public/outputs/index.html"},
         )
         for run_day in dates:
             day_items = collect_situation_items(home, run_date=run_day)

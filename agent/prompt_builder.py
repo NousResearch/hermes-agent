@@ -1040,11 +1040,16 @@ def _skill_should_show(
 def build_skills_system_prompt(
     available_tools: "set[str] | None" = None,
     available_toolsets: "set[str] | None" = None,
+    skill_include: "list[str] | None" = None,
+    skill_exclude: "list[str] | None" = None,
+    categories_include: "list[str] | None" = None,
+    categories_exclude: "list[str] | None" = None,
+    index_format: str = "full",
 ) -> str:
     """Build a compact skill index for the system prompt.
 
     Two-layer cache:
-      1. In-process LRU dict keyed by (skills_dir, tools, toolsets)
+      1. In-process LRU dict keyed by (skills_dir, tools, toolsets, filters)
       2. Disk snapshot (``.skills_prompt_snapshot.json``) validated by
          mtime/size manifest — survives process restarts
 
@@ -1054,6 +1059,15 @@ def build_skills_system_prompt(
     scanned alongside the local ``~/.hermes/skills/`` directory.  External dirs
     are read-only — they appear in the index but new skills are always created
     in the local dir.  Local skills take precedence when names collide.
+
+    Project-scoped filtering via *skill_include* / *skill_exclude* /
+    *categories_include* / *categories_exclude* reduces the index to only
+    skills relevant to the current project. Set via context files
+    (.hermes.md, AGENTS.md) or config.yaml ``skills.project`` section.
+
+    *index_format* controls output density:
+      - ``"full"`` (default): indented category blocks with descriptions
+      - ``"compact"``: pipe-delimited single-line per category, ~30% fewer chars
     """
     skills_dir = get_skills_dir()
     external_dirs = get_all_skills_dirs()[1:]  # skip local (index 0)
@@ -1071,6 +1085,10 @@ def build_skills_system_prompt(
         or ""
     )
     disabled = get_disabled_skill_names()
+    include_set = {s.strip().lower() for s in (skill_include or []) if s.strip()}
+    exclude_set = {s.strip().lower() for s in (skill_exclude or []) if s.strip()}
+    cats_include_set = {s.strip().lower() for s in (categories_include or []) if s.strip()}
+    cats_exclude_set = {s.strip().lower() for s in (categories_exclude or []) if s.strip()}
     cache_key = (
         str(skills_dir.resolve()),
         tuple(str(d) for d in external_dirs),
@@ -1078,6 +1096,11 @@ def build_skills_system_prompt(
         tuple(sorted(str(ts) for ts in (available_toolsets or set()))),
         _platform_hint,
         tuple(sorted(disabled)),
+        tuple(sorted(include_set)),
+        tuple(sorted(exclude_set)),
+        tuple(sorted(cats_include_set)),
+        tuple(sorted(cats_exclude_set)),
+        index_format,
     )
     with _SKILLS_PROMPT_CACHE_LOCK:
         cached = _SKILLS_PROMPT_CACHE.get(cache_key)
@@ -1090,6 +1113,41 @@ def build_skills_system_prompt(
 
     skills_by_category: dict[str, list[tuple[str, str]]] = {}
     category_descriptions: dict[str, str] = {}
+
+    def _skill_passes_project_filters(name: str, category: str) -> bool:
+        name_lower = name.lower()
+        cat_lower = category.lower()
+        # Positive filters (OR): skill passes if name/category matches include_set
+        # OR category matches cats_include_set. If neither is set, pass by default.
+        has_positive = bool(include_set or cats_include_set)
+        if has_positive:
+            matched = False
+            if include_set:
+                if name_lower in include_set or cat_lower in include_set:
+                    matched = True
+                else:
+                    cat_parts = cat_lower.split("/")
+                    if any("/".join(cat_parts[:i]) in include_set for i in range(1, len(cat_parts)+1)):
+                        matched = True
+            if cats_include_set and not matched:
+                cat_parts = cat_lower.split("/")
+                if any("/".join(cat_parts[:i]) in cats_include_set for i in range(1, len(cat_parts)+1)):
+                    matched = True
+            if not matched:
+                return False
+        # Negative filters (OR): skill removed if name/category matches exclude_set
+        # OR category matches cats_exclude_set.
+        if exclude_set:
+            if name_lower in exclude_set or cat_lower in exclude_set:
+                return False
+            cat_parts = cat_lower.split("/")
+            if any("/".join(cat_parts[:i]) in exclude_set for i in range(1, len(cat_parts)+1)):
+                return False
+        if cats_exclude_set:
+            cat_parts = cat_lower.split("/")
+            if any("/".join(cat_parts[:i]) in cats_exclude_set for i in range(1, len(cat_parts)+1)):
+                return False
+        return True
 
     if snapshot is not None:
         # Fast path: use pre-parsed metadata from disk
@@ -1109,6 +1167,8 @@ def build_skills_system_prompt(
                 available_tools,
                 available_toolsets,
             ):
+                continue
+            if not _skill_passes_project_filters(frontmatter_name, category):
                 continue
             skills_by_category.setdefault(category, []).append(
                 (frontmatter_name, entry.get("description", ""))
@@ -1134,6 +1194,8 @@ def build_skills_system_prompt(
                 available_tools,
                 available_toolsets,
             ):
+                continue
+            if not _skill_passes_project_filters(entry["frontmatter_name"], entry["category"]):
                 continue
             skills_by_category.setdefault(entry["category"], []).append(
                 (entry["frontmatter_name"], entry["description"])
@@ -1190,6 +1252,8 @@ def build_skills_system_prompt(
                     available_toolsets,
                 ):
                     continue
+                if not _skill_passes_project_filters(frontmatter_name, entry["category"]):
+                    continue
                 seen_skill_names.add(frontmatter_name)
                 skills_by_category.setdefault(entry["category"], []).append(
                     (frontmatter_name, entry["description"])
@@ -1214,52 +1278,85 @@ def build_skills_system_prompt(
     if not skills_by_category:
         result = ""
     else:
-        index_lines = []
-        for category in sorted(skills_by_category.keys()):
-            cat_desc = category_descriptions.get(category, "")
-            if cat_desc:
-                index_lines.append(f"  {category}: {cat_desc}")
-            else:
-                index_lines.append(f"  {category}:")
-            # Deduplicate and sort skills within each category
-            seen = set()
-            for name, desc in sorted(skills_by_category[category], key=lambda x: x[0]):
-                if name in seen:
-                    continue
-                seen.add(name)
-                if desc:
-                    index_lines.append(f"    - {name}: {desc}")
+        if index_format == "compact":
+            index_lines = []
+            for category in sorted(skills_by_category.keys()):
+                skills = skills_by_category[category]
+                cat_desc = category_descriptions.get(category, "")
+                seen = set()
+                unique_skills = []
+                for name, desc in sorted(skills, key=lambda x: x[0]):
+                    if name not in seen:
+                        seen.add(name)
+                        unique_skills.append((name, desc))
+                if cat_desc:
+                    index_lines.append(f"  {category}:{cat_desc}")
                 else:
-                    index_lines.append(f"    - {name}")
-
-        result = (
-            "## Skills (mandatory)\n"
-            "Before replying, scan the skills below. If a skill matches or is even partially relevant "
-            "to your task, you MUST load it with skill_view(name) and follow its instructions. "
-            "Err on the side of loading — it is always better to have context you don't need "
-            "than to miss critical steps, pitfalls, or established workflows. "
-            "Skills contain specialized knowledge — API endpoints, tool-specific commands, "
-            "and proven workflows that outperform general-purpose approaches. Load the skill "
-            "even if you think you could handle the task with basic tools like web_search or terminal. "
-            "Skills also encode the user's preferred approach, conventions, and quality standards "
-            "for tasks like code review, planning, and testing — load them even for tasks you "
-            "already know how to do, because the skill defines how it should be done here.\n"
-            "Whenever the user asks you to configure, set up, install, enable, disable, modify, "
-            "or troubleshoot Hermes Agent itself — its CLI, config, models, providers, tools, "
-            "skills, voice, gateway, plugins, or any feature — load the `hermes-agent` skill "
-            "first. It has the actual commands (e.g. `hermes config set …`, `hermes tools`, "
-            "`hermes setup`) so you don't have to guess or invent workarounds.\n"
-            "If a skill has issues, fix it with skill_manage(action='patch').\n"
-            "After difficult/iterative tasks, offer to save as a skill. "
-            "If a skill you loaded was missing steps, had wrong commands, or needed "
-            "pitfalls you discovered, update it before finishing.\n"
-            "\n"
-            "<available_skills>\n"
-            + "\n".join(index_lines) + "\n"
-            "</available_skills>\n"
-            "\n"
-            "Only proceed without loading a skill if genuinely none are relevant to the task."
-        )
+                    index_lines.append(f"  {category}:")
+                for name, desc in unique_skills:
+                    index_lines.append(f"    {name}:{desc}")
+            joined = "\n".join(index_lines)
+            result = (
+                "## Skills (mandatory)\n"
+                "Compressed skill index. Load with skill_view(name) when a skill matches your task.\n"
+                "After using a skill, call skill_manage(action='stow', name='<skill>') to mark it\n"
+                "for compression. Skills contain specialized knowledge — load even for basic tasks.\n"
+                "If a skill has issues, fix it with skill_manage(action='patch').\n"
+                "\n"
+                "<available_skills>\n"
+                + joined + "\n"
+                "</available_skills>\n"
+                "\n"
+                "Only proceed without loading a skill if genuinely none are relevant to the task."
+            )
+        else:
+            index_lines = []
+            for category in sorted(skills_by_category.keys()):
+                cat_desc = category_descriptions.get(category, "")
+                if cat_desc:
+                    index_lines.append(f"  {category}: {cat_desc}")
+                else:
+                    index_lines.append(f"  {category}:")
+                seen = set()
+                for name, desc in sorted(skills_by_category[category], key=lambda x: x[0]):
+                    if name in seen:
+                        continue
+                    seen.add(name)
+                    if desc:
+                        index_lines.append(f"    - {name}: {desc}")
+                    else:
+                        index_lines.append(f"    - {name}")
+            result = (
+                "## Skills (mandatory)\n"
+                "Before replying, scan the skills below. If a skill matches or is even partially relevant "
+                "to your task, you MUST load it with skill_view(name) and follow its instructions. "
+                "Err on the side of loading — it is always better to have context you don't need "
+                "than to miss critical steps, pitfalls, or established workflows. "
+                "Skills contain specialized knowledge — API endpoints, tool-specific commands, "
+                "and proven workflows that outperform general-purpose approaches. Load the skill "
+                "even if you think you could handle the task with basic tools like web_search or terminal. "
+                "Skills also encode the user's preferred approach, conventions, and quality standards "
+                "for tasks like code review, planning, and testing — load them even for tasks you "
+                "already know how to do, because the skill defines how it should be done here.\n"
+                "Whenever the user asks you to configure, set up, install, enable, disable, modify, "
+                "or troubleshoot Hermes Agent itself — its CLI, config, models, providers, tools, "
+                "skills, voice, gateway, plugins, or any feature — load the `hermes-agent` skill "
+                "first. It has the actual commands (e.g. `hermes config set …`, `hermes tools`, "
+                "`hermes setup`) so you don't have to guess or invent workarounds.\n"
+                "If a skill has issues, fix it with skill_manage(action='patch').\n"
+                "After difficult/iterative tasks, offer to save as a skill. "
+                "If a skill you loaded was missing steps, had wrong commands, or needed "
+                "pitfalls you discovered, update it before finishing.\n"
+                "After completing a task that used a skill, call skill_manage(action='stow', name='<skill>') "
+                "to mark the skill as no longer needed. This signals the context compressor to reclaim "
+                "those tokens on the next compression cycle.\n"
+                "\n"
+                "<available_skills>\n"
+                + "\n".join(index_lines) + "\n"
+                "</available_skills>\n"
+                "\n"
+                "Only proceed without loading a skill if genuinely none are relevant to the task."
+            )
 
     # ── Store in LRU cache ────────────────────────────────────────────
     with _SKILLS_PROMPT_CACHE_LOCK:
@@ -1335,6 +1432,95 @@ def build_nous_subscription_prompt(valid_tool_names: "set[str] | None" = None) -
         ]
     )
     return "\n".join(lines)
+
+
+# =========================================================================
+# Project-scoped skill configuration from context files
+# =========================================================================
+
+def parse_project_skill_config(cwd: "str | None" = None) -> dict:
+    """Extract skills.include / skills.exclude / skills.categories from context files.
+
+    Reads .hermes.md / AGENTS.md / CLAUDE.md (first found wins) and looks for
+    skill directives. Falls back to config.yaml ``skills.project`` section.
+
+    Returns dict with optional keys: include, exclude, categories_include,
+    categories_exclude, index_format. All values are lists of strings.
+
+    Supported formats in context files:
+      skills.include: [skill1, skill2]
+      skills.exclude: [cat1, cat2]
+      skills.categories.include: [software-development, github]
+      skills.categories.exclude: [gaming, smart-home]
+      skills.index_format: compact
+    """
+    result: dict = {}
+    cwd_path = Path(cwd).resolve() if cwd else Path.cwd()
+
+    # Try context files first
+    hermes_md = _find_hermes_md(cwd_path)
+    context_path = hermes_md
+    if not context_path:
+        for name in ["AGENTS.md", "agents.md", "CLAUDE.md", "claude.md"]:
+            candidate = cwd_path / name
+            if candidate.exists():
+                context_path = candidate
+                break
+
+    if context_path:
+        try:
+            content = context_path.read_text(encoding="utf-8")
+            for line in content.splitlines():
+                line = line.strip()
+                m = re.match(r'skills?\.include:\s*\[(.+?)\]', line, re.IGNORECASE)
+                if m:
+                    items = [s.strip().strip("'\"") for s in m.group(1).split(",") if s.strip()]
+                    if items:
+                        result["include"] = items
+                    continue
+                m = re.match(r'skills?\.exclude:\s*\[(.+?)\]', line, re.IGNORECASE)
+                if m:
+                    items = [s.strip().strip("'\"") for s in m.group(1).split(",") if s.strip()]
+                    if items:
+                        result["exclude"] = items
+                    continue
+                m = re.match(r'skills?\.categories\.include:\s*\[(.+?)\]', line, re.IGNORECASE)
+                if m:
+                    items = [s.strip().strip("'\"") for s in m.group(1).split(",") if s.strip()]
+                    if items:
+                        result["categories_include"] = items
+                    continue
+                m = re.match(r'skills?\.categories\.exclude:\s*\[(.+?)\]', line, re.IGNORECASE)
+                if m:
+                    items = [s.strip().strip("'\"") for s in m.group(1).split(",") if s.strip()]
+                    if items:
+                        result["categories_exclude"] = items
+                    continue
+                m = re.match(r'skills?\.index_format:\s*(\S+)', line, re.IGNORECASE)
+                if m:
+                    result["index_format"] = m.group(1).strip().strip("'\"")
+        except Exception as e:
+            logger.debug("Failed to parse skill config from %s: %s", context_path, e)
+
+    # Fall back to config.yaml
+    if not result:
+        try:
+            from hermes_cli.config import load_config
+            cfg = load_config() or {}
+            project_cfg = cfg.get("skills", {}).get("project", {})
+            if isinstance(project_cfg, dict):
+                for key in ("include", "exclude", "categories_include", "categories_exclude"):
+                    val = project_cfg.get(key)
+                    if isinstance(val, list) and val:
+                        result[key] = [str(v) for v in val]
+                fmt = project_cfg.get("index_format")
+                if fmt and isinstance(fmt, str):
+                    result.setdefault("index_format", fmt)
+        except Exception:
+            pass
+
+    return result
+
 
 
 # =========================================================================

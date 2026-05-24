@@ -39,6 +39,7 @@ from agent.prompt_builder import (
     TASK_COMPLETION_GUIDANCE,
     TOOL_USE_ENFORCEMENT_GUIDANCE,
     TOOL_USE_ENFORCEMENT_MODELS,
+    parse_project_skill_config,
 )
 from agent.runtime_cwd import resolve_context_cwd
 
@@ -185,9 +186,16 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
             )
             if toolset
         }
+        # Parse project-scoped skill config from context files / config.yaml
+        project_cfg = parse_project_skill_config()
         skills_prompt = _r.build_skills_system_prompt(
             available_tools=agent.valid_tool_names,
             available_toolsets=avail_toolsets,
+            skill_include=project_cfg.get("include"),
+            skill_exclude=project_cfg.get("exclude"),
+            categories_include=project_cfg.get("categories_include"),
+            categories_exclude=project_cfg.get("categories_exclude"),
+            index_format=project_cfg.get("index_format", "full"),
         )
     else:
         skills_prompt = ""

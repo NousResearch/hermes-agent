@@ -862,8 +862,23 @@ def skill_manage(
             return tool_error("file_path is required for 'remove_file'.", success=False)
         result = _remove_file(name, file_path)
 
+    elif action == "stow":
+        # Stow a loaded skill: mark it as no longer needed so the context
+        # compressor can reclaim those tokens on the next compression cycle.
+        # Usage telemetry is bumped in the shared block below.
+        result = {
+            "success": True,
+            "action": "stow",
+            "name": name,
+            "message": (
+                f"Skill '{name}' stowed. Its full content will be compressed "
+                f"on the next context compression cycle. The compressed skill "
+                f"index remains available for future reference."
+            ),
+        }
+
     else:
-        result = {"success": False, "error": f"Unknown action '{action}'. Use: create, edit, patch, delete, write_file, remove_file"}
+        result = {"success": False, "error": f"Unknown action '{action}'. Use: create, edit, patch, delete, write_file, remove_file, stow"}
 
     if result.get("success"):
         try:
@@ -878,7 +893,7 @@ def skill_manage(
         # user-directed, and those skills belong to the user (the curator must
         # not touch them). Best-effort; telemetry failures never break the tool.
         try:
-            from tools.skill_usage import bump_patch, forget, mark_agent_created
+            from tools.skill_usage import bump_patch, bump_use, forget, mark_agent_created
             from tools.skill_provenance import is_background_review
             if action == "create":
                 if is_background_review():
@@ -887,6 +902,8 @@ def skill_manage(
                 bump_patch(name)
             elif action == "delete":
                 forget(name)
+            elif action == "stow":
+                bump_use(name)
         except Exception:
             pass
 
@@ -934,8 +951,8 @@ SKILL_MANAGE_SCHEMA = {
         "properties": {
             "action": {
                 "type": "string",
-                "enum": ["create", "patch", "edit", "delete", "write_file", "remove_file"],
-                "description": "The action to perform."
+                "enum": ["create", "patch", "edit", "delete", "write_file", "remove_file", "stow"],
+                "description": "The action to perform. 'stow' marks a loaded skill as no longer needed, signaling the context compressor to reclaim tokens."
             },
             "name": {
                 "type": "string",

@@ -3885,6 +3885,7 @@ class BasePlatformAdapter(ABC):
                     merge_pending_message_event(self._pending_messages, session_key, event, merge_text=True)
                     return
                 if not self._same_text_debounce_sender(state.event, event):
+                    merge_pending_message_event(self._pending_messages, session_key, event, merge_text=True)
                     return
                 logger.debug("[%s] Busy text for %s replies to a third message; merging it into the "
                              "debounce buffer, which keeps its own reply context", self.name, session_key)

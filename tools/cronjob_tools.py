@@ -116,17 +116,18 @@ def _strip_legitimate_emoji_zwj(prompt: str) -> str:
 
 def _scan_cron_prompt(prompt: str) -> str:
     """Scan a cron prompt for critical threats. Returns error string if blocked, else empty."""
-    github_auth_header = re.search(
+    # Allow the bundled GitHub skill fallback shape without opening a
+    # blanket exemption for arbitrary Authorization-header exfiltration.
+    # A prompt may contain multiple bundled GitHub skills, so scrub every
+    # allowlisted api.github.com auth-header curl before running the generic
+    # Authorization-header exfiltration detector.
+    prompt_to_scan = re.sub(
         rf'curl\s+[^\n]*(?:-H|--header)\s+["\']Authorization:\s*token\s+{_CRON_SECRET_VAR_RE}["\']'
         r'\s+["\']?https://api\.github\.com(?:/|\b)',
+        "curl https://api.github.com/user",
         prompt,
-        re.IGNORECASE,
+        flags=re.IGNORECASE,
     )
-    prompt_to_scan = prompt
-    if github_auth_header:
-        # Allow the bundled GitHub skill fallback shape without opening a
-        # blanket exemption for arbitrary Authorization-header exfiltration.
-        prompt_to_scan = prompt.replace(github_auth_header.group(0), "curl https://api.github.com/user")
     prompt_for_invisible_scan = _strip_legitimate_emoji_zwj(prompt_to_scan)
     for char in _CRON_INVISIBLE_CHARS:
         if char in prompt_for_invisible_scan:

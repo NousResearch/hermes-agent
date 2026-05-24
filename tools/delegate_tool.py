@@ -1921,6 +1921,8 @@ def delegate_task(
     toolsets: Optional[List[str]] = None,
     tasks: Optional[List[Dict[str, Any]]] = None,
     max_iterations: Optional[int] = None,
+    model: Optional[str] = None,
+    provider: Optional[str] = None,
     acp_command: Optional[str] = None,
     acp_args: Optional[List[str]] = None,
     role: Optional[str] = None,
@@ -1932,6 +1934,12 @@ def delegate_task(
     Supports two modes:
       - Single: provide goal (+ optional context, toolsets, role)
       - Batch:  provide tasks array [{goal, context, toolsets, role}, ...]
+
+    ``model`` / ``provider`` are per-call overrides layered on top of
+    delegation config.  They are intentionally non-persistent: use them when a
+    single delegation fan-out should run on a different model without changing
+    the user's default delegation route.  In batch mode, per-task
+    ``model``/``provider`` values override the top-level values for that child.
 
     The 'role' parameter controls whether a child can further delegate:
     'leaf' (default) cannot; 'orchestrator' retains the delegation
@@ -1992,10 +2000,20 @@ def delegate_task(
     # bundle (base_url, api_key, api_mode) via the same runtime provider system
     # used by CLI/gateway startup.  When unconfigured, returns None values so
     # children inherit from the parent.
-    try:
-        creds = _resolve_delegation_credentials(cfg, parent_agent)
-    except ValueError as exc:
-        return tool_error(str(exc))
+    call_model = str(model or "").strip() or None
+    call_provider = str(provider or "").strip() or None
+
+    def _cfg_with_call_overrides(
+        *, task_model: Optional[str] = None, task_provider: Optional[str] = None
+    ) -> dict:
+        merged = dict(cfg)
+        effective_model_override = str(task_model or call_model or "").strip()
+        effective_provider_override = str(task_provider or call_provider or "").strip()
+        if effective_model_override:
+            merged["model"] = effective_model_override
+        if effective_provider_override:
+            merged["provider"] = effective_provider_override
+        return merged
 
     # Normalize to task list
     max_children = _get_max_concurrent_children()
@@ -2017,7 +2035,14 @@ def delegate_task(
         task_list = tasks
     elif goal and isinstance(goal, str) and goal.strip():
         task_list = [
-            {"goal": goal, "context": context, "toolsets": toolsets, "role": top_role}
+            {
+                "goal": goal,
+                "context": context,
+                "toolsets": toolsets,
+                "role": top_role,
+                "model": call_model,
+                "provider": call_provider,
+            }
         ]
     else:
         return tool_error("Provide either 'goal' (single task) or 'tasks' (batch).")
@@ -2058,6 +2083,16 @@ def delegate_task(
             # Per-task role beats top-level; normalise again so unknown
             # per-task values warn and degrade to leaf uniformly.
             effective_role = _normalize_role(t.get("role") or top_role)
+            try:
+                creds = _resolve_delegation_credentials(
+                    _cfg_with_call_overrides(
+                        task_model=t.get("model"),
+                        task_provider=t.get("provider"),
+                    ),
+                    parent_agent,
+                )
+            except ValueError as exc:
+                return tool_error(str(exc))
             child = _build_child_agent(
                 task_index=i,
                 goal=t["goal"],
@@ -2718,6 +2753,21 @@ DELEGATE_TASK_SCHEMA = {
                             "items": {"type": "string"},
                             "description": f"Toolsets for this specific task. Available: {_TOOLSET_LIST_STR}. Use 'web' for network access, 'terminal' for shell, 'browser' for web interaction.",
                         },
+                        "model": {
+                            "type": "string",
+                            "description": (
+                                "Per-task model override for this child only. "
+                                "Leave empty to inherit the top-level delegate_task model override, "
+                                "delegation config, or the parent agent model."
+                            ),
+                        },
+                        "provider": {
+                            "type": "string",
+                            "description": (
+                                "Per-task provider override for this child only (e.g. 'openai-codex', 'openrouter'). "
+                                "Leave empty unless this task must use a different configured provider."
+                            ),
+                        },
                         "acp_command": {
                             "type": "string",
                             "description": (
@@ -2748,6 +2798,22 @@ DELEGATE_TASK_SCHEMA = {
                 "type": "string",
                 "enum": ["leaf", "orchestrator"],
                 "description": "(rebuilt at get_definitions() time)",
+            },
+            "model": {
+                "type": "string",
+                "description": (
+                    "Optional per-call model override for this delegation only. "
+                    "Does not persist to config. Leave empty to inherit delegation.model "
+                    "or the parent agent model."
+                ),
+            },
+            "provider": {
+                "type": "string",
+                "description": (
+                    "Optional per-call provider override for this delegation only (e.g. 'openai-codex', 'openrouter'). "
+                    "Does not persist to config. Leave empty to inherit delegation.provider "
+                    "or the parent agent provider."
+                ),
             },
             "acp_command": {
                 "type": "string",
@@ -2790,6 +2856,8 @@ registry.register(
         toolsets=args.get("toolsets"),
         tasks=args.get("tasks"),
         max_iterations=args.get("max_iterations"),
+        model=args.get("model"),
+        provider=args.get("provider"),
         acp_command=args.get("acp_command"),
         acp_args=args.get("acp_args"),
         role=args.get("role"),

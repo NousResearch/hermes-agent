@@ -69,6 +69,11 @@ class TestDelegateRequirements(unittest.TestCase):
         self.assertIn("tasks", props)
         self.assertIn("context", props)
         self.assertIn("toolsets", props)
+        self.assertIn("model", props)
+        self.assertIn("provider", props)
+        task_props = props["tasks"]["items"]["properties"]
+        self.assertIn("model", task_props)
+        self.assertIn("provider", task_props)
         # max_iterations is intentionally NOT exposed to the model — it's
         # config-authoritative via delegation.max_iterations so users get
         # predictable budgets.
@@ -197,6 +202,60 @@ class TestDelegateTask(unittest.TestCase):
         self.assertEqual(result["results"][0]["status"], "completed")
         self.assertEqual(result["results"][0]["summary"], "Done!")
         mock_run.assert_called_once()
+
+    @patch("tools.delegate_tool._run_single_child")
+    def test_single_task_accepts_per_call_model_override(self, mock_run):
+        mock_run.return_value = {
+            "task_index": 0,
+            "status": "completed",
+            "summary": "Done!",
+            "api_calls": 1,
+            "duration_seconds": 1.0,
+        }
+        parent = _make_mock_parent()
+
+        delegate_task(
+            goal="Use a one-off model",
+            model="gpt-5.4-mini",
+            parent_agent=parent,
+        )
+
+        mock_run.assert_called_once()
+        child = mock_run.call_args.kwargs.get("child")
+        if child is None:
+            child = mock_run.call_args.args[2]
+        self.assertEqual(child.model, "gpt-5.4-mini")
+        # The persistent parent default remains untouched.
+        self.assertEqual(parent.model, "anthropic/claude-sonnet-4")
+
+    @patch("tools.delegate_tool._run_single_child")
+    def test_batch_task_model_overrides_top_level_model(self, mock_run):
+        seen_models = []
+
+        def _fake_run(*args, **kwargs):
+            child = kwargs.get("child") or args[2]
+            seen_models.append(child.model)
+            return {
+                "task_index": len(seen_models) - 1,
+                "status": "completed",
+                "summary": "Done!",
+                "api_calls": 1,
+                "duration_seconds": 1.0,
+            }
+
+        mock_run.side_effect = _fake_run
+        parent = _make_mock_parent()
+
+        delegate_task(
+            model="gpt-5.4-mini",
+            tasks=[
+                {"goal": "inherit top-level override"},
+                {"goal": "use task-specific override", "model": "gpt-5.5"},
+            ],
+            parent_agent=parent,
+        )
+
+        self.assertEqual(sorted(seen_models), ["gpt-5.4-mini", "gpt-5.5"])
 
     @patch("tools.delegate_tool._run_single_child")
     def test_batch_mode(self, mock_run):

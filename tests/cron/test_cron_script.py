@@ -175,6 +175,33 @@ class TestRunJobScript:
         assert parsed["new_prs"][0]["number"] == 42
 
 
+def test_script_with_arguments(self, cron_env):
+        """Script field with arguments: 'script.py arg1 arg2' should split correctly."""
+        from cron.scheduler import _run_job_script
+
+        script = cron_env / "scripts" / "args_echo.py"
+        script.write_text(textwrap.dedent("""\\
+            import sys
+            print(" ".join(sys.argv[1:]))
+        """))
+
+        success, output = _run_job_script("args_echo.py hello world")
+        assert success is True
+        assert output == "hello world"
+
+    def test_script_with_arguments_relative_path(self, cron_env):
+        """Relative script path with arguments resolves correctly."""
+        from cron.scheduler import _run_job_script
+
+        script = cron_env / "scripts" / "echo_args.py"
+        script.write_text(textwrap.dedent("""\\
+            import sys
+            print(",".join(sys.argv[1:]))
+        """))
+
+        success, output = _run_job_script("echo_args.py foo bar baz")
+        assert success is True
+        assert output == "foo,bar,baz"
 class TestBuildJobPromptWithScript:
     """Test that script output is injected into the prompt."""
 

@@ -67,8 +67,8 @@ All fields are optional. Missing values inherit from the ``default`` skin.
     branding:
       agent_name: "Hermes Agent"          # Banner title, status display
       welcome: "Welcome message"          # Shown at CLI startup
-      goodbye: "Goodbye! 🟣"              # Shown on exit
-      response_label: " 🟣 Indigo "       # Response box header label
+      goodbye: "Goodbye! ⚕"              # Shown on exit
+      response_label: " ⚕ Hermes "       # Response box header label
       prompt_symbol: "❯"                 # Input prompt symbol (bare token; renderers add trailing space)
       help_header: "(^_^)? Commands"      # /help header text
 
@@ -166,21 +166,21 @@ _BUILTIN_SKINS: Dict[str, Dict[str, Any]] = {
         "name": "default",
         "description": "Classic Hermes — gold and kawaii",
         "colors": {
-            "banner_border": "#4C2598",
-            "banner_title": "#722BFF",
-            "banner_accent": "#6415FF",
-            "banner_dim": "#450BB7",
-            "banner_text": "#F8F8FA",
-            "ui_accent": "#6415FF",
-            "ui_label": "#591ECF",
+            "banner_border": "#CD7F32",
+            "banner_title": "#FFD700",
+            "banner_accent": "#FFBF00",
+            "banner_dim": "#B8860B",
+            "banner_text": "#FFF8DC",
+            "ui_accent": "#FFBF00",
+            "ui_label": "#DAA520",
             "ui_ok": "#4caf50",
             "ui_error": "#ef5350",
             "ui_warn": "#ffa726",
-            "prompt": "#F8F8FA",
-            "input_rule": "#4C2598",
-            "response_border": "#722BFF",
+            "prompt": "#FFF8DC",
+            "input_rule": "#CD7F32",
+            "response_border": "#FFD700",
             "status_bar_bg": "#1a1a2e",
-            "session_label": "#591ECF",
+            "session_label": "#DAA520",
             "session_border": "#8B8682",
         },
         "spinner": {
@@ -189,8 +189,8 @@ _BUILTIN_SKINS: Dict[str, Dict[str, Any]] = {
         "branding": {
             "agent_name": "Hermes Agent",
             "welcome": "Welcome to Hermes Agent! Type your message or /help for commands.",
-            "goodbye": "Goodbye! 🟣",
-            "response_label": " 🟣 Indigo ",
+            "goodbye": "Goodbye! ⚕",
+            "response_label": " ⚕ Hermes ",
             "prompt_symbol": "❯",
             "help_header": "(^_^)? Available Commands",
         },
@@ -300,8 +300,8 @@ _BUILTIN_SKINS: Dict[str, Dict[str, Any]] = {
         "branding": {
             "agent_name": "Hermes Agent",
             "welcome": "Welcome to Hermes Agent! Type your message or /help for commands.",
-            "goodbye": "Goodbye! 🟣",
-            "response_label": " 🟣 Indigo ",
+            "goodbye": "Goodbye! ⚕",
+            "response_label": " ⚕ Hermes ",
             "prompt_symbol": "❯",
             "help_header": "[?] Available Commands",
         },
@@ -339,8 +339,8 @@ _BUILTIN_SKINS: Dict[str, Dict[str, Any]] = {
         "branding": {
             "agent_name": "Hermes Agent",
             "welcome": "Welcome to Hermes Agent! Type your message or /help for commands.",
-            "goodbye": "Goodbye! 🟣",
-            "response_label": " 🟣 Indigo ",
+            "goodbye": "Goodbye! ⚕",
+            "response_label": " ⚕ Hermes ",
             "prompt_symbol": "❯",
             "help_header": "(^_^)? Available Commands",
         },
@@ -376,8 +376,8 @@ _BUILTIN_SKINS: Dict[str, Dict[str, Any]] = {
         "branding": {
             "agent_name": "Hermes Agent",
             "welcome": "Welcome to Hermes Agent! Type your message or /help for commands.",
-            "goodbye": "Goodbye! 🟣",
-            "response_label": " 🟣 Indigo ",
+            "goodbye": "Goodbye! ⚕",
+            "response_label": " ⚕ Hermes ",
             "prompt_symbol": "❯",
             "help_header": "[?] Available Commands",
         },

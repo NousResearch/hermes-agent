@@ -32,7 +32,7 @@ def _make_tool_defs(*names: str) -> list:
     ]
 
 
-def _make_agent(fallback_model=None, provider="custom", base_url="https://my-llm.example.com/v1"):
+def _make_agent(fallback_model=None, provider="custom", base_url="https://my-llm.example.com/v1", model=""):
     """Create a minimal AIAgent with optional fallback config."""
     with (
         patch("run_agent.get_tool_definitions", return_value=_make_tool_defs("web_search")),
@@ -43,6 +43,7 @@ def _make_agent(fallback_model=None, provider="custom", base_url="https://my-llm
             api_key="test-key-12345678",
             base_url=base_url,
             provider=provider,
+            model=model,
             quiet_mode=True,
             skip_context_files=True,
             skip_memory=True,
@@ -473,7 +474,7 @@ class TestRestoreInRunConversation:
 # =============================================================================
 
 class TestRateLimitCooldown:
-    """Verify _restore_primary_runtime() respects the 60s rate-limit cooldown."""
+    """Verify _restore_primary_runtime() respects the 12h rate-limit cooldown."""
 
     def test_restore_blocked_during_cooldown(self):
         """While _rate_limited_until is in the future, restore returns False."""
@@ -486,8 +487,7 @@ class TestRateLimitCooldown:
 
         assert agent._fallback_activated is True
 
-        # Manually set cooldown well into the future
-        agent._rate_limited_until = time.monotonic() + 60
+        agent._rate_limited_until = time.monotonic() + 43200
 
         result = agent._restore_primary_runtime()
         assert result is False
@@ -504,7 +504,6 @@ class TestRateLimitCooldown:
 
         assert agent._fallback_activated is True
 
-        # Cooldown already expired
         agent._rate_limited_until = time.monotonic() - 1
 
         with patch("run_agent.OpenAI", return_value=MagicMock()):
@@ -525,7 +524,7 @@ class TestRateLimitCooldown:
             agent._try_activate_fallback(reason=FailoverReason.rate_limit)
 
         assert hasattr(agent, "_rate_limited_until")
-        assert agent._rate_limited_until > before + 50  # ~60s from now
+        assert agent._rate_limited_until > before + 43100  # ~12h from now
 
     def test_cooldown_not_set_when_already_on_fallback(self):
         """Chain-switching while already on fallback must not reset cooldown."""
@@ -548,3 +547,112 @@ class TestRateLimitCooldown:
 
         # second call should not have extended the cooldown
         assert second_cooldown == first_cooldown
+
+
+# =============================================================================
+# Per-model cooldown dict (_model_cooldowns)
+# =============================================================================
+
+class TestPerModelCooldown:
+    """Verify per-model cooldown dict behavior in try_activate_fallback."""
+
+    def _make_agent_with_fallback(self, fb=None, model="primary-model"):
+        fb = fb or {"provider": "openrouter", "model": "anthropic/claude-sonnet-4"}
+        return _make_agent(fallback_model=fb, model=model)
+
+    def test_cooldown_set_for_primary_on_rate_limit(self):
+        """try_activate_fallback(rate_limit) records _model_cooldowns[(provider,model)]."""
+        from agent.error_classifier import FailoverReason
+        agent = self._make_agent_with_fallback(model="gpt-4o")
+        agent.provider = "openai"
+        agent.model = "gpt-4o"
+        mock_client = _mock_resolve()
+        with patch("agent.auxiliary_client.resolve_provider_client", return_value=(mock_client, None)):
+            agent._try_activate_fallback(reason=FailoverReason.rate_limit)
+        assert hasattr(agent, "_model_cooldowns")
+        cooldowns = agent._model_cooldowns
+        key = ("openai", "gpt-4o")
+        assert key in cooldowns
+        assert cooldowns[key] > time.monotonic() + 43100  # ~12h from now
+
+    def test_cooldown_set_for_fallback_on_rate_limit(self):
+        """When already on fallback, chain-switching also records per-model cooldown."""
+        from agent.error_classifier import FailoverReason
+        agent = self._make_agent_with_fallback(
+            fb=[
+                {"provider": "openrouter", "model": "model-a"},
+                {"provider": "anthropic", "model": "model-b"},
+            ],
+            model="primary-model",
+        )
+        mock_client = _mock_resolve()
+        with patch("agent.auxiliary_client.resolve_provider_client", return_value=(mock_client, None)):
+            # First: leaving primary -> cooldown for primary
+            agent._try_activate_fallback(reason=FailoverReason.rate_limit)
+            primary_key = ("custom", "primary-model")
+            assert primary_key in agent._model_cooldowns
+
+            # Second: chain-switching -> cooldown for the first fallback too
+            agent._try_activate_fallback(reason=FailoverReason.rate_limit)
+            fb_key = ("openrouter", "model-a")
+            assert fb_key in agent._model_cooldowns
+
+    def test_cooldown_not_set_for_non_rate_limit_reasons(self):
+        """Non-rate-limit reasons (e.g. server_error) do NOT set per-model cooldown."""
+        from agent.error_classifier import FailoverReason
+        agent = self._make_agent_with_fallback()
+        agent.provider = "openai"
+        agent.model = "gpt-4o"
+        mock_client = _mock_resolve()
+        with patch("agent.auxiliary_client.resolve_provider_client", return_value=(mock_client, None)):
+            agent._try_activate_fallback(reason=FailoverReason.server_error)
+        cooldowns = getattr(agent, "_model_cooldowns", {})
+        assert ("openai", "gpt-4o") not in cooldowns
+
+    def test_cooldown_not_set_when_provider_or_model_empty(self):
+        """Empty provider/model should not create a cooldown entry."""
+        from agent.error_classifier import FailoverReason
+        agent = self._make_agent_with_fallback()
+        agent.provider = ""
+        agent.model = ""
+        mock_client = _mock_resolve()
+        with patch("agent.auxiliary_client.resolve_provider_client", return_value=(mock_client, None)):
+            agent._try_activate_fallback(reason=FailoverReason.rate_limit)
+        cooldowns = getattr(agent, "_model_cooldowns", {})
+        assert () not in cooldowns
+        assert ("", "") not in cooldowns
+
+    def test_cooldown_expires_after_duration(self):
+        """After the cooldown window passes, the model is no longer in cooldown."""
+        from agent.error_classifier import FailoverReason
+        agent = self._make_agent_with_fallback()
+        agent.provider = "openai"
+        agent.model = "gpt-4o"
+        mock_client = _mock_resolve()
+        with patch("agent.auxiliary_client.resolve_provider_client", return_value=(mock_client, None)):
+            agent._try_activate_fallback(reason=FailoverReason.rate_limit)
+        # Simulate time passing (12h + 1s)
+        key = ("openai", "gpt-4o")
+        agent._model_cooldowns[key] = time.monotonic() - 1
+        assert agent._model_cooldowns[key] < time.monotonic()
+
+    def test_restore_respects_per_model_cooldown(self):
+        """restore_primary_runtime returns False when primary model is in per-model cooldown."""
+        agent = self._make_agent_with_fallback(model="primary-model")
+        agent._fallback_activated = True
+        primary_key = ("custom", "primary-model")
+        agent._model_cooldowns = {primary_key: time.monotonic() + 43200}
+        result = agent._restore_primary_runtime()
+        assert result is False
+        assert agent._fallback_activated is True
+
+    def test_restore_allowed_after_per_model_cooldown_expires(self):
+        """Once per-model cooldown expires, restore proceeds normally."""
+        agent = self._make_agent_with_fallback(model="primary-model")
+        agent._fallback_activated = True
+        primary_key = ("custom", "primary-model")
+        agent._model_cooldowns = {primary_key: time.monotonic() - 1}
+        with patch("run_agent.OpenAI", return_value=MagicMock()):
+            result = agent._restore_primary_runtime()
+        assert result is True
+        assert agent._fallback_activated is False

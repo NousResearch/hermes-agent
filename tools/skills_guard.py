@@ -917,12 +917,14 @@ def _resolve_trust_level(source: str) -> str:
     # Agent-created skills get their own permissive trust level
     if normalized_source == "agent-created":
         return "agent-created"
-    # Official optional skills shipped with the repo
-    if normalized_source.startswith("official/") or normalized_source == "official":
+    # Official optional skills must be identified by source provenance, not by
+    # user-controlled GitHub identifiers such as "official/<repo>".
+    if normalized_source == "official":
         return "builtin"
-    # Check if source matches any trusted repo
+    # Check if source matches any trusted repo exactly, or a skill path inside
+    # that repo. Do not trust sibling repositories that merely share a prefix.
     for trusted in TRUSTED_REPOS:
-        if normalized_source.startswith(trusted) or normalized_source == trusted:
+        if normalized_source == trusted or normalized_source.startswith(f"{trusted}/"):
             return "trusted"
     return "community"
 

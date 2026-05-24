@@ -10,6 +10,12 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+# python-telegram-bot is an optional dep — skip the entire module when
+# it isn't installed (e.g. CI bare env). Tests that patch telegram.Bot
+# or call _send_telegram need it; tests for other platforms don't but
+# keeping the whole file consistent is simpler.
+_HAS_TELEGRAM = pytest.importorskip("telegram", reason="python-telegram-bot not installed") is not None
+
 
 @pytest.fixture(autouse=True)
 def _reset_signal_scheduler():
@@ -22,16 +28,93 @@ def _reset_signal_scheduler():
 
 from gateway.config import Platform
 from tools.send_message_tool import (
-    _derive_forum_thread_name,
     _is_telegram_thread_not_found,
     _parse_target_ref,
-    _send_discord,
     _send_matrix_via_adapter,
     _send_signal,
     _send_telegram,
     _send_to_platform,
     send_message_tool,
 )
+# Discord helpers moved to the plugin in #24325.  Import from the new path
+# and provide a thin ``_send_discord(token, ...)`` shim that mirrors the
+# pre-migration signature so the existing test bodies keep working.
+from plugins.platforms.discord.adapter import (
+    _DISCORD_CHANNEL_TYPE_PROBE_CACHE,
+    _derive_forum_thread_name,
+    _probe_is_forum_cached,
+    _remember_channel_is_forum,
+    _standalone_send,
+)
+
+
+async def _send_discord(
+    token,
+    chat_id,
+    message,
+    *,
+    thread_id=None,
+    media_files=None,
+):
+    """Pre-migration ``(token, chat_id, message, …)`` adapter around the
+    plugin's ``_standalone_send(pconfig, …)``.  Lets test bodies continue
+    to call ``_send_discord("tok", ...)`` without rewriting every signature.
+    """
+    pconfig = SimpleNamespace(token=token, extra={})
+    return await _standalone_send(
+        pconfig,
+        chat_id,
+        message,
+        thread_id=thread_id,
+        media_files=media_files,
+    )
+
+
+def _discord_entry():
+    """Return the live Discord PlatformEntry, importing lazily so plugin
+    discovery is forced exactly once and patches survive across tests."""
+    from hermes_cli.plugins import discover_plugins
+    from gateway.platform_registry import platform_registry
+    discover_plugins()
+    return platform_registry.get("discord")
+
+
+class _patch_discord_sender:
+    """Patch the Discord registry entry's ``standalone_sender_fn`` with the
+    given mock and translate the production ``(pconfig, ...)`` call shape
+    back to the pre-migration ``(token, ...)`` shape the test mocks expect.
+
+    Use as a context manager:
+
+        send_mock = AsyncMock(return_value={...})
+        with _patch_discord_sender(send_mock):
+            asyncio.run(_send_to_platform(Platform.DISCORD, ...))
+        send_mock.assert_awaited_once_with("tok", "chat", "msg",
+                                           thread_id=None, media_files=[])
+    """
+
+    def __init__(self, mock):
+        self._mock = mock
+        self._entry = None
+        self._original = None
+
+    async def _adapter(self, pconfig, chat_id, message, *, thread_id=None, media_files=None):
+        token = getattr(pconfig, "token", None)
+        return await self._mock(
+            token, chat_id, message,
+            thread_id=thread_id, media_files=media_files,
+        )
+
+    def __enter__(self):
+        self._entry = _discord_entry()
+        self._original = self._entry.standalone_sender_fn
+        self._entry.standalone_sender_fn = self._adapter
+        return self._mock
+
+    def __exit__(self, exc_type, exc, tb):
+        if self._entry is not None:
+            self._entry.standalone_sender_fn = self._original
+        return False
 
 
 def _run_async_immediately(coro):
@@ -294,6 +377,37 @@ class TestSendMessageTool:
             user_id="user-123",
         )
 
+    def test_media_tag_outside_allowed_roots_is_not_sent(self, tmp_path):
+        config, telegram_cfg = _make_config()
+        secret = tmp_path / "secret.pdf"
+        secret.write_bytes(b"%PDF secret")
+
+        with patch("gateway.config.load_gateway_config", return_value=config), \
+             patch("tools.interrupt.is_interrupted", return_value=False), \
+             patch("model_tools._run_async", side_effect=_run_async_immediately), \
+             patch("tools.send_message_tool._send_to_platform", new=AsyncMock(return_value={"success": True})) as send_mock, \
+             patch("gateway.mirror.mirror_to_session", return_value=True):
+            result = json.loads(
+                send_message_tool(
+                    {
+                        "action": "send",
+                        "target": "telegram:12345",
+                        "message": f"hello\nMEDIA:{secret}",
+                    }
+                )
+            )
+
+        assert result["success"] is True
+        send_mock.assert_awaited_once_with(
+            Platform.TELEGRAM,
+            telegram_cfg,
+            "12345",
+            "hello",
+            thread_id=None,
+            media_files=[],
+            force_document=False,
+        )
+
     def test_top_level_send_failure_redacts_query_token(self):
         config, _telegram_cfg = _make_config()
         leaked = "very-secret-query-token-123456"
@@ -440,7 +554,7 @@ class TestSendToPlatformChunking:
         """Messages exceeding the platform limit are split into multiple sends."""
         send = AsyncMock(return_value={"success": True, "message_id": "1"})
         long_msg = "word " * 1000  # ~5000 chars, well over Discord's 2000 limit
-        with patch("tools.send_message_tool._send_discord", send):
+        with _patch_discord_sender(send):
             result = asyncio.run(
                 _send_to_platform(
                     Platform.DISCORD,
@@ -1170,7 +1284,7 @@ class TestSendToPlatformDiscordThread:
         """Discord platform with thread_id passes it to _send_discord."""
         send_mock = AsyncMock(return_value={"success": True, "message_id": "1"})
 
-        with patch("tools.send_message_tool._send_discord", send_mock):
+        with _patch_discord_sender(send_mock):
             result = asyncio.run(
                 _send_to_platform(
                     Platform.DISCORD,
@@ -1190,7 +1304,7 @@ class TestSendToPlatformDiscordThread:
         """Discord platform without thread_id passes None."""
         send_mock = AsyncMock(return_value={"success": True, "message_id": "1"})
 
-        with patch("tools.send_message_tool._send_discord", send_mock):
+        with _patch_discord_sender(send_mock):
             result = asyncio.run(
                 _send_to_platform(
                     Platform.DISCORD,
@@ -1354,7 +1468,7 @@ class TestSendToPlatformDiscordMedia:
         # A message long enough to get chunked (Discord limit is 2000)
         long_msg = "A" * 1900 + " " + "B" * 1900
 
-        with patch("tools.send_message_tool._send_discord", side_effect=mock_send_discord):
+        with _patch_discord_sender(AsyncMock(side_effect=mock_send_discord)):
             result = asyncio.run(
                 _send_to_platform(
                     Platform.DISCORD,
@@ -1374,7 +1488,7 @@ class TestSendToPlatformDiscordMedia:
         """Short message (single chunk) gets media_files directly."""
         send_mock = AsyncMock(return_value={"success": True, "message_id": "1"})
 
-        with patch("tools.send_message_tool._send_discord", send_mock):
+        with _patch_discord_sender(send_mock):
             result = asyncio.run(
                 _send_to_platform(
                     Platform.DISCORD,
@@ -1612,7 +1726,7 @@ class TestSendToPlatformDiscordForum:
         """Discord messages are routed through _send_discord, which handles forum detection."""
         send_mock = AsyncMock(return_value={"success": True, "message_id": "1"})
 
-        with patch("tools.send_message_tool._send_discord", send_mock):
+        with _patch_discord_sender(send_mock):
             result = asyncio.run(
                 _send_to_platform(
                     Platform.DISCORD,
@@ -1631,7 +1745,7 @@ class TestSendToPlatformDiscordForum:
         """Thread ID is still passed through when sending to Discord."""
         send_mock = AsyncMock(return_value={"success": True, "message_id": "1"})
 
-        with patch("tools.send_message_tool._send_discord", send_mock):
+        with _patch_discord_sender(send_mock):
             result = asyncio.run(
                 _send_to_platform(
                     Platform.DISCORD,
@@ -1769,11 +1883,11 @@ class TestForumProbeCache:
     """_DISCORD_CHANNEL_TYPE_PROBE_CACHE memoizes forum detection results."""
 
     def setup_method(self):
-        from tools import send_message_tool as smt
-        smt._DISCORD_CHANNEL_TYPE_PROBE_CACHE.clear()
+        from plugins.platforms.discord import adapter as discord_adapter
+        discord_adapter._DISCORD_CHANNEL_TYPE_PROBE_CACHE.clear()
 
     def test_cache_round_trip(self):
-        from tools.send_message_tool import (
+        from plugins.platforms.discord.adapter import (
             _probe_is_forum_cached,
             _remember_channel_is_forum,
         )
@@ -1813,7 +1927,7 @@ class TestForumProbeCache:
         thread_session.post = MagicMock(return_value=thread_resp)
 
         # Two _send_discord calls: first does probe + thread-create; second should skip probe
-        from tools import send_message_tool as smt
+        from plugins.platforms.discord import adapter as discord_adapter
 
         sessions_created = []
 
@@ -1831,7 +1945,7 @@ class TestForumProbeCache:
         with patch("aiohttp.ClientSession", side_effect=session_factory):
             result1 = asyncio.run(_send_discord("tok", "ch1", "first"))
         assert result1["success"] is True
-        assert smt._probe_is_forum_cached("ch1") is True
+        assert discord_adapter._probe_is_forum_cached("ch1") is True
 
         # Second call: cache hits, no new probe session needed. We need to only
         # return thread_session now since probe is skipped.
@@ -2569,4 +2683,3 @@ class TestSendTelegramThreadNotFoundRetry:
         finally:
             if media_path and os.path.exists(media_path):
                 os.unlink(media_path)
-

@@ -25,6 +25,8 @@ Session context:
 
 import logging
 import os
+import sys
+import time
 import threading
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
@@ -308,6 +310,7 @@ class _ManagedRotatingFileHandler(RotatingFileHandler):
     def __init__(self, *args, **kwargs):
         from hermes_cli.config import is_managed
         self._managed = is_managed()
+        self._rollover_suppressed_until = 0.0
         super().__init__(*args, **kwargs)
 
     def _chmod_if_managed(self):
@@ -323,7 +326,34 @@ class _ManagedRotatingFileHandler(RotatingFileHandler):
         return stream
 
     def doRollover(self):
-        super().doRollover()
+        now = time.time()
+        if os.name == "nt" and now < self._rollover_suppressed_until:
+            return
+        try:
+            super().doRollover()
+        except PermissionError:
+            # Windows refuses to rename a log file while another Hermes process
+            # still has it open (common with gateway + CLI/doctor sharing
+            # agent.log).  The stdlib handler writes a noisy "Logging error"
+            # traceback to stderr on every rollover attempt, which can drown out
+            # real diagnostics.  Degrade gracefully by reopening the current log
+            # in append mode and delaying the next rollover check; future
+            # short-lived commands can still log, and a later process can rotate
+            # once the file is no longer locked.
+            if os.name != "nt":
+                raise
+            if self.stream:
+                try:
+                    self.stream.close()
+                except OSError:
+                    pass
+                self.stream = None
+            self.stream = self._open()
+            self._rollover_suppressed_until = now + 3600
+            print(
+                f"Hermes logging: skipped locked log rollover for {self.baseFilename}",
+                file=sys.stderr,
+            )
         self._chmod_if_managed()
 
 

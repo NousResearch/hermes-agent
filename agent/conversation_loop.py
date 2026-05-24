@@ -74,6 +74,84 @@ from utils import base_url_host_matches, env_var_enabled
 logger = logging.getLogger(__name__)
 
 
+def _apply_pre_api_route_override(agent: Any, override: dict[str, Any]) -> bool:
+    """Apply a pre_api_request model/provider override to full runtime state.
+
+    Hook routing must update more than ``agent.model``.  Provider/base URL
+    changes can alter credentials, api_mode, default headers, transport cache,
+    and the shared OpenAI/Anthropic client.  Reuse ``switch_model`` so the
+    next request is built and sent with a coherent runtime snapshot.
+    """
+    if not isinstance(override, dict) or not override.get("model"):
+        return False
+
+    new_model = str(override.get("model") or "").strip()
+    if not new_model:
+        return False
+    explicit_provider = str(override.get("provider") or "").strip()
+    requested_provider = explicit_provider or str(agent.provider or "").strip()
+    explicit_base_url = str(override.get("base_url") or "").strip() or None
+
+    runtime: dict[str, Any] = {}
+    if requested_provider or explicit_base_url:
+        try:
+            from hermes_cli.runtime_provider import resolve_runtime_provider
+            runtime = resolve_runtime_provider(
+                requested=requested_provider or None,
+                explicit_base_url=explicit_base_url,
+                target_model=new_model,
+            ) or {}
+        except Exception as exc:
+            logger.warning(
+                "pre_api_request route override runtime resolution failed; "
+                "falling back to current runtime for model-only overrides. "
+                "provider=%s base_url=%s model=%s error=%s",
+                requested_provider,
+                explicit_base_url,
+                new_model,
+                exc,
+            )
+            # If the hook explicitly changes provider or base_url, do not send
+            # the request with the previous provider's credentials/client.
+            # Model-only overrides can safely reuse the current runtime.
+            if explicit_provider or explicit_base_url:
+                return False
+
+    new_provider = str(runtime.get("provider") or requested_provider or agent.provider or "").strip()
+    if "base_url" in runtime:
+        new_base_url = str(runtime.get("base_url") or "").strip()
+    else:
+        new_base_url = str(explicit_base_url or agent.base_url or "").strip()
+    if "api_key" in runtime:
+        new_api_key = runtime.get("api_key") or ""
+    else:
+        new_api_key = getattr(agent, "api_key", "")
+    new_api_mode = str(runtime.get("api_mode") or getattr(agent, "api_mode", "") or "").strip()
+
+    # switch_model historically treats empty api_key/base_url as "keep the
+    # current value".  Route overrides need exact runtime semantics, including
+    # intentionally-empty keys for local/no-auth providers and intentionally
+    # empty base URLs for native SDK transports.  Pre-clear those fields so the
+    # helper cannot leak the previous provider's credentials or endpoint.
+    if "api_key" in runtime and not new_api_key:
+        agent.api_key = ""
+    if "base_url" in runtime and not new_base_url:
+        agent.base_url = ""
+
+    agent.switch_model(
+        new_model,
+        new_provider,
+        api_key=new_api_key,
+        base_url=new_base_url,
+        api_mode=new_api_mode,
+    )
+    try:
+        set_runtime_main(agent.provider or "", agent.model or "")
+    except Exception:
+        pass
+    return True
+
+
 def _ollama_context_limit_error(agent: Any, request_tokens: int) -> Optional[str]:
     """Return a user-facing error when Ollama is loaded with too little context."""
     if not getattr(agent, "tools", None):
@@ -1056,6 +1134,7 @@ def run_conversation(
                 if agent.api_mode == "codex_responses":
                     api_kwargs = agent._get_transport().preflight_kwargs(api_kwargs, allow_stream=False)
 
+                _pre_results: list = []
                 try:
                     from hermes_cli.plugins import invoke_hook as _invoke_hook
                     request_messages = api_kwargs.get("messages")
@@ -1069,7 +1148,7 @@ def run_conversation(
                     # mutated by the agent loop, so a shallow copy is
                     # sufficient; a deepcopy would walk every tool result
                     # and base64 image on every API call.
-                    _invoke_hook(
+                    _pre_results = _invoke_hook(
                         "pre_api_request",
                         task_id=effective_task_id,
                         session_id=agent.session_id or "",
@@ -1091,11 +1170,25 @@ def run_conversation(
                 except Exception:
                     pass
 
+                # Allow plugins to override model/provider before the API call.
+                # Plugins inspect the request and return {"model": "...", "provider": "..."}.
+                # Only the first non-None override takes effect.
+                _model_overridden = False
+                for _result in _pre_results:
+                    if _apply_pre_api_route_override(agent, _result):
+                        _model_overridden = True
+                        break
+                if _model_overridden:
+                    api_kwargs = agent._build_api_kwargs(api_messages)
+                    if agent._force_ascii_payload:
+                        _sanitize_structure_non_ascii(api_kwargs)
+                    if agent.api_mode == "codex_responses":
+                        api_kwargs = agent._get_transport().preflight_kwargs(api_kwargs, allow_stream=False)
+
                 if env_var_enabled("HERMES_DUMP_REQUESTS"):
                     agent._dump_api_request_debug(api_kwargs, reason="preflight")
 
-                # Always prefer the streaming path — even without stream
-                # consumers.  Streaming gives us fine-grained health
+                # Always prefer the streaming path
                 # checking (90s stale-stream detection, 60s read timeout)
                 # that the non-streaming path lacks.  Without this,
                 # subagents and other quiet-mode callers can hang
@@ -4095,6 +4188,7 @@ def run_conversation(
         "messages": messages,
         "api_calls": api_call_count,
         "completed": completed,
+        "failed": failed,
         "turn_exit_reason": _turn_exit_reason,
         "failed": failed,
         "partial": False,  # True only when stopped due to invalid tool calls

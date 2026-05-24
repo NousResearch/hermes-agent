@@ -3075,7 +3075,10 @@ class HermesCLI:
         self.conversation_history: List[Dict[str, Any]] = []
         self.session_start = datetime.now()
         self._resumed = False
-        # Per-prompt elapsed timer — started at the beginning of each chat turn,
+        # Track whether user explicitly ran /_new (vs fresh CLI start) so
+        # auto-resume does not fire after /_new resets the session.
+        self._new_session_requested = False
+        # Per-prompt elapsed timer
         # frozen when the agent thread completes, displayed in the status bar.
         self._prompt_start_time: Optional[float] = None  # time.time() when turn started
         self._prompt_duration: float = 0.0  # frozen duration of last completed turn
@@ -5081,6 +5084,64 @@ class HermesCLI:
 
         return True
 
+    def _auto_resume_last_session(self):
+        """Silently pick up the most recent CLI session on fresh CLI start.
+
+        Called from run() when neither ``_resumed`` (manual --resume) nor
+        ``_new_session_requested`` (user ran /_new) is set.  Queries the
+        session DB for the newest 'cli' source session with messages, adopts
+        its session_id, loads its conversation history, and reactivates the
+        session so the new process continues it rather than creating a fork.
+        """
+        if self._session_db is None:
+            return
+        try:
+            results = self._session_db._conn.execute(
+                """
+                SELECT id, title, source, message_count
+                  FROM sessions
+                 WHERE source = 'cli'
+                   AND message_count > 0
+                   AND ended_at IS NOT NULL
+                 ORDER BY started_at DESC
+                 LIMIT 1
+                """,
+            ).fetchall()
+        except Exception:
+            return
+        if not results:
+            return
+        row = results[0]
+        prev_id, title, source, msg_count = row
+        # Adopt the old session_id so the new process continues it
+        self.session_id = prev_id
+        self._resumed = True
+        self._new_session_requested = True  # suppress double-fire if run() is called again
+        # Load history (mirrors _preload_resumed_session logic)
+        try:
+            restored = self._session_db.get_messages_as_conversation(prev_id)
+        except Exception:
+            restored = None
+        if restored:
+            restored = [m for m in restored if m.get("role") != "session_meta"]
+            self.conversation_history = restored
+        # Reactivate the session in the DB (clear ended_at/end_reason)
+        try:
+            self._session_db._conn.execute(
+                "UPDATE sessions SET ended_at = NULL, end_reason = NULL WHERE id = ?",
+                (prev_id,),
+            )
+            self._session_db._conn.commit()
+        except Exception:
+            pass
+        # Brief non-intrusive notice
+        title_part = f' "{title}"' if title else ''
+        accent = _accent_hex()
+        self._console_print(
+            f"[{accent}]↻ Resuming last session{title_part}: "
+            f"{msg_count} msgs · {prev_id}[/]"
+        )
+
     def _display_resumed_history(self):
         """Render a compact recap of previous conversation messages.
 
@@ -6287,6 +6348,7 @@ class HermesCLI:
         self._pending_title = None
         self._resumed = False
         _sync_process_session_id(self.session_id)
+        self._new_session_requested = True  # suppress auto-resume for this session
 
         if self.agent:
             self.agent.session_id = self.session_id
@@ -12123,6 +12185,10 @@ class HermesCLI:
         if self._resumed:
             if self._preload_resumed_session():
                 self._display_resumed_history()
+        # Auto-resume: fresh CLI start (not /_new) → silently pick up where
+        # the previous session left off so context is never lost.
+        elif not self._new_session_requested:
+            self._auto_resume_last_session()
 
         try:
             from hermes_cli.skin_engine import get_active_skin

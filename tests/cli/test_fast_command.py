@@ -87,32 +87,6 @@ class TestHandleFastCommand(unittest.TestCase):
         self.assertIsNone(stub.service_tier)
         self.assertIsNone(stub.agent)
 
-    def test_on_argument_enables_fast_when_normal(self):
-        cli_mod = _import_cli()
-        stub = self._make_cli(service_tier=None)
-        with (
-            patch.object(cli_mod, "_cprint"),
-            patch.object(cli_mod, "save_config_value", return_value=True) as mock_save,
-        ):
-            cli_mod.HermesCLI._handle_fast_command(stub, "/fast on")
-
-        mock_save.assert_called_once_with("agent.service_tier", "fast")
-        self.assertEqual(stub.service_tier, "priority")
-        self.assertIsNone(stub.agent)
-
-    def test_off_argument_disables_fast_when_fast(self):
-        cli_mod = _import_cli()
-        stub = self._make_cli(service_tier="priority")
-        with (
-            patch.object(cli_mod, "_cprint"),
-            patch.object(cli_mod, "save_config_value", return_value=True) as mock_save,
-        ):
-            cli_mod.HermesCLI._handle_fast_command(stub, "/fast off")
-
-        mock_save.assert_called_once_with("agent.service_tier", "normal")
-        self.assertIsNone(stub.service_tier)
-        self.assertIsNone(stub.agent)
-
     def test_unsupported_model_does_not_expose_fast(self):
         cli_mod = _import_cli()
         stub = SimpleNamespace(

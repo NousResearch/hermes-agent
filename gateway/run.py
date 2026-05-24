@@ -7029,8 +7029,6 @@ class GatewayRunner:
                     return await self._handle_help_command(event)
                 if _cmd_def_inner.name == "commands":
                     return await self._handle_commands_command(event)
-                if _cmd_def_inner.name == "palette":
-                    return await self._handle_palette_command(event)
                 if _cmd_def_inner.name == "profile":
                     return await self._handle_profile_command(event)
                 if _cmd_def_inner.name == "update":
@@ -7268,9 +7266,6 @@ class GatewayRunner:
 
         if canonical == "commands":
             return await self._handle_commands_command(event)
-
-        if canonical == "palette":
-            return await self._handle_palette_command(event)
         
         if canonical == "profile":
             return await self._handle_profile_command(event)
@@ -9953,36 +9948,6 @@ class GatewayRunner:
             getattr(getattr(event, "source", None), "platform", None),
         )
 
-    async def _handle_palette_command(self, event: MessageEvent) -> Optional[str]:
-        """Handle /palette — show native quick-action controls when possible."""
-        from hermes_cli.commands import (
-            GATEWAY_QUICK_ACTION_COMMANDS,
-            gateway_quick_action_label,
-        )
-
-        palette_text = (
-            "Choose from the quick actions below. Buttons run through the normal "
-            "slash-command pipeline; New, Undo, Stop, and YOLO ask for confirmation first."
-        )
-        quick_actions = [
-            {
-                "command": command,
-                "label": gateway_quick_action_label(command),
-            }
-            for command in GATEWAY_QUICK_ACTION_COMMANDS
-        ]
-        adapter = self.adapters.get(event.source.platform)
-        send_palette = getattr(adapter, "send_command_palette", None) if adapter else None
-        if callable(send_palette):
-            try:
-                result = await send_palette(event.source, palette_text, quick_actions)
-                if result and getattr(result, "success", False):
-                    return None
-            except Exception as exc:
-                logger.warning("Failed to render native command palette: %s", exc, exc_info=True)
-        labels = ", ".join(f"/{item['command']}" for item in quick_actions)
-        return f"{palette_text}\n\nQuick actions: {labels}"
-
     async def _handle_model_command(self, event: MessageEvent) -> Optional[str]:
         """Handle /model command — switch model for this session.
 
@@ -10405,77 +10370,7 @@ class GatewayRunner:
         if not personalities:
             return t("gateway.personality.none_configured", path=display_hermes_home())
 
-        def _resolve_prompt(value):
-            if isinstance(value, dict):
-                parts = [value.get("system_prompt", "")]
-                if value.get("tone"):
-                    parts.append(f'Tone: {value["tone"]}')
-                if value.get("style"):
-                    parts.append(f'Style: {value["style"]}')
-                return "\n".join(p for p in parts if p)
-            return str(value)
-
-        current_prompt = str(cfg_get(config, "agent", "system_prompt", default="") or "")
-        if not current_prompt:
-            current_prompt = str(getattr(self, "_ephemeral_system_prompt", "") or "")
-
         if not args:
-            source = event.source
-            adapter = self.adapters.get(source.platform)
-            has_picker = (
-                adapter is not None
-                and getattr(type(adapter), "send_personality_picker", None) is not None
-            )
-            if has_picker:
-                entries = [
-                    {
-                        "name": "none",
-                        "label": "None",
-                        "description": "Clear personality",
-                        "is_current": not bool(current_prompt),
-                    }
-                ]
-                for personality_name, prompt in personalities.items():
-                    resolved_prompt = _resolve_prompt(prompt)
-                    if isinstance(prompt, dict):
-                        preview = prompt.get("description") or resolved_prompt
-                    else:
-                        preview = resolved_prompt
-                    entries.append(
-                        {
-                            "name": str(personality_name),
-                            "label": str(personality_name),
-                            "description": str(preview or "Custom personality").replace("\n", " ")[:90],
-                            "is_current": bool(current_prompt) and resolved_prompt == current_prompt,
-                        }
-                    )
-
-                async def _on_personality_selected(_chat_id: str, personality_name: str) -> str:
-                    selected_event = dataclasses.replace(
-                        event,
-                        text=f"/personality {personality_name}",
-                    )
-                    return await self._handle_personality_command(selected_event)
-
-                metadata = self._thread_metadata_for_source(
-                    source,
-                    self._reply_anchor_for_event(event),
-                )
-                current_personality = next(
-                    (entry["name"] for entry in entries if entry.get("is_current")),
-                    "none",
-                )
-                result = await adapter.send_personality_picker(
-                    chat_id=source.chat_id,
-                    personalities=entries,
-                    current_personality=current_personality,
-                    session_key=self._session_key_for_source(source),
-                    on_personality_selected=_on_personality_selected,
-                    metadata=metadata,
-                )
-                if result.success:
-                    return None
-
             lines = [t("gateway.personality.header")]
             lines.append(t("gateway.personality.none_option"))
             for name, prompt in personalities.items():
@@ -10486,6 +10381,16 @@ class GatewayRunner:
                 lines.append(t("gateway.personality.item", name=name, preview=preview))
             lines.append(t("gateway.personality.usage"))
             return "\n".join(lines)
+
+        def _resolve_prompt(value):
+            if isinstance(value, dict):
+                parts = [value.get("system_prompt", "")]
+                if value.get("tone"):
+                    parts.append(f'Tone: {value["tone"]}')
+                if value.get("style"):
+                    parts.append(f'Style: {value["style"]}')
+                return "\n".join(p for p in parts if p)
+            return str(value)
 
         if args in {"none", "default", "neutral"}:
             try:
@@ -11826,7 +11731,7 @@ class GatewayRunner:
         return t("gateway.reasoning.set_session", effort=effort)
 
     async def _handle_fast_command(self, event: MessageEvent) -> str:
-        """Handle /fast — set or show gateway Priority Processing mode."""
+        """Handle /fast — mirror the CLI Priority Processing toggle in gateway chats."""
         import yaml
         from hermes_cli.models import model_supports_fast_mode
 
@@ -11859,54 +11764,24 @@ class GatewayRunner:
                 logger.error("Failed to save config key %s: %s", key_path, e)
                 return False
 
-        def _status_text() -> str:
+        if not args or args == "status":
             status = t("gateway.fast.status_fast") if self._service_tier == "priority" else t("gateway.fast.status_normal")
             return t("gateway.fast.status", mode=status)
 
-        async def _set_speed(speed: str) -> str:
-            selected = str(speed or "").strip().lower()
-            if selected in {"fast", "on"}:
-                self._service_tier = "priority"
-                saved_value = "fast"
-                label = t("gateway.fast.label_fast")
-            elif selected in {"normal", "off"}:
-                self._service_tier = None
-                saved_value = "normal"
-                label = t("gateway.fast.label_normal")
-            else:
-                return t("gateway.fast.unknown_arg", arg=selected)
+        if args in {"fast", "on"}:
+            self._service_tier = "priority"
+            saved_value = "fast"
+            label = t("gateway.fast.label_fast")
+        elif args in {"normal", "off"}:
+            self._service_tier = None
+            saved_value = "normal"
+            label = t("gateway.fast.label_normal")
+        else:
+            return t("gateway.fast.unknown_arg", arg=args)
 
-            if _save_config_key("agent.service_tier", saved_value):
-                return t("gateway.fast.saved", label=label)
-            return t("gateway.fast.session_only", label=label)
-
-        if not args:
-            source = event.source
-            adapter = self.adapters.get(source.platform)
-            has_picker = (
-                adapter is not None
-                and getattr(type(adapter), "send_fast_picker", None) is not None
-            )
-            if has_picker:
-                try:
-                    metadata = self._thread_metadata_for_source(source, self._reply_anchor_for_event(event))
-                    result = await adapter.send_fast_picker(
-                        chat_id=source.chat_id,
-                        current_mode="fast" if self._service_tier == "priority" else "normal",
-                        session_key=self._session_key_for_source(source),
-                        on_speed_selected=_set_speed,
-                        metadata=metadata,
-                    )
-                    if result.success:
-                        return None
-                except Exception as exc:
-                    logger.warning("send_fast_picker failed: %s", exc)
-            return _status_text()
-
-        if args == "status":
-            return _status_text()
-
-        return await _set_speed(args)
+        if _save_config_key("agent.service_tier", saved_value):
+            return t("gateway.fast.saved", label=label)
+        return t("gateway.fast.session_only", label=label)
 
     async def _handle_yolo_command(self, event: MessageEvent) -> Union[str, EphemeralReply]:
         """Handle /yolo — toggle dangerous command approval bypass for this session only."""
@@ -14359,7 +14234,6 @@ class GatewayRunner:
         in a ``finally`` block.
         """
         from gateway.session_context import set_session_vars
-
         return set_session_vars(
             platform=context.source.platform.value,
             chat_id=context.source.chat_id,

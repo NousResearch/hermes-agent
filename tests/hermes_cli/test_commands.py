@@ -280,6 +280,7 @@ class TestSlackSubcommandMap:
             if cmd.cli_only and not cmd.gateway_config_gate:
                 assert cmd.name not in mapping
 
+
 class TestSlackNativeSlashes:
     """Slack native slash command generation — used to register every
     COMMAND_REGISTRY entry as a first-class Slack slash, matching Discord

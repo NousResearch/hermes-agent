@@ -158,25 +158,6 @@ async def test_registers_native_restart_slash_command(adapter):
     )
 
 
-@pytest.mark.asyncio
-async def test_registers_palette_without_replacing_commands(adapter):
-    """The Discord quick-action UI lives on /palette; /commands remains text."""
-    adapter._run_simple_slash = AsyncMock()
-    adapter._run_palette_slash = AsyncMock()
-    adapter._register_slash_commands()
-
-    assert "palette" in adapter._client.tree.commands
-    assert "commands" in adapter._client.tree.commands
-
-    interaction = SimpleNamespace()
-    await adapter._client.tree.commands["palette"](interaction)
-    adapter._run_palette_slash.assert_awaited_once_with(interaction)
-
-    commands_cmd = adapter._client.tree.commands["commands"]
-    await commands_cmd.callback(interaction, args="2")
-    adapter._run_simple_slash.assert_awaited_once_with(interaction, "/commands 2")
-
-
 # ------------------------------------------------------------------
 # Auto-registration from COMMAND_REGISTRY
 # ------------------------------------------------------------------

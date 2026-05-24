@@ -196,8 +196,6 @@ COMMAND_REGISTRY: list[CommandDef] = [
     # Info
     CommandDef("commands", "Browse all commands and skills (paginated)", "Info",
                gateway_only=True, args_hint="[page]"),
-    CommandDef("palette", "Open the quick-action command palette", "Info",
-               gateway_only=True),
     CommandDef("help", "Show available commands", "Info"),
     CommandDef("restart", "Gracefully restart the gateway after draining active runs", "Session",
                gateway_only=True),
@@ -221,138 +219,6 @@ COMMAND_REGISTRY: list[CommandDef] = [
     CommandDef("quit", "Exit the CLI (use --delete to also remove session history)", "Exit",
                cli_only=True, aliases=("exit",), args_hint="[--delete]"),
 ]
-
-
-# Gateway quick actions shown by the Discord/Telegram command palette.
-# Keep this metadata platform-neutral; each adapter renders it using its own
-# native controls and dispatches the selected slash back through resolve_command
-# + gateway/run.py rather than implementing per-platform command behavior.
-GATEWAY_QUICK_ACTION_COMMANDS: tuple[str, ...] = (
-    "status",
-    "usage",
-    "help",
-    "model",
-    "agents",
-    "personality",
-    "whoami",
-    "insights",
-    "new",
-    "retry",
-    "undo",
-    "stop",
-    "compress",
-    "fast",
-    "yolo",
-)
-
-GATEWAY_QUICK_ACTION_CONFIRM_COMMANDS: frozenset[str] = frozenset({"new", "undo", "stop", "yolo"})
-
-GATEWAY_QUICK_ACTION_LABELS: dict[str, str] = {
-    "status": "Status",
-    "usage": "Usage",
-    "help": "Help",
-    "model": "Model",
-    "agents": "Agents",
-    "personality": "Personality",
-    "whoami": "Who Am I",
-    "insights": "Insights",
-    "new": "New",
-    "retry": "Retry",
-    "undo": "Undo",
-    "stop": "Stop",
-    "compress": "Compress",
-    "fast": "Fast",
-    "yolo": "YOLO",
-}
-
-GATEWAY_QUICK_ACTION_COMMAND_TEXTS: dict[str, str] = {}
-
-
-@dataclass(frozen=True)
-class GatewayQuickActionPayload:
-    """Parsed gateway command-palette callback payload."""
-
-    raw: str
-    command: str
-    confirmed: bool = False
-    cancelled: bool = False
-    nonce: str | None = None
-    is_valid: bool = False
-
-    @classmethod
-    def parse(cls, value: str | None) -> "GatewayQuickActionPayload":
-        raw = str(value or "").strip()
-        inner = raw
-        if inner.startswith("qa:"):
-            inner = inner.split(":", 1)[1].strip()
-
-        confirmed = False
-        cancelled = False
-        nonce: str | None = None
-        if inner.startswith("cancel:"):
-            cancelled = True
-            parts = inner.split(":", 2)
-            inner = parts[1] if len(parts) > 1 else ""
-            nonce = parts[2] if len(parts) > 2 and parts[2] else None
-        elif inner.startswith("confirm:"):
-            confirmed = True
-            parts = inner.split(":", 2)
-            inner = parts[1] if len(parts) > 1 else ""
-            nonce = parts[2] if len(parts) > 2 and parts[2] else None
-
-        command = inner.strip().lower().lstrip("/")
-        return cls(
-            raw=raw,
-            command=command,
-            confirmed=confirmed,
-            cancelled=cancelled,
-            nonce=nonce,
-            is_valid=command in GATEWAY_QUICK_ACTION_COMMANDS
-            and resolve_command(command) is not None,
-        )
-
-
-def parse_gateway_quick_action_payload(value: str | None) -> GatewayQuickActionPayload:
-    """Parse and validate a gateway quick-action callback payload."""
-    return GatewayQuickActionPayload.parse(value)
-
-
-def gateway_quick_action_label(command: str) -> str:
-    """Return the display label for a command-palette quick action."""
-    return GATEWAY_QUICK_ACTION_LABELS.get(command, command.replace("-", " ").title())
-
-
-def gateway_quick_action_command_text(command: str) -> str:
-    """Return the slash text dispatched when a quick-action is selected."""
-    normalized = command.lower().lstrip("/").strip()
-    return GATEWAY_QUICK_ACTION_COMMAND_TEXTS.get(normalized, f"/{normalized}")
-
-
-def gateway_quick_action_requires_confirmation(command: str | None) -> bool:
-    """Return True when a palette command needs explicit confirmation."""
-    normalized = str(command or "").lower().lstrip("/").strip()
-    return (
-        normalized in GATEWAY_QUICK_ACTION_CONFIRM_COMMANDS
-        and normalized in GATEWAY_QUICK_ACTION_COMMANDS
-        and resolve_command(normalized) is not None
-    )
-
-
-def gateway_quick_action_confirmation_prompt(
-    command: str,
-    *,
-    context_label: str | None = None,
-) -> str:
-    """Return confirmation prompt text for a gateway quick action."""
-    normalized = command.lower().lstrip("/").strip()
-    label = context_label or "context"
-    prompts = {
-        "new": f"Start a fresh Hermes session for this {label}?",
-        "undo": f"Undo the last user/assistant exchange in this {label}?",
-        "stop": f"Stop the active Hermes response in this {label}?",
-        "yolo": "Enable YOLO mode for this session and skip dangerous-command approvals?",
-    }
-    return prompts.get(normalized, f"Run /{normalized}?")
 
 
 # ---------------------------------------------------------------------------
@@ -473,7 +339,6 @@ ACTIVE_SESSION_BYPASS_COMMANDS: frozenset[str] = frozenset(
         "deny",
         "help",
         "new",
-        "palette",
         "profile",
         "queue",
         "restart",

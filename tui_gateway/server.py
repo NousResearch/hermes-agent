@@ -3941,7 +3941,9 @@ def _(rid, params: dict) -> dict:
                 {"key": key, "value": "fast" if current_fast else "normal"},
             )
 
-        if raw in {"fast", "on"}:
+        if raw in {"", "toggle"}:
+            nv = "normal" if current_fast else "fast"
+        elif raw in {"fast", "on"}:
             nv = "fast"
         elif raw in {"normal", "off"}:
             nv = "normal"

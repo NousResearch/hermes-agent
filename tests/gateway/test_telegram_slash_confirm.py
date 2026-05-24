@@ -1,7 +1,6 @@
 """Regression guard: send_slash_confirm must use format_message + MARKDOWN_V2."""
 
 import sys
-import time
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
@@ -37,7 +36,6 @@ _ensure_telegram_mock()
 
 from gateway.platforms.telegram import TelegramAdapter
 from gateway.config import PlatformConfig
-from gateway.platforms.base import MessageType
 
 
 def _make_adapter():
@@ -109,132 +107,3 @@ class TestSendSlashConfirm:
         )
 
         assert result.success is False
-
-
-def _make_palette_update(data="qa:usage", *, thread_id="99"):
-    chat = SimpleNamespace(id=-100, type="supergroup", title="Ops", is_forum=True)
-    message = SimpleNamespace(
-        chat_id=-100,
-        chat=chat,
-        message_id=42,
-        message_thread_id=thread_id,
-        is_topic_message=True,
-    )
-    query = SimpleNamespace(
-        data=data,
-        message=message,
-        from_user=SimpleNamespace(id=123, first_name="Merlin"),
-        answer=AsyncMock(),
-    )
-    return SimpleNamespace(callback_query=query), query
-
-
-class TestTelegramCommandPalette:
-    """Regression tests for Telegram palette callback dispatch and safety gates."""
-
-    @pytest.mark.asyncio
-    async def test_palette_callback_dispatches_shared_command_event_with_topic_context(self, monkeypatch):
-        monkeypatch.setenv("TELEGRAM_ALLOWED_USERS", "*")
-        monkeypatch.delenv("TELEGRAM_ALLOWED_CHATS", raising=False)
-        monkeypatch.delenv("TELEGRAM_ALLOWED_TOPICS", raising=False)
-        monkeypatch.delenv("TELEGRAM_IGNORED_THREADS", raising=False)
-        adapter = _make_adapter()
-        adapter.config.extra["group_topics"] = [
-            {"chat_id": "-100", "topics": [{"thread_id": "99", "name": "Ops", "skill": "ops-skill"}]}
-        ]
-        adapter.handle_message = AsyncMock()
-        update, query = _make_palette_update("qa:usage")
-
-        await adapter._handle_callback_query(update, SimpleNamespace())
-
-        query.answer.assert_awaited_once_with(text="Running /usage…")
-        adapter.handle_message.assert_awaited_once()
-        event = adapter.handle_message.await_args.args[0]
-        assert event.text == "/usage"
-        assert event.message_type == MessageType.COMMAND
-        assert event.source.chat_id == "-100"
-        assert event.source.chat_type == "group"
-        assert event.source.thread_id == "99"
-        assert event.source.chat_topic == "Ops"
-        assert event.auto_skill == "ops-skill"
-
-    @pytest.mark.asyncio
-    async def test_sensitive_palette_callback_requires_confirmation(self, monkeypatch):
-        monkeypatch.setenv("TELEGRAM_ALLOWED_USERS", "*")
-        monkeypatch.delenv("TELEGRAM_ALLOWED_CHATS", raising=False)
-        monkeypatch.delenv("TELEGRAM_ALLOWED_TOPICS", raising=False)
-        monkeypatch.delenv("TELEGRAM_IGNORED_THREADS", raising=False)
-        adapter = _make_adapter()
-        adapter.handle_message = AsyncMock()
-        adapter._send_palette_confirmation = AsyncMock()
-        update, query = _make_palette_update("qa:yolo")
-
-        await adapter._handle_callback_query(update, SimpleNamespace())
-
-        query.answer.assert_awaited_once_with(text="Confirm /yolo to continue.")
-        adapter._send_palette_confirmation.assert_awaited_once_with(query, "yolo", "-100", "99")
-        adapter.handle_message.assert_not_called()
-
-    @pytest.mark.asyncio
-    async def test_confirmed_sensitive_palette_callback_sets_preconfirmed_flag(self, monkeypatch):
-        monkeypatch.setenv("TELEGRAM_ALLOWED_USERS", "*")
-        monkeypatch.delenv("TELEGRAM_ALLOWED_CHATS", raising=False)
-        monkeypatch.delenv("TELEGRAM_ALLOWED_TOPICS", raising=False)
-        monkeypatch.delenv("TELEGRAM_IGNORED_THREADS", raising=False)
-        adapter = _make_adapter()
-        adapter.handle_message = AsyncMock()
-        adapter._palette_confirmations["nonce1"] = {
-            "command": "new",
-            "chat_id": "-100",
-            "user_id": "123",
-            "thread_id": "99",
-            "ts": time.monotonic(),
-        }
-        update, _query = _make_palette_update("qa:confirm:new:nonce1")
-
-        await adapter._handle_callback_query(update, SimpleNamespace())
-
-        event = adapter.handle_message.await_args.args[0]
-        assert event.text == "/new"
-        assert getattr(event, "preconfirmed_destructive", False) is True
-
-    @pytest.mark.asyncio
-    async def test_stateless_or_expired_palette_confirmation_is_rejected(self, monkeypatch):
-        monkeypatch.setenv("TELEGRAM_ALLOWED_USERS", "*")
-        monkeypatch.delenv("TELEGRAM_ALLOWED_CHATS", raising=False)
-        monkeypatch.delenv("TELEGRAM_ALLOWED_TOPICS", raising=False)
-        monkeypatch.delenv("TELEGRAM_IGNORED_THREADS", raising=False)
-        adapter = _make_adapter()
-        adapter.handle_message = AsyncMock()
-
-        update, query = _make_palette_update("qa:confirm:new")
-        await adapter._handle_callback_query(update, SimpleNamespace())
-        query.answer.assert_awaited_with(text="Confirmation expired. Please try again.")
-        adapter.handle_message.assert_not_called()
-
-        adapter._palette_confirmations["expired"] = {
-            "command": "new",
-            "chat_id": "-100",
-            "user_id": "123",
-            "thread_id": "99",
-            "ts": time.monotonic() - adapter._PALETTE_CONFIRM_TTL - 1,
-        }
-        update, query = _make_palette_update("qa:confirm:new:expired")
-        await adapter._handle_callback_query(update, SimpleNamespace())
-        query.answer.assert_awaited_with(text="Confirmation expired. Please try again.")
-        adapter.handle_message.assert_not_called()
-
-    @pytest.mark.asyncio
-    async def test_palette_callback_respects_allowed_topic_gate(self, monkeypatch):
-        monkeypatch.setenv("TELEGRAM_ALLOWED_USERS", "*")
-        monkeypatch.delenv("TELEGRAM_ALLOWED_CHATS", raising=False)
-        monkeypatch.setenv("TELEGRAM_ALLOWED_TOPICS", "100")
-        monkeypatch.delenv("TELEGRAM_IGNORED_THREADS", raising=False)
-        adapter = _make_adapter()
-        adapter.handle_message = AsyncMock()
-        update, query = _make_palette_update("qa:usage", thread_id="99")
-
-        await adapter._handle_callback_query(update, SimpleNamespace())
-
-        query.answer.assert_awaited_once_with(text="This palette is not available in this chat/topic.")
-        adapter.handle_message.assert_not_called()

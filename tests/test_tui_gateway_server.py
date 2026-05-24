@@ -1240,29 +1240,6 @@ def test_config_set_fast_updates_live_agent_and_config(monkeypatch):
         assert agent.service_tier is None
         assert agent.request_overrides == {"foo": "bar"}
         assert ("agent.service_tier", "normal") in writes
-
-        resp_on = server.handle_request(
-            {
-                "id": "3",
-                "method": "config.set",
-                "params": {"session_id": "sid", "key": "fast", "value": "on"},
-            }
-        )
-        assert resp_on["result"]["value"] == "fast"
-        assert agent.service_tier == "priority"
-        assert ("agent.service_tier", "fast") in writes
-
-        resp_off = server.handle_request(
-            {
-                "id": "4",
-                "method": "config.set",
-                "params": {"session_id": "sid", "key": "fast", "value": "off"},
-            }
-        )
-        assert resp_off["result"]["value"] == "normal"
-        assert agent.service_tier is None
-        assert ("agent.service_tier", "normal") in writes
-
     finally:
         server._sessions.pop("sid", None)
 

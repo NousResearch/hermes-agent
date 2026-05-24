@@ -22,10 +22,6 @@ import time
 from collections import defaultdict
 from typing import Callable, Dict, List, Optional, Any, Tuple
 
-import sys
-from pathlib import Path as _Path
-sys.path.insert(0, str(_Path(__file__).resolve().parents[2]))
-
 logger = logging.getLogger(__name__)
 
 VALID_THREAD_AUTO_ARCHIVE_MINUTES = {60, 1440, 4320, 10080}
@@ -34,49 +30,6 @@ _DISCORD_COMMAND_SYNC_STATE_SUBDIR = "gateway"
 _DISCORD_COMMAND_SYNC_STATE_FILENAME = "discord_command_sync_state.json"
 _DISCORD_COMMAND_SYNC_MUTATION_INTERVAL_SECONDS = 4.5
 _DISCORD_COMMAND_SYNC_MAX_RATE_LIMIT_SLEEP_SECONDS = 30.0
-
-from hermes_cli.commands import (
-    GATEWAY_QUICK_ACTION_COMMANDS,
-    GATEWAY_QUICK_ACTION_CONFIRM_COMMANDS,
-    gateway_quick_action_command_text,
-    gateway_quick_action_confirmation_prompt,
-    gateway_quick_action_label,
-    gateway_quick_action_requires_confirmation,
-)
-
-DISCORD_QUICK_ACTION_COMMANDS: tuple[str, ...] = GATEWAY_QUICK_ACTION_COMMANDS
-DISCORD_QUICK_ACTION_CONFIRM_COMMANDS: frozenset[str] = GATEWAY_QUICK_ACTION_CONFIRM_COMMANDS
-
-# Discord palette colors follow one semantic rule set:
-# - danger/red: confirmation-gated actions that can disrupt the session/runtime
-# - primary/blurple: non-destructive actions that actively change or re-run work
-# - secondary/grey: read-only informational actions
-DISCORD_QUICK_ACTION_PRIMARY_COMMANDS: frozenset[str] = frozenset({
-    "model",
-    "personality",
-    "retry",
-    "compress",
-    "fast",
-})
-
-DISCORD_QUICK_ACTION_CONFIRM_PROMPTS: dict[str, str] = {
-    command: gateway_quick_action_confirmation_prompt(command, context_label="Discord thread")
-    for command in DISCORD_QUICK_ACTION_CONFIRM_COMMANDS
-}
-
-
-def _quick_action_label(command_name: str) -> str:
-    """Return the Discord button label for a V1 quick action."""
-    return gateway_quick_action_label(command_name)
-
-
-def _quick_action_row(command_name: str) -> int:
-    """Return the fixed V1 palette row for a quick-action command."""
-    try:
-        index = DISCORD_QUICK_ACTION_COMMANDS.index(command_name)
-    except ValueError:
-        return 0
-    return min(index // 3, 4)
 
 try:
     import discord
@@ -89,6 +42,10 @@ except ImportError:
     DiscordMessage = Any
     Intents = Any
     commands = None
+
+import sys
+from pathlib import Path as _Path
+sys.path.insert(0, str(_Path(__file__).resolve().parents[2]))
 
 from gateway.config import Platform, PlatformConfig
 import re
@@ -109,6 +66,55 @@ from gateway.platforms.base import (
     SUPPORTED_DOCUMENT_TYPES,
 )
 from tools.url_safety import is_safe_url
+
+
+DISCORD_QUICK_ACTION_COMMANDS: tuple[str, ...] = (
+    "status", "usage", "help",
+    "model", "agents", "personality",
+    "whoami", "insights", "new",
+    "retry", "undo", "stop",
+    "compress", "fast", "yolo",
+)
+DISCORD_QUICK_ACTION_CONFIRM_COMMANDS: frozenset[str] = frozenset({"new", "undo", "stop", "yolo"})
+DISCORD_QUICK_ACTION_PRIMARY_COMMANDS: frozenset[str] = frozenset({
+    "model", "personality", "retry", "compress", "fast",
+})
+DISCORD_QUICK_ACTION_LABELS: dict[str, str] = {
+    "whoami": "Who Am I",
+    "yolo": "YOLO",
+}
+DISCORD_QUICK_ACTION_COMMAND_TEXTS: dict[str, str] = {
+    "new": "/reset",
+    "fast": "/fast fast",
+}
+
+
+def _quick_action_label(command_name: str) -> str:
+    return DISCORD_QUICK_ACTION_LABELS.get(
+        command_name,
+        command_name.replace("-", " ").title(),
+    )
+
+
+def _quick_action_command_text(command_name: str) -> str:
+    return DISCORD_QUICK_ACTION_COMMAND_TEXTS.get(command_name, f"/{command_name}")
+
+
+def _quick_action_row(command_name: str) -> int:
+    try:
+        return min(DISCORD_QUICK_ACTION_COMMANDS.index(command_name) // 3, 4)
+    except ValueError:
+        return 0
+
+
+def _quick_action_prompt(command_name: str) -> str:
+    prompts = {
+        "new": "Start a fresh Hermes session for this Discord thread?",
+        "undo": "Undo the last user/assistant exchange in this Discord thread?",
+        "stop": "Stop the active Hermes response in this Discord thread?",
+        "yolo": "Enable YOLO mode for this session and skip dangerous-command approvals?",
+    }
+    return prompts.get(command_name, f"Run /{command_name}?")
 
 
 def _clean_discord_id(entry: str) -> str:
@@ -2976,35 +2982,19 @@ class DiscordAdapter(BasePlatformAdapter):
         except Exception as e:
             logger.debug("Discord interaction cleanup failed: %s", e)
 
-    async def _run_palette_slash(
-        self,
-        interaction: Any,
-    ) -> None:
-        """Render the Discord quick-action palette as its own /palette command."""
+    async def _run_palette_slash(self, interaction: discord.Interaction) -> None:
+        """Render Discord quick-action buttons."""
         if not await self._check_slash_authorization(interaction, "/palette"):
             return
-
         await interaction.response.defer(ephemeral=False)
-        # /palette is a compact quick-action entrypoint, not a /commands alias.
-        # Keep command execution in the normal shared slash path via the buttons,
-        # but do not synthesize /commands just to render the palette body.
-        text = (
-            "Hermes Quick Actions\n\n"
-            "Choose from the quick actions below. Buttons run through the normal "
-            "slash-command pipeline; New, Undo, Stop, and YOLO ask for confirmation first."
-        )
-
         view = CommandQuickActionsView(self)
-        formatted = self.format_message(text)
-        chunks = self.truncate_message(formatted, self.MAX_MESSAGE_LENGTH)
-        if not chunks:
-            chunks = ["Hermes Quick Actions"]
-        try:
-            await interaction.edit_original_response(content=chunks[0], view=view)
-            for chunk in chunks[1:]:
-                await interaction.followup.send(chunk)
-        except Exception as exc:
-            logger.debug("Discord /palette quick-action response failed: %s", exc)
+        await interaction.edit_original_response(
+            content=(
+                "Hermes Quick Actions\n\n"
+                "Choose a button below. Sensitive actions ask for confirmation first."
+            ),
+            view=view,
+        )
 
     def _register_slash_commands(self) -> None:
         """Register Discord slash commands on the command tree."""
@@ -4367,97 +4357,6 @@ class DiscordAdapter(BasePlatformAdapter):
             logger.warning("[%s] send_model_picker failed: %s", self.name, e)
             return SendResult(success=False, error=str(e))
 
-    async def send_personality_picker(
-        self,
-        chat_id: str,
-        personalities: list,
-        current_personality: str,
-        session_key: str,
-        on_personality_selected,
-        metadata: Optional[Dict[str, Any]] = None,
-    ) -> SendResult:
-        """Send an interactive select-menu personality picker."""
-        if not self._client or not DISCORD_AVAILABLE:
-            return SendResult(success=False, error="Not connected")
-
-        try:
-            target_id = chat_id
-            if metadata and metadata.get("thread_id"):
-                target_id = metadata["thread_id"]
-
-            channel = self._client.get_channel(int(target_id))
-            if not channel:
-                channel = await self._client.fetch_channel(int(target_id))
-
-            current_label = current_personality or "none"
-            visible_count = min(len(personalities or []), 25)
-            extra = (
-                f"\n*{len(personalities) - visible_count} more available — type `/personality <name>` directly*"
-                if len(personalities or []) > visible_count
-                else ""
-            )
-            embed = discord.Embed(
-                title="🎭 Personality",
-                description=(
-                    f"Current personality: `{current_label}`\n\n"
-                    f"Select a personality:{extra}"
-                ),
-                color=discord.Color.blue(),
-            )
-            view = PersonalityPickerView(
-                personalities=personalities,
-                current_personality=current_personality,
-                session_key=session_key,
-                on_personality_selected=on_personality_selected,
-                allowed_user_ids=self._allowed_user_ids,
-                allowed_role_ids=self._allowed_role_ids,
-            )
-            msg = await channel.send(embed=embed, view=view)
-            return SendResult(success=True, message_id=str(msg.id))
-        except Exception as e:
-            logger.warning("[%s] send_personality_picker failed: %s", self.name, e)
-            return SendResult(success=False, error=str(e))
-
-    async def send_fast_picker(
-        self,
-        chat_id: str,
-        current_mode: str,
-        session_key: str,
-        on_speed_selected,
-        metadata: Optional[Dict[str, Any]] = None,
-    ) -> SendResult:
-        """Send an interactive Priority Processing speed picker."""
-        if not self._client or not DISCORD_AVAILABLE:
-            return SendResult(success=False, error="Not connected")
-
-        try:
-            target_id = chat_id
-            if metadata and metadata.get("thread_id"):
-                target_id = metadata["thread_id"]
-
-            channel = self._client.get_channel(int(target_id))
-            if not channel:
-                channel = await self._client.fetch_channel(int(target_id))
-
-            mode = "fast" if str(current_mode).lower() == "fast" else "normal"
-            embed = discord.Embed(
-                title="⚡ Priority Processing",
-                description=f"Current mode: `{mode}`\n\nChoose Normal or Fast.",
-                color=discord.Color.blue(),
-            )
-            view = FastPickerView(
-                current_mode=mode,
-                session_key=session_key,
-                on_speed_selected=on_speed_selected,
-                allowed_user_ids=self._allowed_user_ids,
-                allowed_role_ids=self._allowed_role_ids,
-            )
-            msg = await channel.send(embed=embed, view=view)
-            return SendResult(success=True, message_id=str(msg.id))
-        except Exception as e:
-            logger.warning("[%s] send_fast_picker failed: %s", self.name, e)
-            return SendResult(success=False, error=str(e))
-
     def _get_parent_channel_id(self, channel: Any) -> Optional[str]:
         """Return the parent channel ID for a Discord thread-like channel, if present."""
         parent = getattr(channel, "parent", None)
@@ -5176,19 +5075,17 @@ def _define_discord_view_classes() -> None:
     lazy install sets DISCORD_AVAILABLE=True but leaves the classes
     undefined, causing NameError on the first button interaction.
     """
-    global ExecApprovalView, SlashConfirmView, UpdatePromptView, ModelPickerView, PersonalityPickerView, FastPickerView, ClarifyChoiceView
+    global ExecApprovalView, SlashConfirmView, UpdatePromptView, ModelPickerView, ClarifyChoiceView
     global CommandQuickActionButton, CommandQuickActionsView, QuickActionConfirmView
 
     def _quick_action_style(command_name: str):
-        if gateway_quick_action_requires_confirmation(command_name):
+        if command_name in DISCORD_QUICK_ACTION_CONFIRM_COMMANDS:
             return discord.ButtonStyle.red
         if command_name in DISCORD_QUICK_ACTION_PRIMARY_COMMANDS:
             return discord.ButtonStyle.primary
         return discord.ButtonStyle.secondary
 
     class QuickActionConfirmView(discord.ui.View):
-        """Confirm/cancel view for sensitive Discord quick actions."""
-
         def __init__(self, platform: "DiscordAdapter", command_name: str):
             super().__init__(timeout=300)
             self.platform = platform
@@ -5198,63 +5095,39 @@ def _define_discord_view_classes() -> None:
             self.resolved = False
 
         def _check_auth(self, interaction: discord.Interaction) -> bool:
-            return _component_check_auth(
-                interaction, self.allowed_user_ids, self.allowed_role_ids,
-            )
-
-        async def _disable(self, interaction: discord.Interaction, content: str) -> None:
-            self.resolved = True
-            for child in self.children:
-                child.disabled = True
-            await interaction.response.edit_message(content=content, view=self)
+            return _component_check_auth(interaction, self.allowed_user_ids, self.allowed_role_ids)
 
         @discord.ui.button(label="Confirm", style=discord.ButtonStyle.red)
-        async def confirm(
-            self, interaction: discord.Interaction, button: discord.ui.Button,
-        ):
+        async def confirm(self, interaction: discord.Interaction, button: discord.ui.Button):
             if self.resolved:
-                await interaction.response.send_message(
-                    "This prompt has already been resolved~", ephemeral=True,
-                )
+                await interaction.response.send_message("This prompt has already been resolved~", ephemeral=True)
                 return
             if not self._check_auth(interaction):
-                await interaction.response.send_message(
-                    "You're not authorized to use this action~", ephemeral=True,
-                )
+                await interaction.response.send_message("You're not authorized to use this action~", ephemeral=True)
                 return
             self.resolved = True
             for child in self.children:
                 child.disabled = True
             await self.platform._run_simple_slash(
                 interaction,
-                gateway_quick_action_command_text(self.command_name),
+                _quick_action_command_text(self.command_name),
                 preconfirmed_destructive=True,
             )
 
         @discord.ui.button(label="Cancel", style=discord.ButtonStyle.secondary)
-        async def cancel(
-            self, interaction: discord.Interaction, button: discord.ui.Button,
-        ):
+        async def cancel(self, interaction: discord.Interaction, button: discord.ui.Button):
             if self.resolved:
-                await interaction.response.send_message(
-                    "This prompt has already been resolved~", ephemeral=True,
-                )
+                await interaction.response.send_message("This prompt has already been resolved~", ephemeral=True)
                 return
             if not self._check_auth(interaction):
-                await interaction.response.send_message(
-                    "You're not authorized to use this action~", ephemeral=True,
-                )
+                await interaction.response.send_message("You're not authorized to use this action~", ephemeral=True)
                 return
-            await self._disable(interaction, "Quick action cancelled.")
-
-        async def on_timeout(self):
             self.resolved = True
             for child in self.children:
                 child.disabled = True
+            await interaction.response.edit_message(content="Quick action cancelled.", view=self)
 
     class CommandQuickActionButton(discord.ui.Button):
-        """A single fixed V1 command-palette button."""
-
         def __init__(self, command_name: str):
             super().__init__(
                 label=_quick_action_label(command_name),
@@ -5265,35 +5138,24 @@ def _define_discord_view_classes() -> None:
             self.command_name = command_name
 
         async def callback(self, interaction: discord.Interaction):
-            view = self.view
-            platform = getattr(view, "platform", None)
+            platform = getattr(self.view, "platform", None)
             if platform is None:
-                await interaction.response.send_message(
-                    "Quick actions are unavailable right now.", ephemeral=True,
-                )
+                await interaction.response.send_message("Quick actions are unavailable right now.", ephemeral=True)
                 return
-
-            if gateway_quick_action_requires_confirmation(self.command_name):
-                prompt = gateway_quick_action_confirmation_prompt(
-                    self.command_name,
-                    context_label="Discord thread",
-                )
+            if self.command_name in DISCORD_QUICK_ACTION_CONFIRM_COMMANDS:
                 await interaction.response.send_message(
-                    prompt,
+                    _quick_action_prompt(self.command_name),
                     view=QuickActionConfirmView(platform, self.command_name),
                     ephemeral=True,
                 )
                 return
-
             await platform._run_simple_slash(
                 interaction,
-                gateway_quick_action_command_text(self.command_name),
+                _quick_action_command_text(self.command_name),
                 cleanup_response=False,
             )
 
     class CommandQuickActionsView(discord.ui.View):
-        """Fixed Discord V1 quick-action command palette."""
-
         def __init__(self, platform: "DiscordAdapter"):
             super().__init__(timeout=300)
             self.platform = platform
@@ -5813,217 +5675,6 @@ def _define_discord_view_classes() -> None:
         async def on_timeout(self):
             self.resolved = True
             self.clear_items()
-
-
-    class PersonalityPickerView(discord.ui.View):
-        """Interactive select-menu view for personality switching."""
-
-        def __init__(
-            self,
-            personalities: list,
-            current_personality: str,
-            session_key: str,
-            on_personality_selected,
-            allowed_user_ids: set,
-            allowed_role_ids: Optional[set] = None,
-        ):
-            super().__init__(timeout=120)
-            self.personalities = list(personalities or [])
-            self.current_personality = current_personality or "none"
-            self.session_key = session_key
-            self.on_personality_selected = on_personality_selected
-            self.allowed_user_ids = allowed_user_ids
-            self.allowed_role_ids = allowed_role_ids or set()
-            self.resolved = False
-            self._build_personality_select()
-
-        def _check_auth(self, interaction: discord.Interaction) -> bool:
-            return _component_check_auth(
-                interaction, self.allowed_user_ids, self.allowed_role_ids,
-            )
-
-        def _build_personality_select(self):
-            self.clear_items()
-            options = []
-            for idx, entry in enumerate(self.personalities[:25]):
-                name = str(entry.get("name") or "")
-                if not name:
-                    continue
-                label = str(entry.get("label") or name)
-                if entry.get("is_current"):
-                    label = f"✓ {label}"
-                description = str(entry.get("description") or "") or None
-                options.append(
-                    discord.SelectOption(
-                        label=label[:100],
-                        value=str(idx),
-                        description=description[:100] if description else None,
-                    )
-                )
-            if options:
-                select = discord.ui.Select(
-                    placeholder="Choose a personality...",
-                    options=options,
-                    custom_id="personality_select",
-                )
-                select.callback = self._on_personality_selected
-                self.add_item(select)
-
-            cancel_btn = discord.ui.Button(
-                label="Cancel",
-                style=discord.ButtonStyle.red,
-                custom_id="personality_cancel",
-            )
-            cancel_btn.callback = self._on_cancel
-            self.add_item(cancel_btn)
-
-        async def _on_personality_selected(self, interaction: discord.Interaction):
-            if self.resolved:
-                await interaction.response.send_message(
-                    "Already resolved~", ephemeral=True
-                )
-                return
-            if not self._check_auth(interaction):
-                await interaction.response.send_message(
-                    "You're not authorized~", ephemeral=True
-                )
-                return
-
-            try:
-                selected_idx = int(interaction.data["values"][0])
-                personality_name = str(self.personalities[selected_idx]["name"])
-            except Exception:
-                await interaction.response.send_message(
-                    "Personality not found.", ephemeral=True
-                )
-                return
-
-            self.resolved = True
-            self.clear_items()
-            await interaction.response.edit_message(
-                embed=discord.Embed(
-                    title="🎭 Switching Personality",
-                    description=f"Switching to `{personality_name}`...",
-                    color=discord.Color.blue(),
-                ),
-                view=None,
-            )
-
-            try:
-                result_text = await self.on_personality_selected(
-                    str(interaction.channel_id),
-                    personality_name,
-                )
-            except Exception as exc:
-                result_text = f"Error switching personality: {exc}"
-
-            await interaction.edit_original_response(
-                embed=discord.Embed(
-                    title="🎭 Personality Updated",
-                    description=result_text,
-                    color=discord.Color.green(),
-                ),
-                view=None,
-            )
-
-        async def _on_cancel(self, interaction: discord.Interaction):
-            if self.resolved:
-                await interaction.response.send_message(
-                    "Already resolved~", ephemeral=True
-                )
-                return
-            if not self._check_auth(interaction):
-                await interaction.response.send_message(
-                    "You're not authorized~", ephemeral=True
-                )
-                return
-            self.resolved = True
-            self.clear_items()
-            await interaction.response.edit_message(
-                embed=discord.Embed(
-                    title="🎭 Personality",
-                    description="Personality selection cancelled.",
-                    color=discord.Color.greyple(),
-                ),
-                view=self,
-            )
-
-        async def on_timeout(self):
-            self.resolved = True
-            self.clear_items()
-
-
-    class FastPickerView(discord.ui.View):
-        """Interactive button view for explicit Priority Processing selection."""
-
-        def __init__(
-            self,
-            current_mode: str,
-            session_key: str,
-            on_speed_selected,
-            allowed_user_ids: set,
-            allowed_role_ids: Optional[set] = None,
-        ):
-            super().__init__(timeout=120)
-            self.current_mode = current_mode
-            self.session_key = session_key
-            self.on_speed_selected = on_speed_selected
-            self.allowed_user_ids = allowed_user_ids
-            self.allowed_role_ids = allowed_role_ids or set()
-            self.resolved = False
-
-        def _check_auth(self, interaction: discord.Interaction) -> bool:
-            return _component_check_auth(
-                interaction, self.allowed_user_ids, self.allowed_role_ids,
-            )
-
-        async def _select(self, interaction: discord.Interaction, speed: str) -> None:
-            if self.resolved:
-                await interaction.response.send_message(
-                    "Already resolved~", ephemeral=True
-                )
-                return
-            if not self._check_auth(interaction):
-                await interaction.response.send_message(
-                    "You're not authorized~", ephemeral=True
-                )
-                return
-
-            self.resolved = True
-            for child in self.children:
-                child.disabled = True
-
-            try:
-                result_text = await self.on_speed_selected(speed)
-            except Exception as exc:
-                result_text = f"Error updating speed: {exc}"
-
-            color = discord.Color.green() if speed == "fast" else discord.Color.blue()
-            await interaction.response.edit_message(
-                embed=discord.Embed(
-                    title="⚡ Priority Processing Updated",
-                    description=result_text,
-                    color=color,
-                ),
-                view=self,
-            )
-
-        @discord.ui.button(label="Normal", style=discord.ButtonStyle.secondary)
-        async def normal_btn(
-            self, interaction: discord.Interaction, button: discord.ui.Button
-        ):
-            await self._select(interaction, "normal")
-
-        @discord.ui.button(label="Fast", style=discord.ButtonStyle.primary)
-        async def fast_btn(
-            self, interaction: discord.Interaction, button: discord.ui.Button
-        ):
-            await self._select(interaction, "fast")
-
-        async def on_timeout(self):
-            self.resolved = True
-            for child in self.children:
-                child.disabled = True
 
 
     class ClarifyChoiceView(discord.ui.View):

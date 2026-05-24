@@ -138,9 +138,19 @@ class TestDynamicRouteSecretValidation:
         (tmp_path / _DYNAMIC_ROUTES_FILENAME).write_text(
             json.dumps({"test": {"secret": _INSECURE_NO_AUTH, "prompt": "p"}})
         )
-        adapter = _make_adapter()
+        adapter = _make_adapter(extra={"host": "127.0.0.1"})
         adapter._reload_dynamic_routes()
         assert "test" in adapter._routes
+
+    def test_insecure_no_auth_rejected_on_non_loopback_bind(self, tmp_path):
+        # Dynamic INSECURE_NO_AUTH routes are only valid on loopback hosts.
+        (tmp_path / _DYNAMIC_ROUTES_FILENAME).write_text(
+            json.dumps({"pub": {"secret": _INSECURE_NO_AUTH, "prompt": "p"}})
+        )
+        adapter = _make_adapter(extra={"host": "0.0.0.0"})
+        adapter._reload_dynamic_routes()
+        assert "pub" not in adapter._routes
+        assert "pub" not in adapter._dynamic_routes
 
     def test_warning_logged_on_skip(self, tmp_path, caplog):
         import logging

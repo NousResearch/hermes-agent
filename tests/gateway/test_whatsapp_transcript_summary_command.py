@@ -40,7 +40,9 @@ def _make_event(
         message_id="m1",
         participant_role=participant_role,
         message_classification=(
-            "command_capable" if participant_role == "owner_operator" else "conversational_only"
+            "command_capable"
+            if participant_role == "owner_operator"
+            else "conversational_only"
         ),
         command_authority_scope=command_authority_scope,
     )
@@ -52,7 +54,9 @@ def _make_runner(tmp_path):
     runner = object.__new__(GatewayRunner)
     runner.config = GatewayConfig(
         platforms={
-            Platform.WHATSAPP: PlatformConfig(enabled=True, extra={"allow_admin_from": ["15550000001"]})
+            Platform.WHATSAPP: PlatformConfig(
+                enabled=True, extra={"allow_admin_from": ["15550000001"]}
+            )
         }
     )
     runner.adapters = {Platform.WHATSAPP: MagicMock()}
@@ -99,7 +103,9 @@ def _make_runner(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_wsummary_command_returns_readable_summary_for_authorized_operator(tmp_path, monkeypatch):
+async def test_wsummary_command_returns_readable_summary_for_authorized_operator(
+    tmp_path, monkeypatch
+):
     base_dir = tmp_path / ".hermes" / "gateway" / "whatsapp-records"
     base_dir.mkdir(parents=True)
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))

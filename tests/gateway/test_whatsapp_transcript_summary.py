@@ -45,7 +45,9 @@ def _record(
         "record_sequence": record_sequence,
         "participant_role": participant_role,
         "message_classification": message_classification,
-        "command_authority_scope": "owner_only" if participant_role == "owner_operator" else "none",
+        "command_authority_scope": "owner_only"
+        if participant_role == "owner_operator"
+        else "none",
         "sender_id": sender_id,
         "sender_name": sender_name,
         "text": text,
@@ -53,7 +55,9 @@ def _record(
     }
 
 
-def test_generate_whatsapp_transcript_summary_separates_operator_context_and_recap(tmp_path):
+def test_generate_whatsapp_transcript_summary_separates_operator_context_and_recap(
+    tmp_path,
+):
     base_dir = tmp_path / "records"
 
     _append(
@@ -96,8 +100,7 @@ def test_generate_whatsapp_transcript_summary_separates_operator_context_and_rec
             participant_role="agent",
             message_classification="conversational_only",
             text=(
-                "Yes — please send the revised quote and confirm the final unit "
-                "price."
+                "Yes — please send the revised quote and confirm the final unit price."
             ),
             sender_id="agent",
             sender_name="Hermes",
@@ -228,7 +231,9 @@ def test_generate_whatsapp_transcript_summary_can_exclude_operator_context(tmp_p
     assert summary["coverage_start_utc"] == "2024-06-02T09:01:00Z"
 
 
-def test_generate_whatsapp_transcript_summary_returns_no_records_when_only_operator_rows_exist(tmp_path):
+def test_generate_whatsapp_transcript_summary_returns_no_records_when_only_operator_rows_exist(
+    tmp_path,
+):
     base_dir = tmp_path / "records"
     _append(
         base_dir,
@@ -328,44 +333,42 @@ def test_generate_whatsapp_transcript_summary_fails_when_window_too_large(tmp_pa
 
 
 def test_format_whatsapp_transcript_summary_renders_founder_visible_output():
-    rendered = format_whatsapp_transcript_summary(
-        {
-            "summary_status": "ready",
-            "scope": {
-                "conversation_key": None,
-                "destination_key": "whatsapp:dm:15551230000",
-                "group_chat_id": None,
-                "dm_counterparty_id": None,
-                "range_start_utc": "2024-06-02T09:00:00Z",
-                "range_end_utc": "2024-06-02T10:00:00Z",
+    rendered = format_whatsapp_transcript_summary({
+        "summary_status": "ready",
+        "scope": {
+            "conversation_key": None,
+            "destination_key": "whatsapp:dm:15551230000",
+            "group_chat_id": None,
+            "dm_counterparty_id": None,
+            "range_start_utc": "2024-06-02T09:00:00Z",
+            "range_end_utc": "2024-06-02T10:00:00Z",
+        },
+        "coverage_start_utc": "2024-06-02T09:01:00Z",
+        "coverage_end_utc": "2024-06-02T09:03:00Z",
+        "covered_record_count": 2,
+        "participants": [
+            {
+                "participant_role": "external_party",
+                "participant_id": "15551230000",
+                "participant_name": "Vendor",
             },
-            "coverage_start_utc": "2024-06-02T09:01:00Z",
-            "coverage_end_utc": "2024-06-02T09:03:00Z",
-            "covered_record_count": 2,
-            "participants": [
-                {
-                    "participant_role": "external_party",
-                    "participant_id": "15551230000",
-                    "participant_name": "Vendor",
-                },
-                {
-                    "participant_role": "agent",
-                    "participant_id": "agent",
-                    "participant_name": "Hermes",
-                },
-            ],
-            "operator_context": ["Operator: summarize the quote thread"],
-            "conversation_recap": [
-                "Vendor: quoted 200 units.",
-                "Hermes: requested final price.",
-            ],
-            "open_items": [
-                "Unresolved question from Vendor: Do you still need the revised quote?"
-            ],
-            "uncertainties": ["A media attachment was present without visible contents."],
-            "narrative_text": "WhatsApp transcript summary for whatsapp:dm:15551230000.",
-        }
-    )
+            {
+                "participant_role": "agent",
+                "participant_id": "agent",
+                "participant_name": "Hermes",
+            },
+        ],
+        "operator_context": ["Operator: summarize the quote thread"],
+        "conversation_recap": [
+            "Vendor: quoted 200 units.",
+            "Hermes: requested final price.",
+        ],
+        "open_items": [
+            "Unresolved question from Vendor: Do you still need the revised quote?"
+        ],
+        "uncertainties": ["A media attachment was present without visible contents."],
+        "narrative_text": "WhatsApp transcript summary for whatsapp:dm:15551230000.",
+    })
 
     assert "WhatsApp transcript summary" in rendered
     assert "Thread: whatsapp:dm:15551230000" in rendered

@@ -607,6 +607,31 @@ def init_agent(
             # Falling back would send Anthropic credentials to third-party endpoints (Fixes #1739, #minimax-401).
             _is_native_anthropic = agent.provider == "anthropic"
             effective_key = (api_key or resolve_anthropic_token() or "") if _is_native_anthropic else (api_key or "")
+
+            # MiniMax OAuth issues short-lived (~15-min) access tokens. The
+            # Anthropic SDK caches ``api_key`` as a static string at client
+            # construction time, so a session that resolves the bearer once
+            # at startup will keep sending the same token until MiniMax
+            # returns 401 mid-session. Swap the static string for a callable
+            # token provider — ``build_anthropic_client`` recognizes the
+            # callable and installs an httpx event hook that mints a fresh
+            # bearer per outbound request (re-reading auth.json so a refresh
+            # persisted by another process is visible immediately).
+            # The cached refresh path is a no-op when the token still has
+            # ``MINIMAX_OAUTH_REFRESH_SKEW_SECONDS`` of life left, so steady-
+            # state cost is one file read + one timestamp compare per request.
+            if agent.provider == "minimax-oauth" and isinstance(effective_key, str) and effective_key:
+                try:
+                    from hermes_cli.auth import build_minimax_oauth_token_provider
+                    effective_key = build_minimax_oauth_token_provider()
+                except Exception as _mm_exc:  # noqa: BLE001 — never block startup on this
+                    import logging as _logging
+                    _logging.getLogger(__name__).warning(
+                        "MiniMax OAuth: failed to install per-request token provider "
+                        "(%s); falling back to static bearer that will expire ~15min in.",
+                        _mm_exc,
+                    )
+
             agent.api_key = effective_key
             agent._anthropic_api_key = effective_key
             agent._anthropic_base_url = base_url
@@ -618,7 +643,7 @@ def init_agent(
             # that cause 401/403 on their endpoints.  Guards #1739 and
             # the third-party identity-injection bug.
             from agent.anthropic_adapter import _is_oauth_token as _is_oat
-            agent._is_anthropic_oauth = _is_oat(effective_key) if _is_native_anthropic else False
+            agent._is_anthropic_oauth = _is_oat(effective_key) if (_is_native_anthropic and isinstance(effective_key, str)) else False
             agent._anthropic_client = build_anthropic_client(effective_key, base_url, timeout=_provider_timeout)
             # No OpenAI client needed for Anthropic mode
             agent.client = None

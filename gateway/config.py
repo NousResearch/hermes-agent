@@ -870,6 +870,12 @@ def load_gateway_config() -> GatewayConfig:
                         bridged["channel_prompts"] = channel_prompts
                 if "gateway_restart_notification" in platform_cfg:
                     bridged["gateway_restart_notification"] = platform_cfg["gateway_restart_notification"]
+                if "free_response_threads" in platform_cfg:
+                    bridged["free_response_threads"] = platform_cfg["free_response_threads"]
+                if "hub_require_mention_threads" in platform_cfg:
+                    bridged["hub_require_mention_threads"] = [
+                        int(t) for t in platform_cfg["hub_require_mention_threads"]
+                    ]
                 enabled_was_explicit = "enabled" in platform_cfg
                 if not bridged and not enabled_was_explicit:
                     continue

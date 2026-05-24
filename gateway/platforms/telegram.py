@@ -4735,6 +4735,7 @@ class TelegramAdapter(BasePlatformAdapter):
             return True
 
         chat_id_str = str(getattr(getattr(message, "chat", None), "id", ""))
+        thread_id_int = int(thread_id) if thread_id is not None else None
 
         if self._telegram_exclusive_bot_mentions() and self._explicit_bot_mentions_exclude_self(message):
             return False
@@ -4752,7 +4753,23 @@ class TelegramAdapter(BasePlatformAdapter):
 
         if guest_mention:
             return True
-        if chat_id_str in self._telegram_free_response_chats():
+
+        # Check for per-thread free_response override (chat_id:thread_id format).
+        # This lets hub chats force @mention on most threads while allowing
+        # one or two threads (e.g. a "bot-chat" topic) to auto-accept messages.
+        _free_threads = self.config.extra.get("free_response_threads", [])
+        if thread_id_int is not None:
+            for entry in _free_threads:
+                parts = str(entry).split(":")
+                if len(parts) == 2 and parts[0] == chat_id_str and str(thread_id_int) == parts[1]:
+                    return True
+
+        # Per-thread mention override: threads listed here require @mention
+        # even when free_response_chats would normally auto-accept.
+        _hub_mention_threads = self.config.extra.get("hub_require_mention_threads", [])
+        if thread_id_int is not None and thread_id_int in _hub_mention_threads:
+            pass  # Skip free_response_chats, go straight to mention checks
+        elif chat_id_str in self._telegram_free_response_chats():
             return True
         if not self._telegram_require_mention():
             return True

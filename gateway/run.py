@@ -1007,7 +1007,10 @@ from gateway.session import (
     build_session_key,
     is_shared_multi_user_session,
 )
-from gateway.session_handoff import build_session_handoff_note
+from gateway.session_handoff import (
+    build_session_handoff_note,
+    generate_compaction_handoff_summary,
+)
 from gateway.delivery import DeliveryRouter
 from gateway.platforms.base import (
     BasePlatformAdapter,
@@ -8124,6 +8127,24 @@ class GatewayRunner:
                 parent_session_id = getattr(session_entry, "parent_session_id", None)
                 if handoff_mode != "none" and parent_session_id:
                     parent_messages = self.session_store.load_transcript(parent_session_id)
+                    summary_text = None
+                    if handoff_mode == "summary":
+                        try:
+                            _handoff_user_config = _load_gateway_config()
+                            _handoff_model, _handoff_runtime = self._resolve_session_agent_runtime(
+                                source=source,
+                                user_config=_handoff_user_config,
+                            )
+                            summary_text = generate_compaction_handoff_summary(
+                                parent_messages,
+                                model=_handoff_model,
+                                runtime_kwargs=_handoff_runtime,
+                            )
+                        except Exception as e:
+                            logger.debug(
+                                "Session compaction handoff summary failed; using fallback: %s",
+                                e,
+                            )
                     handoff_note = build_session_handoff_note(
                         mode=handoff_mode,
                         parent_session_id=parent_session_id,
@@ -8133,6 +8154,7 @@ class GatewayRunner:
                         now=datetime.now(),
                         max_chars=getattr(handoff_cfg, "max_chars", 2400),
                         last_messages=getattr(handoff_cfg, "last_messages", 8),
+                        summary_text=summary_text,
                     )
             except Exception as e:
                 logger.debug("Session handoff generation failed (non-fatal): %s", e)

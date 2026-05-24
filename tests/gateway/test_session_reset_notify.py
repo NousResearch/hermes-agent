@@ -317,6 +317,57 @@ class TestSessionHandoff:
         assert cfg.mode == "none"
         assert cfg.to_dict()["mode"] == "none"
 
+    def test_summary_mode_is_valid_and_structured(self):
+        cfg = SessionHandoffConfig.from_dict({"mode": "summary"})
+        assert cfg.mode == "summary"
+
+        note = build_session_handoff_note(
+            mode="summary",
+            parent_session_id="parent-summary",
+            reset_reason="daily",
+            parent_messages=[
+                {"role": "user", "content": "We need the daily handoff to preserve decisions."},
+                {"role": "assistant", "content": "I added the parent session linkage."},
+                {"role": "tool", "content": "noisy tool output should not appear"},
+                {"role": "user", "content": "Also align it with compaction."},
+            ],
+            previous_updated_at=datetime(2026, 5, 22, 18, 0),
+            now=datetime(2026, 5, 23, 9, 30),
+            last_messages=20,
+            max_chars=48000,
+        )
+
+        assert note is not None
+        assert "It is now a new day/session" in note
+        assert "## Active Task" in note
+        assert "## Goal" in note
+        assert "## Active State" in note
+        assert "## Remaining Work" in note
+        assert "Also align it with compaction" in note
+        assert "I added the parent session linkage" in note
+        assert "noisy tool output" not in note
+
+    def test_summary_mode_prefers_compaction_summary_over_raw_turns(self):
+        note = build_session_handoff_note(
+            mode="summary",
+            parent_session_id="parent-summary",
+            reset_reason="daily",
+            parent_messages=[
+                {"role": "user", "content": "raw prior user turn should not leak"},
+            ],
+            previous_updated_at=datetime(2026, 5, 22, 18, 0),
+            now=datetime(2026, 5, 23, 9, 30),
+            max_chars=48000,
+            summary_text="## Active Task\nFinish the bridge.\n\n## Remaining Work\nOpen the PR.",
+        )
+
+        assert note is not None
+        assert "Current local time: 2026-05-23 09:30" in note
+        assert "Elapsed since last activity: 15h 30m" in note
+        assert "## Active Task" in note
+        assert "Finish the bridge" in note
+        assert "raw prior user turn should not leak" not in note
+
     def test_notice_mode_frames_prior_context_as_background_only(self):
         note = build_session_handoff_note(
             mode="notice",

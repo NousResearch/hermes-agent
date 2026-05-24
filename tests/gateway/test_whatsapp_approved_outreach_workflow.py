@@ -10,7 +10,10 @@ from gateway.config import GatewayConfig, Platform, PlatformConfig
 from gateway.platforms.base import MessageEvent, SendResult
 from gateway.session import SessionEntry, SessionSource
 from gateway.whatsapp_message_store import append_whatsapp_record
-from gateway.whatsapp_approved_outreach import load_whatsapp_outreach_run_records
+from gateway.whatsapp_approved_outreach import (
+    load_whatsapp_outreach_run_records,
+    load_whatsapp_outreach_state,
+)
 
 
 def _make_source(
@@ -208,6 +211,107 @@ async def test_instruction_triggered_outreach_sends_one_bounded_follow_up(
     )
     assert persisted["run"]["trigger_source"] == "owner_instruction"
     assert persisted["run"]["target_executions"][0]["execution_status"] == "sent"
+
+    outreach_state = load_whatsapp_outreach_state()
+    assert outreach_state["schema_version"] == 1
+    assert len(outreach_state["plans"]) == 1
+    assert len(outreach_state["plan_targets"]) == 1
+    assert len(outreach_state["runs"]) == 1
+    assert len(outreach_state["target_executions"]) == 1
+    assert len(outreach_state["reports"]) == 1
+
+    plan_row = outreach_state["plans"][0]
+    target_row = outreach_state["plan_targets"][0]
+    run_row = outreach_state["runs"][0]
+    execution_row = outreach_state["target_executions"][0]
+    report_row = outreach_state["reports"][0]
+
+    assert plan_row["plan_status"] == "active"
+    assert plan_row["operator_objective"] == "request the revised quote"
+    assert target_row["plan_id"] == plan_row["plan_id"]
+    assert target_row["conversation_key"] == "whatsapp:dm:15551230000"
+    assert target_row["destination_key"] == "whatsapp:dm:15551230000"
+    assert target_row["dm_counterparty_id"] == "15551230000"
+    assert target_row["max_outbound_messages_per_run"] == 1
+    assert run_row["plan_id"] == plan_row["plan_id"]
+    assert run_row["run_status"] == "completed"
+    assert run_row["trigger_source"] == "owner_instruction"
+    assert run_row["target_count"] == 1
+    assert run_row["completed_target_count"] == 1
+    assert run_row["failed_target_count"] == 0
+    assert run_row["report_id"] == report_row["report_id"]
+    assert execution_row["run_id"] == run_row["run_id"]
+    assert execution_row["plan_target_id"] == target_row["plan_target_id"]
+    assert execution_row["execution_status"] == "sent"
+    assert execution_row["resolved_conversation_key"] == "whatsapp:dm:15551230000"
+    assert execution_row["resolved_destination_key"] == "whatsapp:dm:15551230000"
+    assert execution_row["resolved_destination_chat_id"] == "15551230000@s.whatsapp.net"
+    assert execution_row["dispatch_group_id"] == "dispatch-123"
+    assert execution_row["message_id"] == "bridge-msg-9"
+    assert report_row["plan_id"] == plan_row["plan_id"]
+    assert report_row["run_id"] == run_row["run_id"]
+    assert report_row["report_status"] == "ready"
+
+
+@pytest.mark.asyncio
+async def test_instruction_triggered_outreach_reuses_durable_plan_and_target_state(
+    tmp_path, monkeypatch
+):
+    hermes_home = tmp_path / ".hermes"
+    base_dir = hermes_home / "gateway" / "whatsapp-records"
+    base_dir.mkdir(parents=True)
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+    _append_record(
+        base_dir,
+        record_id="record-1",
+        text="Prior vendor thread context.",
+        participant_role="external_party",
+        message_id="msg-1",
+        effective_event_at="2024-06-02T09:01:00Z",
+    )
+
+    runner = _make_runner(tmp_path)
+    runner.adapters[Platform.WHATSAPP].send = AsyncMock(
+        return_value=SendResult(
+            success=True,
+            message_id="bridge-msg-10",
+            raw_response={
+                "dispatch_group_id": "dispatch-124",
+                "messageId": "bridge-msg-10",
+            },
+        )
+    )
+
+    instruction = (
+        "whatsapp outreach destination_key=whatsapp:dm:15551230000 "
+        'operator_objective="request the revised quote" '
+        'message_text="Following up on the revised quote."'
+    )
+    await runner._handle_message(_make_event(instruction, platform=Platform.WHATSAPP))
+    await runner._handle_message(_make_event(instruction, platform=Platform.WHATSAPP))
+
+    run_records = load_whatsapp_outreach_run_records()
+    assert len(run_records) == 2
+    first_plan_id = run_records[0]["plan"]["plan_id"]
+    second_plan_id = run_records[1]["plan"]["plan_id"]
+    first_target_id = run_records[0]["plan"]["approved_targets"][0]["plan_target_id"]
+    second_target_id = run_records[1]["plan"]["approved_targets"][0]["plan_target_id"]
+
+    assert first_plan_id == second_plan_id
+    assert first_target_id == second_target_id
+    assert run_records[0]["run"]["run_id"] != run_records[1]["run"]["run_id"]
+    assert (
+        run_records[0]["run"]["target_executions"][0]["target_execution_id"]
+        != run_records[1]["run"]["target_executions"][0]["target_execution_id"]
+    )
+
+    outreach_state = load_whatsapp_outreach_state()
+    assert len(outreach_state["plans"]) == 1
+    assert len(outreach_state["plan_targets"]) == 1
+    assert len(outreach_state["runs"]) == 2
+    assert len(outreach_state["target_executions"]) == 2
+    assert len(outreach_state["reports"]) == 2
 
 
 @pytest.mark.asyncio

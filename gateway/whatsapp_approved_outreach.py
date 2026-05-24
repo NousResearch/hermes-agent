@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import json
+import os
 import shlex
+import threading
 from pathlib import Path
 from typing import Any
 from uuid import uuid4
@@ -30,6 +32,9 @@ _OUTREACH_PREFIXES = (
     "whatsapp outreach",
     "whatsapp-outreach",
 )
+WHATSAPP_OUTREACH_STATE_SCHEMA_VERSION = 1
+
+_OUTREACH_STATE_LOCK = threading.Lock()
 
 
 def is_whatsapp_approved_outreach_instruction(text: str | None) -> bool:
@@ -95,35 +100,275 @@ def normalize_whatsapp_approved_outreach_request(
     }
 
 
-def _outreach_store_path() -> Path:
-    return get_hermes_home() / "gateway" / "whatsapp-approved-outreach-runs.jsonl"
+def _outreach_store_path(*, base_dir: Path | None = None) -> Path:
+    hermes_home = base_dir or get_hermes_home()
+    return hermes_home / "gateway" / "whatsapp-approved-outreach-state.json"
+
+
+def _default_outreach_state() -> dict[str, Any]:
+    return {
+        "schema_version": WHATSAPP_OUTREACH_STATE_SCHEMA_VERSION,
+        "plans": [],
+        "plan_targets": [],
+        "runs": [],
+        "target_executions": [],
+        "reports": [],
+    }
+
+
+def _normalized_outreach_state(raw_state: dict[str, Any] | None) -> dict[str, Any]:
+    state = _default_outreach_state()
+    if not isinstance(raw_state, dict):
+        return state
+
+    schema_version = raw_state.get("schema_version")
+    if isinstance(schema_version, int) and schema_version > 0:
+        state["schema_version"] = schema_version
+
+    for field in ("plans", "plan_targets", "runs", "target_executions", "reports"):
+        value = raw_state.get(field)
+        if isinstance(value, list):
+            state[field] = [item for item in value if isinstance(item, dict)]
+    return state
+
+
+def load_whatsapp_outreach_state(*, base_dir: Path | None = None) -> dict[str, Any]:
+    path = _outreach_store_path(base_dir=base_dir)
+    if not path.exists():
+        return _default_outreach_state()
+
+    with path.open("r", encoding="utf-8") as handle:
+        return _normalized_outreach_state(json.load(handle))
+
+
+def _write_whatsapp_outreach_state(
+    state: dict[str, Any], *, base_dir: Path | None = None
+) -> Path:
+    path = _outreach_store_path(base_dir=base_dir)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    payload = json.dumps(state, ensure_ascii=False, indent=2) + "\n"
+    with path.open("w", encoding="utf-8") as handle:
+        handle.write(payload)
+        handle.flush()
+        os.fsync(handle.fileno())
+    return path
+
+
+def _find_first(
+    rows: list[dict[str, Any]], field_name: str, expected: str | None
+) -> dict[str, Any] | None:
+    for row in rows:
+        if row.get(field_name) == expected:
+            return row
+    return None
+
+
+def _exact_selector_from_row(row: dict[str, Any]) -> dict[str, Any]:
+    return {
+        field: (str(row.get(field) or "").strip() or None)
+        for field in WHATSAPP_APPROVED_OUTREACH_EXACT_SELECTOR_FIELDS
+    }
+
+
+def _resolved_target_from_execution(execution: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "conversation_key": execution.get("resolved_conversation_key"),
+        "destination_key": execution.get("resolved_destination_key"),
+        "group_chat_id": execution.get("group_chat_id"),
+        "dm_counterparty_id": execution.get("dm_counterparty_id"),
+        "destination_context_type": execution.get("destination_context_type"),
+        "destination_chat_id": execution.get("resolved_destination_chat_id"),
+        "destination_target_id": execution.get("destination_target_id"),
+    }
+
+
+def _enriched_plan(
+    state: dict[str, Any], plan: dict[str, Any] | None
+) -> dict[str, Any] | None:
+    if not isinstance(plan, dict):
+        return None
+    enriched = dict(plan)
+    enriched["approved_targets"] = [
+        dict(target)
+        for target in state["plan_targets"]
+        if target.get("plan_id") == plan.get("plan_id")
+    ]
+    return enriched
+
+
+def _enriched_execution(execution: dict[str, Any]) -> dict[str, Any]:
+    enriched = dict(execution)
+    enriched["resolved_target"] = _resolved_target_from_execution(execution)
+    return enriched
+
+
+def _enriched_run(
+    state: dict[str, Any], run: dict[str, Any] | None
+) -> dict[str, Any] | None:
+    if not isinstance(run, dict):
+        return None
+    enriched = dict(run)
+    enriched["target_executions"] = [
+        _enriched_execution(execution)
+        for execution in state["target_executions"]
+        if execution.get("run_id") == run.get("run_id")
+    ]
+    return enriched
+
+
+def _matching_plan_and_target(
+    state: dict[str, Any],
+    *,
+    operator_objective: str,
+    approved_by_principal: str,
+    selector: dict[str, Any],
+) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
+    for plan_target in reversed(state["plan_targets"]):
+        if plan_target.get("target_status") != "active":
+            continue
+        if _exact_selector_from_row(plan_target) != selector:
+            continue
+        plan = _find_first(state["plans"], "plan_id", plan_target.get("plan_id"))
+        if plan is None:
+            continue
+        if plan.get("approved_by_principal") != approved_by_principal:
+            continue
+        if plan.get("operator_objective") != operator_objective:
+            continue
+        if plan.get("trigger_mode") != "instruction_only":
+            continue
+        if plan.get("plan_status") not in {"approved", "active"}:
+            continue
+        return plan, plan_target
+    return None, None
+
+
+def _observable_status_for_execution_status(execution_status: str) -> str:
+    if execution_status == "sent":
+        return "awaiting_reply"
+    if execution_status == "send_failed":
+        return "send_failed"
+    return "unresolved"
+
+
+def _status_basis_for_execution_status(execution_status: str) -> str:
+    if execution_status == "sent":
+        return "bounded_model_synthesis"
+    return "direct_conversation_evidence"
+
+
+def _persist_whatsapp_outreach_run_record(record: dict[str, Any]) -> Path:
+    with _OUTREACH_STATE_LOCK:
+        state = load_whatsapp_outreach_state()
+        plan = record.get("plan") if isinstance(record, dict) else None
+        run = record.get("run") if isinstance(record, dict) else None
+        report = record.get("report") if isinstance(record, dict) else None
+        if isinstance(plan, dict):
+            plan_targets = plan.get("approved_targets") or []
+            state["plans"] = [
+                row
+                for row in state["plans"]
+                if row.get("plan_id") != plan.get("plan_id")
+            ]
+            state["plans"].append({
+                key: value for key, value in plan.items() if key != "approved_targets"
+            })
+            if isinstance(plan_targets, list):
+                target_ids = {
+                    target.get("plan_target_id")
+                    for target in plan_targets
+                    if isinstance(target, dict)
+                }
+                state["plan_targets"] = [
+                    row
+                    for row in state["plan_targets"]
+                    if row.get("plan_target_id") not in target_ids
+                ]
+                state["plan_targets"].extend(
+                    dict(target) for target in plan_targets if isinstance(target, dict)
+                )
+        if isinstance(run, dict):
+            target_executions = run.get("target_executions") or []
+            state["runs"] = [
+                row for row in state["runs"] if row.get("run_id") != run.get("run_id")
+            ]
+            state["runs"].append({
+                key: value for key, value in run.items() if key != "target_executions"
+            })
+            if isinstance(target_executions, list):
+                execution_ids = {
+                    execution.get("target_execution_id")
+                    for execution in target_executions
+                    if isinstance(execution, dict)
+                }
+                state["target_executions"] = [
+                    row
+                    for row in state["target_executions"]
+                    if row.get("target_execution_id") not in execution_ids
+                ]
+                for execution in target_executions:
+                    if not isinstance(execution, dict):
+                        continue
+                    execution_row = dict(execution)
+                    resolved_target = execution_row.pop("resolved_target", None)
+                    if isinstance(resolved_target, dict):
+                        execution_row.setdefault(
+                            "resolved_conversation_key",
+                            resolved_target.get("conversation_key"),
+                        )
+                        execution_row.setdefault(
+                            "resolved_destination_key",
+                            resolved_target.get("destination_key"),
+                        )
+                        execution_row.setdefault(
+                            "resolved_destination_chat_id",
+                            resolved_target.get("destination_chat_id"),
+                        )
+                        execution_row.setdefault(
+                            "group_chat_id", resolved_target.get("group_chat_id")
+                        )
+                        execution_row.setdefault(
+                            "dm_counterparty_id",
+                            resolved_target.get("dm_counterparty_id"),
+                        )
+                        execution_row.setdefault(
+                            "destination_context_type",
+                            resolved_target.get("destination_context_type"),
+                        )
+                        execution_row.setdefault(
+                            "destination_target_id",
+                            resolved_target.get("destination_target_id"),
+                        )
+                    state["target_executions"].append(execution_row)
+        if isinstance(report, dict):
+            state["reports"] = [
+                row
+                for row in state["reports"]
+                if row.get("report_id") != report.get("report_id")
+            ]
+            state["reports"].append(dict(report))
+        return _write_whatsapp_outreach_state(state)
 
 
 def append_whatsapp_outreach_run_record(record: dict[str, Any]) -> Path:
-    path = _outreach_store_path()
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("a", encoding="utf-8") as handle:
-        handle.write(json.dumps(record, ensure_ascii=False, sort_keys=True) + "\n")
-    return path
+    return _persist_whatsapp_outreach_run_record(record)
 
 
 def load_whatsapp_outreach_run_records(
     *, base_dir: Path | None = None
 ) -> list[dict[str, Any]]:
-    if base_dir is None:
-        path = _outreach_store_path()
-    else:
-        path = base_dir / "gateway" / "whatsapp-approved-outreach-runs.jsonl"
-    if not path.exists():
-        return []
-
+    state = load_whatsapp_outreach_state(base_dir=base_dir)
     results: list[dict[str, Any]] = []
-    with path.open("r", encoding="utf-8") as handle:
-        for line in handle:
-            line = line.strip()
-            if not line:
-                continue
-            results.append(json.loads(line))
+    for run in state["runs"]:
+        plan = _find_first(state["plans"], "plan_id", run.get("plan_id"))
+        report = _find_first(state["reports"], "report_id", run.get("report_id"))
+        results.append({
+            "recorded_at_utc": run.get("run_completed_at_utc")
+            or run.get("run_started_at_utc"),
+            "plan": _enriched_plan(state, plan),
+            "run": _enriched_run(state, run),
+            "report": dict(report) if isinstance(report, dict) else None,
+        })
     return results
 
 
@@ -202,50 +447,123 @@ async def execute_whatsapp_approved_outreach(
     history_window_end_utc = (
         continuity_rows[-1].get("effective_event_at_utc") if continuity_rows else None
     )
+    if history_window_start_utc is None:
+        history_window_start_utc = utc_isoformat(utc_now())
+    if history_window_end_utc is None:
+        history_window_end_utc = history_window_start_utc
 
-    plan_id = f"waplan-{uuid4()}"
-    plan_target_id = f"watarget-{uuid4()}"
-    run_id = f"warun-{uuid4()}"
-    target_execution_id = f"waexec-{uuid4()}"
+    approved_by_principal = "owner_operator"
+    plan_selector = _exact_selector_from_row(resolved_target)
+    run_started_at_utc = utc_isoformat(utc_now())
 
-    plan = {
-        "plan_id": plan_id,
-        "plan_status": "approved",
-        "trigger_mode": "instruction_only",
-        "operator_objective": normalized_request["operator_objective"],
-        "approved_by_principal": "owner_operator",
-        "report_delivery_policy": "initiating_session",
-        "approved_targets": [
-            {
-                "plan_target_id": plan_target_id,
-                "conversation_key": resolved_target.get("conversation_key"),
-                "destination_key": resolved_target.get("destination_key"),
-                "group_chat_id": resolved_target.get("group_chat_id"),
-                "dm_counterparty_id": resolved_target.get("dm_counterparty_id"),
-                "target_status": "active",
-                "max_outbound_messages_per_run": 1,
+    with _OUTREACH_STATE_LOCK:
+        state = load_whatsapp_outreach_state()
+        plan_row, plan_target_row = _matching_plan_and_target(
+            state,
+            operator_objective=normalized_request["operator_objective"],
+            approved_by_principal=approved_by_principal,
+            selector=plan_selector,
+        )
+
+        approved_at_utc = utc_isoformat(utc_now())
+        if plan_row is None or plan_target_row is None:
+            plan_id = f"waplan-{uuid4()}"
+            plan_target_id = f"watarget-{uuid4()}"
+            plan_row = {
+                "plan_id": plan_id,
+                "plan_status": "active",
+                "trigger_mode": "instruction_only",
+                "operator_objective": normalized_request["operator_objective"],
+                "created_by_session_id": None,
+                "approved_by_principal": approved_by_principal,
+                "approved_at_utc": approved_at_utc,
+                "report_delivery_policy": "initiating_session",
+                "default_report_cadence": "end_of_run",
+                "linked_cron_job_id": None,
             }
-        ],
-    }
-    run = {
-        "run_id": run_id,
-        "plan_id": plan_id,
-        "run_status": "running",
-        "trigger_source": "owner_instruction",
-        "trigger_reference_id": None,
-    }
-    execution = {
-        "target_execution_id": target_execution_id,
-        "plan_target_id": plan_target_id,
-        "execution_status": "resolved",
-        "resolved_target": resolved_target,
-        "history_window_start_utc": history_window_start_utc,
-        "history_window_end_utc": history_window_end_utc,
-        "history_record_count": len(continuity_rows),
-        "dispatch_group_id": None,
-        "message_id": None,
-        "last_error": None,
-    }
+            plan_target_row = {
+                "plan_target_id": plan_target_id,
+                "plan_id": plan_id,
+                "target_status": "active",
+                **plan_selector,
+                "target_objective_override": None,
+                "max_outbound_messages_per_run": 1,
+                "last_resolved_conversation_key": resolved_target.get(
+                    "conversation_key"
+                ),
+                "last_observed_message_at_utc": history_window_end_utc,
+            }
+            state["plans"].append(plan_row)
+            state["plan_targets"].append(plan_target_row)
+        else:
+            plan_row["plan_status"] = "active"
+            plan_row["approved_at_utc"] = (
+                plan_row.get("approved_at_utc") or approved_at_utc
+            )
+            plan_target_row.update({
+                **plan_selector,
+                "last_resolved_conversation_key": resolved_target.get(
+                    "conversation_key"
+                ),
+                "last_observed_message_at_utc": history_window_end_utc,
+            })
+
+        run_id = f"warun-{uuid4()}"
+        target_execution_id = f"waexec-{uuid4()}"
+        run = {
+            "run_id": run_id,
+            "plan_id": plan_row["plan_id"],
+            "run_status": "running",
+            "trigger_source": "owner_instruction",
+            "trigger_reference_id": None,
+            "run_started_at_utc": run_started_at_utc,
+            "run_completed_at_utc": None,
+            "target_count": 1,
+            "completed_target_count": 0,
+            "failed_target_count": 0,
+            "report_delivery_target": None,
+            "report_id": None,
+        }
+        execution = {
+            "target_execution_id": target_execution_id,
+            "run_id": run_id,
+            "plan_target_id": plan_target_row["plan_target_id"],
+            "execution_status": "resolved",
+            "resolved_conversation_key": resolved_target.get("conversation_key"),
+            "resolved_destination_key": resolved_target.get("destination_key"),
+            "resolved_destination_chat_id": resolved_target.get("destination_chat_id"),
+            "group_chat_id": resolved_target.get("group_chat_id"),
+            "dm_counterparty_id": resolved_target.get("dm_counterparty_id"),
+            "destination_context_type": resolved_target.get("destination_context_type"),
+            "destination_target_id": resolved_target.get("destination_target_id"),
+            "history_window_start_utc": history_window_start_utc,
+            "history_window_end_utc": history_window_end_utc,
+            "history_record_count": len(continuity_rows),
+            "dispatch_group_id": None,
+            "message_id": None,
+            "last_error": None,
+        }
+        state["plans"] = [
+            row for row in state["plans"] if row.get("plan_id") != plan_row["plan_id"]
+        ]
+        state["plans"].append(dict(plan_row))
+        state["plan_targets"] = [
+            row
+            for row in state["plan_targets"]
+            if row.get("plan_target_id") != plan_target_row["plan_target_id"]
+        ]
+        state["plan_targets"].append(dict(plan_target_row))
+        state["runs"] = [
+            row for row in state["runs"] if row.get("run_id") != run["run_id"]
+        ]
+        state["runs"].append(dict(run))
+        state["target_executions"] = [
+            row
+            for row in state["target_executions"]
+            if row.get("target_execution_id") != execution["target_execution_id"]
+        ]
+        state["target_executions"].append(dict(execution))
+        _write_whatsapp_outreach_state(state)
 
     if adapter is None:
         execution["execution_status"] = "blocked"
@@ -290,50 +608,86 @@ async def execute_whatsapp_approved_outreach(
                 "but the bounded outbound send failed."
             )
 
-    persisted_record = {
-        "recorded_at_utc": utc_isoformat(utc_now()),
-        "plan": plan,
-        "run": {
-            **run,
-            "target_executions": [execution],
-        },
-        "report": {
-            "report_id": f"wareport-{uuid4()}",
-            "plan_id": plan_id,
-            "run_id": run_id,
-            "report_status": (
-                "ready" if run["run_status"] == "completed" else "partial"
-            ),
-            "report_window_start_utc": history_window_start_utc,
-            "report_window_end_utc": history_window_end_utc,
-            "report_text": founder_summary,
-            "target_rows": [
-                {
-                    "plan_target_id": plan_target_id,
-                    "resolved_target": resolved_target,
-                    "observable_status": (
-                        "awaiting_reply"
-                        if execution["execution_status"] == "sent"
-                        else "unresolved"
-                        if execution["execution_status"] == "no_send_required"
-                        else "send_failed"
-                    ),
-                    "status_basis": (
-                        "direct_conversation_evidence"
-                        if execution["execution_status"] == "no_send_required"
-                        else "bounded_model_synthesis"
-                        if execution["execution_status"] == "sent"
-                        else "direct_conversation_evidence"
-                    ),
-                    "latest_observed_message_at_utc": history_window_end_utc,
-                    "open_items": [],
-                    "uncertainties": [],
-                }
-            ],
-            "uncertainties": [],
-        },
+    run["run_completed_at_utc"] = utc_isoformat(utc_now())
+    run["completed_target_count"] = 1
+    run["failed_target_count"] = (
+        1 if execution["execution_status"] in {"blocked", "send_failed"} else 0
+    )
+
+    report = {
+        "report_id": f"wareport-{uuid4()}",
+        "plan_id": plan_row["plan_id"],
+        "run_id": run_id,
+        "report_status": "ready" if run["run_status"] == "completed" else "partial",
+        "report_window_start_utc": history_window_start_utc,
+        "report_window_end_utc": history_window_end_utc,
+        "report_text": founder_summary,
+        "target_rows": [
+            {
+                "plan_target_id": plan_target_row["plan_target_id"],
+                "resolved_target": resolved_target,
+                "observable_status": _observable_status_for_execution_status(
+                    execution["execution_status"]
+                ),
+                "status_basis": _status_basis_for_execution_status(
+                    execution["execution_status"]
+                ),
+                "latest_observed_message_at_utc": history_window_end_utc,
+                "open_items": [],
+                "uncertainties": [],
+            }
+        ],
+        "uncertainties": [],
     }
-    append_whatsapp_outreach_run_record(persisted_record)
+    run["report_id"] = report["report_id"]
+
+    with _OUTREACH_STATE_LOCK:
+        state = load_whatsapp_outreach_state()
+        persisted_plan = _find_first(state["plans"], "plan_id", plan_row["plan_id"])
+        persisted_target = _find_first(
+            state["plan_targets"], "plan_target_id", plan_target_row["plan_target_id"]
+        )
+        if persisted_plan is None or persisted_target is None:
+            state["plans"].append(dict(plan_row))
+            state["plan_targets"].append(dict(plan_target_row))
+            persisted_plan = state["plans"][-1]
+            persisted_target = state["plan_targets"][-1]
+        else:
+            persisted_plan.update(dict(plan_row))
+            persisted_target.update({
+                **dict(plan_target_row),
+                "last_resolved_conversation_key": resolved_target.get(
+                    "conversation_key"
+                ),
+                "last_observed_message_at_utc": history_window_end_utc,
+            })
+        persisted_run = _find_first(state["runs"], "run_id", run["run_id"])
+        if persisted_run is None:
+            state["runs"].append(dict(run))
+            persisted_run = state["runs"][-1]
+        else:
+            persisted_run.update(dict(run))
+        persisted_execution = _find_first(
+            state["target_executions"],
+            "target_execution_id",
+            execution["target_execution_id"],
+        )
+        if persisted_execution is None:
+            state["target_executions"].append(dict(execution))
+            persisted_execution = state["target_executions"][-1]
+        else:
+            persisted_execution.update(dict(execution))
+        state["reports"] = [
+            row
+            for row in state["reports"]
+            if row.get("report_id") != report["report_id"]
+        ]
+        state["reports"].append(dict(report))
+        _write_whatsapp_outreach_state(state)
+
+        plan = _enriched_plan(state, persisted_plan) or {}
+        run = _enriched_run(state, persisted_run) or {}
+        execution = _enriched_execution(persisted_execution)
 
     return _result(
         workflow_status="ready",
@@ -391,10 +745,12 @@ def format_whatsapp_approved_outreach_result(result: dict[str, Any]) -> str:
 __all__ = [
     "WHATSAPP_APPROVED_OUTREACH_ALLOWED_FIELDS",
     "WHATSAPP_APPROVED_OUTREACH_EXACT_SELECTOR_FIELDS",
+    "WHATSAPP_OUTREACH_STATE_SCHEMA_VERSION",
     "append_whatsapp_outreach_run_record",
     "execute_whatsapp_approved_outreach",
     "format_whatsapp_approved_outreach_result",
     "is_whatsapp_approved_outreach_instruction",
+    "load_whatsapp_outreach_state",
     "load_whatsapp_outreach_run_records",
     "normalize_whatsapp_approved_outreach_request",
     "parse_whatsapp_approved_outreach_instruction",

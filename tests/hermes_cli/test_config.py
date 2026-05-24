@@ -486,6 +486,49 @@ class TestOptionalEnvVarsRegistry:
         assert "TAVILY_API_KEY" in all_vars
 
 
+class TestConfigMigrationSecretPrompts:
+    def test_required_secret_env_prompt_uses_masked_prompt(self, tmp_path, monkeypatch):
+        from hermes_cli import config as cfg_mod
+
+        saved = {}
+
+        monkeypatch.setattr(cfg_mod, "sanitize_env_file", lambda: 0)
+        monkeypatch.setattr(cfg_mod, "check_config_version", lambda: (999, 999))
+        monkeypatch.setattr(cfg_mod, "get_missing_config_fields", lambda: [])
+        monkeypatch.setattr(cfg_mod, "get_missing_skill_config_vars", lambda: [])
+        monkeypatch.setattr(
+            cfg_mod,
+            "get_missing_env_vars",
+            lambda required_only=True: [
+                {
+                    "name": "TEST_API_KEY",
+                    "description": "Test key",
+                    "prompt": "Test API key",
+                    "password": True,
+                }
+            ]
+            if required_only
+            else [],
+        )
+        def fake_masked_secret_prompt(prompt):
+            saved["prompt"] = prompt
+            return "secret"
+
+        monkeypatch.setattr(cfg_mod, "masked_secret_prompt", fake_masked_secret_prompt)
+        monkeypatch.setattr(
+            cfg_mod,
+            "save_env_value",
+            lambda name, value: saved.update({name: value}),
+        )
+
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
+            results = cfg_mod.migrate_config(interactive=True, quiet=True)
+
+        assert saved["prompt"] == "  Test API key: "
+        assert saved["TEST_API_KEY"] == "secret"
+        assert results["env_added"] == ["TEST_API_KEY"]
+
+
 class TestAnthropicTokenMigration:
     """Test that config version 8→9 clears ANTHROPIC_TOKEN."""
 

@@ -48,6 +48,37 @@ def _normalize_toolsets(toolsets: object = None) -> list[str] | None:
     return [item for item in normalized if item] or None
 
 
+def _normalize_skills(skills: object = None) -> list[str]:
+    """Normalize argparse/Fire-style --skills input into a de-duplicated list."""
+    if not skills:
+        return []
+
+    raw_items = [skills] if isinstance(skills, str) else skills
+    if not isinstance(raw_items, (list, tuple)):
+        raw_items = [raw_items]
+
+    normalized: list[str] = []
+    seen: set[str] = set()
+    for item in raw_items:
+        for part in str(item).split(","):
+            skill = part.strip()
+            if not skill or skill in seen:
+                continue
+            seen.add(skill)
+            normalized.append(skill)
+    return normalized
+
+
+def _build_preloaded_skills_prompt(skills: object = None) -> tuple[str, list[str], list[str]]:
+    skill_names = _normalize_skills(skills)
+    if not skill_names:
+        return "", [], []
+
+    from agent.skill_commands import build_preloaded_skills_prompt
+
+    return build_preloaded_skills_prompt(skill_names)
+
+
 def _validate_explicit_toolsets(toolsets: object = None) -> tuple[list[str] | None, str | None]:
     normalized = _normalize_toolsets(toolsets)
     if normalized is None:
@@ -127,6 +158,7 @@ def run_oneshot(
     model: Optional[str] = None,
     provider: Optional[str] = None,
     toolsets: object = None,
+    skills: object = None,
 ) -> int:
     """Execute a single prompt and print only the final content block.
 
@@ -137,6 +169,7 @@ def run_oneshot(
         provider: Optional provider override. Falls back to config.yaml's
             model.provider, then "auto".
         toolsets: Optional comma-separated string or iterable of toolsets.
+        skills: Optional comma-separated string or iterable of skills to preload.
 
     Returns the exit code.  Caller should sys.exit() with the return.
     """
@@ -166,6 +199,11 @@ def run_oneshot(
         return 2
     use_config_toolsets = _normalize_toolsets(toolsets) is None
 
+    skills_prompt, _loaded_skills, missing_skills = _build_preloaded_skills_prompt(skills)
+    if missing_skills:
+        sys.stderr.write(f"hermes -z: unknown skill(s): {', '.join(missing_skills)}\n")
+        return 2
+
     # Auto-approve any shell / tool approvals.  Non-interactive by
     # definition — a prompt would hang forever.
     os.environ["HERMES_YOLO_MODE"] = "1"
@@ -184,6 +222,7 @@ def run_oneshot(
                 provider=provider,
                 toolsets=explicit_toolsets,
                 use_config_toolsets=use_config_toolsets,
+                skills_prompt=skills_prompt or None,
             )
     finally:
         try:
@@ -221,6 +260,7 @@ def _run_agent(
     provider: Optional[str] = None,
     toolsets: object = None,
     use_config_toolsets: bool = True,
+    skills_prompt: Optional[str] = None,
 ) -> str:
     """Build an AIAgent exactly like a normal CLI chat turn would, then
     run a single conversation.  Returns the final response string."""
@@ -313,6 +353,7 @@ def _run_agent(
         model=effective_model,
         enabled_toolsets=toolsets_list,
         quiet_mode=True,
+        ephemeral_system_prompt=skills_prompt,
         platform="cli",
         session_db=session_db,
         credential_pool=runtime.get("credential_pool"),

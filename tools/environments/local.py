@@ -213,6 +213,13 @@ def _sanitize_subprocess_env(base_env: dict | None, extra_env: dict | None = Non
     if _profile_home:
         sanitized["HOME"] = _profile_home
 
+    # Force UTF-8 stdio for Python children on Windows so non-ASCII output
+    # (Chinese/Japanese/emoji/...) doesn't crash with UnicodeEncodeError on
+    # CP936 / CP1252 / CP932 locales.  No-op on POSIX.  Honors explicit
+    # ``PYTHONUTF8=0`` in the inherited env via ``setdefault``.  Issue #31420.
+    from hermes_cli._subprocess_compat import apply_windows_utf8_env as _utf8
+    _utf8(sanitized)
+
     return sanitized
 
 
@@ -327,6 +334,11 @@ def _make_run_env(env: dict) -> dict:
                 run_env[var_name] = value
     except Exception:
         pass
+
+    # Force UTF-8 stdio for Python children on Windows (#31420).  No-op on
+    # POSIX; honors an explicit ``PYTHONUTF8=0`` via ``setdefault``.
+    from hermes_cli._subprocess_compat import apply_windows_utf8_env as _utf8
+    _utf8(run_env)
 
     return run_env
 

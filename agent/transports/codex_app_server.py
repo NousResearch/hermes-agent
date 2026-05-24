@@ -79,6 +79,12 @@ class CodexAppServerClient:
             spawn_env.update(env)
         if codex_home:
             spawn_env["CODEX_HOME"] = codex_home
+        # Force UTF-8 stdio for the codex subprocess on Windows so non-ASCII
+        # output in user-visible logs / app-server frames doesn't trip the
+        # legacy code page encoder (#31420).  No-op on POSIX; honors an
+        # explicit user ``PYTHONUTF8=0`` via ``setdefault``.
+        from hermes_cli._subprocess_compat import apply_windows_utf8_env as _utf8
+        _utf8(spawn_env)
 
         app_server_args = list(extra_args or [])
         # Kanban workers must be able to write their handoff/status back to

@@ -106,6 +106,11 @@ def _resolve_home_dir() -> str:
 def _build_subprocess_env() -> dict[str, str]:
     env = os.environ.copy()
     env["HOME"] = _resolve_home_dir()
+    # Force UTF-8 stdio for the Copilot ACP child on Windows so its JSON-RPC
+    # frames and stderr don't blow up on non-ASCII content in CP936/CP1252
+    # locales (#31420).  No-op on POSIX.
+    from hermes_cli._subprocess_compat import apply_windows_utf8_env as _utf8
+    _utf8(env)
     return env
 
 

@@ -42,6 +42,7 @@ import uuid
 
 _IS_WINDOWS = platform.system() == "Windows"
 from tools.environments.local import _find_shell, _resolve_safe_cwd, _sanitize_subprocess_env
+from hermes_cli._subprocess_compat import windows_hide_flags
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
 
@@ -433,9 +434,50 @@ class ProcessRegistry:
 
     @staticmethod
     def _terminate_host_pid(pid: int) -> None:
-        """Terminate a host-visible PID without requiring the original process handle."""
+        """Terminate a host-visible PID and its descendants.
+
+        POSIX: walks the process tree with ``psutil`` and SIGTERMs
+        children before the parent so subprocess trees (e.g. Chromium
+        renderers/GPU helpers spawned by an ``agent-browser`` daemon)
+        don't get reparented to init and survive cleanup.
+
+        Windows: shells out to ``taskkill /PID <pid> /T /F``. This is
+        the documented Microsoft primitive for tree-kill and matches the
+        existing convention in ``gateway.status.terminate_pid``. We can't
+        reuse the POSIX psutil path on Windows because:
+
+          1. Windows doesn't maintain a Unix-style process tree —
+             ``psutil.Process.children(recursive=True)`` walks PPID
+             links that go stale when intermediate processes exit, so
+             enumeration is best-effort and misses orphaned descendants.
+          2. ``psutil.Process.terminate()`` on Windows is
+             ``TerminateProcess()`` which kills only the target handle
+             and is a hard kill — there is no Windows equivalent of a
+             SIGTERM that cascades through a process group. (See the
+             warning in ``gateway/status.py::terminate_pid``: "os.kill
+             with SIGTERM is not equivalent to a tree-killing hard stop"
+             on Windows.) Headless Chromium has no GUI window, so the
+             softer ``taskkill /T`` without ``/F`` won't reach it either.
+
+        ``psutil`` is a hard dependency (see ``pyproject.toml``); the
+        bare-``os.kill`` fallback covers OSError / PermissionError on
+        POSIX and a missing ``taskkill.exe`` on Windows (effectively
+        unreachable on real Windows installs, but cheap insurance).
+        """
         if _IS_WINDOWS:
-            os.kill(pid, signal.SIGTERM)
+            try:
+                subprocess.run(
+                    ["taskkill", "/PID", str(pid), "/T", "/F"],
+                    capture_output=True,
+                    text=True,
+                    timeout=10,
+                    creationflags=windows_hide_flags(),
+                )
+            except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
+                try:
+                    os.kill(pid, signal.SIGTERM)
+                except (OSError, ProcessLookupError, PermissionError):
+                    pass
             return
 
         import psutil
@@ -549,6 +591,8 @@ class ProcessRegistry:
         # stdout is a pipe, hiding output from process(action="poll")).
         bg_env = _sanitize_subprocess_env(os.environ, env_vars)
         bg_env["PYTHONUNBUFFERED"] = "1"
+        _popen_kwargs = {"creationflags": windows_hide_flags()} if _IS_WINDOWS else {}
+
         proc = subprocess.Popen(
             [user_shell, "-lic", f"set +m; {command}"],
             text=True,
@@ -560,7 +604,7 @@ class ProcessRegistry:
             stderr=subprocess.STDOUT,
             stdin=subprocess.DEVNULL,
             preexec_fn=None if _IS_WINDOWS else os.setsid,
-            creationflags=subprocess.CREATE_NO_WINDOW if _IS_WINDOWS else 0,
+            **_popen_kwargs,
         )
 
         session.process = proc

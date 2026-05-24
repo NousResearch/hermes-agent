@@ -1,5 +1,6 @@
 import sys
 import threading
+import time
 import types
 from types import SimpleNamespace
 
@@ -64,6 +65,7 @@ def _build_agent(shared_client=None):
     agent.stream_delta_callback = None
     agent._stream_callback = None
     agent.reasoning_callback = None
+    agent.status_callback = None
     return agent
 
 
@@ -91,6 +93,24 @@ def test_retry_after_api_connection_error_recreates_request_client(monkeypatch):
     assert len(factory.calls) == 2
     assert first_request.close_calls >= 1
     assert second_request.close_calls >= 1
+
+
+def test_stale_non_stream_close_is_single_owner(monkeypatch):
+    def slow_responder(**kwargs):
+        time.sleep(0.1)
+        raise _connection_error()
+
+    request_client = FakeRequestClient(slow_responder)
+    factory = OpenAIFactory([request_client])
+    monkeypatch.setattr(run_agent, "OpenAI", factory)
+
+    agent = _build_agent()
+    agent._compute_non_stream_stale_timeout = lambda _messages: 0.01
+
+    with pytest.raises(APIConnectionError):
+        agent._interruptible_api_call({"model": agent.model, "messages": []})
+
+    assert request_client.close_calls == 1
 
 
 def test_closed_shared_client_is_recreated_before_request(monkeypatch):

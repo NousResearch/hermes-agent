@@ -235,6 +235,26 @@ def display_hermes_home() -> str:
         return str(home)
 
 
+def secure_parent_dir(path: Path) -> None:
+    """Chmod ``0o700`` on the parent directory of *path*, but only if safe.
+
+    Refuses to chmod ``/`` or any top-level directory (resolved parent with
+    fewer than 3 parts, i.e. ``/`` or any direct child like ``/usr``) to
+    prevent catastrophic host bricking when ``HERMES_HOME`` or other path
+    env vars resolve to an unexpected location.
+
+    See https://github.com/NousResearch/hermes-agent/issues/25821.
+    """
+    parent = path.parent.resolve()
+    # Refuse root and its direct children (/usr, /home, /var, /tmp, …).
+    if parent == Path("/") or len(parent.parts) < 3:
+        return
+    try:
+        os.chmod(parent, 0o700)
+    except OSError:
+        pass
+
+
 def get_subprocess_home() -> str | None:
     """Return a per-profile HOME directory for subprocesses, or None.
 

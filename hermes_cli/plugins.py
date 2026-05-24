@@ -698,6 +698,119 @@ class PluginContext:
 
     # -- hook registration --------------------------------------------------
 
+    # -- auxiliary task registration ---------------------------------------
+
+    def register_auxiliary_task(
+        self,
+        key: str,
+        *,
+        display_name: str,
+        description: str,
+        defaults: Optional[Dict[str, Any]] = None,
+    ) -> None:
+        """Register a plugin-defined auxiliary LLM task.
+
+        Auxiliary tasks are LLM-backed side jobs (vision analysis, web extraction,
+        compression, smart-approval, etc.) that route through ``auxiliary_client.py``.
+        Each task has its own ``auxiliary.<key>`` config block where users can
+        pin a provider/model independent of the main chat model.
+
+        Plugins use this to declare their own auxiliary tasks without touching
+        core files. After registration, the task:
+
+          - Appears in the ``hermes model → Configure auxiliary models`` picker
+          - Has its provider/model/base_url/api_key bridged from config.yaml to
+            ``AUXILIARY_<KEY_UPPER>_*`` env vars at gateway startup
+          - Gets default routing fields (provider="auto", model="", etc.) merged
+            into loaded configs so ``cfg.get("auxiliary", {}).get(key)`` works
+
+        Args:
+            key: stable task key (snake_case). Used in config ``auxiliary.<key>``
+                and env vars ``AUXILIARY_<KEY_UPPER>_*``. Must not shadow a
+                built-in task key (vision, compression, web_extract, approval,
+                mcp, title_generation, skills_hub, curator).
+            display_name: human-readable name shown in the picker.
+            description: short one-line description shown next to the name.
+            defaults: optional dict of default routing fields. Recognized keys:
+                ``provider`` (default "auto"), ``model`` (default ""),
+                ``base_url`` (default ""), ``api_key`` (default ""),
+                ``timeout`` (default 60), ``extra_body`` (default {}),
+                plus any task-specific extras (e.g. ``download_timeout``).
+                Unknown keys are preserved verbatim — the plugin owns the
+                schema for its own task.
+
+        Raises:
+            ValueError: if *key* is empty, contains invalid characters, or
+                shadows a built-in auxiliary task key.
+
+        Example:
+            ctx.register_auxiliary_task(
+                key="memory_retain_filter",
+                display_name="Memory retain filter",
+                description="hindsight pre-retain dedup/extract",
+                defaults={"provider": "auto", "timeout": 30},
+            )
+        """
+        # Validate key shape
+        if not key or not isinstance(key, str):
+            raise ValueError(
+                f"Plugin '{self.manifest.name}' tried to register auxiliary task "
+                f"with invalid key {key!r}"
+            )
+        if not all(c.isalnum() or c == "_" for c in key):
+            raise ValueError(
+                f"Plugin '{self.manifest.name}' auxiliary task key {key!r} "
+                f"must contain only alphanumeric characters and underscores"
+            )
+
+        # Lazy import to avoid circular: hermes_cli.main imports plugins indirectly
+        from hermes_cli.main import _AUX_TASKS as _BUILTIN_AUX_TASKS
+
+        builtin_keys = {k for k, _name, _desc in _BUILTIN_AUX_TASKS}
+        if key in builtin_keys:
+            raise ValueError(
+                f"Plugin '{self.manifest.name}' cannot register auxiliary task "
+                f"{key!r} — that key is reserved for a built-in task. "
+                f"Pick a plugin-namespaced key (e.g. '{self.manifest.name}_{key}')."
+            )
+
+        # Reject duplicate registrations across plugins
+        existing = self._manager._aux_tasks.get(key)
+        if existing is not None and existing.get("plugin") != self.manifest.name:
+            raise ValueError(
+                f"Plugin '{self.manifest.name}' cannot register auxiliary task "
+                f"{key!r} — already registered by plugin "
+                f"'{existing.get('plugin')}'"
+            )
+
+        # Normalize defaults — plugin owns the schema, but we ensure routing
+        # fields exist with sensible types so consumers don't crash.
+        merged_defaults: Dict[str, Any] = {
+            "provider": "auto",
+            "model": "",
+            "base_url": "",
+            "api_key": "",
+            "timeout": 60,
+            "extra_body": {},
+        }
+        if defaults:
+            for k, v in defaults.items():
+                merged_defaults[k] = v
+
+        self._manager._aux_tasks[key] = {
+            "key": key,
+            "display_name": display_name,
+            "description": description,
+            "defaults": merged_defaults,
+            "plugin": self.manifest.name,
+        }
+        logger.debug(
+            "Plugin %s registered auxiliary task: %s (%s)",
+            self.manifest.name,
+            key,
+            display_name,
+        )
+
     def register_hook(self, hook_name: str, callback: Callable) -> None:
         """Register a lifecycle hook callback.
 
@@ -782,6 +895,9 @@ class PluginManager:
         self._cli_ref = None  # Set by CLI after plugin discovery
         # Plugin skill registry: qualified name → metadata dict.
         self._plugin_skills: Dict[str, Dict[str, Any]] = {}
+        # Plugin-registered auxiliary tasks: key → {key, display_name,
+        # description, defaults, plugin}. See PluginContext.register_auxiliary_task.
+        self._aux_tasks: Dict[str, Dict[str, Any]] = {}
 
     # -----------------------------------------------------------------------
     # Public
@@ -803,6 +919,7 @@ class PluginManager:
             self._cli_commands.clear()
             self._plugin_commands.clear()
             self._plugin_skills.clear()
+            self._aux_tasks.clear()
             self._context_engine = None
         self._discovered = True
 
@@ -1546,6 +1663,21 @@ def get_plugin_commands() -> Dict[str, dict]:
     before any explicit discover_plugins() call.
     """
     return _ensure_plugins_discovered()._plugin_commands
+
+
+def get_plugin_auxiliary_tasks() -> List[Dict[str, Any]]:
+    """Return all plugin-registered auxiliary tasks as a stable-ordered list.
+
+    Each entry is the registration dict from
+    :meth:`PluginContext.register_auxiliary_task`:
+    ``{key, display_name, description, defaults, plugin}``.
+
+    Triggers idempotent plugin discovery so callers can read the registry
+    before any explicit ``discover_plugins()`` call. Sorted by ``key`` for
+    deterministic ordering in pickers and tests.
+    """
+    manager = _ensure_plugins_discovered()
+    return [manager._aux_tasks[k] for k in sorted(manager._aux_tasks)]
 
 
 def get_plugin_toolsets() -> List[tuple]:

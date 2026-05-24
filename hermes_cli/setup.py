@@ -2188,28 +2188,58 @@ def _setup_matrix():
             print_success("E2EE enabled")
 
         matrix_pkg = "mautrix[encryption]" if want_e2ee else "mautrix"
+        # Use the central lazy-deps feature group so we install ALL of
+        # platform.matrix's dependencies (mautrix, Markdown, aiosqlite,
+        # asyncpg, aiohttp-socks) — not just mautrix itself.  The previous
+        # hand-rolled ``pip install mautrix[encryption]`` left asyncpg /
+        # aiosqlite uninstalled and broke E2EE connect with
+        # ``No module named 'asyncpg'`` on every fresh install (#31116).
         try:
-            __import__("mautrix")
+            from tools.lazy_deps import ensure as _lazy_ensure, feature_missing
+            _missing_before = feature_missing("platform.matrix")
+            if _missing_before:
+                print_info(
+                    f"Installing {matrix_pkg} (+ {len(_missing_before)} runtime deps)..."
+                )
+                try:
+                    _lazy_ensure("platform.matrix", prompt=False)
+                    print_success(f"{matrix_pkg} installed")
+                except Exception as exc:
+                    print_warning(
+                        f"Install failed — run manually: pip install "
+                        f"'mautrix[encryption]' asyncpg aiosqlite Markdown "
+                        f"aiohttp-socks"
+                    )
+                    print_info(f"  Error: {exc}")
         except ImportError:
-            print_info(f"Installing {matrix_pkg}...")
-            import subprocess
-            uv_bin = shutil.which("uv")
-            if uv_bin:
-                result = subprocess.run(
-                    [uv_bin, "pip", "install", "--python", sys.executable, matrix_pkg],
-                    capture_output=True, text=True,
-                )
-            else:
-                result = subprocess.run(
-                    [sys.executable, "-m", "pip", "install", matrix_pkg],
-                    capture_output=True, text=True,
-                )
-            if result.returncode == 0:
-                print_success(f"{matrix_pkg} installed")
-            else:
-                print_warning(f"Install failed — run manually: pip install '{matrix_pkg}'")
-                if result.stderr:
-                    print_info(f"  Error: {result.stderr.strip().splitlines()[-1]}")
+            # tools.lazy_deps unavailable (extreme edge case — partial
+            # install).  Fall back to the legacy single-package install
+            # path so the wizard still does *something*.
+            try:
+                __import__("mautrix")
+            except ImportError:
+                print_info(f"Installing {matrix_pkg}...")
+                import subprocess
+                uv_bin = shutil.which("uv")
+                if uv_bin:
+                    result = subprocess.run(
+                        [uv_bin, "pip", "install", "--python", sys.executable, matrix_pkg],
+                        capture_output=True, text=True,
+                    )
+                else:
+                    result = subprocess.run(
+                        [sys.executable, "-m", "pip", "install", matrix_pkg],
+                        capture_output=True, text=True,
+                    )
+                if result.returncode == 0:
+                    print_success(f"{matrix_pkg} installed")
+                else:
+                    print_warning(
+                        f"Install failed — run manually: pip install "
+                        f"'{matrix_pkg}' asyncpg aiosqlite Markdown aiohttp-socks"
+                    )
+                    if result.stderr:
+                        print_info(f"  Error: {result.stderr.strip().splitlines()[-1]}")
 
         print()
         print_info("🔒 Security: Restrict who can use your bot")

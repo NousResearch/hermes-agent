@@ -1,0 +1,8 @@
+name: llm-trace
+version: "1.0.0"
+description: "本地 LLM 请求/响应埋点。捕获主对话 + 辅助 LLM（vision/compression/web_extract 等），按会话+回合归档为可读的 JSON / NDJSON。零核心入侵：通过 hook + OpenAI SDK 包装实现。"
+author: xyt
+hooks:
+  - on_session_start
+  - pre_api_request
+  - post_api_request

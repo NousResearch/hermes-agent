@@ -2132,8 +2132,8 @@ class GatewayRunner:
             return True
         import time as _time
         now = _time.monotonic()
-        last = self._telegram_lobby_reminder_ts.get(chat_id, 0.0)
-        if now - last < self._TELEGRAM_LOBBY_REMINDER_COOLDOWN_S:
+        last = self._telegram_lobby_reminder_ts.get(chat_id)
+        if last is not None and now - last < self._TELEGRAM_LOBBY_REMINDER_COOLDOWN_S:
             return False
         self._telegram_lobby_reminder_ts[chat_id] = now
         return True
@@ -2175,12 +2175,23 @@ class GatewayRunner:
         session_db = getattr(self, "_session_db", None)
         if session_db is None or not source.chat_id or not source.thread_id:
             return
+        managed_mode = "auto"
+        try:
+            existing = session_db.get_telegram_topic_binding(
+                chat_id=str(source.chat_id),
+                thread_id=str(source.thread_id),
+            )
+            if existing:
+                managed_mode = str(existing.get("managed_mode") or "auto")
+        except Exception:
+            logger.debug("Failed to read Telegram topic binding before rebinding", exc_info=True)
         session_db.bind_telegram_topic(
             chat_id=str(source.chat_id),
             thread_id=str(source.thread_id),
             user_id=str(source.user_id or ""),
             session_key=session_entry.session_key,
             session_id=session_entry.session_id,
+            managed_mode=managed_mode,
         )
 
     def _recover_telegram_topic_thread_id(
@@ -9178,12 +9189,16 @@ class GatewayRunner:
                 _title_note = t("gateway.reset.title_rejected", error=str(e))
             if sanitized:
                 try:
-                    self._session_db.set_session_title(new_entry.session_id, sanitized)
-                    header = t("gateway.reset.header_titled", title=sanitized)
+                    title_set = self._session_db.set_session_title(new_entry.session_id, sanitized)
+                    if title_set:
+                        header = t("gateway.reset.header_titled", title=sanitized)
+                    else:
+                        _title_note = "\n⚠️ Session title could not be stored — session started untitled."
                 except ValueError as e:
                     _title_note = t("gateway.reset.title_error_untitled", error=str(e))
                 except Exception:
-                    pass
+                    logger.debug("Failed to set session title after /new", exc_info=True)
+                    _title_note = "\n⚠️ Session title could not be stored — session started untitled."
             elif not _title_note:
                 # sanitize_title returned empty (whitespace-only / unprintable)
                 _title_note = t("gateway.reset.title_empty_untitled")
@@ -9199,6 +9214,14 @@ class GatewayRunner:
                 self._record_telegram_topic_binding(source, new_entry)
             except Exception:
                 logger.debug("Failed to rebind Telegram topic after /new", exc_info=True)
+
+        if _title_arg and sanitized and title_set and new_entry is not None:
+            await self._rename_telegram_topic_for_session_title(
+                source,
+                new_entry.session_id,
+                sanitized,
+                force=True,
+            )
 
         # Fire plugin on_session_reset hook (new session guaranteed to exist)
         try:
@@ -12166,6 +12189,64 @@ class GatewayRunner:
         except Exception:
             logger.debug("Failed to send Telegram topic setup image", exc_info=True)
 
+    def _set_telegram_topic_binding_managed_mode(
+        self,
+        source: SessionSource,
+        managed_mode: str,
+    ) -> None:
+        """Best-effort update of Telegram topic binding ownership metadata."""
+        session_db = getattr(self, "_session_db", None)
+        if session_db is None or not source.chat_id or not source.thread_id:
+            return
+        update_mode = getattr(session_db, "update_telegram_topic_binding_managed_mode", None)
+        if not callable(update_mode):
+            return
+        try:
+            update_mode(
+                chat_id=str(source.chat_id),
+                thread_id=str(source.thread_id),
+                managed_mode=managed_mode,
+            )
+        except Exception:
+            logger.debug("Failed to update Telegram topic binding managed_mode", exc_info=True)
+
+    async def _handle_telegram_topic_name_edited(
+        self,
+        source: SessionSource,
+        topic_name: str,
+    ) -> None:
+        """Track user-edited Telegram topic names so auto-title does not clobber them."""
+        if not topic_name or not self._is_telegram_topic_lane(source):
+            return
+        session_db = getattr(self, "_session_db", None)
+        if session_db is None or not source.chat_id or not source.thread_id:
+            return
+        try:
+            binding = session_db.get_telegram_topic_binding(
+                chat_id=str(source.chat_id),
+                thread_id=str(source.thread_id),
+            )
+        except Exception:
+            logger.debug("Failed to read Telegram topic binding after topic edit", exc_info=True)
+            return
+        if not binding:
+            return
+
+        current_name = self._sanitize_telegram_topic_title(topic_name)
+        expected_title = ""
+        try:
+            expected_title = session_db.get_session_title(str(binding.get("session_id") or "")) or ""
+        except Exception:
+            logger.debug("Failed to read session title after Telegram topic edit", exc_info=True)
+        expected_name = self._sanitize_telegram_topic_title(expected_title) if expected_title else ""
+        # Telegram emits the same service update for bot-initiated renames and
+        # user-initiated edits. If the new name matches the stored session title,
+        # keep Hermes ownership; otherwise treat the topic as user-managed.
+        self._set_telegram_topic_binding_managed_mode(
+            source,
+            "auto" if expected_name and current_name == expected_name else "manual",
+        )
+
     def _sanitize_telegram_topic_title(self, title: str) -> str:
         """Return a Bot API-safe forum topic name from a generated session title."""
         cleaned = re.sub(r"\s+", " ", str(title or "")).strip()
@@ -12182,8 +12263,10 @@ class GatewayRunner:
         source: SessionSource,
         session_id: str,
         title: str,
+        *,
+        force: bool = False,
     ) -> None:
-        """Best-effort rename of a Telegram DM topic when Hermes auto-titles a session."""
+        """Best-effort rename of a Telegram DM topic when a session title changes."""
         if not self._is_telegram_topic_lane(source) or not source.chat_id or not source.thread_id:
             return
 
@@ -12216,6 +12299,7 @@ class GatewayRunner:
                     return
 
         session_db = getattr(self, "_session_db", None)
+        binding = None
         if session_db is not None:
             try:
                 binding = session_db.get_telegram_topic_binding(
@@ -12223,6 +12307,8 @@ class GatewayRunner:
                     thread_id=str(source.thread_id),
                 )
                 if binding and str(binding.get("session_id") or "") != str(session_id):
+                    return
+                if binding and not force and str(binding.get("managed_mode") or "auto") != "auto":
                     return
             except Exception:
                 logger.debug("Failed to verify Telegram topic binding before rename", exc_info=True)
@@ -12239,6 +12325,8 @@ class GatewayRunner:
                     thread_id=str(source.thread_id),
                     name=topic_name,
                 )
+                if force:
+                    self._set_telegram_topic_binding_managed_mode(source, "auto")
                 return
 
             bot = getattr(adapter, "_bot", None)
@@ -12259,6 +12347,8 @@ class GatewayRunner:
                     message_thread_id=source.thread_id,
                     name=topic_name,
                 )
+            if force:
+                self._set_telegram_topic_binding_managed_mode(source, "auto")
         except Exception:
             logger.debug("Failed to rename Telegram topic for auto-generated title", exc_info=True)
 
@@ -12337,8 +12427,8 @@ class GatewayRunner:
             return True
         import time as _time
         now = _time.monotonic()
-        last = self._telegram_capability_hint_ts.get(chat_id, 0.0)
-        if now - last < self._TELEGRAM_CAPABILITY_HINT_COOLDOWN_S:
+        last = self._telegram_capability_hint_ts.get(chat_id)
+        if last is not None and now - last < self._TELEGRAM_CAPABILITY_HINT_COOLDOWN_S:
             return False
         self._telegram_capability_hint_ts[chat_id] = now
         return True
@@ -12626,6 +12716,12 @@ class GatewayRunner:
             # Set the title
             try:
                 if self._session_db.set_session_title(session_id, sanitized):
+                    await self._rename_telegram_topic_for_session_title(
+                        source,
+                        session_id,
+                        sanitized,
+                        force=True,
+                    )
                     return t("gateway.title.set_to", title=sanitized)
                 else:
                     return t("gateway.title.not_found")

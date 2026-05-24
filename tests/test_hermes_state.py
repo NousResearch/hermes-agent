@@ -1348,6 +1348,40 @@ class TestSessionTitle:
     def test_set_title_nonexistent_session(self, db):
         assert db.set_session_title("nonexistent", "Title") is False
 
+    def test_update_telegram_topic_binding_managed_mode(self, db):
+        """managed_mode can be updated on an existing Telegram topic binding."""
+        db.apply_telegram_topic_migration()
+        db.create_session(session_id="s1", source="telegram")
+        db.bind_telegram_topic(
+            chat_id="111",
+            thread_id="222",
+            user_id="u1",
+            session_key="k1",
+            session_id="s1",
+            managed_mode="auto",
+        )
+        binding = db.get_telegram_topic_binding(chat_id="111", thread_id="222")
+        assert binding["managed_mode"] == "auto"
+
+        updated = db.update_telegram_topic_binding_managed_mode(
+            chat_id="111",
+            thread_id="222",
+            managed_mode="manual",
+        )
+        assert updated is True
+        binding = db.get_telegram_topic_binding(chat_id="111", thread_id="222")
+        assert binding["managed_mode"] == "manual"
+
+    def test_update_telegram_topic_binding_managed_mode_missing_row(self, db):
+        """Updating a non-existent binding returns False without raising."""
+        db.apply_telegram_topic_migration()
+        updated = db.update_telegram_topic_binding_managed_mode(
+            chat_id="111",
+            thread_id="222",
+            managed_mode="manual",
+        )
+        assert updated is False
+
     def test_title_initially_none(self, db):
         db.create_session(session_id="s1", source="cli")
         session = db.get_session("s1")

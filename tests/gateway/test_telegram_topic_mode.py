@@ -1326,3 +1326,303 @@ def test_session_split_restores_source_thread_id_from_binding(tmp_path):
     meta = GatewayRunner._thread_metadata_for_source(runner, source)
     assert meta is not None
     assert meta["thread_id"] == "17585"
+
+
+@pytest.mark.asyncio
+async def test_new_with_title_renames_current_telegram_topic(tmp_path):
+    db = SessionDB(db_path=tmp_path / "state.db")
+    db.apply_telegram_topic_migration()
+    db.create_session("sess-topic", source="telegram", user_id="208214988")
+    runner = _make_runner(session_db=db)
+    runner._telegram_topic_mode_enabled = lambda source: True
+
+    result = await runner._handle_reset_command(
+        _make_event("/new Fix Telegram topic titles", thread_id="42")
+    )
+
+    assert "Fix Telegram topic titles" in result.text
+    runner.adapters[Platform.TELEGRAM].rename_dm_topic.assert_awaited_once_with(
+        chat_id="208214988",
+        thread_id="42",
+        name="Fix Telegram topic titles",
+    )
+
+
+@pytest.mark.asyncio
+async def test_new_with_title_does_not_rename_topic_when_title_store_fails(tmp_path):
+    db = SessionDB(db_path=tmp_path / "state.db")
+    db.apply_telegram_topic_migration()
+    db.create_session("sess-topic", source="telegram", user_id="208214988")
+    runner = _make_runner(session_db=db)
+    runner._telegram_topic_mode_enabled = lambda source: True
+    runner._session_db.set_session_title = MagicMock(return_value=False)
+
+    result = await runner._handle_reset_command(
+        _make_event("/new Unsaved Topic Title", thread_id="42")
+    )
+
+    assert "could not be stored" in result.text
+    runner.adapters[Platform.TELEGRAM].rename_dm_topic.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_new_with_title_does_not_rename_general_telegram_topic(tmp_path):
+    db = SessionDB(db_path=tmp_path / "state.db")
+    db.apply_telegram_topic_migration()
+    db.enable_telegram_topic_mode(chat_id="208214988", user_id="208214988")
+    db.create_session("sess-topic", source="telegram", user_id="208214988")
+    runner = _make_runner(session_db=db)
+
+    result = await runner._handle_reset_command(
+        _make_event("/new General Topic Title", thread_id="1")
+    )
+
+    assert "General Topic Title" in result.text
+    runner.adapters[Platform.TELEGRAM].rename_dm_topic.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_new_with_title_does_not_rename_operator_declared_topic(tmp_path):
+    db = SessionDB(db_path=tmp_path / "state.db")
+    db.apply_telegram_topic_migration()
+    db.enable_telegram_topic_mode(chat_id="208214988", user_id="208214988")
+    db.create_session("sess-topic", source="telegram", user_id="208214988")
+    runner = _make_runner(session_db=db)
+
+    class _FakeAdapter:
+        def _get_dm_topic_info(self, chat_id, thread_id):
+            return {"name": "Research", "skill": "arxiv"}
+
+        async def rename_dm_topic(self, **kwargs):
+            return None
+
+    fake = _FakeAdapter()
+    fake.rename_dm_topic = AsyncMock()
+    runner.adapters[Platform.TELEGRAM] = fake
+
+    result = await runner._handle_reset_command(
+        _make_event("/new Operator Topic Title", thread_id="17585")
+    )
+
+    assert "Operator Topic Title" in result.text
+    fake.rename_dm_topic.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_title_command_renames_current_telegram_topic(tmp_path):
+    db = SessionDB(db_path=tmp_path / "state.db")
+    db.apply_telegram_topic_migration()
+    db.create_session("sess-topic", source="telegram", user_id="208214988")
+    runner = _make_runner(session_db=db)
+    runner._telegram_topic_mode_enabled = lambda source: True
+
+    result = await runner._handle_title_command(
+        _make_event("/title Config Changes", thread_id="42")
+    )
+
+    assert "Session title set" in result
+    runner.adapters[Platform.TELEGRAM].rename_dm_topic.assert_awaited_once_with(
+        chat_id="208214988",
+        thread_id="42",
+        name="Config Changes",
+    )
+
+
+@pytest.mark.asyncio
+async def test_title_command_does_not_rename_general_telegram_topic(tmp_path):
+    db = SessionDB(db_path=tmp_path / "state.db")
+    db.apply_telegram_topic_migration()
+    db.enable_telegram_topic_mode(chat_id="208214988", user_id="208214988")
+    db.create_session("sess-topic", source="telegram", user_id="208214988")
+    runner = _make_runner(session_db=db)
+
+    result = await runner._handle_title_command(
+        _make_event("/title General Topic Title", thread_id="1")
+    )
+
+    assert "Session title set" in result
+    runner.adapters[Platform.TELEGRAM].rename_dm_topic.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_title_command_does_not_rename_operator_declared_topic(tmp_path):
+    db = SessionDB(db_path=tmp_path / "state.db")
+    db.apply_telegram_topic_migration()
+    db.enable_telegram_topic_mode(chat_id="208214988", user_id="208214988")
+    db.create_session("sess-topic", source="telegram", user_id="208214988")
+    runner = _make_runner(session_db=db)
+
+    class _FakeAdapter:
+        def _get_dm_topic_info(self, chat_id, thread_id):
+            return {"name": "Research", "skill": "arxiv"}
+
+        async def rename_dm_topic(self, **kwargs):
+            return None
+
+    fake = _FakeAdapter()
+    fake.rename_dm_topic = AsyncMock()
+    runner.adapters[Platform.TELEGRAM] = fake
+
+    result = await runner._handle_title_command(
+        _make_event("/title Operator Topic Title", thread_id="17585")
+    )
+
+    assert "Session title set" in result
+    fake.rename_dm_topic.assert_not_called()
+
+
+def test_telegram_debounce_first_call_allows_short_uptime(tmp_path, monkeypatch):
+    """First debounce hit must pass even when monotonic() is below the cooldown.
+
+    Fresh Linux CI runners can have a process monotonic clock below 300s; a
+    missing timestamp is not the same thing as a timestamp at zero. Cute bug.
+    """
+    import time
+
+    db = SessionDB(db_path=tmp_path / "state.db")
+    runner = _make_runner(session_db=db)
+    source = _make_source(thread_id=None)
+    monkeypatch.setattr(time, "monotonic", lambda: 12.0)
+
+    assert runner._should_send_telegram_lobby_reminder(source) is True
+    assert runner._should_send_telegram_capability_hint(source) is True
+    assert runner._should_send_telegram_lobby_reminder(source) is False
+    assert runner._should_send_telegram_capability_hint(source) is False
+
+
+def test_topic_off_resets_debounce_counters(tmp_path):
+    """Disabling topic mode clears per-chat debounce state."""
+    db = SessionDB(db_path=tmp_path / "state.db")
+    db.enable_telegram_topic_mode(chat_id="208214988", user_id="208214988")
+    runner = _make_runner(session_db=db)
+
+    source = _make_source()
+    # Prime the debounce counters.
+    assert runner._should_send_telegram_lobby_reminder(source) is True
+    assert runner._should_send_telegram_capability_hint(source) is True
+    assert runner._should_send_telegram_lobby_reminder(source) is False
+    assert runner._should_send_telegram_capability_hint(source) is False
+
+    # /topic off resets them.
+    result = runner._disable_telegram_topic_mode_for_chat(source)
+    assert "OFF" in result or "off" in result
+
+    # Re-enable and verify counters reset (so the first reminder/hint
+    # after re-enabling can land immediately).
+    db.enable_telegram_topic_mode(chat_id="208214988", user_id="208214988")
+    assert runner._should_send_telegram_lobby_reminder(source) is True
+    assert runner._should_send_telegram_capability_hint(source) is True
+
+
+@pytest.mark.asyncio
+async def test_auto_generated_title_does_not_rename_user_modified_topic(tmp_path):
+    db = SessionDB(db_path=tmp_path / "state.db")
+    db.apply_telegram_topic_migration()
+    db.create_session("sess-topic", source="telegram", user_id="208214988")
+    db.bind_telegram_topic(
+        chat_id="208214988",
+        thread_id="42",
+        user_id="208214988",
+        session_key="agent:main:telegram:dm:208214988:42",
+        session_id="sess-topic",
+        managed_mode="manual",
+    )
+    runner = _make_runner(session_db=db)
+    runner._telegram_topic_mode_enabled = lambda source: True
+
+    await runner._rename_telegram_topic_for_session_title(
+        _make_source(thread_id="42"),
+        "sess-topic",
+        "Auto-generated title should not clobber manual topic name",
+    )
+
+    runner.adapters[Platform.TELEGRAM].rename_dm_topic.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_telegram_topic_edit_marks_binding_manual_and_blocks_auto_rename(tmp_path):
+    db = SessionDB(db_path=tmp_path / "state.db")
+    db.apply_telegram_topic_migration()
+    db.create_session("sess-topic", source="telegram", user_id="208214988")
+    db.set_session_title("sess-topic", "Hermes Title")
+    db.bind_telegram_topic(
+        chat_id="208214988",
+        thread_id="42",
+        user_id="208214988",
+        session_key="agent:main:telegram:dm:208214988:42",
+        session_id="sess-topic",
+    )
+    runner = _make_runner(session_db=db)
+    runner._telegram_topic_mode_enabled = lambda source: True
+    source = _make_source(thread_id="42")
+
+    await runner._handle_telegram_topic_name_edited(source, "My hand-written topic name")
+
+    binding = db.get_telegram_topic_binding(chat_id="208214988", thread_id="42")
+    assert binding["managed_mode"] == "manual"
+
+    await runner._rename_telegram_topic_for_session_title(
+        source,
+        "sess-topic",
+        "Auto title after reset",
+    )
+
+    runner.adapters[Platform.TELEGRAM].rename_dm_topic.assert_not_called()
+
+
+def test_rebinding_topic_preserves_manual_managed_mode(tmp_path):
+    db = SessionDB(db_path=tmp_path / "state.db")
+    db.apply_telegram_topic_migration()
+    db.create_session("sess-old", source="telegram", user_id="208214988")
+    db.create_session("sess-new", source="telegram", user_id="208214988")
+    source = _make_source(thread_id="42")
+    session_key = "agent:main:telegram:dm:208214988:42"
+    db.bind_telegram_topic(
+        chat_id="208214988",
+        thread_id="42",
+        user_id="208214988",
+        session_key=session_key,
+        session_id="sess-old",
+        managed_mode="manual",
+    )
+    runner = _make_runner(session_db=db)
+
+    runner._record_telegram_topic_binding(
+        source,
+        SessionEntry(
+            session_key=session_key,
+            session_id="sess-new",
+            created_at=datetime.now(),
+            updated_at=datetime.now(),
+            platform=Platform.TELEGRAM,
+            chat_type="dm",
+            origin=source,
+        ),
+    )
+
+    binding = db.get_telegram_topic_binding(chat_id="208214988", thread_id="42")
+    assert binding["session_id"] == "sess-new"
+    assert binding["managed_mode"] == "manual"
+
+
+@pytest.mark.asyncio
+async def test_bot_matching_topic_edit_keeps_binding_auto(tmp_path):
+    db = SessionDB(db_path=tmp_path / "state.db")
+    db.apply_telegram_topic_migration()
+    db.create_session("sess-topic", source="telegram", user_id="208214988")
+    db.set_session_title("sess-topic", "Hermes Title")
+    db.bind_telegram_topic(
+        chat_id="208214988",
+        thread_id="42",
+        user_id="208214988",
+        session_key="agent:main:telegram:dm:208214988:42",
+        session_id="sess-topic",
+        managed_mode="manual",
+    )
+    runner = _make_runner(session_db=db)
+    runner._telegram_topic_mode_enabled = lambda source: True
+
+    await runner._handle_telegram_topic_name_edited(_make_source(thread_id="42"), "Hermes Title")
+
+    binding = db.get_telegram_topic_binding(chat_id="208214988", thread_id="42")
+    assert binding["managed_mode"] == "auto"

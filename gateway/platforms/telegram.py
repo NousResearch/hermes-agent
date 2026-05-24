@@ -1450,6 +1450,13 @@ class TelegramAdapter(BasePlatformAdapter):
                 filters.PHOTO | filters.VIDEO | filters.AUDIO | filters.VOICE | filters.Document.ALL | filters.Sticker.ALL,
                 self._handle_media_message
             ))
+            status_update_filters = getattr(filters, "StatusUpdate", None)
+            forum_topic_edited_filter = getattr(status_update_filters, "FORUM_TOPIC_EDITED", None)
+            if forum_topic_edited_filter is not None:
+                self._app.add_handler(TelegramMessageHandler(
+                    forum_topic_edited_filter,
+                    self._handle_forum_topic_edited,
+                ))
             # Handle inline keyboard button callbacks (update prompts)
             self._app.add_handler(CallbackQueryHandler(self._handle_callback_query))
             
@@ -4806,6 +4813,28 @@ class TelegramAdapter(BasePlatformAdapter):
         event.text = self._clean_bot_trigger_text(event.text)
         event = self._apply_telegram_group_observe_attribution(event)
         self._enqueue_text_event(event)
+
+    async def _handle_forum_topic_edited(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """Track Telegram topic rename service updates without sending them to the agent."""
+        if not update.message:
+            return
+        topic_edit = getattr(update.message, "forum_topic_edited", None)
+        topic_name = getattr(topic_edit, "name", None)
+        if not topic_name:
+            return
+        try:
+            event = self._build_message_event(update.message, MessageType.TEXT, update_id=update.update_id)
+        except Exception:
+            logger.debug("[%s] Failed to build event for Telegram topic edit", self.name, exc_info=True)
+            return
+        runner = getattr(getattr(self, "_message_handler", None), "__self__", None)
+        callback = getattr(runner, "_handle_telegram_topic_name_edited", None)
+        if not callable(callback):
+            return
+        try:
+            await callback(event.source, str(topic_name))
+        except Exception:
+            logger.debug("[%s] Failed to record Telegram topic edit", self.name, exc_info=True)
 
     async def _handle_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """Handle incoming command messages."""

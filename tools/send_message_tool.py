@@ -50,11 +50,11 @@ _VOICE_EXTS = {".ogg", ".opus"}
 # document delivery.
 _TELEGRAM_SEND_AUDIO_EXTS = {".mp3", ".m4a"}
 _URL_SECRET_QUERY_RE = re.compile(
-    r"([?&](?:access_token|api[_-]?key|auth[_-]?token|token|signature|sig)=)([^&#\s]+)",
+    r"([?&](?:access_token|api[_-]?key|auth[_-]?token|token|password|passwd|signature|sig)=)([^&#\s]+)",
     re.IGNORECASE,
 )
 _GENERIC_SECRET_ASSIGN_RE = re.compile(
-    r"\b(access_token|api[_-]?key|auth[_-]?token|signature|sig)\s*=\s*([^\s,;]+)",
+    r"\b(access_token|api[_-]?key|auth[_-]?token|token|password|passwd|signature|sig)\s*=\s*([^\s,;]+)",
     re.IGNORECASE,
 )
 
@@ -1589,28 +1589,41 @@ async def _send_weixin(pconfig, chat_id, message, media_files=None):
 
 
 async def _send_bluebubbles(extra, chat_id, message):
-    """Send via BlueBubbles iMessage server using the adapter's REST API."""
+    """Send via BlueBubbles REST without starting the inbound webhook listener."""
     try:
-        from gateway.platforms.bluebubbles import BlueBubblesAdapter, check_bluebubbles_requirements
-        if not check_bluebubbles_requirements():
-            return {"error": "BlueBubbles requirements not met (need aiohttp + httpx)."}
+        import httpx
+        from gateway.platforms._http_client_limits import platform_httpx_limits
+        from gateway.platforms.bluebubbles import BlueBubblesAdapter
     except ImportError:
-        return {"error": "BlueBubbles adapter not available."}
+        return {"error": "BlueBubbles adapter not available (need httpx)."}
 
     try:
         from gateway.config import PlatformConfig
         pconfig = PlatformConfig(extra=extra)
         adapter = BlueBubblesAdapter(pconfig)
-        connected = await adapter.connect()
-        if not connected:
-            return _error("BlueBubbles: failed to connect to server")
+        if not adapter.server_url or not adapter.password:
+            return _error("BlueBubbles: server URL/password not configured")
+
+        limits = platform_httpx_limits()
+        if limits is None:
+            client = httpx.AsyncClient(timeout=30.0)
+        else:
+            client = httpx.AsyncClient(timeout=30.0, limits=limits)
         try:
-            result = await adapter.send(chat_id, message)
-            if not result.success:
-                return _error(f"BlueBubbles send failed: {result.error}")
-            return {"success": True, "platform": "bluebubbles", "chat_id": chat_id, "message_id": result.message_id}
+            async with client:
+                adapter.client = client
+                await adapter._api_get("/api/v1/ping")
+                info = await adapter._api_get("/api/v1/server/info")
+                server_data = (info or {}).get("data", {})
+                adapter._private_api_enabled = bool(server_data.get("private_api"))
+                adapter._helper_connected = bool(server_data.get("helper_connected"))
+
+                result = await adapter.send(chat_id, message)
         finally:
-            await adapter.disconnect()
+            adapter.client = None
+        if not result.success:
+            return _error(f"BlueBubbles send failed: {result.error}")
+        return {"success": True, "platform": "bluebubbles", "chat_id": chat_id, "message_id": result.message_id}
     except Exception as e:
         return _error(f"BlueBubbles send failed: {e}")
 

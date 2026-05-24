@@ -7,6 +7,9 @@ from gateway.config import Platform, PlatformConfig
 def _make_adapter(monkeypatch, **extra):
     monkeypatch.setenv("BLUEBUBBLES_SERVER_URL", "http://localhost:1234")
     monkeypatch.setenv("BLUEBUBBLES_PASSWORD", "secret")
+    monkeypatch.delenv("BLUEBUBBLES_WEBHOOK_HOST", raising=False)
+    monkeypatch.delenv("BLUEBUBBLES_WEBHOOK_PORT", raising=False)
+    monkeypatch.delenv("BLUEBUBBLES_WEBHOOK_PATH", raising=False)
     from gateway.platforms.bluebubbles import BlueBubblesAdapter
 
     cfg = PlatformConfig(

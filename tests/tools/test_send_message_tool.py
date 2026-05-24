@@ -30,6 +30,8 @@ from gateway.config import Platform
 from tools.send_message_tool import (
     _is_telegram_thread_not_found,
     _parse_target_ref,
+    _sanitize_error_text,
+    _send_bluebubbles,
     _send_matrix_via_adapter,
     _send_signal,
     _send_telegram,
@@ -434,6 +436,74 @@ class TestSendMessageTool:
         assert "error" in result
         assert leaked not in result["error"]
         assert "access_token=***" in result["error"]
+
+    def test_error_sanitizer_redacts_password_query_params(self):
+        leaked = "bluebubbles-password-123456"
+        error = _sanitize_error_text(
+            f"403 Client Error for url 'http://localhost:1234/api?password={leaked}'"
+        )
+
+        assert leaked not in error
+        assert "password=***" in error
+
+    def test_bluebubbles_send_uses_rest_without_connecting_adapter(self, monkeypatch):
+        import httpx
+
+        from gateway.platforms.base import SendResult
+        from gateway.platforms.bluebubbles import BlueBubblesAdapter
+
+        calls = []
+        clients = []
+
+        class FakeAsyncClient:
+            def __init__(self, *args, **kwargs):
+                self.closed = False
+                clients.append(self)
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, exc_type, exc, tb):
+                self.closed = True
+
+        async def fail_if_connect_called(self):
+            raise AssertionError("_send_bluebubbles must not start adapter.connect()")
+
+        async def fake_api_get(self, path):
+            calls.append(("get", path, self.client is clients[0]))
+            if path == "/api/v1/server/info":
+                return {"data": {"private_api": True, "helper_connected": True}}
+            return {"data": {}}
+
+        async def fake_send(self, chat_id, message):
+            calls.append(("send", chat_id, message, self._private_api_enabled, self._helper_connected))
+            return SendResult(success=True, message_id="msg-1")
+
+        monkeypatch.setattr(httpx, "AsyncClient", FakeAsyncClient)
+        monkeypatch.setattr(BlueBubblesAdapter, "connect", fail_if_connect_called)
+        monkeypatch.setattr(BlueBubblesAdapter, "_api_get", fake_api_get)
+        monkeypatch.setattr(BlueBubblesAdapter, "send", fake_send)
+
+        result = asyncio.run(
+            _send_bluebubbles(
+                {"server_url": "http://localhost:1234", "password": "secret"},
+                "iMessage;-;user@example.com",
+                "hello",
+            )
+        )
+
+        assert result == {
+            "success": True,
+            "platform": "bluebubbles",
+            "chat_id": "iMessage;-;user@example.com",
+            "message_id": "msg-1",
+        }
+        assert clients and clients[0].closed is True
+        assert calls == [
+            ("get", "/api/v1/ping", True),
+            ("get", "/api/v1/server/info", True),
+            ("send", "iMessage;-;user@example.com", "hello", True, True),
+        ]
 
 
 class TestSendTelegramMediaDelivery:

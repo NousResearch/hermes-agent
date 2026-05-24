@@ -1,0 +1,11 @@
+name: secret-guard
+version: 1.0.0
+description: "Blocks GitHub PAT-like credentials before they reach tools or the agent."
+author: "Hermes Agent contributors"
+kind: standalone
+hooks:
+  - pre_gateway_dispatch
+  - pre_tool_call
+  - transform_tool_result
+  - transform_terminal_output
+  - transform_llm_output

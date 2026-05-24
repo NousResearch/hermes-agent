@@ -1041,8 +1041,21 @@ def init_agent(
     if not skip_memory:
         try:
             mem_config = _agent_cfg.get("memory", {})
-            agent._memory_enabled = mem_config.get("memory_enabled", False)
-            agent._user_profile_enabled = mem_config.get("user_profile_enabled", False)
+            is_optimize_api_session = (
+                platform == "api_server"
+                and isinstance(gateway_session_key, str)
+                and gateway_session_key.startswith("opt:")
+            )
+            if is_optimize_api_session:
+                # Optimize uses Honcho as the tenant-scoped memory provider.
+                # Never inject Hermes' local MEMORY.md/USER.md into product
+                # chat; those files belong to the developer's personal Hermes
+                # instance and can contain unrelated repository/session history.
+                agent._memory_enabled = False
+                agent._user_profile_enabled = False
+            else:
+                agent._memory_enabled = mem_config.get("memory_enabled", False)
+                agent._user_profile_enabled = mem_config.get("user_profile_enabled", False)
             agent._memory_nudge_interval = int(mem_config.get("nudge_interval", 10))
             if agent._memory_enabled or agent._user_profile_enabled:
                 from tools.memory_tool import MemoryStore

@@ -212,21 +212,36 @@ def enforce_turn_budget(
         content = msg["content"]
         tool_use_id = msg.get("tool_call_id", f"budget_{idx}")
 
+        # Extract and preserve any /steer marker appended to this result.
+        # enforce_turn_budget must not strip user guidance injected by
+        # apply_pending_steer_to_tool_results (issue #31524).
+        _steer_marker = ""
+        _steer_sep = "\n\nUser guidance: "
+        if _steer_sep in content:
+            _steer_split = content.split(_steer_sep, 1)
+            content_without_steer = _steer_split[0]
+            _steer_marker = _steer_sep + _steer_split[1]
+        else:
+            content_without_steer = content
+
         replacement = maybe_persist_tool_result(
-            content=content,
+            content=content_without_steer,
             tool_name=_BUDGET_TOOL_NAME,
             tool_use_id=tool_use_id,
             env=env,
             config=config,
             threshold=0,
         )
-        if replacement != content:
+        if replacement != content_without_steer:
+            # Re-attach the steer marker after budget enforcement so it
+            # is never truncated or dropped.
+            replacement = replacement + _steer_marker
             total_size -= size
             total_size += len(replacement)
             tool_messages[idx]["content"] = replacement
             logger.info(
                 "Budget enforcement: persisted tool result %s (%d chars)",
-                tool_use_id, size,
+                tool_use_id, size - len(_steer_marker),
             )
 
     return tool_messages

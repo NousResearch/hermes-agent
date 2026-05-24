@@ -88,6 +88,20 @@ bedrock:
     refresh_interval: 3600                     # Cache for 1 hour
 ```
 
+### 1M-context window for Claude Opus 4.6/4.7 + Sonnet 4.6
+
+AWS gates the 1M-context window for these models behind an account-level
+entitlement plus the `context-1m-2025-08-07` beta on every request. Once
+your AWS account has the entitlement on its allowlist, opt in with:
+
+```bash
+export HERMES_BEDROCK_1M_CONTEXT=1
+```
+
+When set, Hermes injects `additionalModelRequestFields={"anthropic_beta": ["context-1m-2025-08-07"]}` into every Converse / ConverseStream call for Opus 4.6/4.7 and Sonnet 4.6, and `model_metadata` reports a 1M context window for those models. Other models on the same account are unaffected — the beta is only sent for the capable Anthropic families.
+
+The flag is OFF by default because AWS rejects the beta with `ValidationException` on accounts without the entitlement, so an unconditional injection would regress every account that hasn't been allowlisted.
+
 ## Available Models
 
 Bedrock models use **inference profile IDs** for on-demand invocation. The `hermes model` picker shows these automatically, with recommended models at the top:

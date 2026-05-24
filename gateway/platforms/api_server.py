@@ -28,6 +28,9 @@ import asyncio
 import hashlib
 import hmac
 import json
+import jwt
+from datetime import datetime, timedelta, timezone
+
 import logging
 import os
 import socket as _socket
@@ -673,6 +676,7 @@ class APIServerAdapter(BasePlatformAdapter):
             raw_port = os.getenv("API_SERVER_PORT", str(DEFAULT_PORT))
         self._port: int = _coerce_port(raw_port, DEFAULT_PORT)
         self._api_key: str = extra.get("key", os.getenv("API_SERVER_KEY", ""))
+        self._jwt_secret: str = os.getenv("HERMES_JWT_SECRET", os.urandom(32).hex())
         self._cors_origins: tuple[str, ...] = self._parse_cors_origins(
             extra.get("cors_origins", os.getenv("API_SERVER_CORS_ORIGINS", "")),
         )
@@ -769,25 +773,53 @@ class APIServerAdapter(BasePlatformAdapter):
 
     def _check_auth(self, request: "web.Request") -> Optional["web.Response"]:
         """
-        Validate Bearer token from Authorization header.
-
-        Returns None if auth is OK, or a 401 web.Response on failure.
-        If no API key is configured, all requests are allowed (only when API
-        server is local).
+        Validate Bearer token (JWT or API Key) from Authorization header.
         """
         if not self._api_key:
-            return None  # No key configured — allow all (local-only use)
+            return None
 
         auth_header = request.headers.get("Authorization", "")
-        if auth_header.startswith("Bearer "):
-            token = auth_header[7:].strip()
-            if hmac.compare_digest(token, self._api_key):
-                return None  # Auth OK
+        if not auth_header.startswith("Bearer "):
+            return self._auth_error_response("Missing or malformed Authorization header")
 
+        token = auth_header[7:].strip()
+
+        # 1. Try JWT validation
+        try:
+            jwt.decode(token, self._jwt_secret, algorithms=["HS256"])
+            return None  # JWT Valid
+        except jwt.ExpiredSignatureError:
+            return self._auth_error_response("Token expired", code="token_expired")
+        except jwt.InvalidTokenError:
+            # 2. Fallback to API Key for backward compatibility
+            if hmac.compare_digest(token, self._api_key):
+                return None
+            return self._auth_error_response("Invalid token or API key")
+
+    def _auth_error_response(self, message: str, code: str = "invalid_api_key") -> "web.Response":
         return web.json_response(
-            {"error": {"message": "Invalid API key", "type": "invalid_request_error", "code": "invalid_api_key"}},
+            {"error": {"message": message, "type": "invalid_request_error", "code": code}},
             status=401,
         )
+
+    async def handle_login(self, request: "web.Request") -> "web.Response":
+        """POST /v1/login - Exchange API Key for a JWT."""
+        try:
+            data = await request.json()
+            api_key = data.get("api_key")
+        except Exception:
+            return web.json_response({"error": "Invalid JSON"}, status=400)
+
+        if not api_key or not hmac.compare_digest(api_key, self._api_key):
+            return self._auth_error_response("Invalid API key")
+
+        payload = {
+            "sub": "hermes-agent",
+            "iat": datetime.now(timezone.utc),
+            "exp": datetime.now(timezone.utc) + timedelta(hours=24)
+        }
+        token = jwt.encode(payload, self._jwt_secret, algorithm="HS256")
+        return web.json_response({"token": token, "expires_in": 86400})
 
     # ------------------------------------------------------------------
     # Session header helpers
@@ -3430,6 +3462,7 @@ class APIServerAdapter(BasePlatformAdapter):
             self._app.router.add_get("/v1/health", self._handle_health)
             self._app.router.add_get("/v1/models", self._handle_models)
             self._app.router.add_get("/v1/capabilities", self._handle_capabilities)
+            self._app.router.add_post("/v1/login", self.handle_login)
             self._app.router.add_post("/v1/chat/completions", self._handle_chat_completions)
             self._app.router.add_post("/v1/responses", self._handle_responses)
             self._app.router.add_get("/v1/responses/{response_id}", self._handle_get_response)

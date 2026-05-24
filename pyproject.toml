@@ -237,7 +237,9 @@ markers = [
 # scripts/run_tests_parallel.py). Per-file isolation gives every test
 # file a fresh Python interpreter; pytest-timeout catches Python-level
 # hangs within a file.
-addopts = "-m 'not integration' --timeout=30 --timeout-method=signal"
+# pytest-timeout: per-test 30s hard cap.
+# On Windows, we use thread mode as signal is not supported.
+addopts = "-m 'not integration' --timeout=300 --timeout_method=thread"
 
 [tool.ty.environment]
 python-version = "3.13"

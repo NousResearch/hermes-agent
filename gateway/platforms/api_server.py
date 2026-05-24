@@ -1062,6 +1062,7 @@ class APIServerAdapter(BasePlatformAdapter):
             "status": "ok",
             "platform": "hermes-agent",
             "gateway_state": runtime.get("gateway_state"),
+            "restart_requested": bool(runtime.get("restart_requested", False)),
             "platforms": runtime.get("platforms", {}),
             "active_agents": runtime.get("active_agents", 0),
             "exit_reason": runtime.get("exit_reason"),

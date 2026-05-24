@@ -554,8 +554,8 @@ class TestBuildContextFilesPrompt:
         result = build_context_files_prompt(cwd=str(tmp_path))
         assert "ESLint" in result
 
-    def test_agents_md_top_level_only(self, tmp_path):
-        """AGENTS.md is loaded from cwd only — subdirectory copies are ignored."""
+    def test_agents_md_off_path_subdirectory_ignored(self, tmp_path):
+        """AGENTS.md files outside the cwd ancestry are not loaded."""
         (tmp_path / "AGENTS.md").write_text("Top level instructions.")
         sub = tmp_path / "src"
         sub.mkdir()
@@ -563,6 +563,56 @@ class TestBuildContextFilesPrompt:
         result = build_context_files_prompt(cwd=str(tmp_path))
         assert "Top level" in result
         assert "Src-specific" not in result
+
+    def test_agents_md_hierarchy_loads_git_root_to_cwd(self, tmp_path):
+        """AGENTS.md hierarchy is loaded from git root down to cwd."""
+        (tmp_path / ".git").mkdir()
+        (tmp_path / "AGENTS.md").write_text("Root instructions.")
+        service = tmp_path / "services"
+        service.mkdir()
+        (service / "AGENTS.md").write_text("Services instructions.")
+        api = service / "api"
+        api.mkdir()
+        (api / "AGENTS.md").write_text("API instructions.")
+
+        result = build_context_files_prompt(cwd=str(api))
+
+        assert "Root instructions" in result
+        assert "Services instructions" in result
+        assert "API instructions" in result
+        assert result.index("Root instructions") < result.index("Services instructions")
+        assert result.index("Services instructions") < result.index("API instructions")
+        assert "AGENTS.md hierarchy" in result
+
+    def test_agents_md_hierarchy_stops_at_git_root(self, tmp_path):
+        """Parent AGENTS.md outside the git root is not loaded."""
+        (tmp_path / "AGENTS.md").write_text("Outside repo instructions.")
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        (repo / ".git").mkdir()
+        (repo / "AGENTS.md").write_text("Repo instructions.")
+        app = repo / "app"
+        app.mkdir()
+        (app / "AGENTS.md").write_text("App instructions.")
+
+        result = build_context_files_prompt(cwd=str(app))
+
+        assert "Outside repo instructions" not in result
+        assert "Repo instructions" in result
+        assert "App instructions" in result
+
+    def test_agents_md_without_git_preserves_cwd_only_behavior(self, tmp_path):
+        """Without a git root, only cwd AGENTS.md is considered."""
+        parent = tmp_path / "parent"
+        child = parent / "child"
+        child.mkdir(parents=True)
+        (parent / "AGENTS.md").write_text("Parent instructions.")
+        (child / "AGENTS.md").write_text("Child instructions.")
+
+        result = build_context_files_prompt(cwd=str(child))
+
+        assert "Child instructions" in result
+        assert "Parent instructions" not in result
 
     # --- .hermes.md / HERMES.md discovery ---
 
@@ -624,6 +674,21 @@ class TestBuildContextFilesPrompt:
         result = build_context_files_prompt(cwd=str(tmp_path))
         assert "Hermes project rules" in result
         assert "Agent guidelines" not in result
+
+    def test_parent_hermes_md_beats_agents_md_hierarchy(self, tmp_path):
+        """A discovered .hermes.md keeps priority over AGENTS.md hierarchy."""
+        (tmp_path / ".git").mkdir()
+        (tmp_path / ".hermes.md").write_text("Hermes root rules.")
+        (tmp_path / "AGENTS.md").write_text("Root agent guidelines.")
+        sub = tmp_path / "sub"
+        sub.mkdir()
+        (sub / "AGENTS.md").write_text("Sub agent guidelines.")
+
+        result = build_context_files_prompt(cwd=str(sub))
+
+        assert "Hermes root rules" in result
+        assert "Root agent guidelines" not in result
+        assert "Sub agent guidelines" not in result
 
     def test_agents_md_beats_claude_md(self, tmp_path):
         (tmp_path / "AGENTS.md").write_text("Agent guidelines here.")
@@ -1192,6 +1257,4 @@ class TestOpenAIModelExecutionGuidance:
 # =========================================================================
 # Budget warning history stripping
 # =========================================================================
-
-
 

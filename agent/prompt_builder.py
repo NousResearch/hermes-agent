@@ -13,7 +13,7 @@ from collections import OrderedDict
 from pathlib import Path
 
 from hermes_constants import get_hermes_home, get_skills_dir, is_wsl
-from typing import Optional
+from typing import List, Optional
 
 from agent.skill_utils import (
     extract_skill_conditions,
@@ -87,6 +87,7 @@ def _find_git_root(start: Path) -> Optional[Path]:
 
 
 _HERMES_MD_NAMES = (".hermes.md", "HERMES.md")
+_AGENTS_MD_NAMES = ("AGENTS.md", "agents.md")
 
 
 def _find_hermes_md(cwd: Path) -> Optional[Path]:
@@ -1361,19 +1362,73 @@ def _load_hermes_md(cwd_path: Path) -> str:
         return ""
 
 
+def _iter_agents_md_hierarchy(cwd_path: Path) -> List[Path]:
+    """Return AGENTS.md files from git root to ``cwd_path``.
+
+    If ``cwd_path`` is not inside a git worktree, preserve the historical
+    behavior and only consider ``cwd_path`` itself. Within each directory,
+    ``AGENTS.md`` wins over ``agents.md``.
+    """
+    cwd_path = cwd_path.resolve()
+    git_root = _find_git_root(cwd_path)
+    if git_root:
+        git_root = git_root.resolve()
+        try:
+            rel = cwd_path.relative_to(git_root)
+        except ValueError:
+            directories = [cwd_path]
+        else:
+            directories = [git_root]
+            current = git_root
+            for part in rel.parts:
+                current = current / part
+                directories.append(current)
+    else:
+        directories = [cwd_path]
+
+    found: List[Path] = []
+    for directory in directories:
+        for name in _AGENTS_MD_NAMES:
+            candidate = directory / name
+            if candidate.is_file():
+                found.append(candidate)
+                break
+    return found
+
+
 def _load_agents_md(cwd_path: Path) -> str:
-    """AGENTS.md — top-level only (no recursive walk)."""
-    for name in ["AGENTS.md", "agents.md"]:
-        candidate = cwd_path / name
-        if candidate.exists():
+    """AGENTS.md / agents.md -- git-root-to-cwd hierarchy."""
+    agent_files = _iter_agents_md_hierarchy(cwd_path)
+    if not agent_files:
+        return ""
+
+    cwd_path = cwd_path.resolve()
+    git_root = _find_git_root(cwd_path)
+    rel_base = git_root.resolve() if git_root else cwd_path
+
+    sections = []
+    for candidate in agent_files:
+        try:
+            content = candidate.read_text(encoding="utf-8").strip()
+            if not content:
+                continue
             try:
-                content = candidate.read_text(encoding="utf-8").strip()
-                if content:
-                    content = _scan_context_content(content, name)
-                    result = f"## {name}\n\n{content}"
-                    return _truncate_content(result, "AGENTS.md")
-            except Exception as e:
-                logger.debug("Could not read %s: %s", candidate, e)
+                rel = str(candidate.relative_to(rel_base))
+            except ValueError:
+                rel = candidate.name
+            content = _scan_context_content(content, rel)
+            sections.append(f"### {rel}\n\n{content}")
+        except Exception as e:
+            logger.debug("Could not read %s: %s", candidate, e)
+
+    if sections:
+        result = (
+            "## AGENTS.md hierarchy\n\n"
+            "Loaded from repository root to current working directory. "
+            "More specific files appear later and override earlier general guidance.\n\n"
+            + "\n\n".join(sections)
+        )
+        return _truncate_content(result, "AGENTS.md")
     return ""
 
 
@@ -1428,7 +1483,7 @@ def build_context_files_prompt(cwd: Optional[str] = None, skip_soul: bool = Fals
 
     Priority (first found wins — only ONE project context type is loaded):
       1. .hermes.md / HERMES.md  (walk to git root)
-      2. AGENTS.md / agents.md   (cwd only)
+      2. AGENTS.md / agents.md   (git root -> cwd hierarchy)
       3. CLAUDE.md / claude.md   (cwd only)
       4. .cursorrules / .cursor/rules/*.mdc  (cwd only)
 

@@ -534,7 +534,7 @@ def test_model_flow_custom_saves_verified_v1_base_url(monkeypatch, capsys):
     # then display name. The api_mode prompt also runs before model selection.
     answers = iter(["http://localhost:8000", "local-key", "", "", "", "", ""])
     monkeypatch.setattr("builtins.input", lambda _prompt="": next(answers))
-    monkeypatch.setattr("getpass.getpass", lambda _prompt="": next(answers))
+    monkeypatch.setattr("hermes_cli.secret_prompt.masked_secret_prompt", lambda _prompt="": next(answers))
 
     hermes_main._model_flow_custom({})
     output = capsys.readouterr().out
@@ -592,7 +592,7 @@ def test_model_flow_custom_persists_selected_api_mode(monkeypatch):
         ]
     )
     monkeypatch.setattr("builtins.input", lambda _prompt="": next(answers))
-    monkeypatch.setattr("getpass.getpass", lambda _prompt="": "test-key")
+    monkeypatch.setattr("hermes_cli.secret_prompt.masked_secret_prompt", lambda _prompt="": "test-key")
 
     hermes_main._model_flow_custom({"model": {"provider": "custom"}})
 

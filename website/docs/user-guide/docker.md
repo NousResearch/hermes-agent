@@ -51,7 +51,7 @@ docker run -d \
   -p 8642:8642 \
   -e API_SERVER_ENABLED=true \
   -e API_SERVER_HOST=0.0.0.0 \
-  -e API_SERVER_KEY=your_api_key_here \
+  -e API_SERVER_KEY="$(openssl rand -hex 32)" \
   -e API_SERVER_CORS_ORIGINS='*' \
   nousresearch/hermes-agent gateway run
 ```

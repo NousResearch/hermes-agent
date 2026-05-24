@@ -235,7 +235,33 @@ class TestDeclaredPolicy:
             "enabled": True,
             "identity_blocks_redacted": True,
             "opt_in_supported": False,
+            "sanitised_endpoints": [
+                "/api/memory",
+                "/api/sessions",
+                "/api/sessions/{id}/messages",
+            ],
+            "out_of_scope": [
+                "/api/profiles/{name}/soul",
+            ],
         }
+
+    def test_policy_lists_endpoints_in_lockstep_with_handlers(self):
+        """The advertised endpoint list must match the constants
+        used to wire the handlers — single source of truth.
+        """
+        from gateway.platforms.api_sanitiser import (
+            _SANITISED_ENDPOINTS,
+            _OUT_OF_SCOPE_ENDPOINTS,
+        )
+
+        p = declared_policy()
+        assert p["sanitised_endpoints"] == list(_SANITISED_ENDPOINTS)
+        assert p["out_of_scope"] == list(_OUT_OF_SCOPE_ENDPOINTS)
+        # Disjoint sets — a path is either redacted or pass-through,
+        # never both at once.
+        assert not (
+            set(_SANITISED_ENDPOINTS) & set(_OUT_OF_SCOPE_ENDPOINTS)
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -287,7 +313,44 @@ class TestCapabilitiesAdvertisesPolicy:
                 "enabled": True,
                 "identity_blocks_redacted": True,
                 "opt_in_supported": False,
+                "sanitised_endpoints": [
+                    "/api/memory",
+                    "/api/sessions",
+                    "/api/sessions/{id}/messages",
+                ],
+                "out_of_scope": [
+                    "/api/profiles/{name}/soul",
+                ],
             }
+
+    @pytest.mark.asyncio
+    async def test_capabilities_lists_exactly_the_sanitised_endpoints(
+        self, adapter
+    ):
+        """Regression-guard against drift: the advertised list MUST
+        equal the set of handlers that actually route through
+        sanitize_response(). A maintainer adding a handler to the
+        sanitised set without updating ``_SANITISED_ENDPOINTS``
+        (or vice versa) breaks this test by name.
+        """
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.get("/v1/capabilities")
+            body = await resp.json()
+            sanitised = set(body["sanitisation"]["sanitised_endpoints"])
+            assert sanitised == {
+                "/api/memory",
+                "/api/sessions",
+                "/api/sessions/{id}/messages",
+            }
+            # SOUL must NOT be in the sanitised set — it is the
+            # owner's pass-through edit target. If a future PR adds
+            # SOUL to the sanitised set, this test must be updated
+            # in lockstep so clients see the change advertised.
+            assert "/api/profiles/{name}/soul" not in sanitised
+            assert "/api/profiles/{name}/soul" in body[
+                "sanitisation"
+            ]["out_of_scope"]
 
 
 class TestIncludeIdentityQueryParamIgnored:

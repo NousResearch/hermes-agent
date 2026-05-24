@@ -213,14 +213,42 @@ def sanitize_response(payload: Any) -> Any:
     return structural
 
 
+# Explicit endpoint scope for /v1/capabilities advertising.
+# Kept as module-level tuples so the declared policy and the
+# handlers stay in lockstep — any future expansion of the
+# sanitised surface must update these tuples AND wire the new
+# handler through sanitize_response().
+_SANITISED_ENDPOINTS: Tuple[str, ...] = (
+    "/api/memory",
+    "/api/sessions",
+    "/api/sessions/{id}/messages",
+)
+
+# Endpoints deliberately NOT in scope of this PR. SOUL.md is the
+# owner's direct edit target and stays pass-through so the
+# PUT / RESET round-trip works; structural sanitisation of SOUL
+# (URL credentials + querystring tokens, no identity-block
+# redaction) is a planned follow-up.
+_OUT_OF_SCOPE_ENDPOINTS: Tuple[str, ...] = (
+    "/api/profiles/{name}/soul",
+)
+
+
 def declared_policy() -> Dict[str, Any]:
     """Policy summary for /v1/capabilities advertising.
 
     Stays in this module so a future policy change only needs to
-    update one source of truth.
+    update one source of truth. Clients consume
+    ``sanitised_endpoints`` to decide whether to render
+    "click to reveal" affordances per endpoint (always false for
+    the listed three); ``out_of_scope`` makes it explicit that
+    a missing endpoint from ``sanitised_endpoints`` is not an
+    accidental omission but a deliberate scope decision.
     """
     return {
         "enabled": True,
         "identity_blocks_redacted": True,
         "opt_in_supported": False,
+        "sanitised_endpoints": list(_SANITISED_ENDPOINTS),
+        "out_of_scope": list(_OUT_OF_SCOPE_ENDPOINTS),
     }

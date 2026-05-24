@@ -98,7 +98,11 @@ def get_hermes_home() -> Path:
             except Exception:
                 pass
 
-    return Path.home() / ".hermes"
+    try:
+        home = Path.home()
+    except RuntimeError:
+        home = Path(os.getcwd())
+    return home / ".hermes"
 
 
 def get_default_hermes_root() -> Path:

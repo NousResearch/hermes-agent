@@ -134,6 +134,47 @@ class TestSanitizeValueStructural:
         assert sanitize_value(None) is None
         assert sanitize_value(True) is True
 
+    def test_counter_fields_with_token_substring_are_not_redacted(self):
+        """Regression: ``input_tokens`` etc. are integer counts, not
+        credentials. The field-name heuristic must let them through
+        even though they contain the substring ``token``.
+
+        Live-smoke against /api/sessions found these getting
+        wholesale-redacted, which broke any cost / usage display
+        downstream. See ``_COUNTER_FIELD_RE``."""
+        counters = (
+            "input_tokens",
+            "output_tokens",
+            "cache_read_tokens",
+            "cache_write_tokens",
+            "reasoning_tokens",
+            "tokens",            # bare plural
+            "token_count",
+            "tokenCount",
+            "TOKEN_COUNT",       # case-insensitive
+            "foo_tokens",        # any prefix-with-underscore + tokens
+        )
+        for field in counters:
+            assert sanitize_value(1234, field) == 1234, (
+                f"counter field {field!r} should pass through unchanged"
+            )
+
+    def test_actual_secret_token_fields_still_redacted(self):
+        """Negative pair to the counter test above: singular
+        ``token`` and explicit access/api/bearer tokens stay
+        redacted. Don't widen the allow-list past counters."""
+        for field in (
+            "token",
+            "access_token",
+            "api_token",
+            "bearer_token",
+            "refresh_token",
+            "session_token",
+        ):
+            assert sanitize_value("sk-xyz", field) == REDACTED, (
+                f"secret field {field!r} must still be redacted"
+            )
+
     def test_recursively_walks_dict_and_list(self):
         payload = {
             "name": "openai",

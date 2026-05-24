@@ -61,6 +61,24 @@ _SECRET_FIELD_PATTERNS: Tuple[str, ...] = (
     # field named "key" / "token" which the patterns above catch.
 )
 
+# Allow-list for numeric *counters* whose key happens to contain
+# one of the secret substrings above. The classic case is
+# ``input_tokens`` / ``output_tokens`` / ``cache_read_tokens`` /
+# ``reasoning_tokens`` etc. — those are integer counts, not
+# credentials, and stripping them breaks any cost / usage display
+# downstream.
+#
+# Plural ``tokens`` is always a counter. Singular ``token`` stays
+# secret-by-default. Suffix forms like ``token_count`` /
+# ``tokenCount`` are also counters and explicitly allowed.
+_COUNTER_FIELD_RE = re.compile(
+    r"(?:^|_)tokens$"           # input_tokens, output_tokens, …
+    r"|^tokens$"                # bare "tokens"
+    r"|(?:^|_)token_count$"     # token_count, foo_token_count
+    r"|^tokencount$",           # camelCase form
+    re.IGNORECASE,
+)
+
 # Layer 2a: URL with embedded basic-auth credentials.
 # https://user:pass@host/path → https://<redacted>@host/path
 _URL_CRED_RE = re.compile(
@@ -97,8 +115,16 @@ _IDENTITY_OBJECT_PATHS: Tuple[Tuple[str, ...], ...] = (
 
 
 def _looks_like_secret_field(name: str) -> bool:
-    """True when a key name suggests the value is a secret."""
+    """True when a key name suggests the value is a secret.
+
+    Counter fields (``input_tokens``, ``tokenCount``, etc.) are
+    explicitly excluded — see ``_COUNTER_FIELD_RE``. They look like
+    they contain a secret substring but are integer counts that
+    must reach the client for cost / usage rendering.
+    """
     n = name.lower()
+    if _COUNTER_FIELD_RE.search(n):
+        return False
     return any(pattern in n for pattern in _SECRET_FIELD_PATTERNS)
 
 

@@ -6543,4 +6543,96 @@ No issues found.
 | session.create/resume cols no bounds | No upper bound on cols at creation | LOW |
 | _SlashWorker raw command | Command string passed directly to cli.process_command | LOW |
 
-**6 GOOD areas, 4 LOW issues, 1 MEDIUM, 1 INFORMATIONAL. 0 CRITICAL.**
+---
+
+## Pass #61 – Notification System, Alerting & Escalation Deep Dive – 2026-05-24T17:34:00Z
+
+### Notification Delivery Reliability
+
+**Retry mechanisms:** The codebase does not implement a general-purpose notification retry loop. When a platform adapter's `send()` fails, the failure is logged and propagated back to the caller — there is no autonomous retry with backoff for user-facing notification delivery. The single exception is the Signal attachment scheduler (`gateway/platforms/signal_rate_limit.py`), which implements a token-bucket rate limiter with server-calibrated refill rates and explicit `feedback(retry_after, n_attempted)` for 429 responses. Signal uses `SIGNAL_RATE_LIMIT_MAX_ATTEMPTS = 2` (one initial attempt + one retry).
+
+**Delivery receipts:** There is no delivery receipt tracking for outbound messages. Platforms return `SendResult(success=bool, error=str, raw_response=...)` but the gateway never verifies that a message actually arrived at the destination. Some platforms (Telegram, Discord) provide confirmation that the platform accepted the message, but this confirms server receipt, not end-user delivery.
+
+**Fallback on all-channel failure:** When the live adapter fails in the cron scheduler's delivery path, it falls back to a standalone `_send_to_platform()` coroutine run in a fresh event loop or thread pool. For kanban notifier failures, the subscription is dropped after `MAX_SEND_FAILURES = 3` consecutive failures (per `_kanban_notifier_watcher`). There is no fallback to a different notification channel (e.g., switching from Telegram to email) — if the platform's adapter fails, the notification is simply lost after the retry counter is exhausted.
+
+**Cron job delivery reliability:** Cron jobs use a two-tier delivery approach: live adapter first (via `safe_schedule_threadsafe` with a 60s timeout), then a standalone asyncio.run fallback. The standalone path handles `RuntimeError` from `asyncio.run()` nested-loop by closing the coroutine and retrying in a `ThreadPoolExecutor`. Delivery errors are accumulated in a `delivery_errors` list and logged at ERROR level, but there is no alert generated to an operator when all delivery attempts fail — the job is simply marked delivered=False and the error is logged.
+
+### Alert Escalation
+
+**Escalation policy:** There is no formal alert escalation policy (no tiered escalation rules, no escalation paths to different operators after N minutes). The closest concept is the `SessionResetPolicy` in `gateway/config.py`, which controls when sessions auto-reset with optional notifications (`notify: bool = True`, `notify_exclude_platforms: tuple = ("api_server", "webhook")`). This is session-level, not alert-level.
+
+**Kanban task escalation:** The kanban system has a circuit breaker pattern in `hermes_cli/kanban_db.py` — a `consecutive_failures` counter with a configurable trip threshold (`failure_limit` per task). Tasks that reach the failure limit transition to `gave_up` state and subscribers are notified via the `_kanban_notifier_watcher`. There is no multi-tier escalation (e.g., warning → critical → supervisor); a task either succeeds, gets blocked/spawn_auto_blocked, or gives up after reaching the limit.
+
+**Stuck-loop escalation:** The gateway session manager (`gateway/session.py`) has a `restart_failure_counts` counter that handles terminal escalation for genuinely stuck sessions. Sessions suspended via `/stop` or stuck-loop escalation are excluded from message processing. This is a system-level safety mechanism, not a user-facing alerting escalation.
+
+### Operator Notification Channels
+
+**Signal:** `gateway/platforms/signal.py` — full adapter with SSE inbound, JSON-RPC outbound, attachment support, rate limiting via `signal_rate_limit.py`. The rate limiter is a process-wide token-bucket with `SIGNAL_RATE_LIMIT_BUCKET_CAPACITY = 50`, `SIGNAL_RATE_LIMIT_DEFAULT_RETRY_AFTER = 4s`. It handles 429 detection across three error shapes (typed error code, legacy `[429]` substring, `RetryLaterException` wrapped in `AttachmentInvalidException`). There is no Signal-specific retry loop in the adapter — rate limit errors propagate to the caller.
+
+**Email:** `gateway/platforms/email.py` — IMAP for receiving, SMTP for sending. Has `_NOREPLY_PATTERNS` blocklist and `_AUTOMATED_HEADERS` RFC checks (`Auto-Submitted`, `Precedence`, `X-Auto-Response-Suppress`, `List-Unsubscribe`) to filter automated mail. The adapter sends messages via SMTP with TLS. No retry loop, no delivery receipts, no fallback channel.
+
+**Webhook:** `gateway/platforms/msgraph_webhook.py` and gateway hooks (`~/.hermes/hooks/HOOK.yaml`) support alert routing to external systems. There is no per-webhook retry configuration visible in the adapter base or config.
+
+**Fallback channel configuration:** No operator-configurable fallback channels exist. The `notify_exclude_platforms` in `SessionResetPolicy` only suppresses notifications to certain platforms, it does not redirect to an alternative channel.
+
+**Rate limits per channel:**
+- Signal: token-bucket (50 capacity, 1 token per 4s default refill)
+- Cron scheduler: live adapter timeout 60s, standalone timeout 30s
+- No global notification rate limiter across all channels
+
+### Sensitive Data in Notifications
+
+**Credential redaction:** The `security.redact_secrets` config controls redaction of tool output, logs, chat responses, session JSONs. The `hermes debug share` command (`hermes_cli/debug.py`) applies `_redact_log_text()` at upload time when `security.redact_secrets` is enabled. Phone numbers are redacted via `redact_phone()` in `gateway/platforms/helpers.py`. The `gateway/run.py` logs a notice when secret redaction is enabled.
+
+**Session redaction:** Session history (`session.history` tool) is returned raw without scrubbing according to Pass #60 findings. This means if a session contains credentials, they would be exposed through the history API.
+
+**Path redaction:** File paths appear in notification text (e.g., kanban task completion messages include task IDs and titles), but there is no systematic path redaction in notification content. The `safe_url_for_log()` in `base.py` strips query/fragment/userinfo from URLs before logging.
+
+**Send message errors:** `RELEASE_v0.8.0.md` (#5650, @WAXLYY) notes "Redact query secrets in send_message errors" — error messages in the send_message path previously leaked query string secrets.
+
+### Notification Fatigue
+
+**Rate limiting:** No global notification throttle exists across all platforms. The Signal rate limiter is per-attachment (not per-message), so a large batch of attachments would be paced. The `TextBatchAggregator` in `gateway/platforms/helpers.py` aggregates rapid-fire text events into single messages (batch_delay=0.6s, split_delay=2.0s) — this reduces notification spam at the platform adapter level but is not operator-configurable per alert type.
+
+**Quiet hours:** `[SILENT]` in the agent's final response suppresses delivery in cron jobs. There is no operator-configurable quiet hours window (e.g., "do not notify between 22:00–07:00"). The `SessionResetPolicy.notify` flag controls whether to send a reset notification, but does not support time-based suppression.
+
+**Alert grouping:** The `TextBatchAggregator` groups rapid text events per session into single messages — not configurable and applies only to inbound message batching, not outbound notifications. Kanban notifications are sent one-per-event with a cursor-based claim mechanism that atomically advances the cursor to prevent duplicate delivery.
+
+**Alert deduplication:** `MessageDeduplicator` (in `gateway/platforms/helpers.py`) is a centralized TTL-based deduplication cache (default 2000 entries, 300s TTL) used by: slack, wecom, weixin, qqbot, mattermost, dingtalk, yuanbao. Each adapter has its own instance. TTL pruning keeps entries within the window, and max_size is enforced by keeping newest entries when TTL pruning alone doesn't reduce the set. Feishu's dedup cache uses a 24-hour TTL (P46-8) — delayed duplicates possible on extended retries, flagged LOW.
+
+**Notification suppression:** `SessionResetPolicy.notify` can disable reset notifications. `[SILENT]` suppresses cron delivery. `_session_expiry_watcher` handles auto-reset notifications only when `notify` is True and platform is not in `notify_exclude_platforms`.
+
+### Gaps and Risks
+
+1. **No operator-facing alert escalation policy** — no tiered escalation rules, no escalation to a secondary operator after N minutes of silence, no escalation to email/webhook when all messaging channels fail.
+2. **No delivery receipt verification** — `SendResult` confirms platform accept, not user receipt.
+3. **No cross-channel fallback** — if Telegram fails, no automatic redirect to Signal, email, or webhook. Notifications lost after 3 failures (kanban) or logged and abandoned (cron).
+4. **No retry loop for user-facing notifications** — only Signal has autonomous retry (1 retry on rate limit). Email and webhook failures propagate with no autonomous retry.
+5. **Sensitive data in notifications** — `session.history` returns raw history without redaction. Credentials in session context could appear in error notifications or reset alerts.
+6. **No quiet hours** — no time-based notification suppression.
+7. **No notification fatigue controls** — no per-alert-type rate limiting, no max-notifications-per-hour cap, no operator-configurable grouping rules.
+
+---
+
+### Summary
+
+| Area | Status | Severity |
+|------|--------|----------|
+| Signal rate limiting | Token-bucket with server feedback, 1 retry | GOOD |
+| MessageDeduplicator | Centralized TTL-based dedup cache, 300s default | GOOD |
+| Kanban notifier dedup | Atomic claim + rewind on failure | GOOD |
+| Session reset notifications | Configurable per-platform exclusion | GOOD |
+| Email automated-sender filtering | RFC header checks + noreply patterns | GOOD |
+| Secret redaction in logs | `security.redact_secrets` + `_redact_log_text` | GOOD |
+| Phone redaction | `redact_phone()` in helpers, used by SMS/Signal | GOOD |
+| Cron two-tier delivery | Live adapter → standalone fallback | GOOD |
+| No cross-channel fallback | Failed platform → no redirect to alternative | MEDIUM |
+| No delivery receipt tracking | SendResult confirms platform accept, not user receipt | MEDIUM |
+| No operator alert escalation | No tiered escalation, no secondary operator routing | MEDIUM |
+| No retry for non-Signal notifications | Email/webhook failures propagate, no autonomous retry | MEDIUM |
+| session.history no redaction | Raw history returned without credential scrubbing | LOW |
+| No quiet hours | No time-based notification suppression | LOW |
+| No notification fatigue controls | No per-type rate limiting, no max-per-hour cap | LOW |
+| Feishu dedup 24h TTL | Delayed duplicates possible on extended retries | LOW |
+
+**6 GOOD areas, 4 MEDIUM gaps, 4 LOW issues. No CRITICAL.**

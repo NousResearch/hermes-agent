@@ -914,14 +914,60 @@ async def vision_analyze_tool(
 
 
 def check_vision_requirements() -> bool:
-    """Check if the configured runtime vision path can resolve a client."""
-    try:
-        from agent.auxiliary_client import resolve_vision_provider_client
+    """Check if the configured runtime vision path can resolve a client.
 
-        _provider, client, _model = resolve_vision_provider_client()
-        return client is not None
+    Uses a lightweight config check first to avoid expensive provider
+    resolution (which may trigger network probes) at startup.  Falls back
+    to full resolution only when the lightweight check is inconclusive.
+    """
+    try:
+        from agent.auxiliary_client import (
+            _resolve_task_provider_model,
+            _VISION_AUTO_PROVIDER_ORDER,
+        )
+        from hermes_cli.auth import PROVIDER_REGISTRY, resolve_api_key_provider_credentials
+
+        requested, _model, _base_url, _api_key, _ = _resolve_task_provider_model(
+            "vision", None, None,
+        )
+
+        # Explicit non-auto provider with explicit base_url or api_key
+        if _base_url or _api_key:
+            return True
+
+        # Auto mode: check if main provider OR any aggregator has credentials
+        if requested == "auto":
+            from agent.auxiliary_client import _read_main_provider
+            main_provider = _read_main_provider()
+            if main_provider and main_provider not in ("auto", ""):
+                pconfig = PROVIDER_REGISTRY.get(main_provider)
+                if pconfig and pconfig.auth_type == "api_key":
+                    creds = resolve_api_key_provider_credentials(main_provider)
+                    if creds.get("api_key"):
+                        return True
+            for candidate in _VISION_AUTO_PROVIDER_ORDER:
+                pconfig = PROVIDER_REGISTRY.get(candidate)
+                if pconfig and pconfig.auth_type == "api_key":
+                    creds = resolve_api_key_provider_credentials(candidate)
+                    if creds.get("api_key"):
+                        return True
+            return False
+
+        # Named provider: check credentials exist
+        pconfig = PROVIDER_REGISTRY.get(requested)
+        if pconfig and pconfig.auth_type == "api_key":
+            creds = resolve_api_key_provider_credentials(requested)
+            return bool(creds.get("api_key"))
+
+        return True
     except Exception:
-        return False
+        # Fallback: try full resolution (preserves original behavior)
+        try:
+            from agent.auxiliary_client import resolve_vision_provider_client
+            _provider, client, _model = resolve_vision_provider_client()
+            return client is not None
+        except Exception:
+            return False
 
 
 

@@ -692,6 +692,9 @@ class QQAdapter(BasePlatformAdapter):
             elif msg.type in {aiohttp.WSMsgType.CLOSED, aiohttp.WSMsgType.ERROR}:
                 raise RuntimeError("WebSocket closed")
 
+        if self._running:
+            raise RuntimeError("WebSocket closed")
+
     async def _heartbeat_loop(self) -> None:
         """Send periodic heartbeats (QQ Gateway expects op 1 heartbeat with latest seq).
 

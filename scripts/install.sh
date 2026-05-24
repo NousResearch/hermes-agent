@@ -309,6 +309,28 @@ get_hermes_command_path() {
     fi
 }
 
+resolve_install_python() {
+    if [ -x "$INSTALL_DIR/venv/bin/python" ]; then
+        echo "$INSTALL_DIR/venv/bin/python"
+    elif [ -n "${PYTHON_PATH:-}" ] && [ -x "$PYTHON_PATH" ]; then
+        echo "$PYTHON_PATH"
+    elif command -v python >/dev/null 2>&1; then
+        command -v python
+    else
+        return 1
+    fi
+}
+
+resolve_install_hermes_bin() {
+    if [ -x "$INSTALL_DIR/venv/bin/hermes" ]; then
+        echo "$INSTALL_DIR/venv/bin/hermes"
+    elif command -v hermes >/dev/null 2>&1; then
+        command -v hermes
+    else
+        return 1
+    fi
+}
+
 # ============================================================================
 # System detection
 # ============================================================================
@@ -1260,14 +1282,14 @@ PY
 setup_path() {
     log_info "Setting up hermes command..."
 
-    if [ "$USE_VENV" = true ]; then
-        HERMES_BIN="$INSTALL_DIR/venv/bin/hermes"
-    else
-        HERMES_BIN="$(which hermes 2>/dev/null || echo "")"
-        if [ -z "$HERMES_BIN" ]; then
+    HERMES_BIN="$(resolve_install_hermes_bin 2>/dev/null || echo "")"
+    if [ -z "$HERMES_BIN" ]; then
+        if [ "$USE_VENV" = false ]; then
             log_warn "hermes not found on PATH after install"
-            return 0
+        else
+            log_warn "hermes entry point not found after install"
         fi
+        return 0
     fi
 
     # Verify the entry point script was actually generated
@@ -1478,7 +1500,9 @@ SOUL_EOF
 
     # Seed bundled skills into ~/.hermes/skills/ (manifest-based, one-time per skill)
     log_info "Syncing bundled skills to ~/.hermes/skills/ ..."
-    if "$INSTALL_DIR/venv/bin/python" "$INSTALL_DIR/tools/skills_sync.py" 2>/dev/null; then
+    local install_python
+    install_python="$(resolve_install_python 2>/dev/null || echo "")"
+    if [ -n "$install_python" ] && "$install_python" "$INSTALL_DIR/tools/skills_sync.py" 2>/dev/null; then
         log_success "Skills synced to ~/.hermes/skills/"
     else
         # Fallback: simple directory copy if Python sync fails
@@ -1717,13 +1741,17 @@ run_setup_wizard() {
 
     cd "$INSTALL_DIR"
 
-    # Run hermes setup using the venv Python directly (no activation needed).
+    # Run hermes setup with the interpreter that actually has Hermes installed.
     # Redirect stdin from /dev/tty so interactive prompts work when piped from curl.
-    if [ "$USE_VENV" = true ]; then
-        "$INSTALL_DIR/venv/bin/python" -m hermes_cli.main setup < /dev/tty
-    else
-        python -m hermes_cli.main setup < /dev/tty
+    local install_python
+    install_python="$(resolve_install_python 2>/dev/null || echo "")"
+    if [ -z "$install_python" ]; then
+        log_warn "Python interpreter for Hermes install not found"
+        log_info "Try: python -m hermes_cli.main setup"
+        return 0
     fi
+
+    "$install_python" -m hermes_cli.main setup < /dev/tty
 }
 
 maybe_start_gateway() {

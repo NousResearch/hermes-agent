@@ -8,6 +8,7 @@ are made.
 import io
 import json
 import logging
+import os
 import re
 import uuid
 from logging.handlers import RotatingFileHandler
@@ -2880,6 +2881,88 @@ class TestRunConversation:
         assert all("message_count" in c and isinstance(c.get("request_messages"), list) for c in pre_request_calls)
         assert any(msg.get("role") == "user" and msg.get("content") == "search something" for msg in pre_request_calls[0]["request_messages"])
         assert all("usage" in c and "response" in c and "assistant_message" in c for c in post_request_calls)
+
+    def test_memory_mesh_canary_is_default_off_and_not_in_api_payload(self, monkeypatch):
+        monkeypatch.delenv("HERMES_MEMORY_MESH_ONE_SESSION_CANARY", raising=False)
+        with (
+            patch(
+                "run_agent.get_tool_definitions",
+                return_value=_make_tool_defs("session_search", "memory"),
+            ),
+            patch("run_agent.check_toolset_requirements", return_value={}),
+            patch("run_agent.OpenAI"),
+        ):
+            agent = AIAgent(
+                api_key="test-key-1234567890",
+                base_url="https://openrouter.ai/api/v1",
+                quiet_mode=True,
+                skip_context_files=True,
+                skip_memory=True,
+            )
+        self._setup_agent(agent)
+
+        captured_api_messages = []
+
+        def _capture_api_call(api_kwargs):
+            captured_api_messages.append(api_kwargs["messages"])
+            return _mock_response(content="Clean answer", finish_reason="stop")
+
+        with (
+            patch.object(agent, "_interruptible_api_call", side_effect=_capture_api_call),
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+        ):
+            result = agent.run_conversation("What is the relational peer texture in this explicit live continuity?")
+
+        assert result["completed"] is True
+        assert "Memory mesh one-session canary" not in json.dumps(captured_api_messages[0])
+
+    def test_memory_mesh_canary_env_on_injects_once_and_consumes(self, monkeypatch):
+        monkeypatch.setenv("HERMES_MEMORY_MESH_ONE_SESSION_CANARY", "1")
+        with (
+            patch(
+                "run_agent.get_tool_definitions",
+                return_value=_make_tool_defs("session_search", "memory"),
+            ),
+            patch("run_agent.check_toolset_requirements", return_value={}),
+            patch("run_agent.OpenAI"),
+        ):
+            agent = AIAgent(
+                api_key="test-key-1234567890",
+                base_url="https://openrouter.ai/api/v1",
+                quiet_mode=True,
+                skip_context_files=True,
+                skip_memory=True,
+            )
+        self._setup_agent(agent)
+
+        captured_api_messages = []
+
+        def _capture_api_call(api_kwargs):
+            captured_api_messages.append(api_kwargs["messages"])
+            return _mock_response(content="Clean answer", finish_reason="stop")
+
+        user_text = "What is the relational peer texture in this explicit live continuity?"
+        with (
+            patch.object(agent, "_interruptible_api_call", side_effect=_capture_api_call),
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+        ):
+            first = agent.run_conversation(user_text)
+            second = agent.run_conversation(user_text, conversation_history=first["messages"])
+
+        assert second["completed"] is True
+        first_payload = json.dumps(captured_api_messages[0])
+        second_payload = json.dumps(captured_api_messages[1])
+        assert first_payload.count("Memory mesh one-session canary") == 1
+        assert "drivers_to_query=honcho" in first_payload
+        assert "prompt_admission=metadata_only" in first_payload
+        assert "Memory mesh one-session canary" not in second_payload
+        assert os.environ["HERMES_MEMORY_MESH_ONE_SESSION_CANARY"] == "consumed"
+        assert "Memory mesh one-session canary" not in json.dumps(first["messages"])
+        assert "Memory mesh one-session canary" not in json.dumps(second["messages"])
 
     def test_retrieval_route_hint_is_api_payload_only(self):
         with (

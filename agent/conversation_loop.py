@@ -836,6 +836,9 @@ def run_conversation(
                 _route_hint = agent._build_retrieval_route_hint(str(original_user_message or user_message or ""))
                 if _route_hint:
                     _injections.append(_route_hint)
+                _mesh_canary_hint = agent._build_memory_mesh_canary_hint(str(original_user_message or user_message or ""))
+                if _mesh_canary_hint:
+                    _injections.append(_mesh_canary_hint)
                 if _injections:
                     _base = api_msg.get("content", "")
                     if isinstance(_base, str):

@@ -134,6 +134,7 @@ from agent.prompt_builder import (
     build_retrieval_route_hint,
     classify_retrieval_route,
 )
+from agent.memory_driver_router import build_one_session_mesh_canary
 from agent.model_metadata import (
     fetch_model_metadata,
     estimate_tokens_rough, estimate_messages_tokens_rough, estimate_request_tokens_rough,
@@ -2338,6 +2339,19 @@ class AIAgent:
         if decision.fallback_from:
             return ""
         return build_retrieval_route_hint(decision)
+
+    def _build_memory_mesh_canary_hint(self, request: str) -> str:
+        """Return the env-gated one-session memory-mesh canary hint, once."""
+        env_name = "HERMES_MEMORY_MESH_ONE_SESSION_CANARY"
+        if os.getenv(env_name) != "1":
+            return ""
+        if getattr(self, "_memory_mesh_canary_consumed", False):
+            return ""
+        self._memory_mesh_canary_consumed = True
+        os.environ[env_name] = "consumed"
+        result = build_one_session_mesh_canary(request, enabled=True)
+        self._memory_mesh_canary_telemetry = result.telemetry_record
+        return result.prompt_block
 
     @staticmethod
     def _get_tool_call_id_static(tc) -> str:

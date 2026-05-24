@@ -400,13 +400,25 @@ def apply_wal_with_fallback(
         if not any(marker in msg for marker in _WAL_INCOMPAT_MARKERS):
             # Unrelated OperationalError — don't silently swallow.
             raise
-        # Don't downgrade if another process already set WAL on disk.
+        # Don't downgrade if another process already set WAL on disk. In that
+        # case the connection is usable, so treat the failed pragma as a race.
         existing = _on_disk_journal_mode(conn)
         if existing == "wal":
-            raise
+            _apply_macos_checkpoint_barrier(conn)
+            return "wal"
         _log_wal_fallback_once(db_label, exc)
-        conn.execute("PRAGMA journal_mode=DELETE")
-        return "delete"
+        try:
+            conn.execute("PRAGMA journal_mode=DELETE")
+            return "delete"
+        except sqlite3.OperationalError:
+            # Same race, second chance: if another connection left the DB in
+            # WAL mode, the connection is usable and should not take down
+            # gateway-side Kanban polling.
+            existing = _on_disk_journal_mode(conn)
+            if existing == "wal":
+                _apply_macos_checkpoint_barrier(conn)
+                return "wal"
+            raise
 
 
 def _log_wal_fallback_once(db_label: str, exc: Exception) -> None:

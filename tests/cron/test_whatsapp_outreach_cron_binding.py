@@ -9,6 +9,7 @@ from gateway.platforms.base import SendResult
 from gateway.whatsapp_approved_outreach import (
     bind_whatsapp_outreach_plan_to_cron_job,
     load_whatsapp_outreach_state,
+    _write_whatsapp_outreach_state,
 )
 
 
@@ -197,3 +198,107 @@ def test_tick_partitions_bound_whatsapp_outreach_jobs_sequentially(
 
     assert executed == 1
     assert calls == [job["id"]]
+
+
+def test_tick_runs_multi_target_bound_whatsapp_outreach_and_persists_partial_report(
+    tmp_path, monkeypatch
+):
+    plan_id = _seed_plan_state(tmp_path, monkeypatch)
+    state = load_whatsapp_outreach_state()
+    state["plan_targets"].append({
+        "plan_target_id": "watarget-extra",
+        "plan_id": plan_id,
+        "target_status": "active",
+        "conversation_key": "whatsapp:dm:15551230001",
+        "destination_key": "whatsapp:dm:15551230001",
+        "group_chat_id": None,
+        "dm_counterparty_id": "15551230001",
+        "target_objective_override": None,
+        "max_outbound_messages_per_run": 1,
+        "last_resolved_conversation_key": None,
+        "last_observed_message_at_utc": None,
+    })
+    state["plans"][0]["plan_status"] = "approved"
+    from gateway.whatsapp_message_store import append_whatsapp_record
+    from datetime import datetime
+
+    append_whatsapp_record(
+        {
+            "record_kind": "conversation_record",
+            "record_id": "record-2",
+            "conversation_key": "whatsapp:dm:15551230001",
+            "destination_key": "whatsapp:dm:15551230001",
+            "destination_context_type": "direct_message",
+            "destination_chat_id": "15551230001@s.whatsapp.net",
+            "destination_target_id": "15551230001",
+            "group_chat_id": None,
+            "dm_counterparty_id": "15551230001",
+            "direction": "inbound",
+            "effective_event_at_utc": "2024-06-02T09:02:00Z",
+            "record_sequence": 2,
+            "participant_role": "external_party",
+            "message_classification": "conversational_only",
+            "command_authority_scope": "none",
+            "sender_id": "15551230001",
+            "sender_name": "Vendor B",
+            "text": "Prior vendor thread context B.",
+            "message_id": "msg-2",
+            "media_types": [],
+        },
+        effective_event_at=datetime.fromisoformat("2024-06-02T09:02:00+00:00"),
+        base_dir=tmp_path / ".hermes" / "gateway" / "whatsapp-records",
+    )
+    _write_whatsapp_outreach_state(state)
+
+    job = create_job(
+        prompt="Scheduled follow-up.",
+        schedule="every 1h",
+        deliver="telegram:-100ops",
+        workflow_binding_type="whatsapp_outreach_plan",
+        workflow_binding_id=plan_id,
+    )
+    bind_whatsapp_outreach_plan_to_cron_job(plan_id=plan_id, cron_job_id=job["id"])
+
+    async def _send(chat_id, _message):
+        if chat_id == "15551230000@s.whatsapp.net":
+            return SendResult(success=True, message_id="cron-msg-a", raw_response={})
+        return SendResult(success=False, error="bridge down")
+
+    adapter_instance = type("Adapter", (), {})()
+    adapter_instance.send = AsyncMock(side_effect=_send)
+
+    fake_db = MagicMock()
+
+    with (
+        patch("cron.scheduler.get_due_jobs", return_value=[job]),
+        patch("cron.scheduler.advance_next_run"),
+        patch("cron.scheduler.save_job_output", return_value="/tmp/out.md"),
+        patch("cron.scheduler._deliver_result", return_value=None),
+        patch("cron.scheduler.mark_job_run") as mark_mock,
+        patch("hermes_state.SessionDB", return_value=fake_db),
+    ):
+        executed = tick(
+            verbose=False,
+            adapters={Platform.WHATSAPP: adapter_instance},
+        )
+
+    assert executed == 1
+    assert adapter_instance.send.await_count == 2
+    assert mark_mock.call_args[0][1] is True
+
+    final_state = load_whatsapp_outreach_state()
+    latest_run = final_state["runs"][-1]
+    latest_report = final_state["reports"][-1]
+    assert latest_run["run_status"] == "completed_with_failures"
+    assert latest_run["target_count"] == 2
+    assert latest_run["failed_target_count"] == 1
+    assert (
+        len([
+            r
+            for r in final_state["target_executions"]
+            if r["run_id"] == latest_run["run_id"]
+        ])
+        == 2
+    )
+    assert latest_report["report_status"] == "partial"
+    assert len(latest_report["target_rows"]) == 2

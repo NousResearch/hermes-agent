@@ -3054,6 +3054,12 @@ def launchd_restart():
         # Job not loaded — bootstrap and start fresh
         print("↻ launchd job was unloaded; reloading")
         plist_path = get_launchd_plist_path()
+        # Self-heal: if the plist was deleted (e.g., incomplete setup wizard
+        # run) recreate it before bootstrapping — mirrors launchd_start().
+        if not plist_path.exists():
+            print("↻ launchd plist missing; regenerating service definition")
+            plist_path.parent.mkdir(parents=True, exist_ok=True)
+            plist_path.write_text(generate_launchd_plist(), encoding="utf-8")
         subprocess.run(["launchctl", "bootstrap", _launchd_domain(), str(plist_path)], check=True, timeout=30)
         subprocess.run(["launchctl", "kickstart", target], check=True, timeout=30)
         print("✓ Service restarted")

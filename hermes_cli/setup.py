@@ -2187,29 +2187,63 @@ def _setup_matrix():
             save_env_value("MATRIX_ENCRYPTION", "true")
             print_success("E2EE enabled")
 
-        matrix_pkg = "mautrix[encryption]" if want_e2ee else "mautrix"
-        try:
-            __import__("mautrix")
-        except ImportError:
-            print_info(f"Installing {matrix_pkg}...")
-            import subprocess
-            uv_bin = shutil.which("uv")
-            if uv_bin:
-                result = subprocess.run(
-                    [uv_bin, "pip", "install", "--python", sys.executable, matrix_pkg],
-                    capture_output=True, text=True,
-                )
+        # Install the full Matrix stack via the lazy-deps allowlist so we get
+        # everything ``gateway/platforms/matrix.py`` actually imports at
+        # runtime — not just ``mautrix[encryption]``. The crypto-store path
+        # ``from mautrix.crypto.store.asyncpg import PgCryptoStore`` runs
+        # ``import asyncpg`` at module load, and ``Database.create("sqlite://")``
+        # needs ``aiosqlite`` to register the sqlite scheme. Neither is a
+        # transitive dep of the upstream ``mautrix[encryption]`` extra, so
+        # the gateway crashed at first connect with
+        # ``No module named 'asyncpg'`` even though the wizard said the
+        # install succeeded. The ``platform.matrix`` group in
+        # ``tools/lazy_deps.py`` mirrors the ``[matrix]`` extra in
+        # ``pyproject.toml`` and pulls the complete set. Issue #31116.
+        if want_e2ee:
+            try:
+                from tools.lazy_deps import ensure as _lazy_ensure, FeatureUnavailable
+            except ImportError:
+                _lazy_ensure = None
+                FeatureUnavailable = Exception  # type: ignore[assignment,misc]
+            print_info("Installing Matrix E2EE stack (mautrix[encryption], asyncpg, aiosqlite)...")
+            if _lazy_ensure is not None:
+                try:
+                    _lazy_ensure("platform.matrix", prompt=False)
+                    print_success("Matrix E2EE stack installed")
+                except FeatureUnavailable as exc:
+                    print_warning(
+                        "Install failed — run manually: "
+                        "pip install 'hermes-agent[matrix]'"
+                    )
+                    print_info(f"  Error: {str(exc).splitlines()[0]}")
             else:
-                result = subprocess.run(
-                    [sys.executable, "-m", "pip", "install", matrix_pkg],
-                    capture_output=True, text=True,
+                print_warning(
+                    "Install helper unavailable — run manually: "
+                    "pip install 'hermes-agent[matrix]'"
                 )
-            if result.returncode == 0:
-                print_success(f"{matrix_pkg} installed")
-            else:
-                print_warning(f"Install failed — run manually: pip install '{matrix_pkg}'")
-                if result.stderr:
-                    print_info(f"  Error: {result.stderr.strip().splitlines()[-1]}")
+        else:
+            try:
+                __import__("mautrix")
+            except ImportError:
+                print_info("Installing mautrix...")
+                import subprocess
+                uv_bin = shutil.which("uv")
+                if uv_bin:
+                    result = subprocess.run(
+                        [uv_bin, "pip", "install", "--python", sys.executable, "mautrix"],
+                        capture_output=True, text=True,
+                    )
+                else:
+                    result = subprocess.run(
+                        [sys.executable, "-m", "pip", "install", "mautrix"],
+                        capture_output=True, text=True,
+                    )
+                if result.returncode == 0:
+                    print_success("mautrix installed")
+                else:
+                    print_warning("Install failed — run manually: pip install mautrix")
+                    if result.stderr:
+                        print_info(f"  Error: {result.stderr.strip().splitlines()[-1]}")
 
         print()
         print_info("🔒 Security: Restrict who can use your bot")

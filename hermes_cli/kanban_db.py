@@ -1478,7 +1478,14 @@ def write_txn(conn: sqlite3.Connection):
     try:
         yield conn
     except Exception:
-        conn.execute("ROLLBACK")
+        try:
+            conn.execute("ROLLBACK")
+        except sqlite3.OperationalError as exc:
+            # SQLite can auto-abort the transaction before we reach the
+            # explicit rollback; keep the original exception in that case.
+            msg = str(exc).lower()
+            if "cannot rollback" not in msg and "no transaction is active" not in msg:
+                raise
         raise
     else:
         conn.execute("COMMIT")

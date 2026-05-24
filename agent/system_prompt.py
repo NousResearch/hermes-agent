@@ -41,6 +41,93 @@ from agent.prompt_builder import (
     TOOL_USE_ENFORCEMENT_MODELS,
 )
 
+# Domain knowledge block builder (lazy import to avoid cycle)
+_DOMAIN_KNOWLEDGE_BUILT = False
+
+
+def _build_domain_knowledge_block(agent: Any) -> Optional[str]:
+    """Build a <domain-knowledge> block for the system prompt.
+
+    Loaded once per session based on the project's domain tags.
+    Reads domain notes from the Obsidian vault and includes them
+    as reference context. Returns None if no notes are found.
+    """
+    global _DOMAIN_KNOWLEDGE_BUILT
+    if _DOMAIN_KNOWLEDGE_BUILT:
+        return None  # Already included in cached prompt
+
+    try:
+        from agent.knowledge_domains import DomainRelevanceMatcher
+    except ImportError:
+        return None
+
+    # Determine project slug from context cwd or session
+    project_slug = None
+    context_cwd = os.getenv("TERMINAL_CWD") or os.getcwd()
+    if context_cwd:
+        # Extract project slug from path
+        path_parts = Path(context_cwd).parts
+        for i, part in enumerate(path_parts):
+            if part == "Viber Project":
+                # Remaining path segments form the project slug
+                remaining = path_parts[i + 1:]
+                if len(remaining) >= 2:
+                    category = remaining[0].lower().replace(" ", "-")
+                    name = remaining[1].lower().replace(" ", "-")
+                    project_slug = f"{category}-{name}"
+                    break
+
+    if not project_slug:
+        # Fallback: try session ID or platform-specific project detection
+        project_slug = getattr(agent, "_project_slug", None)
+
+    if not project_slug:
+        return None
+
+    matcher = DomainRelevanceMatcher()
+    domains = matcher.classify(project_slug)
+    if not domains:
+        return None
+
+    notes = matcher.get_domain_notes(domains)
+    if not notes:
+        # No promoted notes yet — still include domain header for awareness
+        domain_list = ", ".join(domains)
+        _DOMAIN_KNOWLEDGE_BUILT = True
+        return (
+            f"<domain-knowledge>\n"
+            f"Project: {project_slug}\n"
+            f"Domains: {domain_list}\n"
+            f"No shared domain notes promoted yet. "
+            f"Use the load_domain_knowledge tool to check for updates.\n"
+            f"</domain-knowledge>"
+        )
+
+    content_parts = []
+    for note_path in notes[:5]:  # Limit to 5 notes to control token budget
+        try:
+            text = note_path.read_text(encoding="utf-8")
+            # Extract title from frontmatter
+            title_match = __import__("re").search(r"^title:\s*(.+)$", text, __import__("re").MULTILINE)
+            title = title_match.group(1).strip() if title_match else note_path.stem
+            content_parts.append(f"### {title} ({note_path.parent.name})\n{text}")
+        except Exception:
+            pass
+
+    if not content_parts:
+        return None
+
+    domain_list = ", ".join(domains)
+    _DOMAIN_KNOWLEDGE_BUILT = True
+    return (
+        f"<domain-knowledge>\n"
+        f"Project: {project_slug}\n"
+        f"Domains: {domain_list}\n"
+        f"Shared knowledge from {len(content_parts)} promoted note(s):\n\n"
+        + "\n\n".join(content_parts)
+        + "\n</domain-knowledge>"
+    )
+
 
 def _ra():
     """Lazy reference to the ``run_agent`` module.
@@ -184,6 +271,20 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
     if skills_prompt:
         stable_parts.append(skills_prompt)
 
+    if "capture_knowledge" in agent.valid_tool_names:
+        stable_parts.append(
+            "Knowledge Center routing: when the user posts reusable knowledge, "
+            "lessons, operating procedures, role/agent ideas, or skill-like "
+            "instructions, use capture_knowledge to classify it as "
+            "skill_candidate, agent_candidate, domain_knowledge, "
+            "workspace_knowledge, playbook_candidate, or project_note. Use "
+            "workspace_knowledge for portfolio-wide strategy, roadmap, "
+            "project relationships, vocabulary, and decision principles. Do "
+            "not create a new Skill or Agent profile directly from ambiguous "
+            "knowledge; capture it to the Obsidian intake queue for review "
+            "unless the user explicitly asks for creation."
+        )
+
     # Alibaba Coding Plan API always returns "glm-4.7" as model name regardless
     # of the requested model. Inject explicit model identity into the system prompt
     # so the agent can correctly report which model it is (workaround for API bug).
@@ -259,6 +360,16 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
                 volatile_parts.append(_ext_mem_block)
         except Exception:
             pass
+
+    # ── Domain knowledge block (Tier 2 of 3-Tier Knowledge Center) ─
+    # Loaded once per session based on the project's domain tags.
+    # Cache-aware: same project = same domain knowledge = stable prompt.
+    try:
+        _domain_block = _build_domain_knowledge_block(agent)
+        if _domain_block:
+            volatile_parts.append(_domain_block)
+    except Exception:
+        pass
 
     from hermes_time import now as _hermes_now
     now = _hermes_now()

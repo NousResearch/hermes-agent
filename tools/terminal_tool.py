@@ -1894,6 +1894,37 @@ def terminal_tool(
                 desc = approval.get("description", "flagged as dangerous")
                 approval_note = f"Command was flagged ({desc}) and auto-approved by smart approval."
 
+        # Command allowlist/denylist filter (config-driven, applies even in yolo mode)
+        if not force:
+            from tools.command_filter import check_command_filter_fast
+            filter_ok, filter_reason = check_command_filter_fast(command)
+            if not filter_ok:
+                logger.info(
+                    "Command blocked by allowlist/denylist filter: %s (command: %s)",
+                    filter_reason, command[:200],
+                )
+                # Audit: blocked by filter
+                try:
+                    from tools.audit_log import write_audit_entry
+                    from tools.approval import get_current_session_key
+                    write_audit_entry(
+                        command=command,
+                        session_key=get_current_session_key(default=""),
+                        task_id=effective_task_id or "",
+                        workdir=workdir or "",
+                        blocked=True,
+                        block_reason=filter_reason,
+                        env_type=env_type,
+                    )
+                except Exception:
+                    pass
+                return json.dumps({
+                    "output": "",
+                    "exit_code": -1,
+                    "error": filter_reason,
+                    "status": "blocked"
+                }, ensure_ascii=False)
+
         # Validate workdir against shell injection
         if workdir:
             workdir_error = _validate_workdir(workdir)
@@ -2134,6 +2165,22 @@ def terminal_tool(
                 result_dict["approval"] = approval_note
             if exit_note:
                 result_dict["exit_code_meaning"] = exit_note
+
+            # Audit: successful execution
+            try:
+                from tools.audit_log import write_audit_entry
+                from tools.approval import get_current_session_key
+                write_audit_entry(
+                    command=command,
+                    session_key=get_current_session_key(default=""),
+                    task_id=effective_task_id or "",
+                    workdir=workdir or cwd,
+                    exit_code=returncode,
+                    user_approved=bool(approval_note),
+                    env_type=env_type,
+                )
+            except Exception:
+                pass
 
             return json.dumps(result_dict, ensure_ascii=False)
 

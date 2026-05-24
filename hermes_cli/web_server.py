@@ -47,6 +47,7 @@ from hermes_cli.config import (
     check_config_version,
     redact_key,
 )
+from hermes_cli.csrf import is_state_changing_method as _is_state_changing_method
 from gateway.status import get_running_pid, read_runtime_status
 
 try:
@@ -85,6 +86,10 @@ app = FastAPI(title="Hermes Agent", version=__version__)
 # ---------------------------------------------------------------------------
 _SESSION_TOKEN = secrets.token_urlsafe(32)
 _SESSION_HEADER_NAME = "X-Hermes-Session-Token"
+_SESSION_COOKIE_NAME = "hermes_session"  # HttpOnly cookie for browser auth
+
+# CSRF protection — enabled by default, can be disabled via config
+_CSRF_ENABLED = True
 
 # In-browser Chat tab (/chat, /api/pty, …).  Off unless ``hermes dashboard --tui``
 # or HERMES_DASHBOARD_TUI=1.  Set from :func:`start_server`.
@@ -125,10 +130,13 @@ _PUBLIC_API_PATHS: frozenset = frozenset({
 def _has_valid_session_token(request: Request) -> bool:
     """True if the request carries a valid dashboard session token.
 
-    The dedicated session header avoids collisions with reverse proxies that
-    already use ``Authorization`` (for example Caddy ``basic_auth``). We still
-    accept the legacy Bearer path for backward compatibility with older
-    dashboard bundles.
+    Accepts (in priority order):
+    1. Dedicated session header (``X-Hermes-Session-Token``) — avoids
+       collisions with reverse proxies that already use ``Authorization``.
+    2. ``Authorization: Bearer <token>`` — legacy path for backward
+       compatibility with older dashboard bundles.
+    3. ``hermes_session`` cookie — browser-native path that keeps the
+       token out of URLs (no referer leaks, no history exposure).
     """
     session_header = request.headers.get(_SESSION_HEADER_NAME, "")
     if session_header and hmac.compare_digest(
@@ -139,7 +147,15 @@ def _has_valid_session_token(request: Request) -> bool:
 
     auth = request.headers.get("authorization", "")
     expected = f"Bearer {_SESSION_TOKEN}"
-    return hmac.compare_digest(auth.encode(), expected.encode())
+    if hmac.compare_digest(auth.encode(), expected.encode()):
+        return True
+
+    # Cookie-based auth (HttpOnly, set by the dashboard HTML response)
+    cookie = request.cookies.get(_SESSION_COOKIE_NAME, "")
+    if cookie and hmac.compare_digest(cookie.encode(), _SESSION_TOKEN.encode()):
+        return True
+
+    return False
 
 
 def _require_token(request: Request) -> None:
@@ -235,7 +251,11 @@ async def host_header_middleware(request: Request, call_next):
 
 @app.middleware("http")
 async def auth_middleware(request: Request, call_next):
-    """Require the session token on all /api/ routes except the public list."""
+    """Require the session token on all /api/ routes except the public list.
+
+    Also enforces CSRF protection on state-changing methods (POST/PUT/DELETE/
+    PATCH) to prevent cross-site request forgery attacks.
+    """
     path = request.url.path
     if path.startswith("/api/") and path not in _PUBLIC_API_PATHS:
         if not _has_valid_session_token(request):
@@ -243,6 +263,17 @@ async def auth_middleware(request: Request, call_next):
                 status_code=401,
                 content={"detail": "Unauthorized"},
             )
+
+        # CSRF check on state-changing methods
+        if _CSRF_ENABLED and _is_state_changing_method(request.method):
+            from hermes_cli.csrf import extract_csrf_token, verify_csrf_token
+            csrf_token = extract_csrf_token(dict(request.headers))
+            if not verify_csrf_token(_SESSION_TOKEN, csrf_token, enabled=_CSRF_ENABLED):
+                return JSONResponse(
+                    status_code=403,
+                    content={"detail": "Invalid or missing CSRF token"},
+                )
+
     return await call_next(request)
 
 
@@ -3398,6 +3429,45 @@ def _channel_or_close_code(ws: WebSocket) -> Optional[str]:
     return channel if _VALID_CHANNEL_RE.match(channel) else None
 
 
+def _extract_ws_token(ws: WebSocket) -> str:
+    """Extract the session token from a WebSocket handshake request.
+
+    Checks (in priority order):
+    1. ``token`` query parameter (legacy, browsers can't set headers on WS upgrade)
+    2. ``hermes_session`` cookie (secure path — token stays out of URLs)
+    3. ``X-Hermes-Session-Token`` header
+    4. ``Authorization: Bearer <token>`` header
+
+    Returns empty string if no token is found.
+    """
+    # Query parameter (legacy)
+    token = ws.query_params.get("token", "")
+    if token:
+        return token
+
+    # Cookie: WebSocket headers include "cookie" header as a raw string
+    cookie_header = ws.headers.get("cookie", "")
+    if cookie_header:
+        # Parse cookies from the raw header string
+        for part in cookie_header.split(";"):
+            part = part.strip()
+            if "=" in part:
+                name, _, value = part.partition("=")
+                if name.strip() == _SESSION_COOKIE_NAME:
+                    return value
+
+    # Headers (some WS clients can set these)
+    session_header = ws.headers.get(_SESSION_HEADER_NAME.lower(), "")
+    if session_header:
+        return session_header
+
+    auth_header = ws.headers.get("authorization", "")
+    if auth_header.startswith("Bearer "):
+        return auth_header[7:]
+
+    return ""
+
+
 @app.websocket("/api/pty")
 async def pty_ws(ws: WebSocket) -> None:
     if not _DASHBOARD_EMBEDDED_CHAT_ENABLED:
@@ -3405,7 +3475,7 @@ async def pty_ws(ws: WebSocket) -> None:
         return
 
     # --- auth + loopback check (before accept so we can close cleanly) ---
-    token = ws.query_params.get("token", "")
+    token = _extract_ws_token(ws)
     expected = _SESSION_TOKEN
     if not hmac.compare_digest(token.encode(), expected.encode()):
         await ws.close(code=4401)
@@ -3677,13 +3747,23 @@ def mount_spa(application: FastAPI):
 
         ``prefix`` is the normalised ``X-Forwarded-Prefix`` (e.g. ``/hermes``)
         or empty string when served at root.
+
+        The response also sets an HttpOnly ``hermes_session`` cookie so that
+        WebSocket connections (which can't set ``Authorization`` headers on
+        upgrade) can authenticate via cookies instead of query parameters.
         """
         html = _index_path.read_text()
         chat_js = "true" if _DASHBOARD_EMBEDDED_CHAT_ENABLED else "false"
+
+        # Generate CSRF token bound to the session token
+        from hermes_cli.csrf import generate_csrf_token as _gen_csrf
+        csrf_token = _gen_csrf(_SESSION_TOKEN)
+
         token_script = (
             f'<script>window.__HERMES_SESSION_TOKEN__="{_SESSION_TOKEN}";'
             f"window.__HERMES_DASHBOARD_EMBEDDED_CHAT__={chat_js};"
-            f'window.__HERMES_BASE_PATH__="{prefix}";</script>'
+            f'window.__HERMES_BASE_PATH__="{prefix}";'
+            f'window.__HERMES_CSRF_TOKEN__="{csrf_token}";</script>'
         )
         if prefix:
             # Rewrite absolute asset URLs baked into the Vite build so the
@@ -3695,10 +3775,22 @@ def mount_spa(application: FastAPI):
             html = html.replace('href="/ds-assets/', f'href="{prefix}/ds-assets/')
             html = html.replace('src="/ds-assets/', f'src="{prefix}/ds-assets/')
         html = html.replace("</head>", f"{token_script}</head>", 1)
-        return HTMLResponse(
-            html,
-            headers={"Cache-Control": "no-store, no-cache, must-revalidate"},
+
+        # Set the session cookie — HttpOnly (JS can't steal it),
+        # SameSite=Strict (CSRF protection), Path=prefix (scoped).
+        # Secure flag is added when served behind a TLS-terminating
+        # proxy (detected via X-Forwarded-Proto).
+        secure_flag = "; Secure"  # Always set for safety; browsers ignore
+                                   # on non-HTTPS so it's harmless either way.
+        cookie_attrs = (
+            f"{_SESSION_COOKIE_NAME}={_SESSION_TOKEN}; "
+            f"HttpOnly; SameSite=Strict; Path={prefix or '/'}{secure_flag}"
         )
+        headers = {
+            "Cache-Control": "no-store, no-cache, must-revalidate",
+            "Set-Cookie": cookie_attrs,
+        }
+        return HTMLResponse(html, headers=headers)
 
     # When served behind a path-prefix proxy, the built CSS contains
     # absolute ``url(/fonts/...)`` and ``url(/ds-assets/...)`` references.

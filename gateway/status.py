@@ -22,6 +22,7 @@ from pathlib import Path
 from hermes_constants import get_hermes_home
 from typing import Any, Optional
 from utils import atomic_json_write
+from gateway.file_lock import FileLock, LockTimeout
 
 if sys.platform == "win32":
     import msvcrt
@@ -575,107 +576,152 @@ def remove_pid_file() -> None:
         pass
 
 
-def acquire_scoped_lock(scope: str, identity: str, metadata: Optional[dict[str, Any]] = None) -> tuple[bool, Optional[dict[str, Any]]]:
+# Scoped lock acquisition timeout (seconds).  A process that cannot acquire
+# the lock within this window gives up and reports the lock as held by
+# another active gateway.
+_SCOPED_LOCK_TIMEOUT_S = 5
+
+
+def acquire_scoped_lock(
+    scope: str,
+    identity: str,
+    metadata: Optional[dict[str, Any]] = None,
+    *,
+    timeout: float = _SCOPED_LOCK_TIMEOUT_S,
+) -> tuple[bool, Optional[dict[str, Any]]]:
     """Acquire a machine-local lock keyed by scope + identity.
 
-    Used to prevent multiple local gateways from using the same external identity
-    at once (e.g. the same Telegram bot token across different HERMES_HOME dirs).
+    Uses ``fcntl.flock`` (POSIX) or ``msvcrt.locking`` (Windows) for proper
+    mutual exclusion that auto-releases on process death — unlike raw
+    ``O_CREAT | O_EXCL`` which requires manual cleanup.
+
+    Used to prevent multiple local gateways from using the same external
+    identity at once (e.g. the same Telegram bot token across different
+    HERMES_HOME dirs).
+
+    Parameters
+    ----------
+    scope:
+        Lock scope category (e.g. ``"telegram"``, ``"feishu"``).
+    identity:
+        Unique identity within the scope (e.g. a hashed bot token).
+    metadata:
+        Optional metadata stored alongside the lock record.
+    timeout:
+        Maximum seconds to wait for the lock.  ``0`` for non-blocking.
+
+    Returns
+    -------
+    (acquired, existing_record)
+        ``acquired`` is ``True`` when this call owns the lock.
+        ``existing_record`` is the previous lock record when ``acquired`` is
+        ``False`` (useful for reporting why the lock is unavailable).
     """
     lock_path = _get_scope_lock_path(scope, identity)
     lock_path.parent.mkdir(parents=True, exist_ok=True)
-    record = {
-        **_build_pid_record(),
-        "scope": scope,
-        "identity_hash": _scope_hash(identity),
-        "metadata": metadata or {},
-        "updated_at": _utc_now_iso(),
-    }
 
-    existing = _read_json_file(lock_path)
-    if existing is None and lock_path.exists():
-        # Lock file exists but is empty or contains invalid JSON — treat as
-        # stale.  This happens when a previous process was killed between
-        # O_CREAT|O_EXCL and the subsequent json.dump() (e.g. DNS failure
-        # during rapid Slack reconnect retries).
-        try:
-            lock_path.unlink(missing_ok=True)
-        except OSError:
-            pass
-    if existing:
-        try:
-            existing_pid = int(existing["pid"])
-        except (KeyError, TypeError, ValueError):
-            existing_pid = None
+    # Use FileLock for proper mutual exclusion during the entire
+    # read-check-acquire cycle.  The fcntl/msvcrt lock auto-releases on
+    # process death, so stale locks from killed processes are cleaned up
+    # by the OS without manual intervention.
+    file_lock = FileLock(lock_path)
+    try:
+        file_lock.acquire(timeout=timeout)
+    except LockTimeout:
+        # Could not acquire the OS-level file lock — another process holds
+        # it.  Return the current lock record if available.
+        return False, _read_json_file(lock_path)
 
-        if existing_pid == os.getpid() and existing.get("start_time") == record.get("start_time"):
-            _write_json_file(lock_path, record)
-            return True, existing
+    try:
+        record = {
+            **_build_pid_record(),
+            "scope": scope,
+            "identity_hash": _scope_hash(identity),
+            "metadata": metadata or {},
+            "updated_at": _utc_now_iso(),
+        }
 
-        stale = existing_pid is None
-        if not stale:
-            if not _pid_exists(existing_pid):
-                stale = True
-            else:
-                current_start = _get_process_start_time(existing_pid)
-                if (
-                    existing.get("start_time") is not None
-                    and current_start is not None
-                    and current_start != existing.get("start_time")
-                ):
-                    stale = True
-                # When start_time comparison is unavailable (macOS / Windows
-                # have no /proc, so both sides are None), fall back to
-                # checking the live process command line.  When cmdline is
-                # also unreadable (Windows has no ps), consult the lock
-                # record's own argv — the gateway writes it at startup and
-                # it's the only identity signal on platforms without ps.
-                # Both oracles must indicate "not a gateway" to mark stale.
-                if (
-                    not stale
-                    and existing.get("start_time") is None
-                    and current_start is None
-                    and not _looks_like_gateway_process(existing_pid)
-                ):
-                    live_cmdline = _read_process_cmdline(existing_pid)
-                    if live_cmdline is not None or not _record_looks_like_gateway(existing):
-                        stale = True
-                # Check if process is stopped (Ctrl+Z / SIGTSTP) — stopped
-                # processes still appear alive to _pid_exists but are not
-                # actually running. Treat them as stale so --replace works.
-                if not stale:
-                    try:
-                        _proc_status = Path(f"/proc/{existing_pid}/status")
-                        if _proc_status.exists():
-                            for _line in _proc_status.read_text(encoding="utf-8").splitlines():
-                                if _line.startswith("State:"):
-                                    _state = _line.split()[1]
-                                    if _state in {"T", "t"}:  # stopped or tracing stop
-                                        stale = True
-                                    break
-                    except (OSError, PermissionError):
-                        pass
-        if stale:
+        existing = _read_json_file(lock_path)
+        if existing is None and lock_path.exists():
+            # Lock file exists but is empty or contains invalid JSON — treat
+            # as stale (previous process killed between O_CREAT and json.dump).
             try:
                 lock_path.unlink(missing_ok=True)
             except OSError:
                 pass
-        else:
-            return False, existing
 
-    try:
-        fd = os.open(lock_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
-    except FileExistsError:
-        return False, _read_json_file(lock_path)
-    try:
-        with os.fdopen(fd, "w", encoding="utf-8") as handle:
-            json.dump(record, handle)
+        if existing:
+            try:
+                existing_pid = int(existing["pid"])
+            except (KeyError, TypeError, ValueError):
+                existing_pid = None
+
+            if existing_pid == os.getpid() and existing.get("start_time") == record.get("start_time"):
+                # Re-entrant: same process, same boot — update the record.
+                _write_json_file(lock_path, record)
+                return True, existing
+
+            stale = existing_pid is None
+            if not stale:
+                if not _pid_exists(existing_pid):
+                    stale = True
+                else:
+                    current_start = _get_process_start_time(existing_pid)
+                    if (
+                        existing.get("start_time") is not None
+                        and current_start is not None
+                        and current_start != existing.get("start_time")
+                    ):
+                        stale = True
+                    # When start_time comparison is unavailable (macOS /
+                    # Windows have no /proc), fall back to checking the
+                    # live process command line.
+                    if (
+                        not stale
+                        and existing.get("start_time") is None
+                        and current_start is None
+                        and not _looks_like_gateway_process(existing_pid)
+                    ):
+                        live_cmdline = _read_process_cmdline(existing_pid)
+                        if live_cmdline is not None or not _record_looks_like_gateway(existing):
+                            stale = True
+                    # Check if process is stopped (Ctrl+Z / SIGTSTP).
+                    if not stale:
+                        try:
+                            _proc_status = Path(f"/proc/{existing_pid}/status")
+                            if _proc_status.exists():
+                                for _line in _proc_status.read_text(encoding="utf-8").splitlines():
+                                    if _line.startswith("State:"):
+                                        _state = _line.split()[1]
+                                        if _state in {"T", "t"}:  # stopped or tracing stop
+                                            stale = True
+                                        break
+                        except (OSError, PermissionError):
+                            pass
+
+            if stale:
+                try:
+                    lock_path.unlink(missing_ok=True)
+                except OSError:
+                    pass
+            else:
+                return False, existing
+
+        # Acquire the lock — write the record atomically.
+        _write_json_file(lock_path, record)
+        return True, None
+
     except Exception:
+        # On any error during the critical section, clean up and re-raise.
         try:
             lock_path.unlink(missing_ok=True)
         except OSError:
             pass
         raise
-    return True, None
+    finally:
+        # Release the OS-level file lock but leave the lock record on disk
+        # so other processes can still read it for staleness checks.
+        file_lock.release()
 
 
 def release_scoped_lock(scope: str, identity: str) -> None:

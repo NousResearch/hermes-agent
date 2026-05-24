@@ -163,6 +163,34 @@ def test_preview_records_and_final_preflight_checklist_are_deterministic_and_pre
     assert dry_run_a["token_target_paths_preview"]["writes_approval_audit"] is False
 
 
+def test_valid_token_issuance_dry_run_ids_match_v0_1_baseline():
+    dry_run = create_human_approval_token_issuance_dry_run(
+        _plan(),
+        operator="token-dry-run-operator",
+    )
+
+    assert (
+        dry_run["dry_run_id"]
+        == "memory-human-approval-token-issuance-dry-run:v0.1:140f4c26fe91185c"
+    )
+    assert (
+        dry_run["approval_token_record_preview"]["approval_token_id_preview"]
+        == "preview:approval-token:v0.1:86ab1a636bd6b306"
+    )
+    assert (
+        dry_run["approval_audit_record_preview"]["approval_audit_id_preview"]
+        == "preview:approval-audit:v0.1:973c76dd0b193548"
+    )
+    assert (
+        dry_run["token_target_paths_preview"]["approval_token_selector"]
+        == "preview:approval-token:v0.1:86ab1a636bd6b306"
+    )
+    assert (
+        dry_run["token_target_paths_preview"]["approval_audit_selector"]
+        == "preview:approval-audit:v0.1:973c76dd0b193548"
+    )
+
+
 def test_input_plan_is_not_mutated():
     plan = _plan()
     before = deepcopy(plan)

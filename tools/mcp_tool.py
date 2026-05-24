@@ -268,24 +268,22 @@ _SAFE_ENV_KEYS = frozenset({
     "PATH", "HOME", "USER", "LANG", "LC_ALL", "TERM", "SHELL", "TMPDIR",
 })
 
-# Canonical POSIX system bin directories that MCP subprocess shell scripts
-# typically depend on (cat, env, sh, node via /usr/bin, etc.).  Appended
-# if missing during PATH sanitization so a degraded parent PATH does not
-# silently break MCP subprocesses (#30369).
-_POSIX_SYSTEM_PATH_DIRS: tuple = (
-    "/usr/local/bin",
-    "/usr/bin",
-    "/bin",
-    "/usr/sbin",
-    "/sbin",
-)
+# Minimum POSIX baseline bin directories that subprocess shell scripts
+# typically depend on (cat, env, sh, ls).  Appended at the END if missing
+# during PATH sanitization so a degraded parent PATH does not silently
+# break MCP subprocesses (#30369).  Kept intentionally narrow: any
+# subprocess that needs Homebrew / sbin tools must inherit those paths
+# from the parent PATH or set them in the server config; the safety net
+# is only for baseline POSIX commands so an intentionally restricted
+# parent PATH stays mostly intact.
+_POSIX_SYSTEM_PATH_DIRS: tuple[str, ...] = ("/usr/bin", "/bin")
 
 # Literal shell-variable references that occasionally end up in PATH when
 # a parent shell mis-quotes ``export PATH="$HOME/.local/bin:$PATH"`` and
 # fails to expand the inner ``$PATH``.  These strings are never valid
 # filesystem paths; passing them through to subprocesses causes silent
 # ``command not found`` failures.
-_PATH_VAR_LITERALS = frozenset({"$PATH", "${PATH}", "%PATH%"})
+_PATH_VAR_LITERALS: frozenset[str] = frozenset({"$PATH", "${PATH}", "%PATH%"})
 
 # Regex for credential patterns to strip from error messages
 _CREDENTIAL_PATTERN = re.compile(
@@ -315,7 +313,7 @@ _ENV_VAR_PATTERN = re.compile(r"\$\{([^}]+)\}")
 def _sanitize_inherited_path(value: str) -> str:
     """Sanitize an inherited ``PATH`` value before forwarding to a subprocess.
 
-    Three normalizations are applied:
+    Three normalizations are applied on every platform:
 
     1. Empty entries (from ``::`` or leading/trailing ``:``) are dropped.
     2. Literal ``$PATH`` / ``${PATH}`` / ``%PATH%`` entries are dropped —
@@ -324,17 +322,22 @@ def _sanitize_inherited_path(value: str) -> str:
        break basic POSIX tool lookup in subprocess shells (#30369).
     3. Duplicate entries are removed, preserving first-seen order.
 
-    On POSIX, the canonical system bin directories are appended if absent
-    so MCP subprocess shell scripts can resolve baseline tools (``cat``,
-    ``env``, ``sh``) even when the parent process inherited a degraded
-    PATH.  Windows is left untouched — there is no equivalent canonical
-    set there.
+    On POSIX only, a minimum baseline of ``/usr/bin`` and ``/bin`` is
+    appended at the END if missing, so subprocess shell scripts can
+    resolve core POSIX commands (``cat``, ``env``, ``sh``) even when
+    the parent inherited a degraded PATH.  The append is intentionally
+    minimal — Homebrew, sbin, and other distribution-specific dirs are
+    not added so an intentionally restricted parent PATH stays mostly
+    intact, and user entries always sort first.
+
+    Windows receives only the strip/dedup pass (no sysdir backfill —
+    there is no equivalent canonical set).
     """
     if not value and os.name != "posix":
         return value or ""
 
-    seen: set = set()
-    parts: list = []
+    seen: set[str] = set()
+    parts: list[str] = []
     for raw in (value or "").split(os.pathsep):
         entry = raw.strip()
         if not entry or entry in _PATH_VAR_LITERALS:

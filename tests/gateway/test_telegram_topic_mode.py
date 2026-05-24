@@ -1211,6 +1211,31 @@ def test_recover_returns_none_when_no_bindings_yet(tmp_path):
     assert runner._recover_telegram_topic_thread_id(_make_source(thread_id=None)) is None
 
 
+def test_recover_returns_none_for_brand_new_topic(tmp_path):
+    # Regression for #31086: bindings exist for a prior topic but the user
+    # opened a fresh one (thread_id "99999"). Recovery must return None so the
+    # new topic gets its own session rather than being silently merged into
+    # the previous topic's session. The hijack was self-reinforcing — because
+    # the rewrite ran before _record_telegram_topic_binding, the new topic's
+    # binding row never got written, so every subsequent message in that topic
+    # looked "unknown" and was hijacked again.
+    db = SessionDB(db_path=tmp_path / "state.db")
+    db.enable_telegram_topic_mode(chat_id="208214988", user_id="208214988")
+    db.create_session(session_id="sess-old", source="telegram", user_id="208214988")
+    src_old = _make_source(thread_id="12345")
+    db.bind_telegram_topic(
+        chat_id=src_old.chat_id,
+        thread_id=src_old.thread_id,
+        user_id=src_old.user_id,
+        session_key=build_session_key(src_old),
+        session_id="sess-old",
+    )
+    runner = _make_runner(session_db=db)
+
+    # "99999" is non-lobby and not in the binding table — brand-new topic.
+    assert runner._recover_telegram_topic_thread_id(_make_source(thread_id="99999")) is None
+
+
 def test_list_telegram_topic_bindings_for_chat(tmp_path):
     db = SessionDB(db_path=tmp_path / "state.db")
     _seed_two_topic_bindings(db)

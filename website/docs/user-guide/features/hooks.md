@@ -1309,6 +1309,33 @@ Non-TTY runs (gateway, cron, CI) need one of these three — otherwise any newly
 
 **Script edits are silently trusted.** The allowlist keys on the exact command string, not the script's hash, so editing the script on disk does not invalidate consent. `hermes hooks doctor` flags mtime drift so you can spot edits and decide whether to re-approve.
 
+#### Manual allowlisting
+
+For non-TTY deployments where `hooks_auto_accept: true` would be too broad, you can pre-seed the allowlist file yourself. The file is a JSON object with an `approvals` array; each entry must include the exact `event` and `command` string from your `hooks:` config:
+
+```json title="~/.hermes/shell-hooks-allowlist.json"
+{
+  "approvals": [
+    {
+      "event": "post_llm_call",
+      "command": "/home/hermes/.hermes/hooks/my-hook.py"
+    }
+  ]
+}
+```
+
+The allowlist is **not** keyed by path or content hash. This intuitive-looking shape is valid JSON but will not approve the hook, because Hermes only reads entries from `approvals`:
+
+```json title="Does not work"
+{
+  "/home/hermes/.hermes/hooks/my-hook.py": {
+    "sha256": "b8d40b7d887a6bd838db363983da3b077b345cbaac9dceb427de4cba28eec6f2"
+  }
+}
+```
+
+After editing the file, run `hermes hooks list` or `hermes hooks doctor` and confirm the hook shows `allowed` before relying on it in a gateway, cron, or CI process.
+
 ### The `hermes hooks` CLI
 
 | Command | What it does |

@@ -1640,18 +1640,49 @@ class MemoryMunchProvider(MemoryProvider):
         return {"search_results": results, "deep_reads": deep_reads, "_meta": search_result.get("_meta") if isinstance(search_result, dict) else {}}
 
     def _call_memorymunch_worker_model(self, role: str, system_prompt: str, user_prompt: str, *, timeout: int = 180) -> str:
+        """Call an optional MemoryMunch worker model without poisoning memory.
+
+        The old implementation recursively ran `hermes chat`. In live gateway/Telegram
+        contexts that path can still traverse session/capture plumbing and persist the
+        worker prompt as a normal conversation atom. Keep the model-worker lane off by
+        default until a non-recursive provider transport is implemented and proven.
+        """
+        normalized_role = (role or "worker").strip().lower() or "worker"
+        if not self._truthy_env("HERMES_MEMORYMUNCH_WORKER_ALLOW_RECURSIVE", default=False):
+            self._append_session_event(
+                self._session_id,
+                f"{normalized_role}_model_worker_disabled",
+                reason="recursive_hermes_chat_disabled_until_no_leak_proven",
+                transport="disabled",
+                live_db_write=False,
+                live_vault_write=False,
+            )
+            return ""
+
         env = os.environ.copy()
         env["HERMES_MEMORYMUNCH_ENABLE"] = "false"
         env["HERMES_MEMORYMUNCH_LIVE_WRITE_ENABLE"] = "0"
         env["HERMES_MEMORYMUNCH_AUTO_CAPTURE_ENABLE"] = "0"
+        env["HERMES_MEMORYMUNCH_WORKER_CALL"] = "1"
         prompt = f"{system_prompt}\n\n{user_prompt}"
-        proc = subprocess.run(
-            ["hermes", "chat", "-Q", "-t", "safe", "-q", prompt],
-            text=True,
-            capture_output=True,
-            timeout=timeout,
-            env=env,
-        )
+        try:
+            proc = subprocess.run(
+                ["hermes", "chat", "-Q", "-t", "safe", "-q", prompt],
+                text=True,
+                capture_output=True,
+                timeout=timeout,
+                env=env,
+            )
+        except subprocess.TimeoutExpired as exc:
+            self._append_session_event(
+                self._session_id,
+                f"{normalized_role}_model_worker_timeout",
+                reason="recursive_hermes_chat_timeout",
+                timeout=timeout,
+                live_db_write=False,
+                live_vault_write=False,
+            )
+            return ""
         if proc.returncode != 0:
             raise RuntimeError(proc.stderr.strip() or proc.stdout.strip() or f"hermes worker rc={proc.returncode}")
         lines = [line for line in proc.stdout.splitlines() if not line.startswith("session_id:")]

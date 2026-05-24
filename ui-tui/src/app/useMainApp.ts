@@ -304,7 +304,8 @@ export function useMainApp(gw: GatewayClient) {
     estimateHeight: estimateRowHeight,
     initialHeights: heightCache,
     liveTailActive: turnLiveTailActive,
-    onHeightsChange: syncHeightCache
+    onHeightsChange: syncHeightCache,
+    overscan: ui.overscan
   })
 
   const scrollWithSelection = useCallback(

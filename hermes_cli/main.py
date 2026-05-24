@@ -266,7 +266,30 @@ def _apply_profile_override() -> None:
                     break
 
 
+def _align_process_home_for_docker_profile() -> None:
+    """Use the active profile's home/ as process HOME in the official image.
+
+    The Docker entrypoint creates ``{HERMES_HOME}/home`` for per-profile tool
+    configs. Aligning the main Python process after profile selection keeps
+    ``~`` consistent between Hermes itself and the subprocesses it spawns,
+    while leaving non-container installs on the existing subprocess-only model.
+    """
+    if os.environ.get("HERMES_DOCKER_ALIGN_HOME") != "1":
+        return
+
+    try:
+        from hermes_constants import get_subprocess_home
+
+        profile_home = get_subprocess_home()
+    except Exception:
+        return
+
+    if profile_home:
+        os.environ["HOME"] = profile_home
+
+
 _apply_profile_override()
+_align_process_home_for_docker_profile()
 
 # Load .env from ~/.hermes/.env first, then project root as dev fallback.
 # User-managed env files should override stale shell exports on restart.

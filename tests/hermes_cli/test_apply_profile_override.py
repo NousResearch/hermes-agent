@@ -111,6 +111,74 @@ class TestApplyProfileOverrideHermesHomeGuard:
             "HERMES_HOME must remain unchanged when already pointing to a profile dir"
         )
 
+    def test_docker_home_alignment_uses_default_profile_home(
+        self, tmp_path, monkeypatch
+    ):
+        """Official Docker mode should align process HOME to the default profile home."""
+        hermes_root = tmp_path / "opt" / "data"
+        profile_home = hermes_root / "home"
+        profile_home.mkdir(parents=True, exist_ok=True)
+
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        monkeypatch.setenv("HERMES_HOME", str(hermes_root))
+        monkeypatch.setenv("HOME", str(hermes_root))
+        monkeypatch.setenv("HERMES_DOCKER_ALIGN_HOME", "1")
+        monkeypatch.setattr(sys, "argv", ["hermes", "gateway", "start"])
+
+        from hermes_cli.main import (
+            _align_process_home_for_docker_profile,
+            _apply_profile_override,
+        )
+
+        _apply_profile_override()
+        _align_process_home_for_docker_profile()
+
+        assert os.environ["HERMES_HOME"] == str(hermes_root)
+        assert os.environ["HOME"] == str(profile_home)
+
+    def test_docker_home_alignment_runs_after_named_profile_selection(
+        self, tmp_path, monkeypatch
+    ):
+        """Named Docker profiles should align HOME to that profile's home/ dir."""
+        hermes_root = tmp_path / "opt" / "data"
+        profile_dir = hermes_root / "profiles" / "coder"
+        profile_home = profile_dir / "home"
+        profile_home.mkdir(parents=True, exist_ok=True)
+        (hermes_root / "active_profile").write_text("coder")
+
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        monkeypatch.setenv("HERMES_HOME", str(hermes_root))
+        monkeypatch.setenv("HOME", str(hermes_root))
+        monkeypatch.setenv("HERMES_DOCKER_ALIGN_HOME", "1")
+        monkeypatch.setattr(sys, "argv", ["hermes", "gateway", "start"])
+
+        from hermes_cli.main import (
+            _align_process_home_for_docker_profile,
+            _apply_profile_override,
+        )
+
+        _apply_profile_override()
+        _align_process_home_for_docker_profile()
+
+        assert os.environ["HERMES_HOME"] == str(profile_dir)
+        assert os.environ["HOME"] == str(profile_home)
+
+    def test_home_alignment_is_opt_in(self, tmp_path, monkeypatch):
+        """Non-Docker installs keep the subprocess-only HOME isolation model."""
+        hermes_root = tmp_path / ".hermes"
+        (hermes_root / "home").mkdir(parents=True, exist_ok=True)
+
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        monkeypatch.setenv("HERMES_HOME", str(hermes_root))
+        monkeypatch.setenv("HOME", str(tmp_path))
+        monkeypatch.delenv("HERMES_DOCKER_ALIGN_HOME", raising=False)
+
+        from hermes_cli.main import _align_process_home_for_docker_profile
+
+        _align_process_home_for_docker_profile()
+
+        assert os.environ["HOME"] == str(tmp_path)
+
     def test_hermes_home_unset_reads_active_profile(self, tmp_path, monkeypatch):
         """Classic case: HERMES_HOME unset + active_profile=coder must set
         HERMES_HOME to the profile directory (existing behaviour must not regress).

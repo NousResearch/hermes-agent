@@ -73,6 +73,11 @@ echo "docker" > "${HERMES_HOME:=/opt/data}/.install_method" 2>/dev/null || true
 # ephemeral and shared across profiles.  See issue #4426.
 mkdir -p "$HERMES_HOME"/{cron,sessions,logs,hooks,memories,skills,skins,plans,workspace,home}
 
+# Tell the Python CLI entrypoint that this is the official container path.
+# The CLI applies sticky profile selection before aligning process HOME, so
+# named profiles get HOME=<profile>/home rather than the default profile home.
+export HERMES_DOCKER_ALIGN_HOME=1
+
 # .env
 if [ ! -f "$HERMES_HOME/.env" ]; then
     cp "$INSTALL_DIR/.env.example" "$HERMES_HOME/.env"

@@ -40,7 +40,7 @@ import shutil
 import tempfile
 from pathlib import Path
 from hermes_constants import get_hermes_home, display_hermes_home
-from typing import Dict, Any, Optional, Tuple
+from typing import Dict, Any, Optional, Tuple, List
 
 from utils import atomic_replace, is_truthy_value
 from hermes_cli.config import cfg_get
@@ -707,6 +707,238 @@ def _remove_file(name: str, file_path: str) -> Dict[str, Any]:
 
 
 # =============================================================================
+# Health check — read-only diagnostic scan of all skills
+# =============================================================================
+
+def _health_check(single_name: Optional[str] = None, _skills_dirs: Optional[List[Path]] = None) -> Dict[str, Any]:
+    """
+    Scan all skills (or a single one if single_name is given) and return
+    a diagnostic report. Read-only — nothing is modified.
+
+    _skills_dirs: optional override for the skills directories to scan.
+                  Internal/testing use only; production code always passes None.
+    """
+    import textwrap
+    from agent.skill_utils import get_all_skills_dirs, EXCLUDED_SKILL_DIRS
+
+    if _skills_dirs is not None:
+        skills_dirs: List[Path] = _skills_dirs
+    else:
+        skills_dirs = get_all_skills_dirs()
+
+    # Collect all SKILL.md paths
+    skill_paths = []
+    for skills_dir in skills_dirs:
+        if not skills_dir.exists():
+            continue
+        for skill_md in skills_dir.rglob("SKILL.md"):
+            if any(p in skill_md.parts for p in EXCLUDED_SKILL_DIRS):
+                continue
+            skill_name = skill_md.parent.name
+            skill_paths.append((skill_name, skill_md))
+
+    # Name-based filter is applied after collecting so that cross-skill checks
+    # (collision, overlap) still see all skills when targeting a single one.
+    if single_name:
+        skill_paths = [(n, p) for n, p in skill_paths if n == single_name]
+
+    if not skill_paths:
+        return {
+            "success": True,
+            "action": "health-check",
+            "summary": {"total": 0, "errors": 0, "warnings": 0, "info": 0},
+            "issues": [],
+            "healthy": [],
+            "message": "No skills found."
+        }
+
+    all_names = [n for n, _ in skill_paths]
+    name_count: Dict[str, int] = {}
+    for n in all_names:
+        name_count[n] = name_count.get(n, 0) + 1
+
+    issues: list = []
+    healthy: list = []
+
+    for skill_name, skill_md in skill_paths:
+        skill_dir = skill_md.parent
+        raw = skill_md.read_text(encoding="utf-8")
+
+        # --- Parse frontmatter ---
+        fm = {}
+        body = ""
+        if raw.startswith("---"):
+            m = re.search(r'\n---\s*\n', raw[3:])
+            if m:
+                # raw[3:] skips the opening "---"; m.start() is relative to there.
+                # raw[3:3+m.start()] = everything between opening and closing "---"
+                try:
+                    fm = yaml.safe_load(raw[3:3 + m.start()]) or {}
+                except yaml.YAMLError:
+                    fm = {}
+                body = raw[3 + m.end():].strip()
+
+        # --- Check 1: frontmatter structure ---
+        if not fm:
+            issues.append({
+                "skill": skill_name,
+                "severity": "error",
+                "check": "frontmatter-unparseable",
+                "message": "Frontmatter is missing or unparseable.",
+                "path": str(skill_md),
+            })
+            continue
+        if not isinstance(fm, dict):
+            issues.append({
+                "skill": skill_name,
+                "severity": "error",
+                "check": "frontmatter-type",
+                "message": f"Frontmatter must be a YAML mapping, got {type(fm).__name__}.",
+                "path": str(skill_md),
+            })
+            continue
+
+        # --- Check 2: required name field ---
+        if "name" not in fm:
+            issues.append({
+                "skill": skill_name,
+                "severity": "error",
+                "check": "frontmatter-missing-name",
+                "message": "Frontmatter missing required 'name' field.",
+                "fix": f"Add 'name: {skill_name}' to the frontmatter."
+            })
+
+        # --- Check 3: required description field ---
+        desc = fm.get("description", "")
+        if "description" not in fm:
+            issues.append({
+                "skill": skill_name,
+                "severity": "error",
+                "check": "frontmatter-missing-description",
+                "message": "Frontmatter missing required 'description' field.",
+                "fix": "Add a 'description' field to the frontmatter."
+            })
+        elif len(str(desc)) > MAX_DESCRIPTION_LENGTH:
+            issues.append({
+                "skill": skill_name,
+                "severity": "error",
+                "check": "description-too-long",
+                "message": f"Description is {len(str(desc))} chars (limit {MAX_DESCRIPTION_LENGTH}).",
+                "fix": f"Trim description to ≤ {MAX_DESCRIPTION_LENGTH} characters."
+            })
+
+        # --- Check 4: name collision ---
+        if name_count.get(skill_name, 0) > 1:
+            issues.append({
+                "skill": skill_name,
+                "severity": "error",
+                "check": "name-collision",
+                "message": f"Multiple skills share name '{skill_name}' — each must be unique.",
+            })
+
+        # --- Check 5: description starts with "Use when" (peer standard) ---
+        desc_str = str(desc)
+        if desc_str and not desc_str.startswith("Use when"):
+            issues.append({
+                "skill": skill_name,
+                "severity": "warning",
+                "check": "description-format",
+                "message": f"Description should start with 'Use when ...'. Got: {desc_str[:80]!r}",
+                "fix": f"Rewrite description to start with 'Use when ...': {desc_str[:80]}"
+            })
+
+        # --- Check 6: file size ---
+        if len(raw) > 80_000:
+            issues.append({
+                "skill": skill_name,
+                "severity": "warning",
+                "check": "file-too-large",
+                "message": f"SKILL.md is {len(raw):,} chars — consider splitting into references/ or templates/.",
+                "fix": "Move detailed docs to references/*.md and keep SKILL.md under ~15k chars."
+            })
+
+        # --- Check 7: missing optional metadata fields ---
+        for field in ("version", "author", "license"):
+            if field not in fm:
+                issues.append({
+                    "skill": skill_name,
+                    "severity": "info",
+                    "check": f"missing-{field}",
+                    "message": f"Frontmatter missing optional '{field}' field.",
+                })
+                break  # only flag once per skill at info level
+
+        # --- Check 8: orphan related_skills (non-blocking info) ---
+        meta = fm.get("metadata", {}) or {}
+        hermes_meta = meta.get("hermes", {}) if isinstance(meta, dict) else {}
+        related = hermes_meta.get("related_skills", []) if isinstance(hermes_meta, dict) else []
+        if related:
+            missing = [r for r in related if r not in all_names]
+            if missing:
+                issues.append({
+                    "skill": skill_name,
+                    "severity": "warning",
+                    "check": "orphan-related-skills",
+                    "message": f"related_skills references skills not found: {missing}",
+                    "fix": "Remove or fix the skill name(s) in metadata.hermes.related_skills."
+                })
+
+        # --- Check 9: description overlap (Jaccard, non-blocking warning) ---
+        if desc_str:
+            desc_words = set(desc_str.lower().split())
+            for other_name, other_md in skill_paths:
+                if other_name <= skill_name:
+                    continue
+                other_raw = other_md.read_text(encoding="utf-8")
+                om = re.search(r'\n---\s*\n', other_raw[3:])
+                if not om:
+                    continue
+                try:
+                    other_fm = yaml.safe_load(other_raw[3:3 + om.start()]) or {}
+                except yaml.YAMLError:
+                    continue
+                other_desc = str(other_fm.get("description", ""))
+                if not other_desc:
+                    continue
+                other_words = set(other_desc.lower().split())
+                inter = desc_words & other_words
+                union = desc_words | other_words
+                if union and len(inter) / len(union) > 0.75:
+                    issues.append({
+                        "skill": skill_name,
+                        "severity": "warning",
+                        "check": "description-overlap",
+                        "message": f"Description may overlap with '{other_name}' (Jaccard similarity {len(inter)/len(union):.2f}).",
+                        "fix": "Make the trigger condition more specific to distinguish from other skills."
+                    })
+                    break  # one overlap warning per skill is enough
+
+        # No errors — mark healthy
+        skill_errors = [i for i in issues if i["skill"] == skill_name and i["severity"] == "error"]
+        if not skill_errors:
+            healthy.append(skill_name)
+
+    # Summarise
+    errors = sum(1 for i in issues if i["severity"] == "error")
+    warnings = sum(1 for i in issues if i["severity"] == "warning")
+    info = sum(1 for i in issues if i["severity"] == "info")
+
+    return {
+        "success": True,
+        "action": "health-check",
+        "target": single_name,
+        "summary": {
+            "total": len(skill_paths),
+            "errors": errors,
+            "warnings": warnings,
+            "info": info,
+        },
+        "issues": issues,
+        "healthy": healthy,
+    }
+
+
+# =============================================================================
 # Main entry point
 # =============================================================================
 
@@ -759,8 +991,11 @@ def skill_manage(
             return tool_error("file_path is required for 'remove_file'.", success=False)
         result = _remove_file(name, file_path)
 
+    elif action == "health-check":
+        result = _health_check(name, _skills_dirs=None)
+
     else:
-        result = {"success": False, "error": f"Unknown action '{action}'. Use: create, edit, patch, delete, write_file, remove_file"}
+        result = {"success": False, "error": f"Unknown action '{action}'. Use: create, edit, patch, delete, write_file, remove_file, health-check"}
 
     if result.get("success"):
         try:

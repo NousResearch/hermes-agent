@@ -943,3 +943,119 @@ class TestPinnedGuard:
                        side_effect=RuntimeError("sidecar broken")):
                 result = _delete_skill("my-skill")
         assert result["success"] is True
+
+
+# -----------------------------------------------------------------------------
+# _health_check
+# -----------------------------------------------------------------------------
+
+from tools.skill_manager_tool import _health_check
+
+
+class TestHealthCheck:
+    """Tests that create SKILL.md files directly (bypassing _create_skill) to
+    avoid _skill_dir / SKILLS_DIR patching complexity in xdist workers."""
+
+    def test_empty_skill_dir(self, tmp_path):
+        result = _health_check(_skills_dirs=[tmp_path])
+        assert result["success"] is True
+        assert result["summary"]["total"] == 0
+        assert result["issues"] == []
+
+    def test_one_valid_skill(self, tmp_path):
+        _make_skill(tmp_path, "valid-skill", VALID_SKILL_CONTENT)
+        result = _health_check(_skills_dirs=[tmp_path])
+        assert result["success"] is True
+        assert result["summary"]["total"] == 1
+        assert result["summary"]["errors"] == 0
+        assert "valid-skill" in result["healthy"]
+
+    def test_catches_missing_description(self, tmp_path):
+        bad = "---\nname: no-desc\n---\n# Bad\nNo description field."
+        _make_skill(tmp_path, "no-desc", bad)
+        result = _health_check(_skills_dirs=[tmp_path])
+        issues = result["issues"]
+        assert any(i["check"] == "frontmatter-missing-description" for i in issues)
+
+    def test_catches_description_too_long(self, tmp_path):
+        bad = "---\nname: long-desc\ndescription: " + ("x" * 1100) + "\n---\n# Bad\nBody."
+        _make_skill(tmp_path, "long-desc", bad)
+        result = _health_check(_skills_dirs=[tmp_path])
+        issues = result["issues"]
+        assert any(i["check"] == "description-too-long" for i in issues)
+
+    def test_catches_missing_name(self, tmp_path):
+        bad = "---\ndescription: Has no name field.\n---\n# Bad"
+        _make_skill(tmp_path, "no-name", bad)
+        result = _health_check(_skills_dirs=[tmp_path])
+        issues = result["issues"]
+        assert any(i["check"] == "frontmatter-missing-name" for i in issues)
+
+    def test_catches_name_collision(self, tmp_path):
+        # Create same skill name under two different category directories.
+        # skill_paths deduplicates by (parent-dir, filename) so this creates two
+        # entries with the same name but different paths.
+        cat1 = tmp_path / "cat-a"
+        cat2 = tmp_path / "cat-b"
+        cat1.mkdir()
+        cat2.mkdir()
+        (cat1 / "dup-name").mkdir()
+        (cat2 / "dup-name").mkdir()
+        (cat1 / "dup-name" / "SKILL.md").write_text(VALID_SKILL_CONTENT)
+        (cat2 / "dup-name" / "SKILL.md").write_text(VALID_SKILL_CONTENT)
+        result = _health_check(_skills_dirs=[tmp_path])
+        assert result["summary"]["errors"] >= 1
+        assert any(i["check"] == "name-collision" for i in result["issues"])
+
+    def test_catches_description_format_warning(self, tmp_path):
+        bad = "---\nname: bad-fmt\ndescription: This skill does X.\n---\n# Body"
+        _make_skill(tmp_path, "bad-fmt", bad)
+        result = _health_check(_skills_dirs=[tmp_path])
+        issues = result["issues"]
+        assert any(i["check"] == "description-format" for i in issues)
+
+    def test_catches_file_too_large(self, tmp_path):
+        big_body = "# Large Skill\n" + ("Lorem ipsum dolor. " * 5000)
+        content = "---\nname: large-skill\ndescription: Use when big.\n---\n" + big_body
+        _make_skill(tmp_path, "large-skill", content)
+        result = _health_check(_skills_dirs=[tmp_path])
+        issues = result["issues"]
+        assert any(i["check"] == "file-too-large" for i in issues)
+
+    def test_catches_orphan_related_skill(self, tmp_path):
+        content = (
+            "---\nname: orphan-rel\ndescription: Use when testing orphans.\n"
+            "metadata:\n  hermes:\n    related_skills: [nonexistent-skill]\n---\n# Body"
+        )
+        _make_skill(tmp_path, "orphan-rel", content)
+        result = _health_check(_skills_dirs=[tmp_path])
+        issues = result["issues"]
+        assert any(i["check"] == "orphan-related-skills" for i in issues)
+
+    def test_single_name_filter(self, tmp_path):
+        _make_skill(tmp_path, "skill-a", VALID_SKILL_CONTENT)
+        _make_skill(tmp_path, "skill-b", VALID_SKILL_CONTENT)
+        result = _health_check("skill-a", _skills_dirs=[tmp_path])
+        assert result["success"] is True
+        assert result["target"] == "skill-a"
+        # Only skill-a is in the filtered result
+        assert result["summary"]["total"] == 1
+
+    def test_info_missing_metadata_once_per_skill(self, tmp_path):
+        # Skill missing version/author/license should get ONE info issue, not three
+        content = (
+            "---\nname: no-meta\ndescription: Use when testing metadata.\n"
+            "metadata:\n  hermes:\n    tags: [test]\n---\n# Body"
+        )
+        _make_skill(tmp_path, "no-meta", content)
+        result = _health_check(_skills_dirs=[tmp_path])
+        info_checks = [i for i in result["issues"]
+                       if i["skill"] == "no-meta" and i["severity"] == "info"]
+        assert len(info_checks) == 1
+
+
+def _make_skill(tmp_path, name, content):
+    """Create a skill directory+SKILL.md directly, bypassing _create_skill."""
+    skill_dir = tmp_path / name
+    skill_dir.mkdir(exist_ok=True)
+    (skill_dir / "SKILL.md").write_text(content)

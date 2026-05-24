@@ -135,10 +135,14 @@ def _emit_synthesized_final_delta(agent: Any, final_response: str) -> None:
     Gateway/SSE clients only see streamed deltas, so emit that synthesized
     final answer before the loop closes.
     """
-    if not final_response or not getattr(agent, "stream_delta_callback", None):
+    if not final_response:
+        return
+    agent._safe_print(f"\n{final_response}\n")
+    if not getattr(agent, "stream_delta_callback", None):
         return
     try:
         agent.stream_delta_callback(final_response)
+        agent.stream_delta_callback(None)
     except Exception:
         pass
 

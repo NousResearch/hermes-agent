@@ -609,11 +609,27 @@ class MemoryStore:
         return resp
 
     def _render_block(self, target: str, entries: List[str]) -> str:
-        """Render a system prompt block with header and usage indicator."""
+        """Render a system prompt block, truncating to limit (newest entries kept)."""
         if not entries:
             return ""
 
         limit = self._char_limit(target)
+
+        # Truncate at render time: keep the most-recent entries that fit within
+        # the char limit. add() guards writes, but the file can grow beyond the
+        # limit via direct disk writes or pre-limit migrations, so we re-enforce
+        # here. Oldest entries are dropped first.
+        if limit > 0:
+            kept: List[str] = []
+            total = 0
+            for entry in reversed(entries):
+                entry_len = len(entry) + len(ENTRY_DELIMITER)
+                if total + entry_len > limit:
+                    break
+                kept.append(entry)
+                total += entry_len
+            entries = list(reversed(kept))
+
         content = ENTRY_DELIMITER.join(entries)
         current = len(content)
         pct = min(100, int((current / limit) * 100)) if limit > 0 else 0

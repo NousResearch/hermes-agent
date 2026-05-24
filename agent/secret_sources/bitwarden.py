@@ -70,7 +70,7 @@ _BWS_RUN_TIMEOUT = 30
 
 # In-process cache so repeated load_hermes_dotenv() calls (CLI startup,
 # gateway hot-reload, test suites) don't re-fetch from BSM.
-_CacheKey = Tuple[str, str]  # (access_token_fingerprint, project_id)
+_CacheKey = Tuple[str, str, str]  # (access_token_fingerprint, project_id, server_url)
 _CACHE: Dict[_CacheKey, "_CachedFetch"] = {}
 
 
@@ -317,10 +317,17 @@ def fetch_bitwarden_secrets(
     binary: Optional[Path] = None,
     cache_ttl_seconds: float = 300,
     use_cache: bool = True,
+    server_url: str = "",
 ) -> Tuple[Dict[str, str], List[str]]:
     """Pull the secrets for ``project_id`` from Bitwarden Secrets Manager.
 
     Returns ``(secrets_dict, warnings_list)``.
+
+    Set ``server_url`` to point at a non-default Bitwarden region or a
+    self-hosted instance — e.g. ``https://vault.bitwarden.eu`` for EU
+    Cloud accounts.  When empty, ``bws`` uses its built-in default
+    (``https://vault.bitwarden.com``, US Cloud).  This is plumbed into
+    the subprocess as ``BWS_SERVER_URL``.
 
     Raises :class:`RuntimeError` for fatal conditions (missing binary,
     auth failure, unparseable output).  Callers in the env_loader path
@@ -332,7 +339,7 @@ def fetch_bitwarden_secrets(
     if not project_id:
         raise RuntimeError("Bitwarden project_id is empty")
 
-    cache_key = (_token_fingerprint(access_token), project_id)
+    cache_key = (_token_fingerprint(access_token), project_id, server_url or "")
     if use_cache:
         cached = _CACHE.get(cache_key)
         if cached and cached.is_fresh(cache_ttl_seconds):
@@ -347,19 +354,26 @@ def fetch_bitwarden_secrets(
             "`hermes secrets bitwarden setup`."
         )
 
-    secrets, warnings = _run_bws_list(bws, access_token, project_id)
+    secrets, warnings = _run_bws_list(bws, access_token, project_id, server_url)
     _CACHE[cache_key] = _CachedFetch(secrets=secrets, fetched_at=time.time())
     return secrets, warnings
 
 
 def _run_bws_list(
-    bws: Path, access_token: str, project_id: str
+    bws: Path, access_token: str, project_id: str, server_url: str = ""
 ) -> Tuple[Dict[str, str], List[str]]:
     cmd = [str(bws), "secret", "list", project_id, "--output", "json"]
     env = os.environ.copy()
     env["BWS_ACCESS_TOKEN"] = access_token
     # Make sure we're not echoing telemetry / colour codes into json.
     env.setdefault("NO_COLOR", "1")
+    # Region / self-hosted support.  bws defaults to https://vault.bitwarden.com
+    # (US Cloud); EU Cloud users need https://vault.bitwarden.eu, and
+    # self-hosted users need their own URL.  When unset, fall back to whatever
+    # BWS_SERVER_URL the caller already had in their shell env (preserved by
+    # the copy above) so manual overrides keep working too.
+    if server_url:
+        env["BWS_SERVER_URL"] = server_url
 
     try:
         proc = subprocess.run(  # noqa: S603 — bws path is trusted
@@ -437,12 +451,17 @@ def apply_bitwarden_secrets(
     override_existing: bool = False,
     cache_ttl_seconds: float = 300,
     auto_install: bool = True,
+    server_url: str = "",
 ) -> FetchResult:
     """Pull secrets from BSM and set them on ``os.environ``.
 
     This is the function ``load_hermes_dotenv()`` calls after the .env
     files have loaded.  It is intentionally defensive — any failure
     returns a :class:`FetchResult` with ``error`` set; it never raises.
+
+    ``server_url`` selects the Bitwarden region or self-hosted endpoint
+    (e.g. ``https://vault.bitwarden.eu`` for EU Cloud).  Empty string
+    means use ``bws``'s default (US Cloud).
 
     Parameters mirror the ``secrets.bitwarden.*`` config keys so the
     caller can just splat the dict in.
@@ -482,6 +501,7 @@ def apply_bitwarden_secrets(
             project_id=project_id,
             binary=binary,
             cache_ttl_seconds=cache_ttl_seconds,
+            server_url=server_url,
         )
     except RuntimeError as exc:
         result.error = str(exc)

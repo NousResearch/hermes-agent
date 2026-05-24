@@ -45,6 +45,11 @@ def _resolve_vault_path() -> Path:
     return fallback
 
 
+def _domain_roots(vault: Path) -> List[Path]:
+    """Return supported domain KB roots in precedence order."""
+    return [vault / "knowledge" / "domain", vault / "domains"]
+
+
 def load_domain_knowledge(domains: List[str], task_id: str = None) -> str:
     """Load domain knowledge notes for the given domains.
 
@@ -70,36 +75,38 @@ def load_domain_knowledge(domains: List[str], task_id: str = None) -> str:
     notes: List[Dict[str, Any]] = []
 
     for domain_slug in valid:
-        domain_dir = vault / "domains" / domain_slug
-        if not domain_dir.exists():
+        domain_dirs = [root / domain_slug for root in _domain_roots(vault)]
+        existing_dirs = [path for path in domain_dirs if path.exists()]
+        if not existing_dirs:
             notes.append({
                 "domain": domain_slug,
                 "status": "not_found",
-                "path": str(domain_dir),
+                "path": str(domain_dirs[0]),
                 "content": None,
             })
             continue
 
-        for note_file in sorted(domain_dir.glob("*.md")):
-            if note_file.name == "README.md":
-                continue
-            try:
-                content = note_file.read_text(encoding="utf-8")
-                notes.append({
-                    "domain": domain_slug,
-                    "status": "loaded",
-                    "path": str(note_file),
-                    "title": note_file.stem,
-                    "content": content,
-                })
-            except Exception as e:
-                notes.append({
-                    "domain": domain_slug,
-                    "status": "error",
-                    "path": str(note_file),
-                    "error": str(e),
-                    "content": None,
-                })
+        for domain_dir in existing_dirs:
+            for note_file in sorted(domain_dir.glob("*.md")):
+                if note_file.name == "README.md":
+                    continue
+                try:
+                    content = note_file.read_text(encoding="utf-8")
+                    notes.append({
+                        "domain": domain_slug,
+                        "status": "loaded",
+                        "path": str(note_file),
+                        "title": note_file.stem,
+                        "content": content,
+                    })
+                except Exception as e:
+                    notes.append({
+                        "domain": domain_slug,
+                        "status": "error",
+                        "path": str(note_file),
+                        "error": str(e),
+                        "content": None,
+                    })
 
     result = {
         "success": True,
@@ -123,7 +130,8 @@ registry.register(
             "Load shared domain knowledge notes for the given domain slugs. "
             "Valid domains: frontend, backend, devops, security, testing, data, mobile, infrastructure, "
             "business, marketing, sales, finance, operations, people. "
-            "Returns loaded notes as JSON with content, path, and status."
+            "Reads knowledge/domain/<domain>/ in the restored Obsidian graph and "
+            "domains/<domain>/ for legacy vaults. Returns loaded notes as JSON."
         ),
         "parameters": {
             "type": "object",

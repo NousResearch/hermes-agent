@@ -2476,6 +2476,19 @@ def test_create_task_without_workspace_inherits_board_default_workdir(kanban_hom
     assert t.workspace_path == default_wd
 
 
+def test_create_task_uses_connected_board_default_workdir_when_current_board_differs(kanban_home):
+    """Connected board should win even when the current-board pointer differs."""
+    kb.write_board_metadata("default", default_workdir="/board/default")
+    kb.create_board("other", default_workdir="/board/other")
+    kb.set_current_board("default")
+
+    with kb.connect(board="other") as conn:
+        tid = kb.create_task(conn, title="inherits-connected-board-default")
+        t = kb.get_task(conn, tid)
+    assert t is not None
+    assert t.workspace_path == "/board/other"
+
+
 def test_create_task_without_workspace_no_default_stays_none(kanban_home):
     """Board without default_workdir → create_task without workspace_path → stays None."""
     kb.create_board("empty-board")

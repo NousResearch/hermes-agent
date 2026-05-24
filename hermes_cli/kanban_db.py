@@ -385,6 +385,47 @@ def board_metadata_path(board: Optional[str] = None) -> Path:
     return board_dir(slug) / "board.json"
 
 
+def _board_from_connection(conn: sqlite3.Connection) -> Optional[str]:
+    """Best-effort board slug inference from an open SQLite connection.
+
+    ``create_task()`` uses this to inherit the connected board's
+    ``default_workdir`` when the caller omitted ``board=`` but already opened
+    ``connect(board="...")``. If the DB path lives outside the normal kanban
+    layout, inference falls back to ``None`` and callers keep the legacy
+    current-board resolution chain.
+    """
+    try:
+        rows = conn.execute("PRAGMA database_list").fetchall()
+    except sqlite3.Error:
+        return None
+    db_file = None
+    for row in rows:
+        name = row["name"] if isinstance(row, sqlite3.Row) else row[1]
+        if name == "main":
+            db_file = row["file"] if isinstance(row, sqlite3.Row) else row[2]
+            break
+    if not db_file:
+        return None
+    try:
+        resolved = Path(str(db_file)).expanduser().resolve()
+        default_db = (kanban_home() / "kanban.db").resolve()
+        boards = boards_root().resolve()
+    except OSError:
+        return None
+    if resolved == default_db:
+        return DEFAULT_BOARD
+    try:
+        rel = resolved.relative_to(boards)
+    except ValueError:
+        return None
+    if len(rel.parts) != 2 or rel.parts[1] != "kanban.db":
+        return None
+    try:
+        return _normalize_board_slug(rel.parts[0])
+    except ValueError:
+        return None
+
+
 def _default_board_display_name(slug: str) -> str:
     """Turn a slug into a reasonable default display name.
 
@@ -1653,7 +1694,7 @@ def create_task(
     # Resolve workspace_path from board-level default_workdir when the
     # caller did not specify one explicitly.
     if workspace_path is None:
-        board_slug = board if board else get_current_board()
+        board_slug = board or _board_from_connection(conn) or get_current_board()
         board_meta = read_board_metadata(board_slug)
         board_default = board_meta.get("default_workdir")
         if board_default:

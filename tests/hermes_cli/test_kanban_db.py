@@ -2097,16 +2097,30 @@ def test_latest_summaries_batch_omits_tasks_without_summary(kanban_home):
 # NFS / network-filesystem fallback (see hermes_state.apply_wal_with_fallback)
 # ---------------------------------------------------------------------------
 
-def test_connect_falls_back_to_delete_on_locking_protocol(kanban_home, caplog):
+def test_connect_falls_back_to_delete_on_locking_protocol(tmp_path, monkeypatch, caplog):
     """kanban_db.connect() must handle ``locking protocol`` on NFS/SMB.
 
     Without this fallback, the gateway's kanban dispatcher crashes every
     60s and the kanban migration (``consecutive_failures`` ADD COLUMN) is
     retried forever — which is what the real-world user report shows
     (see hermes-agent issue #22032).
+
+    NOTE: We do NOT use the ``kanban_home`` fixture here because that
+    fixture pre-initializes the DB via ``kb.init_db()`` — putting the
+    file in WAL on disk. The Bug D safety guard now refuses to downgrade
+    to DELETE when the on-disk header is already WAL, so testing the
+    NFS-fallback path requires a truly-fresh DB file (NFS scenario in
+    production: first connection of the first process ever to touch the
+    file, where downgrading is safe because nobody else has WAL state
+    yet).
     """
     import sqlite3 as _sqlite3
     from unittest.mock import patch as _patch
+
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
 
     # Clear module cache so a fresh connect() is attempted
     kb._INITIALIZED_PATHS.clear()

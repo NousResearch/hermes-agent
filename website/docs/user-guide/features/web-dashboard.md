@@ -24,7 +24,8 @@ This starts a local web server and opens `http://127.0.0.1:9119` in your browser
 | `--host` | `127.0.0.1` | Bind address |
 | `--no-open` | — | Don't auto-open the browser |
 | `--insecure` | off | Allow binding to non-localhost hosts (**DANGEROUS** — exposes API keys on the network; pair with a firewall and strong auth) |
-| `--tui` | off | Expose the in-browser Chat tab (embedded `hermes --tui` via PTY/WebSocket). Alternatively set `HERMES_DASHBOARD_TUI=1`. |
+| `--tui` | on | Compatibility flag for the in-browser Chat tab (embedded `hermes --tui` via PTY/WebSocket), which is now enabled by default. |
+| `--no-tui` | off | Hide the in-browser Chat tab. Alternatively set `HERMES_DASHBOARD_TUI=0`. |
 
 ```bash
 # Custom port
@@ -36,23 +37,23 @@ hermes dashboard --host 0.0.0.0
 # Start without opening browser
 hermes dashboard --no-open
 
-# Enable the in-browser Chat tab
-hermes dashboard --tui
+# Start without the in-browser Chat tab
+hermes dashboard --no-tui
 ```
 
 ## Prerequisites
 
-The default `hermes-agent` install does not ship the HTTP stack or PTY helper — those are optional extras. The **web dashboard** needs FastAPI and Uvicorn (`web` extra). The **Chat** tab also needs `ptyprocess` to spawn the embedded TUI behind a pseudo-terminal (`pty` extra on POSIX). Install both with:
+The default `hermes-agent` install does not ship the HTTP stack or PTY helper — those are optional extras. The **web dashboard** needs FastAPI and Uvicorn (`web` extra). The **Chat** tab also needs a PTY helper to spawn the embedded TUI behind a pseudo-terminal. The `web` extra includes those PTY dependencies:
 
 ```bash
-pip install 'hermes-agent[web,pty]'
+pip install 'hermes-agent[web]'
 ```
 
-The `web` extra pulls in FastAPI/Uvicorn; `pty` pulls in `ptyprocess` (POSIX) or `pywinpty` (native Windows — note that the embedded TUI itself still requires WSL). `pip install hermes-agent[all]` includes both extras and is the easiest path if you also want messaging/voice/etc.
+The `web` extra pulls in FastAPI/Uvicorn and PTY support (`ptyprocess` on POSIX or `pywinpty` on native Windows — note that the embedded TUI itself still requires WSL). `pip install hermes-agent[all]` includes the dashboard extra and is the easiest path if you also want messaging/voice/etc.
 
 When you run `hermes dashboard` without the dependencies, it will tell you what to install. If the frontend hasn't been built yet and `npm` is available, it builds automatically on first launch.
 
-The Chat tab is intentionally off for a plain `hermes dashboard` launch. Start the dashboard with `hermes dashboard --tui` or set `HERMES_DASHBOARD_TUI=1` when you want the embedded browser chat pane.
+The Chat tab is enabled for a plain `hermes dashboard` launch. Use `hermes dashboard --no-tui` or set `HERMES_DASHBOARD_TUI=0` when you need to hide it in constrained runtimes.
 
 ## Pages
 
@@ -84,7 +85,7 @@ The **Chat** tab embeds the full Hermes TUI (the same interface you get from `he
 **Prerequisites:**
 
 - Node.js (same requirement as `hermes --tui`; the TUI bundle is built on first launch)
-- `ptyprocess` — installed by the `pty` extra (`pip install 'hermes-agent[web,pty]'`, or `[all]` covers both)
+- PTY support — installed by the `web` extra (`pip install 'hermes-agent[web]'`, or `[all]` covers it)
 - POSIX kernel (Linux, macOS, or WSL2).  The `/chat` terminal pane specifically needs a POSIX PTY — native Windows Python has no equivalent, so on a native Windows install the rest of the dashboard (sessions, jobs, metrics, config editor) works but the `/chat` tab will show a banner telling you to use WSL2 for that feature.
 
 Close the browser tab and the PTY is reaped cleanly on the server. Re-opening spawns a fresh session.

@@ -1770,6 +1770,8 @@ voice = [
 ]
 web = [
     { name = "fastapi" },
+    { name = "ptyprocess", marker = "sys_platform != 'win32'" },
+    { name = "pywinpty", marker = "sys_platform == 'win32'" },
     { name = "uvicorn", extra = ["standard"] },
 ]
 youtube = [
@@ -1823,6 +1825,7 @@ requires-dist = [
     { name = "hermes-agent", extras = ["mcp"], marker = "extra == 'termux'" },
     { name = "hermes-agent", extras = ["pty"], marker = "extra == 'all'" },
     { name = "hermes-agent", extras = ["pty"], marker = "extra == 'termux'" },
+    { name = "hermes-agent", extras = ["pty"], marker = "extra == 'web'" },
     { name = "hermes-agent", extras = ["sms"], marker = "extra == 'all'" },
     { name = "hermes-agent", extras = ["sms"], marker = "extra == 'termux-all'" },
     { name = "hermes-agent", extras = ["termux"], marker = "extra == 'termux-all'" },

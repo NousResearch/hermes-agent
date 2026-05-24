@@ -10548,6 +10548,24 @@ def _report_dashboard_status() -> int:
     return len(pids)
 
 
+def _dashboard_tui_enabled(args) -> bool:
+    """Return whether the dashboard should expose embedded TUI chat.
+
+    The TUI-backed /chat tab is the canonical dashboard chat surface. Keep it
+    on by default, but preserve explicit opt-outs for constrained runtimes.
+    """
+    if getattr(args, "no_tui", False):
+        return False
+    if getattr(args, "tui", False):
+        return True
+
+    env_value = os.environ.get("HERMES_DASHBOARD_TUI")
+    if env_value is None:
+        return True
+
+    return env_value.strip().lower() not in {"0", "false", "no", "off"}
+
+
 def cmd_dashboard(args):
     """Start the web UI server, or (with --stop/--status) manage running ones."""
     # --status: report running dashboards and exit, no deps needed.
@@ -10603,7 +10621,7 @@ def cmd_dashboard(args):
 
     from hermes_cli.web_server import start_server
 
-    embedded_chat = args.tui or os.environ.get("HERMES_DASHBOARD_TUI") == "1"
+    embedded_chat = _dashboard_tui_enabled(args)
     start_server(
         host=args.host,
         port=args.port,
@@ -13626,12 +13644,21 @@ Examples:
         action="store_true",
         help="Allow binding to non-localhost (DANGEROUS: exposes API keys on the network)",
     )
-    dashboard_parser.add_argument(
+    tui_group = dashboard_parser.add_mutually_exclusive_group()
+    tui_group.add_argument(
         "--tui",
         action="store_true",
         help=(
             "Expose the in-browser Chat tab (embedded `hermes --tui` via PTY/WebSocket). "
-            "Alternatively set HERMES_DASHBOARD_TUI=1."
+            "This is now the default; the flag is kept for compatibility."
+        ),
+    )
+    tui_group.add_argument(
+        "--no-tui",
+        action="store_true",
+        help=(
+            "Hide the in-browser Chat tab. Alternatively set "
+            "HERMES_DASHBOARD_TUI=0."
         ),
     )
     dashboard_parser.add_argument(

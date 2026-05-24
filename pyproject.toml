@@ -169,8 +169,9 @@ youtube = [
   # at first invocation with ModuleNotFoundError (issue #22243).
   "youtube-transcript-api==1.2.4",
 ]
-# `hermes dashboard` (localhost SPA + API).  Not in core to keep the default install lean.
-web = ["fastapi==0.133.1", "uvicorn[standard]==0.41.0"]
+# `hermes dashboard` (localhost SPA + API + embedded TUI chat). Not in core to
+# keep the default install lean.
+web = ["fastapi==0.133.1", "uvicorn[standard]==0.41.0", "hermes-agent[pty]"]
 all = [
   # Policy (2026-05-12): `[all]` includes only extras that genuinely
   # CAN'T be lazy-installed via `tools/lazy_deps.py` — i.e. things every

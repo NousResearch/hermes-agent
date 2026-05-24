@@ -22,7 +22,7 @@ def _ns(**kw):
     """Build an argparse.Namespace with dashboard defaults plus overrides."""
     defaults = dict(
         port=9119, host="127.0.0.1", no_open=False, insecure=False,
-        tui=False, stop=False, status=False,
+        tui=False, no_tui=False, stop=False, status=False,
     )
     defaults.update(kw)
     return argparse.Namespace(**defaults)
@@ -179,3 +179,56 @@ class TestArgparseWiring:
              pytest.raises(SystemExit) as exc:
             mod.cmd_dashboard(_ns(status=True))
         assert exc.value.code == 0
+
+
+class TestDashboardTuiDefault:
+    def _start_kwargs(self, monkeypatch, tmp_path, **overrides):
+        import hermes_cli.main as mod
+
+        captured = {}
+        dist = tmp_path / "web_dist"
+        dist.mkdir()
+        (dist / "index.html").write_text("<!doctype html>\n", encoding="utf-8")
+
+        def fake_start_server(**kw):
+            captured.update(kw)
+
+        monkeypatch.setattr(mod, "_build_web_ui", lambda *a, **kw: True)
+        monkeypatch.setattr(mod, "PROJECT_ROOT", mod.PROJECT_ROOT)
+        monkeypatch.setenv("HERMES_WEB_DIST", str(dist))
+
+        fake_ws = MagicMock()
+        fake_ws.start_server = fake_start_server
+
+        with patch.dict(
+            sys.modules,
+            {
+                "fastapi": MagicMock(),
+                "uvicorn": MagicMock(),
+                "hermes_cli.web_server": fake_ws,
+            },
+        ):
+            mod.cmd_dashboard(_ns(skip_build=True, **overrides))
+
+        return captured
+
+    def test_embedded_tui_chat_is_default(self, monkeypatch, tmp_path):
+        monkeypatch.delenv("HERMES_DASHBOARD_TUI", raising=False)
+
+        captured = self._start_kwargs(monkeypatch, tmp_path)
+
+        assert captured["embedded_chat"] is True
+
+    def test_no_tui_flag_disables_embedded_chat(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("HERMES_DASHBOARD_TUI", "1")
+
+        captured = self._start_kwargs(monkeypatch, tmp_path, no_tui=True)
+
+        assert captured["embedded_chat"] is False
+
+    def test_env_zero_disables_embedded_chat(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("HERMES_DASHBOARD_TUI", "0")
+
+        captured = self._start_kwargs(monkeypatch, tmp_path)
+
+        assert captured["embedded_chat"] is False

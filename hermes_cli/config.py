@@ -707,6 +707,12 @@ DEFAULT_CONFIG = {
             # Rehydrate tab_id from Camofox before creating a new tab.
             "adopt_existing_tab": False,
         },
+        "cloakbrowser": {
+            # Native stealth Chromium backend via the Python cloakbrowser package.
+            # When enabled, browser tools route through tools/browser_cloak.py
+            # instead of agent-browser/Camofox. BROWSER_CDP_URL still wins.
+            "enabled": False,
+        },
     },
 
     # Filesystem checkpoints — automatic snapshots before destructive file ops.

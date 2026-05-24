@@ -241,6 +241,20 @@ implementation plan candidates for future executor dry runs without writing
 files, issuing tokens, persisting approvals, creating ledger events, or
 implementing or invoking an executor.
 
+Memory Human Approval Token Real Write Executor Implementation Dry Run v0.1
+lives in
+`agent.memory_human_approval_token_real_write_executor_implementation_dry_run`.
+It previews future executor module boundaries, interfaces, filesystem safety,
+audit, rollback, and tests without creating executor source files, implementing
+or invoking the executor, issuing tokens, or writing token/audit/ledger state.
+
+Memory Human Approval Token Real Write Executor Code Review Plan v0.1 lives in
+`agent.memory_human_approval_token_real_write_executor_code_review_plan`. It
+turns valid implementation dry-run candidates into read-only code-review-plan
+candidates for a later gate, defining future static-analysis, security,
+write-safety, test, and acceptance checks without creating executor source
+files or tests.
+
 ---
 
 ## Migrating from OpenClaw

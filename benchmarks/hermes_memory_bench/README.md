@@ -52,6 +52,7 @@ python -m benchmarks.hermes_memory_bench.run --suite smoke --output /tmp/hermes-
 - `memory_human_approval_token_real_write_executor_contract_review_gate`
 - `memory_human_approval_token_real_write_executor_implementation_plan`
 - `memory_human_approval_token_real_write_executor_implementation_dry_run`
+- `memory_human_approval_token_real_write_executor_code_review_plan`
 - `latency_ms`
 
 ## Hybrid Retrieval Fusion v0.1
@@ -630,6 +631,34 @@ proving that a valid implementation plan becomes
 persisting approval, creating a real proposal, writing token files, writing
 approval audit, invoking or implementing a real token write executor, creating
 executor source files, or creating an operation event.
+
+### Memory Human Approval Token Real Write Executor Code Review Plan v0.1
+
+Implemented in
+`agent.memory_human_approval_token_real_write_executor_code_review_plan`.
+It turns a valid `real_token_write_executor_code_review_plan_required`
+implementation dry-run candidate into a deterministic, read-only code review
+plan candidate with `real_token_write_executor_code_review_gate_required`
+status.
+
+The code review plan defines future executor source-file review scope, required
+future files, static analysis checks, security checks, write-safety checks,
+test matrix, acceptance criteria, forbidden actions, and a plan checklist.
+Invalid, locked, incomplete, or integrity-failed implementation dry runs become
+locked code-review-plan candidates with explicit reasons. v0.1 does not create
+executor source files, create executor tests, implement or invoke a real token
+write executor, issue approval tokens, persist approvals, create real
+proposals, write proposal files, write operation-ledger events, write token
+files, write approval audit records, submit to governance, write memory, write
+the Memory Graph, or modify config.
+
+The smoke suite includes
+`memory_human_approval_token_real_write_executor_code_review_plan`, proving
+that a valid implementation dry run becomes
+`real_token_write_executor_code_review_gate_required` without issuing a token,
+persisting approval, creating a real proposal, writing token files, writing
+approval audit, invoking or implementing a real token write executor, creating
+executor source files, creating executor tests, or creating an operation event.
 
 ## Report Schema
 

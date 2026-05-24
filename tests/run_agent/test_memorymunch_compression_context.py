@@ -228,3 +228,38 @@ def test_source_of_truth_compaction_clears_stale_compressor_warning_state_and_co
     assert agent.context_compressor._last_aux_model_failure_model is None
     assert agent.context_compressor._last_aux_model_failure_error is None
     assert agent._last_compression_summary_warning is None
+
+
+class FakeBackgroundCompactionManager:
+    def __init__(self):
+        self.scheduled = []
+
+    def schedule(self, snapshot, build_summary, *, is_current):
+        self.scheduled.append((snapshot, build_summary, is_current))
+        return object()
+
+
+def test_source_of_truth_compaction_schedules_background_rich_summary_without_blocking():
+    agent = FakeAgent()
+    agent._memory_manager = SourceOfTruthMemoryManager()
+    agent._background_compaction_manager = FakeBackgroundCompactionManager()
+
+    compressed, _ = compress_context(
+        agent,
+        [
+            {"role": "user", "content": "older task"},
+            {"role": "assistant", "content": "older answer"},
+            {"role": "user", "content": "LIVE_QUERY"},
+        ],
+        approx_tokens=100,
+        system_message="sys",
+    )
+
+    assert agent.context_compressor.called is False
+    assert compressed[-1]["content"] == "LIVE_QUERY"
+    assert len(agent._background_compaction_manager.scheduled) == 1
+    snapshot, _builder, is_current = agent._background_compaction_manager.scheduled[0]
+    assert snapshot.parent_session_id == "old-sess"
+    assert snapshot.message_count == 3
+    assert snapshot.message_hash
+    assert is_current(snapshot) is True

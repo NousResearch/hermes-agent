@@ -459,6 +459,52 @@ def compress_context(
     except Exception as _me_err:
         logger.debug("memory manager on_session_switch (compression): %s", _me_err)
 
+    # When MemoryMunch/provider source-of-truth compaction gave us a fast
+    # foreground checkpoint, queue richer compaction work behind the scenes.
+    # The background result is guarded by session/generation/hash and is stored
+    # as a candidate only; it must never overwrite newer live context blindly.
+    try:
+        if source_of_truth_compressed:
+            from agent.background_compaction import (
+                BackgroundCompactionManager,
+                CompactionSnapshot,
+            )
+            import hashlib as _hashlib
+            import json as _json
+
+            bg_manager = getattr(agent, "_background_compaction_manager", None)
+            if bg_manager is None:
+                bg_manager = BackgroundCompactionManager()
+                setattr(agent, "_background_compaction_manager", bg_manager)
+            parent_sid = locals().get("old_session_id") or agent.session_id or ""
+            payload = _json.dumps(messages_for_compression, sort_keys=True, default=str)
+            snapshot = CompactionSnapshot(
+                session_id=agent.session_id or "",
+                parent_session_id=parent_sid,
+                generation=int(getattr(agent.context_compressor, "compression_count", 0) or 0),
+                message_count=len(messages or []),
+                message_hash=_hashlib.sha256(payload.encode("utf-8", errors="replace")).hexdigest(),
+                focus_topic=focus_topic or "",
+            )
+
+            def _build_background_summary(_snapshot):
+                return (
+                    "MemoryMunch background compaction candidate. "
+                    f"parent_session_id={_snapshot.parent_session_id} "
+                    f"message_count={_snapshot.message_count} "
+                    f"message_hash={_snapshot.message_hash}"
+                )
+
+            def _is_current(_snapshot):
+                return (
+                    (agent.session_id or "") == _snapshot.session_id
+                    and int(getattr(agent.context_compressor, "compression_count", 0) or 0) == _snapshot.generation
+                )
+
+            bg_manager.schedule(snapshot, _build_background_summary, is_current=_is_current)
+    except Exception as _bg_err:
+        logger.debug("background compaction scheduling failed: %s", _bg_err)
+
     # Warn on repeated compressions (quality degrades with each pass)
     _cc = agent.context_compressor.compression_count
     if _cc >= 2:

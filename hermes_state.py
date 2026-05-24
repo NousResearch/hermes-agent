@@ -4598,6 +4598,49 @@ class SessionDB:
                 return None
         return dict(row) if row else None
 
+    def delete_telegram_topic_binding(
+        self,
+        *,
+        chat_id: str,
+        thread_id: str,
+    ) -> int:
+        """Remove the binding row for a single (chat, thread) pair.
+
+        Called when the Telegram Bot API confirms a topic was deleted
+        externally (``Thread not found`` after the same-thread retry
+        already failed).  Without this prune, the stale row keeps
+        living in ``telegram_dm_topic_bindings`` and the
+        recovery logic in ``gateway.run._recover_telegram_topic_thread_id``
+        cheerfully redirects future inbound messages to the deleted
+        topic, causing tool progress, approvals, and replies to land
+        in the wrong place.  Issue #31501.
+
+        Returns the number of rows deleted (0 when the binding was
+        already absent or the topic-mode tables haven't been
+        migrated yet — both are silent no-ops; we never raise from
+        a cleanup hot path).
+        """
+        chat_id = str(chat_id)
+        thread_id = str(thread_id)
+        deleted = {"count": 0}
+
+        def _do(conn):
+            try:
+                cursor = conn.execute(
+                    """
+                    DELETE FROM telegram_dm_topic_bindings
+                    WHERE chat_id = ? AND thread_id = ?
+                    """,
+                    (chat_id, thread_id),
+                )
+                deleted["count"] = cursor.rowcount or 0
+            except sqlite3.OperationalError:
+                # Tables don't exist yet — nothing to prune.
+                deleted["count"] = 0
+
+        self._execute_write(_do)
+        return deleted["count"]
+
     def bind_telegram_topic(
         self,
         *,

@@ -391,7 +391,7 @@ class WebhookAdapter(BasePlatformAdapter):
             )
             return web.json_response(
                 {"error": "Webhook route is missing an HMAC secret"},
-                status=500,
+                status=403,
             )
         if secret != _INSECURE_NO_AUTH:
             if not self._validate_signature(request, raw_body, secret):

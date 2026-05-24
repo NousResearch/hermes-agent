@@ -194,6 +194,36 @@ def _unregister_subagent(subagent_id: str) -> None:
         _active_subagents.pop(subagent_id, None)
 
 
+def _cleanup_built_child(child: Any, parent_agent) -> None:
+    """Undo build-time child registration and close child resources.
+
+    Shared by delegate_task() build-stage error handling and
+    _run_single_child().finally. Lease release and tool-name restoration stay
+    with the caller because only the run path has that context.
+    """
+    _raw_sid = getattr(child, "_subagent_id", None)
+    _subagent_id = _raw_sid if isinstance(_raw_sid, str) else None
+    if _subagent_id:
+        _unregister_subagent(_subagent_id)
+
+    if hasattr(parent_agent, "_active_children"):
+        try:
+            lock = getattr(parent_agent, "_active_children_lock", None)
+            if lock:
+                with lock:
+                    parent_agent._active_children.remove(child)
+            else:
+                parent_agent._active_children.remove(child)
+        except (ValueError, UnboundLocalError) as exc:
+            logger.debug("Could not remove child from active_children: %s", exc)
+
+    try:
+        if hasattr(child, "close"):
+            child.close()
+    except Exception:
+        logger.debug("Failed to close child agent after delegation")
+
+
 def interrupt_subagent(subagent_id: str) -> bool:
     """Request that a single running subagent stop at its next iteration boundary.
 
@@ -1005,6 +1035,8 @@ def _build_child_agent(
     # ACP transport overrides — lets a non-ACP parent spawn ACP child agents
     override_acp_command: Optional[str] = None,
     override_acp_args: Optional[List[str]] = None,
+    # Optional per-task reasoning override. Precedence: task > delegation config > parent.
+    reasoning_effort: Optional[str] = None,
     # Per-call role controlling whether the child can further delegate.
     # 'leaf' (default) cannot; 'orchestrator' retains the delegation
     # toolset subject to depth/kill-switch bounds applied below.
@@ -1180,22 +1212,42 @@ def _build_child_agent(
         effective_provider = "copilot-acp"
         effective_api_mode = "chat_completions"
 
-    # Resolve reasoning config: delegation override > parent inherit
+    # Resolve reasoning config: task override > delegation override > parent inherit
     parent_reasoning = getattr(parent_agent, "reasoning_config", None)
     child_reasoning = parent_reasoning
     try:
-        delegation_effort = str(delegation_cfg.get("reasoning_effort") or "").strip()
-        if delegation_effort:
-            from hermes_constants import parse_reasoning_effort
+        from hermes_constants import parse_reasoning_effort
 
+        delegation_effort = str(delegation_cfg.get("reasoning_effort") or "").strip()
+        config_reasoning = None
+        if delegation_effort:
             parsed = parse_reasoning_effort(delegation_effort)
             if parsed is not None:
+                config_reasoning = parsed
                 child_reasoning = parsed
             else:
                 logger.warning(
                     "Unknown delegation.reasoning_effort '%s', inheriting parent level",
                     delegation_effort,
                 )
+
+        task_effort = str(reasoning_effort or "").strip()
+        if task_effort:
+            parsed_task = parse_reasoning_effort(task_effort)
+            if parsed_task is not None:
+                child_reasoning = parsed_task
+            elif config_reasoning is not None:
+                logger.warning(
+                    "Unknown delegate_task reasoning_effort '%s', using delegation.reasoning_effort fallback",
+                    task_effort,
+                )
+                child_reasoning = config_reasoning
+            else:
+                logger.warning(
+                    "Unknown delegate_task reasoning_effort '%s', inheriting parent level",
+                    task_effort,
+                )
+                child_reasoning = parent_reasoning
     except Exception as exc:
         logger.debug("Could not load delegation reasoning_effort: %s", exc)
 
@@ -2017,9 +2069,6 @@ def _run_single_child(
 
         # Drop the TUI-facing registry entry.  Safe to call even if the
         # child was never registered (e.g. ID missing on test doubles).
-        if _subagent_id:
-            _unregister_subagent(_subagent_id)
-
         if child_pool is not None and leased_cred_id is not None:
             try:
                 child_pool.release_lease(leased_cred_id)
@@ -2034,28 +2083,7 @@ def _run_single_child(
         if isinstance(saved_tool_names, list):
             model_tools._last_resolved_tool_names = list(saved_tool_names)
 
-        # Remove child from active tracking
-
-        # Unregister child from interrupt propagation
-        if hasattr(parent_agent, "_active_children"):
-            try:
-                lock = getattr(parent_agent, "_active_children_lock", None)
-                if lock:
-                    with lock:
-                        parent_agent._active_children.remove(child)
-                else:
-                    parent_agent._active_children.remove(child)
-            except (ValueError, UnboundLocalError) as e:
-                logger.debug("Could not remove child from active_children: %s", e)
-
-        # Close tool resources (terminal sandboxes, browser daemons,
-        # background processes, httpx clients) so subagent subprocesses
-        # don't outlive the delegation.
-        try:
-            if hasattr(child, "close"):
-                child.close()
-        except Exception:
-            logger.debug("Failed to close child agent after delegation")
+        _cleanup_built_child(child, parent_agent)
 
 
 def _recover_tasks_from_json_string(
@@ -2081,6 +2109,35 @@ def _recover_tasks_from_json_string(
     return parsed, None
 
 
+def _resolve_task_credentials(
+    task: Dict[str, Any],
+    default_creds: dict,
+    cfg: dict,
+    parent_agent,
+) -> dict:
+    """Resolve per-task routing overrides against delegation config.
+
+    Tasks without a model/provider override reuse ``default_creds`` unchanged.
+    When a provider override is present we must clear ``base_url`` from the
+    copied config before calling ``_resolve_delegation_credentials()``,
+    otherwise the configured direct endpoint silently wins over the provider.
+    """
+    task_provider = str(task.get("provider") or "").strip() or None
+    task_model = str(task.get("model") or "").strip() or None
+
+    if not task_provider and not task_model:
+        return default_creds
+
+    task_cfg = dict(cfg or {})
+    if task_provider:
+        task_cfg["provider"] = task_provider
+        task_cfg["base_url"] = None
+    if task_model:
+        task_cfg["model"] = task_model
+
+    return _resolve_delegation_credentials(task_cfg, parent_agent)
+
+
 def delegate_task(
     goal: Optional[str] = None,
     context: Optional[str] = None,
@@ -2091,14 +2148,22 @@ def delegate_task(
     acp_args: Optional[List[str]] = None,
     role: Optional[str] = None,
     background: Optional[bool] = None,
+    model: Optional[str] = None,
+    provider: Optional[str] = None,
+    reasoning_effort: Optional[str] = None,
     parent_agent=None,
 ) -> str:
     """
     Spawn one or more child agents to handle delegated tasks.
 
     Supports two modes:
-      - Single: provide goal (+ optional context, toolsets, role)
-      - Batch:  provide tasks array [{goal, context, toolsets, role}, ...]
+      - Single: provide goal (+ optional context, toolsets, role, routing)
+      - Batch:  provide tasks array [{goal, context, toolsets, role, routing}, ...]
+
+    Routing fields (model, provider, reasoning_effort) are optional.
+    In single-task mode they can be supplied at the top level. In batch mode
+    routing is per-task only; top-level routing fields do not default across
+    tasks.
 
     The 'role' parameter controls whether a child can further delegate:
     'leaf' (default) cannot; 'orchestrator' retains the delegation
@@ -2192,7 +2257,15 @@ def delegate_task(
         task_list = tasks
     elif goal and isinstance(goal, str) and goal.strip():
         task_list = [
-            {"goal": goal, "context": context, "toolsets": toolsets, "role": top_role}
+            {
+                "goal": goal,
+                "context": context,
+                "toolsets": toolsets,
+                "role": top_role,
+                "model": model,
+                "provider": provider,
+                "reasoning_effort": reasoning_effort,
+            }
         ]
     else:
         return tool_error("Provide either 'goal' (single task) or 'tasks' (batch).")
@@ -2228,37 +2301,46 @@ def delegate_task(
     # child build raises (otherwise _last_resolved_tool_names stays corrupted).
     children = []
     try:
-        for i, t in enumerate(task_list):
-            task_acp_args = t.get("acp_args") if "acp_args" in t else None
-            # Per-task role beats top-level; normalise again so unknown
-            # per-task values warn and degrade to leaf uniformly.
-            effective_role = _normalize_role(t.get("role") or top_role)
-            child = _build_child_agent(
-                task_index=i,
-                goal=t["goal"],
-                context=t.get("context"),
-                toolsets=t.get("toolsets") or toolsets,
-                model=creds["model"],
-                max_iterations=effective_max_iter,
-                task_count=n_tasks,
-                parent_agent=parent_agent,
-                override_provider=creds["provider"],
-                override_base_url=creds["base_url"],
-                override_api_key=creds["api_key"],
-                override_api_mode=creds["api_mode"],
-                override_acp_command=t.get("acp_command")
-                or acp_command
-                or creds.get("command"),
-                override_acp_args=(
-                    task_acp_args
-                    if task_acp_args is not None
-                    else (acp_args if acp_args is not None else creds.get("args"))
-                ),
-                role=effective_role,
-            )
-            # Override with correct parent tool names (before child construction mutated global)
-            child._delegate_saved_tool_names = _parent_tool_names
-            children.append((i, t, child))
+        try:
+            for i, t in enumerate(task_list):
+                task_acp_args = t.get("acp_args") if "acp_args" in t else None
+                task_creds = _resolve_task_credentials(t, creds, cfg, parent_agent)
+                # Per-task role beats top-level; normalise again so unknown
+                # per-task values warn and degrade to leaf uniformly.
+                effective_role = _normalize_role(t.get("role") or top_role)
+                child = _build_child_agent(
+                    task_index=i,
+                    goal=t["goal"],
+                    context=t.get("context"),
+                    toolsets=t.get("toolsets") or toolsets,
+                    model=task_creds["model"],
+                    max_iterations=effective_max_iter,
+                    task_count=n_tasks,
+                    parent_agent=parent_agent,
+                    override_provider=task_creds["provider"],
+                    override_base_url=task_creds["base_url"],
+                    override_api_key=task_creds["api_key"],
+                    override_api_mode=task_creds["api_mode"],
+                    override_acp_command=t.get("acp_command")
+                    or acp_command
+                    or task_creds.get("command"),
+                    override_acp_args=(
+                        task_acp_args
+                        if task_acp_args is not None
+                        else (acp_args if acp_args is not None else task_creds.get("args"))
+                    ),
+                    reasoning_effort=t.get("reasoning_effort"),
+                    role=effective_role,
+                )
+                # Override with correct parent tool names (before child construction mutated global)
+                child._delegate_saved_tool_names = _parent_tool_names
+                children.append((i, t, child))
+        except Exception as exc:
+            for _, _, built_child in children:
+                _cleanup_built_child(built_child, parent_agent)
+            if isinstance(exc, ValueError):
+                return tool_error(str(exc))
+            raise
     finally:
         # Authoritative restore: reset global to parent's tool names after all children built
         _model_tools._last_resolved_tool_names = _parent_tool_names
@@ -2899,6 +2981,8 @@ def _build_top_level_description() -> str:
         "never enter your context window.\n\n"
         "TWO MODES (one of 'goal' or 'tasks' is required):\n"
         "1. Single task: provide 'goal' (+ optional context, toolsets).\n"
+        "   Optional routing in single-task mode: top-level "
+        "model/provider/reasoning_effort apply only when you pass 'goal'.\n"
         f"2. Batch (parallel): provide 'tasks' array with up to {max_children} "
         f"items concurrently for this user (configured via "
         f"delegation.max_concurrent_children in config.yaml). {nesting_clause}\n\n"
@@ -2961,7 +3045,9 @@ def _build_tasks_param_description() -> str:
         f"Batch mode: tasks to run in parallel (up to {max_children} for this "
         f"user, set via delegation.max_concurrent_children). Each gets "
         "its own subagent with isolated context and terminal session. "
-        "When provided, top-level goal/context/toolsets are ignored."
+        "When provided, top-level goal/context/toolsets are ignored. "
+        "put model/provider/reasoning_effort inside each tasks[] item for "
+        "batch routing. Top-level routing fields are ignored in batch mode."
     )
 
 
@@ -3024,6 +3110,9 @@ def _build_dynamic_schema_overrides() -> dict:
     }
 
 
+_REASONING_EFFORT_ENUM = ["none", "minimal", "low", "medium", "high", "xhigh"]
+
+
 DELEGATE_TASK_SCHEMA = {
     "name": "delegate_task",
     # NOTE: description / tasks.description / role.description are placeholder
@@ -3070,6 +3159,30 @@ DELEGATE_TASK_SCHEMA = {
                     "['terminal', 'file', 'web'] for full-stack tasks."
                 ),
             },
+            "model": {
+                "type": "string",
+                "description": (
+                    "Optional routing override for single-task mode only. "
+                    "Applies only when you pass top-level goal; batch mode routing "
+                    "must be set inside each tasks[] item."
+                ),
+            },
+            "provider": {
+                "type": "string",
+                "description": (
+                    "Optional provider routing override for single-task mode only. "
+                    "Ignored in batch mode unless set per-task inside tasks[]."
+                ),
+            },
+            "reasoning_effort": {
+                "type": "string",
+                "enum": _REASONING_EFFORT_ENUM,
+                "description": (
+                    "Optional reasoning override for single-task mode only. "
+                    "Use 'none' to disable reasoning. Ignored in batch mode unless "
+                    "set per-task inside tasks[]."
+                ),
+            },
             "tasks": {
                 "type": "array",
                 "items": {
@@ -3084,6 +3197,19 @@ DELEGATE_TASK_SCHEMA = {
                             "type": "array",
                             "items": {"type": "string"},
                             "description": f"Toolsets for this specific task. Available: {_TOOLSET_LIST_STR}. Use 'web' for network access, 'terminal' for shell, 'browser' for web interaction.",
+                        },
+                        "model": {
+                            "type": "string",
+                            "description": "Optional per-task model routing override for batch mode.",
+                        },
+                        "provider": {
+                            "type": "string",
+                            "description": "Optional per-task provider routing override for batch mode.",
+                        },
+                        "reasoning_effort": {
+                            "type": "string",
+                            "enum": _REASONING_EFFORT_ENUM,
+                            "description": "Optional per-task reasoning override for batch mode. Use 'none' to disable reasoning for that task.",
                         },
                         "acp_command": {
                             "type": "string",
@@ -3190,6 +3316,9 @@ registry.register(
         acp_args=args.get("acp_args"),
         role=args.get("role"),
         background=_model_background_value(args, kw.get("parent_agent")),
+        model=args.get("model"),
+        provider=args.get("provider"),
+        reasoning_effort=args.get("reasoning_effort"),
         parent_agent=kw.get("parent_agent"),
     ),
     check_fn=check_delegate_requirements,

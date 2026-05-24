@@ -16,6 +16,7 @@ import time
 import unittest
 from unittest.mock import MagicMock, patch
 
+from tools import delegate_tool as delegate_tool_module
 from tools.delegate_tool import (
     DELEGATE_BLOCKED_TOOLS,
     DELEGATE_TASK_SCHEMA,
@@ -74,6 +75,35 @@ class TestDelegateRequirements(unittest.TestCase):
         # predictable budgets.
         self.assertNotIn("max_iterations", props)
         self.assertNotIn("maxItems", props["tasks"])  # removed — limit is now runtime-configurable
+
+    def test_schema_exposes_per_task_routing_fields(self):
+        props = DELEGATE_TASK_SCHEMA["parameters"]["properties"]
+        task_props = props["tasks"]["items"]["properties"]
+
+        for field in ("model", "provider", "reasoning_effort"):
+            self.assertIn(field, props)
+            self.assertIn(field, task_props)
+
+        expected_reasoning_enum = ["none", "minimal", "low", "medium", "high", "xhigh"]
+        self.assertEqual(props["reasoning_effort"]["enum"], expected_reasoning_enum)
+        self.assertEqual(task_props["reasoning_effort"]["enum"], expected_reasoning_enum)
+
+    def test_dynamic_schema_descriptions_explain_routing_scopes(self):
+        from tools.delegate_tool import _build_dynamic_schema_overrides
+
+        overrides = _build_dynamic_schema_overrides()
+        desc = overrides["description"]
+        tasks_desc = overrides["parameters"]["properties"]["tasks"]["description"]
+
+        self.assertIn(
+            "top-level model/provider/reasoning_effort apply only when you pass 'goal'",
+            desc,
+        )
+        self.assertIn(
+            "put model/provider/reasoning_effort inside each tasks[] item",
+            tasks_desc,
+        )
+        self.assertIn("Top-level routing fields are ignored in batch mode", tasks_desc)
 
     def test_schema_description_advertises_runtime_limits(self):
         """The model must see the user's actual concurrency / spawn-depth caps,
@@ -347,6 +377,54 @@ class TestDelegateTask(unittest.TestCase):
         result = json.loads(delegate_task(goal="Break things", parent_agent=parent))
         self.assertEqual(result["results"][0]["status"], "error")
         self.assertIn("Something broke", result["results"][0]["error"])
+
+    def test_batch_build_error_cleans_up_already_built_children(self):
+        parent = _make_mock_parent()
+        default_creds = {
+            "model": "delegate-model",
+            "provider": "openrouter",
+            "base_url": "https://openrouter.ai/api/v1",
+            "api_key": "sk-delegate",
+            "api_mode": "chat_completions",
+        }
+        child = MagicMock()
+
+        with patch(
+            "tools.delegate_tool._load_config",
+            return_value={"max_iterations": 5},
+        ), patch(
+            "tools.delegate_tool._resolve_delegation_credentials",
+            return_value=default_creds,
+        ), patch(
+            "tools.delegate_tool._resolve_task_credentials",
+            side_effect=[
+                default_creds,
+                ValueError("Task 1 provider override is invalid."),
+            ],
+        ) as mock_task_creds, patch(
+            "tools.delegate_tool._unregister_subagent"
+        ) as mock_unregister, patch(
+            "run_agent.AIAgent",
+            return_value=child,
+        ) as mock_agent_cls:
+            result = json.loads(
+                delegate_task(
+                    tasks=[
+                        {"goal": "Task 0"},
+                        {"goal": "Task 1", "provider": "bad-provider"},
+                    ],
+                    parent_agent=parent,
+                )
+            )
+
+        self.assertIn("error", result)
+        self.assertEqual(result["error"], "Task 1 provider override is invalid.")
+        self.assertEqual(mock_task_creds.call_count, 2)
+        mock_agent_cls.assert_called_once()
+        self.assertEqual(parent._active_children, [])
+        child.close.assert_called_once_with()
+        self.assertIsInstance(child._subagent_id, str)
+        mock_unregister.assert_called_once_with(child._subagent_id)
 
     def test_depth_increments(self):
         """Verify child gets parent's depth + 1."""
@@ -1193,6 +1271,69 @@ class TestDelegationCredentialResolution(unittest.TestCase):
         self.assertIsNone(creds["provider"])
 
 
+class TestPerTaskDelegationCredentialResolution(unittest.TestCase):
+    def test_reuses_default_credentials_when_task_has_no_model_or_provider(self):
+        parent = _make_mock_parent(depth=0)
+        default_creds = {
+            "model": "default-model",
+            "provider": "openrouter",
+            "base_url": "https://openrouter.ai/api/v1",
+            "api_key": "sk-default",
+            "api_mode": "chat_completions",
+        }
+        cfg = {"model": "default-model", "provider": "openrouter"}
+
+        resolved = delegate_tool_module._resolve_task_credentials(
+            {"goal": "inherit defaults"},
+            default_creds,
+            cfg,
+            parent,
+        )
+
+        self.assertIs(resolved, default_creds)
+
+    @patch("tools.delegate_tool._resolve_delegation_credentials")
+    def test_provider_override_clears_base_url_before_resolution(self, mock_resolve):
+        parent = _make_mock_parent(depth=0)
+        default_creds = {
+            "model": "default-model",
+            "provider": "openrouter",
+            "base_url": "https://openrouter.ai/api/v1",
+            "api_key": "sk-default",
+            "api_mode": "chat_completions",
+        }
+        cfg = {
+            "model": "default-model",
+            "provider": "openrouter",
+            "base_url": "https://sticky.example/v1",
+            "api_key": "sticky-key",
+        }
+        mock_resolve.return_value = {
+            "model": "nous-model",
+            "provider": "nous",
+            "base_url": "https://nous.example/v1",
+            "api_key": "sk-nous",
+            "api_mode": "chat_completions",
+            "command": "copilot",
+            "args": ["--acp", "--stdio"],
+        }
+
+        resolved = delegate_tool_module._resolve_task_credentials(
+            {"goal": "provider override", "provider": "nous", "model": "nous-model"},
+            default_creds,
+            cfg,
+            parent,
+        )
+
+        called_cfg = mock_resolve.call_args.args[0]
+        self.assertEqual(called_cfg["provider"], "nous")
+        self.assertEqual(called_cfg["model"], "nous-model")
+        self.assertIsNone(called_cfg.get("base_url"))
+        self.assertEqual(cfg["base_url"], "https://sticky.example/v1")
+        self.assertEqual(resolved["command"], "copilot")
+        self.assertEqual(resolved["args"], ["--acp", "--stdio"])
+
+
 class TestDelegationProviderIntegration(unittest.TestCase):
     """Integration tests: delegation config → _run_single_child → AIAgent construction."""
 
@@ -1499,6 +1640,222 @@ class TestDelegationProviderIntegration(unittest.TestCase):
             # But provider/base_url/api_key should inherit from parent
             self.assertEqual(kwargs["provider"], parent.provider)
             self.assertEqual(kwargs["base_url"], parent.base_url)
+
+
+class TestDelegateTaskPerTaskRouting(unittest.TestCase):
+    @patch("tools.delegate_tool._run_single_child")
+    @patch("tools.delegate_tool._build_child_agent")
+    @patch("tools.delegate_tool._resolve_delegation_credentials")
+    @patch("tools.delegate_tool._load_config")
+    def test_single_task_top_level_routing_reaches_child_build(
+        self,
+        mock_cfg,
+        mock_resolve,
+        mock_build,
+        mock_run,
+    ):
+        mock_cfg.return_value = {
+            "max_iterations": 50,
+            "model": "default-model",
+            "provider": "openrouter",
+        }
+        parent = _make_mock_parent(depth=0)
+        mock_build.return_value = MagicMock()
+        mock_run.return_value = {
+            "task_index": 0,
+            "status": "completed",
+            "summary": "done",
+            "api_calls": 1,
+            "duration_seconds": 0.1,
+        }
+        seen_cfgs = []
+
+        def _resolve(cfg, _parent_agent):
+            seen_cfgs.append(dict(cfg))
+            provider = cfg.get("provider")
+            model = cfg.get("model")
+            if provider == "nous":
+                return {
+                    "model": model,
+                    "provider": "nous",
+                    "base_url": "https://nous.example/v1",
+                    "api_key": "sk-nous",
+                    "api_mode": "chat_completions",
+                    "command": "copilot",
+                    "args": ["--acp", "--stdio"],
+                }
+            return {
+                "model": model,
+                "provider": "openrouter",
+                "base_url": "https://openrouter.ai/api/v1",
+                "api_key": "sk-default",
+                "api_mode": "chat_completions",
+                "command": "default-acp",
+                "args": ["--default"],
+            }
+
+        mock_resolve.side_effect = _resolve
+
+        delegate_task(
+            goal="route this task",
+            model="single-task-model",
+            provider="nous",
+            reasoning_effort="high",
+            parent_agent=parent,
+        )
+
+        self.assertEqual(len(seen_cfgs), 2)
+        self.assertEqual(seen_cfgs[1]["model"], "single-task-model")
+        self.assertEqual(seen_cfgs[1]["provider"], "nous")
+
+        kwargs = mock_build.call_args.kwargs
+        self.assertEqual(kwargs["model"], "single-task-model")
+        self.assertEqual(kwargs["override_provider"], "nous")
+        self.assertEqual(kwargs["override_base_url"], "https://nous.example/v1")
+        self.assertEqual(kwargs["override_api_key"], "sk-nous")
+        self.assertEqual(kwargs["override_api_mode"], "chat_completions")
+        self.assertEqual(kwargs["override_acp_command"], "copilot")
+        self.assertEqual(kwargs["override_acp_args"], ["--acp", "--stdio"])
+        self.assertEqual(kwargs["reasoning_effort"], "high")
+
+    @patch("tools.delegate_tool._build_child_agent")
+    @patch("tools.delegate_tool._resolve_delegation_credentials")
+    @patch("tools.delegate_tool._load_config")
+    def test_single_task_override_credential_error_uses_tool_error_pattern(
+        self,
+        mock_cfg,
+        mock_resolve,
+        mock_build,
+    ):
+        mock_cfg.return_value = {
+            "max_iterations": 50,
+            "model": "default-model",
+            "provider": "openrouter",
+        }
+        parent = _make_mock_parent(depth=0)
+
+        def _resolve(cfg, _parent_agent):
+            if cfg.get("provider") == "bad-provider":
+                raise ValueError("Cannot resolve delegation provider 'bad-provider'")
+            return {
+                "model": cfg.get("model"),
+                "provider": "openrouter",
+                "base_url": "https://openrouter.ai/api/v1",
+                "api_key": "sk-default",
+                "api_mode": "chat_completions",
+                "command": "default-acp",
+                "args": ["--default"],
+            }
+
+        mock_resolve.side_effect = _resolve
+
+        result = json.loads(
+            delegate_task(
+                goal="route this task",
+                provider="bad-provider",
+                parent_agent=parent,
+            )
+        )
+
+        self.assertIn("error", result)
+        self.assertIn("bad-provider", result["error"])
+        mock_build.assert_not_called()
+
+    @patch("tools.delegate_tool._run_single_child")
+    @patch("tools.delegate_tool._build_child_agent")
+    @patch("tools.delegate_tool._resolve_delegation_credentials")
+    @patch("tools.delegate_tool._load_config")
+    def test_batch_mode_uses_only_per_task_routing_overrides(
+        self,
+        mock_cfg,
+        mock_resolve,
+        mock_build,
+        mock_run,
+    ):
+        mock_cfg.return_value = {
+            "max_iterations": 50,
+            "max_concurrent_children": 4,
+            "model": "default-model",
+            "provider": "openrouter",
+        }
+        parent = _make_mock_parent(depth=0)
+        seen_cfgs = []
+
+        def _resolve(cfg, _parent_agent):
+            seen_cfgs.append(dict(cfg))
+            provider = cfg.get("provider")
+            model = cfg.get("model")
+            if provider == "nous":
+                return {
+                    "model": model,
+                    "provider": "nous",
+                    "base_url": "https://nous.example/v1",
+                    "api_key": "sk-nous",
+                    "api_mode": "chat_completions",
+                    "command": "nous-acp",
+                    "args": ["--nous"],
+                }
+            return {
+                "model": model,
+                "provider": "openrouter",
+                "base_url": "https://openrouter.ai/api/v1",
+                "api_key": "sk-openrouter",
+                "api_mode": "chat_completions",
+                "command": "default-acp",
+                "args": ["--default"],
+            }
+
+        mock_resolve.side_effect = _resolve
+        mock_build.side_effect = lambda **kwargs: MagicMock()
+        mock_run.side_effect = lambda **kwargs: {
+            "task_index": kwargs["task_index"],
+            "status": "completed",
+            "summary": kwargs["goal"],
+            "api_calls": 1,
+            "duration_seconds": 0.1,
+        }
+
+        delegate_task(
+            tasks=[
+                {"goal": "inherit defaults"},
+                {"goal": "model only", "model": "task-model-only"},
+                {"goal": "provider+model", "provider": "nous", "model": "nous-model"},
+                {"goal": "reasoning only", "reasoning_effort": "minimal"},
+            ],
+            model="batch-top-model",
+            provider="batch-top-provider",
+            reasoning_effort="xhigh",
+            parent_agent=parent,
+        )
+
+        self.assertEqual(mock_resolve.call_count, 3)
+        self.assertEqual(seen_cfgs[0]["model"], "default-model")
+        self.assertEqual(seen_cfgs[0]["provider"], "openrouter")
+        self.assertEqual(seen_cfgs[1]["model"], "task-model-only")
+        self.assertEqual(seen_cfgs[1]["provider"], "openrouter")
+        self.assertEqual(seen_cfgs[2]["model"], "nous-model")
+        self.assertEqual(seen_cfgs[2]["provider"], "nous")
+        self.assertTrue(all(cfg.get("model") != "batch-top-model" for cfg in seen_cfgs))
+        self.assertTrue(all(cfg.get("provider") != "batch-top-provider" for cfg in seen_cfgs))
+
+        task0 = mock_build.call_args_list[0].kwargs
+        task1 = mock_build.call_args_list[1].kwargs
+        task2 = mock_build.call_args_list[2].kwargs
+        task3 = mock_build.call_args_list[3].kwargs
+
+        self.assertEqual(task0["model"], "default-model")
+        self.assertEqual(task0["override_provider"], "openrouter")
+        self.assertIsNone(task0["reasoning_effort"])
+
+        self.assertEqual(task1["model"], "task-model-only")
+        self.assertEqual(task1["override_provider"], "openrouter")
+
+        self.assertEqual(task2["model"], "nous-model")
+        self.assertEqual(task2["override_provider"], "nous")
+
+        self.assertEqual(task3["model"], "default-model")
+        self.assertEqual(task3["override_provider"], "openrouter")
+        self.assertEqual(task3["reasoning_effort"], "minimal")
 
 
 class TestChildCredentialPoolResolution(unittest.TestCase):
@@ -2028,6 +2385,70 @@ class TestDelegationReasoningEffort(unittest.TestCase):
         call_kwargs = MockAgent.call_args[1]
         self.assertEqual(call_kwargs["reasoning_config"], {"enabled": True, "effort": "medium"})
 
+    @patch("tools.delegate_tool._load_config")
+    @patch("run_agent.AIAgent")
+    def test_task_reasoning_effort_overrides_config_and_parent(self, MockAgent, mock_cfg):
+        mock_cfg.return_value = {"max_iterations": 50, "reasoning_effort": "low"}
+        MockAgent.return_value = MagicMock()
+        parent = _make_mock_parent()
+        parent.reasoning_config = {"enabled": True, "effort": "xhigh"}
+
+        _build_child_agent(
+            task_index=0, goal="test", context=None, toolsets=None,
+            model=None, max_iterations=50, parent_agent=parent,
+            task_count=1, reasoning_effort="high",
+        )
+        call_kwargs = MockAgent.call_args[1]
+        self.assertEqual(call_kwargs["reasoning_config"], {"enabled": True, "effort": "high"})
+
+    @patch("tools.delegate_tool._load_config")
+    @patch("run_agent.AIAgent")
+    def test_task_reasoning_effort_none_disables(self, MockAgent, mock_cfg):
+        mock_cfg.return_value = {"max_iterations": 50, "reasoning_effort": "low"}
+        MockAgent.return_value = MagicMock()
+        parent = _make_mock_parent()
+        parent.reasoning_config = {"enabled": True, "effort": "xhigh"}
+
+        _build_child_agent(
+            task_index=0, goal="test", context=None, toolsets=None,
+            model=None, max_iterations=50, parent_agent=parent,
+            task_count=1, reasoning_effort="none",
+        )
+        call_kwargs = MockAgent.call_args[1]
+        self.assertEqual(call_kwargs["reasoning_config"], {"enabled": False})
+
+    @patch("tools.delegate_tool._load_config")
+    @patch("run_agent.AIAgent")
+    def test_invalid_task_reasoning_effort_falls_back_to_config(self, MockAgent, mock_cfg):
+        mock_cfg.return_value = {"max_iterations": 50, "reasoning_effort": "low"}
+        MockAgent.return_value = MagicMock()
+        parent = _make_mock_parent()
+        parent.reasoning_config = {"enabled": True, "effort": "xhigh"}
+
+        _build_child_agent(
+            task_index=0, goal="test", context=None, toolsets=None,
+            model=None, max_iterations=50, parent_agent=parent,
+            task_count=1, reasoning_effort="banana",
+        )
+        call_kwargs = MockAgent.call_args[1]
+        self.assertEqual(call_kwargs["reasoning_config"], {"enabled": True, "effort": "low"})
+
+    @patch("tools.delegate_tool._load_config")
+    @patch("run_agent.AIAgent")
+    def test_invalid_task_reasoning_effort_falls_back_to_parent_when_config_invalid(self, MockAgent, mock_cfg):
+        mock_cfg.return_value = {"max_iterations": 50, "reasoning_effort": "banana"}
+        MockAgent.return_value = MagicMock()
+        parent = _make_mock_parent()
+        parent.reasoning_config = {"enabled": True, "effort": "medium"}
+
+        _build_child_agent(
+            task_index=0, goal="test", context=None, toolsets=None,
+            model=None, max_iterations=50, parent_agent=parent,
+            task_count=1, reasoning_effort="banana",
+        )
+        call_kwargs = MockAgent.call_args[1]
+        self.assertEqual(call_kwargs["reasoning_config"], {"enabled": True, "effort": "medium"})
+
 
 # =========================================================================
 # Dispatch helper, progress events, concurrency
@@ -2067,6 +2488,48 @@ class TestDispatchDelegateTask(unittest.TestCase):
             _, kwargs = mock_build.call_args
             self.assertEqual(kwargs["override_acp_command"], "claude")
             self.assertEqual(kwargs["override_acp_args"], ["--acp", "--stdio"])
+
+    def test_registry_handler_forwards_routing_fields(self):
+        from tools.registry import registry
+
+        parent = _make_mock_parent(depth=0)
+        with patch("tools.delegate_tool.delegate_task") as mock_delegate:
+            registry.get_entry("delegate_task").handler(
+                {
+                    "goal": "test",
+                    "model": "task-model",
+                    "provider": "nous",
+                    "reasoning_effort": "high",
+                },
+                parent_agent=parent,
+            )
+
+        kwargs = mock_delegate.call_args.kwargs
+        self.assertEqual(kwargs["model"], "task-model")
+        self.assertEqual(kwargs["provider"], "nous")
+        self.assertEqual(kwargs["reasoning_effort"], "high")
+        self.assertIs(kwargs["parent_agent"], parent)
+
+    def test_run_agent_dispatch_forwards_routing_fields(self):
+        from run_agent import AIAgent
+
+        parent = MagicMock()
+        with patch("tools.delegate_tool.delegate_task") as mock_delegate:
+            AIAgent._dispatch_delegate_task(
+                parent,
+                {
+                    "goal": "test",
+                    "model": "task-model",
+                    "provider": "nous",
+                    "reasoning_effort": "minimal",
+                },
+            )
+
+        kwargs = mock_delegate.call_args.kwargs
+        self.assertEqual(kwargs["model"], "task-model")
+        self.assertEqual(kwargs["provider"], "nous")
+        self.assertEqual(kwargs["reasoning_effort"], "minimal")
+        self.assertIs(kwargs["parent_agent"], parent)
 
 class TestDelegateEventEnum(unittest.TestCase):
     """Tests for DelegateEvent enum and back-compat aliases."""

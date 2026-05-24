@@ -207,6 +207,39 @@ Skills are loaded in order — `arxiv` first (teaches the agent how to search pa
 
 ---
 
+## Pattern 6: Overnight Coding with Quota Pause/Resume
+
+Long autonomous coding tasks should be resumable and quota-aware. Wrap the actual Hermes/Codex invocation with `usage-guard`; it persists pause state under `$HERMES_HOME/usage_guard/tasks/` and exits with code `75` while waiting for a provider reset.
+
+```bash
+hermes usage-guard run \
+  --id filechore-overnight \
+  --workdir /Users/stefanrimola/boring-tools \
+  -- hermes chat -q "Continue the File Chore sandbox roadmap. Stop before live payment gates. Commit safe checkpoints and write docs/STATUS.md before finishing."
+```
+
+If the wrapped command prints a provider quota/rate-limit error such as `429`, `rate limit`, `quota exceeded`, `Retry-After: 3600`, or `try again in 12 minutes`, `usage-guard` saves:
+
+- command and working directory
+- attempts count
+- last exit code
+- reason
+- `resume_at`
+
+Then schedule a script-only cron job or external cron to call the same command every 15-30 minutes. Until `resume_at`, it returns `75` without invoking the model again, which avoids the classic clown-school loop of spending tokens asking whether tokens are available.
+
+Operational commands:
+
+```bash
+hermes usage-guard status --id filechore-overnight
+hermes usage-guard list
+hermes usage-guard clear --id filechore-overnight
+```
+
+Use this for bounded overnight stages, not infinite “build everything” prompts. The wrapped task should write a checkpoint file, commit logical progress, and have objective stop gates.
+
+---
+
 ## Managing Your Jobs
 
 ```bash

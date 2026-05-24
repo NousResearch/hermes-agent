@@ -11069,6 +11069,21 @@ def main():
     fallback_parser.set_defaults(func=cmd_fallback)
 
     # =========================================================================
+    # usage-guard command — resumable quota-aware subprocess wrapper
+    # =========================================================================
+    usage_guard_parser = subparsers.add_parser(
+        "usage-guard",
+        help="Run long tasks with provider quota pause/resume state",
+        description=(
+            "Wrap autonomous Hermes/Codex work so cron or another scheduler can "
+            "pause cleanly on provider rate limits and resume after the reset window."
+        ),
+    )
+    from hermes_cli.usage_guard import register_cli as _register_usage_guard_cli
+
+    _register_usage_guard_cli(usage_guard_parser)
+
+    # =========================================================================
     # secrets command — external secret managers (currently: Bitwarden)
     # =========================================================================
     secrets_parser = subparsers.add_parser(

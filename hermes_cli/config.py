@@ -1186,6 +1186,18 @@ DEFAULT_CONFIG = {
                 "fallback": "deterministic_sanitizer",
                 "on_empty": "silence",
             },
+            "generated_ack": {
+                "mode": "generated",  # generated | off
+                "timeout_ms": 1000,
+                "max_words": 12,
+                "max_spoken_chars": 120,
+                "max_seconds": 2,
+                "voice_profile": "eon",
+                "context_window_chars": 500,
+                "provider": "auto",
+                "model": None,
+                "silence_on_failure": True,
+            },
         },
     },
 

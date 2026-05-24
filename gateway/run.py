@@ -25,6 +25,7 @@ except ModuleNotFoundError:
     pass
 
 import asyncio
+from concurrent.futures import ThreadPoolExecutor
 import dataclasses
 import inspect
 import json
@@ -65,7 +66,42 @@ _AGENT_CACHE_MAX_SIZE = 128
 _AGENT_CACHE_IDLE_TTL_SECS = 3600.0  # evict agents idle for >1h
 _PLATFORM_CONNECT_TIMEOUT_SECS_DEFAULT = 30.0
 _ADAPTER_DISCONNECT_TIMEOUT_SECS_DEFAULT = 5.0
+_GENERATED_ACK_DISPATCH_MAX_WORKERS = 2
+_GENERATED_ACK_DISPATCH_EXECUTOR = ThreadPoolExecutor(
+    max_workers=_GENERATED_ACK_DISPATCH_MAX_WORKERS,
+    thread_name_prefix="generated-ack-dispatch",
+)
+_GENERATED_ACK_DISPATCH_SLOTS = threading.BoundedSemaphore(_GENERATED_ACK_DISPATCH_MAX_WORKERS)
 _TELEGRAM_COMMAND_MENTION_RE = re.compile(r"(?<![\w:/])/([A-Za-z0-9][A-Za-z0-9_-]*)")
+
+
+def _submit_generated_ack_voice_out(message_text: str, **kwargs: Any) -> bool:
+    """Submit generated turn-start room audio work without unbounded threads.
+
+    Admission is non-blocking.  Saturation degrades to silence/no-op so the main
+    gateway path is never delayed and no unbounded executor queue builds up.
+    """
+    if not _GENERATED_ACK_DISPATCH_SLOTS.acquire(blocking=False):
+        return False
+
+    def run_publish() -> None:
+        try:
+            from gateway.pulse_voice_events import publish_generated_ack_voice_out
+
+            publish_generated_ack_voice_out(message_text, **kwargs)
+        except Exception:
+            pass
+
+    future = _GENERATED_ACK_DISPATCH_EXECUTOR.submit(run_publish)
+
+    def release_slot(_future: Any) -> None:
+        try:
+            _GENERATED_ACK_DISPATCH_SLOTS.release()
+        except ValueError:
+            pass
+
+    future.add_done_callback(release_slot)
+    return True
 
 _TELEGRAM_NOISY_STATUS_RE = re.compile(
     r"("  # transient/auxiliary status that should stay in logs, not Telegram chat
@@ -8582,6 +8618,29 @@ class GatewayRunner:
         )
         if message_text is None:
             return
+
+        # Generated turn-start acknowledgement is voice-only and fire-and-forget.
+        # It publishes only a safe Pulse voice event, never platform text, and it
+        # must not mutate the session transcript or contaminate the main prompt.
+        try:
+            _ack_source_message_id = self._reply_anchor_for_event(event)
+            _ack_input_modality = "voice" if event.message_type == MessageType.VOICE else "text"
+            _submit_generated_ack_voice_out(
+                message_text,
+                session_id=session_entry.session_id,
+                platform=source.platform.value if source.platform else "",
+                chat_id=source.chat_id,
+                channel_id=source.parent_chat_id or source.chat_id,
+                thread_id=source.thread_id,
+                source_message_id=_ack_source_message_id,
+                input_modality=_ack_input_modality,
+                output_device="room_audio",
+                config_scope="living_room_default",
+                explicit_spoken_request=_ack_input_modality == "voice",
+                is_private_context=source.chat_type == "dm",
+            )
+        except Exception:
+            pass
 
         # Bind this gateway run generation to the adapter's active-session
         # event so deferred post-delivery callbacks can be released by the

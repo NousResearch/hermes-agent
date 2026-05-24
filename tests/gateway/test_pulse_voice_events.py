@@ -4,6 +4,7 @@ from types import SimpleNamespace
 from gateway.pulse_voice_events import (
     completion_voice_text,
     publish_completion_voice_out,
+    publish_generated_ack_voice_out,
     publish_voice_event,
     publish_voice_out,
     summarize_final_voice_response,
@@ -137,6 +138,25 @@ def test_publish_voice_out_drops_malicious_metadata_from_canonical_and_legacy(tm
     assert "raw_path" not in canonical[0]
     assert "user_content" not in canonical[0]
     assert "extra_secret" not in canonical[0]
+
+
+def test_publish_voice_out_drops_secret_shaped_allowlisted_metadata(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    secret_values = {
+        "session_id": "xoxb-[REDACTED]",
+        "chat_id": "hf_[REDACTED]",
+        "channel_id": "glpat-[REDACTED]",
+        "thread_id": "hk_[REDACTED]",
+        "source_message_id": "rk_live_[REDACTED]",
+    }
+
+    publish_voice_out("completion", "Safe completion.", **secret_values)
+
+    [event] = _jsonl(voice_out_path())
+    payload = json.dumps(event, ensure_ascii=False)
+    for key, raw in secret_values.items():
+        assert key not in event
+        assert raw not in payload
 
 
 def test_publish_voice_out_routes_candidate_through_ambient_policy(tmp_path, monkeypatch):
@@ -290,6 +310,54 @@ def test_passed_policy_metadata_is_normalized_without_raw_content(tmp_path, monk
         "blocked_sensitive_topic": False,
         "blocked_stack_trace": False,
     }
+
+
+def test_publish_generated_ack_voice_out_is_voice_only_and_metadata_safe(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    raw_user_text = "look at /Users/brenno/.hermes/.env and token sk-test...cdef"
+
+    publish_generated_ack_voice_out(
+        raw_user_text,
+        generator=lambda prompt, *, timeout_ms: "That voice bridge needs sharper timing.",
+        session_id="safe-session-2",
+        platform="discord",
+        chat_id="chat-1",
+        thread_id="thread-1",
+        source_message_id="msg-2",
+        input_modality="voice",
+        output_device="room_audio",
+        raw_user_text=raw_user_text,
+        debug_path="/Users/brenno/.hermes/.env",
+    )
+
+    [event] = _jsonl(voice_out_path())
+    payload = json.dumps(event, ensure_ascii=False)
+    assert event["kind"] == "ack"
+    assert event["text"] == "That voice bridge needs sharper timing."
+    assert event["source"] == "generated_ack"
+    assert event["derived_from"] == "turn_start"
+    assert event["max_seconds"] == 2
+    assert event["ack"]["method"] == "generated"
+    assert event["ack"]["timeout_ms"] == 1000
+    assert event["session_id"] == "safe-session-2"
+    assert event["source_message_id"] == "msg-2"
+    assert "raw_user_text" not in event
+    assert "debug_path" not in event
+    assert "/Users/brenno" not in payload
+    assert "sk-test" not in payload
+    assert raw_user_text not in payload
+
+
+def test_publish_generated_ack_voice_out_silences_invalid_generated_ack(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+    publish_generated_ack_voice_out(
+        "voice test",
+        generator=lambda prompt, *, timeout_ms: "I’ll run the tests and verify it.",
+    )
+
+    assert not voice_out_path().exists()
+    assert not voice_events_path().exists()
 
 
 def test_no_canned_ack_phrase_generator_is_exported():

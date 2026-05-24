@@ -24,6 +24,7 @@ from gateway.final_speech_summarizer import (
     FinalSpeechSummarizer,
     VoiceContext as FinalSpeechVoiceContext,
 )
+from gateway.generated_ack_harness import AckContext, AckGenerator, GeneratedAckHarness
 
 _LOCK = threading.Lock()
 _MAX_BYTES = 2_000_000
@@ -45,10 +46,11 @@ _SECRET_RE = re.compile(
         \b(?:bearer|authorization)\b\s*[:=]?\s+[A-Za-z0-9][A-Za-z0-9._~+/\-]{7,}
       | \b(?:api[_ -]?key|secret(?:[_ -]?key)?|password|passwd|pwd|token|access[_ -]?key|aws[_ -]?key)\b
         \s*(?:is|=|:)?\s+[A-Za-z0-9][A-Za-z0-9._~+/\-]{7,}
-      | \b(?:sk-[A-Za-z0-9._-]{6,}|sk-[A-Za-z0-9]{2,}\.\.\.[A-Za-z0-9]{2,}|gh[pousr]_[A-Za-z0-9_]{10,})\b
+      | \b(?:sk-[A-Za-z0-9._-]{6,}|sk-[A-Za-z0-9]{2,}\.\.\.[A-Za-z0-9]{2,}|gh[pousr]_[A-Za-z0-9_]{10,}|github_pat_[A-Za-z0-9_]{10,})\b
+      | \b(?:xox[baprs]-(?:[A-Za-z0-9-]{10,}|\[REDACTED\])|hf_(?:[A-Za-z0-9]{10,}|\[REDACTED\])|glpat-(?:[A-Za-z0-9_-]{10,}|\[REDACTED\]))(?=$|\W)
       | \b(?:AKIA|ASIA)[A-Z0-9.]{10,}\b
-      | \bhk_[A-Za-z0-9._-]{10,}\b
-      | \b[a-z]{2,}_(?:test|live|prod|secret|key)_[A-Za-z0-9]{10,}\b
+      | \bhk_(?:[A-Za-z0-9._-]{10,}|\[REDACTED\])(?=$|\W)
+      | \b[a-z]{2,}_(?:test|live|prod|secret|key)_(?:[A-Za-z0-9]{10,}|\[REDACTED\])(?=$|\W)
       | \beyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\b
     )
     """,
@@ -64,6 +66,18 @@ _DEFAULT_FINAL_SUMMARY_CONFIG = {
     "voice_profile": "eon",
     "fallback": "deterministic_sanitizer",
     "on_empty": "silence",
+}
+_DEFAULT_GENERATED_ACK_CONFIG = {
+    "mode": "generated",
+    "timeout_ms": 1000,
+    "max_words": 12,
+    "max_spoken_chars": 120,
+    "max_seconds": 2,
+    "voice_profile": "eon",
+    "context_window_chars": 500,
+    "provider": "auto",
+    "model": None,
+    "silence_on_failure": True,
 }
 _STACK_TRACE_RE = re.compile(r"(?is)^\s*Traceback \(most recent call last\):.*")
 _SENSITIVE_TOPIC_RE = re.compile(r"(?i)\b(?:trading\s+pnl|portfolio\s+exposure)\b")
@@ -228,6 +242,7 @@ _SAFE_METADATA_KEYS = {
     "explicit_spoken_request",
     "is_private_context",
     "summarizer",
+    "ack",
 }
 _SAFE_METADATA_STRING_RE = re.compile(r"^[A-Za-z0-9_.:@#-]{1,128}$")
 _SAFE_ENUM_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_-]{0,63}$")
@@ -262,6 +277,23 @@ def _safe_summarizer_metadata(value: Any) -> dict[str, Any] | None:
     return allowed or None
 
 
+def _safe_ack_metadata(value: Any) -> dict[str, Any] | None:
+    if not isinstance(value, dict):
+        return None
+    allowed: dict[str, Any] = {}
+    for key in ("method", "reason"):
+        safe = _safe_metadata_string(value.get(key), enum=True)
+        if safe is not None:
+            allowed[key] = safe
+    for key in ("timeout_ms", "elapsed_ms"):
+        if key in value:
+            try:
+                allowed[key] = max(0, min(int(value.get(key) or 0), 10000))
+            except (TypeError, ValueError):
+                pass
+    return allowed or None
+
+
 def _safe_voice_metadata(metadata: dict[str, Any]) -> dict[str, Any]:
     """Return allowlisted Pulse metadata with no raw content/debug passthrough."""
     safe: dict[str, Any] = {}
@@ -275,6 +307,10 @@ def _safe_voice_metadata(metadata: dict[str, Any]) -> dict[str, Any]:
             summarizer = _safe_summarizer_metadata(value)
             if summarizer:
                 safe[key] = summarizer
+        elif key == "ack":
+            ack = _safe_ack_metadata(value)
+            if ack:
+                safe[key] = ack
         elif key in {"platform", "input_modality", "output_device", "config_scope"}:
             safe_value = _safe_metadata_string(value, enum=True)
             if safe_value is not None:
@@ -304,6 +340,80 @@ def _final_summary_config() -> dict[str, Any]:
     except Exception:
         pass
     return config
+
+
+def _generated_ack_config() -> dict[str, Any]:
+    """Load pulse.voice.generated_ack with silence-on-failure defaults."""
+    config = dict(_DEFAULT_GENERATED_ACK_CONFIG)
+    try:
+        from hermes_cli.config import load_config
+
+        loaded = load_config() or {}
+        pulse_voice = ((loaded.get("pulse") or {}).get("voice") or {}) if isinstance(loaded, dict) else {}
+        user_config = pulse_voice.get("generated_ack") or {}
+        if isinstance(user_config, dict):
+            config.update({k: v for k, v in user_config.items() if v is not None})
+    except Exception:
+        pass
+    return config
+
+
+class _ProviderAckGenerator:
+    """Small OpenAI-compatible auxiliary-client adapter for generated acks.
+
+    All exceptions intentionally bubble to GeneratedAckHarness, where they become
+    silence. This adapter must never log prompts, raw model responses,
+    credentials, or provider details.
+    """
+
+    def __init__(self, *, provider: str = "auto", model: str | None = None) -> None:
+        self.provider = str(provider or "auto")
+        self.model = str(model).strip() if model else None
+
+    def __call__(self, prompt: str, *, timeout_ms: int) -> str:
+        from agent.auxiliary_client import resolve_provider_client
+
+        client, resolved_model = resolve_provider_client(self.provider, model=self.model or "")
+        model = self.model or resolved_model
+        if client is None or not model:
+            return ""
+        timeout_s = max(0.1, min(float(timeout_ms or 1000) / 1000.0, 1.5))
+        response = client.chat.completions.create(
+            model=model,
+            messages=[
+                {
+                    "role": "system",
+                    "content": (
+                        "You generate one short room-audio acknowledgement for Eon. "
+                        "Return only the line or an empty string."
+                    ),
+                },
+                {"role": "user", "content": prompt},
+            ],
+            temperature=0.5,
+            max_tokens=40,
+            timeout=timeout_s,
+        )
+        choices = getattr(response, "choices", None) or []
+        if not choices:
+            return ""
+        message = getattr(choices[0], "message", None)
+        content = getattr(message, "content", "") if message is not None else ""
+        if isinstance(content, list):
+            return " ".join(
+                str(part.get("text", "") if isinstance(part, dict) else part)
+                for part in content
+            )
+        return str(content or "")
+
+
+def _make_generated_ack_generator(config: dict[str, Any]) -> AckGenerator | None:
+    provider = str(config.get("provider") or "auto").strip().lower()
+    if provider in {"", "none", "off", "disabled"}:
+        return None
+    model_value = config.get("model")
+    model = str(model_value).strip() if model_value else None
+    return _ProviderAckGenerator(provider=provider, model=model)
 
 
 def _trim_if_needed(path: Path) -> None:
@@ -532,6 +642,82 @@ def publish_voice_out(kind: str, text: str, **metadata: Any) -> None:
             # not raw delta/commentary.
             if legacy != canonical:
                 _write_event(legacy, event)
+    except Exception:
+        return
+
+
+def publish_generated_ack_voice_out(
+    user_message: str,
+    *,
+    generator: AckGenerator | None = None,
+    **metadata: Any,
+) -> None:
+    """Publish one generated turn-start voice acknowledgement if it is safe.
+
+    This helper is voice-only. It never sends platform text, never mutates chat
+    history, and returns silently for disabled config, missing generator/provider,
+    timeouts, invalid candidates, policy denial, or any exception.
+    """
+    if not _enabled():
+        return
+    try:
+        config = _generated_ack_config()
+        mode = str(config.get("mode") or "generated").strip().lower()
+        if mode == "off":
+            return
+        timeout_ms = max(1, min(int(config.get("timeout_ms") or 1000), 1500))
+        max_words = max(1, min(int(config.get("max_words") or 12), 20))
+        max_spoken_chars = max(1, min(int(config.get("max_spoken_chars") or 120), 240))
+        max_seconds = max(1, min(int(config.get("max_seconds") or 2), 10))
+        voice_profile = str(config.get("voice_profile") or "eon")
+        context_window_chars = max(80, min(int(config.get("context_window_chars") or 500), 2000))
+
+        context = AckContext(
+            user_message=str(user_message or "")[:context_window_chars],
+            session_id=metadata.get("session_id"),
+            platform=metadata.get("platform"),
+            chat_id=metadata.get("chat_id"),
+            channel_id=metadata.get("channel_id"),
+            thread_id=metadata.get("thread_id"),
+            source_message_id=metadata.get("source_message_id"),
+            input_modality=metadata.get("input_modality"),
+            output_device=metadata.get("output_device"),
+            voice_profile=voice_profile,
+            timeout_ms=timeout_ms,
+            max_words=max_words,
+            max_spoken_chars=max_spoken_chars,
+            max_seconds=max_seconds,
+            context_window_chars=context_window_chars,
+            config_scope=str(metadata.get("config_scope") or "living_room_default"),
+            explicit_spoken_request=bool(metadata.get("explicit_spoken_request", False)),
+            is_private_context=bool(metadata.get("is_private_context", False)),
+        )
+        if generator is None:
+            generator = _make_generated_ack_generator(config)
+        result = GeneratedAckHarness(generator=generator, mode=mode).generate(context)
+        if result.method == "silence" or not result.text:
+            return
+        publish_voice_out(
+            "ack",
+            result.text,
+            source="generated_ack",
+            derived_from="turn_start",
+            voice_profile=voice_profile,
+            max_seconds=max_seconds,
+            policy=result.policy,
+            ack={"method": result.method, "timeout_ms": timeout_ms, "elapsed_ms": result.elapsed_ms},
+            session_id=context.session_id,
+            platform=context.platform,
+            chat_id=context.chat_id,
+            channel_id=context.channel_id,
+            thread_id=context.thread_id,
+            source_message_id=context.source_message_id,
+            input_modality=context.input_modality,
+            output_device=context.output_device,
+            config_scope=context.config_scope,
+            explicit_spoken_request=context.explicit_spoken_request,
+            is_private_context=context.is_private_context,
+        )
     except Exception:
         return
 

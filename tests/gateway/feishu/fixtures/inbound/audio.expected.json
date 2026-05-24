@@ -1,0 +1,13 @@
+{
+  "text": "",
+  "message_type": "audio",
+  "message_id": "om_audio_001",
+  "media_urls_count": 1,
+  "reply_to_message_id": null,
+  "source": {
+    "platform": "feishu",
+    "chat_id": "p2p_alice",
+    "chat_type": "dm",
+    "user_id": "u_alice"
+  }
+}

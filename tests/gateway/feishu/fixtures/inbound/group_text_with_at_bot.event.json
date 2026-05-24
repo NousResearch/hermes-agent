@@ -1,0 +1,41 @@
+{
+  "schema": "2.0",
+  "header": {
+    "event_id": "evt_group_at_bot_001",
+    "event_type": "im.message.receive_v1",
+    "create_time": "1714203700000",
+    "token": "test_token",
+    "app_id": "cli_test_app"
+  },
+  "event": {
+    "sender": {
+      "sender_id": {
+        "open_id": "ou_alice",
+        "user_id": "u_alice",
+        "union_id": "on_alice"
+      },
+      "sender_type": "user",
+      "tenant_key": "tk_test"
+    },
+    "message": {
+      "message_id": "om_group_at_bot_001",
+      "chat_id": "oc_techteam",
+      "chat_type": "group",
+      "message_type": "text",
+      "content": "{\"text\":\"@_user_1 what is the status?\"}",
+      "create_time": "1714203700000",
+      "mentions": [
+        {
+          "key": "@_user_1",
+          "id": {
+            "open_id": "ou_hermes_bot",
+            "user_id": "u_hermes_bot",
+            "union_id": "on_hermes_bot"
+          },
+          "name": "HermesBot",
+          "tenant_key": "tk_test"
+        }
+      ]
+    }
+  }
+}

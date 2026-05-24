@@ -7,7 +7,7 @@ the main group chat.
 Covers: #6969, #9916, #7355
 """
 import asyncio
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock
 from types import SimpleNamespace
 
 import pytest
@@ -138,92 +138,74 @@ class TestOverflowFirstMessage:
         )
 
 
-class TestFeishuFallbackThreadRouting:
-    """Verify FeishuAdapter._send_raw_message routes to topic on fallback."""
+class _FakeFeishuChannel:
+    def __init__(self):
+        self.calls = []
+
+    async def send(self, target_id, payload, opts=None):
+        self.calls.append((target_id, payload, opts))
+        return SimpleNamespace(success=True, message_id="new_msg_1", error=None)
+
+
+class TestFeishuSdkThreadRouting:
+    """Verify FeishuAdapter routes new SDK sends to topics when available."""
 
     @pytest.mark.asyncio
     async def test_create_uses_thread_id_when_available(self):
-        """When reply_to=None and metadata has thread_id, message.create
-        should use receive_id_type='thread_id'."""
+        """When reply_to=None and metadata has thread_id, SDK sends to the topic."""
+        from gateway.config import PlatformConfig
         from gateway.platforms.feishu import FeishuAdapter
 
-        # We test the _send_raw_message method directly by mocking the client
-        adapter = MagicMock(spec=FeishuAdapter)
-
-        # Set up the real _send_raw_message logic manually
-        mock_client = MagicMock()
-        mock_create_response = SimpleNamespace(
-            success=lambda: True,
-            data=SimpleNamespace(message_id="new_msg_1"),
+        adapter = FeishuAdapter(
+            PlatformConfig(
+                enabled=True,
+                extra={
+                    "app_id": "cli_test",
+                    "app_secret": "secret_test",
+                    "domain": "feishu",
+                },
+            )
         )
-        mock_client.im.v1.message.create = MagicMock(return_value=mock_create_response)
+        channel = _FakeFeishuChannel()
+        adapter._channel = channel
 
-        # Use the real implementation path
-        adapter._client = mock_client
-        adapter._build_create_message_body = FeishuAdapter._build_create_message_body
-        adapter._build_create_message_request = FeishuAdapter._build_create_message_request
-
-        # Call _send_raw_message with reply_to=None and thread_id in metadata
-        import json
-        result = await FeishuAdapter._send_raw_message(
-            adapter,
+        result = await adapter.send(
             chat_id="oc_main_chat",
-            msg_type="text",
-            payload=json.dumps({"text": "hello"}),
+            content="hello",
             reply_to=None,
             metadata={"thread_id": "omt_topic_abc"},
         )
 
-        # Verify message.create was called (not message.reply)
-        mock_client.im.v1.message.create.assert_called_once()
-
-        # The request should have receive_id_type="thread_id"
-        call_args = mock_client.im.v1.message.create.call_args[0][0]
-        # Lark SDK builder exposes .body; the in-tree fallback exposes .request_body.
-        # The contributor's branch had the lark SDK installed, the test environment
-        # may not — handle both shapes.
-        body = getattr(call_args, "body", None) or getattr(call_args, "request_body", None)
-        assert body is not None, "request has neither .body nor .request_body"
-        # receive_id should be the thread_id, not the chat_id
-        receive_id = getattr(body, "receive_id", None)
-        if receive_id is None and isinstance(body, str):
-            import json as _json
-            receive_id = _json.loads(body).get("receive_id")
-        assert receive_id == "omt_topic_abc", (
-            f"Expected receive_id='omt_topic_abc', got '{receive_id}'"
-        )
-        # And receive_id_type must be 'thread_id', not 'chat_id'
-        receive_id_type = getattr(call_args, "receive_id_type", None)
-        assert receive_id_type == "thread_id", (
-            f"Expected receive_id_type='thread_id', got '{receive_id_type}'"
-        )
+        assert result.success is True
+        assert channel.calls == [
+            ("omt_topic_abc", "hello", {"receive_id_type": "thread_id"})
+        ]
 
     @pytest.mark.asyncio
     async def test_create_uses_chat_id_when_no_thread(self):
-        """When reply_to=None and metadata has no thread_id, message.create
-        should use receive_id_type='chat_id' (original behavior)."""
+        """When reply_to=None and metadata has no thread_id, SDK sends to the chat."""
+        from gateway.config import PlatformConfig
         from gateway.platforms.feishu import FeishuAdapter
 
-        mock_client = MagicMock()
-        mock_create_response = SimpleNamespace(
-            success=lambda: True,
-            data=SimpleNamespace(message_id="new_msg_1"),
+        adapter = FeishuAdapter(
+            PlatformConfig(
+                enabled=True,
+                extra={
+                    "app_id": "cli_test",
+                    "app_secret": "secret_test",
+                    "domain": "feishu",
+                },
+            )
         )
-        mock_client.im.v1.message.create = MagicMock(return_value=mock_create_response)
+        channel = _FakeFeishuChannel()
+        adapter._channel = channel
 
-        adapter = MagicMock(spec=FeishuAdapter)
-        adapter._client = mock_client
-        adapter._build_create_message_body = FeishuAdapter._build_create_message_body
-        adapter._build_create_message_request = FeishuAdapter._build_create_message_request
-
-        import json
-        result = await FeishuAdapter._send_raw_message(
-            adapter,
+        result = await adapter.send(
             chat_id="oc_main_chat",
-            msg_type="text",
-            payload=json.dumps({"text": "hello"}),
+            content="hello",
             reply_to=None,
             metadata=None,
         )
 
-        mock_client.im.v1.message.create.assert_called_once()
+        assert result.success is True
+        assert channel.calls == [("oc_main_chat", "hello", None)]

@@ -93,7 +93,7 @@ FEISHU_WEBHOOK_PORT=8765         # default: 8765
 FEISHU_WEBHOOK_PATH=/feishu/webhook  # default: /feishu/webhook
 ```
 
-When Feishu sends a URL verification challenge (`type: url_verification`), the webhook responds automatically so you can complete the subscription setup in the Feishu developer console.
+When Feishu sends a URL verification challenge (`type: url_verification`), the webhook responds automatically so you can complete the subscription setup in the Feishu developer console. URL verification is a setup challenge response; normal event payloads are handled by the webhook authentication checks below.
 
 ## Step 3: Configure Hermes
 
@@ -157,22 +157,24 @@ If you leave the allowlist empty, anyone who can reach the bot may be able to us
 
 ### Webhook Encryption Key
 
-When running in webhook mode, set an encryption key to enable signature verification of inbound webhook payloads:
+When running in webhook mode, configure `FEISHU_ENCRYPT_KEY`, `FEISHU_VERIFICATION_TOKEN`, or both. The webhook server refuses to start if both are empty, so inbound events must be authenticated before they reach the SDK.
+
+Set an encryption key to enable signature verification of inbound webhook payloads:
 
 ```bash
 FEISHU_ENCRYPT_KEY=your-encrypt-key
 ```
 
-This key is found in the **Event Subscriptions** section of your Feishu app configuration. When set, the adapter verifies every webhook request using the signature algorithm:
+This key is found in the **Event Subscriptions** section of your Feishu app configuration. When set, the adapter verifies event webhook payloads using the signature algorithm:
 
 ```
 SHA256(timestamp + nonce + encrypt_key + body)
 ```
 
-The computed hash is compared against the `x-lark-signature` header using timing-safe comparison. Requests with invalid or missing signatures are rejected with HTTP 401.
+The computed hash is compared against the `x-lark-signature` header using timing-safe comparison. Event payloads with invalid or missing signatures are rejected with HTTP 401.
 
 :::tip
-In WebSocket mode, signature verification is handled by the SDK itself, so `FEISHU_ENCRYPT_KEY` is optional. In webhook mode, it is strongly recommended for production.
+In WebSocket mode, signature verification is handled by the SDK itself, so `FEISHU_ENCRYPT_KEY` is optional. In webhook mode, at least one of `FEISHU_ENCRYPT_KEY` or `FEISHU_VERIFICATION_TOKEN` is required.
 :::
 
 ### Verification Token
@@ -183,9 +185,9 @@ An additional layer of authentication that checks the `token` field inside webho
 FEISHU_VERIFICATION_TOKEN=your-verification-token
 ```
 
-This token is also found in the **Event Subscriptions** section of your Feishu app. When set, every inbound webhook payload must contain a matching `token` in its `header` object. Mismatched tokens are rejected with HTTP 401.
+This token is also found in the **Event Subscriptions** section of your Feishu app. When set, event webhook payloads must contain a matching `token` in their `header` object. Mismatched tokens are rejected with HTTP 401.
 
-Both `FEISHU_ENCRYPT_KEY` and `FEISHU_VERIFICATION_TOKEN` can be used together for defense in depth.
+Both `FEISHU_ENCRYPT_KEY` and `FEISHU_VERIFICATION_TOKEN` can be used together for defense in depth. If you do not set an encryption key in webhook mode, this token becomes required.
 
 ## Group Message Policy
 
@@ -203,7 +205,7 @@ FEISHU_GROUP_POLICY=allowlist   # default
 
 In all modes, the bot must be explicitly @mentioned (or @all) in the group before the message is processed. Direct messages always bypass this gate.
 
-Set `FEISHU_REQUIRE_MENTION=false` to let Hermes read all group traffic without requiring an @mention:
+Set `FEISHU_REQUIRE_MENTION=false` to disable Hermes' own @mention gate for group messages that Feishu/Lark has already delivered:
 
 ```bash
 FEISHU_REQUIRE_MENTION=false
@@ -211,9 +213,11 @@ FEISHU_REQUIRE_MENTION=false
 
 For per-chat control, set `require_mention` on a `group_rules` entry — see [Per-Group Access Control](#per-group-access-control) below.
 
+This setting cannot make Feishu/Lark deliver event types your app is not allowed to receive. In particular, Feishu/Lark bot message events may only be delivered for group messages that @mention the bot; ordinary non-@ group traffic can be absent before Hermes sees it.
+
 ### Bot Identity
 
-Hermes auto-detects the bot's `open_id` and display name on startup. You only need to set these manually when auto-detection cannot reach the Feishu API, or when your app uses tenant-scoped user IDs:
+Hermes auto-detects the bot's `open_id` and display name on startup. These settings are a manual fallback when auto-detection cannot reach the Feishu API, or when your app uses tenant-scoped user IDs:
 
 ```bash
 FEISHU_BOT_OPEN_ID=ou_xxx     # only when auto-detection fails
@@ -233,13 +237,19 @@ FEISHU_ALLOW_BOTS=mentions   # default: none
 |-------|----------|
 | `none` | Ignore all messages from other bots (default). |
 | `mentions` | Accept only when the peer bot @mentions Hermes. |
-| `all` | Accept every peer bot message. |
+| `all` | Accept every peer bot message that Feishu/Lark actually delivers to Hermes. |
 
 Also configurable as `feishu.allow_bots` in `config.yaml` (env wins when both are set).
 
 Peer bots do not need to be added to `FEISHU_ALLOWED_USERS` — that allowlist applies to human senders only.
 
 Grant the `application:bot.basic_info:read` scope to display peer bot names; without it, peer bots still route correctly but appear as their `open_id`.
+
+Feishu/Lark delivery rules still apply before this Hermes-side gate. If the platform does not deliver ordinary non-@ group messages to bot event subscriptions, `FEISHU_ALLOW_BOTS=all` cannot make Hermes receive them. Have the peer bot @mention Hermes, use a direct chat, or use an explicit polling integration if non-@ group traffic is required.
+
+## SDK Import Compatibility
+
+The package import `gateway.platforms.feishu` keeps the adapter, settings, availability constants, QR registration helpers, probe helper, and legacy raw-payload parser `normalize_feishu_message` available for integrations that import them directly. New SDK message handlers should normalize through `gateway.platforms.feishu.events_mapping.to_message_event`.
 
 ## Interactive Card Actions
 
@@ -251,7 +261,7 @@ When users click buttons or interact with interactive cards sent by the bot, the
 
 Gateway-driven update prompts use a native Feishu `Yes` / `No` card instead of falling back to plain text replies. When `hermes update --gateway` needs confirmation, the adapter records the selected answer in Hermes's `.update_response` file and replaces the card inline with a resolved state.
 
-Card action events are dispatched with `MessageType.COMMAND`, so they flow through the normal command processing pipeline.
+Card action events are dispatched with `MessageType.COMMAND`, so plugin or quick-command handlers named `card` can consume them. Without a matching handler, the gateway treats generic `/card` actions like any other unknown slash command. Built-in command approval buttons are handled before this generic path.
 
 This is also how **command approval** works — when the agent needs to run a dangerous command, it sends an interactive card with Allow Once / Session / Always / Deny buttons. The user clicks a button, and the card action callback delivers the approval decision back to the agent.
 
@@ -414,22 +424,9 @@ Additional webhook protections:
 - **Body read timeout:** 30 seconds
 - **Content-Type enforcement:** Only `application/json` is accepted
 
-## WebSocket Tuning
+## WebSocket Transport
 
-When using `websocket` mode, you can customize reconnect and ping behavior:
-
-```yaml
-platforms:
-  feishu:
-    extra:
-      ws_reconnect_interval: 120   # Seconds between reconnect attempts (default: 120)
-      ws_ping_interval: 30         # Seconds between WebSocket pings (optional; SDK default if unset)
-```
-
-| Setting | Config key | Default | Description |
-|---------|-----------|---------|-------------|
-| Reconnect interval | `ws_reconnect_interval` | 120s | How long to wait between reconnection attempts |
-| Ping interval | `ws_ping_interval` | _(SDK default)_ | Frequency of WebSocket keepalive pings |
+WebSocket reconnect and ping behavior is owned by the Feishu/Lark SDK transport. Legacy config keys such as `ws_reconnect_interval`, `ws_ping_interval`, `ws_reconnect_nonce`, and `ws_ping_timeout` are tolerated for backward compatibility but are ignored.
 
 ## Per-Group Access Control
 
@@ -506,7 +503,7 @@ Inbound messages are deduplicated using message IDs with a 24-hour TTL. The dedu
 | `HERMES_FEISHU_TEXT_BATCH_MAX_CHARS` | — | `4000` | Max characters merged per text batch |
 | `HERMES_FEISHU_MEDIA_BATCH_DELAY_SECONDS` | — | `0.8` | Media burst debounce quiet period |
 
-WebSocket and per-group ACL settings are configured via `config.yaml` under `platforms.feishu.extra` (see [WebSocket Tuning](#websocket-tuning) and [Per-Group Access Control](#per-group-access-control) above).
+Per-group ACL settings are configured via `config.yaml` under `platforms.feishu.extra` (see [Per-Group Access Control](#per-group-access-control) above).
 
 ## Troubleshooting
 
@@ -523,7 +520,8 @@ WebSocket and per-group ACL settings are configured via `config.yaml` under `pla
 | Post messages show as plain text | The Feishu API rejected the post payload; this is normal fallback behavior. Check logs for details. |
 | Images/files not received by bot | Grant `im:message` and `im:resource` permission scopes to your Feishu app |
 | Bot identity not auto-detected | Usually a transient network issue reaching Feishu's bot info endpoint. Set `FEISHU_BOT_OPEN_ID` and `FEISHU_BOT_NAME` manually as a workaround. |
-| Peer bot messages still ignored after enabling `FEISHU_ALLOW_BOTS` | Hermes can't identify itself yet — set `FEISHU_BOT_OPEN_ID` (and `FEISHU_BOT_USER_ID` if your app uses `sender_id_type=user_id`). |
+| Peer bot @mentions still ignored after enabling `FEISHU_ALLOW_BOTS` | Hermes can't identify itself yet — set `FEISHU_BOT_OPEN_ID` (and `FEISHU_BOT_USER_ID` if your app uses `sender_id_type=user_id`). |
+| Peer bot ordinary group messages are not received with `FEISHU_ALLOW_BOTS=all` | Feishu/Lark may not deliver non-@ group messages to bot event subscriptions. Have the peer bot @mention Hermes, use a direct chat, or build a polling integration. |
 | Peer bots show as `ou_xxxxxx` instead of by name | Grant the `application:bot.basic_info:read` scope. |
 | Error 200340 when clicking approval buttons | Enable **Interactive Card** capability and configure **Card Request URL** in the Feishu Developer Console. See [Required Feishu App Configuration](#required-feishu-app-configuration) above. |
 | `Webhook rate limit exceeded` | More than 120 requests/minute from the same IP. This is usually a misconfiguration or loop. |

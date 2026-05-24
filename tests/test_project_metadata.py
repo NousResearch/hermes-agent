@@ -1,6 +1,7 @@
 """Regression tests for packaging metadata in pyproject.toml."""
 
 from pathlib import Path
+import re
 import tomllib
 
 
@@ -16,6 +17,19 @@ def _load_package_data():
     with pyproject_path.open("rb") as handle:
         tool = tomllib.load(handle)["tool"]
     return tool["setuptools"]["package-data"]
+
+
+def _load_uv_lock_requires_dist_for_extra(extra):
+    lock_path = Path(__file__).resolve().parents[1] / "uv.lock"
+    with lock_path.open("rb") as handle:
+        packages = tomllib.load(handle)["package"]
+    root_package = next(pkg for pkg in packages if pkg["name"] == "hermes-agent")
+    requires_dist = root_package["metadata"]["requires-dist"]
+    return {
+        f"{dep['name']}{dep.get('specifier', '')}"
+        for dep in requires_dist
+        if dep.get("marker") == f"extra == '{extra}'"
+    }
 
 
 def test_matrix_extra_not_in_all():
@@ -122,3 +136,37 @@ def test_dashboard_plugin_manifests_and_assets_are_packaged():
     assert "*/dashboard/manifest.json" in plugin_data
     assert "*/dashboard/dist/*" in plugin_data
     assert "*/dashboard/dist/**/*" in plugin_data
+
+
+def test_feishu_and_dingtalk_extras_use_reviewed_exact_pins():
+    """Lazy and explicit extra installs must resolve the same reviewed deps."""
+    from tools.lazy_deps import LAZY_DEPS
+
+    optional_dependencies = _load_optional_dependencies()
+    expected_dingtalk = set(LAZY_DEPS["platform.dingtalk"])
+    expected_feishu = set(LAZY_DEPS["platform.feishu"])
+
+    assert set(optional_dependencies["dingtalk"]) == expected_dingtalk
+    assert set(optional_dependencies["feishu"]) == expected_feishu
+    assert _load_uv_lock_requires_dist_for_extra("dingtalk") == expected_dingtalk
+    assert _load_uv_lock_requires_dist_for_extra("feishu") == expected_feishu
+
+
+def test_feishu_contract_ci_installs_feishu_extra():
+    workflow_path = Path(__file__).resolve().parents[1] / ".github" / "workflows" / "tests.yml"
+    workflow = workflow_path.read_text(encoding="utf-8")
+
+    install_step, _, feishu_step_and_after = workflow.partition(
+        "Feishu adapter contract tests"
+    )
+    assert feishu_step_and_after, "workflow must keep the dedicated Feishu contract step"
+
+    editable_extra_specs = re.findall(r'uv pip install -e "\.\[([^\]]+)\]"', install_step)
+    assert any(
+        {"all", "dev", "feishu"}.issubset(
+            {extra.strip() for extra in spec.split(",")}
+        )
+        for spec in editable_extra_specs
+    )
+    feishu_step = feishu_step_and_after.split("\n      - name:", 1)[0]
+    assert 'python -c "import lark_oapi.channel"' in feishu_step

@@ -1,0 +1,14 @@
+{
+  "schema": "2.0",
+  "header": {"event_id": "evt_video_001", "event_type": "im.message.receive_v1",
+             "create_time": "1714203900000", "token": "test_token", "app_id": "cli_test_app"},
+  "event": {
+    "sender": {"sender_id": {"open_id": "ou_alice", "user_id": "u_alice"}, "sender_type": "user"},
+    "message": {
+      "message_id": "om_video_001", "chat_id": "p2p_alice", "chat_type": "p2p",
+      "message_type": "media",
+      "content": "{\"file_key\":\"video_test_key\",\"file_name\":\"clip.mp4\",\"duration\":5000,\"image_key\":\"img_cover_key\"}",
+      "create_time": "1714203900000", "mentions": []
+    }
+  }
+}

@@ -1,0 +1,10 @@
+{
+  "endpoint": "im.v1.message.create",
+  "msg_type": "text",
+  "content": {
+    "text": "| Header A | Header B |\n|----------|----------|\n| Cell 1   | Cell 2   |\n| Cell 3   | Cell 4   |"
+  },
+  "extra": {
+    "receive_id_type": "chat_id"
+  }
+}

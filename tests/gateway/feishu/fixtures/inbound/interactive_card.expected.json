@@ -1,0 +1,13 @@
+{
+  "text": "Confirm\nClick below\nOK\nActions: OK",
+  "message_type": "text",
+  "message_id": "om_interactive_card_001",
+  "media_urls_count": 0,
+  "reply_to_message_id": null,
+  "source": {
+    "platform": "feishu",
+    "chat_id": "p2p_alice",
+    "chat_type": "dm",
+    "user_id": "u_alice"
+  }
+}

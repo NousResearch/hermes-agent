@@ -6,7 +6,7 @@ import unittest
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock, patch
 
-from gateway.platforms.feishu_comment import (
+from gateway.platforms.feishu.comments import (
     parse_drive_comment_event,
     _ALLOWED_NOTICE_TYPES,
     _sanitize_comment_text,
@@ -68,7 +68,7 @@ class TestEventFiltering(unittest.TestCase):
     @patch("gateway.platforms.feishu_comment_rules.is_user_allowed")
     def test_self_reply_filtered(self, mock_allowed, mock_resolve, mock_load):
         """Events where from_open_id == self_open_id should be dropped."""
-        from gateway.platforms.feishu_comment import handle_drive_comment_event
+        from gateway.platforms.feishu.comments import handle_drive_comment_event
 
         evt = _make_event(from_open_id="ou_bot", to_open_id="ou_bot")
         self._run(handle_drive_comment_event(Mock(), evt, self_open_id="ou_bot"))
@@ -79,7 +79,7 @@ class TestEventFiltering(unittest.TestCase):
     @patch("gateway.platforms.feishu_comment_rules.is_user_allowed")
     def test_wrong_receiver_filtered(self, mock_allowed, mock_resolve, mock_load):
         """Events where to_open_id != self_open_id should be dropped."""
-        from gateway.platforms.feishu_comment import handle_drive_comment_event
+        from gateway.platforms.feishu.comments import handle_drive_comment_event
 
         evt = _make_event(to_open_id="ou_other_bot")
         self._run(handle_drive_comment_event(Mock(), evt, self_open_id="ou_bot"))
@@ -90,7 +90,7 @@ class TestEventFiltering(unittest.TestCase):
     @patch("gateway.platforms.feishu_comment_rules.is_user_allowed")
     def test_empty_to_open_id_filtered(self, mock_allowed, mock_resolve, mock_load):
         """Events with empty to_open_id should be dropped."""
-        from gateway.platforms.feishu_comment import handle_drive_comment_event
+        from gateway.platforms.feishu.comments import handle_drive_comment_event
 
         evt = _make_event(to_open_id="")
         self._run(handle_drive_comment_event(Mock(), evt, self_open_id="ou_bot"))
@@ -101,7 +101,7 @@ class TestEventFiltering(unittest.TestCase):
     @patch("gateway.platforms.feishu_comment_rules.is_user_allowed")
     def test_invalid_notice_type_filtered(self, mock_allowed, mock_resolve, mock_load):
         """Events with unsupported notice_type should be dropped."""
-        from gateway.platforms.feishu_comment import handle_drive_comment_event
+        from gateway.platforms.feishu.comments import handle_drive_comment_event
 
         evt = _make_event(notice_type="resolve_comment")
         self._run(handle_drive_comment_event(Mock(), evt, self_open_id="ou_bot"))
@@ -110,7 +110,27 @@ class TestEventFiltering(unittest.TestCase):
     def test_allowed_notice_types(self):
         self.assertIn("add_comment", _ALLOWED_NOTICE_TYPES)
         self.assertIn("add_reply", _ALLOWED_NOTICE_TYPES)
+        self.assertIn("comment_add", _ALLOWED_NOTICE_TYPES)
         self.assertNotIn("resolve_comment", _ALLOWED_NOTICE_TYPES)
+
+    @patch("gateway.platforms.feishu_comment_rules.has_wiki_keys", return_value=False)
+    @patch("gateway.platforms.feishu_comment_rules.load_config")
+    @patch("gateway.platforms.feishu_comment_rules.resolve_rule")
+    @patch("gateway.platforms.feishu_comment_rules.is_user_allowed", return_value=False)
+    def test_sdk_comment_add_reaches_access_control(
+        self, mock_allowed, mock_resolve, mock_load, mock_wiki_keys
+    ):
+        """SDK-normalized drive comment notices use notice_type=comment_add."""
+        from gateway.platforms.feishu.comments import handle_drive_comment_event
+        from gateway.platforms.feishu_comment_rules import ResolvedCommentRule
+
+        evt = _make_event(notice_type="comment_add")
+        mock_resolve.return_value = ResolvedCommentRule(True, "allowlist", frozenset(), "top")
+        mock_load.return_value = Mock()
+        self._run(handle_drive_comment_event(Mock(), evt, self_open_id="ou_bot"))
+
+        mock_load.assert_called_once()
+        mock_allowed.assert_called_once()
 
 
 class TestAccessControlIntegration(unittest.TestCase):
@@ -123,7 +143,7 @@ class TestAccessControlIntegration(unittest.TestCase):
     @patch("gateway.platforms.feishu_comment_rules.load_config")
     def test_denied_user_no_side_effects(self, mock_load, mock_resolve, mock_allowed, mock_wiki_keys):
         """Denied user should not trigger typing reaction or agent."""
-        from gateway.platforms.feishu_comment import handle_drive_comment_event
+        from gateway.platforms.feishu.comments import handle_drive_comment_event
         from gateway.platforms.feishu_comment_rules import ResolvedCommentRule
 
         mock_resolve.return_value = ResolvedCommentRule(True, "allowlist", frozenset(), "top")
@@ -142,7 +162,7 @@ class TestAccessControlIntegration(unittest.TestCase):
     @patch("gateway.platforms.feishu_comment_rules.load_config")
     def test_disabled_comment_skipped(self, mock_load, mock_resolve, mock_allowed, mock_wiki_keys):
         """Disabled comments should return immediately."""
-        from gateway.platforms.feishu_comment import handle_drive_comment_event
+        from gateway.platforms.feishu.comments import handle_drive_comment_event
         from gateway.platforms.feishu_comment_rules import ResolvedCommentRule
 
         mock_resolve.return_value = ResolvedCommentRule(False, "allowlist", frozenset(), "top")
@@ -185,9 +205,9 @@ class TestWikiReverseLookup(unittest.TestCase):
     def _run(self, coro):
         return asyncio.get_event_loop().run_until_complete(coro)
 
-    @patch("gateway.platforms.feishu_comment._exec_request")
+    @patch("gateway.platforms.feishu.comments._exec_request")
     def test_reverse_lookup_success(self, mock_exec):
-        from gateway.platforms.feishu_comment import _reverse_lookup_wiki_token
+        from gateway.platforms.feishu.comments import _reverse_lookup_wiki_token
 
         mock_exec.return_value = (0, "Success", {
             "node": {"node_token": "WIKI_TOKEN_123", "obj_token": "docx_abc"},
@@ -201,36 +221,36 @@ class TestWikiReverseLookup(unittest.TestCase):
         self.assertEqual(query_dict["token"], "docx_abc")
         self.assertEqual(query_dict["obj_type"], "docx")
 
-    @patch("gateway.platforms.feishu_comment._exec_request")
+    @patch("gateway.platforms.feishu.comments._exec_request")
     def test_reverse_lookup_not_wiki(self, mock_exec):
-        from gateway.platforms.feishu_comment import _reverse_lookup_wiki_token
+        from gateway.platforms.feishu.comments import _reverse_lookup_wiki_token
 
         mock_exec.return_value = (131001, "not found", {})
         result = self._run(_reverse_lookup_wiki_token(Mock(), "docx", "docx_abc"))
         self.assertIsNone(result)
 
-    @patch("gateway.platforms.feishu_comment._exec_request")
+    @patch("gateway.platforms.feishu.comments._exec_request")
     def test_reverse_lookup_service_error(self, mock_exec):
-        from gateway.platforms.feishu_comment import _reverse_lookup_wiki_token
+        from gateway.platforms.feishu.comments import _reverse_lookup_wiki_token
 
         mock_exec.return_value = (500, "internal error", {})
         result = self._run(_reverse_lookup_wiki_token(Mock(), "docx", "docx_abc"))
         self.assertIsNone(result)
 
-    @patch("gateway.platforms.feishu_comment._reverse_lookup_wiki_token", new_callable=AsyncMock)
+    @patch("gateway.platforms.feishu.comments._reverse_lookup_wiki_token", new_callable=AsyncMock)
     @patch("gateway.platforms.feishu_comment_rules.has_wiki_keys", return_value=True)
     @patch("gateway.platforms.feishu_comment_rules.is_user_allowed", return_value=True)
     @patch("gateway.platforms.feishu_comment_rules.resolve_rule")
     @patch("gateway.platforms.feishu_comment_rules.load_config")
-    @patch("gateway.platforms.feishu_comment.add_comment_reaction", new_callable=AsyncMock)
-    @patch("gateway.platforms.feishu_comment.batch_query_comment", new_callable=AsyncMock)
-    @patch("gateway.platforms.feishu_comment.query_document_meta", new_callable=AsyncMock)
+    @patch("gateway.platforms.feishu.comments.add_comment_reaction", new_callable=AsyncMock)
+    @patch("gateway.platforms.feishu.comments.batch_query_comment", new_callable=AsyncMock)
+    @patch("gateway.platforms.feishu.comments.query_document_meta", new_callable=AsyncMock)
     def test_wiki_lookup_triggered_when_no_exact_match(
         self, mock_meta, mock_batch, mock_reaction,
         mock_load, mock_resolve, mock_allowed, mock_wiki_keys, mock_lookup,
     ):
         """Wiki reverse lookup should fire when rule falls to wildcard/top and wiki keys exist."""
-        from gateway.platforms.feishu_comment import handle_drive_comment_event
+        from gateway.platforms.feishu.comments import handle_drive_comment_event
         from gateway.platforms.feishu_comment_rules import ResolvedCommentRule
 
         # First resolve returns wildcard (no exact match), second returns exact wiki match

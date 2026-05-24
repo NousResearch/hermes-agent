@@ -6085,7 +6085,10 @@ class GatewayRunner:
         elif platform == Platform.FEISHU:
             from gateway.platforms.feishu import FeishuAdapter, check_feishu_requirements
             if not check_feishu_requirements():
-                logger.warning("Feishu: lark-oapi not installed or FEISHU_APP_ID/SECRET not set")
+                logger.warning(
+                    "Feishu: required dependencies are unavailable; install "
+                    "the feishu extra or enable lazy installs"
+                )
                 return None
             return FeishuAdapter(config)
 

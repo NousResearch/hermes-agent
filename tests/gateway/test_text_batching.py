@@ -448,65 +448,9 @@ class TestTelegramAdaptiveDelay:
 
 
 # =====================================================================
-# Feishu adaptive delay
+# Feishu adaptive delay — RETIRED in Phase 4 cascade sweep.
+# Hermes-side text batching (`_enqueue_text_event` / `_flush_text_batch` /
+# `_handle_message_with_guards` / FeishuBatchState) is gone; the SDK
+# pipeline (`InboundConfig.text_batch_*`) now owns batching. Coverage moved
+# to the SDK's own contract tests.
 # =====================================================================
-
-def _make_feishu_adapter():
-    """Create a minimal FeishuAdapter for testing adaptive delay."""
-    from gateway.platforms.feishu import FeishuAdapter, FeishuBatchState
-
-    config = PlatformConfig(enabled=True, token="test-token")
-    adapter = object.__new__(FeishuAdapter)
-    adapter._platform = Platform.FEISHU
-    adapter.config = config
-    batch_state = FeishuBatchState()
-    adapter._pending_text_batches = batch_state.events
-    adapter._pending_text_batch_tasks = batch_state.tasks
-    adapter._pending_text_batch_counts = batch_state.counts
-    adapter._text_batch_delay_seconds = 0.1
-    adapter._text_batch_split_delay_seconds = 0.3
-    adapter._text_batch_max_messages = 20
-    adapter._text_batch_max_chars = 50000
-    adapter._active_sessions = {}
-    adapter._pending_messages = {}
-    adapter._message_handler = AsyncMock()
-    adapter._handle_message_with_guards = AsyncMock()
-    return adapter
-
-
-class TestFeishuAdaptiveDelay:
-    @pytest.mark.asyncio
-    async def test_short_chunk_uses_normal_delay(self):
-        adapter = _make_feishu_adapter()
-        event = _make_event("short msg", Platform.FEISHU)
-        await adapter._enqueue_text_event(event)
-
-        await asyncio.sleep(0.15)
-        adapter._handle_message_with_guards.assert_called_once()
-
-    @pytest.mark.asyncio
-    async def test_near_limit_chunk_uses_split_delay(self):
-        """A chunk near the 4096-char limit should trigger longer delay."""
-        adapter = _make_feishu_adapter()
-        long_text = "x" * 4050
-        event = _make_event(long_text, Platform.FEISHU)
-        await adapter._enqueue_text_event(event)
-
-        await asyncio.sleep(0.15)
-        adapter._handle_message_with_guards.assert_not_called()
-
-        await asyncio.sleep(0.25)
-        adapter._handle_message_with_guards.assert_called_once()
-
-    @pytest.mark.asyncio
-    async def test_split_continuation_merged(self):
-        adapter = _make_feishu_adapter()
-
-        await adapter._enqueue_text_event(_make_event("x" * 4050, Platform.FEISHU))
-        await asyncio.sleep(0.05)
-        await adapter._enqueue_text_event(_make_event("continuation text", Platform.FEISHU))
-
-        await asyncio.sleep(0.15)
-        adapter._handle_message_with_guards.assert_called_once()
-        text = adapter._handle_message_with_guards.call_args[0][0].text
-        assert "continuation text" in text

@@ -1,0 +1,20 @@
+{
+  "endpoint": "im.v1.message.create",
+  "msg_type": "post",
+  "content": {
+    "zh_cn": {
+      "title": "",
+      "content": [
+        [
+          {
+            "tag": "md",
+            "text": "> quoted line 1\n> quoted line 2"
+          }
+        ]
+      ]
+    }
+  },
+  "extra": {
+    "receive_id_type": "chat_id"
+  }
+}

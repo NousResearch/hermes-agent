@@ -2589,7 +2589,18 @@ class FeishuAdapter(BasePlatformAdapter):
 
         user_name = self._get_cached_sender_name(open_id) or open_id
 
-        if not self._submit_on_loop(loop, self._resolve_approval(approval_id, choice, user_name)):
+        chat_context = getattr(event, "context", None)
+        chat_id = str(getattr(chat_context, "open_chat_id", "") or "")
+        if not self._submit_on_loop(
+            loop,
+            self._resolve_approval(
+                approval_id=approval_id,
+                choice=choice,
+                user_name=user_name,
+                open_id=open_id,
+                chat_id=chat_id,
+            ),
+        ):
             return P2CardActionTriggerResponse() if P2CardActionTriggerResponse else None
 
         if P2CardActionTriggerResponse is None:
@@ -2637,11 +2648,33 @@ class FeishuAdapter(BasePlatformAdapter):
             response.card = card
         return response
 
-    async def _resolve_approval(self, approval_id: Any, choice: str, user_name: str) -> None:
+    async def _resolve_approval(
+        self,
+        approval_id: Any,
+        choice: str,
+        user_name: str,
+        *,
+        open_id: str = "",
+        chat_id: str = "",
+    ) -> None:
         """Pop approval state and unblock the waiting agent thread."""
-        state = self._approval_state.pop(approval_id, None)
+        state = self._approval_state.get(approval_id)
         if not state:
             logger.debug("[Feishu] Approval %s already resolved or unknown", approval_id)
+            return
+        if not self._is_interactive_operator_authorized(open_id):
+            logger.warning("[Feishu] Unauthorized approval click by %s for approval %s", open_id or "<unknown>", approval_id)
+            return
+        expected_chat_id = str(state.get("chat_id", "") or "")
+        if expected_chat_id and chat_id and expected_chat_id != chat_id:
+            logger.warning(
+                "[Feishu] Approval %s chat mismatch (expected=%s, got=%s)",
+                approval_id, expected_chat_id, chat_id,
+            )
+            return
+        state = self._approval_state.pop(approval_id, None)
+        if not state:
+            logger.debug("[Feishu] Approval %s already resolved while validating callback", approval_id)
             return
         try:
             from tools.approval import resolve_gateway_approval

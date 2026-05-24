@@ -292,6 +292,38 @@ class TestAsyncWriterThread:
         mgr.shutdown()
         assert not mgr._async_thread.is_alive()
 
+    def test_shutdown_flushes_session_mode(self):
+        mgr = _make_manager(write_frequency="session")
+        sess = _make_session()
+        sess.add_message("user", "pending")
+        mgr._cache = {sess.key: sess}
+
+        with patch.object(mgr, "_flush_session") as mock_flush:
+            mgr.shutdown()
+
+        mock_flush.assert_called_once_with(sess)
+
+    def test_shutdown_joins_prefetch_threads(self):
+        mgr = _make_manager(write_frequency="turn")
+        started = threading.Event()
+        release = threading.Event()
+
+        def wait_for_release():
+            started.set()
+            release.wait(timeout=2)
+
+        thread = threading.Thread(target=wait_for_release, name="honcho-context-prefetch", daemon=True)
+        thread.start()
+        assert started.wait(timeout=1)
+        with mgr._cache_lock:
+            mgr._prefetch_threads.append(thread)
+
+        release.set()
+        mgr.shutdown()
+
+        assert not thread.is_alive()
+        assert mgr._prefetch_threads == []
+
     def test_async_writer_calls_flush(self):
         mgr = _make_manager(write_frequency="async")
         sess = _make_session()

@@ -337,7 +337,17 @@ def _run_agent(
     agent.stream_delta_callback = None
     agent.tool_gen_callback = None
 
-    return agent.chat(prompt) or ""
+    try:
+        return agent.chat(prompt) or ""
+    finally:
+        # Oneshot exits the process immediately after printing the response.
+        # Persistent memory providers such as Honcho run background daemon
+        # threads; leaving them alive races Python interpreter shutdown and can
+        # abort the process after the correct answer has already been printed.
+        try:
+            agent.shutdown_memory_provider()
+        except Exception:
+            logging.debug("Oneshot memory-provider shutdown failed", exc_info=True)
 
 
 def _oneshot_clarify_callback(question: str, choices=None) -> str:

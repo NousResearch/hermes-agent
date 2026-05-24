@@ -804,6 +804,68 @@ def test_oneshot_wires_session_db_for_recall(monkeypatch):
     assert captured["prompt"] == "recall this"
 
 
+
+def test_oneshot_shuts_down_memory_provider(monkeypatch):
+    """Oneshot must tear down memory-provider threads before process exit."""
+    from hermes_cli.oneshot import _run_agent
+
+    captured = {"shutdowns": 0}
+
+    class FakeAgent:
+        def __init__(self, **kwargs):
+            self.suppress_status_output = False
+            self.stream_delta_callback = object()
+            self.tool_gen_callback = object()
+
+        def chat(self, prompt):
+            captured["prompt"] = prompt
+            return "ok"
+
+        def shutdown_memory_provider(self):
+            captured["shutdowns"] += 1
+
+    def mod(name, **attrs):
+        module = types.ModuleType(name)
+        for key, value in attrs.items():
+            setattr(module, key, value)
+        return module
+
+    monkeypatch.setitem(sys.modules, "run_agent", mod("run_agent", AIAgent=FakeAgent))
+    monkeypatch.setitem(
+        sys.modules,
+        "hermes_cli.config",
+        mod("hermes_cli.config", load_config=lambda: {"model": {"default": "m"}}),
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "hermes_cli.models",
+        mod("hermes_cli.models", detect_provider_for_model=lambda *_args, **_kwargs: None),
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "hermes_cli.runtime_provider",
+        mod(
+            "hermes_cli.runtime_provider",
+            resolve_runtime_provider=lambda **_kwargs: {
+                "api_key": "k",
+                "base_url": "u",
+                "provider": "p",
+                "api_mode": "chat_completions",
+                "credential_pool": None,
+            },
+        ),
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "hermes_cli.tools_config",
+        mod("hermes_cli.tools_config", _get_platform_tools=lambda *_args, **_kwargs: set()),
+    )
+
+    assert _run_agent("shutdown please") == "ok"
+    assert captured["prompt"] == "shutdown please"
+    assert captured["shutdowns"] == 1
+
+
 def test_launch_tui_exports_model_provider_and_toolsets(monkeypatch, main_mod):
     captured = {}
     active_path_during_call = None

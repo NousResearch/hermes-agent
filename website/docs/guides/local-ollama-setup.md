@@ -227,6 +227,27 @@ hermes gateway
 
 Now message your bot on Telegram — it responds using your local model.
 
+### Use a local model for Telegram smart mention routing
+
+If Telegram smart mention routing is enabled, point only that auxiliary classifier at a small local model:
+
+```yaml
+telegram:
+  require_mention: true
+  smart_mention:
+    enabled: true
+
+auxiliary:
+  smart_mention:
+    provider: custom
+    base_url: "http://localhost:11434/v1"
+    model: "qwen2.5:7b-instruct"
+    api_key: "ollama"
+    timeout: 30
+```
+
+Hermes does not start Ollama for you. Start `ollama serve` yourself, pull the model, and keep it reachable from the Hermes process. If Hermes runs in Docker, use the Ollama container/service hostname instead of `localhost`.
+
 ### Discord
 
 1. Create a Discord application at [discord.com/developers](https://discord.com/developers/applications)

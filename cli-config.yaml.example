@@ -401,7 +401,8 @@ prompt_caching:
 # Auxiliary Models (Advanced — Experimental)
 # =============================================================================
 # Hermes uses lightweight "auxiliary" models for side tasks: image analysis,
-# browser screenshot analysis, web page summarization, and context compression.
+# browser screenshot analysis, web page summarization, context compression,
+# approval scoring, and Telegram smart mention routing.
 #
 # By default these use Gemini Flash via OpenRouter or Nous Portal and are
 # auto-detected from your credentials.  You do NOT need to change anything
@@ -445,6 +446,14 @@ prompt_caching:
 #   web_extract:
 #     provider: "auto"
 #     model: ""
+#
+#   # Telegram smart mention routing classifier
+#   smart_mention:
+#     provider: "auto"
+#     model: ""
+#     base_url: ""           # e.g. "http://localhost:11434/v1" for local Ollama
+#     api_key: ""            # for Ollama-compatible local endpoints, "ollama" is fine
+#     timeout: 30
 #
 #   # Session search — summarizes matching past sessions
 #   session_search:
@@ -689,6 +698,28 @@ platform_toolsets:
 #     # allowed_chats: ["-1001234567890"]
 #     extra:
 #       disable_link_previews: false  # Set true to suppress Telegram URL previews in bot messages
+#
+# Telegram-specific settings (canonical top-level config):
+#
+# telegram:
+#   require_mention: true
+#   mention_patterns: []              # Regex wake words checked next to @mentions
+#   allowed_chats: ""                 # Optional group/supergroup whitelist
+#   allowed_topics: ""                # Optional forum topic whitelist; General topic is 1
+#   ignored_threads: ""               # Optional forum topic IDs to ignore
+#   reactions: false
+#   smart_mention:
+#     enabled: false
+#     include_recent_context: true
+#     recent_context_messages: 5
+#     recent_context_max_chars: 2000
+#     pass_recent_context_to_agent: false
+#     min_confidence: 0.6
+#     max_tokens: 128
+#     log_decisions: true
+#     log_message_text: false
+#     on_error: ignore
+#     system_prompt: ""               # Blank falls back to Hermes's built-in prompt
 #
 # Discord-specific settings (config.yaml top-level, not under platforms:):
 #

@@ -319,6 +319,45 @@ To verify what PortAudio sees inside the container:
 docker exec hermes /opt/hermes/.venv/bin/python -c "import sounddevice as sd; print(sd.query_devices())"
 ```
 
+### Running Ollama beside Hermes
+
+Hermes does not launch Ollama or LM Studio automatically. When Hermes runs in Docker, run Ollama as a separate service on the same Compose network and point auxiliary or main model config at the service name:
+
+```yaml
+services:
+  hermes:
+    image: nousresearch/hermes-agent:latest
+    command: gateway run
+    volumes:
+      - ~/.hermes:/opt/data
+    environment:
+      - TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN}
+    depends_on:
+      - ollama
+
+  ollama:
+    image: ollama/ollama:latest
+    volumes:
+      - ollama:/root/.ollama
+    ports:
+      - "11434:11434"
+
+volumes:
+  ollama:
+```
+
+Then configure `/opt/data/config.yaml` (the mounted `~/.hermes/config.yaml`) with the container hostname:
+
+```yaml
+auxiliary:
+  smart_mention:
+    provider: custom
+    base_url: "http://ollama:11434/v1"
+    model: "qwen2.5:7b-instruct"
+    api_key: "ollama"
+    timeout: 30
+```
+
 ## Resource limits
 
 The Hermes container needs moderate resources. Recommended minimums:

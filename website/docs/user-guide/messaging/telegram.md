@@ -101,6 +101,48 @@ TELEGRAM_OBSERVE_UNMENTIONED_GROUP_MESSAGES=true
 
 This requires Telegram to deliver ordinary group messages to the gateway, so disable BotFather privacy mode or promote the bot to group admin as described above.
 
+### Smart mention routing for groups
+
+Smart mention routing lets Hermes watch ordinary group/supergroup messages and use a small auxiliary model to decide whether a message is implicitly addressed to the bot. It is an extra trigger alongside `mention_patterns`; explicit `@botname` mentions, replies to the bot, free-response chats, allowed topics, ignored topics, and `allowed_chats` keep their existing behavior.
+
+```yaml
+telegram:
+  require_mention: true
+  allowed_chats:
+    - "-1001234567890"
+  mention_patterns:
+    - "(?i)\\bhermes\\b"
+  smart_mention:
+    enabled: true
+    include_recent_context: true
+    recent_context_messages: 5
+    recent_context_max_chars: 2000
+    pass_recent_context_to_agent: false
+    min_confidence: 0.6
+    max_tokens: 128
+    log_decisions: true
+    log_message_text: false
+    on_error: ignore
+    system_prompt: |
+      You are Hermes's Telegram smart mention router.
+      Decide whether the current Telegram group message is addressed to Hermes.
+      Return only JSON: {"should_respond": true|false, "confidence": 0.0-1.0, "reason": "short reason"}
+
+auxiliary:
+  smart_mention:
+    provider: custom
+    base_url: http://ollama:11434/v1
+    model: qwen2.5:7b-instruct
+    api_key: ollama
+    timeout: 30
+```
+
+The classifier receives the current text/caption plus a volatile in-memory buffer of the last `recent_context_messages` messages from the same chat/topic. That buffer is not persisted and is not sent to the main agent unless `pass_recent_context_to_agent: true`.
+
+Attachment routing is intentionally lightweight: Hermes does not download, transcribe, or vision-analyze media before the smart mention decision. Captioned attachments can be classified from their caption and basic metadata; attachments without text/caption still need an explicit hard trigger such as an `@botname` mention or reply to the bot. Voice-message pre-routing transcription is a separate future feature.
+
+`auxiliary.smart_mention.timeout` is the only timeout for the classifier. If `telegram.smart_mention.system_prompt` is blank, Hermes logs a warning and uses the built-in default prompt.
+
 ## Step 4: Find Your User ID
 
 Hermes Agent uses numeric Telegram user IDs to control access. Your user ID is **not** your username — it's a number like `123456789`.

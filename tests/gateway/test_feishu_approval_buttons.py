@@ -320,7 +320,7 @@ class TestResolveApproval:
         }
 
         with patch("tools.approval.resolve_gateway_approval", return_value=1) as mock_resolve:
-            await adapter._resolve_approval(1, "once", "Norbert")
+            await adapter._resolve_approval(1, "once", "Norbert", open_id="ou_user1", chat_id="oc_12345")
 
         mock_resolve.assert_called_once_with("agent:main:feishu:group:oc_12345", "once")
         assert 1 not in adapter._approval_state
@@ -335,7 +335,7 @@ class TestResolveApproval:
         }
 
         with patch("tools.approval.resolve_gateway_approval", return_value=1) as mock_resolve:
-            await adapter._resolve_approval(2, "deny", "Alice")
+            await adapter._resolve_approval(2, "deny", "Alice", open_id="ou_user1", chat_id="oc_12345")
 
         mock_resolve.assert_called_once_with("some-session", "deny")
 
@@ -349,7 +349,7 @@ class TestResolveApproval:
         }
 
         with patch("tools.approval.resolve_gateway_approval", return_value=1) as mock_resolve:
-            await adapter._resolve_approval(3, "session", "Bob")
+            await adapter._resolve_approval(3, "session", "Bob", open_id="ou_user1", chat_id="oc_99")
 
         mock_resolve.assert_called_once_with("sess-3", "session")
 
@@ -363,7 +363,7 @@ class TestResolveApproval:
         }
 
         with patch("tools.approval.resolve_gateway_approval", return_value=1) as mock_resolve:
-            await adapter._resolve_approval(4, "always", "Carol")
+            await adapter._resolve_approval(4, "always", "Carol", open_id="ou_user1", chat_id="oc_55")
 
         mock_resolve.assert_called_once_with("sess-4", "always")
 
@@ -372,9 +372,40 @@ class TestResolveApproval:
         adapter = _make_adapter()
 
         with patch("tools.approval.resolve_gateway_approval") as mock_resolve:
-            await adapter._resolve_approval(99, "once", "Nobody")
+            await adapter._resolve_approval(99, "once", "Nobody", open_id="ou_user1", chat_id="oc_12345")
 
         mock_resolve.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_unauthorized_click_does_not_resolve(self):
+        adapter = _make_adapter()
+        adapter._admins = {"ou_admin"}
+        adapter._approval_state[5] = {
+            "session_key": "sess-5",
+            "message_id": "msg_005",
+            "chat_id": "oc_12345",
+        }
+
+        with patch("tools.approval.resolve_gateway_approval") as mock_resolve:
+            await adapter._resolve_approval(5, "once", "Mallory", open_id="ou_intruder", chat_id="oc_12345")
+
+        mock_resolve.assert_not_called()
+        assert 5 in adapter._approval_state
+
+    @pytest.mark.asyncio
+    async def test_chat_mismatch_does_not_resolve(self):
+        adapter = _make_adapter()
+        adapter._approval_state[6] = {
+            "session_key": "sess-6",
+            "message_id": "msg_006",
+            "chat_id": "oc_expected",
+        }
+
+        with patch("tools.approval.resolve_gateway_approval") as mock_resolve:
+            await adapter._resolve_approval(6, "session", "Norbert", open_id="ou_user1", chat_id="oc_wrong")
+
+        mock_resolve.assert_not_called()
+        assert 6 in adapter._approval_state
 
 # ===========================================================================
 # _handle_card_action_event — non-approval card actions

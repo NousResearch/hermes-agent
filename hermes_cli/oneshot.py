@@ -17,7 +17,6 @@ Model / provider selection mirrors `hermes chat`:
 
 Env var fallbacks (used when the corresponding arg is not passed):
     - HERMES_INFERENCE_MODEL
-    - HERMES_INFERENCE_PROVIDER  (already read by resolve_runtime_provider)
 """
 
 from __future__ import annotations
@@ -135,9 +134,8 @@ def run_oneshot(
         prompt: The user message to send.
         model: Optional model override. Falls back to HERMES_INFERENCE_MODEL
             env var, then config.yaml's model.default / model.model.
-        provider: Optional provider override. Falls back to
-            HERMES_INFERENCE_PROVIDER env var, then config.yaml's model.provider,
-            then "auto".
+        provider: Optional provider override. Falls back to config.yaml's
+            model.provider, then "auto".
         toolsets: Optional comma-separated string or iterable of toolsets.
 
     Returns the exit code.  Caller should sys.exit() with the return.

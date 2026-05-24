@@ -2857,7 +2857,12 @@ class HermesCLI:
         else:
             self.busy_input_mode = "interrupt"
 
-        self.verbose = verbose if verbose is not None else (self.tool_progress_mode == "verbose")
+        # self.verbose ONLY controls global DEBUG logging (root logger level).
+        # display.tool_progress="verbose" controls tool-call rendering (full args,
+        # results, think blocks) and is independent — see _apply_logging_levels.
+        # Coupling the two (PR #6a1aa420e) caused all module DEBUG logs to spew
+        # to console whenever a user set tool_progress: verbose in config.
+        self.verbose = bool(verbose) if verbose is not None else False
         
         # streaming: stream tokens to the terminal as they arrive (display.streaming in config.yaml)
         self.streaming_enabled = CLI_CONFIG["display"].get("streaming", False)
@@ -9329,18 +9334,23 @@ class HermesCLI:
             _cprint("  Failed to save runtime_footer setting to config.yaml")
 
     def _toggle_verbose(self):
-        """Cycle tool progress mode: off → new → all → verbose → off."""
+        """Cycle tool progress mode: off → new → all → verbose → off.
+
+        Tool-progress display (full args / results / think blocks at the
+        ``verbose`` step) is INDEPENDENT of global DEBUG logging.  Cycling
+        through here does not change ``self.verbose`` or the agent's
+        ``verbose_logging`` / ``quiet_mode`` — those remain under the
+        explicit ``-v``/``--verbose`` flag and the ``/verbose-logging``
+        toggle.  See PR #6a1aa420e for the history that decoupled them.
+        """
         cycle = ["off", "new", "all", "verbose"]
         try:
             idx = cycle.index(self.tool_progress_mode)
         except ValueError:
             idx = 2  # default to "all"
         self.tool_progress_mode = cycle[(idx + 1) % len(cycle)]
-        self.verbose = self.tool_progress_mode == "verbose"
 
         if self.agent:
-            self.agent.verbose_logging = self.verbose
-            self.agent.quiet_mode = not self.verbose
             self.agent.reasoning_callback = self._current_reasoning_callback()
 
         # Use raw ANSI codes via _cprint so the output is routed through
@@ -9352,7 +9362,7 @@ class HermesCLI:
             "off": f"{_Colors.DIM}Tool progress: OFF{_Colors.RESET} — silent mode, just the final response.",
             "new": f"{_Colors.YELLOW}Tool progress: NEW{_Colors.RESET} — show each new tool (skip repeats).",
             "all": f"{_Colors.GREEN}Tool progress: ALL{_Colors.RESET} — show every tool call.",
-            "verbose": f"{_Colors.BOLD}{_Colors.GREEN}Tool progress: VERBOSE{_Colors.RESET} — full args, results, think blocks, and debug logs.",
+            "verbose": f"{_Colors.BOLD}{_Colors.GREEN}Tool progress: VERBOSE{_Colors.RESET} — full args, results, and think blocks.",
         }
         _cprint(labels.get(self.tool_progress_mode, ""))
 

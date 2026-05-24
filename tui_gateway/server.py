@@ -2033,7 +2033,11 @@ def _make_agent(sid: str, key: str, session_id: str | None = None):
         acp_args=runtime.get("args"),
         credential_pool=runtime.get("credential_pool"),
         quiet_mode=True,
-        verbose_logging=_load_tool_progress_mode() == "verbose",
+        # verbose_logging controls DEBUG-level agent logging; it is intentionally
+        # independent of tool_progress_mode (which only controls per-tool
+        # display detail).  See cli.py PR (decoupling fix) for the matching
+        # change on the classic CLI side.
+        verbose_logging=False,
         reasoning_config=_load_reasoning_config(),
         service_tier=_load_service_tier(),
         enabled_toolsets=_load_enabled_toolsets(),

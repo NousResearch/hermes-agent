@@ -5834,3 +5834,178 @@ This is informational — not a bug, but a potential tuning knob for very high-l
 | WAL checkpoint edge case | Passive checkpoint may not reclaim WAL under sustained write load | INFORMATIONAL |
 
 **No critical issues found. 2 informational notes, 6 low-severity observations, 4 areas rated GOOD/EXCELLENT.**
+---
+
+## Pass #58 – Signal, WhatsApp & Messaging Protocol Adapters Deep Dive – 2026-05-24T21:30:00Z
+
+Scope: `gateway/platforms/signal.py`, `gateway/platforms/whatsapp.py`, `gateway/platforms/signal_rate_limit.py`, `gateway/platforms/helpers.py`, `gateway/run.py`
+
+---
+
+### P58-1 · Signal echo-back filter uses unbounded set — potential memory growth over long sessions — LOW
+
+**File:** `gateway/platforms/signal.py` (lines 236, 1007–1013)
+
+Signal tracks outbound message timestamps in `self._recent_sent_timestamps: set` (max 50 entries) to filter echo-back when processing Note to Self messages. `_track_sent_timestamp` adds timestamps and evicts the oldest when size exceeds `_max_recent_timestamps = 50`.
+
+The eviction uses `pop()` without a key, which on a `set` removes an arbitrary element — not necessarily the oldest. The comment says "newest entries" for eviction but the code does not implement timestamp-ordered eviction. Over very long sessions this is cosmetic (the set stays bounded at 50), but could theoretically remove a recent timestamp still in use.
+
+**Recommendation:** Use an ordered structure (e.g., `collections.OrderedDict` or a deque with a lock) for deterministic FIFO eviction instead of arbitrary `set.pop()`.
+
+---
+
+### P58-2 · Signal typing indicator failure exponential backoff does not persist across adapter restarts — LOW
+
+**File:** `gateway/platforms/signal.py` (lines 1034–1066)
+
+When `sendTyping` RPC fails 3+ consecutive times for a recipient, SignalAdapter applies an exponential backoff (`16s, 32s, 60s cap`) and skips RPCs until `self._typing_skip_until[chat_id]` expires. This state is in-memory only and resets when the adapter reconnects.
+
+**Observation:** A daemon restart or SSE reconnect resets all per-recipient typing backoff state. A recipient that was in backoff will immediately receive typing indicator RPCs again, potentially producing repeated `NETWORK_FAILURE` spam until the 3-failure threshold is hit again.
+
+This is LOW severity — the spam is rate-limited by the 2s refresh interval and recovers automatically — but worth documenting that in-memory backoff state is lost on reconnect.
+
+---
+
+### P58-3 · Signal does not call `_set_fatal_error` for RPC failures — failures silently logged — LOW
+
+**File:** `gateway/platforms/signal.py` (lines 765–810)
+
+`_rpc()` returns `None` on any error (RPC failure, HTTP error, rate limit without `raise_on_rate_limit=True`). It never calls `_set_fatal_error`. The adapter only transitions to fatal state via SSE disconnect or health check failure (lines 253–296).
+
+This means transient RPC failures (network blips, signal-cli overload) are silently swallowed at the RPC layer and do not propagate to the platform watcher in `run.py`. The watcher only detects fatal errors, not repeated transient failures.
+
+**Observation:** This is likely intentional — transient RPC failures should not crash the adapter. But it means there's no visibility into patterns like a daemon that is responding to health checks but returning frequent RPC errors.
+
+---
+
+### P58-4 · SignalAttachmentScheduler is process-wide singleton — shared across multiple Signal adapters — INFORMATIONAL
+
+**File:** `gateway/platforms/signal_rate_limit.py` (lines 348–369)
+
+`get_scheduler()` returns a process-wide `SignalAttachmentScheduler` singleton. If a user configured two Signal accounts (two `SignalAdapter` instances), both share the same token-bucket scheduler. The scheduler's capacity (50 tokens) is designed for a single account.
+
+**Observation:** Running multiple Signal adapters from the same process with a shared scheduler would cause incorrect rate-limit simulation. However, `run.py` appears to prevent multiple adapters for the same platform, so this is unlikely to occur in practice.
+
+---
+
+### P58-5 · WhatsApp bridge PID file race: check-then-delete not atomic — LOW
+
+**File:** `gateway/platforms/whatsapp.py` (lines 99–122)
+
+`_kill_stale_bridge_by_pidfile` reads the PID, checks `_pid_exists(pid)`, then deletes the file. Between the check and the delete, the process could exit and a new process could obtain the same PID. The PID file would be deleted even though it refers to a different process.
+
+This is LOW because the consequence is killing an innocent process that happened to get the recycled PID — unlikely in practice, but the correct pattern is to attempt the `os.kill` directly, catching exceptions, without a pre-check.
+
+**Recommendation:** Remove the pre-check `_pid_exists` call and just attempt the `os.kill` directly, catching exceptions. This is inherently race-safe.
+
+---
+
+### P58-6 · WhatsApp fatal error is non-retryable for missing Node.js / bridge script, retryable for bridge exit — GOOD
+
+**File:** `gateway/platforms/whatsapp.py` (lines 494–511, 753–758)
+
+WhatsApp correctly distinguishes permanent vs. retryable failures:
+- `whatsapp_node_missing` → `retryable=False` (Node.js not installed)
+- `whatsapp_bridge_missing` → `retryable=False` (script file absent)
+- `whatsapp_not_paired` → `retryable=False` (needs `hermes whatsapp` pairing)
+- `whatsapp_bridge_exited` → `retryable=True` (transient bridge crash)
+
+The `_shutting_down` flag at line 279 prevents intentional SIGTERM during `disconnect()` from being reported as a fatal crash. This is well-implemented.
+
+---
+
+### P58-7 · WhatsApp does not implement webhook verification — INFORMATIONAL
+
+**File:** `gateway/platforms/whatsapp.py`
+
+WhatsApp uses a polling model (`_poll_messages` every 1 second) with a Node.js bridge subprocess. It does not use the WhatsApp Business API webhook pattern (no `hub.verify` token challenge). This is intentional — the web-based bridge approach (whatsapp-web.js / Baileys) doesn't use the Business API.
+
+---
+
+### P58-8 · WhatsApp message chunking: 0.3s inter-chunk delay is hardcoded, not configurable — LOW
+
+**File:** `gateway/platforms/whatsapp.py` (line 919)
+
+`await asyncio.sleep(0.3)` is hardcoded with no env var or config to adjust it.
+
+**Recommendation:** Add `WHATSAPP_CHUNK_DELAY` env var (default 0.3) so users can adjust rate-limit behavior.
+
+---
+
+### P58-9 · WhatsApp `MAX_MESSAGE_LENGTH = 4096` is UX limit, not protocol limit — OK
+
+**File:** `gateway/platforms/whatsapp.py` (line 244)
+
+Correctly documented as a UX limit (WhatsApp allows ~65K). The code reserves 1024 chars for the prefix, giving ~3072 effective limit for user content when a prefix is configured.
+
+---
+
+### P58-10 · Signal SSE with exponential backoff jitter — GOOD
+
+**File:** `gateway/platforms/signal.py` (lines 332–393)
+
+SSE listener correctly implements: 2s initial backoff, 60s max, 20% jitter, SSE keepalive comment handling, health check stale threshold (120s) before forcing reconnect. No issues.
+
+---
+
+### P58-11 · Signal markdown→bodyRanges conversion uses UTF-16 code units correctly — GOOD
+
+**File:** `gateway/platforms/signal.py` (lines 816–954)
+
+`_markdown_to_signal` correctly converts Python string offsets to UTF-16 code units for Signal's protocol. Multi-pass non-overlapping match collection with simultaneous marker stripping is robust. No issues.
+
+---
+
+### P58-12 · run.py fatal error propagation: retryable platforms queued for background reconnection — GOOD
+
+**File:** `gateway/run.py` (lines 2447–2512)
+
+Retryable adapter failures: `run.py` disconnects the adapter, stores config in `_failed_platforms[platform]` with `next_retry = time.monotonic() + 30`, and keeps the gateway alive so the reconnect watcher can recover platforms. Non-retryable errors exit cleanly. This is a well-designed resilience pattern.
+
+---
+
+### P58-13 · WhatsApp bridge exit check races with send/edit/poll — LOW
+
+**File:** `gateway/platforms/whatsapp.py` (lines 728–758, 940)
+
+`_check_managed_bridge_exit()` checks bridge exit status, but between the check and the HTTP call in `send()`/`edit_message()`/`_poll_messages()` the bridge could exit. The window is small and the error is surfaced correctly to the caller. Acceptable.
+
+---
+
+### P58-14 · Signal platform lock prevents duplicate listeners for same phone — GOOD
+
+**File:** `gateway/platforms/signal.py` (lines 259–266)
+
+`_acquire_platform_lock('signal-phone', self.account)` prevents two gateway processes from connecting the same Signal number simultaneously. No issues.
+
+---
+
+### P58-15 · MessageDeduplicator shared helper — GOOD
+
+**File:** `gateway/platforms/helpers.py` (lines 27–75)
+
+TTL-based dedup cache (default 2000 entries, 300s TTL) correctly handles expired entries and enforces max_size with newest-entries-kept policy. Centralized from previously duplicated across 7 adapters. No issues.
+
+---
+
+### Summary
+
+| Area | Status | Severity |
+|------|--------|----------|
+| Signal echo-back filter | Works; set eviction is non-deterministic | LOW |
+| Signal typing backoff | Resets on reconnect (expected) | LOW |
+| Signal RPC failure handling | Silently swallows RPC errors (by design) | LOW |
+| SignalAttachmentScheduler singleton | Process-wide; acceptable given platform limits | INFORMATIONAL |
+| WhatsApp PID file race | Check-then-delete not atomic | LOW |
+| WhatsApp fatal error retryability | Correctly distinguishes permanent vs. retryable | GOOD |
+| WhatsApp webhook | Polling model (not Business API); by design | INFORMATIONAL |
+| WhatsApp chunk delay | Hardcoded 0.3s, not tunable | LOW |
+| WhatsApp MAX_MESSAGE_LENGTH | Correctly documented as UX limit | GOOD |
+| Signal SSE backoff | Correct with jitter | GOOD |
+| Signal markdown→UTF-16 | Correct implementation | GOOD |
+| run.py fatal error propagation | Well-designed retry/background reconnect | GOOD |
+| WhatsApp bridge exit race | Small race window; error surfaced correctly | LOW |
+| Signal platform lock | Prevents duplicate listeners per account | GOOD |
+| MessageDeduplicator helper | Clean centralized implementation | GOOD |
+
+**2 GOOD areas, 6 LOW issues, 2 INFORMATIONAL notes. No critical issues found.**

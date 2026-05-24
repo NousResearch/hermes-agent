@@ -335,7 +335,7 @@ You can designate a "home room" where the bot sends proactive messages (such as 
 
 ### Using the Slash Command
 
-Type `/sethome` in any Matrix room where the bot is present. That room becomes the home room.
+Type `!sethome` in any Matrix room where the bot is present. That room becomes the home room. Matrix clients use the `!` prefix for bot commands — standard `/` commands like `/sethome` get intercepted by the client and never reach the bot.
 
 ### Manual Configuration
 

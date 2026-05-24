@@ -1816,6 +1816,14 @@ class MatrixAdapter(BasePlatformAdapter):
                 stripped.append(line)
             body = "\n".join(stripped) if stripped else body
 
+        # Rewrite Matrix '!' prefix to '/' so the command dispatch recognises it.
+        # Matrix clients (Element, FluffyChat) intercept '/' commands before they
+        # reach the room, so Matrix uses '!' as the standard bot command prefix
+        # (e.g. !sethome, !help). The core dispatch only understands '/', so we
+        # rewrite before creating the MessageEvent.
+        if body.startswith("!"):
+            body = "/" + body[1:]
+
         msg_type = MessageType.TEXT
         if body.startswith(("!", "/")):
             msg_type = MessageType.COMMAND

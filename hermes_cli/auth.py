@@ -7228,13 +7228,24 @@ def get_minimax_oauth_auth_status() -> Dict[str, Any]:
     state = get_provider_auth_state("minimax-oauth")
     if not state or not state.get("access_token"):
         return {"logged_in": False, "provider": "minimax-oauth"}
+
     try:
-        expires_at = datetime.fromisoformat(state.get("expires_at", "")).timestamp()
-        token_valid = (expires_at - time.time()) > 0
-    except Exception:
-        token_valid = bool(state.get("access_token"))
+        # Mirror the runtime path: MiniMax access tokens are intentionally
+        # short-lived and are refreshed on demand when still recoverable.
+        resolve_minimax_oauth_runtime_credentials()
+    except AuthError as exc:
+        state = get_provider_auth_state("minimax-oauth") or state
+        return {
+            "logged_in": False,
+            "provider": "minimax-oauth",
+            "region": state.get("region", "global"),
+            "expires_at": state.get("expires_at"),
+            "error": str(exc),
+        }
+
+    state = get_provider_auth_state("minimax-oauth") or state
     return {
-        "logged_in": token_valid,
+        "logged_in": True,
         "provider": "minimax-oauth",
         "region": state.get("region", "global"),
         "expires_at": state.get("expires_at"),

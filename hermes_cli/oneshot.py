@@ -122,11 +122,35 @@ def _validate_explicit_toolsets(toolsets: object = None) -> tuple[list[str] | No
     return valid, None
 
 
+def _normalize_skills(skills: object) -> Optional[list[str]]:
+    """Normalize --skills into a deduplicated list (None when unset)."""
+    if skills is None:
+        return None
+    if isinstance(skills, str):
+        raw_values = [skills]
+    elif isinstance(skills, (list, tuple)):
+        raw_values = [str(item) for item in skills if item is not None]
+    else:
+        raw_values = [str(skills)]
+
+    parsed: list[str] = []
+    seen: set[str] = set()
+    for raw in raw_values:
+        for part in raw.split(","):
+            normalized = part.strip()
+            if not normalized or normalized in seen:
+                continue
+            seen.add(normalized)
+            parsed.append(normalized)
+    return parsed or None
+
+
 def run_oneshot(
     prompt: str,
     model: Optional[str] = None,
     provider: Optional[str] = None,
     toolsets: object = None,
+    skills: object = None,
 ) -> int:
     """Execute a single prompt and print only the final content block.
 
@@ -137,6 +161,7 @@ def run_oneshot(
         provider: Optional provider override. Falls back to config.yaml's
             model.provider, then "auto".
         toolsets: Optional comma-separated string or iterable of toolsets.
+        skills: Optional comma-separated string or iterable of skills to preload.
 
     Returns the exit code.  Caller should sys.exit() with the return.
     """
@@ -165,6 +190,17 @@ def run_oneshot(
         sys.stderr.write(toolsets_error)
         return 2
     use_config_toolsets = _normalize_toolsets(toolsets) is None
+    explicit_skills = _normalize_skills(skills)
+    if explicit_skills:
+        from agent.skill_commands import build_preloaded_skills_prompt
+
+        _, _, missing_skills = build_preloaded_skills_prompt(explicit_skills)
+        if missing_skills:
+            sys.stderr.write(
+                "hermes -z: unknown skill(s): "
+                f"{', '.join(missing_skills)}\n"
+            )
+            return 2
 
     # Auto-approve any shell / tool approvals.  Non-interactive by
     # definition — a prompt would hang forever.
@@ -184,6 +220,7 @@ def run_oneshot(
                 provider=provider,
                 toolsets=explicit_toolsets,
                 use_config_toolsets=use_config_toolsets,
+                skills=explicit_skills,
             )
     finally:
         try:
@@ -221,6 +258,7 @@ def _run_agent(
     provider: Optional[str] = None,
     toolsets: object = None,
     use_config_toolsets: bool = True,
+    skills: Optional[list[str]] = None,
 ) -> str:
     """Build an AIAgent exactly like a normal CLI chat turn would, then
     run a single conversation.  Returns the final response string."""
@@ -305,6 +343,14 @@ def _run_agent(
     # honour the same merge semantics as interactive CLI and gateway sessions.
     _fb = get_fallback_chain(cfg)
 
+    ephemeral_system_prompt = None
+    if skills:
+        from agent.skill_commands import build_preloaded_skills_prompt
+
+        skills_prompt, _, _missing = build_preloaded_skills_prompt(skills)
+        if skills_prompt:
+            ephemeral_system_prompt = skills_prompt
+
     agent = AIAgent(
         api_key=runtime.get("api_key"),
         base_url=runtime.get("base_url"),
@@ -317,6 +363,7 @@ def _run_agent(
         session_db=session_db,
         credential_pool=runtime.get("credential_pool"),
         fallback_model=_fb or None,
+        ephemeral_system_prompt=ephemeral_system_prompt,
         # Interactive callbacks are intentionally NOT wired beyond this
         # one.  In oneshot mode there's no user sitting at a terminal:
         #   - clarify  → returns a synthetic "pick a default" instruction

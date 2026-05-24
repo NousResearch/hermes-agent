@@ -116,17 +116,17 @@ def _strip_legitimate_emoji_zwj(prompt: str) -> str:
 
 def _scan_cron_prompt(prompt: str) -> str:
     """Scan a cron prompt for critical threats. Returns error string if blocked, else empty."""
-    github_auth_header = re.search(
+    # Allow every bundled GitHub skill curl block (not just the first match).
+    # See #31570 — github-issues alone has four api.github.com auth-header curls.
+    _github_skill_curl = re.compile(
         rf'curl\s+[^\n]*(?:-H|--header)\s+["\']Authorization:\s*token\s+{_CRON_SECRET_VAR_RE}["\']'
-        r'\s+["\']?https://api\.github\.com(?:/|\b)',
-        prompt,
+        r'\s+["\']?https://api\.github\.com(?:/|\b)[^\n]*',
         re.IGNORECASE,
     )
-    prompt_to_scan = prompt
-    if github_auth_header:
-        # Allow the bundled GitHub skill fallback shape without opening a
-        # blanket exemption for arbitrary Authorization-header exfiltration.
-        prompt_to_scan = prompt.replace(github_auth_header.group(0), "curl https://api.github.com/user")
+    prompt_to_scan = _github_skill_curl.sub(
+        "curl https://api.github.com/user",
+        prompt,
+    )
     prompt_for_invisible_scan = _strip_legitimate_emoji_zwj(prompt_to_scan)
     for char in _CRON_INVISIBLE_CHARS:
         if char in prompt_for_invisible_scan:

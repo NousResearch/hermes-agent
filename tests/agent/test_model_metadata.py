@@ -22,6 +22,7 @@ from unittest.mock import patch, MagicMock
 from agent.model_metadata import (
     CONTEXT_PROBE_TIERS,
     DEFAULT_CONTEXT_LENGTHS,
+    _should_probe_ollama_api_show,
     _strip_provider_prefix,
     estimate_tokens_rough,
     estimate_messages_tokens_rough,
@@ -62,6 +63,35 @@ class TestEstimateTokensRough:
         """Unicode chars are still 1 Python char each — 4 chars/token holds."""
         text = "你好世界"  # 4 CJK characters
         assert estimate_tokens_rough(text) == 1
+
+
+class TestOllamaApiShowProbeGating:
+    """Regression for #31555 — skip /api/show on known cloud providers."""
+
+    def test_skips_openrouter_provider(self):
+        assert not _should_probe_ollama_api_show(
+            "openrouter", "https://openrouter.ai/api/v1"
+        )
+
+    def test_allows_ollama_provider(self):
+        assert _should_probe_ollama_api_show("ollama", "http://127.0.0.1:11434/v1")
+
+    def test_openrouter_url_inferred_without_provider(self):
+        assert not _should_probe_ollama_api_show("", "https://openrouter.ai/api/v1")
+
+    def test_get_model_context_length_does_not_probe_openrouter(self):
+        with patch("agent.model_metadata.get_cached_context_length", return_value=None), \
+             patch("agent.model_metadata.fetch_endpoint_model_metadata", return_value={}), \
+             patch("agent.model_metadata.fetch_model_metadata", return_value={}), \
+             patch("agent.models_dev.lookup_models_dev_context", return_value=128000), \
+             patch("agent.model_metadata._query_ollama_api_show") as mock_show:
+            result = get_model_context_length(
+                "anthropic/claude-sonnet-4",
+                base_url="https://openrouter.ai/api/v1",
+                provider="openrouter",
+            )
+        mock_show.assert_not_called()
+        assert result == 128000
 
 
 class TestEstimateMessagesTokensRough:

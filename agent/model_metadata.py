@@ -132,6 +132,20 @@ DEFAULT_FALLBACK_CONTEXT = CONTEXT_PROBE_TIERS[0]
 # Sessions, model switches, and cron jobs should reject models below this.
 MINIMUM_CONTEXT_LENGTH = 64_000
 
+# Providers with authoritative context-length sources — skip the Ollama
+# ``/api/show`` probe that adds ~1–2s of 404 latency on non-Ollama hosts (#31555).
+_OLLAMA_API_SHOW_SKIP_PROVIDERS = frozenset({
+    "openrouter", "nous", "anthropic", "openai", "openai-codex", "gemini", "google",
+    "google-gemini", "google-ai-studio", "deepseek", "bedrock", "copilot", "copilot-acp",
+    "github-copilot", "github-models", "xai", "x-ai", "grok", "nvidia", "nim", "nvidia-nim",
+    "fireworks", "novita", "novita-ai", "gmi", "gmi-cloud", "zai", "glm", "z-ai", "zhipu",
+    "kimi-coding", "kimi-coding-cn", "kimi", "moonshot", "moonshot-cn", "minimax",
+    "minimax-cn", "minimax-oauth", "stepfun", "alibaba", "dashscope", "qwen-oauth",
+    "xiaomi", "xiaomi-mimo", "mimo", "arcee", "arcee-ai", "tencent-tokenhub",
+    "tencent", "tencent-cloud", "tencentmaas", "opencode-go", "opencode-zen",
+    "ai-gateway", "kilocode", "vercel", "kilo", "go", "zen", "opencode",
+})
+
 # Thin fallback defaults — only broad model family patterns.
 # These fire only when provider is unknown AND models.dev/OpenRouter/Anthropic
 # all miss. Replaced the previous 80+ entry dict.
@@ -1029,6 +1043,24 @@ def query_ollama_num_ctx(model: str, base_url: str, api_key: str = "") -> Option
     return None
 
 
+def _should_probe_ollama_api_show(effective_provider: str, base_url: str) -> bool:
+    """Return True when ``/api/show`` is worth trying for this route."""
+    if not base_url:
+        return False
+    ep = (effective_provider or "").strip().lower()
+    if ep in ("ollama", "ollama-cloud"):
+        return True
+    if ep in _OLLAMA_API_SHOW_SKIP_PROVIDERS:
+        return False
+    inferred = _infer_provider_from_url(base_url)
+    if inferred:
+        if inferred in ("ollama", "ollama-cloud"):
+            return True
+        if inferred in _OLLAMA_API_SHOW_SKIP_PROVIDERS:
+            return False
+    return True
+
+
 def _query_ollama_api_show(model: str, base_url: str, api_key: str = "") -> Optional[int]:
     """Query an Ollama server's native ``/api/show`` for context length.
 
@@ -1653,16 +1685,10 @@ def get_model_context_length(
         ctx = _resolve_endpoint_context_length(model, base_url, api_key=api_key)
         if ctx is not None:
             return ctx
-    # 5e. Ollama native /api/show probe — runs for ANY provider with a
-    # base_url, not just ollama-cloud.  Ollama-compatible servers expose
-    # this endpoint regardless of hostname (local Ollama, Ollama Cloud,
-    # custom Ollama hosting).  The OpenAI-compat /v1/models endpoint
-    # correctly omits context_length per the OpenAI schema, but /api/show
-    # returns the authoritative GGUF model_info.context_length.
-    # For non-Ollama servers (OpenAI, Anthropic, etc.), the POST returns
-    # 404/405 quickly.  Results are cached, so the hit is per-model+URL,
-    # once per hour.
-    if base_url:
+    # 5e. Ollama native /api/show probe — for Ollama-compatible servers only.
+    # Skipped for known cloud providers (OpenRouter, Anthropic, etc.) where
+    # the POST adds ~1–2s of 404 latency per cold lookup (#31555).
+    if base_url and _should_probe_ollama_api_show(effective_provider, base_url):
         ctx = _query_ollama_api_show(model, base_url, api_key=api_key)
         if ctx is not None:
             save_context_length(model, base_url, ctx)

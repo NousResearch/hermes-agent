@@ -134,6 +134,34 @@ def _resolve_claim_ttl_seconds(ttl_seconds: Optional[int] = None) -> int:
     return DEFAULT_CLAIM_TTL_SECONDS
 
 
+# Grace period after a task transitions to ``running`` during which
+# ``detect_crashed_workers`` skips the ``_pid_alive`` check. Covers the
+# fork() → /proc-visibility window where liveness can transiently report
+# False for a freshly-spawned worker. The 15-minute claim TTL still
+# catches genuinely-crashed workers; this only suppresses false positives
+# during the launch window.
+DEFAULT_CRASH_GRACE_SECONDS = 30
+
+
+def _resolve_crash_grace_seconds() -> int:
+    """Return the crash-detection grace period in seconds.
+
+    Reads ``HERMES_KANBAN_CRASH_GRACE_SECONDS`` from the environment;
+    falls back to ``DEFAULT_CRASH_GRACE_SECONDS`` when absent, empty,
+    non-integer, or negative. A value of 0 restores immediate-reclaim
+    behaviour (useful for tests).
+    """
+    raw = os.environ.get("HERMES_KANBAN_CRASH_GRACE_SECONDS", "").strip()
+    if raw:
+        try:
+            parsed = int(raw)
+        except ValueError:
+            parsed = -1
+        if parsed >= 0:
+            return parsed
+    return DEFAULT_CRASH_GRACE_SECONDS
+
+
 # Worker-context caps so build_worker_context() stays bounded on
 # pathological boards (retry-heavy tasks, comment storms, giant
 # summaries). Values chosen to fit a typical 100k-char LLM prompt with
@@ -4653,7 +4681,7 @@ def detect_crashed_workers(conn: sqlite3.Connection) -> list[str]:
     # (task_id, pid, claimer, protocol_violation, error_text)
     with write_txn(conn):
         rows = conn.execute(
-            "SELECT id, worker_pid, claim_lock FROM tasks "
+            "SELECT id, worker_pid, claim_lock, started_at FROM tasks "
             "WHERE status = 'running' AND worker_pid IS NOT NULL"
         ).fetchall()
         host_prefix = f"{_claimer_id().split(':', 1)[0]}:"
@@ -4662,6 +4690,14 @@ def detect_crashed_workers(conn: sqlite3.Connection) -> list[str]:
             lock = row["claim_lock"] or ""
             if not lock.startswith(host_prefix):
                 continue
+            # Skip liveness check inside the launch-window grace period
+            # so a freshly-spawned worker isn't reclaimed before its PID
+            # is visible on /proc.
+            started_at = row["started_at"] if "started_at" in row.keys() else None
+            if started_at is not None:
+                grace = _resolve_crash_grace_seconds()
+                if time.time() - started_at < grace:
+                    continue
             if _pid_alive(row["worker_pid"]):
                 continue
 

@@ -35,6 +35,9 @@ def kanban_home(tmp_path, monkeypatch):
     home = tmp_path / ".hermes"
     home.mkdir()
     monkeypatch.setenv("HERMES_HOME", str(home))
+    # Existing crash-detection tests pre-date the grace window; pin to 0
+    # so they keep their immediate-reclaim semantics.
+    monkeypatch.setenv("HERMES_KANBAN_CRASH_GRACE_SECONDS", "0")
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
     # Disable the detect_crashed_workers grace period for legacy tests in
     # this file that claim a task and immediately expect

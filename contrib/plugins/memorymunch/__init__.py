@@ -1069,6 +1069,7 @@ class MemoryMunchProvider(MemoryProvider):
             "user": redact_for_shadow_seed(user_content),
             "assistant": redact_for_shadow_seed(assistant_content),
             "source": source,
+            "session_id": session_id,
         })
         if len(bucket) > 5:
             del bucket[:-5]
@@ -1093,6 +1094,7 @@ class MemoryMunchProvider(MemoryProvider):
                 "user": redact_for_shadow_seed(str(row.get("user") or "")),
                 "assistant": redact_for_shadow_seed(str(row.get("assistant") or "")),
                 "source": "ACTIVE_SESSION_LEDGER",
+                "session_id": session_id,
             })
         return rows[-5:]
 
@@ -1429,11 +1431,12 @@ class MemoryMunchProvider(MemoryProvider):
         scored.sort(key=lambda item: (item[0], -item[1]), reverse=True)
         return [item[2] for item in scored[:max(1, int(max_rows))]]
 
-    def _build_active_session_briefing(self, session_id: str, query: str = "") -> str:
+    def _active_session_rows(self, session_id: str, query: str = "") -> list[dict[str, Any]]:
         rows = []
         exchanges = self._ensure_recent_exchanges(session_id)
         for idx, ex in enumerate(exchanges, 1):
-            provenance = "ACTIVE_SESSION_LEDGER_CURRENT" if idx == len(exchanges) else "ACTIVE_SESSION_LINEAGE"
+            exchange_session_id = str(ex.get("session_id") or session_id)
+            provenance = "ACTIVE_SESSION_LEDGER_CURRENT" if (exchange_session_id == session_id and idx == len(exchanges)) else "ACTIVE_SESSION_LINEAGE"
             rows.append({
                 "id": f"active::{session_id}::{idx:06d}",
                 "provenance_class": provenance,
@@ -1442,7 +1445,9 @@ class MemoryMunchProvider(MemoryProvider):
                 "hop_depth": 0,
                 "content_preview": f"User: {ex.get('user', '')} Bot: {ex.get('assistant', '')}",
             })
-        rows = self._curate_rows_for_query(rows, query, keep_if_no_match=1, max_rows=5)
+        return self._curate_rows_for_query(rows, query, keep_if_no_match=1, max_rows=5)
+
+    def _format_rows_briefing(self, rows: list[dict[str, Any]]) -> str:
         return format_memorymunch_briefing(
             rows,
             scope_entity=self._scope_entity,
@@ -1450,6 +1455,9 @@ class MemoryMunchProvider(MemoryProvider):
             isolation_mode=self._isolation_mode,
             injected_token_budget=900,
         )
+
+    def _build_active_session_briefing(self, session_id: str, query: str = "") -> str:
+        return self._format_rows_briefing(self._active_session_rows(session_id, query))
 
     def _build_proof_telemetry(
         self,
@@ -1482,37 +1490,30 @@ class MemoryMunchProvider(MemoryProvider):
         reassertion = self._consume_reassertion(session_id) if session_id else ""
         fallback = self._active_context_fallback(session_id) if session_id else "none"
 
-        def _load_active_context() -> str:
-            return self._build_active_session_briefing(session_id, query=query)
+        def _load_active_rows() -> list[dict[str, Any]]:
+            return self._active_session_rows(session_id, query=query)
 
-        def _load_wrapper_context() -> tuple[int, str]:
+        def _load_wrapper_rows() -> list[dict[str, Any]]:
             if not Path(self._wrapper).exists():
-                return 0, ""
+                return []
             try:
                 data = self._run_readonly_recall(query, max_results=6)
-                results = self._curate_rows_for_query(data.get("results") or [], query, keep_if_no_match=0, max_rows=6)
-                memory_hits = len(results)
-                context = format_memorymunch_briefing(
-                    results,
-                    scope_entity=self._scope_entity,
-                    domain=self._domain,
-                    isolation_mode=self._isolation_mode,
-                    injected_token_budget=900,
-                )
-                return memory_hits, context
+                return self._curate_rows_for_query(data.get("results") or [], query, keep_if_no_match=0, max_rows=6)
             except Exception:
-                return 0, ""
+                return []
 
         with ThreadPoolExecutor(max_workers=2) as pool:
-            active_future = pool.submit(_load_active_context)
-            wrapper_future = pool.submit(_load_wrapper_context)
-            active_context = active_future.result()
-            memory_hits, wrapper_context = wrapper_future.result()
+            active_future = pool.submit(_load_active_rows)
+            wrapper_future = pool.submit(_load_wrapper_rows)
+            active_rows = active_future.result()
+            wrapper_rows = wrapper_future.result()
+
+        active_context = self._format_rows_briefing(active_rows)
+        wrapper_context = self._format_rows_briefing(wrapper_rows)
+        memory_hits = len(wrapper_rows)
 
         if reassertion:
             parts.append(reassertion)
-        if active_context:
-            parts.append(active_context)
         model_curator_context = ""
         try:
             model_curator_context = self._build_model_curator_briefing(
@@ -1530,9 +1531,17 @@ class MemoryMunchProvider(MemoryProvider):
                 live_vault_write=False,
             )
         if model_curator_context:
+            # OpenClaw parity: Gateway receives one Curator-authored briefing.
+            # Active-session and search/deep-read rows are inputs to Curator, not
+            # duplicate raw briefing blocks in the final prompt.
             parts.append(model_curator_context)
-        elif wrapper_context:
-            parts.append(wrapper_context)
+        else:
+            # Deterministic fallback: merge current-session continuity and durable
+            # recall rows into one bounded MemoryMunch block with provenance
+            # subsections. This prevents duplicate <memorymunch-briefing> blocks.
+            unified_context = self._format_rows_briefing([*active_rows, *wrapper_rows])
+            if unified_context:
+                parts.append(unified_context)
         body = "\n\n".join(p for p in parts if p.strip())
         if not body and not session_id:
             return ""
@@ -1883,6 +1892,10 @@ class MemoryMunchProvider(MemoryProvider):
         # Beta adapter: append completed visible exchange to local active-session
         # ledger only. Do not live-write vault or DB here.
         sid = session_id or self._session_id
+        stripped_user, _user_recall_context = _strip_memorymunch_recall_context(user_content)
+        stripped_assistant, _assistant_recall_context = _strip_memorymunch_recall_context(assistant_content)
+        clean_user = redact_for_shadow_seed(stripped_user)
+        clean_assistant = redact_for_shadow_seed(stripped_assistant)
         row = {
             "ts": _utc_now(),
             "event": "turn_completed",
@@ -1896,10 +1909,10 @@ class MemoryMunchProvider(MemoryProvider):
             "domain": self._domain,
             "platform": self._platform,
             "status": "completed",
-            "user": user_content,
-            "assistant": assistant_content,
+            "user": clean_user,
+            "assistant": clean_assistant,
             "semantic_slots": extract_semantic_slots(
-                f"User: {user_content} Assistant: {assistant_content}",
+                f"User: {clean_user} Assistant: {clean_assistant}",
                 speaker="conversation",
                 entity=self._scope_entity,
                 session_id=sid,
@@ -1921,9 +1934,19 @@ class MemoryMunchProvider(MemoryProvider):
             "live_db_write": False,
         }
         self._append_jsonl(sid, row)
-        self._remember_exchange(sid, user_content, assistant_content)
-        self._maybe_live_capture_exchange(sid, user_content, assistant_content)
-        self._maybe_janitor_cycle(sid, user_content, assistant_content)
+        if _user_recall_context or _assistant_recall_context:
+            self._append_session_event(
+                sid,
+                "local_ledger_sanitized",
+                reason="recalled_memory_context_stripped_before_local_ledger",
+                live_db_write=False,
+                live_vault_write=False,
+                user_sanitized=bool(_user_recall_context),
+                assistant_sanitized=bool(_assistant_recall_context),
+            )
+        self._remember_exchange(sid, clean_user, clean_assistant)
+        self._maybe_live_capture_exchange(sid, clean_user, clean_assistant)
+        self._maybe_janitor_cycle(sid, clean_user, clean_assistant)
 
     def _maybe_janitor_cycle(self, session_id: str, user_content: str, assistant_content: str) -> None:
         if not self._truthy_env("HERMES_MEMORYMUNCH_JANITOR_ENABLE", default=True):
@@ -2430,7 +2453,7 @@ class MemoryMunchProvider(MemoryProvider):
         try:
             query = str(args.get("query") or "")
             max_results = int(args.get("max_results") or 6)
-            active_briefing = self._build_active_session_briefing(self._session_id)
+            active_briefing = self._build_active_session_briefing(self._session_id, query=query)
             proof = self._build_proof_telemetry(
                 self._session_id,
                 memory_hits=0,
@@ -2449,9 +2472,11 @@ class MemoryMunchProvider(MemoryProvider):
                     },
                 }, ensure_ascii=False)
             data = self._run_readonly_recall(query, max_results=max_results)
+            curated_results = self._curate_rows_for_query(data.get("results") or [], query, keep_if_no_match=0, max_rows=max_results)
+            data["results"] = curated_results
             data["proof"] = self._build_proof_telemetry(
                 self._session_id,
-                memory_hits=len(data.get("results") or []),
+                memory_hits=len(curated_results),
                 fallback=self._active_context_fallback(self._session_id),
                 context_text=active_briefing,
                 prefetch_cache="tool_call",

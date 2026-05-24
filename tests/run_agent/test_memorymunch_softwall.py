@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 import importlib.util
+import json
+import sqlite3
 from pathlib import Path
 
 
@@ -178,6 +180,108 @@ def test_curator_briefing_downranks_activation_only_smart_search_noise(monkeypat
     assert "income streams" not in context
 
 
+def test_compose_prefetch_context_uses_one_bounded_briefing_for_active_and_recall(monkeypatch):
+    mm = _load_memorymunch_module()
+    provider = mm.MemoryMunchProvider()
+    provider._session_id = "sid-unified"
+    provider._scope_entity = "scope-a"
+    provider._domain = "general"
+    provider._harness = "hermes/cli/primary/default"
+    provider._wrapper = __file__
+    provider._recent_exchanges["sid-unified"] = [
+        {
+            "user": "Need MemoryMunch production readiness audit status.",
+            "assistant": "Current session MemoryMunch production status.",
+            "source": "ACTIVE_SESSION_LEDGER",
+        }
+    ]
+
+    def fake_recall(query, *, max_results=6):
+        return {
+            "results": [
+                {
+                    "id": "relevant-memorymunch-recall",
+                    "provenance_class": "OBSIDIAN_VAULT_OWN_SCOPE",
+                    "source": "vault,db,vector",
+                    "activation_weight": 0.55,
+                    "hop_depth": 0,
+                    "content_preview": "MemoryMunch production readiness recall fact.",
+                }
+            ]
+        }
+
+    monkeypatch.setattr(provider, "_run_readonly_recall", fake_recall)
+
+    context = provider._compose_prefetch_context(
+        "MemoryMunch production readiness recall fact",
+        "sid-unified",
+    )
+
+    assert context.count("<memorymunch-briefing") == 1
+    assert context.count("</memorymunch-briefing>") == 1
+    assert "ACTIVE_SESSION_LEDGER_CURRENT:" in context
+    assert "OBSIDIAN_VAULT_OWN_SCOPE:" in context
+
+
+def test_memorymunch_recall_tool_curates_results_and_active_briefing_by_query(monkeypatch):
+    mm = _load_memorymunch_module()
+    provider = mm.MemoryMunchProvider()
+    provider._session_id = "sid-tool"
+    provider._scope_entity = "scope-a"
+    provider._domain = "general"
+    provider._harness = "hermes/cli/primary/default"
+    provider._wrapper = __file__
+    provider._recent_exchanges["sid-tool"] = [
+        {
+            "user": "Unrelated Lake View Drive and email topic.",
+            "assistant": "Unrelated personal context.",
+            "source": "ACTIVE_SESSION_LEDGER",
+            "session_id": "sid-tool",
+        },
+        {
+            "user": "MemoryMunch sanitizer and production readiness topic.",
+            "assistant": "Relevant technical context.",
+            "source": "ACTIVE_SESSION_LEDGER",
+            "session_id": "sid-tool",
+        },
+    ]
+
+    def fake_recall(query, *, max_results=6):
+        return {
+            "query": query,
+            "results": [
+                {
+                    "id": "activation-only-personal",
+                    "provenance_class": "OWN_SCOPE",
+                    "source": "vault,activation",
+                    "activation_weight": 0.99,
+                    "content_preview": "Al Cooke email and Lake View Drive unrelated personal fact.",
+                },
+                {
+                    "id": "relevant-sanitizer",
+                    "provenance_class": "OBSIDIAN_VAULT_OWN_SCOPE",
+                    "source": "vault,db,vector",
+                    "activation_weight": 0.5,
+                    "content_preview": "MemoryMunch sanitizer blocks recalled context recapture.",
+                },
+            ],
+        }
+
+    monkeypatch.setattr(provider, "_run_readonly_recall", fake_recall)
+
+    payload = json.loads(provider.handle_tool_call(
+        "memorymunch_recall_readonly",
+        {"query": "MemoryMunch sanitizer recapture", "max_results": 6},
+    ))
+
+    rendered = json.dumps(payload)
+    assert "MemoryMunch sanitizer blocks" in rendered
+    assert "Relevant technical context" in rendered
+    assert "Lake View Drive" not in rendered
+    assert "unrelated personal" not in rendered
+    assert all(row["id"] != "activation-only-personal" for row in payload["results"])
+
+
 def test_new_session_switch_clears_old_rolling_state_and_prefetch_cache():
     mm = _load_memorymunch_module()
     provider = mm.MemoryMunchProvider()
@@ -194,3 +298,57 @@ def test_new_session_switch_clears_old_rolling_state_and_prefetch_cache():
     assert "old-session" not in provider._prefetch_cache
     assert "new-session" not in provider._recent_exchanges
     assert "new-session" not in provider._pending_reassertions
+
+
+def test_sync_turn_sanitizes_recalled_context_before_local_ledger_and_recent_cache(tmp_path, monkeypatch):
+    mm = _load_memorymunch_module()
+    provider = mm.MemoryMunchProvider()
+    provider._session_id = "sid-sanitize-local"
+    provider._hermes_home = str(tmp_path)
+    provider._scope_entity = "scope-a"
+    monkeypatch.setattr(provider, "_maybe_live_capture_exchange", lambda *args, **kwargs: None)
+    monkeypatch.setattr(provider, "_maybe_janitor_cycle", lambda *args, **kwargs: None)
+
+    provider.sync_turn(
+        "User text <memory-context>recalled user atom row</memory-context> keep this",
+        "Answer <memorymunch-briefing>recalled assistant atom row</memorymunch-briefing> done",
+        session_id="sid-sanitize-local",
+    )
+
+    ledger_text = provider._ledger_path("sid-sanitize-local").read_text(encoding="utf-8")
+    recent_text = json.dumps(provider._recent_exchanges["sid-sanitize-local"])
+    combined = ledger_text + recent_text
+    assert "<memory-context>" not in combined
+    assert "</memory-context>" not in combined
+    assert "<memorymunch-briefing>" not in combined
+    assert "</memorymunch-briefing>" not in combined
+    assert "recalled user atom row" not in combined
+    assert "recalled assistant atom row" not in combined
+    assert "keep this" in combined
+    assert "done" in combined
+
+
+def test_branch_hydration_keeps_parent_rows_as_lineage_not_current(tmp_path):
+    mm = _load_memorymunch_module()
+    provider = mm.MemoryMunchProvider()
+    provider._session_id = "parent-session"
+    provider._hermes_home = str(tmp_path)
+    provider._scope_entity = "scope-a"
+    db = tmp_path / "state.db"
+    con = sqlite3.connect(db)
+    try:
+        con.execute("CREATE TABLE sessions (id TEXT PRIMARY KEY, parent_session_id TEXT)")
+        con.execute("CREATE TABLE messages (id INTEGER PRIMARY KEY AUTOINCREMENT, session_id TEXT, role TEXT, content TEXT)")
+        con.execute("INSERT INTO sessions (id, parent_session_id) VALUES (?, ?)", ("parent-session", None))
+        con.execute("INSERT INTO sessions (id, parent_session_id) VALUES (?, ?)", ("child-session", "parent-session"))
+        con.execute("INSERT INTO messages (session_id, role, content) VALUES (?, ?, ?)", ("parent-session", "user", "Parent unrelated Lake View Drive topic"))
+        con.execute("INSERT INTO messages (session_id, role, content) VALUES (?, ?, ?)", ("parent-session", "assistant", "Parent unrelated answer"))
+        con.commit()
+    finally:
+        con.close()
+
+    provider.on_session_switch("child-session", parent_session_id="parent-session", reset=False)
+    rows = provider._active_session_rows("child-session", query="MemoryMunch production sanitizer")
+
+    assert all(row.get("provenance_class") != "ACTIVE_SESSION_LEDGER_CURRENT" for row in rows)
+    assert "Lake View Drive" not in json.dumps(rows)

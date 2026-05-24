@@ -702,6 +702,22 @@ def _live_system_guard(request, monkeypatch):
         _psutil = None
         _initial_children = set()
 
+    def _linux_parent_pid(pid: int) -> int | None:
+        """Best-effort /proc parent lookup when psutil is unavailable."""
+        try:
+            stat = Path(f"/proc/{pid}/stat").read_text(encoding="utf-8")
+        except FileNotFoundError:
+            # Stale PID — kill would be a no-op anyway, allow it.
+            return 0
+        except Exception:
+            return None
+        try:
+            # comm can contain spaces and is wrapped in the final ')' before
+            # state/ppid. Split after that marker to avoid corrupting names.
+            return int(stat.rsplit(")", 1)[1].strip().split()[1])
+        except Exception:
+            return None
+
     def _is_own_subtree(pid: int) -> bool:
         # PID 0 means "our own process group"; -1 means "every process we
         # can signal". Both are dangerous when paired with SIGTERM/SIGKILL,
@@ -713,19 +729,35 @@ def _live_system_guard(request, monkeypatch):
             return False
         if pid == test_pid or pid in _initial_children:
             return True
-        if _psutil is None:
+        if _psutil is not None:
+            try:
+                walker = _psutil.Process(pid)
+            except Exception:
+                # Stale PID — kill would be a no-op anyway, allow it.
+                return True
+            try:
+                for parent in walker.parents():
+                    if parent.pid == test_pid:
+                        return True
+            except Exception:
+                return False
             return False
-        try:
-            walker = _psutil.Process(pid)
-        except Exception:
-            # Stale PID — kill would be a no-op anyway, allow it.
-            return True
-        try:
-            for parent in walker.parents():
-                if parent.pid == test_pid:
-                    return True
-        except Exception:
-            return False
+        # Minimal Linux fallback for environments that intentionally keep the
+        # test venv lean (no psutil): walk /proc/<pid>/stat ppid chain so
+        # subprocess-based tests may terminate their own children without
+        # weakening live-gateway kill protection.
+        seen: set[int] = set()
+        current = pid
+        while current > 1 and current not in seen:
+            seen.add(current)
+            parent = _linux_parent_pid(current)
+            if parent == 0:
+                return True
+            if parent == test_pid:
+                return True
+            if parent is None:
+                return False
+            current = parent
         return False
 
     real_kill = _os.kill

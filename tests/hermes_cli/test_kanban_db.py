@@ -155,6 +155,23 @@ def test_connect_rejects_kanban_board_env_as_pytest_isolation_override(monkeypat
         kb.connect()
 
 
+def test_connect_rejects_explicit_board_as_pytest_isolation_override(monkeypatch):
+    monkeypatch.delenv("HERMES_KANBAN_HOME", raising=False)
+    monkeypatch.delenv("HERMES_KANBAN_DB", raising=False)
+    monkeypatch.delenv("HERMES_KANBAN_BOARD", raising=False)
+    realish_home = Path("/home/test-user")
+    monkeypatch.setattr(Path, "home", lambda: realish_home)
+    monkeypatch.setenv("HERMES_HOME", str(realish_home / ".hermes"))
+
+    def fail_if_connect_tries_to_create(_self, *args, **kwargs):
+        raise AssertionError("connect() should fail before creating directories")
+
+    monkeypatch.setattr(Path, "mkdir", fail_if_connect_tries_to_create)
+
+    with pytest.raises(RuntimeError, match="without HERMES_KANBAN_HOME or HERMES_KANBAN_DB"):
+        kb.connect(board="test-board")
+
+
 def test_connect_rejects_tls_record_in_sqlite_header(tmp_path, monkeypatch):
     """Kanban should classify TLS-looking page-0 clobbers before WAL setup."""
     home = tmp_path / ".hermes"

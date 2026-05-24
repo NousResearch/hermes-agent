@@ -1159,16 +1159,15 @@ def connect(
     connections skip the schema check via a module-level path cache.
 
     Safety guard: when running under pytest (PYTEST_CURRENT_TEST is set)
-    and no explicit db_path or board override is provided, fail closed if
-    no Kanban path-isolation env var is set and the caller still resolves to a
-    non-temporary Hermes home. HERMES_KANBAN_BOARD only selects a board name;
-    it is not a path-isolation override. This prevents tests from silently
-    writing to a live ~/.hermes/kanban board while preserving explicit test
-    fixtures.
+    and no explicit db_path is provided, fail closed if no Kanban
+    path-isolation env var is set and the caller still resolves to a
+    non-temporary Hermes home. HERMES_KANBAN_BOARD and the board= argument
+    only select a board name; neither is a path-isolation override. This
+    prevents tests from silently writing to a live ~/.hermes/kanban board
+    while preserving explicit test fixtures.
     """
     if (
         db_path is None
-        and board is None
         and os.environ.get("PYTEST_CURRENT_TEST")
         and not os.environ.get("HERMES_KANBAN_HOME", "").strip()
         and not os.environ.get("HERMES_KANBAN_DB", "").strip()
@@ -1184,8 +1183,9 @@ def connect(
                 "HERMES_KANBAN_BOARD only selects a board name and is not "
                 "a path-isolation override. This would write test data to "
                 "the real ~/.hermes/kanban/ board. "
-                "Fix: ensure _hermetic_environment conftest fixture is active, or "
-                "pass db_path/board explicitly to this call."
+                "Fix: ensure _hermetic_environment conftest fixture is active, "
+                "set HERMES_KANBAN_HOME/HERMES_KANBAN_DB, or pass db_path "
+                "explicitly to this call."
             )
 
     if db_path is not None:

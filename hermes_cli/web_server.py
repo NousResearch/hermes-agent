@@ -119,7 +119,6 @@ _PUBLIC_API_PATHS: frozenset = frozenset({
     "/api/model/info",
     "/api/dashboard/themes",
     "/api/dashboard/plugins",
-    "/api/dashboard/plugins/rescan",
 })
 
 

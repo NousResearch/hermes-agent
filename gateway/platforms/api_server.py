@@ -50,6 +50,7 @@ from gateway.platforms.base import (
     SendResult,
     is_network_accessible,
 )
+from hermes_cli.commands import COMMAND_REGISTRY
 
 logger = logging.getLogger(__name__)
 
@@ -1019,6 +1020,34 @@ class APIServerAdapter(BasePlatformAdapter):
                 "run_stop": {"method": "POST", "path": "/v1/runs/{run_id}/stop"},
             },
         })
+
+    async def _handle_commands(self, request: "web.Request") -> "web.Response":
+        """GET /v1/commands — return canonical slash command registry."""
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+
+        try:
+            commands_list = [
+                {
+                    "command": "/" + cmd.name,
+                    "description": cmd.description,
+                    "category": cmd.category,
+                    "args_hint": cmd.args_hint,
+                    "subcommands": list(cmd.subcommands) if cmd.subcommands else [],
+                }
+                for cmd in COMMAND_REGISTRY
+            ]
+            return web.json_response({
+                "object": "hermes.api_server.commands",
+                "commands": commands_list,
+            })
+        except Exception as exc:
+            logger.error("[%s] Error building command list: %s", self.name, exc)
+            return web.json_response(
+                {"error": {"message": "Failed to build command list", "type": "server_error"}},
+                status=500,
+            )
 
     async def _handle_chat_completions(self, request: "web.Request") -> "web.Response":
         """POST /v1/chat/completions — OpenAI Chat Completions format."""
@@ -3402,6 +3431,7 @@ class APIServerAdapter(BasePlatformAdapter):
             self._app.router.add_get("/v1/health", self._handle_health)
             self._app.router.add_get("/v1/models", self._handle_models)
             self._app.router.add_get("/v1/capabilities", self._handle_capabilities)
+            self._app.router.add_get("/v1/commands", self._handle_commands)
             self._app.router.add_post("/v1/chat/completions", self._handle_chat_completions)
             self._app.router.add_post("/v1/responses", self._handle_responses)
             self._app.router.add_get("/v1/responses/{response_id}", self._handle_get_response)

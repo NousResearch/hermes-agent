@@ -2365,7 +2365,16 @@ def _is_auth_error(exc: Exception) -> bool:
     if status == 401:
         return True
     err_lower = str(exc).lower()
-    return "error code: 401" in err_lower or "authenticationerror" in type(exc).__name__.lower()
+    if "error code: 401" in err_lower or "authenticationerror" in type(exc).__name__.lower():
+        return True
+    # xAI returns HTTP 403 with "unauthenticated:bad-credentials" when an OAuth2
+    # access token has expired or is invalid — semantically a 401 auth failure,
+    # even though the status code is 403 (PermissionDenied).
+    if status == 403 and "bad-credentials" in err_lower:
+        return True
+    if "unauthenticated" in err_lower and "bad-credentials" in err_lower:
+        return True
+    return False
 
 
 def _is_unsupported_parameter_error(exc: Exception, param: str) -> bool:
@@ -2518,6 +2527,8 @@ def _recoverable_pool_provider(
         return "copilot"
     if base_url_host_matches(base, "api.kimi.com"):
         return "kimi-coding"
+    if base_url_host_matches(base, "api.x.ai"):
+        return "xai-oauth"
     # For api_key providers not in the hardcoded list (e.g. opencode-go), match
     # the client base URL against all registered api_key providers so that
     # credential-pool rotation works for any provider the user configured.
@@ -2736,6 +2747,24 @@ def _refresh_provider_credentials(provider: str) -> bool:
             if not str(token or "").strip():
                 token = resolve_anthropic_token()
             if not str(token or "").strip():
+                return False
+            _evict_cached_clients(normalized)
+            return True
+        if normalized == "xai-oauth":
+            # Preference: pool-level refresh (uses refresh_token from pool entry),
+            # then fall back to singleton auth-store resolver.
+            pool = load_pool(normalized)
+            if pool and pool.has_credentials():
+                # Ensure a current entry is selected before trying to refresh.
+                pool.select()
+                refreshed = pool.try_refresh_current()
+                if refreshed is not None and str(getattr(refreshed, "runtime_api_key", "") or "").strip():
+                    _evict_cached_clients(normalized)
+                    return True
+            from hermes_cli.auth import resolve_xai_oauth_runtime_credentials
+
+            creds = resolve_xai_oauth_runtime_credentials(force_refresh=True)
+            if not str(creds.get("api_key", "") or "").strip():
                 return False
             _evict_cached_clients(normalized)
             return True

@@ -202,6 +202,7 @@ def test_script_with_arguments(self, cron_env):
         success, output = _run_job_script("echo_args.py foo bar baz")
         assert success is True
         assert output == "foo,bar,baz"
+
 class TestBuildJobPromptWithScript:
     """Test that script output is injected into the prompt."""
 

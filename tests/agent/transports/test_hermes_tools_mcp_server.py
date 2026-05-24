@@ -8,6 +8,11 @@ build helper assembles a server when the SDK is present.
 
 from __future__ import annotations
 
+import inspect
+import sys
+import types
+from types import SimpleNamespace
+from unittest.mock import patch
 
 
 
@@ -95,6 +100,80 @@ class TestModuleSurface:
             assert orch_tool in EXPOSED_TOOLS, (
                 f"{orch_tool!r} missing from codex callback"
             )
+
+    def test_build_server_preserves_tool_argument_schema(self, monkeypatch):
+        """FastMCP must see Hermes' real argument names.
+
+        Regression coverage for Codex app-server sessions where skill_view
+        was exposed but calls like skill_view(name="hermes-agent") arrived as
+        an empty argument dict, producing "Skill '' not found".
+        """
+        import agent.transports.hermes_tools_mcp_server as m
+
+        fake_schema = {
+            "type": "object",
+            "properties": {
+                "name": {"type": "string", "description": "Skill name"},
+                "file_path": {"type": "string"},
+            },
+            "required": ["name"],
+        }
+
+        monkeypatch.setattr(
+            "model_tools.get_tool_definitions",
+            lambda quiet_mode=True: [
+                {
+                    "type": "function",
+                    "function": {
+                        "name": "skill_view",
+                        "description": "Load a skill",
+                        "parameters": fake_schema,
+                    },
+                }
+            ],
+        )
+
+        class FakeToolManager:
+            def __init__(self):
+                self._tools = {}
+
+            def add_tool(self, fn, name=None, description=None, **kwargs):
+                signature = inspect.signature(fn)
+                tool = SimpleNamespace(
+                    name=name,
+                    description=description,
+                    parameters={
+                        "type": "object",
+                        "properties": {
+                            key: {} for key in signature.parameters
+                        },
+                    },
+                )
+                self._tools[name] = tool
+                return tool
+
+        class FakeFastMCP:
+            def __init__(self, *args, **kwargs):
+                self._tool_manager = FakeToolManager()
+
+            def add_tool(self, fn, **kwargs):
+                self._tool_manager.add_tool(fn, **kwargs)
+
+        mcp_mod = types.ModuleType("mcp")
+        server_mod = types.ModuleType("mcp.server")
+        fastmcp_mod = types.ModuleType("mcp.server.fastmcp")
+        fastmcp_mod.FastMCP = FakeFastMCP
+        monkeypatch.setitem(sys.modules, "mcp", mcp_mod)
+        monkeypatch.setitem(sys.modules, "mcp.server", server_mod)
+        monkeypatch.setitem(sys.modules, "mcp.server.fastmcp", fastmcp_mod)
+
+        server = m._build_server()
+        tool = server._tool_manager._tools["skill_view"]
+
+        assert "name" in tool.parameters["properties"]
+        assert "file_path" in tool.parameters["properties"]
+        assert tool.parameters["required"] == ["name"]
+        assert "kwargs" not in tool.parameters["properties"]
 
 
 class TestMain:

@@ -7,6 +7,9 @@ deadline timeouts. These tests pin all of that without spawning real codex.
 
 from __future__ import annotations
 
+import json
+import sys
+import threading
 import time
 from unittest.mock import patch
 from typing import Any, Optional
@@ -160,6 +163,53 @@ class TestLifecycle:
         method, params = next(r for r in client.requests if r[0] == "thread/start")
         assert params["cwd"] == "/tmp"
         assert "permissions" not in params  # see session.ensure_started() comment
+
+    def test_kanban_worker_process_gets_hermes_tools_mcp_config(
+        self, monkeypatch, tmp_path
+    ):
+        captured = {}
+        client = FakeClient()
+
+        def factory(**kwargs):
+            captured.update(kwargs)
+            return client
+
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+        monkeypatch.setenv("HERMES_PROFILE", "ops-agent")
+        monkeypatch.setenv("HERMES_KANBAN_TASK", "t_12345678")
+        monkeypatch.setenv("HERMES_KANBAN_BOARD", "wisbric-core")
+        monkeypatch.setenv("HERMES_KANBAN_DB", str(tmp_path / "kanban.db"))
+        monkeypatch.setenv("HERMES_KANBAN_WORKSPACE", str(tmp_path))
+
+        s = CodexAppServerSession(cwd=str(tmp_path), client_factory=factory)
+        s.ensure_started()
+
+        config_overrides = captured["extra_args"]
+        assert config_overrides[::2] == ["-c"] * (len(config_overrides) // 2)
+        values = {
+            override.split("=", 1)[0]: override.split("=", 1)[1]
+            for override in config_overrides[1::2]
+        }
+
+        assert json.loads(values["mcp_servers.hermes-tools.command"]) == sys.executable
+        assert json.loads(values["mcp_servers.hermes-tools.args"]) == [
+            "-m",
+            "agent.transports.hermes_tools_mcp_server",
+        ]
+        assert (
+            json.loads(values["mcp_servers.hermes-tools.env.HERMES_KANBAN_TASK"])
+            == "t_12345678"
+        )
+        assert (
+            json.loads(values["mcp_servers.hermes-tools.env.HERMES_KANBAN_BOARD"])
+            == "wisbric-core"
+        )
+        assert (
+            json.loads(values["mcp_servers.hermes-tools.env.HERMES_PROFILE"])
+            == "ops-agent"
+        )
+        assert json.loads(values["mcp_servers.hermes-tools.startup_timeout_sec"]) == 30.0
+        assert json.loads(values["mcp_servers.hermes-tools.tool_timeout_sec"]) == 600.0
 
     def test_close_idempotent(self):
         client = FakeClient()

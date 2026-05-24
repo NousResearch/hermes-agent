@@ -125,9 +125,13 @@ auxiliary:
         _fresh_modules()
 
         from agent.auxiliary_client import resolve_vision_provider_client
+        from urllib.parse import urlparse
         provider, client, model = resolve_vision_provider_client()
         assert client is not None, "openai alias should produce a usable client"
-        assert "api.openai.com" in str(getattr(client, "base_url", ""))
+        # Exact hostname comparison (not substring) — defends against URLs
+        # like ``api.openai.com.evil.example`` and keeps CodeQL happy.
+        host = urlparse(str(getattr(client, "base_url", ""))).hostname or ""
+        assert host == "api.openai.com", f"expected api.openai.com host, got {host!r}"
         assert model == "gpt-4o-mini"
 
 

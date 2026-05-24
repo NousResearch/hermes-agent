@@ -552,13 +552,19 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
 
     p_promote = sub.add_parser(
         "promote",
-        help="Manually move a todo/blocked task to ready (recovery path)",
+        help="Manually move one or more todo/blocked tasks to ready (recovery path)",
     )
     p_promote.add_argument("task_id")
     p_promote.add_argument(
         "reason",
         nargs="*",
         help="Audit-trail reason (recorded on the task_events row)",
+    )
+    p_promote.add_argument(
+        "--ids",
+        nargs="+",
+        default=None,
+        help="Additional task ids to promote with the same reason (bulk mode)",
     )
     p_promote.add_argument(
         "--force",
@@ -1987,37 +1993,51 @@ def _cmd_promote(args: argparse.Namespace) -> int:
     reason = " ".join(args.reason).strip() if args.reason else None
     author = _profile_author()
     as_json = getattr(args, "json", False)
+    extra_ids = list(getattr(args, "ids", None) or [])
+    # Dedupe while preserving order; positional task_id always first.
+    ids: list[str] = []
+    seen: set[str] = set()
+    for tid in [args.task_id, *extra_ids]:
+        if tid not in seen:
+            ids.append(tid)
+            seen.add(tid)
+
+    results: list[dict[str, object]] = []
     with kb.connect() as conn:
-        ok, err = kb.promote_task(
-            conn,
-            args.task_id,
-            actor=author,
-            reason=reason,
-            force=bool(args.force),
-            dry_run=bool(args.dry_run),
-        )
-    if as_json:
-        print(json.dumps(
-            {
-                "task_id": args.task_id,
+        for tid in ids:
+            ok, err = kb.promote_task(
+                conn,
+                tid,
+                actor=author,
+                reason=reason,
+                force=bool(args.force),
+                dry_run=bool(args.dry_run),
+            )
+            results.append({
+                "task_id": tid,
                 "promoted": ok,
                 "dry_run": bool(args.dry_run),
                 "forced": bool(args.force),
                 "reason": reason,
                 "error": err,
-            },
-            indent=2,
-            ensure_ascii=False,
-        ))
-        return 0 if ok else 1
-    if not ok:
-        print(f"cannot promote {args.task_id}: {err}", file=sys.stderr)
-        return 1
+            })
+
+    failed = [r for r in results if not r["promoted"]]
+    if as_json:
+        # Single-id stays a flat object for back-compat; bulk emits a list.
+        payload: object = results[0] if len(results) == 1 else results
+        print(json.dumps(payload, indent=2, ensure_ascii=False))
+        return 0 if not failed else 1
+
     tag = " (dry)" if args.dry_run else ""
     label = "Would promote" if args.dry_run else "Promoted"
-    print(f"{label} {args.task_id} -> ready{tag}"
-          + (f": {reason}" if reason else ""))
-    return 0
+    for r in results:
+        if r["promoted"]:
+            suffix = f": {reason}" if reason else ""
+            print(f"{label} {r['task_id']} -> ready{tag}{suffix}")
+        else:
+            print(f"cannot promote {r['task_id']}: {r['error']}", file=sys.stderr)
+    return 0 if not failed else 1
 
 
 def _cmd_archive(args: argparse.Namespace) -> int:

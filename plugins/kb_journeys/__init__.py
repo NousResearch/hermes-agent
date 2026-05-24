@@ -983,6 +983,7 @@ def _confirmed_text(
 
 def _queue_reply_choices_from_text(text: str) -> list[str]:
     lowered = str(text or "").lower()
+    lowered = re.sub(r"\bdetails\b", "detail", lowered)
     ordered = ["complete", "keep", "demote", "archive", "reject", "approve", "detail", "skip"]
     return [decision for decision in ordered if re.search(rf"\b{re.escape(decision)}\b", lowered)]
 
@@ -1004,6 +1005,7 @@ def _infer_iterative_queue_title(body: str) -> str:
         "applied",
         "archived proposal",
         "proposal ids",
+        "options",
     )
     for raw_line in reversed(search_lines):
         line = raw_line.strip()
@@ -1011,6 +1013,9 @@ def _infer_iterative_queue_title(body: str) -> str:
             continue
         line = re.sub(r"^\s*#+\s*", "", line).strip()
         line = re.sub(r"^\s*\d+[\).]\s*", "", line).strip()
+        proposal_title_match = re.match(r"(?i)^proposal\s+\d+\s*[—:-]\s*(.+)$", line)
+        if proposal_title_match:
+            return proposal_title_match.group(1).strip("`*_ ")
         if line.startswith("-"):
             continue
         if line.lower().startswith(skip_prefixes):
@@ -1021,7 +1026,12 @@ def _infer_iterative_queue_title(body: str) -> str:
 
 def _parse_iterative_queue_reply_state(response_text: str) -> dict[str, Any] | None:
     text = str(response_text or "")
-    reply_matches = list(re.finditer(r"(?im)^\s*Reply(?:\s+with)?\s*:\s*(.+)$", text))
+    reply_matches = list(
+        re.finditer(
+            r"(?im)^\s*(?:Reply(?:\s+with)?|Options(?:\s+presented)?)\s*:\s*(.+)$",
+            text,
+        )
+    )
     if not reply_matches:
         return None
     reply_match = reply_matches[-1]
@@ -1088,6 +1098,38 @@ def _bare_queue_reply_decision(text: str) -> str:
     lowered = str(text or "").strip().lower()
     lowered = {"details": "detail", "show": "detail"}.get(lowered, lowered)
     return lowered if lowered in QUEUE_REPLY_DECISIONS else ""
+
+
+def scoped_mcp_tool_allowlist_for_message(
+    *,
+    session_id: str,
+    message: str,
+    target: str | None = None,
+) -> set[str]:
+    """Return exact MCP tools allowed by a matched pending queue action.
+
+    This is the stateful bridge between Telegram action cards and the generic
+    MCP posture filter.  A bare reply such as ``Reject`` should not globally
+    expose confirmed tools.  It may expose only the queue preview/confirmed
+    tools when there is fresh queue state for the current gateway session and
+    the reply is one of the choices shown for that visible item.
+    """
+    decision = _bare_queue_reply_decision(message)
+    if decision not in QUEUE_REPLY_TOOL_DECISIONS:
+        return set()
+    state = _get_iterative_queue_reply_state(session_id)
+    if not state:
+        return set()
+    choices = {str(choice).strip().lower() for choice in (state.get("choices") or []) if str(choice).strip()}
+    if choices and decision not in choices:
+        return set()
+    mcp_target = target or _mcp_target()
+    return {
+        _mcp_tool_name(mcp_target, "queue.decision_preview"),
+        _mcp_tool_name(mcp_target, "queue.decide_confirmed"),
+        _mcp_tool_name(mcp_target, "queue.batch_decide_confirmed"),
+        _mcp_tool_name(mcp_target, "queue.decisions_confirmed"),
+    }
 
 
 def _session_id_for_queue_reply_state(session_store: Any, source: Any) -> str:

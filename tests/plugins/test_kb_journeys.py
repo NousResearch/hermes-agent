@@ -617,6 +617,89 @@ def test_kbqueue_bare_reply_uses_visible_iterative_item_state(monkeypatch, tmp_p
     assert "WG Agents" in adapter.sent[0]["text"]
 
 
+def test_kbqueue_bare_reply_records_options_presented_as_pending_action(monkeypatch, tmp_path):
+    from plugins import kb_journeys
+    from plugins.kb_journeys import build_pre_gateway_dispatch_hook
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+    monkeypatch.setenv("HERMES_KB_MCP_TARGET", "kb-engine-prod")
+    state = kb_journeys._record_iterative_queue_reply_state(
+        session_id="session-options",
+        response_text=(
+            "Proposal 1 — Hitachi\n"
+            "- Type: Create Entity\n"
+            "- Path: accounts/hitachi\n"
+            "- Proposal id: act_hitachi\n"
+            "- Rationale: durable strategic relevance.\n\n"
+            "Options presented: Approve, Reject, Archive, Details, Feedback."
+        ),
+    )
+
+    assert state is not None
+    assert state["proposal_ids"] == ["act_hitachi"]
+    assert "reject" in state["choices"]
+    assert "detail" in state["choices"]
+
+    ctx = FakeContext(
+        {
+            "mcp_kb_engine_prod_queue_decision_preview": {
+                "result": {"status": "preview", "ok": True, "plan": {"summary": "Reject Hitachi."}}
+            },
+            "mcp_kb_engine_prod_queue_batch_decide_confirmed": {
+                "result": {"status": "applied", "ok": True, "git": {"after": {"changed_count": 1}}}
+            },
+            "mcp_kb_engine_prod_queue_summary": {"result": {"counts": {"proposals": 0}, "items": []}},
+        }
+    )
+    adapter = FakeKbActionsAdapter()
+    hook = build_pre_gateway_dispatch_hook(ctx)
+
+    result = hook(
+        event=_event("Reject"),
+        gateway=_authorized_gateway(adapter),
+        session_store=FakeSessionStore("session-options"),
+    )
+    _drain_scheduled_tasks()
+
+    assert result == {"action": "skip", "reason": "kb_journeys"}
+    assert ctx.calls[0][0] == "mcp_kb_engine_prod_queue_decision_preview"
+    assert ctx.calls[0][1]["proposal_ids"] == ["act_hitachi"]
+    assert ctx.calls[0][1]["decision"] == "reject"
+    assert ctx.calls[1][0] == "mcp_kb_engine_prod_queue_batch_decide_confirmed"
+    assert ctx.calls[1][1]["proposal_ids"] == ["act_hitachi"]
+    assert "Hitachi" in adapter.sent[0]["text"]
+
+
+def test_kbqueue_pending_action_exposes_scoped_mcp_tools(monkeypatch, tmp_path):
+    from plugins import kb_journeys
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+    monkeypatch.setenv("HERMES_KB_MCP_TARGET", "kb-engine-prod")
+    kb_journeys._record_iterative_queue_reply_state(
+        session_id="session-posture",
+        response_text=(
+            "Next item:\n\n"
+            "Hitachi\n"
+            "- Proposal id: act_hitachi\n\n"
+            "Reply: approve, reject, archive, detail."
+        ),
+    )
+
+    assert kb_journeys.scoped_mcp_tool_allowlist_for_message(
+        session_id="session-posture",
+        message="Reject",
+    ) == {
+        "mcp_kb_engine_prod_queue_batch_decide_confirmed",
+        "mcp_kb_engine_prod_queue_decide_confirmed",
+        "mcp_kb_engine_prod_queue_decisions_confirmed",
+        "mcp_kb_engine_prod_queue_decision_preview",
+    }
+    assert kb_journeys.scoped_mcp_tool_allowlist_for_message(
+        session_id="session-posture",
+        message="keep me posted",
+    ) == set()
+
+
 def test_kbqueue_todo_complete_decision_uses_queue_decision_contract(monkeypatch):
     from plugins.kb_journeys import build_pre_gateway_dispatch_hook
 

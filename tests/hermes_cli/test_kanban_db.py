@@ -56,7 +56,7 @@ def test_connect_rejects_unisolated_pytest_default(monkeypatch):
     monkeypatch.setattr(Path, "home", lambda: realish_home)
     monkeypatch.setenv("HERMES_HOME", str(realish_home / ".hermes"))
 
-    with pytest.raises(RuntimeError, match="without any of HERMES_KANBAN_HOME"):
+    with pytest.raises(RuntimeError, match="without HERMES_KANBAN_HOME or HERMES_KANBAN_DB"):
         kb.connect()
 
 
@@ -73,7 +73,7 @@ def test_connect_rejects_false_temp_prefix_under_pytest(monkeypatch):
 
     monkeypatch.setattr(Path, "mkdir", fail_if_connect_tries_to_create)
 
-    with pytest.raises(RuntimeError, match="without any of HERMES_KANBAN_HOME"):
+    with pytest.raises(RuntimeError, match="without HERMES_KANBAN_HOME or HERMES_KANBAN_DB"):
         kb.connect()
 
 
@@ -89,7 +89,7 @@ def test_connect_rejects_non_temp_hermes_home_even_when_path_home_is_temp(tmp_pa
 
     monkeypatch.setattr(Path, "mkdir", fail_if_connect_tries_to_create)
 
-    with pytest.raises(RuntimeError, match="without any of HERMES_KANBAN_HOME"):
+    with pytest.raises(RuntimeError, match="without HERMES_KANBAN_HOME or HERMES_KANBAN_DB"):
         kb.connect()
 
 
@@ -136,6 +136,23 @@ def test_connect_allows_kanban_db_env_under_pytest(tmp_path, monkeypatch):
         kb.create_task(conn, title="isolated")
 
     assert pinned_db.exists()
+
+
+def test_connect_rejects_kanban_board_env_as_pytest_isolation_override(monkeypatch):
+    monkeypatch.delenv("HERMES_KANBAN_HOME", raising=False)
+    monkeypatch.delenv("HERMES_KANBAN_DB", raising=False)
+    monkeypatch.setenv("HERMES_KANBAN_BOARD", "test-board")
+    realish_home = Path("/home/test-user")
+    monkeypatch.setattr(Path, "home", lambda: realish_home)
+    monkeypatch.setenv("HERMES_HOME", str(realish_home / ".hermes"))
+
+    def fail_if_connect_tries_to_create(_self, *args, **kwargs):
+        raise AssertionError("connect() should fail before creating directories")
+
+    monkeypatch.setattr(Path, "mkdir", fail_if_connect_tries_to_create)
+
+    with pytest.raises(RuntimeError, match="without HERMES_KANBAN_HOME or HERMES_KANBAN_DB"):
+        kb.connect()
 
 
 def test_connect_rejects_tls_record_in_sqlite_header(tmp_path, monkeypatch):

@@ -28,7 +28,7 @@ chunks = pxt.create_view(
 
 # Add embedding index for similarity search
 embed_fn = sentence_transformer.using(model_id='intfloat/e5-large-v2')
-chunks.add_embedding_index('text', embedding=embed_fn, if_not_exists=True)
+chunks.add_embedding_index('text', embedding=embed_fn)
 
 # Insert documents
 docs.insert([
@@ -37,7 +37,7 @@ docs.insert([
 ])
 
 # Search
-sim = chunks.text.similarity('What are the key findings?')
+sim = chunks.text.similarity(string='What are the key findings?')
 results = chunks.order_by(sim, asc=False).limit(5).select(
     chunks.text, sim, docs.source
 ).collect()
@@ -105,7 +105,7 @@ imgs = pxt.create_table('images.gallery', {
 
 # Add CLIP embedding index for cross-modal search
 embed_fn = clip.using(model_id='openai/clip-vit-base-patch32')
-imgs.add_embedding_index('image', embedding=embed_fn, if_not_exists=True)
+imgs.add_embedding_index('image', embedding=embed_fn)
 
 # Insert images
 imgs.insert([
@@ -114,7 +114,7 @@ imgs.insert([
 ])
 
 # Search images with a text query
-sim = imgs.image.similarity('a sunset over the ocean')
+sim = imgs.image.similarity(string='a sunset over the ocean')
 results = imgs.order_by(sim, asc=False).limit(5).select(
     imgs.image, imgs.tags, sim
 ).collect()
@@ -182,7 +182,7 @@ articles.add_computed_column(
 
 # Step 2: Embed the summary for search
 embed_fn = sentence_transformer.using(model_id='all-MiniLM-L6-v2')
-articles.add_embedding_index('summary', embedding=embed_fn, if_not_exists=True)
+articles.add_embedding_index('summary', embedding=embed_fn)
 
 # Insert triggers both summarization and embedding
 articles.insert([{
@@ -191,7 +191,7 @@ articles.insert([{
 }])
 
 # Semantic search over summaries
-sim = articles.summary.similarity('transformer architecture for NLP')
+sim = articles.summary.similarity(string='transformer architecture for NLP')
 results = articles.order_by(sim, asc=False).limit(5).select(
     articles.title, articles.summary, sim
 ).collect()

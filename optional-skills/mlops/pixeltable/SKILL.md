@@ -47,7 +47,7 @@ Pixeltable auto-starts an embedded PostgreSQL instance on first import. No exter
 **Optional — MCP server for native tool access:**
 
 ```bash
-pip install mcp-server-pixeltable-developer
+uvx mcp-server-pixeltable-developer
 ```
 
 Then add to `~/.hermes/config.yaml`:
@@ -90,7 +90,7 @@ For multi-step workflows, write a Python script with `write_file` and execute wi
 | Insert rows | `t.insert([{'text': 'hello', 'img': 'path/to/img.jpg'}])` |
 | Add computed column | `t.add_computed_column(emb=embed_fn(t.text))` |
 | Add embedding index | `t.add_embedding_index('text', embedding=embed_fn)` |
-| Similarity search | `t.order_by(t.text.similarity('query'), asc=False).limit(5).collect()` |
+| Similarity search | `t.order_by(t.text.similarity(string='query'), asc=False).limit(5).collect()` |
 | Create view | `pxt.create_view('mydir.chunks', t, iterator=document_splitter(t.doc, separators='paragraph'))` |
 | Query with filter | `t.where(t.category == 'science').select(t.text, t.score).collect()` |
 | Drop table | `pxt.drop_table('mydir.t')` |
@@ -98,36 +98,43 @@ For multi-step workflows, write a Python script with `write_file` and execute wi
 
 Column types: `pxt.String`, `pxt.Int`, `pxt.Float`, `pxt.Bool`, `pxt.Timestamp`, `pxt.Json`, `pxt.Array`, `pxt.Image`, `pxt.Video`, `pxt.Audio`, `pxt.Document`.
 
+**ResultSet**: `.collect()` returns a `ResultSet`. Print it directly with `print(results)` for a table view. Iterate with `for row in results: print(row)` (each row is a dict). Do NOT use `.iterrows()`, `.to_string()`, or index with `results[i][1]`.
+
 ## Procedure
 
-### 1. Document RAG pipeline
+### 1. Image cross-modal search with CLIP (no API keys needed)
+
+Search images using natural language. This is runnable as-is -- uses public sample images.
 
 ```python
 import pixeltable as pxt
-from pixeltable.functions.document import document_splitter
-from pixeltable.functions.huggingface import sentence_transformer
+from pixeltable.functions.huggingface import clip
 
-pxt.create_dir('rag', if_exists='ignore')
+pxt.create_dir('images', if_exists='ignore')
 
-docs = pxt.create_table('rag.docs', {'doc': pxt.Document}, if_exists='ignore')
+imgs = pxt.create_table('images.gallery', {'image': pxt.Image, 'label': pxt.String}, if_exists='replace')
 
-chunks = pxt.create_view(
-    'rag.chunks', docs,
-    iterator=document_splitter(docs.doc, separators='paragraph'),
-    if_exists='ignore'
-)
+# CLIP embeds images AND text into the same vector space
+embed_fn = clip.using(model_id='openai/clip-vit-base-patch32')
+imgs.add_embedding_index('image', embedding=embed_fn)
 
-embed_fn = sentence_transformer.using(model_id='intfloat/e5-large-v2')
-chunks.add_embedding_index('text', embedding=embed_fn, if_not_exists=True)
+# Insert real sample images (COCO dataset hosted on GitHub)
+base = 'https://raw.githubusercontent.com/pixeltable/pixeltable/release/docs/resources/images'
+imgs.insert([
+    {'image': f'{base}/000000000030.jpg', 'label': 'outdoor scene'},
+    {'image': f'{base}/000000000034.jpg', 'label': 'people'},
+    {'image': f'{base}/000000000042.jpg', 'label': 'animals'},
+    {'image': f'{base}/000000000049.jpg', 'label': 'food'},
+    {'image': f'{base}/000000000057.jpg', 'label': 'sports'},
+])
 
-docs.insert([{'doc': '/path/to/document.pdf'}])
-
-sim = chunks.text.similarity('What is the main conclusion?')
-results = chunks.order_by(sim, asc=False).limit(5).select(chunks.text, sim).collect()
+# Cross-modal search: text query finds matching images
+sim = imgs.image.similarity(string='a dog playing outside')
+results = imgs.order_by(sim, asc=False).limit(3).select(imgs.label, sim).collect()
 print(results)
 ```
 
-### 2. Video analysis pipeline
+### 2. Video analysis pipeline (requires OPENAI_API_KEY)
 
 ```python
 import pixeltable as pxt
@@ -159,23 +166,30 @@ videos.insert([{'video': '/path/to/video.mp4'}])
 print(frames.select(frames.frame, frames.caption).limit(5).collect())
 ```
 
-### 3. Image similarity search
+### 3. Document RAG pipeline
 
 ```python
 import pixeltable as pxt
-from pixeltable.functions.huggingface import clip
+from pixeltable.functions.document import document_splitter
+from pixeltable.functions.huggingface import sentence_transformer
 
-pxt.create_dir('images', if_exists='ignore')
+pxt.create_dir('rag', if_exists='ignore')
 
-imgs = pxt.create_table('images.gallery', {'image': pxt.Image}, if_exists='ignore')
+docs = pxt.create_table('rag.docs', {'doc': pxt.Document}, if_exists='ignore')
 
-embed_fn = clip.using(model_id='openai/clip-vit-base-patch32')
-imgs.add_embedding_index('image', embedding=embed_fn, if_not_exists=True)
+chunks = pxt.create_view(
+    'rag.chunks', docs,
+    iterator=document_splitter(docs.doc, separators='paragraph'),
+    if_exists='ignore'
+)
 
-imgs.insert([{'image': '/path/to/photo.jpg'}])
+embed_fn = sentence_transformer.using(model_id='intfloat/e5-large-v2')
+chunks.add_embedding_index('text', embedding=embed_fn)
 
-sim = imgs.image.similarity('a sunset over the ocean')
-results = imgs.order_by(sim, asc=False).limit(5).select(imgs.image, sim).collect()
+docs.insert([{'doc': '/path/to/document.pdf'}])
+
+sim = chunks.text.similarity(string='What is the main conclusion?')
+results = chunks.order_by(sim, asc=False).limit(5).select(chunks.text, sim).collect()
 print(results)
 ```
 

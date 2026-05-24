@@ -166,11 +166,10 @@ async def handle_ws(ws: Any) -> None:
     finally:
         transport.close()
 
-        # Detach the transport from any sessions it owned so later emits
-        # fall back to stdio instead of crashing into a closed socket.
-        for _, sess in list(server._sessions.items()):
-            if sess.get("transport") is transport:
-                sess["transport"] = server._stdio_transport
+        # Preserve the historical "session survives reconnect" behaviour for
+        # normal TUI sessions, but eagerly close explicit sidecar sessions
+        # whose slash_worker should not outlive this websocket.
+        server._close_sessions_for_transport(transport, end_reason="ws_disconnect")
 
         try:
             await ws.close()

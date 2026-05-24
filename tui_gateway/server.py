@@ -322,15 +322,73 @@ def _finalize_session(session: dict | None, end_reason: str = "tui_close") -> No
             pass
 
 
+# ── Session teardown helpers ─────────────────────────────────────────
+
+
+def _coerce_close_on_disconnect(value: object) -> bool:
+    """Normalise ``close_on_disconnect`` from JSON-RPC params to a bool."""
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        return value.strip().lower() in {"1", "true", "yes", "on"}
+    if value is None:
+        return False
+    return bool(value)
+
+
+def _close_session_by_id(sid: str, *, end_reason: str = "tui_close") -> bool:
+    """Pop and fully tear down a session: finalize, notify, close agent + worker.
+
+    Shared by ``session.close`` RPC, WebSocket-disconnect cleanup, and
+    server shutdown — guarantees all teardown paths are identical.
+    """
+    session = _sessions.pop(sid, None)
+    if not session:
+        return False
+    _finalize_session(session, end_reason=end_reason)
+    try:
+        from tools.approval import unregister_gateway_notify
+
+        unregister_gateway_notify(session["session_key"])
+    except Exception:
+        pass
+    try:
+        agent = session.get("agent")
+        if agent and hasattr(agent, "close"):
+            agent.close()
+    except Exception:
+        pass
+    try:
+        worker = session.get("slash_worker")
+        if worker:
+            worker.close()
+    except Exception:
+        pass
+    return True
+
+
+def _close_sessions_for_transport(
+    transport: object, *, end_reason: str = "ws_disconnect"
+) -> None:
+    """Tear down (or migrate) sessions owned by a particular transport.
+
+    * Sessions marked ``close_on_disconnect=True`` (sidecar / short-lived)
+      are eagerly finalised and their ``slash_worker`` is killed.
+    * Normal sessions fall back to the stdio transport so the session can
+      be reconnected later — historical ``handle_ws`` behaviour.
+    """
+    for sid, session in list(_sessions.items()):
+        if session.get("transport") is not transport:
+            continue
+        if session.get("close_on_disconnect"):
+            _close_session_by_id(sid, end_reason=end_reason)
+        else:
+            session["transport"] = _stdio_transport
+
+
 def _shutdown_sessions() -> None:
-    for session in list(_sessions.values()):
-        _finalize_session(session, end_reason="tui_shutdown")
-        try:
-            worker = session.get("slash_worker")
-            if worker:
-                worker.close()
-        except Exception:
-            pass
+    for sid in list(_sessions.keys()):
+        _close_session_by_id(sid, end_reason="tui_shutdown")
 
 
 atexit.register(_shutdown_sessions)
@@ -2078,6 +2136,7 @@ def _init_session(sid: str, key: str, agent, history: list, cols: int = 80):
         "tool_progress_mode": _load_tool_progress_mode(),
         "edit_snapshots": {},
         "tool_started_at": {},
+        "close_on_disconnect": False,
         # Pin async event emissions to whichever transport created the
         # session (stdio for Ink, JSON-RPC WS for the dashboard sidebar).
         "transport": current_transport() or _stdio_transport,
@@ -2296,6 +2355,9 @@ def _(rid, params: dict) -> dict:
     sid = uuid.uuid4().hex[:8]
     key = _new_session_key()
     cols = int(params.get("cols", 80))
+    close_on_disconnect = _coerce_close_on_disconnect(
+        params.get("close_on_disconnect")
+    )
     _enable_gateway_prompts()
 
     ready = threading.Event()
@@ -2307,6 +2369,7 @@ def _(rid, params: dict) -> dict:
         "agent_ready": ready,
         "attached_images": [],
         "cols": cols,
+        "close_on_disconnect": close_on_disconnect,
         "created_at": now,
         "edit_snapshots": {},
         "history": [],
@@ -2975,29 +3038,7 @@ def _(rid, params: dict) -> dict:
 @method("session.close")
 def _(rid, params: dict) -> dict:
     sid = params.get("session_id", "")
-    session = _sessions.pop(sid, None)
-    if not session:
-        return _ok(rid, {"closed": False})
-    _finalize_session(session)
-    try:
-        from tools.approval import unregister_gateway_notify
-
-        unregister_gateway_notify(session["session_key"])
-    except Exception:
-        pass
-    try:
-        agent = session.get("agent")
-        if agent and hasattr(agent, "close"):
-            agent.close()
-    except Exception:
-        pass
-    try:
-        worker = session.get("slash_worker")
-        if worker:
-            worker.close()
-    except Exception:
-        pass
-    return _ok(rid, {"closed": True})
+    return _ok(rid, {"closed": _close_session_by_id(sid)})
 
 
 @method("session.branch")

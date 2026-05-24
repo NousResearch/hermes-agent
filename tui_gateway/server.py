@@ -3345,6 +3345,26 @@ def _(rid, params: dict) -> dict:
             f"Agent Running: {'Yes' if session.get('running') else 'No'}",
         ]
     )
+    # Optimization indicators
+    try:
+        from agent.prompt_builder import parse_project_skill_config
+        cfg = parse_project_skill_config()
+        fmt = cfg.get("index_format", "full")
+        filter_active = bool(
+            cfg.get("include") or cfg.get("exclude")
+            or cfg.get("categories_include") or cfg.get("categories_exclude")
+        )
+        lines.append("")
+        lines.append("⚡ Optimization:")
+        lines.append(f"  Index format: {fmt}")
+        lines.append(f"  Skill filter: {'active' if filter_active else 'inactive'}")
+        if agent is not None:
+            mt = getattr(agent, "max_tokens", None)
+            if mt:
+                lines.append(f"  Output cap: {mt:,} tokens/response")
+            lines.append(f"  Cost awareness: active")
+    except Exception:
+        pass
     return _ok(rid, {"output": "\n".join(lines)})
 
 

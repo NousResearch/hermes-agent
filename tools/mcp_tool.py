@@ -439,6 +439,8 @@ def _resolve_stdio_command(command: str, env: dict) -> tuple[str, dict]:
 # MCP ImageContent block → Hermes MEDIA tag
 # ---------------------------------------------------------------------------
 
+_HERMES_MEDIA_TAGS_RESULT_KEY = "_hermes_media_tags"
+
 
 def _mcp_image_extension_for_mime_type(mime_type: str) -> str:
     """Return a reasonable file extension for an MCP image MIME type."""
@@ -2365,6 +2367,7 @@ def _make_tool_handler(server_name: str, tool_name: str, tool_timeout: float):
             # Hermes' MEDIA tag + cache_image_from_bytes) was the cleaner of
             # the two — plugs into existing infrastructure.
             parts: List[str] = []
+            media_tags: List[str] = []
             for block in (result.content or []):
                 if hasattr(block, "text") and block.text:
                     parts.append(block.text)
@@ -2372,6 +2375,7 @@ def _make_tool_handler(server_name: str, tool_name: str, tool_timeout: float):
                 image_tag = _cache_mcp_image_block(block)
                 if image_tag:
                     parts.append(image_tag)
+                    media_tags.append(image_tag)
             text_result = "\n".join(parts) if parts else ""
 
             # Combine content + structuredContent when both are present.
@@ -2381,12 +2385,21 @@ def _make_tool_handler(server_name: str, tool_name: str, tool_timeout: float):
             structured = getattr(result, "structuredContent", None)
             if structured is not None:
                 if text_result:
-                    return json.dumps({
+                    payload = {
                         "result": text_result,
                         "structuredContent": structured,
-                    }, ensure_ascii=False)
-                return json.dumps({"result": structured}, ensure_ascii=False)
-            return json.dumps({"result": text_result}, ensure_ascii=False)
+                    }
+                else:
+                    payload = {"result": structured}
+            else:
+                payload = {"result": text_result}
+            if media_tags:
+                # Gateway media extraction deliberately ignores arbitrary MCP
+                # text output.  Mark only tags produced from ImageContent blocks
+                # so dynamic mcp_<server>_<tool> results can still render their
+                # fresh screenshots/images as native attachments.
+                payload[_HERMES_MEDIA_TAGS_RESULT_KEY] = media_tags
+            return json.dumps(payload, ensure_ascii=False)
 
         def _call_once():
             return _run_on_mcp_loop(_call, timeout=tool_timeout)

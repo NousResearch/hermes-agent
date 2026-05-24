@@ -1247,6 +1247,13 @@ _GATEWAY_TRUSTED_MEDIA_TOOL_NAMES = frozenset({
     "video_generate",
 })
 
+# MCP tool names are dynamic (mcp_<server>_<tool>).  Do not trust arbitrary
+# MEDIA-looking text from all MCP outputs; only trust the wrapper's explicit
+# metadata key, which is populated when an MCP ImageContent block is cached by
+# tools/mcp_tool.py.
+_GATEWAY_EXPLICIT_MEDIA_TOOL_PREFIXES = ("mcp_",)
+_GATEWAY_EXPLICIT_MEDIA_TAGS_KEY = "_hermes_media_tags"
+
 _GATEWAY_TOOL_MEDIA_RE = re.compile(
     r'MEDIA:\s*((?:/|~\/)\S+\.(?:png|jpe?g|gif|webp|'
     r'mp4|mov|avi|mkv|webm|ogg|opus|mp3|wav|m4a|'
@@ -1288,6 +1295,47 @@ def _gateway_tool_result_name(msg: dict, tool_call_names: dict) -> str:
     return ""
 
 
+def _extract_explicit_gateway_media_tags(
+    content: Any,
+    history_media_paths: set[str],
+) -> list[str]:
+    """Read wrapper-marked MEDIA tags from a tool result payload.
+
+    Used for dynamic tool names such as MCP tools.  This intentionally does
+    not regex-scan arbitrary tool text: only top-level explicit metadata
+    written by Hermes wrapper code is considered a current-turn attachment
+    directive.
+    """
+    if isinstance(content, str):
+        try:
+            payload = json.loads(content)
+        except Exception:
+            return []
+    else:
+        payload = content
+    if not isinstance(payload, dict):
+        return []
+
+    raw_tags = payload.get(_GATEWAY_EXPLICIT_MEDIA_TAGS_KEY)
+    if isinstance(raw_tags, str):
+        raw_tags = [raw_tags]
+    if not isinstance(raw_tags, list):
+        return []
+
+    media_tags: list[str] = []
+    for raw_tag in raw_tags:
+        if not isinstance(raw_tag, str):
+            continue
+        match = _GATEWAY_TOOL_MEDIA_RE.fullmatch(raw_tag.strip())
+        if not match:
+            continue
+        raw_path = match.group(1).strip().rstrip('\",}')
+        path = os.path.expanduser(raw_path)
+        if raw_path and path not in history_media_paths:
+            media_tags.append(f"MEDIA:{raw_path}")
+    return media_tags
+
+
 def _extract_trusted_tool_media_tags(
     result_messages: list,
     *,
@@ -1320,10 +1368,17 @@ def _extract_trusted_tool_media_tags(
         if msg.get("role") not in {"tool", "function"}:
             continue
         tool_name = _gateway_tool_result_name(msg, tool_call_names)
+        content = msg.get("content", "")
         if tool_name not in _GATEWAY_TRUSTED_MEDIA_TOOL_NAMES:
+            if tool_name.startswith(_GATEWAY_EXPLICIT_MEDIA_TOOL_PREFIXES):
+                media_tags.extend(
+                    _extract_explicit_gateway_media_tags(
+                        content,
+                        history_media_paths,
+                    )
+                )
             continue
 
-        content = msg.get("content", "")
         if not isinstance(content, str):
             try:
                 content = json.dumps(content, ensure_ascii=False)
@@ -11995,6 +12050,8 @@ class GatewayRunner:
                     session_db=self._session_db,
                     fallback_model=self._fallback_model,
                 )
+                agent._turn_platform_message_id = event_message_id
+                agent._turn_id = task_id
                 try:
                     return agent.run_conversation(
                         user_message=enriched_prompt,
@@ -16876,6 +16933,8 @@ class GatewayRunner:
             agent.reasoning_config = reasoning_config
             agent.service_tier = self._service_tier
             agent.request_overrides = turn_route.get("request_overrides") or {}
+            agent._turn_platform_message_id = event_message_id or getattr(source, "message_id", None)
+            agent._turn_id = f"{session_id}:{run_generation}" if run_generation is not None else session_id
 
             _bg_review_release = threading.Event()
             _bg_review_pending: list[str] = []

@@ -7,6 +7,7 @@ This prevents voice messages from accumulating and being sent multiple
 times per reply. (Regression test for #160)
 """
 
+import json
 import pytest
 import re
 
@@ -147,6 +148,65 @@ class TestMediaExtraction:
 
         assert tags == [f"MEDIA:{audio}"]
         assert voice_directive is True
+
+    def test_mcp_explicit_media_tags_are_extracted_from_current_turn(self, tmp_path):
+        """MCP ImageContent blocks carry explicit media metadata for gateway delivery."""
+        image = tmp_path / "screenshot.png"
+        image.write_bytes(b"fake png bytes")
+        tag = f"MEDIA:{image}"
+        messages = [
+            {
+                "role": "assistant",
+                "tool_calls": [
+                    {"id": "call_mcp", "function": {"name": "mcp_playwright_screenshot"}},
+                ],
+            },
+            {
+                "role": "tool",
+                "tool_call_id": "call_mcp",
+                "content": json.dumps(
+                    {"result": tag, "_hermes_media_tags": [tag]},
+                    ensure_ascii=False,
+                ),
+            },
+        ]
+
+        tags, voice_directive = _extract_trusted_tool_media_tags(
+            messages,
+            history_media_paths=set(),
+        )
+
+        assert tags == [tag]
+        assert voice_directive is False
+
+    def test_mcp_plain_result_media_tags_are_not_extracted_without_metadata(self, tmp_path):
+        """MCP text evidence mentioning MEDIA must not become an attachment directive."""
+        image = tmp_path / "historical.png"
+        image.write_bytes(b"fake png bytes")
+        messages = [
+            {
+                "role": "assistant",
+                "tool_calls": [
+                    {"id": "call_mcp", "function": {"name": "mcp_filesystem_read_file"}},
+                ],
+            },
+            {
+                "role": "tool",
+                "tool_call_id": "call_mcp",
+                "content": json.dumps(
+                    {"result": f"A log line said MEDIA:{image}"},
+                    ensure_ascii=False,
+                ),
+            },
+        ]
+
+        tags, voice_directive = _extract_trusted_tool_media_tags(
+            messages,
+            history_media_paths=set(),
+        )
+
+        assert tags == []
+        assert voice_directive is False
 
     def test_history_media_paths_are_compared_after_expanding_user(self, tmp_path, monkeypatch):
         """A trusted tool must not resend a ~/ path already present as an absolute history path."""

@@ -39,7 +39,10 @@ _CONTEXT_THREAT_PATTERNS = [
     (r'system\s+prompt\s+override', "sys_prompt_override"),
     (r'disregard\s+(your|all|any)\s+(instructions|rules|guidelines)', "disregard_rules"),
     (r'act\s+as\s+(if|though)\s+you\s+(have\s+no|don\'t\s+have)\s+(restrictions|limits|rules)', "bypass_restrictions"),
-    (r'<!--[^>]*(?:ignore|override|system|secret|hidden)[^>]*-->', "html_comment_injection"),
+    # HTML comments are common in markdown notes. Only block comments that
+    # contain instruction-override or execution language; broad terms like
+    # "system" create false positives for benign persona docs.
+    (r'<!--[\s\S]*?(?:ignore|override|disregard|do\s+not\s+tell|reveal\s+secrets?|exfiltrat\w*|execute|run|eval)[\s\S]*?-->', "html_comment_injection"),
     (r'<\s*div\s+style\s*=\s*["\'][\s\S]*?display\s*:\s*none', "hidden_div"),
     (r'translate\s+.*\s+into\s+.*\s+and\s+(execute|run|eval)', "translate_execute"),
     (r'curl\s+[^\n]*\$\{?\w*(KEY|TOKEN|SECRET|PASSWORD|CREDENTIAL|API)', "exfil_curl"),

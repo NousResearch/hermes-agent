@@ -116,17 +116,21 @@ def _strip_legitimate_emoji_zwj(prompt: str) -> str:
 
 def _scan_cron_prompt(prompt: str) -> str:
     """Scan a cron prompt for critical threats. Returns error string if blocked, else empty."""
-    github_auth_header = re.search(
+    # Scrub all GitHub API auth-header curl blocks that match the bundled-skill
+    # shape (curl … -H 'Authorization: token $VAR' … https://api.github.com/…).
+    # Use re.sub so every occurrence is replaced, not just the first — a cron
+    # job that loads 2+ GitHub skills (e.g. github-issues + github-pr-workflow
+    # + github-code-review) contains 4+ such blocks and the old re.search +
+    # str.replace approach only scrubbed one, leaving the rest to trip the
+    # exfil_curl_auth_header detector on every run.  The trailing [^\n]* also
+    # consumes the rest of the URL path so no dangling fragment remains.
+    prompt_to_scan = re.sub(
         rf'curl\s+[^\n]*(?:-H|--header)\s+["\']Authorization:\s*token\s+{_CRON_SECRET_VAR_RE}["\']'
-        r'\s+["\']?https://api\.github\.com(?:/|\b)',
+        r'\s+["\']?https://api\.github\.com(?:/|\b)[^\n]*',
+        'curl https://api.github.com/user',
         prompt,
-        re.IGNORECASE,
+        flags=re.IGNORECASE,
     )
-    prompt_to_scan = prompt
-    if github_auth_header:
-        # Allow the bundled GitHub skill fallback shape without opening a
-        # blanket exemption for arbitrary Authorization-header exfiltration.
-        prompt_to_scan = prompt.replace(github_auth_header.group(0), "curl https://api.github.com/user")
     prompt_for_invisible_scan = _strip_legitimate_emoji_zwj(prompt_to_scan)
     for char in _CRON_INVISIBLE_CHARS:
         if char in prompt_for_invisible_scan:

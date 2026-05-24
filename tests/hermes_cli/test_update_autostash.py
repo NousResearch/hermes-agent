@@ -551,19 +551,21 @@ def test_cmd_update_switches_to_main_from_detached_head(monkeypatch, tmp_path, c
     assert "detached HEAD" in out
 
 
-def test_cmd_update_restores_stash_and_branch_when_already_up_to_date(monkeypatch, tmp_path, capsys):
-    """When on a feature branch with no updates, stash is restored and branch switched back."""
+def test_cmd_update_leaves_feature_branch_untouched_when_already_up_to_date(monkeypatch, tmp_path, capsys):
+    """When main is current, feature-branch installs should not checkout/stash."""
     _setup_update_mocks(monkeypatch, tmp_path)
     monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/uv" if name == "uv" else None)
 
-    # Enable stash so it returns a ref
-    monkeypatch.setattr(
-        hermes_main, "_stash_local_changes_if_needed",
-        lambda *a, **kw: "abc123deadbeef",
-    )
+    stash_calls = []
     restore_calls = []
     monkeypatch.setattr(
-        hermes_main, "_restore_stashed_changes",
+        hermes_main,
+        "_stash_local_changes_if_needed",
+        lambda *a, **kw: stash_calls.append(1) or "abc123deadbeef",
+    )
+    monkeypatch.setattr(
+        hermes_main,
+        "_restore_stashed_changes",
         lambda *a, **kw: restore_calls.append(1) or True,
     )
 
@@ -574,15 +576,13 @@ def test_cmd_update_restores_stash_and_branch_when_already_up_to_date(monkeypatc
 
     hermes_main.cmd_update(SimpleNamespace())
 
-    # Stash should have been restored
-    assert len(restore_calls) == 1
-
-    # Should have checked out back to the original branch
-    checkout_back = [c for c in recorded if "checkout" in c and "fix/something" in c]
-    assert len(checkout_back) == 1
+    assert stash_calls == []
+    assert restore_calls == []
+    assert not any("checkout" in c for c in recorded)
 
     out = capsys.readouterr().out
     assert "Already up to date" in out
+    assert "switching to main" not in out
 
 
 def test_cmd_update_no_checkout_when_already_on_main(monkeypatch, tmp_path):

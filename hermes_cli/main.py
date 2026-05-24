@@ -8754,38 +8754,18 @@ def _cmd_update_impl(args, gateway_mode: bool):
         )
         current_branch = result.stdout.strip()
 
-        # Always update against main
+        # Always update the install's main branch.  When the checkout is
+        # currently on a local feature branch, compare local main to
+        # origin/main before touching the worktree; otherwise `hermes update`
+        # noisily checks out main just to discover there was nothing to pull.
         branch = "main"
+        update_base_ref = "HEAD" if current_branch == branch else branch
 
-        # If user is on a non-main branch or detached HEAD, switch to main
-        if current_branch != "main":
-            label = (
-                "detached HEAD"
-                if current_branch == "HEAD"
-                else f"branch '{current_branch}'"
-            )
-            print(f"  ⚠ Currently on {label} — switching to main for update...")
-            # Stash before checkout so uncommitted work isn't lost
-            auto_stash_ref = _stash_local_changes_if_needed(git_cmd, PROJECT_ROOT)
-            subprocess.run(
-                git_cmd + ["checkout", "main"],
-                cwd=PROJECT_ROOT,
-                capture_output=True,
-                text=True,
-                check=True,
-            )
-        else:
-            auto_stash_ref = _stash_local_changes_if_needed(git_cmd, PROJECT_ROOT)
-
-        prompt_for_restore = (
-            auto_stash_ref is not None
-            and not assume_yes
-            and (gateway_mode or (sys.stdin.isatty() and sys.stdout.isatty()))
-        )
-
-        # Check if there are updates
+        # Check if there are updates before stashing/checking out.  This keeps
+        # local feature-branch installs quiet and untouched when main is already
+        # current (the common case for local UI/theme patches).
         result = subprocess.run(
-            git_cmd + ["rev-list", f"HEAD..origin/{branch}", "--count"],
+            git_cmd + ["rev-list", f"{update_base_ref}..origin/{branch}", "--count"],
             cwd=PROJECT_ROOT,
             capture_output=True,
             text=True,
@@ -8795,25 +8775,33 @@ def _cmd_update_impl(args, gateway_mode: bool):
 
         if commit_count == 0:
             _invalidate_update_cache()
-            # Restore stash and switch back to original branch if we moved
-            if auto_stash_ref is not None:
-                _restore_stashed_changes(
-                    git_cmd,
-                    PROJECT_ROOT,
-                    auto_stash_ref,
-                    prompt_user=prompt_for_restore,
-                    input_fn=gw_input_fn,
-                )
-            if current_branch not in {"main", "HEAD"}:
-                subprocess.run(
-                    git_cmd + ["checkout", current_branch],
-                    cwd=PROJECT_ROOT,
-                    capture_output=True,
-                    text=True,
-                    check=False,
-                )
             print("✓ Already up to date!")
             return
+
+        # From here on we will mutate the worktree, so protect any local edits
+        # before checking out main or pulling.
+        auto_stash_ref = _stash_local_changes_if_needed(git_cmd, PROJECT_ROOT)
+        prompt_for_restore = (
+            auto_stash_ref is not None
+            and not assume_yes
+            and (gateway_mode or (sys.stdin.isatty() and sys.stdout.isatty()))
+        )
+
+        # If user is on a non-main branch or detached HEAD, switch to main.
+        if current_branch != branch:
+            label = (
+                "detached HEAD"
+                if current_branch == "HEAD"
+                else f"branch '{current_branch}'"
+            )
+            print(f"  ⚠ Currently on {label} — switching to main for update...")
+            subprocess.run(
+                git_cmd + ["checkout", branch],
+                cwd=PROJECT_ROOT,
+                capture_output=True,
+                text=True,
+                check=True,
+            )
 
         print(f"→ Found {commit_count} new commit(s)")
 

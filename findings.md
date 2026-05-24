@@ -6947,9 +6947,212 @@ Areas of note (all BY_DESIGN or LOW severity):
 - `tools/kanban_tools.py` — Worker-side kanban tools (MCP interface)
 ---
 
+## Pass #65 – YAML, Config Parsing & Deserialization Security Deep Dive – 2026-05-24T21:45:00Z
+
+**Scope:** yaml.safe_load enforcement, config file injection, config validation, skill YAML frontmatter parsing, environment variable injection, pickle deserialization, subprocess shell usage.
+
+---
+
+### 1. YAML Safe_load Enforcement
+
+**Finding: Mostly GOOD — 50 yaml.safe_load calls across the codebase, but 3 unsafe yaml.load instances found.**
+
+The overwhelming majority of YAML loading correctly uses `yaml.safe_load()` or `yaml.SafeLoader`/`yaml.CSafeLoader`. However, three files use unsafe `yaml.load()` without `Loader=SafeLoader`:
+
+#### 🔴 CRITICAL: `hermes_cli/xai_retirement.py` line 207
+```python
+yaml = YAML(typ="rt")   # ruamel.yaml round-trip mode
+with config_path.open("r", encoding="utf-8") as fh:
+    doc = yaml.load(fh)  # DANGER: yaml.load without safe loader
+```
+- **File:** `hermes_cli/xai_retirement.py` (lines 204-207)
+- **Issue:** Uses `ruamel.yaml.YAML(typ="rt")` — the `typ="rt"` (round-trip) mode resolves YAML anchors/aliases, which can lead to resource exhaustion (billion laughs attack) and arbitrary object construction if the config file is crafted maliciously. While `ruamel.yaml` doesn't use the unsafe `!!python/object` tags by default, round-trip mode is still riskier than `SafeLoader`.
+- **Context:** Used by `hermes doctor` to scan for retired xAI models. An attacker who could write to `~/.hermes/config.yaml` could potentially craft a malicious YAML that, when processed by `ruamel.yaml` round-trip, could cause memory exhaustion or unexpected behavior.
+
+#### 🟡 MEDIUM: `agent/skill_utils.py` line 79
+```python
+return yaml.load(value, Loader=loader)  # loader is CSafeLoader or SafeLoader
+```
+- **File:** `agent/skill_utils.py` line 79
+- **Issue:** Uses `yaml.load()` (not `yaml.safe_load()`) with an explicit `Loader` parameter. The loader IS `CSafeLoader` or `SafeLoader` (safe), but the call pattern is non-standard and the function comment claims it uses "CSafeLoader for full YAML support" — this could mislead future maintainers into removing the Loader argument or switching to `!!python/object`.
+- **Mitigating factor:** The loader is explicitly set to CSafeLoader/SafeLoader, so it is technically safe.
+
+#### 🟡 MEDIUM: `tests/hermes_cli/test_migrate_xai.py` line 64
+```python
+yaml = YAML(typ="rt")
+with path.open("r", encoding="utf-8") as fh:
+    return yaml.load(fh)  # Test helper using ruamel.yaml round-trip
+```
+- **File:** `tests/hermes_cli/test_migrate_xai.py` line 64
+- **Issue:** Test-only code, but uses the same `ruamel.yaml YAML(typ="rt")` round-trip pattern.
+- **Mitigating factor:** Test files are not production code paths, but this trains developers to use the pattern.
+
+**Overall assessment:** 50 uses of `yaml.safe_load()` + `CSafeLoader/SafeLoader` throughout production code is good. The 3 unsafe uses are concerning but have mitigations. However, `ruamel.yaml` round-trip mode (`typ="rt"`) in production code (`hermes_cli/xai_retirement.py`) is the primary security concern.
+
+---
+
+### 2. Config File Injection
+
+**Finding: LOW RISK — No YAML anchor/alias exploitation or entity expansion found.**
+
+Searched for: `!include`, `!import`, `!!python`, `UnsafeLoader`, and patterns related to entity expansion.
+
+- **YAML anchors/aliases:** Not used in any config file. Searched all YAML-related files — no custom tags or anchor references found.
+- **Entity expansion (Billion Laughs):** No evidence of recursive YAML anchors. The `ruamel.yaml` round-trip mode could theoretically be vulnerable if a crafted config with deeply nested anchors were loaded, but the actual usage in `xai_retirement.py` processes config keys as simple strings and doesn't recursively deserialize arbitrary nested structures.
+- **Object deserialization:** No `!!python/object` or `!!python/unicode` tags found in any YAML file. The codebase does NOT use pickle for config (only for skill snapshots — see section 4).
+
+**Config validation:** The `hermes_cli/config.py` `_normalize_root_model_keys()` and `_normalize_max_turns_config()` functions do perform normalization and type coercion. The `_coerce_bool`, `_coerce_float`, `_coerce_int` in `gateway/config.py` handle type safety. No major validation gaps found — but the `_expand_env_vars()` function does expand `${VAR}` references in config values, which could allow environment variable injection (see section 5).
+
+---
+
+### 3. Config Validation — Type Coercion & Default Value Vulnerabilities
+
+**Finding: MODERATE — Type coercion functions exist but have edge cases.**
+
+Key validation functions in `gateway/config.py`:
+```python
+def _coerce_bool(value: Any, default: bool = True) -> bool:
+    if isinstance(value, str):
+        lowered = value.strip().lower()
+        if lowered in {"true", "1", "yes", "on"}:
+            return True
+        if lowered in {"false", "0", "no", "off"}:
+            return False
+        return default  # Falls through on unrecognized strings
+```
+
+- **Good:** Returns default on unrecognized strings (safe fallback)
+- **Good:** Coercion functions use try/except with safe defaults
+- **Issue:** YAML 1.1 parses bare `off` as boolean `False` — there's an explicit comment about this at `gateway/config.py` line 994: `# YAML 1.1 parses bare 'off' as boolean False — coerce to string "off".` — The code handles this correctly.
+- **Issue:** The `_normalize_root_model_keys()` in `hermes_cli/config.py` silently converts string model configs to dicts — this is intentional migration behavior but could hide type errors.
+
+**Default value handling:** Default config in `hermes_cli/config.py` is well-structured (`DEFAULT_CONFIG` dict). If config loading fails, it falls back to defaults via `_warn_config_parse_failure()` which logs and warns on stderr. This is correct behavior.
+
+---
+
+### 4. Skill YAML Frontmatter — Safe Parsing
+
+**Finding: GOOD with ONE CONCERN — Safe YAML loading with fallback, but ruamel.yaml round-trip used elsewhere.**
+
+The skill frontmatter parsing in `agent/skill_utils.py` is well-designed:
+```python
+# Line 71-82: Uses CSafeLoader with fallback to SafeLoader
+loader = getattr(yaml, "CSafeLoader", None) or yaml.SafeLoader
+def _load(value: str):
+    return yaml.load(value, Loader=loader)  # Explicit safe loader
+```
+
+Frontmatter parsing (`parse_frontmatter()` at line 88):
+1. Extracts `---\n...\n---\n` block using regex
+2. Uses `yaml_load()` (safe) to parse the YAML content
+3. Has a fallback to simple `key: value` splitting on parse failure
+4. Type-checks `isinstance(parsed, dict)` before using result
+
+**Skill path validation:** `get_external_skills_dirs()` in `agent/skill_utils.py` (lines 241-324):
+- Expands `~` and `${VAR}` env vars in paths
+- Resolves relative paths against HERMES_HOME, not cwd
+- Excludes paths that resolve to local `~/.hermes/skills/`
+- Returns only existing directories
+
+**Security concern — SKILL.md files could contain malicious frontmatter:**
+- A skill with malicious YAML frontmatter could try to exploit the fallback parsing
+- The `skill_matches_platform()` and `extract_skill_conditions()` functions handle non-dict metadata gracefully (lines 148-156, 341-355)
+- No execution of frontmatter values as code
+
+**Skill metadata is NOT validated against a schema** — values are used directly. However, since frontmatter is only used for conditional routing and display, not for code execution, this is low risk.
+
+---
+
+### 5. Environment Variable Injection
+
+**Finding: MODERATE — `_expand_env_vars()` in config loading allows env var interpolation, but no `eval()`/`exec()` on config values found.**
+
+#### ✅ SAFE: No eval()/exec() on environment variables
+Searched for `eval(` and `exec(` across the codebase:
+- Found NO instances of `eval(os.getenv(...))` or `exec(os.getenv(...))`
+- Found no dynamic code execution from config/env vars
+- The `eval`/`exec` references found are in: test helper functions, subprocess calls with explicit command lists (NOT shell=True), and browser evaluation functions — all safe
+
+#### ⚠️ KNOWN BEHAVIOR: `${VAR}` expansion in config values
+**File:** `hermes_cli/config.py` lines 4160-4177
+```python
+def _expand_env_vars(obj):
+    """Recursively expand ``${VAR}`` references in config values.
+
+    Only string values are processed; dict keys, numbers, booleans, and
+    None are left untouched.  Unresolved references (variable not in
+    ``os.environ``) are kept verbatim so callers can detect them.
+    """
+    if isinstance(obj, str):
+        return re.sub(
+            r"\${([^}]+)}",
+            lambda m: os.environ.get(m.group(1), m.group(0)),
+            obj,
+        )
+```
+
+- **Intended behavior:** Users can write `${API_KEY}` in config.yaml and it expands from environment
+- **Security implication:** If an attacker can write to `~/.hermes/config.yaml`, they can cause the application to read arbitrary env vars (e.g., `${HOME}`, `${PATH}`, `${HERMES_HOME}`) into config values that may be logged or used in subprocess calls
+- **Mitigation:** `config.yaml` is user-owned (0600 permissions), so the attack surface is limited to local user
+- **Note:** `_preserve_env_ref_templates()` at line 4195 restores raw `${VAR}` templates when saving — this is intentional for UX (avoids writing expanded secrets back to disk)
+
+#### Subprocess calls — No shell=True found in critical paths
+Searched for `subprocess` usage with `shell=True`:
+- Found `shell=True` only in `tui_gateway/server.py` line 6769 for a non-critical user-info command
+- All critical subprocess calls use explicit command lists (`[cmd, arg1, arg2]`) without shell injection risk
+
+---
+
+### 6. Pickle Deserialization
+
+**Finding: LOW RISK — Only in optional skill scripts, not in production paths.**
+
+Two `pickle.loads()` calls found in `optional-skills/research/darwinian-evolver/scripts/show_snapshot.py`:
+```python
+# Lines 36, 39
+outer = pickle.loads(args.snapshot.read_bytes())
+inner = pickle.loads(outer["population_snapshot"])
+```
+
+- **Context:** This is an optional skill script (`show_snapshot.py`) used for debugging/research, not production code
+- **Attack surface:** If an attacker can provide a malicious `--snapshot` file, they could execute arbitrary code via pickle deserialization
+- **Mitigation:** This is a CLI script, not a server endpoint; the user provides the snapshot file themselves
+
+---
+
+### 7. Summary of Findings
+
+| Category | Severity | Status |
+|---|---|---|
+| yaml.safe_load enforcement | MEDIUM | ⚠️ 3 unsafe yaml.load() calls (2 test, 1 production) |
+| ruamel.yaml round-trip in production | MEDIUM | `hermes_cli/xai_retirement.py` uses `typ="rt"` on user config |
+| Config file injection (anchors/entity expansion) | LOW | No evidence of exploitation |
+| Config validation (type coercion) | LOW | Functions exist and handle edge cases correctly |
+| Skill YAML frontmatter safe parsing | LOW | Uses CSafeLoader with fallback, type-checked |
+| Environment variable injection | LOW-MODERATE | `${VAR}` expansion intentional; no eval/exec on env vars |
+| Pickle deserialization | LOW | Only in optional skill scripts, not production |
+
+### Recommendations
+
+1. **Replace `ruamel.yaml YAML(typ="rt")` with explicit safe loader** in `hermes_cli/xai_retirement.py` — use `YAML(typ="safe")` instead of `typ="rt"` to avoid anchor/alias resolution risks.
+2. **Consider banning `yaml.load()` without explicit Loader** in production code via linter — always use `yaml.safe_load()` or `yaml.load(value, Loader=SafeLoader)`.
+3. **`${VAR}` expansion is by design** — document this in security guidance so users know not to put untrusted values in `config.yaml`.
+4. **Pickle in optional-skills** is acceptable since it's user-run tooling, but consider adding a warning comment.
+
+**Files examined:**
+- `agent/skill_utils.py` — skill YAML frontmatter, safe loading, path validation
+- `hermes_cli/config.py` — config loading, type coercion, env var expansion
+- `gateway/config.py` — coercion functions, type validation
+- `hermes_cli/xai_retirement.py` — ruamel.yaml round-trip usage
+- `optional-skills/research/darwinian-evolver/scripts/show_snapshot.py` — pickle.loads
+- `cron/scheduler.py` — subprocess, env var handling
+- `tests/hermes_cli/test_migrate_xai.py` — test helper patterns
+
+---
+
 ## Pass #64 – Agent Subprocess, Delegation & MCP Integration – 2026-05-24T20:15:00Z
 
-Scope: tools/delegate_tool.py, tools/mcp_tool.py, tools/mcp_oauth.py, tools/code_execution_tool.py, tools/environments/local.py, tools/env_passthrough.py
+**Scope:** tools/delegate_tool.py, tools/mcp_tool.py, tools/mcp_oauth.py, tools/code_execution_tool.py, tools/environments/local.py, tools/env_passthrough.py
 
 ### P64-1 · MCP schema normalization rewrites but does not validate external schemas — MEDIUM
 

@@ -3938,10 +3938,7 @@ _RESPAWN_GUARD_SUCCESS_WINDOW = 3600  # 1 hour
 _RESPAWN_GUARD_PR_WINDOW = 86400  # 24 hours
 
 # Pattern matching a GitHub PR URL in task comments.
-_RESPAWN_GUARD_PR_URL_RE = re.compile(
-    r"https?://github\.com/[^/\s]+/[^/\s]+/pull/\d+",
-    re.IGNORECASE,
-)
+from hermes_cli.kanban_pr import GITHUB_PR_URL_RE as _RESPAWN_GUARD_PR_URL_RE
 
 
 @dataclass
@@ -3977,6 +3974,8 @@ class DispatchResult:
     Reasons: ``"blocker_auth"`` (quota/auth error — also auto-blocked),
     ``"recent_success"`` (completed run within guard window),
     ``"active_pr"`` (GitHub PR URL in a recent comment)."""
+    pr_merged_completed: list[str] = field(default_factory=list)
+    """Task ids auto-completed because their linked GitHub PR merged."""
 
 
 # Bounded registry of recently-reaped worker child exits, populated by the
@@ -5098,6 +5097,14 @@ def dispatch_once(
         result.auto_blocked.extend(_crash_auto_blocked)
     result.timed_out = enforce_max_runtime(conn)
     result.promoted = recompute_ready(conn)
+
+    try:
+        from hermes_cli import kanban_pr as _kanban_pr
+
+        result.pr_merged_completed = _kanban_pr.sync_merged_pull_requests(conn)
+    except Exception:
+        _log.debug("PR merge sync failed", exc_info=True)
+        result.pr_merged_completed = []
 
     # Count tasks already running so max_spawn enforces concurrency rather
     # than a per-tick spawn budget. See the docstring above for the full

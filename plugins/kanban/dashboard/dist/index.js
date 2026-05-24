@@ -2520,6 +2520,25 @@
     },
       h(Card, null,
         h(CardContent, { className: "hermes-kanban-card-content" },
+          t.pr && t.pr.url
+            ? h("div", { className: "hermes-kanban-card-pr-row",
+                                onClick: function (e) { e.stopPropagation(); } },
+                h("span", { className: "hermes-kanban-card-pr-label" },
+                  tx(i18n, "prStatus", "PR Status"), ":"),
+                h("a", {
+                  className: cn(
+                    "hermes-kanban-card-pr-link",
+                    "hermes-kanban-card-pr-link--" + (t.pr.label || "unknown").toLowerCase(),
+                  ),
+                  href: t.pr.url,
+                  target: "_blank",
+                  rel: "noopener noreferrer",
+                  title: t.pr.target_branch
+                    ? "Pull request (into " + t.pr.target_branch + ")"
+                    : "Open pull request",
+                }, t.pr.label || tx(i18n, "prUnknown", "Unknown")),
+              )
+            : null,
           h("div", { className: "hermes-kanban-card-row" },
             h("label", {
               className: "hermes-kanban-card-check-wrap",
@@ -3097,6 +3116,20 @@
         ),
         h("div", { className: "hermes-kanban-drawer-meta" },
           h(MetaRow, { label: tx(i18n, "status", "Status"), value: t.status }),
+          t.pr && t.pr.url
+            ? h(MetaRow, {
+                label: tx(i18n, "prStatus", "PR Status"),
+                value: h("a", {
+                  className: cn(
+                    "hermes-kanban-pr-link",
+                    "hermes-kanban-pr-link--" + (t.pr.label || "unknown").toLowerCase(),
+                  ),
+                  href: t.pr.url,
+                  target: "_blank",
+                  rel: "noopener noreferrer",
+                }, t.pr.label || tx(i18n, "prUnknown", "Unknown")),
+              })
+            : null,
           h(AssigneeEditor, { task: t, assignees: props.assignees, onPatch: props.onPatch }),
           h(PriorityEditor, { task: t, onPatch: props.onPatch }),
           t.tenant ? h(MetaRow, { label: tx(i18n, "tenant", "Tenant"), value: t.tenant }) : null,

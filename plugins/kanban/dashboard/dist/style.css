@@ -251,6 +251,62 @@
   flex-wrap: wrap;
 }
 
+.hermes-kanban-card-pr-row {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+  font-size: 0.72rem;
+  line-height: 1.2;
+}
+
+.hermes-kanban-card-pr-label {
+  color: var(--color-muted-foreground);
+  font-weight: 500;
+}
+
+.hermes-kanban-card-pr-link {
+  font-weight: 600;
+  text-decoration: none;
+}
+
+.hermes-kanban-card-pr-link:hover {
+  text-decoration: underline;
+}
+
+.hermes-kanban-card-pr-link--open,
+.hermes-kanban-pr-link--open {
+  color: var(--color-primary, #3b82f6);
+}
+
+.hermes-kanban-card-pr-link--merged,
+.hermes-kanban-pr-link--merged {
+  color: #16a34a;
+}
+
+.hermes-kanban-card-pr-link--closed,
+.hermes-kanban-pr-link--closed {
+  color: var(--color-muted-foreground);
+}
+
+.hermes-kanban-card-pr-link--draft,
+.hermes-kanban-pr-link--draft {
+  color: #a855f7;
+}
+
+.hermes-kanban-card-pr-link--unknown,
+.hermes-kanban-pr-link--unknown {
+  color: var(--color-muted-foreground);
+}
+
+.hermes-kanban-pr-link {
+  font-weight: 600;
+  text-decoration: none;
+}
+
+.hermes-kanban-pr-link:hover {
+  text-decoration: underline;
+}
+
 .hermes-kanban-card-id {
   font-family: var(--font-mono, ui-monospace, monospace);
   font-size: 0.65rem;

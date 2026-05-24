@@ -2343,6 +2343,49 @@ def test_dashboard_task_drawer_assignee_uses_profile_dropdown():
     assert "assigneeChoices.map(function (a)" in js
 
 
+def test_dashboard_task_card_shows_pr_status_row():
+    """Cards with a linked PR should show a PR Status row at the top."""
+    repo_root = Path(__file__).resolve().parents[2]
+    js = (repo_root / "plugins" / "kanban" / "dashboard" / "dist" / "index.js").read_text(encoding="utf-8")
+    css = (repo_root / "plugins" / "kanban" / "dashboard" / "dist" / "style.css").read_text(encoding="utf-8")
+
+    assert "hermes-kanban-card-pr-row" in js
+    assert 'tx(i18n, "prStatus", "PR Status")' in js
+    assert "t.pr && t.pr.url" in js
+    assert ".hermes-kanban-card-pr-link--merged" in css
+
+
+def test_board_includes_pr_status(client, monkeypatch):
+    from hermes_cli import kanban_pr as kp
+
+    with kb.connect() as conn:
+        task_id = kb.create_task(conn, title="board-pr", assignee="alice")
+        kb.add_comment(
+            conn,
+            task_id,
+            "worker",
+            "https://github.com/acme/widget/pull/5",
+        )
+
+    open_pr = kp.PullRequestInfo(
+        url="https://github.com/acme/widget/pull/5",
+        state="open",
+        merged=False,
+        draft=False,
+        target_branch="main",
+        label="Open",
+    )
+    monkeypatch.setattr(kp, "fetch_pull_request_info", lambda url: open_pr)
+    monkeypatch.setattr(kp, "sync_merged_pull_requests", lambda conn: [])
+
+    r = client.get("/api/plugins/kanban/board")
+    assert r.status_code == 200
+    tasks = [t for col in r.json()["columns"] for t in col["tasks"]]
+    match = next(t for t in tasks if t["id"] == task_id)
+    assert match["pr"]["label"] == "Open"
+    assert match["pr"]["url"] == "https://github.com/acme/widget/pull/5"
+
+
 def test_dashboard_task_drawer_summary_is_sticky():
     """The task title/meta/status actions should remain pinned while the drawer scrolls."""
     repo_root = Path(__file__).resolve().parents[2]

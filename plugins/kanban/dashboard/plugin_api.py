@@ -50,6 +50,7 @@ from pydantic import BaseModel, Field
 
 from hermes_cli import kanban_db
 from hermes_cli import kanban_diagnostics as kd
+from hermes_cli import kanban_pr
 
 log = logging.getLogger(__name__)
 
@@ -433,6 +434,7 @@ def get_board(
         # preview here — the full text is available via /tasks/:id.
         summary_map = kanban_db.latest_summaries(conn, [t.id for t in tasks])
 
+        board_task_dicts: list[dict[str, Any]] = []
         for t in tasks:
             full = summary_map.get(t.id)
             preview = (
@@ -451,6 +453,13 @@ def get_board(
                 d["warnings"] = _warnings_summary_from_diagnostics(diags)
             col = t.status if t.status in columns else "todo"
             columns[col].append(d)
+            board_task_dicts.append(d)
+
+        try:
+            kanban_pr.sync_merged_pull_requests(conn)
+            kanban_pr.attach_pr_status_to_task_dicts(conn, board_task_dicts)
+        except Exception:
+            log.debug("PR status enrichment failed", exc_info=True)
 
         # Stable per-column ordering already applied by list_tasks
         # (priority DESC, created_at ASC), keep as-is.
@@ -523,6 +532,13 @@ def get_task(
         if diag_list:
             task_d["diagnostics"] = diag_list
             task_d["warnings"] = _warnings_summary_from_diagnostics(diag_list)
+        try:
+            kanban_pr.sync_merged_pull_requests(conn)
+            pr = kanban_pr.pr_info_for_task(conn, task_id)
+            if pr:
+                task_d["pr"] = pr
+        except Exception:
+            log.debug("PR status enrichment failed for task %s", task_id, exc_info=True)
         return {
             "task": task_d,
             "comments": [_comment_dict(c) for c in kanban_db.list_comments(conn, task_id)],

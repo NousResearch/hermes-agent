@@ -6625,8 +6625,49 @@ class HermesCLI:
                 f" ({msg_count} user message{'s' if msg_count != 1 else ''},"
                 f" {len(self.conversation_history)} total)"
             )
+            # Show a short preview of the last user + assistant turn so users
+            # have visible confirmation that the previous context was restored.
+            # The classic CLI does not re-render the full transcript on resume
+            # (TUI ships a dedicated overlay for that); without this preview
+            # users — especially on native Windows terminals where there is no
+            # scrollback restored — cannot tell whether /resume actually
+            # loaded the prior conversation. See #30351.
+            self._show_resume_context_preview()
         else:
             _cprint(f"  ↻ Resumed session {target_id}{title_part} — no messages, starting fresh.")
+
+    def _show_resume_context_preview(self, preview_limit: int = 240) -> None:
+        """Print a one-line preview of the last user + assistant turn after /resume.
+
+        Kept intentionally compact so it does not flood the terminal. Use
+        /history to view the full restored transcript.
+        """
+        last_user = None
+        last_assistant = None
+        for msg in reversed(self.conversation_history or []):
+            role = msg.get("role")
+            if role == "assistant" and last_assistant is None:
+                content = msg.get("content")
+                if content:
+                    last_assistant = str(content)
+            elif role == "user" and last_user is None:
+                content = msg.get("content")
+                if content:
+                    last_user = str(content)
+            if last_user and last_assistant:
+                break
+
+        def _truncate(text: str) -> str:
+            text = " ".join(text.split())
+            return text if len(text) <= preview_limit else text[:preview_limit] + "..."
+
+        if last_user or last_assistant:
+            _cprint("  Last turn:")
+            if last_user:
+                _cprint(f"    [You] {_truncate(last_user)}")
+            if last_assistant:
+                _cprint(f"    [Hermes] {_truncate(last_assistant)}")
+            _cprint("  Use /history for the full restored transcript.")
 
     def _handle_sessions_command(self, cmd_original: str) -> None:
         """Handle /sessions [list|<id_or_title>] — browse or resume previous sessions.

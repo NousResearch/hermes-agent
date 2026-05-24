@@ -411,6 +411,93 @@ class TestHistoryDisplay:
         assert "Recent sessions" in output
         assert "Checking Running Hermes Agent" in output
 
+    def test_resume_prints_last_turn_preview(self, capsys):
+        """/resume into a session with prior history should print a short
+        preview of the last user + assistant turn so users have visible
+        confirmation that the prior context was actually restored. Regression
+        for #30351 (native Windows terminal users could not tell whether the
+        previous conversation context had been restored after `/resume`).
+        """
+        import cli as _cli_mod
+        cli = _make_cli()
+        cli.session_id = "current"
+        cli._session_db = MagicMock()
+        cli._session_db.get_session.return_value = {
+            "id": "20260401_201329_d85961",
+            "title": "Prior Conversation",
+        }
+        cli._session_db.resolve_resume_session_id.return_value = "20260401_201329_d85961"
+        cli._session_db.get_messages_as_conversation.return_value = [
+            {"role": "user", "content": "first message that should not be previewed"},
+            {"role": "assistant", "content": "early assistant reply"},
+            {"role": "user", "content": "what is the meaning of life?"},
+            {"role": "assistant", "content": "Forty-two, give or take."},
+        ]
+        cli.agent = None  # skip the agent-sync branch
+
+        printed = []
+        with patch.object(_cli_mod, "_cprint", side_effect=lambda t: printed.append(t)):
+            cli._handle_resume_command("/resume 20260401_201329_d85961")
+        output = "\n".join(printed)
+
+        assert "Resumed session 20260401_201329_d85961" in output
+        # Header for the new preview block.
+        assert "Last turn:" in output
+        # Last user + last assistant content is shown.
+        assert "what is the meaning of life?" in output
+        assert "Forty-two" in output
+        # Earlier turns are NOT printed in the preview.
+        assert "first message that should not be previewed" not in output
+        assert "early assistant reply" not in output
+        # Tip about /history is surfaced.
+        assert "/history" in output
+
+    def test_resume_preview_truncates_long_messages(self):
+        """Long restored turns are truncated so the preview stays compact."""
+        import cli as _cli_mod
+        cli = _make_cli()
+        cli.session_id = "current"
+        cli._session_db = MagicMock()
+        cli._session_db.get_session.return_value = {"id": "sess_long", "title": "Long"}
+        cli._session_db.resolve_resume_session_id.return_value = "sess_long"
+        long_assistant = "x" * 1000
+        cli._session_db.get_messages_as_conversation.return_value = [
+            {"role": "user", "content": "tiny user msg"},
+            {"role": "assistant", "content": long_assistant},
+        ]
+        cli.agent = None
+
+        printed = []
+        with patch.object(_cli_mod, "_cprint", side_effect=lambda t: printed.append(t)):
+            cli._handle_resume_command("/resume sess_long")
+        output = "\n".join(printed)
+
+        assert "Last turn:" in output
+        assert "tiny user msg" in output
+        # Trailing ellipsis indicates truncation; full 1000-char string is not printed.
+        assert "..." in output
+        assert long_assistant not in output
+
+    def test_resume_empty_session_skips_preview(self):
+        """Empty resumed sessions still print the 'starting fresh' line and
+        must NOT print the 'Last turn:' preview header."""
+        import cli as _cli_mod
+        cli = _make_cli()
+        cli.session_id = "current"
+        cli._session_db = MagicMock()
+        cli._session_db.get_session.return_value = {"id": "sess_empty", "title": "Empty"}
+        cli._session_db.resolve_resume_session_id.return_value = "sess_empty"
+        cli._session_db.get_messages_as_conversation.return_value = []
+        cli.agent = None
+
+        printed = []
+        with patch.object(_cli_mod, "_cprint", side_effect=lambda t: printed.append(t)):
+            cli._handle_resume_command("/resume sess_empty")
+        output = "\n".join(printed)
+
+        assert "starting fresh" in output
+        assert "Last turn:" not in output
+
     def test_sessions_with_target_delegates_to_resume(self):
         """/sessions <id_or_title> behaves identically to /resume <id_or_title>.
 

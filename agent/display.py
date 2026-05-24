@@ -953,11 +953,29 @@ def get_cute_tool_message(
     if tool_name == "todo":
         todos_arg = args.get("todos")
         merge = args.get("merge", False)
+        # Parse result for completion progress
+        total = 0
+        done = 0
+        if result:
+            try:
+                data = safe_json_loads(result)
+                if data:
+                    s = data.get("summary", {})
+                    total = s.get("total", 0)
+                    done = s.get("completed", 0)
+            except Exception:
+                pass
         if todos_arg is None:
+            if total > 0:
+                return _wrap(f"┊ 📋 plan      {done}/{total} task(s)  {dur}")
             return _wrap(f"┊ 📋 plan      reading tasks  {dur}")
         elif merge:
+            if total > 0 and done > 0:
+                return _wrap(f"┊ 📋 plan      update {done}/{total} ✓  {dur}")
             return _wrap(f"┊ 📋 plan      update {len(todos_arg)} task(s)  {dur}")
         else:
+            if total > 0 and done > 0:
+                return _wrap(f"┊ 📋 plan      {done}/{total} task(s)  {dur}")
             return _wrap(f"┊ 📋 plan      {len(todos_arg)} task(s)  {dur}")
     if tool_name == "session_search":
         return _wrap(f"┊ 🔍 recall    \"{_trunc(args.get('query', ''), 35)}\"  {dur}")

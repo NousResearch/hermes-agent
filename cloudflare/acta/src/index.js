@@ -26,6 +26,12 @@ function headersForKey(key) {
   // inline script for local read/unread state and swipe gestures. Signed detail
   // reports and archive pages remain scriptless by default.
   if (key === "public/index.html") return INTERACTIVE_DASHBOARD_HEADERS;
+  // Outputs are curated interactive artifacts. They still require Acta auth,
+  // but unlike cron detail reports they need inline JS for drawers, filters,
+  // and mobile controls to work.
+  if (key === "public/outputs/index.html" || /^public\/outputs\/[A-Za-z0-9._-]+\.html$/.test(key)) {
+    return INTERACTIVE_DASHBOARD_HEADERS;
+  }
   return SECURITY_HEADERS;
 }
 
@@ -93,6 +99,9 @@ function publicKeyForPath(pathname) {
   if (pathname === "/" || pathname === "") return "public/index.html";
   if (pathname === "/jobs" || pathname === "/jobs/") return "public/jobs/index.html";
   if (pathname === "/archive" || pathname === "/archive/") return "public/archive/index.html";
+  if (pathname === "/outputs" || pathname === "/outputs/") return "public/outputs/index.html";
+  const outputMatch = pathname.match(/^\/outputs\/([A-Za-z0-9._-]+)\/?$/);
+  if (outputMatch) return `public/outputs/${outputMatch[1]}.html`;
   const match = pathname.match(/^\/archive\/([0-9]{4}-[0-9]{2}-[0-9]{2})\/?$/);
   if (match) return `public/archive/${match[1]}.html`;
   return "";
@@ -127,6 +136,9 @@ async function publicUrl(env, key) {
   if (key === "public/index.html") return `${base}/`;
   if (key === "public/jobs/index.html") return `${base}/jobs`;
   if (key === "public/archive/index.html") return `${base}/archive`;
+  if (key === "public/outputs/index.html") return `${base}/outputs`;
+  const outputMatch = key.match(/^public\/outputs\/([A-Za-z0-9._-]+)\.html$/);
+  if (outputMatch) return `${base}/outputs/${outputMatch[1]}`;
   const archiveMatch = key.match(/^public\/archive\/([0-9]{4}-[0-9]{2}-[0-9]{2})\.html$/);
   if (archiveMatch) return `${base}/archive/${archiveMatch[1]}`;
   return `${base}/${key}`;

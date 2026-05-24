@@ -58,7 +58,11 @@ function makeEnv(overrides = {}) {
     ACTA_SIGNING_SECRET: "test-secret",
     ACTA_UPLOAD_TOKEN: "upload-token",
     PUBLIC_BASE_URL: "https://acta.imperatr.com",
-    REPORTS: makeReports({ "public/index.html": "<html><body>Acta Private Feed</body></html>" }),
+    REPORTS: makeReports({
+      "public/index.html": "<html><body>Acta Private Feed</body></html>",
+      "public/outputs/index.html": "<html><body>Acta Outputs</body></html>",
+      "public/outputs/pe-principal-automation-roadmap.html": "<html><body><script>window.ok=true</script>PE OS</body></html>",
+    }),
     VESTA_DB: makeVestaDb(),
     ...overrides,
   };
@@ -88,4 +92,29 @@ test("Acta login page is reachable without an existing SSO cookie", async () => 
   assert.equal(response.status, 200);
   assert.match(html, /Sign in to Acta/);
   assert.match(html, /\/auth\/login/);
+});
+
+
+test("Acta serves Outputs as a first-class authenticated module route", async () => {
+  const response = await worker.fetch(
+    new Request("https://acta.imperatr.com/outputs", { headers: { cookie: "vesta_session=valid-token" } }),
+    makeEnv(),
+  );
+
+  assert.equal(response.status, 200);
+  assert.equal(await response.text(), "<html><body>Acta Outputs</body></html>");
+});
+
+test("Acta serves output slugs with interactive CSP so artifact JavaScript works", async () => {
+  const response = await worker.fetch(
+    new Request("https://acta.imperatr.com/outputs/pe-principal-automation-roadmap", {
+      headers: { cookie: "vesta_session=valid-token" },
+    }),
+    makeEnv(),
+  );
+  const body = await response.text();
+
+  assert.equal(response.status, 200);
+  assert.match(body, /PE OS/);
+  assert.match(response.headers.get("content-security-policy"), /script-src 'unsafe-inline'/);
 });

@@ -101,7 +101,7 @@ class XAIWebSearchProvider(WebSearchProvider):
     back to the Responses API ``citations`` list if Grok ignores the JSON
     schema instruction (rare for grok-4.3 but cheap insurance).
 
-    No extract capability — pair with Firecrawl / Tavily / Exa for
+    No extract capability — pair with Firecrawl / Tavily / Exa / LLMLayer for
     ``web_extract`` if you need page content.
 
     Trust model

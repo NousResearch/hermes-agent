@@ -348,6 +348,7 @@ def run_dump(args):
         ("OPENCODE_GO_API_KEY", "opencode_go"),
         ("KILOCODE_API_KEY", "kilocode"),
         ("FIRECRAWL_API_KEY", "firecrawl"),
+        ("LLMLAYER_API_KEY", "llmlayer"),
         ("TAVILY_API_KEY", "tavily"),
         ("BROWSERBASE_API_KEY", "browserbase"),
         ("FAL_KEY", "fal"),

@@ -111,6 +111,7 @@ LAZY_DEPS: dict[str, tuple[str, ...]] = {
 
     # ─── Web search backends ───────────────────────────────────────────────
     "search.exa": ("exa-py==2.10.2",),
+    "search.llmlayer": ("llmlayer==0.2.6",),
     "search.firecrawl": ("firecrawl-py==4.17.0",),
     "search.parallel": ("parallel-web==0.4.2",),
 

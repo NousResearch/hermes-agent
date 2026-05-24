@@ -830,6 +830,7 @@ def test_first_install_nous_auto_configures_managed_defaults(monkeypatch):
         "ELEVENLABS_API_KEY",
         "FIRECRAWL_API_KEY",
         "FIRECRAWL_API_URL",
+        "LLMLAYER_API_KEY",
         "TAVILY_API_KEY",
         "PARALLEL_API_KEY",
         "BROWSERBASE_API_KEY",

@@ -2,8 +2,8 @@
 
 Covers:
 
-- All eight bundled plugins (brave-free, ddgs, searxng, exa, parallel,
-  tavily, firecrawl, xai) instantiate and self-report the expected
+- All nine bundled plugins (brave-free, ddgs, searxng, exa, llmlayer,
+  parallel, tavily, firecrawl, xai) instantiate and self-report the expected
   capabilities + ABC-derived defaults.
 - Each plugin's ``is_available()`` correctly reflects env-var presence.
 - The web_search_registry resolves an active provider in the documented
@@ -37,6 +37,7 @@ def _clear_web_env(monkeypatch: pytest.MonkeyPatch) -> None:
         "TAVILY_API_KEY",
         "TAVILY_BASE_URL",
         "EXA_API_KEY",
+        "LLMLAYER_API_KEY",
         "PARALLEL_API_KEY",
         "PARALLEL_SEARCH_MODE",
         "FIRECRAWL_API_KEY",
@@ -68,9 +69,9 @@ def _isolate_env(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 class TestBundledPluginsRegister:
-    """All eight bundled web plugins discover and register correctly."""
+    """All nine bundled web plugins discover and register correctly."""
 
-    def test_all_seven_plugins_present_in_registry(self) -> None:
+    def test_all_nine_plugins_present_in_registry(self) -> None:
         _ensure_plugins_loaded()
         from agent.web_search_registry import list_providers
 
@@ -80,6 +81,7 @@ class TestBundledPluginsRegister:
             "ddgs",
             "exa",
             "firecrawl",
+            "llmlayer",
             "parallel",
             "searxng",
             "tavily",
@@ -93,6 +95,7 @@ class TestBundledPluginsRegister:
             ("ddgs", True, False),
             ("searxng", True, False),
             ("exa", True, True),
+            ("llmlayer", True, True),
             ("parallel", True, True),
             ("tavily", True, True),
             ("firecrawl", True, True),
@@ -116,7 +119,7 @@ class TestBundledPluginsRegister:
 
     @pytest.mark.parametrize(
         "plugin_name",
-        ["brave-free", "ddgs", "searxng", "exa", "parallel", "tavily", "firecrawl", "xai"],
+        ["brave-free", "ddgs", "searxng", "exa", "llmlayer", "parallel", "tavily", "firecrawl", "xai"],
     )
     def test_each_plugin_has_name_and_display_name(self, plugin_name: str) -> None:
         _ensure_plugins_loaded()
@@ -129,7 +132,7 @@ class TestBundledPluginsRegister:
 
     @pytest.mark.parametrize(
         "plugin_name",
-        ["brave-free", "ddgs", "searxng", "exa", "parallel", "tavily", "firecrawl", "xai"],
+        ["brave-free", "ddgs", "searxng", "exa", "llmlayer", "parallel", "tavily", "firecrawl", "xai"],
     )
     def test_each_plugin_has_setup_schema(self, plugin_name: str) -> None:
         """``get_setup_schema()`` returns a dict the picker can consume."""
@@ -200,6 +203,16 @@ class TestIsAvailable:
         assert p is not None
         assert p.is_available() is False
         monkeypatch.setenv("PARALLEL_API_KEY", "real")
+        assert p.is_available() is True
+
+    def test_llmlayer_requires_api_key(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        _ensure_plugins_loaded()
+        from agent.web_search_registry import get_provider
+
+        p = get_provider("llmlayer")
+        assert p is not None
+        assert p.is_available() is False
+        monkeypatch.setenv("LLMLAYER_API_KEY", "real")
         assert p.is_available() is True
 
     def test_firecrawl_requires_either_key_or_url(
@@ -290,6 +303,21 @@ class TestRegistryResolution:
         assert result is not None
         assert result.is_available() is True
 
+    def test_fallback_order_matches_web_tools_backend_preference(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """No explicit config → use the same paid-provider order as web_tools."""
+        _ensure_plugins_loaded()
+        from agent.web_search_registry import _resolve
+
+        monkeypatch.setenv("LLMLAYER_API_KEY", "llmlayer-test")
+        monkeypatch.setenv("PARALLEL_API_KEY", "parallel-test")
+        monkeypatch.setenv("FIRECRAWL_API_KEY", "firecrawl-test")
+
+        result = _resolve(None, capability="search")
+        assert result is not None
+        assert result.name == "llmlayer"
+
     def test_explicit_search_only_provider_for_extract_falls_back(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
@@ -361,6 +389,14 @@ class TestAsyncExtractDispatch:
         assert p is not None
         assert inspect.iscoroutinefunction(p.extract) is False
 
+    def test_llmlayer_extract_is_sync(self) -> None:
+        _ensure_plugins_loaded()
+        from agent.web_search_registry import get_provider
+
+        p = get_provider("llmlayer")
+        assert p is not None
+        assert inspect.iscoroutinefunction(p.extract) is False
+
     def test_tavily_extract_is_sync(self) -> None:
         _ensure_plugins_loaded()
         from agent.web_search_registry import get_provider
@@ -422,6 +458,17 @@ class TestErrorResponseShapes:
         assert result.get("success") is False
         assert "error" in result
 
+    def test_llmlayer_returns_error_dict_when_unconfigured(self) -> None:
+        _ensure_plugins_loaded()
+        from agent.web_search_registry import get_provider
+
+        p = get_provider("llmlayer")
+        assert p is not None
+        result = p.search("test", limit=5)
+        assert isinstance(result, dict)
+        assert result.get("success") is False
+        assert "error" in result
+
     def test_parallel_extract_returns_per_url_errors_when_unconfigured(self) -> None:
         _ensure_plugins_loaded()
         from agent.web_search_registry import get_provider
@@ -429,6 +476,18 @@ class TestErrorResponseShapes:
         p = get_provider("parallel")
         assert p is not None
         result = asyncio.run(p.extract(["https://example.com"]))
+        assert isinstance(result, list)
+        assert len(result) == 1
+        assert "error" in result[0]
+        assert result[0]["url"] == "https://example.com"
+
+    def test_llmlayer_extract_returns_per_url_errors_when_unconfigured(self) -> None:
+        _ensure_plugins_loaded()
+        from agent.web_search_registry import get_provider
+
+        p = get_provider("llmlayer")
+        assert p is not None
+        result = p.extract(["https://example.com"])
         assert isinstance(result, list)
         assert len(result) == 1
         assert "error" in result[0]

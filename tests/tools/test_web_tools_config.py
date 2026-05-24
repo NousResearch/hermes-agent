@@ -210,6 +210,7 @@ class TestBackendSelection:
 
     _ENV_KEYS = (
         "EXA_API_KEY",
+        "LLMLAYER_API_KEY",
         "PARALLEL_API_KEY",
         "FIRECRAWL_API_KEY",
         "FIRECRAWL_API_URL",
@@ -250,6 +251,13 @@ class TestBackendSelection:
         with patch("tools.web_tools._load_web_config", return_value={"backend": "exa"}), \
              patch.dict(os.environ, {"PARALLEL_API_KEY": "test-key"}):
             assert _get_backend() == "exa"
+
+    def test_config_llmlayer(self):
+        """web.backend=llmlayer in config → 'llmlayer' regardless of other keys."""
+        from tools.web_tools import _get_backend
+        with patch("tools.web_tools._load_web_config", return_value={"backend": "llmlayer"}), \
+             patch.dict(os.environ, {"PARALLEL_API_KEY": "test-key"}):
+            assert _get_backend() == "llmlayer"
 
     def test_config_firecrawl(self):
         """web.backend=firecrawl in config → 'firecrawl' even if Parallel key set."""
@@ -298,6 +306,13 @@ class TestBackendSelection:
         with patch("tools.web_tools._load_web_config", return_value={}), \
              patch.dict(os.environ, {"EXA_API_KEY": "exa-test"}):
             assert _get_backend() == "exa"
+
+    def test_fallback_llmlayer_only_key(self):
+        """Only LLMLAYER_API_KEY set -> 'llmlayer'."""
+        from tools.web_tools import _get_backend
+        with patch("tools.web_tools._load_web_config", return_value={}), \
+             patch.dict(os.environ, {"LLMLAYER_API_KEY": "llm-layer-test"}):
+            assert _get_backend() == "llmlayer"
 
     def test_fallback_exa_takes_priority_over_parallel(self):
         """Direct-credential backends are tried in the order tavily > exa > parallel
@@ -532,6 +547,7 @@ class TestCheckWebApiKey:
 
     _ENV_KEYS = (
         "EXA_API_KEY",
+        "LLMLAYER_API_KEY",
         "PARALLEL_API_KEY",
         "FIRECRAWL_API_KEY",
         "FIRECRAWL_API_URL",
@@ -565,6 +581,11 @@ class TestCheckWebApiKey:
 
     def test_exa_key_only(self):
         with patch.dict(os.environ, {"EXA_API_KEY": "exa-test"}):
+            from tools.web_tools import check_web_api_key
+            assert check_web_api_key() is True
+
+    def test_llmlayer_key_only(self):
+        with patch.dict(os.environ, {"LLMLAYER_API_KEY": "llm-layer-test"}):
             from tools.web_tools import check_web_api_key
             assert check_web_api_key() is True
 
@@ -668,3 +689,4 @@ def test_web_requires_env_includes_exa_key():
     from tools.web_tools import _web_requires_env
 
     assert "EXA_API_KEY" in _web_requires_env()
+    assert "LLMLAYER_API_KEY" in _web_requires_env()

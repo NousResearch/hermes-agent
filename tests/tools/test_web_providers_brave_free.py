@@ -212,7 +212,7 @@ class TestBraveFreeBackendWiring:
         from tools import web_tools
         monkeypatch.setattr(web_tools, "_load_web_config", lambda: {})
         for key in ("FIRECRAWL_API_KEY", "FIRECRAWL_API_URL", "PARALLEL_API_KEY",
-                    "TAVILY_API_KEY", "EXA_API_KEY", "SEARXNG_URL"):
+                    "TAVILY_API_KEY", "EXA_API_KEY", "LLMLAYER_API_KEY", "SEARXNG_URL"):
             monkeypatch.delenv(key, raising=False)
         monkeypatch.setenv("BRAVE_SEARCH_API_KEY", "BSAkey123")
         monkeypatch.setattr(web_tools, "_is_tool_gateway_ready", lambda: False)
@@ -223,7 +223,7 @@ class TestBraveFreeBackendWiring:
         """Tavily (higher priority) should win in auto-detect."""
         from tools import web_tools
         monkeypatch.setattr(web_tools, "_load_web_config", lambda: {})
-        for key in ("FIRECRAWL_API_KEY", "FIRECRAWL_API_URL", "PARALLEL_API_KEY", "EXA_API_KEY", "SEARXNG_URL"):
+        for key in ("FIRECRAWL_API_KEY", "FIRECRAWL_API_URL", "PARALLEL_API_KEY", "EXA_API_KEY", "LLMLAYER_API_KEY", "SEARXNG_URL"):
             monkeypatch.delenv(key, raising=False)
         monkeypatch.setenv("TAVILY_API_KEY", "tvly")
         monkeypatch.setenv("BRAVE_SEARCH_API_KEY", "BSAkey123")

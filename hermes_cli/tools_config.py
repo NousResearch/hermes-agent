@@ -2027,8 +2027,8 @@ def _plugin_video_gen_providers() -> list[dict]:
 
 # Mirror of _plugin_image_gen_providers for web search backends. Surfaces
 # every plugin-registered web provider so it appears in the
-# "Web Search & Extract" picker. All seven providers (brave-free, ddgs,
-# searxng, exa, parallel, tavily, firecrawl) live as plugins after
+# "Web Search & Extract" picker. All bundled providers (brave-free, ddgs,
+# searxng, exa, llmlayer, parallel, tavily, firecrawl) live as plugins after
 # PR #25182 — this helper is the sole source of truth for the category's
 # provider rows. The hardcoded entries that used to drive the category
 # were deleted in the same PR; only the two non-provider UX rows
@@ -2044,8 +2044,8 @@ def _plugin_web_search_providers() -> list[dict]:
     marker) so the picker behaves identically whether a provider is
     hardcoded or plugin-registered.
 
-    After PR #25182, all seven web providers (brave-free, ddgs, searxng,
-    exa, parallel, tavily, firecrawl) are plugins; this helper is the sole
+    After PR #25182, all web providers (brave-free, ddgs, searxng,
+    exa, llmlayer, parallel, tavily, firecrawl) are plugins; this helper is the sole
     source of provider rows for the Web Search & Extract category.
     """
     try:

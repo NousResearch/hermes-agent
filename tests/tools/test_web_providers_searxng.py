@@ -250,6 +250,7 @@ class TestGetBackendSearXNG:
         monkeypatch.delenv("PARALLEL_API_KEY", raising=False)
         monkeypatch.delenv("TAVILY_API_KEY", raising=False)
         monkeypatch.delenv("EXA_API_KEY", raising=False)
+        monkeypatch.delenv("LLMLAYER_API_KEY", raising=False)
         monkeypatch.setenv("SEARXNG_URL", "http://localhost:8080")
         # Suppress tool gateway
         monkeypatch.setattr(web_tools, "_is_tool_gateway_ready", lambda: False)
@@ -321,6 +322,7 @@ class TestCheckWebApiKey:
         monkeypatch.delenv("PARALLEL_API_KEY", raising=False)
         monkeypatch.delenv("TAVILY_API_KEY", raising=False)
         monkeypatch.delenv("EXA_API_KEY", raising=False)
+        monkeypatch.delenv("LLMLAYER_API_KEY", raising=False)
         monkeypatch.delenv("SEARXNG_URL", raising=False)
         monkeypatch.setattr(web_tools, "_is_tool_gateway_ready", lambda: False)
         monkeypatch.setattr(web_tools, "check_firecrawl_api_key", lambda: False)

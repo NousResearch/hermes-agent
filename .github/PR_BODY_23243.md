@@ -12,7 +12,7 @@ The point isn't "add Chinese." The framework is built for extension: adding a la
 
 **Fallback doesn't crash.** `getPack(locale) ?? en` → `pack[key] ?? en[key] ?? key`. Missing language pack? English. Missing key? English. Crashing? Never.
 
-**English unchanged.** Every code path returns the original English string when `locale !== 'zh'`. There is no behavioral difference for existing users, no matter what language they configure later.
+**English unchanged.** When `locale` is `'en'`, every code path returns the same English text as before — zero behavioral difference. For any other locale, the framework looks up that language's pack; a missing pack or key falls back to English silently. No crash, no blank screen.
 
 **Framework knows nothing about languages.** Verb padding, CJK glyph width — all behaviors declared by the language pack. The framework iterates all 16 packs to compute layout constants. No `if (locale === 'zh')` anywhere. Every language — including English — is simply one of the 16.
 
@@ -124,7 +124,7 @@ Hermes 的 TUI 和 Web Dashboard 目前只有英文。这个 PR 建了一套 16 
 
 **降级不会炸。** `getPack(locale) ?? en` → `pack[key] ?? en[key] ?? key`。缺语言包？英文。缺 key？英文。崩溃？不存在。
 
-**英文零影响。** 只要 locale 不是 zh，所有代码路径返回原文。不管以后加了什么语言、配了什么 locale，存量用户的行为完全不变。
+**英文零影响。** locale 为 `'en'` 时，所有代码路径返回的英文文本与 PR 前完全一致。其他 locale 各走各的翻译路径，缺包或缺 key 才降级到英文——不会崩，不会白屏。
 
 **框架不认语言。** 动词 padding、CJK 字符宽度——这些行为全部由语言包自己声明，框架只是遍历所有 16 个包来算出布局常量。代码里没有 `if (locale === 'zh')`。每种语言——包括英文——只是 16 种里的一员。
 

@@ -583,12 +583,12 @@ class TestGeneratedSystemdUnits:
         monkeypatch.setattr(
             gateway_cli,
             "_system_service_identity",
-            lambda run_as_user=None: ("hermes", "hermes", "/home/hermes"),
+            lambda run_as_user=None: ("hermes", "hermes", "/var/lib/hermes"),
         )
 
         unit = gateway_cli.generate_systemd_unit(system=True)
 
-        assert "ExecStart=/home/hermes/.local/bin/preflight " in unit
+        assert "ExecStart=/var/lib/hermes/.local/bin/preflight " in unit
         assert " -m hermes_cli.main gateway run --replace" in unit
 
 

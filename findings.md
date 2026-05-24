@@ -8595,3 +8595,185 @@ Scope: tools/subprocess_tool.py, tools/code_execution_tool.py, tools/transcripti
 
 *Pass #71 complete — 2026-05-25T18:30:00Z*
 *Commit at scan: b04760fdb*
+
+---
+
+## Pass #72 – Environment, Config & Credential Management Deep Dive – 2026-05-25T19:00:00Z
+
+### Scope
+hermes_cli/config.py, hermes_cli/env_loader.py, hermes_cli/auth.py, agent/credential_pool.py, agent/secret_sources/bitwarden.py, and related credential handling across the codebase.
+
+---
+
+### 1. Secrets Management
+
+#### 1.1 Secrets Storage: `.env` file
+- **Location**: `~/.hermes/.env` (defined as `get_env_path()` in config.py line 364-366)
+- **Permissions**: `_secure_file()` at line 423-438 sets 0o600 on the file after write. No-op on Windows and in managed mode (NixOS sets 0640 via activation script).
+- **Atomic writes**: `save_env_value()` (line 4831-4899) writes via `tempfile.mkstemp` + `atomic_replace()` — no exposure window where other local users can read partial contents.
+- **Permission restoration**: If the file already existed with specific permissions (e.g. Docker volume mount), `save_env_value` preserves the original mode rather than blindly tightening it (line 4871-4889). This is correct behavior for container scenarios.
+- **Credential ASCII sanitization**: `_sanitize_loaded_credentials()` in env_loader.py (line 78-119) strips non-ASCII characters from env vars with credential suffixes after every dotenv load. This prevents copy-paste Unicode lookalike glyphs (e.g. Cyrillic 'а' vs ASCII 'a') from causing opaque API key rejection. Warnings go to stderr.
+
+#### 1.2 Secrets Storage: `auth.json`
+- **Location**: `~/.hermes/auth.json` (line 182 of profiles.py: `# API keys, OAuth tokens, credential pools`)
+- **Write security** (auth.py line 1029-1075):
+  - Created with `os.O_EXCL` so it atomically exists with 0o600 permissions — no TOCTOU window.
+  - `atomic_replace()` for the actual rename.
+  - Parent dir hardened to 0o700 via `secure_parent_dir()`.
+  - Post-write `chmod 0o600` as belt-and-suspenders.
+  - `fsync` on the directory after write.
+- **Read security** (auth.py line 989-1026): Falls back to empty store on parse failure. Corrupt file backed up to `.json.corrupt`.
+
+#### 1.3 No hardcoded secrets in source
+- No `api_key = "sk-..."` or `password = "..."` string literals found in Python source files under `hermes_cli/` or `agent/`.
+- `LMSTUDIO_NOAUTH_PLACEHOLDER = "dummy-lm-api-key"` (auth.py line 159) is an explicit sentinel for LM Studio's no-auth mode and is never sent to any remote service.
+
+#### 1.4 Bitwarden Secrets Manager integration
+- **File**: `agent/secret_sources/bitwarden.py`
+- **Bootstrap secret**: Only `BWS_ACCESS_TOKEN` needs to live in plaintext in `.env`. Every other key can come from BSM.
+- **Binary verification**: `bws` binary auto-installed with SHA-256 checksum verification against upstream checksums file. Version pinned (`_BWS_VERSION = "2.0.0"`), no auto-resolution of "latest".
+- **Cache**: In-process cache with TTL so repeated invocations don't hammer BSM API.
+- **Non-blocking**: All failures (missing binary, network, expired token) emit a one-line warning and continue with existing `.env` credentials. Never blocks startup.
+- **Secret source labeling**: `_SECRET_SOURCES` dict tracks which env vars came from Bitwarden vs `.env` or shell. Used by setup/model flows to show "(from Bitwarden)" suffix.
+
+---
+
+### 2. Environment Variable Handling
+
+#### 2.1 `${VAR}` expansion in config.yaml
+- **Function**: `_expand_env_vars()` at line 4160-4177 of config.py.
+- **Mechanism**: Regex `r"\${([^}]+)}"` with `re.sub` — matches `${VAR}` patterns and looks up in `os.environ`. Unresolved references left verbatim.
+- **Only string values processed** — dict keys, numbers, booleans, None are untouched. This prevents accidental expansion of non-string fields.
+- **Template preservation on save**: `_preserve_env_ref_templates()` (line 4195-4256) restores raw `${VAR}` templates when the expanded value matches the loaded value, preventing plaintext secrets from being written back to config.yaml.
+- **No unsafe eval**: No `eval()`, `exec()`, or similar. Pure regex substitution.
+
+#### 2.2 Dotenv loading precedence
+- **File**: `hermes_cli/env_loader.py`
+- `load_hermes_dotenv()` (line 188-223):
+  1. User env `~/.hermes/.env` loaded **first** with `override=True` (overwrites shell-exported values).
+  2. Project env (e.g. repo `.env` for dev) loaded **second** with `override=not loaded` — only fills missing values when user env doesn't exist.
+- **Corrupted .env pre-sanitization**: `_sanitize_env_file_if_needed()` splits concatenated KEY=VALUE pairs (the #8908 issue). Also strips null bytes.
+- **ASCII-only enforcement for credentials**: `_sanitize_loaded_credentials()` runs after every dotenv load, warning + stripping non-ASCII from credential-suffix env vars.
+
+#### 2.3 `get_env_value()` precedence
+- Line 5012-5020: checks `os.environ` **first**, then falls back to `.env` file. Shell-exported values take precedence over `.env` values at runtime.
+- **Inconsistency noted**: `load_hermes_dotenv` does the opposite (`.env` overrides shell). This precedence difference between initial loading and runtime resolution is worth documenting.
+
+#### 2.4 Env var validation
+- `_ENV_VAR_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")` at line 74 — strict name validation in `save_env_value()`.
+
+---
+
+### 3. Config File Security
+
+#### 3.1 File permissions
+- **`config.yaml`**: `_secure_file()` sets 0o600 after write. No-op on Windows/managed mode.
+- **`~/.hermes/` directory**: `_secure_dir()` sets 0o700 by default. `HERMES_HOME_MODE` env var allows override (e.g. 0701 for web servers needing traversal).
+- **Container opt-out**: `HERMES_CONTAINER` or `HERMES_SKIP_CHMOD` env vars skip chmod entirely for Docker/Podman volume mounts.
+
+#### 3.2 Config migration security
+- Migration code (line 1806-4130+) handles schema upgrades non-destructively. New fields added with defaults; old fields migrated to new locations; dead vars cleared.
+- `read_raw_config()` (line 4352+) returns on-disk values without merging defaults, used by migrations to avoid accidentally promoting runtime defaults back to disk.
+- Migration 13→14 validates that OpenAI model names (e.g. "whisper-1") aren't migrated into the local STT provider section.
+
+#### 3.3 No secrets in logs or config display
+- `show_config()` (line 5037+) uses `redact_key()` which wraps `agent.redact.mask_secret`. Never prints raw API key values.
+- All secrets use `getpass.getpass()` for console input (with TUI-aware stubs in callbacks).
+
+#### 3.4 Backup exclusion
+- `backup.py` line 65: `_SECRET_FILE_NAMES = {".env", "auth.json", "state.db"}` — explicitly excluded from profile backup archives.
+
+---
+
+### 4. Credential Provider Abstraction
+
+#### 4.1 Provider registry
+- `PROVIDER_REGISTRY` in auth.py (line 183-300+) maps provider IDs to `ProviderConfig` objects with `auth_type` in {oauth_device_code, oauth_external, oauth_minimax, api_key, external_process}.
+- Each `ProviderConfig` specifies `api_key_env_vars` tuple (checked in priority order) for API-key providers.
+
+#### 4.2 Credential pool isolation
+- **File**: `agent/credential_pool.py`
+- `CredentialPool` class (line 389) is provider-scoped: `self.provider = provider`, `self._entries = sorted(...)`.
+- Per-provider pool persisted to `auth.json` as `credential_pool.<provider>` via `write_credential_pool()`.
+- Custom provider pool keys are `custom:<normalized_name>` (line 82).
+- `get_custom_provider_pool_key()` (line 318) matches by name first, then by base URL. Fixes P1 bug where two custom providers sharing same base_url resolved to the same pool key.
+
+#### 4.3 Lock ordering to prevent deadlock
+- `_auth_store_lock()` (auth.py line 971-986) documents a lock ordering invariant: when held together with `_nous_shared_store_lock`, the auth store lock must be acquired **first** (outer) and the shared Nous lock **second** (inner). All runtime refresh paths follow this order.
+
+#### 4.4 Credential source suppression
+- Auth store has a `suppressed_sources` dict allowing per-provider per-source suppression. Used by `unsuppress_credential_source()` in auth_commands.py for "forget this credential" flows.
+
+---
+
+### 5. OAuth Token Management
+
+#### 5.1 Token storage
+- OAuth tokens stored in `auth.json` under `providers.<provider>` and `credential_pool.<provider>`. Not stored in `.env`.
+- `PooledCredential` dataclass (credential_pool.py line 93-178) has `access_token`, `refresh_token`, `expires_at`, `expires_at_ms`, `last_refresh` fields.
+- `runtime_api_key` property (line 166-172) returns `agent_key` for Nous (NAS invoke JWT or legacy session key), `access_token` for others.
+
+#### 5.2 Token refresh skew per provider
+| Provider | Refresh skew |
+|----------|-------------|
+| Nous | 120s before expiry |
+| MiniMax OAuth | 60s |
+| xAI | 120s |
+| Spotify | 120s |
+| Google Gemini | 60s |
+| Codex | 120s |
+| Qwen | 120s |
+
+#### 5.3 Refresh token reuse detection
+- auth.py line 4529-4550: Detects "refresh_token_reused" from the Nous portal and surfaces an actionable message explaining that external processes calling POST /api/oauth/token without persisting the rotated token back causes session chain revocation. Shows clear relogin instructions.
+
+#### 5.4 Token sync across processes/files
+- `credential_pool.py` line 447-482: `_sync_anthropic_entry_from_credentials_file()` syncs pool entry from `~/.claude/.credentials.json` when tokens differ (external Claude Code CLI refreshed).
+- Same file line 484-500: `_sync_codex_entry_from_auth_store()` syncs Codex pool entry from `auth.json` when fresh device-code login writes new tokens.
+
+#### 5.5 Nous shared store for multi-profile
+- `_try_import_shared_nous_state()` (auth.py line 4424-4495): Rehydrates Nous OAuth from `<hermes-root>/shared/nous_auth.json` for cross-profile credential sharing. Forces a refresh using the stored refresh_token to produce a fresh access_token scoped to the current profile.
+
+#### 5.6 OAuth device code flow security
+- Local server bound to `127.0.0.1` only (xai_oauth redirect host line 119: `XAI_OAUTH_REDIRECT_HOST = "127.0.0.1"`).
+- Timeout on the callback server.
+- `NO_COLOR=1` set in bws subprocess env (bitwarden.py line 369) to prevent ANSI codes from polluting JSON output.
+
+---
+
+### 6. Secret Redaction in Output
+
+- config.py line 4489-4505 documents the `security:` section with `redact_secrets: true` as default.
+- `redact_key()` (line 5027-5034) wraps `agent.redact.mask_secret` — provides "(not set)" placeholder in dim color for empty values.
+- No direct `print()` of API keys, tokens, or passwords anywhere in the credential handling paths.
+
+---
+
+### Findings Summary
+
+| ID | Severity | Area | Issue |
+|----|----------|------|-------|
+| S72-1 | INFO | Env precedence | `get_env_value()` checks `os.environ` first, but `load_hermes_dotenv` does `.env` first — inconsistent precedence between initial loading and runtime resolution. Not a bug but undocumented behavior. |
+| S72-2 | LOW | Bitwarden BWS binary | `bws` auto-installs into `hermes_home/bin/` and is executed as a subprocess. If the binary is replaced by an attacker before Hermes next runs, the malicious binary would execute with the BWS access token. Mitigated by: binary pinned to specific version with SHA-256 verification. Risk is during the window between version check and execution. |
+
+| Area | Status | Notes |
+|------|--------|-------|
+| Secrets in `.env` | GOOD | Atomic writes, 0o600 perms, ASCII sanitization, pre-sanitization of concatenated lines |
+| Secrets in `auth.json` | GOOD | O_EXCL atomic creation, 0o600 perms, fsync, parent dir hardening |
+| Hardcoded secrets in source | CLEAN | None found |
+| `${VAR}` expansion | SAFE | Regex-only, no eval, templates preserved on save |
+| Dotenv loading precedence | OK | User env overrides shell, project env fills missing only |
+| Config file permissions | GOOD | 0o600 for files, 0o700 for dirs, container/managed opt-outs |
+| Config migration | GOOD | Non-destructive, uses raw config for decisions |
+| No secrets in logs/display | GOOD | All secrets redacted via mask_secret |
+| Bitwarden BSM integration | GOOD | SHA-256 verified binary install, non-blocking, cache TTL, secret source labeling |
+| Credential pool isolation | GOOD | Provider-scoped, custom:* keys, name-first resolution |
+| OAuth token refresh | GOOD | Per-provider skew values, reuse detection, cross-process sync |
+| Lock ordering (deadlock prevention) | GOOD | Auth store lock is outer, Nous shared lock is inner |
+| Token storage | GOOD | `auth.json`, 0o600, atomic writes |
+| Backup exclusion | GOOD | `.env`, `auth.json`, `state.db` excluded from profile backups |
+
+---
+
+*Pass #72 complete — 2026-05-25T19:00:00Z*
+*Commit at scan: 5a51a1f65*

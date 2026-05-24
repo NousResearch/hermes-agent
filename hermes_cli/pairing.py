@@ -30,6 +30,8 @@ def pairing_command(args):
 
 def _cmd_list(store):
     """List all pending and approved users."""
+    from hermes_cli.main import _pad_display
+
     pending = store.list_pending()
     approved = store.list_approved()
 
@@ -43,8 +45,11 @@ def _cmd_list(store):
         print(f"  {'--------':<12} {'----':<10} {'-------':<20} {'----':<20} {'---'}")
         for p in pending:
             print(
-                f"  {p['platform']:<12} {p['code']:<10} {p['user_id']:<20} "
-                f"{(p.get('user_name') or ''):<20} {p['age_minutes']}m ago"
+                f"  {_pad_display(p['platform'], 12)} "
+                f"{_pad_display(p['code'], 10)} "
+                f"{_pad_display(p['user_id'], 20)} "
+                f"{_pad_display(p.get('user_name') or '', 20)} "
+                f"{p['age_minutes']}m ago"
             )
     else:
         print("\n  No pending pairing requests.")
@@ -54,7 +59,11 @@ def _cmd_list(store):
         print(f"  {'Platform':<12} {'User ID':<20} {'Name':<20}")
         print(f"  {'--------':<12} {'-------':<20} {'----':<20}")
         for a in approved:
-            print(f"  {a['platform']:<12} {a['user_id']:<20} {(a.get('user_name') or ''):<20}")
+            print(
+                f"  {_pad_display(a['platform'], 12)} "
+                f"{_pad_display(a['user_id'], 20)} "
+                f"{_pad_display(a.get('user_name') or '', 20)}"
+            )
     else:
         print("\n  No approved users.")
 

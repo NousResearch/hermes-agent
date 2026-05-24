@@ -32,7 +32,7 @@ def _load_api_key(config_path: Path) -> str:
     try:
         import yaml  # type: ignore
 
-        data = yaml.safe_load(config_path.read_text()) or {}
+        data = yaml.safe_load(config_path.read_text(encoding="utf-8")) or {}
         key = (
             data.get("platforms", {})
             .get("api_server", {})
@@ -41,7 +41,7 @@ def _load_api_key(config_path: Path) -> str:
         )
         return str(key or "")
     except ImportError:
-        text = config_path.read_text()
+        text = config_path.read_text(encoding="utf-8")
         match = re.search(r"(?m)^\s*key:\s*['\"]?([^'\"\s#]+)", text)
         return match.group(1) if match else ""
 

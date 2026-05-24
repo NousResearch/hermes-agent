@@ -78,4 +78,3 @@ def test_codex_app_server_turn_prepends_memory_to_codex_input():
     assert result["final_response"] == "ok"
     assert "User prefers Claude CLI via Max" in captured["user_input"]
     assert "[Current user message]\nWhat were we working on?" in captured["user_input"]
-

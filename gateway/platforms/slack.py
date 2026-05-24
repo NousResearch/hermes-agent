@@ -2875,11 +2875,13 @@ class SlackAdapter(BasePlatformAdapter):
             store_cfg = getattr(session_store, "config", None)
             gspu = getattr(store_cfg, "group_sessions_per_user", True) if store_cfg else True
             tspu = getattr(store_cfg, "thread_sessions_per_user", False) if store_cfg else False
+            shared_group_chat_ids = getattr(store_cfg, "shared_group_chat_ids", []) if store_cfg else []
 
             session_key = build_session_key(
                 source,
                 group_sessions_per_user=gspu,
                 thread_sessions_per_user=tspu,
+                shared_group_chat_ids=shared_group_chat_ids,
             )
 
             session_store._ensure_loaded()

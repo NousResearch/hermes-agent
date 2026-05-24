@@ -199,6 +199,7 @@ class TestGatewayConfigRoundtrip:
             quick_commands={"limits": {"type": "exec", "command": "echo ok"}},
             group_sessions_per_user=False,
             thread_sessions_per_user=True,
+            shared_group_chat_ids=["group-1", "group-2"],
         )
         d = config.to_dict()
         restored = GatewayConfig.from_dict(d)
@@ -209,6 +210,15 @@ class TestGatewayConfigRoundtrip:
         assert restored.quick_commands == {"limits": {"type": "exec", "command": "echo ok"}}
         assert restored.group_sessions_per_user is False
         assert restored.thread_sessions_per_user is True
+        assert restored.shared_group_chat_ids == ["group-1", "group-2"]
+
+    def test_from_dict_coerces_shared_group_chat_ids_to_strings(self):
+        restored = GatewayConfig.from_dict({"shared_group_chat_ids": [" group-1 ", 123, ""]})
+        assert restored.shared_group_chat_ids == ["group-1", "123"]
+
+    def test_from_dict_ignores_non_list_shared_group_chat_ids(self):
+        restored = GatewayConfig.from_dict({"shared_group_chat_ids": "group-1"})
+        assert restored.shared_group_chat_ids == []
 
     def test_roundtrip_preserves_unauthorized_dm_behavior(self):
         config = GatewayConfig(
@@ -305,6 +315,23 @@ class TestLoadGatewayConfig:
         config = load_gateway_config()
 
         assert config.thread_sessions_per_user is False
+
+    def test_bridges_shared_group_chat_ids_from_config_yaml(self, tmp_path, monkeypatch):
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        config_path = hermes_home / "config.yaml"
+        config_path.write_text(
+            "shared_group_chat_ids:\n"
+            "  - group-1\n"
+            "  - 123\n",
+            encoding="utf-8",
+        )
+
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+        config = load_gateway_config()
+
+        assert config.shared_group_chat_ids == ["group-1", "123"]
 
     def test_bridges_discord_thread_require_mention_from_config_yaml(self, tmp_path, monkeypatch):
         """discord.thread_require_mention in config.yaml should reach the runtime env var."""

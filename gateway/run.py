@@ -925,6 +925,7 @@ from gateway.session import (
     build_session_context,
     build_session_context_prompt,
     build_session_key,
+    group_sessions_per_user_for_source,
     is_shared_multi_user_session,
 )
 from gateway.delivery import DeliveryRouter
@@ -2066,6 +2067,7 @@ class GatewayRunner:
             source,
             group_sessions_per_user=getattr(config, "group_sessions_per_user", True),
             thread_sessions_per_user=getattr(config, "thread_sessions_per_user", False),
+            shared_group_chat_ids=getattr(config, "shared_group_chat_ids", []),
         )
 
     def _telegram_topic_mode_enabled(self, source: SessionSource) -> bool:
@@ -4320,17 +4322,9 @@ class GatewayRunner:
         )
 
         # Compute the gateway's session_key for that destination using the
-        # same rules its adapters use, so switch_session targets the right
-        # entry. For thread destinations build_session_key keys without
-        # user_id (thread_sessions_per_user defaults to False) — so the
-        # next real user message in the thread shares this same session.
-        platform_cfg = self.config.platforms.get(platform)
-        extra = platform_cfg.extra if platform_cfg else {}
-        session_key = build_session_key(
-            dest_source,
-            group_sessions_per_user=extra.get("group_sessions_per_user", True),
-            thread_sessions_per_user=extra.get("thread_sessions_per_user", False),
-        )
+        # same rules its adapters/session store use, so switch_session targets
+        # the right entry (including any shared_group_chat_ids overrides).
+        session_key = self._session_key_for_source(dest_source)
 
         # Make sure there's an entry in the session_store for this key. If
         # the home channel has never been used, get_or_create_session
@@ -5974,6 +5968,10 @@ class GatewayRunner:
             config.extra.setdefault(
                 "thread_sessions_per_user",
                 getattr(self.config, "thread_sessions_per_user", False),
+            )
+            config.extra.setdefault(
+                "shared_group_chat_ids",
+                getattr(self.config, "shared_group_chat_ids", []),
             )
 
         # ── Plugin-registered platforms (checked first) ───────────────────
@@ -7649,7 +7647,11 @@ class GatewayRunner:
         """
         history = history or []
         message_text = event.text or ""
-        _group_sessions_per_user = getattr(self.config, "group_sessions_per_user", True)
+        _group_sessions_per_user = group_sessions_per_user_for_source(
+            source,
+            group_sessions_per_user=getattr(self.config, "group_sessions_per_user", True),
+            shared_group_chat_ids=getattr(self.config, "shared_group_chat_ids", []),
+        )
         _thread_sessions_per_user = getattr(self.config, "thread_sessions_per_user", False)
         # Use the same helper every other call site uses so the write key here
         # matches the consume key at the run_conversation site — even if the

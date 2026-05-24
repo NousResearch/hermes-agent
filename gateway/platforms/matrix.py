@@ -2255,6 +2255,7 @@ class MatrixAdapter(BasePlatformAdapter):
             thread_sessions_per_user=self.config.extra.get(
                 "thread_sessions_per_user", False
             ),
+            shared_group_chat_ids=self.config.extra.get("shared_group_chat_ids", []),
         )
 
     def _enqueue_text_event(self, event: MessageEvent) -> None:

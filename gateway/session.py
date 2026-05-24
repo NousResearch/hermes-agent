@@ -593,14 +593,39 @@ def is_shared_multi_user_session(
     if source.chat_type == "dm":
         return False
     if source.thread_id:
+        if not group_sessions_per_user:
+            return True
         return not thread_sessions_per_user
     return not group_sessions_per_user
+
+
+def group_sessions_per_user_for_source(
+    source: SessionSource,
+    *,
+    group_sessions_per_user: bool = True,
+    shared_group_chat_ids: Optional[List[str]] = None,
+) -> bool:
+    """Return the effective per-user isolation setting for this source.
+
+    ``group_sessions_per_user`` remains the safe global default. Specific
+    group/channel chat IDs can opt into one shared session by listing the raw
+    ``chat_id`` (or ``chat_id_alt``) in ``shared_group_chat_ids``.
+    """
+    if source.chat_type in {"group", "channel"}:
+        ids = {str(v).strip() for v in (shared_group_chat_ids or []) if str(v).strip()}
+        if ids and (
+            str(source.chat_id) in ids
+            or (source.chat_id_alt is not None and str(source.chat_id_alt) in ids)
+        ):
+            return False
+    return group_sessions_per_user
 
 
 def build_session_key(
     source: SessionSource,
     group_sessions_per_user: bool = True,
     thread_sessions_per_user: bool = False,
+    shared_group_chat_ids: Optional[List[str]] = None,
 ) -> str:
     """Build a deterministic session key from a message source.
 
@@ -625,6 +650,12 @@ def build_session_key(
         shared session per chat.
       - Without identifiers, messages fall back to one session per platform/chat_type.
     """
+    group_sessions_per_user = group_sessions_per_user_for_source(
+        source,
+        group_sessions_per_user=group_sessions_per_user,
+        shared_group_chat_ids=shared_group_chat_ids,
+    )
+
     platform = source.platform.value
     if source.chat_type == "dm":
         dm_chat_id = source.chat_id
@@ -743,10 +774,16 @@ class SessionStore:
     
     def _generate_session_key(self, source: SessionSource) -> str:
         """Generate a session key from a source."""
-        return build_session_key(
+        group_sessions_per_user = group_sessions_per_user_for_source(
             source,
             group_sessions_per_user=getattr(self.config, "group_sessions_per_user", True),
+            shared_group_chat_ids=getattr(self.config, "shared_group_chat_ids", []),
+        )
+        return build_session_key(
+            source,
+            group_sessions_per_user=group_sessions_per_user,
             thread_sessions_per_user=getattr(self.config, "thread_sessions_per_user", False),
+            shared_group_chat_ids=getattr(self.config, "shared_group_chat_ids", []),
         )
     
     def _is_session_expired(self, entry: SessionEntry) -> bool:
@@ -1334,7 +1371,11 @@ def build_session_context(
         home_channels=home_channels,
         shared_multi_user_session=is_shared_multi_user_session(
             source,
-            group_sessions_per_user=getattr(config, "group_sessions_per_user", True),
+            group_sessions_per_user=group_sessions_per_user_for_source(
+                source,
+                group_sessions_per_user=getattr(config, "group_sessions_per_user", True),
+                shared_group_chat_ids=getattr(config, "shared_group_chat_ids", []),
+            ),
             thread_sessions_per_user=getattr(config, "thread_sessions_per_user", False),
         ),
     )

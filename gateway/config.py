@@ -479,6 +479,7 @@ class GatewayConfig:
     # Session isolation in shared chats
     group_sessions_per_user: bool = True  # Isolate group/channel sessions per participant when user IDs are available
     thread_sessions_per_user: bool = False  # When False (default), threads are shared across all participants
+    shared_group_chat_ids: List[str] = field(default_factory=list)  # Specific group/channel chat IDs that should share one session
 
     # Unauthorized DM policy
     unauthorized_dm_behavior: str = "pair"  # "pair" or "ignore"
@@ -583,6 +584,7 @@ class GatewayConfig:
             "stt_enabled": self.stt_enabled,
             "group_sessions_per_user": self.group_sessions_per_user,
             "thread_sessions_per_user": self.thread_sessions_per_user,
+            "shared_group_chat_ids": self.shared_group_chat_ids,
             "unauthorized_dm_behavior": self.unauthorized_dm_behavior,
             "streaming": self.streaming.to_dict(),
             "session_store_max_age_days": self.session_store_max_age_days,
@@ -628,6 +630,9 @@ class GatewayConfig:
 
         group_sessions_per_user = data.get("group_sessions_per_user")
         thread_sessions_per_user = data.get("thread_sessions_per_user")
+        shared_group_chat_ids = data.get("shared_group_chat_ids") or []
+        if not isinstance(shared_group_chat_ids, list):
+            shared_group_chat_ids = []
         unauthorized_dm_behavior = _normalize_unauthorized_dm_behavior(
             data.get("unauthorized_dm_behavior"),
             "pair",
@@ -651,6 +656,7 @@ class GatewayConfig:
             stt_enabled=_coerce_bool(stt_enabled, True),
             group_sessions_per_user=_coerce_bool(group_sessions_per_user, True),
             thread_sessions_per_user=_coerce_bool(thread_sessions_per_user, False),
+            shared_group_chat_ids=[str(v).strip() for v in shared_group_chat_ids if str(v).strip()],
             unauthorized_dm_behavior=unauthorized_dm_behavior,
             streaming=StreamingConfig.from_dict(data.get("streaming", {})),
             session_store_max_age_days=session_store_max_age_days,
@@ -719,6 +725,10 @@ def load_gateway_config() -> GatewayConfig:
             sr = yaml_cfg.get("session_reset")
             if sr and isinstance(sr, dict):
                 gw_data["default_reset_policy"] = sr
+
+            shared_group_chat_ids = yaml_cfg.get("shared_group_chat_ids")
+            if shared_group_chat_ids is not None:
+                gw_data["shared_group_chat_ids"] = shared_group_chat_ids
 
             qc = yaml_cfg.get("quick_commands")
             if qc is not None:

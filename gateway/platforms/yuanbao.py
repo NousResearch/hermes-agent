@@ -2510,6 +2510,7 @@ class DispatchMiddleware(InboundMiddleware):
             ctx.source,
             group_sessions_per_user=adapter.config.extra.get("group_sessions_per_user", True),
             thread_sessions_per_user=adapter.config.extra.get("thread_sessions_per_user", False),
+            shared_group_chat_ids=adapter.config.extra.get("shared_group_chat_ids", []),
         )
 
         async def _dispatch_inbound_event() -> None:

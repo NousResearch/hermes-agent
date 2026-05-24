@@ -12,6 +12,7 @@ from gateway.session import (
     build_session_context_prompt,
     build_session_key,
     canonical_whatsapp_identifier,
+    group_sessions_per_user_for_source,
 )
 
 # Legacy name preserved for these tests; product renamed the function to
@@ -764,6 +765,132 @@ class TestWhatsAppSessionKeyConsistency:
         assert first_entry.session_key == "agent:main:discord:group:guild-123"
         assert second_entry.session_key == "agent:main:discord:group:guild-123"
         assert first_entry.session_id == second_entry.session_id
+
+    def test_store_shares_only_configured_group_chat_ids(self, store):
+        store.config.group_sessions_per_user = True
+        store.config.shared_group_chat_ids = ["guild-123"]
+
+        shared_alice = SessionSource(
+            platform=Platform.DISCORD,
+            chat_id="guild-123",
+            chat_type="group",
+            user_id="alice",
+            user_name="Alice",
+        )
+        shared_bob = SessionSource(
+            platform=Platform.DISCORD,
+            chat_id="guild-123",
+            chat_type="group",
+            user_id="bob",
+            user_name="Bob",
+        )
+        isolated = SessionSource(
+            platform=Platform.DISCORD,
+            chat_id="guild-999",
+            chat_type="group",
+            user_id="alice",
+            user_name="Alice",
+        )
+
+        assert group_sessions_per_user_for_source(
+            shared_alice,
+            group_sessions_per_user=True,
+            shared_group_chat_ids=["guild-123"],
+        ) is False
+        assert group_sessions_per_user_for_source(
+            isolated,
+            group_sessions_per_user=True,
+            shared_group_chat_ids=["guild-123"],
+        ) is True
+
+        first_entry = store.get_or_create_session(shared_alice)
+        second_entry = store.get_or_create_session(shared_bob)
+        isolated_entry = store.get_or_create_session(isolated)
+
+        assert first_entry.session_key == "agent:main:discord:group:guild-123"
+        assert second_entry.session_key == "agent:main:discord:group:guild-123"
+        assert first_entry.session_id == second_entry.session_id
+        assert isolated_entry.session_key == "agent:main:discord:group:guild-999:alice"
+
+    def test_shared_group_chat_id_override_does_not_affect_dms(self):
+        source = SessionSource(
+            platform=Platform.DISCORD,
+            chat_id="guild-123",
+            chat_type="dm",
+            user_id="alice",
+        )
+
+        assert group_sessions_per_user_for_source(
+            source,
+            group_sessions_per_user=True,
+            shared_group_chat_ids=["guild-123"],
+        ) is True
+        assert build_session_key(
+            source,
+            group_sessions_per_user=True,
+            shared_group_chat_ids=["guild-123"],
+        ) == "agent:main:discord:dm:guild-123"
+
+    def test_shared_group_chat_id_override_matches_chat_id_alt(self):
+        alice = SessionSource(
+            platform=Platform.SIGNAL,
+            chat_id="display-name",
+            chat_id_alt="stable-group-id",
+            chat_type="group",
+            user_id="alice",
+        )
+        bob = SessionSource(
+            platform=Platform.SIGNAL,
+            chat_id="display-name",
+            chat_id_alt="stable-group-id",
+            chat_type="group",
+            user_id="bob",
+        )
+
+        assert group_sessions_per_user_for_source(
+            alice,
+            group_sessions_per_user=True,
+            shared_group_chat_ids=["stable-group-id"],
+        ) is False
+        assert build_session_key(
+            alice,
+            group_sessions_per_user=True,
+            shared_group_chat_ids=["stable-group-id"],
+        ) == build_session_key(
+            bob,
+            group_sessions_per_user=True,
+            shared_group_chat_ids=["stable-group-id"],
+        )
+
+    def test_shared_group_chat_id_marks_thread_as_shared_even_when_threads_per_user(self):
+        source = SessionSource(
+            platform=Platform.DISCORD,
+            chat_id="guild-123",
+            chat_type="group",
+            thread_id="thread-1",
+            user_id="alice",
+        )
+
+        effective_group_sessions_per_user = group_sessions_per_user_for_source(
+            source,
+            group_sessions_per_user=True,
+            shared_group_chat_ids=["guild-123"],
+        )
+
+        assert effective_group_sessions_per_user is False
+        assert build_session_key(
+            source,
+            group_sessions_per_user=effective_group_sessions_per_user,
+            thread_sessions_per_user=True,
+        ) == "agent:main:discord:group:guild-123:thread-1"
+
+        from gateway.session import is_shared_multi_user_session
+
+        assert is_shared_multi_user_session(
+            source,
+            group_sessions_per_user=effective_group_sessions_per_user,
+            thread_sessions_per_user=True,
+        ) is True
 
     def test_telegram_dm_includes_chat_id(self):
         """Non-WhatsApp DMs should also include chat_id to separate users."""

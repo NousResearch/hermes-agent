@@ -8,11 +8,13 @@ Direct-SQL setup is used to construct that state deterministically.
 
 from __future__ import annotations
 
+import argparse
 import json
 from pathlib import Path
 
 import pytest
 
+from hermes_cli import kanban as kb_cli
 from hermes_cli import kanban_db as kb
 
 
@@ -155,3 +157,98 @@ def test_promote_blocked_task_works(conn):
     )
     assert ok and err is None
     assert kb.get_task(conn, tid).status == "ready"
+
+
+# ---------------------------------------------------------------------------
+# CLI `_cmd_promote` — bulk via `--ids` (the issue's anti-respawn use case:
+# promote all children of a closed parent in one command).
+# ---------------------------------------------------------------------------
+
+
+def _promote_ns(task_id, *, ids=None, reason=None, force=False,
+                dry_run=False, as_json=False):
+    return argparse.Namespace(
+        task_id=task_id,
+        reason=list(reason or []),
+        ids=list(ids or []) or None,
+        force=force,
+        dry_run=dry_run,
+        json=as_json,
+    )
+
+
+def test_cli_promote_bulk_ids_promotes_all(kanban_home, capsys):
+    with kb.connect() as conn:
+        parent = kb.create_task(conn, title="parent")
+        children = [
+            kb.create_task(conn, title=f"c{i}", parents=[parent])
+            for i in range(3)
+        ]
+        conn.execute("UPDATE tasks SET status='done' WHERE id=?", (parent,))
+    rc = kb_cli._cmd_promote(_promote_ns(children[0], ids=children[1:]))
+    assert rc == 0
+    out = capsys.readouterr().out
+    for c in children:
+        assert c in out
+    with kb.connect() as conn:
+        for c in children:
+            assert kb.get_task(conn, c).status == "ready"
+
+
+def test_cli_promote_bulk_partial_failure_exits_1(kanban_home, capsys):
+    """Bulk with one bad id: good ones still promote, exit code reflects failure."""
+    with kb.connect() as conn:
+        parent = kb.create_task(conn, title="parent")
+        good = kb.create_task(conn, title="good", parents=[parent])
+        conn.execute("UPDATE tasks SET status='done' WHERE id=?", (parent,))
+    rc = kb_cli._cmd_promote(_promote_ns(good, ids=["t_nope"]))
+    assert rc == 1
+    captured = capsys.readouterr()
+    assert good in captured.out  # good one promoted
+    assert "t_nope" in captured.err and "not found" in captured.err
+    with kb.connect() as conn:
+        assert kb.get_task(conn, good).status == "ready"
+
+
+def test_cli_promote_bulk_json_emits_list(kanban_home, capsys):
+    with kb.connect() as conn:
+        parent = kb.create_task(conn, title="parent")
+        a = kb.create_task(conn, title="a", parents=[parent])
+        b = kb.create_task(conn, title="b", parents=[parent])
+        conn.execute("UPDATE tasks SET status='done' WHERE id=?", (parent,))
+    rc = kb_cli._cmd_promote(_promote_ns(a, ids=[b], as_json=True))
+    assert rc == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert isinstance(payload, list) and len(payload) == 2
+    assert {r["task_id"] for r in payload} == {a, b}
+    assert all(r["promoted"] for r in payload)
+
+
+def test_cli_promote_single_json_stays_flat_object(kanban_home, capsys):
+    """Back-compat: single-id JSON is still a flat object, not a list."""
+    with kb.connect() as conn:
+        parent = kb.create_task(conn, title="parent")
+        child = kb.create_task(conn, title="c", parents=[parent])
+        conn.execute("UPDATE tasks SET status='done' WHERE id=?", (parent,))
+    rc = kb_cli._cmd_promote(_promote_ns(child, as_json=True))
+    assert rc == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert isinstance(payload, dict)
+    assert payload["task_id"] == child and payload["promoted"] is True
+
+
+def test_cli_promote_dedupes_duplicate_ids(kanban_home, capsys):
+    """Same id in positional + --ids must only attempt the promotion once."""
+    with kb.connect() as conn:
+        parent = kb.create_task(conn, title="parent")
+        child = kb.create_task(conn, title="c", parents=[parent])
+        conn.execute("UPDATE tasks SET status='done' WHERE id=?", (parent,))
+    rc = kb_cli._cmd_promote(_promote_ns(child, ids=[child, child]))
+    assert rc == 0
+    with kb.connect() as conn:
+        n = conn.execute(
+            "SELECT COUNT(*) AS n FROM task_events "
+            "WHERE task_id = ? AND kind = 'promoted_manual'",
+            (child,),
+        ).fetchone()["n"]
+    assert n == 1

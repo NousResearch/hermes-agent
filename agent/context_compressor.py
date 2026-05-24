@@ -79,6 +79,7 @@ _SUMMARY_FAILURE_COOLDOWN_SECONDS = 600
 # only meant to preserve continuity anchors from the dropped window, not to
 # become another unbounded transcript copy after the LLM summarizer failed.
 _FALLBACK_SUMMARY_MAX_CHARS = 8_000
+_FALLBACK_TURN_MAX_CHARS = 700
 
 
 _PATH_MENTION_RE = re.compile(r"(?:/|~/?|[A-Za-z]:\\)[^\s`'\")\]}<>]+")
@@ -574,8 +575,8 @@ class ContextCompressor(ContextEngine):
         self.quiet_mode = quiet_mode
         # When True, summary-generation failure aborts compression entirely
         # (returns messages unchanged, sets _last_compress_aborted=True).
-        # When False (default = historical behavior), insert a static
-        # "summary unavailable" placeholder and drop the middle window.
+        # When False (default = historical behavior), insert a
+        # deterministic "summary unavailable" handoff and drop the middle window.
         self.abort_on_summary_failure = abort_on_summary_failure
 
         self.context_length = get_model_context_length(
@@ -941,6 +942,23 @@ class ContextCompressor(ContextEngine):
         tool_actions: list[str] = []
         relevant_files: list[str] = []
         blockers: list[str] = []
+        last_dropped_turns: list[str] = []
+
+        def _compact_fallback_turn(value: Any) -> str:
+            text = redact_sensitive_text(_content_text_for_contains(value))
+            text = re.sub(r"\bgh[pousr]_[A-Za-z0-9_]{8,}\b", "[REDACTED]", text)
+            text = re.sub(r"\s+", " ", text).strip()
+            if len(text) > _FALLBACK_TURN_MAX_CHARS:
+                text = text[: _FALLBACK_TURN_MAX_CHARS - 15].rstrip() + " ...[truncated]"
+            return re.sub(r"\bgh[pousr]_[A-Za-z0-9_.-]+", "[REDACTED]", text)
+
+        def _remember_dropped_turn(label: str, text: str, *, limit: int = 8) -> None:
+            text = text.strip()
+            if not text:
+                return
+            last_dropped_turns.append(f"{label}: {text}")
+            if len(last_dropped_turns) > limit:
+                del last_dropped_turns[0]
 
         def _collect_paths_from_jsonish(obj: Any) -> None:
             if isinstance(obj, dict):
@@ -972,10 +990,20 @@ class ContextCompressor(ContextEngine):
 
         for msg in turns_to_summarize:
             role = msg.get("role", "unknown")
-            text = redact_sensitive_text(
-                _content_text_for_contains(msg.get("content"))
-            ).strip()
+            text = _compact_fallback_turn(msg.get("content"))
             _collect_path_mentions(text, relevant_files)
+
+            turn_text = text
+            turn_tool_names: list[str] = []
+            if role == "assistant" and msg.get("tool_calls"):
+                for tc in msg.get("tool_calls") or []:
+                    name, _args = _extract_tool_call_name_and_args(tc)
+                    turn_tool_names.append(name)
+                if turn_tool_names:
+                    prefix = "tool calls: " + ", ".join(turn_tool_names[:6])
+                    turn_text = f"{prefix}; {turn_text}" if turn_text else prefix
+            _remember_dropped_turn(str(role).upper(), turn_text)
+
             if len(text) > 600:
                 text = text[:420].rstrip() + " ... " + text[-160:].lstrip()
 
@@ -1072,6 +1100,9 @@ None recoverable from deterministic fallback.
 
 ## Remaining Work
 Continue from the most recent unfulfilled user ask and protected tail messages. Verify state with tools before making claims.
+
+## Last Dropped Turns
+{_bullets(last_dropped_turns, limit=8)}
 
 ## Critical Context
 Summary generation was unavailable, so this is a best-effort deterministic fallback for {len(turns_to_summarize)} compacted message(s).{reason_text}"""
@@ -1808,9 +1839,9 @@ The user has requested that this compaction PRIORITISE preserving all informatio
         #   True  → ABORT compression entirely. Return messages unchanged
         #           and set _last_compress_aborted=True so callers can warn
         #           the user and stop the auto-compress retry loop.
-        #   False → Fall through to the legacy fallback path below: insert
-        #           a static "summary unavailable" placeholder and drop the
-        #           middle window.  Records _last_summary_fallback_used /
+        #   False → Fall through to the default fallback path below: insert
+        #           a deterministic "summary unavailable" handoff and drop
+        #           the middle window.  Records _last_summary_fallback_used /
         #           _last_summary_dropped_count for gateway hygiene to
         #           surface a warning.
         # Default is False (historical behavior).

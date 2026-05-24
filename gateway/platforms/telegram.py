@@ -1421,8 +1421,27 @@ class TelegramAdapter(BasePlatformAdapter):
                 )
             elif proxy_url:
                 logger.info("[%s] Proxy detected; passing explicitly to HTTPXRequest: %s", self.name, proxy_url)
-                request = HTTPXRequest(**request_kwargs, proxy=proxy_url)
-                get_updates_request = HTTPXRequest(**request_kwargs, proxy=proxy_url)
+                # Bound the general pool behind proxies — leaked half-closed
+                # tunnel sockets otherwise accumulate until fd limits (#31599).
+                import httpx
+
+                _proxy_pool_limits = httpx.Limits(
+                    max_connections=_env_int("HERMES_TELEGRAM_PROXY_MAX_CONNECTIONS", 20),
+                    max_keepalive_connections=_env_int(
+                        "HERMES_TELEGRAM_PROXY_MAX_KEEPALIVE", 10
+                    ),
+                )
+                _proxy_httpx_kwargs = {"limits": _proxy_pool_limits}
+                request = HTTPXRequest(
+                    **request_kwargs,
+                    proxy=proxy_url,
+                    httpx_kwargs=_proxy_httpx_kwargs,
+                )
+                get_updates_request = HTTPXRequest(
+                    **request_kwargs,
+                    proxy=proxy_url,
+                    httpx_kwargs=_proxy_httpx_kwargs,
+                )
             else:
                 if disable_fallback:
                     logger.info("[%s] Telegram fallback-IP transport disabled via env", self.name)

@@ -581,6 +581,11 @@ def build_assistant_message(agent, assistant_message, finish_reason: str) -> dic
     if isinstance(_san_content, str) and _san_content:
         _san_content = agent._strip_think_blocks(_san_content).strip()
 
+    # Pure tool-call turns: strict OpenAI-compat shims reject content="" as an
+    # empty text block; null/omitted content is valid (#31583).
+    if assistant_tool_calls and not _san_content:
+        _san_content = None
+
     msg = {
         "role": "assistant",
         "content": _san_content,

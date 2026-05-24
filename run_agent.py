@@ -1174,6 +1174,9 @@ class AIAgent:
         Ensures conversations are never lost, even on errors or early returns.
         """
         self._drop_trailing_empty_response_scaffolding(messages)
+        # Scaffolding rewind can shorten messages below the last flush cursor (#31507).
+        if self._last_flushed_db_idx > len(messages):
+            self._last_flushed_db_idx = len(messages)
         self._apply_persist_user_message_override(messages)
         self._session_messages = messages
         self._save_session_log(messages)

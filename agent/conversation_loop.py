@@ -142,9 +142,12 @@ def _emit_synthesized_final_delta(agent: Any, final_response: str) -> None:
         return
     try:
         agent.stream_delta_callback(final_response)
+    except Exception:
+        logger.debug("synthesized stream final callback error", exc_info=True)
+    try:
         agent.stream_delta_callback(None)
     except Exception:
-        pass
+        logger.debug("synthesized stream close callback error", exc_info=True)
 
 
 def _restore_or_build_system_prompt(agent, system_message, conversation_history):

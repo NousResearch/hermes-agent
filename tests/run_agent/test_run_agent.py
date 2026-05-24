@@ -3110,6 +3110,24 @@ class TestRunConversation:
         assert result["final_response"] == "Earlier housekeeping answer"
         assert result["api_calls"] == 2
         assert "Earlier housekeeping answer" in stream_deltas
+        assert stream_deltas[-1] is None
+
+    def test_synthesized_final_delta_closes_stream_after_callback_error(self):
+        """SSE writers receive the close sentinel even if final text delivery fails."""
+        from agent.conversation_loop import _emit_synthesized_final_delta
+
+        callback = MagicMock(side_effect=[RuntimeError("writer rejected text"), None])
+        agent = SimpleNamespace(
+            _safe_print=lambda *_args, **_kwargs: None,
+            stream_delta_callback=callback,
+        )
+
+        _emit_synthesized_final_delta(agent, "Recovered answer")
+
+        assert [call.args for call in callback.call_args_list] == [
+            ("Recovered answer",),
+            (None,),
+        ]
 
     def test_nous_401_refreshes_after_remint_and_retries(self, agent):
         self._setup_agent(agent)

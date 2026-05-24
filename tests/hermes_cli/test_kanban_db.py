@@ -701,6 +701,24 @@ def test_unblock_resets_failure_counters(kanban_home):
         assert task.last_failure_error is None
 
 
+def test_promote_resets_failure_counters(kanban_home):
+    """promote_task must reset consecutive_failures and last_failure_error."""
+    with kb.connect() as conn:
+        t = kb.create_task(conn, title="x", assignee="a")
+        conn.execute(
+            "UPDATE tasks SET status = 'blocked', consecutive_failures = 2, "
+            "last_failure_error = 'test error' WHERE id = ?",
+            (t,),
+        )
+        conn.commit()
+        ok, err = kb.promote_task(conn, t, actor="tester")
+        assert (ok, err) == (True, None)
+        task = kb.get_task(conn, t)
+        assert task.status == "ready"
+        assert task.consecutive_failures == 0
+        assert task.last_failure_error is None
+
+
 # ---------------------------------------------------------------------------
 # Parent-completion invariant at the claim gate (RCA t_a6acd07d)
 # ---------------------------------------------------------------------------

@@ -21,7 +21,6 @@ Gmail, Calendar, Drive, Docs, Sheets via gws CLI or Python.
 | License | MIT |
 | Platforms | linux, macos, windows |
 | Tags | `Google`, `Gmail`, `Calendar`, `Drive`, `Sheets`, `Docs`, `Contacts`, `Email`, `OAuth` |
-| Related skills | [`himalaya`](/docs/user-guide/skills/bundled/email/email-himalaya) |
 
 ## Reference: full SKILL.md
 
@@ -68,10 +67,13 @@ Before starting OAuth setup, ask the user TWO questions:
 **Question 1: "What Google services do you need? Just email, or also
 Calendar/Drive/Sheets/Docs?"**
 
-- **Email only** → They don't need this skill at all. Use the `himalaya` skill
-  instead — it works with a Gmail App Password (Settings → Security → App
-  Passwords) and takes 2 minutes to set up. No Google Cloud project needed.
-  Load the himalaya skill and follow its setup instructions.
+- **Email only** → Prefer this skill when Gmail OAuth is already configured.
+  If `~/.hermes/google_token.json` exists, stay on the Gmail OAuth path. Use
+  this skill's Gmail commands for inbox search/read/labels/debugging. For
+  actually sending or replying as Hermes in an interactive conversation, use
+  the `send_message` tool so delivery goes through the platform adapter and
+  outbound dedup guardrails. Do not switch to any separate IMAP/SMTP mail
+  client for Hermes-managed Gmail mailboxes.
 
 - **Email + Calendar** → Continue with this skill, but use
   `--services email,calendar` during auth so the consent screen only asks for
@@ -175,6 +177,48 @@ Should print `AUTHENTICATED`. Setup is complete — token refreshes automaticall
 - Pending OAuth session state/verifier are stored temporarily at `~/.hermes/google_oauth_pending.json` until exchange completes.
 - If `gws` is installed, `google_api.py` points it at the same `~/.hermes/google_token.json` credentials file. Users do not need to run a separate `gws auth login` flow.
 - To revoke: `$GSETUP --revoke`
+
+### Gmail OAuth for Hermes email delivery
+
+If the user wants Hermes itself to read and send email from a Gmail mailbox
+through the gateway, there is a small but important difference between
+"Google Workspace is authorized" and "Hermes email delivery is configured."
+
+For the Gmail OAuth path, make sure all of the following are true:
+
+1. `~/.hermes/google_token.json` exists and `setup.py --check` prints
+   `AUTHENTICATED`
+2. `EMAIL_ADDRESS` is set to the mailbox Hermes should use
+3. `EMAIL_IMAP_HOST=imap.gmail.com`
+4. `EMAIL_SMTP_HOST=smtp.gmail.com`
+5. `EMAIL_ALLOWED_USERS` is set if the user wants an inbound allowlist
+6. `EMAIL_PASSWORD` is **not required** when the Gmail OAuth token is present
+
+Example `.env` shape:
+
+```bash
+EMAIL_ADDRESS=hermes@example.com
+EMAIL_IMAP_HOST=imap.gmail.com
+EMAIL_SMTP_HOST=smtp.gmail.com
+EMAIL_ALLOWED_USERS=user@example.com,other@example.com
+```
+
+Verification steps:
+
+```bash
+# OAuth token works
+$GSETUP --check
+
+# Gmail API works
+$GAPI gmail search "in:inbox" --max 1
+
+# Gateway sees the mailbox as configured
+hermes gateway status
+```
+
+If `hermes gateway status` still reports email as disconnected, check the env
+first. Missing Gmail hosts are the most common reason Hermes falls back to the
+legacy IMAP/SMTP setup path.
 
 ## Usage
 

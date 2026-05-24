@@ -1414,10 +1414,15 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
 
     # Email
     email_addr = os.getenv("EMAIL_ADDRESS")
-    email_pwd = os.getenv("EMAIL_PASSWORD")
     email_imap = os.getenv("EMAIL_IMAP_HOST")
     email_smtp = os.getenv("EMAIL_SMTP_HOST")
-    if all([email_addr, email_pwd, email_imap, email_smtp]):
+    email_pwd = os.getenv("EMAIL_PASSWORD")
+    gmail_token = get_hermes_home() / "google_token.json"
+    gmail_hosts = {str(email_imap or "").lower(), str(email_smtp or "").lower()}
+    email_oauth_ready = email_addr and email_imap and email_smtp and gmail_token.exists() and (
+        "imap.gmail.com" in gmail_hosts or "smtp.gmail.com" in gmail_hosts
+    )
+    if email_oauth_ready or all([email_addr, email_pwd, email_imap, email_smtp]):
         if Platform.EMAIL not in config.platforms:
             config.platforms[Platform.EMAIL] = PlatformConfig()
         config.platforms[Platform.EMAIL].enabled = True

@@ -10,19 +10,23 @@ Environment variables:
     EMAIL_SMTP_HOST     — SMTP server host (e.g., smtp.gmail.com)
     EMAIL_SMTP_PORT     — SMTP server port (default: 587)
     EMAIL_ADDRESS       — Email address for the agent
-    EMAIL_PASSWORD      — Email password or app-specific password
+    EMAIL_PASSWORD      — Email password or app-specific password (legacy IMAP/SMTP path)
     EMAIL_POLL_INTERVAL — Seconds between mailbox checks (default: 15)
     EMAIL_ALLOWED_USERS — Comma-separated list of allowed sender addresses
+    ~/.hermes/google_token.json — Google OAuth token for Gmail API mode
 """
 
 import asyncio
+import base64
 import email as email_lib
+import hashlib
 import imaplib
 import logging
 import os
 import re
 import smtplib
 import ssl
+import time
 import uuid
 from email.header import decode_header
 from email.mime.multipart import MIMEMultipart
@@ -42,6 +46,7 @@ from gateway.platforms.base import (
     cache_image_from_bytes,
 )
 from gateway.config import Platform, PlatformConfig
+from hermes_constants import get_hermes_home
 
 logger = logging.getLogger(__name__)
 # Automated sender patterns — emails from these are silently ignored
@@ -64,6 +69,56 @@ MAX_MESSAGE_LENGTH = 50_000
 
 # Supported image extensions for inline detection
 _IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".gif", ".webp"}
+_GMAIL_API_SCOPES = [
+    "https://www.googleapis.com/auth/gmail.readonly",
+    "https://www.googleapis.com/auth/gmail.send",
+    "https://www.googleapis.com/auth/gmail.modify",
+]
+_OUTBOUND_EMAIL_DEDUP_TTL_SECONDS = 120.0
+_OUTBOUND_EMAIL_DEDUP_MAX = 512
+_OUTBOUND_EMAIL_DEDUP_CACHE: Dict[str, tuple[float, str]] = {}
+
+
+def _get_outbound_email_duplicate(key: str) -> Optional[str]:
+    """Return a recent outbound message ID for *key* if it is still within TTL."""
+    now = time.time()
+    stale_keys = [
+        cache_key for cache_key, (ts, _) in _OUTBOUND_EMAIL_DEDUP_CACHE.items()
+        if now - ts >= _OUTBOUND_EMAIL_DEDUP_TTL_SECONDS
+    ]
+    for stale_key in stale_keys:
+        _OUTBOUND_EMAIL_DEDUP_CACHE.pop(stale_key, None)
+
+    cached = _OUTBOUND_EMAIL_DEDUP_CACHE.get(key)
+    if not cached:
+        return None
+    ts, message_id = cached
+    if now - ts >= _OUTBOUND_EMAIL_DEDUP_TTL_SECONDS:
+        _OUTBOUND_EMAIL_DEDUP_CACHE.pop(key, None)
+        return None
+    return message_id
+
+
+def _remember_outbound_email(key: str, message_id: str) -> None:
+    """Store a recent outbound email send for duplicate suppression."""
+    now = time.time()
+    _OUTBOUND_EMAIL_DEDUP_CACHE[key] = (now, message_id)
+    if len(_OUTBOUND_EMAIL_DEDUP_CACHE) <= _OUTBOUND_EMAIL_DEDUP_MAX:
+        return
+
+    sorted_items = sorted(
+        _OUTBOUND_EMAIL_DEDUP_CACHE.items(),
+        key=lambda item: item[1][0],
+        reverse=True,
+    )
+    kept = dict(sorted_items[:_OUTBOUND_EMAIL_DEDUP_MAX])
+    _OUTBOUND_EMAIL_DEDUP_CACHE.clear()
+    _OUTBOUND_EMAIL_DEDUP_CACHE.update(kept)
+
+
+def _clear_outbound_email_dedup_cache() -> None:
+    """Test helper to clear recent outbound email dedup state."""
+    _OUTBOUND_EMAIL_DEDUP_CACHE.clear()
 
 def _send_imap_id(imap: "imaplib.IMAP4") -> None:
     """Send RFC 2971 IMAP ID command identifying this client.
@@ -105,6 +160,12 @@ def check_email_requirements() -> bool:
     pwd = os.getenv("EMAIL_PASSWORD")
     imap = os.getenv("EMAIL_IMAP_HOST")
     smtp = os.getenv("EMAIL_SMTP_HOST")
+    gmail_token = get_hermes_home() / "google_token.json"
+    gmail_hosts = {str(imap or "").lower(), str(smtp or "").lower()}
+    if addr and imap and smtp and gmail_token.exists() and (
+        "imap.gmail.com" in gmail_hosts or "smtp.gmail.com" in gmail_hosts
+    ):
+        return True
     if not all([addr, pwd, imap, smtp]):
         return False
     return True
@@ -242,25 +303,35 @@ def _extract_attachments(
     return attachments
 
 
+def _decode_gmail_raw_message(raw_value: str) -> bytes:
+    """Decode Gmail API raw payload to bytes."""
+    padding = "=" * (-len(raw_value) % 4)
+    return base64.urlsafe_b64decode(raw_value + padding)
+
+
 class EmailAdapter(BasePlatformAdapter):
     """Email gateway adapter using IMAP (receive) and SMTP (send)."""
 
     def __init__(self, config: PlatformConfig):
         super().__init__(config, Platform.EMAIL)
 
-        self._address = os.getenv("EMAIL_ADDRESS", "")
-        self._password = os.getenv("EMAIL_PASSWORD", "")
-        self._imap_host = os.getenv("EMAIL_IMAP_HOST", "")
-        self._imap_port = int(os.getenv("EMAIL_IMAP_PORT", "993"))
-        self._smtp_host = os.getenv("EMAIL_SMTP_HOST", "")
-        self._smtp_port = int(os.getenv("EMAIL_SMTP_PORT", "587"))
-        self._poll_interval = int(os.getenv("EMAIL_POLL_INTERVAL", "15"))
+        extra = config.extra or {}
+
+        self._address = extra.get("address") or os.getenv("EMAIL_ADDRESS", "")
+        self._password = extra.get("password") or os.getenv("EMAIL_PASSWORD", "")
+        self._imap_host = extra.get("imap_host") or os.getenv("EMAIL_IMAP_HOST", "")
+        self._imap_port = int(str(extra.get("imap_port") or os.getenv("EMAIL_IMAP_PORT", "993")))
+        self._smtp_host = extra.get("smtp_host") or os.getenv("EMAIL_SMTP_HOST", "")
+        self._smtp_port = int(str(extra.get("smtp_port") or os.getenv("EMAIL_SMTP_PORT", "587")))
+        self._poll_interval = int(str(extra.get("poll_interval") or os.getenv("EMAIL_POLL_INTERVAL", "15")))
+        self._gmail_token_path = get_hermes_home() / "google_token.json"
+        self._startup_ms = int(time.time() * 1000)
+        self._use_gmail_api = self._should_use_gmail_api()
 
         # Skip attachments — configured via config.yaml:
         #   platforms:
         #     email:
         #       skip_attachments: true
-        extra = config.extra or {}
         self._skip_attachments = extra.get("skip_attachments", False)
 
         # Track message IDs we've already processed to avoid duplicates
@@ -271,7 +342,55 @@ class EmailAdapter(BasePlatformAdapter):
         # Map chat_id (sender email) -> last subject + message-id for threading
         self._thread_context: Dict[str, Dict[str, str]] = {}
 
-        logger.info("[Email] Adapter initialized for %s", self._address)
+        logger.info(
+            "[Email] Adapter initialized for %s (gmail_api=%s token=%s exists=%s)",
+            self._address,
+            self._use_gmail_api,
+            self._gmail_token_path,
+            self._gmail_token_path.exists(),
+        )
+
+    def _should_use_gmail_api(self) -> bool:
+        """Use Gmail API when a Google OAuth token is available for Gmail hosts."""
+        hosts = {self._imap_host.lower(), self._smtp_host.lower()}
+        if not self._gmail_token_path.exists():
+            return False
+        return "imap.gmail.com" in hosts or "smtp.gmail.com" in hosts
+
+    def _gmail_service(self):
+        """Build an authenticated Gmail API client."""
+        from google.auth.transport.requests import Request
+        from google.oauth2.credentials import Credentials
+        from googleapiclient.discovery import build
+
+        creds = Credentials.from_authorized_user_file(str(self._gmail_token_path), _GMAIL_API_SCOPES)
+        if creds.expired and creds.refresh_token:
+            creds.refresh(Request())
+            self._gmail_token_path.write_text(creds.to_json())
+        if not creds.valid:
+            raise RuntimeError(f"Invalid Gmail OAuth credentials at {self._gmail_token_path}")
+        return build("gmail", "v1", credentials=creds, cache_discovery=False)
+
+    def _prime_seen_gmail_messages(self) -> None:
+        """Record existing unread inbox messages so startup only handles new mail."""
+        service = self._gmail_service()
+        response = service.users().messages().list(
+            userId="me",
+            labelIds=["INBOX", "UNREAD"],
+            maxResults=500,
+        ).execute()
+        for msg in response.get("messages", []):
+            self._seen_uids.add(msg["id"])
+        self._trim_seen_uids()
+
+    def _gmail_mark_read(self, message_id: str) -> None:
+        """Remove Gmail's unread label after successful handling."""
+        service = self._gmail_service()
+        service.users().messages().modify(
+            userId="me",
+            id=message_id,
+            body={"removeLabelIds": ["UNREAD"]},
+        ).execute()
 
     def _trim_seen_uids(self) -> None:
         """Keep only the most recent UIDs to prevent unbounded memory growth.
@@ -295,6 +414,24 @@ class EmailAdapter(BasePlatformAdapter):
 
     async def connect(self) -> bool:
         """Connect to the IMAP server and start polling for new messages."""
+        if self._use_gmail_api:
+            try:
+                service = self._gmail_service()
+                service.users().getProfile(userId="me").execute()
+                self._prime_seen_gmail_messages()
+                logger.info(
+                    "[Email] Gmail API connection test passed. %d existing unread messages skipped.",
+                    len(self._seen_uids),
+                )
+            except Exception as e:
+                logger.error("[Email] Gmail API connection failed: %s", e)
+                return False
+
+            self._running = True
+            self._poll_task = asyncio.create_task(self._poll_loop())
+            print(f"[Email] Connected as {self._address} via Gmail API")
+            return True
+
         try:
             # Test IMAP connection
             imap = imaplib.IMAP4_SSL(self._imap_host, self._imap_port, timeout=30)
@@ -363,6 +500,9 @@ class EmailAdapter(BasePlatformAdapter):
 
     def _fetch_new_messages(self) -> List[Dict[str, Any]]:
         """Fetch new (unseen) messages from IMAP. Runs in executor thread."""
+        if self._use_gmail_api:
+            return self._fetch_new_gmail_messages()
+
         results = []
         try:
             imap = imaplib.IMAP4_SSL(self._imap_host, self._imap_port, timeout=30)
@@ -428,6 +568,70 @@ class EmailAdapter(BasePlatformAdapter):
             logger.error("[Email] IMAP fetch error: %s", e)
         return results
 
+    def _fetch_new_gmail_messages(self) -> List[Dict[str, Any]]:
+        """Fetch new unread Gmail messages via the Gmail API."""
+        results = []
+        try:
+            service = self._gmail_service()
+            response = service.users().messages().list(
+                userId="me",
+                labelIds=["INBOX", "UNREAD"],
+                maxResults=100,
+            ).execute()
+
+            for msg_meta in response.get("messages", []):
+                message_id = msg_meta["id"]
+                if message_id in self._seen_uids:
+                    continue
+                self._seen_uids.add(message_id)
+                if len(self._seen_uids) > self._seen_uids_max:
+                    self._trim_seen_uids()
+
+                msg = service.users().messages().get(
+                    userId="me",
+                    id=message_id,
+                    format="raw",
+                ).execute()
+
+                internal_ms = int(msg.get("internalDate", "0") or 0)
+                if internal_ms and internal_ms <= self._startup_ms:
+                    continue
+
+                raw_email = _decode_gmail_raw_message(msg["raw"])
+                parsed = email_lib.message_from_bytes(raw_email)
+
+                sender_raw = parsed.get("From", "")
+                sender_addr = _extract_email_address(sender_raw)
+                sender_name = _decode_header_value(sender_raw)
+                if "<" in sender_name:
+                    sender_name = sender_name.split("<")[0].strip().strip('"')
+
+                subject = _decode_header_value(parsed.get("Subject", "(no subject)"))
+                in_reply_to = parsed.get("In-Reply-To", "")
+                msg_headers = dict(parsed.items())
+                if _is_automated_sender(sender_addr, msg_headers):
+                    logger.debug("[Email] Skipping automated sender: %s", sender_addr)
+                    continue
+
+                results.append(
+                    {
+                        "uid": message_id,
+                        "sender_addr": sender_addr,
+                        "sender_name": sender_name,
+                        "subject": subject,
+                        "message_id": parsed.get("Message-ID", message_id),
+                        "in_reply_to": in_reply_to,
+                        "body": _extract_text_body(parsed),
+                        "attachments": _extract_attachments(parsed, skip_attachments=self._skip_attachments),
+                        "date": parsed.get("Date", ""),
+                        "gmail_id": message_id,
+                        "gmail_thread_id": msg.get("threadId", ""),
+                    }
+                )
+        except Exception as e:
+            logger.error("[Email] Gmail fetch error: %s", e)
+        return results
+
     async def _dispatch_message(self, msg_data: Dict[str, Any]) -> None:
         """Convert a fetched email into a MessageEvent and dispatch it."""
         sender_addr = msg_data["sender_addr"]
@@ -477,6 +681,7 @@ class EmailAdapter(BasePlatformAdapter):
         self._thread_context[sender_addr] = {
             "subject": subject,
             "message_id": msg_data["message_id"],
+            "thread_id": msg_data.get("gmail_thread_id", ""),
         }
 
         source = self.build_source(
@@ -499,6 +704,9 @@ class EmailAdapter(BasePlatformAdapter):
 
         logger.info("[Email] New message from %s: %s", sender_addr, subject)
         await self.handle_message(event)
+        if self._use_gmail_api and msg_data.get("gmail_id"):
+            loop = asyncio.get_running_loop()
+            await loop.run_in_executor(None, self._gmail_mark_read, msg_data["gmail_id"])
 
     async def send(
         self,
@@ -524,20 +732,33 @@ class EmailAdapter(BasePlatformAdapter):
         body: str,
         reply_to_msg_id: Optional[str] = None,
     ) -> str:
-        """Send an email via SMTP. Runs in executor thread."""
+        """Send an email reply. Runs in executor thread."""
+        if self._use_gmail_api:
+            return self._send_gmail_message(to_addr, body, reply_to_msg_id)
+
+        dedup_key = self._outbound_dedup_key(to_addr, body, reply_to_msg_id=reply_to_msg_id)
+        cached_message_id = _get_outbound_email_duplicate(dedup_key)
+        if cached_message_id:
+            logger.warning(
+                "[Email] Skipping duplicate SMTP send to %s within %.0fs window",
+                to_addr,
+                _OUTBOUND_EMAIL_DEDUP_TTL_SECONDS,
+            )
+            return cached_message_id
+
         msg = MIMEMultipart()
         msg["From"] = self._address
         msg["To"] = to_addr
 
         # Thread context for reply
         ctx = self._thread_context.get(to_addr, {})
+        original_msg_id = reply_to_msg_id or ctx.get("message_id")
         subject = ctx.get("subject", "Hermes Agent")
-        if not subject.startswith("Re:"):
+        if original_msg_id and not subject.startswith("Re:"):
             subject = f"Re: {subject}"
         msg["Subject"] = subject
 
         # Threading headers
-        original_msg_id = reply_to_msg_id or ctx.get("message_id")
         if original_msg_id:
             msg["In-Reply-To"] = original_msg_id
             msg["References"] = original_msg_id
@@ -559,8 +780,120 @@ class EmailAdapter(BasePlatformAdapter):
             except Exception:
                 smtp.close()
 
+        _remember_outbound_email(dedup_key, msg_id)
         logger.info("[Email] Sent reply to %s (subject: %s)", to_addr, subject)
         return msg_id
+
+    def _build_outbound_message(
+        self,
+        to_addr: str,
+        body: str,
+        reply_to_msg_id: Optional[str] = None,
+    ) -> tuple[MIMEMultipart, Dict[str, str], str]:
+        """Build a threaded outbound email message."""
+        msg = MIMEMultipart()
+        msg["From"] = self._address
+        msg["To"] = to_addr
+
+        ctx = self._thread_context.get(to_addr, {})
+        original_msg_id = reply_to_msg_id or ctx.get("message_id")
+        subject = ctx.get("subject", "Hermes Agent")
+        if original_msg_id and not subject.startswith("Re:"):
+            subject = f"Re: {subject}"
+        msg["Subject"] = subject
+
+        if original_msg_id:
+            msg["In-Reply-To"] = original_msg_id
+            msg["References"] = original_msg_id
+
+        msg_id = f"<hermes-{uuid.uuid4().hex[:12]}@{self._address.split('@')[1]}>"
+        msg["Message-ID"] = msg_id
+
+        if body:
+            msg.attach(MIMEText(body, "plain", "utf-8"))
+
+        return msg, ctx, msg_id
+
+    def _outbound_dedup_key(
+        self,
+        to_addr: str,
+        body: str,
+        reply_to_msg_id: Optional[str] = None,
+        file_path: Optional[str] = None,
+        file_name: Optional[str] = None,
+    ) -> str:
+        """Build a stable duplicate-suppression key for outbound email sends."""
+        ctx = self._thread_context.get(to_addr, {})
+        original_msg_id = reply_to_msg_id or ctx.get("message_id", "")
+        subject = ctx.get("subject", "Hermes Agent")
+        if original_msg_id and not subject.startswith("Re:"):
+            subject = f"Re: {subject}"
+        thread_id = ctx.get("thread_id", "")
+        normalized_body = re.sub(r"\s+", " ", (body or "").strip())
+        file_marker = ""
+        if file_path or file_name:
+            file_marker = f"{file_name or ''}|{file_path or ''}"
+        key_material = "\n".join(
+            [
+                self._address.lower(),
+                to_addr.lower(),
+                subject,
+                original_msg_id,
+                thread_id,
+                normalized_body,
+                file_marker,
+            ]
+        )
+        return hashlib.sha256(key_material.encode("utf-8")).hexdigest()
+
+    def _send_gmail_message(
+        self,
+        to_addr: str,
+        body: str,
+        reply_to_msg_id: Optional[str] = None,
+        file_path: Optional[str] = None,
+        file_name: Optional[str] = None,
+    ) -> str:
+        """Send an email through the Gmail API."""
+        dedup_key = self._outbound_dedup_key(
+            to_addr,
+            body,
+            reply_to_msg_id=reply_to_msg_id,
+            file_path=file_path,
+            file_name=file_name,
+        )
+        cached_message_id = _get_outbound_email_duplicate(dedup_key)
+        if cached_message_id:
+            logger.warning(
+                "[Email] Skipping duplicate Gmail send to %s within %.0fs window",
+                to_addr,
+                _OUTBOUND_EMAIL_DEDUP_TTL_SECONDS,
+            )
+            return cached_message_id
+
+        msg, ctx, msg_id = self._build_outbound_message(to_addr, body, reply_to_msg_id)
+
+        if file_path:
+            p = Path(file_path)
+            fname = file_name or p.name
+            with open(p, "rb") as f:
+                part = MIMEBase("application", "octet-stream")
+                part.set_payload(f.read())
+                encoders.encode_base64(part)
+                part.add_header("Content-Disposition", f"attachment; filename={fname}")
+                msg.attach(part)
+
+        raw = base64.urlsafe_b64encode(msg.as_bytes()).decode("ascii").rstrip("=")
+        body_payload = {"raw": raw}
+        if ctx.get("thread_id"):
+            body_payload["threadId"] = ctx["thread_id"]
+
+        service = self._gmail_service()
+        response = service.users().messages().send(userId="me", body=body_payload).execute()
+        response_id = response.get("id", msg_id)
+        _remember_outbound_email(dedup_key, response_id)
+        logger.info("[Email] Sent Gmail API reply to %s (subject: %s)", to_addr, msg["Subject"])
+        return response_id
 
     async def send_typing(self, chat_id: str, metadata: Optional[Dict[str, Any]] = None) -> None:
         """Email has no typing indicator — no-op."""
@@ -716,7 +1049,25 @@ class EmailAdapter(BasePlatformAdapter):
         file_path: str,
         file_name: Optional[str] = None,
     ) -> str:
-        """Send an email with a file attachment via SMTP."""
+        """Send an email with a file attachment."""
+        if self._use_gmail_api:
+            return self._send_gmail_message(to_addr, body, file_name=file_name, file_path=file_path)
+
+        dedup_key = self._outbound_dedup_key(
+            to_addr,
+            body,
+            file_path=file_path,
+            file_name=file_name,
+        )
+        cached_message_id = _get_outbound_email_duplicate(dedup_key)
+        if cached_message_id:
+            logger.warning(
+                "[Email] Skipping duplicate SMTP attachment send to %s within %.0fs window",
+                to_addr,
+                _OUTBOUND_EMAIL_DEDUP_TTL_SECONDS,
+            )
+            return cached_message_id
+
         msg = MIMEMultipart()
         msg["From"] = self._address
         msg["To"] = to_addr
@@ -760,6 +1111,7 @@ class EmailAdapter(BasePlatformAdapter):
             except Exception:
                 smtp.close()
 
+        _remember_outbound_email(dedup_key, msg_id)
         return msg_id
 
     async def get_chat_info(self, chat_id: str) -> Dict[str, Any]:

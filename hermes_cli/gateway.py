@@ -3438,16 +3438,15 @@ _PLATFORMS = [
         "token_var": "EMAIL_ADDRESS",
         "setup_instructions": [
             "1. Use a dedicated email account for your Hermes agent",
-            "2. For Gmail: enable 2FA, then create an App Password at",
-            "   https://myaccount.google.com/apppasswords",
-            "3. For other providers: use your email password or app-specific password",
-            "4. IMAP must be enabled on your email account",
+            "2. For Gmail: prefer OAuth via ~/.hermes/google_token.json",
+            "3. Legacy fallback: use an app password if you want IMAP/SMTP auth",
+            "4. IMAP must be enabled on your email account for the legacy path",
         ],
         "vars": [
             {"name": "EMAIL_ADDRESS", "prompt": "Email address", "password": False,
              "help": "The email address Hermes will use (e.g., hermes@gmail.com)."},
             {"name": "EMAIL_PASSWORD", "prompt": "Email password (or app password)", "password": True,
-             "help": "For Gmail, use an App Password (not your regular password)."},
+             "help": "Optional for Gmail OAuth. For legacy Gmail IMAP/SMTP, use an App Password."},
             {"name": "EMAIL_IMAP_HOST", "prompt": "IMAP host", "password": False,
              "help": "e.g., imap.gmail.com for Gmail, outlook.office365.com for Outlook."},
             {"name": "EMAIL_SMTP_HOST", "prompt": "SMTP host", "password": False,
@@ -3771,7 +3770,9 @@ def _platform_status(platform: dict) -> str:
         pwd = get_env_value("EMAIL_PASSWORD")
         imap = get_env_value("EMAIL_IMAP_HOST")
         smtp = get_env_value("EMAIL_SMTP_HOST")
-        if all([val, pwd, imap, smtp]):
+        oauth_token = get_hermes_home() / "google_token.json"
+        gmail_oauth = bool(val and imap and smtp and oauth_token.exists())
+        if gmail_oauth or all([val, pwd, imap, smtp]):
             return "configured"
         if any([val, pwd, imap, smtp]):
             return "partially configured"

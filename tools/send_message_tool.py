@@ -1269,35 +1269,29 @@ async def _send_signal(extra, chat_id, message, media_files=None):
 
 
 async def _send_email(extra, chat_id, message):
-    """Send via SMTP (one-shot, no persistent connection needed)."""
-    import smtplib
-    from email.mime.text import MIMEText
-    from email.utils import formatdate
-
-    address = extra.get("address") or os.getenv("EMAIL_ADDRESS", "")
-    password = os.getenv("EMAIL_PASSWORD", "")
-    smtp_host = extra.get("smtp_host") or os.getenv("EMAIL_SMTP_HOST", "")
+    """Send email through the shared gateway adapter path."""
     try:
-        smtp_port = int(os.getenv("EMAIL_SMTP_PORT", "587"))
-    except (ValueError, TypeError):
-        smtp_port = 587
+        from gateway.config import PlatformConfig
+        from gateway.platforms.email import EmailAdapter
 
-    if not all([address, password, smtp_host]):
-        return {"error": "Email not configured (EMAIL_ADDRESS, EMAIL_PASSWORD, EMAIL_SMTP_HOST required)"}
-
-    try:
-        msg = MIMEText(message, "plain", "utf-8")
-        msg["From"] = address
-        msg["To"] = chat_id
-        msg["Subject"] = "Hermes Agent"
-        msg["Date"] = formatdate(localtime=True)
-
-        server = smtplib.SMTP(smtp_host, smtp_port)
-        server.starttls(context=ssl.create_default_context())
-        server.login(address, password)
-        server.send_message(msg)
-        server.quit()
-        return {"success": True, "platform": "email", "chat_id": chat_id}
+        adapter = EmailAdapter(PlatformConfig(enabled=True, extra=extra or {}))
+        if not adapter._address or not adapter._smtp_host:
+            return {
+                "error": (
+                    "Email not configured (EMAIL_ADDRESS and EMAIL_SMTP_HOST required, "
+                    "plus Gmail OAuth token or EMAIL_PASSWORD)"
+                )
+            }
+        loop = asyncio.get_running_loop()
+        message_id = await loop.run_in_executor(None, adapter._send_email, chat_id, message, None)
+        transport = "gmail_api" if adapter._use_gmail_api else "smtp"
+        return {
+            "success": True,
+            "platform": "email",
+            "chat_id": chat_id,
+            "transport": transport,
+            "message_id": message_id,
+        }
     except Exception as e:
         return _error(f"Email send failed: {e}")
 

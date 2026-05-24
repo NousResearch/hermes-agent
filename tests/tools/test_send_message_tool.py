@@ -128,7 +128,6 @@ def _make_config():
         get_home_channel=lambda _platform: None,
     ), telegram_cfg
 
-
 def _install_telegram_mock(monkeypatch, bot):
     parse_mode = SimpleNamespace(MARKDOWN_V2="MarkdownV2", HTML="HTML")
     constants_mod = SimpleNamespace(ParseMode=parse_mode)
@@ -434,6 +433,19 @@ class TestSendMessageTool:
         assert "error" in result
         assert leaked not in result["error"]
         assert "access_token=***" in result["error"]
+
+    def test_shared_email_sender_uses_email_adapter(self):
+        from tools.send_message_tool import _send_email
+
+        with patch("gateway.platforms.email.EmailAdapter._send_email", return_value="<msg@test.com>") as mock_send:
+            result = asyncio.run(
+                _send_email({"address": "hermes@test.com", "smtp_host": "smtp.gmail.com"}, "user@test.com", "Hello")
+            )
+
+        assert result["success"] is True
+        assert result["message_id"] == "<msg@test.com>"
+        assert result["transport"] in {"gmail_api", "smtp"}
+        mock_send.assert_called_once_with("user@test.com", "Hello", None)
 
 
 class TestSendTelegramMediaDelivery:

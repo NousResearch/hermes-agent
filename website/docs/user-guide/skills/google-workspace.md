@@ -21,8 +21,47 @@ The setup is fully agent-driven — ask Hermes to set up Google Workspace and it
 4. **Done** — token auto-refreshes from that point on
 
 :::tip Email-only users
-If you only need email (no Calendar/Drive/Sheets), use the **himalaya** skill instead — it works with a Gmail App Password and takes 2 minutes. No Google Cloud project needed.
+If you already have Hermes Gmail OAuth configured, you can use this skill for email-only workflows too. Hermes reuses `~/.hermes/google_token.json` for Gmail search/read/send flows instead of forcing a separate app-password mail client setup.
 :::
+
+## Gmail OAuth for Hermes email delivery
+
+If you want Hermes itself to check and send mail from a Gmail mailbox, you need
+both:
+
+- Google Workspace OAuth set up
+- the Hermes email gateway pointed at Gmail
+
+That setup looks like this:
+
+1. Complete the normal Google Workspace OAuth flow so
+   `~/.hermes/google_token.json` exists
+2. Set these email gateway values in your Hermes env/config:
+
+```bash
+EMAIL_ADDRESS=hermes@example.com
+EMAIL_IMAP_HOST=imap.gmail.com
+EMAIL_SMTP_HOST=smtp.gmail.com
+EMAIL_ALLOWED_USERS=user@example.com,other@example.com
+```
+
+`EMAIL_PASSWORD` is not required for this Gmail OAuth path.
+
+### Verify it
+
+```bash
+# OAuth token is valid
+$GSETUP --check
+
+# Gmail API works
+$GAPI gmail search "in:inbox" --max 1
+
+# Hermes gateway sees email as connected
+hermes gateway status
+```
+
+If Gmail search works but the gateway still says email is disconnected, the
+usual cause is missing `EMAIL_IMAP_HOST` / `EMAIL_SMTP_HOST` values.
 
 ## Gmail
 

@@ -6064,7 +6064,10 @@ class GatewayRunner:
         elif platform == Platform.EMAIL:
             from gateway.platforms.email import EmailAdapter, check_email_requirements
             if not check_email_requirements():
-                logger.warning("Email: EMAIL_ADDRESS, EMAIL_PASSWORD, EMAIL_IMAP_HOST, or EMAIL_SMTP_HOST not set")
+                logger.warning(
+                    "Email: EMAIL_ADDRESS, EMAIL_IMAP_HOST, or EMAIL_SMTP_HOST not set "
+                    "(and either EMAIL_PASSWORD or ~/.hermes/google_token.json for Gmail OAuth)"
+                )
                 return None
             return EmailAdapter(config)
 

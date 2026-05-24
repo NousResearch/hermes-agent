@@ -14,7 +14,6 @@ metadata:
   hermes:
     tags: [Google, Gmail, Calendar, Drive, Sheets, Docs, Contacts, Email, OAuth]
     homepage: https://github.com/NousResearch/hermes-agent
-    related_skills: [himalaya]
 ---
 
 # Google Workspace
@@ -56,10 +55,13 @@ Before starting OAuth setup, ask the user TWO questions:
 **Question 1: "What Google services do you need? Just email, or also
 Calendar/Drive/Sheets/Docs?"**
 
-- **Email only** → They don't need this skill at all. Use the `himalaya` skill
-  instead — it works with a Gmail App Password (Settings → Security → App
-  Passwords) and takes 2 minutes to set up. No Google Cloud project needed.
-  Load the himalaya skill and follow its setup instructions.
+- **Email only** → Prefer this skill when Gmail OAuth is already configured.
+  If `~/.hermes/google_token.json` exists, stay on the Gmail OAuth path. Use
+  this skill's Gmail commands for inbox search/read/labels/debugging. For
+  actually sending or replying as Hermes in an interactive conversation, use
+  the `send_message` tool so delivery goes through the platform adapter and
+  outbound dedup guardrails. Do not switch to any separate IMAP/SMTP mail
+  client for Hermes-managed Gmail mailboxes.
 
 - **Email + Calendar** → Continue with this skill, but use
   `--services email,calendar` during auth so the consent screen only asks for
@@ -164,6 +166,48 @@ Should print `AUTHENTICATED`. Setup is complete — token refreshes automaticall
 - If `gws` is installed, `google_api.py` points it at the same `~/.hermes/google_token.json` credentials file. Users do not need to run a separate `gws auth login` flow.
 - To revoke: `$GSETUP --revoke`
 
+### Gmail OAuth for Hermes email delivery
+
+If the user wants Hermes itself to read and send email from a Gmail mailbox
+through the gateway, there is a small but important difference between
+"Google Workspace is authorized" and "Hermes email delivery is configured."
+
+For the Gmail OAuth path, make sure all of the following are true:
+
+1. `~/.hermes/google_token.json` exists and `setup.py --check` prints
+   `AUTHENTICATED`
+2. `EMAIL_ADDRESS` is set to the mailbox Hermes should use
+3. `EMAIL_IMAP_HOST=imap.gmail.com`
+4. `EMAIL_SMTP_HOST=smtp.gmail.com`
+5. `EMAIL_ALLOWED_USERS` is set if the user wants an inbound allowlist
+6. `EMAIL_PASSWORD` is **not required** when the Gmail OAuth token is present
+
+Example `.env` shape:
+
+```bash
+EMAIL_ADDRESS=hermes@example.com
+EMAIL_IMAP_HOST=imap.gmail.com
+EMAIL_SMTP_HOST=smtp.gmail.com
+EMAIL_ALLOWED_USERS=user@example.com,other@example.com
+```
+
+Verification steps:
+
+```bash
+# OAuth token works
+$GSETUP --check
+
+# Gmail API works
+$GAPI gmail search "in:inbox" --max 1
+
+# Gateway sees the mailbox as configured
+hermes gateway status
+```
+
+If `hermes gateway status` still reports email as disconnected, check the env
+first. Missing Gmail hosts are the most common reason Hermes falls back to the
+legacy IMAP/SMTP setup path.
+
 ## Usage
 
 All commands go through the API script. Set `GAPI` as a shorthand:
@@ -173,6 +217,14 @@ GAPI="python ${HERMES_HOME:-$HOME/.hermes}/skills/productivity/google-workspace/
 ```
 
 ### Gmail
+
+For Hermes' own mailbox behavior, prefer this split:
+
+- Use `gmail search` / `gmail get` to inspect or find messages.
+- Use `send_message` for the actual outbound send/reply when the user wants
+  Hermes to email them from the configured mailbox.
+- Use `gmail send` / `gmail reply` here only for explicit low-level Gmail API
+  tasks or debugging, not as the default interactive delivery path.
 
 ```bash
 # Search (returns JSON array with id, from, subject, date, snippet)
@@ -311,10 +363,11 @@ All commands return JSON. Parse with `jq` or read directly. Key fields:
 ## Rules
 
 1. **Never send email, create/delete calendar events, delete Drive files, share files, or modify Docs/Sheets without confirming with the user first.** Show what will be done (recipients, file IDs, content, share role) and ask for approval. For `drive delete`, prefer the default trash (reversible) over `--permanent`.
-2. **Check auth before first use** — run `setup.py --check`. If it fails, guide the user through setup.
-3. **Use the Gmail search syntax reference** for complex queries — load it with `skill_view("google-workspace", file_path="references/gmail-search-syntax.md")`.
-4. **Calendar times must include timezone** — always use ISO 8601 with offset (e.g., `2026-03-01T10:00:00-06:00`) or UTC (`Z`).
-5. **Respect rate limits** — avoid rapid-fire sequential API calls. Batch reads when possible.
+2. **For Hermes mailbox delivery, use `send_message` instead of raw Gmail send/reply commands.** Reserve `gmail send` / `gmail reply` for explicit debugging or low-level API work.
+3. **Check auth before first use** — run `setup.py --check`. If it fails, guide the user through setup.
+4. **Use the Gmail search syntax reference** for complex queries — load it with `skill_view("google-workspace", file_path="references/gmail-search-syntax.md")`.
+5. **Calendar times must include timezone** — always use ISO 8601 with offset (e.g., `2026-03-01T10:00:00-06:00`) or UTC (`Z`).
+6. **Respect rate limits** — avoid rapid-fire sequential API calls. Batch reads when possible.
 
 ## Troubleshooting
 

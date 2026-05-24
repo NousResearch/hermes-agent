@@ -2933,9 +2933,15 @@ def _resolve_auto(main_runtime: Optional[Dict[str, Any]] = None) -> Tuple[Option
         explicit_base_url = None
         explicit_api_key = None
         if runtime_base_url and (main_provider == "custom" or main_provider.startswith("custom:")):
-            resolved_provider = "custom"
-            explicit_base_url = runtime_base_url
-            explicit_api_key = runtime_api_key or None
+            # For named custom providers (custom:name), don't rewrite to bare "custom" —
+            # let it fall through to the named custom provider branch in
+            # resolve_provider_client which has proper api_mode handling.
+            # Only rewrite bare "custom" (anonymous custom endpoint).
+            if main_provider == "custom":
+                resolved_provider = "custom"
+                explicit_base_url = runtime_base_url
+                explicit_api_key = runtime_api_key or None
+            # else: keep main_provider as-is, explicit_base_url=None → named custom branch
         # Skip Step-1 if the main provider was recently 402'd. The unhealthy
         # cache TTL bounds how long we bypass it, so a topped-up account
         # recovers automatically. If we tried Step-1 anyway, every aux call
@@ -3378,7 +3384,7 @@ def resolve_provider_client(
                 # /v1 equivalent.  Rewrite only on the OpenAI-wire path so the
                 # Anthropic fallback SDK still sees the original URL.
                 if entry_api_mode == "anthropic_messages":
-                    openai_base = custom_base
+                    openai_base = _to_openai_base_url(custom_base)
                     raw_base_for_wrap = custom_base
                 else:
                     openai_base = _to_openai_base_url(custom_base)

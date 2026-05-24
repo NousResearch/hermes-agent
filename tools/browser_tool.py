@@ -196,6 +196,22 @@ _cached_command_timeout: Optional[int] = None
 _command_timeout_resolved = False
 
 
+def _get_stealth_args() -> tuple[list[str], str]:
+    """Read stealth config from config.yaml and return (args_list, user_agent).
+
+    Returns ([], "") when stealth is not configured or unreadable.
+    """
+    try:
+        from hermes_cli.config import read_raw_config
+        config = read_raw_config()
+        stealth = config.get("browser", {}).get("stealth", {})
+        args = stealth.get("args", [])
+        user_agent = stealth.get("user_agent", "") or ""
+        return list(args), user_agent
+    except Exception:
+        return [], ""
+
+
 def _get_command_timeout() -> int:
     """Return the configured browser command timeout from config.yaml.
 
@@ -1971,6 +1987,13 @@ def _run_browser_command(
         cmd_prefix = [_npx_bin, "agent-browser"]
     else:
         cmd_prefix = [browser_cmd]
+
+    # Inject stealth args + user-agent from config
+    stealth_args, stealth_ua = _get_stealth_args()
+    if stealth_args:
+        args = args + ["--args", ",".join(stealth_args)]
+    if stealth_ua:
+        args = args + ["--user-agent", stealth_ua]
 
     cmd_parts = cmd_prefix + backend_args + [
         "--json",

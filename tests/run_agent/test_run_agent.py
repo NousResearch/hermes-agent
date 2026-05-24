@@ -2755,6 +2755,9 @@ class TestRunConversation:
         ):
             result = agent.run_conversation("hello")
         assert result["interrupted"] is True
+        assert "操作已中断" in result["final_response"]
+        assert "Operation interrupted" not in result["final_response"]
+        assert "waiting for model response" not in result["final_response"]
 
     def test_invalid_tool_name_retry(self, agent):
         """Model hallucinates an invalid tool name, agent retries and succeeds."""

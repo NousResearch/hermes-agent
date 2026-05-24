@@ -108,6 +108,15 @@ def _get_scope_lock_path(scope: str, identity: str) -> Path:
     return _get_lock_dir() / f"{scope}-{_scope_hash(identity)}.lock"
 
 
+def _proc_status_path(pid: int) -> Path:
+    """Return the Linux proc status path for a process.
+
+    Kept as a helper so tests can simulate process states without touching
+    the real /proc filesystem.
+    """
+    return Path(f"/proc/{pid}/status")
+
+
 def _get_process_start_time(pid: int) -> Optional[int]:
     """Return the kernel start time for a process when available."""
     stat_path = Path(f"/proc/{pid}/stat")
@@ -639,17 +648,17 @@ def acquire_scoped_lock(scope: str, identity: str, metadata: Optional[dict[str, 
                     live_cmdline = _read_process_cmdline(existing_pid)
                     if live_cmdline is not None or not _record_looks_like_gateway(existing):
                         stale = True
-                # Check if process is stopped (Ctrl+Z / SIGTSTP) — stopped
-                # processes still appear alive to _pid_exists but are not
-                # actually running. Treat them as stale so --replace works.
+                # Check if process is stopped (Ctrl+Z / SIGTSTP) or zombie.
+                # These states still appear alive to _pid_exists but cannot
+                # operate the gateway. Treat them as stale so --replace works.
                 if not stale:
                     try:
-                        _proc_status = Path(f"/proc/{existing_pid}/status")
+                        _proc_status = _proc_status_path(existing_pid)
                         if _proc_status.exists():
                             for _line in _proc_status.read_text(encoding="utf-8").splitlines():
                                 if _line.startswith("State:"):
                                     _state = _line.split()[1]
-                                    if _state in {"T", "t"}:  # stopped or tracing stop
+                                    if _state in {"T", "t", "Z", "z"}:  # stopped/tracing stop/zombie
                                         stale = True
                                     break
                     except (OSError, PermissionError):

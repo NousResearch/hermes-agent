@@ -155,6 +155,47 @@ class TestCodexBuildKwargs:
         )
         assert "max_output_tokens" not in kw
 
+    def test_custom_codex_proxy_adds_transport_compat_headers(self, transport):
+        messages = [{"role": "user", "content": "Hi"}]
+        kw = transport.build_kwargs(
+            model="gpt-5.4",
+            messages=messages,
+            tools=[],
+            session_id="custom-codex-session",
+            max_tokens=4096,
+            is_codex_backend=True,
+            use_codex_transport_compat_headers=True,
+        )
+        headers = kw.get("extra_headers", {})
+        assert "max_output_tokens" not in kw
+        assert headers["session_id"] == "custom-codex-session"
+        assert headers["x-client-request-id"] == "custom-codex-session"
+        assert headers["x-codex-window-id"] == "custom-codex-session:0"
+        assert headers["originator"] == "codex_exec"
+        assert "codex_exec/0.120.0" in headers["User-Agent"]
+        metadata = json.loads(headers["x-codex-turn-metadata"])
+        assert metadata["session_id"] == "custom-codex-session"
+        assert metadata["window_id"] == "custom-codex-session:0"
+        assert metadata["sandbox"] == "none"
+        assert isinstance(metadata["turn_id"], str) and metadata["turn_id"]
+
+    def test_codex_backend_without_proxy_flag_omits_transport_compat_headers(self, transport):
+        messages = [{"role": "user", "content": "Hi"}]
+        kw = transport.build_kwargs(
+            model="gpt-5.4",
+            messages=messages,
+            tools=[],
+            session_id="official-codex-session",
+            is_codex_backend=True,
+        )
+        headers = kw.get("extra_headers", {})
+        assert headers["session_id"] == "official-codex-session"
+        assert headers["x-client-request-id"] == "official-codex-session"
+        assert "x-codex-window-id" not in headers
+        assert "originator" not in headers
+        assert "User-Agent" not in headers
+        assert "x-codex-turn-metadata" not in headers
+
     def test_xai_headers(self, transport):
         messages = [{"role": "user", "content": "Hi"}]
         kw = transport.build_kwargs(

@@ -88,6 +88,9 @@ class TestSlashCommands:
         if platform != Platform.TELEGRAM:
             pytest.skip("Plaintext restart shortcut is intentionally DM/Telegram-focused")
 
+        monkeypatch.delenv("HERMES_WEBUI_STATE_DIR", raising=False)
+        monkeypatch.delenv("HERMES_WEBUI_PORT", raising=False)
+        monkeypatch.delenv("HERMES_SESSION_PLATFORM", raising=False)
         monkeypatch.setenv("INVOCATION_ID", "e2e-systemd")
         runner.request_restart = MagicMock(return_value=True)
 
@@ -103,6 +106,9 @@ class TestSlashCommands:
         if platform != Platform.TELEGRAM:
             pytest.skip("Shortcut scope is only verified for Telegram here")
 
+        monkeypatch.delenv("HERMES_WEBUI_STATE_DIR", raising=False)
+        monkeypatch.delenv("HERMES_WEBUI_PORT", raising=False)
+        monkeypatch.delenv("HERMES_SESSION_PLATFORM", raising=False)
         monkeypatch.setenv("INVOCATION_ID", "e2e-systemd")
         runner.request_restart = MagicMock(return_value=True)
         runner._handle_message_with_agent = AsyncMock(return_value="agent-handled")

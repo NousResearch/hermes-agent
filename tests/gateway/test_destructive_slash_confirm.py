@@ -120,9 +120,12 @@ async def test_gate_on_text_fallback_returns_prompt_without_executing(monkeypatc
 
     execute.assert_not_awaited()
     assert isinstance(result, str)
-    assert "Confirm /new" in result
-    assert "Approve Once" in result
-    assert "Cancel" in result
+    assert "确认 /new" in result
+    assert "批准一次" in result
+    assert "取消" in result
+    assert "Confirm /new" not in result
+    assert "Approve Once" not in result
+    assert "Cancel" not in result
 
 
 @pytest.mark.asyncio
@@ -235,8 +238,11 @@ async def test_resolve_always_persists_opt_out_and_runs_execute(monkeypatch):
         saved[path] = value
         return True
 
-    import cli as cli_mod
-    monkeypatch.setattr(cli_mod, "save_config_value", _fake_save)
+    import sys
+    import types
+
+    cli_mod = types.SimpleNamespace(save_config_value=_fake_save)
+    monkeypatch.setitem(sys.modules, "cli", cli_mod)
 
     execute = AsyncMock(return_value="✨ fresh")
 

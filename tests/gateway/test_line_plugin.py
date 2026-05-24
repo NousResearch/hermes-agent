@@ -319,6 +319,9 @@ class TestSendRouting:
         return ad
 
     def test_system_bypass_recognized(self):
+        assert _is_system_bypass("⚡ 正在中断当前任务")
+        assert _is_system_bypass("⏳ 已排队到下一轮")
+        assert _is_system_bypass("⏩ 已插入当前任务")
         assert _is_system_bypass("⚡ Interrupting current run")
         assert _is_system_bypass("⏳ Queued — agent is busy")
         assert _is_system_bypass("⏩ Steered toward new task")
@@ -372,7 +375,7 @@ class TestSendRouting:
         # Even with a pending button, system busy-acks must surface visibly.
         rid = adapter._cache.register_pending("Uchat")
         adapter._pending_buttons["Uchat"] = rid
-        result = asyncio.run(adapter.send("Uchat", "⚡ Interrupting current run"))
+        result = asyncio.run(adapter.send("Uchat", "⚡ 正在中断当前任务"))
         assert result.success
         # Bypass goes through push (no reply token stored)
         adapter._client.push.assert_called_once()

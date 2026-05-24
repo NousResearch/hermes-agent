@@ -40,22 +40,22 @@ def busy_input_hint_gateway(mode: str) -> str:
     """
     if mode == "queue":
         return (
-            "💡 First-time tip — I queued your message instead of interrupting. "
-            "Send `/busy interrupt` to make new messages stop the current task "
-            "immediately, or `/busy status` to check. This notice won't appear again."
+            "💡 首次提示：我已把你的消息排队，没有中断当前任务。"
+            "发送 `/busy interrupt` 可改为新消息立即中断当前任务，"
+            "或发送 `/busy status` 查看状态。此提示不会再出现。"
         )
     if mode == "steer":
         return (
-            "💡 First-time tip — I steered your message into the current run; "
-            "it will arrive after the next tool call instead of interrupting. "
-            "Send `/busy interrupt` or `/busy queue` to change this, or "
-            "`/busy status` to check. This notice won't appear again."
+            "💡 首次提示：我已把你的消息插入当前任务；"
+            "它会在下一个工具调用后进入，不会中断任务。"
+            "发送 `/busy interrupt` 或 `/busy queue` 可切换模式，"
+            "或发送 `/busy status` 查看状态。此提示不会再出现。"
         )
     return (
-        "💡 First-time tip — I just interrupted my current task to answer you. "
-        "Send `/busy queue` to queue follow-ups for after the current task instead, "
-        "`/busy steer` to inject them mid-run without interrupting, or "
-        "`/busy status` to check. This notice won't appear again."
+        "💡 首次提示：我刚刚中断当前任务来回复你。"
+        "发送 `/busy queue` 可让后续消息排队到当前任务之后，"
+        "发送 `/busy steer` 可在不中断的情况下插入当前任务，"
+        "或发送 `/busy status` 查看状态。此提示不会再出现。"
     )
 
 
@@ -82,9 +82,9 @@ def busy_input_hint_cli(mode: str) -> str:
 
 def tool_progress_hint_gateway() -> str:
     return (
-        "💡 First-time tip — that tool took a while and I'm streaming every step. "
-        "If the progress messages feel noisy, send `/verbose` to cycle modes "
-        "(all → new → off). This notice won't appear again."
+        "💡 首次提示：这个工具运行较久，我正在流式显示每一步。"
+        "如果觉得进度消息太多，发送 `/verbose` 可切换显示模式"
+        "（all → new → off）。此提示不会再出现。"
     )
 
 

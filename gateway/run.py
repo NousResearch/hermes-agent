@@ -66,6 +66,21 @@ _AGENT_CACHE_IDLE_TTL_SECS = 3600.0  # evict agents idle for >1h
 _PLATFORM_CONNECT_TIMEOUT_SECS_DEFAULT = 30.0
 _ADAPTER_DISCONNECT_TIMEOUT_SECS_DEFAULT = 5.0
 _TELEGRAM_COMMAND_MENTION_RE = re.compile(r"(?<![\w:/])/([A-Za-z0-9][A-Za-z0-9_-]*)")
+_WHAT_DID_YOU_DO_TRIGGERS = frozenset(
+    {
+        "你做了什么",
+        "刚才你干嘛了",
+        "你到底改了啥",
+        "哪些是你做的",
+    }
+)
+
+
+def _is_what_did_you_do_trigger(text: str | None) -> bool:
+    """Return True for Chinese plain-text aliases of /what-did-you-do."""
+    normalized = re.sub(r"[\s，。！？!?、,.`'\"“”‘’：:；;（）()【】\[\]]+", "", str(text or ""))
+    return normalized in _WHAT_DID_YOU_DO_TRIGGERS
+
 
 _TELEGRAM_NOISY_STATUS_RE = re.compile(
     r"("  # transient/auxiliary status that should stay in logs, not Telegram chat
@@ -139,6 +154,251 @@ def _gateway_platform_value(platform: Any) -> str:
     return str(getattr(platform, "value", platform) or "").strip().lower()
 
 
+def _gateway_prefers_chinese(platform: Any) -> bool:
+    """Return True for chat platforms whose Hermes system copy should be Chinese."""
+    return _gateway_platform_value(platform) == "qqbot"
+
+
+def _localize_gateway_error_detail_zh(text: str) -> str:
+    """Translate known Hermes-owned error detail fragments for QQ.
+
+    Keep API/function names intact, but localize the English runtime prose so
+    QQ users do not see raw Hermes status copy for common failures.
+    """
+    body = str(text or "").strip()
+    body = re.sub(
+        r"Responses create\(stream=True\) fallback did not emit a terminal response\.?",
+        "Responses create(stream=True) fallback 未产生终止响应。",
+        body,
+        flags=re.IGNORECASE,
+    )
+    return body
+
+
+def _localize_stream_stalled_tool_call_zh(text: str) -> Optional[str]:
+    """Localize the Hermes dropped tool-call warning for Chinese-first chats."""
+    body = str(text or "").strip()
+    match = re.match(
+        r"^⚠\s*Stream stalled mid tool-call \((?P<tool>[^)]+)\); "
+        r"the action was not executed\. Ask me to retry if you want to continue\.?$",
+        body,
+        re.IGNORECASE,
+    )
+    if not match:
+        return None
+    return f"⚠ 流式响应在工具调用中途停住（{match.group('tool')}）；操作未执行。需要继续的话，请让我重试。"
+
+
+def _localize_gateway_status_zh(text: str) -> str:
+    """Translate common Hermes runtime status chatter for Chinese-first chats.
+
+    This intentionally handles static Hermes status envelopes only. Provider
+    names, commands, paths, and raw error identifiers remain untouched.
+    """
+    body = str(text or "").strip()
+
+    retry_match = re.match(
+        r"^⏳\s*Retrying in (?P<wait>\d+(?:\.\d+)?)s "
+        r"\(attempt (?P<attempt>\d+)/(?:\s*)?(?P<max>\d+)\)\.\.\.$",
+        body,
+        re.IGNORECASE,
+    )
+    if retry_match:
+        return (
+            f"⏳ {retry_match.group('wait')} 秒后重试"
+            f"（第 {retry_match.group('attempt')}/{retry_match.group('max')} 次）..."
+        )
+
+    rate_limit_match = re.match(
+        r"^⏱️\s*Rate limited\. Waiting (?P<wait>\d+(?:\.\d+)?)s "
+        r"\(attempt (?P<attempt>\d+)/(?:\s*)?(?P<max>\d+)\)\.\.\.$",
+        body,
+        re.IGNORECASE,
+    )
+    if rate_limit_match:
+        return (
+            f"⏱️ 被限流，{rate_limit_match.group('wait')} 秒后重试"
+            f"（第 {rate_limit_match.group('attempt')}/{rate_limit_match.group('max')} 次）..."
+        )
+
+    max_retry_match = re.match(
+        r"^⚠️\s*Max retries \((?P<count>\d+)\) "
+        r"(?P<tail>exhausted|for invalid responses) — trying fallback\.\.\.$",
+        body,
+        re.IGNORECASE,
+    )
+    if max_retry_match:
+        count = max_retry_match.group("count")
+        if "invalid" in max_retry_match.group("tail").lower():
+            return f"⚠️ 无效响应已重试 {count} 次，正在尝试备用模型..."
+        return f"⚠️ 已重试 {count} 次仍失败，正在尝试备用模型..."
+
+    max_retry_exceeded = re.match(
+        r"^❌\s*Max retries \((?P<count>\d+)\) exceeded for invalid responses\. Giving up\.$",
+        body,
+        re.IGNORECASE,
+    )
+    if max_retry_exceeded:
+        return f"❌ 无效响应已重试 {max_retry_exceeded.group('count')} 次，停止尝试。"
+
+    static_map = {
+        "⚠️ Empty/malformed response — switching to fallback...": "⚠️ 模型返回空或格式异常，正在切换到备用模型...",
+        "⚠️ Rate limited — switching to fallback provider...": "⚠️ 已被限流，正在切换到备用提供商...",
+        "↻ Stream interrupted — using delivered content as final response": "↻ 流式响应中断，改用已发送内容作为最终回复",
+        "↻ Empty response after tool calls — using earlier content as final answer": "↻ 工具调用后模型返回空内容，改用较早内容作为最终回复",
+        "⚠️ Model returned empty after tool calls — nudging to continue": "⚠️ 工具调用后模型返回空内容，正在提示模型继续",
+        "⚠️ Model returning empty responses — switching to fallback provider...": "⚠️ 模型持续返回空内容，正在切换到备用提供商...",
+        "⚠️ Model produced reasoning but no visible response after all retries. Returning empty.": "⚠️ 模型多次重试后仍只返回思考内容，没有可见回复。将返回空结果。",
+        "❌ Model returned no content after all retries. No fallback providers configured.": "❌ 多次重试后模型仍无内容，且未配置备用提供商。",
+        "❌ Model returned no content after all retries and fallback attempts.": "❌ 多次重试和备用模型尝试后，模型仍无内容。",
+    }
+    if body in static_map:
+        return static_map[body]
+
+    auxiliary_match = re.match(
+        r"^⚠\s*Auxiliary (?P<task>.+?) failed: (?P<detail>.*)$",
+        body,
+        re.IGNORECASE,
+    )
+    if auxiliary_match:
+        return f"⚠ 辅助任务 {auxiliary_match.group('task')} 失败：{auxiliary_match.group('detail')}"
+
+    payload_match = re.match(
+        r"^⚠️\s*Request payload too large \(413\) — compression attempt "
+        r"(?P<attempt>\d+)/(?:\s*)?(?P<max>\d+)\.\.\.$",
+        body,
+        re.IGNORECASE,
+    )
+    if payload_match:
+        return (
+            "⚠️ 请求内容过大 (413)，正在压缩"
+            f"（第 {payload_match.group('attempt')}/{payload_match.group('max')} 次）..."
+        )
+
+    context_large_match = re.match(
+        r"^🗜️\s*Context too large \(~(?P<tokens>[\d,]+) tokens\) — compressing "
+        r"\((?P<attempt>\d+)/(?:\s*)?(?P<max>\d+)\)\.\.\.$",
+        body,
+        re.IGNORECASE,
+    )
+    if context_large_match:
+        return (
+            f"🗜️ 上下文过大（约 {context_large_match.group('tokens')} tokens），正在压缩"
+            f"（第 {context_large_match.group('attempt')}/{context_large_match.group('max')} 次）..."
+        )
+
+    context_reduced_match = re.match(
+        r"^🗜️\s*Context reduced to (?P<new>[\d,]+) tokens "
+        r"\(was (?P<old>[\d,]+)\), retrying\.\.\.$",
+        body,
+        re.IGNORECASE,
+    )
+    if context_reduced_match:
+        return (
+            f"🗜️ 上下文已降到 {context_reduced_match.group('new')} tokens"
+            f"（原 {context_reduced_match.group('old')}），正在重试..."
+        )
+
+    compressed_match = re.match(
+        r"^🗜️\s*Compressed (?P<old>\d+) → (?P<new>\d+) messages, retrying\.\.\.$",
+        body,
+        re.IGNORECASE,
+    )
+    if compressed_match:
+        return (
+            f"🗜️ 已压缩 {compressed_match.group('old')} → "
+            f"{compressed_match.group('new')} 条消息，正在重试..."
+        )
+
+    non_retryable_fallback_match = re.match(
+        r"^⚠️\s*Non-retryable error \(HTTP (?P<code>[^)]+)\) — trying fallback\.\.\.$",
+        body,
+        re.IGNORECASE,
+    )
+    if non_retryable_fallback_match:
+        return f"⚠️ 不可重试错误 (HTTP {non_retryable_fallback_match.group('code')})，正在尝试备用模型..."
+
+    non_retryable_final_match = re.match(
+        r"^❌\s*Non-retryable error \(HTTP (?P<code>[^)]+)\): (?P<detail>.+)$",
+        body,
+        re.IGNORECASE,
+    )
+    if non_retryable_final_match:
+        return f"❌ 不可重试错误 (HTTP {non_retryable_final_match.group('code')})：{non_retryable_final_match.group('detail')}"
+
+    rate_limit_final_match = re.match(
+        r"^❌\s*Rate limited after (?P<count>\d+) retries — (?P<detail>.+)$",
+        body,
+        re.IGNORECASE,
+    )
+    if rate_limit_final_match:
+        detail = _localize_gateway_error_detail_zh(rate_limit_final_match.group("detail"))
+        return f"❌ 重试 {rate_limit_final_match.group('count')} 次后仍被限流 — {detail}"
+
+    api_failed_final_match = re.match(
+        r"^❌\s*API failed after (?P<count>\d+) retries — (?P<detail>.+)$",
+        body,
+        re.IGNORECASE,
+    )
+    if api_failed_final_match:
+        detail = _localize_gateway_error_detail_zh(api_failed_final_match.group("detail"))
+        return f"❌ API 重试 {api_failed_final_match.group('count')} 次后仍失败 — {detail}"
+
+    thinking_prefill_match = re.match(
+        r"^↻\s*Thinking-only response — prefilling to continue "
+        r"\((?P<attempt>\d+)/(?:\s*)?(?P<max>\d+)\)$",
+        body,
+        re.IGNORECASE,
+    )
+    if thinking_prefill_match:
+        return (
+            "↻ 模型只返回思考内容，正在预填继续"
+            f"（第 {thinking_prefill_match.group('attempt')}/{thinking_prefill_match.group('max')} 次）"
+        )
+
+    empty_retry_match = re.match(
+        r"^⚠️\s*Empty response from model — retrying "
+        r"\((?P<attempt>\d+)/(?:\s*)?(?P<max>\d+)\)$",
+        body,
+        re.IGNORECASE,
+    )
+    if empty_retry_match:
+        return (
+            "⚠️ 模型返回空内容，正在重试"
+            f"（第 {empty_retry_match.group('attempt')}/{empty_retry_match.group('max')} 次）"
+        )
+
+    fallback_switch_match = re.match(
+        r"^↻\s*Switched to fallback: (?P<model>.+)$",
+        body,
+        re.IGNORECASE,
+    )
+    if fallback_switch_match:
+        return f"↻ 已切换到备用模型：{fallback_switch_match.group('model')}"
+
+    iteration_budget_match = re.match(
+        r"^⚠️\s*Iteration budget exhausted \((?P<used>\d+)/(?:\s*)?(?P<max>\d+)\) "
+        r"— asking model to summarise$",
+        body,
+        re.IGNORECASE,
+    )
+    if iteration_budget_match:
+        return (
+            f"⚠️ 轮次预算已用尽（{iteration_budget_match.group('used')}/"
+            f"{iteration_budget_match.group('max')}），正在请求模型总结"
+        )
+
+    guardrail_match = re.match(
+        r"^⚠️\s*Tool guardrail halted (?P<tool>[^:]+): (?P<code>.+)$",
+        body,
+        re.IGNORECASE,
+    )
+    if guardrail_match:
+        return f"⚠️ 工具保护规则已暂停 {guardrail_match.group('tool')}：{guardrail_match.group('code')}"
+
+    return body
+
+
 def _redact_gateway_user_facing_secrets(text: str) -> str:
     """Best-effort secret redaction before text can leave the gateway."""
     redacted = str(text or "")
@@ -147,8 +407,17 @@ def _redact_gateway_user_facing_secrets(text: str) -> str:
     return redacted
 
 
-def _gateway_provider_error_reply(text: str) -> str:
-    """Map raw provider/API errors to a short user-safe Telegram reply."""
+def _gateway_provider_error_reply(text: str, *, lang: str = "en") -> str:
+    """Map raw provider/API errors to a short user-safe gateway reply."""
+    if lang == "zh":
+        if _GATEWAY_AUTH_ERROR_RE.search(text):
+            return "⚠️ 模型凭证认证失败。请检查已配置的凭证；原始提供商细节已写入 gateway logs。"
+        if _GATEWAY_PROVIDER_POLICY_RE.search(text):
+            return "⚠️ 模型提供商拒绝了这次请求。原始错误未发送到聊天；可查看 gateway logs 或换种说法重试。"
+        if _GATEWAY_RATE_LIMIT_RE.search(text):
+            return "⏱️ 模型提供商正在限流。请稍等再试。"
+        return "⚠️ 模型提供商多次重试后仍失败。原始细节未发送到聊天；可查看 gateway logs。"
+
     if _GATEWAY_AUTH_ERROR_RE.search(text):
         return (
             "⚠️ Provider authentication failed. Check the configured credentials; "
@@ -208,16 +477,31 @@ def _looks_like_gateway_provider_error(text: str) -> bool:
 def _sanitize_gateway_final_response(platform: Any, text: str) -> str:
     """Sanitize final gateway replies before sending them to high-noise chats.
 
-    Telegram is Bob's mobile inbox, so it should receive concise, safe provider
-    failure categories instead of raw HTTP bodies, request IDs, or policy text.
-    Other platforms keep the existing behaviour for now.
+    Telegram keeps the existing English safety copy. QQ gets the same safety
+    shielding but localized to Chinese for Hermes-owned system messages.
     """
     if not text:
         return text
-    if _gateway_platform_value(platform) != "telegram":
+    platform_value = _gateway_platform_value(platform)
+    if platform_value not in {"telegram", "qqbot"}:
         return text
 
     redacted = _redact_gateway_user_facing_secrets(str(text))
+    if _gateway_prefers_chinese(platform):
+        empty_model_reply = (
+            "⚠️ The model returned no response after processing tool "
+            "results. This can happen with some models — try again or "
+            "rephrase your question."
+        )
+        if redacted == empty_model_reply:
+            return "⚠️ 模型处理完工具结果后没有返回内容。部分模型会这样；请重试或换种说法。"
+        stream_stalled = _localize_stream_stalled_tool_call_zh(redacted)
+        if stream_stalled:
+            return stream_stalled
+        if _looks_like_gateway_provider_error(redacted):
+            return _gateway_provider_error_reply(redacted, lang="zh")
+        return redacted
+
     if _looks_like_gateway_provider_error(redacted):
         return _gateway_provider_error_reply(redacted)
     return redacted
@@ -228,6 +512,15 @@ def _prepare_gateway_status_message(platform: Any, event_type: str, message: str
     text = str(message or "").strip()
     if not text:
         return None
+    if _gateway_prefers_chinese(platform):
+        text = _redact_gateway_user_facing_secrets(text)
+        stream_stalled = _localize_stream_stalled_tool_call_zh(text)
+        if stream_stalled:
+            return stream_stalled
+        text = _localize_gateway_status_zh(text)
+        if _looks_like_gateway_provider_error(text):
+            return _gateway_provider_error_reply(text, lang="zh")
+        return text
     if _gateway_platform_value(platform) != "telegram":
         return text
 
@@ -960,6 +1253,167 @@ logger = logging.getLogger(__name__)
 # between the guard check and actual agent creation.
 _AGENT_PENDING_SENTINEL = object()
 
+_GATEWAY_TRUSTED_MEDIA_TOOL_NAMES = frozenset({
+    # Tools whose current-turn result is itself an attachment directive.
+    # Other tools can mention MEDIA: as logs, history, code, or evidence and
+    # must not trigger native uploads just because the string appears there.
+    "text_to_speech",
+    "image_generate",
+    "video_generate",
+})
+
+# MCP tool names are dynamic (mcp_<server>_<tool>).  Do not trust arbitrary
+# MEDIA-looking text from all MCP outputs; only trust the wrapper's explicit
+# metadata key, which is populated when an MCP ImageContent block is cached by
+# tools/mcp_tool.py.
+_GATEWAY_EXPLICIT_MEDIA_TOOL_PREFIXES = ("mcp_",)
+_GATEWAY_EXPLICIT_MEDIA_TAGS_KEY = "_hermes_media_tags"
+
+_GATEWAY_TOOL_MEDIA_RE = re.compile(
+    r'MEDIA:\s*((?:/|~\/)\S+\.(?:png|jpe?g|gif|webp|'
+    r'mp4|mov|avi|mkv|webm|ogg|opus|mp3|wav|m4a|'
+    r'flac|epub|pdf|zip|rar|7z|docx?|xlsx?|pptx?|'
+    r'txt|csv|apk|ipa))',
+    re.IGNORECASE,
+)
+
+
+def _mapping_get(value: Any, key: str, default: Any = None) -> Any:
+    """Read *key* from either a dict-like object or SDK object."""
+    if isinstance(value, dict):
+        return value.get(key, default)
+    return getattr(value, key, default)
+
+
+def _gateway_tool_call_name(tool_call: Any) -> str:
+    """Return a normalized tool/function name from an assistant tool_call."""
+    function = _mapping_get(tool_call, "function", {}) or {}
+    name = _mapping_get(function, "name") or _mapping_get(tool_call, "name")
+    return str(name or "").strip()
+
+
+def _gateway_tool_result_name(msg: dict, tool_call_names: dict) -> str:
+    """Resolve the producing tool name for a tool/function result message."""
+    for key in ("name", "tool_name"):
+        value = msg.get(key)
+        if value:
+            return str(value).strip()
+    metadata = msg.get("metadata")
+    if isinstance(metadata, dict):
+        for key in ("name", "tool_name"):
+            value = metadata.get(key)
+            if value:
+                return str(value).strip()
+    tool_call_id = msg.get("tool_call_id")
+    if tool_call_id is not None:
+        return str(tool_call_names.get(tool_call_id, "")).strip()
+    return ""
+
+
+def _extract_explicit_gateway_media_tags(
+    content: Any,
+    history_media_paths: set[str],
+) -> list[str]:
+    """Read wrapper-marked MEDIA tags from a tool result payload.
+
+    Used for dynamic tool names such as MCP tools.  This intentionally does
+    not regex-scan arbitrary tool text: only top-level explicit metadata
+    written by Hermes wrapper code is considered a current-turn attachment
+    directive.
+    """
+    if isinstance(content, str):
+        try:
+            payload = json.loads(content)
+        except Exception:
+            return []
+    else:
+        payload = content
+    if not isinstance(payload, dict):
+        return []
+
+    raw_tags = payload.get(_GATEWAY_EXPLICIT_MEDIA_TAGS_KEY)
+    if isinstance(raw_tags, str):
+        raw_tags = [raw_tags]
+    if not isinstance(raw_tags, list):
+        return []
+
+    media_tags: list[str] = []
+    for raw_tag in raw_tags:
+        if not isinstance(raw_tag, str):
+            continue
+        match = _GATEWAY_TOOL_MEDIA_RE.fullmatch(raw_tag.strip())
+        if not match:
+            continue
+        raw_path = match.group(1).strip().rstrip('\",}')
+        path = os.path.expanduser(raw_path)
+        if raw_path and path not in history_media_paths:
+            media_tags.append(f"MEDIA:{raw_path}")
+    return media_tags
+
+
+def _extract_trusted_tool_media_tags(
+    result_messages: list,
+    *,
+    history_media_paths: set | None = None,
+) -> tuple[list[str], bool]:
+    """Extract MEDIA tags only from trusted current media tool results.
+
+    Generic tool output is plain evidence text.  In particular, session_search,
+    terminal, log readers, and file readers may include historical ``MEDIA:``
+    strings; those must never be promoted into current native attachments.
+    """
+    history_media_paths = {
+        os.path.expanduser(str(path)) for path in (history_media_paths or set())
+    }
+    tool_call_names: dict[str, str] = {}
+    media_tags: list[str] = []
+    has_voice_directive = False
+
+    for msg in result_messages or []:
+        if not isinstance(msg, dict):
+            continue
+        if msg.get("role") == "assistant":
+            for tool_call in msg.get("tool_calls") or []:
+                tool_call_id = _mapping_get(tool_call, "id")
+                tool_name = _gateway_tool_call_name(tool_call)
+                if tool_call_id and tool_name:
+                    tool_call_names[str(tool_call_id)] = tool_name
+            continue
+
+        if msg.get("role") not in {"tool", "function"}:
+            continue
+        tool_name = _gateway_tool_result_name(msg, tool_call_names)
+        content = msg.get("content", "")
+        if tool_name not in _GATEWAY_TRUSTED_MEDIA_TOOL_NAMES:
+            if tool_name.startswith(_GATEWAY_EXPLICIT_MEDIA_TOOL_PREFIXES):
+                media_tags.extend(
+                    _extract_explicit_gateway_media_tags(
+                        content,
+                        history_media_paths,
+                    )
+                )
+            continue
+
+        if not isinstance(content, str):
+            try:
+                content = json.dumps(content, ensure_ascii=False)
+            except Exception:
+                content = str(content)
+        if "media:" not in content.lower():
+            continue
+
+        found_for_message = False
+        for match in _GATEWAY_TOOL_MEDIA_RE.finditer(content):
+            raw_path = match.group(1).strip().rstrip('",}')
+            path = os.path.expanduser(raw_path)
+            if raw_path and path not in history_media_paths:
+                media_tags.append(f"MEDIA:{raw_path}")
+                found_for_message = True
+        if found_for_message and "[[audio_as_voice]]" in content:
+            has_voice_directive = True
+
+    return media_tags, has_voice_directive
+
 
 def _resolve_runtime_agent_kwargs() -> dict:
     """Resolve provider credentials for gateway-created AIAgent instances.
@@ -1384,6 +1838,31 @@ def _resolve_hermes_bin() -> Optional[list[str]]:
         pass
 
     return None
+
+
+def _is_webui_embedded_runtime() -> bool:
+    """Return True when the gateway is hosted by Hermes WebUI.
+
+    WebUI itself commonly runs inside a Docker container, but the gateway is
+    a child of the WebUI server process rather than the container's PID 1 or a
+    system service. In that mode, exiting with the service-restart code leaves
+    the gateway down until WebUI starts it again, so /restart must use the
+    detached manual relaunch helper instead.
+    """
+    return bool(
+        os.environ.get("HERMES_WEBUI_STATE_DIR")
+        or os.environ.get("HERMES_WEBUI_PORT")
+        or os.environ.get("HERMES_SESSION_PLATFORM") == "webui"
+    )
+
+
+def _should_restart_via_service_manager() -> bool:
+    """Choose whether /restart should rely on an external supervisor."""
+    if _is_webui_embedded_runtime():
+        return False
+    under_service = bool(os.environ.get("INVOCATION_ID"))  # systemd sets this
+    in_container = os.path.exists("/.dockerenv") or os.path.exists("/run/.containerenv")
+    return under_service or in_container
 
 
 def _parse_session_key(session_key: str) -> "dict | None":
@@ -2442,6 +2921,12 @@ class GatewayRunner:
     def _status_action_gerund(self) -> str:
         return "restarting" if self._restart_requested else "shutting down"
 
+    def _status_action_zh(self) -> str:
+        return "重启" if self._restart_requested else "关闭"
+
+    def _status_action_gerund_zh(self) -> str:
+        return "重启中" if self._restart_requested else "关闭中"
+
     def _queue_during_drain_enabled(self) -> bool:
         # Both "queue" and "steer" modes imply the user doesn't want messages
         # to be lost during restart — queue them for the newly-spawned gateway
@@ -2963,9 +3448,9 @@ class GatewayRunner:
             thread_meta = self._thread_metadata_for_source(event.source, reply_anchor)
             if self._queue_during_drain_enabled():
                 self._queue_or_replace_pending_event(session_key, event)
-                message = f"⏳ Gateway {self._status_action_gerund()} — queued for the next turn after it comes back."
+                message = f"⏳ Gateway 正在{self._status_action_zh()}，已排队到恢复后的下一轮。"
             else:
-                message = f"⏳ Gateway is {self._status_action_gerund()} and is not accepting another turn right now."
+                message = f"⏳ Gateway 正在{self._status_action_zh()}，暂时不接受新的任务。"
 
             await adapter._send_with_retry(
                 chat_id=event.source.chat_id,
@@ -3074,29 +3559,29 @@ class GatewayRunner:
                 if start_ts:
                     elapsed_min = int((now - start_ts) / 60)
                     if elapsed_min > 0:
-                        status_parts.append(f"{elapsed_min} min elapsed")
+                        status_parts.append(f"已运行 {elapsed_min} 分钟")
                 if max_iter:
-                    status_parts.append(f"iteration {iteration}/{max_iter}")
+                    status_parts.append(f"轮次 {iteration}/{max_iter}")
                 if current_tool:
-                    status_parts.append(f"running: {current_tool}")
+                    status_parts.append(f"正在运行：{current_tool}")
             except Exception:
                 pass
 
-        status_detail = f" ({', '.join(status_parts)})" if status_parts else ""
+        status_detail = f"（{'，'.join(status_parts)}）" if status_parts else ""
         if is_steer_mode:
             message = (
-                f"⏩ Steered into current run{status_detail}. "
-                f"Your message arrives after the next tool call."
+                f"⏩ 已插入当前任务{status_detail}。"
+                f"你的消息会在下一个工具调用后进入。"
             )
         elif is_queue_mode:
             message = (
-                f"⏳ Queued for the next turn{status_detail}. "
-                f"I'll respond once the current task finishes."
+                f"⏳ 已排队到下一轮{status_detail}。"
+                f"当前任务结束后我会回复。"
             )
         else:
             message = (
-                f"⚡ Interrupting current task{status_detail}. "
-                f"I'll respond to your message shortly."
+                f"⚡ 正在中断当前任务{status_detail}。"
+                f"马上处理你的消息。"
             )
 
         # First-touch onboarding: the very first time a user sends a message
@@ -3195,14 +3680,13 @@ class GatewayRunner:
         """
         active = self._snapshot_running_agents()
 
-        action = "restarting" if self._restart_requested else "shutting down"
+        action = "重启" if self._restart_requested else "关闭"
         hint = (
-            "Your current task will be interrupted. "
-            "Send any message after restart and I'll try to resume where you left off."
+            "当前任务会被中断。重启后发任意消息，我会尽量从断点继续。"
             if self._restart_requested
-            else "Your current task will be interrupted."
+            else "当前任务会被中断。"
         )
-        msg = f"⚠️ Gateway {action} — {hint}"
+        msg = f"⚠️ Gateway 正在{action} — {hint}"
 
         notified: set[tuple[str, str, Optional[str]]] = set()
         for session_key in active:
@@ -3500,14 +3984,14 @@ class GatewayRunner:
 
         # On Windows there's no bash/setsid chain — spawn a tiny Python
         # watcher directly via sys.executable instead.  The watcher polls
-        # current_pid, waits for our exit, then runs `hermes gateway
-        # restart` with detach flags so the respawn survives the CLI
+        # current_pid, waits for our exit, then runs `hermes gateway run
+        # --replace` with detach flags so the respawn survives the CLI
         # that triggered the /restart command closing its console.
         if sys.platform == "win32":
             import textwrap
             from hermes_cli._subprocess_compat import windows_detach_popen_kwargs
 
-            cmd_argv = [*hermes_cmd, "gateway", "restart"]
+            cmd_argv = [*hermes_cmd, "gateway", "run", "--replace"]
             watcher = textwrap.dedent(
                 """
                 import os, subprocess, sys, time
@@ -3565,10 +4049,41 @@ class GatewayRunner:
             )
             return
 
+        expected_starttime = ""
+        try:
+            stat_text = Path(f"/proc/{current_pid}/stat").read_text(
+                encoding="utf-8", errors="ignore"
+            )
+            # /proc/<pid>/stat field 2 (comm) is parenthesized and may contain
+            # spaces, so split after the final ") " before indexing fields.
+            stat_fields_after_comm = stat_text.rsplit(") ", 1)[1].split()
+            # After comm, field 3 (state) is index 0 and field 22 (starttime)
+            # is index 19.  Capturing starttime avoids waiting on PID reuse.
+            if len(stat_fields_after_comm) >= 20:
+                expected_starttime = stat_fields_after_comm[19]
+        except Exception:
+            expected_starttime = ""
+
         cmd = " ".join(shlex.quote(part) for part in hermes_cmd)
         shell_cmd = (
-            f"while kill -0 {current_pid} 2>/dev/null; do sleep 0.2; done; "
-            f"{cmd} gateway restart"
+            f"deadline=$((SECONDS + 120)); "
+            f"expected_start={shlex.quote(expected_starttime)}; "
+            f"stat_path=/proc/{current_pid}/stat; "
+            f"while kill -0 {current_pid} 2>/dev/null; do "
+            f"if [[ -r \"$stat_path\" ]]; then "
+            f"stat_line=$(<\"$stat_path\") || stat_line=''; "
+            f"if [[ -n \"$stat_line\" ]]; then "
+            f"stat_tail=${{stat_line##*) }}; "
+            f"set -- $stat_tail; "
+            f"state=$1; starttime=${{20:-}}; "
+            f"if [[ \"$state\" == 'Z' ]]; then break; fi; "
+            f"if [[ -n \"$expected_start\" && -n \"$starttime\" && \"$starttime\" != \"$expected_start\" ]]; then break; fi; "
+            f"fi; "
+            f"fi; "
+            f"if [[ $SECONDS -ge $deadline ]]; then break; fi; "
+            f"sleep 0.2; "
+            f"done; "
+            f"{cmd} gateway run --replace"
         )
         setsid_bin = shutil.which("setsid")
         if setsid_bin:
@@ -6191,11 +6706,14 @@ class GatewayRunner:
             return BlueBubblesAdapter(config)
 
         elif platform == Platform.QQBOT:
-            from gateway.platforms.qqbot import QQAdapter, check_qq_requirements
+            from gateway.platforms.qqbot import QQMultiAdapter, check_qq_requirements, has_any_qq_credentials
             if not check_qq_requirements():
-                logger.warning("QQBot: aiohttp/httpx missing or QQ_APP_ID/QQ_CLIENT_SECRET not configured")
+                logger.warning("QQBot: aiohttp/httpx missing")
                 return None
-            return QQAdapter(config)
+            if not has_any_qq_credentials(config):
+                logger.warning("QQBot: QQ_APP_ID/QQ_CLIENT_SECRET or QQ_APP_ID_N/QQ_CLIENT_SECRET_N not configured")
+                return None
+            return QQMultiAdapter(config)
 
         elif platform == Platform.YUANBAO:
             from gateway.platforms.yuanbao import YuanbaoAdapter, WEBSOCKETS_AVAILABLE
@@ -6638,6 +7156,8 @@ class GatewayRunner:
         # Otherwise control/session commands like /new or /help get silently
         # consumed as update answers instead of being dispatched normally.
         _quick_key = self._session_key_for_source(source)
+        if _is_what_did_you_do_trigger(event.text):
+            event = dataclasses.replace(event, text="/what-did-you-do")
         _update_prompts = getattr(self, "_update_prompt_pending", {})
         if _update_prompts.get(_quick_key):
             raw = (event.text or "").strip()
@@ -6907,7 +7427,7 @@ class GatewayRunner:
             if event.get_command() in {"queue", "q"}:
                 queued_text = event.get_command_args().strip()
                 if not queued_text:
-                    return "Usage: /queue <prompt>"
+                    return "用法：/queue <prompt>"
                 adapter = self.adapters.get(source.platform)
                 if adapter:
                     queued_event = MessageEvent(
@@ -6920,8 +7440,8 @@ class GatewayRunner:
                     self._enqueue_fifo(_quick_key, queued_event, adapter)
                 depth = self._queue_depth(_quick_key, adapter=self.adapters.get(source.platform))
                 if depth <= 1:
-                    return "Queued for the next turn."
-                return f"Queued for the next turn. ({depth} queued)"
+                    return "已排队到下一轮。"
+                return f"已排队到下一轮。（当前队列 {depth} 条）"
 
             # /steer <prompt> — inject mid-run after the next tool call.
             # Unlike /queue (turn boundary), /steer lands BETWEEN tool-call
@@ -6931,7 +7451,7 @@ class GatewayRunner:
             if _cmd_def_inner and _cmd_def_inner.name == "steer":
                 steer_text = event.get_command_args().strip()
                 if not steer_text:
-                    return "Usage: /steer <prompt>"
+                    return "用法：/steer <prompt>"
                 running_agent = self._running_agents.get(_quick_key)
                 if running_agent is _AGENT_PENDING_SENTINEL:
                     # Agent hasn't started yet — queue as turn-boundary fallback.
@@ -6945,17 +7465,17 @@ class GatewayRunner:
                             channel_prompt=event.channel_prompt,
                         )
                         adapter._pending_messages[_quick_key] = queued_event
-                    return "Agent still starting — /steer queued for the next turn."
+                    return "任务仍在启动中，/steer 已改为排队到下一轮。"
                 if running_agent and hasattr(running_agent, "steer"):
                     try:
                         accepted = running_agent.steer(steer_text)
                     except Exception as exc:
                         logger.warning("Steer failed for session %s: %s", _quick_key, exc)
-                        return f"⚠️ Steer failed: {exc}"
+                        return f"⚠️ /steer 失败：{exc}"
                     if accepted:
                         preview = steer_text[:60] + ("..." if len(steer_text) > 60 else "")
-                        return f"⏩ Steer queued — arrives after the next tool call: '{preview}'"
-                    return "Steer rejected (empty payload)."
+                        return f"⏩ 已插入当前任务：会在下一个工具调用后进入：'{preview}'"
+                    return "/steer 被拒绝：内容为空。"
                 # Running agent is missing or lacks steer() — fall back to queue.
                 adapter = self.adapters.get(source.platform)
                 if adapter:
@@ -6967,17 +7487,16 @@ class GatewayRunner:
                         channel_prompt=event.channel_prompt,
                     )
                     adapter._pending_messages[_quick_key] = queued_event
-                return "No active agent — /steer queued for the next turn."
+                return "没有活跃任务，/steer 已改为排队到下一轮。"
 
             # /model must not be used while the agent is running.
             if _cmd_def_inner and _cmd_def_inner.name == "model":
-                return "Agent is running — wait or /stop first, then switch models."
+                return "任务正在运行。请等待完成，或先发送 /stop，再切换模型。"
 
             # /codex-runtime must not be used while the agent is running.
             # Switching mid-turn would split a turn across two transports.
             if _cmd_def_inner and _cmd_def_inner.name == "codex-runtime":
-                return ("Agent is running — wait or /stop first, then "
-                        "change runtime.")
+                return "任务正在运行。请等待完成，或先发送 /stop，再切换 runtime。"
 
             # /approve and /deny must bypass the running-agent interrupt path.
             # The agent thread is blocked on a threading.Event inside
@@ -7016,7 +7535,7 @@ class GatewayRunner:
                 _goal_arg = (event.get_command_args() or "").strip().lower()
                 if not _goal_arg or _goal_arg in {"status", "pause", "resume", "clear", "stop", "done"}:
                     return await self._handle_goal_command(event)
-                return "Agent is running — use /goal status / pause / clear mid-run, or /stop before setting a new goal."
+                return "任务正在运行。可用 /goal status / pause / clear 在任务中途查看或控制；设置新目标前请先 /stop。"
 
             # /subgoal is safe mid-run — it only modifies the goal's
             # subgoals list, which the judge reads at the next turn
@@ -7051,6 +7570,8 @@ class GatewayRunner:
                     return await self._handle_profile_command(event)
                 if _cmd_def_inner.name == "update":
                     return await self._handle_update_command(event)
+                if _cmd_def_inner.name == "what-did-you-do":
+                    return await self._handle_what_did_you_do_command(event)
 
             # Catch-all: any other recognized slash command reached the
             # running-agent guard. Reject gracefully rather than falling
@@ -7063,8 +7584,8 @@ class GatewayRunner:
             # producing a zero-char response. See #5057, #6252, #10370.
             if _cmd_def_inner:
                 return (
-                    f"⏳ Agent is running — `/{_cmd_def_inner.name}` can't run "
-                    f"mid-turn. Wait for the current response or `/stop` first."
+                    f"⏳ 任务正在运行，`/{_cmd_def_inner.name}` 不能中途执行。"
+                    f"请等当前回复完成，或先发送 `/stop`。"
                 )
 
             if event.message_type == MessageType.PHOTO:
@@ -7107,7 +7628,7 @@ class GatewayRunner:
                     # Force-clean the sentinel so the session is unlocked.
                     self._release_running_agent_state(_quick_key)
                     logger.info("HARD STOP (pending) for session %s — sentinel cleared", _quick_key)
-                    return EphemeralReply("⚡ Force-stopped. The agent was still starting — session unlocked.")
+                    return EphemeralReply("⚡ 已强制停止。任务仍在启动中，当前会话已解锁。")
                 # Queue the message so it will be picked up after the
                 # agent starts.
                 adapter = self.adapters.get(source.platform)
@@ -7123,9 +7644,9 @@ class GatewayRunner:
                 if self._queue_during_drain_enabled():
                     self._queue_or_replace_pending_event(_quick_key, event)
                 return (
-                    f"⏳ Gateway {self._status_action_gerund()} — queued for the next turn after it comes back."
+                    f"⏳ Gateway 正在{self._status_action_zh()}，已排队到恢复后的下一轮。"
                     if self._queue_during_drain_enabled()
-                    else f"⏳ Gateway is {self._status_action_gerund()} and is not accepting another turn right now."
+                    else f"⏳ Gateway 正在{self._status_action_zh()}，暂时不接受新的任务。"
                 )
             if self._busy_input_mode == "queue":
                 logger.debug("PRIORITY queue follow-up for session %s", _quick_key)
@@ -7268,8 +7789,7 @@ class GatewayRunner:
                 command="new",
                 title="/new",
                 detail=(
-                    "This starts a fresh session and discards the current "
-                    "conversation history."
+                    "这会开始一个新会话，并丢弃当前 conversation history。"
                 ),
                 execute=_do_reset,
             )
@@ -7291,6 +7811,9 @@ class GatewayRunner:
 
         if canonical == "status":
             return await self._handle_status_command(event)
+
+        if canonical == "what-did-you-do":
+            return await self._handle_what_did_you_do_command(event)
 
         if canonical == "agents":
             return await self._handle_agents_command(event)
@@ -7418,7 +7941,7 @@ class GatewayRunner:
             return await self._handle_voice_command(event)
 
         if self._draining:
-            return f"⏳ Gateway is {self._status_action_gerund()} and is not accepting new work right now."
+            return f"⏳ Gateway 正在{self._status_action_zh()}，暂时不接受新的任务。"
 
         # User-defined quick commands (bypass agent loop, no LLM call)
         if command:
@@ -9447,6 +9970,55 @@ class GatewayRunner:
             output = output[:3800] + "\n" + t("gateway.kanban.truncated_suffix")
         return output or t("gateway.kanban.no_output")
 
+    async def _handle_what_did_you_do_command(self, event: MessageEvent) -> str:
+        """Handle /what-did-you-do — show this session lineage's tool ledger."""
+        source = event.source
+        session_id = None
+        session_store = getattr(self, "session_store", None)
+        if session_store is not None and source is not None:
+            session_key = None
+            try:
+                session_key = session_store._generate_session_key(source)
+            except Exception:
+                try:
+                    session_key = self._session_key_for_source(source)
+                except Exception:
+                    session_key = None
+            if session_key:
+                try:
+                    entries = getattr(session_store, "_entries", {}) or {}
+                    entry = entries.get(session_key)
+                    session_id = getattr(entry, "session_id", None) if entry else None
+                except Exception:
+                    session_id = None
+            if not session_id:
+                try:
+                    entry = session_store.get_or_create_session(source)
+                    session_id = getattr(entry, "session_id", None)
+                except Exception:
+                    session_id = None
+
+        if not session_id:
+            return "未找到当前 session_id，不能归因。"
+
+        db = getattr(self, "_session_db", None)
+        if db is None:
+            return "未连接 SessionDB，不能读取 attribution ledger。"
+
+        try:
+            from agent.attribution_ledger import format_what_did_you_do_for_session
+
+            return format_what_did_you_do_for_session(
+                db,
+                session_id=session_id,
+                chat_id=getattr(source, "chat_id", None),
+                source=_gateway_platform_value(getattr(source, "platform", None)),
+                limit=100,
+            )
+        except Exception as exc:
+            logger.warning("/what-did-you-do failed for session %s: %s", session_id, exc)
+            return f"读取 attribution ledger 失败：{exc}"
+
     async def _handle_status_command(self, event: MessageEvent) -> str:
         """Handle /status command."""
         source = event.source
@@ -9816,15 +10388,13 @@ class GatewayRunner:
             logger.debug("Failed to write restart dedup marker: %s", e)
 
         active_agents = self._running_agent_count()
-        # When running under a service manager (systemd/launchd) or inside a
-        # Docker/Podman container, use the service restart path: exit with
-        # code 75 so the service manager / container restart policy restarts
-        # us.  The detached subprocess approach (setsid + bash) doesn't work
-        # under systemd (KillMode=mixed kills the cgroup) or Docker (tini
-        # exits when the gateway dies, taking the detached helper with it).
-        _under_service = bool(os.environ.get("INVOCATION_ID"))  # systemd sets this
-        _in_container = os.path.exists("/.dockerenv") or os.path.exists("/run/.containerenv")
-        if _under_service or _in_container:
+        # When running under a service manager (systemd/launchd) or as a
+        # container main process, use the service restart path: exit with code
+        # 75 so the external supervisor restarts us.  WebUI is a special case:
+        # it often runs inside Docker too, but the gateway is just a child of
+        # the WebUI server, so there is no container restart policy watching the
+        # gateway PID.  In that embedded mode, use the detached helper.
+        if _should_restart_via_service_manager():
             self.request_restart(detached=False, via_service=True)
         else:
             self.request_restart(detached=True, via_service=False)
@@ -11551,6 +12121,8 @@ class GatewayRunner:
                     session_db=self._session_db,
                     fallback_model=self._fallback_model,
                 )
+                agent._turn_platform_message_id = event_message_id
+                agent._turn_id = task_id
                 try:
                     return agent.run_conversation(
                         user_message=enriched_prompt,
@@ -13355,9 +13927,9 @@ class GatewayRunner:
             result = await execute()
             if choice == "always":
                 note = (
-                    "\n\nℹ️ Future /clear, /new, /reset, and /undo will run "
-                    "without confirmation. Re-enable via "
-                    "`approvals.destructive_slash_confirm: true` in config.yaml."
+                    "\n\nℹ️ 今后 /clear、/new、/reset、/undo 将不再确认。"
+                    "要重新启用，请在 config.yaml 设置 "
+                    "`approvals.destructive_slash_confirm: true`。"
                 )
                 if isinstance(result, str):
                     return result + note
@@ -13368,13 +13940,13 @@ class GatewayRunner:
             return result
 
         prompt_message = (
-            f"⚠️ **Confirm /{command}**\n\n"
+            f"⚠️ **确认 /{command}**\n\n"
             f"{detail}\n\n"
-            "Choose:\n"
-            "• **Approve Once** — proceed this time only\n"
-            "• **Always Approve** — proceed and silence this prompt permanently\n"
-            "• **Cancel** — keep current conversation\n\n"
-            "_Text fallback: reply `/approve`, `/always`, or `/cancel`._"
+            "请选择：\n"
+            "• **批准一次** — 仅本次继续\n"
+            "• **始终批准** — 继续，并永久关闭此确认提示\n"
+            "• **取消** — 保留当前会话\n\n"
+            "_文本备用：回复 `/approve`、`/always` 或 `/cancel`。_"
         )
         return await self._request_slash_confirm(
             event=event,
@@ -16432,6 +17004,8 @@ class GatewayRunner:
             agent.reasoning_config = reasoning_config
             agent.service_tier = self._service_tier
             agent.request_overrides = turn_route.get("request_overrides") or {}
+            agent._turn_platform_message_id = event_message_id or getattr(source, "message_id", None)
+            agent._turn_id = f"{session_id}:{run_generation}" if run_generation is not None else session_id
 
             _bg_review_release = threading.Event()
             _bg_review_pending: list[str] = []
@@ -16591,18 +17165,16 @@ class GatewayRunner:
             for _hm in agent_history:
                 if _hm.get("role") in {"tool", "function"}:
                     _hc = _hm.get("content", "")
-                    if "MEDIA:" in _hc:
-                        _TOOL_MEDIA_RE = re.compile(
-                            r'MEDIA:((?:/|~\/)\S+\.(?:png|jpe?g|gif|webp|'
-                            r'mp4|mov|avi|mkv|webm|ogg|opus|mp3|wav|m4a|'
-                            r'flac|epub|pdf|zip|rar|7z|docx?|xlsx?|pptx?|'
-                            r'txt|csv|apk|ipa))',
-                            re.IGNORECASE
-                        )
-                        for _match in _TOOL_MEDIA_RE.finditer(_hc):
+                    if not isinstance(_hc, str):
+                        try:
+                            _hc = json.dumps(_hc, ensure_ascii=False)
+                        except Exception:
+                            _hc = str(_hc)
+                    if "media:" in _hc.lower():
+                        for _match in _GATEWAY_TOOL_MEDIA_RE.finditer(_hc):
                             _p = _match.group(1).strip().rstrip('",}')
                             if _p:
-                                _history_media_paths.add(_p)
+                                _history_media_paths.add(os.path.expanduser(_p))
             
             # Register per-session gateway approval callback so dangerous
             # command approval blocks the agent thread (mirrors CLI input()).
@@ -16745,27 +17317,24 @@ class GatewayRunner:
             if _is_resume_pending:
                 _reason = getattr(_resume_entry, "resume_reason", None) or "restart_timeout"
                 _reason_phrase = (
-                    "a gateway restart"
+                    "Gateway 重启"
                     if _reason == "restart_timeout"
-                    else "a gateway shutdown"
+                    else "Gateway 关闭"
                     if _reason == "shutdown_timeout"
-                    else "a gateway interruption"
+                    else "Gateway 中断"
                 )
                 message = (
-                    f"[System note: Your previous turn in this session was interrupted "
-                    f"by {_reason_phrase}. The conversation history below is intact. "
-                    f"If it contains unfinished tool result(s), process them first and "
-                    f"summarize what was accomplished, then address the user's new "
-                    f"message below.]\n\n"
+                    f"[系统提示：本会话上一轮被 {_reason_phrase} 中断。"
+                    f"下面的 conversation history 保持完整。"
+                    f"如果里面有未完成的 tool result(s)，请先处理并总结已完成内容，"
+                    f"再处理下面用户的新消息。]\n\n"
                     + message
                 )
             elif _has_fresh_tool_tail:
                 message = (
-                    "[System note: Your previous turn was interrupted before you could "
-                    "process the last tool result(s). The conversation history contains "
-                    "tool outputs you haven't responded to yet. Please finish processing "
-                    "those results and summarize what was accomplished, then address the "
-                    "user's new message below.]\n\n"
+                    "[系统提示：上一轮在处理最后的 tool result(s) 前被中断。"
+                    "conversation history 里还有尚未回复的 tool outputs。"
+                    "请先处理这些结果并总结已完成内容，再处理下面用户的新消息。]\n\n"
                     + message
                 )
 
@@ -16881,48 +17450,38 @@ class GatewayRunner:
                     "context_length": _context_length,
                 }
             
-            # Scan tool results for MEDIA:<path> tags that need to be delivered
-            # as native audio/file attachments.  The TTS tool embeds MEDIA: tags
-            # in its JSON response, but the model's final text reply usually
-            # doesn't include them.  We collect unique tags from tool results and
-            # append any that aren't already present in the final response, so the
-            # adapter's extract_media() can find and deliver the files exactly once.
+            # Scan trusted media tool results for MEDIA:<path> tags that need
+            # to be delivered as native attachments. Generic tool output is not
+            # a control channel: session_search, terminal, logs, and file reads
+            # may contain historical MEDIA strings and must not re-send them.
             #
             # Uses path-based deduplication against _history_media_paths (collected
             # before run_conversation) instead of index slicing. This is safe even
             # when context compression shrinks the message list. (Fixes #160)
-            if "MEDIA:" not in final_response:
-                media_tags = []
-                has_voice_directive = False
-                for msg in result.get("messages", []):
-                    if msg.get("role") in {"tool", "function"}:
-                        content = msg.get("content", "")
-                        if "MEDIA:" in content:
-                            _TOOL_MEDIA_RE = re.compile(
-                                r'MEDIA:((?:/|~\/)\S+\.(?:png|jpe?g|gif|webp|'
-                                r'mp4|mov|avi|mkv|webm|ogg|opus|mp3|wav|m4a|'
-                                r'flac|epub|pdf|zip|rar|7z|docx?|xlsx?|pptx?|'
-                                r'txt|csv|apk|ipa))',
-                                re.IGNORECASE
-                            )
-                            for match in _TOOL_MEDIA_RE.finditer(content):
-                                path = match.group(1).strip().rstrip('",}')
-                                if path and path not in _history_media_paths:
-                                    media_tags.append(f"MEDIA:{path}")
-                            if "[[audio_as_voice]]" in content:
-                                has_voice_directive = True
-                
-                if media_tags:
-                    seen = set()
-                    unique_tags = []
-                    for tag in media_tags:
-                        if tag not in seen:
-                            seen.add(tag)
-                            unique_tags.append(tag)
+            media_tags, has_voice_directive = _extract_trusted_tool_media_tags(
+                result.get("messages", []),
+                history_media_paths=_history_media_paths,
+            )
+            if media_tags:
+                try:
+                    existing_response_paths = {
+                        path for path, _is_voice in BasePlatformAdapter.extract_media(final_response)[0]
+                    }
+                except Exception:
+                    existing_response_paths = set()
+                seen_paths = set()
+                unique_tags = []
+                for tag in media_tags:
+                    tag_path = os.path.expanduser(tag[len("MEDIA:"):])
+                    if tag_path in seen_paths or tag_path in existing_response_paths:
+                        continue
+                    seen_paths.add(tag_path)
+                    unique_tags.append(tag)
+                if unique_tags:
                     if has_voice_directive:
                         unique_tags.insert(0, "[[audio_as_voice]]")
                     final_response = final_response + "\n" + "\n".join(unique_tags)
-            
+
             # Sync session_id: the agent may have created a new session during
             # mid-run context compression (_compress_context splits sessions).
             # If so, update the session store entry so the NEXT message loads
@@ -17162,18 +17721,27 @@ class GatewayRunner:
                 if _agent_ref and hasattr(_agent_ref, "get_activity_summary"):
                     try:
                         _a = _agent_ref.get_activity_summary()
-                        _parts = [f"iteration {_a['api_call_count']}/{_a['max_iterations']}"]
+                        _parts = [f"第 {_a['api_call_count']}/{_a['max_iterations']} 轮"]
                         if _a.get("current_tool"):
-                            _parts.append(f"running: {_a['current_tool']}")
+                            _parts.append(f"正在运行: {_a['current_tool']}")
                         else:
-                            _parts.append(_a.get("last_activity_desc", ""))
+                            _desc = _a.get("last_activity_desc", "")
+                            if _desc == "waiting for non-streaming API response":
+                                _desc = "等待非流式 API 响应"
+                            elif _desc.startswith("waiting for non-streaming response"):
+                                _desc = _desc.replace(
+                                    "waiting for non-streaming response",
+                                    "等待非流式响应",
+                                    1,
+                                ).replace("elapsed", "已等待")
+                            _parts.append(_desc)
                         _status_detail = " — " + ", ".join(_parts)
                     except Exception:
                         pass
                 try:
                     _notify_res = await _notify_adapter.send(
                         source.chat_id,
-                        f"⏳ Still working... ({_elapsed_mins} min elapsed{_status_detail})",
+                        f"⏳ 还在处理...（已等待 {_elapsed_mins} 分钟{_status_detail}）",
                         metadata=_status_thread_metadata,
                     )
                     if (
@@ -17270,10 +17838,9 @@ class GatewayRunner:
                             try:
                                 await _warn_adapter.send(
                                     source.chat_id,
-                                    f"⚠️ No activity for {_elapsed_warn} min. "
-                                    f"If the agent does not respond soon, it will "
-                                    f"be timed out in {_remaining_mins} min. "
-                                    f"You can continue waiting or use /reset.",
+                                    f"⚠️ 已 {_elapsed_warn} 分钟无活动。"
+                                    f"如果 Agent 很快仍无响应，将在 {_remaining_mins} 分钟后超时。"
+                                    f"你可以继续等待，或使用 /reset。",
                                     metadata=_status_thread_metadata,
                                 )
                             except Exception as _warn_err:
@@ -17332,25 +17899,27 @@ class GatewayRunner:
 
                 # Construct a user-facing message with diagnostic context.
                 _diag_lines = [
-                    f"⏱️ Agent inactive for {_timeout_mins} min — no tool calls "
-                    f"or API responses."
+                    f"⏱️ Agent 已连续 {_timeout_mins} 分钟无活动："
+                    f"没有 tool call 或 API 响应。"
                 ]
                 if _cur_tool:
                     _diag_lines.append(
-                        f"The agent appears stuck on tool `{_cur_tool}` "
-                        f"({_secs_ago:.0f}s since last activity, "
-                        f"iteration {_iter_n}/{_iter_max})."
+                        f"看起来卡在工具 `{_cur_tool}` 上"
+                        f"（距上次活动 {_secs_ago:.0f} 秒，"
+                        f"第 {_iter_n}/{_iter_max} 轮）。"
                     )
                 else:
+                    if _last_desc == "waiting for non-streaming API response":
+                        _last_desc = "等待非流式 API 响应"
                     _diag_lines.append(
-                        f"Last activity: {_last_desc} ({_secs_ago:.0f}s ago, "
-                        f"iteration {_iter_n}/{_iter_max}). "
-                        "The agent may have been waiting on an API response."
+                        f"上次活动：{_last_desc}（{_secs_ago:.0f} 秒前，"
+                        f"第 {_iter_n}/{_iter_max} 轮）。"
+                        "可能仍在等待 API 响应。"
                     )
                 _diag_lines.append(
-                    "To increase the limit, set agent.gateway_timeout in config.yaml "
-                    "(value in seconds, 0 = no limit) and restart the gateway.\n"
-                    "Try again, or use /reset to start fresh."
+                    "如需调高限制，请在 config.yaml 设置 agent.gateway_timeout "
+                    "（单位秒，0 表示不限），然后重启 Gateway。\n"
+                    "可以重试，或用 /reset 开始新会话。"
                 )
 
                 response = {
@@ -18137,7 +18706,8 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
         asyncio.create_task(runner.stop())
 
     def restart_signal_handler():
-        runner.request_restart(detached=False, via_service=True)
+        via_service = _should_restart_via_service_manager()
+        runner.request_restart(detached=not via_service, via_service=via_service)
     
     loop = asyncio.get_running_loop()
     if threading.current_thread() is threading.main_thread():

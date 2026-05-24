@@ -632,6 +632,37 @@ def test_custom_endpoint_uses_config_api_field_when_no_api_key(monkeypatch):
     assert resolved["api_key"] == "config-api-field"
 
 
+def test_custom_codex_endpoint_without_api_mode_auto_detects_codex_responses(monkeypatch):
+    """Custom proxy URLs ending in /codex must use Codex Responses semantics.
+
+    Users may configure a Codex-compatible cache/proxy as provider=custom with
+    only base_url/api_key.  A stale or missing api_mode must not silently route
+    GPT-5 Codex traffic through chat_completions.
+    """
+    monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "openrouter")
+    monkeypatch.setattr(
+        rp,
+        "_get_model_config",
+        lambda: {
+            "provider": "custom",
+            "base_url": "https://right.codes/codex/v1",
+            "api_key": "proxy-token",
+            "api_mode": "chat_completions",
+        },
+    )
+    monkeypatch.delenv("OPENAI_BASE_URL", raising=False)
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.delenv("OPENROUTER_BASE_URL", raising=False)
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+
+    resolved = rp.resolve_runtime_provider(requested="custom")
+
+    assert resolved["provider"] == "custom"
+    assert resolved["base_url"] == "https://right.codes/codex/v1"
+    assert resolved["api_key"] == "proxy-token"
+    assert resolved["api_mode"] == "codex_responses"
+
+
 def test_custom_endpoint_explicit_custom_prefers_config_key(monkeypatch):
     """Explicit 'custom' provider with config base_url+api_key should use them.
 
@@ -1658,6 +1689,32 @@ def test_named_custom_runtime_propagates_extra_body_direct_path(monkeypatch):
     }
 
 
+def test_named_custom_runtime_propagates_default_headers_direct_path(monkeypatch):
+    """Custom provider default_headers should become per-request extra_headers."""
+    monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "my-proxy")
+    monkeypatch.setattr(
+        rp, "_get_named_custom_provider",
+        lambda p: {
+            "name": "my-proxy",
+            "base_url": "https://proxy.example.com/v1",
+            "api_key": "test-key",
+            "default_headers": {
+                "User-Agent": "Mozilla/5.0 Hermes",
+                "X-Route": "custom",
+            },
+        },
+    )
+    monkeypatch.setattr(rp, "_try_resolve_from_custom_pool", lambda *a, **k: None)
+
+    resolved = rp.resolve_runtime_provider(requested="my-proxy")
+    assert resolved["request_overrides"] == {
+        "extra_headers": {
+            "User-Agent": "Mozilla/5.0 Hermes",
+            "X-Route": "custom",
+        }
+    }
+
+
 def test_named_custom_runtime_propagates_model_pool_path(monkeypatch):
     """Model should propagate even when credential pool handles credentials."""
     monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "my-server")
@@ -1716,6 +1773,35 @@ def test_named_custom_runtime_propagates_extra_body_pool_path(monkeypatch):
     resolved = rp.resolve_runtime_provider(requested="my-gemma")
     assert resolved["request_overrides"] == {
         "extra_body": {"enable_thinking": True}
+    }
+
+
+def test_named_custom_runtime_propagates_default_headers_pool_path(monkeypatch):
+    """Custom provider headers should survive credential-pool resolution."""
+    monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "my-proxy")
+    monkeypatch.setattr(
+        rp, "_get_named_custom_provider",
+        lambda p: {
+            "name": "my-proxy",
+            "base_url": "https://proxy.example.com/v1",
+            "api_key": "test-key",
+            "default_headers": {"User-Agent": "Mozilla/5.0 Hermes"},
+        },
+    )
+    monkeypatch.setattr(
+        rp, "_try_resolve_from_custom_pool",
+        lambda *a, **k: {
+            "provider": "custom",
+            "api_mode": "chat_completions",
+            "base_url": "https://proxy.example.com/v1",
+            "api_key": "pool-key",
+            "source": "pool:custom:my-proxy",
+        },
+    )
+
+    resolved = rp.resolve_runtime_provider(requested="my-proxy")
+    assert resolved["request_overrides"] == {
+        "extra_headers": {"User-Agent": "Mozilla/5.0 Hermes"}
     }
 
 
@@ -2225,6 +2311,24 @@ class TestProviderEntryApiKeyEnvAlias:
         assert normalized is not None
         assert "extra_body" in _VALID_CUSTOM_PROVIDER_FIELDS
         assert normalized["extra_body"] == entry["extra_body"]
+
+    def test_default_headers_is_supported_schema(self):
+        from hermes_cli.config import (
+            _VALID_CUSTOM_PROVIDER_FIELDS,
+            _normalize_custom_provider_entry,
+        )
+        entry = {
+            "name": "vendor",
+            "base_url": "https://api.vendor.example.com/v1",
+            "default_headers": {
+                "User-Agent": "Mozilla/5.0 Hermes",
+                "X-Route": "custom",
+            },
+        }
+        normalized = _normalize_custom_provider_entry(dict(entry), provider_key="vendor")
+        assert normalized is not None
+        assert "default_headers" in _VALID_CUSTOM_PROVIDER_FIELDS
+        assert normalized["default_headers"] == entry["default_headers"]
 # =============================================================================
 # Tencent TokenHub — API-key provider runtime resolution
 # =============================================================================

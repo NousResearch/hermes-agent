@@ -19,11 +19,9 @@ def _simulate_auto_continue(agent_history: list, user_message: str) -> str:
     message = user_message
     if agent_history and agent_history[-1].get("role") == "tool":
         message = (
-            "[System note: Your previous turn was interrupted before you could "
-            "process the last tool result(s). The conversation history contains "
-            "tool outputs you haven't responded to yet. Please finish processing "
-            "those results and summarize what was accomplished, then address the "
-            "user's new message below.]\n\n"
+            "[系统提示：上一轮在处理最后的 tool result(s) 前被中断。"
+            "conversation history 里还有尚未回复的 tool outputs。"
+            "请先处理这些结果并总结已完成内容，再处理下面用户的新消息。]\n\n"
             + message
         )
     return message
@@ -41,8 +39,8 @@ class TestAutoDetection:
             {"role": "tool", "tool_call_id": "call_1", "content": "deployed successfully"},
         ]
         result = _simulate_auto_continue(history, "what happened?")
-        assert "[System note:" in result
-        assert "interrupted" in result
+        assert "[系统提示：" in result
+        assert "被中断" in result
         assert "what happened?" in result
 
     def test_trailing_assistant_message_no_note(self):
@@ -51,7 +49,7 @@ class TestAutoDetection:
             {"role": "assistant", "content": "Hi there!"},
         ]
         result = _simulate_auto_continue(history, "how are you?")
-        assert "[System note:" not in result
+        assert "[系统提示：" not in result
         assert result == "how are you?"
 
     def test_empty_history_no_note(self):
@@ -78,7 +76,7 @@ class TestAutoDetection:
             {"role": "tool", "tool_call_id": "call_2", "content": "file content here"},
         ]
         result = _simulate_auto_continue(history, "continue")
-        assert "[System note:" in result
+        assert "[系统提示：" in result
 
     def test_original_message_preserved_after_note(self):
         """The user's actual message must appear after the system note."""

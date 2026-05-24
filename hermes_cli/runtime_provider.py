@@ -93,11 +93,33 @@ def _detect_api_mode_for_url(base_url: str) -> Optional[str]:
         return "codex_responses"
     if hostname == "api.openai.com":
         return "codex_responses"
+    if "/codex" in normalized:
+        return "codex_responses"
     if normalized.endswith("/anthropic"):
         return "anthropic_messages"
     if hostname == "api.kimi.com" and "/coding" in normalized:
         return "anthropic_messages"
     return None
+
+
+def _custom_api_mode_for_url(
+    base_url: str,
+    configured_mode: Optional[str] = None,
+) -> str:
+    """Resolve api_mode for custom endpoints, preferring /codex when present.
+
+    Custom Codex-compatible proxies rely on Responses semantics and
+    transport-compatible cache headers even when an older config still says
+    ``chat_completions``. Treat a ``/codex`` URL path as authoritative so
+    stale config does not silently route GPT-5 Codex traffic through the
+    wrong adapter.
+    """
+    normalized = (base_url or "").strip().lower().rstrip("/")
+    if "/codex" in normalized:
+        return "codex_responses"
+    if configured_mode:
+        return configured_mode
+    return _detect_api_mode_for_url(base_url) or "chat_completions"
 
 
 def _host_derived_api_key(base_url: str) -> str:
@@ -464,7 +486,7 @@ def _try_resolve_from_custom_pool(
             return None
         return {
             "provider": provider_label,
-            "api_mode": api_mode_override or _detect_api_mode_for_url(base_url) or "chat_completions",
+            "api_mode": _custom_api_mode_for_url(base_url, api_mode_override),
             "base_url": base_url,
             "api_key": pool_api_key,
             "source": f"pool:{pool_key}",
@@ -531,6 +553,9 @@ def _get_named_custom_provider(requested_provider: str) -> Optional[Dict[str, An
                     extra_body = entry.get("extra_body")
                     if isinstance(extra_body, dict):
                         result["extra_body"] = dict(extra_body)
+                    default_headers = entry.get("default_headers")
+                    if isinstance(default_headers, dict):
+                        result["default_headers"] = dict(default_headers)
                     # The v11→v12 migration writes the API mode under the new
                     # ``transport`` field, but hand-edited configs may still
                     # use the legacy ``api_mode`` spelling.  Accept both —
@@ -559,6 +584,9 @@ def _get_named_custom_provider(requested_provider: str) -> Optional[Dict[str, An
                         extra_body = entry.get("extra_body")
                         if isinstance(extra_body, dict):
                             result["extra_body"] = dict(extra_body)
+                        default_headers = entry.get("default_headers")
+                        if isinstance(default_headers, dict):
+                            result["default_headers"] = dict(default_headers)
                         api_mode = _parse_api_mode(entry.get("api_mode") or entry.get("transport"))
                         if api_mode:
                             result["api_mode"] = api_mode
@@ -605,6 +633,9 @@ def _get_named_custom_provider(requested_provider: str) -> Optional[Dict[str, An
         extra_body = entry.get("extra_body")
         if isinstance(extra_body, dict):
             result["extra_body"] = dict(extra_body)
+        default_headers = entry.get("default_headers")
+        if isinstance(default_headers, dict):
+            result["default_headers"] = dict(default_headers)
         api_mode = _parse_api_mode(entry.get("api_mode"))
         if api_mode:
             result["api_mode"] = api_mode
@@ -617,10 +648,23 @@ def _get_named_custom_provider(requested_provider: str) -> Optional[Dict[str, An
 
 
 def _custom_provider_request_overrides(custom_provider: Dict[str, Any]) -> Dict[str, Any]:
+    request_overrides: Dict[str, Any] = {}
     extra_body = custom_provider.get("extra_body")
-    if not isinstance(extra_body, dict) or not extra_body:
-        return {}
-    return {"extra_body": dict(extra_body)}
+    if isinstance(extra_body, dict) and extra_body:
+        request_overrides["extra_body"] = dict(extra_body)
+    default_headers = custom_provider.get("default_headers")
+    if isinstance(default_headers, dict) and default_headers:
+        headers: Dict[str, str] = {}
+        for key, value in default_headers.items():
+            header_name = str(key or "").strip()
+            if not header_name or value is None:
+                continue
+            header_value = str(value).strip()
+            if header_value:
+                headers[header_name] = header_value
+        if headers:
+            request_overrides["extra_headers"] = headers
+    return request_overrides
 
 
 def _resolve_named_custom_runtime(
@@ -673,7 +717,7 @@ def _resolve_named_custom_runtime(
         ) or "no-key-required"
         return {
             "provider": "custom",
-            "api_mode": _detect_api_mode_for_url(base_url) or "chat_completions",
+            "api_mode": _custom_api_mode_for_url(base_url),
             "base_url": base_url,
             "api_key": api_key,
             "source": "direct-alias",
@@ -725,9 +769,10 @@ def _resolve_named_custom_runtime(
 
     result = {
         "provider": "custom",
-        "api_mode": custom_provider.get("api_mode")
-        or _detect_api_mode_for_url(base_url)
-        or "chat_completions",
+        "api_mode": _custom_api_mode_for_url(
+            base_url,
+            _parse_api_mode(custom_provider.get("api_mode")),
+        ),
         "base_url": base_url,
         "api_key": api_key or "no-key-required",
         "source": f"custom_provider:{custom_provider.get('name', requested_provider)}",
@@ -873,9 +918,10 @@ def _resolve_openrouter_runtime(
 
     return {
         "provider": effective_provider,
-        "api_mode": _parse_api_mode(model_cfg.get("api_mode"))
-        or _detect_api_mode_for_url(base_url)
-        or "chat_completions",
+        "api_mode": _custom_api_mode_for_url(
+            base_url,
+            _parse_api_mode(model_cfg.get("api_mode")),
+        ),
         "base_url": base_url,
         "api_key": api_key,
         "source": source,

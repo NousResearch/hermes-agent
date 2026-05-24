@@ -33,7 +33,7 @@ T = TypeVar("T")
 
 DEFAULT_DB_PATH = get_hermes_home() / "state.db"
 
-SCHEMA_VERSION = 13
+SCHEMA_VERSION = 14
 
 # ---------------------------------------------------------------------------
 # WAL-compatibility fallback
@@ -194,7 +194,10 @@ CREATE TABLE IF NOT EXISTS sessions (
     model TEXT,
     model_config TEXT,
     system_prompt TEXT,
+    prompt_cache_key TEXT,
+    prompt_cache_supported INTEGER,
     parent_session_id TEXT,
+    lineage_id TEXT,
     started_at REAL NOT NULL,
     ended_at REAL,
     end_reason TEXT,
@@ -241,6 +244,29 @@ CREATE TABLE IF NOT EXISTS messages (
     observed INTEGER DEFAULT 0
 );
 
+CREATE TABLE IF NOT EXISTS attribution_events (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    session_id TEXT NOT NULL REFERENCES sessions(id),
+    lineage_id TEXT NOT NULL,
+    source TEXT,
+    user_id TEXT,
+    chat_id TEXT,
+    thread_id TEXT,
+    platform_message_id TEXT,
+    turn_id TEXT,
+    tool_call_id TEXT,
+    tool_name TEXT NOT NULL,
+    action_summary TEXT,
+    args_summary TEXT,
+    side_effect_class TEXT,
+    status TEXT NOT NULL,
+    started_at REAL NOT NULL,
+    ended_at REAL,
+    duration_ms INTEGER,
+    output_digest TEXT,
+    error_preview TEXT
+);
+
 CREATE TABLE IF NOT EXISTS state_meta (
     key TEXT PRIMARY KEY,
     value TEXT
@@ -250,6 +276,9 @@ CREATE INDEX IF NOT EXISTS idx_sessions_source ON sessions(source);
 CREATE INDEX IF NOT EXISTS idx_sessions_parent ON sessions(parent_session_id);
 CREATE INDEX IF NOT EXISTS idx_sessions_started ON sessions(started_at DESC);
 CREATE INDEX IF NOT EXISTS idx_messages_session ON messages(session_id, timestamp);
+CREATE INDEX IF NOT EXISTS idx_attribution_lineage ON attribution_events(lineage_id, started_at, id);
+CREATE INDEX IF NOT EXISTS idx_attribution_session ON attribution_events(session_id, started_at, id);
+CREATE INDEX IF NOT EXISTS idx_attribution_chat_lineage ON attribution_events(chat_id, lineage_id, started_at, id);
 """
 
 FTS_SQL = """
@@ -585,6 +614,13 @@ class SessionDB:
             )
         except sqlite3.OperationalError as exc:
             logger.debug("idx_messages_platform_msg_id create skipped: %s", exc)
+        try:
+            cursor.execute(
+                "CREATE INDEX IF NOT EXISTS idx_sessions_lineage "
+                "ON sessions(lineage_id)"
+            )
+        except sqlite3.OperationalError as exc:
+            logger.debug("idx_sessions_lineage create skipped: %s", exc)
 
         # ── Schema version bookkeeping ─────────────────────────────────
         # Bump to current so future data migrations (if any) can gate on
@@ -696,6 +732,50 @@ class SessionDB:
     # Session lifecycle
     # =========================================================================
 
+    def get_session_lineage_id(self, session_id: str) -> Optional[str]:
+        """Return the stable lineage id for *session_id*.
+
+        New sessions store ``lineage_id`` directly.  Older rows may not have it,
+        so fall back to walking ``parent_session_id`` to the root.
+        """
+        if not session_id:
+            return None
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT id, parent_session_id, lineage_id FROM sessions WHERE id = ?",
+                (session_id,),
+            ).fetchone()
+            if row is None:
+                return None
+            lineage = row["lineage_id"] if hasattr(row, "keys") else row[2]
+            if lineage:
+                return lineage
+
+            current = session_id
+            root = session_id
+            seen = set()
+            for _ in range(100):
+                if not current or current in seen:
+                    break
+                seen.add(current)
+                parent_row = self._conn.execute(
+                    "SELECT parent_session_id FROM sessions WHERE id = ?",
+                    (current,),
+                ).fetchone()
+                if parent_row is None:
+                    break
+                parent = parent_row["parent_session_id"] if hasattr(parent_row, "keys") else parent_row[0]
+                if not parent:
+                    break
+                root = parent
+                current = parent
+            return root
+
+    def _lineage_id_for_new_session(self, session_id: str, parent_session_id: str = None) -> str:
+        if parent_session_id:
+            return self.get_session_lineage_id(parent_session_id) or parent_session_id
+        return session_id
+
     def _insert_session_row(
         self,
         session_id: str,
@@ -703,15 +783,22 @@ class SessionDB:
         model: str = None,
         model_config: Dict[str, Any] = None,
         system_prompt: str = None,
+        prompt_cache_key: str = None,
+        prompt_cache_supported: Optional[bool] = None,
         user_id: str = None,
         parent_session_id: str = None,
+        lineage_id: str = None,
     ) -> None:
         """Shared INSERT OR IGNORE for session rows."""
+        if not lineage_id:
+            lineage_id = self._lineage_id_for_new_session(session_id, parent_session_id)
+
         def _do(conn):
             conn.execute(
                 """INSERT OR IGNORE INTO sessions (id, source, user_id, model, model_config,
-                   system_prompt, parent_session_id, started_at)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+                   system_prompt, prompt_cache_key, prompt_cache_supported,
+                   parent_session_id, lineage_id, started_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
                     session_id,
                     source,
@@ -719,7 +806,10 @@ class SessionDB:
                     model,
                     json.dumps(model_config) if model_config else None,
                     system_prompt,
+                    prompt_cache_key,
+                    None if prompt_cache_supported is None else int(bool(prompt_cache_supported)),
                     parent_session_id,
+                    lineage_id,
                     time.time(),
                 ),
             )
@@ -764,6 +854,53 @@ class SessionDB:
                 (system_prompt, session_id),
             )
         self._execute_write(_do)
+
+    def update_prompt_cache_state(
+        self,
+        session_id: str,
+        *,
+        prompt_cache_key: Optional[str] = None,
+        prompt_cache_supported: Optional[bool] = None,
+    ) -> bool:
+        """Persist prompt-cache metadata for a session.
+
+        Returns True when a row was updated, False when the session does not
+        exist.
+        """
+        def _do(conn):
+            cur = conn.execute(
+                "UPDATE sessions SET prompt_cache_key = ?, prompt_cache_supported = ? WHERE id = ?",
+                (
+                    prompt_cache_key,
+                    None if prompt_cache_supported is None else int(bool(prompt_cache_supported)),
+                    session_id,
+                ),
+            )
+            return cur.rowcount > 0
+
+        return bool(self._execute_write(_do))
+
+    def get_prompt_cache_state(self, session_id: str) -> Optional[Dict[str, Any]]:
+        """Return prompt-cache metadata for a session, if any."""
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT prompt_cache_key, prompt_cache_supported FROM sessions WHERE id = ?",
+                (session_id,),
+            ).fetchone()
+        if row is None:
+            return None
+        prompt_cache_key = row["prompt_cache_key"] if isinstance(row, sqlite3.Row) else row[0]
+        prompt_cache_supported = row["prompt_cache_supported"] if isinstance(row, sqlite3.Row) else row[1]
+        if prompt_cache_key is None and prompt_cache_supported is None:
+            return None
+        if prompt_cache_supported is None:
+            supported_value = None
+        else:
+            supported_value = bool(prompt_cache_supported)
+        return {
+            "prompt_cache_key": prompt_cache_key,
+            "prompt_cache_supported": supported_value,
+        }
 
     def update_token_counts(
         self,
@@ -1541,6 +1678,116 @@ class SessionDB:
             return msg_id
 
         return self._execute_write(_do)
+
+    def append_attribution_event(
+        self,
+        session_id: str,
+        tool_name: str,
+        status: str,
+        action_summary: str = None,
+        args_summary: str = None,
+        side_effect_class: str = None,
+        source: str = None,
+        user_id: str = None,
+        chat_id: str = None,
+        thread_id: str = None,
+        platform_message_id: str = None,
+        turn_id: str = None,
+        tool_call_id: str = None,
+        lineage_id: str = None,
+        started_at: float = None,
+        ended_at: float = None,
+        duration_ms: int = None,
+        output_digest: str = None,
+        error_preview: str = None,
+    ) -> int:
+        """Append one redacted attribution/action-ledger event."""
+        lineage_id = lineage_id or self.get_session_lineage_id(session_id) or session_id
+        if source is None:
+            try:
+                session = self.get_session(session_id)
+                if session:
+                    source = session.get("source")
+                    if user_id is None:
+                        user_id = session.get("user_id")
+            except Exception:
+                pass
+        started_at = time.time() if started_at is None else float(started_at)
+
+        def _do(conn):
+            cursor = conn.execute(
+                """INSERT INTO attribution_events (
+                   session_id, lineage_id, source, user_id, chat_id, thread_id,
+                   platform_message_id, turn_id, tool_call_id, tool_name,
+                   action_summary, args_summary, side_effect_class, status,
+                   started_at, ended_at, duration_ms, output_digest, error_preview)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    session_id,
+                    lineage_id,
+                    source,
+                    user_id,
+                    chat_id,
+                    thread_id,
+                    platform_message_id,
+                    turn_id,
+                    tool_call_id,
+                    tool_name,
+                    action_summary,
+                    args_summary,
+                    side_effect_class,
+                    status,
+                    started_at,
+                    ended_at,
+                    duration_ms,
+                    output_digest,
+                    error_preview,
+                ),
+            )
+            return cursor.lastrowid
+
+        return self._execute_write(_do)
+
+    def get_attribution_events(
+        self,
+        session_id: str = None,
+        lineage_id: str = None,
+        include_lineage: bool = True,
+        source: str = None,
+        chat_id: str = None,
+        limit: int = 100,
+    ) -> List[Dict[str, Any]]:
+        """Return attribution events for a session or lineage."""
+        where = []
+        params: list[Any] = []
+        if session_id:
+            if include_lineage:
+                lineage_id = lineage_id or self.get_session_lineage_id(session_id) or session_id
+                where.append("lineage_id = ?")
+                params.append(lineage_id)
+            else:
+                where.append("session_id = ?")
+                params.append(session_id)
+        elif lineage_id:
+            where.append("lineage_id = ?")
+            params.append(lineage_id)
+        if source:
+            where.append("source = ?")
+            params.append(source)
+        if chat_id:
+            where.append("chat_id = ?")
+            params.append(chat_id)
+        where_sql = " WHERE " + " AND ".join(where) if where else ""
+        try:
+            limit_int = max(1, min(int(limit), 500))
+        except Exception:
+            limit_int = 100
+        with self._lock:
+            rows = self._conn.execute(
+                f"SELECT * FROM attribution_events{where_sql} ORDER BY started_at ASC, id ASC LIMIT ?",
+                (*params, limit_int),
+            ).fetchall()
+        return [dict(row) for row in rows]
 
     def replace_messages(self, session_id: str, messages: List[Dict[str, Any]]) -> None:
         """Atomically replace every message for a session.

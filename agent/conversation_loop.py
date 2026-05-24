@@ -493,9 +493,9 @@ def run_conversation(
                 f"{agent.context_compressor.context_length:,}",
             )
             agent._emit_status(
-                f"📦 Preflight compression: ~{_preflight_tokens:,} tokens "
-                f">= {agent.context_compressor.threshold_tokens:,} threshold. "
-                "This may take a moment."
+                f"📦 预先压缩 context：约 {_preflight_tokens:,} tokens "
+                f">= {agent.context_compressor.threshold_tokens:,} threshold，"
+                "可能需要一点时间。"
             )
             # May need multiple passes for very large sessions with small
             # context windows (each pass summarises the middle N turns).
@@ -1359,7 +1359,7 @@ def run_conversation(
                             agent._persist_session(messages, conversation_history)
                             agent.clear_interrupt()
                             return {
-                                "final_response": f"Operation interrupted during retry ({_failure_hint}, attempt {retry_count}/{max_retries}).",
+                                "final_response": f"操作已中断：正在重试等待（{_failure_hint}，第 {retry_count}/{max_retries} 次尝试）。",
                                 "messages": messages,
                                 "api_calls": api_call_count,
                                 "completed": False,
@@ -1780,7 +1780,7 @@ def run_conversation(
                 agent._vprint(f"{agent.log_prefix}⚡ Interrupted during API call.", force=True)
                 agent._persist_session(messages, conversation_history)
                 interrupted = True
-                final_response = f"Operation interrupted: waiting for model response ({api_elapsed:.1f}s elapsed)."
+                final_response = f"操作已中断：正在等待模型响应（已等待 {api_elapsed:.1f} 秒）。"
                 break
 
             except Exception as api_error:
@@ -2374,7 +2374,7 @@ def run_conversation(
                     agent._persist_session(messages, conversation_history)
                     agent.clear_interrupt()
                     return {
-                        "final_response": f"Operation interrupted: handling API error ({error_type}: {agent._clean_error_message(str(api_error))}).",
+                        "final_response": f"操作已中断：正在处理 API 错误（{error_type}: {agent._clean_error_message(str(api_error))}）。",
                         "messages": messages,
                         "api_calls": api_call_count,
                         "completed": False,
@@ -3002,7 +3002,7 @@ def run_conversation(
                         agent._persist_session(messages, conversation_history)
                         agent.clear_interrupt()
                         return {
-                            "final_response": f"Operation interrupted: retrying API call after error (retry {retry_count}/{max_retries}).",
+                            "final_response": f"操作已中断：API 错误后正在重试（第 {retry_count}/{max_retries} 次）。",
                             "messages": messages,
                             "api_calls": api_call_count,
                             "completed": False,

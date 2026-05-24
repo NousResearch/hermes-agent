@@ -5,6 +5,7 @@ import logging
 import os
 import stat
 import tempfile
+from io import StringIO
 from pathlib import Path
 from typing import Any, Union
 from urllib.parse import urlparse
@@ -143,6 +144,7 @@ def atomic_yaml_write(
     default_flow_style: bool = False,
     sort_keys: bool = False,
     extra_content: str | None = None,
+    allow_destructive_secret_change: bool = False,
 ) -> None:
     """Write YAML data to a file atomically.
 
@@ -161,6 +163,28 @@ def atomic_yaml_write(
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
 
+    payload_io = StringIO()
+    yaml.dump(data, payload_io, default_flow_style=default_flow_style, sort_keys=sort_keys)
+    if extra_content:
+        payload_io.write(extra_content)
+    payload = payload_io.getvalue()
+
+    from agent.live_config_guard import validate_and_backup_live_config_write
+
+    guard_result = validate_and_backup_live_config_write(
+        path,
+        new_content=payload,
+        allow_destructive_secret_change=allow_destructive_secret_change,
+    )
+    if guard_result.error:
+        raise ValueError(guard_result.error)
+    if guard_result.guarded and guard_result.redacted_diff:
+        logger.info(
+            "Live Hermes config write approved for %s; redacted diff:\n%s",
+            path,
+            guard_result.redacted_diff,
+        )
+
     original_mode = _preserve_file_mode(path)
 
     fd, tmp_path = tempfile.mkstemp(
@@ -170,9 +194,7 @@ def atomic_yaml_write(
     )
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as f:
-            yaml.dump(data, f, default_flow_style=default_flow_style, sort_keys=sort_keys)
-            if extra_content:
-                f.write(extra_content)
+            f.write(payload)
             f.flush()
             os.fsync(f.fileno())
         # Preserve symlinks — swap in-place on the real file (GitHub #16743).
@@ -192,6 +214,8 @@ def atomic_roundtrip_yaml_update(
     path: Union[str, Path],
     key_path: str,
     value: Any,
+    *,
+    allow_destructive_secret_change: bool = False,
 ) -> None:
     """Update one dotted YAML key while preserving comments and readable text.
 
@@ -232,6 +256,26 @@ def atomic_roundtrip_yaml_update(
     current[keys[-1]] = value
 
     original_mode = _preserve_file_mode(path)
+    payload_io = StringIO()
+    yaml_rt.dump(config, payload_io)
+    payload = payload_io.getvalue()
+
+    from agent.live_config_guard import validate_and_backup_live_config_write
+
+    guard_result = validate_and_backup_live_config_write(
+        path,
+        new_content=payload,
+        allow_destructive_secret_change=allow_destructive_secret_change,
+    )
+    if guard_result.error:
+        raise ValueError(guard_result.error)
+    if guard_result.guarded and guard_result.redacted_diff:
+        logger.info(
+            "Live Hermes config write approved for %s; redacted diff:\n%s",
+            path,
+            guard_result.redacted_diff,
+        )
+
     fd, tmp_path = tempfile.mkstemp(
         dir=str(path.parent),
         prefix=f".{path.stem}_",
@@ -239,7 +283,7 @@ def atomic_roundtrip_yaml_update(
     )
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as f:
-            yaml_rt.dump(config, f)
+            f.write(payload)
             f.flush()
             os.fsync(f.fileno())
         real_path = atomic_replace(tmp_path, path)

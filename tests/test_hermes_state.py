@@ -1,5 +1,6 @@
 """Tests for hermes_state.py — SessionDB SQLite CRUD, FTS5 search, export."""
 
+import sqlite3
 import time
 import pytest
 from pathlib import Path
@@ -85,6 +86,22 @@ class TestSessionLifecycle:
         session = db.get_session("s1")
         assert session["system_prompt"] == "You are a helpful assistant."
 
+    def test_update_and_get_prompt_cache_state(self, db):
+        db.create_session(session_id="s1", source="cli")
+
+        assert db.get_prompt_cache_state("s1") is None
+        assert db.update_prompt_cache_state(
+            "s1",
+            prompt_cache_key="custom-codex-session",
+            prompt_cache_supported=True,
+        ) is True
+
+        cache_state = db.get_prompt_cache_state("s1")
+        assert cache_state == {
+            "prompt_cache_key": "custom-codex-session",
+            "prompt_cache_supported": True,
+        }
+
     def test_update_token_counts(self, db):
         db.create_session(session_id="s1", source="cli")
         db.update_token_counts("s1", input_tokens=200, output_tokens=100)
@@ -135,6 +152,116 @@ class TestSessionLifecycle:
 
         child = db.get_session("child")
         assert child["parent_session_id"] == "parent"
+
+    def test_lineage_id_inherits_from_parent_session(self, db):
+        db.create_session(session_id="parent", source="qqbot")
+        db.create_session(session_id="child", source="qqbot", parent_session_id="parent")
+
+        parent = db.get_session("parent")
+        child = db.get_session("child")
+
+        assert parent["lineage_id"] == "parent"
+        assert child["lineage_id"] == "parent"
+        assert db.get_session_lineage_id("child") == "parent"
+
+    def test_existing_database_without_lineage_column_is_reconciled(self, tmp_path):
+        db_path = tmp_path / "legacy_state.db"
+        conn = sqlite3.connect(db_path)
+        try:
+            conn.executescript(
+                """
+                CREATE TABLE schema_version (version INTEGER NOT NULL);
+                INSERT INTO schema_version (version) VALUES (13);
+                CREATE TABLE sessions (
+                    id TEXT PRIMARY KEY,
+                    source TEXT NOT NULL,
+                    user_id TEXT,
+                    parent_session_id TEXT,
+                    started_at REAL NOT NULL
+                );
+                INSERT INTO sessions (id, source, user_id, parent_session_id, started_at)
+                VALUES ('legacy-parent', 'qqbot', 'user-1', NULL, 1.0);
+                """
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+        migrated = SessionDB(db_path=db_path)
+        try:
+            session = migrated.get_session("legacy-parent")
+            assert session["lineage_id"] is None
+            assert migrated.get_session_lineage_id("legacy-parent") == "legacy-parent"
+
+            migrated.create_session(
+                session_id="legacy-child",
+                source="qqbot",
+                parent_session_id="legacy-parent",
+            )
+            assert migrated.get_session("legacy-child")["lineage_id"] == "legacy-parent"
+        finally:
+            migrated.close()
+
+
+# =========================================================================
+# Attribution ledger
+# =========================================================================
+
+class TestAttributionLedger:
+    def test_append_and_query_attribution_events_by_lineage(self, db):
+        db.create_session(session_id="parent", source="qqbot")
+        db.create_session(session_id="child", source="qqbot", parent_session_id="parent")
+        db.create_session(session_id="other", source="qqbot")
+
+        parent_event = db.append_attribution_event(
+            session_id="parent",
+            tool_name="read_file",
+            status="completed",
+            action_summary="read README.md",
+            side_effect_class="read",
+            chat_id="chat-1",
+            platform_message_id="msg-1",
+        )
+        child_event = db.append_attribution_event(
+            session_id="child",
+            tool_name="patch",
+            status="completed",
+            action_summary="patched SKILL.md",
+            side_effect_class="write",
+            chat_id="chat-1",
+            platform_message_id="msg-2",
+        )
+        db.append_attribution_event(
+            session_id="other",
+            tool_name="terminal",
+            status="completed",
+            action_summary="git status",
+            side_effect_class="process",
+            chat_id="chat-1",
+        )
+
+        events = db.get_attribution_events(session_id="child", include_lineage=True)
+
+        assert [e["id"] for e in events] == [parent_event, child_event]
+        assert {e["lineage_id"] for e in events} == {"parent"}
+        assert events[1]["platform_message_id"] == "msg-2"
+
+    def test_attribution_events_can_be_filtered_to_current_chat(self, db):
+        db.create_session(session_id="s1", source="qqbot")
+        keep = db.append_attribution_event(
+            session_id="s1", tool_name="read_file", status="completed",
+            action_summary="read local file", chat_id="chat-keep",
+        )
+        db.append_attribution_event(
+            session_id="s1", tool_name="terminal", status="completed",
+            action_summary="other chat command", chat_id="chat-other",
+        )
+
+        events = db.get_attribution_events(
+            session_id="s1", include_lineage=True, chat_id="chat-keep"
+        )
+
+        assert [e["id"] for e in events] == [keep]
 
 
 # =========================================================================

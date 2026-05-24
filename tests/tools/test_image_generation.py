@@ -9,6 +9,7 @@ tests/tools/test_managed_media_gateways.py.
 
 from __future__ import annotations
 
+import json
 from unittest.mock import patch
 
 import pytest
@@ -338,6 +339,55 @@ class TestModelResolution:
         assert mid == "fal-ai/nano-banana-pro"
 
 
+class TestFalToolResponseEnvelope:
+    def test_success_response_includes_message_and_actual_parameters(self, image_tool, monkeypatch):
+        class FakeHandler:
+            def get(self):
+                return {
+                    "images": [
+                        {
+                            "url": "https://cdn.example/image.png",
+                            "width": 1024,
+                            "height": 1024,
+                        }
+                    ]
+                }
+
+        submitted = {}
+
+        def fake_submit(model, arguments):
+            submitted["model"] = model
+            submitted["arguments"] = arguments
+            return FakeHandler()
+
+        monkeypatch.setattr(image_tool, "fal_" + "key_is_configured", lambda: True)
+        monkeypatch.setattr(image_tool, "_resolve_managed_fal_gateway", lambda: None)
+        monkeypatch.setattr(image_tool, "_submit_fal_request", fake_submit)
+
+        payload = image_tool.image_generate_tool(
+            prompt="draw a dog",
+            aspect_ratio="square",
+            num_images=2,
+            output_format="png",
+            seed=7,
+        )
+
+        result = json.loads(payload)
+        assert result["success"] is True
+        assert result["message"] == "Image generation completed"
+        assert result["provider"] == "fal"
+        assert result["model"] == "fal-ai/flux-2/klein/9b"
+        assert result["parameters"] == {
+            "prompt": "draw a dog",
+            "aspect_ratio": "square",
+            "num_images": 2,
+            "output_format": "png",
+            "seed": 7,
+        }
+        assert result["provider_request"] == submitted["arguments"]
+        assert result["provider_request"]["image_size"] == "square_hd"
+
+
 # ---------------------------------------------------------------------------
 # Aspect ratio handling
 # ---------------------------------------------------------------------------
@@ -363,11 +413,26 @@ class TestAspectRatioNormalization:
 
 class TestRegistryIntegration:
 
-    def test_schema_exposes_only_prompt_and_aspect_ratio_to_agent(self, image_tool):
-        """The agent-facing schema must stay tight — model selection is a
-        user-level config choice, not an agent-level arg."""
+    def test_schema_exposes_generation_and_edit_controls_to_agent(self, image_tool):
+        """The agent-facing schema exposes image controls but still keeps
+        model/provider selection as user-level config."""
         props = image_tool.IMAGE_GENERATE_SCHEMA["parameters"]["properties"]
-        assert set(props.keys()) == {"prompt", "aspect_ratio"}
+        assert set(props.keys()) == {
+            "prompt",
+            "aspect_ratio",
+            "size",
+            "quality",
+            "n",
+            "background",
+            "output_format",
+            "output_compression",
+            "moderation",
+            "seed",
+            "image",
+            "mask",
+            "input_fidelity",
+        }
+        assert "model" not in props
 
     def test_aspect_ratio_enum_is_three_values(self, image_tool):
         enum = image_tool.IMAGE_GENERATE_SCHEMA["parameters"]["properties"]["aspect_ratio"]["enum"]

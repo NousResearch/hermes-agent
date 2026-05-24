@@ -68,7 +68,7 @@ async def test_drain_queue_mode_queues_follow_up_without_interrupt():
     assert session_key in adapter._pending_messages
     assert adapter._pending_messages[session_key].text == "follow up"
     assert not adapter._active_sessions[session_key].is_set()
-    assert any("queued for the next turn" in message for message in adapter.sent)
+    assert any("已排队" in message and "下一轮" in message for message in adapter.sent)
 
 
 @pytest.mark.asyncio
@@ -86,7 +86,7 @@ async def test_draining_rejects_new_session_messages():
 
     result = await runner._handle_message(event)
 
-    assert result == "⏳ Gateway is restarting and is not accepting new work right now."
+    assert result == "⏳ Gateway 正在重启，暂时不接受新的任务。"
 
 
 def test_load_busy_input_mode_prefers_env_then_config_then_default(tmp_path, monkeypatch):
@@ -197,11 +197,38 @@ async def test_launch_detached_restart_command_uses_setsid(monkeypatch):
     assert len(popen_calls) == 1
     cmd, kwargs = popen_calls[0]
     assert cmd[:2] == ["/usr/bin/setsid", "bash"]
-    assert "gateway restart" in cmd[-1]
+    assert "gateway run --replace" in cmd[-1]
+    assert "gateway restart" not in cmd[-1]
     assert "kill -0 321" in cmd[-1]
     assert kwargs["start_new_session"] is True
     assert kwargs["stdout"] is subprocess.DEVNULL
     assert kwargs["stderr"] is subprocess.DEVNULL
+
+
+@pytest.mark.asyncio
+async def test_launch_detached_restart_command_waiter_does_not_hang_on_zombie_pid(monkeypatch):
+    """The POSIX watcher must not wait forever when the old PID is a zombie."""
+    runner, _adapter = make_restart_runner()
+    popen_calls = []
+
+    monkeypatch.setattr(gateway_run, "_resolve_hermes_bin", lambda: ["/usr/bin/hermes"])
+    monkeypatch.setattr(gateway_run.os, "getpid", lambda: 321)
+    monkeypatch.setattr(shutil, "which", lambda cmd: "/usr/bin/setsid" if cmd == "setsid" else None)
+
+    def fake_popen(cmd, **kwargs):
+        popen_calls.append((cmd, kwargs))
+        return MagicMock()
+
+    monkeypatch.setattr(subprocess, "Popen", fake_popen)
+
+    await runner._launch_detached_restart_command()
+
+    assert len(popen_calls) == 1
+    shell_cmd = popen_calls[0][0][-1]
+    assert "/proc/321/stat" in shell_cmd
+    assert "'Z'" in shell_cmd or '"Z"' in shell_cmd
+    assert "120" in shell_cmd
+    assert "gateway run --replace" in shell_cmd
 
 
 # ── Shutdown notification tests ──────────────────────────────────────
@@ -218,8 +245,8 @@ async def test_shutdown_notification_sent_to_active_sessions():
     await runner._notify_active_sessions_of_shutdown()
 
     assert len(adapter.sent) == 1
-    assert "shutting down" in adapter.sent[0]
-    assert "interrupted" in adapter.sent[0]
+    assert "正在关闭" in adapter.sent[0]
+    assert "当前任务会被中断" in adapter.sent[0]
 
 
 @pytest.mark.asyncio
@@ -233,8 +260,8 @@ async def test_shutdown_notification_says_restarting_when_restart_requested():
     await runner._notify_active_sessions_of_shutdown()
 
     assert len(adapter.sent) == 1
-    assert "restarting" in adapter.sent[0]
-    assert "resume" in adapter.sent[0]
+    assert "正在重启" in adapter.sent[0]
+    assert "尽量从断点继续" in adapter.sent[0]
 
 
 @pytest.mark.asyncio

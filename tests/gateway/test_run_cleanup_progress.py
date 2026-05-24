@@ -131,6 +131,27 @@ class FailingAgent:
         }
 
 
+class SlowStatusAgent:
+    """Runs long enough for a gateway still-working notice to fire."""
+
+    def __init__(self, **kwargs):
+        self.tool_progress_callback = kwargs.get("tool_progress_callback")
+        self.tools = []
+
+    def get_activity_summary(self):
+        return {
+            "api_call_count": 19,
+            "max_iterations": 90,
+            "current_tool": None,
+            "last_activity_desc": "waiting for non-streaming API response",
+            "seconds_since_activity": 30.0,
+        }
+
+    def run_conversation(self, message, conversation_history=None, task_id=None):
+        time.sleep(0.4)
+        return {"final_response": "done", "messages": [], "api_calls": 19}
+
+
 def _make_runner(adapter):
     gateway_run = importlib.import_module("gateway.run")
     GatewayRunner = gateway_run.GatewayRunner
@@ -365,3 +386,33 @@ async def test_cleanup_chains_with_existing_callback(monkeypatch, tmp_path):
     # deletes at least one progress bubble.
     assert pre_existing_fired == [True]
     assert len(adapter.deleted) >= 1
+
+
+@pytest.mark.asyncio
+async def test_long_running_notice_is_chinese(monkeypatch, tmp_path):
+    """Gateway wait notices are user-facing and must be localized."""
+    adapter = CleanupCaptureAdapter()
+    runner = _make_runner(adapter)
+    gateway_run = _install_fakes(monkeypatch, SlowStatusAgent, cleanup_on=False)
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+    monkeypatch.setenv("HERMES_AGENT_NOTIFY_INTERVAL", "0.05")
+
+    source = SessionSource(platform=Platform.TELEGRAM, chat_id="-1001")
+    session_key = "agent:main:telegram:group:-1001"
+
+    result = await runner._run_agent(
+        message="hello",
+        context_prompt="",
+        history=[],
+        source=source,
+        session_id="sess-1",
+        session_key=session_key,
+    )
+
+    assert result["final_response"] == "done"
+    notices = [entry["content"] for entry in adapter.sent if "还在处理" in entry["content"]]
+    assert notices
+    assert all("Still working" not in notice for notice in notices)
+    assert all("iteration" not in notice for notice in notices)
+    assert all("waiting for non-streaming API response" not in notice for notice in notices)
+    assert any("等待非流式 API 响应" in notice for notice in notices), notices

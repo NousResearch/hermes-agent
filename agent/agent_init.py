@@ -322,6 +322,15 @@ def init_agent(
     else:
         agent.api_mode = "chat_completions"
 
+    if (
+        agent.provider == "custom"
+        and agent.api_mode == "chat_completions"
+        and "/codex" in agent._base_url_lower
+    ):
+        # Custom Codex proxies need Responses semantics even when the
+        # persisted/explicit api_mode is stale.
+        agent.api_mode = "codex_responses"
+
     # Eagerly warm the transport cache so import errors surface at init,
     # not mid-conversation.  Also validates the api_mode is registered.
     try:
@@ -725,6 +734,13 @@ def init_agent(
                 from hermes_cli.models import copilot_default_headers
 
                 client_kwargs["default_headers"] = copilot_default_headers()
+            elif (
+                base_url_host_matches(effective_base, "cpa.yumeapi.cn")
+                or base_url_host_matches(effective_base, "ai.yumeapi.cn")
+            ):
+                client_kwargs["default_headers"] = {
+                    "User-Agent": "curl/8.5.0",
+                }
             elif base_url_host_matches(effective_base, "api.kimi.com"):
                 client_kwargs["default_headers"] = {
                     "User-Agent": "claude-code/0.1.0",
@@ -1230,6 +1246,26 @@ def init_agent(
         _compression_cfg.get("abort_on_summary_failure", False)
     ).lower() in {"true", "1", "yes"}
 
+    def _cfg_bool(section: Any, key: str, default: bool) -> bool:
+        if isinstance(section, dict):
+            value = section.get(key, default)
+        else:
+            value = default
+        if isinstance(value, bool):
+            return value
+        return str(value).strip().lower() in {"true", "1", "yes", "on"}
+
+    _safe_retry_cfg = _compression_cfg.get("safe_retry", {}) if isinstance(_compression_cfg, dict) else {}
+    _chunked_cfg = _compression_cfg.get("chunked", {}) if isinstance(_compression_cfg, dict) else {}
+    _fallback_cfg = _compression_cfg.get("fallback", {}) if isinstance(_compression_cfg, dict) else {}
+    compression_safe_retry_enabled = _cfg_bool(_safe_retry_cfg, "enabled", True)
+    compression_chunked_summary_enabled = _cfg_bool(_chunked_cfg, "enabled", True)
+    compression_extractive_fallback_enabled = _cfg_bool(_fallback_cfg, "extractive_marker", True)
+    try:
+        compression_chunk_messages = max(1, int(_chunked_cfg.get("chunk_messages", 40))) if isinstance(_chunked_cfg, dict) else 40
+    except (TypeError, ValueError):
+        compression_chunk_messages = 40
+
     # Read optional explicit context_length override for the auxiliary
     # compression model. Custom endpoints often cannot report this via
     # /models, so the startup feasibility check needs the config hint.
@@ -1446,6 +1482,10 @@ def init_agent(
             provider=agent.provider,
             api_mode=agent.api_mode,
             abort_on_summary_failure=compression_abort_on_summary_failure,
+            safe_retry_enabled=compression_safe_retry_enabled,
+            chunked_summary_enabled=compression_chunked_summary_enabled,
+            chunk_summary_messages=compression_chunk_messages,
+            extractive_fallback_enabled=compression_extractive_fallback_enabled,
         )
     agent.compression_enabled = compression_enabled
 

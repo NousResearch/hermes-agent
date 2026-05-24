@@ -4,7 +4,7 @@ Covers the behaviour introduced to fix the ``Gateway shutting down ...
 task will be interrupted`` follow-up bug (spec: PR #11852, builds on
 PRs #9850, #9934, #7536):
 
-1. When a gateway restart drain times out and agents are force-interrupted,
+1. When a Gateway 重启 drain times out and agents are force-interrupted,
    the affected sessions are flagged ``resume_pending=True`` — not
    ``suspended`` — so the next user message on the same session_key
    auto-resumes from the existing transcript instead of getting routed
@@ -56,7 +56,7 @@ from tests.gateway.restart_test_helpers import (
 def test_resume_pending_is_cleared_only_after_successful_turn():
     """Interrupted/failed drain results must keep the restart recovery marker.
 
-    Regression for dogfood failure: during gateway restart the interrupted run
+    Regression for dogfood failure: during Gateway 重启 the interrupted run
     returned an empty final response and was normalized into a user-facing
     fallback, but the gateway cleared ``resume_pending`` before startup could
     auto-resume it.
@@ -146,27 +146,24 @@ def _simulate_note_injection(
     if is_resume_pending:
         reason = getattr(resume_entry, "resume_reason", None) or "restart_timeout"
         reason_phrase = (
-            "a gateway restart"
+            "Gateway 重启"
             if reason == "restart_timeout"
-            else "a gateway shutdown"
+            else "Gateway 关闭"
             if reason == "shutdown_timeout"
-            else "a gateway interruption"
+            else "Gateway 中断"
         )
         message = (
-            f"[System note: Your previous turn in this session was interrupted "
-            f"by {reason_phrase}. The conversation history below is intact. "
-            f"If it contains unfinished tool result(s), process them first and "
-            f"summarize what was accomplished, then address the user's new "
-            f"message below.]\n\n"
+            f"[系统提示：本会话上一轮被 {reason_phrase} 中断。"
+            f"下面的 conversation history 保持完整。"
+            f"如果里面有未完成的 tool result(s)，请先处理并总结已完成内容，"
+            f"再处理下面用户的新消息。]\n\n"
             + message
         )
     elif has_fresh_tool_tail:
         message = (
-            "[System note: Your previous turn was interrupted before you could "
-            "process the last tool result(s). The conversation history contains "
-            "tool outputs you haven't responded to yet. Please finish processing "
-            "those results and summarize what was accomplished, then address the "
-            "user's new message below.]\n\n"
+            "[系统提示：上一轮在处理最后的 tool result(s) 前被中断。"
+            "conversation history 里还有尚未回复的 tool outputs。"
+            "请先处理这些结果并总结已完成内容，再处理下面用户的新消息。]\n\n"
             + message
         )
     return message
@@ -439,8 +436,8 @@ class TestResumePendingSystemNote:
             user_message="what happened?",
             resume_entry=entry,
         )
-        assert "[System note:" in result
-        assert "gateway restart" in result
+        assert "[系统提示：" in result
+        assert "Gateway 重启" in result
         assert "what happened?" in result
 
     def test_resume_pending_shutdown_note_mentions_shutdown(self):
@@ -452,7 +449,7 @@ class TestResumePendingSystemNote:
             user_message="ping",
             resume_entry=entry,
         )
-        assert "gateway shutdown" in result
+        assert "Gateway 关闭" in result
 
     def test_resume_pending_fires_without_tool_tail(self):
         """Key improvement over PR #9934: the restart-resume note fires
@@ -463,8 +460,8 @@ class TestResumePendingSystemNote:
             {"role": "assistant", "content": "ok, starting...", "timestamp": time.time()},
         ]
         result = _simulate_note_injection(history, "ping", resume_entry=entry)
-        assert "[System note:" in result
-        assert "gateway restart" in result
+        assert "[系统提示：" in result
+        assert "Gateway 重启" in result
 
     def test_resume_pending_subsumes_tool_tail_note(self):
         """When BOTH conditions are true, the restart-resume note wins —
@@ -478,10 +475,10 @@ class TestResumePendingSystemNote:
              "timestamp": time.time()},
         ]
         result = _simulate_note_injection(history, "ping", resume_entry=entry)
-        assert result.count("[System note:") == 1
-        assert "gateway restart" in result
+        assert result.count("[系统提示：") == 1
+        assert "Gateway 重启" in result
         # Old tool-tail wording absent
-        assert "haven't responded to yet" not in result
+        assert "尚未回复" not in result
 
     def test_no_resume_pending_preserves_tool_tail_note(self):
         """Regression: the old PR #9934 tool-tail behaviour is unchanged."""
@@ -493,7 +490,7 @@ class TestResumePendingSystemNote:
              "timestamp": time.time()},
         ]
         result = _simulate_note_injection(history, "ping", resume_entry=None)
-        assert "[System note:" in result
+        assert "[系统提示：" in result
         assert "tool result" in result
 
     def test_stale_resume_pending_does_not_inject_restart_note(self):
@@ -531,7 +528,7 @@ class TestResumePendingSystemNote:
             },
         ]
         result = _simulate_note_injection(history, "ping", resume_entry=None)
-        assert "[System note:" in result
+        assert "[系统提示：" in result
         assert "tool result" in result
 
     def test_stale_tool_tail_does_not_inject_auto_continue_note(self):
@@ -622,7 +619,7 @@ class TestResumePendingSystemNote:
         result = _simulate_note_injection(
             history, "ping", resume_entry=None, window_secs=0,
         )
-        assert "[System note:" in result
+        assert "[系统提示：" in result
         assert "tool result" in result
 
     def test_legacy_history_without_timestamps_still_injects(self):
@@ -635,7 +632,7 @@ class TestResumePendingSystemNote:
             {"role": "tool", "tool_call_id": "c1", "content": "result"},
         ]
         result = _simulate_note_injection(history, "ping", resume_entry=None)
-        assert "[System note:" in result
+        assert "[系统提示：" in result
         assert "tool result" in result
 
     def test_no_note_when_nothing_to_resume(self):
@@ -1078,8 +1075,8 @@ async def test_restart_banner_uses_try_to_resume_wording():
 
     assert len(adapter.sent) == 1
     msg = adapter.sent[0]
-    assert "restarting" in msg
-    assert "try to resume" in msg
+    assert "正在重启" in msg
+    assert "尽量从断点继续" in msg
 
 
 @pytest.mark.asyncio
@@ -1095,8 +1092,7 @@ async def test_restart_notifies_home_channel_even_without_active_sessions():
     await runner._notify_active_sessions_of_shutdown()
 
     assert adapter.sent == [
-        "⚠️ Gateway restarting — Your current task will be interrupted. "
-        "Send any message after restart and I'll try to resume where you left off."
+        "⚠️ Gateway 正在重启 — 当前任务会被中断。重启后发任意消息，我会尽量从断点继续。"
     ]
 
 

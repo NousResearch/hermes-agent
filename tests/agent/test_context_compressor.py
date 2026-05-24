@@ -1942,3 +1942,145 @@ class TestTruncateToolCallArgsJson:
         parsed = _json.loads(shrunk)
         assert parsed["path"] == "~/.hermes/skills/shopping/browser-setup-notes.md"
         assert parsed["content"].endswith("...[truncated]")
+
+
+class TestSummarySafeRetryAndExtractiveFallback:
+    def _mock_summary(self, text):
+        resp = MagicMock()
+        resp.choices = [MagicMock()]
+        resp.choices[0].message.content = text
+        return resp
+
+    def _messages_with_risky_tool_output(self):
+        return [
+            {"role": "user", "content": "请修复 context 压缩失败"},
+            {"role": "assistant", "content": "我会检查压缩代码", "tool_calls": [
+                {"id": "call_1", "function": {"name": "terminal", "arguments": "{\"command\": \"pytest\"}"}}
+            ]},
+            {"role": "tool", "tool_call_id": "call_1", "content": "Traceback (most recent call last):\n" + "blocked scary output\n" * 2000},
+            {"role": "assistant", "content": "发现 summary 被 provider 拦截"},
+            {"role": "user", "content": "长期方案怎么设计"},
+        ]
+
+    def test_blocked_summary_retries_with_scrubbed_prompt(self):
+        err = Exception("Your request was blocked.")
+        ok = self._mock_summary("## Active Task\nUser asked: '长期方案怎么设计'\n\n## Completed Actions\n1. Checked compression failure.")
+        with patch("agent.context_compressor.get_model_context_length", return_value=100000):
+            c = ContextCompressor(model="main-model", quiet_mode=True)
+
+        with patch("agent.context_compressor.call_llm", side_effect=[err, ok]) as mock_call:
+            result = c._generate_summary(self._messages_with_risky_tool_output())
+
+        assert mock_call.call_count == 2
+        first_prompt = mock_call.call_args_list[0].kwargs["messages"][0]["content"]
+        second_prompt = mock_call.call_args_list[1].kwargs["messages"][0]["content"]
+        assert "Traceback (most recent call last)" in first_prompt
+        assert "Traceback (most recent call last)" not in second_prompt
+        assert "blocked scary output" not in second_prompt
+        assert "[tool output summarized for safe compression retry]" in second_prompt
+        assert result is not None
+        assert result.startswith(SUMMARY_PREFIX)
+        assert "长期方案怎么设计" in result
+        assert c._last_summary_error is None
+
+    def test_blocked_summary_uses_extractive_fallback_after_safe_retry_fails(self):
+        with patch("agent.context_compressor.get_model_context_length", return_value=100000):
+            c = ContextCompressor(model="main-model", quiet_mode=True)
+
+        with patch("agent.context_compressor.call_llm", side_effect=Exception("Your request was blocked.")) as mock_call:
+            result = c._generate_summary(self._messages_with_risky_tool_output())
+
+        assert mock_call.call_count == 2
+        assert result is not None
+        assert result.startswith(SUMMARY_PREFIX)
+        assert "## Active Task" in result
+        assert "长期方案怎么设计" in result
+        assert "## Completed Actions" in result
+        assert "terminal" in result
+        assert "blocked scary output" not in result
+        assert c._last_summary_fallback_used is True
+        assert c._last_summary_error == "extractive fallback after summary failure: Your request was blocked."
+
+    def test_safe_retry_can_be_disabled(self):
+        err = Exception("Your request was blocked.")
+        with patch("agent.context_compressor.get_model_context_length", return_value=100000):
+            c = ContextCompressor(model="main-model", quiet_mode=True, safe_retry_enabled=False)
+
+        with patch("agent.context_compressor.call_llm", side_effect=[err]) as mock_call:
+            result = c._generate_summary(self._messages_with_risky_tool_output())
+
+        assert mock_call.call_count == 1
+        assert result is not None
+        assert "extractive fallback" in c._last_summary_error
+
+    def test_chunked_summary_can_be_disabled(self):
+        err = Exception("Your request was blocked.")
+        with patch("agent.context_compressor.get_model_context_length", return_value=100000):
+            c = ContextCompressor(model="main-model", quiet_mode=True, chunked_summary_enabled=False)
+
+        with patch("agent.context_compressor.call_llm", side_effect=[err, err]) as mock_call:
+            result = c._generate_summary(self._messages_with_risky_tool_output())
+
+        assert mock_call.call_count == 2
+        assert result is not None
+        assert "extractive fallback" in c._last_summary_error
+
+    def test_extractive_fallback_can_be_disabled(self):
+        err = Exception("Your request was blocked.")
+        with patch("agent.context_compressor.get_model_context_length", return_value=100000):
+            c = ContextCompressor(model="main-model", quiet_mode=True, extractive_fallback_enabled=False)
+
+        with patch("agent.context_compressor.call_llm", side_effect=[err, err]) as mock_call:
+            result = c._generate_summary(self._messages_with_risky_tool_output())
+
+        assert mock_call.call_count == 2
+        assert result is None
+        assert c._last_summary_error == "Your request was blocked."
+
+    def test_chunk_message_count_is_configurable(self):
+        err = Exception("Your request was blocked.")
+        chunk1 = self._mock_summary("chunk one")
+        chunk2 = self._mock_summary("chunk two")
+        merged = self._mock_summary("merged")
+        with patch("agent.context_compressor.get_model_context_length", return_value=100000):
+            c = ContextCompressor(model="main-model", quiet_mode=True, chunk_summary_messages=3)
+
+        with patch("agent.context_compressor.call_llm", side_effect=[err, err, chunk1, chunk2, merged]) as mock_call:
+            result = c._generate_summary(self._messages_with_risky_tool_output())
+
+        assert mock_call.call_count == 5
+        assert result.startswith(SUMMARY_PREFIX)
+
+    def test_blocked_safe_retry_then_chunked_summary_succeeds(self):
+        err = Exception("Your request was blocked.")
+        chunk1 = self._mock_summary("## Active Task\npart one\n\n## Completed Actions\n1. chunk one summarized")
+        chunk2 = self._mock_summary("## Active Task\npart two\n\n## Completed Actions\n1. chunk two summarized")
+        chunk3 = self._mock_summary("## Active Task\npart three\n\n## Completed Actions\n1. chunk three summarized")
+        merged = self._mock_summary("## Active Task\nUser asked: '长期方案怎么设计'\n\n## Completed Actions\n1. chunk one summarized\n2. chunk two summarized\n3. chunk three summarized")
+        with patch("agent.context_compressor.get_model_context_length", return_value=100000):
+            c = ContextCompressor(model="main-model", quiet_mode=True, chunk_summary_messages=2)
+
+        with patch("agent.context_compressor.call_llm", side_effect=[err, err, chunk1, chunk2, chunk3, merged]) as mock_call:
+            result = c._generate_summary(self._messages_with_risky_tool_output())
+
+        assert mock_call.call_count == 6
+        assert result is not None
+        assert result.startswith(SUMMARY_PREFIX)
+        assert "chunk one summarized" in result
+        assert "chunk two summarized" in result
+        assert c._last_summary_fallback_used is False
+
+    def test_chunked_summary_falls_back_extractively_when_one_chunk_blocked(self):
+        with patch("agent.context_compressor.get_model_context_length", return_value=100000):
+            c = ContextCompressor(model="main-model", quiet_mode=True, chunk_summary_messages=2)
+
+        with patch("agent.context_compressor.call_llm", side_effect=Exception("Your request was blocked.")) as mock_call:
+            result = c._generate_summary(self._messages_with_risky_tool_output())
+
+        # normal + safe retry + first chunk attempt, then local fallback
+        assert mock_call.call_count == 3
+        assert result is not None
+        assert result.startswith(SUMMARY_PREFIX)
+        assert "## Active Task" in result
+        assert "长期方案怎么设计" in result
+        assert c._last_summary_fallback_used is True

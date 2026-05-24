@@ -587,9 +587,12 @@ def build_postback_button_message(
 # cache for these so they reach the user as visible bubbles instead of
 # being silently swallowed. From PR #18153.
 _SYSTEM_BYPASS_PREFIXES: Tuple[str, ...] = (
-    "⚡ Interrupting",
-    "⏳ Queued",
-    "⏩ Steered",
+    "⚡ 正在中断",
+    "⏳ 已排队",
+    "⏩ 已插入",
+    "⚡ Interrupting",  # legacy English busy ack
+    "⏳ Queued",        # legacy English busy ack
+    "⏩ Steered",       # legacy English busy ack
     "💾",  # background-review summary
 )
 

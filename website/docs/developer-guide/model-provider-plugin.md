@@ -89,7 +89,7 @@ Full definition in `providers/base.py`. The most useful ones:
 
 | Field | Type | Purpose |
 |---|---|---|
-| `name` | str | Canonical id — matches `--provider` choices and `HERMES_INFERENCE_PROVIDER` |
+| `name` | str | Canonical id — matches `model.provider` in `config.yaml` and the `--provider` flag |
 | `aliases` | `tuple[str, ...]` | Alternative names resolved by `get_provider_profile()` (e.g. `grok` → `xai`) |
 | `api_mode` | str | `chat_completions` \| `codex_responses` \| `anthropic_messages` \| `bedrock_converse` |
 | `display_name` | str | Human label shown in `hermes model` picker |

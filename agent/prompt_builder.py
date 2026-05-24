@@ -254,10 +254,11 @@ TOOL_USE_ENFORCEMENT_GUIDANCE = (
 COST_AWARENESS_GUIDANCE = (
     "# Cost awareness\n"
     "Output tokens are expensive. Be as concise as possible in every response.\n"
-    "Prefer short answers over long ones. One sentence is better than three.\n"
+    "Target ≤100 words per response. One sentence is better than three.\n"
     "When delivering results, state the outcome — not the journey. Skip narration.\n"
     "Use tools for detail (read_file, terminal) rather than describing output inline.\n"
-    "If a response can be under 100 words, keep it under 100 words."
+    "Never restate what a tool just returned. The user can see tool results.\n"
+    "If you find yourself writing more than 3 sentences, stop — you're over-explaining."
 )
 
 # Model name substrings that trigger tool-use enforcement guidance.

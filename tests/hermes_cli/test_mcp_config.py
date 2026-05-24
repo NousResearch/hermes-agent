@@ -567,6 +567,38 @@ class TestDispatcher:
         assert payload["kwargs"]["runtime"] == "codex"
         assert payload["kwargs"]["server_name"] == "context7"
 
+    def test_runtime_probe_generic_exception_emits_structured_json(
+        self, monkeypatch, capsys,
+    ):
+        from hermes_cli.mcp_config import mcp_command
+
+        async def fake_probe_default_sources(**_kwargs):
+            raise RuntimeError("boom SECRET_VALUE_DO_NOT_PRINT")
+
+        monkeypatch.setattr(
+            "tools.mcp_runtime_probe.probe_default_sources",
+            fake_probe_default_sources,
+        )
+
+        mcp_command(
+            _make_args(
+                mcp_action="runtime-probe",
+                runtime="codex",
+                server="context7",
+                timeout=1,
+                skip_auth_needed=True,
+                include_google_drive_auth_needed=False,
+            )
+        )
+
+        out = capsys.readouterr().out
+        payload = json.loads(out)
+        assert payload["status"] == "error"
+        assert payload["status_counts"] == {"error": 1}
+        assert payload["check_status_counts"] == {"error": 1}
+        assert "Traceback" not in out
+        assert "SECRET_VALUE_DO_NOT_PRINT" not in out
+
 
 # ---------------------------------------------------------------------------
 # Tests: Task 7 consolidation — cmd_mcp_remove evicts manager cache,
@@ -591,7 +623,7 @@ class TestMcpRemoveEvictsManager:
 
         mgr = get_manager()
         mgr.get_or_build_provider(
-            "oauth-srv", "https://example.com/mcp", None,
+            "oauth-srv", "https://example.com/mcp", {"redirect_port": 8765},
         )
         assert "oauth-srv" in mgr._entries
 

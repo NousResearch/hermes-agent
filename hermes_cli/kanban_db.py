@@ -79,6 +79,7 @@ import shutil
 import sqlite3
 import subprocess
 import sys
+import tempfile
 import threading
 import logging
 import time
@@ -1132,6 +1133,16 @@ def _guard_existing_db_is_healthy(path: Path) -> None:
     raise KanbanDbCorruptError(resolved, backup, reason)
 
 
+def _path_is_under_system_temp(path_value: str | Path) -> bool:
+    """Return True only when a path resolves inside the system temp directory."""
+    try:
+        temp_dir = Path(tempfile.gettempdir()).expanduser().resolve(strict=False)
+        path = Path(path_value).expanduser().resolve(strict=False)
+        return os.path.commonpath([str(temp_dir), str(path)]) == str(temp_dir)
+    except (OSError, RuntimeError, ValueError):
+        return False
+
+
 def connect(
     db_path: Optional[Path] = None,
     *,
@@ -1161,12 +1172,11 @@ def connect(
         and not os.environ.get("HERMES_KANBAN_DB", "").strip()
         and not os.environ.get("HERMES_KANBAN_BOARD", "").strip()
     ):
-        real_home = str(Path.home())
+        real_home = Path.home()
         hermes_home = os.environ.get("HERMES_HOME", "").strip()
         is_isolated = (
-            real_home.startswith("/tmp")
-            or real_home.startswith("/var/folders")
-            or (bool(hermes_home) and hermes_home.startswith("/tmp"))
+            _path_is_under_system_temp(real_home)
+            or (bool(hermes_home) and _path_is_under_system_temp(hermes_home))
         )
         if not is_isolated:
             raise RuntimeError(

@@ -767,6 +767,19 @@ def cmd_mcp_runtime_probe(args):
             "status_classes": ["timeout"],
             "status_samples": {},
         }
+    except Exception as exc:
+        report = {
+            "status": "error",
+            "status_counts": {"error": 1},
+            "check_status_counts": {"error": 1},
+            "servers": [],
+            "status_classes": ["error"],
+            "status_samples": {},
+            "error": {
+                "kind": "runtime_probe_failed",
+                "exception_type": type(exc).__name__,
+            },
+        }
     print(json.dumps(report, indent=2, sort_keys=True))
 
 

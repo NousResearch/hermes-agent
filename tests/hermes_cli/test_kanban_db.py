@@ -52,7 +52,26 @@ def test_connect_rejects_unisolated_pytest_default(monkeypatch):
     monkeypatch.delenv("HERMES_KANBAN_HOME", raising=False)
     monkeypatch.delenv("HERMES_KANBAN_DB", raising=False)
     monkeypatch.delenv("HERMES_KANBAN_BOARD", raising=False)
-    monkeypatch.setenv("HERMES_HOME", str(Path.home() / ".hermes"))
+    realish_home = Path("/home/test-user")
+    monkeypatch.setattr(Path, "home", lambda: realish_home)
+    monkeypatch.setenv("HERMES_HOME", str(realish_home / ".hermes"))
+
+    with pytest.raises(RuntimeError, match="without any of HERMES_KANBAN_HOME"):
+        kb.connect()
+
+
+def test_connect_rejects_false_temp_prefix_under_pytest(monkeypatch):
+    monkeypatch.delenv("HERMES_KANBAN_HOME", raising=False)
+    monkeypatch.delenv("HERMES_KANBAN_DB", raising=False)
+    monkeypatch.delenv("HERMES_KANBAN_BOARD", raising=False)
+    false_temp_home = Path("/tmpnotreallysafe")
+    monkeypatch.setattr(Path, "home", lambda: false_temp_home)
+    monkeypatch.setenv("HERMES_HOME", str(false_temp_home / ".hermes"))
+
+    def fail_if_connect_tries_to_create(_self, *args, **kwargs):
+        raise AssertionError("connect() should fail before creating directories")
+
+    monkeypatch.setattr(Path, "mkdir", fail_if_connect_tries_to_create)
 
     with pytest.raises(RuntimeError, match="without any of HERMES_KANBAN_HOME"):
         kb.connect()
@@ -62,7 +81,9 @@ def test_connect_allows_explicit_db_path_under_pytest(tmp_path, monkeypatch):
     monkeypatch.delenv("HERMES_KANBAN_HOME", raising=False)
     monkeypatch.delenv("HERMES_KANBAN_DB", raising=False)
     monkeypatch.delenv("HERMES_KANBAN_BOARD", raising=False)
-    monkeypatch.setenv("HERMES_HOME", str(Path.home() / ".hermes"))
+    realish_home = Path("/home/test-user")
+    monkeypatch.setattr(Path, "home", lambda: realish_home)
+    monkeypatch.setenv("HERMES_HOME", str(realish_home / ".hermes"))
     db_path = tmp_path / "isolated-kanban.db"
 
     with kb.connect(db_path=db_path) as conn:
@@ -76,12 +97,29 @@ def test_connect_allows_kanban_home_under_pytest(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_KANBAN_HOME", str(kanban_root))
     monkeypatch.delenv("HERMES_KANBAN_DB", raising=False)
     monkeypatch.delenv("HERMES_KANBAN_BOARD", raising=False)
-    monkeypatch.setenv("HERMES_HOME", str(Path.home() / ".hermes"))
+    realish_home = Path("/home/test-user")
+    monkeypatch.setattr(Path, "home", lambda: realish_home)
+    monkeypatch.setenv("HERMES_HOME", str(realish_home / ".hermes"))
 
     with kb.connect() as conn:
         kb.create_task(conn, title="isolated")
 
     assert (kanban_root / "kanban.db").exists()
+
+
+def test_connect_allows_kanban_db_env_under_pytest(tmp_path, monkeypatch):
+    pinned_db = tmp_path / "pinned" / "kanban.db"
+    monkeypatch.delenv("HERMES_KANBAN_HOME", raising=False)
+    monkeypatch.setenv("HERMES_KANBAN_DB", str(pinned_db))
+    monkeypatch.delenv("HERMES_KANBAN_BOARD", raising=False)
+    realish_home = Path("/home/test-user")
+    monkeypatch.setattr(Path, "home", lambda: realish_home)
+    monkeypatch.setenv("HERMES_HOME", str(realish_home / ".hermes"))
+
+    with kb.connect() as conn:
+        kb.create_task(conn, title="isolated")
+
+    assert pinned_db.exists()
 
 
 def test_connect_rejects_tls_record_in_sqlite_header(tmp_path, monkeypatch):
@@ -1995,6 +2033,7 @@ class TestSharedBoardPaths:
         default_home.mkdir()
         monkeypatch.setattr(Path, "home", lambda: tmp_path)
         monkeypatch.setenv("HERMES_HOME", str(default_home))
+        monkeypatch.delenv("HERMES_KANBAN_HOME", raising=False)
         monkeypatch.setenv("HERMES_KANBAN_DB", "   ")
         monkeypatch.setenv("HERMES_KANBAN_WORKSPACES_ROOT", "")
 

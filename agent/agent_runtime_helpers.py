@@ -829,8 +829,20 @@ def restore_primary_runtime(agent) -> bool:
         agent._fallback_index = 0
         return False
 
+    # Legacy single-value gate
     if getattr(agent, "_rate_limited_until", 0) > time.monotonic():
         return False  # primary still in rate-limit cooldown, stay on fallback
+
+    # Per-model cooldown dict -- check if the primary model is still cooling
+    _primary_key = (
+        (agent._primary_runtime or {}).get("provider", "").strip().lower(),
+        (agent._primary_runtime or {}).get("model", "").strip(),
+    )
+    if _primary_key[0] and _primary_key[1]:
+        __cooldowns = getattr(agent, "_model_cooldowns", {})
+        _until = __cooldowns.get(_primary_key, 0)
+        if _until > time.monotonic():
+            return False  # primary model still in per-model cooldown
 
     rt = agent._primary_runtime
     try:

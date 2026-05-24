@@ -982,6 +982,41 @@ def run_conversation(
                 except Exception:
                     pass  # Never let rate guard break the agent loop
 
+            # ── Per-model cooldown guard ──────────────────────────
+            # Before calling the API, check whether the current
+            # (provider, model) is in the per-model cooldown dict set by
+            # try_activate_fallback.  If it is, skip the API call and
+            # switch to the next fallback immediately — no point burning
+            # retries on a model that just returned 429.
+            try:
+                _cur_key = (
+                    (getattr(agent, "provider", "") or "").strip().lower(),
+                    (getattr(agent, "model", "") or "").strip(),
+                )
+                if _cur_key[0] and _cur_key[1]:
+                    _cur_cooldowns = getattr(agent, "_model_cooldowns", {})
+                    _cur_until = _cur_cooldowns.get(_cur_key, 0)
+                    if _cur_until > time.monotonic():
+                        _secs_left = int(_cur_until - time.monotonic())
+                        agent._vprint(
+                            f"{agent.log_prefix}⏳ Model "
+                            f"{_cur_key[0]}/{_cur_key[1]} in cooldown "
+                            f"({_secs_left}s left) — skipping to fallback.",
+                            force=True,
+                        )
+                        if agent._fallback_index < len(agent._fallback_chain):
+                            if agent._try_activate_fallback():
+                                retry_count = 0
+                                compression_attempts = 0
+                                primary_recovery_attempted = False
+                                continue
+                        # No fallback left — expire the entry so we don't
+                        # loop forever, and let the retry logic surface
+                        # the error to the user.
+                        _cur_cooldowns.pop(_cur_key, None)
+            except Exception:
+                pass  # Never let cooldown guard break the agent loop
+
             try:
                 agent._reset_stream_delivery_tracking()
                 api_kwargs = agent._build_api_kwargs(api_messages)

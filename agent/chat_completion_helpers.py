@@ -682,15 +682,27 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
     auth resolution and client construction — no duplicated provider→key
     mappings.
     """
+    PRIMARY_RATE_LIMIT_COOLDOWN = 43200  # 12h per-model cooldown
     if reason in {FailoverReason.rate_limit, FailoverReason.billing}:
-        # Only start cooldown when leaving the primary provider.  If we're
-        # already on a fallback and chain-switching, the primary wasn't the
-        # source of the 429 so the cooldown should not be reset/extended.
+        # Record a per-model cooldown for every model that hits a 429/billing
+        # error so it won't be retried until the window expires.  This covers
+        # primary and all fallbacks, not just the primary provider.
+        _mdl = (
+            getattr(agent, "provider", "").strip().lower(),
+            getattr(agent, "model", "").strip(),
+        )
+        if _mdl[0] and _mdl[1]:
+            _cooldowns = getattr(agent, "_model_cooldowns", None)
+            if _cooldowns is None:
+                _cooldowns = {}
+                agent._model_cooldowns = _cooldowns
+            _cooldowns[_mdl] = time.monotonic() + PRIMARY_RATE_LIMIT_COOLDOWN
+        # Legacy single-value gate (kept for restore_primary_runtime compat)
         fallback_already_active = bool(getattr(agent, "_fallback_activated", False))
         current_provider = (getattr(agent, "provider", "") or "").strip().lower()
         primary_provider = ((agent._primary_runtime or {}).get("provider") or "").strip().lower()
         if (not fallback_already_active) or (primary_provider and current_provider == primary_provider):
-            agent._rate_limited_until = time.monotonic() + 60
+            agent._rate_limited_until = time.monotonic() + PRIMARY_RATE_LIMIT_COOLDOWN
     if agent._fallback_index >= len(agent._fallback_chain):
         return False
 

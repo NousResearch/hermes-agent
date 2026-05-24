@@ -482,6 +482,7 @@ Hermes Agent works in Telegram group chats with a few considerations:
   - `/command@botusername` (Telegram's bot-menu command form that includes the bot name)
   - matches for one of your configured regex wake words in `telegram.mention_patterns`
 - In groups with multiple Hermes bots, `telegram.exclusive_bot_mentions` keeps routing deterministic. When a message explicitly mentions one or more Telegram bot usernames, only the mentioned bot profiles process it; other Hermes bots ignore it before reply and wake-word fallbacks run. This is enabled by default.
+- Use `telegram.allowed_topics` to limit Hermes to specific Telegram forum topics in otherwise authorized groups
 - Use `telegram.ignored_threads` to keep Hermes silent in specific Telegram forum topics, even when the group would otherwise allow free responses or mention-triggered replies
 - If `telegram.require_mention` is left unset or false, Hermes keeps the previous open-group behavior and responds to normal group messages it can see
 
@@ -553,13 +554,25 @@ telegram:
   exclusive_bot_mentions: true
   mention_patterns:
     - "^\\s*chompy\\b"
+  allowed_topics:
+    - 7
+    - "13"
   ignored_threads:
     - 31
     - "42"
 ```
 
 This example allows all the usual direct triggers plus messages that begin with `chompy`, even if they do not use an `@mention`.
+Messages outside Telegram topics `7` and `13` are silently ignored before mention, reply, wake-word, and free-response checks run.
 Messages in Telegram topics `31` and `42` are always ignored before the mention and free-response checks run.
+
+Use `allowed_topics` when a bot should only operate in a small set of forum topics. Use `ignored_threads` when most topics are allowed but a few should stay silent. `allowed_topics` does not filter DMs; when Telegram omits `message_thread_id` for a forum's General topic, Hermes treats it as topic `1` for matching.
+
+Equivalent environment variable:
+
+```bash
+TELEGRAM_ALLOWED_TOPICS="7,13"
+```
 
 ### Notes on `mention_patterns`
 

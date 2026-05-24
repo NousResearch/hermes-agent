@@ -358,33 +358,11 @@ def cmd_setup(args) -> None:
 
 def _write_env_vars(env_path: Path, env_writes: dict) -> None:
     """Append or update env vars in .env file."""
+    from hermes_cli.config import save_env_value
+
     env_path.parent.mkdir(parents=True, exist_ok=True)
-
-    existing_lines = []
-    if env_path.exists():
-        existing_lines = env_path.read_text(encoding="utf-8").splitlines()
-
-    updated_keys = set()
-    new_lines = []
-    for line in existing_lines:
-        key_match = line.split("=", 1)[0].strip() if "=" in line else ""
-        if key_match in env_writes:
-            new_lines.append(f"{key_match}={env_writes[key_match]}")
-            updated_keys.add(key_match)
-        else:
-            new_lines.append(line)
-
     for key, val in env_writes.items():
-        if key not in updated_keys:
-            new_lines.append(f"{key}={val}")
-
-    env_path.write_text("\n".join(new_lines) + "\n", encoding="utf-8")
-    # Restrict permissions — .env holds API keys and tokens.
-    try:
-        import stat
-        env_path.chmod(stat.S_IRUSR | stat.S_IWUSR)  # 0600
-    except OSError:
-        pass  # Windows or read-only FS
+        save_env_value(str(key), str(val))
 
 
 # ---------------------------------------------------------------------------

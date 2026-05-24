@@ -6,6 +6,7 @@ import subprocess
 from pathlib import Path
 
 import pytest
+import yaml
 
 from hermes_constants import reset_hermes_home_override, set_hermes_home_override
 from tools.file_operations import ShellFileOperations
@@ -160,13 +161,191 @@ def test_patch_replace_on_env_uses_live_config_guard(
     file_ops: ShellFileOperations,
 ):
     env_path = hermes_home / ".env"
-    old = "OPENAI_API_KEY=sk-env-secret\nLOG_LEVEL=info\n"
+    old = "OPENAI_API_KEY=***\nLOG_LEVEL=info\n"
     env_path.write_text(old)
 
     result = file_ops.patch_replace(str(env_path), "LOG_LEVEL=info", "LOG_LEVEL=debug")
 
     assert result.success is True
-    assert env_path.read_text() == "OPENAI_API_KEY=sk-env-secret\nLOG_LEVEL=debug\n"
+    assert env_path.read_text() == "OPENAI_API_KEY=***\nLOG_LEVEL=debug\n"
     assert result.backup_path
     assert result.redacted_diff
-    assert "sk-env-secret" not in result.redacted_diff
+    assert "***" not in result.redacted_diff
+
+
+def test_config_write_redacts_flow_style_secret_values(
+    hermes_home: Path,
+    file_ops: ShellFileOperations,
+):
+    config_path = hermes_home / "config.yaml"
+    old = "model: {api_key: FLOWVALUE12345, default: old}\n"
+    new = "model: {api_key: FLOWVALUE12345, default: new}\n"
+    config_path.write_text(old)
+
+    result = file_ops.write_file(str(config_path), new)
+
+    assert result.error is None
+    assert result.backup_path
+    assert result.redacted_diff
+    assert "default: new" in result.redacted_diff
+    assert "FLOWVALUE12345" not in result.redacted_diff
+    assert "[REDACTED]" in result.redacted_diff
+
+
+def test_patch_v4a_on_env_uses_live_config_guard(
+    hermes_home: Path,
+    file_ops: ShellFileOperations,
+):
+    env_path = hermes_home / ".env"
+    old = "OPENAI_API_KEY=LIVEVALUE12345\nLOG_LEVEL=info\n"
+    env_path.write_text(old)
+    patch = f"""*** Begin Patch
+*** Update File: {env_path}
+@@ LOG_LEVEL=info @@
+ OPENAI_API_KEY=LIVEVALUE12345
+-LOG_LEVEL=info
++LOG_LEVEL=debug
+*** End Patch
+"""
+
+    result = file_ops.patch_v4a(patch)
+
+    assert result.success is True
+    assert env_path.read_text() == "OPENAI_API_KEY=LIVEVALUE12345\nLOG_LEVEL=debug\n"
+    assert result.backup_path
+    assert Path(result.backup_path).read_text() == old
+    assert result.redacted_diff
+    assert "LIVEVALUE12345" not in result.diff
+    assert "LIVEVALUE12345" not in result.redacted_diff
+
+
+def test_atomic_yaml_write_refuses_live_config_secret_deletion(
+    hermes_home: Path,
+):
+    from utils import atomic_yaml_write
+
+    config_path = hermes_home / "config.yaml"
+    old = "custom_providers:\n  yuna:\n    api_key: sk-live-value\n    base_url: https://example.test/v1\n"
+    config_path.write_text(old)
+
+    with pytest.raises(ValueError, match="credential"):
+        atomic_yaml_write(
+            config_path,
+            {"custom_providers": {"yuna": {"base_url": "https://example.test/v1"}}},
+            sort_keys=False,
+        )
+
+    assert config_path.read_text() == old
+    assert list(hermes_home.glob("config.yaml.bak.*")) == []
+
+
+def test_live_config_guard_does_not_treat_token_count_fields_as_secrets(
+    hermes_home: Path,
+):
+    from utils import atomic_yaml_write
+
+    config_path = hermes_home / "config.yaml"
+    config_path.write_text(
+        "model:\n  default: old-model\n  max_tokens: 4096\n  tokenizer: cl100k_base\n"
+    )
+
+    atomic_yaml_write(
+        config_path,
+        {"model": {"default": "new-model"}},
+        sort_keys=False,
+    )
+
+    assert yaml.safe_load(config_path.read_text()) == {"model": {"default": "new-model"}}
+
+
+def test_live_config_guard_refuses_deleting_duplicate_secret_even_if_value_remains(
+    hermes_home: Path,
+    file_ops: ShellFileOperations,
+):
+    config_path = hermes_home / "config.yaml"
+    old = """providers:
+  one:
+    api_key: SHAREDREALVALUE123
+  two:
+    api_key: SHAREDREALVALUE123
+"""
+    new = """providers:
+  two:
+    api_key: SHAREDREALVALUE123
+"""
+    config_path.write_text(old)
+
+    result = file_ops.write_file(str(config_path), new)
+
+    assert result.error
+    assert "providers.one.api_key" in result.error
+    assert config_path.read_text() == old
+
+
+def test_atomic_yaml_write_backs_up_live_config_safe_edit(
+    hermes_home: Path,
+):
+    from utils import atomic_yaml_write
+
+    config_path = hermes_home / "config.yaml"
+    old_data = {"model": {"api_key": "sk-live-value", "default": "old-model"}}
+    config_path.write_text(yaml.safe_dump(old_data, sort_keys=False))
+
+    atomic_yaml_write(
+        config_path,
+        {"model": {"api_key": "sk-live-value", "default": "new-model"}},
+        sort_keys=False,
+    )
+
+    assert yaml.safe_load(config_path.read_text())["model"]["default"] == "new-model"
+    backups = list(hermes_home.glob("config.yaml.bak.*"))
+    assert len(backups) == 1
+    assert yaml.safe_load(backups[0].read_text()) == old_data
+
+
+def test_save_env_value_refuses_overwriting_real_secret_with_placeholder(
+    hermes_home: Path,
+):
+    from hermes_cli.config import save_env_value
+
+    env_path = hermes_home / ".env"
+    old = "OPENAI_API_KEY=sk-live-value\nLOG_LEVEL=info\n"
+    env_path.write_text(old)
+
+    with pytest.raises(ValueError, match="placeholder"):
+        save_env_value("OPENAI_API_KEY", "YOUR_API_KEY_HERE")
+
+    assert env_path.read_text() == old
+    assert list(hermes_home.glob(".env.bak.*")) == []
+
+
+def test_save_env_value_backs_up_live_env_safe_edit(
+    hermes_home: Path,
+):
+    from hermes_cli.config import save_env_value
+
+    env_path = hermes_home / ".env"
+    old = "OPENAI_API_KEY=sk-live-value\nLOG_LEVEL=info\n"
+    env_path.write_text(old)
+
+    save_env_value("LOG_LEVEL", "debug")
+
+    assert env_path.read_text() == "OPENAI_API_KEY=sk-live-value\nLOG_LEVEL=debug\n"
+    backups = list(hermes_home.glob(".env.bak.*"))
+    assert len(backups) == 1
+    assert backups[0].read_text() == old
+
+
+def test_remove_env_value_refuses_deleting_real_secret(
+    hermes_home: Path,
+):
+    from hermes_cli.config import remove_env_value
+
+    env_path = hermes_home / ".env"
+    old = "OPENAI_API_KEY=sk-live-value\nLOG_LEVEL=info\n"
+    env_path.write_text(old)
+
+    with pytest.raises(ValueError, match="remove existing credential"):
+        remove_env_value("OPENAI_API_KEY")
+
+    assert env_path.read_text() == old

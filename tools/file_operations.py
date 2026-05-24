@@ -27,7 +27,6 @@ Usage:
 
 import os
 import re
-import time
 import difflib
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
@@ -44,7 +43,7 @@ from agent.file_safety import (
 from agent.live_config_guard import (
     classify_live_config_path,
     is_live_config_path,
-    validate_live_config_write,
+    validate_and_backup_live_config_write,
 )
 
 
@@ -1020,7 +1019,7 @@ class ShellFileOperations(FileOperations):
             if read_result.exit_code == 0:
                 pre_content = read_result.stdout
 
-        guard_result = validate_live_config_write(
+        guard_result = validate_and_backup_live_config_write(
             path,
             old_content=pre_content,
             new_content=content,
@@ -1048,20 +1047,7 @@ class ShellFileOperations(FileOperations):
             if mkdir_result.exit_code == 0:
                 dirs_created = True
 
-        backup_path: Optional[str] = None
-        if guard_result.guarded and pre_content is not None:
-            stamp = time.strftime("%Y%m%dT%H%M%SZ", time.gmtime())
-            backup_path = f"{path}.bak.{stamp}.{os.getpid()}"
-            backup_cmd = (
-                f"cp -p {self._escape_shell_arg(path)} "
-                f"{self._escape_shell_arg(backup_path)}"
-            )
-            backup_result = self._exec(backup_cmd)
-            if backup_result.exit_code != 0:
-                return WriteResult(
-                    error=f"Failed to back up live Hermes config before write: {backup_result.stdout}",
-                    redacted_diff=guard_result.redacted_diff,
-                )
+        backup_path = guard_result.backup_path
 
         # Write via stdin pipe — content bypasses shell arg parsing entirely,
         # so there's no ARG_MAX limit regardless of file size.

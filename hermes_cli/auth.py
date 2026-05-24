@@ -5961,7 +5961,12 @@ def _update_config_for_provider(
 
     config["model"] = model_cfg
 
-    atomic_yaml_write(config_path, config, sort_keys=False)
+    atomic_yaml_write(
+        config_path,
+        config,
+        sort_keys=False,
+        allow_destructive_secret_change=True,
+    )
     return config_path
 
 

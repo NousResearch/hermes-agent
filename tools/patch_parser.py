@@ -369,6 +369,8 @@ def apply_v4a_operations(operations: List[PatchOperation],
     # the LSP tier's output gets silently dropped — see
     # ``PatchResult.lsp_diagnostics`` aggregation below.
     lsp_blocks: List[str] = []
+    backup_path: Optional[str] = None
+    redacted_diffs: List[str] = []
     errors = []
 
     for op in operations:
@@ -380,6 +382,10 @@ def apply_v4a_operations(operations: List[PatchOperation],
                     all_diffs.append(result[1])
                     if result[2]:
                         lsp_blocks.append(result[2])
+                    if len(result) > 3 and result[3] and not backup_path:
+                        backup_path = result[3]
+                    if len(result) > 4 and result[4]:
+                        redacted_diffs.append(result[4])
                 else:
                     errors.append(f"Failed to add {op.file_path}: {result[1]}")
 
@@ -406,6 +412,10 @@ def apply_v4a_operations(operations: List[PatchOperation],
                     all_diffs.append(result[1])
                     if result[2]:
                         lsp_blocks.append(result[2])
+                    if len(result) > 3 and result[3] and not backup_path:
+                        backup_path = result[3]
+                    if len(result) > 4 and result[4]:
+                        redacted_diffs.append(result[4])
                 else:
                     errors.append(f"Failed to update {op.file_path}: {result[1]}")
 
@@ -437,6 +447,8 @@ def apply_v4a_operations(operations: List[PatchOperation],
             files_deleted=files_deleted,
             lint=lint_results if lint_results else None,
             lsp_diagnostics=combined_lsp,
+            backup_path=backup_path,
+            redacted_diff="\n".join(redacted_diffs) if redacted_diffs else None,
             error="Apply phase failed (state may be inconsistent — run `git diff` to assess):\n"
                   + "\n".join(f"  • {e}" for e in errors),
         )
@@ -449,6 +461,8 @@ def apply_v4a_operations(operations: List[PatchOperation],
         files_deleted=files_deleted,
         lint=lint_results if lint_results else None,
         lsp_diagnostics=combined_lsp,
+        backup_path=backup_path,
+        redacted_diff="\n".join(redacted_diffs) if redacted_diffs else None,
     )
 
 
@@ -472,12 +486,20 @@ def _apply_add(op: PatchOperation, file_ops: Any) -> Tuple[bool, str, Optional[s
     
     result = file_ops.write_file(op.file_path, content)
     if result.error:
-        return False, result.error, None
+        return False, result.error, None, None, None
     
-    diff = f"--- /dev/null\n+++ b/{op.file_path}\n"
-    diff += '\n'.join(f"+{line}" for line in content_lines)
+    diff = getattr(result, "redacted_diff", None)
+    if not diff:
+        diff = f"--- /dev/null\n+++ b/{op.file_path}\n"
+        diff += '\n'.join(f"+{line}" for line in content_lines)
     
-    return True, diff, getattr(result, "lsp_diagnostics", None)
+    return (
+        True,
+        diff,
+        getattr(result, "lsp_diagnostics", None),
+        getattr(result, "backup_path", None),
+        getattr(result, "redacted_diff", None),
+    )
 
 
 def _apply_delete(op: PatchOperation, file_ops: Any) -> Tuple[bool, str]:
@@ -608,15 +630,22 @@ def _apply_update(op: PatchOperation, file_ops: Any) -> Tuple[bool, str, Optiona
     # Write new content
     write_result = file_ops.write_file(op.file_path, new_content)
     if write_result.error:
-        return False, write_result.error, None
+        return False, write_result.error, None, None, None
     
-    # Generate diff
-    diff_lines = difflib.unified_diff(
-        current_content.splitlines(keepends=True),
-        new_content.splitlines(keepends=True),
-        fromfile=f"a/{op.file_path}",
-        tofile=f"b/{op.file_path}"
+    diff = getattr(write_result, "redacted_diff", None)
+    if not diff:
+        diff_lines = difflib.unified_diff(
+            current_content.splitlines(keepends=True),
+            new_content.splitlines(keepends=True),
+            fromfile=f"a/{op.file_path}",
+            tofile=f"b/{op.file_path}"
+        )
+        diff = ''.join(diff_lines)
+    
+    return (
+        True,
+        diff,
+        getattr(write_result, "lsp_diagnostics", None),
+        getattr(write_result, "backup_path", None),
+        getattr(write_result, "redacted_diff", None),
     )
-    diff = ''.join(diff_lines)
-    
-    return True, diff, getattr(write_result, "lsp_diagnostics", None)

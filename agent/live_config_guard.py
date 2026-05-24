@@ -12,6 +12,8 @@ from __future__ import annotations
 import difflib
 import os
 import re
+import shutil
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Optional
@@ -22,11 +24,13 @@ class LiveConfigGuardResult:
     guarded: bool = False
     redacted_diff: str = ""
     error: Optional[str] = None
+    backup_path: Optional[str] = None
 
 
 _CREDENTIAL_NAME_RE = re.compile(
-    r"(?:api[_-]?key|token|secret|password|credential|private[_-]?key|"
-    r"access[_-]?key|auth[_-]?token|oauth)",
+    r"(?:api[_-]?key|secret|password|credential|private[_-]?key|"
+    r"access[_-]?key|access[_-]?token|auth[_-]?token|oauth[_-]?token|oauth|"
+    r"(?<![A-Za-z0-9])token(?![A-Za-z0-9_-]))",
     re.IGNORECASE,
 )
 _PLACEHOLDER_RE = re.compile(
@@ -45,8 +49,9 @@ _ENV_ASSIGNMENT_RE = re.compile(
     r"^(?P<prefix>\s*(?:export\s+)?(?P<key>[A-Za-z_][A-Za-z0-9_]*)\s*=)(?P<value>.*)$"
 )
 _YAML_SECRET_LINE_RE = re.compile(
-    r"^(?P<prefix>\s*[^#\n:]*?(?:api[_-]?key|token|secret|password|credential|"
-    r"private[_-]?key|access[_-]?key|auth[_-]?token|oauth)[^:\n]*:\s*)(?P<value>.*)$",
+    r"^(?P<prefix>\s*[^#\n:]*?(?:api[_-]?key|secret|password|credential|"
+    r"private[_-]?key|access[_-]?key|access[_-]?token|auth[_-]?token|"
+    r"oauth[_-]?token|oauth|token\b)[^:\n]*:\s*)(?P<value>.*)$",
     re.IGNORECASE,
 )
 _REDACTED = "[REDACTED]"
@@ -80,6 +85,7 @@ def validate_live_config_write(
     *,
     old_content: Optional[str],
     new_content: str,
+    allow_destructive_secret_change: bool = False,
 ) -> LiveConfigGuardResult:
     """Validate a prospective write to a live Hermes config/secrets file.
 
@@ -104,10 +110,20 @@ def validate_live_config_write(
         )
 
     violations: list[str] = []
+    newly_added_real_values = {
+        str(value).strip().strip('"\'')
+        for name, value in new_credentials.items()
+        if name not in old_credentials and _is_real_secret(value)
+    }
     for name, old_value in sorted(old_credentials.items()):
         if not _is_real_secret(old_value):
             continue
+        if allow_destructive_secret_change:
+            continue
+        old_text = str(old_value).strip().strip('"\'')
         if name not in new_credentials:
+            if old_text in newly_added_real_values:
+                continue
             violations.append(f"would remove existing credential field {name}")
             continue
         new_value = new_credentials[name]
@@ -126,6 +142,60 @@ def validate_live_config_write(
         )
 
     return LiveConfigGuardResult(guarded=True, redacted_diff=redacted_diff)
+
+
+def validate_and_backup_live_config_write(
+    path: str | os.PathLike[str],
+    *,
+    new_content: str,
+    old_content: Optional[str] = None,
+    create_backup: bool = True,
+    allow_destructive_secret_change: bool = False,
+) -> LiveConfigGuardResult:
+    """Validate a live config/secrets write and create a pre-write backup."""
+    kind = classify_live_config_path(path)
+    if kind is None:
+        return LiveConfigGuardResult(guarded=False)
+
+    target = Path(path).expanduser().resolve()
+    before = old_content
+    if before is None:
+        try:
+            before = target.read_text(encoding="utf-8") if target.exists() else ""
+        except OSError as exc:
+            return LiveConfigGuardResult(
+                guarded=True,
+                error=f"Refusing to write live Hermes config/secrets file: cannot read existing file: {exc}",
+            )
+
+    result = validate_live_config_write(
+        target,
+        old_content=before,
+        new_content=new_content,
+        allow_destructive_secret_change=allow_destructive_secret_change,
+    )
+    if result.error or not result.guarded:
+        return result
+
+    backup_path: Optional[str] = None
+    if create_backup and target.exists():
+        stamp = time.strftime("%Y%m%dT%H%M%SZ", time.gmtime())
+        backup = target.with_name(f"{target.name}.bak.{stamp}.{os.getpid()}")
+        try:
+            shutil.copy2(target, backup)
+            backup_path = str(backup)
+        except OSError as exc:
+            return LiveConfigGuardResult(
+                guarded=True,
+                redacted_diff=result.redacted_diff,
+                error=f"Failed to back up live Hermes config before write: {exc}",
+            )
+
+    return LiveConfigGuardResult(
+        guarded=True,
+        redacted_diff=result.redacted_diff,
+        backup_path=backup_path,
+    )
 
 
 def _collect_credentials(kind: str, content: str, *, label: str, path: str) -> dict[str, Any]:
@@ -240,9 +310,40 @@ def _redacted_unified_diff(old: str, new: str, path: str, kind: str) -> str:
 def _redact_content(kind: str, content: str) -> str:
     if kind == "env":
         redacted = [_redact_env_line(line) for line in content.splitlines()]
+        text = "\n".join(redacted)
     else:
         redacted = _redact_yaml_lines(content.splitlines())
-    return "\n".join(redacted) + ("\n" if content.endswith("\n") else "")
+        text = _redact_yaml_scalar_secret_values(content, "\n".join(redacted))
+    return text + ("\n" if content.endswith("\n") else "")
+
+
+def _redact_yaml_scalar_secret_values(original: str, redacted_text: str) -> str:
+    """Redact parsed YAML credential scalar values missed by line regexes."""
+    try:
+        import yaml
+
+        data = yaml.safe_load(original)
+    except Exception:
+        return redacted_text
+
+    values: list[str] = []
+
+    def walk(value: Any) -> None:
+        if isinstance(value, dict):
+            for key, child in value.items():
+                if _is_credential_name(str(key)) and child is not None:
+                    scalar = str(child).strip()
+                    if scalar:
+                        values.append(scalar)
+                walk(child)
+        elif isinstance(value, list):
+            for child in value:
+                walk(child)
+
+    walk(data)
+    for value in sorted(set(values), key=len, reverse=True):
+        redacted_text = redacted_text.replace(value, _REDACTED)
+    return redacted_text
 
 
 def _redact_env_line(line: str) -> str:

@@ -242,8 +242,40 @@ def apply_migration(
         )
         shutil.copy2(config_path, backup_path)
 
-    with config_path.open("w", encoding="utf-8") as fh:
-        yaml.dump(doc, fh)
+    from io import StringIO
+    import os
+    import tempfile
+    from agent.live_config_guard import validate_and_backup_live_config_write
+    from utils import atomic_replace
+
+    payload_io = StringIO()
+    yaml.dump(doc, payload_io)
+    payload = payload_io.getvalue()
+    guard_result = validate_and_backup_live_config_write(
+        config_path,
+        new_content=payload,
+        create_backup=False,
+    )
+    if guard_result.error:
+        raise ValueError(guard_result.error)
+
+    fd, tmp_path = tempfile.mkstemp(
+        dir=str(config_path.parent),
+        suffix=".tmp",
+        prefix=f".{config_path.stem}_",
+    )
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            fh.write(payload)
+            fh.flush()
+            os.fsync(fh.fileno())
+        atomic_replace(tmp_path, config_path)
+    except BaseException:
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
+        raise
 
     return ApplyResult(
         file_path=config_path,

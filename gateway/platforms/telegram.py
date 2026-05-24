@@ -1210,23 +1210,9 @@ class TelegramAdapter(BasePlatformAdapter):
                         break
 
             if changed:
-                fd, tmp_path = tempfile.mkstemp(
-                    dir=str(config_path.parent),
-                    suffix=".tmp",
-                    prefix=".config_",
-                )
-                try:
-                    with os.fdopen(fd, "w", encoding="utf-8") as f:
-                        _yaml.dump(config, f, default_flow_style=False, sort_keys=False)
-                        f.flush()
-                        os.fsync(f.fileno())
-                    atomic_replace(tmp_path, config_path)
-                except BaseException:
-                    try:
-                        os.unlink(tmp_path)
-                    except OSError:
-                        pass
-                    raise
+                from utils import atomic_yaml_write
+
+                atomic_yaml_write(config_path, config, sort_keys=False)
                 logger.info(
                     "[%s] Persisted thread_id=%s for topic '%s' in config.yaml",
                     self.name, thread_id, topic_name,

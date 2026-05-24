@@ -3642,7 +3642,7 @@ def migrate_config(interactive: bool = True, quiet: bool = False) -> Dict[str, A
         try:
             old_token = get_env_value("ANTHROPIC_TOKEN")
             if old_token:
-                save_env_value("ANTHROPIC_TOKEN", "")
+                save_env_value("ANTHROPIC_TOKEN", "", allow_destructive_secret_change=True)
                 if not quiet:
                     print("  ✓ Cleared ANTHROPIC_TOKEN from .env (no longer used)")
         except Exception:
@@ -4697,6 +4697,34 @@ def invalidate_env_cache() -> None:
     _env_cache = None
 
 
+def _guard_live_env_write(
+    env_path: Path,
+    old_lines: list[str],
+    new_lines: list[str],
+    *,
+    allow_destructive_secret_change: bool = False,
+) -> None:
+    """Validate and back up active .env before replacing it."""
+    from agent.live_config_guard import validate_and_backup_live_config_write
+
+    old_content = "".join(old_lines)
+    new_content = "".join(new_lines)
+    guard_result = validate_and_backup_live_config_write(
+        env_path,
+        old_content=old_content,
+        new_content=new_content,
+        allow_destructive_secret_change=allow_destructive_secret_change,
+    )
+    if guard_result.error:
+        raise ValueError(guard_result.error)
+    if guard_result.guarded and guard_result.redacted_diff:
+        logger.info(
+            "Live Hermes .env write approved for %s; redacted diff:\n%s",
+            env_path,
+            guard_result.redacted_diff,
+        )
+
+
 def _sanitize_env_lines(lines: list) -> list:
     """Fix corrupted .env lines before reading or writing.
 
@@ -4785,6 +4813,8 @@ def sanitize_env_file() -> int:
         fixes = sum(1 for a, b in zip(original_lines, sanitized) if a != b)
         fixes += abs(len(sanitized) - len(original_lines))
 
+    _guard_live_env_write(env_path, original_lines, sanitized)
+
     fd, tmp_path = tempfile.mkstemp(dir=str(env_path.parent), suffix=".tmp", prefix=".env_")
     try:
         with os.fdopen(fd, "w", **write_kw) as f:
@@ -4843,7 +4873,7 @@ def _check_non_ascii_credential(key: str, value: str) -> str:
     return sanitized
 
 
-def save_env_value(key: str, value: str):
+def save_env_value(key: str, value: str, *, allow_destructive_secret_change: bool = False):
     """Save or update a value in ~/.hermes/.env."""
     if is_managed():
         managed_error(f"set {key}")
@@ -4867,6 +4897,7 @@ def save_env_value(key: str, value: str):
             lines = f.readlines()
         # Sanitize on every read: split concatenated keys, drop stale placeholders
         lines = _sanitize_env_lines(lines)
+    old_lines = list(lines)
 
     # Find and update or append
     found = False
@@ -4881,6 +4912,13 @@ def save_env_value(key: str, value: str):
         if lines and not lines[-1].endswith("\n"):
             lines[-1] += "\n"
         lines.append(f"{key}={value}\n")
+
+    _guard_live_env_write(
+        env_path,
+        old_lines,
+        lines,
+        allow_destructive_secret_change=allow_destructive_secret_change,
+    )
     
     fd, tmp_path = tempfile.mkstemp(dir=str(env_path.parent), suffix='.tmp', prefix='.env_')
     # Preserve original permissions so Docker volume mounts aren't clobbered.
@@ -4940,6 +4978,7 @@ def remove_env_value(key: str) -> bool:
     found = len(new_lines) < len(lines)
 
     if found:
+        _guard_live_env_write(env_path, lines, new_lines)
         fd, tmp_path = tempfile.mkstemp(dir=str(env_path.parent), suffix='.tmp', prefix='.env_')
         # Preserve original permissions so Docker volume mounts aren't clobbered.
         original_mode = None
@@ -4971,25 +5010,36 @@ def remove_env_value(key: str) -> bool:
     return found
 
 
+def _call_env_writer(writer, key: str, value: str, *, allow_destructive_secret_change: bool = False) -> None:
+    if allow_destructive_secret_change:
+        try:
+            writer(key, value, allow_destructive_secret_change=True)
+            return
+        except TypeError:
+            # Tests and embedding code may pass a two-argument fake writer.
+            pass
+    writer(key, value)
+
+
 def save_anthropic_oauth_token(value: str, save_fn=None):
     """Persist an Anthropic OAuth/setup token and clear the API-key slot."""
     writer = save_fn or save_env_value
-    writer("ANTHROPIC_TOKEN", value)
-    writer("ANTHROPIC_API_KEY", "")
+    _call_env_writer(writer, "ANTHROPIC_TOKEN", value)
+    _call_env_writer(writer, "ANTHROPIC_API_KEY", "", allow_destructive_secret_change=True)
 
 
 def use_anthropic_claude_code_credentials(save_fn=None):
     """Use Claude Code's own credential files instead of persisting env tokens."""
     writer = save_fn or save_env_value
-    writer("ANTHROPIC_TOKEN", "")
-    writer("ANTHROPIC_API_KEY", "")
+    _call_env_writer(writer, "ANTHROPIC_TOKEN", "", allow_destructive_secret_change=True)
+    _call_env_writer(writer, "ANTHROPIC_API_KEY", "", allow_destructive_secret_change=True)
 
 
 def save_anthropic_api_key(value: str, save_fn=None):
     """Persist an Anthropic API key and clear the OAuth/setup-token slot."""
     writer = save_fn or save_env_value
-    writer("ANTHROPIC_API_KEY", value)
-    writer("ANTHROPIC_TOKEN", "")
+    _call_env_writer(writer, "ANTHROPIC_API_KEY", value)
+    _call_env_writer(writer, "ANTHROPIC_TOKEN", "", allow_destructive_secret_change=True)
 
 
 def save_env_value_secure(key: str, value: str) -> Dict[str, Any]:

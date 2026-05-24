@@ -392,6 +392,233 @@ def test_task_detail_404_on_unknown(client):
     assert r.status_code == 404
 
 
+def _complete_task(task_id: str, *, result=None, summary=None, metadata=None):
+    conn = kb.connect()
+    try:
+        assert kb.complete_task(
+            conn,
+            task_id,
+            result=result,
+            summary=summary,
+            metadata=metadata,
+        )
+    finally:
+        conn.close()
+
+
+def test_task_summary_tree_returns_descendants_edges_and_latest_run(client):
+    root = client.post(
+        "/api/plugins/kanban/tasks",
+        json={"title": "root", "assignee": "pm"},
+    ).json()["task"]
+    child = client.post(
+        "/api/plugins/kanban/tasks",
+        json={"title": "child", "assignee": "backendeng", "parents": [root["id"]]},
+    ).json()["task"]
+    grandchild = client.post(
+        "/api/plugins/kanban/tasks",
+        json={"title": "grandchild", "assignee": "frontendeng", "parents": [child["id"]]},
+    ).json()["task"]
+
+    _complete_task(root["id"], result="root result wins", summary="root run summary")
+    _complete_task(
+        child["id"],
+        summary="child handoff summary",
+        metadata={"diff_path": "child.diff"},
+    )
+
+    r = client.get(f"/api/plugins/kanban/tasks/{root['id']}/summary-tree")
+    assert r.status_code == 200, r.text
+    data = r.json()
+
+    assert data["root_id"] == root["id"]
+    assert data["order"] == [root["id"], child["id"], grandchild["id"]]
+    assert {tuple((e["parent_id"], e["child_id"], e["depth"])) for e in data["edges"]} == {
+        (root["id"], child["id"], 1),
+        (child["id"], grandchild["id"], 2),
+    }
+    assert data["tasks"][root["id"]]["display_result"] == "root result wins"
+    assert data["tasks"][child["id"]]["display_result"] == "child handoff summary"
+    assert data["tasks"][child["id"]]["latest_run"]["outcome"] == "completed"
+    assert data["tasks"][child["id"]]["latest_run"]["profile"] == "backendeng"
+    assert data["tasks"][child["id"]]["latest_run"]["metadata"] == {"diff_path": "child.diff"}
+    assert data["tasks"][child["id"]]["run_count"] == 1
+    assert data["tasks"][grandchild["id"]]["parents"] == [child["id"]]
+    assert data["tasks"][root["id"]]["children"] == [child["id"]]
+    assert data["stats"]["total"] == 3
+    assert data["stats"]["max_depth"] == 2
+
+
+def test_task_summary_tree_lists_metadata_artifacts_without_comment_path_scraping(client, tmp_path):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    changed = workspace / "relative.py"
+    changed.write_text("print('hi')")
+
+    task = client.post(
+        "/api/plugins/kanban/tasks",
+        json={
+            "title": "artifact task",
+            "workspace_kind": "worktree",
+            "workspace_path": str(workspace),
+        },
+    ).json()["task"]
+    _complete_task(
+        task["id"],
+        summary="artifact handoff",
+        metadata={
+            "diff_path": "changes.diff",
+            "document_path": "docs/report.md",
+            "changed_files": ["relative.py"],
+        },
+    )
+    conn = kb.connect()
+    try:
+        kb.add_comment(conn, task["id"], "reviewer", "review-required handoff: see /etc/passwd")
+    finally:
+        conn.close()
+
+    r = client.get(f"/api/plugins/kanban/tasks/{task['id']}/summary-tree?comment_limit=2")
+    assert r.status_code == 200, r.text
+    node = r.json()["tasks"][task["id"]]
+    artifacts = node["artifacts"]
+    assert {a["kind"] for a in artifacts} >= {"workspace", "diff", "document", "changed_file"}
+    assert all(a["source"] != "comment.regex" for a in artifacts)
+    assert all(a["openable"] is False for a in artifacts)
+    changed_artifact = next(a for a in artifacts if a["kind"] == "changed_file")
+    assert changed_artifact["path"] == "relative.py"
+    assert changed_artifact["resolved_path"] == str(changed)
+    assert changed_artifact["availability"] == "available"
+    assert node["important_comments"][0]["body"].startswith("review-required handoff")
+    assert node["comment_count"] == 1
+
+
+def test_task_summary_tree_redacts_metadata_artifacts_outside_workspace(client, tmp_path):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    outside = tmp_path / "outside.txt"
+    outside.write_text("outside")
+
+    task = client.post(
+        "/api/plugins/kanban/tasks",
+        json={
+            "title": "outside artifact",
+            "workspace_kind": "worktree",
+            "workspace_path": str(workspace),
+        },
+    ).json()["task"]
+    _complete_task(
+        task["id"],
+        summary="attempted outside artifacts",
+        metadata={"file_path": str(outside), "changed_files": ["../outside.txt"]},
+    )
+
+    r = client.get(f"/api/plugins/kanban/tasks/{task['id']}/summary-tree")
+    assert r.status_code == 200, r.text
+    artifacts = [
+        a for a in r.json()["tasks"][task["id"]]["artifacts"]
+        if a["kind"] in {"file", "changed_file"}
+    ]
+    assert len(artifacts) == 2
+    assert all(a["availability"] == "outside_workspace" for a in artifacts)
+    assert all(a["path"] is None and a["resolved_path"] is None for a in artifacts)
+    assert all(a["openable"] is False for a in artifacts)
+
+
+def test_task_summary_tree_exposes_blocked_context(client):
+    task = client.post("/api/plugins/kanban/tasks", json={"title": "needs decision"}).json()["task"]
+    r = client.patch(
+        f"/api/plugins/kanban/tasks/{task['id']}",
+        json={"status": "blocked", "block_reason": "choose the rollout window"},
+    )
+    assert r.status_code == 200
+    conn = kb.connect()
+    try:
+        kb.add_comment(conn, task["id"], "pm", "Use Friday unless launch support says no")
+    finally:
+        conn.close()
+
+    tree = client.get(f"/api/plugins/kanban/tasks/{task['id']}/summary-tree").json()
+    block = tree["tasks"][task["id"]]["block"]
+    assert block["reason"] == "choose the rollout window"
+    assert block["missing_info"] == "choose the rollout window"
+    assert block["latest_relevant_comment"]["body"].startswith("Use Friday")
+    assert block["comment_prompt"].startswith("Add the missing info")
+
+
+def test_task_summary_tree_important_comments_stay_chronological_without_backfill(client):
+    """important_comments carries only term-matching comments, in
+    chronological order — no back-fill with ordinary comments (the recent
+    tail already ships separately in ``comments``)."""
+    task = client.post("/api/plugins/kanban/tasks", json={"title": "comments"}).json()["task"]
+    conn = kb.connect()
+    try:
+        kb.add_comment(conn, task["id"], "pm", "kickoff note")
+        kb.add_comment(conn, task["id"], "worker", "handoff: diff ready for review")
+        kb.add_comment(conn, task["id"], "worker", "artifact saved under out/")
+        kb.add_comment(conn, task["id"], "pm", "thanks!")
+    finally:
+        conn.close()
+
+    node = client.get(
+        f"/api/plugins/kanban/tasks/{task['id']}/summary-tree?comment_limit=3"
+    ).json()["tasks"][task["id"]]
+    assert [c["body"] for c in node["important_comments"]] == [
+        "handoff: diff ready for review",
+        "artifact saved under out/",
+    ]
+    assert [c["body"] for c in node["comments"]] == [
+        "handoff: diff ready for review",
+        "artifact saved under out/",
+        "thanks!",
+    ]
+    assert node["comment_count"] == 4
+
+
+def test_task_summary_tree_includes_descendant_uploaded_attachments(client):
+    """First-class task attachments (task_attachments rows) on descendant
+    tasks must surface in the tree as read-only artifact records — batch
+    loaded, no local-file open path (openable stays False)."""
+    root = client.post(
+        "/api/plugins/kanban/tasks",
+        json={"title": "root", "assignee": "pm"},
+    ).json()["task"]
+    child = client.post(
+        "/api/plugins/kanban/tasks",
+        json={"title": "child", "parents": [root["id"]]},
+    ).json()["task"]
+
+    content = b"quarterly numbers"
+    r = client.post(
+        f"/api/plugins/kanban/tasks/{child['id']}/attachments",
+        files={"file": ("report.csv", content, "text/csv")},
+    )
+    assert r.status_code == 200, r.text
+    uploaded = r.json()["attachment"]
+
+    tree = client.get(f"/api/plugins/kanban/tasks/{root['id']}/summary-tree").json()
+    node = tree["tasks"][child["id"]]
+    assert node["attachment_count"] == 1
+    att = next(a for a in node["artifacts"] if a["kind"] == "attachment")
+    assert att["source"] == "task.attachment"
+    assert att["path"] == "report.csv"
+    assert att["attachment_id"] == uploaded["id"]
+    assert att["size"] == len(content)
+    assert att["availability"] == "available"
+    assert att["openable"] is False
+    assert node["artifact_state"]["has_user_actionable"] is True
+
+    # A row whose blob vanished stays listed but flips to missing — the
+    # metadata row is the source of truth (see kanban_db.delete_attachment).
+    Path(uploaded["stored_path"]).unlink()
+    tree = client.get(f"/api/plugins/kanban/tasks/{root['id']}/summary-tree").json()
+    att = next(
+        a for a in tree["tasks"][child["id"]]["artifacts"] if a["kind"] == "attachment"
+    )
+    assert att["availability"] == "missing"
+    assert att["user_actionable"] is False
+
+
 # ---------------------------------------------------------------------------
 # PATCH /tasks/:id — status transitions
 # ---------------------------------------------------------------------------
@@ -1172,6 +1399,65 @@ def test_dashboard_surfaces_ready_blocked_error_inline():
     assert "const [patchErr, setPatchErr] = useState(null);" in bundle
     assert "setPatchErr(parseApiErrorMessage(e))" in bundle
     assert "setPatchErr(null)" in bundle
+
+
+def test_dashboard_bundle_renders_summary_tree_without_local_open_endpoint():
+    repo_root = Path(__file__).resolve().parents[2]
+    bundle = (
+        repo_root / "plugins" / "kanban" / "dashboard" / "dist" / "index.js"
+    ).read_text(encoding="utf-8")
+    css = (
+        repo_root / "plugins" / "kanban" / "dashboard" / "dist" / "style.css"
+    ).read_text(encoding="utf-8")
+
+    assert "function TaskSummaryTreeSection(props)" in bundle
+    assert "summary-tree?comment_limit=3" in bundle
+    assert "function ArtifactList(props)" in bundle
+    assert "Blocked — missing input needed" in bundle
+    assert "/artifacts/open" not in bundle
+    assert "comment.regex" not in bundle
+
+    assert ".hermes-kanban-summary-tree" in css
+    assert ".hermes-kanban-artifact-row" in css
+    assert ".hermes-kanban-blocked-summary" in css
+
+
+def test_dashboard_bundle_renders_summary_tree_comments_links_and_runs():
+    """The summary tree must render every field its payload contract
+    promises — latest run (with raw metadata), comments, links — not just
+    result/block/artifacts. Behavioral companion to the API-side tests."""
+    repo_root = Path(__file__).resolve().parents[2]
+    bundle = (
+        repo_root / "plugins" / "kanban" / "dashboard" / "dist" / "index.js"
+    ).read_text(encoding="utf-8")
+    css = (
+        repo_root / "plugins" / "kanban" / "dashboard" / "dist" / "style.css"
+    ).read_text(encoding="utf-8")
+
+    # Latest-run line, with the run's raw metadata behind a <details> and
+    # the run summary shown when an explicit task result shadows it.
+    assert "function SummaryNodeRun(props)" in bundle
+    assert "h(SummaryNodeRun, { run: node.latest_run, runCount: node.run_count, shownResult: result })" in bundle
+    assert "run.summary && run.summary !== props.shownResult" in bundle
+    assert "JSON.stringify(run.metadata, null, 2)" in bundle
+
+    # Important comments win over the recent tail; full count in the header.
+    assert "function SummaryNodeComments(props)" in bundle
+    assert "important: node.important_comments" in bundle
+    assert "recent: node.comments" in bundle
+    assert "total: node.comment_count" in bundle
+    assert '"importantComments", "Important comments"' in bundle
+
+    # Parent/child link ids.
+    assert "function SummaryNodeLinks(props)" in bundle
+    assert "h(SummaryNodeLinks, { parentIds: node.parents, childIds: node.children })" in bundle
+
+    # Uploaded attachments arrive as sized artifact rows; still no opener.
+    assert "_fmtBytes(a.size)" in bundle
+
+    assert ".hermes-kanban-summary-run" in css
+    assert ".hermes-kanban-summary-comment" in css
+    assert ".hermes-kanban-summary-links" in css
 
 
 def test_dashboard_dependency_selects_use_value_change_handler():

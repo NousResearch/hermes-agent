@@ -3356,6 +3356,166 @@
     );
   }
 
+  function ArtifactList(props) {
+    const { t: i18n } = useI18n();
+    const artifacts = props.artifacts || [];
+    if (!artifacts.length) {
+      return h("div", { className: "text-xs text-muted-foreground" },
+        tx(i18n, "noArtifactMetadata", "No artifact metadata"));
+    }
+    return h("div", { className: "hermes-kanban-artifact-list" },
+      artifacts.map(function (a, idx) {
+        const label = a.path || a.label || a.kind || "artifact";
+        return h("div", { key: `${a.source || "artifact"}-${idx}`, className: "hermes-kanban-artifact-row" },
+          h("span", { className: "hermes-kanban-artifact-kind" }, a.kind || "artifact"),
+          h("code", { className: "hermes-kanban-artifact-path", title: a.resolved_path || label }, label),
+          a.size != null ? h("span", { className: "text-xs text-muted-foreground whitespace-nowrap" }, _fmtBytes(a.size)) : null,
+          h("span", { className: `hermes-kanban-artifact-state hermes-kanban-artifact-state--${a.availability || "unknown"}` }, a.availability || "unknown"),
+        );
+      }),
+    );
+  }
+
+  function BlockedSummaryPanel(props) {
+    const { t: i18n } = useI18n();
+    const block = props.block;
+    if (!block || !block.is_blocked) return null;
+    return h("div", { className: "hermes-kanban-blocked-summary" },
+      h("div", { className: "hermes-kanban-blocked-summary-title" },
+        tx(i18n, "blockedMissingInput", "Blocked — missing input needed")),
+      block.reason ? h("div", { className: "text-xs" }, block.reason) : null,
+      block.latest_relevant_comment ? h("div", { className: "text-xs text-muted-foreground" },
+        `${tx(i18n, "latestComment", "Latest comment")}: ${block.latest_relevant_comment.body || ""}`) : null,
+      h("div", { className: "text-xs text-muted-foreground" },
+        block.comment_prompt || tx(i18n, "blockedCommentPrompt", "Add the missing info as a comment, then unblock when ready.")),
+    );
+  }
+
+  // Latest-run line for a summary node: profile · outcome · age. The run's
+  // raw metadata sits behind a <details> so operators can inspect the
+  // handoff without leaving the tree. Read-only — no run controls here.
+  // props.shownResult is the text the node body already renders; the run
+  // summary only repeats here when an explicit task result shadows it.
+  function SummaryNodeRun(props) {
+    const { t: i18n } = useI18n();
+    const run = props.run;
+    if (!run) return null;
+    const parts = [run.profile, run.outcome || run.status].filter(Boolean);
+    const when = run.ended_at || run.started_at;
+    if (when && timeAgo) parts.push(timeAgo(when));
+    if ((props.runCount || 0) > 1) parts.push(`${props.runCount} ${tx(i18n, "runs", "runs")}`);
+    return h("div", { className: "hermes-kanban-summary-run" },
+      h("span", { className: "hermes-kanban-summary-label" }, tx(i18n, "latestRun", "Latest run")),
+      h("span", { className: "text-xs text-muted-foreground" }, parts.join(" · ")),
+      run.summary && run.summary !== props.shownResult
+        ? h("div", { className: "hermes-kanban-summary-run-summary" }, run.summary)
+        : null,
+      run.metadata ? h("details", { className: "hermes-kanban-summary-run-meta" },
+        h("summary", null, tx(i18n, "runMetadata", "metadata")),
+        h("pre", null, JSON.stringify(run.metadata, null, 2)),
+      ) : null,
+    );
+  }
+
+  // Important comments win over the recent tail; both arrive pre-sliced from
+  // the API (comment_limit). comment_count is the task's full total so the
+  // header can show "2 of 7" when the tree only carries a slice.
+  function SummaryNodeComments(props) {
+    const { t: i18n } = useI18n();
+    const important = props.important || [];
+    const shown = important.length ? important : (props.recent || []);
+    if (!shown.length) return null;
+    const total = props.total != null ? props.total : shown.length;
+    const label = important.length
+      ? tx(i18n, "importantComments", "Important comments")
+      : tx(i18n, "recentComments", "Recent comments");
+    return h("div", { className: "hermes-kanban-summary-comments" },
+      h("div", { className: "hermes-kanban-summary-label" },
+        total > shown.length ? `${label} (${shown.length} of ${total})` : `${label} (${total})`),
+      shown.map(function (c) {
+        return h("div", { key: c.id, className: "hermes-kanban-summary-comment" },
+          h("span", { className: "hermes-kanban-comment-author" }, c.author || "anon"),
+          h("span", { className: "hermes-kanban-summary-comment-body" }, c.body || ""),
+        );
+      }),
+    );
+  }
+
+  // Parent/child ids as plain text. Indentation already shows the traversal
+  // structure; this surfaces the payload's links contract, including extra
+  // parents that indentation can't express.
+  function SummaryNodeLinks(props) {
+    const { t: i18n } = useI18n();
+    const parents = props.parentIds || [];
+    const children = props.childIds || [];
+    if (!parents.length && !children.length) return null;
+    const parts = [];
+    if (parents.length) parts.push(`${tx(i18n, "parents", "parents")}: ${parents.join(", ")}`);
+    if (children.length) parts.push(`${tx(i18n, "children", "children")}: ${children.join(", ")}`);
+    return h("div", { className: "hermes-kanban-summary-links" }, parts.join(" · "));
+  }
+
+  function TaskSummaryTreeSection(props) {
+    const { t: i18n } = useI18n();
+    const [tree, setTree] = useState(null);
+    const [err, setErr] = useState(null);
+    const [expanded, setExpanded] = useState(true);
+    useEffect(function () {
+      let cancelled = false;
+      // Reset first: the drawer swaps tasks without remounting, so stale
+      // tree/err state from the previous task would render under the new
+      // task's detail view until this fetch resolves.
+      setTree(null);
+      setErr(null);
+      SDK.fetchJSON(withBoard(`${API}/tasks/${encodeURIComponent(props.taskId)}/summary-tree?comment_limit=3`, props.boardSlug))
+        .then(function (d) { if (!cancelled) { setTree(d); setErr(null); } })
+        .catch(function (e) { if (!cancelled) setErr(String(e.message || e)); });
+      return function () { cancelled = true; };
+    }, [props.taskId, props.boardSlug]);
+
+    const head = tx(i18n, "summaryTree", "Summary tree");
+    if (err) return h("div", { className: "hermes-kanban-section hermes-kanban-summary-tree" },
+      h("div", { className: "hermes-kanban-section-head" }, head),
+      h("div", { className: "text-xs text-destructive" }, err),
+    );
+    if (!tree) return h("div", { className: "hermes-kanban-section hermes-kanban-summary-tree" },
+      h("div", { className: "hermes-kanban-section-head" }, head),
+      h("div", { className: "text-xs text-muted-foreground" }, tx(i18n, "loadingSummaryTree", "Loading summary tree…")),
+    );
+    const nodes = (tree.order || []).map(function (id) { return tree.tasks && tree.tasks[id]; }).filter(Boolean);
+    return h("div", { className: "hermes-kanban-section hermes-kanban-summary-tree" },
+      h("button", {
+        type: "button",
+        className: "hermes-kanban-section-head hermes-kanban-summary-tree-toggle",
+        onClick: function () { setExpanded(!expanded); },
+      }, `${head} (${tree.stats ? tree.stats.total : nodes.length}) ${expanded ? "▾" : "▸"}`),
+      expanded ? h("div", { className: "hermes-kanban-summary-tree-list" },
+        nodes.map(function (node) {
+          const result = node.display_result || node.latest_summary || "";
+          return h("div", { key: node.id, className: "hermes-kanban-summary-node", style: { marginLeft: `${Math.min(node.depth || 0, 8) * 14}px` } },
+            h("div", { className: "hermes-kanban-summary-node-head" },
+              h("span", { className: cn("hermes-kanban-dot", COLUMN_DOT[node.status]) }),
+              h("span", { className: "font-medium" }, node.title || node.id),
+              h("span", { className: "text-xs text-muted-foreground" }, node.status),
+            ),
+            h(SummaryNodeRun, { run: node.latest_run, runCount: node.run_count, shownResult: result }),
+            result ? h(MarkdownBlock, { source: result, enabled: props.renderMarkdown }) : null,
+            h(BlockedSummaryPanel, { block: node.block }),
+            h(SummaryNodeComments, {
+              important: node.important_comments,
+              recent: node.comments,
+              total: node.comment_count,
+            }),
+            h(SummaryNodeLinks, { parentIds: node.parents, childIds: node.children }),
+            h(ArtifactList, { artifacts: node.artifacts || [] }),
+          );
+        }),
+        tree.stats && tree.stats.truncated ? h("div", { className: "text-xs text-muted-foreground" },
+          tx(i18n, "summaryTreeTruncated", "Tree truncated — showing the first slice of descendants.")) : null,
+      ) : null,
+    );
+  }
+
   function TaskDetail(props) {
     const { t: i18n } = useI18n();
     const t = props.data.task;
@@ -3433,6 +3593,11 @@
         onRemoveParent: props.onRemoveParent,
         onAddChild: props.onAddChild,
         onRemoveChild: props.onRemoveChild,
+      }),
+      h(TaskSummaryTreeSection, {
+        taskId: t.id,
+        boardSlug: props.boardSlug,
+        renderMarkdown: props.renderMarkdown,
       }),
       (function () {
         var finalResult = t.result || t.latest_summary || null;

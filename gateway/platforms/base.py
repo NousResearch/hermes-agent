@@ -3274,6 +3274,19 @@ class BasePlatformAdapter(ABC):
                 )
             except Exception:
                 logger.debug("[%s] WebUI bridge accepted ack failed", self.name, exc_info=True)
+            # Inactive WebUI session fallback: the open /chat?resume tab spawns
+            # its own PTY-backed agent and does NOT subscribe to runs created by
+            # other clients. Poll /v1/runs/{run_id} to terminal status and
+            # mirror the final assistant response back to the originating chat
+            # so the human sees the answer even when nothing is watching the
+            # WebUI session live. Active-steer already streams through the
+            # WebUI, so it does not need mirroring.
+            if not steered_active and run_id:
+                await self._poll_origin_run_and_mirror(
+                    event=event,
+                    run_id=run_id,
+                    webui_url=webui_url,
+                )
         else:
             logger.warning("[%s] WebUI bridge failed to start origin API run: %s", self.name, detail)
             try:
@@ -3285,6 +3298,138 @@ class BasePlatformAdapter(ABC):
                 )
             except Exception:
                 pass
+
+    async def _poll_origin_run_and_mirror(
+        self,
+        *,
+        event: "MessageEvent",
+        run_id: str,
+        webui_url: Optional[str],
+    ) -> None:
+        """Poll a fallback /v1/runs run to completion and mirror its final response.
+
+        The fallback path (POST /v1/runs) creates a new run on an existing
+        WebUI session, but an already-open /chat?resume tab is a separate
+        PTY-backed agent process — it does not stream events from runs it did
+        not spawn. Without this mirror, the human who triggered the reply via
+        Telegram would only see the agent's answer after manually reloading
+        the WebUI session. This polls the API run and, on terminal status,
+        sends a single Telegram follow-up with the result.
+
+        Bounded by HERMES_NOTIFICATION_BRIDGE_WAIT_SECONDS (default 180,
+        clamp [0.5, 1800]) for total wait and
+        HERMES_NOTIFICATION_BRIDGE_POLL_INTERVAL (default 1.0,
+        clamp [0.05, 10.0]) for the initial poll interval (with mild
+        backoff, capped at 5s).
+        """
+        run_id = (run_id or "").strip()
+        if not run_id:
+            return
+        try:
+            timeout_s = float(os.getenv("HERMES_NOTIFICATION_BRIDGE_WAIT_SECONDS", "180") or "180")
+        except (TypeError, ValueError):
+            timeout_s = 180.0
+        timeout_s = max(0.5, min(timeout_s, 1800.0))
+        try:
+            interval_s = float(os.getenv("HERMES_NOTIFICATION_BRIDGE_POLL_INTERVAL", "1") or "1")
+        except (TypeError, ValueError):
+            interval_s = 1.0
+        interval_s = max(0.05, min(interval_s, 10.0))
+
+        def _poll_once() -> Tuple[Optional[int], Optional[Dict[str, Any]]]:
+            import json as _json
+            import os as _os
+            import urllib.error as _urlerr
+            import urllib.request as _urlreq
+            api_key = (_os.getenv("API_SERVER_KEY") or _os.getenv("HERMES_API_SERVER_KEY") or "").strip()
+            port = (_os.getenv("API_SERVER_PORT") or "8642").strip()
+            headers = {"Accept": "application/json"}
+            if api_key:
+                headers["Authorization"] = f"Bearer {api_key}"
+            url = f"http://127.0.0.1:{port}/v1/runs/{quote(run_id, safe='')}"
+            try:
+                req = _urlreq.Request(url, headers=headers, method="GET")
+                with _urlreq.urlopen(req, timeout=5) as resp:
+                    body = resp.read(64000).decode("utf-8", "replace")
+                    try:
+                        parsed = _json.loads(body)
+                    except Exception:
+                        parsed = None
+                    status_code = int(getattr(resp, "status", 200) or 200)
+                    return status_code, parsed if isinstance(parsed, dict) else None
+            except _urlerr.HTTPError as exc:
+                return int(exc.code), None
+            except Exception:
+                return None, None
+
+        async def _send(content: str) -> None:
+            try:
+                await self._send_with_retry(
+                    chat_id=event.source.chat_id,
+                    content=content,
+                    reply_to=_reply_anchor_for_event(event),
+                    metadata=_thread_metadata_for_source(event.source, _reply_anchor_for_event(event)),
+                )
+            except Exception:
+                logger.debug("[%s] WebUI bridge mirror send failed", self.name, exc_info=True)
+
+        deadline = time.monotonic() + timeout_s
+        final_payload: Optional[Dict[str, Any]] = None
+
+        while True:
+            status_code, payload = await asyncio.to_thread(_poll_once)
+            if status_code == 404:
+                await _send(
+                    f"Origin run `{run_id}` was not found; reply was queued — check the WebUI"
+                    + (f": {webui_url}" if webui_url else ".")
+                )
+                return
+            if status_code is not None and 200 <= status_code < 300 and payload is not None:
+                run_status = str(payload.get("status") or "").lower()
+                if run_status in {"completed", "failed", "cancelled"}:
+                    final_payload = payload
+                    break
+                if run_status == "waiting_for_approval":
+                    await _send(
+                        "Origin run is waiting for approval — open the WebUI to resolve"
+                        + (f": {webui_url}" if webui_url else ".")
+                    )
+                    return
+            if time.monotonic() >= deadline:
+                break
+            try:
+                await asyncio.sleep(min(interval_s, max(0.0, deadline - time.monotonic())))
+            except asyncio.CancelledError:
+                raise
+            interval_s = min(interval_s * 1.5, 5.0)
+
+        if final_payload is None:
+            await _send(
+                f"Origin run still running after {int(timeout_s)}s — open the WebUI to follow"
+                + (f": {webui_url}" if webui_url else ".")
+            )
+            return
+
+        status = str(final_payload.get("status") or "").lower()
+        if status == "completed":
+            output = str(final_payload.get("output") or "").strip()
+            if not output:
+                text = "Origin WebUI run completed (no textual response)."
+            else:
+                cap = 3500
+                if len(output) > cap:
+                    output = output[: cap - 1].rstrip() + "…"
+                text = f"Origin WebUI reply:\n\n{output}"
+        elif status == "failed":
+            err = str(final_payload.get("error") or "unknown error")
+            text = f"Origin WebUI run failed: {err[:1000]}"
+        elif status == "cancelled":
+            text = "Origin WebUI run was cancelled before completing."
+        else:
+            text = f"Origin WebUI run ended with status `{status}`."
+        if webui_url:
+            text += f"\nChat: {webui_url}"
+        await _send(text)
 
     async def handle_message(self, event: MessageEvent) -> None:
         """

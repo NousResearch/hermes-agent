@@ -88,6 +88,15 @@ def test_valid_review_required_request_becomes_approve_token_issuance_outcome_ca
     assert outcome["next_step_recommendation"]["writes_operation_ledger"] is False
 
 
+def test_valid_human_approval_token_review_outcome_id_matches_v0_1_baseline():
+    outcome = create_human_approval_token_review_outcome(_request(), reviewer="token-reviewer")
+
+    assert (
+        outcome["review_outcome_id"]
+        == "memory-human-approval-token-review-outcome:v0.1:b58709b83a4aaeb5"
+    )
+
+
 def test_invalid_request_candidate_rejects():
     request = _request()
     request["request_kind"] = "invalid"

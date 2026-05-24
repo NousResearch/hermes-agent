@@ -726,6 +726,15 @@ class MattermostAdapter(BasePlatformAdapter):
         # For DMs, user_id is sufficient.  For channels, check for @mention.
         message_text = post.get("message", "")
 
+        # Ignore DMs if configured.
+        if channel_type_raw == "D" and os.getenv(
+            "MATTERMOST_IGNORE_DMS", ""
+        ).lower() in ("true", "1", "yes"):
+            logger.debug(
+                "Mattermost: ignoring DM (MATTERMOST_IGNORE_DMS=true)"
+            )
+            return
+
         # Mention-gating for non-DM channels.
         # Config (config.yaml `mattermost.*` with env-var fallback):
         #   require_mention / MATTERMOST_REQUIRE_MENTION: Require @mention in channels (default: true)

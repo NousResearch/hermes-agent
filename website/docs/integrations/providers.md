@@ -164,14 +164,78 @@ If you're trying to switch to a provider you haven't set up yet (e.g. you only h
 
 ### Nous Portal
 
-Subscription-based access to Hermes-4 models (`Hermes-4-70B`, `Hermes-4.3-36B`, `Hermes-4-405B`) via Nous Research's portal. Two paths:
+[Nous Portal](https://portal.nousresearch.com) is Nous Research's unified subscription gateway and **the recommended way to use Hermes Agent**. One OAuth login replaces the juggling act of separate accounts, API keys, and billing relationships across every model lab, search API, image generator, and browser provider you'd otherwise need to wire up by hand.
 
-- **Fresh install:** `hermes setup --portal` — runs OAuth, sets Nous as your provider, and offers the [Tool Gateway](/docs/user-guide/features/tool-gateway) in one command.
-- **Existing install:** `hermes model`, pick **Nous Portal**, sign in through the browser.
+#### What you get
 
-Either path stores a long-lived refresh token at `~/.hermes/auth.json`. Check status with `hermes portal status`.
+**300+ frontier models, one bill.** The portal proxies a curated catalog of agentic models from across the ecosystem — Anthropic Claude (Opus, Sonnet, Haiku), OpenAI (GPT-5.4, o-series), Google Gemini (2.5 Pro, Flash), DeepSeek, Qwen, Kimi, GLM, MiniMax, xAI Grok, and the rest of the agentic frontier. Routing happens through OpenRouter under the hood, so you get the same model availability and failover behavior, but billed against your Nous subscription instead of one credit balance per lab. Switch between Claude Sonnet 4.6 for code and Gemini 2.5 Pro for long context with `/model` mid-session — no new credentials, no top-ups, no surprise zero-balance errors.
 
-The refresh token is also shared across profiles via a shared token store, so logging in on one profile carries over to the others.
+**The Nous Tool Gateway.** The same subscription unlocks the [Tool Gateway](/docs/user-guide/features/tool-gateway), which routes Hermes Agent's tool calls through Nous-managed infrastructure:
+
+- **Web search and extraction** — agent-grade search and full-page extraction (Firecrawl-backed). No Firecrawl API key, no rate limits to manage.
+- **Image generation** — nine models under one endpoint: FLUX 2 Klein 9B, FLUX 2 Pro, Z-Image Turbo, Nano Banana Pro (Gemini 3 Pro Image), GPT Image 1.5, GPT Image 2, Ideogram V3, Recraft V4 Pro, Qwen Image.
+- **Text-to-speech** — OpenAI TTS without a separate OpenAI key. Enables [voice mode](/docs/user-guide/features/voice-mode).
+- **Cloud browser automation** — headless Chromium sessions via Browser Use. All the agent-driving primitives (`browser_navigate`, `browser_click`, `browser_type`, `browser_vision`) without a Browserbase account.
+- **Modal sandbox** (optional add-on) — serverless terminal sandboxes for code execution, available through the same subscription via `hermes setup terminal`.
+
+Without the gateway, hooking each of those up means a Firecrawl account, a FAL account, a Browser Use account, an OpenAI key — four separate signups, four separate dashboards, four separate top-up flows. With the gateway, all of it routes through one subscription. See the [Tool Gateway docs](/docs/user-guide/features/tool-gateway) for the full breakdown and per-tool configuration.
+
+**Nous Chat.** Your portal account also covers [chat.nousresearch.com](https://chat.nousresearch.com) — Nous Research's web chat interface with the same model catalog, useful when you're away from your terminal.
+
+**Cross-platform parity.** [Native Windows](/docs/user-guide/windows-native) is still early beta and per-tool API key setup is its rough edge. A portal subscription smooths that out: one OAuth covers the model and every gateway tool, so Windows users get the same experience as macOS/Linux without manually configuring four backends.
+
+**No credentials in your dotfiles.** Because everything routes through one OAuth-authenticated portal session, you don't accumulate a `.env` file with a dozen long-lived API keys. The refresh token at `~/.hermes/auth.json` is the only credential on disk, and Hermes mints short-lived JWTs from it per request (see [Token handling](#token-handling) below).
+
+#### A note on Hermes 4
+
+Nous Research's own **Hermes 4** family (Hermes-4-70B, Hermes-4-405B) is available through the portal at heavily discounted rates. These are **frontier hybrid-reasoning chat models** — strong at math, science, instruction following, schema adherence, roleplay, and long-form writing.
+
+They are **not recommended for use inside Hermes Agent**, however. Hermes 4 is tuned for chat and reasoning, not the rapid-fire tool-calling loop the agent relies on. Use them for [Nous Chat](https://chat.nousresearch.com), for research workflows, or via the [subscription proxy](/docs/user-guide/features/subscription-proxy) from other tooling — but for agent work, pick a frontier agentic model from the catalog instead:
+
+```
+/model anthropic/claude-sonnet-4.6     # best general-purpose agentic model
+/model openai/gpt-5.4                  # strong reasoning + tool calling
+/model google/gemini-2.5-pro           # huge context window
+/model deepseek/deepseek-v3.2          # cost-effective coder
+```
+
+The portal's own [model info page](https://portal.nousresearch.com/info) carries the same warning, so this isn't a Hermes-side opinion — it's the official guidance from Nous Research.
+
+#### Setup
+
+Two paths, both interactive, both browser-based:
+
+**Fresh install** — one command does everything:
+
+```bash
+hermes setup --portal
+```
+
+Opens your browser to portal.nousresearch.com, runs the OAuth flow, sets Nous as your inference provider in `config.yaml`, and turns on the Tool Gateway in the same step. After this you're ready to `hermes chat`. If you don't have a subscription yet, grab one at [portal.nousresearch.com/manage-subscription](https://portal.nousresearch.com/manage-subscription) before running the command.
+
+**Existing install** — add the portal alongside whatever else you have configured:
+
+```bash
+hermes model
+# pick "Nous Portal" from the provider list
+# browser opens, sign in, done
+```
+
+This adds Nous Portal as a provider you can switch to with `/model` or `hermes model` at any time. Your existing providers (OpenRouter, Anthropic, OpenAI, etc.) stay configured — you can switch back whenever you want. To enable just specific gateway tools (e.g. web search but not image generation), use `hermes tools` and pick **Nous Subscription** per backend.
+
+Either path stores a long-lived refresh token at `~/.hermes/auth.json`. The token is also written into a shared token store, so signing in on one Hermes [profile](/docs/user-guide/profiles) carries over to all of them automatically — no need to repeat the OAuth flow per profile.
+
+Manage your plan, view usage, or upgrade/cancel at any time from [portal.nousresearch.com/manage-subscription](https://portal.nousresearch.com/manage-subscription).
+
+#### Inspecting and managing the connection
+
+```bash
+hermes portal status     # login status, subscription info, gateway routing summary
+hermes model             # switch the active model within the portal catalog
+hermes auth add nous     # re-authenticate after a token revocation
+```
+
+`/model` inside an active session works the same way — open the picker, select any model from the catalog, conversation continues uninterrupted.
 
 #### Token handling
 

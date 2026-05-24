@@ -18,7 +18,7 @@ import pytest
 
 from gateway.config import GatewayConfig, Platform
 from gateway.platforms.base import MessageEvent, MessageType
-from gateway.session import SessionSource
+from gateway.session import SessionSource, build_session_key
 
 
 def _make_runner(stt_enabled: bool = True) -> "GatewayRunner":  # type: ignore[name-defined]
@@ -182,3 +182,47 @@ def test_telegram_media_type_detection_audio_vs_voice():
     assert MessageType.VOICE.value == "voice"
     # Sanity: they are distinct
     assert MessageType.AUDIO != MessageType.VOICE
+
+
+@pytest.mark.asyncio
+async def test_voice_reply_resolves_pending_clarify_with_transcript():
+    """A voice answer to an open clarify must unblock clarify, not interrupt the run."""
+    from gateway.run import GatewayRunner
+    from tools import clarify_gateway as cm
+
+    with cm._lock:
+        cm._entries.clear()
+        cm._session_index.clear()
+
+    runner = _make_runner(stt_enabled=True)
+    runner.session_store = None
+
+    source = SessionSource(
+        platform=Platform.TELEGRAM,
+        chat_id="1",
+        chat_type="dm",
+        user_id="user1",
+    )
+    session_key = build_session_key(source)
+    cm.register("cid-voice", session_key, "What should I do?", choices=None)
+
+    event = MessageEvent(
+        text="",
+        message_type=MessageType.VOICE,
+        source=source,
+        media_urls=["/tmp/voice.ogg"],
+        media_types=["audio/ogg"],
+        internal=True,
+    )
+
+    with patch(
+        "tools.transcription_tools.transcribe_audio",
+        return_value={"success": True, "transcript": "kurz und knackig", "provider": "whisper"},
+    ) as mock_transcribe:
+        result = await GatewayRunner._handle_message(runner, event)
+
+    mock_transcribe.assert_called_once_with("/tmp/voice.ogg")
+    assert result == ""
+    response = cm.wait_for_response("cid-voice", timeout=0.01)
+    assert response is not None
+    assert "kurz und knackig" in response

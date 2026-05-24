@@ -3318,6 +3318,126 @@ class GatewayRunner:
                 pass
             self._cleanup_agent_resources(agent)
 
+    def _register_proactive_compression_callback(
+        self,
+        *,
+        adapter: Any,
+        session_key: str,
+        run_generation: Optional[int],
+        session_entry: Any,
+        agent_result: Dict[str, Any],
+    ) -> bool:
+        """Run opt-in context compression after the user-visible reply is delivered.
+
+        The core agent only reports pressure; the gateway owns response delivery
+        and can safely do the expensive compression work after the final message
+        has been sent.  The callback fires before the adapter releases the
+        per-session guard, so a queued follow-up waits for the compressed session
+        instead of racing it.
+        """
+        if not adapter or not session_key or session_entry is None:
+            return False
+        pressure = agent_result.get("proactive_compression") or {}
+        if not isinstance(pressure, dict) or not pressure.get("should_compress"):
+            return False
+        if agent_result.get("failed") or agent_result.get("compression_exhausted"):
+            return False
+        messages = agent_result.get("messages") or []
+        if not messages:
+            return False
+
+        approx_tokens = pressure.get("current_tokens") or pressure.get("projected_tokens")
+        original_session_id = agent_result.get("session_id") or getattr(session_entry, "session_id", None)
+
+        async def _compress_after_delivery() -> None:
+            if run_generation is not None and not self._is_session_run_current(session_key, run_generation):
+                logger.debug(
+                    "Skipping proactive compression for stale session run %s generation %s",
+                    session_key,
+                    run_generation,
+                )
+                return
+
+            def _compress_sync() -> Optional[Dict[str, Any]]:
+                agent = self._running_agents.get(session_key)
+                if agent is None or agent is _AGENT_PENDING_SENTINEL:
+                    return None
+                if not getattr(agent, "compression_enabled", False):
+                    return None
+                if not getattr(agent, "_proactive_compression_enabled", False):
+                    return None
+
+                old_status_callback = getattr(agent, "status_callback", None)
+                try:
+                    # Keep post-turn compression silent. The user already got
+                    # their answer; emitting a second status bubble defeats the
+                    # point of hiding this latency off the critical path.
+                    agent.status_callback = None
+                    compressed_messages, _new_system_prompt = agent._compress_context(
+                        list(messages),
+                        None,
+                        approx_tokens=approx_tokens,
+                        task_id=original_session_id or session_key,
+                        focus_topic="next turn reserve",
+                    )
+                    agent._persist_session(compressed_messages, None)
+                    return {
+                        "old_session_id": original_session_id,
+                        "new_session_id": getattr(agent, "session_id", None),
+                        "message_count": len(compressed_messages),
+                    }
+                finally:
+                    agent.status_callback = old_status_callback
+
+            try:
+                result = await self._run_in_executor_with_context(_compress_sync)
+            except Exception as exc:
+                logger.warning("Proactive context compression failed for %s: %s", session_key, exc)
+                return
+            if not result:
+                return
+
+            new_session_id = result.get("new_session_id")
+            if new_session_id and new_session_id != getattr(session_entry, "session_id", None):
+                logger.info(
+                    "Proactive session split detected: %s → %s (post-delivery compression)",
+                    getattr(session_entry, "session_id", None),
+                    new_session_id,
+                )
+                session_entry.session_id = new_session_id
+                try:
+                    self.session_store._save()
+                except Exception as exc:
+                    logger.debug("session_store save after proactive compression failed: %s", exc)
+            try:
+                self.session_store.update_session(
+                    session_key,
+                    last_prompt_tokens=pressure.get("current_tokens", 0) or 0,
+                )
+            except Exception:
+                pass
+
+        try:
+            if getattr(type(adapter), "register_post_delivery_callback", None) is not None:
+                adapter.register_post_delivery_callback(
+                    session_key,
+                    _compress_after_delivery,
+                    generation=run_generation,
+                )
+            else:
+                adapter._post_delivery_callbacks[session_key] = _compress_after_delivery
+            logger.info(
+                "Scheduled proactive context compression for %s: current=~%s projected=~%s threshold=%s",
+                session_key,
+                pressure.get("current_tokens"),
+                pressure.get("projected_tokens"),
+                pressure.get("threshold_tokens"),
+            )
+            return True
+        except Exception as exc:
+            logger.debug("Could not register proactive compression callback for %s: %s", session_key, exc)
+            return False
+
     def _cleanup_agent_resources(self, agent: Any) -> None:
         """Best-effort cleanup for temporary or cached agent instances."""
         if agent is None:
@@ -8846,6 +8966,18 @@ class GatewayRunner:
             self.session_store.update_session(
                 session_entry.session_key,
                 last_prompt_tokens=agent_result.get("last_prompt_tokens", 0),
+            )
+
+            # Optional post-delivery compression.  Register the callback after
+            # the current turn is safely persisted but before returning the
+            # response to the adapter, so base.py can fire it after the visible
+            # reply has been sent and before the next queued message runs.
+            self._register_proactive_compression_callback(
+                adapter=self.adapters.get(source.platform),
+                session_key=session_key,
+                run_generation=run_generation,
+                session_entry=session_entry,
+                agent_result=agent_result,
             )
 
             # Auto voice reply: send TTS audio before the text response
@@ -16861,6 +16993,7 @@ class GatewayRunner:
                     "output_tokens": _output_toks,
                     "model": _resolved_model,
                     "context_length": _context_length,
+                    "proactive_compression": result.get("proactive_compression", {}),
                 }
             
             # Scan tool results for MEDIA:<path> tags that need to be delivered
@@ -17023,6 +17156,7 @@ class GatewayRunner:
                 "context_length": _context_length,
                 "session_id": effective_session_id,
                 "response_previewed": result.get("response_previewed", False),
+                "proactive_compression": result.get("proactive_compression", {}),
             }
         
         # Start progress message sender if enabled

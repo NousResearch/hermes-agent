@@ -35,6 +35,7 @@ from typing import Optional, Sequence
 
 __all__ = [
     "IS_WINDOWS",
+    "apply_windows_utf8_env",
     "resolve_node_command",
     "windows_detach_flags",
     "windows_hide_flags",
@@ -86,6 +87,56 @@ def resolve_node_command(name: str, argv: Sequence[str]) -> list[str]:
     if resolved:
         return [resolved, *argv]
     return [name, *argv]
+
+
+# -----------------------------------------------------------------------------
+# UTF-8 stdio for Python subprocesses
+# -----------------------------------------------------------------------------
+
+
+def apply_windows_utf8_env(env: dict) -> dict:
+    """Ensure a subprocess env dict carries UTF-8 stdio knobs on Windows.
+
+    Mutates and returns *env* (in place; the return value is for fluent
+    chaining).  No-op on POSIX — Linux/macOS already inherit UTF-8 from
+    the locale.
+
+    What it sets (only when the keys are not already present, so explicit
+    user overrides win):
+
+      * ``PYTHONUTF8=1`` — PEP 540 UTF-8 Mode.  Forces ``sys.stdin/out/err``
+        and ``open()``'s default encoding to UTF-8 in any Python child,
+        regardless of the active Windows code page (CP936 on zh-CN,
+        CP1252 on en-US, CP932 on ja-JP, …).  Without this knob, a
+        child Python process emitting non-ASCII output crashes with::
+
+            UnicodeEncodeError: 'gbk' codec can't encode character '\\u4e2d'
+
+        in non-en-US Windows locales.  See #31420.
+      * ``PYTHONIOENCODING=utf-8`` — belt-and-suspenders for older Python
+        builds that don't pick up ``PYTHONUTF8`` (or for code that
+        explicitly inspects ``PYTHONIOENCODING``).  Also harmless on
+        POSIX, but we still gate to Windows so we don't pollute env
+        snapshots in tests / dotfiles audits unnecessarily.
+
+    Why ``setdefault``: a user that has *already* set ``PYTHONUTF8=0``
+    in their env (rare but legitimate — e.g. debugging Windows codepage
+    behavior) must keep their opt-out.  ``setdefault`` honors that
+    intent.
+
+    Use from any code path that builds an explicit ``env=`` dict for
+    ``subprocess.Popen`` / ``asyncio.create_subprocess_exec`` etc.
+    Helpers that already start from ``os.environ`` *do* inherit
+    Hermes's bootstrap-time ``PYTHONUTF8=1`` (set by
+    :func:`hermes_cli._ensure_utf8`), but applying this is still safe
+    and protects callers reached without going through the Hermes CLI
+    entry point (library imports, scripts, vendored tools, tests).
+    """
+    if not IS_WINDOWS:
+        return env
+    env.setdefault("PYTHONUTF8", "1")
+    env.setdefault("PYTHONIOENCODING", "utf-8")
+    return env
 
 
 # -----------------------------------------------------------------------------

@@ -1,5 +1,6 @@
 """Tests for gateway/platforms/base.py — MessageEvent, media extraction, message truncation."""
 
+import json
 import os
 from unittest.mock import patch
 
@@ -14,6 +15,89 @@ from gateway.platforms.base import (
     utf16_len,
     _prefix_within_utf16_limit,
 )
+from gateway.session import SessionSource
+
+
+class _StubAdapter(BasePlatformAdapter):
+    """Minimal concrete adapter for BasePlatformAdapter behavior tests."""
+
+    def __init__(self):
+        from gateway.config import Platform, PlatformConfig
+
+        super().__init__(config=PlatformConfig(enabled=True, token="test"), platform=Platform.TELEGRAM)
+        self.sent = []
+
+    async def connect(self):
+        return True
+
+    async def disconnect(self):
+        pass
+
+    async def send(self, *a, **kw):
+        pass
+
+    async def get_chat_info(self, *a):
+        return {}
+
+    async def _send_with_retry(self, chat_id, content, **kwargs):
+        self.sent.append((chat_id, content, kwargs))
+        return None
+
+
+class _FakeHttpResponse:
+    def __init__(self, body=b'{"run_id":"run_123","status":"started"}', status=202):
+        self._body = body
+        self.status = status
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        return False
+
+    def read(self, limit=-1):
+        return self._body[:limit if limit and limit > 0 else None]
+
+
+@pytest.mark.asyncio
+async def test_webui_notification_reply_starts_api_run_without_waiting_for_completion(monkeypatch):
+    captured = {}
+
+    def fake_urlopen(req, timeout=None):
+        captured["url"] = req.full_url
+        captured["timeout"] = timeout
+        captured["headers"] = dict(req.header_items())
+        captured["body"] = json.loads(req.data.decode("utf-8"))
+        return _FakeHttpResponse()
+
+    monkeypatch.setenv("API_SERVER_KEY", "secret-test-key")
+    monkeypatch.setenv("API_SERVER_PORT", "18642")
+    monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
+
+    adapter = _StubAdapter()
+    event = MessageEvent(
+        text="ок, проверь",
+        source=SessionSource(platform="telegram", chat_id="999", chat_type="dm", user_id="456"),
+        message_id="702",
+        reply_to_text="Need approval?",
+    )
+    route = {
+        "kind": "webui_session",
+        "api_session_id": "20260524_142634_986d3f",
+        "webui_url": "https://hermes.example.com/session/20260524_142634_986d3f",
+    }
+
+    await adapter._forward_notification_reply_to_api_session(event, route)
+
+    assert captured["url"] == "http://127.0.0.1:18642/v1/runs"
+    assert captured["timeout"] <= 15
+    assert captured["headers"]["X-hermes-session-id"] == "20260524_142634_986d3f"
+    assert captured["headers"]["Authorization"] == "Bearer secret-test-key"
+    assert captured["body"]["session_id"] == "20260524_142634_986d3f"
+    assert captured["body"]["input"].startswith("[Telegram reply/follow-up to Hermes notification]")
+    assert len(adapter.sent) == 2
+    assert "Forwarding" in adapter.sent[0][1]
+    assert "started" in adapter.sent[1][1].lower()
 
 
 class TestSecretCaptureGuidance:

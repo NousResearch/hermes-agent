@@ -3203,7 +3203,7 @@ class BasePlatformAdapter(ABC):
         else:
             text = f"[Telegram semantic follow-up to Hermes notification]\n\n{text}"
 
-        def _post_to_api() -> tuple[bool, str]:
+        def _start_api_run() -> tuple[bool, str]:
             import json as _json
             import os as _os
             import urllib.error as _urlerr
@@ -3211,26 +3211,42 @@ class BasePlatformAdapter(ABC):
             api_key = (_os.getenv("API_SERVER_KEY") or _os.getenv("HERMES_API_SERVER_KEY") or "").strip()
             port = (_os.getenv("API_SERVER_PORT") or "8642").strip()
             payload = _json.dumps({
+                "input": text,
+                "session_id": api_session_id,
                 "model": "Hermes Agent",
-                "messages": [{"role": "user", "content": text}],
-                "stream": False,
             }).encode("utf-8")
             headers = {"Content-Type": "application/json", "X-Hermes-Session-Id": api_session_id}
             if api_key:
                 headers["Authorization"] = f"Bearer {api_key}"
-            req = _urlreq.Request(f"http://127.0.0.1:{port}/v1/chat/completions", data=payload, headers=headers, method="POST")
+            req = _urlreq.Request(f"http://127.0.0.1:{port}/v1/runs", data=payload, headers=headers, method="POST")
             try:
-                with _urlreq.urlopen(req, timeout=240) as resp:
-                    return True, resp.read(500).decode("utf-8", "replace")
+                # /v1/runs is the enqueue/start endpoint: it returns 202 as
+                # soon as the origin API/WebUI session has accepted the user
+                # turn.  Do not wait for the agent's final answer here; long
+                # tasks should keep running in the origin process and report
+                # via its normal WebUI/status channels.
+                with _urlreq.urlopen(req, timeout=10) as resp:
+                    body = resp.read(1000).decode("utf-8", "replace")
+                    status = int(getattr(resp, "status", 200) or 200)
+                    return 200 <= status < 300, body
             except _urlerr.HTTPError as exc:
                 body = exc.read(1000).decode("utf-8", "replace") if exc.fp else ""
                 return False, f"HTTP {exc.code}: {body[:500]}"
             except Exception as exc:
                 return False, f"{type(exc).__name__}: {str(exc)[:500]}"
 
-        ok, detail = await asyncio.to_thread(_post_to_api)
+        ok, detail = await asyncio.to_thread(_start_api_run)
         if ok:
-            msg = "Reply forwarded to the origin WebUI chat."
+            run_id = ""
+            try:
+                parsed = __import__("json").loads(detail or "{}")
+                if isinstance(parsed, dict):
+                    run_id = str(parsed.get("run_id") or "").strip()
+            except Exception:
+                run_id = ""
+            msg = "Reply delivered to the origin WebUI chat and processing started."
+            if run_id:
+                msg += f"\nRun: `{run_id}`"
             if webui_url:
                 msg += f"\nChat: {webui_url}"
             try:
@@ -3241,13 +3257,13 @@ class BasePlatformAdapter(ABC):
                     metadata=_thread_metadata_for_source(event.source, _reply_anchor_for_event(event)),
                 )
             except Exception:
-                logger.debug("[%s] WebUI bridge completion ack failed", self.name, exc_info=True)
+                logger.debug("[%s] WebUI bridge accepted ack failed", self.name, exc_info=True)
         else:
-            logger.warning("[%s] WebUI bridge failed: %s", self.name, detail)
+            logger.warning("[%s] WebUI bridge failed to start origin API run: %s", self.name, detail)
             try:
                 await self._send_with_retry(
                     chat_id=event.source.chat_id,
-                    content="Could not forward the reply into the WebUI chat; check gateway/API logs.",
+                    content="Could not deliver the reply into the WebUI chat; check gateway/API logs.",
                     reply_to=_reply_anchor_for_event(event),
                     metadata=_thread_metadata_for_source(event.source, _reply_anchor_for_event(event)),
                 )

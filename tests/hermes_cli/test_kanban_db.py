@@ -1401,15 +1401,67 @@ def test_config_uses_claude_cli_runtime_aliases():
 
 def test_claude_cli_auth_preflight_parses_logged_out_json(monkeypatch):
     class Result:
-        returncode = 1
-        stdout = '{"loggedIn": false, "authMethod": "none"}'
-        stderr = ""
+        def __init__(self, returncode, stdout="", stderr=""):
+            self.returncode = returncode
+            self.stdout = stdout
+            self.stderr = stderr
 
-    monkeypatch.setattr(kb.subprocess, "run", lambda *args, **kwargs: Result())
+    monkeypatch.setattr(
+        kb.subprocess,
+        "run",
+        lambda *args, **kwargs: Result(
+            1, '{"loggedIn": false, "authMethod": "none"}'
+        ),
+    )
 
     assert kb._claude_cli_auth_preflight() == (
         "Claude CLI is not logged in; run `claude auth login --claudeai`."
     )
+
+
+def test_claude_cli_auth_preflight_smoke_catches_invalid_credentials(monkeypatch):
+    class Result:
+        def __init__(self, returncode, stdout="", stderr=""):
+            self.returncode = returncode
+            self.stdout = stdout
+            self.stderr = stderr
+
+    calls = []
+
+    def fake_run(cmd, **kwargs):
+        calls.append(cmd)
+        if cmd[:3] == ["claude", "auth", "status"]:
+            return Result(0, '{"loggedIn": true, "authMethod": "claude.ai"}')
+        return Result(
+            1,
+            "",
+            "Failed to authenticate. API Error: 401 Invalid authentication credentials",
+        )
+
+    monkeypatch.setattr(kb.subprocess, "run", fake_run)
+
+    assert kb._claude_cli_auth_preflight() == (
+        "Claude CLI is not logged in; run `claude auth login --claudeai`."
+    )
+    assert len(calls) == 2
+    assert calls[1][:2] == ["claude", "-p"]
+
+
+def test_claude_cli_auth_preflight_smoke_passes_when_inference_works(monkeypatch):
+    class Result:
+        def __init__(self, returncode, stdout="", stderr=""):
+            self.returncode = returncode
+            self.stdout = stdout
+            self.stderr = stderr
+
+    def fake_run(cmd, **kwargs):
+        if cmd[:3] == ["claude", "auth", "status"]:
+            return Result(0, '{"loggedIn": true, "authMethod": "claude.ai"}')
+        return Result(0, "OK")
+
+    monkeypatch.setattr(kb.subprocess, "run", fake_run)
+
+    assert kb._claude_cli_auth_preflight() is None
 
 
 def test_dispatch_respawn_guard_skips_recent_success(

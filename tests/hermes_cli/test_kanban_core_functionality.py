@@ -2976,6 +2976,9 @@ def test_default_spawn_appends_per_task_skills(kanban_home, monkeypatch):
     """Dispatcher argv must carry one `--skills X` pair per task skill,
     in addition to the built-in kanban-worker."""
     monkeypatch.setattr(kb, "_kanban_worker_skill_available", lambda _h: True)
+    monkeypatch.setattr(
+        kb, "_worker_skill_available", lambda _h, _name: True, raising=False
+    )
     captured = {}
 
     class FakeProc:
@@ -3023,9 +3026,56 @@ def test_default_spawn_appends_per_task_skills(kanban_home, monkeypatch):
     )
 
 
+def test_default_spawn_skips_unavailable_per_task_skills(kanban_home, monkeypatch):
+    """Missing force-loaded skills must not crash dispatcher-spawned workers."""
+    monkeypatch.setattr(kb, "_kanban_worker_skill_available", lambda _h: True)
+    monkeypatch.setattr(
+        kb,
+        "_worker_skill_available",
+        lambda _h, name: name != "sdlc-review",
+        raising=False,
+    )
+    captured = {}
+
+    class FakeProc:
+        pid = 43
+
+    def fake_popen(cmd, **kwargs):
+        captured["cmd"] = cmd
+        return FakeProc()
+
+    monkeypatch.setattr("subprocess.Popen", fake_popen)
+
+    conn = kb.connect()
+    try:
+        tid = kb.create_task(
+            conn,
+            title="review worker",
+            assignee="reviewer",
+            skills=["sdlc-review", "github-code-review"],
+        )
+        task = kb.get_task(conn, tid)
+        workspace = kb.resolve_workspace(task)
+        kb._default_spawn(task, str(workspace))
+    finally:
+        conn.close()
+
+    cmd = captured["cmd"]
+    skill_names = [
+        cmd[i + 1]
+        for i, tok in enumerate(cmd)
+        if tok == "--skills" and i + 1 < len(cmd)
+    ]
+    assert "sdlc-review" not in skill_names
+    assert "github-code-review" in skill_names
+
+
 def test_default_spawn_dedupes_kanban_worker_from_task_skills(kanban_home, monkeypatch):
     """If a task explicitly lists 'kanban-worker', we don't double-pass it."""
     monkeypatch.setattr(kb, "_kanban_worker_skill_available", lambda _h: True)
+    monkeypatch.setattr(
+        kb, "_worker_skill_available", lambda _h, _name: True, raising=False
+    )
     captured = {}
 
     class FakeProc:

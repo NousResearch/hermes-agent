@@ -5063,6 +5063,59 @@ def _short_cli_output(output: str, limit: int = 500) -> str:
     return compact[: limit - 1].rstrip() + "…"
 
 
+def _claude_cli_smoke_preflight(claude_bin: str) -> Optional[str]:
+    """Run a tiny Claude CLI inference to catch stale subscription tokens."""
+    raw_enabled = os.getenv("HERMES_CLAUDE_CLI_PREFLIGHT_SMOKE", "1").strip().lower()
+    if raw_enabled in {"0", "false", "no", "off"}:
+        return None
+    raw_timeout = os.getenv("HERMES_CLAUDE_CLI_PREFLIGHT_TIMEOUT_SECONDS", "30")
+    try:
+        timeout = max(1, int(raw_timeout))
+    except ValueError:
+        timeout = 30
+    try:
+        result = subprocess.run(
+            [
+                claude_bin,
+                "-p",
+                "Reply exactly OK.",
+                "--no-session-persistence",
+                "--output-format",
+                "text",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+        )
+    except FileNotFoundError:
+        return (
+            f"Claude CLI not found: {claude_bin}. "
+            "Install Claude Code or set HERMES_CLAUDE_CLI_BIN."
+        )
+    except subprocess.TimeoutExpired:
+        return f"Claude CLI inference smoke test timed out after {timeout}s."
+    except Exception as exc:
+        return f"Claude CLI inference smoke test failed: {exc}"
+
+    output = "\n".join(
+        part for part in ((result.stdout or "").strip(), (result.stderr or "").strip())
+        if part
+    ).strip()
+    if result.returncode == 0:
+        return None
+    lower = output.lower()
+    if (
+        "not logged" in lower
+        or "log in" in lower
+        or "login required" in lower
+        or "invalid authentication credentials" in lower
+        or "failed to authenticate" in lower
+    ):
+        return _CLAUDE_CLI_LOGIN_MESSAGE
+    detail = _short_cli_output(output) or f"claude exited {result.returncode}"
+    return f"Claude CLI inference smoke test failed: {detail}"
+
+
 def _claude_cli_auth_preflight() -> Optional[str]:
     """Return an operator-facing reason if the local Claude CLI is unusable."""
     claude_bin = os.getenv("HERMES_CLAUDE_CLI_BIN", "").strip() or "claude"
@@ -5093,7 +5146,7 @@ def _claude_cli_auth_preflight() -> Optional[str]:
     )
     if parsed is not None:
         if bool(parsed.get("loggedIn") or parsed.get("logged_in")):
-            return None
+            return _claude_cli_smoke_preflight(claude_bin)
         if "loggedIn" in parsed or "logged_in" in parsed:
             return _CLAUDE_CLI_LOGIN_MESSAGE
         detail = _short_cli_output(
@@ -5118,7 +5171,7 @@ def _claude_cli_auth_preflight() -> Optional[str]:
     if result.returncode != 0:
         detail = _short_cli_output(combined) or f"claude exited {result.returncode}"
         return f"Claude CLI auth check failed: {detail}"
-    return None
+    return _claude_cli_smoke_preflight(claude_bin)
 
 
 def _kanban_profile_runtime_preflight(
@@ -5678,6 +5731,28 @@ def _resolve_hermes_argv() -> list[str]:
     return _module_hermes_argv()
 
 
+def _worker_skill_available(hermes_home: Optional[str], skill_name: str) -> bool:
+    """True if ``skill_name`` resolves for the home the worker will use."""
+    skill_name = (skill_name or "").strip()
+    if not skill_name:
+        return False
+    from pathlib import Path as _Path
+
+    base = _Path(hermes_home) if hermes_home else (_Path.home() / ".hermes")
+    skills_root = base / "skills"
+    if not skills_root.is_dir():
+        return False
+    if (skills_root / skill_name / "SKILL.md").is_file():
+        return True
+    try:
+        for skill_md in skills_root.rglob(f"{skill_name}/SKILL.md"):
+            if skill_md.is_file():
+                return True
+    except OSError:
+        pass
+    return False
+
+
 def _kanban_worker_skill_available(hermes_home: Optional[str]) -> bool:
     """True if the bundled ``kanban-worker`` skill resolves for the home the
     spawned worker will run under.
@@ -5692,25 +5767,7 @@ def _kanban_worker_skill_available(hermes_home: Optional[str]) -> bool:
     the kanban lifecycle contract is still injected via ``KANBAN_GUIDANCE``, so
     omitting the flag only drops the supplementary pattern library.
     """
-    from pathlib import Path as _Path
-
-    # An unset HERMES_HOME means the worker falls back to the default root
-    # home (``~/.hermes``), which ships the bundled skill.
-    base = _Path(hermes_home) if hermes_home else (_Path.home() / ".hermes")
-    skills_root = base / "skills"
-    if not skills_root.is_dir():
-        return False
-    # Canonical bundled location first (cheap), then a bounded scan for
-    # profiles that have it nested elsewhere.
-    if (skills_root / "devops" / "kanban-worker" / "SKILL.md").is_file():
-        return True
-    try:
-        for skill_md in skills_root.rglob("kanban-worker/SKILL.md"):
-            if skill_md.is_file():
-                return True
-    except OSError:
-        pass
-    return False
+    return _worker_skill_available(hermes_home, "kanban-worker")
 
 
 def _worker_terminal_timeout_env(
@@ -5865,7 +5922,11 @@ def _default_spawn(
     # if a task author asks for it explicitly.
     if task.skills:
         for sk in task.skills:
-            if sk and sk != "kanban-worker":
+            if (
+                sk
+                and sk != "kanban-worker"
+                and _worker_skill_available(env.get("HERMES_HOME"), sk)
+            ):
                 cmd.extend(["--skills", sk])
     if task.model_override:
         cmd.extend(["-m", task.model_override])

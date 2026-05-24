@@ -6175,6 +6175,13 @@ def cmd_hooks(args):
     hooks_command(args)
 
 
+def cmd_health(args):
+    """Show database health, WAL size, session counts, checkpoint disk usage, and cron status."""
+    from hermes_cli.health import run_health
+
+    run_health(args)
+
+
 def cmd_doctor(args):
     """Check configuration and dependencies."""
     from hermes_cli.doctor import run_doctor
@@ -12001,6 +12008,20 @@ def main():
         ),
     )
     doctor_parser.set_defaults(func=cmd_doctor)
+
+    # =========================================================================
+    # health command
+    # =========================================================================
+    health_parser = subparsers.add_parser(
+        "health",
+        help="Show database health, WAL size, session counts, checkpoint usage, and cron status",
+        description=(
+            "Display a health dashboard for the Hermes state database, "
+            "filesystem checkpoints, and cron jobs, along with maintenance "
+            "recommendations."
+        ),
+    )
+    health_parser.set_defaults(func=cmd_health)
 
     # =========================================================================
     # dump command

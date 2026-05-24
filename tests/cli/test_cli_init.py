@@ -333,6 +333,33 @@ class TestHistoryDisplay:
         assert "Checking Running Hermes Agent" in output
         assert "Use /resume <session id or title> to continue" in output
 
+    def test_resume_updates_hermes_session_id_env_and_context(self, tmp_path):
+        from gateway.session_context import _UNSET, _VAR_MAP, get_session_env
+        from hermes_state import SessionDB
+
+        cli = _make_cli()
+        cli.session_id = "current_session"
+        cli.conversation_history = []
+        cli.agent = None
+        cli._session_db = SessionDB(db_path=tmp_path / "state.db")
+        cli._session_db.create_session("current_session", "cli")
+        cli._session_db.create_session("target_session", "cli")
+        cli._session_db.append_message("target_session", "user", "hello from resumed session")
+
+        os.environ["HERMES_SESSION_ID"] = "current_session"
+        _VAR_MAP["HERMES_SESSION_ID"].set("current_session")
+
+        try:
+            cli._handle_resume_command("/resume target_session")
+
+            assert cli.session_id == "target_session"
+            assert os.environ["HERMES_SESSION_ID"] == "target_session"
+            assert get_session_env("HERMES_SESSION_ID") == "target_session"
+        finally:
+            cli._session_db.close()
+            os.environ.pop("HERMES_SESSION_ID", None)
+            _VAR_MAP["HERMES_SESSION_ID"].set(_UNSET)
+
     def test_sessions_command_no_args_lists_recent_sessions(self, capsys):
         """/sessions with no args prints the recent-sessions table (TUI parity).
 
@@ -443,8 +470,8 @@ class TestRootLevelProviderOverride:
 
         assert cfg["model"]["provider"] == "openrouter"
 
-    def test_root_provider_ignored_when_default_model_provider_exists(self, tmp_path, monkeypatch):
-        """Even when model.provider is the default 'auto', root-level provider is ignored."""
+    def test_root_provider_used_as_fallback_when_model_provider_missing(self, tmp_path, monkeypatch):
+        """Legacy root-level provider still populates model.provider in the CLI loader."""
         import yaml
 
         hermes_home = tmp_path / ".hermes"
@@ -464,8 +491,29 @@ class TestRootLevelProviderOverride:
         monkeypatch.setattr(cli, "_hermes_home", hermes_home)
         cfg = cli.load_cli_config()
 
-        # Root-level "opencode-go" must NOT leak through
-        assert cfg["model"]["provider"] != "opencode-go"
+        assert cfg["model"]["provider"] == "opencode-go"
+
+    def test_root_base_url_used_as_fallback_when_model_base_url_missing(self, tmp_path, monkeypatch):
+        """Legacy root-level base_url still populates model.base_url in the CLI loader."""
+        import yaml
+
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+        config_path = hermes_home / "config.yaml"
+        config_path.write_text(yaml.safe_dump({
+            "base_url": "https://example.com/v1",
+            "model": {
+                "default": "google/gemini-3-flash-preview",
+            },
+        }))
+
+        import cli
+        monkeypatch.setattr(cli, "_hermes_home", hermes_home)
+        cfg = cli.load_cli_config()
+
+        assert cfg["model"]["base_url"] == "https://example.com/v1"
 
     def test_terminal_vercel_runtime_bridged_to_env(self, tmp_path, monkeypatch):
         """Classic CLI must expose terminal.vercel_runtime to terminal_tool.py."""

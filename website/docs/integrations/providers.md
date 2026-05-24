@@ -52,90 +52,20 @@ In the `model:` config section, you can use either `default:` or `model:` as the
 :::
 
 
-### Google Gemini via OAuth (`google-gemini-cli`)
+### Nous Portal
 
-The `google-gemini-cli` provider uses Google's Cloud Code Assist backend — the
-same API that Google's own `gemini-cli` tool uses. This supports both the
-**free tier** (generous daily quota for personal accounts) and **paid tiers**
-(Standard/Enterprise via a GCP project).
-
-**Quick start:**
+[Nous Portal](https://portal.nousresearch.com) is Nous Research's unified subscription gateway and **the recommended way to run Hermes Agent**. One OAuth login covers 300+ frontier agentic models (Claude, GPT, Gemini, DeepSeek, Qwen, Kimi, GLM, MiniMax, Grok, ...) plus the [Tool Gateway](/docs/user-guide/features/tool-gateway) (web search, image generation, TTS, browser automation) plus [Nous Chat](https://chat.nousresearch.com) — billed against your Nous subscription instead of separate per-provider accounts.
 
 ```bash
-hermes model
-# → pick "Google Gemini (OAuth)"
-# → see policy warning, confirm
-# → browser opens to accounts.google.com, sign in
-# → done — Hermes auto-provisions your free tier on first request
+hermes setup --portal     # fresh install — OAuth + provider + gateway in one command
+hermes model              # existing install — pick "Nous Portal" from the list
+hermes portal status      # inspect login + routing at any time
 ```
 
-Hermes ships Google's **public** `gemini-cli` desktop OAuth client by default —
-the same credentials Google includes in their open-source `gemini-cli`. Desktop
-OAuth clients are not confidential (PKCE provides the security). You do not
-need to install `gemini-cli` or register your own GCP OAuth client.
+Don't have a subscription yet? Get one at [portal.nousresearch.com/manage-subscription](https://portal.nousresearch.com/manage-subscription).
 
-**How auth works:**
-- PKCE Authorization Code flow against `accounts.google.com`
-- Browser callback at `http://127.0.0.1:8085/oauth2callback` (with ephemeral-port fallback if busy)
-- Tokens stored at `~/.hermes/auth/google_oauth.json` (chmod 0600, atomic write, cross-process `fcntl` lock)
-- Automatic refresh 60 s before expiry
-- Headless environments (SSH, `HERMES_HEADLESS=1`) → paste-mode fallback
-- Inflight refresh deduplication — two concurrent requests won't double-refresh
-- `invalid_grant` (revoked refresh) → credential file wiped, user prompted to re-login
+**For full details:** see the dedicated [Nous Portal integration page](/docs/integrations/nous-portal) (what's in the subscription, model catalog, troubleshooting) and the step-by-step [Run Hermes Agent with Nous Portal guide](/docs/guides/run-hermes-with-nous-portal).
 
-**How inference works:**
-- Traffic goes to `https://cloudcode-pa.googleapis.com/v1internal:generateContent`
-  (or `:streamGenerateContent?alt=sse` for streaming), NOT the paid `v1beta/openai` endpoint
-- Request body wrapped `{project, model, user_prompt_id, request}`
-- OpenAI-shaped `messages[]`, `tools[]`, `tool_choice` are translated to Gemini's native
-  `contents[]`, `tools[].functionDeclarations`, `toolConfig` shape
-- Responses translated back to OpenAI shape so the rest of Hermes works unchanged
-
-**Tiers & project IDs:**
-
-| Your situation | What to do |
-|---|---|
-| Personal Google account, want free tier | Nothing — sign in, start chatting |
-| Workspace / Standard / Enterprise account | Set `HERMES_GEMINI_PROJECT_ID` or `GOOGLE_CLOUD_PROJECT` to your GCP project ID |
-| VPC-SC-protected org | Hermes detects `SECURITY_POLICY_VIOLATED` and forces `standard-tier` automatically |
-
-Free tier auto-provisions a Google-managed project on first use. No GCP setup required.
-
-**Quota monitoring:**
-
-```
-/gquota
-```
-
-Shows remaining Code Assist quota per model with progress bars:
-
-```
-Gemini Code Assist quota  (project: 123-abc)
-
-  gemini-2.5-pro                      ▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓░░░░   85%
-  gemini-2.5-flash [input]            ▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓░░   92%
-```
-
-:::warning Policy risk
-Google considers using the Gemini CLI OAuth client with third-party software a
-policy violation. Some users have reported account restrictions. For the lowest-risk
-experience, use your own API key via the `gemini` provider instead. Hermes shows
-an upfront warning and requires explicit confirmation before OAuth begins.
-:::
-
-**Custom OAuth client (optional):**
-
-If you'd rather register your own Google OAuth client — e.g., to keep quota
-and consent scoped to your own GCP project — set:
-
-```bash
-HERMES_GEMINI_CLIENT_ID=your-client.apps.googleusercontent.com
-HERMES_GEMINI_CLIENT_SECRET=...   # optional for Desktop clients
-```
-
-Register a **Desktop app** OAuth client at
-[console.cloud.google.com/apis/credentials](https://console.cloud.google.com/apis/credentials)
-with the Generative Language API enabled.
 
 :::info Codex Note
 The OpenAI Codex provider authenticates via device code (open a URL, enter a code). Hermes stores the resulting credentials in its own auth store under `~/.hermes/auth.json` and can import existing Codex CLI credentials from `~/.codex/auth.json` when present. No Codex CLI installation is required.
@@ -162,22 +92,6 @@ Hermes has **two** model commands that serve different purposes:
 
 If you're trying to switch to a provider you haven't set up yet (e.g. you only have OpenRouter configured and want to use Anthropic), you need `hermes model`, not `/model`. Exit your session first (`Ctrl+C` or `/quit`), run `hermes model`, complete the provider setup, then start a new session.
 
-### Nous Portal
-
-Subscription-based access to Hermes-4 models (`Hermes-4-70B`, `Hermes-4.3-36B`, `Hermes-4-405B`) via Nous Research's portal. Two paths:
-
-- **Fresh install:** `hermes setup --portal` — runs OAuth, sets Nous as your provider, and offers the [Tool Gateway](/docs/user-guide/features/tool-gateway) in one command.
-- **Existing install:** `hermes model`, pick **Nous Portal**, sign in through the browser.
-
-Either path stores a long-lived refresh token at `~/.hermes/auth.json`. Check status with `hermes portal status`.
-
-The refresh token is also shared across profiles via a shared token store, so logging in on one profile carries over to the others.
-
-#### Token handling
-
-Hermes mints a short-lived JWT from your stored Nous refresh token on each inference call rather than reusing a long-lived API key. The token lifecycle is fully automatic — refresh, mint, retry on transient 401 — and you never see it.
-
-If the portal invalidates the refresh token (password change, manual revoke, session expiry), the invalid refresh token is quarantined locally so Hermes stops replaying it and you don't see a stream of identical 401s. The next call surfaces a clear "re-authentication required" message. Run `hermes auth add nous` to log in again; the quarantine clears on the next successful login.
 
 ### Anthropic (Native)
 
@@ -598,6 +512,91 @@ Get your token at [huggingface.co/settings/tokens](https://huggingface.co/settin
 You can append routing suffixes to model names: `:fastest` (default), `:cheapest`, or `:provider_name` to force a specific backend.
 
 The base URL can be overridden with `HF_BASE_URL`.
+
+### Google Gemini via OAuth (`google-gemini-cli`)
+
+The `google-gemini-cli` provider uses Google's Cloud Code Assist backend — the
+same API that Google's own `gemini-cli` tool uses. This supports both the
+**free tier** (generous daily quota for personal accounts) and **paid tiers**
+(Standard/Enterprise via a GCP project).
+
+**Quick start:**
+
+```bash
+hermes model
+# → pick "Google Gemini (OAuth)"
+# → see policy warning, confirm
+# → browser opens to accounts.google.com, sign in
+# → done — Hermes auto-provisions your free tier on first request
+```
+
+Hermes ships Google's **public** `gemini-cli` desktop OAuth client by default —
+the same credentials Google includes in their open-source `gemini-cli`. Desktop
+OAuth clients are not confidential (PKCE provides the security). You do not
+need to install `gemini-cli` or register your own GCP OAuth client.
+
+**How auth works:**
+- PKCE Authorization Code flow against `accounts.google.com`
+- Browser callback at `http://127.0.0.1:8085/oauth2callback` (with ephemeral-port fallback if busy)
+- Tokens stored at `~/.hermes/auth/google_oauth.json` (chmod 0600, atomic write, cross-process `fcntl` lock)
+- Automatic refresh 60 s before expiry
+- Headless environments (SSH, `HERMES_HEADLESS=1`) → paste-mode fallback
+- Inflight refresh deduplication — two concurrent requests won't double-refresh
+- `invalid_grant` (revoked refresh) → credential file wiped, user prompted to re-login
+
+**How inference works:**
+- Traffic goes to `https://cloudcode-pa.googleapis.com/v1internal:generateContent`
+  (or `:streamGenerateContent?alt=sse` for streaming), NOT the paid `v1beta/openai` endpoint
+- Request body wrapped `{project, model, user_prompt_id, request}`
+- OpenAI-shaped `messages[]`, `tools[]`, `tool_choice` are translated to Gemini's native
+  `contents[]`, `tools[].functionDeclarations`, `toolConfig` shape
+- Responses translated back to OpenAI shape so the rest of Hermes works unchanged
+
+**Tiers & project IDs:**
+
+| Your situation | What to do |
+|---|---|
+| Personal Google account, want free tier | Nothing — sign in, start chatting |
+| Workspace / Standard / Enterprise account | Set `HERMES_GEMINI_PROJECT_ID` or `GOOGLE_CLOUD_PROJECT` to your GCP project ID |
+| VPC-SC-protected org | Hermes detects `SECURITY_POLICY_VIOLATED` and forces `standard-tier` automatically |
+
+Free tier auto-provisions a Google-managed project on first use. No GCP setup required.
+
+**Quota monitoring:**
+
+```
+/gquota
+```
+
+Shows remaining Code Assist quota per model with progress bars:
+
+```
+Gemini Code Assist quota  (project: 123-abc)
+
+  gemini-2.5-pro                      ▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓░░░░   85%
+  gemini-2.5-flash [input]            ▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓░░   92%
+```
+
+:::warning Policy risk
+Google considers using the Gemini CLI OAuth client with third-party software a
+policy violation. Some users have reported account restrictions. For the lowest-risk
+experience, use your own API key via the `gemini` provider instead. Hermes shows
+an upfront warning and requires explicit confirmation before OAuth begins.
+:::
+
+**Custom OAuth client (optional):**
+
+If you'd rather register your own Google OAuth client — e.g., to keep quota
+and consent scoped to your own GCP project — set:
+
+```bash
+HERMES_GEMINI_CLIENT_ID=your-client.apps.googleusercontent.com
+HERMES_GEMINI_CLIENT_SECRET=...   # optional for Desktop clients
+```
+
+Register a **Desktop app** OAuth client at
+[console.cloud.google.com/apis/credentials](https://console.cloud.google.com/apis/credentials)
+with the Generative Language API enabled.
 
 ## Custom & Self-Hosted LLM Providers
 

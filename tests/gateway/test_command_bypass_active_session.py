@@ -47,6 +47,7 @@ def _make_adapter():
     """Create a minimal adapter for testing the active-session guard."""
     config = PlatformConfig(enabled=True, token="test-token")
     adapter = _StubAdapter(config, Platform.TELEGRAM)
+    adapter._busy_text_mode = ""
     adapter.sent_responses = []
 
     async def _mock_handler(event):

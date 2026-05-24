@@ -138,7 +138,7 @@ Per-run overrides (no mutation to `~/.hermes/config.yaml`):
 | Flag | Equivalent env var | Purpose |
 |---|---|---|
 | `-m` / `--model <model>` | `HERMES_INFERENCE_MODEL` | Override the model for this run |
-| `--provider <provider>` | `HERMES_INFERENCE_PROVIDER` | Override the provider for this run |
+| `--provider <provider>` | _(none)_ | Override the provider for this run |
 
 ```bash
 hermes -z "…" --provider openrouter --model openai/gpt-5.5

@@ -1183,7 +1183,7 @@ def run_conversation(
                                     else str(_codex_error_obj) if _codex_error_obj
                                     else f"Responses API returned status '{_codex_resp_status}'"
                                 )
-                                logging.warning(
+                                logger.warning(
                                     "Codex response status='%s' (error=%s). Routing to fallback. %s",
                                     _codex_resp_status, _codex_error_msg,
                                     agent._client_log_context(),
@@ -1335,7 +1335,7 @@ def run_conversation(
                             primary_recovery_attempted = False
                             continue
                         agent._emit_status(f"❌ Max retries ({max_retries}) exceeded for invalid responses. Giving up.")
-                        logging.error(f"{agent.log_prefix}Invalid API response after {max_retries} retries.")
+                        logger.error(f"{agent.log_prefix}Invalid API response after {max_retries} retries.")
                         agent._persist_session(messages, conversation_history)
                         return {
                             "messages": messages,
@@ -1348,7 +1348,7 @@ def run_conversation(
                     # Backoff before retry — jittered exponential: 5s base, 120s cap
                     wait_time = jittered_backoff(retry_count, base_delay=5.0, max_delay=120.0)
                     agent._vprint(f"{agent.log_prefix}⏳ Retrying in {wait_time:.1f}s ({_failure_hint})...", force=True)
-                    logging.warning(f"Invalid API response (retry {retry_count}/{max_retries}): {', '.join(error_details)} | Provider: {provider_name}")
+                    logger.warning(f"Invalid API response (retry {retry_count}/{max_retries}): {', '.join(error_details)} | Provider: {provider_name}")
                     
                     # Sleep in small increments to stay responsive to interrupts
                     sleep_end = time.time() + wait_time
@@ -1414,7 +1414,18 @@ def run_conversation(
                         finish_reason = "length"
 
                 if finish_reason == "length":
-                    agent._vprint(f"{agent.log_prefix}⚠️  Response truncated (finish_reason='length') - model hit max output tokens", force=True)
+                    if getattr(response, "id", "") == "partial-stream-stub":
+                        agent._vprint(
+                            f"{agent.log_prefix}⚠️  Stream interrupted by network error "
+                            f"(finish_reason='length' on partial-stream-stub)",
+                            force=True,
+                        )
+                    else:
+                        agent._vprint(
+                            f"{agent.log_prefix}⚠️  Response truncated "
+                            f"(finish_reason='length') - model hit max output tokens",
+                            force=True,
+                        )
 
                     # Normalize the truncated response to a single OpenAI-style
                     # message shape so text-continuation and tool-call retry
@@ -1507,17 +1518,40 @@ def run_conversation(
                                 truncated_response_parts.append(assistant_message.content)
 
                             if length_continue_retries < 3:
-                                agent._vprint(
-                                    f"{agent.log_prefix}↻ Requesting continuation "
-                                    f"({length_continue_retries}/3)..."
+                                # Distinguish a real output-token truncation
+                                # from a partial-stream-stub network error
+                                # (#30963).  Same continuation machinery,
+                                # but the prompt has to tell the truth or
+                                # the model goes off rails ("I wasn't
+                                # truncated, I'm done").
+                                _is_partial_stream_stub = (
+                                    getattr(response, "id", "") == "partial-stream-stub"
                                 )
-                                continue_msg = {
-                                    "role": "user",
-                                    "content": (
+                                if _is_partial_stream_stub:
+                                    agent._vprint(
+                                        f"{agent.log_prefix}↻ Stream interrupted — "
+                                        f"requesting continuation "
+                                        f"({length_continue_retries}/3)..."
+                                    )
+                                    _continue_content = (
+                                        "[System: The previous response was cut off by a "
+                                        "network error mid-stream. Continue exactly where "
+                                        "you left off. Do not restart or repeat prior text. "
+                                        "Finish the answer directly.]"
+                                    )
+                                else:
+                                    agent._vprint(
+                                        f"{agent.log_prefix}↻ Requesting continuation "
+                                        f"({length_continue_retries}/3)..."
+                                    )
+                                    _continue_content = (
                                         "[System: Your previous response was truncated by the output "
                                         "length limit. Continue exactly where you left off. Do not "
                                         "restart or repeat prior text. Finish the answer directly.]"
-                                    ),
+                                    )
+                                continue_msg = {
+                                    "role": "user",
+                                    "content": _continue_content,
                                 }
                                 messages.append(continue_msg)
                                 agent._session_messages = messages
@@ -2225,7 +2259,7 @@ def run_conversation(
                         f"stripped all thinking blocks, retrying...",
                         force=True,
                     )
-                    logging.warning(
+                    logger.warning(
                         "%sThinking block signature recovery: stripped "
                         "reasoning_details from %d messages",
                         agent.log_prefix, len(messages),
@@ -2250,7 +2284,7 @@ def run_conversation(
                         from tools.schema_sanitizer import strip_pattern_and_format
                         _, _stripped = strip_pattern_and_format(agent.tools)
                     except Exception as _strip_exc:  # pragma: no cover — defensive
-                        logging.warning(
+                        logger.warning(
                             "%sllama.cpp grammar recovery: strip helper failed: %s",
                             agent.log_prefix, _strip_exc,
                         )
@@ -2261,7 +2295,7 @@ def run_conversation(
                             f"stripped {_stripped} pattern/format keyword(s), retrying...",
                             force=True,
                         )
-                        logging.warning(
+                        logger.warning(
                             "%sllama.cpp grammar recovery: stripped %d "
                             "pattern/format keyword(s) from tool schemas",
                             agent.log_prefix, _stripped,
@@ -2269,7 +2303,7 @@ def run_conversation(
                         continue
                     # No keywords found to strip — fall through to normal
                     # retry path rather than loop forever on the same error.
-                    logging.warning(
+                    logger.warning(
                         "%sllama.cpp grammar error but no pattern/format "
                         "keywords to strip — falling through to normal retry",
                         agent.log_prefix,
@@ -2370,6 +2404,7 @@ def run_conversation(
                             base_url=agent.base_url,
                             api_key=getattr(agent, "api_key", ""),
                             provider=agent.provider,
+                            api_mode=agent.api_mode,
                         )
                         # Context probing flags — only set on built-in
                         # compressor (plugin engines manage their own).
@@ -2483,7 +2518,7 @@ def run_conversation(
                                 error_context=error_context,
                             )
                         else:
-                            logging.info(
+                            logger.info(
                                 "Nous 429 looks like upstream capacity "
                                 "(no exhausted bucket in headers or "
                                 "last-known state) -- not tripping "
@@ -2543,7 +2578,7 @@ def run_conversation(
                     if compression_attempts > max_compression_attempts:
                         agent._vprint(f"{agent.log_prefix}❌ Max compression attempts ({max_compression_attempts}) reached for payload-too-large error.", force=True)
                         agent._vprint(f"{agent.log_prefix}   💡 Try /new to start a fresh conversation, or /compress to retry compression.", force=True)
-                        logging.error(f"{agent.log_prefix}413 compression failed after {max_compression_attempts} attempts.")
+                        logger.error(f"{agent.log_prefix}413 compression failed after {max_compression_attempts} attempts.")
                         agent._persist_session(messages, conversation_history)
                         return {
                             "messages": messages,
@@ -2574,7 +2609,7 @@ def run_conversation(
                     else:
                         agent._vprint(f"{agent.log_prefix}❌ Payload too large and cannot compress further.", force=True)
                         agent._vprint(f"{agent.log_prefix}   💡 Try /new to start a fresh conversation, or /compress to retry compression.", force=True)
-                        logging.error(f"{agent.log_prefix}413 payload too large. Cannot compress further.")
+                        logger.error(f"{agent.log_prefix}413 payload too large. Cannot compress further.")
                         agent._persist_session(messages, conversation_history)
                         return {
                             "messages": messages,
@@ -2627,7 +2662,7 @@ def run_conversation(
                         if compression_attempts > max_compression_attempts:
                             agent._vprint(f"{agent.log_prefix}❌ Max compression attempts ({max_compression_attempts}) reached.", force=True)
                             agent._vprint(f"{agent.log_prefix}   💡 Try /new to start a fresh conversation, or /compress to retry compression.", force=True)
-                            logging.error(f"{agent.log_prefix}Context compression failed after {max_compression_attempts} attempts.")
+                            logger.error(f"{agent.log_prefix}Context compression failed after {max_compression_attempts} attempts.")
                             agent._persist_session(messages, conversation_history)
                             return {
                                 "messages": messages,
@@ -2679,6 +2714,7 @@ def run_conversation(
                             base_url=agent.base_url,
                             api_key=getattr(agent, "api_key", ""),
                             provider=agent.provider,
+                            api_mode=agent.api_mode,
                         )
                         # Context probing flags — only set on built-in
                         # compressor (plugin engines manage their own).
@@ -2700,7 +2736,7 @@ def run_conversation(
                     if compression_attempts > max_compression_attempts:
                         agent._vprint(f"{agent.log_prefix}❌ Max compression attempts ({max_compression_attempts}) reached.", force=True)
                         agent._vprint(f"{agent.log_prefix}   💡 Try /new to start a fresh conversation, or /compress to retry compression.", force=True)
-                        logging.error(f"{agent.log_prefix}Context compression failed after {max_compression_attempts} attempts.")
+                        logger.error(f"{agent.log_prefix}Context compression failed after {max_compression_attempts} attempts.")
                         agent._persist_session(messages, conversation_history)
                         return {
                             "messages": messages,
@@ -2733,7 +2769,7 @@ def run_conversation(
                         # Can't compress further and already at minimum tier
                         agent._vprint(f"{agent.log_prefix}❌ Context length exceeded and cannot compress further.", force=True)
                         agent._vprint(f"{agent.log_prefix}   💡 The conversation has accumulated too much content. Try /new to start fresh, or /compress to manually trigger compression.", force=True)
-                        logging.error(f"{agent.log_prefix}Context length exceeded: {approx_tokens:,} tokens. Cannot compress further.")
+                        logger.error(f"{agent.log_prefix}Context length exceeded: {approx_tokens:,} tokens. Cannot compress further.")
                         agent._persist_session(messages, conversation_history)
                         return {
                             "messages": messages,
@@ -2826,7 +2862,7 @@ def run_conversation(
                                 agent._vprint(f"{agent.log_prefix}      • Check credits: https://openrouter.ai/settings/credits", force=True)
                     else:
                         agent._vprint(f"{agent.log_prefix}   💡 This type of error won't be fixed by retrying.", force=True)
-                    logging.error(f"{agent.log_prefix}Non-retryable client error: {api_error}")
+                    logger.error(f"{agent.log_prefix}Non-retryable client error: {api_error}")
                     # Skip session persistence when the error is likely
                     # context-overflow related (status 400 + large session).
                     # Persisting the failed user message would make the
@@ -2903,7 +2939,7 @@ def run_conversation(
                             force=True,
                         )
 
-                    logging.error(
+                    logger.error(
                         "%sAPI call failed after %s retries. %s | provider=%s model=%s msgs=%s tokens=~%s",
                         agent.log_prefix, max_retries, _final_summary,
                         _provider, _model, len(api_messages), f"{approx_tokens:,}",
@@ -4029,6 +4065,8 @@ def run_conversation(
         except Exception as _ver_err:
             logger.debug("file-mutation verifier footer failed: %s", _ver_err)
 
+    _response_transformed = False
+
     # Plugin hook: transform_llm_output
     # Fired once per turn after the tool-calling loop completes.
     # Plugins can transform the LLM's output text before it's returned.
@@ -4046,6 +4084,7 @@ def run_conversation(
             for _hook_result in _transform_results:
                 if isinstance(_hook_result, str) and _hook_result:
                     final_response = _hook_result
+                    _response_transformed = True
                     break  # First non-empty string wins
         except Exception as exc:
             logger.warning("transform_llm_output hook failed: %s", exc)
@@ -4097,6 +4136,7 @@ def run_conversation(
         "failed": failed,
         "partial": False,  # True only when stopped due to invalid tool calls
         "interrupted": interrupted,
+        "response_transformed": _response_transformed,
         "response_previewed": getattr(agent, "_response_was_previewed", False),
         "model": agent.model,
         "provider": agent.provider,

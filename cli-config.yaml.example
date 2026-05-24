@@ -39,7 +39,7 @@ model:
   #   LM Studio is first-class and uses provider: "lmstudio".
   #   It works with both no-auth and auth-enabled server modes.
   #
-  # Can also be overridden with --provider flag or HERMES_INFERENCE_PROVIDER env var.
+  # Can also be overridden for a single invocation with the --provider flag.
   provider: "auto"
   
   # API configuration (falls back to OPENROUTER_API_KEY env var)

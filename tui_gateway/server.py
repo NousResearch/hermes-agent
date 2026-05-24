@@ -5625,7 +5625,9 @@ def _mirror_slash_side_effects(sid: str, session: dict, command: str) -> str:
     # with the session.compress / session.undo guards and the gateway
     # runner's running-agent /model guard.
     _MUTATES_WHILE_RUNNING = {"model", "personality", "prompt", "compress"}
-    if name in _MUTATES_WHILE_RUNNING and session.get("running"):
+    _xsearch_subcommand = arg.split(maxsplit=1)[0].lower() if arg else ""
+    _xsearch_mutates = name == "xsearch" and _xsearch_subcommand in {"enable", "disable", "setup"}
+    if (name in _MUTATES_WHILE_RUNNING or _xsearch_mutates) and session.get("running"):
         return f"session busy — /interrupt the current turn before running /{name}"
 
     try:
@@ -5653,6 +5655,11 @@ def _mirror_slash_side_effects(sid: str, session: dict, command: str) -> str:
             _emit("session.info", sid, _session_info(agent))
         elif name == "reload-mcp" and agent and hasattr(agent, "reload_mcp_tools"):
             agent.reload_mcp_tools()
+        elif name == "xsearch":
+            current_toolsets = getattr(agent, "enabled_toolsets", None) if agent else None
+            desired_toolsets = _load_enabled_toolsets()
+            if current_toolsets != desired_toolsets:
+                _reset_session_agent(sid, session)
         elif name == "stop":
             from tools.process_registry import process_registry
 

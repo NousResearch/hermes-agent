@@ -59,6 +59,47 @@ x_search:
   retries: 2
 ```
 
+## `/xsearch` command family
+
+Hermes also exposes X Search as a first-class slash command in the CLI, gateways, and dashboard chat:
+
+```text
+/xsearch <query>
+/xsearch status
+/xsearch setup
+/xsearch enable
+/xsearch disable
+/xsearch model [name]
+```
+
+Why use the command instead of natural language?
+
+- It forces a direct `x_search` call instead of hoping the model chooses the tool.
+- It gives you deterministic filters and cleaner failure messages.
+- It works as a control surface for setup and model selection.
+
+### Search flags
+
+```text
+/xsearch "grok 4 reactions" --from xai,openai --since 2026-05-20 --until 2026-05-21 --images
+```
+
+Supported flags:
+
+- `--from xai,openai` → `allowed_x_handles`
+- `--exclude spam1,spam2` → `excluded_x_handles`
+- `--since YYYY-MM-DD` → `from_date`
+- `--until YYYY-MM-DD` → `to_date`
+- `--images` → `enable_image_understanding`
+- `--videos` → `enable_video_understanding`
+
+### Control commands
+
+- `/xsearch status` shows whether the toolset is enabled on the current surface, the configured model, timeout/retry settings, and whether xAI OAuth or `XAI_API_KEY` is available.
+- `/xsearch setup` auto-enables the toolset for the current surface, ensures `x_search.model` has a value, and then prints any remaining auth step.
+- `/xsearch enable` / `/xsearch disable` persist toolset enablement for the current surface.
+- `/xsearch model [name]` shows or changes `x_search.model`.
+
 ## Tool parameters
 
 The agent calls `x_search` with these arguments:

@@ -7268,6 +7268,9 @@ class GatewayRunner:
         if canonical == "profile":
             return await self._handle_profile_command(event)
 
+        if canonical == "xsearch":
+            return await self._handle_xsearch_command(event)
+
         if canonical == "whoami":
             return await self._handle_whoami_command(event)
 
@@ -9234,6 +9237,27 @@ class GatewayRunner:
         ]
 
         return "\n".join(lines)
+
+    async def _handle_xsearch_command(self, event: MessageEvent) -> str:
+        """Handle `/xsearch` for messaging platforms."""
+        from hermes_cli.xsearch_command import run_xsearch_command
+
+        platform_key = _platform_config_key(event.source.platform)
+        raw_args = event.get_command_args().strip()
+        command = f"/xsearch {raw_args}".strip()
+        result = run_xsearch_command(command, platform=platform_key)
+        if result.reset_session:
+            reset_reply = await self._handle_reset_command(
+                MessageEvent(text="/new", source=event.source)
+            )
+            combined = f"{result.output}\n\n{str(reset_reply)}"
+            if isinstance(reset_reply, EphemeralReply):
+                return EphemeralReply(
+                    combined,
+                    ttl_seconds=getattr(reset_reply, "ttl_seconds", None),
+                )
+            return combined
+        return result.output
 
 
     def _check_slash_access(

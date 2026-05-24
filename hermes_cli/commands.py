@@ -190,6 +190,14 @@ COMMAND_REGISTRY: list[CommandDef] = [
     CommandDef("browser", "Connect browser tools to your live Chromium-family browser via CDP", "Tools & Skills",
                cli_only=True, args_hint="[connect|disconnect|status]",
                subcommands=("connect", "disconnect", "status")),
+    CommandDef(
+        "xsearch",
+        "Run or manage X (Twitter) Search",
+        "Tools & Skills",
+        aliases=("x-search",),
+        args_hint="[status|setup|enable|disable|model [name]|<query>]",
+        subcommands=("status", "setup", "enable", "disable", "model"),
+    ),
     CommandDef("plugins", "List installed plugins and their status",
                "Tools & Skills", cli_only=True),
 

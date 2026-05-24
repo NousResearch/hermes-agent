@@ -86,6 +86,8 @@ Type `/` in the CLI to open the autocomplete menu. Built-in commands are case-in
 | `/tools [list\|disable\|enable] [name...]` | Manage tools: list available tools, or disable/enable specific tools for the current session. Disabling a tool removes it from the agent's toolset and triggers a session reset. |
 | `/toolsets` | List available toolsets |
 | `/browser [connect\|disconnect\|status]` | Manage a local Chromium-family CDP connection. `connect` attaches browser tools to a running Chrome, Brave, Chromium, or Edge instance (default: `http://127.0.0.1:9222`). `disconnect` detaches. `status` shows current connection. Auto-launches a supported Chromium-family browser if no debugger is detected. |
+| `/xsearch <query>` | Run X (Twitter) Search directly, bypassing model tool-choice discretion. Supports `--from`, `--exclude`, `--since`, `--until`, `--images`, and `--videos`. |
+| `/xsearch status\|setup\|enable\|disable\|model [name]` | Control the built-in `x_search` toolset from chat: inspect readiness, persist toolset enablement, and read/change `x_search.model`. `setup` auto-enables the toolset and prints any remaining auth steps (`hermes auth add xai-oauth` or `XAI_API_KEY`). |
 | `/skills` | Search, install, inspect, or manage skills from online registries |
 | `/cron` | Manage scheduled tasks (list, add/create, edit, pause, resume, run, remove) |
 | `/curator` | Background skill maintenance — `status`, `run`, `pin`, `archive`. See [Curator](/docs/user-guide/features/curator). |
@@ -214,6 +216,8 @@ The messaging gateway supports the following built-in commands inside Telegram, 
 | `/voice [on\|off\|tts\|join\|channel\|leave\|status]` | Control spoken replies in chat. `join`/`channel`/`leave` manage Discord voice-channel mode. |
 | `/rollback [number]` | List or restore filesystem checkpoints. |
 | `/background <prompt>` | Run a prompt in a separate background session. Results are delivered back to the same chat when the task finishes. See [Messaging Background Sessions](/docs/user-guide/messaging/#background-sessions). |
+| `/xsearch <query>` | Run X (Twitter) Search directly. Supports `--from`, `--exclude`, `--since`, `--until`, `--images`, and `--videos`. |
+| `/xsearch status\|setup\|enable\|disable\|model [name]` | Control the built-in `x_search` toolset from messaging: inspect readiness, persist toolset enablement for the current platform, and read/change `x_search.model`. `setup` auto-enables the toolset and prints any remaining auth steps. |
 | `/queue <prompt>` (alias: `/q`) | Queue a prompt for the next turn without interrupting the current one. |
 | `/steer <prompt>` | Inject a message after the next tool call without interrupting — the model picks it up on its next iteration rather than as a new turn. |
 | `/goal <text>` | Set a standing goal Hermes works toward across turns — our take on the Ralph loop. A judge model checks after each turn; if not done, Hermes auto-continues until it is, you pause/clear it, or the turn budget (default 20) is hit. Subcommands: `/goal status`, `/goal pause`, `/goal resume`, `/goal clear`. Safe to run mid-agent for status/pause/clear; setting a new goal requires `/stop` first. See [Persistent Goals](/docs/user-guide/features/goals). |
@@ -236,7 +240,7 @@ The messaging gateway supports the following built-in commands inside Telegram, 
 - `/skin`, `/snapshot`, `/gquota`, `/reload`, `/tools`, `/toolsets`, `/browser`, `/config`, `/cron`, `/skills`, `/platforms`, `/paste`, `/image`, `/statusbar`, `/plugins`, `/busy`, `/indicator`, `/redraw`, `/clear`, `/history`, `/save`, `/copy`, `/handoff`, and `/quit` are **CLI-only** commands.
 - `/verbose` is **CLI-only by default**, but can be enabled for messaging platforms by setting `display.tool_progress_command: true` in `config.yaml`. When enabled, it cycles the `display.tool_progress` mode and saves to config.
 - `/sethome`, `/update`, `/restart`, `/approve`, `/deny`, `/topic`, and `/commands` are **messaging-only** commands.
-- `/status`, `/background`, `/queue`, `/steer`, `/voice`, `/reload-mcp`, `/reload-skills`, `/rollback`, `/debug`, `/fast`, `/footer`, `/curator`, `/kanban`, `/sessions`, and `/yolo` work in **both** the CLI and the messaging gateway.
+- `/status`, `/background`, `/xsearch`, `/queue`, `/steer`, `/voice`, `/reload-mcp`, `/reload-skills`, `/rollback`, `/debug`, `/fast`, `/footer`, `/curator`, `/kanban`, `/sessions`, and `/yolo` work in **both** the CLI and the messaging gateway.
 - `/voice join`, `/voice channel`, and `/voice leave` are only meaningful on Discord.
 
 ## Confirmation prompts for destructive commands

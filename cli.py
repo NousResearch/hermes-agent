@@ -4429,6 +4429,12 @@ class HermesCLI:
     def _slow_command_status(self, command: str) -> str:
         """Return a user-facing status message for slower slash commands."""
         cmd_lower = command.lower().strip()
+        if cmd_lower == "/xsearch status":
+            return "Checking X Search..."
+        if cmd_lower == "/xsearch setup":
+            return "Configuring X Search..."
+        if cmd_lower.startswith("/xsearch"):
+            return "Searching X..."
         if cmd_lower.startswith("/skills search"):
             return "Searching skills..."
         if cmd_lower.startswith("/skills browse"):
@@ -6033,6 +6039,20 @@ class HermesCLI:
         self.enabled_toolsets = _get_platform_tools(load_config(), "cli")
         self.new_session()
         _cprint(f"{_DIM}Session reset. New tool configuration is active.{_RST}")
+
+    def _handle_xsearch_command(self, cmd: str):
+        """Handle `/xsearch` in the CLI and slash worker."""
+        from hermes_cli.config import load_config
+        from hermes_cli.tools_config import _get_platform_tools
+        from hermes_cli.xsearch_command import run_xsearch_command
+
+        result = run_xsearch_command(cmd, platform="cli")
+        print(result.output)
+
+        if result.reset_session:
+            self.enabled_toolsets = _get_platform_tools(load_config(), "cli")
+            self.new_session()
+            _cprint(f"{_DIM}Session reset. New X Search tool configuration is active.{_RST}")
 
     def show_toolsets(self):
         """Display available toolsets with kawaii ASCII art."""
@@ -8094,6 +8114,9 @@ class HermesCLI:
             self._handle_profile_command()
         elif canonical == "tools":
             self._handle_tools_command(cmd_original)
+        elif canonical == "xsearch":
+            with self._busy_command(self._slow_command_status(cmd_original)):
+                self._handle_xsearch_command(cmd_original)
         elif canonical == "toolsets":
             self.show_toolsets()
         elif canonical == "config":

@@ -2836,6 +2836,39 @@ def complete_task(
                 summary=summary if summary is not None else result,
                 metadata=metadata,
             )
+        handoff = (summary if summary is not None else result) or ""
+        handoff = handoff.strip()
+        if handoff or (isinstance(metadata, dict) and metadata):
+            author_row = conn.execute(
+                "SELECT assignee FROM tasks WHERE id = ?", (task_id,),
+            ).fetchone()
+            author = (
+                (author_row["assignee"] if author_row else None)
+                or os.environ.get("HERMES_PROFILE")
+                or "worker"
+            )
+            comment_parts = ["**Completed**"]
+            if handoff:
+                comment_parts.append(handoff)
+            if isinstance(metadata, dict) and metadata:
+                comment_parts.append(
+                    "```json\n"
+                    + json.dumps(metadata, ensure_ascii=False, indent=2)
+                    + "\n```"
+                )
+            comment_body = "\n\n".join(comment_parts).strip()
+            conn.execute(
+                "INSERT INTO task_comments (task_id, author, body, created_at) "
+                "VALUES (?, ?, ?, ?)",
+                (task_id, str(author).strip(), comment_body, now),
+            )
+            _append_event(
+                conn,
+                task_id,
+                "commented",
+                {"author": author, "len": len(comment_body), "source": "completion"},
+                run_id=run_id,
+            )
         # Carry the handoff summary in the event payload so gateway
         # notifiers and dashboard WS consumers can render it without a
         # second SQL round-trip. First line only, 400 char cap — the
@@ -3510,6 +3543,16 @@ def delete_task(conn: sqlite3.Connection, task_id: str) -> bool:
 # Workspace resolution
 # ---------------------------------------------------------------------------
 
+def _prepare_task_workspace(task: Task, *, board: Optional[str] = None) -> Path:
+    """Resolve a task workspace and provision git worktrees when needed."""
+    workspace = resolve_workspace(task, board=board)
+    if (task.workspace_kind or "scratch") == "worktree":
+        from hermes_cli.kanban_worktree import ensure_worktree_workspace
+
+        workspace = ensure_worktree_workspace(task, workspace)
+    return workspace
+
+
 def resolve_workspace(task: Task, *, board: Optional[str] = None) -> Path:
     """Resolve (and create if needed) the workspace for a task.
 
@@ -3523,9 +3566,9 @@ def resolve_workspace(task: Task, *, board: Optional[str] = None) -> Path:
       resolves against the dispatcher's CWD instead of a meaningful
       root.  Users who want a kanban-root-relative workspace should
       compute the absolute path themselves.
-    - ``worktree``: a git worktree at ``workspace_path``.  Not created
-      automatically in v1 -- the kanban-worker skill documents
-      ``git worktree add`` as a worker-side step.  Returns the intended path.
+    - ``worktree``: a git worktree at ``workspace_path``.  The dispatcher
+      provisions it at claim/spawn time via ``git worktree add`` when the
+      path does not exist yet.  Returns the intended (absolute) path.
 
     Persist the resolved path back to the task row via ``set_workspace_path``
     so subsequent runs reuse the same directory.
@@ -3562,8 +3605,9 @@ def resolve_workspace(task: Task, *, board: Optional[str] = None) -> Path:
         return p
     if kind == "worktree":
         if not task.workspace_path:
-            # Default: .worktrees/<id>/ under CWD.  Worker skill creates it.
-            return Path.cwd() / ".worktrees" / task.id
+            from hermes_cli.kanban_worktree import default_worktree_path
+
+            return default_worktree_path(task.id)
         p = Path(task.workspace_path).expanduser()
         if not p.is_absolute():
             raise ValueError(
@@ -4961,7 +5005,7 @@ def dispatch_once(
         if claimed is None:
             continue
         try:
-            workspace = resolve_workspace(claimed, board=board)
+            workspace = _prepare_task_workspace(claimed, board=board)
         except Exception as exc:
             auto = _record_spawn_failure(
                 conn, claimed.id, f"workspace: {exc}",
@@ -5039,7 +5083,7 @@ def dispatch_once(
         if claimed is None:
             continue
         try:
-            workspace = resolve_workspace(claimed, board=board)
+            workspace = _prepare_task_workspace(claimed, board=board)
         except Exception as exc:
             auto = _record_spawn_failure(
                 conn, claimed.id, f"workspace: {exc}",
@@ -5395,6 +5439,9 @@ def _default_spawn(
         env["HERMES_TENANT"] = task.tenant
     env["HERMES_KANBAN_TASK"] = task.id
     env["HERMES_KANBAN_WORKSPACE"] = workspace
+    if os.path.isdir(workspace):
+        env["TERMINAL_CWD"] = workspace
+        env["HERMES_CURSOR_AUX_CWD"] = workspace
     if task.branch_name:
         env["HERMES_KANBAN_BRANCH"] = task.branch_name
     if task.current_run_id is not None:

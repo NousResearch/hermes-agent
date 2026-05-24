@@ -284,6 +284,13 @@ def run_conversation(
     except ImportError:
         pass
 
+    try:
+        from hermes_cli.kanban_worktree import apply_kanban_worker_workspace
+
+        apply_kanban_worker_workspace(agent)
+    except ImportError:
+        pass
+
     # Tag all log records on this thread with the session ID so
     # ``hermes logs --session <id>`` can filter a single conversation.
     from hermes_logging import set_session_context

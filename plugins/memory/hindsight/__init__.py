@@ -569,8 +569,8 @@ class HindsightMemoryProvider(MemoryProvider):
         self._recall_tags_match = "any"
 
         # Retain controls
-        self._auto_retain = True
-        self._retain_every_n_turns = 1
+        self._auto_retain = False
+        self._retain_every_n_turns = 10
         self._retain_async = True
         self._retain_context = "conversation between Hermes Agent and the User"
         self._turn_counter = 0
@@ -857,8 +857,8 @@ class HindsightMemoryProvider(MemoryProvider):
             {"key": "recall_tags", "description": "Tags to filter when searching memories (comma-separated)", "default": ""},
             {"key": "recall_tags_match", "description": "Tag matching mode for recall", "default": "any", "choices": ["any", "all", "any_strict", "all_strict"]},
             {"key": "auto_recall", "description": "Automatically recall memories before each turn", "default": True},
-            {"key": "auto_retain", "description": "Automatically retain conversation turns", "default": True},
-            {"key": "retain_every_n_turns", "description": "Retain every N turns (1 = every turn)", "default": 1},
+            {"key": "auto_retain", "description": "Automatically retain conversation turns (cloud retain can incur usage costs)", "default": False},
+            {"key": "retain_every_n_turns", "description": "Retain every N turns (1 = every turn)", "default": 10},
             {"key": "retain_async","description": "Process retain asynchronously on the Hindsight server", "default": True},
             {"key": "retain_context", "description": "Context label for retained memories", "default": "conversation between Hermes Agent and the User"},
             {"key": "recall_max_tokens", "description": "Maximum tokens for recall results", "default": 4096},
@@ -1180,8 +1180,8 @@ class HindsightMemoryProvider(MemoryProvider):
         ).strip() or "Assistant"
 
         # Retain controls
-        self._auto_retain = self._config.get("auto_retain", True)
-        self._retain_every_n_turns = max(1, int(self._config.get("retain_every_n_turns", 1)))
+        self._auto_retain = self._config.get("auto_retain", False)
+        self._retain_every_n_turns = max(1, int(self._config.get("retain_every_n_turns", 10)))
         self._retain_context = self._config.get("retain_context", "conversation between Hermes Agent and the User")
 
         # Recall controls

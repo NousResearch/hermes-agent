@@ -96,6 +96,8 @@ def provider(tmp_path, monkeypatch):
         "bank_id": "test-bank",
         "budget": "mid",
         "memory_mode": "hybrid",
+        "auto_retain": True,
+        "retain_every_n_turns": 1,
     }
     config_path = tmp_path / "hindsight" / "config.json"
     config_path.parent.mkdir(parents=True, exist_ok=True)
@@ -122,6 +124,8 @@ def provider_with_config(tmp_path, monkeypatch):
             "bank_id": "test-bank",
             "budget": "mid",
             "memory_mode": "hybrid",
+            "auto_retain": True,
+            "retain_every_n_turns": 1,
         }
         config.update(overrides)
         config_path = tmp_path / "hindsight" / "config.json"
@@ -189,10 +193,28 @@ class TestSchemas:
 
 
 class TestConfig:
-    def test_default_values(self, provider):
-        assert provider._auto_retain is True
+    def test_default_values(self, tmp_path, monkeypatch):
+        config = {
+            "mode": "cloud",
+            "apiKey": "test-key",
+            "api_url": "http://localhost:9999",
+            "bank_id": "test-bank",
+            "budget": "mid",
+            "memory_mode": "hybrid",
+        }
+        config_path = tmp_path / "hindsight" / "config.json"
+        config_path.parent.mkdir(parents=True, exist_ok=True)
+        config_path.write_text(json.dumps(config))
+        monkeypatch.setattr(
+            "plugins.memory.hindsight.get_hermes_home", lambda: tmp_path
+        )
+
+        provider = HindsightMemoryProvider()
+        provider.initialize(session_id="test-session", hermes_home=str(tmp_path), platform="cli")
+
+        assert provider._auto_retain is False
         assert provider._auto_recall is True
-        assert provider._retain_every_n_turns == 1
+        assert provider._retain_every_n_turns == 10
         assert provider._recall_max_tokens == 4096
         assert provider._recall_max_input_chars == 800
         assert provider._tags is None
@@ -819,7 +841,14 @@ class TestSyncTurn:
 
     def test_sync_turn_parent_session_tag(self, tmp_path, monkeypatch):
         """When initialized with parent_session_id, parent tag is added."""
-        config = {"mode": "cloud", "apiKey": "k", "api_url": "http://x", "bank_id": "b"}
+        config = {
+            "mode": "cloud",
+            "apiKey": "k",
+            "api_url": "http://x",
+            "bank_id": "b",
+            "auto_retain": True,
+            "retain_every_n_turns": 1,
+        }
         config_path = tmp_path / "hindsight" / "config.json"
         config_path.parent.mkdir(parents=True, exist_ok=True)
         config_path.write_text(json.dumps(config))

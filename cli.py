@@ -6776,6 +6776,195 @@ class HermesCLI:
         _cprint(f"  Original session: {parent_session_id}")
         _cprint(f"  Branch session:   {new_session_id}")
 
+    def _handle_continue_command(self, cmd_original: str) -> None:
+        """Handle /continue [focus] -- new session with context carried forward.
+
+        Generates a handoff summary from the current conversation and injects it
+        into a fresh session so the agent can continue where it left off with a
+        clean context window.  Inspired by Claude Code's ``/compact`` but starts
+        a brand-new session instead of compressing in-place.
+        """
+        if not self.conversation_history or len(self.conversation_history) < 2:
+            _cprint("  No conversation to continue -- send a message first.")
+            return
+
+        # -- extract optional focus topic --
+        focus = ""
+        parts = cmd_original.strip().split(None, 1)
+        if len(parts) > 1:
+            focus = parts[1].strip()
+
+        # -- build continuation context --
+        summary = self._build_continuation_context(focus)
+
+        old_session_id = self.session_id
+
+        # -- start a fresh session --
+        self.new_session(silent=True)
+
+        # -- inject the handoff as the first user message --
+        handoff_msg = {"role": "user", "content": summary}
+        self.conversation_history = [handoff_msg]
+
+        # persist to session DB
+        if self._session_db:
+            try:
+                self._session_db.append_message(
+                    session_id=self.session_id,
+                    role="user",
+                    content=summary,
+                )
+            except Exception:
+                pass
+
+        # -- set a descriptive title --
+        try:
+            from hermes_state import SessionDB
+            short_old = old_session_id[:19] if old_session_id else "unknown"
+            title = SessionDB.sanitize_title(f"Continue from {short_old}")
+            if title:
+                self._session_db.set_session_title(self.session_id, title)
+        except Exception:
+            pass
+
+        # -- auto-trigger the agent --
+        # The handoff context is already in conversation_history as the first
+        # user message.  This trigger tells the agent to read it and continue.
+        self._pending_input.put(
+            "Read the session continuation context above and pick up "
+            "where the previous session left off."
+        )
+
+        _cprint(f"  Session continued from {old_session_id[:19]}...")
+        _cprint("  Context handoff injected. Agent will pick up automatically.")
+
+    def _build_continuation_context(self, focus: str = "") -> str:
+        """Build a handoff summary from the current conversation history.
+
+        Extracts: primary task, recent exchanges, tool activity, files touched,
+        and optional project context from carry_forward.  Mechanical -- no LLM.
+        """
+        import json as _json
+
+        sections = []
+
+        # -- primary task: find the most substantive user message --
+        # The first message might be "yes" or "go ahead" -- look for the
+        # longest substantive one (heuristic: longest content that looks
+        # like a task description).
+        user_msgs = [
+            m for m in self.conversation_history
+            if m.get("role") == "user" and m.get("content")
+        ]
+        if user_msgs:
+            # Pick the longest user message as the primary task description,
+            # falling back to the first one.
+            primary = max(user_msgs, key=lambda m: len(m.get("content", "")))
+            # But if the first message is close in length (>=50%), prefer it
+            # since it's the original intent.
+            first = user_msgs[0]
+            if len(first.get("content", "")) >= len(primary.get("content", "")) * 0.5:
+                primary = first
+            task_text = primary["content"][:800]
+            sections.append(f"## Task\n{task_text}")
+
+        # -- recent exchanges (last 10 content-bearing messages) --
+        recent_lines = []
+        for msg in self.conversation_history[-16:]:
+            role = msg.get("role", "")
+            content = msg.get("content", "")
+            if not content or role not in ("user", "assistant"):
+                continue
+            tag = "USER" if role == "user" else "ASST"
+            # For assistant messages, take the first meaningful paragraph
+            if role == "assistant" and len(content) > 500:
+                content = content[:500] + "..."
+            recent_lines.append(f"[{tag}]: {content[:500]}")
+            if len(recent_lines) >= 10:
+                break
+        if recent_lines:
+            sections.append("## Recent Exchanges\n" + "\n".join(recent_lines))
+
+        # -- tool calls: extract names, key args, and file paths --
+        tool_lines = []
+        files_touched = set()
+        for msg in self.conversation_history[-20:]:
+            tcs = msg.get("tool_calls")
+            if tcs:
+                for tc in tcs:
+                    fn = tc.get("function", {})
+                    name = fn.get("name", tc.get("name", ""))
+                    args_str = fn.get("arguments", "")
+                    if isinstance(args_str, str) and args_str:
+                        try:
+                            args = _json.loads(args_str)
+                            # Collect file paths from common args
+                            for key in ("path", "file_path", "workdir", "command"):
+                                val = args.get(key, "")
+                                if val and isinstance(val, str):
+                                    if "/" in val and len(val) < 300:
+                                        files_touched.add(val)
+                            short = {
+                                k: (str(v)[:80] if len(str(v)) > 80 else v)
+                                for k, v in list(args.items())[:5]
+                            }
+                            tool_lines.append(f"  {name}({short})")
+                        except Exception:
+                            tool_lines.append(f"  {name}(...)")
+            elif msg.get("role") == "tool" and msg.get("content"):
+                # Extract file paths from tool results
+                result_text = msg["content"][:300]
+                tool_lines.append(f"  -> {result_text}")
+                # Quick scan for file paths in results
+                import re as _re
+                for match in _re.finditer(r'[\w/.-]+\.\w{1,10}', result_text):
+                    candidate = match.group(0)
+                    if "/" in candidate and not candidate.startswith("http"):
+                        files_touched.add(candidate)
+        if tool_lines:
+            sections.append("## Tool Activity\n" + "\n".join(tool_lines[-12:]))
+
+        # -- files touched --
+        # Filter out noise (system paths, very long paths) and deduplicate
+        clean_files = set()
+        for f in files_touched:
+            if len(f) > 5 and not f.startswith(("/usr/", "/tmp/", "/proc/")):
+                clean_files.add(f)
+        if clean_files:
+            file_list = sorted(clean_files)[:15]
+            sections.append("## Files Touched\n" + "\n".join(f"  {f}" for f in file_list))
+
+        # -- carry_forward project context (best-effort) --
+        try:
+            import subprocess
+            cf_path = os.path.expanduser(
+                "~/zion/projects/carry_forward/carry_forward/carry_forward.py"
+            )
+            if os.path.isfile(cf_path):
+                result = subprocess.run(
+                    ["python3", cf_path, "context"],
+                    capture_output=True, text=True, timeout=15,
+                )
+                if result.returncode == 0 and result.stdout.strip():
+                    sections.append(
+                        "## Project Context (carry_forward)\n"
+                        + result.stdout[:2000]
+                    )
+        except Exception:
+            pass
+
+        # -- focus topic --
+        if focus:
+            sections.append(f"## Focus\n{focus}")
+
+        msg_count = len(self.conversation_history)
+        header = (
+            f"[SESSION CONTINUATION -- previous session had {msg_count} messages "
+            f"and ran out of context. Pick up where we left off. "
+            f"Review the context below and continue working.]\n"
+        )
+        return header + "\n\n".join(sections)
+
     def save_conversation(self):
         """Save the current conversation to a JSON snapshot under ~/.hermes/sessions/saved/.
 
@@ -8255,6 +8444,8 @@ class HermesCLI:
             ) is None:
                 return
             self.undo_last()
+        elif canonical == "continue":
+            self._handle_continue_command(cmd_original)
         elif canonical == "branch":
             self._handle_branch_command(cmd_original)
         elif canonical == "save":

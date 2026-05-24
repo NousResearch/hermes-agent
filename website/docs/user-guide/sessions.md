@@ -247,6 +247,39 @@ When a session's context is compressed (manually via `/compress` or automaticall
 
 When you resume by name (`hermes -c "my project"`), it automatically picks the most recent session in the lineage.
 
+### Session Continuation (`/continue`)
+
+When your session runs out of context window (you see the model truncating responses or losing track of earlier conversation), use `/continue` to start a fresh session that carries the important context forward:
+
+```
+/continue                    # carry full context forward
+/continue the database schema  # carry forward with a focus topic
+/chain                       # alias
+```
+
+**What it does:**
+
+1. Extracts a handoff summary from the current session:
+   - **Task** — the primary user intent (finds the most substantive user message)
+   - **Recent exchanges** — last 10 user/assistant messages
+   - **Tool activity** — recent tool calls, arguments, and results
+   - **Files touched** — file paths extracted from tool arguments and results
+   - **Project context** — carry_forward state (if available)
+2. Starts a completely new session (fresh ID, clean context window)
+3. Injects the handoff summary as the first user message
+4. Auto-triggers the agent to pick up where you left off
+
+**How it differs from related commands:**
+
+| Command | What happens |
+|---------|-------------|
+| `/new` | Blank session, no context carried over |
+| `/compress` | Summarizes in-place using an LLM call (costs tokens), stays in same session lineage |
+| `/continue` | Starts a new session with mechanical context extraction (no LLM cost, no token spend) |
+| `/branch` | Copies the full conversation history to a new session (no summarization, full fidelity) |
+
+`/continue` is the right choice when you want a clean context window but don't want to lose the thread. The extraction is mechanical (no LLM call), so it's instant and free. The trade-off is that the handoff is a structured dump rather than a concise LLM-generated summary.
+
 ### /title in Messaging Platforms
 
 The `/title` command works in all gateway platforms (Telegram, Discord, Slack, WhatsApp):

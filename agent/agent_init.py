@@ -1190,6 +1190,26 @@ def init_agent(
         _agent_section = {}
     agent._tool_use_enforcement = _agent_section.get("tool_use_enforcement", "auto")
 
+    # OAuth Claude-Code stealth mode (#15080). Anthropic's plan-vs-extra-
+    # usage classifier rejects requests whose tool-name set or system-
+    # prompt content fingerprints as non-Claude-Code, when the account
+    # has no overage credit. Modes: "off" (legacy mcp_-prefix only),
+    # "rename_only" (CC/PascalCase tool names), "full_stealth" (rename +
+    # collapse system prompt to the bare identity line), "auto" (start
+    # off, escalate on first matching 400 within a session).
+    # Configure via agent.oauth_stealth in config.yaml. Default: auto.
+    from agent import oauth_compat as _oauth_compat
+    _stealth_cfg = _agent_section.get("oauth_stealth", "auto")
+    if isinstance(_stealth_cfg, str) and _stealth_cfg.strip().lower() == "auto":
+        agent._oauth_stealth_auto = True
+        agent._oauth_stealth_mode = _oauth_compat.StealthMode.OFF
+    else:
+        agent._oauth_stealth_auto = False
+        agent._oauth_stealth_mode = _oauth_compat.StealthMode.parse(
+            _stealth_cfg, default=_oauth_compat.StealthMode.OFF,
+        )
+    agent._oauth_tool_map = _oauth_compat.ToolNameMap()
+
     # App-level API retry count (wraps each model API call).  Default 3,
     # overridable via agent.api_max_retries in config.yaml.  See #11616.
     try:

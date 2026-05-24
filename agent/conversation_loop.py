@@ -991,6 +991,7 @@ def run_conversation(
         image_shrink_retry_attempted = False
         multimodal_tool_content_retry_attempted = False
         oauth_1m_beta_retry_attempted = False
+        oauth_stealth_retry_attempted = False
         llama_cpp_grammar_retry_attempted = False
         has_retried_429 = False
         restart_with_compressed_messages = False
@@ -1426,8 +1427,15 @@ def run_conversation(
                     _trunc_msg = None
                     _trunc_transport = agent._get_transport()
                     if agent.api_mode == "anthropic_messages":
+                        # OAuth stealth reverse-rename (#15080): the rebuilt
+                        # assistant message must un-rename tool-use blocks
+                        # so the next iteration's tool registry recognizes
+                        # them by their original hermes names. No-op when
+                        # the session never escalated stealth.
                         _trunc_result = _trunc_transport.normalize_response(
-                            response, strip_tool_prefix=agent._is_anthropic_oauth
+                            response,
+                            strip_tool_prefix=agent._is_anthropic_oauth,
+                            oauth_tool_map=agent._oauth_tool_map,
                         )
                     else:
                         _trunc_result = _trunc_transport.normalize_response(response)
@@ -2112,6 +2120,32 @@ def run_conversation(
                         agent._vprint(
                             f"{agent.log_prefix}🔕 OAuth subscription doesn't support "
                             f"the 1M-context beta — disabled for this session and retrying...",
+                            force=True,
+                        )
+                        continue
+
+                # Reactive recovery for the OAuth third-party billing-lane
+                # classifier (#15080). On the first matching 400 in a
+                # session running with stealth=auto, escalate to
+                # FULL_STEALTH and retry. Sessions configured with an
+                # explicit stealth mode are left alone (the operator
+                # opted into a specific behavior).
+                if (
+                    classified.reason == FailoverReason.oauth_third_party_classifier
+                    and agent.api_mode == "anthropic_messages"
+                    and agent._is_anthropic_oauth
+                    and getattr(agent, "_oauth_stealth_auto", False)
+                    and not oauth_stealth_retry_attempted
+                ):
+                    oauth_stealth_retry_attempted = True
+                    from agent import oauth_compat as _oauth_compat
+                    if agent._oauth_stealth_mode != _oauth_compat.StealthMode.FULL_STEALTH:
+                        agent._oauth_stealth_mode = _oauth_compat.StealthMode.FULL_STEALTH
+                        agent._vprint(
+                            f"{agent.log_prefix}🔕 Anthropic OAuth third-party classifier rejected "
+                            f"this request shape (#15080). Escalating to full stealth mode "
+                            f"(tool-name rename + system-prompt slim) for this session and retrying. "
+                            f"Set agent.oauth_stealth in config.yaml to skip the first-call probe.",
                             force=True,
                         )
                         continue
@@ -3022,6 +3056,10 @@ def run_conversation(
             _normalize_kwargs = {}
             if agent.api_mode == "anthropic_messages":
                 _normalize_kwargs["strip_tool_prefix"] = agent._is_anthropic_oauth
+                # OAuth stealth reverse-rename (#15080). No-op when the
+                # session never escalated stealth or when no rewrites
+                # were registered.
+                _normalize_kwargs["oauth_tool_map"] = agent._oauth_tool_map
             normalized = _transport.normalize_response(response, **_normalize_kwargs)
             assistant_message = normalized
             finish_reason = normalized.finish_reason

@@ -536,6 +536,7 @@ def _common_betas_for_base_url(
     base_url: str | None,
     *,
     drop_context_1m_beta: bool = False,
+    is_oauth: bool = False,
 ) -> list[str]:
     """Return the beta headers that are safe for the configured endpoint.
 
@@ -552,6 +553,16 @@ def _common_betas_for_base_url(
 
     ``drop_context_1m_beta=True`` strips the 1M-context beta from any path that
     would otherwise include it after a subscription/endpoint rejects the beta.
+
+    ``is_oauth=True`` strips ``fine-grained-tool-streaming-2025-05-14`` from
+    the resulting list. Empirical inspection of the Claude Code 2.1.143 binary
+    confirms CC does **not** send this beta — it's GA on Claude 4.6+ and CC's
+    own bundled docs say to remove the header (CC opts in to fine-grained tool
+    streaming via the per-tool ``eager_input_streaming`` field gated on the
+    ``CLAUDE_CODE_ENABLE_FINE_GRAINED_TOOL_STREAMING`` env / ``tengu_fgts``
+    feature flag, not the global beta header). Sending it on OAuth requests
+    is a fingerprint divergence from real CC and may contribute to Anthropic's
+    plan-vs-extra-usage classifier rejection (#15080).
     """
     betas = list(_COMMON_BETAS)
     if _base_url_needs_context_1m_beta(base_url) and not drop_context_1m_beta:
@@ -560,7 +571,9 @@ def _common_betas_for_base_url(
         _stripped = {_TOOL_STREAMING_BETA, _CONTEXT_1M_BETA}
         return [b for b in betas if b not in _stripped]
     if drop_context_1m_beta:
-        return [b for b in betas if b != _CONTEXT_1M_BETA]
+        betas = [b for b in betas if b != _CONTEXT_1M_BETA]
+    if is_oauth:
+        betas = [b for b in betas if b != _TOOL_STREAMING_BETA]
     return betas
 
 
@@ -705,9 +718,19 @@ def build_anthropic_client(
             kwargs["default_query"] = {"api-version": "2025-04-15"}
         else:
             kwargs["base_url"] = normalized_base_url
+    # OAuth detection runs before client-construction so the beta list can
+    # mirror real Claude Code exactly. _is_oauth_token() is the same shape
+    # check used below to pick auth_token vs api_key.
+    _is_oauth_request = (
+        not _requires_bearer_auth(normalized_base_url)
+        and not _is_third_party_anthropic_endpoint(base_url)
+        and not _is_kimi_coding_endpoint(base_url)
+        and _is_oauth_token(api_key)
+    )
     common_betas = _common_betas_for_base_url(
         normalized_base_url,
         drop_context_1m_beta=drop_context_1m_beta,
+        is_oauth=_is_oauth_request,
     )
 
     if _is_kimi_coding_endpoint(base_url):
@@ -2038,6 +2061,8 @@ def build_anthropic_kwargs(
     base_url: str | None = None,
     fast_mode: bool = False,
     drop_context_1m_beta: bool = False,
+    oauth_stealth_mode: "oauth_compat.StealthMode | None" = None,
+    oauth_tool_map: "oauth_compat.ToolNameMap | None" = None,
 ) -> Dict[str, Any]:
     """Build kwargs for anthropic.messages.create().
 
@@ -2121,23 +2146,31 @@ def build_anthropic_kwargs(
                 text = text.replace("Nous Research", "Anthropic")
                 block["text"] = text
 
-        # 3. Prefix tool names with mcp_ (Claude Code convention)
-        if anthropic_tools:
-            for tool in anthropic_tools:
-                if "name" in tool:
-                    tool["name"] = _MCP_TOOL_PREFIX + tool["name"]
+        # 3. Prefix tool names with mcp_ (legacy Claude Code MCP convention).
+        #    Skipped when stealth mode is RENAME_ONLY / FULL_STEALTH — the
+        #    stealth path rewrites tool names to Claude Code canonicals
+        #    (or PascalCase) instead. See agent/oauth_compat.py and #15080.
+        from agent import oauth_compat  # local import: avoid cycle at load
+        _stealth = oauth_compat.StealthMode.parse(
+            oauth_stealth_mode, default=oauth_compat.StealthMode.OFF
+        )
+        if _stealth == oauth_compat.StealthMode.OFF:
+            if anthropic_tools:
+                for tool in anthropic_tools:
+                    if "name" in tool:
+                        tool["name"] = _MCP_TOOL_PREFIX + tool["name"]
 
-        # 4. Prefix tool names in message history (tool_use and tool_result blocks)
-        for msg in anthropic_messages:
-            content = msg.get("content")
-            if isinstance(content, list):
-                for block in content:
-                    if isinstance(block, dict):
-                        if block.get("type") == "tool_use" and "name" in block:
-                            if not block["name"].startswith(_MCP_TOOL_PREFIX):
-                                block["name"] = _MCP_TOOL_PREFIX + block["name"]
-                        elif block.get("type") == "tool_result" and "tool_use_id" in block:
-                            pass  # tool_result uses ID, not name
+            # 4. Prefix tool names in message history (tool_use and tool_result blocks)
+            for msg in anthropic_messages:
+                content = msg.get("content")
+                if isinstance(content, list):
+                    for block in content:
+                        if isinstance(block, dict):
+                            if block.get("type") == "tool_use" and "name" in block:
+                                if not block["name"].startswith(_MCP_TOOL_PREFIX):
+                                    block["name"] = _MCP_TOOL_PREFIX + block["name"]
+                            elif block.get("type") == "tool_result" and "tool_use_id" in block:
+                                pass  # tool_result uses ID, not name
 
     kwargs: Dict[str, Any] = {
         "model": model,
@@ -2232,13 +2265,28 @@ def build_anthropic_kwargs(
         kwargs.setdefault("extra_body", {})["speed"] = "fast"
         # Build extra_headers with ALL applicable betas (the per-request
         # extra_headers override the client-level anthropic-beta header).
+        # Pass is_oauth so the OAuth path also drops fine-grained-tool-streaming
+        # here — without this, the fast-mode extra_headers override would
+        # silently re-introduce the beta we stripped at client level (#15080).
         betas = list(_common_betas_for_base_url(
             base_url,
             drop_context_1m_beta=drop_context_1m_beta,
+            is_oauth=is_oauth,
         ))
         if is_oauth:
             betas.extend(_OAUTH_ONLY_BETAS)
         betas.append(_FAST_MODE_BETA)
         kwargs["extra_headers"] = {"anthropic-beta": ",".join(betas)}
+
+    # OAuth Claude-Code-stealth transforms (#15080). No-op when mode==OFF
+    # or when the request isn't OAuth. Runs last so beta-header logic and
+    # output_config decisions see the original tool names.
+    if is_oauth and oauth_tool_map is not None:
+        from agent import oauth_compat
+        _stealth = oauth_compat.StealthMode.parse(
+            oauth_stealth_mode, default=oauth_compat.StealthMode.OFF
+        )
+        if _stealth != oauth_compat.StealthMode.OFF:
+            oauth_compat.apply_to_kwargs(kwargs, mode=_stealth, tool_map=oauth_tool_map)
 
     return kwargs

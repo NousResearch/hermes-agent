@@ -60,6 +60,7 @@ class TestFailoverReason:
             "provider_policy_blocked",
             "thinking_signature", "long_context_tier",
             "oauth_long_context_beta_forbidden",
+            "oauth_third_party_classifier",
             "llama_cpp_grammar_pattern",
             "unknown",
         }
@@ -564,6 +565,54 @@ class TestClassifyApiError:
         )
         result = classify_api_error(e, provider="anthropic")
         assert result.reason != FailoverReason.oauth_long_context_beta_forbidden
+
+    # ── Provider-specific: Anthropic OAuth third-party classifier (#15080) ──
+
+    def test_anthropic_oauth_third_party_classifier_third_party_apps(self):
+        """400 + 'Third-party apps now draw from your extra usage' + URL
+        → oauth_third_party_classifier (retryable, no compression)."""
+        e = MockAPIError(
+            "Third-party apps now draw from your extra usage, not your plan limits. "
+            "Add more at claude.ai/settings/usage and keep going.",
+            status_code=400,
+        )
+        result = classify_api_error(e, provider="anthropic", model="claude-opus-4-7")
+        assert result.reason == FailoverReason.oauth_third_party_classifier
+        assert result.retryable is True
+        assert result.should_compress is False
+
+    def test_anthropic_oauth_third_party_classifier_out_of_extra_usage(self):
+        """Same classification for the alternate phrasing Anthropic returns
+        on accounts that previously had overage credit."""
+        e = MockAPIError(
+            "You're out of extra usage. Add more at claude.ai/settings/usage "
+            "and keep going.",
+            status_code=400,
+        )
+        result = classify_api_error(e, provider="anthropic", model="claude-opus-4-7")
+        assert result.reason == FailoverReason.oauth_third_party_classifier
+
+    def test_third_party_classifier_does_not_match_429_tier_gate(self):
+        """The 429 long-context-tier rule uses 'extra usage' too — the new
+        400 rule must require both 'extra usage' AND the URL to fire, so
+        the 429 path keeps its own classification."""
+        e = MockAPIError(
+            "Extra usage is required for long context requests over 200k tokens",
+            status_code=429,
+        )
+        result = classify_api_error(e, provider="anthropic", model="claude-opus-4-7")
+        assert result.reason == FailoverReason.long_context_tier
+        assert result.reason != FailoverReason.oauth_third_party_classifier
+
+    def test_third_party_classifier_requires_status_400(self):
+        """Same error string at a different status code must not match."""
+        e = MockAPIError(
+            "Third-party apps now draw from your extra usage. "
+            "Add more at claude.ai/settings/usage.",
+            status_code=402,
+        )
+        result = classify_api_error(e, provider="anthropic", model="claude-opus-4-7")
+        assert result.reason != FailoverReason.oauth_third_party_classifier
 
     # ── Transport errors ──
 

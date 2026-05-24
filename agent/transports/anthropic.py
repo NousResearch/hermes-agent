@@ -75,6 +75,8 @@ class AnthropicTransport(ProviderTransport):
             base_url=params.get("base_url"),
             fast_mode=params.get("fast_mode", False),
             drop_context_1m_beta=params.get("drop_context_1m_beta", False),
+            oauth_stealth_mode=params.get("oauth_stealth_mode"),
+            oauth_tool_map=params.get("oauth_tool_map"),
         )
 
     def normalize_response(self, response: Any, **kwargs) -> NormalizedResponse:
@@ -89,6 +91,13 @@ class AnthropicTransport(ProviderTransport):
 
         strip_tool_prefix = kwargs.get("strip_tool_prefix", False)
         _MCP_PREFIX = "mcp_"
+        # Reverse OAuth Claude-Code stealth tool renames (#15080). The
+        # forward rewrite happens in oauth_compat.apply_to_kwargs at
+        # request-build time; here we restore the agent's original tool
+        # names so the dispatcher receives what it registered. Optional:
+        # callers that don't pass an oauth_tool_map (or pass None) get the
+        # legacy passthrough behavior.
+        oauth_tool_map = kwargs.get("oauth_tool_map")
 
         text_parts = []
         reasoning_parts = []
@@ -107,6 +116,10 @@ class AnthropicTransport(ProviderTransport):
                 name = block.name
                 if strip_tool_prefix and name.startswith(_MCP_PREFIX):
                     name = name[len(_MCP_PREFIX):]
+                if oauth_tool_map is not None:
+                    _orig = oauth_tool_map.unrename(name)
+                    if _orig is not None:
+                        name = _orig
                 tool_calls.append(
                     ToolCall(
                         id=block.id,

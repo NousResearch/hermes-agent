@@ -67,11 +67,57 @@ class TestBuildAnthropicClient:
             assert "oauth-2025-04-20" in betas
             assert "claude-code-20250219" in betas
             assert "interleaved-thinking-2025-05-14" in betas
-            assert "fine-grained-tool-streaming-2025-05-14" in betas
+            # CC parity (#15080): real Claude Code does NOT send the
+            # fine-grained-tool-streaming beta header — see
+            # test_oauth_strips_fine_grained_tool_streaming_beta below.
+            assert "fine-grained-tool-streaming-2025-05-14" not in betas
             # Native Anthropic does not get context-1m by default; accounts
             # without that beta reject even short auxiliary requests.
             assert "context-1m-2025-08-07" not in betas
             assert "api_key" not in kwargs
+
+    def test_oauth_strips_fine_grained_tool_streaming_beta(self):
+        """OAuth requests must NOT carry ``fine-grained-tool-streaming-2025-05-14``.
+
+        Empirical evidence from the Claude Code 2.1.143 Windows binary:
+        running ``strings claude.exe | grep -E '^(fine-grained-tool-streaming|...)'``
+        shows every other beta CC uses (claude-code-20250219, oauth-2025-04-20,
+        interleaved-thinking-2025-05-14, context-1m-2025-08-07, fast-mode-2026-02-01,
+        files-api-2025-04-14, extended-cache-ttl-2025-04-11,
+        prompt-caching-scope-2026-01-05, message-batches-2024-09-24) as a plain
+        interned string — but the streaming beta only appears inside docstrings
+        of a bundled skill, which literally instructs:
+
+            "Remove the effort-2025-11-24 and
+             fine-grained-tool-streaming-2025-05-14 beta headers (GA on 4.6)"
+
+        CC opts in to fine-grained tool streaming at the per-tool level
+        (``eager_input_streaming: true``) gated on the
+        ``CLAUDE_CODE_ENABLE_FINE_GRAINED_TOOL_STREAMING`` env var and the
+        ``tengu_fgts`` feature flag — NOT via the global beta header.
+
+        Sending the beta on OAuth requests is a fingerprint divergence from
+        real CC and was flagged on the #15080 PR as a possible additional
+        trigger for Anthropic's plan-vs-extra-usage classifier. Even if it
+        is not an independent classifier trigger, matching CC's beta set
+        exactly is the whole point of the OAuth path.
+        """
+        with patch("agent.anthropic_adapter._anthropic_sdk") as mock_sdk:
+            build_anthropic_client("sk-ant-oat01-" + "x" * 60)
+            kwargs = mock_sdk.Anthropic.call_args[1]
+            betas = kwargs["default_headers"]["anthropic-beta"]
+            assert "fine-grained-tool-streaming-2025-05-14" not in betas
+
+    def test_api_key_still_sends_fine_grained_tool_streaming_beta(self):
+        """Non-OAuth (x-api-key) requests keep the beta — the strip is
+        scoped to OAuth only, since the fingerprint concern is OAuth-specific
+        and API-key callers may target older Claude (4.5/4.1) endpoints that
+        still benefit from the explicit opt-in header."""
+        with patch("agent.anthropic_adapter._anthropic_sdk") as mock_sdk:
+            build_anthropic_client("sk-ant-api03-" + "x" * 60)
+            kwargs = mock_sdk.Anthropic.call_args[1]
+            betas = kwargs["default_headers"]["anthropic-beta"]
+            assert "fine-grained-tool-streaming-2025-05-14" in betas
 
     def test_oauth_drop_context_1m_beta_strips_only_1m(self):
         """drop_context_1m_beta=True strips context-1m-2025-08-07 while
@@ -84,11 +130,13 @@ class TestBuildAnthropicClient:
             kwargs = mock_sdk.Anthropic.call_args[1]
             betas = kwargs["default_headers"]["anthropic-beta"]
             assert "context-1m-2025-08-07" not in betas
-            # Everything else must still be there.
+            # Everything else CC sends must still be there.
             assert "oauth-2025-04-20" in betas
             assert "claude-code-20250219" in betas
             assert "interleaved-thinking-2025-05-14" in betas
-            assert "fine-grained-tool-streaming-2025-05-14" in betas
+            # CC parity (#15080): fine-grained-tool-streaming must remain
+            # absent regardless of the context-1m drop.
+            assert "fine-grained-tool-streaming-2025-05-14" not in betas
 
     def test_api_key_uses_api_key(self):
         with patch("agent.anthropic_adapter._anthropic_sdk") as mock_sdk:
@@ -1081,6 +1129,33 @@ class TestBuildAnthropicKwargs:
         assert "oauth-2025-04-20" in betas
         assert "claude-code-20250219" in betas
         assert "interleaved-thinking-2025-05-14" in betas
+        # CC parity (#15080): fast-mode extra_headers must also drop the
+        # fine-grained-tool-streaming beta on the OAuth path, otherwise the
+        # per-request override would silently re-introduce the beta that
+        # build_anthropic_client stripped at client level.
+        assert "fine-grained-tool-streaming-2025-05-14" not in betas
+
+    def test_fast_mode_oauth_strips_fine_grained_tool_streaming_beta(self):
+        """OAuth fast-mode requests must not regress on the CC fingerprint
+        parity asserted by test_oauth_strips_fine_grained_tool_streaming_beta.
+        The fast-mode code path builds its own extra_headers from
+        _common_betas_for_base_url; this guards the is_oauth thread-through."""
+        kwargs = build_anthropic_kwargs(
+            model="claude-opus-4-6",
+            messages=[{"role": "user", "content": "Hi"}],
+            tools=None,
+            max_tokens=4096,
+            reasoning_config=None,
+            is_oauth=True,
+            fast_mode=True,
+        )
+        betas = kwargs["extra_headers"]["anthropic-beta"]
+        assert "fine-grained-tool-streaming-2025-05-14" not in betas
+        # And the CC-parity betas the fast-mode path is supposed to set:
+        assert "fast-mode-2026-02-01" in betas
+        assert "oauth-2025-04-20" in betas
+        assert "claude-code-20250219" in betas
+        assert "interleaved-thinking-2025-05-14" in betas
 
     def test_reasoning_config_maps_to_manual_thinking_for_pre_4_6_models(self):
         kwargs = build_anthropic_kwargs(
@@ -1987,3 +2062,102 @@ class TestConvertToolsToAnthropicDedup:
 
     def test_none_tools_returns_empty(self):
         assert convert_tools_to_anthropic(None) == []
+
+
+# ---------------------------------------------------------------------------
+# OAuth Claude-Code stealth integration (#15080)
+# ---------------------------------------------------------------------------
+
+class TestOAuthStealthIntegration:
+    """Regression tests that ``build_anthropic_kwargs`` honors the
+    ``oauth_stealth_mode`` / ``oauth_tool_map`` parameters threaded
+    through from run_agent. See agent/oauth_compat.py for the full
+    rationale (issue #15080)."""
+
+    def _tools(self):
+        return [
+            {"type": "function", "function": {
+                "name": "terminal", "description": "x",
+                "parameters": {"type": "object", "properties": {}},
+            }},
+            {"type": "function", "function": {
+                "name": "session_search", "description": "x",
+                "parameters": {"type": "object", "properties": {}},
+            }},
+        ]
+
+    def test_off_or_unset_keeps_legacy_mcp_prefix(self):
+        # No stealth params → legacy mcp_-prefixed names (existing behavior).
+        kwargs = build_anthropic_kwargs(
+            model="claude-opus-4-7",
+            messages=[{"role": "user", "content": "Hi"}],
+            tools=self._tools(),
+            max_tokens=4096,
+            reasoning_config=None,
+            is_oauth=True,
+        )
+        names = [t["name"] for t in kwargs["tools"]]
+        assert names == ["mcp_terminal", "mcp_session_search"]
+
+    def test_rename_only_rewrites_tools_keeps_system(self):
+        from agent import oauth_compat
+        tool_map = oauth_compat.ToolNameMap()
+        kwargs = build_anthropic_kwargs(
+            model="claude-opus-4-7",
+            messages=[{"role": "user", "content": "Hi"}],
+            tools=self._tools(),
+            max_tokens=4096,
+            reasoning_config=None,
+            is_oauth=True,
+            oauth_stealth_mode=oauth_compat.StealthMode.RENAME_ONLY,
+            oauth_tool_map=tool_map,
+        )
+        names = [t["name"] for t in kwargs["tools"]]
+        # terminal → Bash (canonical); session_search → SessionSearch (PascalCase).
+        assert names == ["Bash", "SessionSearch"]
+        # System prompt prepended with cc_block but NOT collapsed.
+        assert isinstance(kwargs["system"], list)
+        assert kwargs["system"][0]["text"].startswith("You are Claude Code")
+        # Reverse map populated for the dispatcher's response path.
+        assert tool_map.unrename("Bash") == "terminal"
+        assert tool_map.unrename("SessionSearch") == "session_search"
+
+    def test_full_stealth_collapses_system_to_single_block(self):
+        from agent import oauth_compat
+        tool_map = oauth_compat.ToolNameMap()
+        kwargs = build_anthropic_kwargs(
+            model="claude-opus-4-7",
+            messages=[{"role": "user", "content": "Hi"}],
+            tools=self._tools(),
+            max_tokens=4096,
+            reasoning_config=None,
+            is_oauth=True,
+            oauth_stealth_mode=oauth_compat.StealthMode.FULL_STEALTH,
+            oauth_tool_map=tool_map,
+        )
+        # Tools renamed.
+        assert [t["name"] for t in kwargs["tools"]] == ["Bash", "SessionSearch"]
+        # System collapsed to exactly one block: the bare CC identity line.
+        assert kwargs["system"] == [
+            {"type": "text", "text": oauth_compat.CLAUDE_CODE_SYSTEM_PREFIX}
+        ]
+
+    def test_stealth_no_op_when_not_oauth(self):
+        # API-key requests should never get the stealth transforms.
+        from agent import oauth_compat
+        tool_map = oauth_compat.ToolNameMap()
+        kwargs = build_anthropic_kwargs(
+            model="claude-opus-4-7",
+            messages=[{"role": "user", "content": "Hi"}],
+            tools=self._tools(),
+            max_tokens=4096,
+            reasoning_config=None,
+            is_oauth=False,
+            oauth_stealth_mode=oauth_compat.StealthMode.FULL_STEALTH,
+            oauth_tool_map=tool_map,
+        )
+        # No mcp_ prefix (only added on OAuth path) and no rename.
+        names = [t["name"] for t in kwargs["tools"]]
+        assert names == ["terminal", "session_search"]
+        # Map untouched.
+        assert len(tool_map) == 0

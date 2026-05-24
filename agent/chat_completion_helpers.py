@@ -301,6 +301,8 @@ def build_api_kwargs(agent, api_messages: list) -> dict:
             base_url=getattr(agent, "_anthropic_base_url", None),
             fast_mode=(agent.request_overrides or {}).get("speed") == "fast",
             drop_context_1m_beta=bool(getattr(agent, "_oauth_1m_beta_disabled", False)),
+            oauth_stealth_mode=agent._oauth_stealth_mode,
+            oauth_tool_map=agent._oauth_tool_map,
         )
 
     # AWS Bedrock native Converse API — bypasses the OpenAI client entirely.
@@ -1106,9 +1108,11 @@ def handle_max_iterations(agent, messages: list, api_call_count: int) -> str:
                 _ant_kw = _tsum.build_kwargs(model=agent.model, messages=api_messages, tools=None,
                                max_tokens=agent.max_tokens, reasoning_config=agent.reasoning_config,
                                is_oauth=agent._is_anthropic_oauth,
-                               preserve_dots=agent._anthropic_preserve_dots())
+                               preserve_dots=agent._anthropic_preserve_dots(),
+                               oauth_stealth_mode=agent._oauth_stealth_mode,
+                               oauth_tool_map=agent._oauth_tool_map)
                 summary_response = agent._anthropic_messages_create(_ant_kw)
-                _summary_result = _tsum.normalize_response(summary_response, strip_tool_prefix=agent._is_anthropic_oauth)
+                _summary_result = _tsum.normalize_response(summary_response, strip_tool_prefix=agent._is_anthropic_oauth, oauth_tool_map=agent._oauth_tool_map)
                 final_response = (_summary_result.content or "").strip()
             else:
                 summary_response = agent._ensure_primary_openai_client(reason="iteration_limit_summary").chat.completions.create(**summary_kwargs)
@@ -1136,9 +1140,11 @@ def handle_max_iterations(agent, messages: list, api_call_count: int) -> str:
                 _ant_kw2 = _tretry.build_kwargs(model=agent.model, messages=api_messages, tools=None,
                                 is_oauth=agent._is_anthropic_oauth,
                                 max_tokens=agent.max_tokens, reasoning_config=agent.reasoning_config,
-                                preserve_dots=agent._anthropic_preserve_dots())
+                                preserve_dots=agent._anthropic_preserve_dots(),
+                                oauth_stealth_mode=agent._oauth_stealth_mode,
+                                oauth_tool_map=agent._oauth_tool_map)
                 retry_response = agent._anthropic_messages_create(_ant_kw2)
-                _retry_result = _tretry.normalize_response(retry_response, strip_tool_prefix=agent._is_anthropic_oauth)
+                _retry_result = _tretry.normalize_response(retry_response, strip_tool_prefix=agent._is_anthropic_oauth, oauth_tool_map=agent._oauth_tool_map)
                 final_response = (_retry_result.content or "").strip()
             else:
                 summary_kwargs = {

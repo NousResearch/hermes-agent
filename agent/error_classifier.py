@@ -56,6 +56,7 @@ class FailoverReason(enum.Enum):
     thinking_signature = "thinking_signature"  # Anthropic thinking block sig invalid
     long_context_tier = "long_context_tier"    # Anthropic "extra usage" tier gate
     oauth_long_context_beta_forbidden = "oauth_long_context_beta_forbidden"  # Anthropic OAuth subscription rejects 1M context beta — disable beta and retry
+    oauth_third_party_classifier = "oauth_third_party_classifier"  # Anthropic OAuth third-party billing-lane classifier rejected the request shape (#15080) — escalate stealth mode and retry
     llama_cpp_grammar_pattern = "llama_cpp_grammar_pattern"  # llama.cpp json-schema-to-grammar rejects regex escapes in `pattern` / `format` — strip from tools and retry
 
     # Catch-all
@@ -508,6 +509,26 @@ def classify_api_error(
     ):
         return _result(
             FailoverReason.oauth_long_context_beta_forbidden,
+            retryable=True,
+            should_compress=False,
+        )
+
+    # Anthropic OAuth third-party billing-lane classifier rejection (#15080).
+    # Returned as HTTP 400 from native Anthropic when the request fingerprints
+    # as a non-Claude-Code agent (tool-name set, multi-block system prompt)
+    # and the account has no overage credit. Recovery in run_agent.py
+    # escalates oauth_compat.StealthMode for the session and retries.
+    # Pattern matches the two known phrasings:
+    #   "Third-party apps now draw from your extra usage…"
+    #   "You're out of extra usage…"
+    # both of which include the claude.ai/settings/usage URL.
+    if (
+        status_code == 400
+        and "extra usage" in error_msg
+        and "claude.ai/settings/usage" in error_msg
+    ):
+        return _result(
+            FailoverReason.oauth_third_party_classifier,
             retryable=True,
             should_compress=False,
         )

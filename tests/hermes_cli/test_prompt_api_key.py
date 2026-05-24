@@ -103,6 +103,22 @@ def test_replace_cancelled_preserves_key(profile_env):
     assert get_env_value("DEEPSEEK_API_KEY") == "sk-existing"
 
 
+def test_replace_rejects_composite_secret_and_preserves_key(profile_env, capsys):
+    """Composite pastes with whitespace/path fragments should be refused."""
+    from hermes_cli.config import get_env_value, save_env_value
+    save_env_value("DEEPSEEK_API_KEY", "sk-existing")
+
+    bad = "sk-old-123456 /home/user/Pictures/Capture.png"
+    key, abort = _run_prompt(existing_key="sk-existing", choice="r", new_key=bad)
+
+    assert key == "sk-existing"
+    assert abort is False
+    assert get_env_value("DEEPSEEK_API_KEY") == "sk-existing"
+    captured = capsys.readouterr()
+    assert "looks malformed" in captured.out
+    assert "No change." in captured.out
+
+
 def test_clear_wipes_env_and_aborts(profile_env):
     from hermes_cli.config import get_env_value, save_env_value
     save_env_value("DEEPSEEK_API_KEY", "sk-existing")

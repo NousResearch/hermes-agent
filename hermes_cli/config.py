@@ -4807,6 +4807,40 @@ def _check_non_ascii_credential(key: str, value: str) -> str:
     return sanitized
 
 
+_API_KEY_PATH_LIKE_RE = re.compile(
+    r"(?i)(?:file://|text/uri-list|[A-Za-z]:\\\\|(?:^|[\\\\/])(?:users|home)[\\\\/]|"
+    r"\.(?:png|jpe?g|webp|gif|bmp|pdf|txt)\b)"
+)
+
+
+def validate_api_key_input(key: str, value: str) -> Optional[str]:
+    """Return a user-facing error when an interactive API key paste looks broken.
+
+    Keep this narrow: only ``*_API_KEY`` values are checked so we do not reject
+    OAuth tokens, passwords, or other secret types that may legitimately carry
+    whitespace or different shapes.
+    """
+    if not key.endswith("_API_KEY") or not value:
+        return None
+
+    reasons: list[str] = []
+    if any(ch.isspace() for ch in value):
+        reasons.append("contains whitespace")
+    if _API_KEY_PATH_LIKE_RE.search(value):
+        reasons.append("contains path-like text")
+    if value.count("sk-") > 1:
+        reasons.append("appears to contain more than one key")
+
+    if not reasons:
+        return None
+
+    return (
+        f"{key} looks malformed: "
+        + ", ".join(reasons)
+        + ". Hermes did not save it."
+    )
+
+
 def save_env_value(key: str, value: str):
     """Save or update a value in ~/.hermes/.env."""
     if is_managed():

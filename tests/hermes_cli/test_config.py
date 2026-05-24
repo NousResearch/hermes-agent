@@ -20,6 +20,7 @@ from hermes_cli.config import (
     save_env_value_secure,
     sanitize_env_file,
     _sanitize_env_lines,
+    validate_api_key_input,
 )
 
 
@@ -225,6 +226,28 @@ class TestSaveEnvValueSecure:
             save_env_value("TENOR_API_KEY", "sk-test-secret")
             env_mode = (tmp_path / ".env").stat().st_mode & 0o777
             assert env_mode == 0o600
+
+
+class TestValidateApiKeyInput:
+    def test_accepts_normal_api_key(self):
+        assert validate_api_key_input("DEEPSEEK_API_KEY", "sk-valid-123456") is None
+
+    def test_rejects_whitespace_and_path_like_text(self):
+        problem = validate_api_key_input(
+            "DEEPSEEK_API_KEY",
+            "sk-valid-123456 /home/user/Pictures/Capture.png",
+        )
+        assert problem is not None
+        assert "contains whitespace" in problem
+        assert "contains path-like text" in problem
+
+    def test_rejects_multiple_sk_like_tokens(self):
+        problem = validate_api_key_input(
+            "DEEPSEEK_API_KEY",
+            "sk-old-1234567sk-new-7654321",
+        )
+        assert problem is not None
+        assert "more than one key" in problem
 
 
 class TestRemoveEnvValue:

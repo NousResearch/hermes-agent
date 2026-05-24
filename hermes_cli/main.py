@@ -4982,7 +4982,7 @@ def _prompt_api_key(pconfig, existing_key: str, provider_id: str = "") -> tuple:
     import getpass
 
     from hermes_cli.auth import LMSTUDIO_NOAUTH_PLACEHOLDER
-    from hermes_cli.config import save_env_value
+    from hermes_cli.config import save_env_value, validate_api_key_input
 
     key_env = pconfig.api_key_env_vars[0] if pconfig.api_key_env_vars else ""
 
@@ -5000,6 +5000,18 @@ def _prompt_api_key(pconfig, existing_key: str, provider_id: str = "") -> tuple:
             return LMSTUDIO_NOAUTH_PLACEHOLDER
         return entered
 
+    def _reject_if_malformed(candidate: str, *, keep_existing: bool) -> bool:
+        problem = validate_api_key_input(key_env, candidate)
+        if not problem:
+            return False
+        print(f"  Warning: {problem}")
+        if keep_existing:
+            print("  No change.")
+            print()
+        else:
+            print("Cancelled.")
+        return True
+
     # First-time entry ────────────────────────────────────────────────────
     if not existing_key:
         print(f"No {pconfig.name} API key configured.")
@@ -5008,6 +5020,8 @@ def _prompt_api_key(pconfig, existing_key: str, provider_id: str = "") -> tuple:
         new_key = _prompt_new_key(allow_lmstudio_default=True)
         if not new_key:
             print("Cancelled.")
+            return "", True
+        if _reject_if_malformed(new_key, keep_existing=False):
             return "", True
         save_env_value(key_env, new_key)
         print("API key saved.")
@@ -5034,6 +5048,8 @@ def _prompt_api_key(pconfig, existing_key: str, provider_id: str = "") -> tuple:
         if not new_key:
             print("  No change.")
             print()
+            return existing_key, False
+        if _reject_if_malformed(new_key, keep_existing=True):
             return existing_key, False
         save_env_value(key_env, new_key)
         print("  API key updated.")

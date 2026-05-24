@@ -140,6 +140,7 @@ from hermes_cli.config import (
     load_config,
     save_config,
     save_env_value,
+    validate_api_key_input,
     remove_env_value,
     get_env_value,
     ensure_hermes_home,
@@ -350,6 +351,11 @@ def _prompt_api_key(var: dict):
         value = prompt(f"  {var.get('prompt', var['name'])}")
 
     if value:
+        problem = validate_api_key_input(var["name"], value)
+        if problem:
+            print_warning(f"  {problem}")
+            print_warning("  Skipped (fix the pasted value and try again)")
+            return
         save_env_value(var["name"], value)
         print_success("  ✓ Saved")
     else:

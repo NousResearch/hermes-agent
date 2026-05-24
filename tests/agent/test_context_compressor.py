@@ -881,6 +881,32 @@ class TestSummaryFailureTrackingForGatewayWarning:
         assert "/repo/src/pkg/module.py" in fallback
         assert "C:\\work\\pkg\\module.py" in fallback
         assert "Traceback" in fallback
+        assert "## Last Dropped Turns" in fallback
+        assert "TOOL: Traceback in /repo/src/pkg/module.py: boom" in fallback
+
+    def test_summary_failure_fallback_preserves_last_dropped_turns_without_tail(self):
+        with patch("agent.context_compressor.get_model_context_length", return_value=100000):
+            c = ContextCompressor(model="test", quiet_mode=True, protect_first_n=1, protect_last_n=1)
+
+        msgs = [
+            {"role": "system", "content": "sys"},
+            {"role": "user", "content": "Investigate dropped-window request in /tmp/active.py"},
+            {"role": "assistant", "content": "I inspected /tmp/active.py and found the failing branch"},
+            {"role": "tool", "tool_call_id": "call-old", "content": "ValueError: boom in /tmp/active.py"},
+            {"role": "assistant", "content": "Next step is patching /tmp/active.py"},
+            {"role": "user", "content": "Confirm regression coverage for /tmp/active.py"},
+            {"role": "assistant", "content": "Regression note is ready"},
+            {"role": "user", "content": "protected tail request must not be copied from dropped window"},
+        ]
+
+        with patch("agent.context_compressor.call_llm", side_effect=Exception("timeout")):
+            result = c.compress(msgs)
+
+        fallback = next(m["content"] for m in result if "Summary generation was unavailable" in m.get("content", ""))
+        assert "## Last Dropped Turns" in fallback
+        assert "ASSISTANT: I inspected /tmp/active.py and found the failing branch" in fallback
+        assert "TOOL: ValueError: boom in /tmp/active.py" in fallback
+        assert "protected tail request must not be copied" not in fallback
 
     def test_summary_failure_fallback_is_bounded(self):
         with patch("agent.context_compressor.get_model_context_length", return_value=100000):

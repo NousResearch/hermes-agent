@@ -442,6 +442,45 @@ def gateway_help_lines() -> list[str]:
     return lines
 
 
+def gateway_command_entries() -> list[dict[str, Any]]:
+    """Return structured gateway-available slash command metadata.
+
+    API clients use this to build Telegram-style command pickers without
+    parsing help text or duplicating the command registry.
+    """
+    overrides = _resolve_config_gates()
+    entries: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for cmd in COMMAND_REGISTRY:
+        if not _is_gateway_available(cmd, overrides):
+            continue
+        seen.add(cmd.name)
+        entries.append({
+            "name": cmd.name,
+            "description": cmd.description,
+            "category": cmd.category,
+            "aliases": list(cmd.aliases),
+            "args_hint": cmd.args_hint,
+            "subcommands": list(cmd.subcommands),
+            "requires_argument": _requires_argument(cmd.args_hint),
+            "source": "builtin",
+        })
+    for name, description, args_hint in _iter_plugin_command_entries():
+        if name in seen:
+            continue
+        entries.append({
+            "name": name,
+            "description": description,
+            "category": "Plugins",
+            "aliases": [],
+            "args_hint": args_hint,
+            "subcommands": [],
+            "requires_argument": _requires_argument(args_hint),
+            "source": "plugin",
+        })
+    return entries
+
+
 def _iter_plugin_command_entries() -> list[tuple[str, str, str]]:
     """Yield (name, description, args_hint) tuples for all plugin slash commands.
 

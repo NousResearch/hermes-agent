@@ -9,6 +9,7 @@ Exposes an HTTP server with endpoints:
 - GET  /v1/models                  — lists hermes-agent as an available model
 - GET  /v1/capabilities            — machine-readable API capabilities for external UIs
 - POST /v1/approvals               — resolve pending chat-completions approvals
+- GET  /v1/commands                — list API-client slash commands
 - POST /v1/commands                — execute API-client slash commands
 - POST /v1/runs                    — start a run, returns run_id immediately (202)
 - GET  /v1/runs/{run_id}           — retrieve current run status
@@ -1016,7 +1017,8 @@ class APIServerAdapter(BasePlatformAdapter):
                 "models": {"method": "GET", "path": "/v1/models"},
                 "chat_completions": {"method": "POST", "path": "/v1/chat/completions"},
                 "chat_completion_approval": {"method": "POST", "path": "/v1/approvals"},
-                "commands": {"method": "POST", "path": "/v1/commands"},
+                "commands": {"method": "GET", "path": "/v1/commands"},
+                "command_execute": {"method": "POST", "path": "/v1/commands"},
                 "responses": {"method": "POST", "path": "/v1/responses"},
                 "runs": {"method": "POST", "path": "/v1/runs"},
                 "run_status": {"method": "GET", "path": "/v1/runs/{run_id}"},
@@ -1436,6 +1438,34 @@ class APIServerAdapter(BasePlatformAdapter):
             "resolved": resolved,
         })
 
+    async def _handle_list_api_commands(self, request: "web.Request") -> "web.Response":
+        """GET /v1/commands — list slash commands for API clients."""
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+
+        try:
+            from hermes_cli.commands import gateway_command_entries
+
+            commands = gateway_command_entries()
+        except Exception as exc:
+            logger.exception("[api_server] command listing failed")
+            return web.json_response(_openai_error(str(exc)), status=500)
+
+        query = request.query.get("q", "").strip().lstrip("/").lower()
+        if query:
+            commands = [
+                command
+                for command in commands
+                if command.get("name", "").lower().startswith(query)
+                or any(str(alias).lower().startswith(query) for alias in command.get("aliases", []))
+            ]
+
+        return web.json_response({
+            "object": "hermes.api_command.list",
+            "data": commands,
+        })
+
     async def _handle_api_command(self, request: "web.Request") -> "web.Response":
         """POST /v1/commands — execute slash commands for API clients."""
         auth_err = self._check_auth(request)
@@ -1473,7 +1503,7 @@ class APIServerAdapter(BasePlatformAdapter):
             or request.headers.get("X-Hermes-Session-Id", "").strip()
         )
 
-        from hermes_cli.commands import gateway_help_lines, resolve_command
+        from hermes_cli.commands import gateway_command_entries, gateway_help_lines, resolve_command
 
         command_def = resolve_command(command_name)
         canonical = command_def.name if command_def is not None else command_name
@@ -1489,6 +1519,10 @@ class APIServerAdapter(BasePlatformAdapter):
         if canonical == "status":
             pending_approval = False
             yolo_enabled = False
+            approval_mode = "manual"
+            env_yolo = str(os.getenv("HERMES_YOLO_MODE", "")).strip().lower() in {
+                "1", "true", "yes", "on",
+            }
             if approval_session_key:
                 try:
                     from tools.approval import has_blocking_approval, is_session_yolo_enabled
@@ -1497,17 +1531,30 @@ class APIServerAdapter(BasePlatformAdapter):
                     yolo_enabled = is_session_yolo_enabled(approval_session_key)
                 except Exception:
                     pass
+            try:
+                from hermes_cli.config import load_config
+
+                cfg = load_config()
+                approvals_cfg = cfg.get("approvals", {}) if isinstance(cfg, dict) else {}
+                if isinstance(approvals_cfg, dict):
+                    raw_mode = approvals_cfg.get("mode", "manual")
+                    approval_mode = "off" if raw_mode is False else str(raw_mode or "manual")
+            except Exception:
+                pass
             text = "\n".join([
                 "Hermes API server is running.",
                 f"Session: {approval_session_key or 'not provided'}",
                 f"Active runs: {len(self._active_run_agents)}",
                 f"Pending approval: {'yes' if pending_approval else 'no'}",
-                f"YOLO mode: {'enabled' if yolo_enabled else 'disabled'}",
+                f"Approval mode: {approval_mode}",
+                f"Session YOLO mode: {'enabled' if yolo_enabled else 'disabled'}",
+                f"Global HERMES_YOLO_MODE: {'enabled' if env_yolo else 'disabled'}",
             ])
             return web.json_response({
                 "object": "hermes.api_command.result",
                 "command": canonical,
                 "content": text,
+                "commands": gateway_command_entries(),
             })
 
         if canonical in {"approve", "deny"}:
@@ -3712,6 +3759,7 @@ class APIServerAdapter(BasePlatformAdapter):
             self._app.router.add_get("/v1/capabilities", self._handle_capabilities)
             self._app.router.add_post("/v1/chat/completions", self._handle_chat_completions)
             self._app.router.add_post("/v1/approvals", self._handle_chat_approval)
+            self._app.router.add_get("/v1/commands", self._handle_list_api_commands)
             self._app.router.add_post("/v1/commands", self._handle_api_command)
             self._app.router.add_post("/v1/responses", self._handle_responses)
             self._app.router.add_get("/v1/responses/{response_id}", self._handle_get_response)

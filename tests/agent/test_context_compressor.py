@@ -67,6 +67,7 @@ class TestCompress:
     def test_truncation_fallback_no_client(self, compressor):
         # Simulate "no summarizer available" explicitly. call_llm can otherwise
         # discover the developer's real auxiliary credentials from auth state.
+        # The failed summary should use the deterministic fallback path.
         msgs = [{"role": "system", "content": "System prompt"}] + self._make_messages(10)
         with patch("agent.context_compressor.call_llm", side_effect=RuntimeError("no provider")):
             result = compressor.compress(msgs)
@@ -77,6 +78,64 @@ class TestCompress:
         # Abort flag must NOT fire under the default config.
         assert compressor._last_compress_aborted is False
         assert compressor._last_summary_fallback_used is True
+
+    def test_summary_failure_uses_deterministic_fallback_with_recovered_context(self):
+        """Regression: failed LLM summaries should not emit a content-free marker.
+
+        The fallback should preserve locally recoverable continuity details so a
+        future turn does not see only "messages were removed" after compaction.
+        """
+        with patch("agent.context_compressor.get_model_context_length", return_value=100000):
+            c = ContextCompressor(
+                model="test/model",
+                protect_first_n=1,
+                protect_last_n=2,
+                quiet_mode=True,
+            )
+
+        msgs = [
+            {"role": "system", "content": "System prompt"},
+            {"role": "user", "content": "Please fix the compression summary failure"},
+            {
+                "role": "assistant",
+                "content": None,
+                "tool_calls": [{
+                    "id": "call_1",
+                    "type": "function",
+                    "function": {
+                        "name": "read_file",
+                        "arguments": '{"path":"agent/context_compressor.py","offset":1}',
+                    },
+                }],
+            },
+            {
+                "role": "tool",
+                "tool_call_id": "call_1",
+                "content": "read agent/context_compressor.py and found static fallback marker",
+            },
+            {"role": "assistant", "content": "I found the issue."},
+            {"role": "user", "content": "latest protected ask"},
+            {"role": "assistant", "content": "ok"},
+        ]
+
+        with (
+            patch.object(c, "_find_tail_cut_by_tokens", return_value=5),
+            patch(
+                "agent.context_compressor.call_llm",
+                side_effect=RuntimeError("provider down"),
+            ),
+        ):
+            result = c.compress(msgs)
+
+        combined = "\n".join(str(m.get("content", "")) for m in result)
+        assert "## Active Task" in combined
+        assert "Please fix the compression summary failure" in combined
+        assert "read_file" in combined
+        assert "agent/context_compressor.py" in combined
+        assert "Summary generation was unavailable" in combined
+        assert "removed to free context space but could not be summarized" not in combined
+        assert c._last_summary_fallback_used is True
+        assert c._last_summary_dropped_count == 3
 
     def test_compression_increments_count(self, compressor):
         msgs = self._make_messages(10)

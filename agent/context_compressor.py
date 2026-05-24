@@ -884,6 +884,160 @@ class ContextCompressor(ContextEngine):
 
         return "\n\n".join(parts)
 
+    def _build_static_fallback_summary(
+        self,
+        turns_to_summarize: List[Dict[str, Any]],
+        reason: str | None = None,
+    ) -> str:
+        """Build a deterministic handoff when the LLM summarizer is unavailable.
+
+        This is intentionally much less rich than an LLM-written summary, but it
+        is still better than a bare "N messages were removed" marker.  It keeps
+        the most useful continuity anchors that can be extracted locally:
+        recent user asks, assistant/tool actions, files/commands mentioned in
+        tool calls, and any error text.  The result uses the normal summary
+        structure so downstream prompts can recover gracefully after a provider
+        outage or summary-model failure.
+        """
+        user_asks: list[str] = []
+        assistant_actions: list[str] = []
+        tool_actions: list[str] = []
+        relevant_files: list[str] = []
+        blockers: list[str] = []
+
+        call_id_to_tool: dict[str, tuple[str, str]] = {}
+        for msg in turns_to_summarize:
+            if msg.get("role") == "assistant" and msg.get("tool_calls"):
+                for tc in msg.get("tool_calls") or []:
+                    if not isinstance(tc, dict):
+                        continue
+                    fn = tc.get("function") or {}
+                    name = str(fn.get("name") or "unknown")
+                    args = redact_sensitive_text(str(fn.get("arguments") or ""))
+                    call_id = str(tc.get("id") or "")
+                    if call_id:
+                        call_id_to_tool[call_id] = (name, args)
+                    if args:
+                        try:
+                            parsed = json.loads(args)
+                        except Exception:
+                            parsed = {}
+                        for key in ("path", "workdir", "file_path"):
+                            val = parsed.get(key) if isinstance(parsed, dict) else None
+                            if (
+                                isinstance(val, str)
+                                and val
+                                and len(relevant_files) < 12
+                            ):
+                                relevant_files.append(val)
+
+        for msg in turns_to_summarize:
+            role = msg.get("role", "unknown")
+            text = redact_sensitive_text(
+                _content_text_for_contains(msg.get("content"))
+            ).strip()
+            if len(text) > 600:
+                text = text[:420].rstrip() + " ... " + text[-160:].lstrip()
+
+            if role == "user" and text:
+                user_asks.append(text)
+            elif role == "assistant":
+                tool_names: list[str] = []
+                for tc in msg.get("tool_calls") or []:
+                    if isinstance(tc, dict):
+                        name = ((tc.get("function") or {}).get("name")) or "unknown"
+                        tool_names.append(str(name))
+                if tool_names:
+                    assistant_actions.append(
+                        "Called tool(s): " + ", ".join(tool_names[:6])
+                    )
+                elif text:
+                    assistant_actions.append(text)
+            elif role == "tool":
+                call_id = str(msg.get("tool_call_id") or "")
+                tool_name, tool_args = call_id_to_tool.get(call_id, ("unknown", ""))
+                tool_actions.append(
+                    _summarize_tool_result(tool_name, tool_args, text or "")
+                )
+                if re.search(
+                    r"\b(error|failed|exception|traceback|timeout|timed out|fatal)\b",
+                    text,
+                    re.I,
+                ):
+                    blockers.append(text[:500])
+
+        def _bullets(items: list[str], limit: int = 8) -> str:
+            unique: list[str] = []
+            seen: set[str] = set()
+            for item in items:
+                item = item.strip()
+                if not item or item in seen:
+                    continue
+                seen.add(item)
+                unique.append(item)
+                if len(unique) >= limit:
+                    break
+            return "\n".join(f"- {item}" for item in unique) if unique else "None."
+
+        completed: list[str] = []
+        for idx, item in enumerate((assistant_actions + tool_actions)[:12], start=1):
+            completed.append(f"{idx}. {item}")
+
+        active_task = (
+            f"User asked: {user_asks[-1]!r}"
+            if user_asks
+            else "Unknown from deterministic fallback."
+        )
+        previous_summary_note = ""
+        if self._previous_summary:
+            previous_summary_note = (
+                "\n\nPrevious compaction summary was present and should still be treated as "
+                "background continuity context, but the latest LLM summary update failed."
+            )
+
+        reason_text = f" Summary failure reason: {reason}." if reason else ""
+        body = f"""## Active Task
+{active_task}
+
+## Goal
+Recovered from a deterministic fallback because the LLM context summarizer was unavailable. Continue from the protected recent messages after this summary and use current file/system state for exact details.{previous_summary_note}
+
+## Constraints & Preferences
+- This fallback was generated locally without an LLM summary call.
+- Secrets and credentials were redacted before preservation.
+- The summary may be incomplete; prefer verifying current files, git state, processes, and test results instead of assuming omitted details.
+
+## Completed Actions
+{chr(10).join(completed) if completed else "None recoverable from compacted turns."}
+
+## Active State
+Unknown from deterministic fallback. Inspect current repository/session state if needed.
+
+## In Progress
+{active_task}
+
+## Blocked
+{_bullets(blockers, limit=5)}
+
+## Key Decisions
+None recoverable from deterministic fallback.
+
+## Resolved Questions
+None recoverable from deterministic fallback.
+
+## Pending User Asks
+{active_task}
+
+## Relevant Files
+{_bullets(relevant_files, limit=12)}
+
+## Remaining Work
+Continue from the most recent unfulfilled user ask and protected tail messages. Verify state with tools before making claims.
+
+## Critical Context
+Summary generation was unavailable, so this is a best-effort deterministic fallback for {len(turns_to_summarize)} compacted message(s).{reason_text}"""
+        return self._with_summary_prefix(redact_sensitive_text(body.strip()))
+
     def _fallback_to_main_for_compression(self, e: Exception, reason: str) -> None:
         """Switch from a separate ``summary_model`` back to the main model.
 
@@ -911,7 +1065,11 @@ class ContextCompressor(ContextEngine):
         self.summary_model = ""  # empty = use main model
         self._summary_failure_cooldown_until = 0.0  # no cooldown — retry immediately
 
-    def _generate_summary(self, turns_to_summarize: List[Dict[str, Any]], focus_topic: str = None) -> Optional[str]:
+    def _generate_summary(
+        self,
+        turns_to_summarize: List[Dict[str, Any]],
+        focus_topic: Optional[str] = None,
+    ) -> Optional[str]:
         """Generate a structured summary of conversation turns.
 
         Uses a structured template (Goal, Progress, Decisions, Resolved/Pending
@@ -1643,21 +1801,18 @@ The user has requested that this compaction PRIORITISE preserving all informatio
                     )
             compressed.append(msg)
 
-        # Legacy fallback path: LLM summary failed and abort_on_summary_failure
-        # is False (the default).  Insert a static placeholder so the model
-        # knows context was lost rather than silently dropping everything.
+        # If LLM summary failed, insert a deterministic fallback so the model
+        # gets at least locally recoverable continuity anchors instead of a
+        # content-free "N messages were removed" marker.
         if not summary:
             if not self.quiet_mode:
-                logger.warning("Summary generation failed — inserting static fallback context marker")
+                logger.warning("Summary generation failed — inserting deterministic fallback context summary")
             n_dropped = compress_end - compress_start
             self._last_summary_dropped_count = n_dropped
             self._last_summary_fallback_used = True
-            summary = (
-                f"{SUMMARY_PREFIX}\n"
-                f"Summary generation was unavailable. {n_dropped} message(s) were "
-                f"removed to free context space but could not be summarized. The removed "
-                f"messages contained earlier work in this session. Continue based on the "
-                f"recent messages below and the current state of any files or resources."
+            summary = self._build_static_fallback_summary(
+                turns_to_summarize,
+                reason=self._last_summary_error,
             )
 
         _merge_summary_into_tail = False

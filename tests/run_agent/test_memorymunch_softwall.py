@@ -6,7 +6,8 @@ from pathlib import Path
 
 
 def _load_memorymunch_module():
-    plugin_path = Path("/home/alcoo/.hermes/plugins/memorymunch/__init__.py")
+    repo_root = Path(__file__).resolve().parents[2]
+    plugin_path = repo_root / "contrib" / "plugins" / "memorymunch" / "__init__.py"
     spec = importlib.util.spec_from_file_location("memorymunch_plugin_under_test", plugin_path)
     module = importlib.util.module_from_spec(spec)
     assert spec and spec.loader

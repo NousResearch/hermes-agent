@@ -1,0 +1,5 @@
+name: memorymunch
+version: 0.1.0
+description: "MemoryMunch shared-brain memory provider for Hermes — read-only recall first, soft-wall provenance, Obsidian/vault source-of-truth lane."
+hooks:
+  - on_turn_start

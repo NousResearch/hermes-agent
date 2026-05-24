@@ -5,6 +5,7 @@
 __pycache__/
 .venv/
 .vscode/
+.cursor/
 .env
 .env.local
 .env.development.local

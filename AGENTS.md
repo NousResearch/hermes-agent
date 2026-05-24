@@ -1158,5 +1158,7 @@ them into invariants before re-requesting review.
 - OpenCode credentials bridge from OpenClaw: shared `OPENCODE_API_KEY` satisfies `OPENCODE_ZEN_API_KEY` when the Zen-specific key is unset.
 - Companion WebUI checkout: `C:\Users\downl\Desktop\hermes-webui`.
 - Config reference for OpenCode free + llama rollback: `docs/migration/opencode_free_webui_config.example.yaml`.
-- Windows logon autostart: `scripts/windows/register-hermes-autostart.ps1` registers llama + gateway scheduled tasks.
+- Windows logon autostart: `scripts/windows/register-hermes-autostart.ps1` registers llama + gateway scheduled tasks; set `HERMES_LLAMA_MODEL_PATH` in `~/.hermes/.env` for llama task model resolution.
 - Active deployment checkout is `hermes-agent-upstream-sync`; user pushes directly to `main`.
+- `~/.hermes/.env` UTF-8 BOM can prefix keys and break dotenv loading (e.g. `GATEWAY_ALLOW_ALL_USERS`); strip BOM from file and key names if env vars appear unset.
+- VRChat Quest2 + Virtual Desktop: OpenXR doctor scripts in `scripts/windows/` (`vrchat_quest2_controller_doctor.ps1`, `vrchat_quest2_openxr_fix.ps1`, `run-vrchat-openxr-fix-admin.ps1`); launch from VD Games (not desktop Steam); `Oculus Touch controller = False` without VD controller passthrough is typical.

@@ -117,6 +117,7 @@ def make_tool_progress_cb(
     loop: asyncio.AbstractEventLoop,
     tool_call_ids: Dict[str, Deque[str]],
     tool_call_meta: Dict[str, Dict[str, Any]],
+    edit_approval_policy_getter: Callable[[], tuple[str, str | None]] | None = None,
 ) -> Callable:
     """Create a ``tool_progress_callback`` for AIAgent.
 
@@ -162,7 +163,20 @@ def make_tool_progress_cb(
                 logger.debug("Failed to capture ACP edit snapshot for %s", name, exc_info=True)
         tool_call_meta[tc_id] = {"args": args, "snapshot": snapshot}
 
-        update = build_tool_start(tc_id, name, args)
+        edit_diff = None
+        if name in {"write_file", "patch"} and edit_approval_policy_getter is not None:
+            try:
+                from acp_adapter.edit_approval import build_edit_proposal, should_auto_approve_edit
+
+                proposal = build_edit_proposal(name, args)
+                if proposal is not None:
+                    policy, cwd = edit_approval_policy_getter()
+                    if should_auto_approve_edit(proposal, policy, cwd):
+                        edit_diff = proposal
+            except Exception:
+                logger.debug("Failed to prepare auto-approved ACP edit diff for %s", name, exc_info=True)
+
+        update = build_tool_start(tc_id, name, args, edit_diff=edit_diff)
         _send_update(conn, session_id, loop, update)
 
     return _tool_progress

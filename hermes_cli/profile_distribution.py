@@ -70,6 +70,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
+from agent.skill_utils import is_excluded_skill_path
+
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -463,7 +465,9 @@ def _count_skills(staged: Path) -> int:
     skills_dir = staged / "skills"
     if not skills_dir.is_dir():
         return 0
-    return sum(1 for _ in skills_dir.rglob("SKILL.md"))
+    return sum(
+        1 for p in skills_dir.rglob("SKILL.md") if not is_excluded_skill_path(p)
+    )
 
 
 def plan_install(

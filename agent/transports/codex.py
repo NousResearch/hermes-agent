@@ -116,14 +116,11 @@ class ResponsesApiTransport(ProviderTransport):
         if reasoning_enabled and is_xai_responses:
             from agent.model_metadata import grok_supports_reasoning_effort
 
-            # NOTE: Hermes does NOT ask xAI to return ``reasoning.encrypted_content``
-            # any more.  xAI's OAuth/SuperGrok ``/v1/responses`` surface rejects
-            # replayed encrypted reasoning items on turn 2+ — see
-            # _chat_messages_to_responses_input docstring.  Requesting the field
-            # back would just have us cache something we then must strip.  Grok
-            # still reasons natively each turn; coherence across turns rides on
-            # the visible message text alone.
-            kwargs["include"] = []
+            # Ask xAI to echo back encrypted reasoning items so we can
+            # replay them on subsequent turns for cross-turn coherence.
+            # See agent/codex_responses_adapter._chat_messages_to_responses_input
+            # for the May 2026 reversal of the earlier suppression gate.
+            kwargs["include"] = ["reasoning.encrypted_content"]
             # xAI rejects `reasoning.effort` on grok-4 / grok-4-fast / grok-3
             # / grok-code-fast / grok-4.20-0309-* with HTTP 400 even though
             # those models reason natively. Only send the effort dial when

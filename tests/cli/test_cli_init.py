@@ -102,6 +102,20 @@ class TestVerboseAndToolProgress:
         assert cli.tool_progress_mode in {"off", "new", "all", "verbose"}
 
 
+class TestFallbackChainInit:
+    def test_merges_new_and_legacy_fallback_config(self):
+        cli = _make_cli(config_overrides={
+            "fallback_providers": [
+                {"provider": "openrouter", "model": "anthropic/claude-sonnet-4.6"},
+            ],
+            "fallback_model": {"provider": "nous", "model": "Hermes-4"},
+        })
+        assert cli._fallback_model == [
+            {"provider": "openrouter", "model": "anthropic/claude-sonnet-4.6"},
+            {"provider": "nous", "model": "Hermes-4"},
+        ]
+
+
 class TestBusyInputMode:
     def test_default_busy_input_mode_is_interrupt(self):
         cli = _make_cli()
@@ -318,6 +332,33 @@ class TestHistoryDisplay:
         assert "Recent sessions" in output
         assert "Checking Running Hermes Agent" in output
         assert "Use /resume <session id or title> to continue" in output
+
+    def test_resume_updates_hermes_session_id_env_and_context(self, tmp_path):
+        from gateway.session_context import _UNSET, _VAR_MAP, get_session_env
+        from hermes_state import SessionDB
+
+        cli = _make_cli()
+        cli.session_id = "current_session"
+        cli.conversation_history = []
+        cli.agent = None
+        cli._session_db = SessionDB(db_path=tmp_path / "state.db")
+        cli._session_db.create_session("current_session", "cli")
+        cli._session_db.create_session("target_session", "cli")
+        cli._session_db.append_message("target_session", "user", "hello from resumed session")
+
+        os.environ["HERMES_SESSION_ID"] = "current_session"
+        _VAR_MAP["HERMES_SESSION_ID"].set("current_session")
+
+        try:
+            cli._handle_resume_command("/resume target_session")
+
+            assert cli.session_id == "target_session"
+            assert os.environ["HERMES_SESSION_ID"] == "target_session"
+            assert get_session_env("HERMES_SESSION_ID") == "target_session"
+        finally:
+            cli._session_db.close()
+            os.environ.pop("HERMES_SESSION_ID", None)
+            _VAR_MAP["HERMES_SESSION_ID"].set(_UNSET)
 
     def test_sessions_command_no_args_lists_recent_sessions(self, capsys):
         """/sessions with no args prints the recent-sessions table (TUI parity).

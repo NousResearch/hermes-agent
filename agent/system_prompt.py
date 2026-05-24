@@ -111,8 +111,12 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
     # Kanban worker/orchestrator lifecycle — only present when the
     # dispatcher spawned this process (kanban_show check_fn gates on
     # HERMES_KANBAN_TASK env var). Normal chat sessions never see
-    # this block.
-    if "kanban_show" in agent.valid_tool_names:
+    # this block. Resolved once at __init__ (see _kanban_worker_guidance).
+    _kanban_guidance = getattr(agent, "_kanban_worker_guidance", None)
+    if _kanban_guidance:
+        tool_guidance.append(_kanban_guidance)
+    elif _kanban_guidance is None and "kanban_show" in agent.valid_tool_names:
+        # Fallback for code paths that bypass agent_init (rare).
         tool_guidance.append(KANBAN_GUIDANCE)
     if tool_guidance:
         stable_parts.append(" ".join(tool_guidance))
@@ -156,7 +160,10 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
                 stable_parts.append(GOOGLE_MODEL_OPERATIONAL_GUIDANCE)
             # OpenAI GPT/Codex execution discipline (tool persistence,
             # prerequisite checks, verification, anti-hallucination).
-            if "gpt" in _model_lower or "codex" in _model_lower:
+            # Also applied to xAI Grok — same failure modes (claims completion
+            # without tool calls, suggests workarounds instead of using
+            # existing tools, replies with plans instead of executing).
+            if "gpt" in _model_lower or "codex" in _model_lower or "grok" in _model_lower:
                 stable_parts.append(OPENAI_MODEL_EXECUTION_GUIDANCE)
 
     has_skills_tools = any(name in agent.valid_tool_names for name in ['skills_list', 'skill_view', 'skill_manage'])
@@ -255,7 +262,13 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
 
     from hermes_time import now as _hermes_now
     now = _hermes_now()
-    timestamp_line = f"Conversation started: {now.strftime('%A, %B %d, %Y %I:%M %p')}"
+    # Date-only (not minute-precision) so the system prompt is byte-stable
+    # for the full day.  Minute-precision changes invalidate prefix-cache KV
+    # on every rebuild path (compression boundary, fresh-agent gateway turns,
+    # session resume without a stored prompt).  The model can still query the
+    # exact wall-clock time via tools when it actually needs it.
+    # Credit: @iamfoz (PR #20451).
+    timestamp_line = f"Conversation started: {now.strftime('%A, %B %d, %Y')}"
     if agent.pass_session_id and agent.session_id:
         timestamp_line += f"\nSession ID: {agent.session_id}"
     if agent.model:

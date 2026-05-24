@@ -39,4 +39,19 @@ describe('virtual height estimates', () => {
 
     expect(withSep).toBe(base + 2)
   })
+
+  it('caps wrapped-line counting so giant assistant turns do not block offset rebuilds', () => {
+    // wrappedLines is invoked once per uncached message during
+    // useVirtualHistory's offset rebuild. Unbounded counting on a long
+    // assistant response (10k+ chars × every row × every rebuild) blocks
+    // the UI on cold mount. Cap is ~800 rows; post-mount Yoga
+    // measurement converges to the true height regardless.
+    const giant = 'x'.repeat(1_000_000)
+    const t0 = performance.now()
+    const rows = wrappedLines(giant, 80)
+    const elapsed = performance.now() - t0
+
+    expect(rows).toBeLessThanOrEqual(800)
+    expect(elapsed).toBeLessThan(50)
+  })
 })

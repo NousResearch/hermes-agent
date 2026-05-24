@@ -3665,7 +3665,12 @@ class HermesCLI:
                     text += " · ⚠ YOLO"
                 return self._trim_status_bar_text(text, width)
             if width < 76:
-                parts = [f"⚕ {snapshot['model_short']}", percent_label]
+                # Keep the graphical context meter visible even in compact
+                # terminals. The older compact branch only showed the percent,
+                # which made the status bar look like the visual meter had
+                # disappeared on narrow panes.
+                compact_bar = self._build_context_bar(percent, width=6)
+                parts = [f"⚕ {snapshot['model_short']}", compact_bar, percent_label]
                 compressions = snapshot.get("compressions", 0)
                 if compressions:
                     parts.append(f"🗜️ {compressions}")
@@ -3732,11 +3737,14 @@ class HermesCLI:
                 if width < 76:
                     compressions = snapshot.get("compressions", 0)
                     bg_count = snapshot.get("active_background_tasks", 0)
+                    bar_style = self._status_bar_context_style(percent)
                     frags = [
                         ("class:status-bar", " ⚕ "),
                         ("class:status-bar-strong", snapshot["model_short"]),
                         ("class:status-bar-dim", " · "),
-                        (self._status_bar_context_style(percent), percent_label),
+                        (bar_style, self._build_context_bar(percent, width=6)),
+                        ("class:status-bar-dim", " "),
+                        (bar_style, percent_label),
                     ]
                     if compressions:
                         frags.append(("class:status-bar-dim", " · "))

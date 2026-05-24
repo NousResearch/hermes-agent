@@ -695,8 +695,12 @@ def build_welcome_banner(console: Console, model: str, cwd: str,
 
     console.print()
     term_width = shutil.get_terminal_size().columns
-    if term_width >= 95:
-        _logo = _bskin.banner_logo if _bskin and hasattr(_bskin, 'banner_logo') and _bskin.banner_logo else HERMES_AGENT_LOGO
+    _logo = _bskin.banner_logo if _bskin and hasattr(_bskin, 'banner_logo') and _bskin.banner_logo else HERMES_AGENT_LOGO
+    # Custom user skins may provide a compact startup image; allow those on
+    # standard 80-column terminals while preserving the built-in logo's wider
+    # 95-column guard.
+    min_logo_width = 80 if (_bskin and getattr(_bskin, "banner_logo", "")) else 95
+    if term_width >= min_logo_width:
         console.print(_logo)
         console.print()
     console.print(outer_panel)

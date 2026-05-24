@@ -5,7 +5,7 @@ from argparse import Namespace
 import pytest
 
 from cron.jobs import create_job, get_job, list_jobs
-from hermes_cli.cron import cron_command
+from hermes_cli.cron import cron_command, cron_list
 
 
 @pytest.fixture()
@@ -17,6 +17,19 @@ def tmp_cron_dir(tmp_path, monkeypatch):
 
 
 class TestCronCommandLifecycle:
+    def test_list_handles_null_deliver(self, tmp_cron_dir, capsys, monkeypatch):
+        job = create_job(prompt="Check server status", schedule="every 1h")
+        from cron.jobs import update_job
+
+        update_job(job["id"], {"deliver": None})
+        monkeypatch.setattr("hermes_cli.gateway.find_gateway_pids", lambda: [1234])
+
+        cron_list()
+
+        out = capsys.readouterr().out
+        assert job["id"] in out
+        assert "Deliver:   local" in out
+
     def test_pause_resume_run(self, tmp_cron_dir, capsys):
         job = create_job(prompt="Check server status", schedule="every 1h")
 

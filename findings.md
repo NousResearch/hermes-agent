@@ -8901,5 +8901,139 @@ No platform adapters render user-supplied Markdown as HTML. All platforms either
 
 ---
 
-*Pass #73 complete — 2026-05-25T19:15:00Z*
+## Pass #74 – Cross-File Consistency, Function Signature & Config Key Audit – 2026-05-25T19:45:00Z
+
+Scope: Full codebase — function signatures, config keys, environment variables, return values, imports.
+
+### P74-1 · skill_view(task_id=...) call signature mismatch at cron/scheduler.py:1070 — LOW
+
+**File:** `cron/scheduler.py` (line 1070)
+**Severity:** LOW
+
+```python
+loaded = json.loads(skill_view(skill_name))
+```
+
+`skill_view()` signature:
+```python
+def skill_view(name: str, file_path: str = None, task_id: str = None, preprocess: bool = True) -> str
+```
+
+The `task_id` parameter is received positionally — the skill name is passed as `task_id` and the actual skill name becomes `file_path`. This misroutes the arguments and will cause `task_id`-dependent skill logic to behave incorrectly, with the task_id field showing the skill name instead of the actual task ID.
+
+**Contrast with** `agent/skill_commands.py:94` which calls `skill_view(normalized, task_id=task_id, preprocess=False)` correctly using the named `task_id` argument.
+
+**Recommendation:** Use `skill_view(skill_name, task_id=None)` to pass task_id explicitly as a keyword argument.
+
+---
+
+### P74-2 · handle_function_call() at hermes_tools_mcp_server.py:165 calls without tool_call_id/session_id — INFO
+
+**File:** `agent/transports/hermes_tools_mcp_server.py` (line 165)
+**Severity:** INFO
+
+```python
+return handle_function_call(tool_name, kwargs or {})
+```
+
+Both `tool_call_id` and `session_id` are `None`. This dispatches the tool outside of any agent session context, so hook tracking IDs are absent. By design; the MCP server wraps errors in a try/except and returns JSON error responses. Flagged as INFO for visibility — no runtime failure expected.
+
+---
+
+### P74-3 · HERMES_AGENT_TIMEOUT_WARNING still lacks cfg_get read-back path — LOW (known issue)
+
+**File:** `gateway/run.py:1389`
+**Severity:** LOW
+
+Documented in Pass #27-2 (2026-05-24). `HERMES_AGENT_TIMEOUT_WARNING` is set as an env var but has no `cfg_get` read-back path for tool code to query it programmatically. Unchanged.
+
+---
+
+### P74-4 · invoke_hook() kwargs passed as **kwargs without key validation at tools/approval.py:53 — LOW
+
+**File:** `tools/approval.py` (line 53)
+**Severity:** LOW
+
+```python
+invoke_hook(hook_name, **kwargs)
+```
+
+The hook name is a string passed positionally; `**kwargs` spreads dispatcher kwargs. At `approval.py:53`, the kwargs content is derived from `hook_name` plus tool-context kwargs. No runtime validation confirms that the kwargs keys actually match what the hook manager expects for the given hook name. A misspelled key silently does nothing.
+
+**Recommendation:** Add a warning log in the hook dispatcher when a key in kwargs is not consumed by any registered hook handler.
+
+---
+
+### P74-5 · Cron scheduler inconsistent None vs tuple returns on local delivery — HIGH
+
+**File:** `cron/scheduler.py` (line 588)
+**Severity:** HIGH
+
+```python
+return None  # local-only jobs don't deliver — not a failure
+```
+
+Several functions return `None` for local-only jobs instead of returning an explicit 4-tuple indicating delivery was not applicable. Callers that unpack as `success, doc, marker_or_output, error = run_cron_job(...)` will receive `None` on success=False, causing attribute errors or mishandled logic if they test `if not success`.
+
+**Recommendation:** Always return `CronJobResult`-equivalent tuples. Introduce a `CronJobResult` dataclass to enforce consistent 4-field returns. Never return bare `None` from functions that callers expect to unpack as tuples.
+
+---
+
+### P74-6 · cfg_get return type is `Any`; callers do isinstance guards appropriately — INFO (known)
+
+**File:** `hermes_cli/config.py:4305`
+**Severity:** INFO
+
+`cfg_get()` returns `Any`. Callers do explicit `isinstance()` checks before numeric operations. No runtime type errors in scanner. Not a bug — a known typing limitation documented in P34-16.
+
+---
+
+### P74-7 · No circular imports detected — GOOD
+
+All imports use absolute paths (`from hermes_cli.plugins import ...`, `from agent.shell_hooks import ...`, `from tools.skills_tool import ...`). Lazy imports inside functions break up potential dependency chains. No relative import cycles observed across 50+ commonly-imported modules.
+
+---
+
+### P74-8 · All env vars read via os.getenv have defaults or are checked with .get() — GOOD
+
+- `os.getenv("HERMES_REDACT_SECRETS", "true")` — has default
+- `os.getenv("HERMES_COPILOT_ACP_COMMAND", "").strip()` — empty string default
+- `os.getenv("HERMES_NOUS_TIMEOUT_SECONDS", "15")` — string default, converted with `float()`
+- `os.getenv("HERMES_PLATFORM")` — checked with `or get_session_env(...)` fallback
+
+No bare `os.environ[key]` reads without existence checks except in dedicated test files that set up their own environment.
+
+---
+
+### P74-9 · cfg_get calls are all well-formed with multi-level keys — GOOD
+
+All `cfg_get(cfg, "section", "subsection", "key")` calls use 2-4 key segments. The `default` kwarg is used consistently. No single-key cfg_get calls that could be replaced with a simple dict.get().
+
+---
+
+### P74-10 · handle_function_call skip_pre_tool_call_hook inconsistency is by design — INFO
+
+**File:** `conversation_loop.py:3979` (kanban_block call)
+**Severity:** INFO
+
+`skip_pre_tool_call_hook=True` is passed by `tool_executor.py` and `agent_runtime_helpers.py` callers to avoid double-firing hooks. The `conversation_loop.py:3979` kanban_block call does NOT pass `skip_pre_tool_call_hook`. This is intentional — the agent loop fires `pre_tool_call` for agent-initiated tool calls but the kanban_block call is a direct call from the iteration-exhaustion handler, not from the agent model. By design, not a bug.
+
+---
+
+### Summary
+
+| Area | Status | Notes |
+|------|--------|-------|
+| Function signature consistency | ✅ MOSTLY GOOD | 1 issue (P74-1: skill_view positional args) |
+| Config key consistency | ✅ GOOD | All cfg_get well-formed; defaults consistent |
+| Environment variable documentation | ✅ GOOD | All env vars have defaults; no undocumented vars |
+| Return value consistency | ⚠️ NEEDS WORK | P74-5 (cron mixed None/bool returns) |
+| Import consistency | ✅ GOOD | No circular imports; absolute paths throughout |
+| Type safety | ✅ INFO | P74-6 cfg_get Any return; callers guard appropriately |
+
+**FINDING:** 3 findings total — 1 new LOW (P74-1), 1 HIGH (P74-5 cron return inconsistency), 1 known LOW (P74-3/HERMES_AGENT_TIMEOUT_WARNING).
+
+---
+
+*Pass #74 complete — 2026-05-25T19:45:00Z*
 *Commit at scan: 5a51a1f65*

@@ -64,6 +64,10 @@ def _make_adapter():
     adapter._auto_tts_disabled_chats = set()
     adapter._message_queue = asyncio.Queue()
     adapter._http_session = None
+    adapter._pending_text_batches = {}
+    adapter._pending_text_batch_tasks = {}
+    adapter._pending_photo_batches = {}
+    adapter._pending_photo_batch_tasks = {}
     return adapter
 
 

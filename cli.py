@@ -95,6 +95,12 @@ def estimate_usage_cost(*args, **kwargs):
     return _estimate_usage_cost(*args, **kwargs)
 
 
+def format_token_usage_counter(*args, **kwargs):
+    from agent.token_usage import format_token_usage_counter as _format_token_usage_counter
+
+    return _format_token_usage_counter(*args, **kwargs)
+
+
 def format_duration_compact(*args, **kwargs):
     seconds = float(args[0] if args else kwargs.get("seconds", 0.0))
     if seconds < 60:
@@ -9747,15 +9753,19 @@ class HermesCLI:
         print("  📊 Session Token Usage")
         print(f"  {'─' * 40}")
         print(f"  Model:                     {agent.model}")
-        print(f"  Input tokens:              {input_tokens:>10,}")
-        print(f"  Cache read tokens:         {cache_read_tokens:>10,}")
-        print(f"  Cache write tokens:        {cache_write_tokens:>10,}")
-        print(f"  Output tokens:             {output_tokens:>10,}")
-        if reasoning_tokens:
-            print(f"  ↳ Reasoning (subset):      {reasoning_tokens:>10,}")
+        token_summary = format_token_usage_counter(
+            {
+                'input_tokens': input_tokens,
+                'output_tokens': output_tokens,
+                'cache_read_tokens': cache_read_tokens,
+                'cache_write_tokens': cache_write_tokens,
+                'reasoning_tokens': reasoning_tokens,
+                'total_tokens': total,
+            }
+        )
+        print(f"  Tokens:                    {token_summary}")
         print(f"  Prompt tokens (total):     {prompt:>10,}")
         print(f"  Completion tokens:         {completion:>10,}")
-        print(f"  Total tokens:              {total:>10,}")
         print(f"  API calls:                 {calls:>10,}")
         print(f"  Session duration:          {elapsed:>10}")
         print(f"  Cost status:              {cost_result.status:>10}")

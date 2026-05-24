@@ -7789,6 +7789,26 @@ class GatewayRunner:
                 )
                 message_text = f"{_note}\n\n{message_text}"
 
+        # Video file attachments — inject path so the agent knows a video was
+        # sent and where to find it (parallels the audio-file and document
+        # handlers above).
+        if event.media_urls and event.message_type == MessageType.VIDEO:
+            from tools.credential_files import to_agent_visible_cache_path as _vid_agent_path
+
+            for _vpath in event.media_urls:
+                _vbasename = os.path.basename(_vpath)
+                _vparts = _vbasename.split("_", 2)
+                _vdisplay = _vparts[2] if len(_vparts) >= 3 else _vbasename
+                _vdisplay = re.sub(r'[^\w.\- ]', '_', _vdisplay)
+                _vagent_path = _vid_agent_path(_vpath)
+                _vnote = (
+                    f"[The user sent a video: '{_vdisplay}'. "
+                    f"It is saved at: {_vagent_path}. "
+                    f"Use vision_analyze to extract key frames, or ask the user "
+                    f"what they'd like you to do with it.]"
+                )
+                message_text = f"{_vnote}\n\n{message_text}"
+
         if event.media_urls and event.message_type == MessageType.DOCUMENT:
             import mimetypes as _mimetypes
             from tools.credential_files import to_agent_visible_cache_path

@@ -3960,6 +3960,25 @@ class BasePlatformAdapter(ABC):
                 merge_pending_message_event(self._pending_messages, session_key, event)
                 return  # Don't interrupt now - will run after current task completes
 
+            # Send feedback to the user so they know the message was queued
+            # and how to interrupt.  Without this, the user has no indication
+            # that their message was received but deferred — see #31588.
+            if event.message_type == MessageType.TEXT:
+                try:
+                    await self._send_with_retry(
+                        chat_id=event.source.chat_id,
+                        content=(
+                            "⏳ Agent is busy — message queued for the next turn. "
+                            "Use /stop to interrupt."
+                        ),
+                        reply_to=event.message_id,
+                    )
+                except Exception:
+                    logger.debug(
+                        "[%s] Failed to send busy-feedback notice for session %s",
+                        self.name, session_key, exc_info=True,
+                    )
+
             if self._is_queue_text_debounce_candidate(event):
                 logger.debug(
                     "[%s] New text message while session %s is active — "

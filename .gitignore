@@ -66,6 +66,9 @@ web/public/ds-assets/
 .release_notes.md
 mini-swe-agent/
 
+# Local code intelligence indexes
+.codegraph/
+
 # Nix
 .direnv/
 .nix-stamps/

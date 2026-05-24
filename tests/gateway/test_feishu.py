@@ -78,6 +78,58 @@ class TestConfigEnvOverrides(unittest.TestCase):
         self.assertIn(Platform.FEISHU, config.get_connected_platforms())
 
 
+class TestFeishuHermesEnvFallback(unittest.TestCase):
+    @patch.dict(os.environ, {"HOME": "C:/Users/Administrator", "HERMES_HOME": "C:/Users/Administrator/.hermes-test"}, clear=True)
+    def test_feishu_gateway_config_uses_get_env_value_fallback(self):
+        from gateway import config as gateway_config
+        from gateway.config import GatewayConfig, Platform, _apply_env_overrides
+
+        values = {
+            "FEISHU_APP_ID": "cli_from_dotenv",
+            "FEISHU_APP_SECRET": "secret_from_dotenv",
+            "FEISHU_CONNECTION_MODE": "websocket",
+            "FEISHU_HOME_CHANNEL": "oc_from_dotenv",
+        }
+        with patch.object(gateway_config, "_env_value", side_effect=lambda name, default="": values.get(name, default)):
+            config = GatewayConfig()
+            _apply_env_overrides(config)
+
+        self.assertIn(Platform.FEISHU, config.platforms)
+        platform_config = config.platforms[Platform.FEISHU]
+        self.assertTrue(platform_config.enabled)
+        self.assertEqual(platform_config.extra["app_id"], "cli_from_dotenv")
+        self.assertEqual(platform_config.extra["app_secret"], "secret_from_dotenv")
+        self.assertEqual(platform_config.extra["connection_mode"], "websocket")
+        self.assertEqual(platform_config.home_channel.chat_id, "oc_from_dotenv")
+
+    @patch.dict(os.environ, {"HOME": "C:/Users/Administrator", "HERMES_HOME": "C:/Users/Administrator/.hermes-test"}, clear=True)
+    def test_feishu_adapter_settings_uses_get_env_value_fallback(self):
+        from gateway.config import PlatformConfig
+        from gateway.platforms import feishu as feishu_mod
+        from gateway.platforms.feishu import FeishuAdapter
+
+        values = {
+            "FEISHU_APP_ID": "cli_from_dotenv",
+            "FEISHU_APP_SECRET": "secret_from_dotenv",
+            "FEISHU_DOMAIN": "lark",
+            "FEISHU_CONNECTION_MODE": "webhook",
+            "FEISHU_ALLOWED_USERS": "ou_1, ou_2",
+            "FEISHU_BOT_OPEN_ID": "ou_bot",
+            "FEISHU_REQUIRE_MENTION": "false",
+        }
+        with patch.object(feishu_mod, "_env_value", side_effect=lambda name, default="": values.get(name, default)):
+            adapter = FeishuAdapter(PlatformConfig())
+            settings = adapter._settings
+
+        self.assertEqual(settings.app_id, "cli_from_dotenv")
+        self.assertEqual(settings.app_secret, "secret_from_dotenv")
+        self.assertEqual(settings.domain_name, "lark")
+        self.assertEqual(settings.connection_mode, "webhook")
+        self.assertEqual(settings.allowed_group_users, frozenset({"ou_1", "ou_2"}))
+        self.assertEqual(settings.bot_open_id, "ou_bot")
+        self.assertFalse(settings.require_mention)
+
+
 class TestFeishuMessageNormalization(unittest.TestCase):
     def test_normalize_merge_forward_preserves_summary_lines(self):
         from gateway.platforms.feishu import normalize_feishu_message

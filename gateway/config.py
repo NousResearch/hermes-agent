@@ -22,6 +22,19 @@ from utils import is_truthy_value
 logger = logging.getLogger(__name__)
 
 
+def _env_value(name: str, default: str = "") -> str:
+    """Read env with Hermes config fallback (.env / Windows registry)."""
+    value = os.getenv(name)
+    if value is not None and value != "":
+        return value
+    try:
+        from hermes_cli.config import get_env_value
+        value = get_env_value(name)
+    except Exception:
+        value = None
+    return value if value not in (None, "") else default
+
+
 def _coerce_bool(value: Any, default: bool = True) -> bool:
     """Coerce bool-ish config values, preserving a caller-provided default."""
     if value is None:
@@ -1016,15 +1029,11 @@ def load_gateway_config() -> GatewayConfig:
                         group_allowed_chats = ",".join(str(v) for v in group_allowed_chats)
                     os.environ["TELEGRAM_GROUP_ALLOWED_CHATS"] = str(group_allowed_chats)
                 for _telegram_extra_key in ("guest_mode", "disable_link_previews", "observe_unmentioned_group_messages"):
+
                     if _telegram_extra_key in telegram_cfg:
-                        plat_data = platforms_data.setdefault(Platform.TELEGRAM.value, {})
-                        if not isinstance(plat_data, dict):
-                            plat_data = {}
-                            platforms_data[Platform.TELEGRAM.value] = plat_data
-                        extra = plat_data.setdefault("extra", {})
-                        if not isinstance(extra, dict):
-                            extra = {}
-                            plat_data["extra"] = extra
+                        _, extra = _ensure_platform_extra_dict(
+                            platforms_data, Platform.TELEGRAM.value
+                        )
                         extra[_telegram_extra_key] = telegram_cfg[_telegram_extra_key]
                 if _telegram_extra:
                     _plat_data, _plat_extra = _ensure_platform_extra_dict(
@@ -1573,8 +1582,8 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
             )
 
     # Feishu / Lark
-    feishu_app_id = os.getenv("FEISHU_APP_ID")
-    feishu_app_secret = os.getenv("FEISHU_APP_SECRET")
+    feishu_app_id = _env_value("FEISHU_APP_ID")
+    feishu_app_secret = _env_value("FEISHU_APP_SECRET")
     if feishu_app_id and feishu_app_secret:
         if Platform.FEISHU not in config.platforms:
             config.platforms[Platform.FEISHU] = PlatformConfig()
@@ -1582,22 +1591,22 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
         config.platforms[Platform.FEISHU].extra.update({
             "app_id": feishu_app_id,
             "app_secret": feishu_app_secret,
-            "domain": os.getenv("FEISHU_DOMAIN", "feishu"),
-            "connection_mode": os.getenv("FEISHU_CONNECTION_MODE", "websocket"),
+            "domain": _env_value("FEISHU_DOMAIN", "feishu"),
+            "connection_mode": _env_value("FEISHU_CONNECTION_MODE", "websocket"),
         })
-        feishu_encrypt_key = os.getenv("FEISHU_ENCRYPT_KEY", "")
+        feishu_encrypt_key = _env_value("FEISHU_ENCRYPT_KEY", "")
         if feishu_encrypt_key:
             config.platforms[Platform.FEISHU].extra["encrypt_key"] = feishu_encrypt_key
-        feishu_verification_token = os.getenv("FEISHU_VERIFICATION_TOKEN", "")
+        feishu_verification_token = _env_value("FEISHU_VERIFICATION_TOKEN", "")
         if feishu_verification_token:
             config.platforms[Platform.FEISHU].extra["verification_token"] = feishu_verification_token
-        feishu_home = os.getenv("FEISHU_HOME_CHANNEL")
+        feishu_home = _env_value("FEISHU_HOME_CHANNEL")
         if feishu_home:
             config.platforms[Platform.FEISHU].home_channel = HomeChannel(
                 platform=Platform.FEISHU,
                 chat_id=feishu_home,
-                name=os.getenv("FEISHU_HOME_CHANNEL_NAME", "Home"),
-                thread_id=os.getenv("FEISHU_HOME_CHANNEL_THREAD_ID") or None,
+                name=_env_value("FEISHU_HOME_CHANNEL_NAME", "Home"),
+                thread_id=_env_value("FEISHU_HOME_CHANNEL_THREAD_ID") or None,
             )
 
     # WeCom (Enterprise WeChat)
@@ -1818,16 +1827,47 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
         discover_plugins()  # idempotent
         from gateway.platform_registry import platform_registry
         for entry in platform_registry.plugin_entries():
+            platform = Platform(entry.name)
+            pconfig = config.platforms.get(platform)
+            explicitly_enabled = bool(pconfig and pconfig.enabled)
+
             try:
-                if not entry.check_fn():
-                    continue
+                requirements_ok = bool(entry.check_fn())
             except Exception as e:
                 logger.debug("check_fn for %s raised: %s", entry.name, e)
                 continue
-            platform = Platform(entry.name)
+
+            plugin_configured = False
+            if pconfig is not None:
+                try:
+                    if entry.is_connected is not None:
+                        plugin_configured = bool(entry.is_connected(pconfig))
+                    elif entry.validate_config is not None:
+                        plugin_configured = bool(entry.validate_config(pconfig))
+                    else:
+                        plugin_configured = requirements_ok
+                except Exception as e:
+                    logger.debug("config check for %s raised: %s", entry.name, e)
+                    plugin_configured = False
+
+            # check_fn() only proves dependencies are importable (for some
+            # plugins that means a lazy-installed Python package), not that
+            # the platform has credentials.  Do not turn a top-level YAML
+            # tuning section such as ``discord.require_mention`` into an
+            # enabled gateway adapter unless either:
+            #   1. the plugin reports it is actually configured, or
+            #   2. the user explicitly enabled it in config.yaml.
+            if not requirements_ok or (not plugin_configured and not explicitly_enabled):
+                continue
+
             if platform not in config.platforms:
                 config.platforms[platform] = PlatformConfig()
-            config.platforms[platform].enabled = True
+
+            if plugin_configured:
+                config.platforms[platform].enabled = True
+            elif not explicitly_enabled:
+                continue
+
             # Seed extras from env if the plugin opted in.
             if entry.env_enablement_fn is not None:
                 try:

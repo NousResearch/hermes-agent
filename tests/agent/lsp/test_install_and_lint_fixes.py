@@ -275,5 +275,67 @@ def test_check_lint_returns_error_for_real_ts_type_errors(tmp_path):
     assert "TS2322" in lint.output
 
 
+# ---------------------------------------------------------------------------
+# Fix 4: Windows npm bins prefer .cmd shims, not POSIX shell wrappers
+# ---------------------------------------------------------------------------
+
+
+def test_windows_cmd_shim_for_npm_bin_prefers_sibling_cmd(tmp_path, monkeypatch):
+    """Windows cannot Popen npm's extensionless shell wrapper directly."""
+    from agent.lsp import servers
+
+    wrapper = tmp_path / "pyright-langserver"
+    wrapper.write_text("#!/bin/sh\n")
+    shim = tmp_path / "pyright-langserver.cmd"
+    shim.write_text("@echo off\n")
+
+    monkeypatch.setattr(servers.os, "name", "nt")
+
+    assert servers._windows_cmd_shim_for_npm_bin(str(wrapper)) == str(shim)
+
+
+def test_windows_cmd_shim_for_npm_bin_leaves_native_executables_alone(tmp_path, monkeypatch):
+    from agent.lsp import servers
+
+    exe = tmp_path / "pyright-langserver.exe"
+    exe.write_text("")
+    monkeypatch.setattr(servers.os, "name", "nt")
+
+    assert servers._windows_cmd_shim_for_npm_bin(str(exe)) is None
+
+
+def test_windows_cmd_shim_for_npm_bin_noop_on_posix(tmp_path, monkeypatch):
+    from agent.lsp import servers
+
+    wrapper = tmp_path / "pyright-langserver"
+    wrapper.write_text("#!/bin/sh\n")
+    (tmp_path / "pyright-langserver.cmd").write_text("@echo off\n")
+    monkeypatch.setattr(servers.os, "name", "posix")
+
+    assert servers._windows_cmd_shim_for_npm_bin(str(wrapper)) is None
+
+
+def test_spawn_pyright_cmd_uses_langserver_cmd_sibling(tmp_path, monkeypatch):
+    """If PATH resolves pyright.cmd, Windows must still spawn pyright-langserver.cmd."""
+    from agent.lsp import servers
+    from agent.lsp.servers import ServerContext
+
+    pyright_cmd = tmp_path / "pyright.cmd"
+    pyright_cmd.write_text("@echo off\n")
+    langserver_shell = tmp_path / "pyright-langserver"
+    langserver_shell.write_text("#!/bin/sh\n")
+    langserver_cmd = tmp_path / "pyright-langserver.cmd"
+    langserver_cmd.write_text("@echo off\n")
+
+    monkeypatch.setattr(servers.os, "name", "nt")
+    monkeypatch.setattr(servers, "_which", lambda *names: str(pyright_cmd))
+
+    spec = servers._spawn_pyright(str(tmp_path), ServerContext(workspace_root=str(tmp_path)))
+
+    assert spec is not None
+    assert spec.command[0] == str(langserver_cmd)
+    assert spec.command[1:] == ["--stdio"]
+
+
 if __name__ == "__main__":  # pragma: no cover
     pytest.main([__file__, "-v"])

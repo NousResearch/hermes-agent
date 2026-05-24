@@ -145,6 +145,19 @@ from utils import atomic_json_write
 
 logger = logging.getLogger(__name__)
 
+
+def _env_value(name: str, default: str = "") -> str:
+    """Read env with Hermes config fallback (.env / Windows registry)."""
+    value = os.getenv(name)
+    if value is not None and value != "":
+        return value
+    try:
+        from hermes_cli.config import get_env_value
+        value = get_env_value(name)
+    except Exception:
+        value = None
+    return value if value not in (None, "") else default
+
 # ---------------------------------------------------------------------------
 # Regex patterns
 # ---------------------------------------------------------------------------
@@ -1508,25 +1521,27 @@ class FeishuAdapter(BasePlatformAdapter):
             allow_bots = "none"
 
         return FeishuAdapterSettings(
-            app_id=str(extra.get("app_id") or os.getenv("FEISHU_APP_ID", "")).strip(),
-            app_secret=str(extra.get("app_secret") or os.getenv("FEISHU_APP_SECRET", "")).strip(),
-            domain_name=str(extra.get("domain") or os.getenv("FEISHU_DOMAIN", "feishu")).strip().lower(),
+            app_id=str(extra.get("app_id") or _env_value("FEISHU_APP_ID", "")).strip(),
+            app_secret=str(extra.get("app_secret") or _env_value("FEISHU_APP_SECRET", "")).strip(),
+            domain_name=str(extra.get("domain") or _env_value("FEISHU_DOMAIN", "feishu")).strip().lower(),
             connection_mode=str(
-                extra.get("connection_mode") or os.getenv("FEISHU_CONNECTION_MODE", "websocket")
+                extra.get("connection_mode") or _env_value("FEISHU_CONNECTION_MODE", "websocket")
             ).strip().lower(),
-            encrypt_key=str(extra.get("encrypt_key") or os.getenv("FEISHU_ENCRYPT_KEY", "")).strip(),
-            verification_token=str(
-                extra.get("verification_token") or os.getenv("FEISHU_VERIFICATION_TOKEN", "")
+            encrypt_key=str(
+                extra.get("encrypt_key") or _env_value("FEISHU_ENCRYPT_KEY", "")
             ).strip(),
-            group_policy=os.getenv("FEISHU_GROUP_POLICY", "allowlist").strip().lower(),
+            verification_token=str(
+                extra.get("verification_token") or _env_value("FEISHU_VERIFICATION_TOKEN", "")
+            ).strip(),
+            group_policy=_env_value("FEISHU_GROUP_POLICY", "allowlist").strip().lower(),
             allowed_group_users=frozenset(
                 item.strip()
-                for item in os.getenv("FEISHU_ALLOWED_USERS", "").split(",")
+                for item in _env_value("FEISHU_ALLOWED_USERS", "").split(",")
                 if item.strip()
             ),
-            bot_open_id=os.getenv("FEISHU_BOT_OPEN_ID", "").strip(),
-            bot_user_id=os.getenv("FEISHU_BOT_USER_ID", "").strip(),
-            bot_name=os.getenv("FEISHU_BOT_NAME", "").strip(),
+            bot_open_id=_env_value("FEISHU_BOT_OPEN_ID", "").strip(),
+            bot_user_id=_env_value("FEISHU_BOT_USER_ID", "").strip(),
+            bot_name=_env_value("FEISHU_BOT_NAME", "").strip(),
             dedup_cache_size=max(
                 32,
                 int(os.getenv("HERMES_FEISHU_DEDUP_CACHE_SIZE", str(_DEFAULT_DEDUP_CACHE_SIZE))),
@@ -1567,7 +1582,7 @@ class FeishuAdapter(BasePlatformAdapter):
             group_rules=group_rules,
             allow_bots=allow_bots,
             require_mention=_to_boolean(
-                extra.get("require_mention", os.getenv("FEISHU_REQUIRE_MENTION", "true"))
+                extra.get("require_mention", _env_value("FEISHU_REQUIRE_MENTION", "true"))
             ),
         )
 

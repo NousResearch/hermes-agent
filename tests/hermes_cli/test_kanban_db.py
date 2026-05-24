@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import concurrent.futures
+import json
 import os
 import sqlite3
 import time
@@ -2466,7 +2467,7 @@ def test_task_dict_survives_corrupt_created_at(tmp_path, monkeypatch):
 
 def test_create_task_without_workspace_inherits_board_default_workdir(kanban_home, monkeypatch):
     """Board with default_workdir → create_task without workspace_path → inherits default."""
-    default_wd = "/home/user/project"
+    default_wd = str(kanban_home / "project")
     kb.create_board("work-proj", default_workdir=default_wd)
 
     with kb.connect(board="work-proj") as conn:
@@ -2489,15 +2490,29 @@ def test_create_task_without_workspace_no_default_stays_none(kanban_home):
 
 def test_create_task_with_explicit_workspace_ignores_board_default(kanban_home):
     """create_task with explicit workspace_path → ignores board default."""
-    kb.create_board("custom-ws-board", default_workdir="/board/default")
+    board_default = str(kanban_home / "board-default")
+    kb.create_board("custom-ws-board", default_workdir=board_default)
 
-    explicit = "/my/explicit/path"
+    explicit = str(kanban_home / "explicit-path")
     with kb.connect(board="custom-ws-board") as conn:
         tid = kb.create_task(conn, title="explicit", workspace_path=explicit, board="custom-ws-board")
         t = kb.get_task(conn, tid)
     assert t is not None
     assert t.workspace_path == explicit
-    assert t.workspace_path != "/board/default"
+    assert t.workspace_path != board_default
+
+
+def test_create_task_rejects_relative_board_default_from_existing_metadata(kanban_home):
+    """Legacy board metadata with relative default_workdir should fail at create-time."""
+    kb.create_board("legacy-rel", default_workdir=str(kanban_home / "abs-worktree"))
+    meta_path = kb.board_metadata_path("legacy-rel")
+    meta = json.loads(meta_path.read_text(encoding="utf-8"))
+    meta["default_workdir"] = "relative/path"
+    meta_path.write_text(json.dumps(meta, indent=2) + "\n", encoding="utf-8")
+
+    with kb.connect(board="legacy-rel") as conn:
+        with pytest.raises(ValueError, match=r"default_workdir must resolve to an absolute path"):
+            kb.create_task(conn, title="blocked early", board="legacy-rel")
 
 
 # ---------------------------------------------------------------------------

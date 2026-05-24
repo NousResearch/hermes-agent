@@ -219,6 +219,10 @@ class TestBoardCRUD:
         slugs = [b["slug"] for b in kb.list_boards()]
         assert slugs == ["default", "foo"]
 
+    def test_create_rejects_relative_default_workdir(self, fresh_home):
+        with pytest.raises(ValueError, match=r"default_workdir must resolve to an absolute path"):
+            kb.create_board("foo", default_workdir="relative/path")
+
     def test_create_is_idempotent(self, fresh_home):
         kb.create_board("bar")
         kb.create_board("bar")  # no error
@@ -507,6 +511,14 @@ class TestCLI:
         data = json.loads(r2.stdout)
         cur = [b for b in data if b["is_current"]][0]
         assert cur["slug"] == "myproj"
+
+    def test_boards_create_rejects_relative_default_workdir(self, tmp_path):
+        env = {"HERMES_HOME": str(tmp_path)}
+        res = _cli(
+            ["boards", "create", "relproj", "--default-workdir", "relative/path"],
+            env_extra=env,
+        )
+        assert "default_workdir must resolve to an absolute path" in res.stderr
 
     def test_per_board_task_isolation_via_cli(self, tmp_path):
         env = {"HERMES_HOME": str(tmp_path)}

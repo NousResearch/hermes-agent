@@ -429,6 +429,17 @@ def read_board_metadata(board: Optional[str] = None) -> dict:
     return meta
 
 
+def _validate_board_default_workdir(default_workdir: str, *, board: str) -> str:
+    """Return ``default_workdir`` when it resolves to an absolute path."""
+    raw = str(default_workdir)
+    if raw and not Path(raw).expanduser().is_absolute():
+        raise ValueError(
+            f"board {board!r} default_workdir must resolve to an absolute path; "
+            f"got {raw!r}"
+        )
+    return raw
+
+
 def write_board_metadata(
     board: Optional[str],
     *,
@@ -460,7 +471,10 @@ def write_board_metadata(
     if archived is not None:
         meta["archived"] = bool(archived)
     if default_workdir is not None:
-        meta["default_workdir"] = str(default_workdir) if default_workdir else None
+        meta["default_workdir"] = (
+            _validate_board_default_workdir(default_workdir, board=slug)
+            if default_workdir else None
+        )
     if not meta.get("created_at"):
         meta["created_at"] = int(time.time())
     path = board_metadata_path(slug)
@@ -1657,7 +1671,10 @@ def create_task(
         board_meta = read_board_metadata(board_slug)
         board_default = board_meta.get("default_workdir")
         if board_default:
-            workspace_path = str(board_default)
+            workspace_path = _validate_board_default_workdir(
+                board_default,
+                board=board_slug,
+            )
 
     # Retry once on the extremely unlikely id collision.
     for attempt in range(2):

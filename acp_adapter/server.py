@@ -88,6 +88,20 @@ _executor = ThreadPoolExecutor(max_workers=4, thread_name_prefix="acp-agent")
 # does not expose a client-side limit, so this is a fixed cap that clients
 # paginate against using `cursor` / `next_cursor`.
 _LIST_SESSIONS_PAGE_SIZE = 50
+_INTERRUPT_WAITING_FOR_MODEL_PREFIX = (
+    "Operation interrupted: waiting for model response ("
+)
+_INTERRUPT_WAITING_FOR_MODEL_SUFFIX = " elapsed)."
+
+
+def _is_interrupt_waiting_for_model_response(text: Any) -> bool:
+    """Return True for Hermes' local API-wait interruption status string."""
+    response = str(text or "").strip()
+    return (
+        response.startswith(_INTERRUPT_WAITING_FOR_MODEL_PREFIX)
+        and response.endswith(_INTERRUPT_WAITING_FOR_MODEL_SUFFIX)
+    )
+
 _MAX_ACP_RESOURCE_BYTES = 512 * 1024
 _TEXT_RESOURCE_MIME_PREFIXES = ("text/",)
 _TEXT_RESOURCE_MIME_TYPES = {
@@ -1513,7 +1527,12 @@ class HermesACPAgent(acp.Agent):
             self.session_manager.save_session(session_id)
 
         final_response = result.get("final_response", "")
-        if final_response:
+        cancelled = bool(state.cancel_event and state.cancel_event.is_set())
+        interrupted = bool(result.get("interrupted")) or cancelled
+        suppress_interrupt_response = (
+            interrupted and _is_interrupt_waiting_for_model_response(final_response)
+        )
+        if final_response and not suppress_interrupt_response:
             try:
                 from agent.title_generator import maybe_auto_title
 
@@ -1534,7 +1553,12 @@ class HermesACPAgent(acp.Agent):
                 )
             except Exception:
                 logger.debug("Failed to auto-title ACP session %s", session_id, exc_info=True)
-        if final_response and conn and (not streamed_message or result.get("response_transformed")):
+        if (
+            final_response
+            and conn
+            and not suppress_interrupt_response
+            and (not streamed_message or result.get("response_transformed"))
+        ):
             # Deliver the final response when streaming did not already send it,
             # or when a plugin hook transformed the response after streaming
             # finished (e.g. transform_llm_output) — otherwise the appended /
@@ -1576,7 +1600,7 @@ class HermesACPAgent(acp.Agent):
 
         await self._send_usage_update(state)
 
-        stop_reason = "cancelled" if state.cancel_event and state.cancel_event.is_set() else "end_turn"
+        stop_reason = "cancelled" if cancelled else "end_turn"
         return PromptResponse(stop_reason=stop_reason, usage=usage)
 
     # ---- Slash commands (headless) -------------------------------------------

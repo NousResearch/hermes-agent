@@ -4810,6 +4810,20 @@ class DiscordAdapter(BasePlatformAdapter):
             reply_to_id = str(message.reference.message_id)
             if message.reference.resolved:
                 reply_to_text = getattr(message.reference.resolved, "content", None) or None
+            # When Discord doesn't provide the resolved message inline
+            # (common in high-traffic servers or for older messages),
+            # fetch it from the API so the agent has reply context.
+            if reply_to_text is None and reply_to_id:
+                try:
+                    ref_msg = await message.channel.fetch_message(int(reply_to_id))
+                    reply_to_text = getattr(ref_msg, "content", None) or None
+                except Exception:
+                    logger.debug("Could not fetch reply-to message %s", reply_to_id)
+        # Prepend reply context to the message text so the agent can
+        # understand what the user is responding to.
+        if reply_to_text:
+            reply_context = f'[Replying to: "{reply_to_text[:200]}"]\n' if len(reply_to_text) <= 200 else f'[Replying to: "{reply_to_text[:200]}..."]\n'
+            event_text = reply_context + event_text
 
         event = MessageEvent(
             text=event_text,

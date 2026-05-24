@@ -605,6 +605,22 @@ async def get_status():
     if gateway_running and gateway_state is None and remote_health_body is not None:
         gateway_state = "running"
 
+    # Aggregate platform states from all profiles (multi-profile support).
+    # Each profile may run its own gateway with different platforms; merge them
+    # so the dashboard shows the full picture.
+    try:
+        from hermes_cli import profiles as profiles_mod
+        for profile in profiles_mod.list_profiles():
+            if profile.is_default:
+                continue
+            if not profile.gateway_running or not profile.gateway_platforms:
+                continue
+            for platform_name, platform_info in profile.gateway_platforms.items():
+                if platform_name not in gateway_platforms:
+                    gateway_platforms[platform_name] = platform_info
+    except Exception:
+        pass
+
     active_sessions = 0
     try:
         from hermes_state import SessionDB
@@ -773,9 +789,36 @@ async def get_action_status(name: str, lines: int = 200):
     }
 
 
-@app.get("/api/sessions")
-async def get_sessions(limit: int = 20, offset: int = 0):
+def _session_profile_home(profile: Optional[str]) -> Tuple[str, Path]:
+    """Resolve a profile query value to (profile_name, HERMES_HOME)."""
+    from hermes_cli import profiles as profiles_mod
+
+    raw = (profile or "default").strip() or "default"
     try:
+        canon = profiles_mod.normalize_profile_name(raw)
+        profiles_mod.validate_profile_name(canon)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    if not profiles_mod.profile_exists(canon):
+        raise HTTPException(status_code=404, detail=f"Profile '{canon}' does not exist.")
+    return canon, profiles_mod.get_profile_dir(canon)
+
+
+def _annotate_session(session: Dict[str, Any], profile: str, home: Path) -> Dict[str, Any]:
+    annotated = dict(session)
+    annotated["profile"] = profile
+    annotated["profile_name"] = profile
+    annotated["hermes_home"] = str(home)
+    annotated["is_default_profile"] = profile == "default"
+    return annotated
+
+
+def _list_sessions_for_profile(profile: str, home: Path, limit: int, offset: int) -> Tuple[List[Dict[str, Any]], int]:
+    """List sessions from a single profile's state.db."""
+    import os
+    old_home = os.environ.get("HERMES_HOME")
+    try:
+        os.environ["HERMES_HOME"] = str(home)
         from hermes_state import SessionDB
         db = SessionDB()
         try:
@@ -787,26 +830,72 @@ async def get_sessions(limit: int = 20, offset: int = 0):
                     s.get("ended_at") is None
                     and (now - s.get("last_active", s.get("started_at", 0))) < 300
                 )
-            return {"sessions": sessions, "total": total, "limit": limit, "offset": offset}
+            return sessions, total
         finally:
             db.close()
+    finally:
+        if old_home is not None:
+            os.environ["HERMES_HOME"] = old_home
+        elif "HERMES_HOME" in os.environ:
+            del os.environ["HERMES_HOME"]
+
+
+@app.get("/api/sessions")
+async def get_sessions(limit: int = 20, offset: int = 0, profile: Optional[str] = None):
+    try:
+        # When no profile specified, use current (backward compatible)
+        if not profile:
+            from hermes_state import SessionDB
+            db = SessionDB()
+            try:
+                sessions = db.list_sessions_rich(limit=limit, offset=offset)
+                total = db.session_count()
+                now = time.time()
+                for s in sessions:
+                    s["is_active"] = (
+                        s.get("ended_at") is None
+                        and (now - s.get("last_active", s.get("started_at", 0))) < 300
+                    )
+                return {"sessions": sessions, "total": total, "limit": limit, "offset": offset}
+            finally:
+                db.close()
+
+        # "all" — aggregate sessions from all profiles
+        if profile.strip().lower() == "all":
+            from hermes_cli import profiles as profiles_mod
+            all_sessions: List[Dict[str, Any]] = []
+            total = 0
+            for p in profiles_mod.list_profiles():
+                sessions, count = _list_sessions_for_profile(p.name, p.path, limit=10000, offset=0)
+                total += count
+                for s in sessions:
+                    all_sessions.append(_annotate_session(s, p.name, p.path))
+            # Sort by started_at desc, then apply limit/offset
+            all_sessions.sort(key=lambda s: s.get("started_at", 0), reverse=True)
+            paginated = all_sessions[offset:offset + limit]
+            return {"sessions": paginated, "total": total, "limit": limit, "offset": offset}
+
+        # Specific profile
+        name, home = _session_profile_home(profile)
+        sessions, total = _list_sessions_for_profile(name, home, limit, offset)
+        annotated = [_annotate_session(s, name, home) for s in sessions]
+        return {"sessions": annotated, "total": total, "limit": limit, "offset": offset}
+    except HTTPException:
+        raise
     except Exception:
         _log.exception("GET /api/sessions failed")
         raise HTTPException(status_code=500, detail="Internal server error")
 
 
-@app.get("/api/sessions/search")
-async def search_sessions(q: str = "", limit: int = 20):
-    """Full-text search across session message content using FTS5."""
-    if not q or not q.strip():
-        return {"results": []}
+def _search_sessions_for_profile(profile: str, home: Path, q: str, limit: int) -> List[Dict[str, Any]]:
+    """Search sessions from a single profile's state.db."""
+    import os
+    old_home = os.environ.get("HERMES_HOME")
     try:
+        os.environ["HERMES_HOME"] = str(home)
         from hermes_state import SessionDB
         db = SessionDB()
         try:
-            # Auto-add prefix wildcards so partial words match
-            # e.g. "nimb" → "nimb*" matches "nimby"
-            # Preserve quoted phrases and existing wildcards as-is
             import re
             terms = []
             for token in re.findall(r'"[^"]*"|\S+', q.strip()):
@@ -816,22 +905,93 @@ async def search_sessions(q: str = "", limit: int = 20):
                     terms.append(token + "*")
             prefix_query = " ".join(terms)
             matches = db.search_messages(query=prefix_query, limit=limit)
-            # Group by session_id — return unique sessions with their best snippet
-            seen: dict = {}
+            results: List[Dict[str, Any]] = []
+            seen: set = set()
             for m in matches:
                 sid = m["session_id"]
-                if sid not in seen:
-                    seen[sid] = {
-                        "session_id": sid,
-                        "snippet": m.get("snippet", ""),
-                        "role": m.get("role"),
-                        "source": m.get("source"),
-                        "model": m.get("model"),
-                        "session_started": m.get("session_started"),
-                    }
-            return {"results": list(seen.values())}
+                if sid in seen:
+                    continue
+                seen.add(sid)
+                results.append({
+                    "session_id": sid,
+                    "snippet": m.get("snippet", ""),
+                    "role": m.get("role"),
+                    "source": m.get("source"),
+                    "model": m.get("model"),
+                    "session_started": m.get("session_started"),
+                    "profile": profile,
+                    "profile_name": profile,
+                    "hermes_home": str(home),
+                    "is_default_profile": profile == "default",
+                })
+            return results
         finally:
             db.close()
+    finally:
+        if old_home is not None:
+            os.environ["HERMES_HOME"] = old_home
+        elif "HERMES_HOME" in os.environ:
+            del os.environ["HERMES_HOME"]
+
+
+@app.get("/api/sessions/search")
+async def search_sessions(q: str = "", limit: int = 20, profile: Optional[str] = None):
+    """Full-text search across session message content using FTS5."""
+    if not q or not q.strip():
+        return {"results": []}
+    try:
+        # When no profile specified, use current (backward compatible)
+        if not profile:
+            from hermes_state import SessionDB
+            db = SessionDB()
+            try:
+                import re
+                terms = []
+                for token in re.findall(r'"[^"]*"|\S+', q.strip()):
+                    if token.startswith('"') or token.endswith("*"):
+                        terms.append(token)
+                    else:
+                        terms.append(token + "*")
+                prefix_query = " ".join(terms)
+                matches = db.search_messages(query=prefix_query, limit=limit)
+                seen: dict = {}
+                for m in matches:
+                    sid = m["session_id"]
+                    if sid not in seen:
+                        seen[sid] = {
+                            "session_id": sid,
+                            "snippet": m.get("snippet", ""),
+                            "role": m.get("role"),
+                            "source": m.get("source"),
+                            "model": m.get("model"),
+                            "session_started": m.get("session_started"),
+                        }
+                return {"results": list(seen.values())}
+            finally:
+                db.close()
+
+        # "all" — search across all profiles
+        if profile.strip().lower() == "all":
+            from hermes_cli import profiles as profiles_mod
+            all_results: List[Dict[str, Any]] = []
+            seen_ids: set = set()
+            for p in profiles_mod.list_profiles():
+                results = _search_sessions_for_profile(p.name, p.path, q, limit)
+                for r in results:
+                    sid = r["session_id"]
+                    if sid not in seen_ids:
+                        seen_ids.add(sid)
+                        all_results.append(r)
+                if len(all_results) >= limit:
+                    break
+            return {"results": all_results[:limit]}
+
+        # Specific profile
+        name, home = _session_profile_home(profile)
+        results = _search_sessions_for_profile(name, home, q, limit)
+        return {"results": results}
+    except HTTPException:
+        raise
     except Exception:
         _log.exception("GET /api/sessions/search failed")
         raise HTTPException(status_code=500, detail="Search failed")
@@ -2777,6 +2937,9 @@ def _profile_to_dict(info) -> Dict[str, Any]:
         "provider": _profile_attr(info, "provider"),
         "has_env": bool(_profile_attr(info, "has_env", False)),
         "skill_count": int(_profile_attr(info, "skill_count", 0) or 0),
+        "gateway_state": _profile_attr(info, "gateway_state"),
+        "gateway_platforms": _profile_attr(info, "gateway_platforms") or {},
+        "gateway_updated_at": _profile_attr(info, "gateway_updated_at"),
     }
 
 

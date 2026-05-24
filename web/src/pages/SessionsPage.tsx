@@ -24,12 +24,14 @@ import {
   X,
   Play,
 } from "lucide-react";
+import { Select, SelectOption } from "@nous-research/ui/ui/components/select";
 import { api } from "@/lib/api";
 import type {
   SessionInfo,
   SessionMessage,
   SessionSearchResult,
   StatusResponse,
+  ProfileInfo,
 } from "@/lib/api";
 import { timeAgo } from "@/lib/utils";
 import { Markdown } from "@/components/Markdown";
@@ -37,7 +39,6 @@ import { PlatformsCard } from "@/components/PlatformsCard";
 import { Toast } from "@/components/Toast";
 import { Button } from "@nous-research/ui/ui/components/button";
 import { ListItem } from "@nous-research/ui/ui/components/list-item";
-import { Segmented } from "@nous-research/ui/ui/components/segmented";
 import { Spinner } from "@nous-research/ui/ui/components/spinner";
 import { Badge } from "@nous-research/ui/ui/components/badge";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -84,7 +85,7 @@ function SnippetHighlight({ snippet }: { snippet: string }) {
     parts.push(snippet.slice(last));
   }
   return (
-    <p className="font-mondwest normal-case mt-0.5 min-w-0 max-w-full truncate text-xs text-text-secondary">
+    <p className="mt-0.5 min-w-0 max-w-full truncate text-xs text-muted-foreground/80">
       {parts}
     </p>
   );
@@ -192,12 +193,12 @@ function MessageBubble({
       <div className="flex items-center gap-2 mb-1">
         <span className={`text-xs font-semibold ${style.text}`}>{label}</span>
         {isHit && (
-          <Badge tone="warning" className="text-xs py-0 px-1.5">
+          <Badge tone="warning" className="text-[9px] py-0 px-1.5">
             {t.common.match}
           </Badge>
         )}
         {msg.timestamp && (
-          <span className="text-xs text-text-tertiary">
+          <span className="text-[10px] text-muted-foreground">
             {timeAgo(msg.timestamp)}
           </span>
         )}
@@ -295,43 +296,6 @@ function SessionRow({
   const SourceIcon = sourceInfo.icon;
   const hasTitle = session.title && session.title !== "Untitled";
 
-  const actionButtons = (
-    <>
-      <Badge tone="outline" className="text-xs">
-        {session.source ?? "local"}
-      </Badge>
-
-      {resumeInChatEnabled && (
-        <Button
-          ghost
-          size="icon"
-          className="text-muted-foreground hover:text-success"
-          aria-label={t.sessions.resumeInChat}
-          title={t.sessions.resumeInChat}
-          onClick={(e) => {
-            e.stopPropagation();
-            navigate(`/chat?resume=${encodeURIComponent(session.id)}`);
-          }}
-        >
-          <Play />
-        </Button>
-      )}
-
-      <Button
-        ghost
-        destructive
-        size="icon"
-        aria-label={t.sessions.deleteSession}
-        onClick={(e) => {
-          e.stopPropagation();
-          onDelete();
-        }}
-      >
-        <Trash2 />
-      </Button>
-    </>
-  );
-
   return (
     <div
       className={`max-w-full min-w-0 overflow-hidden border transition-colors ${
@@ -348,54 +312,81 @@ function SessionRow({
           <SourceIcon className="h-4 w-4" />
         </div>
         <div className="flex min-w-0 flex-1 flex-col gap-2">
-          <div className="flex min-w-0 flex-col gap-2 sm:flex-row sm:items-start sm:justify-between sm:gap-3">
-            <div className="flex min-w-0 flex-1 flex-col gap-0.5">
-              <div className="flex min-w-0 items-center gap-2">
-                <span
-                  className={`font-mondwest normal-case min-w-0 flex-1 truncate text-sm ${hasTitle ? "font-medium" : "text-muted-foreground italic"}`}
-                >
-                  {hasTitle
-                    ? session.title
-                    : session.preview
-                      ? session.preview.slice(0, 60)
-                      : t.sessions.untitledSession}
-                </span>
-                {session.is_active && (
-                  <Badge tone="success" className="shrink-0 text-xs">
-                    <span className="mr-1 inline-block h-1.5 w-1.5 animate-pulse rounded-full bg-current" />
-                    {t.common.live}
-                  </Badge>
-                )}
-              </div>
-              <div className="flex min-w-0 flex-wrap items-center gap-x-1.5 gap-y-0.5 text-xs text-muted-foreground">
-                <span className="max-w-[min(100%,12rem)] truncate sm:max-w-[180px]">
-                  {(session.model ?? t.common.unknown).split("/").pop()}
-                </span>
-                <span className="text-border">&#183;</span>
-                <span className="shrink-0">
-                  {session.message_count} {t.common.msgs}
-                </span>
-                {session.tool_call_count > 0 && (
-                  <>
-                    <span className="text-border">&#183;</span>
-                    <span className="shrink-0">
-                      {session.tool_call_count} {t.common.tools}
-                    </span>
-                  </>
-                )}
-                <span className="text-border">&#183;</span>
-                <span className="shrink-0">{timeAgo(session.last_active)}</span>
-              </div>
-              {snippet && <SnippetHighlight snippet={snippet} />}
+          <div className="flex min-w-0 flex-col gap-0.5">
+            <div className="flex min-w-0 items-center gap-2">
+              <span
+                className={`min-w-0 flex-1 truncate text-sm ${hasTitle ? "font-medium" : "text-muted-foreground italic"}`}
+              >
+                {hasTitle
+                  ? session.title
+                  : session.preview
+                    ? session.preview.slice(0, 60)
+                    : t.sessions.untitledSession}
+              </span>
+              {session.is_active && (
+                <Badge tone="success" className="shrink-0 text-[10px]">
+                  <span className="mr-1 inline-block h-1.5 w-1.5 animate-pulse rounded-full bg-current" />
+                  {t.common.live}
+                </Badge>
+              )}
+              {session.profile_name && !session.is_default_profile && (
+                <Badge tone="secondary" className="shrink-0 text-[10px]">
+                  {session.profile_name.toUpperCase()}
+                </Badge>
+              )}
             </div>
-
-            <div className="hidden shrink-0 items-center gap-2 sm:flex">
-              {actionButtons}
+            <div className="flex min-w-0 flex-wrap items-center gap-x-1.5 gap-y-0.5 text-xs text-muted-foreground">
+              <span className="max-w-[min(100%,12rem)] truncate sm:max-w-[180px]">
+                {(session.model ?? t.common.unknown).split("/").pop()}
+              </span>
+              <span className="text-border">&#183;</span>
+              <span className="shrink-0">
+                {session.message_count} {t.common.msgs}
+              </span>
+              {session.tool_call_count > 0 && (
+                <>
+                  <span className="text-border">&#183;</span>
+                  <span className="shrink-0">
+                    {session.tool_call_count} {t.common.tools}
+                  </span>
+                </>
+              )}
+              <span className="text-border">&#183;</span>
+              <span className="shrink-0">{timeAgo(session.last_active)}</span>
             </div>
           </div>
-
-          <div className="flex flex-wrap items-center gap-2 sm:hidden">
-            {actionButtons}
+          {snippet && <SnippetHighlight snippet={snippet} />}
+          <div className="flex flex-wrap items-center gap-2">
+            <Badge tone="outline" className="text-[10px]">
+              {session.source ?? "local"}
+            </Badge>
+            {resumeInChatEnabled && (
+              <Button
+                ghost
+                size="icon"
+                className="text-muted-foreground hover:text-success"
+                aria-label={t.sessions.resumeInChat}
+                title={t.sessions.resumeInChat}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  navigate(`/chat?resume=${encodeURIComponent(session.id)}`);
+                }}
+              >
+                <Play />
+              </Button>
+            )}
+            <Button
+              ghost
+              destructive
+              size="icon"
+              aria-label={t.sessions.deleteSession}
+              onClick={(e) => {
+                e.stopPropagation();
+                onDelete();
+              }}
+            >
+              <Trash2 />
+            </Button>
           </div>
         </div>
       </div>
@@ -424,62 +415,11 @@ function SessionRow({
   );
 }
 
-type SessionsView = "list" | "overview";
-
-const PAGE_SIZE = 20;
-
-function SessionsPagination({
-  className,
-  compact = false,
-  onPageChange,
-  page,
-  total,
-}: SessionsPaginationProps) {
-  const { t } = useI18n();
-  const pageCount = Math.ceil(total / PAGE_SIZE);
-
-  return (
-    <div
-      className={`flex items-center ${compact ? "gap-1" : "justify-between pt-2"}${className ? ` ${className}` : ""}`}
-    >
-      {!compact && (
-        <span className="text-xs text-muted-foreground">
-          {page * PAGE_SIZE + 1}–{Math.min((page + 1) * PAGE_SIZE, total)}{" "}
-          {t.common.of} {total}
-        </span>
-      )}
-
-      <div className="flex items-center gap-1">
-        <Button
-          outlined
-          size="icon"
-          disabled={page === 0}
-          onClick={() => onPageChange(page - 1)}
-          aria-label={t.sessions.previousPage}
-        >
-          <ChevronLeft />
-        </Button>
-        <span className="px-2 text-xs text-muted-foreground">
-          {t.common.page} {page + 1} {t.common.of} {pageCount}
-        </span>
-        <Button
-          outlined
-          size="icon"
-          disabled={(page + 1) * PAGE_SIZE >= total}
-          onClick={() => onPageChange(page + 1)}
-          aria-label={t.sessions.nextPage}
-        >
-          <ChevronRight />
-        </Button>
-      </div>
-    </div>
-  );
-}
-
 export default function SessionsPage() {
   const [sessions, setSessions] = useState<SessionInfo[]>([]);
   const [total, setTotal] = useState(0);
   const [page, setPage] = useState(0);
+  const PAGE_SIZE = 20;
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState("");
   const [expandedId, setExpandedId] = useState<string | null>(null);
@@ -491,16 +431,18 @@ export default function SessionsPage() {
   const logScrollRef = useRef<HTMLPreElement | null>(null);
   const [status, setStatus] = useState<StatusResponse | null>(null);
   const [overviewSessions, setOverviewSessions] = useState<SessionInfo[]>([]);
-  const [view, setView] = useState<SessionsView>("overview");
+  const [profiles, setProfiles] = useState<ProfileInfo[]>([]);
+  const [selectedProfile, setSelectedProfile] = useState("all");
   const { toast, showToast } = useToast();
   const { t } = useI18n();
-  const { setAfterTitle } = usePageHeader();
+  const { setAfterTitle, setEnd } = usePageHeader();
   const { activeAction, actionStatus, dismissLog } = useSystemActions();
   const resumeInChatEnabled = isDashboardEmbeddedChatEnabled();
 
   useLayoutEffect(() => {
     if (loading) {
       setAfterTitle(null);
+      setEnd(null);
       return;
     }
     setAfterTitle(
@@ -508,15 +450,71 @@ export default function SessionsPage() {
         {total}
       </Badge>,
     );
+    setEnd(
+      <div className="flex items-center gap-2">
+        <div className="grid gap-1 min-w-[140px]">
+          <Select
+            value={selectedProfile}
+            onValueChange={(v) => {
+              setSelectedProfile(v);
+              setPage(0);
+            }}
+          >
+            <SelectOption value="all">All profiles</SelectOption>
+            {profiles.map((profile) => (
+              <SelectOption key={profile.name} value={profile.name}>
+                {profile.name === "default" ? "DEFAULT" : profile.name.toUpperCase()}
+              </SelectOption>
+            ))}
+          </Select>
+        </div>
+        <div className="relative w-full min-w-0 sm:max-w-xs">
+          {searching ? (
+            <Spinner className="absolute left-2.5 top-1/2 -translate-y-1/2 text-[0.875rem] text-primary" />
+          ) : (
+            <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-muted-foreground" />
+          )}
+          <Input
+            placeholder={t.sessions.searchPlaceholder}
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+            className="h-8 pr-7 pl-8 text-xs"
+          />
+          {search && (
+            <Button
+              ghost
+              size="xs"
+              className="absolute right-1.5 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
+              onClick={() => setSearch("")}
+              aria-label={t.common.clear}
+            >
+              <X />
+            </Button>
+          )}
+        </div>
+      </div>,
+    );
     return () => {
       setAfterTitle(null);
+      setEnd(null);
     };
-  }, [loading, setAfterTitle, total]);
+  }, [
+    loading,
+    search,
+    searching,
+    selectedProfile,
+    profiles,
+    setAfterTitle,
+    setEnd,
+    t.common.clear,
+    t.sessions.searchPlaceholder,
+    total,
+  ]);
 
-  const loadSessions = useCallback((p: number) => {
+  const loadSessions = useCallback((p: number, profile: string) => {
     setLoading(true);
     api
-      .getSessions(PAGE_SIZE, p * PAGE_SIZE)
+      .getSessions(PAGE_SIZE, p * PAGE_SIZE, profile)
       .then((resp) => {
         setSessions(resp.sessions);
         setTotal(resp.total);
@@ -526,8 +524,15 @@ export default function SessionsPage() {
   }, []);
 
   useEffect(() => {
-    loadSessions(page);
-  }, [loadSessions, page]);
+    loadSessions(page, selectedProfile);
+  }, [loadSessions, page, selectedProfile]);
+
+  useEffect(() => {
+    api
+      .getProfiles()
+      .then((res) => setProfiles(res.profiles))
+      .catch(() => setProfiles([]));
+  }, []);
 
   useEffect(() => {
     const loadOverview = () => {
@@ -536,14 +541,14 @@ export default function SessionsPage() {
         .then(setStatus)
         .catch(() => {});
       api
-        .getSessions(50)
+        .getSessions(50, 0, selectedProfile)
         .then((r) => setOverviewSessions(r.sessions))
         .catch(() => {});
     };
     loadOverview();
     const id = setInterval(loadOverview, 5000);
     return () => clearInterval(id);
-  }, []);
+  }, [selectedProfile]);
 
   useEffect(() => {
     const el = logScrollRef.current;
@@ -563,7 +568,7 @@ export default function SessionsPage() {
     setSearching(true);
     debounceRef.current = setTimeout(() => {
       api
-        .searchSessions(search.trim())
+        .searchSessions(search.trim(), selectedProfile)
         .then((resp) => setSearchResults(resp.results))
         .catch(() => setSearchResults(null))
         .finally(() => setSearching(false));
@@ -572,7 +577,7 @@ export default function SessionsPage() {
     return () => {
       if (debounceRef.current) clearTimeout(debounceRef.current);
     };
-  }, [search]);
+  }, [search, selectedProfile]);
 
   const sessionDelete = useConfirmDelete({
     onDelete: useCallback(
@@ -621,16 +626,6 @@ export default function SessionsPage() {
   const recentSessions = overviewSessions
     .filter((s) => !s.is_active)
     .slice(0, 5);
-
-  const isSearching = Boolean(search.trim());
-  const showOverviewTab =
-    platformEntries.length > 0 || recentSessions.length > 0;
-  const showList = view === "list" || isSearching || !showOverviewTab;
-  const showPagination = showList && !searchResults && total > PAGE_SIZE;
-
-  useEffect(() => {
-    if (isSearching) setView("list");
-  }, [isSearching]);
 
   const alerts: { message: string; detail?: string }[] = [];
   if (status) {
@@ -733,7 +728,7 @@ export default function SessionsPage() {
                         ? "destructive"
                         : "outline"
                 }
-                className="text-xs shrink-0"
+                className="text-[10px] shrink-0"
               >
                 {actionStatus?.running
                   ? t.status.running
@@ -749,7 +744,7 @@ export default function SessionsPage() {
               ghost
               size="icon"
               onClick={dismissLog}
-              className="shrink-0 text-text-secondary hover:text-foreground"
+              className="shrink-0 opacity-60 hover:opacity-100"
               aria-label={t.common.close}
             >
               <X />
@@ -758,7 +753,7 @@ export default function SessionsPage() {
 
           <pre
             ref={logScrollRef}
-            className="max-h-72 overflow-auto px-3 py-2 font-mono-ui text-xs leading-relaxed whitespace-pre-wrap break-all"
+            className="max-h-72 overflow-auto px-3 py-2 font-mono-ui text-[11px] leading-relaxed whitespace-pre-wrap break-all"
           >
             {actionStatus?.lines && actionStatus.lines.length > 0
               ? actionStatus.lines.join("\n")
@@ -767,170 +762,133 @@ export default function SessionsPage() {
         </div>
       )}
 
-      {(showOverviewTab && !isSearching) || showList ? (
-        <div className="flex w-full min-w-0 flex-wrap items-center gap-2 sm:gap-3">
-          <div className="flex min-w-0 flex-1 flex-wrap items-center gap-2 sm:gap-3">
-            {showOverviewTab && !isSearching && (
-              <Segmented
-                className="w-fit shrink-0"
-                size="md"
-                value={view}
-                onChange={setView}
-                options={[
-                  { value: "overview", label: t.sessions.overview },
-                  { value: "list", label: t.sessions.title },
-                ]}
-              />
-            )}
-
-            {showList && (
-              <div className="relative min-w-0 w-full sm:w-auto sm:min-w-[12rem] sm:max-w-md sm:flex-1">
-                {searching ? (
-                  <Spinner className="absolute left-2.5 top-1/2 -translate-y-1/2 text-[0.875rem] text-primary" />
-                ) : (
-                  <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-muted-foreground" />
-                )}
-                <Input
-                  placeholder={t.sessions.searchPlaceholder}
-                  value={search}
-                  onChange={(e) => setSearch(e.target.value)}
-                  className="h-8 py-0 pr-7 pl-8 text-xs leading-none"
-                />
-                {search && (
-                  <Button
-                    ghost
-                    size="xs"
-                    className="absolute right-1.5 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
-                    onClick={() => setSearch("")}
-                    aria-label={t.common.clear}
-                  >
-                    <X />
-                  </Button>
-                )}
-              </div>
-            )}
-          </div>
-
-          {showPagination && (
-            <SessionsPagination
-              compact
-              className="shrink-0 sm:ml-auto"
-              page={page}
-              total={total}
-              onPageChange={setPage}
-            />
-          )}
-        </div>
-      ) : null}
-
-      {showList ? (
-        filtered.length === 0 ? (
-          <div className="flex flex-col items-center justify-center py-16 text-muted-foreground">
-            <Clock className="h-8 w-8 mb-3 opacity-40" />
-            <p className="text-sm font-medium">
-              {search ? t.sessions.noMatch : t.sessions.noSessions}
-            </p>
-            {!search && (
-              <p className="text-xs mt-1 text-text-tertiary">
-                {t.sessions.startConversation}
-              </p>
-            )}
-          </div>
-        ) : (
-          <>
-            <div className="flex min-w-0 flex-col gap-1.5">
-              {filtered.map((s) => (
-                <SessionRow
-                  key={s.id}
-                  session={s}
-                  snippet={snippetMap.get(s.id)}
-                  searchQuery={search || undefined}
-                  isExpanded={expandedId === s.id}
-                  onToggle={() =>
-                    setExpandedId((prev) => (prev === s.id ? null : s.id))
-                  }
-                  onDelete={() => sessionDelete.requestDelete(s.id)}
-                  resumeInChatEnabled={resumeInChatEnabled}
-                />
-              ))}
-            </div>
-
-            {showPagination && (
-              <SessionsPagination
-                page={page}
-                total={total}
-                onPageChange={setPage}
-              />
-            )}
-          </>
-        )
-      ) : (
-        <div className="flex min-w-0 flex-col gap-4">
-          {platformEntries.length > 0 && status && (
-            <PlatformsCard platforms={platformEntries} />
-          )}
-
-          {recentSessions.length > 0 && (
-            <Card className="min-w-0 max-w-full overflow-hidden">
-              <CardHeader className="min-w-0">
-                <div className="flex min-w-0 items-center gap-2">
-                  <Clock className="h-5 w-5 shrink-0 text-muted-foreground" />
-                  <CardTitle className="min-w-0 truncate text-base">
-                    {t.status.recentSessions}
-                  </CardTitle>
-                </div>
-              </CardHeader>
-
-              <CardContent className="grid min-w-0 gap-3">
-                {recentSessions.map((s) => (
-                  <div
-                    key={s.id}
-                    className="flex min-w-0 max-w-full flex-col gap-2 border border-border p-3 sm:flex-row sm:items-center sm:justify-between"
-                  >
-                    <div className="flex min-w-0 flex-1 flex-col gap-1">
-                      <span className="font-mondwest normal-case min-w-0 truncate text-sm font-medium">
-                        {s.title ?? t.common.untitled}
-                      </span>
-
-                      <span className="min-w-0 break-words text-xs text-muted-foreground">
-                        <span className="font-mono-ui">
-                          {(s.model ?? t.common.unknown).split("/").pop()}
-                        </span>{" "}
-                        · {s.message_count} {t.common.msgs} ·{" "}
-                        {timeAgo(s.last_active)}
-                      </span>
-
-                      {s.preview && (
-                        <p className="font-mondwest normal-case min-w-0 max-w-full text-xs leading-snug text-text-tertiary [overflow-wrap:anywhere]">
-                          {s.preview}
-                        </p>
-                      )}
-                    </div>
-
-                    <Badge
-                      tone="outline"
-                      className="shrink-0 self-start text-xs sm:self-center"
-                    >
-                      <Database className="mr-1 h-3 w-3" />
-                      {s.source ?? "local"}
-                    </Badge>
-                  </div>
-                ))}
-              </CardContent>
-            </Card>
-          )}
-        </div>
+      {platformEntries.length > 0 && status && (
+        <PlatformsCard platforms={platformEntries} />
       )}
 
+      {recentSessions.length > 0 && (
+        <Card className="min-w-0 max-w-full overflow-hidden">
+          <CardHeader className="min-w-0">
+            <div className="flex min-w-0 items-center gap-2">
+              <Clock className="h-5 w-5 shrink-0 text-muted-foreground" />
+              <CardTitle className="min-w-0 truncate text-base">
+                {t.status.recentSessions}
+              </CardTitle>
+            </div>
+          </CardHeader>
+
+          <CardContent className="grid min-w-0 gap-3">
+            {recentSessions.map((s) => (
+              <div
+                key={s.id}
+                className="flex min-w-0 max-w-full flex-col gap-2 border border-border p-3 sm:flex-row sm:items-center sm:justify-between"
+              >
+                <div className="flex min-w-0 flex-1 flex-col gap-1">
+                  <span className="min-w-0 truncate text-sm font-medium">
+                    {s.title ?? t.common.untitled}
+                  </span>
+
+                  <span className="min-w-0 break-words text-xs text-muted-foreground">
+                    <span className="font-mono-ui">
+                      {(s.model ?? t.common.unknown).split("/").pop()}
+                    </span>{" "}
+                    · {s.message_count} {t.common.msgs} ·{" "}
+                    {timeAgo(s.last_active)}
+                  </span>
+
+                  {s.preview && (
+                    <p className="min-w-0 max-w-full text-xs leading-snug text-muted-foreground/70 [overflow-wrap:anywhere]">
+                      {s.preview}
+                    </p>
+                  )}
+                </div>
+
+                <div className="flex items-center gap-1.5 shrink-0 self-start sm:self-center">
+                  {s.profile_name && !s.is_default_profile && (
+                    <Badge tone="secondary" className="text-[10px]">
+                      {s.profile_name.toUpperCase()}
+                    </Badge>
+                  )}
+                  <Badge
+                    tone="outline"
+                    className="text-[10px]"
+                  >
+                    <Database className="mr-1 h-3 w-3" />
+                    {s.source ?? "local"}
+                  </Badge>
+                </div>
+              </div>
+            ))}
+          </CardContent>
+        </Card>
+      )}
+
+      {filtered.length === 0 ? (
+        <div className="flex flex-col items-center justify-center py-16 text-muted-foreground">
+          <Clock className="h-8 w-8 mb-3 opacity-40" />
+          <p className="text-sm font-medium">
+            {search ? t.sessions.noMatch : t.sessions.noSessions}
+          </p>
+          {!search && (
+            <p className="text-xs mt-1 text-muted-foreground/60">
+              {t.sessions.startConversation}
+            </p>
+          )}
+        </div>
+      ) : (
+        <>
+          <div className="flex min-w-0 flex-col gap-1.5">
+            {filtered.map((s) => (
+              <SessionRow
+                key={s.id}
+                session={s}
+                snippet={snippetMap.get(s.id)}
+                searchQuery={search || undefined}
+                isExpanded={expandedId === s.id}
+                onToggle={() =>
+                  setExpandedId((prev) => (prev === s.id ? null : s.id))
+                }
+                onDelete={() => sessionDelete.requestDelete(s.id)}
+                resumeInChatEnabled={resumeInChatEnabled}
+              />
+            ))}
+          </div>
+
+          {!searchResults && total > PAGE_SIZE && (
+            <div className="flex items-center justify-between pt-2">
+              <span className="text-xs text-muted-foreground">
+                {page * PAGE_SIZE + 1}–{Math.min((page + 1) * PAGE_SIZE, total)}{" "}
+                {t.common.of} {total}
+              </span>
+              <div className="flex items-center gap-1">
+                <Button
+                  outlined
+                  size="icon"
+                  disabled={page === 0}
+                  onClick={() => setPage((p) => p - 1)}
+                  aria-label={t.sessions.previousPage}
+                >
+                  <ChevronLeft />
+                </Button>
+                <span className="text-xs text-muted-foreground px-2">
+                  {t.common.page} {page + 1} {t.common.of}{" "}
+                  {Math.ceil(total / PAGE_SIZE)}
+                </span>
+                <Button
+                  outlined
+                  size="icon"
+                  disabled={(page + 1) * PAGE_SIZE >= total}
+                  onClick={() => setPage((p) => p + 1)}
+                  aria-label={t.sessions.nextPage}
+                >
+                  <ChevronRight />
+                </Button>
+              </div>
+            </div>
+          )}
+        </>
+      )}
       <PluginSlot name="sessions:bottom" />
     </div>
   );
-}
-
-interface SessionsPaginationProps {
-  className?: string;
-  compact?: boolean;
-  onPageChange: (page: number) => void;
-  page: number;
-  total: number;
 }

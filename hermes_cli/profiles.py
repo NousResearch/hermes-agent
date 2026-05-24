@@ -425,6 +425,9 @@ class ProfileInfo:
     # surfaces a "review" badge in this case so the user can edit or
     # accept.
     description_auto: bool = False
+    gateway_state: Optional[str] = None
+    gateway_platforms: Optional[dict] = None
+    gateway_updated_at: Optional[str] = None
 
 
 def _read_distribution_meta(profile_dir: Path) -> tuple:
@@ -573,6 +576,28 @@ def write_profile_meta(
 # CRUD operations
 # ---------------------------------------------------------------------------
 
+def _read_profile_runtime_status(profile_dir: Path) -> tuple[Optional[str], Optional[dict], Optional[str]]:
+    """Read gateway runtime status for a specific profile directory.
+
+    Returns (gateway_state, gateway_platforms, gateway_updated_at).
+    """
+    try:
+        from gateway.status import read_runtime_status
+        status_path = profile_dir / "gateway_state.json"
+        if not status_path.exists():
+            return None, None, None
+        runtime = read_runtime_status(status_path)
+        if not runtime:
+            return None, None, None
+        return (
+            runtime.get("gateway_state"),
+            runtime.get("platforms") or {},
+            runtime.get("updated_at"),
+        )
+    except Exception:
+        return None, None, None
+
+
 def list_profiles() -> List[ProfileInfo]:
     """Return info for all profiles, including the default."""
     profiles = []
@@ -584,6 +609,7 @@ def list_profiles() -> List[ProfileInfo]:
         model, provider = _read_config_model(default_home)
         dist_name, dist_version, dist_source = _read_distribution_meta(default_home)
         meta = read_profile_meta(default_home)
+        gateway_state, gateway_platforms, gateway_updated_at = _read_profile_runtime_status(default_home)
         profiles.append(ProfileInfo(
             name="default",
             path=default_home,
@@ -598,6 +624,9 @@ def list_profiles() -> List[ProfileInfo]:
             distribution_source=dist_source,
             description=meta.get("description", ""),
             description_auto=meta.get("description_auto", False),
+            gateway_state=gateway_state,
+            gateway_platforms=gateway_platforms,
+            gateway_updated_at=gateway_updated_at,
         ))
 
     # Named profiles
@@ -613,6 +642,7 @@ def list_profiles() -> List[ProfileInfo]:
             alias_path = wrapper_dir / name
             dist_name, dist_version, dist_source = _read_distribution_meta(entry)
             meta = read_profile_meta(entry)
+            gateway_state, gateway_platforms, gateway_updated_at = _read_profile_runtime_status(entry)
             profiles.append(ProfileInfo(
                 name=name,
                 path=entry,
@@ -628,6 +658,9 @@ def list_profiles() -> List[ProfileInfo]:
                 distribution_source=dist_source,
                 description=meta.get("description", ""),
                 description_auto=meta.get("description_auto", False),
+                gateway_state=gateway_state,
+                gateway_platforms=gateway_platforms,
+                gateway_updated_at=gateway_updated_at,
             ))
 
     return profiles

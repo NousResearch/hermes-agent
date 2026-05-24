@@ -1827,23 +1827,43 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
     # ``_platform_status`` already uses for the setup picker. Fall back to
     # ``check_fn`` for plugins that haven't adopted ``is_connected`` yet,
     # so the historic "deps installed → enable" behavior is preserved for
-    # them. Plugins that need to seed ``PlatformConfig.extra`` from env
-    # vars can still supply ``env_enablement_fn`` — called below BEFORE
-    # adapter construction.
+    # them.
+    #
+    # Ordering matters: ``env_enablement_fn`` (when present) is what seeds
+    # ``PlatformConfig.extra`` from env vars, and some plugins'
+    # ``is_connected`` hooks read those extras (e.g. Google Chat's
+    # ``_is_connected`` inspects ``config.extra["project_id"]``). So we
+    # build a CANDIDATE config first — extras seeded by
+    # ``env_enablement_fn`` — and pass that to ``is_connected``. Only
+    # commit the candidate to ``config.platforms`` if the gate passes.
     try:
         from hermes_cli.plugins import discover_plugins
         discover_plugins()  # idempotent
         from gateway.platform_registry import platform_registry
         for entry in platform_registry.plugin_entries():
+            # Build a candidate config with extras pre-seeded so plugins
+            # whose ``is_connected`` reads ``config.extra`` see the same
+            # state they will after enablement.
+            candidate = PlatformConfig(enabled=True)
+            candidate_home = None
+            if entry.env_enablement_fn is not None:
+                try:
+                    seed = entry.env_enablement_fn()
+                except Exception as e:
+                    logger.debug(
+                        "env_enablement_fn for %s raised: %s", entry.name, e
+                    )
+                    seed = None
+                if isinstance(seed, dict) and seed:
+                    # ``home_channel`` is not part of ``extra`` — set it
+                    # aside so we can wire it up as a ``HomeChannel`` only
+                    # if the gate passes.
+                    candidate_home = seed.pop("home_channel", None)
+                    candidate.extra.update(seed)
+
             try:
                 if entry.is_connected is not None:
-                    # Synthesize a minimal PlatformConfig matching what the
-                    # adapter would see post-load. ``is_connected`` callers
-                    # only read env vars + ``config.extra`` so a default
-                    # ``PlatformConfig(enabled=True)`` is the right input
-                    # — same shape used by ``_platform_status`` in the
-                    # setup picker (see ``hermes_cli/gateway.py``).
-                    if not entry.is_connected(PlatformConfig(enabled=True)):
+                    if not entry.is_connected(candidate):
                         continue
                 else:
                     if not entry.check_fn():
@@ -1854,35 +1874,26 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
                     entry.name, e,
                 )
                 continue
+
             platform = Platform(entry.name)
             if platform not in config.platforms:
                 config.platforms[platform] = PlatformConfig()
             config.platforms[platform].enabled = True
-            # Seed extras from env if the plugin opted in.
-            if entry.env_enablement_fn is not None:
-                try:
-                    seed = entry.env_enablement_fn()
-                except Exception as e:
-                    logger.debug(
-                        "env_enablement_fn for %s raised: %s", entry.name, e
-                    )
-                    seed = None
-                if isinstance(seed, dict) and seed:
-                    # Extract the home_channel dict (if provided) so we wire it
-                    # up as a proper HomeChannel dataclass.  Everything else is
-                    # merged into ``extra``.
-                    home = seed.pop("home_channel", None)
-                    config.platforms[platform].extra.update(seed)
-                    if isinstance(home, dict) and home.get("chat_id"):
-                        config.platforms[platform].home_channel = HomeChannel(
-                            platform=platform,
-                            chat_id=str(home["chat_id"]),
-                            name=str(home.get("name") or "Home"),
-                            thread_id=(
-                                str(home["thread_id"])
-                                if home.get("thread_id")
-                                else None
-                            ),
-                        )
+            # Commit candidate extras + home_channel now that the gate has
+            # passed. Merge into any extras already on the platform (e.g.
+            # from earlier YAML loading) without clobbering them.
+            if candidate.extra:
+                config.platforms[platform].extra.update(candidate.extra)
+            if isinstance(candidate_home, dict) and candidate_home.get("chat_id"):
+                config.platforms[platform].home_channel = HomeChannel(
+                    platform=platform,
+                    chat_id=str(candidate_home["chat_id"]),
+                    name=str(candidate_home.get("name") or "Home"),
+                    thread_id=(
+                        str(candidate_home["thread_id"])
+                        if candidate_home.get("thread_id")
+                        else None
+                    ),
+                )
     except Exception as e:
         logger.debug("Plugin platform enable pass failed: %s", e)

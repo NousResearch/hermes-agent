@@ -261,3 +261,84 @@ class TestRegistryDrivenEnableGating:
 
         cfg = load_gateway_config()  # must not raise
         assert Platform("discord") not in cfg.platforms
+
+
+class TestEnvEnablementFnOrdering:
+    """Pin the ``env_enablement_fn`` → ``is_connected`` ordering.
+
+    Some plugins' ``is_connected`` hooks read ``config.extra`` (e.g. Google
+    Chat's ``_is_connected`` checks ``config.extra["project_id"]``). The
+    extras only get populated when ``env_enablement_fn`` runs. So the gate
+    must see a candidate config that already has the env-seeded extras —
+    otherwise plugins on env-var-only setups would be silently dropped
+    even though the user is genuinely configured.
+    """
+
+    def test_extras_seeded_before_is_connected_called(
+        self, monkeypatch, tmp_path
+    ):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+        seen = {}
+
+        def _env_enablement():
+            return {"project_id": "p", "subscription_name": "s"}
+
+        def _is_connected(cfg):
+            # Mimic Google Chat: pass only if extras are populated.
+            seen["extra_keys"] = sorted(getattr(cfg, "extra", {}).keys())
+            extra = getattr(cfg, "extra", {}) or {}
+            return bool(extra.get("project_id") and extra.get("subscription_name"))
+
+        fake = _FakeRegistry([
+            _FakeEntry(
+                "google_chat",
+                check_fn=lambda: True,
+                is_connected=_is_connected,
+                env_enablement_fn=_env_enablement,
+            )
+        ])
+        import gateway.platform_registry as _pr_mod
+
+        monkeypatch.setattr(_pr_mod, "platform_registry", fake)
+
+        from gateway.config import Platform, load_gateway_config
+
+        cfg = load_gateway_config()
+        assert Platform("google_chat") in cfg.platforms, (
+            "is_connected was called with empty extras — extras must be "
+            "seeded by env_enablement_fn BEFORE the gate"
+        )
+        assert seen["extra_keys"] == ["project_id", "subscription_name"]
+        # And the extras must actually land on the platform config after
+        # the gate passes.
+        assert (
+            cfg.platforms[Platform("google_chat")].extra.get("project_id")
+            == "p"
+        )
+
+    def test_env_enablement_fn_not_committed_when_gate_fails(
+        self, monkeypatch, tmp_path
+    ):
+        """If ``is_connected`` returns False, extras seeded for the gate
+        must NOT leak onto ``config.platforms`` (the platform isn't
+        enabled, so its extras shouldn't be partially populated either).
+        """
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+        fake = _FakeRegistry([
+            _FakeEntry(
+                "google_chat",
+                check_fn=lambda: True,
+                is_connected=lambda cfg: False,
+                env_enablement_fn=lambda: {"project_id": "p"},
+            )
+        ])
+        import gateway.platform_registry as _pr_mod
+
+        monkeypatch.setattr(_pr_mod, "platform_registry", fake)
+
+        from gateway.config import Platform, load_gateway_config
+
+        cfg = load_gateway_config()
+        assert Platform("google_chat") not in cfg.platforms

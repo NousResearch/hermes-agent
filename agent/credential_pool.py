@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextvars
 import logging
 import os
 import random
@@ -9,9 +10,10 @@ import threading
 import time
 import uuid
 import re
+from contextlib import contextmanager
 from dataclasses import dataclass, fields, replace
 from datetime import datetime, timezone
-from typing import Any, Dict, List, Optional, Set, Tuple
+from typing import Any, Dict, Iterator, List, Optional, Set, Tuple
 
 from hermes_constants import OPENROUTER_BASE_URL
 from hermes_cli.config import load_env
@@ -40,14 +42,52 @@ from hermes_cli.auth import (
 logger = logging.getLogger(__name__)
 
 
+_CONFIG_CACHE_UNSET: Any = object()
+_cached_config_safe: contextvars.ContextVar[Any] = contextvars.ContextVar(
+    "_cached_config_safe", default=_CONFIG_CACHE_UNSET
+)
+
+
+@contextmanager
+def cached_config_loads() -> Iterator[None]:
+    """Reuse a single ``load_config()`` result across nested calls.
+
+    ``list_authenticated_providers()`` instantiates a ``CredentialPool``
+    for every provider candidate; each constructor calls ``get_pool_strategy``
+    which in turn calls ``_load_config_safe`` → ``load_config()``. Without a
+    cache the /model picker re-parses config.yaml ~69 times per invocation
+    (issue #31556). Wrapping the discovery body in this context manager makes
+    ``_load_config_safe()`` reuse the first successful load until the context
+    exits.
+    """
+    token = _cached_config_safe.set(None)
+    try:
+        yield
+    finally:
+        _cached_config_safe.reset(token)
+
+
 def _load_config_safe() -> Optional[dict]:
-    """Load config.yaml, returning None on any error."""
+    """Load config.yaml, returning None on any error.
+
+    Inside a :func:`cached_config_loads` block, the first successful load is
+    memoized and returned on subsequent calls so YAML parsing and the
+    associated deepcopy don't repeat.
+    """
+    cached = _cached_config_safe.get()
+    if cached is not _CONFIG_CACHE_UNSET and cached is not None:
+        return cached
     try:
         from hermes_cli.config import load_config
 
-        return load_config()
+        config = load_config()
     except Exception:
         return None
+    if cached is None and config is not None:
+        # ``cached is None`` (and not ``_CONFIG_CACHE_UNSET``) means we are
+        # inside a ``cached_config_loads`` block but have not memoized yet.
+        _cached_config_safe.set(config)
+    return config
 
 
 # --- Status and type constants ---

@@ -1063,6 +1063,33 @@ def list_authenticated_providers(
 
     Only includes providers that have API keys set or are user-defined endpoints.
     """
+    # Reuse a single load_config() result across every CredentialPool
+    # construction in this discovery pass. Without this the /model picker
+    # parses config.yaml ~69 times per invocation (#31556).
+    from agent.credential_pool import cached_config_loads
+
+    with cached_config_loads():
+        return _list_authenticated_providers_impl(
+            current_provider=current_provider,
+            current_base_url=current_base_url,
+            user_providers=user_providers,
+            custom_providers=custom_providers,
+            max_models=max_models,
+            current_model=current_model,
+        )
+
+
+def _list_authenticated_providers_impl(
+    current_provider: str = "",
+    current_base_url: str = "",
+    user_providers: dict = None,
+    custom_providers: list | None = None,
+    max_models: int = 8,
+    current_model: str = "",
+) -> List[dict]:
+    """Body of :func:`list_authenticated_providers`. Extracted so the public
+    function can wrap it in :func:`cached_config_loads` without re-indenting
+    the entire ~700-line implementation."""
     import os
     from agent.models_dev import (
         PROVIDER_TO_MODELS_DEV,

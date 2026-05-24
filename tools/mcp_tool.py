@@ -2331,7 +2331,16 @@ def _make_tool_handler(server_name: str, tool_name: str, tool_timeout: float):
 
         async def _call():
             async with server._rpc_lock:
-                result = await server.session.call_tool(tool_name, arguments=args)
+                call_args = args
+                try:
+                    from gateway.session_context import get_session_env
+                    hermes_session_key = get_session_env("HERMES_SESSION_KEY", "")
+                    if hermes_session_key and isinstance(call_args, dict):
+                        call_args = dict(call_args)
+                        call_args.setdefault("_hermes_session_key", hermes_session_key)
+                except Exception:
+                    call_args = args
+                result = await server.session.call_tool(tool_name, arguments=call_args)
             # MCP CallToolResult has .content (list of content blocks) and .isError
             if result.isError:
                 error_text = ""

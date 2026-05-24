@@ -674,6 +674,17 @@ class WebhookAdapter(BasePlatformAdapter):
                 delivery["deliver"],
                 result.error,
             )
+            if route_config.get("direct_delivery_ack_on_failure"):
+                return web.json_response(
+                    {
+                        "status": "accepted",
+                        "delivery_status": "target_failed",
+                        "route": route_name,
+                        "target": delivery["deliver"],
+                        "delivery_id": delivery_id,
+                    },
+                    status=202,
+                )
             return web.json_response(
                 {"status": "error", "error": "Delivery failed", "delivery_id": delivery_id},
                 status=502,

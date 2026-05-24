@@ -1454,7 +1454,7 @@ def _launch_tui(
     provider: Optional[str] = None,
     toolsets: object = None,
     skills: object = None,
-    verbose: bool = False,
+    verbose: Optional[bool] = None,
     quiet: bool = False,
     query: Optional[str] = None,
     image: Optional[str] = None,
@@ -1763,7 +1763,7 @@ def cmd_chat(args):
             provider=getattr(args, "provider", None),
             toolsets=getattr(args, "toolsets", None),
             skills=getattr(args, "skills", None),
-            verbose=getattr(args, "verbose", False),
+            verbose=getattr(args, "verbose", None),
             quiet=getattr(args, "quiet", False),
             query=getattr(args, "query", None),
             image=getattr(args, "image", None),
@@ -1783,7 +1783,7 @@ def cmd_chat(args):
         "provider": getattr(args, "provider", None),
         "toolsets": args.toolsets,
         "skills": getattr(args, "skills", None),
-        "verbose": args.verbose,
+        "verbose": getattr(args, "verbose", None),
         "quiet": getattr(args, "quiet", False),
         "query": args.query,
         "image": getattr(args, "image", None),
@@ -2505,6 +2505,27 @@ _AUX_TASKS: list[tuple[str, str, str]] = [
 ]
 
 
+def _all_aux_tasks() -> list[tuple[str, str, str]]:
+    """Return built-in + plugin-registered auxiliary tasks for picker/menu use.
+
+    Built-in tasks come first (preserving order), followed by plugin tasks
+    sorted by key. Used by ``_aux_config_menu``, ``_reset_aux_to_auto``, and
+    display-name lookups so plugin-registered tasks (registered via
+    :meth:`hermes_cli.plugins.PluginContext.register_auxiliary_task`) appear
+    in the same surfaces as built-in ones without core knowing about them.
+    """
+    tasks = list(_AUX_TASKS)
+    try:
+        from hermes_cli.plugins import get_plugin_auxiliary_tasks
+        for entry in get_plugin_auxiliary_tasks():
+            tasks.append((entry["key"], entry["display_name"], entry["description"]))
+    except Exception:
+        # Plugin discovery failure must not break the aux config UI.
+        # Built-in tasks remain available.
+        pass
+    return tasks
+
+
 def _format_aux_current(task_cfg: dict) -> str:
     """Render the current aux config for display in the task menu."""
     if not isinstance(task_cfg, dict):
@@ -2555,7 +2576,11 @@ def _save_aux_choice(
 
 
 def _reset_aux_to_auto() -> int:
-    """Reset every known aux task back to auto/empty. Returns number reset."""
+    """Reset every known aux task back to auto/empty. Returns number reset.
+
+    Includes plugin-registered tasks (via ``_all_aux_tasks``) so a plugin
+    that contributed an auxiliary task gets reset alongside built-ins.
+    """
     from hermes_cli.config import load_config, save_config
 
     cfg = load_config()
@@ -2564,7 +2589,7 @@ def _reset_aux_to_auto() -> int:
         aux = {}
         cfg["auxiliary"] = aux
     count = 0
-    for task, _name, _desc in _AUX_TASKS:
+    for task, _name, _desc in _all_aux_tasks():
         entry = aux.setdefault(task, {})
         if not isinstance(entry, dict):
             entry = {}
@@ -2607,10 +2632,11 @@ def _aux_config_menu() -> None:
         print()
 
         # Build the task menu with current settings inline
-        name_col = max(len(name) for _, name, _ in _AUX_TASKS) + 2
-        desc_col = max(len(desc) for _, _, desc in _AUX_TASKS) + 4
+        all_tasks = _all_aux_tasks()
+        name_col = max(len(name) for _, name, _ in all_tasks) + 2
+        desc_col = max(len(desc) for _, _, desc in all_tasks) + 4
         entries: list[tuple[str, str]] = []
-        for task_key, name, desc in _AUX_TASKS:
+        for task_key, name, desc in all_tasks:
             task_cfg = (
                 aux.get(task_key, {}) if isinstance(aux.get(task_key), dict) else {}
             )
@@ -2661,7 +2687,7 @@ def _aux_select_for_task(task: str) -> None:
     current_model = str(task_cfg.get("model") or "").strip()
     current_base_url = str(task_cfg.get("base_url") or "").strip()
 
-    display_name = next((name for key, name, _ in _AUX_TASKS if key == task), task)
+    display_name = next((name for key, name, _ in _all_aux_tasks() if key == task), task)
 
     # Gather authenticated providers (has credentials + curated model list)
     try:
@@ -2732,7 +2758,7 @@ def _aux_flow_provider_model(
     from hermes_cli.auth import _prompt_model_selection
     from hermes_cli.models import get_pricing_for_provider
 
-    display_name = next((name for key, name, _ in _AUX_TASKS if key == task), task)
+    display_name = next((name for key, name, _ in _all_aux_tasks() if key == task), task)
 
     # Fetch live pricing for this provider (non-blocking)
     pricing: dict = {}
@@ -2778,7 +2804,7 @@ def _aux_flow_custom_endpoint(task: str, task_cfg: dict) -> None:
     """Prompt for a direct OpenAI-compatible base_url + optional api_key/model."""
     import getpass
 
-    display_name = next((name for key, name, _ in _AUX_TASKS if key == task), task)
+    display_name = next((name for key, name, _ in _all_aux_tasks() if key == task), task)
     current_base_url = str(task_cfg.get("base_url") or "").strip()
     current_model = str(task_cfg.get("model") or "").strip()
 
@@ -6097,6 +6123,13 @@ def cmd_webhook(args):
     webhook_command(args)
 
 
+def cmd_portal(args):
+    """Nous Portal status and Tool Gateway routing surface."""
+    from hermes_cli.portal_cli import portal_command
+
+    return portal_command(args)
+
+
 def cmd_slack(args):
     """Slack integration helpers.
 
@@ -6925,8 +6958,8 @@ def _update_via_zip(args):
     )
 
     print("→ Downloading latest version...")
+    tmp_dir = tempfile.mkdtemp(prefix="hermes-update-")
     try:
-        tmp_dir = tempfile.mkdtemp(prefix="hermes-update-")
         zip_path = os.path.join(tmp_dir, f"hermes-agent-{branch}.zip")
         urlretrieve(zip_url, zip_path)
 
@@ -6973,12 +7006,11 @@ def _update_via_zip(args):
 
         print(f"✓ Updated {update_count} items from ZIP")
 
-        # Cleanup
-        shutil.rmtree(tmp_dir, ignore_errors=True)
-
     except Exception as e:
         print(f"✗ ZIP update failed: {e}")
         sys.exit(1)
+    finally:
+        shutil.rmtree(tmp_dir, ignore_errors=True)
 
     # Clear stale bytecode after ZIP extraction
     removed = _clear_bytecode_cache(PROJECT_ROOT)
@@ -10647,7 +10679,7 @@ _BUILTIN_SUBCOMMANDS = frozenset(
         "config", "cron", "curator", "dashboard", "debug", "doctor",
         "dump", "fallback", "gateway", "hooks", "import", "insights",
         "kanban", "login", "logout", "logs", "lsp", "mcp", "memory", "migrate",
-        "model", "pairing", "plugins", "postinstall", "profile", "proxy",
+        "model", "pairing", "plugins", "portal", "postinstall", "profile", "proxy",
         "send", "sessions", "setup",
         "skills", "slack", "status", "tools", "uninstall", "update",
         "version", "webhook", "whatsapp", "chat", "secrets",
@@ -11384,6 +11416,13 @@ def main():
         help="On existing installs: only prompt for items that are missing "
         "or unset, instead of running the full reconfigure wizard.",
     )
+    setup_parser.add_argument(
+        "--portal",
+        action="store_true",
+        help="One-shot Nous Portal setup: log in via OAuth, set Nous as the "
+        "inference provider, and opt into the Tool Gateway. Skips the "
+        "rest of the wizard.",
+    )
     setup_parser.set_defaults(func=cmd_setup)
 
     # =========================================================================
@@ -11860,6 +11899,12 @@ def main():
     webhook_parser.set_defaults(func=cmd_webhook)
 
     # =========================================================================
+    # portal command — Nous Portal status + Tool Gateway routing
+    # =========================================================================
+    from hermes_cli.portal_cli import add_parser as _add_portal_parser
+    _add_portal_parser(subparsers)
+
+    # =========================================================================
     # kanban command — multi-profile collaboration board
     # =========================================================================
     from hermes_cli.kanban import build_parser as _build_kanban_parser
@@ -12281,6 +12326,11 @@ Examples:
     )
     skills_audit.add_argument(
         "name", nargs="?", help="Specific skill to audit (default: all)"
+    )
+    skills_audit.add_argument(
+        "--deep",
+        action="store_true",
+        help="Run AST-level analysis on Python files (opt-in diagnostic)",
     )
 
     skills_uninstall = skills_subparsers.add_parser(
@@ -13761,7 +13811,7 @@ Examples:
             ("model", None),
             ("provider", None),
             ("toolsets", None),
-            ("verbose", False),
+            ("verbose", None),
             ("worktree", False),
         ]:
             if not hasattr(args, attr):
@@ -13776,7 +13826,7 @@ Examples:
             ("model", None),
             ("provider", None),
             ("toolsets", None),
-            ("verbose", False),
+            ("verbose", None),
             ("resume", None),
             ("continue_last", None),
             ("worktree", False),

@@ -3350,6 +3350,8 @@ def _run_prompt_submit(rid, sid: str, session: dict, text: Any) -> None:
                         _read_main_model(),
                         _cfg,
                     )
+                    if getattr(agent, "api_mode", "") == "codex_app_server":
+                        _mode = "text"
                 except Exception as _img_exc:
                     print(
                         f"[tui_gateway] image_routing decision failed, defaulting to text: {_img_exc}",
@@ -5380,7 +5382,12 @@ def _(rid, params: dict) -> dict:
         items = [
             {
                 "text": c.text,
-                "display": c.display or c.text,
+                # prompt_toolkit gives us FormattedText (a list of (style,
+                # text) tuples) for display/display_meta. Serialize both as
+                # plain strings — the TUI's CompletionItem.display contract
+                # is a string, and sending the raw list trips Ink's row
+                # layout into 1-char truncation of the next column.
+                "display": to_plain_text(c.display) if c.display else c.text,
                 "meta": to_plain_text(c.display_meta) if c.display_meta else "",
             }
             for c in completer.get_completions(doc, None)
@@ -5868,6 +5875,9 @@ def _(rid, params: dict) -> dict:
                 pass
             except Exception as e:
                 logger.warning("voice: stop_continuous failed during toggle off: %s", e)
+
+            # Clear TTS so it can be toggled independently after voice is off.
+            os.environ["HERMES_VOICE_TTS"] = "0"
 
         return _ok(
             rid,

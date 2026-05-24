@@ -113,7 +113,6 @@ For native Anthropic auth, Hermes prefers Claude Code's own credential files whe
 
 | Variable | Description |
 |----------|-------------|
-| `HERMES_INFERENCE_PROVIDER` | Override provider selection: `auto`, `custom`, `openrouter`, `nous`, `openai-codex`, `copilot`, `copilot-acp`, `anthropic`, `huggingface`, `novita`, `gemini`, `zai`, `kimi-coding`, `kimi-coding-cn`, `minimax`, `minimax-cn`, `minimax-oauth` (browser OAuth login — no API key required; see [MiniMax OAuth guide](../guides/minimax-oauth.md)), `kilocode`, `xiaomi`, `arcee`, `gmi`, `stepfun`, `alibaba`, `alibaba-coding-plan` (alias `alibaba_coding`), `deepseek`, `nvidia`, `ollama-cloud`, `xai` (alias `grok`), `xai-oauth` (browser OAuth login for SuperGrok subscribers — no API key required; see [xAI Grok OAuth guide](../guides/xai-grok-oauth.md)), `google-gemini-cli`, `qwen-oauth`, `bedrock`, `opencode-zen`, `opencode-go`, `ai-gateway`, `tencent-tokenhub` (default: `auto`) |
 | `HERMES_PORTAL_BASE_URL` | Override Nous Portal URL (for development/testing) |
 | `NOUS_INFERENCE_BASE_URL` | Override Nous inference API URL |
 | `HERMES_NOUS_MIN_KEY_TTL_SECONDS` | Min agent key TTL before re-mint (default: 1800 = 30min) |
@@ -483,6 +482,24 @@ Used by the bundled LINE platform plugin (`plugins/platforms/line/`). See [Messa
 | `LINE_DELIVERED_TEXT` | Reply when an already-delivered postback is tapped again (default: `Already replied ✅`). |
 | `LINE_INTERRUPTED_TEXT` | Reply when a `/stop`-orphaned postback button is tapped (default: `Run was interrupted before completion.`). |
 
+### ntfy (push notifications)
+
+[ntfy](https://ntfy.sh/) is a lightweight HTTP-based push notification service. Subscribe to a topic from the [ntfy mobile app](https://ntfy.sh/docs/subscribe/phone/), publish to that topic to talk to the agent.
+
+| Variable | Description |
+|----------|-------------|
+| `NTFY_TOPIC` | Topic to subscribe to (incoming messages). Required. |
+| `NTFY_SERVER_URL` | Server URL (default: `https://ntfy.sh`). Point at a self-hosted ntfy for privacy. |
+| `NTFY_TOKEN` | Optional auth token. Bearer token (e.g. `tk_xyz`) or `user:pass` for Basic auth. |
+| `NTFY_PUBLISH_TOPIC` | Topic for outgoing replies (defaults to `NTFY_TOPIC`). |
+| `NTFY_MARKDOWN` | Set `true` to send replies with `X-Markdown: true` header. Default: `false`. |
+| `NTFY_ALLOWED_USERS` | Allowlist (treated as user IDs; on ntfy these are topic names). Typically set to the same value as `NTFY_TOPIC`. |
+| `NTFY_ALLOW_ALL_USERS` | Dev-only escape hatch — only safe on access-controlled private topics. Default: `false`. |
+| `NTFY_HOME_CHANNEL` | Default delivery target for cron jobs with `deliver: ntfy`. |
+| `NTFY_HOME_CHANNEL_NAME` | Human label for the home channel (defaults to the topic name). |
+
+See [the ntfy messaging guide](/docs/user-guide/messaging/ntfy) — particularly the **identity model** section — before deploying with untrusted topics.
+
 ### Advanced Messaging Tuning
 
 Advanced per-platform knobs for throttling the outbound message batcher. Most users never need to touch these; defaults are set to respect each platform's rate limits without feeling sluggish.
@@ -571,7 +588,7 @@ Advanced per-platform knobs for throttling the outbound message batcher. Most us
 | `HERMES_TUI_DIR` | Path to a prebuilt `ui-tui/` directory (must contain `dist/entry.js` and populated `node_modules`). Used by distros and Nix to skip the first-launch `npm install`. |
 | `HERMES_TUI_RESUME` | Resume a specific TUI session by ID on launch. When set, `hermes --tui` skips forging a fresh session and picks up the named session instead — useful for re-attaching after a disconnect or terminal crash. |
 | `HERMES_TUI_THEME` | Force the TUI color theme: `light`, `dark`, or a raw 6-character background hex (e.g. `ffffff` or `1a1a2e`). When unset, Hermes auto-detects using `COLORFGBG` and terminal background queries; this variable overrides detection on terminals (Ghostty, Warp, iTerm2, etc.) that don't set `COLORFGBG`. |
-| `HERMES_INFERENCE_MODEL` | Force the model for `hermes -z` / `hermes chat` without mutating `config.yaml`. Pairs with `HERMES_INFERENCE_PROVIDER`. Useful for scripted callers (sweeper, CI, batch runners) that need to override the default model per run. |
+| `HERMES_INFERENCE_MODEL` | Force the model for `hermes -z` / `hermes chat` without mutating `config.yaml`. Pairs with the `--provider` flag. Useful for scripted callers (sweeper, CI, batch runners) that need to override the default model per run. |
 
 ## Session Settings
 

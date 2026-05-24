@@ -232,6 +232,7 @@ export const sessionCommands: SlashCommand[] = [
       ctx.gateway.rpc<VoiceToggleResponse>('voice.toggle', { action }).then(
         ctx.guarded<VoiceToggleResponse>(r => {
           ctx.voice.setVoiceEnabled(!!r.enabled)
+          ctx.voice.setVoiceTts(!!r.tts)
 
           // Render the configured record key (config.yaml ``voice.record_key``)
           // instead of hardcoded "Ctrl+B" — the gateway response carries the

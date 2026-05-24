@@ -75,6 +75,7 @@ import json
 import os
 import re
 import secrets
+import shutil
 import sqlite3
 import subprocess
 import sys
@@ -82,6 +83,7 @@ import threading
 import logging
 import time
 from dataclasses import dataclass, field
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Iterable, Optional
 
@@ -1005,6 +1007,131 @@ def _validate_sqlite_header(path: Path) -> None:
     )
 
 
+class KanbanDbCorruptError(RuntimeError):
+    """Raised when an existing kanban DB file fails integrity checks.
+
+    Fail-closed guard against silent recreation of a corrupt board file,
+    which would otherwise destroy the user's tasks. Carries both the
+    original path and the timestamped backup we made before refusing.
+    """
+
+    def __init__(self, db_path: Path, backup_path: Optional[Path], reason: str):
+        self.db_path = db_path
+        self.backup_path = backup_path
+        self.reason = reason
+        backup_str = str(backup_path) if backup_path is not None else "<backup failed>"
+        super().__init__(
+            f"Refusing to open corrupt kanban DB at {db_path}: {reason}. "
+            f"Original preserved; backup at {backup_str}."
+        )
+
+
+def _backup_corrupt_db(path: Path) -> Optional[Path]:
+    """Copy a corrupt DB (and its WAL/SHM sidecars) to a timestamped backup.
+
+    Returns the backup path of the main DB file, or ``None`` if the copy
+    itself failed (the caller still raises loudly in that case).
+
+    Writes are confined to the original DB's parent directory. The
+    backup basename is derived purely from ``path.name``, never from
+    caller-supplied directory segments — no traversal is possible.
+    """
+    # Resolve once and pin the parent so subsequent path operations cannot
+    # escape it. ``Path.resolve()`` collapses any ``..`` segments and
+    # symlinks, and we only ever write inside ``parent``.
+    resolved = path.resolve()
+    parent = resolved.parent
+    base_name = resolved.name  # basename only
+    stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    candidate = parent / f"{base_name}.corrupt.{stamp}.bak"
+    # Defensive: candidate must still be inside parent after construction.
+    # f-string interpolation of ``base_name`` cannot escape ``parent``
+    # because ``base_name`` is itself a resolved basename, but assert it
+    # anyway so static analyzers can see the containment guarantee.
+    if candidate.parent != parent:
+        return None
+    counter = 0
+    while candidate.exists():
+        counter += 1
+        candidate = parent / f"{base_name}.corrupt.{stamp}.{counter}.bak"
+        if candidate.parent != parent:
+            return None
+    try:
+        shutil.copy2(resolved, candidate)
+    except OSError:
+        return None
+    for suffix in ("-wal", "-shm"):
+        sidecar = parent / (base_name + suffix)
+        if sidecar.parent != parent or not sidecar.exists():
+            continue
+        try:
+            sidecar_backup = parent / (candidate.name + suffix)
+            if sidecar_backup.parent != parent:
+                continue
+            shutil.copy2(sidecar, sidecar_backup)
+        except OSError:
+            pass
+    return candidate
+
+
+def _guard_existing_db_is_healthy(path: Path) -> None:
+    """Run ``PRAGMA integrity_check`` on an existing non-empty DB file.
+
+    Opens the probe in read/write mode so SQLite can recover or
+    checkpoint a healthy WAL/hot-journal DB before we declare it
+    corrupt. If the file is malformed, copy it (and any WAL/SHM
+    sidecars) to a timestamped backup and raise
+    :class:`KanbanDbCorruptError` so callers cannot silently recreate
+    the schema on top of a damaged DB.
+
+    Transient lock/busy errors (``sqlite3.OperationalError``) are NOT
+    treated as corruption; they propagate raw so the caller sees a
+    normal lock failure and no spurious ``.corrupt`` backup is made.
+
+    No-op for missing files, zero-byte files (treated as fresh), and
+    paths already proven healthy this process (cache hit).
+
+    Path-trust note: ``path`` arrives via :func:`connect`, which itself
+    resolves it from an explicit ``db_path`` argument, the
+    :func:`kanban_db_path` env-var chain, or the kanban-home default —
+    all sources Hermes treats as user-controlled-but-trusted on the
+    user's own machine. We additionally resolve the path here and
+    confine all filesystem writes to its parent directory so any
+    accidental ``..`` segments are collapsed before any I/O happens.
+    """
+    # Resolve before any I/O. ``Path.resolve()`` normalizes ``..`` and
+    # symlinks, giving us a canonical path whose parent dir we can pin.
+    try:
+        resolved = path.resolve()
+    except OSError:
+        return
+    try:
+        if not resolved.exists() or resolved.stat().st_size == 0:
+            return
+    except OSError:
+        return
+    if str(resolved) in _INITIALIZED_PATHS:
+        return
+    reason: Optional[str] = None
+    try:
+        probe = sqlite3.connect(str(resolved), timeout=5, isolation_level=None)
+        try:
+            row = probe.execute("PRAGMA integrity_check").fetchone()
+        finally:
+            probe.close()
+        if not row or (row[0] or "").lower() != "ok":
+            reason = f"integrity_check returned {row[0] if row else '<no row>'!r}"
+    except sqlite3.OperationalError:
+        # Lock contention, busy, transient IO — not corruption. Let it propagate.
+        raise
+    except sqlite3.DatabaseError as exc:
+        reason = f"sqlite refused to open file: {exc}"
+    if reason is None:
+        return
+    backup = _backup_corrupt_db(resolved)
+    raise KanbanDbCorruptError(resolved, backup, reason)
+
+
 def connect(
     db_path: Optional[Path] = None,
     *,
@@ -1033,7 +1160,13 @@ def connect(
     else:
         path = kanban_db_path(board=board)
     path.parent.mkdir(parents=True, exist_ok=True)
+    # Cheap byte-level check first — catches the #29507 TLS-overwrite shape
+    # and other invalid-header cases without opening a sqlite connection.
     _validate_sqlite_header(path)
+    # Full integrity probe — catches corruption past the header (malformed
+    # pages, broken internal metadata). Cached per-path after first success
+    # via _INITIALIZED_PATHS so it only runs once per process per path.
+    _guard_existing_db_is_healthy(path)
     resolved = str(path.resolve())
     conn = sqlite3.connect(str(path), isolation_level=None, timeout=30)
     try:
@@ -2961,6 +3094,93 @@ def _cleanup_worker_tmux(conn: sqlite3.Connection, task_id: str) -> None:
         pass  # best-effort — never block completion
 
 
+# ---------------------------------------------------------------------------
+# First-use tip for scratch workspaces
+# ---------------------------------------------------------------------------
+#
+# Scratch workspaces are intentionally ephemeral — ``_cleanup_workspace``
+# removes them as soon as ``complete_task`` runs.  New users often don't
+# realize that and lose worker output (community report, May 2026).  The
+# behavior is right; the lack of warning is the bug.
+#
+# On the FIRST scratch workspace materialization across the whole install
+# we:
+#   1. Log a warning line on the dispatcher logger.
+#   2. Append a ``tip_scratch_workspace`` event on the task so it's visible
+#      via ``hermes kanban show <id>`` and the dashboard.
+#   3. Touch a sentinel file under ``kanban_home() / '.scratch_tip_shown'``
+#      so we don't repeat the tip — once you know, you know.
+#
+# Scope is per-install, not per-board: a user creating a second board
+# already learned the lesson on board #1.
+
+_SCRATCH_TIP_SENTINEL_NAME = ".scratch_tip_shown"
+
+_SCRATCH_TIP_MESSAGE = (
+    "scratch workspaces are ephemeral — they're deleted when the task "
+    "completes. Use --workspace worktree: (git worktree) or "
+    "--workspace dir:/abs/path (existing dir) to preserve worker output."
+)
+
+
+def _scratch_tip_sentinel_path() -> Path:
+    """Path to the per-install scratch-workspace-tip sentinel file."""
+    return kanban_home() / _SCRATCH_TIP_SENTINEL_NAME
+
+
+def _scratch_tip_shown() -> bool:
+    """True iff the scratch-workspace tip has already been emitted on this
+    install. Best-effort — any error means we re-emit, which is the safer
+    failure mode for a help message."""
+    try:
+        return _scratch_tip_sentinel_path().exists()
+    except OSError:
+        return False
+
+
+def _mark_scratch_tip_shown() -> None:
+    """Touch the sentinel so future scratch workspaces stay silent.
+
+    Best-effort: a failure here just means the tip might appear once more,
+    which is preferable to crashing dispatch over a help message.
+    """
+    try:
+        path = _scratch_tip_sentinel_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.touch(exist_ok=True)
+    except OSError:
+        pass
+
+
+def _maybe_emit_scratch_tip(
+    conn: sqlite3.Connection,
+    task_id: str,
+    workspace_kind: Optional[str],
+) -> None:
+    """Emit the first-use scratch-workspace tip exactly once per install.
+
+    Called from the dispatcher right after a scratch workspace is
+    materialized. No-op for ``worktree`` / ``dir`` workspaces (they're
+    preserved by design) and no-op after the sentinel exists.
+    """
+    if (workspace_kind or "scratch") != "scratch":
+        return
+    if _scratch_tip_shown():
+        return
+    try:
+        _log.warning("kanban: %s (task %s)", _SCRATCH_TIP_MESSAGE, task_id)
+        with write_txn(conn):
+            _append_event(
+                conn, task_id, "tip_scratch_workspace",
+                {"message": _SCRATCH_TIP_MESSAGE},
+            )
+    except Exception:
+        # Best-effort — never block the spawn loop over a help message.
+        pass
+    finally:
+        _mark_scratch_tip_shown()
+
+
 def edit_completed_task_result(
     conn: sqlite3.Connection,
     task_id: str,
@@ -3081,6 +3301,77 @@ def block_task(
             )
         _append_event(conn, task_id, "blocked", {"reason": reason}, run_id=run_id)
         return True
+
+
+
+def promote_task(
+    conn: sqlite3.Connection,
+    task_id: str,
+    *,
+    actor: str,
+    reason: Optional[str] = None,
+    force: bool = False,
+    dry_run: bool = False,
+) -> tuple[bool, Optional[str]]:
+    """Manually promote a `todo` or `blocked` task to `ready`.
+
+    Mirrors the automatic promotion done by ``recompute_ready`` but
+    drives it from a deliberate operator action with an audit-trail
+    entry. Refuses to promote if any parent dep is not in a terminal
+    state (`done`/`archived`) unless ``force=True``. Does NOT change
+    assignee or claim state. Returns ``(True, None)`` on success and
+    ``(False, reason)`` if refused. ``dry_run=True`` validates the
+    promotion would succeed without mutating state.
+    """
+    row = conn.execute(
+        "SELECT status FROM tasks WHERE id = ?", (task_id,)
+    ).fetchone()
+    if row is None:
+        return False, f"task {task_id} not found"
+
+    cur_status = row["status"]
+    if cur_status not in ("todo", "blocked"):
+        return False, (
+            f"task {task_id} is {cur_status!r}; promote only applies to "
+            f"'todo' or 'blocked'"
+        )
+
+    if not force:
+        parents = conn.execute(
+            "SELECT t.id, t.status FROM tasks t "
+            "JOIN task_links l ON l.parent_id = t.id "
+            "WHERE l.child_id = ?",
+            (task_id,),
+        ).fetchall()
+        unsatisfied = [
+            p["id"] for p in parents
+            if p["status"] not in ("done", "archived")
+        ]
+        if unsatisfied:
+            return False, (
+                f"unsatisfied parent dependencies: "
+                f"{', '.join(unsatisfied)} (use --force to override)"
+            )
+
+    if dry_run:
+        return True, None
+
+    with write_txn(conn):
+        upd = conn.execute(
+            "UPDATE tasks SET status = 'ready' "
+            "WHERE id = ? AND status IN ('todo', 'blocked')",
+            (task_id,),
+        )
+        if upd.rowcount != 1:
+            return False, f"task {task_id} status changed during promotion"
+        _append_event(
+            conn,
+            task_id,
+            "promoted_manual",
+            {"actor": actor, "reason": reason, "forced": force},
+        )
+
+    return True, None
 
 
 def unblock_task(conn: sqlite3.Connection, task_id: str) -> bool:
@@ -4892,6 +5183,7 @@ def dispatch_once(
             continue
         # Persist the resolved workspace path so the worker can cd there.
         set_workspace_path(conn, claimed.id, str(workspace))
+        _maybe_emit_scratch_tip(conn, claimed.id, claimed.workspace_kind)
         _spawn = spawn_fn if spawn_fn is not None else _default_spawn
         try:
             # Back-compat: older spawn_fn signatures accept only
@@ -4970,6 +5262,7 @@ def dispatch_once(
             continue
         # Persist the resolved workspace path so the worker can cd there.
         set_workspace_path(conn, claimed.id, str(workspace))
+        _maybe_emit_scratch_tip(conn, claimed.id, claimed.workspace_kind)
         # Force-load sdlc-review skill for review agents.  The
         # _default_spawn function already auto-loads kanban-worker, and
         # appends task.skills via --skills.  Setting task.skills here

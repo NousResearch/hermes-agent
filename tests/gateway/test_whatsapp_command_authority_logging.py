@@ -9,7 +9,10 @@ import pytest
 from gateway.config import Platform
 from gateway.platforms.base import MessageEvent, SendResult
 from gateway.session import SessionSource
-from gateway.whatsapp_message_store import query_whatsapp_records
+from gateway.whatsapp_message_store import (
+    query_latest_whatsapp_record,
+    query_whatsapp_records,
+)
 from tests.gateway._plugin_adapter_loader import load_plugin_adapter
 
 
@@ -248,3 +251,58 @@ def test_query_whatsapp_records_scans_overlapping_daily_partitions_only(
         "2024-06-02T00:00:01Z",
     ]
     assert day_three.exists()
+
+
+@pytest.mark.asyncio
+async def test_query_latest_whatsapp_record_sees_latest_logged_outbound_chunk(
+    tmp_path, monkeypatch
+):
+    hermes_home = tmp_path / ".hermes"
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+    adapter = _whatsapp_plugin.WhatsAppPluginAdapter(_config())
+    adapter._running = True
+    adapter._check_managed_bridge_exit = AsyncMock(return_value=None)
+    adapter.truncate_message = lambda content, limit: ["first", "second"]
+    adapter.format_message = lambda content: content
+
+    responses = [
+        {"success": True, "messageId": "msg-1", "messageIds": ["msg-1"]},
+        {"success": True, "messageId": "msg-2", "messageIds": ["msg-2"]},
+    ]
+
+    class _Response:
+        def __init__(self, payload):
+            self.status = 200
+            self._payload = payload
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return False
+
+        async def json(self):
+            return self._payload
+
+        async def text(self):
+            return str(self._payload)
+
+    class _Session:
+        closed = False
+
+        def post(self, *_args, **_kwargs):
+            return _Response(responses.pop(0))
+
+    adapter._http_session = _Session()
+
+    await adapter.send("18885550000@s.whatsapp.net", "hello there")
+
+    latest = query_latest_whatsapp_record(
+        destination_key="whatsapp:dm:18885550000",
+        dm_counterparty_id="18885550000",
+    )
+
+    assert latest is not None
+    assert latest["message_id"] == "msg-2"
+    assert latest["dispatch_group_sequence"] == 2

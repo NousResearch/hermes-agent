@@ -700,6 +700,19 @@ class TestBlueBubblesWebhookRegistration:
         assert ok is False
 
 
+class _FakeWebhookRequest:
+    """Stand-in for aiohttp's ``web.Request`` in inbound-webhook tests."""
+
+    def __init__(self, payload, password):
+        self._payload = payload
+        self.query = {"password": password}
+        self.headers = {}
+
+    async def read(self):
+        import json
+        return json.dumps(self._payload).encode("utf-8")
+
+
 class TestBlueBubblesInboundDedup:
     """Regression coverage for #30708 — exact-GUID dedup across new-message
     and updated-message webhook events for the same iMessage."""
@@ -707,24 +720,16 @@ class TestBlueBubblesInboundDedup:
     @pytest.mark.asyncio
     async def test_same_guid_new_then_updated_message_dedups(self, monkeypatch):
         import asyncio
-        import json
 
         adapter = _make_adapter(monkeypatch)
         delivered = []
+        delivered_event = asyncio.Event()
 
         async def fake_handle_message(event):
             delivered.append(event)
+            delivered_event.set()
 
         monkeypatch.setattr(adapter, "handle_message", fake_handle_message)
-
-        class _FakeRequest:
-            def __init__(self, payload, password):
-                self._payload = payload
-                self.query = {"password": password}
-                self.headers = {}
-
-            async def read(self):
-                return json.dumps(self._payload).encode("utf-8")
 
         new_msg = {
             "type": "new-message",
@@ -751,10 +756,13 @@ class TestBlueBubblesInboundDedup:
             },
         }
 
-        r1 = await adapter._handle_webhook(_FakeRequest(new_msg, "secret"))
-        await asyncio.sleep(0)
-        r2 = await adapter._handle_webhook(_FakeRequest(upd_msg, "secret"))
-        await asyncio.sleep(0)
+        r1 = await adapter._handle_webhook(_FakeWebhookRequest(new_msg, "secret"))
+        await asyncio.wait_for(delivered_event.wait(), timeout=2.0)
+        r2 = await adapter._handle_webhook(_FakeWebhookRequest(upd_msg, "secret"))
+        # Drain any background tasks from the second request so a stray
+        # delivery would have a turn to fire before we assert dedup.
+        for _ in range(5):
+            await asyncio.sleep(0)
 
         assert r1.status == 200
         assert r2.status == 200
@@ -768,24 +776,17 @@ class TestBlueBubblesInboundDedup:
     async def test_different_guids_both_delivered(self, monkeypatch):
         """Two distinct iMessages must still both be delivered."""
         import asyncio
-        import json
 
         adapter = _make_adapter(monkeypatch)
         delivered = []
+        delivered_count = asyncio.Event()
 
         async def fake_handle_message(event):
             delivered.append(event)
+            if len(delivered) >= 2:
+                delivered_count.set()
 
         monkeypatch.setattr(adapter, "handle_message", fake_handle_message)
-
-        class _FakeRequest:
-            def __init__(self, payload, password):
-                self._payload = payload
-                self.query = {"password": password}
-                self.headers = {}
-
-            async def read(self):
-                return json.dumps(self._payload).encode("utf-8")
 
         def _msg(guid, text):
             return {
@@ -799,10 +800,9 @@ class TestBlueBubblesInboundDedup:
                 },
             }
 
-        r1 = await adapter._handle_webhook(_FakeRequest(_msg("M1", "hi"), "secret"))
-        await asyncio.sleep(0)
-        r2 = await adapter._handle_webhook(_FakeRequest(_msg("M2", "there"), "secret"))
-        await asyncio.sleep(0)
+        r1 = await adapter._handle_webhook(_FakeWebhookRequest(_msg("M1", "hi"), "secret"))
+        r2 = await adapter._handle_webhook(_FakeWebhookRequest(_msg("M2", "there"), "secret"))
+        await asyncio.wait_for(delivered_count.wait(), timeout=2.0)
 
         assert r1.status == 200
         assert r2.status == 200

@@ -134,7 +134,9 @@ class BlueBubblesAdapter(BasePlatformAdapter):
         # delivered/read/edit echoes for the same message; without dedup the
         # second event normalizes to a different chat key (chatIdentifier vs
         # chatGuid) and spins up a parallel session for the same chat.
-        self._dedup = MessageDeduplicator()
+        # Explicit bounds: 2000 entries / 5 min TTL cap memory for
+        # long-running gateway processes.
+        self._dedup = MessageDeduplicator(max_size=2000, ttl_seconds=300)
 
     # ------------------------------------------------------------------
     # API helpers

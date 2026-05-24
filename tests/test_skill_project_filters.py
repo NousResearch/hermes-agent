@@ -300,3 +300,9 @@ class TestParseProjectSkillConfig:
         result = parse_project_skill_config()
         assert "project" not in result.get("include", [])
         assert "tools" not in result.get("include", [])
+
+    def test_lazy_index_format(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / "AGENTS.md").write_text("skills.index_format: lazy")
+        result = parse_project_skill_config()
+        assert result["index_format"] == "lazy"

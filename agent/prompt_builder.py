@@ -1116,7 +1116,8 @@ def build_skills_system_prompt(
 
     *index_format* controls output density:
       - ``"full"`` (default): indented category blocks with ``- name: desc``
-      - ``"compact"``: colon-delimited ``name:desc``, ~30% fewer chars
+      - ``"compact"``: colon-delimited ``name:desc``, ~30% fewer chars, desc capped at 120
+      - ``"lazy"``: names only, comma-separated per category, ~60% smaller than compact
     """
     skills_dir = get_skills_dir()
     external_dirs = get_all_skills_dirs()[1:]  # skip local (index 0)
@@ -1310,7 +1311,33 @@ def build_skills_system_prompt(
             total_skills, len(skills_by_category), index_format,
             bool(include_set), bool(exclude_set),
         )
-        if index_format == "compact":
+        if index_format == "lazy":
+            # Names only — no descriptions. Agent loads skill_view to see details.
+            # ~60% smaller than compact, ~80% smaller than full.
+            index_lines = []
+            for category in sorted(skills_by_category.keys()):
+                skills = skills_by_category[category]
+                seen = set()
+                names = []
+                for name, _desc in sorted(skills, key=lambda x: x[0]):
+                    if name not in seen:
+                        seen.add(name)
+                        names.append(name)
+                index_lines.append(f"  {category}: {', '.join(names)}")
+            joined = "\n".join(index_lines)
+            result = (
+                "## Skills (mandatory)\n"
+                "Name-only index. Load with skill_view(name) to see full instructions. "
+                "After using a skill, call skill_manage(action='stow', name='<skill>'). "
+                "If a skill has issues, fix it with skill_manage(action='patch').\n"
+                "\n"
+                "<available_skills>\n"
+                + joined + "\n"
+                "</available_skills>\n"
+                "\n"
+                "Only proceed without loading a skill if genuinely none are relevant to the task."
+            )
+        elif index_format == "compact":
             index_lines = []
             for category in sorted(skills_by_category.keys()):
                 skills = skills_by_category[category]
@@ -1472,11 +1499,15 @@ def build_nous_subscription_prompt(valid_tool_names: "set[str] | None" = None) -
 # Project-scoped skill configuration from context files
 # =========================================================================
 
-def parse_project_skill_config(cwd: "str | None" = None) -> dict:
+def parse_project_skill_config(cwd: "str | None" = None, text: "str | None" = None) -> dict:
     """Extract skills.include / skills.exclude / skills.categories from context files.
 
     Reads .hermes.md / AGENTS.md / CLAUDE.md (first found wins) and looks for
     skill directives. Falls back to config.yaml ``skills.project`` section.
+
+    If *text* is provided (pre-loaded context file content), skips file I/O.
+    Use this when the caller already read the file (e.g. build_context_files_prompt)
+    to avoid redundant disk reads.
 
     Returns dict with optional keys: include, exclude, categories_include,
     categories_exclude, index_format. All values are lists of strings.
@@ -1492,19 +1523,31 @@ def parse_project_skill_config(cwd: "str | None" = None) -> dict:
     cwd_path = Path(cwd).resolve() if cwd else Path.cwd()
 
     # Try context files first
-    hermes_md = _find_hermes_md(cwd_path)
-    context_path = hermes_md
-    if not context_path:
-        for name in ["AGENTS.md", "agents.md", "CLAUDE.md", "claude.md"]:
-            candidate = cwd_path / name
-            if candidate.exists():
-                context_path = candidate
-                break
+    context_path = None  # may be referenced in exception handler below
+    if text is not None:
+        lines = text.splitlines()
+    else:
+        hermes_md = _find_hermes_md(cwd_path)
+        context_path = hermes_md
+        if not context_path:
+            for name in ["AGENTS.md", "agents.md", "CLAUDE.md", "claude.md"]:
+                candidate = cwd_path / name
+                if candidate.exists():
+                    context_path = candidate
+                    break
 
-    if context_path:
+        if context_path:
+            try:
+                text = context_path.read_text(encoding="utf-8")
+                lines = text.splitlines()
+            except Exception as e:
+                logger.debug("Failed to read skill config from %s: %s", context_path, e)
+                lines = []
+        else:
+            lines = []
+
+    if lines:
         try:
-            text = context_path.read_text(encoding="utf-8")
-            lines = text.splitlines()
             # Track code-fence state to skip documentation examples
             in_fence = False
             i = 0
@@ -1552,7 +1595,7 @@ def parse_project_skill_config(cwd: "str | None" = None) -> dict:
                         m = re.match(r'skills?\.index_format:\s*(\S+)', line, re.IGNORECASE)
                         if m:
                             fmt_val = m.group(1).strip().strip("'\"")
-                            if fmt_val in ("compact", "full"):
+                            if fmt_val in ("compact", "full", "lazy"):
                                 result["index_format"] = fmt_val
                             else:
                                 logger.warning("Unknown skills.index_format '%s' — using 'full'", fmt_val)
@@ -1589,7 +1632,7 @@ def parse_project_skill_config(cwd: "str | None" = None) -> dict:
                                 break
                 i += 1
         except Exception as e:
-            logger.debug("Failed to parse skill config from %s: %s", context_path, e)
+            logger.debug("Failed to parse skill config from %s: %s", getattr(context_path, '__str__', lambda: '<preloaded>')() if 'context_path' in dir() else '<preloaded>', e)
 
     # Merge config.yaml as base, then overlay context file values
     try:

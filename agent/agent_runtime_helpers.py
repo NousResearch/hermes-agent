@@ -711,7 +711,9 @@ def try_recover_primary_transport(
                 pass
 
         # Rebuild from primary snapshot
-        rt = agent._primary_runtime
+        rt = getattr(agent, "_primary_runtime", None)
+        if not rt:
+            return False
         agent._client_kwargs = dict(rt["client_kwargs"])
         agent.model = rt["model"]
         agent.provider = rt["provider"]
@@ -865,7 +867,12 @@ def restore_primary_runtime(agent) -> bool:
     if getattr(agent, "_rate_limited_until", 0) > time.monotonic():
         return False  # primary still in rate-limit cooldown, stay on fallback
 
-    rt = agent._primary_runtime
+    rt = getattr(agent, "_primary_runtime", None)
+    if not rt:
+        agent._fallback_activated = False
+        agent._fallback_index = 0
+        return False
+
     try:
         # ── Core runtime state ──
         agent.model = rt["model"]

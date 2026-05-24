@@ -131,6 +131,7 @@ def test_gateway_runtime_attrs_are_initialized_by_constructor_authority():
         "_checkpoint_mgr",
         "_session_init_model_config",
         "_last_flushed_db_idx",
+        "_primary_runtime",
         "_subdirectory_hints",
     ):
         _assert_attr_in_init_agent(attr)

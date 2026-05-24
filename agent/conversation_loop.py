@@ -4357,6 +4357,21 @@ def run_conversation(
                             "as final response"
                         )
                         final_response = _recovered
+                        # Push the recovered text through the streaming
+                        # callback so SSE/TUI clients see it before the
+                        # finish chunk lands.  The recovered text wasn't
+                        # necessarily streamed in full this turn — the
+                        # current SSE writer drains an empty queue and
+                        # emits a finish chunk with zero content delta
+                        # otherwise, indistinguishable from a crash
+                        # (#31449, mirrors the guardrail-halt site in
+                        # #31448).
+                        if final_response and agent.stream_delta_callback:
+                            try:
+                                agent.stream_delta_callback(final_response)
+                                agent.stream_delta_callback(None)
+                            except Exception:
+                                pass
                         agent._response_was_previewed = True
                         break
 
@@ -4383,6 +4398,18 @@ def run_conversation(
                         # poisoned the conversation history.  Just use the
                         # fallback text as the final response and break.
                         final_response = agent._strip_think_blocks(fallback).strip()
+                        # Push the prior-turn content through the streaming
+                        # callback so SSE/TUI clients see it before the
+                        # finish chunk lands.  The text was streamed on the
+                        # *previous* SSE response, so the current SSE writer
+                        # drains an empty queue otherwise (#31449, mirrors
+                        # the guardrail-halt site in #31448).
+                        if final_response and agent.stream_delta_callback:
+                            try:
+                                agent.stream_delta_callback(final_response)
+                                agent.stream_delta_callback(None)
+                            except Exception:
+                                pass
                         agent._response_was_previewed = True
                         break
 

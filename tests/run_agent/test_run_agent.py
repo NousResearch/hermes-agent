@@ -4173,6 +4173,100 @@ class TestRunConversation:
         assert result["final_response"].startswith(INTERRUPT_WAITING_FOR_MODEL_PREFIX)
         assert result["messages"][-1]["role"] == "user"
 
+    def test_partial_stream_recovery_emits_final_response_through_stream_callback(self, agent):
+        """Regression for #31449: when the loop exits via partial_stream_recovery,
+        the recovered final_response must be pushed through stream_delta_callback
+        so SSE/TUI clients see content delta before the finish chunk lands.
+        Without this the current SSE writer drains an empty queue and emits a
+        finish chunk with zero content (indistinguishable from a crash for
+        Open WebUI and similar clients).  Mirrors the guardrail-halt site in
+        #31448.
+        """
+        self._setup_agent(agent)
+        empty_stub = _mock_response(content=None, finish_reason="stop")
+
+        def _fake_api_call(api_kwargs):
+            agent._current_streamed_assistant_text = "Recovered partial answer."
+            return empty_stub
+
+        deltas: list = []
+        agent.stream_delta_callback = lambda d: deltas.append(d)
+        # Force the non-streaming code path so the recovery branch is
+        # reached without engaging the real streaming machinery (the
+        # mocked client returns SimpleNamespace, not a stream iterator).
+        agent._disable_streaming = True
+
+        with (
+            patch.object(agent, "_interruptible_api_call", side_effect=_fake_api_call),
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+        ):
+            result = agent.run_conversation("ask me")
+
+        assert result["turn_exit_reason"] == "partial_stream_recovery"
+        assert result["final_response"] == "Recovered partial answer."
+        # The recovered text must have been pushed through the callback at
+        # least once.  Empty-queue SSE writers were the bug — clients saw no
+        # content delta before the finish chunk.
+        text_deltas = [d for d in deltas if isinstance(d, str)]
+        assert "Recovered partial answer." in text_deltas, (
+            f"recovered text was never streamed; callback only saw {deltas!r}"
+        )
+        # Callback should also have been closed so the SSE writer can drain.
+        assert deltas[-1] is None, (
+            f"stream_delta_callback was not closed with None; deltas={deltas!r}"
+        )
+        # response_previewed must be set so the gateway suppresses its own
+        # final send (avoid duplicate delivery).
+        assert result.get("response_previewed") is True
+
+    def test_fallback_prior_turn_content_emits_final_response_through_stream_callback(self, agent):
+        """Regression for #31449: when the loop exits via fallback_prior_turn_content,
+        the prior-turn final_response must be pushed through stream_delta_callback
+        so SSE/TUI clients see content delta before the finish chunk lands.
+        The text was streamed on the *previous* SSE response, so the current
+        SSE writer drains an empty queue without this push.  Mirrors the
+        guardrail-halt site in #31448.
+        """
+        self._setup_agent(agent)
+        empty_stub = _mock_response(content=None, finish_reason="stop")
+
+        def _fake_api_call(api_kwargs):
+            # run_conversation() resets _last_content_with_tools at turn
+            # start; re-seed it here so the empty response engages the
+            # fallback_prior_turn_content branch.  The text reaches
+            # final_response via _strip_think_blocks(fallback).strip().
+            agent._last_content_with_tools = "Earlier user-visible answer."
+            agent._last_content_tools_all_housekeeping = True
+            agent._current_streamed_assistant_text = ""
+            return empty_stub
+
+        deltas: list = []
+        agent.stream_delta_callback = lambda d: deltas.append(d)
+        # Force the non-streaming code path so the recovery branch is
+        # reached without engaging the real streaming machinery.
+        agent._disable_streaming = True
+
+        with (
+            patch.object(agent, "_interruptible_api_call", side_effect=_fake_api_call),
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+        ):
+            result = agent.run_conversation("ack")
+
+        assert result["turn_exit_reason"] == "fallback_prior_turn_content"
+        assert result["final_response"] == "Earlier user-visible answer."
+        text_deltas = [d for d in deltas if isinstance(d, str)]
+        assert "Earlier user-visible answer." in text_deltas, (
+            f"prior-turn text was never streamed; callback only saw {deltas!r}"
+        )
+        assert deltas[-1] is None, (
+            f"stream_delta_callback was not closed with None; deltas={deltas!r}"
+        )
+        assert result.get("response_previewed") is True
+
     def test_nous_401_refreshes_after_remint_and_retries(self, agent):
         self._setup_agent(agent)
         agent.provider = "nous"

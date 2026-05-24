@@ -11,6 +11,10 @@ def _make_cli():
     cli_obj.conversation_history = []
     cli_obj.agent = None
     cli_obj._session_db = MagicMock()
+    # _handle_resume_command now triggers _display_resumed_history (#31695),
+    # which reads self.resume_display. "minimal" short-circuits the recap so
+    # the test only exercises session-switch behavior.
+    cli_obj.resume_display = "minimal"
     return cli_obj
 
 
@@ -44,6 +48,8 @@ class TestCliResumeCommand:
             {"role": "user", "content": "hello"},
             {"role": "assistant", "content": "hi"},
         ]
+        # resolve_resume_session_id passes the id through when no compression chain.
+        cli_obj._session_db.resolve_resume_session_id.return_value = "sess_001"
 
         with (
             patch("hermes_cli.main._resolve_session_by_name_or_id", return_value=None),

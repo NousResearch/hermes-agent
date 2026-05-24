@@ -1837,6 +1837,25 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
                 continue
             platform = Platform(entry.name)
             existing_cfg = config.platforms.get(platform)
+            # Seed candidate extras from ``env_enablement_fn`` so plugins
+            # whose ``is_connected`` reads ``config.extra`` (e.g. Google
+            # Chat's ``_is_connected`` checks ``config.extra["project_id"]``)
+            # see the same state they will after enablement. Without this,
+            # Google-Chat-on-env-vars-only setups silently fail the gate
+            # below even though the user is configured.  Plugins whose
+            # ``is_connected`` reads env vars directly (Discord, IRC,
+            # Teams, LINE, ntfy, Simplex) are unaffected; this only
+            # restores Google Chat.
+            seed_for_probe = None
+            if entry.env_enablement_fn is not None:
+                try:
+                    seed_for_probe = entry.env_enablement_fn()
+                except Exception as e:
+                    logger.debug(
+                        "env_enablement_fn for %s raised: %s", entry.name, e
+                    )
+                    seed_for_probe = None
+
             # Only consult is_connected for platforms that are NOT already
             # explicitly configured in YAML / env (existing_cfg with
             # enabled=True means the user wrote it themselves or another
@@ -1844,7 +1863,35 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
             if existing_cfg is None or not existing_cfg.enabled:
                 if entry.is_connected is not None:
                     try:
-                        probe_cfg = existing_cfg or PlatformConfig()
+                        # Probe with ``enabled=True`` since we're asking
+                        # "would this plugin BE configured if we enabled
+                        # it?" not "is it currently enabled?". Google
+                        # Chat's ``_is_connected`` short-circuits on
+                        # ``config.enabled`` being False, which on the
+                        # default ``PlatformConfig()`` would fail the
+                        # gate even with proper env vars set.
+                        if existing_cfg is not None:
+                            probe_cfg = existing_cfg
+                            if not probe_cfg.enabled:
+                                probe_cfg = PlatformConfig(
+                                    enabled=True,
+                                    extra=dict(probe_cfg.extra or {}),
+                                )
+                        else:
+                            probe_cfg = PlatformConfig(enabled=True)
+                        if isinstance(seed_for_probe, dict) and seed_for_probe:
+                            # Don't mutate ``existing_cfg``; the probe gets
+                            # a transient view with env-seeded extras layered
+                            # on top of whatever's already there.
+                            probe_extra = dict(getattr(probe_cfg, "extra", {}) or {})
+                            for k, v in seed_for_probe.items():
+                                if k == "home_channel":
+                                    continue
+                                probe_extra.setdefault(k, v)
+                            probe_cfg = PlatformConfig(
+                                enabled=True,
+                                extra=probe_extra,
+                            )
                         configured = bool(entry.is_connected(probe_cfg))
                     except Exception as exc:
                         logger.debug(
@@ -1862,31 +1909,26 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
             if platform not in config.platforms:
                 config.platforms[platform] = PlatformConfig()
             config.platforms[platform].enabled = True
-            # Seed extras from env if the plugin opted in.
-            if entry.env_enablement_fn is not None:
-                try:
-                    seed = entry.env_enablement_fn()
-                except Exception as e:
-                    logger.debug(
-                        "env_enablement_fn for %s raised: %s", entry.name, e
+            # Commit env-seeded extras onto the now-enabled platform.
+            # We've already called ``env_enablement_fn`` above (for the
+            # probe); reuse that result instead of calling it twice.
+            if isinstance(seed_for_probe, dict) and seed_for_probe:
+                seed = dict(seed_for_probe)
+                # Extract the home_channel dict (if provided) so we wire it
+                # up as a proper HomeChannel dataclass.  Everything else is
+                # merged into ``extra``.
+                home = seed.pop("home_channel", None)
+                config.platforms[platform].extra.update(seed)
+                if isinstance(home, dict) and home.get("chat_id"):
+                    config.platforms[platform].home_channel = HomeChannel(
+                        platform=platform,
+                        chat_id=str(home["chat_id"]),
+                        name=str(home.get("name") or "Home"),
+                        thread_id=(
+                            str(home["thread_id"])
+                            if home.get("thread_id")
+                            else None
+                        ),
                     )
-                    seed = None
-                if isinstance(seed, dict) and seed:
-                    # Extract the home_channel dict (if provided) so we wire it
-                    # up as a proper HomeChannel dataclass.  Everything else is
-                    # merged into ``extra``.
-                    home = seed.pop("home_channel", None)
-                    config.platforms[platform].extra.update(seed)
-                    if isinstance(home, dict) and home.get("chat_id"):
-                        config.platforms[platform].home_channel = HomeChannel(
-                            platform=platform,
-                            chat_id=str(home["chat_id"]),
-                            name=str(home.get("name") or "Home"),
-                            thread_id=(
-                                str(home["thread_id"])
-                                if home.get("thread_id")
-                                else None
-                            ),
-                        )
     except Exception as e:
         logger.debug("Plugin platform enable pass failed: %s", e)

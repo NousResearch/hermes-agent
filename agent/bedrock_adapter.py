@@ -404,6 +404,75 @@ def is_anthropic_bedrock_model(model_id: str) -> bool:
 
 
 # ---------------------------------------------------------------------------
+# 1M-context beta support (issue #31277)
+# ---------------------------------------------------------------------------
+# PR #16793 wired ``context-1m-2025-08-07`` into the OpenAI-compat Bedrock
+# path through ``agent/anthropic_adapter.py:build_anthropic_bedrock_client``.
+# That fix is invisible to users on the *native* Converse adapter — the
+# wizard's recommended default for direct AWS Bedrock without a proxy —
+# because Converse takes provider-specific betas via
+# ``additionalModelRequestFields={"anthropic_beta": [...]}`` rather than an
+# HTTP header.
+#
+# We gate the injection on an opt-in env var so accounts that don't have the
+# 1M-context entitlement on their Bedrock allowlist aren't broken: AWS will
+# refuse the request with ``ValidationException`` rather than silently
+# truncating, so an unconditional injection would regress every account
+# without the entitlement. Users who DO have it set
+# ``HERMES_BEDROCK_1M_CONTEXT=1`` once and forget about it.
+
+_BEDROCK_1M_CONTEXT_ENV = "HERMES_BEDROCK_1M_CONTEXT"
+_BEDROCK_CONTEXT_1M_BETA = "context-1m-2025-08-07"
+
+# Models that AWS Bedrock advertises 1M context for when the
+# ``context-1m-2025-08-07`` beta is on the request.  Match by substring
+# against the lower-cased model id so versioned/profile ids resolve too:
+# ``us.anthropic.claude-opus-4-7``, ``anthropic.claude-opus-4-6-20250514-v1:0``,
+# ``global.anthropic.claude-sonnet-4-6``, etc.
+_BEDROCK_1M_CAPABLE_PATTERNS: Tuple[str, ...] = (
+    "claude-opus-4-7",
+    "claude-opus-4.7",
+    "claude-opus-4-6",
+    "claude-opus-4.6",
+    "claude-sonnet-4-6",
+    "claude-sonnet-4.6",
+)
+
+
+def bedrock_1m_context_enabled(env: Optional[Dict[str, str]] = None) -> bool:
+    """Return True iff the user has opted into the Bedrock 1M-context beta.
+
+    Reads ``HERMES_BEDROCK_1M_CONTEXT`` from the supplied env (defaults to
+    ``os.environ``).  Accepts the project-wide truthy set (``1``, ``true``,
+    ``yes``, ``on``); anything else — including unset — is False.
+    Default-OFF on purpose: AWS hard-rejects the beta on accounts without
+    the entitlement, so an opt-in flag keeps the existing 200K behavior
+    for everyone who hasn't asked for 1M.
+    """
+    src = env if env is not None else os.environ
+    try:
+        from utils import is_truthy_value
+        return is_truthy_value(src.get(_BEDROCK_1M_CONTEXT_ENV))
+    except ImportError:  # pragma: no cover — utils is a sibling top-level module
+        val = (src.get(_BEDROCK_1M_CONTEXT_ENV) or "").strip().lower()
+        return val in {"1", "true", "yes", "on"}
+
+
+def is_anthropic_opus_4_1m_capable(model_id: str) -> bool:
+    """Return True if *model_id* is an Anthropic 1M-context-capable Claude.
+
+    Matches the model families AWS lists as 1M-eligible behind the
+    ``context-1m-2025-08-07`` beta — Opus 4.6/4.7 and Sonnet 4.6 — across
+    all the spelling variants Bedrock surfaces (regional inference
+    profiles, dot-vs-dash, versioned suffixes).
+    """
+    if not model_id:
+        return False
+    model_lower = model_id.lower()
+    return any(p in model_lower for p in _BEDROCK_1M_CAPABLE_PATTERNS)
+
+
+# ---------------------------------------------------------------------------
 # Message format conversion: OpenAI → Bedrock Converse
 # ---------------------------------------------------------------------------
 
@@ -882,10 +951,18 @@ def build_converse_kwargs(
     top_p: Optional[float] = None,
     stop_sequences: Optional[List[str]] = None,
     guardrail_config: Optional[Dict] = None,
+    additional_model_request_fields: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     """Build kwargs for ``bedrock-runtime.converse()`` or ``converse_stream()``.
 
     Converts OpenAI-format inputs to Converse API parameters.
+
+    When the user opts into ``HERMES_BEDROCK_1M_CONTEXT=1`` AND *model* is
+    an Anthropic Opus 4.6/4.7 or Sonnet 4.6 inference profile, the
+    ``context-1m-2025-08-07`` beta is merged into the request's
+    ``additionalModelRequestFields["anthropic_beta"]``.  Caller-supplied
+    betas are preserved (no clobbering); duplicates are de-duplicated.
+    Issue #31277.
     """
     system_prompt, converse_messages = convert_messages_to_converse(messages)
 
@@ -928,6 +1005,31 @@ def build_converse_kwargs(
     if guardrail_config:
         kwargs["guardrailConfig"] = guardrail_config
 
+    # ``additionalModelRequestFields`` is the Converse-API channel for
+    # provider-specific extensions; for Anthropic that's where the
+    # ``anthropic_beta`` array lives. Build the fields dict by:
+    #   1. starting from any caller-supplied dict (so future callers can
+    #      thread through extended-thinking / guardrail-trace betas etc.),
+    #   2. layering in the auto-injected 1M-context beta when both opt-in
+    #      and capability checks pass,
+    # then merge betas into a single de-duplicated list so we never clobber
+    # user-supplied entries.
+    extra_fields: Dict[str, Any] = {}
+    if additional_model_request_fields:
+        extra_fields.update(additional_model_request_fields)
+
+    if (
+        bedrock_1m_context_enabled()
+        and is_anthropic_opus_4_1m_capable(model)
+    ):
+        existing_betas = list(extra_fields.get("anthropic_beta") or [])
+        if _BEDROCK_CONTEXT_1M_BETA not in existing_betas:
+            existing_betas.append(_BEDROCK_CONTEXT_1M_BETA)
+        extra_fields["anthropic_beta"] = existing_betas
+
+    if extra_fields:
+        kwargs["additionalModelRequestFields"] = extra_fields
+
     return kwargs
 
 
@@ -941,6 +1043,7 @@ def call_converse(
     top_p: Optional[float] = None,
     stop_sequences: Optional[List[str]] = None,
     guardrail_config: Optional[Dict] = None,
+    additional_model_request_fields: Optional[Dict[str, Any]] = None,
 ) -> SimpleNamespace:
     """Call Bedrock Converse API (non-streaming) and return an OpenAI-compatible response.
 
@@ -956,6 +1059,7 @@ def call_converse(
         top_p=top_p,
         stop_sequences=stop_sequences,
         guardrail_config=guardrail_config,
+        additional_model_request_fields=additional_model_request_fields,
     )
 
     try:
@@ -982,6 +1086,7 @@ def call_converse_stream(
     top_p: Optional[float] = None,
     stop_sequences: Optional[List[str]] = None,
     guardrail_config: Optional[Dict] = None,
+    additional_model_request_fields: Optional[Dict[str, Any]] = None,
 ) -> SimpleNamespace:
     """Call Bedrock ConverseStream API and return an OpenAI-compatible response.
 
@@ -998,6 +1103,7 @@ def call_converse_stream(
         top_p=top_p,
         stop_sequences=stop_sequences,
         guardrail_config=guardrail_config,
+        additional_model_request_fields=additional_model_request_fields,
     )
 
     try:
@@ -1243,7 +1349,12 @@ def classify_bedrock_error(error_message: str) -> str:
 # detection is unavailable.
 
 BEDROCK_CONTEXT_LENGTHS: Dict[str, int] = {
-    # Anthropic Claude models on Bedrock
+    # Anthropic Claude models on Bedrock.
+    # Values here are the *unbeta-d* defaults — Bedrock caps Opus 4.6/4.7
+    # and Sonnet 4.6 at 200K unless the request carries the
+    # ``context-1m-2025-08-07`` beta. ``get_bedrock_context_length`` returns
+    # 1M for those models when ``HERMES_BEDROCK_1M_CONTEXT`` is opted in.
+    "anthropic.claude-opus-4-7":     200_000,
     "anthropic.claude-opus-4-6":     200_000,
     "anthropic.claude-sonnet-4-6":   200_000,
     "anthropic.claude-sonnet-4-5":   200_000,
@@ -1278,7 +1389,18 @@ def get_bedrock_context_length(model_id: str) -> int:
 
     Uses substring matching so versioned IDs like
     ``anthropic.claude-sonnet-4-6-20250514-v1:0`` resolve correctly.
+
+    Returns 1M only when both:
+      * the user has opted into ``HERMES_BEDROCK_1M_CONTEXT``, AND
+      * the model is one of the Anthropic 1M-capable Claude families
+        (Opus 4.6/4.7, Sonnet 4.6).
+
+    Otherwise returns the unbeta-d default from ``BEDROCK_CONTEXT_LENGTHS``.
+    Issue #31277.
     """
+    if bedrock_1m_context_enabled() and is_anthropic_opus_4_1m_capable(model_id):
+        return 1_000_000
+
     model_lower = model_id.lower()
     best_key = ""
     best_val = BEDROCK_DEFAULT_CONTEXT_LENGTH

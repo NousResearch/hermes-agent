@@ -121,6 +121,24 @@ def _ensure_deps():
         sys.exit(1)
 
 
+def _gws_auth_valid() -> bool:
+    """Check if the gws CLI has its own valid credentials."""
+    gws = shutil.which("gws")
+    if not gws:
+        return False
+    try:
+        result = subprocess.run(
+            [gws, "auth", "status"],
+            capture_output=True, text=True, timeout=10,
+        )
+        if result.returncode != 0:
+            return False
+        data = json.loads(result.stdout)
+        return data.get("token_valid", False) and data.get("has_refresh_token", False)
+    except Exception:
+        return False
+
+
 def check_auth_live():
     """Check auth with a real API call to detect disabled_client/account issues."""
     # quiet=True suppresses the "AUTHENTICATED" print from check_auth so the
@@ -150,6 +168,10 @@ def check_auth_live():
 def check_auth(quiet: bool = False):
     """Check if stored credentials are valid. Prints status, exits 0 or 1."""
     if not TOKEN_PATH.exists():
+        if _gws_auth_valid():
+            if not quiet:
+                print("AUTHENTICATED: via gws CLI (~/.config/gws/)")
+            return True
         print(f"NOT_AUTHENTICATED: No token at {TOKEN_PATH}")
         return False
 

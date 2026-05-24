@@ -10543,10 +10543,15 @@ def _cmd_update_impl(args, gateway_mode: bool):
                 except Exception:
                     pass
 
+                _is_root = os.geteuid() == 0 if hasattr(os, "geteuid") else False
                 for scope, scope_cmd in [
                     ("user", ["systemctl", "--user"]),
                     ("system", ["systemctl"]),
                 ]:
+                    # Skip system-scope commands when not root — they'll
+                    # trigger a polkit auth prompt and hang the update.
+                    if scope == "system" and not _is_root:
+                        continue
                     try:
                         result = subprocess.run(
                             scope_cmd
@@ -10640,18 +10645,25 @@ def _cmd_update_impl(args, gateway_mode: bool):
                                 # ``start`` is a no-op and we fall through to
                                 # the poll below. Either way we collapse the
                                 # 60s+ delay to a ~5s one.
-                                subprocess.run(
-                                    scope_cmd + ["reset-failed", svc_name],
-                                    capture_output=True,
-                                    text=True,
-                                    timeout=10,
-                                )
-                                subprocess.run(
-                                    scope_cmd + ["start", svc_name],
-                                    capture_output=True,
-                                    text=True,
-                                    timeout=15,
-                                )
+                                #
+                                # System services may require auth (polkit).
+                                # Skip the explicit start if we lack perms —
+                                # systemd's auto-restart will handle it.
+                                try:
+                                    subprocess.run(
+                                        scope_cmd + ["reset-failed", svc_name],
+                                        capture_output=True,
+                                        text=True,
+                                        timeout=10,
+                                    )
+                                    subprocess.run(
+                                        scope_cmd + ["start", svc_name],
+                                        capture_output=True,
+                                        text=True,
+                                        timeout=15,
+                                    )
+                                except Exception:
+                                    pass  # auth failed — let auto-restart handle it
                                 # Short poll: the gateway should be up within
                                 # a few seconds now that we bypassed
                                 # RestartSec. Fall back to the longer

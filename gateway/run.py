@@ -4293,7 +4293,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # Both "queue" and "steer" modes imply the user doesn't want messages
         # to be lost during restart — queue them for the newly-spawned gateway
         # process to pick up.  "interrupt" mode drops them (current behaviour).
-        return self._restart_requested and self._busy_input_mode in {"queue", "steer"}
+        return self._restart_requested and self._busy_input_mode in {"queue", "steer", "auto_steer"}
 
     # -------- /queue FIFO helpers --------------------------------------
     # /queue must produce one full agent turn per invocation, in FIFO
@@ -4838,6 +4838,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             return "queue"
         if mode == "steer":
             return "steer"
+        if mode == "auto_steer":
+            return "auto_steer"
         return "interrupt"
 
     @staticmethod
@@ -5267,14 +5269,14 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         if (
             event.message_type == MessageType.TEXT
             and busy_text_mode == "queue"
-            and effective_mode != "steer"
+            and effective_mode not in {"steer", "auto_steer"}
         ):
             return False
 
-        # Steer mode: inject mid-run via running_agent.steer() instead of
-        # queueing + interrupting.  If the agent isn't running yet
+        # Steer / auto_steer mode: inject mid-run via running_agent.steer()
+        # instead of queueing + interrupting.  If the agent isn't running yet
         # (sentinel) or lacks steer(), or the payload is empty, fall back
-        # to queue semantics so nothing is lost.
+        # to queue semantics (steer) or normal processing (auto_steer).
         # #30170 — Subagent protection. ``AIAgent.interrupt()`` cascades
         # to every entry in the parent's ``_active_children`` list and
         # aborts in-flight ``delegate_task`` work. Demote ``interrupt``
@@ -5306,7 +5308,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             )
             effective_mode = "queue"
         steered = False
-        if effective_mode == "steer":
+        is_auto_steer = effective_mode == "auto_steer"
+        if effective_mode in {"steer", "auto_steer"}:
             steer_text = (event.text or "").strip()
             can_steer = (
                 steer_text
@@ -5321,6 +5324,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     logger.warning("Gateway steer failed for session %s: %s", session_key, exc)
                     steered = False
             if not steered:
+                if is_auto_steer:
+                    # auto_steer: let the message through for normal processing
+                    # when the agent isn't running or steer failed.
+                    return False
                 # Fall back to queue (merge into pending messages, no interrupt)
                 effective_mode = "queue"
 
@@ -9341,10 +9348,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 logger.debug("PRIORITY queue follow-up for session %s", _quick_key)
                 self._queue_or_replace_pending_event(_quick_key, event)
                 return None
-            if self._busy_input_mode == "steer":
-                # Steer mode: inject text into the running agent mid-run via
-                # agent.steer().  Falls back to queue semantics if the payload
-                # is empty, the agent lacks steer(), or steer() rejects.
+            if self._busy_input_mode in {"steer", "auto_steer"}:
+                # Steer / auto_steer mode: inject text into the running agent
+                # mid-run via agent.steer().  Falls back to queue semantics
+                # (steer) or is dropped (auto_steer) if steer() fails.
                 steer_text = (event.text or "").strip()
                 steered = False
                 if steer_text and hasattr(running_agent, "steer"):
@@ -9355,6 +9362,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         steered = False
                 if steered:
                     logger.debug("PRIORITY steer for session %s", _quick_key)
+                    return None
+                if self._busy_input_mode == "auto_steer":
+                    # auto_steer: drop the message rather than queueing
+                    logger.debug("PRIORITY auto_steer drop for session %s", _quick_key)
                     return None
                 logger.debug("PRIORITY steer-fallback-to-queue for session %s", _quick_key)
                 self._queue_or_replace_pending_event(_quick_key, event)

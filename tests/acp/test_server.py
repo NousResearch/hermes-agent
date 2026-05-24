@@ -971,6 +971,18 @@ class TestSessionConfiguration:
             "hermes_cli.runtime_provider.resolve_runtime_provider",
             fake_resolve_runtime_provider,
         )
+        # Pin the parser so this test doesn't depend on live
+        # ``_KNOWN_PROVIDER_NAMES`` / ``_PROVIDER_ALIASES`` module state
+        # (sibling of the same hardening on
+        # ``test_model_switch_uses_requested_provider``).
+        monkeypatch.setattr(
+            "hermes_cli.models.parse_model_input",
+            lambda raw, current: ("anthropic", "claude-sonnet-4-6"),
+        )
+        monkeypatch.setattr(
+            "hermes_cli.models.detect_provider_for_model",
+            lambda model, current: None,
+        )
         manager = SessionManager(db=SessionDB(tmp_path / "state.db"))
 
         with patch("run_agent.AIAgent", side_effect=fake_agent):
@@ -1190,6 +1202,48 @@ class TestPrompt:
         agent_chunks = [update for update in updates if update.session_update == "agent_message_chunk"]
         assert len(agent_chunks) == 1
         assert agent_chunks[0].content.text == "streamed answer"
+
+    @pytest.mark.asyncio
+    async def test_prompt_delivers_transformed_response_after_streaming(self, agent):
+        """If a transform_llm_output plugin hook modifies the response after
+        streaming, ACP must deliver the transformed final_response so the
+        appended/rewritten text reaches the client.
+        """
+        new_resp = await agent.new_session(cwd=".")
+        state = agent.session_manager.get_session(new_resp.session_id)
+
+        def mock_run(*args, **kwargs):
+            state.agent.stream_delta_callback("original answer")
+            return {
+                "final_response": "original answer\n\n[plugin appended this]",
+                "response_transformed": True,
+                "messages": [],
+            }
+
+        state.agent.run_conversation = mock_run
+
+        mock_conn = MagicMock(spec=acp.Client)
+        mock_conn.session_update = AsyncMock()
+        agent._conn = mock_conn
+
+        prompt = [TextContentBlock(type="text", text="hello")]
+        await agent.prompt(prompt=prompt, session_id=new_resp.session_id)
+
+        updates = [
+            call.kwargs.get("update") or call.args[1]
+            for call in mock_conn.session_update.call_args_list
+        ]
+        # The streamed chunk and the post-stream transformed message should
+        # both be present (final delivery is a separate update_agent_message_text
+        # call carrying the full transformed text).
+        all_texts = [
+            getattr(getattr(u, "content", None), "text", None)
+            for u in updates
+        ]
+        assert any(
+            text and "[plugin appended this]" in text for text in all_texts
+        ), f"expected transformed final to be delivered, got: {all_texts!r}"
+
 
     @pytest.mark.asyncio
     async def test_prompt_auto_titles_session(self, agent):
@@ -1542,6 +1596,20 @@ class TestSlashCommands:
         monkeypatch.setattr(
             "hermes_cli.runtime_provider.resolve_runtime_provider",
             fake_resolve_runtime_provider,
+        )
+        # Pin the model-string parser independently of the live
+        # ``_KNOWN_PROVIDER_NAMES`` / ``_PROVIDER_ALIASES`` module state.
+        # Otherwise any test in the same xdist worker that mutates those
+        # globals (e.g. registers a custom provider that shadows
+        # ``anthropic``) flakes this one — observed once in CI as
+        # ``'custom' == 'anthropic'``.
+        monkeypatch.setattr(
+            "hermes_cli.models.parse_model_input",
+            lambda raw, current: ("anthropic", "claude-sonnet-4-6"),
+        )
+        monkeypatch.setattr(
+            "hermes_cli.models.detect_provider_for_model",
+            lambda model, current: None,
         )
         manager = SessionManager(db=SessionDB(tmp_path / "state.db"))
 

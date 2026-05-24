@@ -1,4 +1,4 @@
-import { cn } from "@/lib/utils";
+import { cn, themedBody } from "@/lib/utils";
 
 /**
  * Themed card primitive. Themes can restyle every card without touching
@@ -27,6 +27,7 @@ export function Card({ className, style, ...props }: React.HTMLAttributes<HTMLDi
     <div
       className={cn(
         "border border-border bg-card/80 text-card-foreground w-full",
+        themedBody,
         className,
       )}
       style={{ ...CARD_STYLE, ...style }}
@@ -40,11 +41,21 @@ export function CardHeader({ className, ...props }: React.HTMLAttributes<HTMLDiv
 }
 
 export function CardTitle({ className, ...props }: React.HTMLAttributes<HTMLHeadingElement>) {
-  return <h3 className={cn("font-expanded text-sm font-bold tracking-[0.08em] uppercase blend-lighter", className)} {...props} />;
+  return (
+    <h3
+      className={cn(
+        "font-mondwest text-display text-sm tracking-[0.12em] text-text-primary",
+        className,
+      )}
+      {...props}
+    />
+  );
 }
 
 export function CardDescription({ className, ...props }: React.HTMLAttributes<HTMLParagraphElement>) {
-  return <p className={cn("font-mondwest text-xs text-muted-foreground", className)} {...props} />;
+  return (
+    <p className={cn("font-mondwest normal-case text-xs text-muted-foreground", className)} {...props} />
+  );
 }
 
 export function CardContent({ className, ...props }: React.HTMLAttributes<HTMLDivElement>) {

@@ -642,3 +642,202 @@ def test_generic_auth_status_dispatches_minimax_oauth():
     assert status["logged_in"] is True
     assert status["provider"] == "minimax-oauth"
     assert status["region"] == "global"
+
+
+# ---------------------------------------------------------------------------
+# build_minimax_oauth_token_provider — per-request callable bearer
+# ---------------------------------------------------------------------------
+# These tests verify the fix for short-lived (~15-min) MiniMax access tokens
+# expiring mid-session. The callable is invoked by the Anthropic SDK on every
+# outbound request via the existing Entra-style bearer hook.
+
+
+def test_token_provider_returns_current_access_token_when_fresh():
+    """When token is far from expiry, callable just returns the cached token."""
+    from hermes_cli.auth import build_minimax_oauth_token_provider
+
+    state = {
+        "access_token": "still-fresh",
+        "refresh_token": "rt",
+        "portal_base_url": MINIMAX_OAUTH_GLOBAL_BASE,
+        "client_id": MINIMAX_OAUTH_CLIENT_ID,
+        "inference_base_url": MINIMAX_OAUTH_GLOBAL_INFERENCE,
+        "expires_at": _future_iso(3600),
+    }
+
+    provider = build_minimax_oauth_token_provider()
+
+    with patch("hermes_cli.auth.get_provider_auth_state", return_value=state), \
+         patch("httpx.Client") as mock_client_class:
+        token = provider()
+        # No network call should happen — token is fresh.
+        mock_client_class.assert_not_called()
+
+    assert token == "still-fresh"
+
+
+def test_token_provider_refreshes_when_near_expiry():
+    """When token is within the skew window, callable mints a fresh one."""
+    from hermes_cli.auth import build_minimax_oauth_token_provider
+
+    state = {
+        "access_token": "about-to-die",
+        "refresh_token": "rt",
+        "portal_base_url": MINIMAX_OAUTH_GLOBAL_BASE,
+        "client_id": MINIMAX_OAUTH_CLIENT_ID,
+        "inference_base_url": MINIMAX_OAUTH_GLOBAL_INFERENCE,
+        "expires_at": _future_iso(MINIMAX_OAUTH_REFRESH_SKEW_SECONDS - 1),
+    }
+
+    refreshed_body = {
+        "status": "success",
+        "access_token": "fresh-bearer",
+        "refresh_token": "rt2",
+        "expired_in": 900,
+    }
+    mock_resp = _make_httpx_response(200, refreshed_body)
+
+    provider = build_minimax_oauth_token_provider()
+
+    with patch("hermes_cli.auth.get_provider_auth_state", return_value=state), \
+         patch("httpx.Client") as mock_client_class, \
+         patch("hermes_cli.auth._minimax_save_auth_state"):
+        mock_instance = MagicMock()
+        mock_instance.__enter__ = MagicMock(return_value=mock_instance)
+        mock_instance.__exit__ = MagicMock(return_value=False)
+        mock_instance.post.return_value = mock_resp
+        mock_client_class.return_value = mock_instance
+
+        token = provider()
+
+    assert token == "fresh-bearer"
+
+
+def test_token_provider_rereads_state_each_call():
+    """Each callable invocation re-reads auth.json so cross-process refreshes
+    persisted by another hermes process are immediately visible."""
+    from hermes_cli.auth import build_minimax_oauth_token_provider
+
+    states = [
+        {
+            "access_token": "first-token",
+            "refresh_token": "rt",
+            "portal_base_url": MINIMAX_OAUTH_GLOBAL_BASE,
+            "client_id": MINIMAX_OAUTH_CLIENT_ID,
+            "inference_base_url": MINIMAX_OAUTH_GLOBAL_INFERENCE,
+            "expires_at": _future_iso(3600),
+        },
+        {
+            "access_token": "second-token-after-another-process-refreshed",
+            "refresh_token": "rt",
+            "portal_base_url": MINIMAX_OAUTH_GLOBAL_BASE,
+            "client_id": MINIMAX_OAUTH_CLIENT_ID,
+            "inference_base_url": MINIMAX_OAUTH_GLOBAL_INFERENCE,
+            "expires_at": _future_iso(3600),
+        },
+    ]
+
+    provider = build_minimax_oauth_token_provider()
+    with patch("hermes_cli.auth.get_provider_auth_state", side_effect=states):
+        first = provider()
+        second = provider()
+
+    assert first == "first-token"
+    assert second == "second-token-after-another-process-refreshed"
+
+
+def test_token_provider_raises_not_logged_in_when_state_missing():
+    """No state in auth.json → AuthError(not_logged_in, relogin_required=True)."""
+    from hermes_cli.auth import build_minimax_oauth_token_provider
+
+    provider = build_minimax_oauth_token_provider()
+    with patch("hermes_cli.auth.get_provider_auth_state", return_value=None):
+        with pytest.raises(AuthError) as exc_info:
+            provider()
+
+    assert exc_info.value.code == "not_logged_in"
+    assert exc_info.value.relogin_required is True
+
+
+def test_token_provider_quarantines_state_on_terminal_refresh():
+    """When refresh returns invalid_grant, callable raises AuthError AND
+    wipes the dead tokens so subsequent calls fail fast without network."""
+    from hermes_cli.auth import build_minimax_oauth_token_provider
+
+    state = {
+        "access_token": "expired",
+        "refresh_token": "burned-rt",
+        "portal_base_url": MINIMAX_OAUTH_GLOBAL_BASE,
+        "client_id": MINIMAX_OAUTH_CLIENT_ID,
+        "inference_base_url": MINIMAX_OAUTH_GLOBAL_INFERENCE,
+        "expires_at": _past_iso(100),
+    }
+
+    bad_resp = _make_httpx_response(400, text="invalid_grant")
+    bad_resp.json.side_effect = Exception("no json")
+    bad_resp.text = "invalid_grant"
+    bad_resp.reason_phrase = "Bad Request"
+
+    saved_states: list[dict] = []
+
+    provider = build_minimax_oauth_token_provider()
+    with patch("hermes_cli.auth.get_provider_auth_state", return_value=state), \
+         patch("httpx.Client") as mock_client_class, \
+         patch(
+             "hermes_cli.auth._minimax_save_auth_state",
+             side_effect=lambda s: saved_states.append(dict(s)),
+         ):
+        mock_instance = MagicMock()
+        mock_instance.__enter__ = MagicMock(return_value=mock_instance)
+        mock_instance.__exit__ = MagicMock(return_value=False)
+        mock_instance.post.return_value = bad_resp
+        mock_client_class.return_value = mock_instance
+
+        with pytest.raises(AuthError) as exc_info:
+            provider()
+
+    assert exc_info.value.relogin_required is True
+    # Quarantine wrote a state with tokens removed.
+    assert len(saved_states) == 1
+    quarantined = saved_states[0]
+    assert "access_token" not in quarantined
+    assert "refresh_token" not in quarantined
+    assert quarantined["last_auth_error"]["relogin_required"] is True
+
+
+def test_resolve_returns_callable_when_as_token_provider_true():
+    """Explicit opt-in path: resolve_minimax_oauth_runtime_credentials(as_token_provider=True)
+    returns a callable api_key."""
+    state = {
+        "access_token": "tok",
+        "refresh_token": "rt",
+        "portal_base_url": MINIMAX_OAUTH_GLOBAL_BASE,
+        "client_id": MINIMAX_OAUTH_CLIENT_ID,
+        "inference_base_url": MINIMAX_OAUTH_GLOBAL_INFERENCE,
+        "expires_at": _future_iso(3600),
+    }
+
+    with patch("hermes_cli.auth.get_provider_auth_state", return_value=state):
+        creds = resolve_minimax_oauth_runtime_credentials(as_token_provider=True)
+
+    assert callable(creds["api_key"])
+    assert not isinstance(creds["api_key"], str)
+    assert creds["base_url"] == MINIMAX_OAUTH_GLOBAL_INFERENCE.rstrip("/")
+
+
+def test_resolve_returns_string_by_default():
+    """Backwards-compatible default: api_key is a string materialized once."""
+    state = {
+        "access_token": "tok",
+        "refresh_token": "rt",
+        "portal_base_url": MINIMAX_OAUTH_GLOBAL_BASE,
+        "client_id": MINIMAX_OAUTH_CLIENT_ID,
+        "inference_base_url": MINIMAX_OAUTH_GLOBAL_INFERENCE,
+        "expires_at": _future_iso(3600),
+    }
+
+    with patch("hermes_cli.auth.get_provider_auth_state", return_value=state):
+        creds = resolve_minimax_oauth_runtime_credentials()
+
+    assert creds["api_key"] == "tok"
+    assert isinstance(creds["api_key"], str)

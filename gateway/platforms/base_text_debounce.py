@@ -96,14 +96,9 @@ class BaseTextDebounceMixin:
                 state.event, event
             ):
                 if not self._same_text_debounce_sender(state.event, event):
-                    existing_pending = self._pending_messages.get(session_key)
-                    if (
-                        existing_pending is not None
-                        and self._can_merge_text_debounce_events(existing_pending, event)
-                    ):
-                        merge_pending_message_event(
-                            self._pending_messages, session_key, event, merge_text=True
-                        )
+                    merge_pending_message_event(
+                        self._pending_messages, session_key, event, merge_text=True
+                    )
                     return
                 logger.debug(
                     "[%s] Busy text for %s replies to a third message; merging it into the "

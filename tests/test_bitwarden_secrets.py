@@ -301,6 +301,89 @@ def test_fetch_cache_hits(monkeypatch, tmp_path):
     assert call_count["n"] == 1  # cached on second call
 
 
+def test_fetch_server_url_sets_env(monkeypatch, tmp_path):
+    """server_url must be plumbed into the subprocess as BWS_SERVER_URL."""
+    fake_binary = tmp_path / "bws"
+    fake_binary.write_text("")
+    payload = _fake_bws_payload([{"key": "K", "value": "v"}])
+
+    captured_env = {}
+
+    def fake_run(cmd, **kwargs):
+        captured_env.update(kwargs["env"])
+        return mock.Mock(returncode=0, stdout=payload, stderr="")
+
+    monkeypatch.setattr(bw.subprocess, "run", fake_run)
+
+    bw.fetch_bitwarden_secrets(
+        access_token="0.t",
+        project_id="p",
+        binary=fake_binary,
+        use_cache=False,
+        server_url="https://vault.bitwarden.eu",
+    )
+    assert captured_env.get("BWS_SERVER_URL") == "https://vault.bitwarden.eu"
+
+
+def test_fetch_no_server_url_does_not_set_env(monkeypatch, tmp_path):
+    """When server_url is empty, BWS_SERVER_URL must not be injected."""
+    fake_binary = tmp_path / "bws"
+    fake_binary.write_text("")
+    payload = _fake_bws_payload([])
+    # Make sure the inherited env doesn't already have BWS_SERVER_URL set.
+    monkeypatch.delenv("BWS_SERVER_URL", raising=False)
+
+    captured_env = {}
+
+    def fake_run(cmd, **kwargs):
+        captured_env.update(kwargs["env"])
+        return mock.Mock(returncode=0, stdout=payload, stderr="")
+
+    monkeypatch.setattr(bw.subprocess, "run", fake_run)
+
+    bw.fetch_bitwarden_secrets(
+        access_token="0.t",
+        project_id="p",
+        binary=fake_binary,
+        use_cache=False,
+    )
+    assert "BWS_SERVER_URL" not in captured_env
+
+
+def test_fetch_server_url_keyed_in_cache(monkeypatch, tmp_path):
+    """Different server_url values must produce separate cache entries."""
+    fake_binary = tmp_path / "bws"
+    fake_binary.write_text("")
+    payload = _fake_bws_payload([{"key": "K", "value": "v"}])
+
+    call_count = {"n": 0}
+
+    def fake_run(*a, **kw):
+        call_count["n"] += 1
+        return mock.Mock(returncode=0, stdout=payload, stderr="")
+
+    monkeypatch.setattr(bw.subprocess, "run", fake_run)
+
+    # US (default empty) — fresh fetch.
+    bw.fetch_bitwarden_secrets(
+        access_token="0.t", project_id="p",
+        binary=fake_binary, cache_ttl_seconds=60,
+    )
+    # EU — different server_url, must NOT hit the US cache entry.
+    bw.fetch_bitwarden_secrets(
+        access_token="0.t", project_id="p",
+        binary=fake_binary, cache_ttl_seconds=60,
+        server_url="https://vault.bitwarden.eu",
+    )
+    # Second EU call hits cache.
+    bw.fetch_bitwarden_secrets(
+        access_token="0.t", project_id="p",
+        binary=fake_binary, cache_ttl_seconds=60,
+        server_url="https://vault.bitwarden.eu",
+    )
+    assert call_count["n"] == 2
+
+
 def test_fetch_cache_disabled(monkeypatch, tmp_path):
     fake_binary = tmp_path / "bws"
     fake_binary.write_text("")

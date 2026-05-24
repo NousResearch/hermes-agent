@@ -363,6 +363,13 @@ export function processVimKey(
     return { consumed: true, mode: 'insert' }
   }
 
+  if (ch === 'A' || (ch === 'a' && key.shift)) {
+    // Append at end of line. Ink may report Shift+A as ch='a' with key.shift.
+    const pos = cursorPos(input, cursor)
+    cursor = pos.lineEnd
+    return { cursor, consumed: true, mode: 'insert' }
+  }
+
   if (ch === 'a') {
     // Append: move cursor right by 1, then enter insert
     cursor = Math.min(input.length, cursor + 1)
@@ -372,13 +379,6 @@ export function processVimKey(
   if (ch === 'I') {
     // Insert at start of line (first non-whitespace)
     cursor = firstNonBlank(input, cursor)
-    return { cursor, consumed: true, mode: 'insert' }
-  }
-
-  if (ch === 'A') {
-    // Append at end of line
-    const pos = cursorPos(input, cursor)
-    cursor = pos.lineEnd
     return { cursor, consumed: true, mode: 'insert' }
   }
 

@@ -143,6 +143,12 @@ describe('processVimKey', () => {
       expect(r.mode).toBe('insert')
       expect(r.cursor).toBe(5)
     })
+
+    it('treats shifted a as A and moves to line end', () => {
+      const r = processVimKey('a', makeKey({ shift: true }), 'hello', 1, 1)
+      expect(r.mode).toBe('insert')
+      expect(r.cursor).toBe(5)
+    })
   })
 
   describe('o — new line below (auto-indent)', () => {

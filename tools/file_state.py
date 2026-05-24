@@ -19,6 +19,8 @@ Three public hooks are used by the file tools:
   * ``record_read(task_id, path, *, partial)`` — called by read_file
   * ``note_write(task_id, path)`` — called after write_file / patch
   * ``check_stale(task_id, path)`` — called BEFORE write_file / patch
+  * ``read_was_partial(task_id, path)`` — helper for blocking full overwrites
+    after a truncated or paginated read
 
 Plus ``lock_path(path)`` — a context-manager returning a per-path lock to
 wrap the whole read→modify→write block. And ``writes_since(task_id,
@@ -43,8 +45,9 @@ from typing import Dict, Iterable, List, Optional, Tuple
 
 # ── Public stamp type ────────────────────────────────────────────────
 # (mtime, read_ts, partial).  partial=True when read_file returned a
-# windowed view (offset > 1 or limit < total_lines) — writes that happen
-# after a partial read should still warn so the model re-reads in full.
+# windowed view (offset > 1 or limit < total_lines). Full-file overwrites
+# should be blocked after a partial read; other edit paths can surface a
+# warning so the model re-reads in full.
 ReadStamp = Tuple[float, float, bool]
 
 # Number of resolved-path entries retained per agent.  Bounded to keep
@@ -214,6 +217,14 @@ class FileStateRegistry:
 
         return None
 
+    def read_was_partial(self, task_id: str, resolved: str) -> bool:
+        """Return True when this task only saw a partial view of *resolved*."""
+        if _disabled():
+            return False
+        with self._state_lock:
+            stamp = self._reads.get(task_id, {}).get(resolved)
+        return bool(stamp and stamp[2])
+
     # ── Reminder helper for delegate_tool ───────────────────────────
     def writes_since(
         self,
@@ -304,6 +315,10 @@ def check_stale(task_id: str, resolved_or_path: str | Path) -> Optional[str]:
     return _registry.check_stale(task_id, str(resolved_or_path))
 
 
+def read_was_partial(task_id: str, resolved_or_path: str | Path) -> bool:
+    return _registry.read_was_partial(task_id, str(resolved_or_path))
+
+
 def lock_path(resolved_or_path: str | Path):
     return _registry.lock_path(str(resolved_or_path))
 
@@ -326,6 +341,7 @@ __all__ = [
     "record_read",
     "note_write",
     "check_stale",
+    "read_was_partial",
     "lock_path",
     "writes_since",
     "known_reads",

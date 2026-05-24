@@ -795,6 +795,27 @@ def _check_file_staleness(filepath: str, task_id: str) -> str | None:
     return None
 
 
+def _partial_read_overwrite_error(
+    filepath: str, task_id: str, resolved: str | None = None
+) -> str | None:
+    """Return an error if write_file would overwrite from partial context."""
+    try:
+        resolved = resolved or str(_resolve_path_for_task(filepath, task_id))
+    except (OSError, ValueError):
+        return None
+    try:
+        if file_state.read_was_partial(task_id, resolved):
+            return (
+                f"Refusing to overwrite {filepath}: this task last read only a "
+                "partial/truncated view of the file. Re-read the whole file "
+                "with offset=1 and a limit that covers total_lines before "
+                "calling write_file."
+            )
+    except Exception:
+        logger.debug("file_state.read_was_partial failed", exc_info=True)
+    return None
+
+
 def write_file_tool(path: str, content: str, task_id: str = "default") -> str:
     """Write content to a file."""
     sensitive_err = _check_sensitive_path(path, task_id)
@@ -813,6 +834,10 @@ def write_file_tool(path: str, content: str, task_id: str = "default") -> str:
             _resolved = str(_resolve_path_for_task(path, task_id))
         except Exception:
             _resolved = None
+
+        partial_read_err = _partial_read_overwrite_error(path, task_id, _resolved)
+        if partial_read_err:
+            return tool_error(partial_read_err)
 
         if _resolved is None:
             stale_warning = _check_file_staleness(path, task_id)
@@ -1047,7 +1072,7 @@ READ_FILE_SCHEMA = {
 
 WRITE_FILE_SCHEMA = {
     "name": "write_file",
-    "description": "Write content to a file, completely replacing existing content. Use this instead of echo/cat heredoc in terminal. Creates parent directories automatically. OVERWRITES the entire file — use 'patch' for targeted edits. Auto-runs syntax checks on .py/.json/.yaml/.toml and other linted languages; only NEW errors introduced by this write are surfaced (pre-existing errors are filtered out).",
+    "description": "Write content to a file, completely replacing existing content. Use this instead of echo/cat heredoc in terminal. Creates parent directories automatically. OVERWRITES the entire file — use 'patch' for targeted edits. Refuses to overwrite a file after a truncated/paginated read_file result until the file is read fully. Auto-runs syntax checks on .py/.json/.yaml/.toml and other linted languages; only NEW errors introduced by this write are surfaced (pre-existing errors are filtered out).",
     "parameters": {
         "type": "object",
         "properties": {

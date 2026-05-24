@@ -14,6 +14,7 @@ import time
 import unittest
 from unittest.mock import patch, MagicMock
 
+from tools import file_state
 from tools.file_tools import (
     read_file_tool,
     write_file_tool,
@@ -34,17 +35,23 @@ from tools.file_tools import (
 
 class _FakeReadResult:
     """Minimal stand-in for FileOperations.read_file return value."""
-    def __init__(self, content="line1\nline2\n", total_lines=2, file_size=100):
+    def __init__(
+        self, content="line1\nline2\n", total_lines=2, file_size=100, truncated=False
+    ):
         self.content = content
         self._total_lines = total_lines
         self._file_size = file_size
+        self._truncated = truncated
 
     def to_dict(self):
-        return {
+        result = {
             "content": self.content,
             "total_lines": self._total_lines,
             "file_size": self._file_size,
         }
+        if self._truncated:
+            result["truncated"] = True
+        return result
 
 
 def _make_fake_ops(content="hello\n", total_lines=1, file_size=6):
@@ -561,6 +568,90 @@ class TestLargeFileHint(unittest.TestCase):
 
 
 # ---------------------------------------------------------------------------
+# Partial-read overwrite guard
+# ---------------------------------------------------------------------------
+
+class TestPartialReadOverwriteGuard(unittest.TestCase):
+    """write_file must not replace a file after only a truncated read."""
+
+    def setUp(self):
+        _read_tracker.clear()
+        file_state.get_registry().clear()
+        self._tmpdir = tempfile.mkdtemp()
+        self._tmpfile = os.path.join(self._tmpdir, "partial_guard.txt")
+        with open(self._tmpfile, "w") as f:
+            f.write("line 1\nline 2\nline 3\n")
+
+    def tearDown(self):
+        _read_tracker.clear()
+        file_state.get_registry().clear()
+        try:
+            os.unlink(self._tmpfile)
+            os.rmdir(self._tmpdir)
+        except OSError:
+            pass
+
+    @patch("tools.file_tools._get_file_ops")
+    def test_write_rejects_after_truncated_read(self, mock_ops):
+        fake = MagicMock()
+        fake.read_file.return_value = _FakeReadResult(
+            content="line 1\n",
+            total_lines=3,
+            file_size=21,
+            truncated=True,
+        )
+        fake.write_file = MagicMock()
+        mock_ops.return_value = fake
+
+        read_result = json.loads(read_file_tool(self._tmpfile, limit=1, task_id="partial"))
+        self.assertTrue(read_result.get("truncated"))
+
+        write_result = json.loads(write_file_tool(
+            self._tmpfile,
+            "line 1\n",
+            task_id="partial",
+        ))
+
+        self.assertIn("error", write_result)
+        self.assertIn("partial/truncated", write_result["error"])
+        fake.write_file.assert_not_called()
+
+    @patch("tools.file_tools._get_file_ops")
+    def test_full_reread_clears_partial_write_block(self, mock_ops):
+        fake = MagicMock()
+        fake.read_file.side_effect = [
+            _FakeReadResult(
+                content="line 1\n",
+                total_lines=3,
+                file_size=21,
+                truncated=True,
+            ),
+            _FakeReadResult(
+                content="line 1\nline 2\nline 3\n",
+                total_lines=3,
+                file_size=21,
+                truncated=False,
+            ),
+        ]
+        fake.write_file.return_value = MagicMock(
+            to_dict=lambda: {"success": True, "path": self._tmpfile}
+        )
+        mock_ops.return_value = fake
+
+        read_file_tool(self._tmpfile, limit=1, task_id="partial")
+        read_file_tool(self._tmpfile, limit=10, task_id="partial")
+
+        write_result = json.loads(write_file_tool(
+            self._tmpfile,
+            "line 1\nline 2\nline 3\nline 4\n",
+            task_id="partial",
+        ))
+
+        self.assertNotIn("error", write_result)
+        self.assertTrue(write_result.get("success"))
+
+
+# ---------------------------------------------------------------------------
 # Config override
 # ---------------------------------------------------------------------------
 
@@ -677,18 +768,18 @@ class TestWriteInvalidatesDedup(unittest.TestCase):
 
         # Read with different offsets to populate multiple dedup entries.
         read_file_tool(self._tmpfile, offset=1, limit=100, task_id="off")
-        read_file_tool(self._tmpfile, offset=50, limit=100, task_id="off")
+        read_file_tool(self._tmpfile, offset=1, limit=200, task_id="off")
 
         # Write — should invalidate BOTH dedup entries.
         write_file_tool(self._tmpfile, "replaced\n", task_id="off")
 
         # Both reads should return fresh content.
         r1 = json.loads(read_file_tool(self._tmpfile, offset=1, limit=100, task_id="off"))
-        r2 = json.loads(read_file_tool(self._tmpfile, offset=50, limit=100, task_id="off"))
+        r2 = json.loads(read_file_tool(self._tmpfile, offset=1, limit=200, task_id="off"))
         self.assertNotEqual(r1.get("dedup"), True,
                             "offset=1 should not dedup after write")
         self.assertNotEqual(r2.get("dedup"), True,
-                            "offset=50 should not dedup after write")
+                            "limit=200 should not dedup after write")
 
     @patch("tools.file_tools._get_file_ops")
     def test_write_does_not_invalidate_other_files(self, mock_ops):

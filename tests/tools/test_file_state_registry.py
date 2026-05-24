@@ -88,6 +88,13 @@ class FileStateRegistryUnitTests(unittest.TestCase):
         self.assertIsNotNone(warn)
         self.assertIn("partial", warn.lower())
 
+    def test_read_was_partial_tracks_latest_read(self):
+        p = self._mk()
+        file_state.record_read("A", p, partial=True)
+        self.assertTrue(file_state.read_was_partial("A", p))
+        file_state.record_read("A", p, partial=False)
+        self.assertFalse(file_state.read_was_partial("A", p))
+
     def test_external_mtime_drift_flagged(self):
         p = self._mk()
         file_state.record_read("A", p)

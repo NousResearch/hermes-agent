@@ -1204,6 +1204,48 @@ class TestPrompt:
         assert agent_chunks[0].content.text == "streamed answer"
 
     @pytest.mark.asyncio
+    async def test_prompt_delivers_transformed_response_after_streaming(self, agent):
+        """If a transform_llm_output plugin hook modifies the response after
+        streaming, ACP must deliver the transformed final_response so the
+        appended/rewritten text reaches the client.
+        """
+        new_resp = await agent.new_session(cwd=".")
+        state = agent.session_manager.get_session(new_resp.session_id)
+
+        def mock_run(*args, **kwargs):
+            state.agent.stream_delta_callback("original answer")
+            return {
+                "final_response": "original answer\n\n[plugin appended this]",
+                "response_transformed": True,
+                "messages": [],
+            }
+
+        state.agent.run_conversation = mock_run
+
+        mock_conn = MagicMock(spec=acp.Client)
+        mock_conn.session_update = AsyncMock()
+        agent._conn = mock_conn
+
+        prompt = [TextContentBlock(type="text", text="hello")]
+        await agent.prompt(prompt=prompt, session_id=new_resp.session_id)
+
+        updates = [
+            call.kwargs.get("update") or call.args[1]
+            for call in mock_conn.session_update.call_args_list
+        ]
+        # The streamed chunk and the post-stream transformed message should
+        # both be present (final delivery is a separate update_agent_message_text
+        # call carrying the full transformed text).
+        all_texts = [
+            getattr(getattr(u, "content", None), "text", None)
+            for u in updates
+        ]
+        assert any(
+            text and "[plugin appended this]" in text for text in all_texts
+        ), f"expected transformed final to be delivered, got: {all_texts!r}"
+
+
+    @pytest.mark.asyncio
     async def test_prompt_auto_titles_session(self, agent):
         new_resp = await agent.new_session(cwd=".")
         state = agent.session_manager.get_session(new_resp.session_id)

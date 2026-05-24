@@ -928,6 +928,20 @@ def build_converse_kwargs(
     if guardrail_config:
         kwargs["guardrailConfig"] = guardrail_config
 
+    # Inject the context-1m beta when the user has opted in and the model
+    # is capable.  This mirrors the context-1m machinery in
+    # ``anthropic_adapter.py`` (PR #16793) but targets the native Converse
+    # path via ``additionalModelRequestFields``.
+    if bedrock_1m_context_enabled() and is_anthropic_opus_4_1m_capable(model):
+        existing = kwargs.get("additionalModelRequestFields", {})
+        existing_betas = list(existing.get("anthropic_beta", []))
+        if _BEDROCK_CONTEXT_1M_BETA not in existing_betas:
+            existing_betas.append(_BEDROCK_CONTEXT_1M_BETA)
+        kwargs["additionalModelRequestFields"] = {
+            **existing,
+            "anthropic_beta": existing_betas,
+        }
+
     return kwargs
 
 
@@ -1272,13 +1286,52 @@ BEDROCK_CONTEXT_LENGTHS: Dict[str, int] = {
 # Default for unknown Bedrock models
 BEDROCK_DEFAULT_CONTEXT_LENGTH = 128_000
 
+# ---------------------------------------------------------------------------
+# 1M-context beta for Anthropic Claude Opus 4.6+ on Bedrock
+# ---------------------------------------------------------------------------
+# PR #16793 added context-1m support for the OpenAI-compat path through
+# the AnthropicBedrock client.  The native Converse path was missed.
+# When the user's AWS account has the 1M-context entitlement, setting
+# this env var causes the Converse adapter to inject the beta into
+# ``additionalModelRequestFields`` and report a 1M context window.
+
+_BEDROCK_1M_CONTEXT_ENV = "HERMES_BEDROCK_1M_CONTEXT"
+_BEDROCK_CONTEXT_1M_BETA = "context-1m-2025-08-07"
+_BEDROCK_1M_CONTEXT = 1_000_000
+
+# Model substrings that support the 1M-context beta on Bedrock
+_BEDROCK_1M_CAPABLE_SUBSTRINGS = (
+    "claude-opus-4-7",
+    "claude-opus-4-6",
+)
+
+
+def bedrock_1m_context_enabled() -> bool:
+    """Return True when the user has opted into the 1M-context beta."""
+    return os.environ.get(_BEDROCK_1M_CONTEXT_ENV, "").strip().lower() in (
+        "1", "true", "yes",
+    )
+
+
+def is_anthropic_opus_4_1m_capable(model_id: str) -> bool:
+    """Return True if the model is an Anthropic Claude Opus 4.6+ that supports 1M context on Bedrock."""
+    model_lower = model_id.lower()
+    return any(s in model_lower for s in _BEDROCK_1M_CAPABLE_SUBSTRINGS)
+
 
 def get_bedrock_context_length(model_id: str) -> int:
     """Look up the context window size for a Bedrock model.
 
     Uses substring matching so versioned IDs like
     ``anthropic.claude-sonnet-4-6-20250514-v1:0`` resolve correctly.
+
+    When the 1M-context beta is enabled (``HERMES_BEDROCK_1M_CONTEXT``)
+    and the model is Opus 4.6+, returns 1,000,000.
     """
+    # 1M-context opt-in takes precedence for capable models
+    if bedrock_1m_context_enabled() and is_anthropic_opus_4_1m_capable(model_id):
+        return _BEDROCK_1M_CONTEXT
+
     model_lower = model_id.lower()
     best_key = ""
     best_val = BEDROCK_DEFAULT_CONTEXT_LENGTH

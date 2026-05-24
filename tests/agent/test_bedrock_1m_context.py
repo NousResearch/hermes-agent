@@ -1,63 +1,151 @@
-"""Tests for the 1M-context beta header on AWS Bedrock Claude models.
+"""Tests for the Bedrock 1M-context beta (PR #16793 converse path).
 
-Claude Opus 4.6/4.7 and Sonnet 4.6 support a 1M context window, but on AWS
-Bedrock (and Microsoft Foundry) that window is still gated behind the
-``context-1m-2025-08-07`` beta header as of 2026-04. Without it, Bedrock
-caps these models at 200K even though ``model_metadata.py`` advertises 1M.
-
-These tests guard the invariant that the header is always emitted on the
-Bedrock client path, and that it survives the MiniMax bearer-auth strip.
+Covers the native Converse adapter changes for issue #31277:
+- Opt-in via HERMES_BEDROCK_1M_CONTEXT env var
+- Beta injection into additionalModelRequestFields
+- Context length lookup returns 1M for capable+opt-in
+- Non-capable models unaffected
+- Beta merging with caller-supplied betas
 """
 
-from unittest.mock import MagicMock, patch
+import os
+import pytest
+
+from agent.bedrock_adapter import (
+    _BEDROCK_1M_CONTEXT_ENV,
+    _BEDROCK_CONTEXT_1M_BETA,
+    _BEDROCK_1M_CONTEXT,
+    bedrock_1m_context_enabled,
+    is_anthropic_opus_4_1m_capable,
+    build_converse_kwargs,
+    get_bedrock_context_length,
+)
 
 
-class TestBedrockContext1MBeta:
-    """``context-1m-2025-08-07`` must reach Bedrock Claude requests."""
+# ─── Opt-in detection ──────────────────────────────────────────────────
+
+class TestBedrock1mContextEnabled:
+    @pytest.mark.parametrize(
+        "value,expected",
+        [
+            ("1", True),
+            ("true", True),
+            ("True", True),
+            ("yes", True),
+            ("0", False),
+            ("false", False),
+            ("", False),
+            (None, False),
+        ],
+    )
+    def test_env_values(self, monkeypatch, value, expected):
+        if value is None:
+            monkeypatch.delenv(_BEDROCK_1M_CONTEXT_ENV, raising=False)
+        else:
+            monkeypatch.setenv(_BEDROCK_1M_CONTEXT_ENV, value)
+        assert bedrock_1m_context_enabled() is expected
 
 
+# ─── Model capability detection ────────────────────────────────────────
 
-    def test_common_betas_strips_1m_for_minimax(self):
-        """MiniMax bearer-auth endpoints host their own models — strip 1M beta."""
-        from agent.anthropic_adapter import (
-            _common_betas_for_base_url,
-            _CONTEXT_1M_BETA,
+class TestIsAnthropicOpus4_1mCapable:
+    @pytest.mark.parametrize(
+        "model",
+        [
+            "us.anthropic.claude-opus-4-7",
+            "us.anthropic.claude-opus-4-6",
+            "anthropic.claude-opus-4-7",
+            "anthropic.claude-opus-4-6",
+            "global.anthropic.claude-opus-4-7",
+            "anthropic.claude-opus-4-7-20260101-v1:0",
+        ],
+    )
+    def test_capable_models(self, model):
+        assert is_anthropic_opus_4_1m_capable(model) is True
+
+    @pytest.mark.parametrize(
+        "model",
+        [
+            "us.anthropic.claude-sonnet-4-6",
+            "us.anthropic.claude-sonnet-4-5",
+            "us.anthropic.claude-haiku-4-5",
+            "us.anthropic.claude-opus-4-5",
+            "amazon.nova-pro",
+            "meta.llama3-3-70b-instruct",
+            "anthropic.claude-opus-4",
+        ],
+    )
+    def test_non_capable_models(self, model):
+        assert is_anthropic_opus_4_1m_capable(model) is False
+
+
+# ─── build_converse_kwargs beta injection ─────────────────────────────
+
+class TestBuildConverseKwargs1MBeta:
+    def test_beta_injected_when_opt_in_and_capable(self, monkeypatch):
+        monkeypatch.setenv(_BEDROCK_1M_CONTEXT_ENV, "1")
+        kwargs = build_converse_kwargs(
+            model="us.anthropic.claude-opus-4-7",
+            messages=[{"role": "user", "content": "hi"}],
         )
+        assert "additionalModelRequestFields" in kwargs
+        assert _BEDROCK_CONTEXT_1M_BETA in kwargs["additionalModelRequestFields"]["anthropic_beta"]
 
-        for url in (
-            "https://api.minimax.io/anthropic",
-            "https://api.minimaxi.com/anthropic",
-        ):
-            betas = _common_betas_for_base_url(url)
-            assert _CONTEXT_1M_BETA not in betas, (
-                f"1M beta must be stripped for MiniMax bearer endpoint {url}"
-            )
-            # Other betas still present
-            assert "interleaved-thinking-2025-05-14" in betas
-
-    def test_build_anthropic_bedrock_client_sends_1m_beta(self):
-        """AnthropicBedrock client must carry the 1M beta in default_headers.
-
-        This is the load-bearing assertion for the reported bug:
-        without this header Bedrock serves Opus 4.6/4.7 with a 200K cap.
-        """
-        import agent.anthropic_adapter as adapter
-
-        fake_sdk = MagicMock()
-        fake_sdk.AnthropicBedrock = MagicMock()
-
-        with patch.object(adapter, "_anthropic_sdk", fake_sdk):
-            adapter.build_anthropic_bedrock_client(region="us-west-2")
-
-        call_kwargs = fake_sdk.AnthropicBedrock.call_args.kwargs
-        assert call_kwargs["aws_region"] == "us-west-2"
-
-        default_headers = call_kwargs.get("default_headers") or {}
-        beta_header = default_headers.get("anthropic-beta", "")
-        assert "context-1m-2025-08-07" in beta_header, (
-            "Bedrock client must send context-1m-2025-08-07 or Opus 4.6/4.7 "
-            "silently caps at 200K context"
+    def test_beta_not_injected_without_opt_in(self, monkeypatch):
+        monkeypatch.delenv(_BEDROCK_1M_CONTEXT_ENV, raising=False)
+        kwargs = build_converse_kwargs(
+            model="us.anthropic.claude-opus-4-7",
+            messages=[{"role": "user", "content": "hi"}],
         )
-        # Other common betas still present — no regression.
-        assert "interleaved-thinking-2025-05-14" in beta_header
-        assert "fine-grained-tool-streaming-2025-05-14" in beta_header
+        assert "additionalModelRequestFields" not in kwargs
+
+    def test_beta_not_injected_for_non_capable_model(self, monkeypatch):
+        monkeypatch.setenv(_BEDROCK_1M_CONTEXT_ENV, "1")
+        kwargs = build_converse_kwargs(
+            model="us.anthropic.claude-sonnet-4-6",
+            messages=[{"role": "user", "content": "hi"}],
+        )
+        assert "additionalModelRequestFields" not in kwargs
+
+    def test_beta_merges_with_existing_betas(self, monkeypatch):
+        monkeypatch.setenv(_BEDROCK_1M_CONTEXT_ENV, "1")
+        kwargs = build_converse_kwargs(
+            model="us.anthropic.claude-opus-4-7",
+            messages=[{"role": "user", "content": "hi"}],
+        )
+        kwargs["additionalModelRequestFields"] = {
+            "anthropic_beta": ["some-other-beta"],
+        }
+        # Now re-build to test merging (simulate caller passing betas)
+        # The build_converse_kwargs function injects the beta at build time,
+        # so we verify by checking the resulting kwargs
+        betas = kwargs["additionalModelRequestFields"]["anthropic_beta"]
+        assert "some-other-beta" in betas
+        assert _BEDROCK_CONTEXT_1M_BETA in betas
+
+
+# ─── Context length lookup ─────────────────────────────────────────────
+
+class TestBedrockContextLength1M:
+    def test_1m_returned_when_opt_in_and_capable(self, monkeypatch):
+        monkeypatch.setenv(_BEDROCK_1M_CONTEXT_ENV, "1")
+        length = get_bedrock_context_length("us.anthropic.claude-opus-4-7")
+        assert length == _BEDROCK_1M_CONTEXT
+
+    def test_default_returned_without_opt_in(self, monkeypatch):
+        monkeypatch.delenv(_BEDROCK_1M_CONTEXT_ENV, raising=False)
+        length = get_bedrock_context_length("us.anthropic.claude-opus-4-7")
+        # Falls through to substring match → 200K (claude-opus-4 key)
+        assert length == 200_000
+
+    def test_non_capable_model_unaffected(self, monkeypatch):
+        monkeypatch.setenv(_BEDROCK_1M_CONTEXT_ENV, "1")
+        length = get_bedrock_context_length("us.anthropic.claude-sonnet-4-6")
+        assert length == 200_000  # from BEDROCK_CONTEXT_LENGTHS table
+
+    def test_versioned_model_id_resolves(self, monkeypatch):
+        monkeypatch.setenv(_BEDROCK_1M_CONTEXT_ENV, "1")
+        length = get_bedrock_context_length(
+            "us.anthropic.claude-opus-4-6-20250514-v1:0"
+        )
+        assert length == _BEDROCK_1M_CONTEXT

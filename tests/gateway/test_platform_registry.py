@@ -895,3 +895,92 @@ class TestPluginEnablementGate:
             )
         finally:
             _reg.unregister("myexplicitplat")
+
+    def test_is_connected_sees_env_seeded_extras(self, tmp_path, monkeypatch):
+        """``env_enablement_fn`` extras must be visible to ``is_connected``.
+
+        Some plugins (e.g. Google Chat) implement ``is_connected`` by
+        inspecting ``config.extra`` (where ``env_enablement_fn`` deposits
+        env-var-derived state) rather than reading ``os.environ`` directly.
+        If the gate runs BEFORE the seeding step, those plugins fail the
+        gate even when the user is genuinely configured via env vars.
+
+        Pin the contract: when both hooks are present, ``env_enablement_fn``
+        feeds a candidate config to ``is_connected``.
+        """
+        from gateway.platform_registry import platform_registry as _reg
+
+        seen_extras: dict = {}
+
+        def _is_connected(cfg):
+            seen_extras["snapshot"] = dict(getattr(cfg, "extra", {}) or {})
+            extra = getattr(cfg, "extra", {}) or {}
+            return bool(extra.get("project_id") and extra.get("subscription_name"))
+
+        def _env_enablement():
+            return {"project_id": "p", "subscription_name": "s"}
+
+        _reg.register(PlatformEntry(
+            name="myextrasplat",
+            label="MyExtras",
+            adapter_factory=lambda cfg: None,
+            check_fn=lambda: True,
+            is_connected=_is_connected,
+            env_enablement_fn=_env_enablement,
+            source="plugin",
+        ))
+        try:
+            home = self._write_config(tmp_path)
+            monkeypatch.setenv("HERMES_HOME", str(home))
+
+            from gateway.config import load_gateway_config, Platform
+            cfg = load_gateway_config()
+
+            plat = Platform("myextrasplat")
+            assert plat in cfg.platforms, (
+                "is_connected was called with empty extras — "
+                "env_enablement_fn must seed the probe BEFORE the gate"
+            )
+            assert cfg.platforms[plat].enabled is True
+            # extras populated on the live config too
+            assert cfg.platforms[plat].extra.get("project_id") == "p"
+            assert cfg.platforms[plat].extra.get("subscription_name") == "s"
+            # and the probe saw them
+            assert seen_extras["snapshot"]["project_id"] == "p"
+        finally:
+            _reg.unregister("myextrasplat")
+
+    def test_is_connected_failed_gate_does_not_leak_extras(
+        self, tmp_path, monkeypatch
+    ):
+        """When the gate rejects, env-seeded extras must NOT leak onto
+        ``config.platforms``.  A rejected plugin should be invisible, not
+        present-but-partially-populated.
+        """
+        from gateway.platform_registry import platform_registry as _reg
+
+        _reg.register(PlatformEntry(
+            name="myrejectedplat",
+            label="MyRejected",
+            adapter_factory=lambda cfg: None,
+            check_fn=lambda: True,
+            is_connected=lambda cfg: False,
+            env_enablement_fn=lambda: {"some_key": "should-not-leak"},
+            source="plugin",
+        ))
+        try:
+            home = self._write_config(tmp_path)
+            monkeypatch.setenv("HERMES_HOME", str(home))
+
+            from gateway.config import load_gateway_config, Platform
+            cfg = load_gateway_config()
+
+            plat = Platform("myrejectedplat")
+            if plat in cfg.platforms:
+                assert cfg.platforms[plat].enabled is False
+                assert "some_key" not in cfg.platforms[plat].extra, (
+                    "Rejected plugin's env-seeded extras leaked onto "
+                    "config.platforms"
+                )
+        finally:
+            _reg.unregister("myrejectedplat")

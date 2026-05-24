@@ -86,6 +86,15 @@ def test_eligible_write_lock_gate_creates_review_required_request():
     assert request["next_step_recommendation"]["writes_operation_ledger"] is False
 
 
+def test_valid_human_approval_token_request_id_matches_v0_1_baseline():
+    request = create_human_approval_token_request(_gate())
+
+    assert (
+        request["request_id"]
+        == "memory-human-approval-token-request:v0.1:f1b6a34228ed943e"
+    )
+
+
 def test_invalid_write_lock_gate_creates_locked_request():
     gate = _gate()
     gate["gate_kind"] = "invalid"

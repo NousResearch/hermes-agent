@@ -1,10 +1,15 @@
 from __future__ import annotations
 
-import hashlib
-import json
 from copy import deepcopy
 from typing import Any, Mapping
 
+from agent.memory_read_only_candidate_utils import (
+    build_stable_digest,
+    deep_copy_mapping,
+    summarize_candidates,
+    validate_forbidden_true_keys_false_or_absent,
+    validate_policy_flags,
+)
 from agent.memory_real_proposal_write_lock_gate import (
     MEMORY_REAL_PROPOSAL_WRITE_LOCK_GATE_ELIGIBLE,
     MEMORY_REAL_PROPOSAL_WRITE_LOCK_GATE_LOCKED,
@@ -209,12 +214,8 @@ def validate_human_approval_token_request(request: Mapping[str, Any]) -> dict[st
     if not isinstance(request.get("approval_token_requirements"), list) or not request.get("approval_token_requirements"):
         errors.append("approval_token_requirements_must_be_non_empty_list")
     errors.extend(preview_integrity_errors)
-    for forbidden_key in _FORBIDDEN_TRUE_KEYS:
-        if request.get(forbidden_key) is True:
-            errors.append(f"{forbidden_key}_must_be_false_or_absent")
-    for key, expected in MEMORY_HUMAN_APPROVAL_TOKEN_REQUEST_POLICY.items():
-        if policy.get(key) is not expected:
-            errors.append(f"policy_{key}_must_be_{str(expected).lower()}")
+    errors.extend(validate_forbidden_true_keys_false_or_absent(request, _FORBIDDEN_TRUE_KEYS))
+    errors.extend(validate_policy_flags(policy, MEMORY_HUMAN_APPROVAL_TOKEN_REQUEST_POLICY))
 
     return {"valid": not errors, "errors": _dedupe(errors)}
 
@@ -292,17 +293,12 @@ def recommend_human_approval_token_request_action(request: Mapping[str, Any]) ->
 def summarize_human_approval_token_requests(
     requests: list[Mapping[str, Any]] | tuple[Mapping[str, Any], ...],
 ) -> dict[str, Any]:
-    by_block_type: dict[str, int] = {}
-    by_status: dict[str, int] = {}
+    candidate_summary = summarize_candidates(requests, "request_status")
     locked_count = 0
     review_required_count = 0
     valid_count = 0
     invalid_count = 0
     for request in requests:
-        block_type = str(request.get("block_type"))
-        by_block_type[block_type] = by_block_type.get(block_type, 0) + 1
-        status = str(request.get("request_status"))
-        by_status[status] = by_status.get(status, 0) + 1
         if request.get("request_status") == MEMORY_HUMAN_APPROVAL_TOKEN_REQUEST_LOCKED:
             locked_count += 1
         if request.get("request_status") == MEMORY_HUMAN_APPROVAL_TOKEN_REQUEST_REVIEW_REQUIRED:
@@ -318,8 +314,8 @@ def summarize_human_approval_token_requests(
         "review_required_count": review_required_count,
         "valid_count": valid_count,
         "invalid_count": invalid_count,
-        "by_block_type": dict(sorted(by_block_type.items())),
-        "by_status": dict(sorted(by_status.items())),
+        "by_block_type": candidate_summary["by_block_type"],
+        "by_status": candidate_summary["by_status"],
         "policy": dict(MEMORY_HUMAN_APPROVAL_TOKEN_REQUEST_POLICY),
     }
 
@@ -451,12 +447,11 @@ def _request_id(request: Mapping[str, Any]) -> str:
         "write_lock_gate_validation": request.get("write_lock_gate_validation", {}),
         "policy": request.get("policy", {}),
     }
-    payload = json.dumps(identity, sort_keys=True, separators=(",", ":"), default=str)
-    return f"memory-human-approval-token-request:v0.1:{hashlib.sha256(payload.encode('utf-8')).hexdigest()[:16]}"
+    return build_stable_digest("memory-human-approval-token-request:v0.1", identity)
 
 
 def _as_dict(value: Any) -> dict[str, Any]:
-    return deepcopy(dict(value)) if isinstance(value, Mapping) else {}
+    return deep_copy_mapping(value)
 
 
 def _dedupe(values: list[str]) -> list[str]:

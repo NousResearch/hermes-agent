@@ -796,7 +796,8 @@ const buildTranscript = () => ({
 
 const buildVoice = () => ({
   setVoiceEnabled: vi.fn(),
-  setVoiceRecordKey: vi.fn()
+  setVoiceRecordKey: vi.fn(),
+  setVoiceTts: vi.fn()
 })
 
 interface Ctx {

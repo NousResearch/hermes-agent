@@ -200,3 +200,25 @@ jobs:
 
       - name: Run footgun checker
         run: python scripts/check-windows-footguns.py --all
+
+  tui-type-check:
+    # Enforce zero TS errors in the TUI frontend. Catches missing props,
+    # wrong types, and interface mismatches — like the voice context bug
+    # where setVoiceTts was added to the interface but missed in one of
+    # three construction sites.
+    name: TUI type check (blocking)
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Setup Node
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020  # v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: ui-tui/package-lock.json
+
+      - name: Install deps + type-check
+        run: cd ui-tui && npm ci && npm run type-check

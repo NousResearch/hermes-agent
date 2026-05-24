@@ -153,6 +153,14 @@ class GoalState:
     last_reason: Optional[str] = None
     paused_reason: Optional[str] = None       # why we auto-paused (budget, etc.)
     consecutive_parse_failures: int = 0       # judge-output parse failures in a row
+    # Inline goals are handled by the chat-turn continuation loop. Extended
+    # goals stay visible/controllable via /goal status|pause|clear but are
+    # handed off to a durable worker ledger instead of re-queuing Hermes chat
+    # turns forever. Backwards-compatible defaults keep old state rows inline.
+    mode: str = "inline"                      # inline | extended
+    inline_active: bool = True
+    kanban_task_id: Optional[str] = None
+    kanban_board: Optional[str] = None
     # User-added criteria appended mid-loop via the /subgoal command.
     # When non-empty the judge prompt and continuation prompt both
     # include them so the agent works toward them and the judge factors
@@ -170,6 +178,11 @@ class GoalState:
         subgoals: List[str] = []
         if isinstance(raw_subgoals, list):
             subgoals = [str(s).strip() for s in raw_subgoals if str(s).strip()]
+        raw_inline = data.get("inline_active", True)
+        if isinstance(raw_inline, bool):
+            inline_active = raw_inline
+        else:
+            inline_active = str(raw_inline).strip().lower() not in {"0", "false", "no", "off"}
         return cls(
             goal=data.get("goal", ""),
             status=data.get("status", "active"),
@@ -181,6 +194,10 @@ class GoalState:
             last_reason=data.get("last_reason"),
             paused_reason=data.get("paused_reason"),
             consecutive_parse_failures=int(data.get("consecutive_parse_failures", 0) or 0),
+            mode=str(data.get("mode") or "inline"),
+            inline_active=inline_active,
+            kanban_task_id=data.get("kanban_task_id"),
+            kanban_board=data.get("kanban_board"),
             subgoals=subgoals,
         )
 
@@ -497,7 +514,11 @@ class GoalManager:
         return self._state
 
     def is_active(self) -> bool:
-        return self._state is not None and self._state.status == "active"
+        return (
+            self._state is not None
+            and self._state.status == "active"
+            and bool(getattr(self._state, "inline_active", True))
+        )
 
     def has_goal(self) -> bool:
         return self._state is not None and self._state.status in {"active", "paused"}
@@ -508,21 +529,40 @@ class GoalManager:
             return "No active goal. Set one with /goal <text>."
         turns = f"{s.turns_used}/{s.max_turns} turns"
         sub = f", {len(s.subgoals)} subgoal{'s' if len(s.subgoals) != 1 else ''}" if s.subgoals else ""
+        mode = getattr(s, "mode", "inline") or "inline"
+        task = f", task {s.kanban_task_id}" if getattr(s, "kanban_task_id", None) else ""
+        board = f", board {s.kanban_board}" if getattr(s, "kanban_board", None) else ""
         if s.status == "active":
-            return f"⊙ Goal (active, {turns}{sub}): {s.goal}"
+            label = "extended" if mode == "extended" else "active"
+            return f"⊙ Goal ({label}, {turns}{sub}{task}{board}): {s.goal}"
         if s.status == "paused":
             extra = f" — {s.paused_reason}" if s.paused_reason else ""
-            return f"⏸ Goal (paused, {turns}{sub}{extra}): {s.goal}"
+            label = "paused extended" if mode == "extended" else "paused"
+            return f"⏸ Goal ({label}, {turns}{sub}{task}{board}{extra}): {s.goal}"
         if s.status == "done":
             return f"✓ Goal done ({turns}{sub}): {s.goal}"
         return f"Goal ({s.status}, {turns}{sub}): {s.goal}"
 
     # --- mutation -----------------------------------------------------
 
-    def set(self, goal: str, *, max_turns: Optional[int] = None) -> GoalState:
+    def set(
+        self,
+        goal: str,
+        *,
+        max_turns: Optional[int] = None,
+        mode: str = "inline",
+        inline_active: Optional[bool] = None,
+        kanban_task_id: Optional[str] = None,
+        kanban_board: Optional[str] = None,
+    ) -> GoalState:
         goal = (goal or "").strip()
         if not goal:
             raise ValueError("goal text is empty")
+        mode = (mode or "inline").strip().lower()
+        if mode not in {"inline", "extended"}:
+            raise ValueError("goal mode must be inline or extended")
+        if inline_active is None:
+            inline_active = mode != "extended"
         state = GoalState(
             goal=goal,
             status="active",
@@ -530,6 +570,10 @@ class GoalManager:
             max_turns=int(max_turns) if max_turns else self.default_max_turns,
             created_at=time.time(),
             last_turn_at=0.0,
+            mode=mode,
+            inline_active=bool(inline_active),
+            kanban_task_id=kanban_task_id,
+            kanban_board=kanban_board,
         )
         self._state = state
         save_goal(self.session_id, state)
@@ -638,13 +682,13 @@ class GoalManager:
           - ``message``: user-visible one-liner to print/send
         """
         state = self._state
-        if state is None or state.status != "active":
+        if state is None or state.status != "active" or not getattr(state, "inline_active", True):
             return {
                 "status": state.status if state else None,
                 "should_continue": False,
                 "continuation_prompt": None,
                 "verdict": "inactive",
-                "reason": "no active goal",
+                "reason": "goal is not inline-active" if state else "no active goal",
                 "message": "",
             }
 
@@ -737,7 +781,11 @@ class GoalManager:
         }
 
     def next_continuation_prompt(self) -> Optional[str]:
-        if not self._state or self._state.status != "active":
+        if (
+            not self._state
+            or self._state.status != "active"
+            or not getattr(self._state, "inline_active", True)
+        ):
             return None
         if self._state.subgoals:
             return CONTINUATION_PROMPT_WITH_SUBGOALS_TEMPLATE.format(

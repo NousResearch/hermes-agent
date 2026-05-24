@@ -66,6 +66,28 @@ _slack_mod.SLACK_AVAILABLE = True
 from gateway.platforms.slack import SlackAdapter  # noqa: E402
 
 
+def _mock_slack_client() -> MagicMock:
+    """Create a Slack WebClient mock with awaitable API methods.
+
+    The client object itself must stay synchronous. Making the entire client an
+    AsyncMock causes unconfigured nested methods to manufacture coroutine
+    objects that production dict-style parsing never awaits.
+    """
+    client = MagicMock()
+    client.users_info = AsyncMock(return_value={
+        "user": {"profile": {}, "name": "U123"}
+    })
+    client.conversations_replies = AsyncMock(return_value={"messages": []})
+    client.chat_postMessage = AsyncMock(return_value={"ok": True, "ts": "123.456"})
+    client.chat_postEphemeral = AsyncMock(return_value={"ok": True, "message_ts": "123.456"})
+    client.files_upload_v2 = AsyncMock(return_value={"ok": True})
+    client.reactions_add = AsyncMock(return_value={"ok": True})
+    client.reactions_remove = AsyncMock(return_value={"ok": True})
+    client.assistant_threads_setStatus = AsyncMock(return_value={"ok": True})
+    client.assistant_threads_setSuggestedPrompts = AsyncMock(return_value={"ok": True})
+    return client
+
+
 # ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------
@@ -76,7 +98,7 @@ def adapter():
     a = SlackAdapter(config)
     # Mock the Slack app client
     a._app = MagicMock()
-    a._app.client = AsyncMock()
+    a._app.client = _mock_slack_client()
     a._bot_user_id = "U_BOT"
     a._running = True
     # Capture events instead of processing them
@@ -89,6 +111,9 @@ def _redirect_cache(tmp_path, monkeypatch):
     """Point document cache to tmp_path so tests don't touch ~/.hermes."""
     monkeypatch.setattr(
         "gateway.platforms.base.DOCUMENT_CACHE_DIR", tmp_path / "doc_cache"
+    )
+    monkeypatch.setattr(
+        "gateway.platforms.base.VIDEO_CACHE_DIR", tmp_path / "video_cache"
     )
 
 
@@ -927,6 +952,29 @@ class TestIncomingDocumentHandling:
         assert msg_event.media_types == ["application/zip"]
 
     @pytest.mark.asyncio
+    async def test_video_file_cached_and_surfaced(self, adapter):
+        """A Slack video attachment should be downloaded, cached, and surfaced as VIDEO media."""
+        video_bytes = b"fake mp4 bytes"
+
+        with patch.object(adapter, "_download_slack_file_bytes", new_callable=AsyncMock) as dl:
+            dl.return_value = video_bytes
+            event = self._make_event(files=[{
+                "mimetype": "video/mp4",
+                "name": "clip.mp4",
+                "url_private_download": "https://files.slack.com/clip.mp4",
+                "size": len(video_bytes),
+            }])
+            await adapter._handle_slack_message(event)
+
+        msg_event = adapter.handle_message.call_args[0][0]
+        assert msg_event.message_type == MessageType.VIDEO
+        assert len(msg_event.media_urls) == 1
+        assert os.path.exists(msg_event.media_urls[0])
+        assert msg_event.media_urls[0].endswith(".mp4")
+        assert msg_event.media_types == ["video/mp4"]
+        assert open(msg_event.media_urls[0], "rb").read() == video_bytes
+
+    @pytest.mark.asyncio
     async def test_oversized_document_skipped(self, adapter):
         """A document over 20MB should be skipped."""
         event = self._make_event(files=[{
@@ -1626,6 +1674,38 @@ class TestFormatMessage:
         """Emoji shortcodes like :smile: pass through unchanged."""
         assert adapter.format_message(":smile: hello :wave:") == ":smile: hello :wave:"
 
+    def test_raw_obsidian_url_preserves_query_ampersand(self, adapter):
+        """Obsidian handler URLs must stay raw; Slack breaks them if & becomes &amp;."""
+        url = "obsidian://open?vault=SingleBrain&file=Karrot%20Enterprise%20Reentry%20Packet%202026-05-20.md"
+        assert adapter.format_message(url) == url
+
+    def test_preescaped_obsidian_url_normalizes_ampersand(self, adapter):
+        """Thread-history copies may already contain &amp;; normalize before sending."""
+        raw = "obsidian://open?vault=SingleBrain&file=Karrot%20Enterprise%20Reentry%20Packet%202026-05-20.md"
+        escaped = raw.replace("&file=", "&amp;file=")
+        assert adapter.format_message(escaped) == raw
+
+    def test_angle_wrapped_obsidian_url_degrades_to_raw(self, adapter):
+        """Slack-style angle wrapping makes custom schemes unreliable; strip it."""
+        raw = "obsidian://open?vault=SingleBrain&file=Karrot%20Enterprise%20Reentry%20Packet%202026-05-20.md"
+        assert adapter.format_message(f"<{raw}>") == raw
+        assert adapter.format_message(f"<{raw}|Karrot packet>") == raw
+
+    def test_markdown_obsidian_link_degrades_to_raw(self, adapter):
+        """Markdown links to obsidian:// should not become <obsidian://...|label>."""
+        raw = "obsidian://open?vault=SingleBrain&file=Karrot%20Enterprise%20Reentry%20Packet%202026-05-20.md"
+        assert adapter.format_message(f"[Karrot packet]({raw})") == raw
+
+    def test_backticked_obsidian_url_degrades_to_raw(self, adapter):
+        """Bare Obsidian URLs in inline code should unwrap so Slack can link them."""
+        raw = "obsidian://open?vault=SingleBrain&file=Karrot%20Enterprise%20Reentry%20Packet%202026-05-20.md"
+        assert adapter.format_message(f"`{raw}`") == raw
+
+    def test_inline_obsidian_url_moves_to_own_line(self, adapter):
+        """Inline Obsidian URLs are easier for Slack to parse when standalone."""
+        raw = "obsidian://open?vault=SingleBrain&file=Karrot%20Enterprise%20Reentry%20Packet%202026-05-20.md"
+        assert adapter.format_message(f"Open this: {raw}") == f"Open this:\n{raw}"
+
 
 # ---------------------------------------------------------------------------
 # TestEditMessage
@@ -1996,7 +2076,7 @@ class TestThreadReplyHandling:
         config = PlatformConfig(enabled=True, token="***")
         a = SlackAdapter(config)
         a._app = MagicMock()
-        a._app.client = AsyncMock()
+        a._app.client = _mock_slack_client()
         a._bot_user_id = "U_BOT"
         a._team_bot_user_ids = {"T_TEAM": "U_BOT"}
         a._running = True
@@ -2136,7 +2216,7 @@ class TestAssistantThreadLifecycle:
         config = PlatformConfig(enabled=True, token="***")
         a = SlackAdapter(config)
         a._app = MagicMock()
-        a._app.client = AsyncMock()
+        a._app.client = _mock_slack_client()
         a._bot_user_id = "U_BOT"
         a._team_bot_user_ids = {"T_TEAM": "U_BOT"}
         a._running = True

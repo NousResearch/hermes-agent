@@ -946,6 +946,8 @@ def _build_media_placeholder(event) -> str:
             parts.append(f"[User sent an image: {url}]")
         elif mtype.startswith("audio/"):
             parts.append(f"[User sent audio: {url}]")
+        elif mtype.startswith("video/") or getattr(event, "message_type", None) == MessageType.VIDEO:
+            parts.append(f"[User sent a video: {url}]")
         else:
             parts.append(f"[User sent a file: {url}]")
     return "\n".join(parts)
@@ -6909,7 +6911,12 @@ class GatewayRunner:
             # continuation prompt against the current turn.
             if _cmd_def_inner and _cmd_def_inner.name == "goal":
                 _goal_arg = (event.get_command_args() or "").strip().lower()
-                if not _goal_arg or _goal_arg in {"status", "pause", "resume", "clear", "stop", "done"}:
+                _goal_verb = _goal_arg.split(None, 1)[0] if _goal_arg else ""
+                if (
+                    not _goal_arg
+                    or _goal_arg in {"status", "pause", "resume", "clear", "stop", "done"}
+                    or _goal_verb == "extended"
+                ):
                     return await self._handle_goal_command(event)
                 return "Agent is running — use /goal status / pause / clear mid-run, or /stop before setting a new goal."
 
@@ -7589,9 +7596,10 @@ class GatewayRunner:
         if getattr(event, "channel_context", None):
             message_text = f"{event.channel_context}\n\n[New message]\n{message_text}"
 
-        # Declare at outer scope so the audio-file-paths handling block below
-        # remains safe when ``event.media_urls`` is empty (no inner block runs).
+        # Declare at outer scope so the media-file-paths handling blocks below
+        # remain safe when ``event.media_urls`` is empty (no inner block runs).
         audio_file_paths: list[str] = []
+        video_file_paths: list[str] = []
 
         if event.media_urls:
             image_paths = []
@@ -7600,6 +7608,8 @@ class GatewayRunner:
                 mtype = event.media_types[i] if i < len(event.media_types) else ""
                 if mtype.startswith("image/") or event.message_type == MessageType.PHOTO:
                     image_paths.append(path)
+                if mtype.startswith("video/") or event.message_type == MessageType.VIDEO:
+                    video_file_paths.append(path)
                 # MessageType.AUDIO = audio file attachment (e.g. .mp3, .m4a) — never STT
                 # MessageType.VOICE = voice message (Opus/OGG) — always STT
                 if event.message_type == MessageType.AUDIO:
@@ -7681,6 +7691,22 @@ class GatewayRunner:
                     f"[The user sent an audio file attachment: '{_display}'. "
                     f"It is saved at: {_agent_path}. "
                     f"Ask the user what they'd like you to do with it, or pass the path to a transcription or media tool.]"
+                )
+                message_text = f"{_note}\n\n{message_text}"
+
+        if video_file_paths:
+            from tools.credential_files import to_agent_visible_cache_path as _to_agent_path
+            for _vpath in video_file_paths:
+                _basename = os.path.basename(_vpath)
+                _parts = _basename.split("_", 2)
+                _display = _parts[2] if len(_parts) >= 3 else _basename
+                _display = re.sub(r'[^\w.\- ]', '_', _display)
+                _agent_path = _to_agent_path(_vpath)
+                _note = (
+                    f"[The user sent a video attachment: '{_display}'. "
+                    f"It is saved at: {_agent_path}. "
+                    "If asked to attach or send it in an email/Gmail draft, use this exact path as the attachment path. "
+                    "Otherwise ask the user what they'd like you to do with it, or pass the path to a video/media tool.]"
                 )
                 message_text = f"{_note}\n\n{message_text}"
 
@@ -10413,6 +10439,143 @@ class GatewayRunner:
         max_turns = self._goal_max_turns_from_config()
         return GoalManager(session_id=sid, default_max_turns=max_turns), session_entry
 
+    def _create_extended_goal_kanban_task(self, goal_text: str, session_id: str, event: "MessageEvent"):
+        """Create the durable Kanban handoff for /goal extended.
+
+        This is deliberately local/idempotent: the gateway writes a Kanban task
+        and stores the task id on GoalState, but it does not enqueue an inline
+        Hermes turn. The Kanban worker/watchdog path owns long execution.
+        """
+        import hashlib
+
+        from hermes_cli import kanban_db as _kb
+        from hermes_cli.config import load_config
+
+        cfg = load_config() or {}
+        kanban_cfg = cfg.get("kanban") or {}
+        assignee = str(kanban_cfg.get("default_assignee") or "codex").strip() or "codex"
+        board = str(kanban_cfg.get("extended_goal_board") or "").strip() or None
+        if board is None:
+            board = _kb.get_current_board()
+
+        normalized_goal = " ".join((goal_text or "").split())
+        digest = hashlib.sha256(normalized_goal.encode("utf-8")).hexdigest()[:16]
+        idem = f"goal-extended:{session_id}:{digest}"
+        title = f"Extended goal: {normalized_goal[:96]}"
+        body = (
+            "Extended goal requested from Hermes gateway.\n\n"
+            f"Goal:\n{goal_text.strip()}\n\n"
+            "Execution contract:\n"
+            "- Treat Hermes as planner/reviewer and this Kanban task as the durable worker ledger.\n"
+            "- Use the assigned executor profile for long-running implementation work.\n"
+            "- Continue until completed, blocked, timed out, or review is required.\n"
+            "- Do not perform external writes, destructive actions, publishes, sends, or credential changes without explicit approval.\n"
+            "- If human approval/review is needed, block the task with a concise `review-required:` reason and concrete next step.\n"
+            "- On completion, include changed files, verification commands/results, and next recommended action.\n"
+        )
+
+        conn = _kb.connect(board=board)
+        try:
+            task_id = _kb.create_task(
+                conn,
+                title=title,
+                body=body,
+                assignee=assignee,
+                created_by="gateway-goal-extended",
+                workspace_kind="scratch",
+                priority=0,
+                idempotency_key=idem,
+                initial_status="running",
+                session_id=session_id,
+                board=board,
+            )
+            task = _kb.get_task(conn, task_id)
+            task_status = getattr(task, "status", "ready") if task is not None else "ready"
+
+            try:
+                source = event.source if event else None
+                platform = getattr(source, "platform", None)
+                if platform is None:
+                    platform_str = ""
+                else:
+                    platform_str = (platform.value if hasattr(platform, "value") else str(platform)).lower()
+                chat_id = str(getattr(source, "chat_id", "") or "")
+                thread_id = str(getattr(source, "thread_id", "") or "")
+                user_id = str(getattr(source, "user_id", "") or "") or None
+                if platform_str and chat_id:
+                    _kb.add_notify_sub(
+                        conn,
+                        task_id=task_id,
+                        platform=platform_str,
+                        chat_id=chat_id,
+                        thread_id=thread_id or None,
+                        user_id=user_id,
+                        notifier_profile=getattr(self, "_kanban_notifier_profile", None) or self._active_profile_name(),
+                    )
+            except Exception as exc:
+                logger.debug("goal extended: notify subscription failed: %s", exc)
+
+            return task_id, assignee, task_status, board
+        finally:
+            conn.close()
+
+    def _control_extended_goal_kanban_task(
+        self,
+        task_id: str,
+        action: str,
+        *,
+        reason: str = "",
+        board: str | None = None,
+    ) -> tuple[bool, str]:
+        """Apply /goal control commands to the linked extended-goal Kanban task."""
+        from hermes_cli import kanban_db as _kb
+        from hermes_cli.config import load_config
+
+        if board is None:
+            cfg = load_config() or {}
+            kanban_cfg = cfg.get("kanban") or {}
+            board = str(kanban_cfg.get("extended_goal_board") or "").strip() or None
+        conn = _kb.connect(board=board)
+        try:
+            before = _kb.get_task(conn, task_id)
+            if before is None:
+                return True, "missing"
+            before_status = getattr(before, "status", "unknown")
+            if action == "archive":
+                if before_status == "archived":
+                    return True, "archived"
+                ok = _kb.archive_task(conn, task_id)
+            elif action == "block":
+                if before_status == "blocked":
+                    return True, "blocked"
+                ok = _kb.block_task(conn, task_id, reason=reason or "paused from /goal")
+            elif action == "unblock":
+                if before_status in {"ready", "running"}:
+                    return True, str(before_status)
+                ok = _kb.unblock_task(conn, task_id)
+            else:
+                raise ValueError(f"unsupported extended-goal action: {action}")
+            after = _kb.get_task(conn, task_id)
+            after_status = getattr(after, "status", before_status) if after is not None else before_status
+            return bool(ok), str(after_status)
+        finally:
+            conn.close()
+
+    def _comment_extended_goal_kanban_task(self, task_id: str, body: str) -> bool:
+        """Append a gateway-originated note to the linked extended-goal Kanban task."""
+        from hermes_cli import kanban_db as _kb
+        from hermes_cli.config import load_config
+
+        cfg = load_config() or {}
+        kanban_cfg = cfg.get("kanban") or {}
+        board = str(kanban_cfg.get("extended_goal_board") or "").strip() or None
+        conn = _kb.connect(board=board)
+        try:
+            _kb.add_comment(conn, task_id, "gateway-goal-extended", body)
+            return True
+        finally:
+            conn.close()
+
     async def _handle_goal_command(self, event: "MessageEvent") -> str:
         """Handle /goal for gateway platforms.
 
@@ -10435,6 +10598,36 @@ class GatewayRunner:
             return mgr.status_line()
 
         if lower == "pause":
+            prior_state = mgr.state
+            if prior_state is None or not mgr.has_goal():
+                return t("gateway.goal.no_goal_set")
+            extended_note = ""
+            task_id = getattr(prior_state, "kanban_task_id", None) if prior_state is not None else None
+            if getattr(prior_state, "mode", "inline") == "extended" and task_id:
+                board = getattr(prior_state, "kanban_board", None)
+                try:
+                    ok, task_status = await asyncio.to_thread(
+                        self._control_extended_goal_kanban_task,
+                        task_id,
+                        "block",
+                        reason="paused from /goal",
+                        board=board,
+                    )
+                except Exception as exc:
+                    logger.warning("goal pause: extended Kanban block failed: %s", exc, exc_info=True)
+                    return (
+                        f"⚠️ Goal pause aborted: could not block linked Kanban task {task_id}"
+                        f"{f' on board {board}' if board else ''}: {exc}. Goal state was left active; retry /goal pause or resolve the Kanban error."
+                    )
+                if not ok:
+                    return (
+                        f"⚠️ Goal pause aborted: linked Kanban task {task_id} remained {task_status}. "
+                        "Goal state was left active; retry /goal pause after resolving the Kanban task state."
+                    )
+                if task_status == "missing":
+                    extended_note = f" Kanban task {task_id} was already missing; local goal paused."
+                else:
+                    extended_note = f" Kanban task {task_id} blocked ({task_status})."
             state = mgr.pause(reason="user-paused")
             if state is None:
                 return t("gateway.goal.no_goal_set")
@@ -10445,16 +10638,72 @@ class GatewayRunner:
                     self._clear_goal_pending_continuations(_quick_key, adapter)
             except Exception as exc:
                 logger.debug("goal pause: pending continuation cleanup failed: %s", exc)
-            return t("gateway.goal.paused", goal=state.goal)
+            return t("gateway.goal.paused", goal=state.goal) + extended_note
 
         if lower == "resume":
+            prior_state = mgr.state
+            if prior_state is None or not mgr.has_goal():
+                return t("gateway.goal.no_resume")
+            extended_note = ""
+            task_id = getattr(prior_state, "kanban_task_id", None) if prior_state is not None else None
+            if getattr(prior_state, "mode", "inline") == "extended" and task_id:
+                board = getattr(prior_state, "kanban_board", None)
+                try:
+                    ok, task_status = await asyncio.to_thread(
+                        self._control_extended_goal_kanban_task,
+                        task_id,
+                        "unblock",
+                        board=board,
+                    )
+                except Exception as exc:
+                    logger.warning("goal resume: extended Kanban unblock failed: %s", exc, exc_info=True)
+                    return (
+                        f"⚠️ Goal resume aborted: could not unblock linked Kanban task {task_id}"
+                        f"{f' on board {board}' if board else ''}: {exc}. Goal state was left paused; retry /goal resume or resolve the Kanban error."
+                    )
+                if not ok:
+                    return (
+                        f"⚠️ Goal resume aborted: linked Kanban task {task_id} remained {task_status}. "
+                        "Goal state was left paused; retry /goal resume after resolving the Kanban task state."
+                    )
+                if task_status == "missing":
+                    extended_note = f" Kanban task {task_id} was already missing; local goal resumed."
+                else:
+                    extended_note = f" Kanban task {task_id} unblocked ({task_status})."
             state = mgr.resume()
             if state is None:
                 return t("gateway.goal.no_resume")
-            return t("gateway.goal.resumed", goal=state.goal)
+            return t("gateway.goal.resumed", goal=state.goal) + extended_note
 
         if lower in {"clear", "stop", "done"}:
+            prior_state = mgr.state
             had = mgr.has_goal()
+            extended_note = ""
+            task_id = getattr(prior_state, "kanban_task_id", None) if prior_state is not None else None
+            if getattr(prior_state, "mode", "inline") == "extended" and task_id:
+                board = getattr(prior_state, "kanban_board", None)
+                try:
+                    ok, task_status = await asyncio.to_thread(
+                        self._control_extended_goal_kanban_task,
+                        task_id,
+                        "archive",
+                        board=board,
+                    )
+                except Exception as exc:
+                    logger.warning("goal clear: extended Kanban archive failed: %s", exc, exc_info=True)
+                    return (
+                        f"⚠️ Goal clear aborted: could not archive linked Kanban task {task_id}"
+                        f"{f' on board {board}' if board else ''}: {exc}. Goal state was preserved with the task link; retry /goal clear or archive the task manually."
+                    )
+                if not ok:
+                    return (
+                        f"⚠️ Goal clear aborted: linked Kanban task {task_id} remained {task_status}. "
+                        "Goal state was preserved with the task link; retry /goal clear after resolving the Kanban task state."
+                    )
+                if task_status == "missing":
+                    extended_note = f" Kanban task {task_id} was already missing; local goal cleared."
+                else:
+                    extended_note = f" Kanban task {task_id} archived ({task_status})."
             mgr.clear()
             try:
                 adapter = self.adapters.get(event.source.platform) if event.source else None
@@ -10463,7 +10712,38 @@ class GatewayRunner:
                     self._clear_goal_pending_continuations(_quick_key, adapter)
             except Exception as exc:
                 logger.debug("goal clear: pending continuation cleanup failed: %s", exc)
-            return t("gateway.goal_cleared") if had else t("gateway.no_active_goal")
+            return (t("gateway.goal_cleared") + extended_note) if had else t("gateway.no_active_goal")
+
+        parts = args.split(None, 1)
+        verb = parts[0].lower() if parts else ""
+        rest = parts[1].strip() if len(parts) > 1 else ""
+        if verb == "extended":
+            if not rest:
+                return "Usage: /goal extended <text>"
+
+            sid = getattr(session_entry, "session_id", "") if session_entry else ""
+            try:
+                task_id, assignee, task_status, board = await asyncio.to_thread(
+                    self._create_extended_goal_kanban_task,
+                    rest,
+                    sid,
+                    event,
+                )
+            except Exception as exc:
+                logger.warning("goal extended: kanban task creation failed: %s", exc, exc_info=True)
+                return f"/goal extended failed to create Kanban task: {exc}"
+
+            try:
+                state = mgr.set(rest, mode="extended", inline_active=False, kanban_task_id=task_id, kanban_board=board)
+            except ValueError as exc:
+                return t("gateway.goal.invalid", error=str(exc))
+
+            return (
+                f"⊙ Extended goal handed to Kanban task {task_id} "
+                f"({task_status}, assignee: {assignee or 'unassigned'}): {state.goal}\n"
+                "Hermes will not burn chat turns on this. The worker ledger owns execution; "
+                "Hermes reviews/report-backs when the task blocks or completes."
+            )
 
         # Otherwise — treat the remaining text as the new goal.
         try:

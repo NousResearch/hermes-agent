@@ -47,6 +47,8 @@ from gateway.platforms.base import (
     resolve_proxy_url,
     safe_url_for_log,
     cache_document_from_bytes,
+    cache_video_from_bytes,
+    SUPPORTED_VIDEO_TYPES,
 )
 
 
@@ -1196,22 +1198,81 @@ class SlackAdapter(BasePlatformAdapter):
 
         text = content
 
-        # 1) Protect fenced code blocks (``` ... ```)
+        obsidian_url_re = r'obsidian://[^\s<>`)]*(?:\([^\s<>`)]*\)[^\s<>`]*)*'
+
+        def _normalize_obsidian_url(url: str) -> str:
+            """Keep Obsidian handler URLs raw for Slack custom-scheme clicks."""
+            return url.strip().replace('&amp;', '&').replace('&lt;', '<').replace('&gt;', '>')
+
+        def _protect_obsidian_url(url: str) -> str:
+            return _ph(_normalize_obsidian_url(url))
+
+        def _obsidian_line_breaks(value: str) -> str:
+            """Move Obsidian URLs onto their own line unless already standalone."""
+            lines = []
+            for line in value.split('\n'):
+                if 'obsidian://' not in line:
+                    lines.append(line)
+                    continue
+                stripped = line.strip()
+                matches = list(re.finditer(obsidian_url_re, line))
+                if len(matches) == 1 and stripped == matches[0].group(0):
+                    lines.append(stripped)
+                    continue
+                cursor = 0
+                pending: list[str] = []
+                for match in matches:
+                    before = line[cursor:match.start()].strip()
+                    if before:
+                        pending.append(before)
+                    pending.append(match.group(0))
+                    cursor = match.end()
+                after = line[cursor:].strip()
+                if after:
+                    pending.append(after)
+                lines.extend(pending)
+            return '\n'.join(lines)
+
+        # 1) Obsidian custom-scheme URLs must stay raw. Slack entity links,
+        #    Markdown links, and backticked bare URLs all degrade to the raw URL.
+        text = re.sub(
+            rf'<({obsidian_url_re})(?:\|[^>\n]*)?>',
+            lambda m: _normalize_obsidian_url(m.group(1)),
+            text,
+        )
+        text = re.sub(
+            rf'(?<!!)\[[^\]]+\]\(<?({obsidian_url_re})>?\)',
+            lambda m: _normalize_obsidian_url(m.group(1)),
+            text,
+        )
+        text = re.sub(
+            rf'`({obsidian_url_re})`',
+            lambda m: _normalize_obsidian_url(m.group(1)),
+            text,
+        )
+        text = _obsidian_line_breaks(text)
+
+        # 2) Protect fenced code blocks (``` ... ```)
         text = re.sub(
             r'(```(?:[^\n]*\n)?[\s\S]*?```)',
             lambda m: _ph(m.group(0)),
             text,
         )
 
-        # 2) Protect inline code (`...`)
+        # 3) Protect raw Obsidian URLs before generic escaping.
+        text = re.sub(obsidian_url_re, lambda m: _protect_obsidian_url(m.group(0)), text)
+
+        # 4) Protect inline code (`...`)
         text = re.sub(r'(`[^`]+`)', lambda m: _ph(m.group(0)), text)
 
-        # 3) Convert markdown links [text](url) → <url|text>
+        # 5) Convert markdown links [text](url) → <url|text>
         def _convert_markdown_link(m):
             label = m.group(1)
             url = m.group(2).strip()
             if url.startswith('<') and url.endswith('>'):
                 url = url[1:-1].strip()
+            if url.startswith('obsidian://'):
+                return _protect_obsidian_url(url)
             return _ph(f'<{url}|{label}>')
 
         text = re.sub(
@@ -1220,7 +1281,7 @@ class SlackAdapter(BasePlatformAdapter):
             text,
         )
 
-        # 4) Protect existing Slack entities/manual links so escaping and later
+        # 5) Protect existing Slack entities/manual links so escaping and later
         #    formatting passes don't break them.
         text = re.sub(
             r'(<(?:[@#!]|(?:https?|mailto|tel):)[^>\n]+>)',
@@ -1228,10 +1289,10 @@ class SlackAdapter(BasePlatformAdapter):
             text,
         )
 
-        # 5) Protect blockquote markers before escaping
+        # 7) Protect blockquote markers before escaping
         text = re.sub(r'^(>+\s)', lambda m: _ph(m.group(0)), text, flags=re.MULTILINE)
 
-        # 6) Escape Slack control characters in remaining plain text.
+        # 8) Escape Slack control characters in remaining plain text.
         # Unescape first so already-escaped input doesn't get double-escaped.
         text = text.replace('&amp;', '&').replace('&lt;', '<').replace('&gt;', '>')
         text = text.replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
@@ -2102,6 +2163,39 @@ class SlackAdapter(BasePlatformAdapter):
                         logger.warning("[Slack] %s", detail)
                     else:
                         logger.warning("[Slack] Failed to cache audio from %s: %s", url, e, exc_info=True)
+            elif mimetype.startswith("video/") and url:
+                try:
+                    original_filename = f.get("name", "")
+                    ext = ""
+                    if original_filename:
+                        _, ext = os.path.splitext(original_filename)
+                        ext = ext.lower()
+
+                    if ext not in SUPPORTED_VIDEO_TYPES:
+                        mime_to_ext = {v: k for k, v in SUPPORTED_VIDEO_TYPES.items()}
+                        ext = mime_to_ext.get(mimetype.split(";")[0].lower(), "")
+
+                    if ext not in SUPPORTED_VIDEO_TYPES:
+                        ext = ".mp4"
+
+                    file_size = f.get("size", 0)
+                    MAX_VIDEO_BYTES = 100 * 1024 * 1024
+                    if file_size and file_size > MAX_VIDEO_BYTES:
+                        logger.warning("[Slack] Video too large to cache: %s", file_size)
+                        continue
+
+                    raw_bytes = await self._download_slack_file_bytes(url, team_id=team_id)
+                    cached_path = cache_video_from_bytes(raw_bytes, ext)
+                    media_urls.append(cached_path)
+                    media_types.append(SUPPORTED_VIDEO_TYPES.get(ext, mimetype))
+                    logger.debug("[Slack] Cached user video: %s", cached_path)
+                except Exception as e:  # pragma: no cover - defensive logging
+                    detail = self._describe_slack_download_failure(e, file_obj=f)
+                    if detail:
+                        attachment_notices.append(detail)
+                        logger.warning("[Slack] %s", detail)
+                    else:
+                        logger.warning("[Slack] Failed to cache video from %s: %s", url, e, exc_info=True)
             elif url:
                 # Try to handle as a document attachment
                 try:
@@ -2173,6 +2267,8 @@ class SlackAdapter(BasePlatformAdapter):
                 msg_type = MessageType.PHOTO
             elif any(m.startswith("audio/") for m in media_types):
                 msg_type = MessageType.VOICE
+            elif any(m.startswith("video/") for m in media_types):
+                msg_type = MessageType.VIDEO
             else:
                 msg_type = MessageType.DOCUMENT
 

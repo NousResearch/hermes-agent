@@ -667,6 +667,8 @@ class GoogleChatAdapter(BasePlatformAdapter):
         if not self._loop_accepts_callbacks(loop):
             # Loop already closed (shutdown race). Safe to drop; Pub/Sub will
             # redeliver on next reconnect.
+            if hasattr(coro, "close"):
+                coro.close()
             logger.warning("[GoogleChat] Loop not accepting callbacks; dropping event")
             return
         try:
@@ -678,9 +680,13 @@ class GoogleChatAdapter(BasePlatformAdapter):
                 log_level=logging.WARNING,
             )
         except RuntimeError:
+            if hasattr(coro, "close"):
+                coro.close()
             logger.warning("[GoogleChat] Loop closed between check and submit")
             return
         if future is None:
+            if hasattr(coro, "close"):
+                coro.close()
             return
         future.add_done_callback(self._log_background_failure)
 
@@ -1247,7 +1253,13 @@ class GoogleChatAdapter(BasePlatformAdapter):
             if "space" not in enriched_env and space:
                 enriched_env["space"] = space
 
-            self._submit_on_loop(self._dispatch_message(msg_with_space, enriched_env))
+            dispatch_coro = self._dispatch_message(msg_with_space, enriched_env)
+            try:
+                self._submit_on_loop(dispatch_coro)
+            except Exception:
+                if hasattr(dispatch_coro, "close"):
+                    dispatch_coro.close()
+                raise
             message.ack()
         except Exception:
             logger.exception("[GoogleChat] Error in _on_pubsub_message")

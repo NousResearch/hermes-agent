@@ -526,6 +526,7 @@ class TestOnPubsubMessage:
         with patch.object(adapter, "_submit_on_loop") as submit:
             adapter._on_pubsub_message(msg)
             submit.assert_called_once()
+            submit.call_args.args[0].close()
         msg.ack.assert_called_once()
 
     def test_duplicate_message_dropped(self, adapter):
@@ -544,6 +545,7 @@ class TestOnPubsubMessage:
         with patch.object(adapter, "_submit_on_loop") as submit:
             adapter._on_pubsub_message(msg)
             submit.assert_called_once()
+            submit.call_args.args[0].close()
         msg.ack.assert_called_once()
 
     def test_callback_exception_does_not_escape(self, adapter):

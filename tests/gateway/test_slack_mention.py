@@ -240,7 +240,8 @@ def test_free_response_channels_int_list():
 
 def _would_process(adapter, *, is_dm=False, channel_id=CHANNEL_ID,
                    text="hello", mentioned=False, thread_reply=False,
-                   active_session=False):
+                   active_session=False, mentioned_thread=False,
+                   reply_to_bot_thread=False):
     """Simulate the mention gating logic from _handle_slack_message.
 
     Returns True if the message would be processed, False if it would be
@@ -261,8 +262,10 @@ def _would_process(adapter, *, is_dm=False, channel_id=CHANNEL_ID,
             return True
         elif not adapter._slack_require_mention():
             return True
+        elif adapter._slack_strict_mention() and not is_mentioned:
+            return False
         elif not is_mentioned:
-            if thread_reply and active_session:
+            if thread_reply and (reply_to_bot_thread or mentioned_thread or active_session):
                 return True
             else:
                 return False
@@ -310,6 +313,46 @@ def test_thread_reply_with_active_session_processed():
     assert _would_process(
         adapter, text="followup",
         thread_reply=True, active_session=True,
+    ) is True
+
+
+def test_strict_mention_thread_reply_with_active_session_ignored():
+    adapter = _make_adapter(require_mention=True, strict_mention=True)
+    assert _would_process(
+        adapter, text="followup",
+        thread_reply=True, active_session=True,
+    ) is False
+
+
+def test_strict_mention_does_not_hijack_hermes_addressed_thread_with_old_single_brain_context():
+    """Regression for Single Brain replying to a Hermes-addressed Slack thread.
+
+    Older thread/session context may contain <@Single Brain>, and the adapter may
+    remember that as a mentioned thread or active session. In strict mention mode
+    that history must not matter: only a mention of this bot in the *current*
+    Slack message should allow processing.
+    """
+    adapter = _make_adapter(require_mention=True, strict_mention=True)
+    current_text_addressed_to_hermes = "<@U0ASD67EGD8> did you actually fix this?"
+    assert _would_process(
+        adapter,
+        text=current_text_addressed_to_hermes,
+        thread_reply=True,
+        active_session=True,
+        mentioned_thread=True,
+        reply_to_bot_thread=True,
+    ) is False
+
+
+def test_strict_mention_still_allows_current_single_brain_mention_in_thread():
+    adapter = _make_adapter(require_mention=True, strict_mention=True)
+    assert _would_process(
+        adapter,
+        text="can you answer this?",
+        mentioned=True,
+        thread_reply=True,
+        active_session=True,
+        mentioned_thread=True,
     ) is True
 
 

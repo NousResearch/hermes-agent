@@ -204,6 +204,48 @@ class TestGoalManager:
         assert "active" in mgr.status_line().lower()
         assert "port the thing" in mgr.status_line()
 
+    def test_extended_goal_is_durable_not_inline_active(self, hermes_home):
+        from hermes_cli.goals import GoalManager
+
+        mgr = GoalManager(session_id="extended-sid", default_max_turns=5)
+        state = mgr.set(
+            "ship the long build",
+            mode="extended",
+            inline_active=False,
+            kanban_task_id="t_goal123",
+            kanban_board="long-goals",
+        )
+        assert state.status == "active"
+        assert state.mode == "extended"
+        assert state.inline_active is False
+        assert state.kanban_task_id == "t_goal123"
+        assert state.kanban_board == "long-goals"
+        assert mgr.has_goal()
+        assert not mgr.is_active()
+        assert "extended" in mgr.status_line().lower()
+        assert "t_goal123" in mgr.status_line()
+        assert "long-goals" in mgr.status_line()
+
+        mgr.pause(reason="user-paused")
+        paused_status = mgr.status_line().lower()
+        assert "paused extended" in paused_status
+        assert "t_goal123" in paused_status
+        assert "long-goals" in paused_status
+
+        decision = mgr.evaluate_after_turn("normal response")
+        assert decision["verdict"] == "inactive"
+        assert decision["should_continue"] is False
+        assert mgr.next_continuation_prompt() is None
+
+    def test_goal_state_from_json_defaults_to_inline(self, hermes_home):
+        from hermes_cli.goals import GoalState
+
+        state = GoalState.from_json('{"goal": "legacy", "status": "active"}')
+        assert state.mode == "inline"
+        assert state.inline_active is True
+        assert state.kanban_task_id is None
+        assert state.kanban_board is None
+
     def test_set_rejects_empty(self, hermes_home):
         from hermes_cli.goals import GoalManager
 

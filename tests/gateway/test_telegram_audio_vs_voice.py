@@ -53,6 +53,16 @@ def _audio_event(path: str = "/tmp/song.mp3") -> MessageEvent:
     )
 
 
+def _video_event(path: str = "/tmp/clip.mp4") -> MessageEvent:
+    return MessageEvent(
+        text="attach this to a Gmail draft",
+        message_type=MessageType.VIDEO,
+        source=SessionSource(platform=Platform.SLACK, chat_id="1", chat_type="dm"),
+        media_urls=[path],
+        media_types=["video/mp4"],
+    )
+
+
 # ---------------------------------------------------------------------------
 # 1. VOICE still goes through STT
 # ---------------------------------------------------------------------------
@@ -134,6 +144,30 @@ async def test_audio_attachment_context_note_format():
     assert "audio file attachment" in result.lower()
     # Should NOT contain the voice-message transcription wrapper text
     assert "voice message" not in result.lower()
+
+
+@pytest.mark.asyncio
+async def test_video_attachment_context_note_includes_email_guidance():
+    """Video attachments should be surfaced as local paths for email/Gmail draft workflows."""
+    runner = _make_runner(stt_enabled=True)
+    source = SessionSource(platform=Platform.SLACK, chat_id="1", chat_type="dm")
+    event = _video_event("/tmp/cache_12345_clip.mp4")
+
+    with patch(
+        "tools.credential_files.to_agent_visible_cache_path",
+        side_effect=lambda p: p,
+    ):
+        result = await runner._prepare_inbound_message_text(
+            event=event,
+            source=source,
+            history=[],
+        )
+
+    assert result is not None
+    assert "/tmp/cache_12345_clip.mp4" in result
+    assert "video attachment" in result.lower()
+    assert "email/gmail draft" in result.lower()
+    assert "exact path as the attachment path" in result.lower()
 
 
 # ---------------------------------------------------------------------------

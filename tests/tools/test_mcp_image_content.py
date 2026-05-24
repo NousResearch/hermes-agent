@@ -17,6 +17,8 @@ images natively.
 from __future__ import annotations
 
 import base64
+import asyncio
+import json
 from types import SimpleNamespace
 from unittest.mock import patch
 
@@ -136,3 +138,53 @@ class TestCacheMcpImageBlock:
         tag = _cache_mcp_image_block(block)
         assert tag.startswith("MEDIA:")
         assert tag.endswith(".jpg"), f"expected .jpg extension, got {tag!r}"
+
+
+class TestMcpToolImageResultPayload:
+    def test_image_content_tags_are_marked_as_explicit_gateway_media(self, tmp_path, monkeypatch):
+        """Gateway extraction trusts MCP image tags only when the wrapper marks them explicit."""
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+        import tools.mcp_tool as mcp_tool
+
+        class AsyncNullLock:
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, exc_type, exc, tb):
+                return False
+
+        class FakeSession:
+            async def call_tool(self, tool_name, arguments):
+                assert tool_name == "screenshot"
+                assert arguments == {"full_page": True}
+                return SimpleNamespace(
+                    isError=False,
+                    content=[
+                        SimpleNamespace(text="Screenshot captured"),
+                        SimpleNamespace(
+                            data=base64.b64encode(_png_bytes()).decode("ascii"),
+                            mimeType="image/png",
+                        ),
+                    ],
+                    structuredContent=None,
+                )
+
+        fake_server = SimpleNamespace(
+            session=FakeSession(),
+            _rpc_lock=AsyncNullLock(),
+        )
+        monkeypatch.setitem(mcp_tool._servers, "playwright", fake_server)
+
+        def run_sync(coro_factory, timeout):
+            return asyncio.run(coro_factory())
+
+        monkeypatch.setattr(mcp_tool, "_run_on_mcp_loop", run_sync)
+
+        handler = mcp_tool._make_tool_handler("playwright", "screenshot", 120)
+        payload = json.loads(handler({"full_page": True}))
+
+        assert "MEDIA:" in payload["result"]
+        assert payload["_hermes_media_tags"] == [
+            line for line in payload["result"].splitlines() if line.startswith("MEDIA:")
+        ]

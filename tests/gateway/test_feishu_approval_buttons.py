@@ -448,6 +448,12 @@ class TestCardActionCallbackResponse:
         adapter = _make_adapter()
         adapter._loop = MagicMock()
         adapter._loop.is_closed = MagicMock(return_value=False)
+        adapter._allowed_group_users = {"ou_bob"}
+        adapter._approval_state[1] = {
+            "session_key": "sess-1",
+            "message_id": "msg-1",
+            "chat_id": "oc_12345",
+        }
         data = _make_card_action_data(
             {"hermes_action": "approve_once", "approval_id": 1},
             open_id="ou_bob",
@@ -469,6 +475,11 @@ class TestCardActionCallbackResponse:
         adapter = _make_adapter()
         adapter._loop = MagicMock()
         adapter._loop.is_closed = MagicMock(return_value=False)
+        adapter._approval_state[2] = {
+            "session_key": "sess-2",
+            "message_id": "msg-2",
+            "chat_id": "oc_12345",
+        }
         data = _make_card_action_data(
             {"hermes_action": "deny", "approval_id": 2},
         )
@@ -510,6 +521,11 @@ class TestCardActionCallbackResponse:
         adapter = _make_adapter()
         adapter._loop = MagicMock()
         adapter._loop.is_closed = MagicMock(return_value=False)
+        adapter._approval_state[3] = {
+            "session_key": "sess-3",
+            "message_id": "msg-3",
+            "chat_id": "oc_12345",
+        }
         data = _make_card_action_data(
             {"hermes_action": "approve_session", "approval_id": 3},
             open_id="ou_unknown",
@@ -525,6 +541,11 @@ class TestCardActionCallbackResponse:
         adapter = _make_adapter()
         adapter._loop = MagicMock()
         adapter._loop.is_closed = MagicMock(return_value=False)
+        adapter._approval_state[4] = {
+            "session_key": "sess-4",
+            "message_id": "msg-4",
+            "chat_id": "oc_12345",
+        }
         data = _make_card_action_data(
             {"hermes_action": "approve_once", "approval_id": 4},
             open_id="ou_expired",
@@ -537,6 +558,51 @@ class TestCardActionCallbackResponse:
         card = response.card.data
         assert "Old Name" not in card["elements"][0]["content"]
         assert "ou_expired" in card["elements"][0]["content"]
+
+    def test_rejects_approval_click_from_unauthorized_user(self, _patch_callback_card_types):
+        adapter = _make_adapter()
+        adapter._loop = MagicMock()
+        adapter._loop.is_closed = MagicMock(return_value=False)
+        adapter._allowed_group_users = {"ou_allowed"}
+        adapter._approval_state[5] = {
+            "session_key": "sess-5",
+            "message_id": "msg-5",
+            "chat_id": "oc_12345",
+        }
+        data = _make_card_action_data(
+            {"hermes_action": "approve_once", "approval_id": 5},
+            open_id="ou_attacker",
+        )
+
+        with patch("asyncio.run_coroutine_threadsafe") as mock_submit:
+            response = adapter._on_card_action_trigger(data)
+
+        assert response is not None
+        assert response.card is None
+        mock_submit.assert_not_called()
+
+    def test_rejects_approval_click_when_callback_chat_mismatches(self, _patch_callback_card_types):
+        adapter = _make_adapter()
+        adapter._loop = MagicMock()
+        adapter._loop.is_closed = MagicMock(return_value=False)
+        adapter._allowed_group_users = {"ou_bob"}
+        adapter._approval_state[6] = {
+            "session_key": "sess-6",
+            "message_id": "msg-6",
+            "chat_id": "oc_expected",
+        }
+        data = _make_card_action_data(
+            {"hermes_action": "approve_once", "approval_id": 6},
+            chat_id="oc_mismatch",
+            open_id="ou_bob",
+        )
+
+        with patch("asyncio.run_coroutine_threadsafe") as mock_submit:
+            response = adapter._on_card_action_trigger(data)
+
+        assert response is not None
+        assert response.card is None
+        mock_submit.assert_not_called()
 
     def test_returns_card_for_update_prompt_yes(self, _patch_callback_card_types):
         adapter = _make_adapter()

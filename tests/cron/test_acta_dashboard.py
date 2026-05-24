@@ -721,6 +721,13 @@ def test_all_acta_modules_share_compact_v9_shell():
         assert "Generated files" not in html, name
         assert "Your cron command center" not in html, name
 
+    assert "background:rgba(3,6,11,.88)" in pages["outputs"]
+    assert "background:rgba(255,255,255,.035)" not in pages["outputs"]
+    assert "background:rgba(3,6,11,.84)" in pages["outputs"]
+    assert "background:rgba(255,255,255,.032)" not in pages["outputs"]
+    assert "background:rgba(3,6,11,.86)" in pages["today"]
+    assert "background:rgba(255,255,255,.045); }}\n.nav-link" not in pages["today"]
+
 
 def test_jobs_subpage_shows_active_relevant_last_runs(tmp_path: Path):
     for job_id in ("active", "silent", "disabled", "hidden"):

@@ -66,6 +66,21 @@ _AGENT_CACHE_IDLE_TTL_SECS = 3600.0  # evict agents idle for >1h
 _PLATFORM_CONNECT_TIMEOUT_SECS_DEFAULT = 30.0
 _ADAPTER_DISCONNECT_TIMEOUT_SECS_DEFAULT = 5.0
 _TELEGRAM_COMMAND_MENTION_RE = re.compile(r"(?<![\w:/])/([A-Za-z0-9][A-Za-z0-9_-]*)")
+_WHAT_DID_YOU_DO_TRIGGERS = frozenset(
+    {
+        "你做了什么",
+        "刚才你干嘛了",
+        "你到底改了啥",
+        "哪些是你做的",
+    }
+)
+
+
+def _is_what_did_you_do_trigger(text: str | None) -> bool:
+    """Return True for Chinese plain-text aliases of /what-did-you-do."""
+    normalized = re.sub(r"[\s，。！？!?、,.`'\"“”‘’：:；;（）()【】\[\]]+", "", str(text or ""))
+    return normalized in _WHAT_DID_YOU_DO_TRIGGERS
+
 
 _TELEGRAM_NOISY_STATUS_RE = re.compile(
     r"("  # transient/auxiliary status that should stay in logs, not Telegram chat
@@ -7141,6 +7156,8 @@ class GatewayRunner:
         # Otherwise control/session commands like /new or /help get silently
         # consumed as update answers instead of being dispatched normally.
         _quick_key = self._session_key_for_source(source)
+        if _is_what_did_you_do_trigger(event.text):
+            event = dataclasses.replace(event, text="/what-did-you-do")
         _update_prompts = getattr(self, "_update_prompt_pending", {})
         if _update_prompts.get(_quick_key):
             raw = (event.text or "").strip()
@@ -7553,6 +7570,8 @@ class GatewayRunner:
                     return await self._handle_profile_command(event)
                 if _cmd_def_inner.name == "update":
                     return await self._handle_update_command(event)
+                if _cmd_def_inner.name == "what-did-you-do":
+                    return await self._handle_what_did_you_do_command(event)
 
             # Catch-all: any other recognized slash command reached the
             # running-agent guard. Reject gracefully rather than falling
@@ -7792,6 +7811,9 @@ class GatewayRunner:
 
         if canonical == "status":
             return await self._handle_status_command(event)
+
+        if canonical == "what-did-you-do":
+            return await self._handle_what_did_you_do_command(event)
 
         if canonical == "agents":
             return await self._handle_agents_command(event)
@@ -9947,6 +9969,55 @@ class GatewayRunner:
         if len(output) > 3800:
             output = output[:3800] + "\n" + t("gateway.kanban.truncated_suffix")
         return output or t("gateway.kanban.no_output")
+
+    async def _handle_what_did_you_do_command(self, event: MessageEvent) -> str:
+        """Handle /what-did-you-do — show this session lineage's tool ledger."""
+        source = event.source
+        session_id = None
+        session_store = getattr(self, "session_store", None)
+        if session_store is not None and source is not None:
+            session_key = None
+            try:
+                session_key = session_store._generate_session_key(source)
+            except Exception:
+                try:
+                    session_key = self._session_key_for_source(source)
+                except Exception:
+                    session_key = None
+            if session_key:
+                try:
+                    entries = getattr(session_store, "_entries", {}) or {}
+                    entry = entries.get(session_key)
+                    session_id = getattr(entry, "session_id", None) if entry else None
+                except Exception:
+                    session_id = None
+            if not session_id:
+                try:
+                    entry = session_store.get_or_create_session(source)
+                    session_id = getattr(entry, "session_id", None)
+                except Exception:
+                    session_id = None
+
+        if not session_id:
+            return "未找到当前 session_id，不能归因。"
+
+        db = getattr(self, "_session_db", None)
+        if db is None:
+            return "未连接 SessionDB，不能读取 attribution ledger。"
+
+        try:
+            from agent.attribution_ledger import format_what_did_you_do_for_session
+
+            return format_what_did_you_do_for_session(
+                db,
+                session_id=session_id,
+                chat_id=getattr(source, "chat_id", None),
+                source=_gateway_platform_value(getattr(source, "platform", None)),
+                limit=100,
+            )
+        except Exception as exc:
+            logger.warning("/what-did-you-do failed for session %s: %s", session_id, exc)
+            return f"读取 attribution ledger 失败：{exc}"
 
     async def _handle_status_command(self, event: MessageEvent) -> str:
         """Handle /status command."""

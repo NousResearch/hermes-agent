@@ -14014,23 +14014,8 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
             _idx = 9 if _num == 0 else _num - 1
             kb.add(str(_num), filter=Condition(lambda: bool(self._slash_confirm_state)))(_make_slash_confirm_number_handler(_idx))
 
-        # --- History navigation: up/down browse history in normal input mode ---
-        # The TextArea is multiline, so by default up/down only move the cursor.
-        # Buffer.auto_up/auto_down handle both: cursor movement when multi-line,
-        # history browsing when on the first/last line (or single-line input).
-        _normal_input = Condition(
-            lambda: not self._clarify_state and not self._approval_state and not self._slash_confirm_state and not self._sudo_state and not self._secret_state and not self._model_picker_state
-        )
-
-        @kb.add('up', filter=_normal_input)
-        def history_up(event):
-            """Up arrow: browse history when on first line, else move cursor up."""
-            event.app.current_buffer.auto_up(count=event.arg)
-
-        @kb.add('down', filter=_normal_input)
-        def history_down(event):
-            """Down arrow: browse history when on last line, else move cursor down."""
-            event.app.current_buffer.auto_down(count=event.arg)
+        # Smart Up/Down for soft-wrapped input are registered after input_area
+        # is created (below), where input_area.window.render_info is available.
 
         @kb.add('c-l')
         def handle_ctrl_l(event):
@@ -15179,6 +15164,164 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
 
         # Allow wrapper CLIs to register extra keybindings.
         self._register_extra_tui_keybindings(kb, input_area=input_area)
+
+        # --- Smart Up/Down/Left/Right: visual-row navigation in the input area ---
+        #
+        # prompt_toolkit's auto_up/auto_down use document.cursor_position_row,
+        # which counts only hard newlines (\n). On a long soft-wrapped prompt
+        # with no hard newlines, cursor_position_row is always 0, so auto_up
+        # immediately steps to history instead of moving the cursor up one visual
+        # row. The bindings below fix this by computing cursor movement from the
+        # rendered screen layout.
+        #
+        # smart_right/smart_left replace the default bindings so that the cursor
+        # can cross hard-newline boundaries; next/previous word already did
+        # this correctly.
+        #
+        # input_area must be in scope here so that input_area.window.render_info
+        # is accessible at key-press time (render_info is None before first render).
+        _normal_input = Condition(
+            lambda: not self._clarify_state and not self._approval_state and not self._slash_confirm_state and not self._sudo_state and not self._secret_state and not self._model_picker_state
+        )
+
+        def _get_window_width() -> tuple[int, int]:
+            """Return (window_width, prompt_width) for the input area.
+
+            window_width is the full content-area width reported by
+            prompt_toolkit (terminal columns minus any left/right margins).
+            prompt_width is the display width of the prompt prefix (e.g. "› ")
+            which BeforeInput prepends only to the first visual row of the
+            first logical line.
+
+            The first visual row therefore holds window_width - prompt_width
+            buffer characters; every other visual row holds window_width."""
+            from prompt_toolkit.utils import get_cwidth
+            info = input_area.window.render_info
+            if info is not None and info.window_width > 0:
+                win_w = info.window_width
+            else:
+                try:
+                    cols = shutil.get_terminal_size((80, 24)).columns
+                except Exception:
+                    cols = 80
+                win_w = max(1, cols)
+            try:
+                prompt_w = get_cwidth(self._get_tui_prompt_text())
+            except Exception:
+                prompt_w = 2
+            return win_w, max(0, prompt_w)
+
+        def _visual_move(buf, direction: int) -> bool:
+            """Move the cursor up (direction=-1) or down (direction=+1) by one
+            visual row within the soft-wrapped, possibly multi-line input.
+
+            Each visual row is represented as (row_start, row_end, loglineno)
+            where row_start/row_end are buffer indices (row_end exclusive of
+            the trailing newline) and loglineno is the logical line index.
+
+            History recall is triggered by loglineno:
+              UP:   return False when loglineno == 0 (on the first logical line)
+              DOWN: return False when loglineno == max_logical_lines
+
+            The prompt prefix occupies prompt_w screen columns on visual row 0
+            only, so hpos is adjusted when crossing the row-0 / row-1 boundary.
+            """
+            win_w, prompt_w = _get_window_width()
+            pos = buf.cursor_position
+            text = buf.text
+            logical_lines = text.split('\n')
+            max_logical_lines = len(logical_lines) - 1  # 0-based index of last
+
+            # Build list of visual rows: (row_start, row_end, loglineno)
+            rows = []
+            char_idx = 0
+            for loglineno, line in enumerate(logical_lines):
+                first_row_w = (win_w - prompt_w) if loglineno == 0 else win_w
+                first_row_w = max(1, first_row_w)
+                line_start = char_idx
+                line_len = len(line)
+                if line_len == 0:
+                    rows.append((line_start, line_start, loglineno))
+                else:
+                    offset = 0
+                    while offset < line_len:
+                        rw = first_row_w if offset == 0 else win_w
+                        r_start = line_start + offset
+                        r_end = min(r_start + rw, line_start + line_len)
+                        rows.append((r_start, r_end, loglineno))
+                        offset += rw
+                char_idx += line_len + 1  # +1 for the '\n'
+
+            # Find the visual row the cursor is currently on.
+            cur_row_idx = len(rows) - 1
+            for i, (r_start, r_end, _) in enumerate(rows):
+                if r_start <= pos <= r_end:
+                    cur_row_idx = i
+                    break
+
+            r_start, r_end, loglineno = rows[cur_row_idx]
+            hpos = pos - r_start  # horizontal position within current visual row
+
+            if direction == -1:  # UP
+                # History recall when on the first logical line.
+                if loglineno == 0 and cur_row_idx == 0:
+                    return False
+                if cur_row_idx == 0:
+                    # Shouldn't happen (loglineno > 0 but cur_row_idx == 0),
+                    # but guard anyway.
+                    return False
+                prev_start, prev_end, prev_loglineno = rows[cur_row_idx - 1]
+                # Crossing from visual row 1 to visual row 0: subtract prompt_w
+                # because visual row 0 has the prompt prefix.
+                target_hpos = max(0, hpos - prompt_w) if cur_row_idx == 1 else hpos
+                buf.cursor_position = prev_start + min(target_hpos, prev_end - prev_start)
+                return True
+            else:  # DOWN
+                # History recall when on the last logical line.
+                if loglineno == max_logical_lines and cur_row_idx == len(rows) - 1:
+                    return False
+                if cur_row_idx == len(rows) - 1:
+                    return False
+                next_start, next_end, next_loglineno = rows[cur_row_idx + 1]
+                # Crossing from visual row 0 to visual row 1: add prompt_w.
+                target_hpos = (hpos + prompt_w) if cur_row_idx == 0 else hpos
+                buf.cursor_position = next_start + min(target_hpos, next_end - next_start)
+                return True
+
+        @kb.add('up', filter=_normal_input, eager=True)
+        def smart_up(event):
+            """Move cursor up one visual row within the soft-wrapped input, or
+            step to the previous history entry when already on the first visual
+            row.  The unsubmitted draft is preserved in prompt_toolkit's
+            working_index and is restored when stepping back down past the most
+            recent entry."""
+            if not _visual_move(event.app.current_buffer, -1):
+                event.app.current_buffer.history_backward(count=event.arg)
+
+        @kb.add('down', filter=_normal_input, eager=True)
+        def smart_down(event):
+            """Move cursor down one visual row within the soft-wrapped input,
+            or step to the next history entry when already on the last visual
+            row.  At the most recent entry the unsubmitted draft is
+            automatically restored."""
+            buf = event.app.current_buffer
+            if not _visual_move(buf, +1):
+                buf.history_forward(count=event.arg)
+                buf.cursor_position = len(buf.text)
+
+        @kb.add('right', filter=_normal_input, eager=True)
+        def smart_right(event):
+            """Right arrow: move one character right, crossing hard newlines."""
+            buf = event.app.current_buffer
+            if buf.cursor_position < len(buf.text):
+                buf.cursor_position += 1
+
+        @kb.add('left', filter=_normal_input, eager=True)
+        def smart_left(event):
+            """Left arrow: move one character left, crossing hard newlines."""
+            buf = event.app.current_buffer
+            if buf.cursor_position > 0:
+                buf.cursor_position -= 1
 
         # Layout: interactive prompt widgets + ruled input at bottom.
         # The sudo, approval, and clarify widgets appear above the input when

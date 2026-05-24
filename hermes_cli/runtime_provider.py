@@ -835,6 +835,17 @@ def _resolve_explicit_runtime(
             if provider in ("kimi-coding", "kimi-coding-cn"):
                 creds = resolve_api_key_provider_credentials(provider)
                 base_url = creds.get("base_url", "").rstrip("/")
+            elif provider == "zai":
+                from hermes_cli.auth import _resolve_zai_base_url
+                # Probe Z.AI endpoints to detect Coding Plan vs standard keys.
+                # Without this, config.yaml base_url (defaulting to /api/paas/v4)
+                # is used even when the key is a Coding Plan key that only works
+                # on /api/coding/paas/v4, causing HTTP 429 on every request.
+                creds = resolve_api_key_provider_credentials(provider)
+                _zai_key = creds.get("api_key", "")
+                base_url = _resolve_zai_base_url(
+                    _zai_key, pconfig.inference_base_url, env_url,
+                )
             else:
                 base_url = env_url or pconfig.inference_base_url
 

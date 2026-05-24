@@ -79,10 +79,11 @@ def test_checker_returns_true_when_configured(platform, checker, monkeypatch):
     elif platform in {
         Platform.API_SERVER,
         Platform.WEBHOOK,
-        Platform.MSGRAPH_WEBHOOK,
         Platform.WHATSAPP,
     }:
         mock_config.extra = {}
+    elif platform == Platform.MSGRAPH_WEBHOOK:
+        mock_config.extra = {"client_state": "expected-client-state"}
     elif platform == Platform.FEISHU:
         mock_config.extra = {"app_id": "app"}
     elif platform == Platform.WECOM:

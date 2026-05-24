@@ -193,10 +193,19 @@ def load_hermes_dotenv(
     """Load Hermes environment files with user config taking precedence.
 
     Behavior:
-    - `~/.hermes/.env` overrides stale shell-exported values when present.
-    - project `.env` acts as a dev fallback and only fills missing values when
-      the user env exists.
-    - if no user env exists, the project `.env` also overrides stale shell vars.
+    - ``${HERMES_HOME}/.env`` overrides stale shell-exported values when present
+      (this is the data-directory's local secrets file — installer-written on
+      Windows, profile-specific in profile mode, container-volume in Docker).
+    - The doc-canonical ``~/.hermes/.env`` is also loaded when it exists and
+      differs from ``${HERMES_HOME}/.env``. Loaded *before* the HERMES_HOME
+      file so the latter still wins on key collisions, but loaded at all so
+      doc-mandated edits (``website/docs/user-guide/features/api-server.md``
+      tells users to add ``API_SERVER_ENABLED=true`` to ``~/.hermes/.env``)
+      actually take effect when the installer or operator has redirected
+      ``HERMES_HOME`` elsewhere. Issue #31144.
+    - project ``.env`` acts as a dev fallback and only fills missing values
+      when one of the user envs exists.
+    - if no user envs exist, the project ``.env`` also overrides stale shell vars.
     """
     loaded: list[Path] = []
 
@@ -204,11 +213,34 @@ def load_hermes_dotenv(
     user_env = home_path / ".env"
     project_env_path = Path(project_env) if project_env else None
 
+    # Doc-canonical secrets file. Loaded only when it exists *and* points at
+    # a different inode than ``user_env`` — common only when the installer /
+    # operator has redirected ``HERMES_HOME``. ``Path.samefile`` is the
+    # cross-platform way to compare (handles symlinks, junctions, case
+    # differences on Windows). Falls back to a plain string compare when
+    # either side doesn't exist on disk yet.
+    shared_user_env: Path | None = None
+    default_user_env = Path.home() / ".hermes" / ".env"
+    if default_user_env.exists():
+        try:
+            is_same_file = (
+                user_env.exists() and default_user_env.samefile(user_env)
+            )
+        except OSError:
+            is_same_file = (default_user_env == user_env)
+        if not is_same_file:
+            shared_user_env = default_user_env
+
     # Fix corrupted .env files before python-dotenv parses them (#8908).
-    if user_env.exists():
-        _sanitize_env_file_if_needed(user_env)
-    if project_env_path and project_env_path.exists():
-        _sanitize_env_file_if_needed(project_env_path)
+    for env_path in (shared_user_env, user_env, project_env_path):
+        if env_path and env_path.exists():
+            _sanitize_env_file_if_needed(env_path)
+
+    if shared_user_env and shared_user_env.exists():
+        # Doc-canonical file: low precedence so the HERMES_HOME-resolved
+        # file (loaded next) still wins on key collisions.
+        _load_dotenv_with_fallback(shared_user_env, override=True)
+        loaded.append(shared_user_env)
 
     if user_env.exists():
         _load_dotenv_with_fallback(user_env, override=True)

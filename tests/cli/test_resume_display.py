@@ -155,13 +155,33 @@ class TestDisplayResumedHistory:
         assert "Page content" not in output
 
     def test_tool_calls_shown_as_summary(self):
-        cli = _make_cli()
+        # Disable tool-only skip so the summary line is rendered for this fixture.
+        cli = _make_cli(config_overrides={"display": {"resume_skip_tool_only": False}})
         cli.conversation_history = _tool_call_history()
-        output = self._capture_display(cli)
+        import cli as _cli_mod
+        # CLI_CONFIG is read at call-time inside _display_resumed_history, so
+        # apply the override for the duration of the capture, not just at init.
+        with patch.dict(_cli_mod.__dict__, {"CLI_CONFIG": {
+            "display": {"resume_skip_tool_only": False, "resume_display": "full"}
+        }}):
+            output = self._capture_display(cli)
 
         assert "2 tool calls" in output
         assert "web_search" in output
         assert "web_extract" in output
+
+    def test_tool_only_message_skipped_by_default(self):
+        """Assistant messages with only tool_calls (no text) are skipped when
+        resume_skip_tool_only=True (the default). The summary line is hidden.
+        """
+        cli = _make_cli()
+        cli.conversation_history = _tool_call_history()
+        output = self._capture_display(cli)
+
+        # The tool-only assistant entry should be skipped
+        assert "2 tool calls" not in output
+        # The final text reply should still appear
+        assert "Here are some great Python tutorials" in output
 
     def test_long_user_message_truncated(self):
         cli = _make_cli()
@@ -625,6 +645,8 @@ class TestHandleResumeCommandRecap:
         mock_db = MagicMock()
         mock_db.get_session.return_value = {"id": "target_session", "title": "Test Session"}
         mock_db.get_messages_as_conversation.return_value = messages
+        # resolve_resume_session_id passes the id through when no compression chain.
+        mock_db.resolve_resume_session_id.return_value = "target_session"
         cli._session_db = mock_db
 
         with (
@@ -646,6 +668,7 @@ class TestHandleResumeCommandRecap:
         mock_db = MagicMock()
         mock_db.get_session.return_value = {"id": "target_session", "title": None}
         mock_db.get_messages_as_conversation.return_value = []
+        mock_db.resolve_resume_session_id.return_value = "target_session"
         cli._session_db = mock_db
 
         with (

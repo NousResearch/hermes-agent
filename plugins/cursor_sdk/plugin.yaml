@@ -1,0 +1,9 @@
+name: cursor_sdk
+version: 0.1.0
+description: "Delegate coding tasks to Cursor agents through the official Python SDK."
+author: NousResearch
+kind: backend
+requires_env:
+  - CURSOR_API_KEY
+provides_tools:
+  - cursor_agent

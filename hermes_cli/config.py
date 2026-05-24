@@ -2336,6 +2336,15 @@ OPTIONAL_ENV_VARS = {
         "password": True,
         "category": "tool",
     },
+    "CURSOR_API_KEY": {
+        "description": "Cursor API key for delegating coding tasks to Cursor SDK agents",
+        "prompt": "Cursor API key",
+        "url": "https://cursor.com/dashboard/integrations",
+        "tools": ["cursor_agent"],
+        "password": True,
+        "category": "tool",
+        "advanced": True,
+    },
     "FIRECRAWL_BROWSER_TTL": {
         "description": "Firecrawl browser session TTL in seconds (optional, default 300)",
         "prompt": "Browser session TTL (seconds)",

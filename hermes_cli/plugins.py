@@ -326,6 +326,7 @@ class PluginContext:
         description: str = "",
         emoji: str = "",
         override: bool = False,
+        max_result_size_chars: int | float | None = None,
     ) -> None:
         """Register a tool in the global registry **and** track it as plugin-provided.
 
@@ -346,6 +347,7 @@ class PluginContext:
             is_async=is_async,
             description=description,
             emoji=emoji,
+            max_result_size_chars=max_result_size_chars,
             override=override,
         )
         self._manager._plugin_tool_names.add(name)

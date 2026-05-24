@@ -308,6 +308,34 @@ class GatewayConfigLoadersMixin:
         """Resolve legacy busy text mode from the routed profile snapshot."""
         return self._effective_busy_mode(source, "_busy_text_mode")
 
+    def _should_transcribe_audio_attachment(self, source: SessionSource) -> bool:
+        """Return whether the source opts regular audio attachments into STT."""
+        platform_config = self.config.platforms.get(source.platform)
+        if platform_config is None:
+            return False
+        raw_channels = (platform_config.extra or {}).get(
+            "transcribe_audio_attachment_channels"
+        )
+        if isinstance(raw_channels, (list, tuple, set)):
+            configured_channels = [str(value) for value in raw_channels]
+        elif raw_channels is not None:
+            configured_channels = [str(raw_channels)]
+        else:
+            configured_channels = []
+        configured_lower = {value.lower() for value in configured_channels}
+        if "*" in configured_channels or "all" in configured_lower:
+            return True
+        source_channel_ids = {
+            str(value)
+            for value in (
+                getattr(source, "chat_id", None),
+                getattr(source, "parent_chat_id", None),
+                getattr(source, "thread_id", None),
+            )
+            if value is not None
+        }
+        return bool(source_channel_ids.intersection(configured_channels))
+
     @staticmethod
     def _warn_unparsable_timeout(cfg_key: str, raw: object, default: float) -> None:
         """Warn when a supplied timeout value is not a number (the parser already fell back to ``default``)."""

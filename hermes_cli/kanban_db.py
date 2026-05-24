@@ -5347,6 +5347,7 @@ def _kanban_worker_skill_available(hermes_home: Optional[str]) -> bool:
     omitting the flag only drops the supplementary pattern library.
     """
     from pathlib import Path as _Path
+    import yaml
 
     # An unset HERMES_HOME means the worker falls back to the default root
     # home (``~/.hermes``), which ships the bundled skill.
@@ -5354,6 +5355,16 @@ def _kanban_worker_skill_available(hermes_home: Optional[str]) -> bool:
     skills_root = base / "skills"
     if not skills_root.is_dir():
         return False
+    # A present-but-disabled skill is just as unusable as an absent one:
+    # the CLI excludes it during explicit `--skills` resolution and exits
+    # before the worker can report a block/completion outcome.
+    try:
+        config = yaml.safe_load((base / "config.yaml").read_text(encoding="utf-8")) or {}
+        disabled = config.get("skills", {}).get("disabled", [])
+        if "kanban-worker" in {str(name).strip() for name in disabled}:
+            return False
+    except (OSError, AttributeError, TypeError, yaml.YAMLError):
+        pass
     # Canonical bundled location first (cheap), then a bounded scan for
     # profiles that have it nested elsewhere.
     if (skills_root / "devops" / "kanban-worker" / "SKILL.md").is_file():

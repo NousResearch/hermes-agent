@@ -16,6 +16,7 @@ import asyncio
 import json
 import time
 import uuid
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -305,6 +306,72 @@ class TestAdapterInit:
         assert isinstance(agent, FakeAgent)
         assert captured["reasoning_config"] == {"enabled": True, "effort": "xhigh"}
 
+    def test_create_agent_ignores_advertised_profile_model_override(self, monkeypatch):
+        captured = {}
+
+        class FakeAgent:
+            def __init__(self, **kwargs):
+                captured.update(kwargs)
+
+        monkeypatch.setattr("run_agent.AIAgent", FakeAgent)
+        monkeypatch.setattr(
+            "gateway.run._resolve_runtime_agent_kwargs",
+            lambda: {"provider": "openrouter", "base_url": "", "api_mode": "chat_completions"},
+        )
+        monkeypatch.setattr("gateway.run._resolve_gateway_model", lambda: "google/gemini-3.5-flash")
+        monkeypatch.setattr("gateway.run._load_gateway_config", lambda: {})
+        monkeypatch.setattr("gateway.run.GatewayRunner._load_reasoning_config", staticmethod(lambda: None))
+        monkeypatch.setattr("gateway.run.GatewayRunner._load_fallback_model", staticmethod(lambda: None))
+        monkeypatch.setattr("hermes_cli.tools_config._get_platform_tools", lambda *_: set())
+
+        adapter = APIServerAdapter(PlatformConfig(enabled=True))
+        monkeypatch.setattr(adapter, "_ensure_session_db", lambda: None)
+
+        adapter._create_agent(session_id="api-session", model_override=adapter._model_name)
+
+        assert captured["model"] == "google/gemini-3.5-flash"
+
+    def test_create_agent_applies_session_model_override(self, monkeypatch):
+        captured = {}
+
+        class FakeAgent:
+            def __init__(self, **kwargs):
+                captured.update(kwargs)
+
+        monkeypatch.setattr("run_agent.AIAgent", FakeAgent)
+        monkeypatch.setattr(
+            "gateway.run._resolve_runtime_agent_kwargs",
+            lambda: {
+                "provider": "openrouter",
+                "api_key": "or-key",
+                "base_url": "https://openrouter.ai/api/v1",
+                "api_mode": "chat_completions",
+            },
+        )
+        monkeypatch.setattr("gateway.run._resolve_gateway_model", lambda: "google/gemini-3.5-flash")
+        monkeypatch.setattr("gateway.run._load_gateway_config", lambda: {})
+        monkeypatch.setattr("gateway.run.GatewayRunner._load_reasoning_config", staticmethod(lambda: None))
+        monkeypatch.setattr("gateway.run.GatewayRunner._load_fallback_model", staticmethod(lambda: None))
+        monkeypatch.setattr("hermes_cli.tools_config._get_platform_tools", lambda *_: set())
+
+        adapter = APIServerAdapter(PlatformConfig(enabled=True))
+        adapter._session_model_overrides["api-session"] = {
+            "model": "gpt-5.3-codex",
+            "provider": "openai-codex",
+            "api_key": "codex-key",
+            "base_url": "https://chatgpt.com/backend-api/codex",
+            "api_mode": "codex_responses",
+        }
+        monkeypatch.setattr(adapter, "_ensure_session_db", lambda: None)
+
+        adapter._create_agent(session_id="api-session")
+
+        assert captured["model"] == "gpt-5.3-codex"
+        assert captured["provider"] == "openai-codex"
+        assert captured["api_key"] == "codex-key"
+        assert captured["base_url"] == "https://chatgpt.com/backend-api/codex"
+        assert captured["api_mode"] == "codex_responses"
+
 
 # ---------------------------------------------------------------------------
 # Auth checking
@@ -379,7 +446,15 @@ def _create_app(adapter: APIServerAdapter) -> web.Application:
     app.router.add_get("/health/detailed", adapter._handle_health_detailed)
     app.router.add_get("/v1/health", adapter._handle_health)
     app.router.add_get("/v1/models", adapter._handle_models)
+    app.router.add_get("/v1/model/current", adapter._handle_current_model)
+    app.router.add_post("/v1/sessions/{session_id}/model", adapter._handle_set_session_model)
     app.router.add_get("/v1/capabilities", adapter._handle_capabilities)
+    app.router.add_post("/v1/capabilities", adapter._handle_capabilities)
+    app.router.add_get("/v1/commands", adapter._handle_commands)
+    app.router.add_get("/v1/skills", adapter._handle_skills)
+    app.router.add_post("/v1/complete/slash", adapter._handle_complete_slash)
+    app.router.add_post("/v1/complete/skills", adapter._handle_complete_skills)
+    app.router.add_post("/v1/slash", adapter._handle_slash)
     app.router.add_post("/v1/chat/completions", adapter._handle_chat_completions)
     app.router.add_post("/v1/responses", adapter._handle_responses)
     app.router.add_get("/v1/responses/{response_id}", adapter._handle_get_response)
@@ -499,6 +574,7 @@ class TestHealthDetailedEndpoint:
                 assert data["status"] == "ok"
                 assert data["platform"] == "hermes-agent"
                 assert data["gateway_state"] == "running"
+                assert data["restart_requested"] is False
                 assert data["platforms"] == {"telegram": {"state": "connected"}}
                 assert data["active_agents"] == 2
                 assert isinstance(data["pid"], int)
@@ -579,6 +655,7 @@ class TestModelsEndpoint:
         with patch("hermes_cli.profiles.get_active_profile_name", return_value="lucas"):
             assert APIServerAdapter._resolve_model_name("") == "lucas"
 
+
     @pytest.mark.asyncio
     async def test_models_requires_auth(self, auth_adapter):
         app = _create_app(auth_adapter)
@@ -595,6 +672,57 @@ class TestModelsEndpoint:
                 headers={"Authorization": "Bearer sk-secret"},
             )
             assert resp.status == 200
+
+
+# ---------------------------------------------------------------------------
+# /v1/sessions/{session_id}/model endpoint
+# ---------------------------------------------------------------------------
+
+
+class TestSessionModelEndpoint:
+    @pytest.mark.asyncio
+    async def test_session_model_switch_stores_resolved_codex_routing(self, adapter, monkeypatch):
+        result = SimpleNamespace(
+            success=True,
+            new_model="gpt-5.3-codex",
+            target_provider="openai-codex",
+            api_key="codex-token",
+            base_url="https://chatgpt.com/backend-api/codex",
+            api_mode="codex_responses",
+            warning_message="",
+        )
+
+        monkeypatch.setattr(
+            "hermes_cli.runtime_provider.resolve_runtime_provider",
+            lambda requested=None: {
+                "provider": "openrouter",
+                "api_key": "or-key",
+                "base_url": "https://openrouter.ai/api/v1",
+            },
+        )
+        monkeypatch.setattr("gateway.run._resolve_gateway_model", lambda: "google/gemini-3.5-flash")
+        monkeypatch.setattr("hermes_cli.config.load_config", lambda: {"providers": {}})
+        monkeypatch.setattr("hermes_cli.config.get_compatible_custom_providers", lambda _cfg: [])
+        monkeypatch.setattr("hermes_cli.model_switch.switch_model", lambda **_kwargs: result)
+
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.post(
+                "/v1/sessions/api-session/model",
+                json={"provider": "openai-codex", "model": "gpt-5.3-codex"},
+            )
+            data = await resp.json()
+
+        assert resp.status == 200
+        assert data["model"] == "gpt-5.3-codex"
+        assert data["provider"] == "openai-codex"
+        assert adapter._session_model_overrides["api-session"] == {
+            "model": "gpt-5.3-codex",
+            "provider": "openai-codex",
+            "api_key": "codex-token",
+            "base_url": "https://chatgpt.com/backend-api/codex",
+            "api_mode": "codex_responses",
+        }
 
 
 # ---------------------------------------------------------------------------
@@ -3311,3 +3439,388 @@ class TestSessionKeyHeader:
             assert resp.status == 200
             data = await resp.json()
             assert data["features"]["session_key_header"] == "X-Hermes-Session-Key"
+
+
+# ---------------------------------------------------------------------------
+# Server-side slash commands (/help, /status, /new, …)
+# ---------------------------------------------------------------------------
+
+
+class TestServerSideSlashCommands:
+    """Recognised gateway slash commands are intercepted and answered by
+    the API server itself — they must never reach the agent loop.
+    """
+
+    def test_is_api_slash_command_recognises_known_commands(self, adapter):
+        assert adapter._is_api_slash_command("/help") is True
+        assert adapter._is_api_slash_command("  /status  ") is True
+        assert adapter._is_api_slash_command("/new please") is True
+
+    def test_is_api_slash_command_rejects_non_commands(self, adapter):
+        assert adapter._is_api_slash_command("hello there") is False
+        assert adapter._is_api_slash_command("") is False
+        assert adapter._is_api_slash_command("/definitelynotacommand") is False
+
+    @pytest.mark.asyncio
+    async def test_non_streaming_help_returns_command_list(self, adapter):
+        """Non-streaming '/help' returns the gateway command listing and
+        never invokes the agent."""
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(adapter, "_run_agent", new_callable=AsyncMock) as mock_run:
+                resp = await cli.post(
+                    "/v1/chat/completions",
+                    json={
+                        "model": "hermes-agent",
+                        "messages": [{"role": "user", "content": "/help"}],
+                    },
+                )
+                assert resp.status == 200
+                data = await resp.json()
+                assert data["object"] == "chat.completion"
+                assert data["choices"][0]["finish_reason"] == "stop"
+                content = data["choices"][0]["message"]["content"]
+                assert "Available commands" in content
+                # gateway_help_lines() renders entries as `/<name> ...`.
+                assert "`/" in content
+                # The agent must not be invoked for an intercepted command.
+                mock_run.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_streaming_status_emits_delta_chunks(self, auth_adapter):
+        """Streaming '/status' streams the markdown back as SSE delta chunks."""
+        mock_db = MagicMock()
+        mock_db.get_session_title.return_value = "My Chat"
+        auth_adapter._session_db = mock_db
+        app = _create_app(auth_adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(auth_adapter, "_run_agent", new_callable=AsyncMock) as mock_run:
+                resp = await cli.post(
+                    "/v1/chat/completions",
+                    headers={
+                        "X-Hermes-Session-Id": "sess-status-1",
+                        "Authorization": "Bearer sk-secret",
+                    },
+                    json={
+                        "model": "hermes-agent",
+                        "messages": [{"role": "user", "content": "/status"}],
+                        "stream": True,
+                    },
+                )
+                assert resp.status == 200
+                assert "text/event-stream" in resp.headers.get("Content-Type", "")
+                body = await resp.text()
+                assert "chat.completion.chunk" in body
+                assert "Session status" in body
+                assert "sess-status-1" in body
+                assert "My Chat" in body
+                assert "[DONE]" in body
+                mock_run.assert_not_called()
+            mock_db.get_session_title.assert_called_once_with("sess-status-1")
+
+    @pytest.mark.asyncio
+    async def test_new_command_clears_session_db_messages(self, auth_adapter):
+        """'/new' clears the session's stored messages via the session DB."""
+        mock_db = MagicMock()
+        mock_db.get_messages_as_conversation.return_value = []
+        auth_adapter._session_db = mock_db
+        app = _create_app(auth_adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(auth_adapter, "_run_agent", new_callable=AsyncMock) as mock_run:
+                resp = await cli.post(
+                    "/v1/chat/completions",
+                    headers={
+                        "X-Hermes-Session-Id": "sess-to-clear",
+                        "Authorization": "Bearer sk-secret",
+                    },
+                    json={
+                        "model": "hermes-agent",
+                        "messages": [{"role": "user", "content": "/new"}],
+                    },
+                )
+                assert resp.status == 200
+                data = await resp.json()
+                content = data["choices"][0]["message"]["content"]
+                assert "cleared" in content.lower()
+                mock_run.assert_not_called()
+            mock_db.clear_messages.assert_called_once_with("sess-to-clear")
+
+
+    @pytest.mark.asyncio
+    async def test_commands_endpoint_returns_json_list(self, adapter):
+        """GET /v1/commands should return the dyn list of server commands."""
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.get("/v1/commands")
+            assert resp.status == 200
+            data = await resp.json()
+            assert data["object"] == "list"
+            names = [item["name"] for item in data["data"]]
+            assert "/help" in names
+            assert "/status" in names
+
+    @pytest.mark.asyncio
+    async def test_responses_endpoint_intercepts_help(self, adapter):
+        """The Responses API path intercepts slash commands too."""
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(adapter, "_run_agent", new_callable=AsyncMock) as mock_run:
+                resp = await cli.post(
+                    "/v1/responses",
+                    json={"model": "hermes-agent", "input": "/help", "store": False},
+                )
+                assert resp.status == 200
+                data = await resp.json()
+                assert data["object"] == "response"
+                assert data["status"] == "completed"
+                text = data["output"][0]["content"][0]["text"]
+                assert "Available commands" in text
+                mock_run.assert_not_called()
+
+
+class TestSlashCompletionAndDispatch:
+    @pytest.mark.asyncio
+    async def test_complete_slash_returns_items_for_help_slash_skill(self, adapter):
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            slash_resp = await cli.post(
+                "/v1/complete/slash",
+                json={"text": "/"},
+            )
+            help_resp = await cli.post(
+                "/v1/complete/slash",
+                json={"text": "/hel"},
+            )
+            exact_help_resp = await cli.post(
+                "/v1/complete/slash",
+                json={"text": "/help"},
+            )
+
+            assert slash_resp.status == 200
+            slash_data = await slash_resp.json()
+            assert slash_data["object"] == "hermes.slash.completion"
+            assert slash_data["replace_from"] == 1
+            slash_texts = [item["text"] for item in slash_data.get("items", [])]
+            assert slash_texts
+            assert all(isinstance(text, str) and text for text in slash_texts)
+
+            assert help_resp.status == 200
+            help_data = await help_resp.json()
+            assert help_data["object"] == "hermes.slash.completion"
+            help_texts = [item["text"] for item in help_data.get("items", [])]
+            assert help_texts
+            assert any("help" in text.lower() for text in help_texts)
+
+            assert exact_help_resp.status == 200
+            exact_help_data = await exact_help_resp.json()
+            assert exact_help_data["object"] == "hermes.slash.completion"
+            exact_help_texts = [item["text"] for item in exact_help_data.get("items", [])]
+            assert exact_help_texts
+            assert any("help" in text.lower() for text in exact_help_texts)
+
+    @pytest.mark.asyncio
+    async def test_complete_slash_empty_for_non_slash(self, adapter):
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.post(
+                "/v1/complete/slash",
+                json={"text": "hello"},
+            )
+            assert resp.status == 200
+            data = await resp.json()
+            assert data.get("items") == []
+
+    @pytest.mark.asyncio
+    async def test_complete_skills_returns_items_for_double_slash(self, adapter, monkeypatch):
+        monkeypatch.setattr(
+            "gateway.platforms.api_server.get_skill_commands",
+            lambda: {
+                "/gif-search": {
+                    "name": "gif-search",
+                    "description": "Search GIFs via Tenor",
+                },
+                "/github-auth": {
+                    "name": "github-auth",
+                    "description": "GitHub auth setup",
+                },
+            },
+            raising=False,
+        )
+
+        def _fake_get_skill_commands():
+            return {
+                "/gif-search": {
+                    "name": "gif-search",
+                    "description": "Search GIFs via Tenor",
+                },
+                "/github-auth": {
+                    "name": "github-auth",
+                    "description": "GitHub auth setup",
+                },
+            }
+
+        import gateway.platforms.api_server as api_server_module
+
+        monkeypatch.setattr(api_server_module, "build_skill_completion_payload", lambda text: {
+            "items": [
+                {
+                    "text": "/gif-search",
+                    "display": "/gif-search",
+                    "meta": "Search GIFs via Tenor",
+                }
+            ],
+            "replace_from": text.rfind("//"),
+        } if "//" in text else {"items": [], "replace_from": 0})
+
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.post(
+                "/v1/complete/skills",
+                json={"text": "Please use //gif"},
+            )
+            assert resp.status == 200
+            data = await resp.json()
+            assert data["object"] == "hermes.skill.completion"
+            assert data["replace_from"] >= 0
+            assert any(item["display"] == "/gif-search" for item in data.get("items", []))
+
+    @pytest.mark.asyncio
+    async def test_slash_help_status_returns_text_type(self, adapter):
+        mock_db = MagicMock()
+        mock_db.get_session_title.return_value = "Slash Session"
+        adapter._session_db = mock_db
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            help_resp = await cli.post(
+                "/v1/slash",
+                headers={"X-Hermes-Session-Id": "sess-slash-1"},
+                json={"command": "/help", "session_id": "sess-slash-1"},
+            )
+            status_resp = await cli.post(
+                "/v1/slash",
+                headers={"X-Hermes-Session-Id": "sess-slash-1"},
+                json={"command": "/status", "session_id": "sess-slash-1"},
+            )
+
+            assert help_resp.status == 200
+            help_data = await help_resp.json()
+            assert help_data["object"] == "hermes.slash.result"
+            assert help_data["type"] == "text"
+            assert "Available commands" in help_data["content"]
+
+            assert status_resp.status == 200
+            status_data = await status_resp.json()
+            assert status_data["object"] == "hermes.slash.result"
+            assert status_data["type"] == "text"
+            assert "Session status" in status_data["content"]
+            assert "sess-slash-1" in status_data["content"]
+        mock_db.get_session_title.assert_called_once_with("sess-slash-1")
+
+    @pytest.mark.asyncio
+    async def test_slash_unknown_returns_error_type(self, adapter):
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(adapter, "_run_agent", new_callable=AsyncMock) as mock_run:
+                resp = await cli.post(
+                    "/v1/slash",
+                    headers={"X-Hermes-Session-Id": "sess-slash-2"},
+                    json={"command": "/definitelynotacommand", "session_id": "sess-slash-2"},
+                )
+                assert resp.status == 200
+                data = await resp.json()
+                assert data["object"] == "hermes.slash.result"
+                assert data["type"] == "error"
+                assert "Unknown command" in data["message"]
+                mock_run.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_slash_clear_clears_session_db(self, auth_adapter):
+        mock_db = MagicMock()
+        auth_adapter._session_db = mock_db
+        app = _create_app(auth_adapter)
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.post(
+                "/v1/slash",
+                headers={
+                    "X-Hermes-Session-Id": "sess-clear-slash",
+                    "Authorization": "Bearer sk-secret",
+                },
+                json={"command": "/clear", "session_id": "sess-clear-slash"},
+            )
+            assert resp.status == 200
+            data = await resp.json()
+            assert data["type"] == "text"
+            assert "cleared" in data["content"].lower()
+            mock_db.clear_messages.assert_called_once_with("sess-clear-slash")
+
+    @pytest.mark.asyncio
+    async def test_slash_model_returns_text_on_active_session(self, adapter):
+        app = _create_app(adapter)
+        with patch.object(
+            adapter,
+            "_apply_session_model_from_slash",
+            return_value=(True, "Session model set to **openai/gpt-4o** for session `sess-model-slash`."),
+        ) as mock_apply:
+            async with TestClient(TestServer(app)) as cli:
+                resp = await cli.post(
+                    "/v1/slash",
+                    headers={"X-Hermes-Session-Id": "sess-model-slash"},
+                    json={"command": "/model gpt-4o", "session_id": "sess-model-slash"},
+                )
+
+                assert resp.status == 200
+                data = await resp.json()
+                assert data["object"] == "hermes.slash.result"
+                assert data["type"] == "text"
+                assert "gpt-4o" in data["content"]
+                mock_apply.assert_called_once_with("sess-model-slash", "gpt-4o")
+
+    @pytest.mark.asyncio
+    async def test_chat_completions_regression(self, adapter):
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(adapter, "_run_agent", new_callable=AsyncMock) as mock_run:
+                resp = await cli.post(
+                    "/v1/chat/completions",
+                    json={
+                        "model": "hermes-agent",
+                        "messages": [{"role": "user", "content": "/help"}],
+                    },
+                )
+
+                assert resp.status == 200
+                data = await resp.json()
+                assert data["object"] == "chat.completion"
+                assert data["choices"][0]["finish_reason"] == "stop"
+                assert data["choices"][0]["message"]["role"] == "assistant"
+                assert "Available commands" in data["choices"][0]["message"]["content"]
+                mock_run.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_commands_include_api_executable_metadata(self, adapter):
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.get("/v1/commands")
+            assert resp.status == 200
+            data = await resp.json()
+            help_item = next(item for item in data["data"] if item["name"] == "/help")
+            assert help_item["apiExecutable"] is True
+            assert help_item["executionSurface"] == "api_server"
+            model_item = next(item for item in data["data"] if item["name"] == "/model")
+            assert model_item["executionSurface"] == "native_app"
+
+    @pytest.mark.asyncio
+    async def test_capabilities_advertises_slash_features(self, adapter):
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.post("/v1/capabilities")
+            assert resp.status == 200
+            data = await resp.json()
+            assert data["features"]["slash_commands"] is True
+            assert data["features"]["slash_completion"] is True
+            assert data["features"]["skill_completion"] is True
+            assert data["features"]["slash_dispatch"] is True
+            assert data["features"]["slash_command_catalog"] is True
+            assert data["features"]["slash_chat_interception"] is True
+            assert data["endpoints"]["slash"]["path"] == "/v1/slash"
+            assert data["endpoints"]["complete_slash"]["path"] == "/v1/complete/slash"

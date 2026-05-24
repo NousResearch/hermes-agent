@@ -1759,7 +1759,13 @@ def _seed_from_env(provider: str, entries: List[PooledCredential]) -> Tuple[bool
     # changes to the .env file.
     def _get_env_prefer_dotenv(key: str) -> str:
         env_file = load_env()
-        val = env_file.get(key) or os.environ.get(key) or ""
+        val = env_file.get(key, "")
+        # Unresolved op:// references in .env are placeholders; the real
+        # secret was resolved into os.environ by _apply_external_secret_sources
+        # at startup. Falling back to os.environ here lets the resolved value win.
+        if val.startswith("op://"):
+            val = ""
+        val = val or os.environ.get(key) or ""
         return val.strip()
 
     # Honour user suppression — `hermes auth remove <provider> <N>` for an

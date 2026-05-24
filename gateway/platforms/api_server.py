@@ -7,7 +7,7 @@ Exposes an HTTP server with endpoints:
 - GET  /v1/responses/{response_id} — Retrieve a stored response
 - DELETE /v1/responses/{response_id} — Delete a stored response
 - GET  /v1/models                  — lists hermes-agent as an available model
-- GET  /v1/capabilities            — machine-readable API capabilities for external UIs
+- GET/POST /v1/capabilities        — machine-readable API capabilities for external UIs
 - POST /v1/runs                    — start a run, returns run_id immediately (202)
 - GET  /v1/runs/{run_id}           — retrieve current run status
 - GET  /v1/runs/{run_id}/events    — SSE stream of structured lifecycle events
@@ -604,6 +604,100 @@ def _derive_chat_session_id(
     return f"api-{digest}"
 
 
+# Slash commands serviceable via POST /v1/slash on the API server.
+API_SERVER_SLASH_COMMANDS = frozenset({
+    "help", "commands", "status", "profile", "yolo", "restart",
+    "new", "reset", "clear", "stop", "steer", "queue",
+})
+
+# Commands the Oryn Workspace app may handle natively (still listed in catalog).
+NATIVE_APP_SLASH_COMMANDS = frozenset({"model"})
+
+
+def _slash_execution_surface(canonical: str) -> tuple[bool, str]:
+    """Return (api_executable, execution_surface) for a canonical command name."""
+    if canonical in NATIVE_APP_SLASH_COMMANDS:
+        return True, "native_app"
+    if canonical in API_SERVER_SLASH_COMMANDS:
+        return True, "api_server"
+    return False, "unavailable"
+
+
+def build_slash_completion_payload(text: str) -> dict:
+    """Build slash completion items for POST /v1/complete/slash."""
+    if not text or not str(text).startswith("/"):
+        return {"items": [], "replace_from": 0}
+
+    text = str(text)
+    try:
+        from hermes_cli.commands import SlashCommandCompleter
+        from prompt_toolkit.document import Document
+        from prompt_toolkit.formatted_text import to_plain_text
+
+        from agent.skill_commands import get_skill_commands
+        from agent.skill_bundles import get_skill_bundles
+
+        completer = SlashCommandCompleter(
+            skill_commands_provider=lambda: get_skill_commands(),
+            skill_bundles_provider=lambda: get_skill_bundles(),
+        )
+        doc = Document(text, len(text))
+        items = [
+            {
+                "text": c.text,
+                "display": c.display or c.text,
+                "meta": to_plain_text(c.display_meta) if c.display_meta else "",
+            }
+            for c in completer.get_completions(doc, None)
+        ][:30]
+        replace_from = text.rfind(" ") + 1 if " " in text else 1
+        return {"items": items, "replace_from": replace_from}
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("slash completion failed: %s", exc)
+        return {"items": [], "replace_from": 1}
+
+
+def build_skill_completion_payload(text: str) -> dict:
+    """Build inline skill picker items for POST /v1/complete/skills."""
+    text = str(text or "")
+    marker = "//"
+    idx = text.rfind(marker)
+    if idx < 0:
+        return {"items": [], "replace_from": 0}
+
+    query = text[idx + len(marker):]
+    if any(ch.isspace() for ch in query):
+        return {"items": [], "replace_from": 0}
+
+    try:
+        from agent.skill_commands import get_skill_commands
+
+        query_lower = query.lower()
+        items = []
+        for cmd, info in sorted(get_skill_commands().items()):
+            cmd_name = cmd.lstrip("/")
+            if query_lower and not (
+                cmd_name.lower().startswith(query_lower)
+                or cmd.lower().startswith(f"/{query_lower}")
+            ):
+                continue
+            description = str(info.get("description") or f"Invoke the {info.get('name', cmd_name)} skill")
+            items.append(
+                {
+                    "text": cmd,
+                    "display": cmd,
+                    "meta": description,
+                }
+            )
+            if len(items) >= 30:
+                break
+
+        return {"items": items, "replace_from": idx}
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("skill completion failed: %s", exc)
+        return {"items": [], "replace_from": idx}
+
+
 _CRON_AVAILABLE = False
 try:
     from cron.jobs import (
@@ -669,6 +763,7 @@ class APIServerAdapter(BasePlatformAdapter):
         # in-flight run by run_id.
         self._run_approval_sessions: Dict[str, str] = {}
         self._session_db: Optional[Any] = None  # Lazy-init SessionDB for session continuity
+        self._session_model_overrides: Dict[str, Dict[str, Any]] = {}
 
     @staticmethod
     def _parse_cors_origins(value: Any) -> tuple[str, ...]:
@@ -853,10 +948,12 @@ class APIServerAdapter(BasePlatformAdapter):
         ephemeral_system_prompt: Optional[str] = None,
         session_id: Optional[str] = None,
         stream_delta_callback=None,
+        reasoning_callback=None,
         tool_progress_callback=None,
         tool_start_callback=None,
         tool_complete_callback=None,
         gateway_session_key: Optional[str] = None,
+        model_override: Optional[str] = None,
     ) -> Any:
         """
         Create an AIAgent instance using the gateway's runtime config.
@@ -879,7 +976,8 @@ class APIServerAdapter(BasePlatformAdapter):
 
         runtime_kwargs = _resolve_runtime_agent_kwargs()
         reasoning_config = GatewayRunner._load_reasoning_config()
-        model = _resolve_gateway_model()
+        model = self._request_model_override(model_override) or _resolve_gateway_model()
+        model, runtime_kwargs = self._apply_session_model_override(session_id, model, runtime_kwargs)
 
         user_config = _load_gateway_config()
         enabled_toolsets = sorted(_get_platform_tools(user_config, "api_server"))
@@ -901,6 +999,7 @@ class APIServerAdapter(BasePlatformAdapter):
             session_id=session_id,
             platform="api_server",
             stream_delta_callback=stream_delta_callback,
+            reasoning_callback=reasoning_callback,
             tool_progress_callback=tool_progress_callback,
             tool_start_callback=tool_start_callback,
             tool_complete_callback=tool_complete_callback,
@@ -910,6 +1009,36 @@ class APIServerAdapter(BasePlatformAdapter):
             gateway_session_key=gateway_session_key,
         )
         return agent
+
+    def _request_model_override(self, requested_model: Optional[str]) -> Optional[str]:
+        """Treat the advertised profile model as an alias for the configured LLM."""
+        if not requested_model:
+            return None
+        model = str(requested_model).strip()
+        if not model or model == self._model_name:
+            return None
+        return model
+
+    def _apply_session_model_override(
+        self,
+        session_id: Optional[str],
+        model: str,
+        runtime_kwargs: Dict[str, Any],
+    ) -> tuple[str, Dict[str, Any]]:
+        """Apply API-server session-scoped model routing overrides."""
+        if not session_id:
+            return model, runtime_kwargs
+
+        override = self._session_model_overrides.get(session_id)
+        if not override:
+            return model, runtime_kwargs
+
+        next_kwargs = dict(runtime_kwargs)
+        model = override.get("model", model)
+        for key in ("provider", "api_key", "base_url", "api_mode"):
+            if key in override and override[key] is not None:
+                next_kwargs[key] = override[key]
+        return model, next_kwargs
 
     # ------------------------------------------------------------------
     # HTTP Handlers
@@ -933,6 +1062,7 @@ class APIServerAdapter(BasePlatformAdapter):
             "status": "ok",
             "platform": "hermes-agent",
             "gateway_state": runtime.get("gateway_state"),
+            "restart_requested": bool(runtime.get("restart_requested", False)),
             "platforms": runtime.get("platforms", {}),
             "active_agents": runtime.get("active_agents", 0),
             "exit_reason": runtime.get("exit_reason"),
@@ -961,8 +1091,411 @@ class APIServerAdapter(BasePlatformAdapter):
             ],
         })
 
+    async def _handle_current_model(self, request: "web.Request") -> "web.Response":
+        """GET /v1/model/current — return the configured gateway model."""
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+
+        try:
+            from hermes_cli.inventory import load_picker_context
+
+            ctx = load_picker_context()
+            return web.json_response({
+                "object": "hermes.model.current",
+                "provider": ctx.current_provider,
+                "model": ctx.current_model,
+                "base_url": ctx.current_base_url,
+            })
+        except Exception as exc:
+            logger.warning("Failed to resolve current API-server model: %s", exc)
+            return web.json_response(_openai_error(str(exc)), status=500)
+
+    async def _handle_set_session_model(self, request: "web.Request") -> "web.Response":
+        """POST /v1/sessions/{session_id}/model — switch one API session."""
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+
+        session_id = str(request.match_info.get("session_id", "")).strip()
+        if not session_id or len(session_id) > self._MAX_SESSION_HEADER_LEN or re.search(r'[\r\n\x00]', session_id):
+            return web.json_response(
+                {"error": {"message": "Invalid session ID", "type": "invalid_request_error"}},
+                status=400,
+            )
+
+        try:
+            body = await request.json()
+        except (json.JSONDecodeError, Exception):
+            return web.json_response(_openai_error("Invalid JSON in request body"), status=400)
+
+        model_input = str(body.get("model") or "").strip()
+        explicit_provider = str(body.get("provider") or "").strip()
+        if not model_input or not explicit_provider:
+            return web.json_response(
+                _openai_error("'provider' and 'model' are required"),
+                status=400,
+            )
+
+        try:
+            from gateway.run import _resolve_gateway_model
+            from hermes_cli.config import get_compatible_custom_providers, load_config
+            from hermes_cli.model_switch import switch_model
+            from hermes_cli.runtime_provider import resolve_runtime_provider
+
+            runtime = resolve_runtime_provider(requested=None)
+            current_api_key = runtime.get("api_key", "")
+            if not callable(current_api_key):
+                current_api_key = str(current_api_key or "")
+
+            cfg = load_config()
+            result = switch_model(
+                raw_input=model_input,
+                current_provider=str(runtime.get("provider", "") or ""),
+                current_model=_resolve_gateway_model(),
+                current_base_url=str(runtime.get("base_url", "") or ""),
+                current_api_key=current_api_key,
+                is_global=False,
+                explicit_provider=explicit_provider,
+                user_providers=cfg.get("providers") if isinstance(cfg.get("providers"), dict) else None,
+                custom_providers=get_compatible_custom_providers(cfg),
+            )
+            if not result.success:
+                return web.json_response(
+                    _openai_error(result.error_message or "model switch failed"),
+                    status=400,
+                )
+
+            self._session_model_overrides[session_id] = {
+                "model": result.new_model,
+                "provider": result.target_provider,
+                "api_key": result.api_key,
+                "base_url": result.base_url,
+                "api_mode": result.api_mode,
+            }
+            return web.json_response({
+                "object": "hermes.session.model",
+                "session_id": session_id,
+                "model": result.new_model,
+                "provider": result.target_provider,
+                "base_url": result.base_url,
+                "api_mode": result.api_mode,
+                "warning": result.warning_message or "",
+            })
+        except Exception as exc:
+            logger.warning("Session model switch failed for %s: %s", session_id, exc)
+            return web.json_response(_openai_error(str(exc)), status=500)
+
+    @staticmethod
+    def _serialize_message_content(content) -> str:
+        if content is None:
+            return ""
+        if isinstance(content, str):
+            return content
+        try:
+            return json.dumps(content, ensure_ascii=False)
+        except (TypeError, ValueError):
+            return str(content)
+
+    async def _handle_list_sessions(self, request: "web.Request") -> "web.Response":
+        """GET /v1/sessions — paginated session list for remote clients."""
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+
+        try:
+            limit = int(request.rel_url.query.get("limit", "50"))
+            offset = int(request.rel_url.query.get("offset", "0"))
+        except (TypeError, ValueError):
+            return web.json_response(_openai_error("Invalid limit or offset"), status=400)
+
+        limit = max(1, min(limit, 200))
+        offset = max(0, offset)
+
+        try:
+            from hermes_state import SessionDB
+
+            db = SessionDB()
+            try:
+                sessions = db.list_sessions_rich(
+                    limit=limit,
+                    offset=offset,
+                    order_by_last_active=True,
+                )
+                total = db.session_count()
+                payload = []
+                for session in sessions:
+                    payload.append({
+                        "id": session.get("id"),
+                        "title": session.get("title"),
+                        "model": session.get("model"),
+                        "preview": session.get("preview"),
+                        "started_at": session.get("started_at"),
+                        "last_active": session.get("last_active"),
+                        "message_count": session.get("message_count"),
+                        "source": session.get("source"),
+                    })
+                return web.json_response({
+                    "object": "list",
+                    "data": payload,
+                    "total": total,
+                    "limit": limit,
+                    "offset": offset,
+                })
+            finally:
+                db.close()
+        except Exception as exc:
+            logger.warning("GET /v1/sessions failed: %s", exc)
+            return web.json_response(_openai_error(str(exc)), status=500)
+
+    async def _handle_get_session(self, request: "web.Request") -> "web.Response":
+        """GET /v1/sessions/{session_id} — session metadata."""
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+
+        session_id = str(request.match_info.get("session_id", "")).strip()
+        if not session_id:
+            return web.json_response(_openai_error("Session ID required"), status=400)
+
+        try:
+            from hermes_state import SessionDB
+
+            db = SessionDB()
+            try:
+                resolved = db.resolve_session_id(session_id)
+                if not resolved:
+                    return web.json_response(_openai_error("Session not found"), status=404)
+                sessions = db.list_sessions_rich(limit=10000, offset=0, include_children=True)
+                match = next((s for s in sessions if s.get("id") == resolved), None)
+                if not match:
+                    return web.json_response(_openai_error("Session not found"), status=404)
+                return web.json_response({
+                    "object": "hermes.session",
+                    "session_id": resolved,
+                    "title": match.get("title"),
+                    "model": match.get("model"),
+                    "preview": match.get("preview"),
+                    "started_at": match.get("started_at"),
+                    "last_active": match.get("last_active"),
+                    "message_count": match.get("message_count"),
+                    "source": match.get("source"),
+                })
+            finally:
+                db.close()
+        except Exception as exc:
+            logger.warning("GET /v1/sessions/{id} failed: %s", exc)
+            return web.json_response(_openai_error(str(exc)), status=500)
+
+    async def _handle_get_session_messages(self, request: "web.Request") -> "web.Response":
+        """GET /v1/sessions/{session_id}/messages — message history for resume/display."""
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+
+        session_id = str(request.match_info.get("session_id", "")).strip()
+        if not session_id:
+            return web.json_response(_openai_error("Session ID required"), status=400)
+
+        try:
+            from hermes_state import SessionDB
+
+            db = SessionDB()
+            try:
+                resolved = db.resolve_session_id(session_id)
+                if not resolved:
+                    return web.json_response(_openai_error("Session not found"), status=404)
+                raw_messages = db.get_messages(resolved)
+                messages = []
+                for msg in raw_messages:
+                    role = msg.get("role")
+                    if role not in ("user", "assistant", "tool"):
+                        continue
+                    item = {
+                        "role": role,
+                        "content": self._serialize_message_content(msg.get("content")),
+                        "timestamp": msg.get("timestamp"),
+                    }
+                    if role == "assistant":
+                        reasoning = msg.get("reasoning")
+                        if reasoning:
+                            item["reasoning"] = reasoning
+                        reasoning_content = msg.get("reasoning_content")
+                        if reasoning_content:
+                            item["reasoning_content"] = reasoning_content
+                        tool_calls = msg.get("tool_calls")
+                        if tool_calls:
+                            item["tool_calls"] = tool_calls
+                    elif role == "tool":
+                        tool_call_id = msg.get("tool_call_id")
+                        if tool_call_id:
+                            item["tool_call_id"] = tool_call_id
+                        tool_name = msg.get("tool_name")
+                        if tool_name:
+                            item["tool_name"] = tool_name
+                    messages.append(item)
+                return web.json_response({
+                    "object": "hermes.session.messages",
+                    "session_id": resolved,
+                    "messages": messages,
+                })
+            finally:
+                db.close()
+        except Exception as exc:
+            logger.warning("GET /v1/sessions/{id}/messages failed: %s", exc)
+            return web.json_response(_openai_error(str(exc)), status=500)
+
+    async def _handle_commands(self, request: "web.Request") -> "web.Response":
+        """GET /v1/commands — Return a dynamic list of active API-callable slash commands."""
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+
+        from hermes_cli.commands import COMMAND_REGISTRY, resolve_command
+        
+        # Emitted command collection mapping
+        data = []
+        emoji_map = {
+            "help": "✨", "commands": "✨",
+            "status": "ℹ️",
+            "profile": "👤",
+            "yolo": "🚀",
+            "clear": "🗑️", "new": "🗑️", "reset": "🗑️",
+            "usage": "📊",
+            "agents": "🤖", "tasks": "🤖",
+            "undo": "⏮️",
+            "fast": "⚡️",
+            "compress": "🗜️",
+            "reload-mcp": "🔌", "reload_mcp": "🔌",
+            "reload-skills": "🎓", "reload_skills": "🎓",
+            "voice": "🎙️",
+            "restart": "🔄",
+            "stop": "🛑",
+            "undo": "⏮️"
+        }
+
+        for cmd in COMMAND_REGISTRY:
+            # Filter out commands that are exclusive to the CLI loop
+            if cmd.cli_only:
+                continue
+
+            emoji = emoji_map.get(cmd.name, "⚙️")
+            api_executable, execution_surface = _slash_execution_surface(cmd.name)
+            data.append({
+                "name": f"/{cmd.name}",
+                "description": cmd.description,
+                "emoji": emoji,
+                "argsHint": cmd.args_hint,
+                "category": cmd.category,
+                "apiExecutable": api_executable,
+                "executionSurface": execution_surface,
+            })
+
+        return web.json_response({
+            "object": "list",
+            "data": data
+        })
+
+    async def _handle_skills(self, request: "web.Request") -> "web.Response":
+        """GET /v1/skills — Return installed skill slash commands for inline pickers."""
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+
+        try:
+            from agent.skill_commands import get_skill_commands
+
+            data = []
+            for cmd, info in sorted(get_skill_commands().items()):
+                cmd_name = cmd.lstrip("/")
+                data.append({
+                    "name": cmd,
+                    "description": str(info.get("description") or f"Invoke the {info.get('name', cmd_name)} skill"),
+                    "displayName": str(info.get("name") or cmd_name),
+                })
+            return web.json_response({
+                "object": "list",
+                "data": data,
+            })
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("skills catalog failed: %s", exc)
+            return web.json_response({"object": "list", "data": []})
+
+    async def _handle_complete_slash(self, request: "web.Request") -> "web.Response":
+        """POST /v1/complete/slash — live slash-command completion."""
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+
+        try:
+            body = await request.json()
+        except (json.JSONDecodeError, Exception):
+            return web.json_response(_openai_error("Invalid JSON in request body"), status=400)
+
+        text = str(body.get("text") or "")
+        payload = build_slash_completion_payload(text)
+        return web.json_response({
+            "object": "hermes.slash.completion",
+            **payload,
+        })
+
+    async def _handle_complete_skills(self, request: "web.Request") -> "web.Response":
+        """POST /v1/complete/skills — inline skill picker completion for // triggers."""
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+
+        try:
+            body = await request.json()
+        except (json.JSONDecodeError, Exception):
+            return web.json_response(_openai_error("Invalid JSON in request body"), status=400)
+
+        text = str(body.get("text") or "")
+        payload = build_skill_completion_payload(text)
+        return web.json_response({
+            "object": "hermes.skill.completion",
+            **payload,
+        })
+
+    async def _handle_slash(self, request: "web.Request") -> "web.Response":
+        """POST /v1/slash — structured slash-command dispatch."""
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+
+        try:
+            body = await request.json()
+        except (json.JSONDecodeError, Exception):
+            return web.json_response(_openai_error("Invalid JSON in request body"), status=400)
+
+        command = str(body.get("command") or "").strip()
+        if not command:
+            return web.json_response(_openai_error("'command' is required"), status=400)
+
+        session_id = str(body.get("session_id") or "").strip()
+        if not session_id:
+            session_id = request.headers.get("X-Hermes-Session-Id", "").strip()
+        if not session_id or len(session_id) > self._MAX_SESSION_HEADER_LEN or re.search(r'[\r\n\x00]', session_id):
+            return web.json_response(
+                _openai_error("Valid session_id is required"),
+                status=400,
+            )
+
+        gateway_session_key, key_err = self._parse_session_key_header(request)
+        if key_err:
+            return key_err
+
+        result = self._dispatch_slash_command(
+            command, session_id, gateway_session_key=gateway_session_key,
+        )
+        return web.json_response({
+            "object": "hermes.slash.result",
+            **result,
+        })
+
+
     async def _handle_capabilities(self, request: "web.Request") -> "web.Response":
-        """GET /v1/capabilities — advertise the stable API surface.
+        """GET/POST /v1/capabilities — advertise the stable API surface.
 
         External UIs and orchestrators use this endpoint to discover the API
         server's plugin-safe contract without scraping docs or assuming that
@@ -1002,14 +1535,29 @@ class APIServerAdapter(BasePlatformAdapter):
                 "run_approval_response": True,
                 "tool_progress_events": True,
                 "approval_events": True,
+                "session_model_selection": True,
                 "session_continuity_header": "X-Hermes-Session-Id",
                 "session_key_header": "X-Hermes-Session-Key",
+                "slash_commands": True,
+                "slash_completion": True,
+                "skill_completion": True,
+                "slash_dispatch": True,
+                "slash_command_catalog": True,
+                "slash_chat_interception": True,
+                "slash_execution": "full",
                 "cors": bool(self._cors_origins),
             },
             "endpoints": {
                 "health": {"method": "GET", "path": "/health"},
                 "health_detailed": {"method": "GET", "path": "/health/detailed"},
                 "models": {"method": "GET", "path": "/v1/models"},
+                "current_model": {"method": "GET", "path": "/v1/model/current"},
+                "session_model": {"method": "POST", "path": "/v1/sessions/{session_id}/model"},
+                "commands": {"method": "GET", "path": "/v1/commands"},
+                "skills": {"method": "GET", "path": "/v1/skills"},
+                "complete_slash": {"method": "POST", "path": "/v1/complete/slash"},
+                "complete_skills": {"method": "POST", "path": "/v1/complete/skills"},
+                "slash": {"method": "POST", "path": "/v1/slash"},
                 "chat_completions": {"method": "POST", "path": "/v1/chat/completions"},
                 "responses": {"method": "POST", "path": "/v1/responses"},
                 "runs": {"method": "POST", "path": "/v1/runs"},
@@ -1019,6 +1567,464 @@ class APIServerAdapter(BasePlatformAdapter):
                 "run_stop": {"method": "POST", "path": "/v1/runs/{run_id}/stop"},
             },
         })
+
+    # ------------------------------------------------------------------
+    # Server-side slash commands
+    # ------------------------------------------------------------------
+
+    def _is_api_slash_command(self, text: Any) -> bool:
+        """Return True when ``text`` is a recognised gateway slash command.
+
+        The chat-completions / responses handlers use this to intercept
+        commands such as ``/help`` or ``/new`` and answer them
+        server-side instead of forwarding them to the agent loop.
+        """
+        raw_text = ""
+        if isinstance(text, str):
+            raw_text = text
+        elif isinstance(text, list):
+            for part in text:
+                if isinstance(part, dict) and part.get("type") == "text":
+                    raw_text = part.get("text", "")
+                    break
+        
+        raw_text = raw_text.strip()
+        if not raw_text or not raw_text.startswith("/"):
+            return False
+            
+        parts = raw_text.split(maxsplit=1)
+        cmd_name = parts[0][1:].lower()
+        from hermes_cli.commands import resolve_command
+        return resolve_command(cmd_name) is not None
+
+    def _find_active_run_id_for_session(self, session_id: str) -> Optional[str]:
+        """Return the run/completion id for an in-flight agent turn on a session."""
+        if not session_id:
+            return None
+        for run_id, status in self._run_statuses.items():
+            if status.get("session_id") != session_id:
+                continue
+            if status.get("status") in {"running", "waiting_for_approval", "stopping"}:
+                return run_id
+        return None
+
+    def _interrupt_run(self, run_id: str) -> str:
+        """Stop an active run by id; returns user-facing markdown."""
+        agent = self._active_run_agents.get(run_id)
+        task = self._active_run_tasks.get(run_id)
+
+        if agent is None and task is None:
+            return f"No active run found for `{run_id}`."
+
+        self._set_run_status(run_id, "stopping", last_event="run.stopping")
+
+        if agent is not None:
+            try:
+                agent.interrupt("Stop requested via slash command")
+            except Exception:  # noqa: BLE001
+                pass
+
+        if task is not None and not task.done():
+            task.cancel()
+
+        return f"Stop requested for run `{run_id}`."
+
+    def _apply_session_model_from_slash(
+        self, session_id: str, model_arg: str,
+    ) -> tuple[bool, str]:
+        """Apply a /model slash argument to a session override."""
+        model_arg = (model_arg or "").strip()
+        if not model_arg:
+            return False, "usage: /model <provider/model> or /model <model-name>"
+
+        try:
+            from gateway.run import _resolve_gateway_model
+            from hermes_cli.config import get_compatible_custom_providers, load_config
+            from hermes_cli.model_switch import switch_model
+            from hermes_cli.runtime_provider import resolve_runtime_provider
+
+            runtime = resolve_runtime_provider(requested=None)
+            current_api_key = runtime.get("api_key", "")
+            if not callable(current_api_key):
+                current_api_key = str(current_api_key or "")
+
+            cfg = load_config()
+            explicit_provider = ""
+            model_input = model_arg
+            if "/" in model_arg and not model_arg.startswith("/"):
+                explicit_provider, _, model_input = model_arg.partition("/")
+                explicit_provider = explicit_provider.strip()
+                model_input = model_input.strip()
+
+            result = switch_model(
+                raw_input=model_input,
+                current_provider=str(runtime.get("provider", "") or ""),
+                current_model=_resolve_gateway_model(),
+                current_base_url=str(runtime.get("base_url", "") or ""),
+                current_api_key=current_api_key,
+                is_global=False,
+                explicit_provider=explicit_provider,
+                user_providers=cfg.get("providers") if isinstance(cfg.get("providers"), dict) else None,
+                custom_providers=get_compatible_custom_providers(cfg),
+            )
+            if not result.success:
+                return False, result.error_message or "model switch failed"
+
+            self._session_model_overrides[session_id] = {
+                "model": result.new_model,
+                "provider": result.target_provider,
+                "api_key": result.api_key,
+                "base_url": result.base_url,
+                "api_mode": result.api_mode,
+            }
+            return True, (
+                f"Session model set to **{result.target_provider}/{result.new_model}** "
+                f"for session `{session_id}`."
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("slash /model failed for %s: %s", session_id, exc)
+            return False, f"Could not switch model: {exc}"
+
+    def _dispatch_slash_command(
+        self,
+        command_text: str,
+        session_id: str,
+        gateway_session_key: str = None,
+    ) -> dict:
+        """Dispatch a slash command and return a structured result dict."""
+        command_text = (command_text or "").strip()
+        if not command_text.startswith("/"):
+            return {"type": "error", "message": "Not a slash command."}
+
+        parts = command_text.split(maxsplit=1)
+        cmd_name = parts[0][1:].lower()
+        cmd_arg = parts[1] if len(parts) > 1 else ""
+
+        # quick_commands
+        try:
+            from hermes_cli.config import load_config
+
+            qcmds = load_config().get("quick_commands", {}) or {}
+            if isinstance(qcmds, dict) and cmd_name in qcmds:
+                qc = qcmds[cmd_name]
+                if isinstance(qc, dict) and qc.get("type") == "alias":
+                    return {"type": "alias", "target": str(qc.get("target", ""))}
+                if isinstance(qc, dict) and qc.get("type") == "exec":
+                    import subprocess
+
+                    proc = subprocess.run(
+                        str(qc.get("command", "")),
+                        shell=True,
+                        capture_output=True,
+                        text=True,
+                        timeout=30,
+                    )
+                    output = (
+                        (proc.stdout or "")
+                        + ("\n" if proc.stdout and proc.stderr else "")
+                        + (proc.stderr or "")
+                    ).strip()[:4000]
+                    if proc.returncode != 0:
+                        return {
+                            "type": "error",
+                            "message": output or f"quick command failed with exit code {proc.returncode}",
+                        }
+                    return {"type": "text", "content": output or "(no output)"}
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("quick_commands dispatch failed: %s", exc)
+
+        # plugin commands
+        try:
+            from hermes_cli.plugins import (
+                get_plugin_command_handler,
+                resolve_plugin_command_result,
+            )
+
+            handler = get_plugin_command_handler(cmd_name)
+            if handler:
+                result = resolve_plugin_command_result(handler(cmd_arg))
+                return {"type": "text", "content": str(result or "(no output)")}
+        except Exception:  # noqa: BLE001
+            pass
+
+        # skill commands
+        try:
+            from agent.skill_commands import (
+                build_skill_invocation_message,
+                scan_skill_commands,
+            )
+
+            skill_key = f"/{cmd_name}"
+            skill_cmds = scan_skill_commands()
+            if skill_key in skill_cmds:
+                msg = build_skill_invocation_message(
+                    skill_key, cmd_arg, task_id=session_id or "",
+                )
+                if msg:
+                    return {
+                        "type": "skill",
+                        "message": msg,
+                        "name": skill_cmds[skill_key].get("name", cmd_name),
+                    }
+        except Exception:  # noqa: BLE001
+            pass
+
+        from hermes_cli.commands import resolve_command
+
+        cmd = resolve_command(cmd_name)
+        canonical = cmd.name if cmd is not None else cmd_name
+
+        if cmd is None and cmd_name not in NATIVE_APP_SLASH_COMMANDS:
+            return {
+                "type": "error",
+                "message": f"Unknown command `/{cmd_name}`. Send `/help` for available commands.",
+            }
+
+        if canonical == "queue" or cmd_name in {"queue", "q"}:
+            if not cmd_arg:
+                return {"type": "error", "message": "usage: /queue <prompt>"}
+            return {"type": "send", "message": cmd_arg}
+
+        if canonical == "steer":
+            if not cmd_arg:
+                return {"type": "error", "message": "usage: /steer <prompt>"}
+            run_id = self._find_active_run_id_for_session(session_id)
+            agent = self._active_run_agents.get(run_id) if run_id else None
+            if agent is not None and hasattr(agent, "steer"):
+                try:
+                    if agent.steer(cmd_arg):
+                        preview = cmd_arg[:80] + ("..." if len(cmd_arg) > 80 else "")
+                        return {
+                            "type": "text",
+                            "content": (
+                                f"Steer queued — arrives after the next tool call: {preview}"
+                            ),
+                        }
+                except Exception as exc:  # noqa: BLE001
+                    logger.debug("steer failed: %s", exc)
+            return {"type": "send", "message": cmd_arg}
+
+        if canonical == "stop":
+            run_id = self._find_active_run_id_for_session(session_id)
+            if not run_id:
+                return {"type": "error", "message": "No active agent run to stop for this session."}
+            content = self._interrupt_run(run_id)
+            return {"type": "text", "content": content}
+
+        if canonical == "model":
+            ok, message = self._apply_session_model_from_slash(session_id, cmd_arg)
+            if ok:
+                return {"type": "text", "content": message}
+            return {"type": "error", "message": message}
+
+        if canonical in ("help", "commands"):
+            from hermes_cli.commands import gateway_help_lines
+
+            lines = gateway_help_lines()
+            body = "\n".join(f"- {ln}" for ln in lines) or "_(no commands available)_"
+            return {"type": "text", "content": "**Available commands**\n\n" + body}
+
+        if canonical == "status":
+            title = None
+            try:
+                db = self._ensure_session_db()
+                if db is not None:
+                    title = db.get_session_title(session_id)
+            except Exception as exc:  # noqa: BLE001
+                logger.debug("status command: could not load session title: %s", exc)
+            content = "**Session status**\n\n" + "\n".join([
+                f"- **Session ID:** `{session_id}`",
+                f"- **Title:** {title or '(untitled)'}",
+                "- **Platform:** API Server",
+            ])
+            return {"type": "text", "content": content}
+
+        if canonical == "profile":
+            try:
+                from hermes_cli.profiles import get_active_profile_name
+
+                profile_name = get_active_profile_name()
+            except Exception as exc:  # noqa: BLE001
+                logger.debug("profile command: could not resolve profile: %s", exc)
+                profile_name = "unknown"
+            try:
+                from hermes_constants import get_hermes_home
+
+                home = str(get_hermes_home())
+            except Exception:  # noqa: BLE001
+                home = os.path.expanduser("~/.hermes")
+            return {
+                "type": "text",
+                "content": (
+                    "**Active profile**\n\n"
+                    f"- **Profile:** `{profile_name}`\n"
+                    f"- **Home:** `{home}`"
+                ),
+            }
+
+        if canonical == "yolo":
+            key = gateway_session_key or session_id
+            try:
+                from tools import approval
+
+                if approval.is_session_yolo_enabled(key):
+                    approval.disable_session_yolo(key)
+                    return {"type": "text", "content": "YOLO mode **disabled** for this session."}
+                approval.enable_session_yolo(key)
+                return {
+                    "type": "text",
+                    "content": (
+                        "YOLO mode **enabled** for this session — tool "
+                        "approvals will be auto-accepted."
+                    ),
+                }
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("yolo command failed: %s", exc)
+                return {"type": "error", "message": f"Could not toggle YOLO mode: {exc}"}
+
+        if canonical == "restart":
+            try:
+                import weakref
+
+                from gateway.run import _gateway_runner_ref
+
+                runner = _gateway_runner_ref()
+                if runner is not None:
+                    runner.request_restart(detached=True)
+                    return {
+                        "type": "text",
+                        "content": "Restart requested! Reloading the Hermes Gateway proxy...",
+                    }
+                import subprocess
+
+                subprocess.Popen(
+                    "hermes gateway restart",
+                    shell=True,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                    start_new_session=True,
+                )
+                return {
+                    "type": "text",
+                    "content": "Restart requested! Relaunching gateway via CLI helper...",
+                }
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("api_server restart slash command failed: %s", exc)
+                return {"type": "error", "message": f"Could not request restart: {exc}"}
+
+        if canonical in ("new", "reset", "clear"):
+            try:
+                db = self._ensure_session_db()
+                if db is None:
+                    return {
+                        "type": "text",
+                        "content": "Conversation cleared (no session database configured).",
+                    }
+                db.clear_messages(session_id)
+                return {
+                    "type": "text",
+                    "content": (
+                        f"Conversation cleared. Session `{session_id}` now has "
+                        "no messages."
+                    ),
+                }
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("clear command failed for %s: %s", session_id, exc)
+                return {"type": "error", "message": f"Could not clear the conversation: {exc}"}
+
+        return {
+            "type": "error",
+            "message": (
+                f"The command `/{cmd_name}` is recognised but is not available "
+                "over the API server. Send `/help` for the list of supported "
+                "commands."
+            ),
+        }
+
+    def _execute_api_slash_command(
+        self, command_text: str, session_id: str, gateway_session_key: str = None
+    ) -> str:
+        """Execute a recognised gateway slash command server-side.
+
+        Returns a markdown string suitable for handing straight back to an
+        OpenAI-compatible client as assistant message content.
+        """
+        result = self._dispatch_slash_command(
+            command_text, session_id, gateway_session_key=gateway_session_key,
+        )
+        result_type = result.get("type")
+        if result_type == "text":
+            return str(result.get("content") or "")
+        if result_type == "error":
+            return str(result.get("message") or "Command failed.")
+        if result_type == "send":
+            return f"Queued message for next turn: {result.get('message', '')}"
+        if result_type == "skill":
+            return str(result.get("message") or "")
+        if result_type == "alias":
+            target = str(result.get("target") or "").strip()
+            if target:
+                return self._execute_api_slash_command(
+                    target if target.startswith("/") else f"/{target}",
+                    session_id,
+                    gateway_session_key=gateway_session_key,
+                )
+        return str(result.get("message") or result.get("content") or "Command failed.")
+
+    async def _api_slash_command_chat_response(
+        self,
+        request: "web.Request",
+        command_feedback: str,
+        *,
+        stream: bool,
+        completion_id: str,
+        model_name: str,
+        created: int,
+        session_id: str,
+        gateway_session_key: str = None,
+    ) -> "web.Response":
+        """Pack a slash-command result into a Chat Completions response.
+
+        Non-streaming returns an immediate OpenAI ``chat.completion``
+        JSON body.  Streaming feeds the markdown through a one-shot queue
+        and an already-resolved ``agent_task`` future so the existing SSE
+        writer streams it without ever spawning the agent.
+        """
+        if stream:
+            import queue as _q
+            cmd_q: "_q.Queue" = _q.Queue()
+            cmd_q.put(command_feedback)
+            cmd_q.put(None)  # EOS sentinel
+            done_task: "asyncio.Future" = asyncio.get_running_loop().create_future()
+            # _write_sse_chat_completion does `result, usage = await agent_task`.
+            done_task.set_result((
+                {"final_response": command_feedback},
+                {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0},
+            ))
+            return await self._write_sse_chat_completion(
+                request, completion_id, model_name, created, cmd_q,
+                done_task, None, session_id=session_id,
+                gateway_session_key=gateway_session_key,
+            )
+
+        response_headers = {"X-Hermes-Session-Id": session_id}
+        if gateway_session_key:
+            response_headers["X-Hermes-Session-Key"] = gateway_session_key
+        response_data = {
+            "id": completion_id,
+            "object": "chat.completion",
+            "created": created,
+            "model": model_name,
+            "choices": [
+                {
+                    "index": 0,
+                    "message": {"role": "assistant", "content": command_feedback},
+                    "finish_reason": "stop",
+                }
+            ],
+            "usage": {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
+        }
+        return web.json_response(response_data, headers=response_headers)
 
     async def _handle_chat_completions(self, request: "web.Request") -> "web.Response":
         """POST /v1/chat/completions — OpenAI Chat Completions format."""
@@ -1138,9 +2144,33 @@ class APIServerAdapter(BasePlatformAdapter):
         model_name = body.get("model", self._model_name)
         created = int(time.time())
 
+        # ── Server-side slash command interception ──
+        # Recognised gateway commands (/help, /status, /new, …) are
+        # answered by the API server directly and never reach the agent.
+        if self._is_api_slash_command(user_message):
+            command_feedback = self._execute_api_slash_command(
+                user_message, session_id, gateway_session_key=gateway_session_key,
+            )
+            return await self._api_slash_command_chat_response(
+                request, command_feedback,
+                stream=stream, completion_id=completion_id,
+                model_name=model_name, created=created,
+                session_id=session_id, gateway_session_key=gateway_session_key,
+            )
+
         if stream:
             import queue as _q
             _stream_q: _q.Queue = _q.Queue()
+            approval_session_key = gateway_session_key or session_id or completion_id
+            self._run_approval_sessions[completion_id] = approval_session_key
+            self._set_run_status(
+                completion_id,
+                "running",
+                created_at=time.time(),
+                session_id=session_id,
+                model=model_name,
+                gateway_session_key=gateway_session_key,
+            )
 
             def _on_delta(delta):
                 # Filter out None — the agent fires stream_delta_callback(None)
@@ -1153,11 +2183,46 @@ class APIServerAdapter(BasePlatformAdapter):
                 if delta is not None:
                     _stream_q.put(delta)
 
+            def _on_reasoning(delta):
+                if delta:
+                    _stream_q.put(("__reasoning_delta__", {"text": delta}))
+
             # Track which tool_call_ids we've emitted a "running" lifecycle
             # event for, so a "completed" event without a matching "running"
             # (e.g. internal/filtered tools) is silently dropped instead of
             # producing an orphaned event clients can't correlate.
             _started_tool_call_ids: set[str] = set()
+            _legacy_started_tools: set[str] = set()
+            _legacy_completed_tools: set[str] = set()
+
+            def _on_tool_progress(event_type, tool_name=None, preview=None, args=None, **kwargs):
+                """Bridge legacy tool progress into chat-completions SSE.
+
+                Hermes still emits some user-visible tool activity through the
+                legacy progress callback before structured tool callbacks fire.
+                Prefer this path for display labels, then suppress the later
+                structured duplicate for the same tool name.
+                """
+                if event_type == "reasoning.available" and preview:
+                    _stream_q.put(("__reasoning_delta__", {"text": preview}))
+                    return
+                if not tool_name or str(tool_name).startswith("_"):
+                    return
+                if event_type == "tool.started":
+                    _legacy_started_tools.add(tool_name)
+                    from agent.display import get_tool_emoji
+                    _stream_q.put(("__tool_progress__", {
+                        "tool": tool_name,
+                        "emoji": get_tool_emoji(tool_name),
+                        "label": preview or tool_name,
+                        "status": "running",
+                    }))
+                elif event_type == "tool.completed":
+                    _legacy_completed_tools.add(tool_name)
+                    _stream_q.put(("__tool_progress__", {
+                        "tool": tool_name,
+                        "status": "failed" if kwargs.get("is_error") else "completed",
+                    }))
 
             def _on_tool_start(tool_call_id, function_name, function_args):
                 """Emit ``hermes.tool.progress`` with ``status: running``.
@@ -1175,6 +2240,8 @@ class APIServerAdapter(BasePlatformAdapter):
                 if not tool_call_id or function_name.startswith("_"):
                     return
                 _started_tool_call_ids.add(tool_call_id)
+                if function_name in _legacy_started_tools:
+                    return
                 from agent.display import build_tool_preview, get_tool_emoji
                 label = build_tool_preview(function_name, function_args) or function_name
                 _stream_q.put(("__tool_progress__", {
@@ -1195,11 +2262,29 @@ class APIServerAdapter(BasePlatformAdapter):
                 if not tool_call_id or tool_call_id not in _started_tool_call_ids:
                     return
                 _started_tool_call_ids.discard(tool_call_id)
+                if function_name in _legacy_completed_tools:
+                    return
                 _stream_q.put(("__tool_progress__", {
                     "tool": function_name,
                     "toolCallId": tool_call_id,
                     "status": "completed",
                 }))
+
+            def _on_approval_request(approval_data: Dict[str, Any]) -> None:
+                event = dict(approval_data or {})
+                event.update({
+                    "run_id": completion_id,
+                    "session_id": session_id,
+                    "gateway_session_key": gateway_session_key,
+                    "timestamp": time.time(),
+                    "choices": ["once", "session", "always", "deny"],
+                })
+                self._set_run_status(
+                    completion_id,
+                    "waiting_for_approval",
+                    last_event="approval.request",
+                )
+                _stream_q.put(("__approval_request__", event))
 
             # Start agent in background.  agent_ref is a mutable container
             # so the SSE writer can interrupt the agent on client disconnect.
@@ -1216,14 +2301,25 @@ class APIServerAdapter(BasePlatformAdapter):
                 ephemeral_system_prompt=system_prompt,
                 session_id=session_id,
                 stream_delta_callback=_on_delta,
+                reasoning_callback=_on_reasoning,
+                tool_progress_callback=_on_tool_progress,
                 tool_start_callback=_on_tool_start,
                 tool_complete_callback=_on_tool_complete,
                 agent_ref=agent_ref,
                 gateway_session_key=gateway_session_key,
+                model_override=model_name,
+                approval_notify_callback=_on_approval_request,
+                run_id=completion_id,
             ))
-            # Ensure SSE drain loops can terminate without relying on polling
-            # agent_task.done(), which can race with queue timeout checks.
-            agent_task.add_done_callback(lambda _fut: _stream_q.put(None))
+            self._active_run_tasks[completion_id] = agent_task
+
+            def _cleanup_chat_run(_fut):
+                _stream_q.put(None)
+                self._active_run_tasks.pop(completion_id, None)
+                self._active_run_agents.pop(completion_id, None)
+                self._set_run_status(completion_id, "completed", last_event="run.completed")
+
+            agent_task.add_done_callback(_cleanup_chat_run)
 
             return await self._write_sse_chat_completion(
                 request, completion_id, model_name, created, _stream_q,
@@ -1239,6 +2335,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 ephemeral_system_prompt=system_prompt,
                 session_id=session_id,
                 gateway_session_key=gateway_session_key,
+                model_override=model_name,
             )
 
         idempotency_key = request.headers.get("Idempotency-Key")
@@ -1389,16 +2486,26 @@ class APIServerAdapter(BasePlatformAdapter):
                 """Write a single queue item to the SSE stream.
 
                 Plain strings are sent as normal ``delta.content`` chunks.
-                Tagged tuples ``("__tool_progress__", payload)`` are sent
-                as a custom ``event: hermes.tool.progress`` SSE event so
-                frontends can display them without storing the markers in
-                conversation history.  See #6972 for the original event,
-                #16588 for the ``toolCallId``/``status`` lifecycle fields.
+                Tagged tuples are sent as custom SSE events so frontends can
+                display auxiliary agent state without storing markers in
+                conversation history. Tool progress uses
+                ``hermes.tool.progress`` (see #6972 / #16588), and reasoning
+                deltas use ``hermes.reasoning.delta`` for live thought panels.
                 """
                 if isinstance(item, tuple) and len(item) == 2 and item[0] == "__tool_progress__":
                     event_data = json.dumps(item[1])
                     await response.write(
                         f"event: hermes.tool.progress\ndata: {event_data}\n\n".encode()
+                    )
+                elif isinstance(item, tuple) and len(item) == 2 and item[0] == "__reasoning_delta__":
+                    event_data = json.dumps(item[1])
+                    await response.write(
+                        f"event: hermes.reasoning.delta\ndata: {event_data}\n\n".encode()
+                    )
+                elif isinstance(item, tuple) and len(item) == 2 and item[0] == "__approval_request__":
+                    event_data = json.dumps(item[1])
+                    await response.write(
+                        f"event: approval.request\ndata: {event_data}\n\n".encode()
                     )
                 else:
                     content_chunk = {
@@ -1441,8 +2548,29 @@ class APIServerAdapter(BasePlatformAdapter):
             try:
                 result, agent_usage = await agent_task
                 usage = agent_usage or usage
+                if isinstance(result, dict) and result.get("failed"):
+                    self._set_run_status(
+                        completion_id,
+                        "failed",
+                        error=result.get("error") or "agent run failed",
+                        last_event="run.failed",
+                    )
+                else:
+                    self._set_run_status(
+                        completion_id,
+                        "completed",
+                        output=(result.get("final_response", "") if isinstance(result, dict) else ""),
+                        usage=usage,
+                        last_event="run.completed",
+                    )
             except Exception as exc:
                 logger.warning("Agent task %s failed, usage data lost: %s", completion_id, exc)
+                self._set_run_status(
+                    completion_id,
+                    "failed",
+                    error=str(exc),
+                    last_event="run.failed",
+                )
 
             # Finish chunk
             finish_chunk = {
@@ -1490,6 +2618,9 @@ class APIServerAdapter(BasePlatformAdapter):
                 await response.write(b"data: [DONE]\n\n")
             except Exception:
                 pass
+
+        finally:
+            self._run_approval_sessions.pop(completion_id, None)
 
         return response
 
@@ -2200,6 +3331,65 @@ class APIServerAdapter(BasePlatformAdapter):
         session_id = stored_session_id or str(uuid.uuid4())
 
         stream = _coerce_request_bool(body.get("stream"), default=False)
+
+        # ── Server-side slash command interception ──
+        # Mirrors _handle_chat_completions: recognised gateway commands are
+        # answered by the API server directly, packed into the Responses
+        # API payload shape, and never reach the agent.
+        if self._is_api_slash_command(user_message):
+            command_feedback = self._execute_api_slash_command(
+                user_message, session_id, gateway_session_key=gateway_session_key,
+            )
+            response_id = f"resp_{uuid.uuid4().hex[:28]}"
+            created_at = int(time.time())
+            model_name = body.get("model", self._model_name)
+            if stream:
+                import queue as _q
+                cmd_q: "_q.Queue" = _q.Queue()
+                cmd_q.put(command_feedback)
+                cmd_q.put(None)  # EOS sentinel
+                done_task: "asyncio.Future" = asyncio.get_running_loop().create_future()
+                # _write_sse_responses does `result, usage = await agent_task`.
+                done_task.set_result((
+                    {"final_response": command_feedback},
+                    {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0},
+                ))
+                return await self._write_sse_responses(
+                    request=request,
+                    response_id=response_id,
+                    model=model_name,
+                    created_at=created_at,
+                    stream_q=cmd_q,
+                    agent_task=done_task,
+                    agent_ref=[None],
+                    conversation_history=conversation_history,
+                    user_message=user_message,
+                    instructions=instructions,
+                    conversation=conversation,
+                    store=store,
+                    session_id=session_id,
+                    gateway_session_key=gateway_session_key,
+                )
+            response_data = {
+                "id": response_id,
+                "object": "response",
+                "status": "completed",
+                "created_at": created_at,
+                "model": model_name,
+                "output": [
+                    {
+                        "type": "message",
+                        "role": "assistant",
+                        "content": [{"type": "output_text", "text": command_feedback}],
+                    }
+                ],
+                "usage": {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0},
+            }
+            response_headers = {"X-Hermes-Session-Id": session_id}
+            if gateway_session_key:
+                response_headers["X-Hermes-Session-Key"] = gateway_session_key
+            return web.json_response(response_data, headers=response_headers)
+
         if stream:
             # Streaming branch — emit OpenAI Responses SSE events as the
             # agent runs so frontends can render text deltas and tool
@@ -2738,11 +3928,15 @@ class APIServerAdapter(BasePlatformAdapter):
         ephemeral_system_prompt: Optional[str] = None,
         session_id: Optional[str] = None,
         stream_delta_callback=None,
+        reasoning_callback=None,
         tool_progress_callback=None,
         tool_start_callback=None,
         tool_complete_callback=None,
         agent_ref: Optional[list] = None,
         gateway_session_key: Optional[str] = None,
+        model_override: Optional[str] = None,
+        approval_notify_callback=None,
+        run_id: Optional[str] = None,
     ) -> tuple:
         """
         Create an agent and run a conversation in a thread executor.
@@ -2758,35 +3952,78 @@ class APIServerAdapter(BasePlatformAdapter):
         loop = asyncio.get_running_loop()
 
         def _run():
+            approval_session_key = gateway_session_key or session_id or ""
+            approval_token = None
+            session_tokens = []
             agent = self._create_agent(
                 ephemeral_system_prompt=ephemeral_system_prompt,
                 session_id=session_id,
                 stream_delta_callback=stream_delta_callback,
+                reasoning_callback=reasoning_callback,
                 tool_progress_callback=tool_progress_callback,
                 tool_start_callback=tool_start_callback,
                 tool_complete_callback=tool_complete_callback,
                 gateway_session_key=gateway_session_key,
+                model_override=model_override,
             )
             if agent_ref is not None:
                 agent_ref[0] = agent
+            if run_id:
+                self._active_run_agents[run_id] = agent
             effective_task_id = session_id or str(uuid.uuid4())
-            result = agent.run_conversation(
-                user_message=user_message,
-                conversation_history=conversation_history,
-                task_id=effective_task_id,
-            )
-            usage = {
-                "input_tokens": getattr(agent, "session_prompt_tokens", 0) or 0,
-                "output_tokens": getattr(agent, "session_completion_tokens", 0) or 0,
-                "total_tokens": getattr(agent, "session_total_tokens", 0) or 0,
-            }
-            # Include the effective session ID in the result so callers
-            # (e.g. X-Hermes-Session-Id header) can track compression-
-            # triggered session rotations. (#16938)
-            _eff_sid = getattr(agent, "session_id", session_id)
-            if isinstance(_eff_sid, str) and _eff_sid:
-                result["session_id"] = _eff_sid
-            return result, usage
+            try:
+                if approval_session_key:
+                    try:
+                        from gateway.session_context import clear_session_vars, set_session_vars
+                        from tools.approval import (
+                            register_gateway_notify,
+                            reset_current_session_key,
+                            set_current_session_key,
+                            unregister_gateway_notify,
+                        )
+
+                        approval_token = set_current_session_key(approval_session_key)
+                        session_tokens = set_session_vars(
+                            platform="api_server",
+                            session_key=approval_session_key,
+                        )
+                        if approval_notify_callback is not None:
+                            register_gateway_notify(approval_session_key, approval_notify_callback)
+                    except Exception:
+                        logger.debug("Failed to bind API server approval context", exc_info=True)
+
+                result = agent.run_conversation(
+                    user_message=user_message,
+                    conversation_history=conversation_history,
+                    task_id=effective_task_id,
+                )
+                usage = {
+                    "input_tokens": getattr(agent, "session_prompt_tokens", 0) or 0,
+                    "output_tokens": getattr(agent, "session_completion_tokens", 0) or 0,
+                    "total_tokens": getattr(agent, "session_total_tokens", 0) or 0,
+                }
+                # Include the effective session ID in the result so callers
+                # (e.g. X-Hermes-Session-Id header) can track compression-
+                # triggered session rotations. (#16938)
+                _eff_sid = getattr(agent, "session_id", session_id)
+                if isinstance(_eff_sid, str) and _eff_sid:
+                    result["session_id"] = _eff_sid
+                return result, usage
+            finally:
+                if run_id:
+                    self._active_run_agents.pop(run_id, None)
+                if approval_session_key:
+                    try:
+                        from gateway.session_context import clear_session_vars
+                        from tools.approval import reset_current_session_key, unregister_gateway_notify
+
+                        unregister_gateway_notify(approval_session_key)
+                        if approval_token is not None:
+                            reset_current_session_key(approval_token)
+                        if session_tokens:
+                            clear_session_vars(session_tokens)
+                    except Exception:
+                        pass
 
         return await loop.run_in_executor(None, _run)
 
@@ -2812,6 +4049,20 @@ class APIServerAdapter(BasePlatformAdapter):
         current.update(fields)
         self._run_statuses[run_id] = current
         return current
+
+    def _resolve_active_approval_session_key(self, run_id: str) -> Optional[str]:
+        """Find the approval session key for a run/completion/session identifier."""
+        direct = self._run_approval_sessions.get(run_id)
+        if direct:
+            return direct
+
+        for active_id, session_key in list(self._run_approval_sessions.items()):
+            if run_id == session_key:
+                return session_key
+            status = self._run_statuses.get(active_id) or {}
+            if run_id == status.get("session_id") or run_id == status.get("gateway_session_key"):
+                return session_key
+        return None
 
     def _make_run_event_callback(self, run_id: str, loop: "asyncio.AbstractEventLoop"):
         """Return a tool_progress_callback that pushes structured events to the run's SSE queue."""
@@ -3163,11 +4414,19 @@ class APIServerAdapter(BasePlatformAdapter):
 
         run_id = request.match_info["run_id"]
         status = self._run_statuses.get(run_id)
-        if status is None:
+        approval_session_key = self._resolve_active_approval_session_key(run_id)
+        if status is None and not approval_session_key:
             return web.json_response(
                 _openai_error(f"Run not found: {run_id}", code="run_not_found"),
                 status=404,
             )
+        if status is None:
+            status = {
+                "object": "hermes.run",
+                "run_id": run_id,
+                "status": "waiting_for_approval",
+                "updated_at": time.time(),
+            }
         return web.json_response(status)
 
     async def _handle_run_events(self, request: "web.Request") -> "web.StreamResponse":
@@ -3252,7 +4511,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 status=400,
             )
 
-        approval_session_key = self._run_approval_sessions.get(run_id)
+        approval_session_key = self._resolve_active_approval_session_key(run_id)
         if not approval_session_key:
             return web.json_response(
                 _openai_error(
@@ -3287,7 +4546,8 @@ class APIServerAdapter(BasePlatformAdapter):
                 status=409,
             )
 
-        self._set_run_status(run_id, "running", last_event="approval.responded")
+        if status is not None:
+            self._set_run_status(run_id, "running", last_event="approval.responded")
         q = self._run_streams.get(run_id)
         if q is not None:
             try:
@@ -3401,7 +4661,18 @@ class APIServerAdapter(BasePlatformAdapter):
             self._app.router.add_get("/health/detailed", self._handle_health_detailed)
             self._app.router.add_get("/v1/health", self._handle_health)
             self._app.router.add_get("/v1/models", self._handle_models)
+            self._app.router.add_get("/v1/model/current", self._handle_current_model)
+            self._app.router.add_post("/v1/sessions/{session_id}/model", self._handle_set_session_model)
+            self._app.router.add_get("/v1/sessions", self._handle_list_sessions)
+            self._app.router.add_get("/v1/sessions/{session_id}", self._handle_get_session)
+            self._app.router.add_get("/v1/sessions/{session_id}/messages", self._handle_get_session_messages)
             self._app.router.add_get("/v1/capabilities", self._handle_capabilities)
+            self._app.router.add_post("/v1/capabilities", self._handle_capabilities)
+            self._app.router.add_get("/v1/commands", self._handle_commands)
+            self._app.router.add_get("/v1/skills", self._handle_skills)
+            self._app.router.add_post("/v1/complete/slash", self._handle_complete_slash)
+            self._app.router.add_post("/v1/complete/skills", self._handle_complete_skills)
+            self._app.router.add_post("/v1/slash", self._handle_slash)
             self._app.router.add_post("/v1/chat/completions", self._handle_chat_completions)
             self._app.router.add_post("/v1/responses", self._handle_responses)
             self._app.router.add_get("/v1/responses/{response_id}", self._handle_get_response)

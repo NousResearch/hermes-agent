@@ -6142,6 +6142,13 @@ def cmd_kanban(args):
     return kanban_command(args)
 
 
+def cmd_case(args):
+    """Durable Work Case files."""
+    from hermes_cli.case import case_command
+
+    return case_command(args)
+
+
 def cmd_hooks(args):
     """Shell-hook inspection and management."""
     from hermes_cli.hooks import hooks_command
@@ -10649,7 +10656,7 @@ def _build_provider_choices() -> list[str]:
 # to parse.
 _BUILTIN_SUBCOMMANDS = frozenset(
     {
-        "acp", "auth", "backup", "bundles", "checkpoints", "claw", "completion",
+        "acp", "auth", "backup", "bundles", "case", "checkpoints", "claw", "completion",
         "computer-use",
         "config", "cron", "curator", "dashboard", "debug", "doctor",
         "dump", "fallback", "gateway", "hooks", "import", "insights",
@@ -11886,6 +11893,14 @@ def main():
 
     kanban_parser = _build_kanban_parser(subparsers)
     kanban_parser.set_defaults(func=cmd_kanban)
+
+    # =========================================================================
+    # case command — durable Work Case files
+    # =========================================================================
+    from hermes_cli.case import build_parser as _build_case_parser
+
+    case_parser = _build_case_parser(subparsers)
+    case_parser.set_defaults(func=cmd_case)
 
     # =========================================================================
     # hooks command — shell-hook inspection and management

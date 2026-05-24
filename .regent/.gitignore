@@ -1,0 +1,3 @@
+# re_gent temporary files
+*.backup
+log/

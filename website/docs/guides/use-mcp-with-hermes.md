@@ -479,6 +479,126 @@ Good first servers for most users:
 - fetch / documentation MCP servers
 - one narrow internal API
 
+### Code intelligence: CodeGraph
+
+[CodeGraph](https://github.com/colbymchenry/codegraph) pre-indexes your codebase into a local knowledge graph — symbol relationships, call graphs, impact analysis, and framework-aware routes. Agents query the graph in 2–3 calls instead of 50+ grep/read/find calls.
+
+**Benchmark:** ~35% cheaper, ~71% fewer tool calls, ~46% faster on architecture questions across 7 real-world codebases.
+
+**19+ languages:** TypeScript, JavaScript, Python, Go, Rust, Java, C#, PHP, Ruby, C, C++, Swift, Kotlin, Dart, and more.
+
+Install and configure:
+
+```bash
+# Install (no Node.js required — bundled runtime)
+curl -fsSL https://raw.githubusercontent.com/colbymchenry/codegraph/main/install.sh | sh
+
+# Index your project
+cd your-project
+codegraph init -i
+```
+
+Add to `~/.hermes/config.yaml`:
+
+```yaml
+mcp_servers:
+  codegraph:
+    command: "codegraph"
+    args: ["serve", "--mcp"]
+    timeout: 120
+    connect_timeout: 30
+```
+
+After reloading (`/reload-mcp`), your agents gain tools like `codegraph_context`, `codegraph_search`, `codegraph_explore`, `codegraph_trace`, and `codegraph_impact`.
+
+Good prompts:
+
+```text
+How does the authentication middleware chain work?
+```
+
+```text
+What would break if I change the return type of handle_request?
+```
+
+### Persistent memory: AgentMemory
+
+[AgentMemory](https://github.com/rohitg00/agentmemory) gives your agents persistent cross-session memory with auto-capture, hybrid search (BM25 + vector), knowledge graph extraction, and memory consolidation. Agents remember what they learned across sessions without manual saving.
+
+**Key features:** 95.2% retrieval recall, 53 MCP tools, 12 auto-hooks, confidence scoring, memory lifecycle, zero external databases.
+
+Install and configure:
+
+```bash
+# Install
+npm install -g @agentmemory/agentmemory
+
+# Start the memory server
+agentmemory
+```
+
+Add to `~/.hermes/config.yaml`:
+
+```yaml
+mcp_servers:
+  agentmemory:
+    command: "agentmemory"
+    args: ["mcp"]
+    timeout: 120
+    connect_timeout: 30
+```
+
+Optionally configure an LLM provider for advanced features (compression, consolidation, knowledge graph extraction) in `~/.agentmemory/.env`:
+
+```bash
+# Any OpenAI-compatible endpoint works
+OPENAI_API_KEY=your-key-here
+OPENAI_BASE_URL=https://api.openai.com/v1
+
+# Enable advanced features
+AGENTMEMORY_AUTO_COMPRESS=true
+CONSOLIDATION_ENABLED=true
+GRAPH_EXTRACTION_ENABLED=true
+```
+
+After reloading (`/reload-mcp`), your agents gain tools like `memory_save`, `memory_recall`, `memory_smart_search`, `memory_sessions`, and 40+ more.
+
+Good prompts:
+
+```text
+What do you remember about the JWT auth setup from last session?
+```
+
+```text
+Search your memory for any decisions we made about the database schema.
+```
+
+### Using both together
+
+CodeGraph and AgentMemory complement each other perfectly:
+
+| | CodeGraph | AgentMemory |
+|---|---|---|
+| **Solves** | Token waste scanning files | Forgetting between sessions |
+| **Best for** | Code-heavy projects | All workflows |
+| **Cost** | Free (100% local) | Free core; LLM features optional |
+
+Full config with both:
+
+```yaml
+mcp_servers:
+  codegraph:
+    command: "codegraph"
+    args: ["serve", "--mcp"]
+    timeout: 120
+    connect_timeout: 30
+  agentmemory:
+    command: "agentmemory"
+    args: ["mcp"]
+    timeout: 120
+    connect_timeout: 30
+```
+
 Not-great first servers:
 - giant business systems with lots of destructive actions and no filtering
 - anything you do not understand well enough to constrain

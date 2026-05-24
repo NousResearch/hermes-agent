@@ -167,6 +167,44 @@ describe('applyDisplay', () => {
   })
 })
 
+describe('applyDisplay → tui_overscan', () => {
+  beforeEach(() => {
+    resetUiState()
+  })
+
+  it('threads display.tui_overscan into $uiState', () => {
+    const setBell = vi.fn()
+
+    applyDisplay({ config: { display: { tui_overscan: 60 } } }, setBell)
+    expect($uiState.get().overscan).toBe(60)
+  })
+
+  it('allows tui_overscan: 0 to use the compiled-in hardcoded fallback', () => {
+    const setBell = vi.fn()
+
+    applyDisplay({ config: { display: { tui_overscan: 0 } } }, setBell)
+    // 0 is forwarded verbatim; the hook uses its own OVERSCAN fallback when it receives 0
+    expect($uiState.get().overscan).toBe(0)
+  })
+
+  it('falls back to DEFAULT_OVERSCAN when tui_overscan is missing or negative', () => {
+    const setBell = vi.fn()
+
+    applyDisplay({ config: { display: {} } }, setBell)
+    expect($uiState.get().overscan).toBe(40) // DEFAULT_OVERSCAN
+
+    applyDisplay({ config: { display: { tui_overscan: -5 } } }, setBell)
+    expect($uiState.get().overscan).toBe(40)
+
+    applyDisplay({ config: { display: { tui_overscan: 'sixty' } } }, setBell)
+    expect($uiState.get().overscan).toBe(40)
+
+    applyDisplay(null, setBell)
+    expect($uiState.get().overscan).toBe(40)
+  })
+})
+
+
 describe('normalizeStatusBar', () => {
   it('maps legacy bool + on alias to top/off', () => {
     expect(normalizeStatusBar(true)).toBe('top')

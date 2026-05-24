@@ -841,6 +841,60 @@ Every transition appends a row to `task_events`. Each row carries an optional `r
 
 `hermes kanban tail <id>` shows these for a single task. `hermes kanban watch` streams them board-wide.
 
+## Recovery playbook (SQLite + stale running)
+
+If the board starts returning `database disk image is malformed` (or dashboard
+API routes begin 500'ing), use this sequence:
+
+1. Stop active workers and the gateway/dispatcher so no process is writing to
+   the DB while you recover it.
+2. Back up the damaged DB and sidecars (`-wal`, `-shm`).
+3. Rebuild with SQLite's recover flow.
+4. Re-run dispatcher recovery to reclaim stale `running` rows.
+
+```bash
+# Default board path (single-board installs)
+DB="${HERMES_HOME:-$HOME/.hermes}/kanban.db"
+
+# Multi-board path example (replace <slug>)
+# DB="${HERMES_HOME:-$HOME/.hermes}/kanban/boards/<slug>/kanban.db"
+
+cp -a "$DB" "$DB.pre-recover.$(date +%Y%m%d_%H%M%S).bak"
+[ -f "$DB-wal" ] && cp -a "$DB-wal" "$DB-wal.pre-recover.bak"
+[ -f "$DB-shm" ] && cp -a "$DB-shm" "$DB-shm.pre-recover.bak"
+
+sqlite3 "$DB" ".recover" > "$DB.recover.sql"
+# Some SQLite versions emit a sqlite_sequence CREATE statement during .recover;
+# filter it if the import fails with "object name reserved for internal use".
+sqlite3 "$DB.recovered" < "$DB.recover.sql" || \
+  grep -v '^CREATE TABLE sqlite_sequence' "$DB.recover.sql" | sqlite3 "$DB.recovered"
+
+sqlite3 "$DB.recovered" "PRAGMA quick_check; PRAGMA integrity_check;"
+mv "$DB.recovered" "$DB"
+```
+
+After replacing the DB, run a bounded dispatcher pass to clean up stale in-flight
+rows and promote newly-unblocked work:
+
+```bash
+hermes kanban dispatch --max 1
+hermes kanban diagnostics
+```
+
+If specific tasks still show `running` with no live worker, reclaim them
+explicitly:
+
+```bash
+hermes kanban reclaim <task_id> --reason "post-recover stale running cleanup"
+```
+
+Then restart gateway/dispatcher and confirm board health from either surface:
+
+```bash
+hermes kanban list
+# or dashboard: /api/plugins/kanban/diagnostics
+```
+
 ## Out of scope
 
 Kanban is deliberately single-host. `~/.hermes/kanban.db` is a local SQLite file and the dispatcher spawns workers on the same machine. Running a shared board across two hosts is not supported — there's no coordination primitive for "worker X on host A, worker Y on host B," and the crash-detection path assumes PIDs are host-local. If you need multi-host, run an independent board per host and use `delegate_task` / a message queue to bridge them.

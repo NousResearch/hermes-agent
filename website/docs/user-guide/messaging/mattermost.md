@@ -155,6 +155,12 @@ MATTERMOST_ALLOWED_USERS=3uo8dkh1p7g1mfk49ear5fzs5c
 
 # Optional: channels where bot responds without @mention (comma-separated channel IDs)
 # MATTERMOST_FREE_RESPONSE_CHANNELS=channel_id_1,channel_id_2
+
+# Optional: interactive clarify buttons for multiple-choice questions
+# MATTERMOST_ACTIONS_ENABLED=true
+# MATTERMOST_ACTIONS_URL=https://hermes.example.com:8769/mattermost/actions
+# MATTERMOST_ACTIONS_HOST=0.0.0.0
+# MATTERMOST_ACTIONS_PORT=8769
 ```
 
 Optional behavior settings in `~/.hermes/config.yaml`:
@@ -196,6 +202,27 @@ MATTERMOST_HOME_CHANNEL=abc123def456ghi789jkl012mn
 ```
 
 Replace the ID with the actual channel ID (click the channel name → View Info → copy the ID).
+
+## Interactive Clarify Buttons
+
+Mattermost can render Hermes `clarify` multiple-choice questions as native interactive buttons. This requires a callback URL that Mattermost can reach; Hermes listens on `/mattermost/actions/clarify` and validates clicks with one-time server-side action tokens.
+
+Set `MATTERMOST_ACTIONS_URL` to the public/base URL for the callback endpoint, without the trailing `/clarify` segment. For example, if Hermes runs on a Tailscale host at `100.64.0.10`:
+
+```bash
+MATTERMOST_ACTIONS_ENABLED=true
+MATTERMOST_ACTIONS_URL=http://100.64.0.10:8769/mattermost/actions
+MATTERMOST_ACTIONS_HOST=0.0.0.0
+MATTERMOST_ACTIONS_PORT=8769
+```
+
+Verify the callback server after starting the gateway:
+
+```bash
+curl http://100.64.0.10:8769/mattermost/actions/health
+```
+
+If `MATTERMOST_ACTIONS_URL` is not configured or posting the interactive message fails, Hermes falls back to the plain numbered-text clarify prompt.
 
 ## Reply Mode
 

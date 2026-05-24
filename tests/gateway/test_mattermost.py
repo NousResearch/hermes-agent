@@ -1,6 +1,7 @@
 """Tests for Mattermost platform adapter."""
 import json
 import os
+import re
 import time
 import pytest
 from unittest.mock import MagicMock, patch, AsyncMock
@@ -75,7 +76,10 @@ def _make_adapter():
     config = PlatformConfig(
         enabled=True,
         token="test-token",
-        extra={"url": "https://mm.example.com"},
+        # Keep unit tests isolated from the developer machine's Mattermost
+        # channel whitelist. Individual tests can still patch env/config when
+        # they need to exercise gating behavior explicitly.
+        extra={"url": "https://mm.example.com", "allowed_channels": ""},
     )
     adapter = MattermostAdapter(config)
     return adapter
@@ -252,6 +256,339 @@ class TestMattermostSend:
         result = await self.adapter.send("channel_1", "Hello!")
 
         assert result.success is False
+
+
+# ---------------------------------------------------------------------------
+# Clarify buttons / interactive message actions
+# ---------------------------------------------------------------------------
+
+class TestMattermostClarifyButtons:
+    def setup_method(self):
+        self.adapter = _make_adapter()
+        self.adapter._session = MagicMock()
+        self.adapter._actions_enabled = True
+        self.adapter._actions_url = "http://hermes.local:8769/mattermost/actions"
+        self.adapter._actions_server_ready = True
+        from tools import clarify_gateway as cm
+        with cm._lock:
+            cm._entries.clear()
+            cm._session_index.clear()
+
+    def teardown_method(self):
+        from tools import clarify_gateway as cm
+        with cm._lock:
+            cm._entries.clear()
+            cm._session_index.clear()
+
+    def _mock_post_success(self, post_id="post_clarify"):
+        mock_resp = AsyncMock()
+        mock_resp.status = 200
+        mock_resp.json = AsyncMock(return_value={"id": post_id})
+        mock_resp.text = AsyncMock(return_value="")
+        mock_resp.__aenter__ = AsyncMock(return_value=mock_resp)
+        mock_resp.__aexit__ = AsyncMock(return_value=False)
+        self.adapter._session.post = MagicMock(return_value=mock_resp)
+
+    def _seed_action_token(self, token, clarify_id, choice, choice_index=None, **overrides):
+        state = {
+            "clarify_id": clarify_id,
+            "session_key": f"sk-{clarify_id}",
+            "chat_id": "channel_1",
+            "thread_id": "",
+            "expected_user_id": "user_123",
+            "choice_index": choice_index,
+            "choice": choice,
+        }
+        state.update(overrides)
+        self.adapter._clarify_action_tokens[token] = state
+
+    @pytest.mark.asyncio
+    async def test_multi_choice_posts_mattermost_actions(self):
+        self._mock_post_success("post_buttons")
+
+        result = await self.adapter.send_clarify(
+            chat_id="channel_1",
+            question="Pick a color",
+            choices=["red", "green", "blue"],
+            clarify_id="cidM",
+            session_key="sk-M",
+        )
+
+        assert result.success is True
+        assert result.message_id == "post_buttons"
+        payload = self.adapter._session.post.call_args[1]["json"]
+        assert payload["channel_id"] == "channel_1"
+        assert payload["message"] == "❓ Pick a color"
+        attachment = payload["props"]["attachments"][0]
+        assert "actions" in attachment
+        actions = attachment["actions"]
+        assert [a["name"] for a in actions] == ["1. red", "2. green", "3. blue", "Other"]
+        assert [a["id"] for a in actions] == [
+            "clarifycidM0",
+            "clarifycidM1",
+            "clarifycidM2",
+            "clarifycidMother",
+        ]
+        assert all(re.fullmatch(r"[A-Za-z0-9]+", a["id"]) for a in actions)
+        assert actions[0]["type"] == "button"
+        assert actions[0]["integration"]["url"] == "http://hermes.local:8769/mattermost/actions/clarify"
+        ctx = actions[1]["integration"]["context"]
+        assert ctx["kind"] == "clarify"
+        assert "token" in ctx
+        assert "secret" not in ctx
+        assert "clarify_id" not in ctx
+        token = ctx["token"]
+        assert self.adapter._clarify_action_tokens[token]["clarify_id"] == "cidM"
+        assert self.adapter._clarify_action_tokens[token]["choice_index"] == 1
+        assert self.adapter._clarify_action_tokens[token]["choice"] == "green"
+        other_ctx = actions[-1]["integration"]["context"]
+        assert self.adapter._clarify_action_tokens[other_ctx["token"]]["choice"] == "__other__"
+
+    @pytest.mark.asyncio
+    async def test_open_ended_uses_text_capture_fallback(self):
+        self._mock_post_success("post_text")
+        from tools import clarify_gateway as cm
+        with cm._lock:
+            cm._entries.clear()
+            cm._session_index.clear()
+        cm.register("cidOE", "sk-OE", "What is your name?", None)
+
+        result = await self.adapter.send_clarify(
+            chat_id="channel_1",
+            question="What is your name?",
+            choices=None,
+            clarify_id="cidOE",
+            session_key="sk-OE",
+        )
+
+        assert result.success is True
+        payload = self.adapter._session.post.call_args[1]["json"]
+        assert payload["message"] == "❓ What is your name?"
+        assert "props" not in payload
+        with cm._lock:
+            assert cm._entries["cidOE"].awaiting_text is True
+
+    @pytest.mark.asyncio
+    async def test_action_choice_resolves_clarify(self):
+        from tools import clarify_gateway as cm
+        with cm._lock:
+            cm._entries.clear()
+            cm._session_index.clear()
+        cm.register("cidA", "sk-A", "Pick", ["red", "green", "blue"])
+        self._seed_action_token("tok-green", "cidA", "green", choice_index=1)
+
+        response = await self.adapter._handle_clarify_action_payload({
+            "channel_id": "channel_1",
+            "user_id": "user_123",
+            "context": {
+                "kind": "clarify",
+                "token": "tok-green",
+            }
+        })
+
+        with cm._lock:
+            entry = cm._entries["cidA"]
+        assert entry.response == "green"
+        assert entry.event.is_set()
+        assert "update" in response
+        assert response["ephemeral_text"] == "Got it: green"
+
+    @pytest.mark.asyncio
+    async def test_action_other_marks_awaiting_text(self):
+        from tools import clarify_gateway as cm
+        with cm._lock:
+            cm._entries.clear()
+            cm._session_index.clear()
+        cm.register("cidOther", "sk-O", "Pick", ["red"])
+        self._seed_action_token("tok-other", "cidOther", "__other__")
+
+        response = await self.adapter._handle_clarify_action_payload({
+            "channel_id": "channel_1",
+            "user_id": "user_123",
+            "context": {
+                "kind": "clarify",
+                "token": "tok-other",
+            }
+        })
+
+        with cm._lock:
+            entry = cm._entries["cidOther"]
+        assert entry.awaiting_text is True
+        assert not entry.event.is_set()
+        assert response["ephemeral_text"].startswith("Type your answer")
+
+    @pytest.mark.asyncio
+    async def test_action_rejects_unknown_token(self):
+        response = await self.adapter._handle_clarify_action_payload({
+            "context": {
+                "kind": "clarify",
+                "token": "missing-token",
+            }
+        })
+
+        assert response == {"error": {"message": "This question is no longer waiting for an answer."}}
+
+    @pytest.mark.asyncio
+    async def test_action_rejects_wrong_user(self):
+        self._seed_action_token("tok-user", "cidUser", "red", expected_user_id="user_123")
+
+        response = await self.adapter._handle_clarify_action_payload({
+            "channel_id": "channel_1",
+            "user_id": "user_999",
+            "context": {"kind": "clarify", "token": "tok-user"},
+        })
+
+        assert response == {"error": {"message": "Only the user who was asked can answer this question."}}
+
+    @pytest.mark.asyncio
+    async def test_action_handler_returns_ephemeral_text_for_stale_button(self):
+        request = MagicMock()
+        request.json = AsyncMock(return_value={
+            "channel_id": "channel_1",
+            "user_id": "user_123",
+            "context": {"kind": "clarify", "token": "missing-token"},
+        })
+
+        response = await self.adapter._handle_clarify_action_request(request)
+
+        assert response.status == 200
+        body = json.loads(response.text)
+        assert body == {"ephemeral_text": "This question is no longer waiting for an answer."}
+
+
+# ---------------------------------------------------------------------------
+# Approval buttons / interactive message actions
+# ---------------------------------------------------------------------------
+
+class TestMattermostApprovalButtons:
+    def setup_method(self):
+        self.adapter = _make_adapter()
+        self.adapter._session = MagicMock()
+        self.adapter._actions_enabled = True
+        self.adapter._actions_url = "http://hermes.local:8769/mattermost/actions"
+        self.adapter._actions_server_ready = True
+        from tools import approval as am
+        with am._lock:
+            am._gateway_queues.clear()
+            am._gateway_notify_cbs.clear()
+            am._session_approved.clear()
+            am._pending.clear()
+
+    def teardown_method(self):
+        from tools import approval as am
+        with am._lock:
+            am._gateway_queues.clear()
+            am._gateway_notify_cbs.clear()
+            am._session_approved.clear()
+            am._pending.clear()
+
+    def _mock_post_success(self, post_id="post_approval"):
+        mock_resp = AsyncMock()
+        mock_resp.status = 200
+        mock_resp.json = AsyncMock(return_value={"id": post_id})
+        mock_resp.text = AsyncMock(return_value="")
+        mock_resp.__aenter__ = AsyncMock(return_value=mock_resp)
+        mock_resp.__aexit__ = AsyncMock(return_value=False)
+        self.adapter._session.post = MagicMock(return_value=mock_resp)
+
+    def _queue_approval(self, session_key="sk-approval"):
+        from tools import approval as am
+        entry = am._ApprovalEntry({"command": "curl http://192.168.1.7"})
+        with am._lock:
+            am._gateway_queues.setdefault(session_key, []).append(entry)
+        return entry
+
+    @pytest.mark.asyncio
+    async def test_send_exec_approval_posts_mattermost_actions(self):
+        self._mock_post_success("post_approval_buttons")
+
+        result = await self.adapter.send_exec_approval(
+            chat_id="channel_1",
+            command="curl http://192.168.1.7",
+            session_key="sk-approval",
+            description="URL uses raw IP address",
+            metadata={"user_id": "user_123"},
+        )
+
+        assert result.success is True
+        assert result.message_id == "post_approval_buttons"
+        payload = self.adapter._session.post.call_args[1]["json"]
+        assert payload["channel_id"] == "channel_1"
+        assert payload["message"] == "⚠️ **Dangerous command requires approval:**"
+        attachment = payload["props"]["attachments"][0]
+        assert "curl http://192.168.1.7" in attachment["text"]
+        actions = attachment["actions"]
+        assert [a["name"] for a in actions] == ["Allow Once", "Allow Session", "Always Allow", "Deny"]
+        assert all(re.fullmatch(r"[A-Za-z0-9]+", a["id"]) for a in actions)
+        assert actions[0]["integration"]["url"] == "http://hermes.local:8769/mattermost/actions/approval"
+        ctx = actions[0]["integration"]["context"]
+        assert ctx["kind"] == "approval"
+        assert "token" in ctx
+        assert "session_key" not in ctx
+        token = ctx["token"]
+        assert self.adapter._approval_action_tokens[token]["session_key"] == "sk-approval"
+        assert self.adapter._approval_action_tokens[token]["choice"] == "once"
+        assert self.adapter._approval_action_tokens[token]["expected_user_id"] == "user_123"
+
+    @pytest.mark.asyncio
+    async def test_approval_action_resolves_gateway_approval(self):
+        entry = self._queue_approval("sk-approval")
+        self.adapter._approval_action_tokens["tok-session"] = {
+            "session_key": "sk-approval",
+            "chat_id": "channel_1",
+            "thread_id": "",
+            "expected_user_id": "user_123",
+            "choice": "session",
+        }
+
+        response = await self.adapter._handle_approval_action_payload({
+            "channel_id": "channel_1",
+            "user_id": "user_123",
+            "context": {"kind": "approval", "token": "tok-session"},
+        })
+
+        assert entry.result == "session"
+        assert entry.event.is_set()
+        assert response["ephemeral_text"] == "Approved for this session."
+        assert response["update"]["props"] == {}
+        assert self.adapter._approval_action_tokens == {}
+
+    @pytest.mark.asyncio
+    async def test_approval_action_rejects_wrong_user_without_resolving(self):
+        entry = self._queue_approval("sk-approval")
+        self.adapter._approval_action_tokens["tok-once"] = {
+            "session_key": "sk-approval",
+            "chat_id": "channel_1",
+            "thread_id": "",
+            "expected_user_id": "user_123",
+            "choice": "once",
+        }
+
+        response = await self.adapter._handle_approval_action_payload({
+            "channel_id": "channel_1",
+            "user_id": "user_999",
+            "context": {"kind": "approval", "token": "tok-once"},
+        })
+
+        assert response == {"error": {"message": "Only the user who was asked can approve this command."}}
+        assert entry.result is None
+        assert not entry.event.is_set()
+        assert "tok-once" in self.adapter._approval_action_tokens
+
+    @pytest.mark.asyncio
+    async def test_approval_action_handler_returns_ephemeral_text_for_stale_button(self):
+        request = MagicMock()
+        request.json = AsyncMock(return_value={
+            "channel_id": "channel_1",
+            "user_id": "user_123",
+            "context": {"kind": "approval", "token": "missing-token"},
+        })
+
+        response = await self.adapter._handle_approval_action_request(request)
+
+        assert response.status == 200
+        body = json.loads(response.text)
+        assert body == {"ephemeral_text": "This approval is no longer waiting for an answer."}
 
 
 # ---------------------------------------------------------------------------

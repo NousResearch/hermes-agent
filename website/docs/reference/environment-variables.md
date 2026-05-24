@@ -392,6 +392,10 @@ For cloud sandbox backends, persistence is filesystem-oriented. `TERMINAL_LIFETI
 | `MATTERMOST_REQUIRE_MENTION` | Require `@mention` in channels (default: `true`). Set to `false` to respond to all messages. |
 | `MATTERMOST_FREE_RESPONSE_CHANNELS` | Comma-separated channel IDs where bot responds without `@mention` |
 | `MATTERMOST_REPLY_MODE` | Reply style: `thread` (threaded replies) or `off` (flat messages, default) |
+| `MATTERMOST_ACTIONS_ENABLED` | Enable Mattermost interactive clarify-button callbacks (`true`/`false`). Defaults to enabled when `MATTERMOST_ACTIONS_URL` is set. |
+| `MATTERMOST_ACTIONS_URL` | Base callback URL reachable by Mattermost, e.g. `https://hermes.example.com:8769/mattermost/actions` |
+| `MATTERMOST_ACTIONS_HOST` | Bind host for the callback listener (default: `0.0.0.0`) |
+| `MATTERMOST_ACTIONS_PORT` | Bind port for the callback listener (default: `8769`) |
 | `MATRIX_HOMESERVER` | Matrix homeserver URL (e.g. `https://matrix.org`) |
 | `MATRIX_ACCESS_TOKEN` | Matrix access token for bot authentication |
 | `MATRIX_USER_ID` | Matrix user ID (e.g. `@hermes:matrix.org`) — required for password login, optional with access token |

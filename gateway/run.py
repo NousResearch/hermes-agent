@@ -16502,6 +16502,11 @@ class GatewayRunner:
                 except Exception:
                     pass
 
+                clarify_metadata = dict(_status_thread_metadata or {})
+                sender_user_id = getattr(source, "user_id", None)
+                if sender_user_id:
+                    clarify_metadata["user_id"] = str(sender_user_id)
+
                 send_ok = False
                 fut = safe_schedule_threadsafe(
                     _status_adapter.send_clarify(
@@ -16510,7 +16515,7 @@ class GatewayRunner:
                         choices=list(choices) if choices else None,
                         clarify_id=clarify_id,
                         session_key=session_key or "",
-                        metadata=_status_thread_metadata,
+                        metadata=clarify_metadata or None,
                     ),
                     _loop_for_step,
                     logger=logger,
@@ -16622,13 +16627,17 @@ class GatewayRunner:
                 # false positives from MagicMock auto-attribute creation in tests.
                 if getattr(type(_status_adapter), "send_exec_approval", None) is not None:
                     try:
+                        approval_metadata = dict(_status_thread_metadata or {})
+                        sender_user_id = getattr(source, "user_id", None)
+                        if sender_user_id:
+                            approval_metadata["user_id"] = str(sender_user_id)
                         _approval_fut = safe_schedule_threadsafe(
                             _status_adapter.send_exec_approval(
                                 chat_id=_status_chat_id,
                                 command=cmd,
                                 session_key=_approval_session_key,
                                 description=desc,
-                                metadata=_status_thread_metadata,
+                                metadata=approval_metadata or None,
                             ),
                             _loop_for_step,
                             logger=logger,

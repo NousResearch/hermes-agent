@@ -421,7 +421,7 @@ def _text_response(res: ActionResult) -> str:
 
 
 # Default cap for the AX `elements` array returned by capture. Dense UIs
-# (Electron apps, Obsidian, JetBrains IDEs) can publish 500+ AX nodes, which
+# (Electron apps, VS Code, JetBrains IDEs) can publish 500+ AX nodes, which
 # can exhaust session context after a single capture. The model-facing
 # `max_elements` argument lets callers raise this when they need the full tree.
 _DEFAULT_MAX_ELEMENTS = 100

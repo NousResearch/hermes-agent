@@ -183,10 +183,9 @@ The script does the mechanical collection; the agent adds the reasoning layer.
 Chain skills together for complex scheduled tasks. Skills are loaded in order before the prompt executes.
 
 ```bash
-# Use the arxiv skill to find papers, then the obsidian skill to save notes
-/cron add "0 8 * * *" "Search arXiv for the 3 most interesting papers on 'language model reasoning' from the past day. For each paper, create an Obsidian note with the title, authors, abstract summary, and key contribution." \
+# Use the arxiv skill to find papers, then write summaries to local markdown notes
+/cron add "0 8 * * *" "Search arXiv for the 3 most interesting papers on 'language model reasoning' from the past day. For each paper, append title, authors, abstract summary, and key contribution to ~/notes/paper-digest.md." \
   --skill arxiv \
-  --skill obsidian \
   --name "Paper digest"
 ```
 
@@ -195,15 +194,15 @@ From the tool directly:
 ```python
 cronjob(
     action="create",
-    skills=["arxiv", "obsidian"],
-    prompt="Search arXiv for papers on 'language model reasoning' from the past day. Save the top 3 as Obsidian notes.",
+    skills=["arxiv"],
+    prompt="Search arXiv for papers on 'language model reasoning' from the past day. Save the top 3 to ~/notes/paper-digest.md as markdown notes.",
     schedule="0 8 * * *",
     name="Paper digest",
     deliver="local"
 )
 ```
 
-Skills are loaded in order — `arxiv` first (teaches the agent how to search papers), then `obsidian` (teaches how to write notes). The prompt ties them together.
+This keeps the job single-skill and writes notes to local markdown files.
 
 ---
 
@@ -224,7 +223,7 @@ Skills are loaded in order — `arxiv` first (teaches the agent how to search pa
 /cron edit <job_id> --prompt "Updated task description"
 
 # Add or remove skills from an existing job
-/cron edit <job_id> --skill arxiv --skill obsidian
+/cron edit <job_id> --skill arxiv
 /cron edit <job_id> --clear-skills
 
 # Remove a job permanently

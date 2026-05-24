@@ -60,7 +60,7 @@ Kanban을 통해 작업을 라우팅하는 orchestrator profile을 위한 작업
 |---|---|---|
 | `researcher` | 자료를 읽고, 사실을 수집하고, findings를 정리 | `scratch` |
 | `analyst` | 종합, 랭킹, 중복 제거. 여러 `researcher` 출력물을 소비 | `scratch` |
-| `writer` | 사용자의 문체에 맞춰 prose 초안 작성 | `scratch` 또는 Obsidian vault의 `dir:` |
+| `writer` | 사용자의 문체에 맞춰 prose 초안 작성 | `scratch` 또는 공유 노트 디렉터리의 `dir:` |
 | `reviewer` | 결과를 읽고, findings를 남기고, 승인 여부를 게이트 | `scratch` |
 | `backend-eng` | 서버 사이드 코드 작성 | `worktree` |
 | `frontend-eng` | 클라이언트 사이드 코드 작성 | `worktree` |

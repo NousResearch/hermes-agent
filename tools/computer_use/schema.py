@@ -80,7 +80,7 @@ COMPUTER_USE_SCHEMA: Dict[str, Any] = {
                 "description": (
                     "Optional cap on the AX `elements` array returned by "
                     "`action='capture'`. Default 100, hard maximum 1000. "
-                    "Dense UIs (Electron apps such as Obsidian or VS Code, "
+                    "Dense UIs (Electron apps such as VS Code, "
                     "JetBrains IDEs) can publish 500+ AX nodes — capping "
                     "prevents a single capture from blowing session "
                     "context. When the cap trims the response, "

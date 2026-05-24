@@ -88,8 +88,8 @@ Chain specialized skills together. Each skill teaches the agent a specific capab
 
 ```bash
 hermes cron create "0 8 * * *" \
-  "Search arXiv for papers on language model reasoning. Save the top 3 as Obsidian notes." \
-  --skills "arxiv,obsidian" \
+  "Search arXiv for papers on language model reasoning. Save the top 3 as markdown notes in ~/notes/paper-digest.md." \
+  --skills "arxiv" \
   --name "Paper digest"
 ```
 

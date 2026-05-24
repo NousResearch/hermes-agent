@@ -285,15 +285,6 @@ const sidebars: SidebarsConfig = {
                 },
                 {
                   type: 'category',
-                  label: 'note-taking',
-                  key: 'skills-bundled-note-taking',
-                  collapsed: true,
-                  items: [
-                    'user-guide/skills/bundled/note-taking/note-taking-obsidian',
-                  ],
-                },
-                {
-                  type: 'category',
                   label: 'productivity',
                   key: 'skills-bundled-productivity',
                   collapsed: true,

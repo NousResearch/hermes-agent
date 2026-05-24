@@ -8,7 +8,7 @@ platforms: [macos, linux]
 metadata:
   hermes:
     tags: [Search, Knowledge-Base, RAG, Notes, MCP, Local-AI]
-    related_skills: [obsidian, native-mcp, arxiv]
+    related_skills: [native-mcp, arxiv]
 ---
 
 # QMD — Query Markup Documents

@@ -130,12 +130,6 @@ If a skill is missing from this list but present in the repo, the catalog is reg
 | [`serving-llms-vllm`](/docs/user-guide/skills/bundled/mlops/mlops-inference-vllm) | vLLM: high-throughput LLM serving, OpenAI API, quantization. | `mlops/inference/vllm` |
 | [`weights-and-biases`](/docs/user-guide/skills/bundled/mlops/mlops-evaluation-weights-and-biases) | W&B: log ML experiments, sweeps, model registry, dashboards. | `mlops/evaluation/weights-and-biases` |
 
-## note-taking
-
-| Skill | Description | Path |
-|-------|-------------|------|
-| [`obsidian`](/docs/user-guide/skills/bundled/note-taking/note-taking-obsidian) | Read, search, create, and edit notes in the Obsidian vault. | `note-taking/obsidian` |
-
 ## productivity
 
 | Skill | Description | Path |

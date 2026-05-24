@@ -747,7 +747,8 @@ def skill_peek(names: "list[str]", task_id: Optional[str] = None) -> str:
     """Return name + description only for one or more skills.
 
     Use this BEFORE skill_view() to decide if a skill is actually relevant
-    to the current task. Reads only frontmatter — does not load the skill body.
+    to the current task. Reads skill metadata and may inspect a short excerpt
+    when frontmatter omits a description, but does not load the full skill body.
     Much cheaper than skill_view() (~10 tokens vs ~500-2000 tokens per skill).
 
     Args:
@@ -758,37 +759,164 @@ def skill_peek(names: "list[str]", task_id: Optional[str] = None) -> str:
         JSON list of {name, description, category, tags} — no full content.
     """
     try:
+        if not isinstance(names, list):
+            return json.dumps(
+                {"success": False, "error": "names must be a list of strings"}
+            )
         if not names:
             return json.dumps({"success": False, "error": "names must be non-empty list"})
+        if any(not isinstance(name, str) for name in names):
+            return json.dumps(
+                {"success": False, "error": "each item in names must be a string"}
+            )
         names = names[:10]  # hard cap
         results = []
-        all_skills = _find_all_skills(skip_disabled=False)
-        index = {s.get("name", ""): s for s in all_skills}
-        # also index by path basename for fuzzy match
-        for s in all_skills:
-            index[s.get("name", "").split("/")[-1]] = s
+
+        from agent.skill_utils import get_external_skills_dirs, iter_skill_index_files
+
+        all_dirs = []
+        if SKILLS_DIR.exists():
+            all_dirs.append(SKILLS_DIR)
+        all_dirs.extend(get_external_skills_dirs())
+
+        def _skill_name(skill: Dict[str, Any]) -> str:
+            return (skill.get("name") or "").strip()
+
+        def _skill_category(skill: Dict[str, Any]) -> str:
+            return (skill.get("category") or "").strip()
+
+        def _full_skill_name(skill: Dict[str, Any]) -> str:
+            name = _skill_name(skill)
+            if not name:
+                return ""
+            if "/" in name:
+                return name
+            category = _skill_category(skill)
+            return f"{category}/{name}" if category else name
+
+        def _basename(skill_name: str) -> str:
+            return skill_name.rsplit("/", 1)[-1] if skill_name else ""
+
+        def _record_candidate(store, skill_md: Path, skill_dir: Optional[Path]) -> None:
+            try:
+                key = skill_md.resolve()
+            except Exception:
+                key = skill_md
+            if key in store["seen"]:
+                return
+            store["seen"].add(key)
+            store["items"].append((skill_dir, skill_md))
 
         for name in names:
-            entry = index.get(name)
-            if entry is None:
-                # Try case-insensitive
-                name_lower = name.lower()
-                entry = next(
-                    (s for s in all_skills if s.get("name", "").lower() == name_lower
-                     or s.get("name", "").lower().split("/")[-1] == name_lower),
-                    None,
+            query = name.strip()
+            if not query:
+                results.append(
+                    {
+                        "name": name,
+                        "found": False,
+                        "description": None,
+                        "error": "name must not be empty",
+                    }
                 )
-            if entry is None:
-                results.append({"name": name, "found": False, "description": None})
+                continue
+
+            query_lower = query.lower()
+            exact = {"seen": set(), "items": []}
+            basename = {"seen": set(), "items": []}
+
+            for search_dir in all_dirs:
+                direct_path = search_dir / query
+                if direct_path.is_dir() and (direct_path / "SKILL.md").exists():
+                    _record_candidate(exact, direct_path / "SKILL.md", direct_path)
+                elif direct_path.with_suffix(".md").exists():
+                    _record_candidate(exact, direct_path.with_suffix(".md"), None)
+
+                for found_skill_md in iter_skill_index_files(search_dir, "SKILL.md"):
+                    rel_name = found_skill_md.parent.relative_to(search_dir).as_posix()
+                    rel_lower = rel_name.lower()
+                    parent_name = found_skill_md.parent.name
+                    parent_lower = parent_name.lower()
+                    if rel_name == query or rel_lower == query_lower:
+                        _record_candidate(exact, found_skill_md, found_skill_md.parent)
+                    elif parent_name == query or parent_lower == query_lower:
+                        _record_candidate(basename, found_skill_md, found_skill_md.parent)
+
+                for found_md in search_dir.rglob(f"{query}.md"):
+                    if found_md.name != "SKILL.md":
+                        _record_candidate(exact, found_md, None)
+
+            if exact["items"]:
+                candidates = exact["items"]
             else:
-                results.append({
-                    "name": entry.get("name", name),
+                candidates = basename["items"]
+
+            if not candidates:
+                results.append({"name": name, "found": False, "description": None})
+                continue
+
+            if len(candidates) > 1:
+                match_names = []
+                seen_matches = set()
+                for skill_dir, skill_md in candidates:
+                    try:
+                        content = skill_md.read_text(encoding="utf-8")[:4000]
+                        frontmatter, _ = _parse_frontmatter(content)
+                    except Exception:
+                        frontmatter = {}
+                    display_name = str(frontmatter.get("name") or skill_md.parent.name or query)
+                    category = _get_category_from_path(skill_md)
+                    full_name = f"{category}/{display_name}" if category else display_name
+                    if full_name not in seen_matches:
+                        seen_matches.add(full_name)
+                        match_names.append(full_name)
+                results.append(
+                    {
+                        "name": name,
+                        "found": False,
+                        "ambiguous": True,
+                        "description": None,
+                        "matches": match_names,
+                        "hint": (
+                            "Use the full skill path (e.g. category/skill-name) to "
+                            "disambiguate this skill."
+                        ),
+                    }
+                )
+                continue
+
+            skill_dir, skill_md = candidates[0]
+            try:
+                content = skill_md.read_text(encoding="utf-8")[:4000]
+                frontmatter, body = _parse_frontmatter(content)
+            except Exception:
+                frontmatter, body = {}, ""
+
+            description = frontmatter.get("description", "")
+            if not description:
+                for line in body.strip().split("\n"):
+                    line = line.strip()
+                    if line and not line.startswith("#"):
+                        description = line
+                        break
+
+            if len(description) > MAX_DESCRIPTION_LENGTH:
+                description = description[:MAX_DESCRIPTION_LENGTH - 3] + "..."
+
+            category = _get_category_from_path(skill_md)
+            results.append(
+                {
+                    "name": str(frontmatter.get("name") or skill_md.parent.name or name),
                     "found": True,
-                    "description": entry.get("description") or "",
-                    "category": entry.get("category") or "",
-                    "tags": entry.get("tags") or [],
+                    "description": description or "",
+                    "category": category or "",
+                    "tags": _parse_tags(
+                        (frontmatter.get("metadata", {}) or {}).get("hermes", {}).get("tags")
+                        if isinstance(frontmatter.get("metadata"), dict)
+                        else ""
+                    ),
                     "hint": "Use skill_view(name) to load full content if this skill is needed.",
-                })
+                }
+            )
         return json.dumps({"success": True, "skills": results}, ensure_ascii=False)
     except Exception as e:
         return tool_error(str(e), success=False)

@@ -15,6 +15,7 @@ from tools.skills_tool import (
     _get_category_from_path,
     _find_all_skills,
     skill_matches_platform,
+    skill_peek,
     skills_list,
     skill_view,
     MAX_DESCRIPTION_LENGTH,
@@ -356,6 +357,64 @@ class TestSkillsList:
         assert result["count"] == 1
         assert result["categories"] == ["linked"]
         assert result["skills"][0]["name"] == "knowledge-brain"
+
+
+# ---------------------------------------------------------------------------
+# skill_peek
+# ---------------------------------------------------------------------------
+
+
+class TestSkillPeek:
+    def test_rejects_non_list_names(self):
+        raw = skill_peek("alpha")
+        result = json.loads(raw)
+        assert result["success"] is False
+        assert "list of strings" in result["error"]
+
+    def test_rejects_non_string_items(self):
+        raw = skill_peek(["alpha", 42])
+        result = json.loads(raw)
+        assert result["success"] is False
+        assert "each item in names must be a string" in result["error"]
+
+    def test_resolves_unique_basename(self, tmp_path):
+        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+            _make_skill(tmp_path, "alpha", category="one")
+            _make_skill(tmp_path, "beta", category="two")
+            raw = skill_peek(["alpha"])
+
+        result = json.loads(raw)
+        assert result["success"] is True
+        assert result["skills"][0]["found"] is True
+        assert result["skills"][0]["name"] == "alpha"
+
+    def test_reports_ambiguous_basename(self, tmp_path):
+        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+            _make_skill(tmp_path, "shared", category="one")
+            _make_skill(tmp_path, "shared", category="two")
+            raw = skill_peek(["shared"])
+
+        result = json.loads(raw)
+        skill = result["skills"][0]
+        assert result["success"] is True
+        assert skill["found"] is False
+        assert skill["ambiguous"] is True
+        assert skill["matches"] == ["one/shared", "two/shared"]
+        assert "disambiguate" in skill["hint"]
+
+    def test_exact_full_path_resolves_despite_basename_collision(self, tmp_path):
+        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+            _make_skill(tmp_path, "shared", category="one")
+            _make_skill(tmp_path, "shared", category="two")
+            raw = skill_peek(["one/shared"])
+
+        result = json.loads(raw)
+        skill = result["skills"][0]
+        assert result["success"] is True
+        assert skill["found"] is True
+        assert skill["name"] == "shared"
+        assert skill["category"] == "one"
+        assert "ambiguous" not in skill
 
 
 # ---------------------------------------------------------------------------

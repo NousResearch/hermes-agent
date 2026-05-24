@@ -6009,3 +6009,208 @@ TTL-based dedup cache (default 2000 entries, 300s TTL) correctly handles expired
 | MessageDeduplicator helper | Clean centralized implementation | GOOD |
 
 **2 GOOD areas, 6 LOW issues, 2 INFORMATIONAL notes. No critical issues found.**
+---
+
+## Pass #59 – File System, Path and I/O Security Deep Dive – 2026-05-24T16:30:00Z
+
+### P59-1 · `agent/file_safety.py` — comprehensive write/deny list with cross-profile awareness — GOOD
+
+**File:** `agent/file_safety.py`
+
+`is_write_denied()` and `get_read_block_error()` use `os.path.realpath()` to resolve all paths before checking against:
+- Exact-file deny: SSH keys (`id_rsa`, `id_ed25519`, `authorized_keys`), `.env` (both per-profile and root), `.bashrc`, `.zshrc`, `.netrc`, `.pgpass`, `/etc/passwd`, `/etc/shadow`
+- Prefix deny: `~/.ssh`, `~/.aws`, `~/.gnupg`, `~/.kube`, `~/.docker`, `~/.azure`, `/etc/sudoers.d`, `/etc/systemd`
+- Control-file names: `auth.json`, `config.yaml`, `webhook_subscriptions.json` under BOTH active profile AND root
+- `mcp-tokens/` directory prefix
+
+`classify_cross_profile_target()` correctly identifies writes to `skills/`, `plugins/`, `cron/`, `memories/` under other profiles. Soft guard with `cross_profile=True` bypass. Both functions are explicitly marked as defense-in-depth (not hard security boundaries). No issues.
+
+---
+
+### P59-2 · `utils.py` — atomic JSON/YAML write with temp-file + fsync + os.replace — GOOD
+
+**File:** `utils.py` (lines 61–245)
+
+Both `atomic_json_write()` and `atomic_yaml_write()` use the correct pattern:
+1. `tempfile.mkstemp()` creates a temp file in target parent dir
+2. Write to fd with `os.fdopen`, flush + `os.fsync()`
+3. `atomic_replace()` to swap into place
+4. `_preserve_file_mode()` / `_restore_file_mode()` to preserve permissions across replace
+5. `BaseException` catch allows cleanup even on `KeyboardInterrupt` / `SystemExit`
+6. Explicit `os.unlink(tmp_path)` on failure
+
+`atomic_replace()` (lines 61–82) resolves symlinks first (`os.path.realpath if islink`) so `os.replace` operates on the real file in-place while the symlink survives.
+
+No issues.
+
+---
+
+### P59-3 · `cron/scheduler.py` — script path traversal prevention — GOOD
+
+**File:** `cron/scheduler.py` (lines 830–854)
+
+```python
+scripts_dir_resolved = scripts_dir.resolve()
+raw = Path(script_path).expanduser()
+if raw.is_absolute():
+    path = raw.resolve()
+else:
+    path = (scripts_dir / raw).resolve()
+try:
+    path.relative_to(scripts_dir_resolved)
+except ValueError:
+    return False, "Blocked: script path resolves outside the scripts directory..."
+```
+
+Uses `resolve()` to fully resolve symlinks, then `relative_to()` to verify containment. Blocks `..` attacks, absolute path injection, and symlink escape in one step. Clean pattern. No issues.
+
+---
+
+### P59-4 · `cron/jobs.py` — workdir normalization uses resolve() + absolute check — GOOD
+
+**File:** `cron/jobs.py` (lines 452–482)
+
+`_normalize_workdir()`: expands `~`, rejects non-absolute paths (cron runs detached), `expanded.resolve()` resolves symlinks, checks `exists()` and `is_dir()`. Validated at create/update time. Correct pattern. No issues.
+
+---
+
+### P59-5 · `hermes_constants.py` — `secure_parent_dir()` refuses to chmod / or top-level dirs — GOOD
+
+**File:** `hermes_constants.py` (lines 238–255)
+
+```python
+def secure_parent_dir(path: Path) -> None:
+    parent = path.parent.resolve()
+    if parent == Path("/") or len(parent.parts) < 3:
+        return
+    os.chmod(parent, 0o700)
+```
+
+Prevents catastrophic host bricking if `HERMES_HOME` resolves to `/` or a top-level dir. Guards against `/`, `/usr`, `/home`, `/var`, `/tmp`. All callers use it correctly. No issues.
+
+---
+
+### P59-6 · TOCTOU-safe credential file writes via `os.open(O_EXCL, mode=0o600)` — GOOD
+
+**Files:** `hermes_cli/auth.py` (lines 1041–1049), `agent/google_oauth.py` (lines 501–514), `tools/mcp_oauth.py` (lines 171–187), `gateway/status.py` (lines 482–498, 666–676)
+
+All credential writers use `os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, stat.S_IRUSR | stat.S_IWUSR)` which atomically creates the file with 0o600 permissions in a single syscall. Closes the TOCTOU window where the default umask (~0o022) would briefly expose the file between `open()` and `chmod()`. Tests in `tests/hermes_cli/test_auth_toctou_file_modes.py` assert mode == 0o600. No issues.
+
+---
+
+### P59-7 · `cron/jobs.py` output directory creation — GOOD
+
+**File:** `cron/jobs.py` (lines 1065–1086)
+
+```python
+job_output_dir.mkdir(parents=True, exist_ok=True)
+_secure_dir(job_output_dir)
+fd, tmp_path = tempfile.mkstemp(dir=str(job_output_dir), suffix='.tmp', prefix='.output_')
+atomic_replace(tmp_path, output_file)
+_secure_file(output_file)
+```
+plus BaseException cleanup. Correct: 0700 dir + 0600 file + atomic write via temp file + cleanup. No issues.
+
+---
+
+### P59-8 · `agent/lsp/workspace.py` — explicitly does NOT resolve symlinks — GOOD
+
+**File:** `agent/lsp/workspace.py` (lines 33–41)
+
+```python
+def normalize_path(path: str) -> str:
+    return os.path.abspath(os.path.expanduser(path))
+    # We do NOT resolve symlinks here — symlink stability matters for some
+    # LSP servers (rust-analyzer cares about Cargo workspace identity)
+```
+
+`normalize_path()` uses `abspath` + `expanduser` but deliberately does NOT call `resolve()`. The docstring explicitly explains the design rationale. This is intentional correctness, not a vulnerability. No issues.
+
+---
+
+### P59-9 · `acp_adapter/edit_approval.py` — `should_auto_approve_edit` uses `resolve(strict=False)` — LOW
+
+**File:** `acp_adapter/edit_approval.py` (line 158)
+
+```python
+path = Path(proposal.path).expanduser().resolve(strict=False)
+```
+
+`resolve(strict=False)` resolves symlinks but the path does not need to exist. If a dangling symlink exists, `resolve()` follows it anyway (resolves to the non-existent target). Combined with the `relative_to(tmp_root)` check, a symlink attack requires pre-existing filesystem write access. Impact is limited to same-user local attack. Acceptable for the threat model.
+
+---
+
+### P59-10 · `cron/scheduler.py` — job output path construction has implicit TOCTOU — LOW
+
+**File:** `cron/scheduler.py` (lines 1010–1020)
+
+```python
+job_output_dir = OUTPUT_DIR / source_job_id
+if not job_output_dir.exists():   # TOCTOU window
+    continue
+output_files = sorted(job_output_dir.glob("*.md"), ...)
+latest_output = output_files[0].read_text(encoding="utf-8")
+```
+
+Between `exists()` and `glob()` the directory could be replaced with a symlink. `source_job_id` is validated as 12-char hex only. Error is logged and silently skipped on any OSError/PermissionError. Window is small; impact requires local filesystem write access (already implies full compromise).
+
+**Severity:** LOW — not reachable via messaging interfaces.
+
+---
+
+### P59-11 · `gateway/pairing.py` — PAIRING_DIR not explicitly chmod'd before use — LOW
+
+**File:** `gateway/pairing.py` (lines 55–78)
+
+`_secure_write()` secures individual pairing files to 0o600 but the PARENT `pairing/` directory is created only via `mkdir(parents=True, exist_ok=True)` — not explicitly secured to 0o700. If `mkdir` creates intermediate directories, those also lack explicit permission hardening.
+
+Compare with `cron/jobs.py` which calls `_secure_dir(CRON_DIR)` explicitly.
+
+**Recommendation:** Add `secure_parent_dir(path)` call in `_secure_write()` or ensure `PAIRING_DIR` itself is explicitly secured at startup.
+
+---
+
+### P59-12 · `tools/code_execution_tool.py` — shared sandbox temp dir uses default permissions — LOW
+
+**File:** `tools/code_execution_tool.py` (line 1090)
+
+```python
+tmpdir = tempfile.mkdtemp(prefix="hermes_sandbox_")
+```
+
+Temp directory uses the OS default (typically 0o755 on UNIX — readable by all local users). Sandboxed code could potentially list other active sandboxes. However, sandbox code is already untrusted and isolation is provided by the sandbox mechanism itself.
+
+**Recommendation:** `tempfile.mkdtemp(prefix="hermes_sandbox_", mode=0o700)` to restrict to owner only (Python 3.11+). Impact is LOW since sandboxed code is already untrusted.
+
+---
+
+### P59-13 · `agent/file_safety.py` — read-block is explicitly documented as defense-in-depth — GOOD
+
+**File:** `agent/file_safety.py` (lines 154–167)
+
+The docstring for `get_read_block_error()` explicitly states:
+> "**This is NOT a security boundary.** The terminal tool runs as the same OS user with shell access; the agent can still `cat auth.json`... and exfiltrate the file."
+
+The denial exists as defense-in-depth and audit trail. Same honest documentation applies to `is_write_denied()` and `classify_cross_profile_target()`. No issues.
+
+---
+
+### Summary
+
+| Area | Status | Severity |
+|------|--------|----------|
+| file_safety.py write deny list | Comprehensive, realpath resolution, cross-profile guard | GOOD |
+| utils.py atomic writes | temp+fsync+atomic_replace+BaseException cleanup | GOOD |
+| cron/scheduler.py script path traversal | relative_to check after resolve() | GOOD |
+| cron/jobs.py workdir validation | is_absolute + exists + is_dir after resolve() | GOOD |
+| hermes_constants.py secure_parent_dir | Refuses to chmod / and top-level dirs | GOOD |
+| TOCTOU-safe credential files | os.open(O_EXCL) atomically with mode=0o600 | GOOD |
+| cron/jobs.py output write | 0700 dir + 0600 file + atomic replace + cleanup | GOOD |
+| lsp/workspace.py normalize_path | Intentionally does NOT resolve symlinks | GOOD |
+| file_safety.py read-block docs | Explicitly marked NOT a security boundary | GOOD |
+| acp_adapter resolve(strict=False) | Resolves dangling symlinks; local-only exploit | LOW |
+| cron/scheduler.py job output TOCTOU | exists() then glob(); constrained job_id | LOW |
+| pairing.py PAIRING_DIR permissions | Creates dir but doesn't explicitly chmod 0700 | LOW |
+| code_execution_tool.py sandbox perms | mkdtemp default 755; low risk since sandboxed code is untrusted | LOW |
+
+**3 GOOD areas, 5 LOW issues, 0 CRITICAL, 0 INFORMATIONAL.** No critical security issues found. The codebase shows strong patterns for atomic file operations, path traversal prevention, and TOCTOU mitigation. Low-severity issues are in components where impact is already limited (sandbox code is already untrusted; local-user symlink attack requires pre-compromise).

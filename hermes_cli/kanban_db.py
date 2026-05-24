@@ -1651,8 +1651,15 @@ def create_task(
     now = int(time.time())
 
     # Resolve workspace_path from board-level default_workdir when the
-    # caller did not specify one explicitly.
-    if workspace_path is None:
+    # caller did not specify one explicitly. Board defaults represent
+    # persistent project checkouts, so only persistent workspace kinds may
+    # inherit them. Scratch workspaces are auto-deleted on completion and
+    # must stay under the per-board scratch root created by
+    # ``resolve_workspace``; inheriting ``default_workdir`` for a scratch
+    # task would point cleanup at the user's source tree (#28818). The
+    # containment guard in ``_cleanup_workspace`` is the safety rail, but
+    # we also stop the bad state from being created in the first place.
+    if workspace_path is None and workspace_kind in {"dir", "worktree"}:
         board_slug = board if board else get_current_board()
         board_meta = read_board_metadata(board_slug)
         board_default = board_meta.get("default_workdir")

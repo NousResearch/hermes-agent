@@ -2596,13 +2596,32 @@ def test_task_dict_survives_corrupt_created_at(tmp_path, monkeypatch):
 # ---------------------------------------------------------------------------
 
 
-def test_create_task_without_workspace_inherits_board_default_workdir(kanban_home, monkeypatch):
-    """Board with default_workdir → create_task without workspace_path → inherits default."""
+def test_create_task_scratch_without_workspace_ignores_board_default_workdir(kanban_home, monkeypatch):
+    """Scratch tasks must NOT inherit board.default_workdir — would point auto-cleanup
+    at the user's source tree on completion (#28818)."""
     default_wd = "/home/user/project"
     kb.create_board("work-proj", default_workdir=default_wd)
 
     with kb.connect(board="work-proj") as conn:
-        tid = kb.create_task(conn, title="inherited", board="work-proj")
+        tid = kb.create_task(conn, title="scratch-task", board="work-proj")
+        t = kb.get_task(conn, tid)
+    assert t is not None
+    assert t.workspace_kind == "scratch"
+    assert t.workspace_path is None
+
+
+def test_create_task_dir_without_workspace_inherits_board_default_workdir(kanban_home, monkeypatch):
+    """Board default_workdir is for persistent dir/worktree workspaces, not scratch."""
+    default_wd = "/home/user/project"
+    kb.create_board("work-proj-dir", default_workdir=default_wd)
+
+    with kb.connect(board="work-proj-dir") as conn:
+        tid = kb.create_task(
+            conn,
+            title="inherited",
+            workspace_kind="dir",
+            board="work-proj-dir",
+        )
         t = kb.get_task(conn, tid)
     assert t is not None
     assert t.workspace_path == default_wd

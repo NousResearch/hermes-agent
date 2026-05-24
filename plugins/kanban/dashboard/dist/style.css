@@ -7,6 +7,7 @@
 
 .hermes-kanban {
   width: 100%;
+  min-width: 0; /* shrink inside dashboard flex layout instead of clipping */
 }
 
 /* ---- Code/pre reset (theme-immune default) --------------------------- *
@@ -63,18 +64,15 @@
 /* ---- Columns layout -------------------------------------------------- */
 
 .hermes-kanban-columns {
-  display: flex;
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(min(100%, 280px), 1fr));
   gap: 0.75rem;
   align-items: start;
-  overflow-x: auto;
-  scrollbar-width: none;
-}
-.hermes-kanban-columns::-webkit-scrollbar {
-  display: none;
+  width: 100%;
 }
 
 .hermes-kanban-column {
-  flex: 0 0 280px;
+  min-width: 0;
   display: flex;
   flex-direction: column;
   background: color-mix(in srgb, var(--color-card) 85%, transparent);
@@ -141,6 +139,8 @@
   display: flex;
   flex-direction: column;
   gap: 0.45rem;
+  flex: 1;
+  min-height: 0;
   overflow-y: auto;
   padding-right: 0.1rem;
 }
@@ -1523,6 +1523,7 @@
 /* ---- Trash drop zone ------------------------------------------------- */
 
 .hermes-kanban-trash {
+  min-width: 0;
   display: flex;
   flex-direction: column;
   align-items: center;
@@ -1534,7 +1535,8 @@
   background: color-mix(in srgb, var(--color-card) 85%, transparent);
   color: var(--color-muted-foreground);
   font-size: 0.75rem;
-  min-height: 80px;
+  min-height: 200px;
+  max-height: calc(100vh - 220px);
   opacity: 0.5;
   transition: opacity 120ms ease, border-color 120ms ease, background-color 120ms ease;
   user-select: none;

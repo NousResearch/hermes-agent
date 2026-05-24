@@ -475,6 +475,9 @@ def _handle_complete(args: dict, **kw) -> str:
                     result=result, summary=summary, metadata=metadata,
                     created_cards=created_cards,
                     expected_run_id=_worker_run_id(tid),
+                    enforce_review=(
+                        os.environ.get("HERMES_KANBAN_TASK") == tid
+                    ),
                 )
             except kb.HallucinatedCardsError as hall_err:
                 # Structured rejection — surface the phantom ids so the
@@ -501,6 +504,19 @@ def _handle_complete(args: dict, **kw) -> str:
                     f"could not complete {tid} (unknown id or already terminal)"
                 )
             run = kb.latest_run(conn, tid)
+            task = kb.get_task(conn, tid)
+            if task and task.status == "blocked":
+                return _ok(
+                    task_id=tid,
+                    run_id=run.id if run else None,
+                    status="blocked",
+                    review_required=True,
+                    message=(
+                        "Task blocked for human review instead of completing. "
+                        "A reviewer can approve via the dashboard (unblock) or "
+                        "move to done after inspection."
+                    ),
+                )
             return _ok(task_id=tid, run_id=run.id if run else None)
         finally:
             conn.close()
@@ -873,7 +889,13 @@ KANBAN_COMPLETE_SCHEMA = {
         "human-readable 1-3 sentence description of what you did; put "
         "machine-readable facts in ``metadata`` (changed_files, "
         "tests_run, decisions, findings, etc). At least one of "
-        "``summary`` or ``result`` is required. If you created new "
+        "``summary`` or ``result`` is required. On ``worktree`` / ``dir`` "
+        "tasks the kernel redirects this call to ``blocked`` with a "
+        "``review-required:`` reason so a human can approve before "
+        "the card reaches ``done`` — pass the full handoff here and "
+        "the reviewer will see it on the run row. For genuinely "
+        "terminal scratch tasks (research writeups, pure decomposition), "
+        "``kanban_complete`` completes normally. If you created new "
         "tasks via ``kanban_create`` during this run, list their ids "
         "in ``created_cards`` — the kernel verifies them so phantom "
         "references are caught before they leak into downstream "

@@ -2069,6 +2069,65 @@ def test_complete_never_claimed_task_synthesizes_run(kanban_home):
         conn.close()
 
 
+def test_complete_enforce_review_redirects_worktree(kanban_home):
+    """Worker completions on worktree tasks route to blocked review."""
+    conn = kb.connect()
+    try:
+        tid = kb.create_task(
+            conn,
+            title="fix bug",
+            assignee="worker",
+            workspace_kind="worktree",
+            workspace_path="/tmp/wt",
+        )
+        kb.claim_task(conn, tid)
+        ok = kb.complete_task(
+            conn,
+            tid,
+            summary="fixed null deref",
+            metadata={"changed_files": ["main.py"]},
+            enforce_review=True,
+        )
+        assert ok is True
+        task = kb.get_task(conn, tid)
+        assert task.status == "blocked"
+        run = kb.latest_run(conn, tid)
+        assert run.outcome == "blocked"
+        assert run.summary == "fixed null deref"
+        assert run.metadata == {"changed_files": ["main.py"]}
+        evts = [
+            e for e in kb.list_events(conn, tid)
+            if e.kind == "completion_redirected_to_review"
+        ]
+        assert len(evts) == 1
+    finally:
+        conn.close()
+
+
+def test_complete_enforce_review_respects_waiver(kanban_home):
+    conn = kb.connect()
+    try:
+        tid = kb.create_task(
+            conn,
+            title="typo",
+            assignee="worker",
+            workspace_kind="worktree",
+            workspace_path="/tmp/wt",
+        )
+        kb.claim_task(conn, tid)
+        ok = kb.complete_task(
+            conn,
+            tid,
+            summary="one char typo",
+            metadata={"review_waived": True},
+            enforce_review=True,
+        )
+        assert ok is True
+        assert kb.get_task(conn, tid).status == "done"
+    finally:
+        conn.close()
+
+
 def test_block_never_claimed_task_synthesizes_run(kanban_home):
     """block_task on a ready task must persist --reason on a synthetic run."""
     conn = kb.connect()

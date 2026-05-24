@@ -1560,6 +1560,12 @@ DEFAULT_CONFIG = {
         # worker process (if still running host-locally) is terminated
         # before the reclaim.  0 disables stale detection entirely.
         "dispatch_stale_timeout_seconds": 14400,
+        # Worker ``kanban_complete`` on tasks with these workspace kinds
+        # is redirected to ``blocked`` with a ``review-required:`` reason
+        # so a human can approve before the card lands in ``done``. Set to
+        # ``[]`` or ``allow_complete_without_review: true`` to disable.
+        "require_review_workspace_kinds": ["worktree", "dir"],
+        "allow_complete_without_review": False,
     },
 
     # execute_code settings — controls the tool used for programmatic tool calls.

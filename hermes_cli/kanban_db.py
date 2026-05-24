@@ -2718,6 +2718,122 @@ class HallucinatedCardsError(ValueError):
         )
 
 
+DEFAULT_REVIEW_REQUIRED_WORKSPACE_KINDS = ("worktree", "dir")
+
+
+def _kanban_config() -> dict:
+    try:
+        from hermes_cli.config import load_config
+
+        return (load_config() or {}).get("kanban") or {}
+    except Exception:
+        return {}
+
+
+def task_requires_review_before_complete(
+    task: Task,
+    metadata: Optional[dict] = None,
+    *,
+    kanban_cfg: Optional[dict] = None,
+) -> bool:
+    """Return True when a worker ``kanban_complete`` should route to review."""
+    cfg = kanban_cfg if kanban_cfg is not None else _kanban_config()
+    if cfg.get("allow_complete_without_review"):
+        return False
+    if metadata and metadata.get("review_waived"):
+        return False
+    kinds = cfg.get(
+        "require_review_workspace_kinds",
+        list(DEFAULT_REVIEW_REQUIRED_WORKSPACE_KINDS),
+    )
+    return (task.workspace_kind or "scratch") in kinds
+
+
+def _redirect_worker_completion_to_review(
+    conn: sqlite3.Connection,
+    task_id: str,
+    *,
+    summary: Optional[str],
+    result: Optional[str],
+    metadata: Optional[dict],
+    verified_cards: list[str],
+    expected_run_id: Optional[int],
+) -> bool:
+    """Finish a worker run as ``blocked`` with a review-required reason."""
+    handoff_summary = summary if summary is not None else result
+    reason_line = (handoff_summary or "worker finished").strip().splitlines()[0][:200]
+    block_reason = f"review-required: {reason_line}"
+
+    with write_txn(conn):
+        if expected_run_id is None:
+            cur = conn.execute(
+                """
+                UPDATE tasks
+                   SET status       = 'blocked',
+                       claim_lock   = NULL,
+                       claim_expires= NULL,
+                       worker_pid   = NULL
+                 WHERE id = ?
+                   AND status IN ('running', 'ready')
+                """,
+                (task_id,),
+            )
+        else:
+            cur = conn.execute(
+                """
+                UPDATE tasks
+                   SET status       = 'blocked',
+                       claim_lock   = NULL,
+                       claim_expires= NULL,
+                       worker_pid   = NULL
+                 WHERE id = ?
+                   AND status IN ('running', 'ready')
+                   AND current_run_id = ?
+                """,
+                (task_id, int(expected_run_id)),
+            )
+        if cur.rowcount != 1:
+            return False
+        run_id = _end_run(
+            conn,
+            task_id,
+            outcome="blocked",
+            status="blocked",
+            summary=handoff_summary,
+            metadata=metadata,
+        )
+        if run_id is None and (handoff_summary or metadata or result):
+            run_id = _synthesize_ended_run(
+                conn,
+                task_id,
+                outcome="blocked",
+                summary=handoff_summary,
+                metadata=metadata,
+            )
+        redirect_payload: dict = {
+            "block_reason": block_reason,
+            "summary": reason_line or None,
+        }
+        if verified_cards:
+            redirect_payload["verified_cards"] = verified_cards
+        _append_event(
+            conn,
+            task_id,
+            "completion_redirected_to_review",
+            redirect_payload,
+            run_id=run_id,
+        )
+        _append_event(
+            conn,
+            task_id,
+            "blocked",
+            {"reason": block_reason},
+            run_id=run_id,
+        )
+    _clear_failure_counter(conn, task_id)
+    return True
+
+
 def complete_task(
     conn: sqlite3.Connection,
     task_id: str,
@@ -2727,6 +2843,7 @@ def complete_task(
     metadata: Optional[dict] = None,
     created_cards: Optional[Iterable[str]] = None,
     expected_run_id: Optional[int] = None,
+    enforce_review: bool = False,
 ) -> bool:
     """Transition ``running|ready -> done`` and record ``result``.
 
@@ -2784,6 +2901,19 @@ def complete_task(
             raise HallucinatedCardsError(phantom_cards, task_id)
     else:
         verified_cards = []
+
+    if enforce_review:
+        task = get_task(conn, task_id)
+        if task and task_requires_review_before_complete(task, metadata):
+            return _redirect_worker_completion_to_review(
+                conn,
+                task_id,
+                summary=summary,
+                result=result,
+                metadata=metadata,
+                verified_cards=verified_cards,
+                expected_run_id=expected_run_id,
+            )
 
     with write_txn(conn):
         if expected_run_id is None:

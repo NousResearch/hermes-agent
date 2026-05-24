@@ -311,6 +311,62 @@ def test_complete_happy_path(worker_env):
         conn.close()
 
 
+def test_complete_worktree_redirects_to_review_blocked(worker_env):
+    """Worktree/dir tasks must land in blocked (review-required), not done."""
+    from tools import kanban_tools as kt
+    from hermes_cli import kanban_db as kb
+
+    conn = kb.connect()
+    try:
+        conn.execute(
+            "UPDATE tasks SET workspace_kind = 'worktree' WHERE id = ?",
+            (worker_env,),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    out = kt._handle_complete({
+        "summary": "shipped rate limiter",
+        "metadata": {"changed_files": ["api/limit.py"], "tests_run": 14},
+    })
+    d = json.loads(out)
+    assert d["ok"] is True
+    assert d["review_required"] is True
+    assert d["status"] == "blocked"
+
+    conn = kb.connect()
+    try:
+        task = kb.get_task(conn, worker_env)
+        assert task.status == "blocked"
+        run = kb.latest_run(conn, worker_env)
+        assert run.outcome == "blocked"
+        assert run.summary == "shipped rate limiter"
+        assert run.metadata == {"changed_files": ["api/limit.py"], "tests_run": 14}
+        events = [e for e in kb.list_events(conn, worker_env)
+                  if e.kind == "completion_redirected_to_review"]
+        assert len(events) == 1
+        assert events[0].payload["block_reason"].startswith("review-required:")
+    finally:
+        conn.close()
+
+
+def test_complete_scratch_still_completes_normally(worker_env):
+    from tools import kanban_tools as kt
+    from hermes_cli import kanban_db as kb
+
+    out = kt._handle_complete({"summary": "research writeup done"})
+    d = json.loads(out)
+    assert d["ok"] is True
+    assert "review_required" not in d
+
+    conn = kb.connect()
+    try:
+        assert kb.get_task(conn, worker_env).status == "done"
+    finally:
+        conn.close()
+
+
 def test_complete_metadata_round_trips_through_show(worker_env):
     """Structured completion metadata should be visible to downstream agents."""
     from tools import kanban_tools as kt

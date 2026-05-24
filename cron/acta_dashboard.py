@@ -874,7 +874,14 @@ h1 { margin:6px 0 8px; color:var(--text); font:720 clamp(22px,3.6vw,34px)/1.02 v
 .silent .job-rank, .missing .job-rank, .silent .output-rank, .missing .output-rank { color:var(--red); }
 .outputs-panel { margin-top:12px; display:flex; flex-direction:column; gap:7px; }
 .output-row { display:grid; grid-template-columns:34px minmax(0,1fr) auto; gap:10px; align-items:center; padding:9px 12px; position:relative; overflow:hidden; min-height:62px; }
-.output-row:before { content:""; width:2px; height:36px; border-radius:999px; background:linear-gradient(180deg,var(--acta),var(--acta2)); position:absolute; left:0; top:50%; transform:translateY(-50%); }
+.output-row[data-open-url] { cursor:pointer; }
+.output-row[aria-disabled='true'] { cursor:default; }
+.output-row[data-open-url]:hover { border-color:rgba(35,167,255,.55); box-shadow:0 0 24px rgba(35,167,255,.10); }
+.output-open-overlay { position:absolute; inset:0; z-index:1; border:0; text-decoration:none; }
+.output-actions { position:relative; z-index:2; pointer-events:none; }
+.output-actions a { pointer-events:auto; }
+.output-meta .followup-meta { position:relative; z-index:2; }
+.output-row:before { content:""; width:2px; height:36px; border-radius:999px; background:linear-gradient(180deg,var(--acta),var(--acta2)); position:absolute; left:0; top:50%; transform:translateY(-50%); z-index:3; }
 .output-rank { color:var(--acta2); font:800 10px var(--mono); }
 .output-main b { display:block; color:#fff; font:700 15px/1.14 var(--ui); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
 .output-main p { margin:2px 0 0; color:var(--body); font:13px/1.28 var(--ui); display:-webkit-box; -webkit-line-clamp:1; -webkit-box-orient:vertical; overflow:hidden; }
@@ -997,11 +1004,14 @@ def render_outputs_page(
         confidence = _confidence_label(item, now)
         category = "system" if _is_system_item(item) else "brief"
         source = item.latest_md.name if item.latest_md else (item.latest_html.name if item.latest_html else item.job_id)
-        open_action = (
-            f'<a class="open" href="{html.escape(item.artifact_url, quote=True)}">Open signed</a>'
-            if item.artifact_url
-            else '<span class="muted">No signed link</span>'
+        signed_href = html.escape(item.artifact_url, quote=True) if item.artifact_url else ""
+        row_open_attr = f' data-open-url="{signed_href}"' if signed_href else ' aria-disabled="true"'
+        open_overlay = (
+            f'<a class="output-open-overlay" href="{signed_href}" aria-label="Open artifact for {html.escape(item.name, quote=True)}"></a>'
+            if signed_href
+            else ""
         )
+        open_action = '<span class="open">SIGNED</span>' if signed_href else '<span class="muted">No signed link</span>'
         ask_action = (
             f'<a class="ask" href="{html.escape(item.telegram_url, quote=True)}" target="_blank" rel="noopener" '
             'aria-label="Ask follow-up in Telegram">ASK</a>'
@@ -1016,7 +1026,8 @@ def render_outputs_page(
         )
         rows.append(
             f"""
-<article class="output-row {_status_class(item)}">
+<article class="output-row {_status_class(item)}"{row_open_attr}>
+  {open_overlay}
   <div class="output-rank">{index:02d}</div>
   <div class="output-main">
     <b>{_safe_text(item.name)}</b>

@@ -715,6 +715,12 @@ def test_outputs_page_uses_v9_shell_and_signed_source_rows():
     assert "#23a7ff" in html
     assert '<a class="active" href="/outputs">Outputs</a>' in html
     assert 'href="https://acta.imperatr.com/r/lead/detail.html?exp=1&amp;sig=abc"' in html
+    assert 'data-open-url="https://acta.imperatr.com/r/lead/detail.html?exp=1&amp;sig=abc"' in html
+    assert '<a class="output-open-overlay" href="https://acta.imperatr.com/r/lead/detail.html?exp=1&amp;sig=abc"' in html
+    assert '<span class="open">SIGNED</span>' in html
+    assert "Open signed" not in html
+    assert ".output-row[data-open-url] { cursor:pointer; }" in html
+    assert ".output-open-overlay { position:absolute; inset:0; z-index:1; border:0; text-decoration:none; }" in html
     assert 'href="https://t.me/c/3566991387/86"' in html
     assert "ASK" in html
     assert (

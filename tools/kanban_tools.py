@@ -511,6 +511,11 @@ def _handle_complete(args: dict, **kw) -> str:
         return tool_error(f"kanban_complete: {e}")
 
 
+def _looks_like_review_required_handoff(reason: object) -> bool:
+    text = str(reason or "").strip().lower()
+    return text.startswith("review-required:") or text.startswith("review required:")
+
+
 def _handle_block(args: dict, **kw) -> str:
     """Transition the task to blocked with a reason a human will read."""
     tid = _default_task_id(args.get("task_id"))
@@ -524,6 +529,15 @@ def _handle_block(args: dict, **kw) -> str:
     reason = args.get("reason")
     if not reason or not str(reason).strip():
         return tool_error("reason is required — explain what input you need")
+    if _looks_like_review_required_handoff(reason):
+        return tool_error(
+            "review handoffs must not use kanban_block. Add any review "
+            "handoff details with kanban_comment if needed, create a review "
+            "child with kanban_create(..., parents=[your-task-id]) if one "
+            "does not already exist, then call kanban_complete with summary "
+            "and metadata. The review child is the gate; blocking this task "
+            "for review can deadlock its dependents."
+        )
     board = args.get("board")
     try:
         kb, conn = _connect(board=board)
@@ -965,7 +979,8 @@ KANBAN_BLOCK_SCHEMA = {
         "to proceed. ``reason`` will be shown to the human on the "
         "board and included in context when someone unblocks you. "
         "Use for genuine blockers only — don't block on things you can "
-        "resolve yourself."
+        "resolve yourself. Do not use this for code-review handoffs; "
+        "create/route a review child and complete this task instead."
     ),
     "parameters": {
         "type": "object",

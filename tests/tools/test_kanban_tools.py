@@ -616,6 +616,26 @@ def test_block_rejects_empty_reason(worker_env):
         assert json.loads(out).get("error")
 
 
+def test_block_rejects_review_required_handoff(worker_env):
+    """Review gates should complete/create review work, not sticky-block."""
+    from hermes_cli import kanban_db as kb
+    from tools import kanban_tools as kt
+
+    out = kt._handle_block({
+        "reason": "review-required: implementation finished; needs eyes",
+    })
+    err = json.loads(out).get("error", "")
+    assert "kanban_complete" in err
+    assert "review child" in err
+
+    conn = kb.connect()
+    try:
+        task = kb.get_task(conn, worker_env)
+        assert task.status == "running"
+    finally:
+        conn.close()
+
+
 def test_heartbeat_happy_path(worker_env):
     from tools import kanban_tools as kt
     out = kt._handle_heartbeat({"note": "progress"})
@@ -1142,6 +1162,8 @@ def test_kanban_guidance_in_worker_prompt(monkeypatch, tmp_path):
     assert "kanban_complete" in prompt
     assert "kanban_block" in prompt
     assert "kanban_create" in prompt
+    assert 'kanban_block(reason="review-required' not in prompt
+    assert "review child" in prompt
     # Anti-shell guidance
     assert "Do not shell out" in prompt or "tools — they work" in prompt
 

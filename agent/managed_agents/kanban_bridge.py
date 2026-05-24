@@ -128,6 +128,9 @@ class KanbanBridgeRuntime:
             raise ValueError(f"Cannot complete review from state {self.card.state!r}")
         return complete_review(self.card, review_result)
 
+    def complete_review(self, review_result: ReviewResult | Mapping[str, Any]) -> KanbanBridgeCard:
+        return self.apply_review_result(review_result)
+
     def approve(self) -> KanbanBridgeCard:
         if self.card.state == "created":
             plan_card(self.card)

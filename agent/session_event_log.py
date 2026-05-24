@@ -151,24 +151,14 @@ class EventLog:
         self._db_path = Path(db_path) if db_path else _get_db_path()
         self._lock = threading.RLock()
         self._conn: Optional[sqlite3.Connection] = None
-        self._conn_thread_id: Optional[int] = None
 
     # ── connection management ──
 
     def _get_conn(self) -> sqlite3.Connection:
-        current_thread_id = threading.get_ident()
-        if self._conn is None or self._conn_thread_id != current_thread_id:
+        if self._conn is None:
             with self._lock:
-                if self._conn is not None and self._conn_thread_id != current_thread_id:
-                    try:
-                        self._conn.close()
-                    except Exception:
-                        pass
-                    self._conn = None
-                    self._conn_thread_id = None
                 if self._conn is None:
-                    self._conn = sqlite3.connect(str(self._db_path))
-                    self._conn_thread_id = current_thread_id
+                    self._conn = sqlite3.connect(str(self._db_path), check_same_thread=False)
                     self._conn.execute("PRAGMA journal_mode=WAL")
                     self._conn.execute("PRAGMA synchronous=NORMAL")
                     self._conn.executescript(SCHEMA_SQL)
@@ -176,13 +166,13 @@ class EventLog:
         return self._conn
 
     def close(self):
-        if self._conn:
-            try:
-                self._conn.close()
-            except Exception:
-                pass
-            self._conn = None
-            self._conn_thread_id = None
+        with self._lock:
+            if self._conn:
+                try:
+                    self._conn.close()
+                except Exception:
+                    pass
+                self._conn = None
 
     # ── write ──
 
@@ -369,12 +359,13 @@ class EventLog:
     # ── read (for verification / debugging) ──
 
     def get_events_for_task(self, task_id: str) -> List[Dict[str, Any]]:
-        conn = self._get_conn()
-        rows = conn.execute(
-            "SELECT event_id, session_id, task_id, type, timestamp, source, payload_json "
-            "FROM events WHERE task_id = ? ORDER BY timestamp",
-            (task_id,),
-        ).fetchall()
+        with self._lock:
+            conn = self._get_conn()
+            rows = conn.execute(
+                "SELECT event_id, session_id, task_id, type, timestamp, source, payload_json "
+                "FROM events WHERE task_id = ? ORDER BY timestamp",
+                (task_id,),
+            ).fetchall()
         return [
             {
                 "event_id": r[0],
@@ -389,12 +380,13 @@ class EventLog:
         ]
 
     def get_events_for_session(self, session_id: str) -> List[Dict[str, Any]]:
-        conn = self._get_conn()
-        rows = conn.execute(
-            "SELECT event_id, session_id, task_id, type, timestamp, source, payload_json "
-            "FROM events WHERE session_id = ? ORDER BY timestamp",
-            (session_id,),
-        ).fetchall()
+        with self._lock:
+            conn = self._get_conn()
+            rows = conn.execute(
+                "SELECT event_id, session_id, task_id, type, timestamp, source, payload_json "
+                "FROM events WHERE session_id = ? ORDER BY timestamp",
+                (session_id,),
+            ).fetchall()
         return [
             {
                 "event_id": r[0],

@@ -190,7 +190,7 @@ jobs:
             tests/gateway/test_pre_gateway_dispatch.py \
             tests/gateway/test_session.py \
             tests/hermes_cli/test_plugins.py \
-            -q --tb=short -n auto
+            -q --tb=short
 
       - name: Smoke-test gateway-policy plugin against integration branch
         if: inputs.skip_tests != 'true'

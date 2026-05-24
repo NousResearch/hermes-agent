@@ -140,6 +140,12 @@ _TOKENJUICE_MIN_COMPRESSED_CHARS: int = 50
 # Set low enough (3%) that legitimate dense summaries still pass.
 _TOKENJUICE_MIN_COMPRESSED_RATIO: float = 0.03
 
+# Only apply the "too short to be safe" checks to sizeable compression windows.
+# Small conversations often have valid one-sentence summaries; rejecting them
+# causes the compressor to keep the full context even though the summary is
+# useful and intentionally brief.
+_TOKENJUICE_SHORT_SUMMARY_GUARD_ORIGINAL_MIN: int = 500
+
 
 def compression_safe_to_apply(original_len: int, compressed_len: int) -> bool:
     """Return True if the compressed text is meaningfully shorter.
@@ -155,8 +161,11 @@ def compression_safe_to_apply(original_len: int, compressed_len: int) -> bool:
     """
     if original_len <= 0:
         return False
-    if compressed_len < _TOKENJUICE_MIN_COMPRESSED_CHARS:
-        return False
-    if compressed_len < original_len * _TOKENJUICE_MIN_COMPRESSED_RATIO:
-        return False
+    if original_len < _TOKENJUICE_SHORT_SUMMARY_GUARD_ORIGINAL_MIN:
+        return True
+    if original_len >= _TOKENJUICE_SHORT_SUMMARY_GUARD_ORIGINAL_MIN:
+        if compressed_len < _TOKENJUICE_MIN_COMPRESSED_CHARS:
+            return False
+        if compressed_len < original_len * _TOKENJUICE_MIN_COMPRESSED_RATIO:
+            return False
     return (compressed_len / original_len) < TOKENJUICE_MIN_COMPRESSION_RATIO

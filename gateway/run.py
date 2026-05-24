@@ -825,6 +825,7 @@ if _config_path.exists():
             _aux_bridged_keys = {"vision", "web_extract", "approval"}
             try:
                 from hermes_cli.plugins import get_plugin_auxiliary_tasks
+
                 for _entry in get_plugin_auxiliary_tasks():
                     _aux_bridged_keys.add(_entry["key"])
             except Exception:
@@ -7988,6 +7989,19 @@ class GatewayRunner:
         if canonical == "voice":
             return await self._handle_voice_command(event)
 
+        if (
+            not command
+            and getattr(getattr(source, "platform", None), "value", None) == "whatsapp"
+            and event.participant_role == "owner_operator"
+            and event.command_authority_scope == "owner_only"
+        ):
+            from gateway.whatsapp_approved_outreach import (
+                is_whatsapp_approved_outreach_instruction,
+            )
+
+            if is_whatsapp_approved_outreach_instruction(event.text):
+                return await self._handle_whatsapp_approved_outreach_instruction(event)
+
         if self._draining:
             return f"⏳ Gateway is {self._status_action_gerund()} and is not accepting new work right now."
 
@@ -13977,6 +13991,50 @@ class GatewayRunner:
             "Status: invalid_request\n"
             "Usage: /wthread <retrieve|send> <field=value ...>"
         )
+
+    async def _handle_whatsapp_approved_outreach_instruction(
+        self, event: MessageEvent
+    ) -> str:
+        """Handle owner-authorized plain-text WhatsApp approved-outreach instructions."""
+        from gateway.config import Platform
+        from gateway.whatsapp_approved_outreach import (
+            execute_whatsapp_approved_outreach,
+            format_whatsapp_approved_outreach_result,
+            parse_whatsapp_approved_outreach_instruction,
+        )
+
+        def _forbidden() -> str:
+            return (
+                "WhatsApp approved outreach\n"
+                "Status: forbidden\n"
+                "This instruction is only available from an owner-authorized WhatsApp surface."
+            )
+
+        if event.source is None or event.source.platform != Platform.WHATSAPP:
+            return _forbidden()
+
+        authorized = (
+            event.participant_role == "owner_operator"
+            and event.command_authority_scope == "owner_only"
+        )
+        if not authorized:
+            return _forbidden()
+
+        try:
+            request = parse_whatsapp_approved_outreach_instruction(event.text)
+        except ValueError:
+            return (
+                "WhatsApp approved outreach\n"
+                "Status: invalid_request\n"
+                "Usage: whatsapp outreach <one exact selector> operator_objective=<text> [message_text=<text>]"
+            )
+
+        result = await execute_whatsapp_approved_outreach(
+            request,
+            authorized=authorized,
+            adapter=self.adapters.get(Platform.WHATSAPP),
+        )
+        return format_whatsapp_approved_outreach_result(result)
 
     async def _handle_resume_command(self, event: MessageEvent) -> str:
         """Handle /resume command — switch to a previously-named session."""

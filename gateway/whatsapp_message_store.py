@@ -340,3 +340,30 @@ __all__ = [
     "utc_now",
     "whatsapp_daily_partition_path",
 ]
+
+
+def query_latest_whatsapp_record(
+    *,
+    base_dir: Path | None = None,
+    conversation_key: str | None = None,
+    destination_key: str | None = None,
+    destination_context_type: str | None = None,
+    group_chat_id: str | None = None,
+    dm_counterparty_id: str | None = None,
+    direction: str | None = None,
+) -> dict[str, Any] | None:
+    records = query_whatsapp_records_any_time(
+        base_dir=base_dir,
+        conversation_key=conversation_key,
+        destination_key=destination_key,
+        destination_context_type=destination_context_type,
+        group_chat_id=group_chat_id,
+        dm_counterparty_id=dm_counterparty_id,
+        direction=direction,
+    )
+    if not records:
+        return None
+    return records[-1]
+
+
+__all__.append("query_latest_whatsapp_record")

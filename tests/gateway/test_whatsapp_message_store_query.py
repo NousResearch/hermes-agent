@@ -6,6 +6,7 @@ import pytest
 
 from gateway.whatsapp_message_store import (
     append_whatsapp_record,
+    query_latest_whatsapp_record,
     query_whatsapp_records,
 )
 
@@ -236,3 +237,45 @@ def test_query_whatsapp_records_filters_by_canonical_destination_fields_and_dire
 
     assert [record["record_id"] for record in group_records] == ["group-outbound"]
     assert [record["record_id"] for record in dm_records] == ["dm-outbound"]
+
+
+def test_query_latest_whatsapp_record_returns_latest_matching_exact_thread(tmp_path):
+    base_dir = tmp_path / "records"
+
+    _append(
+        base_dir,
+        _record(
+            record_id="older",
+            effective_event_at_utc="2024-06-02T09:00:00Z",
+            record_sequence=1,
+            conversation_key="whatsapp:dm:15551230000",
+            destination_key="whatsapp:dm:15551230000",
+            destination_context_type="direct_message",
+            dm_counterparty_id="15551230000",
+            direction="inbound",
+        ),
+        datetime(2024, 6, 2, 9, 0, 0, tzinfo=timezone.utc),
+    )
+    _append(
+        base_dir,
+        _record(
+            record_id="latest",
+            effective_event_at_utc="2024-06-02T09:05:00Z",
+            record_sequence=2,
+            conversation_key="whatsapp:dm:15551230000",
+            destination_key="whatsapp:dm:15551230000",
+            destination_context_type="direct_message",
+            dm_counterparty_id="15551230000",
+            direction="outbound",
+        ),
+        datetime(2024, 6, 2, 9, 5, 0, tzinfo=timezone.utc),
+    )
+
+    latest = query_latest_whatsapp_record(
+        base_dir=base_dir,
+        destination_key="whatsapp:dm:15551230000",
+        dm_counterparty_id="15551230000",
+    )
+
+    assert latest is not None
+    assert latest["record_id"] == "latest"

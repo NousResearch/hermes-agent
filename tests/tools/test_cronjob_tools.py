@@ -408,3 +408,19 @@ class TestUnifiedCronjobTool:
         assert "workflow_binding_type" in props
         assert "workflow_binding_id" in props
         assert "whatsapp_outreach_plan" in props["workflow_binding_type"]["description"]
+
+    def test_bound_plan_create_rejects_missing_binding_pair(self):
+        created = json.loads(
+            cronjob(
+                action="create",
+                prompt="Scheduled follow-up.",
+                schedule="every 1h",
+                workflow_binding_type="whatsapp_outreach_plan",
+            )
+        )
+
+        assert created["success"] is False
+        assert (
+            "workflow_binding_type and workflow_binding_id must be provided together"
+            in created["error"]
+        )

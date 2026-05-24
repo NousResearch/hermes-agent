@@ -14,6 +14,7 @@ from gateway.whatsapp_approved_outreach import (
     bind_whatsapp_outreach_plan_to_cron_job,
     load_whatsapp_outreach_run_records,
     load_whatsapp_outreach_state,
+    _write_whatsapp_outreach_state,
 )
 
 
@@ -565,3 +566,132 @@ async def test_cron_triggered_outreach_fails_closed_for_unavailable_bound_plan(
     runner.adapters[Platform.WHATSAPP].send.assert_not_awaited()
     assert result["workflow_status"] == "blocked"
     assert result["reason"] == expected_reason
+
+
+@pytest.mark.asyncio
+async def test_bound_plan_batch_run_creates_one_execution_per_active_target_and_partial_report(
+    tmp_path, monkeypatch
+):
+    hermes_home = tmp_path / ".hermes"
+    base_dir = hermes_home / "gateway" / "whatsapp-records"
+    base_dir.mkdir(parents=True)
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+    _append_record(
+        base_dir,
+        record_id="record-1",
+        text="Vendor A prior thread context.",
+        participant_role="external_party",
+        message_id="msg-1",
+        effective_event_at="2024-06-02T09:01:00Z",
+    )
+    append_whatsapp_record(
+        {
+            "record_kind": "conversation_record",
+            "record_id": "record-2",
+            "conversation_key": "whatsapp:dm:15551230001",
+            "destination_key": "whatsapp:dm:15551230001",
+            "destination_context_type": "direct_message",
+            "destination_chat_id": "15551230001@s.whatsapp.net",
+            "destination_target_id": "15551230001",
+            "group_chat_id": None,
+            "dm_counterparty_id": "15551230001",
+            "direction": "inbound",
+            "effective_event_at_utc": "2024-06-02T09:02:00Z",
+            "record_sequence": 2,
+            "participant_role": "external_party",
+            "message_classification": "conversational_only",
+            "command_authority_scope": "none",
+            "sender_id": "15551230001",
+            "sender_name": "Vendor B",
+            "text": "Vendor B prior thread context.",
+            "message_id": "msg-2",
+            "media_types": [],
+        },
+        effective_event_at=datetime.fromisoformat("2024-06-02T09:02:00+00:00"),
+        base_dir=base_dir,
+    )
+
+    runner = _make_runner(tmp_path)
+
+    async def _send(chat_id, message):
+        if chat_id == "15551230000@s.whatsapp.net":
+            return SendResult(
+                success=True,
+                message_id="bridge-msg-a",
+                raw_response={"dispatch_group_id": "dispatch-a"},
+            )
+        return SendResult(success=False, error="bridge down for vendor b")
+
+    runner.adapters[Platform.WHATSAPP].send = AsyncMock(side_effect=_send)
+
+    await runner._handle_message(
+        _make_event(
+            "whatsapp outreach destination_key=whatsapp:dm:15551230000 "
+            'operator_objective="request the revised quote" '
+            'message_text="Following up on the revised quote."'
+        )
+    )
+    state = load_whatsapp_outreach_state()
+    plan_id = state["plans"][0]["plan_id"]
+    state["plan_targets"].append({
+        "plan_target_id": "watarget-extra",
+        "plan_id": plan_id,
+        "target_status": "active",
+        "conversation_key": "whatsapp:dm:15551230001",
+        "destination_key": "whatsapp:dm:15551230001",
+        "group_chat_id": None,
+        "dm_counterparty_id": "15551230001",
+        "target_objective_override": None,
+        "max_outbound_messages_per_run": 1,
+        "last_resolved_conversation_key": None,
+        "last_observed_message_at_utc": None,
+    })
+    state["plans"][0]["plan_status"] = "approved"
+    _write_whatsapp_outreach_state(state)
+    bind_whatsapp_outreach_plan_to_cron_job(plan_id=plan_id, cron_job_id="cron-batch")
+
+    from gateway.whatsapp_approved_outreach import execute_whatsapp_approved_outreach
+
+    result = await execute_whatsapp_approved_outreach(
+        {
+            "workflow_binding_type": "whatsapp_outreach_plan",
+            "workflow_binding_id": plan_id,
+            "trigger_source": "cron_job",
+            "trigger_reference_id": "cron-batch",
+            "message_text": "Scheduled follow-up.",
+            "report_delivery_target": "telegram:-100ops",
+        },
+        authorized=True,
+        adapter=runner.adapters[Platform.WHATSAPP],
+    )
+
+    assert result["workflow_status"] == "ready"
+    assert result["run"]["run_status"] == "completed_with_failures"
+    assert result["run"]["target_count"] == 2
+    assert result["run"]["completed_target_count"] == 2
+    assert result["run"]["failed_target_count"] == 1
+    assert len(result["run"]["target_executions"]) == 2
+
+    statuses = {
+        row["resolved_target"]["destination_chat_id"]: row["execution_status"]
+        for row in result["run"]["target_executions"]
+    }
+    assert statuses["15551230000@s.whatsapp.net"] == "sent"
+    assert statuses["15551230001@s.whatsapp.net"] == "send_failed"
+
+    final_state = load_whatsapp_outreach_state()
+    latest_run = final_state["runs"][-1]
+    latest_report = final_state["reports"][-1]
+    assert latest_run["run_status"] == "completed_with_failures"
+    assert latest_run["target_count"] == 2
+    assert (
+        len([
+            r
+            for r in final_state["target_executions"]
+            if r["run_id"] == latest_run["run_id"]
+        ])
+        == 2
+    )
+    assert latest_report["report_status"] == "partial"
+    assert len(latest_report["target_rows"]) == 2

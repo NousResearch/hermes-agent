@@ -14602,10 +14602,22 @@ class GatewayRunner:
             _get_platform_tools,
         )
         enabled_toolsets = sorted(_get_platform_tools(user_config, platform_key))
+        scoped_mcp_tool_allowlist = set()
+        if platform_key == "telegram":
+            try:
+                from plugins.kb_journeys import scoped_mcp_tool_allowlist_for_message
+
+                scoped_mcp_tool_allowlist = scoped_mcp_tool_allowlist_for_message(
+                    session_id=session_id,
+                    message=message,
+                )
+            except Exception:
+                logger.debug("Failed to resolve scoped Telegram MCP tool allowlist", exc_info=True)
         enabled_toolsets = _apply_telegram_mcp_posture_filter(
             enabled_toolsets,
             message=message,
             platform=platform_key,
+            scoped_mcp_tool_allowlist=scoped_mcp_tool_allowlist,
         )
         agent_cfg_local = user_config.get("agent") or {}
         disabled_toolsets = agent_cfg_local.get("disabled_toolsets") or None

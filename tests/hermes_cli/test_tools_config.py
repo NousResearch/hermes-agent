@@ -29,6 +29,8 @@ def _register_posture_mcp_tools():
     tools = [
         "mcp_kb_test_posture_dashboard_live",
         "mcp_kb_test_posture_queue_summary",
+        "mcp_kb_test_posture_queue_batch_decide_confirmed",
+        "mcp_kb_test_posture_queue_decide_confirmed",
         "mcp_kb_test_posture_workflow_start_confirmed",
         "mcp_kb_test_posture_publication_commit_confirmed",
         "mcp_kb_test_posture_run_health",
@@ -355,6 +357,29 @@ def test_telegram_explicit_commitment_mcp_posture_leaves_server_toolset_enabled(
         _deregister_posture_mcp_tools(tools)
 
     assert filtered == ["web", "kb_test_posture"]
+
+
+def test_telegram_pending_action_mcp_posture_exposes_only_scoped_confirmed_tools():
+    tools = _register_posture_mcp_tools()
+    try:
+        filtered = _apply_telegram_mcp_posture_filter(
+            ["web", "kb_test_posture"],
+            message="Reject",
+            platform="telegram",
+            scoped_mcp_tool_allowlist={"mcp_kb_test_posture_queue_batch_decide_confirmed"},
+        )
+    finally:
+        _deregister_posture_mcp_tools(tools)
+
+    assert "web" in filtered
+    assert "kb_test_posture" not in filtered
+    assert "tool:mcp_kb_test_posture_dashboard_live" in filtered
+    assert "tool:mcp_kb_test_posture_queue_summary" in filtered
+    assert "tool:mcp_kb_test_posture_queue_batch_decide_confirmed" in filtered
+    assert "tool:mcp_kb_test_posture_queue_decide_confirmed" not in filtered
+    assert "tool:mcp_kb_test_posture_workflow_start_confirmed" not in filtered
+    assert "tool:mcp_kb_test_posture_publication_commit_confirmed" not in filtered
+    assert "tool:mcp_kb_test_posture_run_health" not in filtered
 
 
 def test_non_telegram_mcp_posture_is_unchanged():

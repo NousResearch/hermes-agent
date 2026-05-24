@@ -17,7 +17,7 @@ import shutil
 import subprocess
 import sys
 from pathlib import Path
-from typing import Dict, List, Optional, Set
+from typing import Dict, Iterable, List, Optional, Set
 
 
 from hermes_cli.config import (
@@ -170,6 +170,7 @@ def _apply_telegram_mcp_posture_filter(
     *,
     message: str,
     platform: str,
+    scoped_mcp_tool_allowlist: Iterable[str] | None = None,
 ) -> List[str]:
     """Narrow Telegram MCP schemas for ordinary conversation turns.
 
@@ -179,11 +180,19 @@ def _apply_telegram_mcp_posture_filter(
     view status/logs, or similar.  The filter converts MCP server toolsets
     into exact ``tool:<name>`` entries so safe tools remain available without
     exposing the whole server.
+
+    ``scoped_mcp_tool_allowlist`` is the bridge for stateful action cards: a
+    gateway/plugin that has already matched the incoming message to a concrete
+    pending action may nominate exact MCP tools needed for that action.  Those
+    tools remain available even if their names are normally gated; unrelated
+    gated tools stay hidden.
     """
     if str(platform or "").lower() != "telegram":
         return list(enabled_toolsets or [])
     if _telegram_message_requests_commitment_mcp(message):
         return list(enabled_toolsets or [])
+
+    allowed_scoped_tools = {str(tool) for tool in (scoped_mcp_tool_allowlist or []) if str(tool).strip()}
 
     try:
         from tools.registry import registry
@@ -211,7 +220,7 @@ def _apply_telegram_mcp_posture_filter(
             continue
 
         for tool_name in tool_names:
-            if _telegram_mcp_tool_is_gated(tool_name):
+            if _telegram_mcp_tool_is_gated(tool_name) and tool_name not in allowed_scoped_tools:
                 continue
             direct = f"tool:{tool_name}"
             if direct not in seen:

@@ -4412,7 +4412,12 @@ class FeishuAdapter(BasePlatformAdapter):
     async def _connect_websocket(self) -> None:
         if not FEISHU_WEBSOCKET_AVAILABLE:
             raise RuntimeError("websockets not installed; websocket mode unavailable")
-        domain = FEISHU_DOMAIN if self._domain_name != "lark" else LARK_DOMAIN
+        if self._domain_name == "lark":
+            domain = LARK_DOMAIN
+        elif self._domain_name == "feishu":
+            domain = FEISHU_DOMAIN
+        else:
+            domain = self._domain_name
         self._client = self._build_lark_client(domain)
         self._event_handler = self._build_event_handler()
         if self._event_handler is None:
@@ -4438,7 +4443,12 @@ class FeishuAdapter(BasePlatformAdapter):
     async def _connect_webhook(self) -> None:
         if not FEISHU_WEBHOOK_AVAILABLE:
             raise RuntimeError("aiohttp not installed; webhook mode unavailable")
-        domain = FEISHU_DOMAIN if self._domain_name != "lark" else LARK_DOMAIN
+        if self._domain_name == "lark":
+            domain = LARK_DOMAIN
+        elif self._domain_name == "feishu":
+            domain = FEISHU_DOMAIN
+        else:
+            domain = self._domain_name
         self._client = self._build_lark_client(domain)
         self._event_handler = self._build_event_handler()
         if self._event_handler is None:
@@ -4913,7 +4923,12 @@ def probe_bot(app_id: str, app_secret: str, domain: str) -> Optional[dict]:
 
 def _build_onboard_client(app_id: str, app_secret: str, domain: str) -> Any:
     """Build a lark Client for the given credentials and domain."""
-    sdk_domain = LARK_DOMAIN if domain == "lark" else FEISHU_DOMAIN
+    if domain == "lark":
+        sdk_domain = LARK_DOMAIN
+    elif domain == "feishu":
+        sdk_domain = FEISHU_DOMAIN
+    else:
+        sdk_domain = domain
     return (
         lark.Client.builder()
         .app_id(app_id)

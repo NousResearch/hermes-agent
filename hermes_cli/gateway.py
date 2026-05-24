@@ -4388,7 +4388,15 @@ def _setup_feishu():
 
         domain_choices = ["feishu (China)", "lark (International)"]
         domain_idx = prompt_choice("  Domain", domain_choices, 0)
-        domain = "lark" if domain_idx == 1 else "feishu"
+        if domain_idx == 1:  
+            domain = "lark"  
+        elif domain_idx == 2:  
+            domain = prompt("  Custom domain (e.g. https://custom.example.com)", password=False)  
+            if not domain:  
+                print_warning("  Custom domain cannot be empty, falling back to feishu")  
+                domain = "feishu"  
+        else:  
+            domain = "feishu"
 
         # Try to probe the bot with manual credentials
         bot_name = None

@@ -14,7 +14,7 @@ filesystem".
 """
 
 import sqlite3
-from unittest.mock import patch
+from unittest.mock import mock_open, patch
 
 import pytest
 
@@ -303,3 +303,107 @@ class TestSessionDbUsesWalFallback:
             assert get_last_init_error() is None
         finally:
             db.close()
+
+
+class TestIsOnBtrfs:
+    """Tests for ``_is_on_btrfs`` — proactive BTRFS COW detection."""
+
+    def test_detection_contract_accepts_path_and_returns_bool(self, tmp_path):
+        """_is_on_btrfs accepts a path string and returns a boolean."""
+        result = hermes_state._is_on_btrfs(str(tmp_path / "test.db"))
+        assert isinstance(result, bool)
+
+    def test_false_when_mountinfo_absent(self):
+        """Non-Linux platforms have no mountinfo and should be a no-op."""
+        with patch("os.path.exists", return_value=False):
+            assert hermes_state._is_on_btrfs("/some/path.db") is False
+
+    def test_detects_btrfs_mountinfo_entry(self):
+        """Parse the real mountinfo shape: fs type follows the '-' separator."""
+        data = "\n".join([
+            "36 25 0:32 / / rw,relatime - ext4 /dev/sda1 rw",
+            "48 36 0:45 /subvol /home rw,relatime shared:1 - btrfs /dev/nvme0n1p2 rw,compress=zstd",
+        ])
+        with (
+            patch("os.path.exists", return_value=True),
+            patch("os.path.realpath", side_effect=lambda p: p),
+            patch("builtins.open", mock_open(read_data=data)),
+        ):
+            assert hermes_state._is_on_btrfs("/home/evi/.hermes/state.db") is True
+
+    def test_uses_path_boundaries_not_prefixes(self):
+        """A DB under /homebrew must not match a /home BTRFS mount."""
+        data = "48 36 0:45 / /home rw,relatime - btrfs /dev/nvme0n1p2 rw\n"
+        with (
+            patch("os.path.exists", return_value=True),
+            patch("os.path.realpath", side_effect=lambda p: p),
+            patch("builtins.open", mock_open(read_data=data)),
+        ):
+            assert hermes_state._is_on_btrfs("/homebrew/state.db") is False
+
+    def test_decodes_mountinfo_octal_escapes(self):
+        """Mount points with spaces are escaped as octal in mountinfo."""
+        data = "48 36 0:45 / /mnt/Hermes\\040Data rw,relatime - btrfs /dev/nvme0n1p2 rw\n"
+        with (
+            patch("os.path.exists", return_value=True),
+            patch("os.path.realpath", side_effect=lambda p: p),
+            patch("builtins.open", mock_open(read_data=data)),
+        ):
+            assert hermes_state._is_on_btrfs("/mnt/Hermes Data/state.db") is True
+
+
+class TestBtrfsProactiveSkip:
+    """E2E: ``apply_wal_with_fallback`` skips WAL proactively on BTRFS."""
+
+    def test_skips_wal_when_path_on_btrfs(self, tmp_path, caplog, monkeypatch):
+        """When db_path is on BTRFS, WAL is skipped without trying the pragma."""
+        db = tmp_path / "btrfs.db"
+        monkeypatch.setattr(hermes_state, "_is_on_btrfs", lambda p: True)
+        conn = sqlite3.connect(str(db), isolation_level=None)
+        try:
+            with caplog.at_level("WARNING", logger="hermes"):
+                mode = apply_wal_with_fallback(conn, db_label="test.db", db_path=str(db))
+            assert mode == "delete"
+            # Verify DELETE was actually set
+            cur = conn.execute("PRAGMA journal_mode")
+            assert cur.fetchone()[0].lower() == "delete"
+            # Warning logged about BTRFS
+            assert any("BTRFS" in r.getMessage() for r in caplog.records)
+        finally:
+            conn.close()
+
+    def test_btrfs_warning_deduplicated_per_db_label(self, tmp_path, caplog, monkeypatch):
+        """Repeated BTRFS connections warn once per DB label, matching fallback path."""
+        monkeypatch.setattr(hermes_state, "_is_on_btrfs", lambda p: True)
+        with caplog.at_level("WARNING", logger="hermes"):
+            for i in range(3):
+                conn = sqlite3.connect(str(tmp_path / f"btrfs_{i}.db"), isolation_level=None)
+                try:
+                    apply_wal_with_fallback(conn, db_label="shared-btrfs.db", db_path=str(tmp_path / f"btrfs_{i}.db"))
+                finally:
+                    conn.close()
+        warnings = [r for r in caplog.records if "shared-btrfs.db" in r.getMessage()]
+        assert len(warnings) == 1
+
+    def test_db_path_none_never_triggers_btrfs_check(self, tmp_path):
+        """When db_path is None (backward compat), WAL proceeds normally."""
+        conn = sqlite3.connect(str(tmp_path / "ok.db"), isolation_level=None)
+        try:
+            mode = apply_wal_with_fallback(conn, db_label="test.db", db_path=None)
+            assert mode == "wal"
+        finally:
+            conn.close()
+
+    def test_btrfs_skip_writeable_after_fallback(self, tmp_path, monkeypatch):
+        """After BTRFS skip to DELETE, the DB is still fully usable."""
+        db = tmp_path / "btrfs_writable.db"
+        monkeypatch.setattr(hermes_state, "_is_on_btrfs", lambda p: True)
+        conn = sqlite3.connect(str(db), isolation_level=None)
+        try:
+            mode = apply_wal_with_fallback(conn, db_label="test.db", db_path=str(db))
+            assert mode == "delete"
+            conn.execute("CREATE TABLE t (x INTEGER)")
+            conn.execute("INSERT INTO t VALUES (42)")
+            assert list(conn.execute("SELECT x FROM t"))[0][0] == 42
+        finally:
+            conn.close()

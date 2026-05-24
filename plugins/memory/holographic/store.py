@@ -131,7 +131,7 @@ class MemoryStore:
         # gracefully on NFS/SMB/FUSE-mounted HERMES_HOME (same issue as
         # state.db / kanban.db — see hermes_state._WAL_INCOMPAT_MARKERS).
         from hermes_state import apply_wal_with_fallback
-        apply_wal_with_fallback(self._conn, db_label="memory_store.db (holographic)")
+        apply_wal_with_fallback(self._conn, db_label="memory_store.db (holographic)", db_path=str(self.db_path))
         self._conn.executescript(_SCHEMA)
         # Migrate: add hrr_vector column if missing (safe for existing databases)
         columns = {row[1] for row in self._conn.execute("PRAGMA table_info(facts)").fetchall()}

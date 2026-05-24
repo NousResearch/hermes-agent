@@ -57,6 +57,55 @@ _WAL_INCOMPAT_MARKERS = (
     "disk i/o error",         # Flaky network FS during WAL setup
 )
 
+# Filesystem types known to have WAL incompatibility beyond the exception-
+# based markers above.  BTRFS Copy-on-Write can modify disk blocks after
+# WAL records them, producing silent corruption.  We detect these ahead of
+# time rather than waiting for an OperationalError that arrives too late.
+_WAL_FS_BLOCKLIST: frozenset[str] = frozenset({"btrfs"})
+
+
+def _decode_mountinfo_path(value: str) -> str:
+    """Decode octal escapes used by Linux mountinfo paths."""
+    return re.sub(r"\\([0-7]{3})", lambda m: chr(int(m.group(1), 8)), value)
+
+
+def _is_on_btrfs(db_path: str) -> bool:
+    """Return True if *db_path* resides on a BTRFS filesystem.
+
+    Reads ``/proc/self/mountinfo`` (Linux only).  Returns ``False`` on
+    any non-Linux platform or when the mountinfo cannot be parsed.
+    """
+    import os as _os
+
+    if not _os.path.exists("/proc/self/mountinfo"):
+        return False
+    try:
+        db_real = _os.path.realpath(db_path)
+    except OSError:
+        return False
+    best_match = ""
+    try:
+        with open("/proc/self/mountinfo", "r", encoding="utf-8") as f:
+            for line in f:
+                parts = line.split()
+                try:
+                    sep = parts.index("-")
+                except ValueError:
+                    continue
+                if sep + 1 >= len(parts) or parts[sep + 1] not in _WAL_FS_BLOCKLIST:
+                    continue
+                mount_point = _os.path.realpath(_decode_mountinfo_path(parts[4]))
+                try:
+                    common = _os.path.commonpath([db_real, mount_point])
+                except ValueError:
+                    continue
+                if common == mount_point and len(mount_point) > len(best_match):
+                    best_match = mount_point
+    except OSError:
+        pass
+    return bool(best_match)
+
+
 # Last SessionDB() init error, per-process.  Surfaced in /resume and
 # related slash-command error strings so users know WHY the DB is
 # unavailable instead of getting a bare "Session database not available."
@@ -129,15 +178,21 @@ def apply_wal_with_fallback(
     conn: sqlite3.Connection,
     *,
     db_label: str = "state.db",
+    db_path: Optional[str] = None,
 ) -> str:
     """Set ``journal_mode=WAL`` on ``conn``, falling back to DELETE on failure.
 
     Returns the journal mode actually set (``"wal"`` or ``"delete"``).
 
-    On WAL-incompatible filesystems (NFS, SMB, some FUSE), SQLite raises
-    ``OperationalError("locking protocol")`` when setting WAL.  We fall
-    back to DELETE mode — the pre-WAL default, which works on NFS — and
-    log one WARNING explaining why.
+    On WAL-incompatible filesystems (NFS, SMB, some FUSE, BTRFS), SQLite
+    may raise ``OperationalError(...)`` when setting WAL.  We fall back
+    to DELETE mode — the pre-WAL default, which works on NFS — and log
+    one WARNING explaining why.
+
+    BTRFS detection is **proactive**: if *db_path* is provided and resides
+    on a BTRFS filesystem, WAL is skipped entirely (before any pragma).
+    This avoids the exception-based fallback path, which would be too late
+    for BTRFS COW-induced corruption (data already written by that point).
 
     The WARNING is deduplicated per ``db_label``: repeated connections
     to the same underlying DB (e.g. kanban_db.connect() which is called
@@ -148,6 +203,22 @@ def apply_wal_with_fallback(
     Shared by :class:`SessionDB` and ``hermes_cli.kanban_db.connect`` so
     both databases get identical fallback behavior.
     """
+    # Proactive BTRFS detection: avoid WAL entirely on COW filesystems.
+    if db_path and _is_on_btrfs(db_path):
+        with _wal_fallback_warned_lock:
+            should_log = db_label not in _wal_fallback_warned_paths
+            _wal_fallback_warned_paths.add(db_label)
+        if should_log:
+            logging.getLogger("hermes").warning(
+                "WAL disabled for %s: database resides on BTRFS (Copy-on-Write "
+                "filesystem incompatible with WAL journal mode). Falling back "
+                "to DELETE journal mode. To re-enable WAL on BTRFS, run "
+                "'chattr +C' on the Hermes data directory before creating the database.",
+                db_label,
+            )
+        conn.execute("PRAGMA journal_mode=DELETE")
+        return "delete"
+
     try:
         conn.execute("PRAGMA journal_mode=WAL")
         return "wal"
@@ -352,7 +423,7 @@ class SessionDB:
                 isolation_level=None,
             )
             self._conn.row_factory = sqlite3.Row
-            apply_wal_with_fallback(self._conn, db_label="state.db")
+            apply_wal_with_fallback(self._conn, db_label="state.db", db_path=str(self.db_path))
             self._conn.execute("PRAGMA foreign_keys=ON")
 
             self._init_schema()

@@ -2678,6 +2678,16 @@ class DiscordAdapter(BasePlatformAdapter):
     ) -> SendResult:
         """Send a local video file natively as a Discord attachment."""
         try:
+            size = os.path.getsize(video_path)
+            max_bytes = int(os.getenv("DISCORD_MAX_VIDEO_UPLOAD_BYTES", str(25 * 1024 * 1024)))
+            if max_bytes > 0 and size > max_bytes:
+                logger.info(
+                    "[%s] Local video too large for native Discord upload (%d > %d bytes); sending fallback path",
+                    self.name,
+                    size,
+                    max_bytes,
+                )
+                return await super().send_video(chat_id, video_path, caption, reply_to, metadata=metadata)
             return await self._send_file_attachment(chat_id, video_path, caption)
         except FileNotFoundError:
             return SendResult(success=False, error=f"Video file not found: {video_path}")

@@ -270,6 +270,30 @@ class TestDiscordSendImageFile:
         assert "file" in mock_channel.send.call_args.kwargs
         assert file_cls.call_args.kwargs["filename"] == "clip.mp4"
 
+    def test_send_video_size_cap_uses_fallback_without_upload_attempt(self, adapter, tmp_path, monkeypatch):
+        """Oversized videos should not hit Discord and produce avoidable 413 errors."""
+        video = tmp_path / "large.mp4"
+        video.write_bytes(b"x" * 20)
+        monkeypatch.setenv("DISCORD_MAX_VIDEO_UPLOAD_BYTES", "10")
+        adapter._send_file_attachment = AsyncMock()
+        mock_channel = MagicMock()
+        mock_msg = MagicMock()
+        mock_msg.id = 102
+        mock_channel.send = AsyncMock(return_value=mock_msg)
+        adapter._client.get_channel = MagicMock(return_value=mock_channel)
+
+        result = _run(
+            adapter.send_video(
+                chat_id="67890",
+                video_path=str(video),
+                caption="clip",
+                metadata={"thread_id": "123"},
+            )
+        )
+
+        assert result.success
+        adapter._send_file_attachment.assert_not_awaited()
+
     def test_returns_error_when_file_missing(self, adapter):
         result = _run(
             adapter.send_image_file(chat_id="67890", image_path="/nonexistent.png")

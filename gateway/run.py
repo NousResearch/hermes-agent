@@ -2986,6 +2986,12 @@ class GatewayRunner:
         if not adapter:
             return False  # let default path handle it
 
+        if event.message_type == MessageType.PHOTO:
+            # Photo albums/bursts are adapter-owned: BasePlatformAdapter queues
+            # them without setting the interrupt event so late Telegram album
+            # items don't produce a misleading "Interrupting current task" ack.
+            return False
+
         running_agent = self._running_agents.get(session_key)
 
         effective_mode = self._busy_input_mode

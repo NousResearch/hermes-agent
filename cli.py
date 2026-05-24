@@ -37,6 +37,7 @@ import tempfile
 import time
 import uuid
 import textwrap
+import shlex
 from collections import deque
 from urllib.parse import unquote, urlparse
 from contextlib import contextmanager
@@ -3113,6 +3114,10 @@ class HermesCLI:
         self._agent_running = False
         self._pending_input = queue.Queue()
         self._interrupt_queue = queue.Queue()
+        self._pending_handoff_new: dict[str, Any] | None = None
+        self._last_chat_result: dict[str, Any] | None = None
+        self._last_turn_failed = False
+        self._last_turn_partial = False
         # Tracks whether the turn that just finished was interrupted via
         # Ctrl+C. Consumed by _maybe_continue_goal_after_turn so /goal loops
         # don't auto-queue another continuation on top of a user-cancelled
@@ -6357,6 +6362,16 @@ class HermesCLI:
                 print("(^_^)v New session started!")
 
     def _handle_handoff_command(self, cmd_original: str) -> bool:
+        """Dispatch /handoff subcommands, preserving legacy platform handoff."""
+        try:
+            parts = shlex.split(cmd_original)
+        except ValueError:
+            parts = cmd_original.split()
+        if len(parts) >= 2 and parts[1].lower() == "new":
+            return self._handle_handoff_new_command(cmd_original)
+        return self._handle_gateway_handoff_command(cmd_original)
+
+    def _handle_gateway_handoff_command(self, cmd_original: str) -> bool:
         """Handle ``/handoff <platform>`` — transfer this CLI session to a gateway platform.
 
         Flow:
@@ -6505,6 +6520,173 @@ class HermesCLI:
         _cprint("  Timed out waiting for the gateway. Is `hermes gateway` running?")
         _cprint("  Your CLI session is intact.")
         return True
+
+    def _parse_handoff_new_command(self, cmd_original: str) -> dict[str, Any]:
+        """Parse /handoff new arguments."""
+        try:
+            tokens = shlex.split(cmd_original)
+        except ValueError as exc:
+            raise ValueError(f"Invalid /handoff new syntax: {exc}") from exc
+        if len(tokens) < 2 or tokens[0].lower() != "/handoff" or tokens[1].lower() != "new":
+            raise ValueError("Usage: /handoff new [path] [--title \"...\"] [--prompt \"...\"]")
+
+        path_arg = None
+        title = None
+        prompt = None
+        i = 2
+        while i < len(tokens):
+            tok = tokens[i]
+            if tok in {"--title", "--prompt"}:
+                if i + 1 >= len(tokens):
+                    raise ValueError(f"Missing value for {tok}")
+                val = tokens[i + 1]
+                if tok == "--title":
+                    title = val
+                else:
+                    if not val.strip():
+                        raise ValueError("--prompt cannot be empty")
+                    prompt = val
+                i += 2
+                continue
+            if tok.startswith("--"):
+                raise ValueError(f"Unknown flag: {tok}")
+            if path_arg is not None:
+                raise ValueError("Only one handoff path may be provided")
+            path_arg = tok
+            i += 1
+
+        raw_path = path_arg or "~/.hermes/handoffs/latest.md"
+        expanded = os.path.expandvars(os.path.expanduser(raw_path))
+        path = Path(expanded).resolve(strict=False)
+        continuation = prompt or f"Continue from {path}"
+        return {"path": path, "title": title, "continuation": continuation}
+
+    def _build_handoff_writer_prompt(self, path: Path | str, continuation: str) -> str:
+        absolute_path = str(Path(path).resolve(strict=False))
+        return (
+            "Write a complete handoff file for this session.\n"
+            f"Target path: {absolute_path}\n\n"
+            "Requirements:\n"
+            "- Create or overwrite the target file with a concise but sufficient summary of the current session.\n"
+            "- Include important context, decisions, files changed, commands run, open questions, and next steps.\n"
+            "- The file must end with a section titled exactly `Start prompt` containing exactly this prompt and no extra text after it:\n"
+            f"{continuation}\n"
+            "- After successfully writing the file, your final assistant response must include exactly this marker line:\n"
+            f"HANDOFF_WRITTEN {absolute_path}"
+        )
+
+    def _handle_handoff_new_command(self, cmd_original: str) -> bool:
+        """Handle /handoff new: write a handoff, then start a fresh session."""
+        if getattr(self, "_agent_running", False):
+            _cprint("  Agent is busy. Wait for the current turn to finish, then retry /handoff new.")
+            return True
+        if getattr(self, "_pending_handoff_new", None) is not None:
+            _cprint("  A /handoff new operation is already pending.")
+            return True
+        try:
+            parsed = self._parse_handoff_new_command(cmd_original)
+            path = parsed["path"]
+            parent = path.parent
+            if path.exists() and path.is_dir():
+                raise ValueError(f"Target path is a directory: {path}")
+            if parent.exists() and not parent.is_dir():
+                raise ValueError(f"Parent path exists and is not a directory: {parent}")
+            parent.mkdir(parents=True, exist_ok=True)
+            pre_stat = None
+            if path.exists():
+                st = path.stat()
+                pre_stat = {"mtime_ns": st.st_mtime_ns, "size": st.st_size}
+        except Exception as exc:
+            _cprint(f"  /handoff new failed: {exc}")
+            self._pending_handoff_new = None
+            return True
+
+        continuation = parsed["continuation"]
+        self._pending_handoff_new = {
+            "path": path,
+            "title": parsed.get("title"),
+            "continuation": continuation,
+            "pre_stat": pre_stat,
+        }
+        writer_prompt = self._build_handoff_writer_prompt(path, continuation)
+        _cprint(f"  Writing handoff file: {path}")
+        # Default to failure until chat() publishes a successful turn result.
+        self._last_chat_result = None
+        self._last_turn_failed = True
+        self._last_turn_partial = False
+        self._last_turn_interrupted = False
+        self._agent_running = True
+        try:
+            self.chat(writer_prompt)
+        finally:
+            self._agent_running = False
+            self._spinner_text = ""
+            self._tool_start_time = 0.0
+            try:
+                self._pending_tool_info.clear()
+            except Exception:
+                pass
+            self._last_scrollback_tool = ""
+            self._maybe_finish_handoff_new()
+        return True
+
+    def _maybe_finish_handoff_new(self) -> None:
+        """Complete a pending /handoff new after the writer turn finishes."""
+        pending = getattr(self, "_pending_handoff_new", None)
+        if not pending:
+            return
+        self._pending_handoff_new = None
+        path: Path = pending["path"]
+        continuation: str = pending["continuation"]
+        title = pending.get("title")
+        pre_stat = pending.get("pre_stat")
+
+        def fail(reason: str) -> None:
+            _cprint(f"  /handoff new failed: {reason}")
+            _cprint("  Current session remains intact.")
+
+        if getattr(self, "_last_turn_failed", False):
+            fail("writer turn failed")
+            return
+        if getattr(self, "_last_turn_partial", False):
+            fail("writer turn was partial")
+            return
+        if getattr(self, "_last_turn_interrupted", False):
+            fail("writer turn was interrupted")
+            return
+        try:
+            if not path.exists():
+                fail(f"handoff file was not created: {path}")
+                return
+            st = path.stat()
+            if st.st_size <= 0:
+                fail(f"handoff file is empty: {path}")
+                return
+            if pre_stat and st.st_size == pre_stat.get("size") and st.st_mtime_ns == pre_stat.get("mtime_ns"):
+                fail(f"handoff file was not updated: {path}")
+                return
+        except Exception as exc:
+            fail(f"could not verify handoff file: {exc}")
+            return
+
+        result = getattr(self, "_last_chat_result", None) or {}
+        final_response = str(result.get("final_response") or "")
+        marker = f"HANDOFF_WRITTEN {path}"
+        if marker not in final_response:
+            _cprint(f"  Warning: writer response did not include marker: {marker}")
+
+        held = []
+        if hasattr(self, "_pending_input"):
+            while True:
+                try:
+                    held.append(self._pending_input.get_nowait())
+                except queue.Empty:
+                    break
+        self.new_session(title=title)
+        self._pending_input.put(continuation)
+        for item in held:
+            self._pending_input.put(item)
+        _cprint(f"  Handoff written. Started a fresh session and queued: {continuation}")
 
     def _handle_resume_command(self, cmd_original: str) -> None:
         """Handle /resume <session_id_or_title> — switch to a previous session mid-conversation."""
@@ -11617,6 +11799,9 @@ class HermesCLI:
 
             # Update history with full conversation
             self.conversation_history = result.get("messages", self.conversation_history) if result else self.conversation_history
+            self._last_chat_result = result
+            self._last_turn_failed = bool(result and result.get("failed"))
+            self._last_turn_partial = bool(result and result.get("partial"))
 
             # If auto-compression fired mid-turn, the agent created a new
             # continuation session and mutated self.agent.session_id. Sync
@@ -14098,6 +14283,11 @@ class HermesCLI:
                         # continuation prompt back into _pending_input so the
                         # next loop iteration picks it up naturally (and any
                         # user input that arrives in between still preempts).
+                        try:
+                            self._maybe_finish_handoff_new()
+                        except Exception as _handoff_new_exc:
+                            logging.debug("handoff new completion hook failed: %s", _handoff_new_exc)
+
                         try:
                             self._maybe_continue_goal_after_turn()
                         except Exception as _goal_exc:

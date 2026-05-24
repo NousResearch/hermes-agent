@@ -8692,6 +8692,7 @@ class GatewayRunner:
             # session_entry so transcript writes below go to the right session.
             if agent_result.get("session_id") and agent_result["session_id"] != session_entry.session_id:
                 session_entry.session_id = agent_result["session_id"]
+                self.session_store._save()
 
             # Prepend reasoning/thinking if display is enabled (per-platform)
             try:

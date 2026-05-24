@@ -610,3 +610,79 @@ def test_memory_human_approval_token_real_write_executor_implementation_plan_smo
     assert case["evidence"]["writes_approval_audit"] is False
     assert case["evidence"]["invokes_real_token_write_executor"] is False
     assert case["evidence"]["implements_real_token_write_executor"] is False
+
+
+def test_memory_human_approval_token_real_write_executor_implementation_dry_run_smoke_case_requires_code_review_plan_without_writes_or_executor_code():
+    report = run_benchmark("smoke")
+    case = next(
+        case
+        for case in report["cases"]
+        if case["dimension"]
+        == "memory_human_approval_token_real_write_executor_implementation_dry_run"
+    )
+
+    dry_run = case["evidence"][
+        "human_approval_token_real_write_executor_implementation_dry_run_candidates"
+    ][0]
+    assert case["actual_answer"] == "real_token_write_executor_code_review_plan_required"
+    assert dry_run["dry_run_validation"] == {"valid": True, "errors": []}
+    assert dry_run["dry_run_status"] == "real_token_write_executor_code_review_plan_required"
+    assert (
+        dry_run["routing"]
+        == "real_token_write_executor_code_review_plan_required_before_any_executor_code"
+    )
+    assert dry_run["lock_reason"] is None
+    assert dry_run["implementation_plan_validation"] == {"valid": True, "errors": []}
+    assert dry_run["implementation_dry_run_module_boundary_preview"][
+        "creates_executor_source_files"
+    ] is False
+    assert dry_run["implementation_dry_run_module_boundary_preview"][
+        "implements_real_token_write_executor"
+    ] is False
+    assert dry_run["implementation_dry_run_module_boundary_preview"][
+        "invokes_real_token_write_executor"
+    ] is False
+    assert all(
+        interface["implemented_in_v0_1"] is False
+        for interface in dry_run["implementation_dry_run_interface_preview"]
+    )
+    assert all(
+        interface["invoked_in_v0_1"] is False
+        for interface in dry_run["implementation_dry_run_interface_preview"]
+    )
+    assert (
+        dry_run["implementation_dry_run_audit_check_preview"]["v0_1_effect"]
+        == "no_approval_audit_file_write_and_no_operation_ledger_event"
+    )
+    assert (
+        dry_run["implementation_dry_run_rollback_check_preview"]["v0_1_effect"]
+        == "no_rollback_action_because_no_write_is_performed"
+    )
+    assert all(
+        test_case["creates_files"] is False
+        for test_case in dry_run["implementation_dry_run_test_harness_preview"]
+    )
+    assert dry_run["approval_token_write_payload_preview"]["preview_only"] is True
+    assert dry_run["approval_token_write_payload_preview"]["token_issued"] is False
+    assert dry_run["approval_token_write_payload_preview"]["persisted"] is False
+    assert dry_run["approval_token_write_payload_preview"]["written"] is False
+    assert dry_run["approval_audit_write_payload_preview"]["preview_only"] is True
+    assert dry_run["approval_audit_write_payload_preview"]["created_operation_event"] is False
+    assert dry_run["approval_audit_write_payload_preview"]["writes_approval_audit"] is False
+    assert dry_run["approval_audit_write_payload_preview"]["writes_operation_ledger"] is False
+    assert dry_run["token_write_target_paths_preview"]["preview_only"] is True
+    assert dry_run["token_write_target_paths_preview"]["writes_token_files"] is False
+    assert dry_run["token_write_target_paths_preview"]["writes_approval_audit"] is False
+    assert dry_run["token_write_target_paths_preview"]["writes_operation_ledger"] is False
+    assert case["evidence"]["token_issued"] is False
+    assert case["evidence"]["persisted_approval"] is False
+    assert case["evidence"]["approved"] is False
+    assert case["evidence"]["created_real_proposal"] is False
+    assert case["evidence"]["created_operation_event"] is False
+    assert case["evidence"]["writes_proposal_files"] is False
+    assert case["evidence"]["writes_operation_ledger"] is False
+    assert case["evidence"]["writes_token_files"] is False
+    assert case["evidence"]["writes_approval_audit"] is False
+    assert case["evidence"]["invokes_real_token_write_executor"] is False
+    assert case["evidence"]["implements_real_token_write_executor"] is False
+    assert case["evidence"]["creates_executor_source_files"] is False

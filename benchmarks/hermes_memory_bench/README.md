@@ -51,6 +51,7 @@ python -m benchmarks.hermes_memory_bench.run --suite smoke --output /tmp/hermes-
 - `memory_human_approval_token_real_write_executor_contract`
 - `memory_human_approval_token_real_write_executor_contract_review_gate`
 - `memory_human_approval_token_real_write_executor_implementation_plan`
+- `memory_human_approval_token_real_write_executor_implementation_dry_run`
 - `latency_ms`
 
 ## Hybrid Retrieval Fusion v0.1
@@ -602,6 +603,33 @@ that a valid contract review outcome becomes
 token, persisting approval, creating a real proposal, writing token files,
 writing approval audit, invoking or implementing a real token write executor,
 or creating an operation event.
+
+### Memory Human Approval Token Real Write Executor Implementation Dry Run v0.1
+
+Implemented in
+`agent.memory_human_approval_token_real_write_executor_implementation_dry_run`.
+It turns a valid `real_token_write_executor_implementation_plan_required`
+implementation plan candidate into a deterministic, read-only implementation
+dry-run candidate with `real_token_write_executor_code_review_plan_required`
+status.
+
+The dry run previews future executor module boundaries, interfaces,
+idempotency checks, filesystem safety checks, audit checks, rollback checks,
+test harness shape, and readiness checklist. Invalid, locked, incomplete, or
+integrity-failed implementation plans become locked dry-run candidates with
+explicit reasons. v0.1 does not implement or invoke a real token write
+executor, create executor source files, issue approval tokens, persist
+approvals, create real proposals, write proposal files, write operation-ledger
+events, write token files, write approval audit records, submit to governance,
+write memory, write the Memory Graph, or modify config.
+
+The smoke suite includes
+`memory_human_approval_token_real_write_executor_implementation_dry_run`,
+proving that a valid implementation plan becomes
+`real_token_write_executor_code_review_plan_required` without issuing a token,
+persisting approval, creating a real proposal, writing token files, writing
+approval audit, invoking or implementing a real token write executor, creating
+executor source files, or creating an operation event.
 
 ## Report Schema
 

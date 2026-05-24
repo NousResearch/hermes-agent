@@ -29,6 +29,8 @@ def test_oneshot_goal_text_adds_chained_autonomy_instructions():
     assert "/goal_prompt_oneshot mode" in text
     assert "immediately re-read" in text
     assert "updated frontier" in text
+    assert "Judge reasoning:" in text
+    assert text.index("Judge reasoning:") < text.index("/goal_prompt_oneshot continuation decision: CONTINUE")
     assert "/goal_prompt_oneshot continuation decision: CONTINUE" in text
     assert "STOP_FOR_OPERATOR" in text
     assert "COMPLETE" in text

@@ -32,6 +32,7 @@ The user invoked the high-autonomy one-shot project loop. Behave like repeated
 4. End every non-final slice report with this machine-readable block so Hermes
    can continue deterministically instead of inferring from prose:
 
+   Judge reasoning: <why GOAL.md is not satisfied and why safe work remains>
    /goal_prompt_oneshot continuation decision: CONTINUE
    GOAL.md definition of done: NOT SATISFIED
    Completed slice: <one-line summary>
@@ -41,6 +42,7 @@ The user invoked the high-autonomy one-shot project loop. Behave like repeated
 
    Use STOP_FOR_OPERATOR only for true non-bypassable gates:
 
+   Judge reasoning: <why no safe autonomous slice remains>
    /goal_prompt_oneshot continuation decision: STOP_FOR_OPERATOR
    GOAL.md definition of done: NOT SATISFIED
    Reason: <exact non-bypassable gate>
@@ -49,6 +51,7 @@ The user invoked the high-autonomy one-shot project loop. Behave like repeated
 
    Use COMPLETE only when GOAL.md's definition of done is actually satisfied:
 
+   Judge reasoning: <why GOAL.md's definition of done is satisfied>
    /goal_prompt_oneshot continuation decision: COMPLETE
    GOAL.md definition of done: SATISFIED
    Evidence: <tests/docs/git status/commit ids if relevant>

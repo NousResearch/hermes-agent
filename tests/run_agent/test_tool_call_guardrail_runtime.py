@@ -273,3 +273,45 @@ def test_config_enabled_hard_stop_run_conversation_returns_controlled_guardrail_
         call_ids = [tc["id"] for tc in assistant_msg["tool_calls"]]
         following_results = [m for m in result["messages"] if m.get("role") == "tool" and m.get("tool_call_id") in call_ids]
         assert len(following_results) == len(call_ids)
+
+
+def test_guardrail_halt_emits_final_response_through_stream_delta_callback():
+    """Regression for #30770: guardrail halts must explain the stop to clients.
+
+    When this branch did not emit a final text delta, SSE clients saw an empty
+    finish chunk, which looked like a crash instead of a controlled stop.
+    """
+    agent = _make_agent("web_search", max_iterations=10, config=_hard_stop_config())
+    same_args = {"query": "same"}
+    responses = [
+        _mock_response(
+            content="",
+            finish_reason="tool_calls",
+            tool_calls=[_mock_tool_call("web_search", json.dumps(same_args), f"c{i}")],
+        )
+        for i in range(1, 10)
+    ]
+    agent.client.chat.completions.create.side_effect = responses
+
+    deltas: list = []
+    agent.stream_delta_callback = lambda d: deltas.append(d)
+    # Mocked responses are SimpleNamespace objects, not streaming chunks; force
+    # the non-streaming path so the guardrail-halt branch is reached directly.
+    agent._disable_streaming = True
+
+    with (
+        patch("run_agent.handle_function_call", return_value=json.dumps({"error": "boom"})),
+        patch.object(agent, "_persist_session"),
+        patch.object(agent, "_save_trajectory"),
+        patch.object(agent, "_cleanup_task_resources"),
+    ):
+        result = agent.run_conversation("search repeatedly")
+
+    assert result["turn_exit_reason"] == "guardrail_halt"
+    halt_text = result["final_response"]
+    assert "stopped retrying" in halt_text
+
+    text_deltas = [d for d in deltas if isinstance(d, str)]
+    assert halt_text in text_deltas, (
+        f"halt message was never streamed; callback only saw {deltas!r}"
+    )

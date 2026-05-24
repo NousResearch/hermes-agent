@@ -607,6 +607,171 @@ def _build_markdown_post_rows(content: str) -> List[List[Dict[str, str]]]:
     return rows or [[{"tag": "md", "text": content}]]
 
 
+# ---------------------------------------------------------------------------
+# Markdown table → Feishu interactive card helpers
+# ---------------------------------------------------------------------------
+
+_MARKDOWN_TABLE_LINE_RE = re.compile(r"^\|.*\|$")
+_FEISHU_CARD_MAX_SIZE = 30000  # bytes — Feishu interactive card content limit
+
+
+def _is_table_separator_row(line: str) -> bool:
+    """Check whether a line is a markdown table separator (e.g. |---|:---:|---|)."""
+    stripped = line.strip()
+    if stripped.startswith("|"):
+        stripped = stripped[1:]
+    if stripped.endswith("|"):
+        stripped = stripped[:-1]
+    cells = [c.strip() for c in stripped.split("|")]
+    return all(re.match(r"^:?-{3,}:?$", c) for c in cells if c)
+
+
+def _parse_table_row(line: str) -> list[str]:
+    """Split a single table row into cells, stripping leading/trailing pipes."""
+    line = line.strip()
+    if line.startswith("|"):
+        line = line[1:]
+    if line.endswith("|"):
+        line = line[:-1]
+    return [cell.strip() for cell in line.split("|")]
+
+
+def _pad_row(cells: list[str], target_len: int) -> list[str]:
+    """Pad a row to the given number of columns."""
+    return cells + [""] * (target_len - len(cells))
+
+
+def _parse_markdown_table(lines: list[str]) -> tuple[list[str], list[list[str]]] | None:
+    """Parse a markdown table from a list of lines.
+
+    Returns ``(headers, rows)`` or ``None`` if the input is not a valid table.
+    """
+    if len(lines) < 2:
+        return None
+    headers = _parse_table_row(lines[0])
+    if not headers:
+        return None
+    # Verify separator row
+    sep_cells = _parse_table_row(lines[1])
+    if not sep_cells:
+        return None
+    if not all(re.match(r"^:?-{3,}:?$", c) for c in sep_cells):
+        return None
+    data_rows = [_parse_table_row(line) for line in lines[2:]]
+    data_rows = [r for r in data_rows if r]
+    # Determine column count from the widest row
+    max_cols = max(
+        len(headers),
+        max((len(r) for r in data_rows), default=0),
+    )
+    headers = _pad_row(headers, max_cols)
+    rows = [_pad_row(r, max_cols) for r in data_rows]
+    return headers, rows
+
+
+def _split_content_by_tables(content: str) -> list[dict]:
+    """Split markdown content into alternating text and table segments.
+
+    Returns a list of dicts, each with ``"type"`` (``"text"`` or ``"table"``).
+    Text segments have ``"content"`` keys; table segments have ``"headers"``
+    and ``"rows"`` keys.
+    """
+    lines = content.split("\n")
+    segments: list[dict] = []
+    current_text_lines: list[str] = []
+    table_buffer: list[str] = []
+    i = 0
+    while i < len(lines):
+        stripped = lines[i].strip()
+        # Detect table start: line is a pipe row, followed by a separator row
+        if (
+            _MARKDOWN_TABLE_LINE_RE.match(stripped)
+            and i + 1 < len(lines)
+            and _is_table_separator_row(lines[i + 1])
+        ):
+            # Flush accumulated text
+            if current_text_lines:
+                segments.append(
+                    {"type": "text", "content": "\n".join(current_text_lines)}
+                )
+                current_text_lines = []
+            # Collect table lines
+            table_buffer.append(stripped)       # header
+            table_buffer.append(lines[i + 1].strip())  # separator
+            i += 2
+            while i < len(lines) and _MARKDOWN_TABLE_LINE_RE.match(lines[i].strip()):
+                table_buffer.append(lines[i].strip())
+                i += 1
+            # Parse table
+            parsed = _parse_markdown_table(table_buffer)
+            if parsed:
+                segments.append(
+                    {"type": "table", "headers": parsed[0], "rows": parsed[1]}
+                )
+            else:
+                # Not a valid table — treat as plain text
+                current_text_lines.extend(table_buffer)
+            table_buffer = []
+            continue
+        current_text_lines.append(lines[i])
+        i += 1
+    # Flush trailing text
+    if current_text_lines:
+        segments.append({"type": "text", "content": "\n".join(current_text_lines)})
+    return segments
+
+
+def _build_table_card_element(
+    headers: list[str], rows: list[list[str]]
+) -> dict:
+    """Build a Feishu card ``table`` element from parsed markdown table data.
+
+    Uses ``lark_md`` data type so inline markdown in cells is rendered.
+    """
+    _MAX_PAGE_SIZE = 50
+    _MIN_PAGE_SIZE = 10
+    return {
+        "tag": "table",
+        "columns": [
+            {"name": h, "data_type": "lark_md", "width": "auto"}
+            for h in headers
+        ],
+        "rows": [
+            [{"tag": "lark_md", "text": cell} for cell in row]
+            for row in rows
+        ],
+        "page_size": max(_MIN_PAGE_SIZE, min(_MAX_PAGE_SIZE, len(rows))),
+        "row_height": "low",
+    }
+
+
+def _build_interactive_table_card(content: str) -> str | None:
+    """Build a Feishu interactive card with native table rendering.
+
+    Returns the card JSON string, or ``None`` if the content has no markdown
+    tables or the resulting card exceeds Feishu size limits.
+    """
+    segments = _split_content_by_tables(content)
+    has_table = any(s["type"] == "table" for s in segments)
+    if not has_table:
+        return None
+    elements: list[dict] = []
+    for seg in segments:
+        if seg["type"] == "text":
+            text = seg["content"].strip()
+            if text:
+                elements.append({"tag": "markdown", "content": text})
+        elif seg["type"] == "table":
+            elements.append(
+                _build_table_card_element(seg["headers"], seg["rows"])
+            )
+    card = {"config": {"wide_screen_mode": True}, "elements": elements}
+    card_json = json.dumps(card, ensure_ascii=False)
+    if len(card_json.encode("utf-8")) > _FEISHU_CARD_MAX_SIZE:
+        return None
+    return card_json
+
+
 def parse_feishu_post_payload(
     payload: Any,
     *,
@@ -1781,9 +1946,32 @@ class FeishuAdapter(BasePlatformAdapter):
                         metadata=metadata,
                     )
                 except Exception as exc:
-                    if msg_type != "post" or not _POST_CONTENT_INVALID_RE.search(str(exc)):
+                    if msg_type == "post" and _POST_CONTENT_INVALID_RE.search(str(exc)):
+                        logger.warning("[Feishu] Invalid post payload rejected by API; falling back to plain text")
+                        response = await self._feishu_send_with_retry(
+                            chat_id=chat_id,
+                            msg_type="text",
+                            payload=json.dumps({"text": _strip_markdown_to_plain_text(chunk)}, ensure_ascii=False),
+                            reply_to=reply_to,
+                            metadata=metadata,
+                        )
+                    elif msg_type == "interactive":
+                        logger.warning("[Feishu] Interactive card rejected; falling back to plain text")
+                        response = await self._feishu_send_with_retry(
+                            chat_id=chat_id,
+                            msg_type="text",
+                            payload=json.dumps({"text": _strip_markdown_to_plain_text(chunk)}, ensure_ascii=False),
+                            reply_to=reply_to,
+                            metadata=metadata,
+                        )
+                    else:
                         raise
-                    logger.warning("[Feishu] Invalid post payload rejected by API; falling back to plain text")
+                if (
+                    msg_type == "post"
+                    and not self._response_succeeded(response)
+                    and _POST_CONTENT_INVALID_RE.search(str(getattr(response, "msg", "") or ""))
+                ):
+                    logger.warning("[Feishu] Post payload rejected by API response; falling back to plain text")
                     response = await self._feishu_send_with_retry(
                         chat_id=chat_id,
                         msg_type="text",
@@ -1791,12 +1979,11 @@ class FeishuAdapter(BasePlatformAdapter):
                         reply_to=reply_to,
                         metadata=metadata,
                     )
-                if (
-                    msg_type == "post"
+                elif (
+                    msg_type == "interactive"
                     and not self._response_succeeded(response)
-                    and _POST_CONTENT_INVALID_RE.search(str(getattr(response, "msg", "") or ""))
                 ):
-                    logger.warning("[Feishu] Post payload rejected by API response; falling back to plain text")
+                    logger.warning("[Feishu] Interactive card rejected by API response; falling back to plain text")
                     response = await self._feishu_send_with_retry(
                         chat_id=chat_id,
                         msg_type="text",
@@ -1830,8 +2017,12 @@ class FeishuAdapter(BasePlatformAdapter):
             request = self._build_update_message_request(message_id=message_id, request_body=body)
             response = await asyncio.to_thread(self._client.im.v1.message.update, request)
             result = self._finalize_send_result(response, "update failed")
-            if not result.success and msg_type == "post" and _POST_CONTENT_INVALID_RE.search(result.error or ""):
-                logger.warning("[Feishu] Invalid post update payload rejected by API; falling back to plain text")
+            if not result.success and (
+                (msg_type == "post" and _POST_CONTENT_INVALID_RE.search(result.error or ""))
+                or msg_type == "interactive"
+            ):
+                logger.warning("[Feishu] %s update payload rejected by API; falling back to plain text",
+                               msg_type)
                 fallback_body = self._build_update_message_body(
                     msg_type="text",
                     content=json.dumps({"text": _strip_markdown_to_plain_text(content)}, ensure_ascii=False),
@@ -4222,10 +4413,15 @@ class FeishuAdapter(BasePlatformAdapter):
     # =========================================================================
 
     def _build_outbound_payload(self, content: str) -> tuple[str, str]:
-        # Feishu post-type 'md' elements do not render markdown tables; sending
-        # table content as post causes the message to appear blank on the client.
-        # Force plain text for anything that looks like a markdown table.
+        # Feishu post-type 'md' elements do not render markdown tables;
+        # sending table content as post causes the message to appear blank
+        # on the client.  Convert markdown tables to Feishu interactive-card
+        # JSON 2.0 native ``table`` elements; fall back to plain text when the
+        # card exceeds API size limits or table parsing fails.
         if _MARKDOWN_TABLE_RE.search(content):
+            card_json = _build_interactive_table_card(content)
+            if card_json is not None:
+                return "interactive", card_json
             text_payload = {"text": content}
             return "text", json.dumps(text_payload, ensure_ascii=False)
         if _MARKDOWN_HINT_RE.search(content):

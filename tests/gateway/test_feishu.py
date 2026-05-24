@@ -2811,6 +2811,339 @@ class TestAdapterBehavior(unittest.TestCase):
         )
 
 
+class TestFeishuMarkdownTableCard(unittest.TestCase):
+    """Markdown table → Feishu interactive card conversion."""
+
+    def test_is_table_separator_row(self):
+        from gateway.platforms.feishu import _is_table_separator_row
+
+        self.assertTrue(_is_table_separator_row("|---|---|"))
+        self.assertTrue(_is_table_separator_row("|:---|:---:|---:|"))
+        self.assertTrue(_is_table_separator_row("| --- | --- |"))
+        self.assertFalse(_is_table_separator_row("| a | b |"))
+        self.assertFalse(_is_table_separator_row("hello"))
+
+    def test_parse_table_row(self):
+        from gateway.platforms.feishu import _parse_table_row
+
+        self.assertEqual(_parse_table_row("| a | b |"), ["a", "b"])
+        self.assertEqual(_parse_table_row("a | b"), ["a", "b"])
+        self.assertEqual(_parse_table_row("| a |"), ["a"])
+        self.assertEqual(_parse_table_row(""), [""])
+
+    def test_parse_markdown_table_basic(self):
+        from gateway.platforms.feishu import _parse_markdown_table
+
+        result = _parse_markdown_table([
+            "| Name | Age |",
+            "|------|-----|",
+            "| Alice | 30 |",
+            "| Bob   | 25 |",
+        ])
+        self.assertIsNotNone(result)
+        headers, rows = result  # type: ignore[misc]
+        self.assertEqual(headers, ["Name", "Age"])
+        self.assertEqual(rows, [["Alice", "30"], ["Bob", "25"]])
+
+    def test_parse_markdown_table_no_data_rows(self):
+        from gateway.platforms.feishu import _parse_markdown_table
+
+        result = _parse_markdown_table([
+            "| Col1 | Col2 |",
+            "|------|------|",
+        ])
+        self.assertIsNotNone(result)
+        headers, rows = result  # type: ignore[misc]
+        self.assertEqual(headers, ["Col1", "Col2"])
+        self.assertEqual(rows, [])
+
+    def test_parse_markdown_table_not_a_table(self):
+        from gateway.platforms.feishu import _parse_markdown_table
+
+        self.assertIsNone(_parse_markdown_table(["just a line"]))
+        self.assertIsNone(_parse_markdown_table([
+            "| a | b |",
+            "not a separator",
+        ]))
+
+    def test_split_content_by_tables_text_only(self):
+        from gateway.platforms.feishu import _split_content_by_tables
+
+        segments = _split_content_by_tables("Hello world")
+        self.assertEqual(len(segments), 1)
+        self.assertEqual(segments[0]["type"], "text")
+        self.assertEqual(segments[0]["content"], "Hello world")
+
+    def test_split_content_by_tables_table_only(self):
+        from gateway.platforms.feishu import _split_content_by_tables
+
+        segments = _split_content_by_tables(
+            "| A | B |\n|---|---|\n| 1 | 2 |"
+        )
+        self.assertEqual(len(segments), 1)
+        self.assertEqual(segments[0]["type"], "table")
+        self.assertEqual(segments[0]["headers"], ["A", "B"])
+        self.assertEqual(segments[0]["rows"], [["1", "2"]])
+
+    def test_split_content_by_tables_text_before_and_after(self):
+        from gateway.platforms.feishu import _split_content_by_tables
+
+        segments = _split_content_by_tables(
+            "Some text before.\n\n| A | B |\n|---|---|\n| 1 | 2 |\n\nAfter the table."
+        )
+        self.assertEqual(len(segments), 3)
+        self.assertEqual(segments[0]["type"], "text")
+        self.assertIn("Some text before", segments[0]["content"])
+        self.assertEqual(segments[1]["type"], "table")
+        self.assertEqual(segments[2]["type"], "text")
+        self.assertIn("After the table", segments[2]["content"])
+
+    def test_split_content_multiple_tables(self):
+        from gateway.platforms.feishu import _split_content_by_tables
+
+        segments = _split_content_by_tables(
+            "| A | B |\n|---|---|\n| 1 | 2 |\n\n| C | D |\n|---|---|\n| 3 | 4 |"
+        )
+        self.assertEqual(len(segments), 3)
+        self.assertEqual(segments[0]["type"], "table")
+        self.assertEqual(segments[1]["type"], "text")  # blank line between
+        self.assertEqual(segments[2]["type"], "table")
+
+    def test_build_interactive_table_card(self):
+        from gateway.platforms.feishu import _build_interactive_table_card
+
+        card_json = _build_interactive_table_card(
+            "| Name | Role |\n|------|------|\n| Alice | Admin |"
+        )
+        self.assertIsNotNone(card_json)
+        card = json.loads(card_json)  # type: ignore[arg-type]
+        self.assertEqual(card["config"]["wide_screen_mode"], True)
+        self.assertEqual(len(card["elements"]), 1)
+        table_el = card["elements"][0]
+        self.assertEqual(table_el["tag"], "table")
+        self.assertEqual(table_el["columns"][0]["name"], "Name")
+        self.assertEqual(table_el["columns"][1]["name"], "Role")
+        self.assertEqual(table_el["rows"][0][0]["text"], "Alice")
+        self.assertEqual(table_el["rows"][0][1]["text"], "Admin")
+
+    def test_build_interactive_table_card_no_table(self):
+        from gateway.platforms.feishu import _build_interactive_table_card
+
+        self.assertIsNone(_build_interactive_table_card("Just text, no table."))
+
+    def test_build_interactive_table_card_with_surrounding_text(self):
+        from gateway.platforms.feishu import _build_interactive_table_card
+
+        card_json = _build_interactive_table_card(
+            "Here is a summary:\n\n| Item | Qty |\n|------|-----|\n| Apple | 5 |\n\nEnd of summary."
+        )
+        self.assertIsNotNone(card_json)
+        card = json.loads(card_json)  # type: ignore[arg-type]
+        self.assertEqual(len(card["elements"]), 3)
+        self.assertEqual(card["elements"][0]["tag"], "markdown")
+        self.assertEqual(card["elements"][1]["tag"], "table")
+        self.assertEqual(card["elements"][2]["tag"], "markdown")
+
+    @patch.dict(os.environ, {}, clear=True)
+    def test_build_outbound_payload_returns_interactive_for_table(self):
+        from gateway.config import PlatformConfig
+        from gateway.platforms.feishu import FeishuAdapter
+
+        adapter = FeishuAdapter(PlatformConfig())
+        msg_type, payload = adapter._build_outbound_payload(
+            "| A | B |\n|---|---|\n| 1 | 2 |"
+        )
+        self.assertEqual(msg_type, "interactive")
+        card = json.loads(payload)
+        self.assertIn("elements", card)
+        table_el = card["elements"][0]
+        self.assertEqual(table_el["tag"], "table")
+
+    @patch.dict(os.environ, {}, clear=True)
+    def test_build_outbound_payload_still_uses_post_for_no_table(self):
+        from gateway.config import PlatformConfig
+        from gateway.platforms.feishu import FeishuAdapter
+
+        adapter = FeishuAdapter(PlatformConfig())
+        msg_type, _ = adapter._build_outbound_payload("**bold** and *italic*")
+        self.assertEqual(msg_type, "post")
+
+    @patch.dict(os.environ, {}, clear=True)
+    def test_send_uses_interactive_for_markdown_table(self):
+        from gateway.config import PlatformConfig
+        from gateway.platforms.feishu import FeishuAdapter
+
+        adapter = FeishuAdapter(PlatformConfig())
+        captured = {}
+
+        class _MessageAPI:
+            def create(self, request):
+                captured["request"] = request
+                return SimpleNamespace(
+                    success=lambda: True,
+                    data=SimpleNamespace(message_id="om_table_card"),
+                )
+
+        adapter._client = SimpleNamespace(
+            im=SimpleNamespace(
+                v1=SimpleNamespace(
+                    message=_MessageAPI(),
+                )
+            )
+        )
+
+        async def _direct(func, *args, **kwargs):
+            return func(*args, **kwargs)
+
+        with patch("gateway.platforms.feishu.asyncio.to_thread", side_effect=_direct):
+            result = asyncio.run(
+                adapter.send(
+                    chat_id="oc_chat",
+                    content="| Name | Score |\n|------|-------|\n| Jeff | 100 |",
+                )
+            )
+
+        self.assertTrue(result.success)
+        self.assertEqual(captured["request"].request_body.msg_type, "interactive")
+        card = json.loads(captured["request"].request_body.content)
+        table_el = card["elements"][0]
+        self.assertEqual(table_el["tag"], "table")
+        self.assertEqual(table_el["columns"][0]["name"], "Name")
+        self.assertEqual(table_el["columns"][1]["name"], "Score")
+
+    @patch.dict(os.environ, {}, clear=True)
+    def test_send_interactive_fallback_to_text_on_api_error(self):
+        from gateway.config import PlatformConfig
+        from gateway.platforms.feishu import FeishuAdapter
+
+        adapter = FeishuAdapter(PlatformConfig())
+        captured = {"calls": []}
+
+        class _MessageAPI:
+            def create(self, request):
+                captured["calls"].append(request)
+                # Fail for interactive calls (before fallback to text)
+                if request.request_body.msg_type == "interactive":
+                    raise RuntimeError("interactive card rejected")
+                return SimpleNamespace(
+                    success=lambda: True,
+                    data=SimpleNamespace(message_id="om_fallback"),
+                )
+
+        adapter._client = SimpleNamespace(
+            im=SimpleNamespace(
+                v1=SimpleNamespace(
+                    message=_MessageAPI(),
+                )
+            )
+        )
+
+        async def _direct(func, *args, **kwargs):
+            return func(*args, **kwargs)
+
+        with patch("gateway.platforms.feishu.asyncio.to_thread", side_effect=_direct):
+            result = asyncio.run(
+                adapter.send(
+                    chat_id="oc_chat",
+                    content="| A | B |\n|---|---|\n| 1 | 2 |",
+                )
+            )
+
+        self.assertTrue(result.success)
+        # First call should be interactive; last call should be text after retry+
+        # fallback (retries happen inside _feishu_send_with_retry)
+        self.assertEqual(captured["calls"][0].request_body.msg_type, "interactive")
+        self.assertEqual(captured["calls"][-1].request_body.msg_type, "text")
+        text_content = json.loads(captured["calls"][-1].request_body.content)
+        self.assertIn("A", text_content["text"])
+        self.assertIn("B", text_content["text"])
+
+    @patch.dict(os.environ, {}, clear=True)
+    def test_send_interactive_fallback_to_text_on_api_failure_response(self):
+        from gateway.config import PlatformConfig
+        from gateway.platforms.feishu import FeishuAdapter
+
+        adapter = FeishuAdapter(PlatformConfig())
+        captured = {"calls": []}
+
+        class _MessageAPI:
+            def create(self, request):
+                captured["calls"].append(request)
+                if len(captured["calls"]) == 1:
+                    return SimpleNamespace(
+                        success=lambda: False,
+                        code=230001,
+                        msg="card content invalid",
+                    )
+                return SimpleNamespace(
+                    success=lambda: True,
+                    data=SimpleNamespace(message_id="om_fallback_response"),
+                )
+
+        adapter._client = SimpleNamespace(
+            im=SimpleNamespace(
+                v1=SimpleNamespace(
+                    message=_MessageAPI(),
+                )
+            )
+        )
+
+        async def _direct(func, *args, **kwargs):
+            return func(*args, **kwargs)
+
+        with patch("gateway.platforms.feishu.asyncio.to_thread", side_effect=_direct):
+            result = asyncio.run(
+                adapter.send(
+                    chat_id="oc_chat",
+                    content="| A | B |\n|---|---|\n| 1 | 2 |",
+                )
+            )
+
+        self.assertTrue(result.success)
+        self.assertEqual(captured["calls"][0].request_body.msg_type, "interactive")
+        self.assertEqual(captured["calls"][1].request_body.msg_type, "text")
+
+    @patch.dict(os.environ, {}, clear=True)
+    def test_edit_message_uses_interactive_for_table(self):
+        from gateway.config import PlatformConfig
+        from gateway.platforms.feishu import FeishuAdapter
+
+        adapter = FeishuAdapter(PlatformConfig())
+        captured = {}
+
+        class _MessageAPI:
+            def update(self, request):
+                captured["request"] = request
+                return SimpleNamespace(
+                    success=lambda: True,
+                )
+
+        adapter._client = SimpleNamespace(
+            im=SimpleNamespace(
+                v1=SimpleNamespace(
+                    message=_MessageAPI(),
+                )
+            )
+        )
+
+        async def _direct(func, *args, **kwargs):
+            return func(*args, **kwargs)
+
+        with patch("gateway.platforms.feishu.asyncio.to_thread", side_effect=_direct):
+            result = asyncio.run(
+                adapter.edit_message(
+                    chat_id="oc_chat",
+                    message_id="om_orig",
+                    content="| A | B |\n|---|---|\n| 1 | 2 |",
+                )
+            )
+
+        self.assertTrue(result.success)
+        self.assertEqual(captured["request"].request_body.msg_type, "interactive")
+        card = json.loads(captured["request"].request_body.content)
+        self.assertEqual(card["elements"][0]["tag"], "table")
+
+
 @unittest.skipUnless(_HAS_LARK_OAPI, "lark-oapi not installed")
 class TestHydrateBotIdentity(unittest.TestCase):
     """Hydration of bot identity via ``/open-apis/bot/v3/info``.

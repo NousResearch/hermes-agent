@@ -4304,6 +4304,210 @@ This exposes a timing oracle. Additionally, _handle_verify in wecom_callback.py 
 
 ---
 
-*Pass #48 complete – 15 findings (5 positive, 10 needs attention)*
-*Last updated: 2026-05-25T06:15:00Z*
+## Pass #49 – i18n, Locale & Encoding Deep Dive – 2026-05-25T06:45:00Z
+
+**Commit at scan:** b04760fdb
+**Focus:** `agent/i18n.py` architecture, encoding assumptions, locale-aware string ops, Chinese support, bidirectional chars, input encoding normalization.
+
+---
+
+### Architecture: `agent/i18n.py` (258 lines)
+
+**Loading:** `_load_catalog(lang)` opens `locales/<lang>.yaml` with explicit `encoding="utf-8"` (line 141). Uses `yaml.safe_load()` which is safe — no arbitrary Python object deserialization. Nested YAML is flattened via `_flatten_into()` into a dotted-key dict.
+
+**Caching (positive):** Two-layer caching:
+- `_catalog_cache: dict[str, dict[str, str]]` — thread-safe dict, per-language, never evicted unless `reset_language_cache()` is called
+- `@lru_cache(maxsize=1)` on `_config_language_cached()` — single entry, cleared via `reset_language_cache()`
+
+**Known issue (P46-14, already documented):** `maxsize=1` means the single config-language entry holds one locale. If the user changes locale at runtime and `reset_language_cache()` is not called, stale language may be served for one more request. `_catalog_cache` does not use LRU — it's unbounded dict keyed by language, so all loaded catalogs stay resident.
+
+**Injection risk:** `_flatten_into()` constructs dotted keys from nested YAML keys: `f"{prefix}.{key}"` (line 159). The key construction uses a dot separator. `str.format(**format_kwargs)` on line 242 receives user-controlled kwargs but the catalog keys and YAML values are developer-controlled, not user-supplied. Risk is LOW.
+
+**Memory:** 16 locale YAML files. Catalogs are flat dicts of string→string. Memory footprint per locale is small. Unbounded dict means multiple locale catalogs accumulate in memory — not a practical concern given 16 small files.
+
+**Fallback chain:** `lang override` → `HERMES_LANGUAGE` env → `display.language` config → `DEFAULT_LANGUAGE ("en")`. Also has `_normalize_lang()` with extensive aliases (38 entries including natural language names like "chinese"→"zh", "japanese"→"ja").
+
+---
+
+### Encoding Handling
+
+**UTF-8 as default (consistent, positive):** The overwhelming pattern is explicit `encoding="utf-8"` on all file opens across the codebase. No implicit reliance on system locale.
+
+**BOM handling — good coverage:** Several critical paths use `encoding="utf-8-sig"` which strips the UTF-8 BOM:
+- `hermes_cli/config.py:4634` — `.env` files (Windows Notepad compatibility)
+- `hermes_cli/config.py:4742,4833,4904` — additional config reads
+- `hermes_cli/env_loader.py:158` — env loader
+- `acp_adapter/server.py:188` — resource bytes decoding with fallback chain: `utf-8-sig` → `utf-8` → `latin-1`
+- `plugins/context_engine/__init__.py`, `plugins/memory/__init__.py`, `plugins/memory/holographic/__init__.py` — plugin YAML files
+
+**BOM risk area:** Config YAML reads (`.yaml` files) use `encoding="utf-8"` without `utf-8-sig`. If a user edits a config file in Windows Notepad and saves with BOM, the YAML parser (`yaml.safe_load`) would see the BOM as the first character of the file. PyYAML's `safe_load` handles BOM gracefully in most cases but it could appear in folded scalars (`description: >`). This is documented in `website/docs/user-guide/windows-native.md:321` with a recommendation to re-save as plain UTF-8.
+
+**Encoding detection for resource bytes:** `acp_adapter/server.py:188` has a 3-encoding fallback chain. This is robust.
+
+**Cron dotenv special handling:** `cron/scheduler.py:1405` uses `load_dotenv(..., encoding="utf-8")` and falls back to `latin-1` on line 1407. This is intentional — CP1252/latin-1 fallback for Windows-encoded .env files.
+
+---
+
+### Locale-Aware String Operations
+
+**Sorted() with no locale awareness:** `sorted()` calls throughout the codebase use default Python byte ordering (lexicographic UTF-8 byte order). No uses of `locale.strcoll()` or ICU collation. For ASCII strings this is correct. For CJK strings, Python's default sort is based on Unicode code point order, not linguistic order — acceptable for identifiers and technical strings, but could produce unexpected ordering for user-displayed lists.
+
+**Case operations:** `str.lower()`, `str.upper()` used throughout — no locale-specific case mapping (e.g., Turkish dotted/lowercase i). This is acceptable for the codebase's scope. `.casefold()` not observed in general string processing.
+
+**Unicode normalization:** `gateway/platforms/yuanbao_sticker.py:400` uses `unicodedata.normalize("NFKC", ...)` — good. No other Unicode normalization observed in core code.
+
+---
+
+### Chinese Language Support
+
+**i18n catalog:** `locales/zh.yaml` exists, `locales/zh-hant.yaml` for Traditional Chinese. 16 locales total including `ja`, `ko`, `ru`, `uk`, `de`, `fr`, `es`, `pt`, `tr`, `hu`, `af`, `ga`, `it`.
+
+**Chinese in error messages:** `agent/error_classifier.py:221` has Chinese-language error pattern matching ("Chinese error messages (some providers return these)"). The `_CONTEXT_OVERFLOW_PATTERNS` includes Chinese-language strings.
+
+**Chinese in platform adapters:** `agent/prompt_builder.py:559` ("You are on Yuanbao (腾讯元宝), a Chinese AI assistant platform"), `yuanbao.py:227` (Chinese punctuation handling), `yuanbao_media.py` sorts parameters with `k.lower()`.
+
+**Potential log encoding issue:** Logs written via `hermes_logging.py` use `encoding="utf-8"`. Chinese characters in log messages (from i18n strings or error messages) would be written as UTF-8. If downstream log parsers assume ASCII or Latin-1, Chinese characters could cause parsing failures — not a Hermes bug but a deployment consideration.
+
+**TUI font rendering:** No explicit CJK font configuration in `cli.py` or skin engine. Terminal font rendering depends on the user's terminal emulator configuration. No special handling observed.
+
+---
+
+### Bidirectional Override Characters
+
+**Already covered by P28-3 (from Pass #27):** `hermes_state.py:1012` — `sanitize_title()` strips U+200B–U+200F, U+2028–U+202E, U+2060–U+2069, U+FEFF, U+FFFC, U+FFF9–U+FFFB. This covers all directional override characters.
+
+**Gap — message content not sanitized:** `append_message()` and tool argument strings (in `coerce_tool_args()`) do NOT receive bidirectional character sanitization. A message with embedded RTL/LTR overrides could affect display order in the TUI or logs.
+
+**No i18n key injection:** The i18n key construction (`f"{prefix}.{key}"`) uses a dot separator. No user-controlled characters can be injected into key paths since YAML files are developer-controlled.
+
+**No RTL language display:** No evidence of RTL layout support in the TUI or CLI. The `sanitize_title()` strips these chars but they are never intentionally used.
+
+---
+
+### Input Encoding Normalization
+
+**TUI input:** `cli.py` uses `prompt_toolkit` for terminal input. prompt_toolkit handles Unicode internally using Python's native string representation. No explicit encoding normalization at the TUI input layer.
+
+**Gateway message encoding:** Platform adapters (Telegram, Discord, etc.) receive messages as Python strings from their respective SDKs. Platform-specific encoding is handled by the SDK. No explicit `encoding` parameter on platform message handlers — strings flow through naturally.
+
+**Tool argument encoding:** `model_tools.py` does null-check and strip on tool arguments (`value.strip().lower() == "null"`) but no encoding normalization. Arguments are JSON-decoded before reaching tool handlers.
+
+**JSON RPC:** `tui_gateway/server.py:3013` uses `json.dumps(payload, ensure_ascii=False)` — correct for UTF-8 preservation in JSON.
+
+---
+
+### Findings
+
+#### P49-1 · `_catalog_cache` is unbounded — no memory cap on loaded locales — INFO
+
+**File:** `agent/i18n.py:83`
+**Severity:** INFO
+**Issue:** `_catalog_cache` is a plain `dict` with no eviction policy. Loading all 16 locale catalogs (en, zh, zh-hant, ja, de, es, fr, tr, uk, af, ko, it, ga, pt, ru, hu) accumulates all in memory indefinitely. Typical footprint is small (string dicts), but on memory-constrained systems or embedded deployments, no upper bound exists.
+**Recommendation:** Add a `maxsize` to `_catalog_cache` or use `functools.LRU` for the catalog layer, keyed by language.
+
+---
+
+#### P49-2 · BOM not stripped on config YAML reads — potential edge-case parse failure — INFO
+
+**File:** `hermes_cli/config.py` (multiple locations), `gateway/run.py` (multiple locations), `cron/scheduler.py`, `cron/jobs.py`, and 30+ other files
+**Severity:** INFO
+**Issue:** Config YAML reads use `encoding="utf-8"` instead of `encoding="utf-8-sig"`. Windows editors (Notepad, some Chinese IME editors) save files with a UTF-8 BOM. PyYAML's `safe_load` may handle BOM at file start, but if the BOM is inside a folded scalar (`description: >` block spanning multiple lines), it could appear mid-stream and be interpreted as content. CONTRIBUTING.md:663 documents this risk but it applies to many file paths.
+**Recommendation:** Audit all config YAML reads. At minimum, use `encoding="utf-8-sig"` at all `config.yaml` and `jobs.yaml` read points (already done for `.env` and plugin YAML). Consider `errors="replace"` to handle corrupt BOMs gracefully.
+
+---
+
+#### P49-3 · No Unicode normalization on message content — potential display inconsistency — INFO
+
+**File:** `hermes_state.py` (append_message path), `model_tools.py` (coerce_tool_args path)
+**Severity:** INFO
+**Issue:** `sanitize_title()` strips bidirectional and zero-width characters, but `append_message()` and `coerce_tool_args()` do not apply Unicode sanitization. Messages from users or tools containing NFD-composed vs NFC-composed characters, or bidirectional override characters, could render inconsistently across terminal emulators.
+**Recommendation:** Apply Unicode sanitization (at minimum strip U+200B-U+200F, U+2028-U+202E, U+2060-U+2069) to message content and tool argument strings. Use the same regex pattern from `sanitize_title()` as a utility function to avoid duplication.
+
+---
+
+#### P49-4 · i18n `str.format(**format_kwargs)` risk is LOW but real — user-controlled values could reach format string — LOW
+
+**File:** `agent/i18n.py:242`
+**Pattern:** `value.format(**format_kwargs)`
+**Details:** Already documented as P37-2. Confirmed here: the format kwargs come from calling code, not from YAML catalog values. If a tool argument containing `{` and `}` characters reaches `t()` as a format kwarg, it could cause formatting errors. Exception handler catches `KeyError, IndexError, ValueError` and falls back to unformatted string — graceful degradation, not a crash.
+**Risk:** LOW — catalog values are developer-controlled, format_kwargs originate from code paths that pass tool output or user message fragments. The `KeyError` path means missing format keys produce a warning but no crash.
+**Recommendation:** Document that `t()` format kwargs should not contain `{` or `}` characters. Validate or escape before passing.
+
+---
+
+#### P49-5 · Python default sort (no locale awareness) used for user-facing lists — INFO
+
+**Files:** `hermes_cli/skills_hub.py:813` (`sorted(all_skills, key=lambda s: (s.get("category") or "", s["name"]))`), `gateway/channel_directory.py:341` (`sorted(guild_channels, key=lambda c: c["name"])`), `gateway/run.py:13188` (`sorted(reconnected)`)
+**Severity:** INFO
+**Issue:** Python's `sorted()` uses lexicographic ordering based on Unicode code points, not linguistic ordering. For CJK characters, this produces code-point order rather than dictionary order. For English ASCII strings it's correct. No use of `locale.strcoll()` or ICU collation observed.
+**Recommendation:** For user-visible sorted lists (skill names, channel names), consider if linguistic ordering matters. For technical lists (sorted IDs, sorted command names) current behavior is correct.
+
+---
+
+#### P49-6 · `load_dotenv` with dual encoding fallback (utf-8 then latin-1) — documented but worth noting — INFO
+
+**File:** `cron/scheduler.py:1405-1407`
+**Pattern:**
+```python
+load_dotenv(..., encoding="utf-8")
+load_dotenv(..., encoding="latin-1")  # fallback
+```
+**Details:** Intentional Windows compatibility pattern — try UTF-8 first, fall back to latin-1/CP1252. This handles both proper UTF-8 .env files and Windows-generated CP1252-encoded .env files. Not a bug — well-documented in CONTRIBUTING.md.
+**Note:** The `.env` files in `hermes_cli/config.py` use `utf-8-sig` directly (not dotenv), which is more robust than this fallback pattern.
+
+---
+
+#### P49-7 · ACP adapter `_decode_text_bytes` fallback chain is robust — positive finding — INFO
+
+**File:** `acp_adapter/server.py:188`
+**Pattern:** `for encoding in ("utf-8-sig", "utf-8", "latin-1")`
+**Details:** Three-stage encoding detection for resource bytes. Handles BOM correctly, falls back gracefully. Positive security/design pattern.
+
+---
+
+#### P49-8 · No locale-specific case mapping (Turkish i, etc.) — acceptable — INFO
+
+**Files:** Throughout — `str.lower()`, `str.upper()`, no `.casefold()` in localization paths
+**Details:** No locale-sensitive case conversion observed. Turkish dotted/lowercase i issue does not apply since no locale-specific case mapping is performed. Using `.lower()` for platform name normalization (telegram, discord) is correct because these are ASCII identifiers.
+
+---
+
+#### P49-9 · Chinese characters in logs — downstream parser compatibility — INFO
+
+**Files:** `hermes_logging.py`, `agent/error_classifier.py`, various platform adapters
+**Details:** Chinese characters appear in log messages and error pattern matching. Logs are written as UTF-8. Downstream log aggregators (Splunk, ELK, CloudWatch) handle UTF-8 correctly in modern versions. Older parsers or log shippers configured for ASCII/Latin-1 could see encoding errors.
+**Recommendation:** Document that `agent.log`, `errors.log`, `gateway.log` are UTF-8 encoded. If deploying to environments with ASCII-only log parsers, consider a preprocessing step.
+
+---
+
+#### Positive Findings
+
+- **`agent/i18n.py`** is well-architected: `yaml.safe_load` (safe loader), thread-safe cache with lock, graceful fallback to English, no eval/deserialize vulnerabilities.
+- **`encoding="utf-8"`** used consistently and explicitly across 50+ file read/write operations — no implicit system locale dependency.
+- **`utf-8-sig`** BOM handling present on all critical config paths (`.env`, plugin YAML, ACP resource bytes).
+- **Unicode sanitization** present in `sanitize_title()` for bidirectional and zero-width chars — comprehensive regex covers all known dangerous codepoints.
+- **16 locale catalogs** with proper alias resolution — mature i18n coverage.
+- **NFKC normalization** used in `yuanbao_sticker.py` for canonicalization — good Unicode hygiene.
+- **JSON** uses `ensure_ascii=False` throughout for UTF-8 preservation.
+
+---
+
+### Summary Table
+
+| ID | Severity | Issue | Location |
+|----|----------|-------|----------|
+| P49-1 | INFO | `_catalog_cache` unbounded — no memory cap | `agent/i18n.py:83` |
+| P49-2 | INFO | BOM not stripped on config YAML reads | Multiple files |
+| P49-3 | INFO | No Unicode sanitization on message content | `hermes_state.py`, `model_tools.py` |
+| P49-4 | LOW | `str.format(**format_kwargs)` could fail on `{` in tool args | `agent/i18n.py:242` |
+| P49-5 | INFO | Default sort (no locale awareness) on user-facing lists | Multiple files |
+| P49-6 | INFO | load_dotenv dual encoding fallback (documented, OK) | `cron/scheduler.py:1405` |
+| P49-7 | INFO | ACP encoding fallback chain is robust (positive) | `acp_adapter/server.py:188` |
+| P49-8 | INFO | No locale-specific case mapping (acceptable) | Throughout |
+| P49-9 | INFO | Chinese in logs — downstream parser compatibility | `hermes_logging.py` |
+
+---
+
+*Pass #49 complete – 9 findings (1 positive, 8 needs attention)*
+*Last updated: 2026-05-25T06:45:00Z*
 *Commit at scan: b04760fdb*

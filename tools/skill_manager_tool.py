@@ -863,6 +863,10 @@ def skill_manage(
         result = _remove_file(name, file_path)
 
     elif action == "stow":
+        if not name or not name.strip():
+            return tool_error("name is required for 'stow'.", success=False)
+        if not _find_skill(name):
+            return tool_error(f"Skill '{name}' not found.", success=False)
         # Stow a loaded skill: mark it as no longer needed so the context
         # compressor can reclaim those tokens on the next compression cycle.
         # Usage telemetry is bumped in the shared block below.

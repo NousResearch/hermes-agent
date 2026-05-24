@@ -1066,8 +1066,8 @@ def build_skills_system_prompt(
     (.hermes.md, AGENTS.md) or config.yaml ``skills.project`` section.
 
     *index_format* controls output density:
-      - ``"full"`` (default): indented category blocks with descriptions
-      - ``"compact"``: pipe-delimited single-line per category, ~30% fewer chars
+      - ``"full"`` (default): indented category blocks with ``- name: desc``
+      - ``"compact"``: colon-delimited ``name:desc``, ~30% fewer chars
     """
     skills_dir = get_skills_dir()
     external_dirs = get_all_skills_dirs()[1:]  # skip local (index 0)
@@ -1078,10 +1078,13 @@ def build_skills_system_prompt(
     # ── Layer 1: in-process LRU cache ─────────────────────────────────
     # Include the resolved platform so per-platform disabled-skill lists
     # produce distinct cache entries (gateway serves multiple platforms).
-    from gateway.session_context import get_session_env
+    try:
+        from gateway.session_context import get_session_env
+    except ImportError:
+        get_session_env = lambda _key: None
     _platform_hint = (
         os.environ.get("HERMES_PLATFORM")
-        or get_session_env("HERMES_SESSION_PLATFORM")
+        or (get_session_env("HERMES_SESSION_PLATFORM") if get_session_env else None)
         or ""
     )
     disabled = get_disabled_skill_names()
@@ -1229,7 +1232,7 @@ def build_skills_system_prompt(
     seen_skill_names: set[str] = set()
     for cat_skills in skills_by_category.values():
         for name, _desc in cat_skills:
-            seen_skill_names.add(name)
+            seen_skill_names.add(name.lower())
 
     for ext_dir in external_dirs:
         if not ext_dir.exists():
@@ -1242,7 +1245,7 @@ def build_skills_system_prompt(
                 entry = _build_snapshot_entry(skill_file, ext_dir, frontmatter, desc)
                 skill_name = entry["skill_name"]
                 frontmatter_name = entry["frontmatter_name"]
-                if frontmatter_name in seen_skill_names:
+                if frontmatter_name.lower() in seen_skill_names:
                     continue
                 if frontmatter_name in disabled or skill_name in disabled:
                     continue
@@ -1469,55 +1472,111 @@ def parse_project_skill_config(cwd: "str | None" = None) -> dict:
 
     if context_path:
         try:
-            content = context_path.read_text(encoding="utf-8")
-            for line in content.splitlines():
-                line = line.strip()
-                m = re.match(r'skills?\.include:\s*\[(.+?)\]', line, re.IGNORECASE)
-                if m:
-                    items = [s.strip().strip("'\"") for s in m.group(1).split(",") if s.strip()]
-                    if items:
-                        result["include"] = items
+            text = context_path.read_text(encoding="utf-8")
+            lines = text.splitlines()
+            # Track code-fence state to skip documentation examples
+            in_fence = False
+            i = 0
+            while i < len(lines):
+                line = lines[i].strip()
+                # Skip code-fenced content
+                if line.startswith("```"):
+                    in_fence = not in_fence
+                    i += 1
                     continue
-                m = re.match(r'skills?\.exclude:\s*\[(.+?)\]', line, re.IGNORECASE)
-                if m:
-                    items = [s.strip().strip("'\"") for s in m.group(1).split(",") if s.strip()]
-                    if items:
-                        result["exclude"] = items
+                if in_fence:
+                    i += 1
                     continue
-                m = re.match(r'skills?\.categories\.include:\s*\[(.+?)\]', line, re.IGNORECASE)
-                if m:
-                    items = [s.strip().strip("'\"") for s in m.group(1).split(",") if s.strip()]
-                    if items:
-                        result["categories_include"] = items
-                    continue
-                m = re.match(r'skills?\.categories\.exclude:\s*\[(.+?)\]', line, re.IGNORECASE)
-                if m:
-                    items = [s.strip().strip("'\"") for s in m.group(1).split(",") if s.strip()]
-                    if items:
-                        result["categories_exclude"] = items
-                    continue
-                m = re.match(r'skills?\.index_format:\s*(\S+)', line, re.IGNORECASE)
-                if m:
-                    result["index_format"] = m.group(1).strip().strip("'\"")
+
+                # Inline bracket format: skills.include: [a, b]
+                for key, result_key in [
+                    ("include", "include"),
+                    ("exclude", "exclude"),
+                ]:
+                    m = re.match(rf'skills?\.{key}:\s*\[(.+?)\]', line, re.IGNORECASE)
+                    if m:
+                        items = [s.strip().strip("'\"") for s in m.group(1).split(",") if s.strip()]
+                        if items:
+                            if result_key in result:
+                                result[result_key].extend(items)
+                            else:
+                                result[result_key] = items
+                        # Check for trailing single-item on same line
+                        rest = line[m.end():].strip()
+                        if rest and not rest.startswith("[") and not rest.startswith("-"):
+                            extra = [rest.strip().strip("'\"")]
+                            result[result_key].extend(extra)
+                        break
+                else:
+                    for key, result_key in [
+                        ("categories.include", "categories_include"),
+                        ("categories.exclude", "categories_exclude"),
+                    ]:
+                        m = re.match(rf'skills?\.{key}:\s*\[(.+?)\]', line, re.IGNORECASE)
+                        if m:
+                            items = [s.strip().strip("'\"") for s in m.group(1).split(",") if s.strip()]
+                            if items:
+                                if result_key in result:
+                                    result[result_key].extend(items)
+                                else:
+                                    result[result_key] = items
+                            break
+                    else:
+                        # Check for index_format
+                        m = re.match(r'skills?\.index_format:\s*(\S+)', line, re.IGNORECASE)
+                        if m:
+                            result["index_format"] = m.group(1).strip().strip("'\"")
+
+                        # Check for YAML list start: "skills.include:" followed by "- item" lines
+                        for key, result_key in [
+                            ("include", "include"),
+                            ("exclude", "exclude"),
+                            ("categories.include", "categories_include"),
+                            ("categories.exclude", "categories_exclude"),
+                        ]:
+                            m = re.match(rf'skills?\.{key}:\s*$', line, re.IGNORECASE)
+                            if m:
+                                items = []
+                                j = i + 1
+                                while j < len(lines):
+                                    next_line = lines[j].strip()
+                                    list_m = re.match(r'\s*-\s+(.+?)\s*$', next_line)
+                                    if list_m:
+                                        item = list_m.group(1).strip().strip("'\"")
+                                        if item:
+                                            items.append(item)
+                                        j += 1
+                                    elif not next_line:
+                                        j += 1
+                                    else:
+                                        break
+                                if items:
+                                    if result_key in result:
+                                        result[result_key].extend(items)
+                                    else:
+                                        result[result_key] = items
+                                i = j - 1  # Skip processed YAML lines
+                                break
+                i += 1
         except Exception as e:
             logger.debug("Failed to parse skill config from %s: %s", context_path, e)
 
-    # Fall back to config.yaml
-    if not result:
-        try:
-            from hermes_cli.config import load_config
-            cfg = load_config() or {}
-            project_cfg = cfg.get("skills", {}).get("project", {})
-            if isinstance(project_cfg, dict):
-                for key in ("include", "exclude", "categories_include", "categories_exclude"):
-                    val = project_cfg.get(key)
-                    if isinstance(val, list) and val:
+    # Merge config.yaml as base, then overlay context file values
+    try:
+        from hermes_cli.config import load_config
+        cfg = load_config() or {}
+        project_cfg = cfg.get("skills", {}).get("project", {})
+        if isinstance(project_cfg, dict):
+            for key in ("include", "exclude", "categories_include", "categories_exclude"):
+                val = project_cfg.get(key)
+                if isinstance(val, list) and val:
+                    if key not in result:
                         result[key] = [str(v) for v in val]
-                fmt = project_cfg.get("index_format")
-                if fmt and isinstance(fmt, str):
-                    result.setdefault("index_format", fmt)
-        except Exception:
-            pass
+            fmt = project_cfg.get("index_format")
+            if fmt and isinstance(fmt, str):
+                result.setdefault("index_format", fmt)
+    except Exception:
+        pass
 
     return result
 

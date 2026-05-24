@@ -97,10 +97,13 @@ return:
     "fanout": false,
     "rationale": "<one sentence>",
     "title": "<tightened title>",
-    "body":  "<concrete spec for a single worker>"
+    "body":  "<concrete spec for a single worker>",
+    "assignee": "<profile name from the roster, or null for default>"
   }
 
-In that case the task stays as one work item, just with a tightened spec.
+In that case the task stays as one work item, just with a tightened spec and
+a concrete assignee. If no profile fits, use null and the system will route to
+the default_assignee.
 
 No preamble, no closing remarks, no code fences. Output only the JSON object.
 """
@@ -246,6 +249,25 @@ def _format_roster(roster: list[dict]) -> str:
     return "\n".join(lines)
 
 
+def _normalize_assignee_choice(
+    assignee: object,
+    *,
+    default_assignee: str,
+    valid_names: set[str],
+) -> str:
+    """Return a valid assignee, falling back to ``default_assignee``.
+
+    Fan-out children and the single-task fallback should share the same
+    routing guarantee: promoted work must not be left unassigned.
+    """
+    if not isinstance(assignee, str) or not assignee.strip():
+        return default_assignee
+    chosen = assignee.strip()
+    if chosen not in valid_names:
+        return default_assignee
+    return chosen
+
+
 def decompose_task(
     task_id: str,
     *,
@@ -271,6 +293,8 @@ def decompose_task(
     cfg = _load_config()
     orchestrator = _resolve_orchestrator_profile(cfg)
     default_assignee = _resolve_default_assignee(cfg)
+    kanban_cfg = cfg.get("kanban", {}) if isinstance(cfg, dict) else {}
+    auto_promote = bool(kanban_cfg.get("auto_promote_children", True))
     roster, valid_names = _build_roster()
 
     try:
@@ -335,6 +359,13 @@ def decompose_task(
         new_body = parsed.get("body")
         title_val = new_title.strip() if isinstance(new_title, str) and new_title.strip() else None
         body_val = new_body if isinstance(new_body, str) and new_body.strip() else None
+        assignee_val = None
+        if not task.assignee:
+            assignee_val = _normalize_assignee_choice(
+                parsed.get("assignee"),
+                default_assignee=default_assignee,
+                valid_names=valid_names,
+            )
         if title_val is None and body_val is None:
             return DecomposeOutcome(
                 task_id, False, "decomposer returned fanout=false with no title/body",
@@ -345,6 +376,7 @@ def decompose_task(
                 task_id,
                 title=title_val,
                 body=body_val,
+                assignee=assignee_val,
                 author=audit_author,
             )
         if not ok:
@@ -379,17 +411,21 @@ def decompose_task(
         if not isinstance(body, str):
             body = ""
         assignee = entry.get("assignee")
-        if not isinstance(assignee, str) or not assignee.strip():
-            chosen = default_assignee
-        elif assignee not in valid_names:
+        chosen = _normalize_assignee_choice(
+            assignee,
+            default_assignee=default_assignee,
+            valid_names=valid_names,
+        )
+        if (
+            isinstance(assignee, str)
+            and assignee.strip()
+            and assignee.strip() not in valid_names
+        ):
             logger.info(
                 "decompose: task %s child %d picked unknown assignee %r — "
                 "routing to default_assignee %r",
                 task_id, idx, assignee, default_assignee,
             )
-            chosen = default_assignee
-        else:
-            chosen = assignee
         parents = entry.get("parents") or []
         if not isinstance(parents, list):
             parents = []
@@ -410,6 +446,7 @@ def decompose_task(
                 root_assignee=orchestrator,
                 children=children,
                 author=audit_author,
+                auto_promote=auto_promote,
             )
     except ValueError as exc:
         return DecomposeOutcome(task_id, False, f"DB rejected graph: {exc}")

@@ -56,6 +56,7 @@ class TestFailoverReason:
             "overloaded", "server_error", "timeout",
             "context_overflow", "payload_too_large", "image_too_large",
             "model_not_found", "format_error",
+            "multimodal_tool_content_unsupported",
             "provider_policy_blocked",
             "thinking_signature", "long_context_tier",
             "oauth_long_context_beta_forbidden",
@@ -1256,3 +1257,66 @@ class TestRateLimitErrorWithoutStatusCode:
         e.status_code = None
         result = classify_api_error(e, provider="copilot", model="gpt-4o")
         assert result.reason != FailoverReason.rate_limit
+
+
+
+# ── Test: multimodal_tool_content_unsupported pattern ───────────────────
+
+class TestMultimodalToolContentUnsupported:
+    """Issue #27344 — providers that reject list-type tool message content
+    should be classified as ``multimodal_tool_content_unsupported`` so the
+    retry loop can downgrade screenshots to text and try again.
+    """
+
+    def test_xiaomi_mimo_text_is_not_set_pattern(self):
+        """The actual Xiaomi MiMo 400 wording from the bug report."""
+        e = MockAPIError(
+            "Error code: 400 - {'error': {'code': '400', 'message': 'Param Incorrect', 'param': 'text is not set', 'type': ''}}",
+            status_code=400,
+        )
+        result = classify_api_error(e, provider="xiaomi", model="mimo-v2.5")
+        assert result.reason == FailoverReason.multimodal_tool_content_unsupported
+        assert result.retryable is True
+
+    def test_generic_tool_message_must_be_string(self):
+        e = MockAPIError(
+            "tool message content must be a string",
+            status_code=400,
+        )
+        result = classify_api_error(e, provider="custom", model="some-model")
+        assert result.reason == FailoverReason.multimodal_tool_content_unsupported
+
+    def test_expected_string_got_list(self):
+        e = MockAPIError(
+            "Schema validation failed: expected string, got list",
+            status_code=400,
+        )
+        result = classify_api_error(e, provider="custom", model="some-model")
+        assert result.reason == FailoverReason.multimodal_tool_content_unsupported
+
+    def test_multimodal_tool_content_takes_priority_over_context_overflow(self):
+        """Some providers return a 400 whose message contains BOTH
+        'text is not set' and a length-shaped phrase; the tool-content
+        recovery is cheaper than compression so it must win the priority.
+        """
+        e = MockAPIError(
+            "text is not set; context length exceeded",
+            status_code=400,
+        )
+        result = classify_api_error(e, provider="xiaomi", model="mimo-v2.5")
+        assert result.reason == FailoverReason.multimodal_tool_content_unsupported
+
+    def test_no_status_code_path_also_classifies(self):
+        """When the error reaches us without a status code (transport
+        layer ate it) the message-only classifier branch must also
+        recognise the pattern.
+        """
+        e = MockTransportError("tool_call.content must be string")
+        result = classify_api_error(e, provider="alibaba", model="qwen3.5-plus")
+        assert result.reason == FailoverReason.multimodal_tool_content_unsupported
+
+    def test_unrelated_400_is_not_misclassified(self):
+        """Make sure the patterns don't false-positive on normal 400s."""
+        e = MockAPIError("bad request: missing field 'model'", status_code=400)
+        result = classify_api_error(e, provider="openrouter", model="anthropic/claude-sonnet-4")
+        assert result.reason != FailoverReason.multimodal_tool_content_unsupported

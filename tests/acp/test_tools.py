@@ -345,6 +345,59 @@ class TestBuildToolComplete:
         assert "hello" in text
         assert result.raw_output is None
 
+    def test_build_tool_complete_marks_success_false_as_failed(self):
+        result = build_tool_complete("tc-fail", "skill_manage", '{"success": false, "error": "boom"}')
+        assert result.status == "failed"
+
+    def test_build_tool_complete_marks_ok_false_as_failed(self):
+        result = build_tool_complete("tc-fail", "some_tool", '{"ok": false, "error": "boom"}')
+        assert result.status == "failed"
+
+    def test_build_tool_complete_marks_exit_code_nonzero_as_failed(self):
+        result = build_tool_complete("tc-fail", "terminal", '{"output": "bad", "exit_code": 2}')
+        assert result.status == "failed"
+
+    def test_build_tool_complete_marks_returncode_nonzero_as_failed(self):
+        result = build_tool_complete("tc-fail", "execute_code", '{"output": "bad", "returncode": 2}')
+        assert result.status == "failed"
+
+    def test_build_tool_complete_keeps_plain_error_text_completed(self):
+        result = build_tool_complete("tc-ok", "terminal", "tests failed: 1 assertion error")
+        assert result.status == "completed"
+
+    def test_build_tool_complete_marks_raised_exception_prefix_as_failed(self):
+        """The agent's tool executor wraps raised exceptions in a canonical
+        "Error executing tool '<name>': ..." prefix. That prefix is unique to
+        the wrapper and means the tool blew up, so it must surface as failed
+        in Zed regardless of whether the body parses as JSON.
+        """
+        result = build_tool_complete(
+            "tc-fail-exc",
+            "patch",
+            "Error executing tool 'patch': KeyError: 'foo'",
+        )
+        assert result.status == "failed"
+
+    def test_build_tool_complete_does_not_match_error_word_alone(self):
+        """Bare 'Error: ...' messages (without the unique 'Error executing
+        tool '<name>':' prefix) must still be reported as completed — they
+        legitimately appear in compiler/linter/test output.
+        """
+        result = build_tool_complete(
+            "tc-ok-error-word",
+            "terminal",
+            "Error: pytest collected 0 items",
+        )
+        assert result.status == "completed"
+
+    def test_build_tool_complete_marks_structured_polished_tool_error_as_failed(self):
+        result = build_tool_complete("tc-fail", "read_file", '{"error": "File not found"}')
+        assert result.status == "failed"
+
+    def test_build_tool_complete_keeps_json_error_without_failure_flag_completed(self):
+        result = build_tool_complete("tc-ok", "some_tool", '{"error": "timeout while reading optional source"}')
+        assert result.status == "completed"
+
     def test_build_tool_complete_for_skill_manage_summarizes_without_raw_json(self):
         result = build_tool_complete(
             "tc-skill-manage",
@@ -460,6 +513,62 @@ class TestBuildToolComplete:
         assert "Web extract failed" in text
         assert "https://example.com" in text
         assert "timeout" in text
+        assert result.raw_output is None
+
+    def test_build_tool_complete_generically_formats_unknown_json_dict_without_raw_output(self):
+        result = build_tool_complete(
+            "tc-recall-search",
+            "memory_archive_search",
+            '{"results":[{"id":"obs-1","status":"active","content":"Recall should render as a readable summary."}],"trust":"lower-trust archive evidence"}',
+        )
+        text = result.content[0].content.text
+        assert "memory_archive_search result" in text
+        assert "lower-trust archive evidence" in text
+        assert "Recall should render as a readable summary" in text
+        assert "{\"results\"" not in text
+        assert result.raw_output is None
+
+    def test_build_tool_complete_generically_formats_unknown_json_list_without_raw_output(self):
+        result = build_tool_complete(
+            "tc-plugin-list",
+            "some_plugin_tool",
+            '[{"name":"alpha","status":"ok"},{"name":"beta","status":"ok"}]',
+        )
+        text = result.content[0].content.text
+        assert "some_plugin_tool: 2 items" in text
+        assert "alpha" in text
+        assert result.raw_output is None
+
+    def test_build_tool_complete_generically_formats_nested_json_without_inline_blob(self):
+        result = build_tool_complete(
+            "tc-recall-stats",
+            "memory_archive_stats",
+            '{"observations_by_status":{"active":12,"rejected":83},"capabilities":["sqlite-fts5-archive","hash-chain-audit"],"audit":{"ok":true,"count":208,"head":"abc123"}}',
+        )
+        text = result.content[0].content.text
+        assert "**observations_by_status:**" in text
+        assert "**active:** 12" in text
+        assert "**rejected:** 83" in text
+        assert "**capabilities:** 2 items" in text
+        assert "sqlite-fts5-archive" in text
+        assert "**audit:**" in text
+        assert "**ok:** True" in text
+        assert "{\"active\"" not in text
+        assert "[\"sqlite" not in text
+        assert result.raw_output is None
+
+    def test_build_tool_complete_for_search_files_files_only_formats_file_list(self):
+        result = build_tool_complete(
+            "tc-search-files",
+            "search_files",
+            '{"total_count":36,"files":["/home/nour/.hermes/config.yaml","/home/nour/.hermes/profiles/recall-test/config.yaml"],"truncated":true}',
+        )
+        text = result.content[0].content.text
+        assert "File search results" in text
+        assert "Found 36 files; showing 2." in text
+        assert "/home/nour/.hermes/config.yaml" in text
+        assert "use offset to page" in text
+        assert "{\"total_count\"" not in text
         assert result.raw_output is None
 
     def test_build_tool_complete_truncates_large_output(self):

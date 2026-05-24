@@ -198,6 +198,7 @@ HERMES_OVERLAYS: Dict[str, HermesOverlay] = {
     ),
     "ollama-cloud": HermesOverlay(
         transport="openai_chat",
+        base_url_override="https://ollama.com/v1",
         base_url_env_var="OLLAMA_BASE_URL",
     ),
     # Azure Foundry: supports both OpenAI-style and Anthropic-style endpoints.

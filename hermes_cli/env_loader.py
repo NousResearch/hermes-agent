@@ -21,6 +21,44 @@ _CREDENTIAL_SUFFIXES = ("_API_KEY", "_TOKEN", "_SECRET", "_KEY")
 # tests) don't spam the same warning multiple times.
 _WARNED_KEYS: set[str] = set()
 
+# Map of env-var name → source label ("bitwarden", etc.) for credentials
+# that were injected by an external secret source during load_hermes_dotenv().
+# Used by setup / `hermes model` flows to label detected credentials so
+# users understand WHERE a key came from when their .env doesn't contain it
+# directly (otherwise the "credentials detected ✓" line looks identical to
+# the .env case and they don't know Bitwarden is wired up).
+_SECRET_SOURCES: dict[str, str] = {}
+
+
+def get_secret_source(env_var: str) -> str | None:
+    """Return the label of the secret source that supplied ``env_var``, if any.
+
+    Returns ``"bitwarden"`` for keys pulled from Bitwarden Secrets Manager
+    during the current process's ``load_hermes_dotenv()`` call.  Returns
+    ``None`` for keys that came from ``.env``, the shell environment, or
+    aren't tracked.
+    """
+    return _SECRET_SOURCES.get(env_var)
+
+
+def format_secret_source_suffix(env_var: str) -> str:
+    """Return a human-readable suffix like ``" (from Bitwarden)"`` or ``""``.
+
+    Use this when printing a detected credential so the user can see where
+    it came from.  Empty string when the credential came from ``.env`` or
+    the shell — those are the implicit / "default" cases users already
+    understand.
+    """
+    source = get_secret_source(env_var)
+    if not source:
+        return ""
+    if source == "bitwarden":
+        return " (from Bitwarden)"
+    # Generic fallback — future-proofing for additional secret sources
+    # (e.g. 1Password, HashiCorp Vault) without having to update every
+    # call site.
+    return f" (from {source})"
+
 
 def _format_offending_chars(value: str, limit: int = 3) -> str:
     """Return a compact 'U+XXXX ('c'), ...' summary of non-ASCII codepoints."""
@@ -102,6 +140,10 @@ def _sanitize_env_file_if_needed(path: Path) -> None:
     This produces mangled values — e.g. a bot token duplicated 8×
     (see #8908).
 
+    Also strips embedded null bytes which crash ``os.environ[k] = v``
+    with ``ValueError: embedded null byte`` — typically introduced by
+    copy-pasting API keys from terminals or rich-text editors.
+
     We delegate to ``hermes_cli.config._sanitize_env_lines`` which
     already knows all valid Hermes env-var names and can split
     concatenated lines correctly.
@@ -117,7 +159,11 @@ def _sanitize_env_file_if_needed(path: Path) -> None:
     try:
         with open(path, **read_kw) as f:
             original = f.readlines()
-        sanitized = _sanitize_env_lines(original)
+        # Strip null bytes before _sanitize_env_lines so they never
+        # reach python-dotenv (which passes them to os.environ and
+        # crashes with ValueError).
+        stripped = [line.replace("\x00", "") for line in original]
+        sanitized = _sanitize_env_lines(stripped)
         if sanitized != original:
             import tempfile
             fd, tmp = tempfile.mkstemp(
@@ -172,4 +218,88 @@ def load_hermes_dotenv(
         _load_dotenv_with_fallback(project_env_path, override=not loaded)
         loaded.append(project_env_path)
 
+    _apply_external_secret_sources(home_path)
+
     return loaded
+
+
+def _apply_external_secret_sources(home_path: Path) -> None:
+    """Pull secrets from external sources (currently Bitwarden) into env.
+
+    Runs AFTER dotenv loads so .env values are visible (we use them to
+    locate the access token) but BEFORE the rest of Hermes reads
+    ``os.environ`` for credentials.  Any failure here is logged and
+    swallowed — external secret sources must never block startup.
+    """
+    try:
+        cfg = _load_secrets_config(home_path)
+    except Exception:  # noqa: BLE001 — config errors must not block startup
+        return
+
+    bw_cfg = (cfg or {}).get("bitwarden") or {}
+    if not bw_cfg.get("enabled"):
+        return
+
+    try:
+        from agent.secret_sources.bitwarden import apply_bitwarden_secrets
+    except ImportError:
+        return
+
+    result = apply_bitwarden_secrets(
+        enabled=True,
+        access_token_env=bw_cfg.get("access_token_env", "BWS_ACCESS_TOKEN"),
+        project_id=bw_cfg.get("project_id", ""),
+        override_existing=bool(bw_cfg.get("override_existing", False)),
+        cache_ttl_seconds=float(bw_cfg.get("cache_ttl_seconds", 300)),
+        auto_install=bool(bw_cfg.get("auto_install", True)),
+        server_url=str(bw_cfg.get("server_url", "") or "").strip(),
+    )
+
+    if result.applied:
+        # Re-run the ASCII sanitization pass: BSM values are user-supplied
+        # and might have the same copy-paste corruption as a manually
+        # edited .env (see #6843).
+        _sanitize_loaded_credentials()
+        # Remember where these came from so the setup / `hermes model`
+        # flows can label detected credentials with "(from Bitwarden)" —
+        # otherwise users see "credentials ✓" with no hint that the value
+        # came from BSM rather than .env.
+        for name in result.applied:
+            _SECRET_SOURCES[name] = "bitwarden"
+        print(
+            f"  Bitwarden Secrets Manager: applied {len(result.applied)} "
+            f"secret{'s' if len(result.applied) != 1 else ''} "
+            f"({', '.join(sorted(result.applied))})",
+            file=sys.stderr,
+        )
+    if result.error:
+        print(
+            f"  Bitwarden Secrets Manager: {result.error}",
+            file=sys.stderr,
+        )
+    for warn in result.warnings:
+        print(
+            f"  Bitwarden Secrets Manager: {warn}",
+            file=sys.stderr,
+        )
+
+
+def _load_secrets_config(home_path: Path) -> dict:
+    """Read just the ``secrets:`` section out of config.yaml.
+
+    Imported lazily and isolated from the main config loader so a
+    malformed config can't take down dotenv loading entirely.
+    """
+    config_path = home_path / "config.yaml"
+    if not config_path.exists():
+        return {}
+    try:
+        import yaml  # type: ignore
+    except ImportError:
+        return {}
+    try:
+        with open(config_path, "r", encoding="utf-8") as f:
+            data = yaml.safe_load(f) or {}
+    except Exception:  # noqa: BLE001
+        return {}
+    return data.get("secrets") or {}

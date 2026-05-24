@@ -70,7 +70,8 @@ def test_board_empty(client):
     data = r.json()
     # All canonical columns present (triage + the rest), each empty.
     names = [c["name"] for c in data["columns"]]
-    for expected in ("triage", "todo", "ready", "running", "blocked", "done"):
+    assert set(names) == kb.VALID_STATUSES - {"archived"}
+    for expected in ("triage", "todo", "scheduled", "ready", "running", "blocked", "done"):
         assert expected in names, f"missing column {expected}: {names}"
     assert all(len(c["tasks"]) == 0 for c in data["columns"])
     assert data["tenants"] == []
@@ -113,6 +114,31 @@ def test_create_task_appears_on_board(client):
     assert "researcher" in data["assignees"]
 
 
+def test_scheduled_tasks_have_their_own_column_not_todo(client):
+    """Scheduled/time-delay tasks must not be silently bucketed into todo."""
+
+    task = client.post(
+        "/api/plugins/kanban/tasks",
+        json={"title": "wait for indexed data", "assignee": "ops"},
+    ).json()["task"]
+
+    conn = kb.connect()
+    try:
+        with kb.write_txn(conn):
+            conn.execute(
+                "UPDATE tasks SET status = 'scheduled' WHERE id = ?",
+                (task["id"],),
+            )
+    finally:
+        conn.close()
+
+    r = client.get("/api/plugins/kanban/board")
+    assert r.status_code == 200
+    columns = {c["name"]: c["tasks"] for c in r.json()["columns"]}
+    assert any(t["id"] == task["id"] for t in columns["scheduled"])
+    assert not any(t["id"] == task["id"] for t in columns["todo"])
+
+
 def test_tenant_filter(client):
     client.post("/api/plugins/kanban/tasks", json={"title": "A", "tenant": "t1"})
     client.post("/api/plugins/kanban/tasks", json={"title": "B", "tenant": "t2"})
@@ -125,6 +151,44 @@ def test_tenant_filter(client):
     r = client.get("/api/plugins/kanban/board?tenant=t2")
     total = sum(len(c["tasks"]) for c in r.json()["columns"])
     assert total == 1
+
+
+def test_board_query_param_default_overrides_current_board_pointer(client):
+    """Dashboard ``?board=default`` must win even if the CLI's current-board
+    pointer targets a non-default board.
+
+    Regression: selecting the Default board in the dashboard must not fall
+    through to whichever board ``hermes kanban boards switch`` last pinned.
+    """
+    default_task = client.post(
+        "/api/plugins/kanban/tasks",
+        json={"title": "default-only"},
+    ).json()["task"]
+
+    kb.create_board("other")
+    other_conn = kb.connect(board="other")
+    try:
+        kb.create_task(other_conn, title="other-only")
+    finally:
+        other_conn.close()
+
+    kb.set_current_board("other")
+
+    current_board = client.get("/api/plugins/kanban/board").json()
+    current_ids = {
+        task["id"]
+        for column in current_board["columns"]
+        for task in column["tasks"]
+    }
+    assert default_task["id"] not in current_ids
+
+    pinned_default = client.get("/api/plugins/kanban/board?board=default").json()
+    pinned_ids = {
+        task["id"]
+        for column in pinned_default["columns"]
+        for task in column["tasks"]
+    }
+    assert pinned_ids == {default_task["id"]}
 
 
 def test_dashboard_select_filters_use_sdk_value_change_handler():
@@ -162,6 +226,25 @@ def test_dashboard_client_side_filtering_includes_tenant_filter():
 
     assert "if (tenantFilter && t.tenant !== tenantFilter) return false;" in js
     assert "[boardData, tenantFilter, assigneeFilter, search]" in js
+
+
+def test_dashboard_initial_board_uses_backend_current_when_unpinned():
+    """Fresh browsers should open the backend current board, not default.
+
+    Explicit dashboard selections are stored in localStorage and should still
+    win, but an empty localStorage state must adopt the API's ``current`` board
+    so multi-board installs do not look empty on first load.
+    """
+
+    repo_root = Path(__file__).resolve().parents[2]
+    bundle = repo_root / "plugins" / "kanban" / "dashboard" / "dist" / "index.js"
+    js = bundle.read_text()
+
+    assert 'useState(() => readSelectedBoard() || null)' in js
+    assert "const storedBoard = readSelectedBoard();" in js
+    assert "if (!storedBoard && !board && data && data.current)" in js
+    assert "setBoard(data.current);" in js
+    assert 'readSelectedBoard() || "default"' not in js
 
 
 # ---------------------------------------------------------------------------
@@ -238,6 +321,28 @@ def test_patch_block_then_unblock(client):
     assert r.json()["task"]["status"] == "ready"
 
 
+def test_patch_schedule_then_unblock(client):
+    t = client.post("/api/plugins/kanban/tasks", json={"title": "x"}).json()["task"]
+    r = client.patch(
+        f"/api/plugins/kanban/tasks/{t['id']}",
+        json={"status": "scheduled", "block_reason": "run tomorrow"},
+    )
+    assert r.status_code == 200
+    assert r.json()["task"]["status"] == "scheduled"
+
+    columns = client.get("/api/plugins/kanban/board").json()["columns"]
+    assert "scheduled" in [c["name"] for c in columns]
+    scheduled = next(c for c in columns if c["name"] == "scheduled")
+    assert any(x["id"] == t["id"] for x in scheduled["tasks"])
+
+    r = client.patch(
+        f"/api/plugins/kanban/tasks/{t['id']}",
+        json={"status": "ready"},
+    )
+    assert r.status_code == 200
+    assert r.json()["task"]["status"] == "ready"
+
+
 def test_patch_drag_drop_move_todo_to_ready(client):
     """Direct status write: the drag-drop path for statuses without a
     dedicated verb (e.g. manually promoting todo -> ready).
@@ -258,6 +363,18 @@ def test_patch_drag_drop_move_todo_to_ready(client):
     )
     assert r.status_code == 409
 
+    # The 409 detail must name the blocking parent so the dashboard can
+    # render an actionable toast instead of a silent no-op (#26744).
+    detail = r.json()["detail"]
+    assert "Cannot move to 'ready'" in detail
+    assert parent["id"] in detail
+    assert "'p'" in detail
+    assert "status=" in detail
+    # Whatever non-``done`` status the parent currently has must show up
+    # so the operator knows what to fix.
+    assert f"status={parent['status']}" in detail
+    assert parent["status"] != "done"
+
     # Complete the parent.
     r = client.patch(
         f"/api/plugins/kanban/tasks/{parent['id']}",
@@ -268,6 +385,43 @@ def test_patch_drag_drop_move_todo_to_ready(client):
     # Now child auto-promoted by recompute_ready — already ready.
     child_after = client.get(f"/api/plugins/kanban/tasks/{child['id']}").json()["task"]
     assert child_after["status"] == "ready"
+
+
+def test_reopening_parent_demotes_ready_child(client):
+    """Reopening a completed parent must invalidate ready children immediately.
+
+    The dispatcher re-checks parent completion on claim, but the dashboard
+    should not keep showing a stale child as ready after an operator drags
+    its parent back out of done for more work.
+    """
+    parent = client.post("/api/plugins/kanban/tasks", json={"title": "p"}).json()["task"]
+    child = client.post(
+        "/api/plugins/kanban/tasks",
+        json={"title": "c", "parents": [parent["id"]]},
+    ).json()["task"]
+    assert child["status"] == "todo"
+
+    r = client.patch(
+        f"/api/plugins/kanban/tasks/{parent['id']}",
+        json={"status": "done"},
+    )
+    assert r.status_code == 200
+
+    child_after_done = client.get(
+        f"/api/plugins/kanban/tasks/{child['id']}"
+    ).json()["task"]
+    assert child_after_done["status"] == "ready"
+
+    r = client.patch(
+        f"/api/plugins/kanban/tasks/{parent['id']}",
+        json={"status": "todo"},
+    )
+    assert r.status_code == 200
+
+    child_after_reopen = client.get(
+        f"/api/plugins/kanban/tasks/{child['id']}"
+    ).json()["task"]
+    assert child_after_reopen["status"] == "todo"
 
 
 def test_patch_reassign(client):
@@ -329,6 +483,33 @@ def test_patch_status_running_rejected(client):
         for tt in col["tasks"]
     }
     assert statuses.get(t["id"]) != "running"
+
+
+# ---------------------------------------------------------------------------
+# DELETE /tasks/:id
+# ---------------------------------------------------------------------------
+
+def test_delete_task(client):
+    t = client.post("/api/plugins/kanban/tasks", json={"title": "to-delete"}).json()["task"]
+    r = client.delete(f"/api/plugins/kanban/tasks/{t['id']}")
+    assert r.status_code == 200
+    assert r.json()["deleted"] is True
+    assert r.json()["task_id"] == t["id"]
+
+    # Gone from board
+    board = client.get("/api/plugins/kanban/board").json()
+    all_ids = [tt["id"] for col in board["columns"] for tt in col["tasks"]]
+    assert t["id"] not in all_ids
+
+    # Gone from detail
+    r = client.get(f"/api/plugins/kanban/tasks/{t['id']}")
+    assert r.status_code == 404
+
+
+def test_delete_task_not_found(client):
+    r = client.delete("/api/plugins/kanban/tasks/t_nonexistent")
+    assert r.status_code == 404
+    assert "not found" in r.json()["detail"]
 
 
 # ---------------------------------------------------------------------------
@@ -593,6 +774,56 @@ def test_ws_events_rejects_when_token_required(tmp_path, monkeypatch):
         assert ws is not None  # handshake succeeded
 
 
+def test_ws_events_board_query_param_default_overrides_current_board_pointer(tmp_path, monkeypatch):
+    """The event stream must honor ``board=default`` even when the global
+    current-board pointer targets a different board.
+
+    This is the live-update half of the dashboard regression: after the UI
+    selects Default, the websocket must not subscribe to the CLI's current
+    non-default board.
+    """
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    kb.init_db()
+
+    default_conn = kb.connect()
+    try:
+        default_task = kb.create_task(default_conn, title="default-live")
+    finally:
+        default_conn.close()
+
+    kb.create_board("other")
+    other_conn = kb.connect(board="other")
+    try:
+        other_task = kb.create_task(other_conn, title="other-live")
+    finally:
+        other_conn.close()
+
+    kb.set_current_board("other")
+
+    import hermes_cli
+    import types
+
+    stub = types.SimpleNamespace(_SESSION_TOKEN="secret-xyz")
+    monkeypatch.setitem(sys.modules, "hermes_cli.web_server", stub)
+    monkeypatch.setattr(hermes_cli, "web_server", stub, raising=False)
+
+    app = FastAPI()
+    app.include_router(_load_plugin_router(), prefix="/api/plugins/kanban")
+    c = TestClient(app)
+
+    with c.websocket_connect(
+        "/api/plugins/kanban/events?token=secret-xyz&board=default&since=0"
+    ) as ws:
+        payload = ws.receive_json()
+
+    task_ids = {event["task_id"] for event in payload["events"]}
+    assert default_task in task_ids
+    assert other_task not in task_ids
+
+
 def test_ws_events_swallows_cancellation_on_shutdown(tmp_path, monkeypatch):
     """``asyncio.CancelledError`` while sleeping in the poll loop is the
     normal uvicorn-shutdown path (``BaseException``, so the bare
@@ -710,6 +941,31 @@ def test_bulk_status_done_forwards_completion_summary(client):
         conn.close()
 
 
+def test_bulk_status_running_rejected(client):
+    """Bulk updates must match single-task PATCH: direct 'running' is invalid."""
+    t = client.post("/api/plugins/kanban/tasks", json={"title": "x"}).json()["task"]
+
+    r = client.post(
+        "/api/plugins/kanban/tasks/bulk",
+        json={"ids": [t["id"]], "status": "running"},
+    )
+
+    assert r.status_code == 200
+    results = r.json()["results"]
+    assert len(results) == 1
+    assert results[0]["id"] == t["id"]
+    assert results[0]["ok"] is False
+    assert "running" in results[0]["error"]
+
+    board = client.get("/api/plugins/kanban/board").json()
+    statuses = {
+        tt["id"]: col["name"]
+        for col in board["columns"]
+        for tt in col["tasks"]
+    }
+    assert statuses.get(t["id"]) != "running"
+
+
 def test_dashboard_done_actions_prompt_for_completion_summary():
     repo_root = Path(__file__).resolve().parents[2]
     bundle = (
@@ -721,6 +977,34 @@ def test_dashboard_done_actions_prompt_for_completion_summary():
     assert "result: summary" in bundle
     assert "body: JSON.stringify(patch)" in bundle
     assert "body: JSON.stringify(finalPatch)" in bundle
+
+
+def test_dashboard_surfaces_ready_blocked_error_inline():
+    """Regression for #26744: failed status transitions must be surfaced
+    inline, not swallowed.  The drag/drop banner and the drawer's action
+    row each render the parsed API ``detail`` so operators see *why*
+    their click did nothing.
+    """
+    repo_root = Path(__file__).resolve().parents[2]
+    bundle = (
+        repo_root / "plugins" / "kanban" / "dashboard" / "dist" / "index.js"
+    ).read_text()
+
+    # Helper that strips ``"409: {\"detail\":\"…\"}"`` down to the
+    # human-readable message before it lands in any banner.
+    assert "function parseApiErrorMessage(err)" in bundle
+    assert "parsed.detail" in bundle
+
+    # Drag/drop banner now uses the parsed message instead of raw
+    # ``err.message`` so it no longer leaks HTTP plumbing.
+    assert "setError(tx(t, \"moveFailed\", \"Move failed: \") + parseApiErrorMessage(err))" in bundle
+
+    # Drawer action row has its own visible error surface and clears it
+    # on success/refresh so stale failures don't follow the operator
+    # around.
+    assert "const [patchErr, setPatchErr] = useState(null);" in bundle
+    assert "setPatchErr(parseApiErrorMessage(e))" in bundle
+    assert "setPatchErr(null)" in bundle
 
 
 def test_dashboard_dependency_selects_use_value_change_handler():
@@ -1105,6 +1389,87 @@ def test_create_task_no_warning_on_triage(client, monkeypatch):
     assert "warning" not in r.json() or not r.json()["warning"]
 
 
+# ---------------------------------------------------------------------------
+# _task_dict — outer try/except fallback when task_age raises
+#
+# Background: kanban_db.task_age was hardened in 061a1830 to return None for
+# corrupt timestamp values via _safe_int. The companion fix added a belt-and-
+# suspenders try/except in plugin_api._task_dict so that *any future* exception
+# from task_age (not just ValueError on '%s') still yields a usable dict
+# instead of 500'ing GET /board for the entire org.
+#
+# kanban_db._safe_int / task_age corruption paths are covered in
+# tests/hermes_cli/test_kanban_db.py. The OUTER fallback here is not, which
+# means a refactor that drops the try/except would not be caught by CI. The
+# tests below pin that contract.
+# ---------------------------------------------------------------------------
+
+
+_FALLBACK_AGE = {
+    "created_age_seconds": None,
+    "started_age_seconds": None,
+    "time_to_complete_seconds": None,
+}
+
+
+def test_board_endpoint_survives_task_age_exception(client, monkeypatch):
+    """If task_age raises for any reason, GET /board must NOT 500.
+
+    Pre-fix behavior (without the try/except in _task_dict): a single corrupt
+    row turned the entire board response into a 500. The fallback dict lets
+    the dashboard render every other card normally.
+    """
+    create = client.post(
+        "/api/plugins/kanban/tasks",
+        json={"title": "doomed", "assignee": "alice"},
+    )
+    assert create.status_code == 200, create.text
+
+    # Force task_age to raise an exception type _safe_int does NOT handle —
+    # simulates a future regression where someone re-introduces an unguarded
+    # operation in task_age. ValueError on '%s' would be absorbed by _safe_int
+    # and never reach the outer try/except, so it would not exercise the
+    # contract this test pins.
+    def _boom(_task):
+        raise RuntimeError("simulated future task_age bug")
+    monkeypatch.setattr("hermes_cli.kanban_db.task_age", _boom)
+
+    r = client.get("/api/plugins/kanban/board")
+    assert r.status_code == 200, r.text
+
+    payload = r.json()
+    # /board returns columns as a list of {name, tasks} — not a dict — so
+    # flatten across all columns to find our seeded task.
+    tasks = [t for col in payload["columns"] for t in col["tasks"]]
+    assert len(tasks) == 1, f"expected exactly the seeded task, got {tasks!r}"
+    # Strict equality: the literal fallback dict from plugin_api._task_dict
+    # is the published contract the dashboard UI relies on. Key renames or
+    # silent additions should fail this test on purpose.
+    assert tasks[0]["age"] == _FALLBACK_AGE
+
+
+def test_single_task_endpoint_survives_task_age_exception(client, monkeypatch):
+    """GET /tasks/:id also calls _task_dict — same fallback should kick in.
+
+    This is the "drawer view" path: the user clicks one card and we serialize
+    just that task. A corrupt timestamp on a single task should not block the
+    user from opening its drawer.
+    """
+    create = client.post(
+        "/api/plugins/kanban/tasks",
+        json={"title": "drawer-target", "assignee": "bob"},
+    )
+    task_id = create.json()["task"]["id"]
+
+    def _boom(_task):
+        raise RuntimeError("simulated future task_age bug")
+    monkeypatch.setattr("hermes_cli.kanban_db.task_age", _boom)
+
+    r = client.get(f"/api/plugins/kanban/tasks/{task_id}")
+    assert r.status_code == 200, r.text
+    assert r.json()["task"]["age"] == _FALLBACK_AGE
+
+
 def test_create_task_probe_error_does_not_break_create(client, monkeypatch):
     """Probe failure must never break task creation."""
     def _raise():
@@ -1184,6 +1549,7 @@ def test_home_subscribe_creates_notify_sub_row(client, with_home_channels):
     assert subs[0]["platform"] == "telegram"
     assert subs[0]["chat_id"] == "1234567"
     assert subs[0]["thread_id"] == "42"
+    assert subs[0]["notifier_profile"] == "default"
 
 
 def test_home_subscribe_flips_subscribed_flag_in_subsequent_get(client, with_home_channels):
@@ -1209,6 +1575,36 @@ def test_home_subscribe_is_idempotent(client, with_home_channels):
         assert len(kb.list_notify_subs(conn, t["id"])) == 1
     finally:
         conn.close()
+
+
+def test_home_subscribe_backfills_owner_on_legacy_row(client, with_home_channels):
+    """Re-subscribing should backfill notifier ownership on ownerless rows."""
+    from hermes_cli import kanban_db as kb
+    t = client.post("/api/plugins/kanban/tasks", json={"title": "x"}).json()["task"]
+
+    conn = kb.connect()
+    try:
+        kb.add_notify_sub(
+            conn,
+            task_id=t["id"],
+            platform="telegram",
+            chat_id="1234567",
+            thread_id="42",
+        )
+    finally:
+        conn.close()
+
+    r = client.post(f"/api/plugins/kanban/tasks/{t['id']}/home-subscribe/telegram")
+    assert r.status_code == 200
+
+    conn = kb.connect()
+    try:
+        subs = kb.list_notify_subs(conn, t["id"])
+    finally:
+        conn.close()
+
+    assert len(subs) == 1
+    assert subs[0]["notifier_profile"] == "default"
 
 
 def test_home_subscribe_unknown_platform_returns_404(client, with_home_channels):
@@ -1543,7 +1939,8 @@ def test_diagnostics_endpoint_surfaces_blocked_hallucination(client):
 
 
 def test_diagnostics_endpoint_severity_filter(client):
-    """Warning-severity filter excludes error-severity entries."""
+    """Severity filter is at-or-above: warning includes warning+error+critical,
+    error includes error+critical, critical is exact (no higher level)."""
     conn = kb.connect()
     try:
         # A warning-severity diagnostic (prose phantom) on one task.
@@ -1551,22 +1948,26 @@ def test_diagnostics_endpoint_severity_filter(client):
         # requires ``t_[a-f0-9]{8,}``.
         p1 = kb.create_task(conn, title="prose", assignee="a")
         kb.complete_task(conn, p1, summary="mentioned t_deadbeef1234")
-        # An error-severity diagnostic (spawn failures) on another
+        # An error-severity diagnostic (spawn failures) on another.
+        # Keep this below critical severity (failure_threshold * 2).
         p2 = kb.create_task(conn, title="spawn", assignee="b")
         conn.execute(
-            "UPDATE tasks SET consecutive_failures=5, last_failure_error='x' WHERE id=?",
+            "UPDATE tasks SET consecutive_failures=2, last_failure_error='x' WHERE id=?",
             (p2,),
         )
         conn.commit()
     finally:
         conn.close()
 
+    # warning filter is at-or-above → both the warning AND the error pass.
     r = client.get("/api/plugins/kanban/diagnostics?severity=warning")
     assert r.status_code == 200
     data = r.json()
-    assert data["count"] == 1
-    assert data["diagnostics"][0]["task_id"] == p1
+    assert data["count"] == 2
+    task_ids = {row["task_id"] for row in data["diagnostics"]}
+    assert task_ids == {p1, p2}
 
+    # error filter is at-or-above → only the error passes (warning is below).
     r = client.get("/api/plugins/kanban/diagnostics?severity=error")
     data = r.json()
     assert data["count"] == 1

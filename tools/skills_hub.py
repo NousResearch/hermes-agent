@@ -26,6 +26,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
 from hermes_constants import get_hermes_home
+from agent.skill_utils import is_excluded_skill_path
 from typing import Any, Dict, List, Optional, Tuple, Union
 from urllib.parse import urljoin, urlparse, urlunparse
 
@@ -379,14 +380,16 @@ class GitHubSource(SkillSource):
                 logger.debug(f"Failed to search {tap['repo']}: {e}")
                 continue
 
-        # Deduplicate by name, preferring higher trust levels
+        # Deduplicate by identifier, preferring higher trust levels.
+        # identifier is unique per skill; name is not (two configured taps can
+        # publish skills with the same name but different identifiers).
         _trust_rank = {"builtin": 2, "trusted": 1, "community": 0}
         seen = {}
         for r in results:
-            if r.name not in seen:
-                seen[r.name] = r
-            elif _trust_rank.get(r.trust_level, 0) > _trust_rank.get(seen[r.name].trust_level, 0):
-                seen[r.name] = r
+            if r.identifier not in seen:
+                seen[r.identifier] = r
+            elif _trust_rank.get(r.trust_level, 0) > _trust_rank.get(seen[r.identifier].trust_level, 0):
+                seen[r.identifier] = r
         results = list(seen.values())
 
         return results[:limit]
@@ -2351,6 +2354,181 @@ class LobeHubSource(SkillSource):
 
 
 # ---------------------------------------------------------------------------
+# browse.sh source adapter
+# ---------------------------------------------------------------------------
+
+
+class BrowseShSource(SkillSource):
+    """Discover and install site-specific browser automation skills from browse.sh.
+
+    browse.sh (https://browse.sh) is Browserbase's catalog of 200+ SKILL.md files
+    that describe how to automate specific websites (Airbnb, Amazon, arXiv, etc.).
+    The catalog lives at ``/api/skills`` and each skill's actual SKILL.md content
+    is fetched via ``/api/skills/{slug}`` which returns a ``skillMdUrl`` field
+    pointing at a CDN-hosted blob — the catalog's ``sourceUrl`` field is a GitHub
+    HTML URL whose underlying repository is not always public, so it cannot be
+    relied on for content fetch.
+    """
+
+    CATALOG_URL = "https://browse.sh/api/skills"
+    SKILL_DETAIL_URL = "https://browse.sh/api/skills/{slug}"
+    _CACHE_KEY = "browse_sh_catalog"
+
+    def source_id(self) -> str:
+        return "browse-sh"
+
+    def trust_level_for(self, identifier: str) -> str:
+        return "community"
+
+    def _fetch_catalog(self) -> List[Dict]:
+        cached = _read_index_cache(self._CACHE_KEY)
+        if cached is not None:
+            return cached
+        try:
+            resp = httpx.get(self.CATALOG_URL, timeout=20)
+            if resp.status_code != 200:
+                return []
+            data = resp.json()
+        except (httpx.HTTPError, json.JSONDecodeError):
+            return []
+        skills = data.get("skills", []) if isinstance(data, dict) else []
+        if isinstance(skills, list):
+            _write_index_cache(self._CACHE_KEY, skills)
+        return skills if isinstance(skills, list) else []
+
+    def _item_to_meta(self, item: Dict) -> Optional[SkillMeta]:
+        slug = item.get("slug", "")
+        name = item.get("name", "")
+        title = item.get("title", name)
+        description = item.get("description", title)
+        if not slug or not name:
+            return None
+        if len(description) > 1024:
+            description = description[:1021] + "..."
+        return SkillMeta(
+            name=name,
+            description=description,
+            source="browse-sh",
+            identifier=f"browse-sh/{slug}",
+            trust_level="community",
+            tags=item.get("tags", []),
+            extra={
+                "slug": slug,
+                "hostname": item.get("hostname", ""),
+                "category": item.get("category", ""),
+                "source_url": item.get("sourceUrl", ""),
+                "recommended_method": item.get("recommendedMethod", ""),
+                "proxies": item.get("proxies", False),
+                "install_count": item.get("installCount", 0),
+            },
+        )
+
+    def search(self, query: str, limit: int = 10) -> List[SkillMeta]:
+        catalog = self._fetch_catalog()
+        query_lower = query.lower()
+        results = []
+        for item in catalog:
+            text = " ".join([
+                item.get("name", ""),
+                item.get("title", ""),
+                item.get("description", ""),
+                item.get("hostname", ""),
+                item.get("category", ""),
+                " ".join(item.get("tags", [])),
+            ]).lower()
+            if not query_lower or query_lower in text:
+                meta = self._item_to_meta(item)
+                if meta:
+                    results.append(meta)
+            if len(results) >= limit:
+                break
+        return results
+
+    def inspect(self, identifier: str) -> Optional[SkillMeta]:
+        slug = self._slug_from_identifier(identifier)
+        if not slug:
+            return None
+        catalog = self._fetch_catalog()
+        for item in catalog:
+            if item.get("slug") == slug:
+                return self._item_to_meta(item)
+        return None
+
+    def fetch(self, identifier: str) -> Optional[SkillBundle]:
+        slug = self._slug_from_identifier(identifier)
+        if not slug:
+            return None
+        catalog = self._fetch_catalog()
+        item = next((i for i in catalog if i.get("slug") == slug), None)
+        if not item:
+            return None
+
+        # Resolve the actual SKILL.md content URL via the per-skill detail
+        # endpoint, which returns a ``skillMdUrl`` (CDN blob). The catalog's
+        # ``sourceUrl`` is a GitHub HTML link whose underlying repo is not
+        # reliably public, so we don't use it for content.
+        md_url = self._resolve_skill_md_url(slug, item)
+        if not md_url:
+            return None
+        try:
+            resp = httpx.get(md_url, timeout=20, follow_redirects=True)
+            if resp.status_code != 200:
+                return None
+            content = resp.text
+        except httpx.HTTPError:
+            return None
+
+        meta = self._item_to_meta(item)
+        name = meta.name if meta else slug.split("/")[-1]
+        return SkillBundle(
+            name=name,
+            files={"SKILL.md": content},
+            source="browse-sh",
+            identifier=identifier,
+            trust_level="community",
+            metadata={
+                "slug": slug,
+                "hostname": item.get("hostname", ""),
+                "source_url": item.get("sourceUrl", ""),
+                "skill_md_url": md_url,
+            },
+        )
+
+    def _resolve_skill_md_url(self, slug: str, item: Dict) -> Optional[str]:
+        """Resolve the SKILL.md content URL for a slug.
+
+        Primary path: hit ``/api/skills/{slug}`` and read ``skillMdUrl``.
+        Fallback: if the catalog item already has a ``raw.githubusercontent.com``
+        ``sourceUrl`` (some entries may), use it directly.
+        """
+        try:
+            detail = httpx.get(
+                self.SKILL_DETAIL_URL.format(slug=slug),
+                timeout=20,
+                follow_redirects=True,
+            )
+            if detail.status_code == 200:
+                data = detail.json()
+                if isinstance(data, dict):
+                    md_url = data.get("skillMdUrl")
+                    if isinstance(md_url, str) and md_url.startswith("http"):
+                        return md_url
+        except (httpx.HTTPError, json.JSONDecodeError):
+            pass
+
+        source_url = item.get("sourceUrl", "") if isinstance(item, dict) else ""
+        if source_url and "raw.githubusercontent.com" in source_url:
+            return source_url
+        return None
+
+    def _slug_from_identifier(self, identifier: str) -> str:
+        """Extract slug from identifier like 'browse-sh/airbnb.com/search-listings-abc'."""
+        if identifier.startswith("browse-sh/"):
+            return identifier[len("browse-sh/"):]
+        return identifier
+
+
+# ---------------------------------------------------------------------------
 # Official optional skills source adapter
 # ---------------------------------------------------------------------------
 
@@ -2462,6 +2640,8 @@ class OptionalSkillSource(SkillSource):
         if not self._optional_dir.is_dir():
             return None
         for skill_md in self._optional_dir.rglob("SKILL.md"):
+            if is_excluded_skill_path(skill_md):
+                continue
             if skill_md.parent.name == name:
                 return skill_md.parent
         return None
@@ -2473,10 +2653,9 @@ class OptionalSkillSource(SkillSource):
 
         results: List[SkillMeta] = []
         for skill_md in sorted(self._optional_dir.rglob("SKILL.md")):
-            parent = skill_md.parent
-            rel_parts = parent.relative_to(self._optional_dir).parts
-            if any(part.startswith(".") for part in rel_parts):
+            if is_excluded_skill_path(skill_md):
                 continue
+            parent = skill_md.parent
 
             try:
                 content = skill_md.read_text(encoding="utf-8")
@@ -2821,6 +3000,13 @@ def uninstall_skill(skill_name: str) -> Tuple[bool, str]:
         return False, f"'{skill_name}' is not a hub-installed skill (may be a builtin)"
 
     install_path = SKILLS_DIR / entry["install_path"]
+    # Prevent path traversal from poisoned lock.json entries
+    try:
+        resolved = install_path.resolve()
+        if not resolved.is_relative_to(SKILLS_DIR.resolve()):
+            return False, f"Refusing to remove '{entry['install_path']}': resolves outside skills directory"
+    except (ValueError, OSError):
+        return False, f"Refusing to remove '{entry['install_path']}': path resolution failed"
     if install_path.exists():
         shutil.rmtree(install_path)
 
@@ -2834,6 +3020,10 @@ def bundle_content_hash(bundle: SkillBundle) -> str:
     """Compute a deterministic hash for an in-memory skill bundle."""
     h = hashlib.sha256()
     for rel_path in sorted(bundle.files):
+        # Include the path so swapping file contents between two paths
+        # changes the hash (avoids filename-swap evading update detection).
+        h.update(rel_path.encode("utf-8"))
+        h.update(b"\x00")
         content = bundle.files[rel_path]
         if isinstance(content, bytes):
             h.update(content)
@@ -3143,6 +3333,7 @@ def create_source_router(auth: Optional[GitHubAuth] = None) -> List[SkillSource]
         ClawHubSource(),
         ClaudeMarketplaceSource(auth=auth),
         LobeHubSource(),
+        BrowseShSource(),   # browse.sh: 169+ site-specific browser automation skills
     ]
 
     return sources
@@ -3249,14 +3440,17 @@ def unified_search(query: str, sources: List[SkillSource],
         overall_timeout=30,
     )
 
-    # Deduplicate by name, preferring higher trust levels
+    # Deduplicate by identifier, preferring higher trust levels.
+    # identifier is always unique per skill (e.g. "browse-sh/airbnb.com/search-listings-ddgioa").
+    # Using name would incorrectly collapse browse-sh skills from different sites that share
+    # the same task name (e.g. "search-listings" from Airbnb and Booking.com).
     _TRUST_RANK = {"builtin": 2, "trusted": 1, "community": 0}
     seen: Dict[str, SkillMeta] = {}
     for r in all_results:
-        if r.name not in seen:
-            seen[r.name] = r
-        elif _TRUST_RANK.get(r.trust_level, 0) > _TRUST_RANK.get(seen[r.name].trust_level, 0):
-            seen[r.name] = r
+        if r.identifier not in seen:
+            seen[r.identifier] = r
+        elif _TRUST_RANK.get(r.trust_level, 0) > _TRUST_RANK.get(seen[r.identifier].trust_level, 0):
+            seen[r.identifier] = r
     deduped = list(seen.values())
 
     return deduped[:limit]

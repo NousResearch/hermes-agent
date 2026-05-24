@@ -7,8 +7,80 @@ Both use per-model api_mode routing:
     (this profile)
 """
 
+from __future__ import annotations
+
+from typing import Any
+
 from providers import register_provider
 from providers.base import ProviderProfile
+
+
+def _flat_model_name(model: str | None) -> str:
+    """Return the bare OpenCode model ID, tolerating aggregator prefixes."""
+    return (model or "").strip().rsplit("/", 1)[-1].lower()
+
+
+def _is_kimi_k2_model(model: str | None) -> bool:
+    return _flat_model_name(model).startswith("kimi-k2")
+
+
+def _is_deepseek_thinking_model(model: str | None) -> bool:
+    m = _flat_model_name(model)
+    if m.startswith("deepseek-v") and not m.startswith("deepseek-v3"):
+        return True
+    return m == "deepseek-reasoner"
+
+
+class OpenCodeGoProfile(ProviderProfile):
+    """OpenCode Go - model-specific reasoning controls."""
+
+    def build_api_kwargs_extras(
+        self, *, reasoning_config: dict | None = None, model: str | None = None, **context
+    ) -> tuple[dict[str, Any], dict[str, Any]]:
+        extra_body: dict[str, Any] = {}
+        top_level: dict[str, Any] = {}
+
+        if _is_kimi_k2_model(model):
+            # Kimi K2 on OpenCode Go uses Moonshot's native wire shape:
+            # extra_body.thinking (binary toggle) + top-level reasoning_effort
+            # (low|medium|high). Mirrors the KimiProfile (api.moonshot.ai/v1).
+            if not isinstance(reasoning_config, dict):
+                # No config → leave server defaults alone.
+                return extra_body, top_level
+
+            enabled = reasoning_config.get("enabled") is not False
+            extra_body["thinking"] = {"type": "enabled" if enabled else "disabled"}
+
+            if not enabled:
+                return extra_body, top_level
+
+            effort = (reasoning_config.get("effort") or "").strip().lower()
+            if effort in {"xhigh", "max"}:
+                top_level["reasoning_effort"] = "high"
+            elif effort in {"low", "medium", "high"}:
+                top_level["reasoning_effort"] = effort
+            return extra_body, top_level
+
+        if not _is_deepseek_thinking_model(model):
+            return extra_body, top_level
+
+        enabled = True
+        if isinstance(reasoning_config, dict) and reasoning_config.get("enabled") is False:
+            enabled = False
+        extra_body["thinking"] = {"type": "enabled" if enabled else "disabled"}
+
+        if not enabled:
+            return extra_body, top_level
+
+        if isinstance(reasoning_config, dict):
+            effort = (reasoning_config.get("effort") or "").strip().lower()
+            if effort in {"xhigh", "max"}:
+                top_level["reasoning_effort"] = "max"
+            elif effort in {"low", "medium", "high"}:
+                top_level["reasoning_effort"] = effort
+
+        return extra_body, top_level
+
 
 opencode_zen = ProviderProfile(
     name="opencode-zen",
@@ -18,7 +90,7 @@ opencode_zen = ProviderProfile(
     default_aux_model="gemini-3-flash",
 )
 
-opencode_go = ProviderProfile(
+opencode_go = OpenCodeGoProfile(
     name="opencode-go",
     aliases=("opencode_go", "go", "opencode-go-sub"),
     env_vars=("OPENCODE_GO_API_KEY",),

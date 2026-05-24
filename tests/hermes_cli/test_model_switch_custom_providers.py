@@ -343,6 +343,7 @@ def test_list_authenticated_providers_bare_custom_slug_recovers(monkeypatch):
     group = matches[0]
     # Canonical slug, NOT the bare "custom" that caused #17478
     assert group["slug"] == "custom:ollama"
+    assert group["is_current"] is True
 
 
 def test_list_authenticated_providers_distinct_endpoints_stay_separate(monkeypatch):

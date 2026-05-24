@@ -486,7 +486,7 @@ class ContextCompressor(ContextEngine):
         model: str,
         context_length: int,
         base_url: str = "",
-        api_key: str = "",
+        api_key: Any = "",
         provider: str = "",
         api_mode: str = "",
     ) -> None:
@@ -523,6 +523,7 @@ class ContextCompressor(ContextEngine):
         config_context_length: int | None = None,
         provider: str = "",
         api_mode: str = "",
+        abort_on_summary_failure: bool = False,
     ):
         self.model = model
         self.base_url = base_url
@@ -534,6 +535,11 @@ class ContextCompressor(ContextEngine):
         self.protect_last_n = protect_last_n
         self.summary_target_ratio = max(0.10, min(summary_target_ratio, 0.80))
         self.quiet_mode = quiet_mode
+        # When True, summary-generation failure aborts compression entirely
+        # (returns messages unchanged, sets _last_compress_aborted=True).
+        # When False (default = historical behavior), insert a static
+        # "summary unavailable" placeholder and drop the middle window.
+        self.abort_on_summary_failure = abort_on_summary_failure
 
         self.context_length = get_model_context_length(
             model, base_url=base_url, api_key=api_key,
@@ -586,6 +592,12 @@ class ContextCompressor(ContextEngine):
         # (gateway hygiene, /compress) can surface a visible warning.
         self._last_summary_dropped_count: int = 0
         self._last_summary_fallback_used: bool = False
+        # When summary generation fails we now ABORT compression entirely
+        # and return the original messages unchanged instead of dropping
+        # the middle window with a static placeholder.  Callers inspect
+        # this flag to know "compression was attempted but aborted, freeze
+        # the chat until the user manually retries via /compress".
+        self._last_compress_aborted: bool = False
         # When a user-configured summary model fails and we recover by
         # retrying on the main model, record the failure so gateway /
         # CLI callers can still warn the user even though compression
@@ -597,6 +609,7 @@ class ContextCompressor(ContextEngine):
         """Update tracked token usage from API response."""
         self.last_prompt_tokens = usage.get("prompt_tokens", 0)
         self.last_completion_tokens = usage.get("completion_tokens", 0)
+        self.last_total_tokens = usage.get("total_tokens", self.last_prompt_tokens + self.last_completion_tokens)
 
     def should_compress(self, prompt_tokens: int = None) -> bool:
         """Check if context exceeds the compression threshold.
@@ -885,7 +898,7 @@ class ContextCompressor(ContextEngine):
         into the warning log.
         """
         self._summary_model_fallen_back = True
-        logging.warning(
+        logger.warning(
             "Summary model '%s' %s (%s). "
             "Falling back to main model '%s' for compression.",
             self.summary_model, reason, e, self.model,
@@ -1074,7 +1087,7 @@ The user has requested that this compaction PRIORITISE preserving all informatio
             # No provider configured — long cooldown, unlikely to self-resolve
             self._summary_failure_cooldown_until = time.monotonic() + _SUMMARY_FAILURE_COOLDOWN_SECONDS
             self._last_summary_error = "no auxiliary LLM provider configured"
-            logging.warning("Context compression: no provider available for "
+            logger.warning("Context compression: no provider available for "
                             "summary. Middle turns will be dropped without summary "
                             "for %d seconds.",
                             _SUMMARY_FAILURE_COOLDOWN_SECONDS)
@@ -1170,7 +1183,7 @@ The user has requested that this compaction PRIORITISE preserving all informatio
             if len(err_text) > 220:
                 err_text = err_text[:217].rstrip() + "..."
             self._last_summary_error = err_text
-            logging.warning(
+            logger.warning(
                 "Failed to generate context summary: %s. "
                 "Further summary attempts paused for %d seconds.",
                 e,
@@ -1479,7 +1492,7 @@ The user has requested that this compaction PRIORITISE preserving all informatio
     # Main compression entry point
     # ------------------------------------------------------------------
 
-    def compress(self, messages: List[Dict[str, Any]], current_tokens: int = None, focus_topic: str = None) -> List[Dict[str, Any]]:
+    def compress(self, messages: List[Dict[str, Any]], current_tokens: int = None, focus_topic: str = None, force: bool = False) -> List[Dict[str, Any]]:
         """Compress conversation messages by summarizing middle turns.
 
         Algorithm:
@@ -1497,6 +1510,9 @@ The user has requested that this compaction PRIORITISE preserving all informatio
                 provided, the summariser will prioritise preserving information
                 related to this topic and be more aggressive about compressing
                 everything else.  Inspired by Claude Code's ``/compact``.
+            force: If True, clear any active summary-failure cooldown before
+                running so a manual ``/compress`` can retry immediately after
+                an auto-compression abort.  Auto-compress callers pass False.
         """
         # Reset per-call summary failure state — callers inspect these fields
         # after compress() returns to decide whether to surface a warning.
@@ -1505,6 +1521,13 @@ The user has requested that this compaction PRIORITISE preserving all informatio
         self._last_summary_error = None
         self._last_aux_model_failure_error = None
         self._last_aux_model_failure_model = None
+        self._last_compress_aborted = False
+
+        # Manual /compress (force=True) bypasses the failure cooldown so the
+        # user can retry immediately after an auto-compress abort.  Without
+        # this, /compress would silently no-op for 30-60s after a failure.
+        if force and self._summary_failure_cooldown_until > 0.0:
+            self._summary_failure_cooldown_until = 0.0
         n_messages = len(messages)
         # Only need head + 3 tail messages minimum (token budget decides the real tail size)
         _min_for_compress = self._protect_head_size(messages) + 3 + 1
@@ -1580,6 +1603,32 @@ The user has requested that this compaction PRIORITISE preserving all informatio
         # Phase 3: Generate structured summary
         summary = self._generate_summary(turns_to_summarize, focus_topic=focus_topic)
 
+        # If summary generation failed, behavior splits on
+        # ``abort_on_summary_failure`` (config: compression.abort_on_summary_failure):
+        #   True  → ABORT compression entirely. Return messages unchanged
+        #           and set _last_compress_aborted=True so callers can warn
+        #           the user and stop the auto-compress retry loop.
+        #   False → Fall through to the legacy fallback path below: insert
+        #           a static "summary unavailable" placeholder and drop the
+        #           middle window.  Records _last_summary_fallback_used /
+        #           _last_summary_dropped_count for gateway hygiene to
+        #           surface a warning.
+        # Default is False (historical behavior).
+        if not summary and self.abort_on_summary_failure:
+            n_skipped = compress_end - compress_start
+            self._last_summary_dropped_count = 0  # nothing actually dropped
+            self._last_summary_fallback_used = False
+            self._last_compress_aborted = True
+            if not self.quiet_mode:
+                logger.warning(
+                    "Summary generation failed — aborting compression "
+                    "(compression.abort_on_summary_failure=true). "
+                    "%d message(s) preserved unchanged. Conversation is "
+                    "frozen until the next /compress or /new.",
+                    n_skipped,
+                )
+            return messages
+
         # Phase 4: Assemble compressed message list
         compressed = []
         for i in range(compress_start):
@@ -1594,7 +1643,8 @@ The user has requested that this compaction PRIORITISE preserving all informatio
                     )
             compressed.append(msg)
 
-        # If LLM summary failed, insert a static fallback so the model
+        # Legacy fallback path: LLM summary failed and abort_on_summary_failure
+        # is False (the default).  Insert a static placeholder so the model
         # knows context was lost rather than silently dropping everything.
         if not summary:
             if not self.quiet_mode:

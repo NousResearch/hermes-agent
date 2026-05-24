@@ -168,7 +168,7 @@ from agent.tool_result_classification import (
     file_mutation_result_landed,
 )
 from agent.trajectory import (
-    convert_scratchpad_to_think, has_incomplete_scratchpad,
+    convert_scratchpad_to_think,
     save_trajectory as _save_trajectory_to_file,
 )
 from agent.message_sanitization import (
@@ -1019,7 +1019,15 @@ class AIAgent:
             return False
         if stripped.endswith("```"):
             return True
-        return stripped[-1] in '.!?:)"\']}。！？：）】」』》'
+        if stripped.endswith('^'):
+            return True
+        last = stripped[-1]
+        if last in '.!?:)"\']}。！？：）】」』》^':
+            return True
+        # Emoji ranges (Misc Symbols, Dingbats, Emoticons, Supplemental, etc.)
+        if ord(last) >= 0x1F300:
+            return True
+        return False
 
     def _is_ollama_glm_backend(self) -> bool:
         """Detect the narrow backend family affected by Ollama/GLM stop misreports."""
@@ -1360,6 +1368,18 @@ class AIAgent:
           * xAI OAuth: "do not have an active Grok subscription" /
             "out of available resources" / "does not have permission" + "grok"
 
+        Disambiguator for xAI (#29344): the same ``code`` text ("The caller
+        does not have permission to execute the specified operation") is
+        returned for BOTH an unsubscribed account AND a stale OAuth access
+        token.  xAI ships an explicit signal in the ``error`` field that
+        tells the two apart: a ``[WKE=unauthenticated:...]`` suffix (and/or
+        the ``OAuth2 access token could not be validated`` phrasing) means
+        the credentials failed validation — that's recoverable by refreshing
+        the token, NOT by surfacing an entitlement message.  When either
+        signal is present we return False eagerly so the credential-pool
+        refresh path runs, letting long-running TUI sessions recover from
+        stale tokens without an exit/reopen cycle.
+
         Extend here for new providers as we discover them (Anthropic's
         Claude Max OAuth entitlement errors look distinct enough today that
         the existing 1M-context-beta branch handles them; revisit if other
@@ -1369,10 +1389,28 @@ class AIAgent:
             return False
         if not isinstance(error_context, dict):
             return False
+        # Build a single lowercase haystack covering every field shape the
+        # body might land in.  ``_extract_api_error_context`` normalises to
+        # ``message``/``reason``, but callers (and the test suite) may also
+        # hand us the raw body with ``code``/``error`` keys; cover both so
+        # the WKE disambiguator below fires regardless of entry point.
         message = str(error_context.get("message") or "").lower()
         reason = str(error_context.get("reason") or "").lower()
-        haystack = f"{message} {reason}"
+        code = str(error_context.get("code") or "").lower()
+        err = str(error_context.get("error") or "").lower()
+        haystack = f"{message} {reason} {code} {err}"
         if not haystack.strip():
+            return False
+        # xAI's authoritative disambiguator for "stale token" vs
+        # "unsubscribed account".  Both conditions share the same
+        # permission-denied ``code`` text; only one carries this suffix.
+        # Bail out before the entitlement keyword checks so a stale OAuth
+        # token routes through the credential-refresh path instead of the
+        # surface-error-as-entitlement path.  See #29344 for the long-
+        # running TUI failure mode this closes.
+        if "[wke=unauthenticated:" in haystack:
+            return False
+        if "oauth2 access token could not be validated" in haystack:
             return False
         if "do not have an active grok subscription" in haystack:
             return True
@@ -1428,7 +1466,11 @@ class AIAgent:
         prefix = f"HTTP {status_code}: " if status_code else ""
         return f"{prefix}{raw[:500]}"
 
-    def _mask_api_key_for_logs(self, key: Optional[str]) -> Optional[str]:
+    def _mask_api_key_for_logs(self, key: Any) -> Optional[str]:
+        # Azure Foundry Entra ID bearer providers are callables — never
+        # invoke them in log paths; identify the auth surface instead.
+        if callable(key) and not isinstance(key, str):
+            return "<entra-id-bearer>"
         if not key:
             return None
         if len(key) <= 12:
@@ -1505,23 +1547,35 @@ class AIAgent:
         return content.strip()
 
     def _save_session_log(self, messages: List[Dict[str, Any]] = None):
-        """
-        Save the full raw session to a JSON file.
+        """Optional per-session JSON snapshot writer.
 
-        Stores every message exactly as the agent sees it: user messages,
-        assistant messages (with reasoning, finish_reason, tool_calls),
-        tool responses (with tool_call_id, tool_name), and injected system
-        messages (compression summaries, todo snapshots, etc.).
+        Gated by ``sessions.write_json_snapshots`` (default False).  state.db
+        is the canonical message store; this writer exists only for users
+        whose external tooling consumes ``~/.hermes/sessions/session_{sid}.json``
+        directly.  When the flag is off this is a fast no-op.
 
-        REASONING_SCRATCHPAD tags are converted to <think> blocks for consistency.
-        Overwritten after each turn so it always reflects the latest state.
+        When enabled, rewrites the snapshot after every persistence point with
+        the full message list (assistant content normalized via
+        ``_clean_session_content`` to convert REASONING_SCRATCHPAD to think
+        tags).  The truncation guard ("don't overwrite a larger log with
+        fewer messages") is preserved so resume + branch don't clobber a
+        fuller existing snapshot.
         """
+        if not getattr(self, "_session_json_enabled", False):
+            return
         messages = messages or self._session_messages
         if not messages:
             return
 
+        # Re-derive the target path each call so /branch and /compress
+        # session-id changes land in the right file without any re-point
+        # bookkeeping at the call sites.
         try:
-            # Clean assistant content for session logs
+            log_file = self.logs_dir / f"session_{self.session_id}.json"
+        except Exception:
+            return
+
+        try:
             cleaned = []
             for msg in messages:
                 if msg.get("role") == "assistant" and msg.get("content"):
@@ -1530,12 +1584,11 @@ class AIAgent:
                 cleaned.append(msg)
 
             # Guard: never overwrite a larger session log with fewer messages.
-            # This protects against data loss when --resume loads a session whose
-            # messages weren't fully written to SQLite — the resumed agent starts
-            # with partial history and would otherwise clobber the full JSON log.
-            if self.session_log_file.exists():
+            # Protects against data loss when a resumed agent starts with
+            # partial history and would otherwise clobber the full JSON log.
+            if log_file.exists():
                 try:
-                    existing = json.loads(self.session_log_file.read_text(encoding="utf-8"))
+                    existing = json.loads(log_file.read_text(encoding="utf-8"))
                     existing_count = existing.get("message_count", len(existing.get("messages", [])))
                     if existing_count > len(cleaned):
                         logging.debug(
@@ -1560,7 +1613,7 @@ class AIAgent:
             }
 
             atomic_json_write(
-                self.session_log_file,
+                log_file,
                 entry,
                 indent=2,
                 default=str,
@@ -1569,6 +1622,7 @@ class AIAgent:
         except Exception as e:
             if self.verbose_logging:
                 logging.warning(f"Failed to save session log: {e}")
+
 
     def interrupt(self, message: str = None) -> None:
         """
@@ -2539,6 +2593,39 @@ class AIAgent:
     def _close_request_openai_client(self, client: Any, *, reason: str) -> None:
         self._close_openai_client(client, reason=reason, shared=False)
 
+    def _abort_request_openai_client(self, client: Any, *, reason: str) -> None:
+        """Cross-thread abort: shut sockets down without releasing FDs.
+
+        Companion to :meth:`_close_request_openai_client` for stranger-thread
+        callers (interrupt-check loop, stale-call detector). Calling
+        ``client.close()`` from a thread that does not own the active httpx
+        connection raced the still-live SSL BIO and corrupted unrelated file
+        descriptors when the kernel recycled the just-freed TCP FD (#29507).
+
+        Here we only ``shutdown(SHUT_RDWR)`` the pool's sockets. That unblocks
+        the owning worker thread's pending ``recv``/``send`` with an EOF or
+        ``EPIPE`` so it can unwind and close ``client`` from its own context
+        — which is where the FD release belongs.
+        """
+        if client is None:
+            return
+        try:
+            shutdown_count = self._force_close_tcp_sockets(client)
+            logger.info(
+                "OpenAI client aborted (%s, shared=False, tcp_force_closed=%d, "
+                "deferred_close=stranger_thread) %s",
+                reason,
+                shutdown_count,
+                self._client_log_context(),
+            )
+        except Exception as exc:
+            logger.debug(
+                "OpenAI client abort failed (%s, shared=False) %s error=%s",
+                reason,
+                self._client_log_context(),
+                exc,
+            )
+
     def _run_codex_stream(self, api_kwargs: dict, client: Any = None, on_first_delta: callable = None):
         """Forwarder — see ``agent.codex_runtime.run_codex_stream``."""
         from agent.codex_runtime import run_codex_stream
@@ -3176,17 +3263,21 @@ class AIAgent:
         Used to decide whether to strip image content parts from API-bound
         messages (for non-vision models) or let the provider adapter handle
         them natively (for vision-capable models).
+
+        Resolution order (see ``agent.image_routing._supports_vision_override``):
+          1. ``model.supports_vision`` (top-level, single-model shortcut)
+          2. ``providers.<provider>.models.<model>.supports_vision``
+          3. models.dev capability lookup
+        Custom/local models absent from models.dev would otherwise be
+        misclassified as non-vision and have their images stripped.
         """
         try:
-            from agent.models_dev import get_model_capabilities
+            from hermes_cli.config import load_config
+            from agent.image_routing import _lookup_supports_vision
+            cfg = load_config()
             provider = (getattr(self, "provider", "") or "").strip()
             model = (getattr(self, "model", "") or "").strip()
-            if not provider or not model:
-                return False
-            caps = get_model_capabilities(provider, model)
-            if caps is None:
-                return False
-            return bool(caps.supports_vision)
+            return _lookup_supports_vision(provider, model, cfg) is True
         except Exception:
             return False
 
@@ -3329,6 +3420,25 @@ class AIAgent:
             return content
 
         if self._model_supports_vision():
+            # Vision-capable on paper — but if we've already learned in this
+            # session that the active (provider, model) rejects list-type
+            # tool content (e.g. Xiaomi MiMo's 400 "text is not set"),
+            # short-circuit to a text summary so we don't burn another
+            # round-trip relearning the same lesson.  Cache populated by
+            # the 400 recovery path in agent.conversation_loop.  Transient
+            # per-session; next session retries.
+            key = (
+                (getattr(self, "provider", "") or "").strip().lower(),
+                (getattr(self, "model", "") or "").strip(),
+            )
+            no_list = getattr(self, "_no_list_tool_content_models", None)
+            if no_list and key in no_list:
+                logger.debug(
+                    "Tool %s: model %s/%s known to reject list-type tool "
+                    "content this session — sending text summary",
+                    tool_name, key[0], key[1],
+                )
+                return _multimodal_text_summary(result)
             return content
 
         summary = _multimodal_text_summary(result)
@@ -3356,6 +3466,80 @@ class AIAgent:
         """Forwarder — see ``agent.conversation_compression.try_shrink_image_parts_in_messages``."""
         from agent.conversation_compression import try_shrink_image_parts_in_messages
         return try_shrink_image_parts_in_messages(api_messages)
+
+    def _try_strip_image_parts_from_tool_messages(self, api_messages: list) -> bool:
+        """Downgrade list-type tool messages to text summaries in-place.
+
+        Recovery path for providers that reject list-type tool message content
+        (e.g. Xiaomi MiMo's 400 "text is not set"; see issue #27344).  Walks
+        ``api_messages`` for any ``role: "tool"`` message whose ``content`` is
+        a list containing image parts, replaces the content with the existing
+        text part(s) (or a minimal placeholder if none survive), and records
+        the active (provider, model) in ``self._no_list_tool_content_models``
+        so subsequent ``_tool_result_content_for_active_model`` calls in this
+        session preemptively downgrade screenshots without a round-trip.
+
+        Returns True when at least one tool message was downgraded — the
+        caller (the 400 recovery branch in ``agent.conversation_loop``) uses
+        this to decide whether to retry the API call with the modified
+        history or surface the original error.
+        """
+        if not isinstance(api_messages, list):
+            return False
+
+        # Record (provider, model) so we don't relearn this lesson.
+        key = (
+            (getattr(self, "provider", "") or "").strip().lower(),
+            (getattr(self, "model", "") or "").strip(),
+        )
+        if not hasattr(self, "_no_list_tool_content_models"):
+            self._no_list_tool_content_models = set()
+        if key[1]:  # only record when we actually have a model id
+            self._no_list_tool_content_models.add(key)
+
+        changed = False
+        for msg in api_messages:
+            if not isinstance(msg, dict) or msg.get("role") != "tool":
+                continue
+            content = msg.get("content")
+            if not isinstance(content, list):
+                continue
+
+            # Salvage any text parts so the model still sees some signal.
+            text_parts: List[str] = []
+            had_image = False
+            for part in content:
+                if not isinstance(part, dict):
+                    if isinstance(part, str) and part.strip():
+                        text_parts.append(part.strip())
+                    continue
+                ptype = part.get("type")
+                if ptype == "image_url" or ptype == "input_image":
+                    had_image = True
+                    continue
+                if ptype in {"text", "input_text"}:
+                    text = str(part.get("text") or "").strip()
+                    if text:
+                        text_parts.append(text)
+
+            if not had_image:
+                # List-type content but no image parts — leave alone (some
+                # providers reject ANY list content, but stripping a
+                # text-only list doesn't reduce ambiguity; let the caller
+                # surface the original error if this turns out to be the
+                # case).
+                continue
+
+            if text_parts:
+                msg["content"] = "\n\n".join(text_parts)
+            else:
+                msg["content"] = (
+                    "[image content removed — provider does not accept "
+                    "list-type tool message content]"
+                )
+            changed = True
+
+        return changed
 
     def _anthropic_preserve_dots(self) -> bool:
         """True when using an anthropic-compatible endpoint that preserves dots in model names.
@@ -3595,12 +3779,26 @@ class AIAgent:
         DeepSeek v4 thinking and Kimi / Moonshot thinking both reject replays
         of assistant tool-call messages that omit ``reasoning_content`` (refs
         #15250, #17400). Xiaomi MiMo thinking mode has the same requirement.
+
+        Result cached on the AIAgent instance keyed by (provider, model,
+        base_url); invalidated whenever ``switch_model()`` /
+        ``_try_activate_fallback()`` mutate any of those. This is hot — the
+        agent loop hits ~16 invocations per turn, each of which would
+        otherwise re-run ~5 ``base_url_host_matches`` (and therefore
+        ``urlparse``) calls under it. Caching drops the per-turn cost from
+        ~5us × 16 = ~80us to <1us.
         """
-        return (
+        key = (self.provider, self.model, getattr(self, "_base_url_lower", self.base_url))
+        cached = getattr(self, "_thinking_pad_cache", None)
+        if cached is not None and cached[0] == key:
+            return cached[1]
+        result = (
             self._needs_deepseek_tool_reasoning()
             or self._needs_kimi_tool_reasoning()
             or self._needs_mimo_tool_reasoning()
         )
+        self._thinking_pad_cache = (key, result)
+        return result
 
     def _needs_kimi_tool_reasoning(self) -> bool:
         """Return True when the current provider is Kimi / Moonshot thinking mode.
@@ -3710,12 +3908,19 @@ class AIAgent:
         """
         return self.api_mode != "codex_responses"
 
-    def _compress_context(self, messages: list, system_message: str, *, approx_tokens: int = None, task_id: str = "default", focus_topic: str = None) -> tuple:
-        """Forwarder — see ``agent.conversation_compression.compress_context``."""
+    def _compress_context(self, messages: list, system_message: str, *, approx_tokens: int = None, task_id: str = "default", focus_topic: str = None, force: bool = False) -> tuple:
+        """Forwarder — see ``agent.conversation_compression.compress_context``.
+
+        ``force=True`` is passed by the manual ``/compress`` slash command
+        so users can bypass the summary-failure cooldown after an
+        auto-compress abort.  Auto-compress callers use the default
+        ``force=False``.
+        """
         from agent.conversation_compression import compress_context
         return compress_context(
             self, messages, system_message,
             approx_tokens=approx_tokens, task_id=task_id, focus_topic=focus_topic,
+            force=force,
         )
 
     def _set_tool_guardrail_halt(self, decision: ToolGuardrailDecision) -> None:

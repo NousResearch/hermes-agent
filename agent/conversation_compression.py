@@ -103,7 +103,15 @@ def check_compression_model_feasibility(agent: Any) -> None:
             return
 
         aux_base_url = str(getattr(client, "base_url", ""))
-        aux_api_key = str(getattr(client, "api_key", ""))
+        # ``client.api_key`` may be a callable (Azure Foundry Entra ID
+        # bearer provider). The context-length resolver chain expects a
+        # string, but it only needs a key for live catalogue probes
+        # (provider model lists). For Entra clients the model-metadata
+        # chain still resolves via models.dev + hardcoded family
+        # fallbacks, which don't require auth — pass empty string rather
+        # than minting a bearer JWT just to look up a context length.
+        _raw_aux_key = getattr(client, "api_key", "")
+        aux_api_key = "" if (callable(_raw_aux_key) and not isinstance(_raw_aux_key, str)) else str(_raw_aux_key or "")
 
         aux_context = get_model_context_length(
             aux_model,
@@ -248,6 +256,7 @@ def compress_context(
     approx_tokens: Optional[int] = None,
     task_id: str = "default",
     focus_topic: Optional[str] = None,
+    force: bool = False,
 ) -> Tuple[list, str]:
     """Compress conversation context and split the session in SQLite.
 
@@ -260,10 +269,31 @@ def compress_context(
         focus_topic: Optional focus string for guided compression — the
             summariser will prioritise preserving information related to
             this topic.  Inspired by Claude Code's ``/compact <focus>``.
+        force: If True, bypass any active summary-failure cooldown.  Set
+            by the manual ``/compress`` slash command so users can retry
+            immediately after an auto-compress abort.  Auto-compress
+            callers use the default ``False``.
 
     Returns:
-        ``(compressed_messages, new_system_prompt)`` tuple.
+        ``(compressed_messages, new_system_prompt)`` tuple.  When
+        compression aborts (aux LLM failed to produce a usable summary),
+        returns the original messages unchanged and the existing system
+        prompt — the session is NOT rotated.  Callers should detect the
+        no-op via ``len(returned) == len(input)`` and stop the retry loop.
     """
+    # Lazy feasibility check — run the auxiliary-provider probe + context
+    # length lookup just-in-time on the first compression attempt instead of
+    # at AIAgent.__init__. Saves ~400ms cold off every short session that
+    # never reaches the threshold (the vast majority of ``chat -q`` runs).
+    # The check itself sets ``agent._compression_warning`` so the
+    # status-callback replay machinery still emits the warning to the user
+    # the first time it would matter.
+    if not getattr(agent, "_compression_feasibility_checked", True):
+        try:
+            check_compression_model_feasibility(agent)
+        finally:
+            agent._compression_feasibility_checked = True
+
     _pre_msg_count = len(messages)
     logger.info(
         "context compression started: session=%s messages=%d tokens=~%s model=%s focus=%r",
@@ -283,11 +313,30 @@ def compress_context(
             pass
 
     try:
-        compressed = agent.context_compressor.compress(messages, current_tokens=approx_tokens, focus_topic=focus_topic)
+        compressed = agent.context_compressor.compress(messages, current_tokens=approx_tokens, focus_topic=focus_topic, force=force)
     except TypeError:
         # Plugin context engine with strict signature that doesn't accept
-        # focus_topic — fall back to calling without it.
+        # focus_topic / force — fall back to calling without them.
         compressed = agent.context_compressor.compress(messages, current_tokens=approx_tokens)
+
+    # If compression aborted (aux LLM failed to produce a usable summary)
+    # the compressor returns the input messages unchanged.  Surface the
+    # error to the user, skip the session-rotation work entirely (no
+    # session has logically ended), and let auto-compress callers detect
+    # the no-op via len(returned) == len(input).
+    if getattr(agent.context_compressor, "_last_compress_aborted", False):
+        _err = getattr(agent.context_compressor, "_last_summary_error", None) or "unknown error"
+        if getattr(agent, "_last_compression_summary_warning", None) != _err:
+            agent._last_compression_summary_warning = _err
+            agent._emit_warning(
+                f"⚠ Compression aborted: {_err}. "
+                "No messages were dropped — conversation continues unchanged. "
+                "Run /compress to retry, or /new to start a fresh session."
+            )
+        _existing_sp = getattr(agent, "_cached_system_prompt", None)
+        if not _existing_sp:
+            _existing_sp = agent._build_system_prompt(system_message)
+        return messages, _existing_sp
 
     summary_error = getattr(agent.context_compressor, "_last_summary_error", None)
     if summary_error:
@@ -332,14 +381,12 @@ def compress_context(
             agent._session_db.end_session(agent.session_id, "compression")
             old_session_id = agent.session_id
             agent.session_id = f"{datetime.now().strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:6]}"
-            os.environ["HERMES_SESSION_ID"] = agent.session_id
             try:
-                from gateway.session_context import _SESSION_ID
-                _SESSION_ID.set(agent.session_id)
+                from gateway.session_context import set_current_session_id
+
+                set_current_session_id(agent.session_id)
             except Exception:
-                pass
-            # Update session_log_file to point to the new session's JSON file
-            agent.session_log_file = agent.logs_dir / f"session_{agent.session_id}.json"
+                os.environ["HERMES_SESSION_ID"] = agent.session_id
             agent._session_db_created = False
             agent._session_db.create_session(
                 session_id=agent.session_id,

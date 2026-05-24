@@ -205,7 +205,7 @@ export default function SkillsPage() {
       <div className="relative w-full min-w-0 sm:max-w-xs">
         <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-muted-foreground" />
         <Input
-          className="h-8 pl-8 pr-7 text-xs"
+          className="h-8 rounded-none pl-8 pr-7 text-xs"
           placeholder={t.common.search}
           value={search}
           onChange={(e) => setSearch(e.target.value)}
@@ -256,15 +256,10 @@ export default function SkillsPage() {
       <div className="flex flex-col sm:flex-row sm:items-start gap-4">
         <aside aria-label={t.skills.title} className="sm:w-56 sm:shrink-0">
           <div className="sm:sticky sm:top-0">
-            <div
-              className={`
-                flex flex-col
-                border border-border bg-muted/20
-              `}
-            >
+            <div className="flex flex-col rounded-none border border-border bg-muted/20">
               <div className="hidden sm:flex items-center gap-2 px-3 py-2 border-b border-border">
-                <Filter className="h-3 w-3 text-muted-foreground" />
-                <span className="font-mondwest text-[0.65rem] tracking-[0.12em] uppercase text-muted-foreground">
+                <Filter className="h-3 w-3 text-text-tertiary" />
+                <span className="font-mondwest text-display text-xs tracking-[0.12em] text-text-secondary">
                   {t.skills.filters}
                 </span>
               </div>
@@ -295,7 +290,7 @@ export default function SkillsPage() {
                 !isSearching &&
                 allCategories.length > 0 && (
                   <div className="hidden sm:flex flex-col border-t border-border">
-                    <div className="px-3 pt-2 pb-1 font-mondwest text-[0.6rem] tracking-[0.12em] uppercase text-muted-foreground/70">
+                    <div className="px-3 pt-2 pb-1 font-mondwest text-display text-xs tracking-[0.12em] text-text-tertiary">
                       {t.skills.categories}
                     </div>
                     <div className="flex flex-col p-2 pt-1 gap-px max-h-[calc(100vh-340px)] overflow-y-auto">
@@ -309,14 +304,14 @@ export default function SkillsPage() {
                             onClick={() =>
                               setActiveCategory(isActive ? null : key)
                             }
-                            className="rounded-sm px-2 py-1 text-[11px]"
+                            className="rounded-none px-2 py-1 text-xs"
                           >
                             <span className="flex-1 truncate">{name}</span>
                             <span
-                              className={`text-[10px] tabular-nums ${
+                              className={`text-xs tabular-nums ${
                                 isActive
-                                  ? "text-foreground/60"
-                                  : "text-muted-foreground/50"
+                                  ? "text-text-secondary"
+                                  : "text-text-tertiary"
                               }`}
                             >
                               {count}
@@ -333,14 +328,14 @@ export default function SkillsPage() {
 
         <div className="flex-1 min-w-0">
           {isSearching ? (
-            <Card>
+            <Card className="rounded-none">
               <CardHeader className="py-3 px-4">
                 <div className="flex items-center justify-between">
                   <CardTitle className="text-sm flex items-center gap-2">
                     <Search className="h-4 w-4" />
                     {t.skills.title}
                   </CardTitle>
-                  <Badge tone="secondary" className="text-[10px]">
+                  <Badge tone="secondary" className="text-xs">
                     {t.skills.resultCount
                       .replace("{count}", String(searchMatchedSkills.length))
                       .replace(
@@ -372,7 +367,7 @@ export default function SkillsPage() {
             </Card>
           ) : view === "skills" ? (
             /* Skills list */
-            <Card>
+            <Card className="rounded-none">
               <CardHeader className="py-3 px-4">
                 <div className="flex items-center justify-between">
                   <CardTitle className="text-sm flex items-center gap-2">
@@ -384,7 +379,7 @@ export default function SkillsPage() {
                         )
                       : t.skills.all}
                   </CardTitle>
-                  <Badge tone="secondary" className="text-[10px]">
+                  <Badge tone="secondary" className="text-xs">
                     {t.skills.skillCount
                       .replace("{count}", String(activeSkills.length))
                       .replace("{s}", activeSkills.length !== 1 ? "s" : "")}
@@ -417,7 +412,7 @@ export default function SkillsPage() {
             /* Toolsets grid */
             <>
               {filteredToolsets.length === 0 ? (
-                <Card>
+                <Card className="rounded-none">
                   <CardContent className="py-8 text-center text-sm text-muted-foreground">
                     {t.skills.noToolsetsMatch}
                   </CardContent>
@@ -431,7 +426,7 @@ export default function SkillsPage() {
                       ts.name;
 
                     return (
-                      <Card key={ts.name} className="relative">
+                      <Card key={ts.name} className="relative rounded-none">
                         <CardContent className="py-4">
                           <div className="flex items-start gap-3">
                             <TsIcon className="h-5 w-5 text-muted-foreground shrink-0 mt-0.5" />
@@ -442,18 +437,18 @@ export default function SkillsPage() {
                                 </span>
                                 <Badge
                                   tone={ts.enabled ? "success" : "outline"}
-                                  className="text-[10px]"
+                                  className="text-xs"
                                 >
                                   {ts.enabled
                                     ? t.common.active
                                     : t.common.inactive}
                                 </Badge>
                               </div>
-                              <p className="text-xs text-muted-foreground mb-2">
+                              <p className="text-xs text-text-secondary mb-2">
                                 {ts.description}
                               </p>
                               {ts.enabled && !ts.configured && (
-                                <p className="text-[10px] text-amber-300/80 mb-2">
+                                <p className="text-xs text-amber-300 mb-2">
                                   {t.skills.setupNeeded}
                                 </p>
                               )}
@@ -463,7 +458,7 @@ export default function SkillsPage() {
                                     <Badge
                                       key={tool}
                                       tone="secondary"
-                                      className="text-[10px] font-mono"
+                                      className="text-xs font-mono"
                                     >
                                       {tool}
                                     </Badge>
@@ -471,7 +466,7 @@ export default function SkillsPage() {
                                 </div>
                               )}
                               {ts.tools.length === 0 && (
-                                <span className="text-[10px] text-muted-foreground/60">
+                                <span className="text-xs text-text-tertiary">
                                   {ts.enabled
                                     ? t.skills.toolsetLabel.replace(
                                         "{name}",
@@ -536,7 +531,7 @@ function PanelItem({ active, icon: Icon, label, onClick }: PanelItemProps) {
       active={active}
       onClick={onClick}
       className={cn(
-        "rounded-sm whitespace-nowrap px-2.5 py-1.5",
+        "rounded-none whitespace-nowrap px-2.5 py-1.5",
         "font-mondwest text-[0.7rem] tracking-[0.08em] uppercase",
         active && "bg-foreground/90 text-background hover:text-background",
       )}

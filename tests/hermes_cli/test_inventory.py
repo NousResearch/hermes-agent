@@ -81,6 +81,26 @@ def test_load_picker_context_string_model_legacy_shape():
     assert ctx.current_base_url == ""
 
 
+def test_get_compatible_custom_providers_still_reads_providers_when_custom_is_wrong_type():
+    """Malformed custom_providers must not skip the v12 providers: dict."""
+    from hermes_cli.config import get_compatible_custom_providers
+
+    cfg = {
+        "custom_providers": {"bad": "shape"},
+        "providers": {
+            "my-endpoint": {
+                "name": "My Endpoint",
+                "base_url": "https://example.com/v1",
+                "api_key": "sk-test",
+                "model": "m1",
+            }
+        },
+    }
+    rows = get_compatible_custom_providers(cfg)
+    assert len(rows) == 1
+    assert rows[0]["name"] == "My Endpoint"
+
+
 def test_load_picker_context_empty_config():
     cfg = _cfg()
     with patch("hermes_cli.config.load_config", return_value=cfg):

@@ -1499,6 +1499,26 @@
   cursor: pointer;
 }
 
+/* ---- Linear issue linkage -------------------------------------------- */
+
+.hermes-kanban-linear-badge,
+.hermes-kanban-linear-link,
+.hermes-kanban-linear-drawer-link {
+  font-size: 0.65rem;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  text-decoration: none;
+  color: var(--color-primary);
+  border: 1px solid color-mix(in srgb, var(--color-primary) 45%, transparent);
+  border-radius: 999px;
+  padding: 0.05rem 0.4rem;
+  line-height: 1.3;
+}
+.hermes-kanban-linear-badge:hover,
+.hermes-kanban-linear-drawer-link:hover {
+  text-decoration: underline;
+}
+
 /* ---- Trash drop zone ------------------------------------------------- */
 
 .hermes-kanban-trash {

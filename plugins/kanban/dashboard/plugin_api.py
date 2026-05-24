@@ -1972,6 +1972,36 @@ class DecomposeBody(BaseModel):
     author: Optional[str] = None
 
 
+@router.post("/tasks/{task_id}/linear")
+def ensure_linear_issue_endpoint(
+    task_id: str,
+    board: Optional[str] = Query(None),
+):
+    """Create or inherit a Linear issue for this kanban task.
+
+    Idempotent: reuses an existing link, inherits from a linked parent, or
+    creates a new Linear issue and backfills unlinked children.
+    """
+    board = _resolve_board(board)
+    conn = _conn(board=board)
+    try:
+        from hermes_cli import kanban_linear  # noqa: WPS433 (intentional)
+
+        task = kanban_linear.ensure_linear_issue_for_task(conn, task_id)
+        return {
+            "ok": True,
+            "task": _task_dict(task),
+            "linear_issue_id": task.linear_issue_id,
+            "linear_issue_url": task.linear_issue_url,
+        }
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except kanban_linear.LinearKanbanError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    finally:
+        conn.close()
+
+
 @router.post("/tasks/{task_id}/decompose")
 def decompose_task_endpoint(
     task_id: str,

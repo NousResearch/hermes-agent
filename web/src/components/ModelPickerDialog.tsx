@@ -46,6 +46,35 @@ interface ModelOptionsResponse {
   providers?: ModelOptionProvider[];
 }
 
+/** User-facing message for model-options load failures (no raw status dumps). */
+function formatModelOptionsError(raw: string): string {
+  const trimmed = raw.trim();
+  const statusMatch = trimmed.match(/^(\d{3}):\s*(.+)$/s);
+  const body = statusMatch ? statusMatch[2].trim() : trimmed;
+  try {
+    const parsed = JSON.parse(body) as { detail?: unknown };
+    if (typeof parsed.detail === "string" && parsed.detail.trim()) {
+      return parsed.detail.trim();
+    }
+  } catch {
+    // not JSON — use body as-is
+  }
+  if (body.length > 0 && body.length < 400) {
+    return body;
+  }
+  return "Could not load model providers. Check the dashboard server logs.";
+}
+
+function formatCurrentModelLabel(model: string, provider: string): string {
+  if (model.trim()) {
+    return model;
+  }
+  if (provider.trim() && provider !== "auto") {
+    return "(provider default)";
+  }
+  return "(not configured)";
+}
+
 interface Props {
   /** Chat-mode: when present, picker emits a slash command via onSubmit. */
   gw?: GatewayClient;
@@ -117,7 +146,8 @@ export function ModelPickerDialog(props: Props) {
       })
       .catch((e) => {
         if (closedRef.current) return;
-        setError(e instanceof Error ? e.message : String(e));
+        const raw = e instanceof Error ? e.message : String(e);
+        setError(formatModelOptionsError(raw));
         setLoading(false);
       });
 
@@ -232,7 +262,7 @@ export function ModelPickerDialog(props: Props) {
             {title}
           </h2>
           <p className="text-xs text-muted-foreground mt-1 font-mono">
-            current: {currentModel || "(unknown)"}
+            current: {formatCurrentModelLabel(currentModel, currentProviderSlug)}
             {currentProviderSlug && ` · ${currentProviderSlug}`}
           </p>
         </header>

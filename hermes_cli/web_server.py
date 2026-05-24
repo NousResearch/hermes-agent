@@ -1000,9 +1000,16 @@ def get_model_options():
         from hermes_cli.inventory import build_models_payload, load_picker_context
 
         return build_models_payload(load_picker_context(), max_models=50)
-    except Exception:
+    except Exception as exc:
         _log.exception("GET /api/model/options failed")
-        raise HTTPException(status_code=500, detail="Failed to list model options")
+        detail = "Failed to list model options"
+        msg = str(exc).lower()
+        if "unknown url type" in msg:
+            detail += (
+                " — a provider base URL in config or .env is not http(s) "
+                "(often OLLAMA_BASE_URL set to an API key). Check ~/.hermes/.env"
+            )
+        raise HTTPException(status_code=500, detail=detail) from exc
 
 
 @app.get("/api/model/auxiliary")

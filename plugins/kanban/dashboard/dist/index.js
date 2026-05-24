@@ -2537,6 +2537,16 @@
               ? h(Badge, { variant: "outline", className: "hermes-kanban-tag",
                            title: `Tenant: ${t.tenant}. Free-form tag for grouping tasks (customer, project, team).` }, t.tenant)
               : null,
+            t.linear_issue_url
+              ? h("a", {
+                  className: "hermes-kanban-linear-badge",
+                  href: t.linear_issue_url,
+                  target: "_blank",
+                  rel: "noopener noreferrer",
+                  title: "Open linked Linear issue (shared with parent/children)",
+                  onClick: function (e) { e.stopPropagation(); },
+                }, "Linear")
+              : null,
             progress
               ? h("span", {
                   className: cn(
@@ -2846,6 +2856,17 @@
       });
     };
 
+    const doLinearEnsure = function () {
+      return SDK.fetchJSON(
+        withBoard(`${API}/tasks/${encodeURIComponent(props.taskId)}/linear`, boardSlug),
+        { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" },
+      ).then(function (res) {
+        load();
+        props.onRefresh();
+        return res;
+      });
+    };
+
     const addLink = function (parentId) {
       return SDK.fetchJSON(withBoard(`${API}/links`, boardSlug), {
         method: "POST",
@@ -2938,6 +2959,7 @@
           onPatch: doPatch,
           onSpecify: doSpecify,
           onDecompose: doDecompose,
+          onLinearEnsure: doLinearEnsure,
           onAddParent: addLink,
           onRemoveParent: removeLink,
           onAddChild: addChild,
@@ -2997,6 +3019,17 @@
         h(AssigneeEditor, { task: t, onPatch: props.onPatch }),
         h(PriorityEditor, { task: t, onPatch: props.onPatch }),
         t.tenant ? h(MetaRow, { label: tx(i18n, "tenant", "Tenant"), value: t.tenant }) : null,
+        t.linear_issue_url
+          ? h("div", { className: "hermes-kanban-drawer-meta-row" },
+              h("span", { className: "hermes-kanban-drawer-meta-label" }, "Linear"),
+              h("a", {
+                className: "hermes-kanban-linear-link",
+                href: t.linear_issue_url,
+                target: "_blank",
+                rel: "noopener noreferrer",
+              }, t.linear_issue_id || t.linear_issue_url),
+            )
+          : null,
         h(MetaRow, {
           label: tx(i18n, "workspace", "Workspace"),
           value: `${t.workspace_kind}${t.workspace_path ? ": " + t.workspace_path : ""}`,
@@ -3012,6 +3045,7 @@
         onPatch: props.onPatch,
         onSpecify: props.onSpecify,
         onDecompose: props.onDecompose,
+        onLinearEnsure: props.onLinearEnsure,
       }),
       h(DiagnosticsSection, {
         task: t,
@@ -3478,6 +3512,8 @@
     const [specifyMsg, setSpecifyMsg] = useState(null);
     const [decomposeBusy, setDecomposeBusy] = useState(false);
     const [decomposeMsg, setDecomposeMsg] = useState(null);
+    const [linearBusy, setLinearBusy] = useState(false);
+    const [linearMsg, setLinearMsg] = useState(null);
     const b = function (label, patch, enabled, confirmMsg) {
       return h(Button, {
         onClick: function () { if (enabled !== false) props.onPatch(patch, { confirm: confirmMsg }); },
@@ -3569,10 +3605,52 @@
         }, decomposeBusy ? "Decomposing…" : "⚗ Decompose")
       : null;
 
+    const linearButton = (props.onLinearEnsure && !task.linear_issue_url)
+      ? h(Button, {
+          onClick: function () {
+            if (linearBusy) return;
+            setLinearBusy(true);
+            setLinearMsg(null);
+            props.onLinearEnsure().then(function (res) {
+              if (res && res.ok) {
+                setLinearMsg({
+                  ok: true,
+                  text: res.linear_issue_url
+                    ? `Linked: ${res.linear_issue_url}`
+                    : "Linear issue linked",
+                });
+              } else {
+                setLinearMsg({
+                  ok: false,
+                  text: "Linear link failed: " + ((res && res.detail) || "unknown error"),
+                });
+              }
+            }).catch(function (err) {
+              setLinearMsg({
+                ok: false,
+                text: "Linear link failed: " + (err.message || String(err)),
+              });
+            }).then(function () {
+              setLinearBusy(false);
+            });
+          },
+          disabled: linearBusy,
+          size: "sm",
+        }, linearBusy ? "Linking…" : "◇ Linear")
+      : (task.linear_issue_url
+          ? h("a", {
+              className: "hermes-kanban-linear-drawer-link",
+              href: task.linear_issue_url,
+              target: "_blank",
+              rel: "noopener noreferrer",
+            }, "◇ Open Linear")
+          : null);
+
     return h("div", null,
       h("div", { className: "hermes-kanban-actions" },
         specifyButton,
         decomposeButton,
+        linearButton,
         b("→ triage",  { status: "triage" },   task.status !== "triage"),
         b("→ ready",   { status: "ready" },    task.status !== "ready"),
         // No direct → running button: /tasks/:id PATCH rejects status=running
@@ -3599,6 +3677,11 @@
           ? "hermes-kanban-msg-ok"
           : "hermes-kanban-msg-err",
       }, decomposeMsg.text) : null,
+      linearMsg ? h("div", {
+        className: linearMsg.ok
+          ? "hermes-kanban-msg-ok"
+          : "hermes-kanban-msg-err",
+      }, linearMsg.text) : null,
     );
   }
 

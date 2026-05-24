@@ -829,7 +829,9 @@ kanban task.
   `init`, `create`, `list` (alias `ls`), `show`, `assign`, `link`,
   `unlink`, `comment`, `complete`, `block`, `unblock`, `archive`,
   `tail`, plus less-commonly-used `watch`, `stats`, `runs`, `log`,
-  `assignees`, `heartbeat`, `notify-*`, `dispatch`, `daemon`, `gc`.
+  `assignees`, `heartbeat`, `notify-*`, `dispatch`, `daemon`, `gc`,
+  `linear ensure` (idempotent Linear issue link — reuse, inherit from
+  parent, or create + backfill children).
 - **Worker/orchestrator toolset:** `tools/kanban_tools.py` exposes
   `kanban_show`, `kanban_complete`, `kanban_block`, `kanban_heartbeat`,
   `kanban_comment`, `kanban_create`, `kanban_link`; profiles that
@@ -842,6 +844,11 @@ kanban task.
 - **Plugin assets:** `plugins/kanban/dashboard/` (web UI) +
   `plugins/kanban/systemd/` (`hermes-kanban-dispatcher.service` for
   standalone dispatcher deployment).
+- **Linear linkage:** `hermes_cli/kanban_linear.py` + task columns
+  `linear_issue_id` / `linear_issue_url`. Configure
+  `kanban.linear.team` (team key, e.g. `ENG`) and `LINEAR_API_KEY`.
+  Children inherit the parent's issue via `task_links`; explicit child
+  links are preserved on parent backfill.
 
 Isolation model:
 - **Board** is the hard boundary — workers are spawned with

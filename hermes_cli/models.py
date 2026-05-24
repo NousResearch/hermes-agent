@@ -8,6 +8,7 @@ Add, remove, or reorder entries here — both `hermes setup` and
 from __future__ import annotations
 
 import json
+import logging
 import os
 import urllib.request
 import urllib.error
@@ -17,6 +18,8 @@ from pathlib import Path
 from typing import Any, NamedTuple, Optional
 
 from hermes_cli import __version__ as _HERMES_VERSION
+
+logger = logging.getLogger(__name__)
 
 # Identify ourselves so endpoints fronted by Cloudflare's Browser Integrity
 # Check (error 1010) don't reject the default ``Python-urllib/*`` signature.
@@ -3094,6 +3097,19 @@ def probe_api_models(
             "used_fallback": False,
         }
 
+    if not _is_http_base_url(normalized):
+        logger.warning(
+            "Skipping /models probe — base_url is not http(s): %r",
+            normalized[:80],
+        )
+        return {
+            "models": None,
+            "probed_url": None,
+            "resolved_base_url": normalized,
+            "suggested_base_url": None,
+            "used_fallback": False,
+        }
+
     if _is_github_models_base_url(normalized):
         models = _fetch_github_models(api_key=api_key, timeout=timeout)
         return {
@@ -3202,6 +3218,38 @@ def fetch_api_models(
 _OLLAMA_CLOUD_CACHE_TTL = 3600  # 1 hour
 
 
+def _is_http_base_url(url: str) -> bool:
+    """True when ``url`` looks like an OpenAI-compatible http(s) API root."""
+    normalized = (url or "").strip().lower()
+    return normalized.startswith("http://") or normalized.startswith("https://")
+
+
+def _resolve_http_base_url(
+    env_var: str,
+    default: str,
+    *,
+    label: str,
+) -> str:
+    """Read an http(s) base URL from ``env_var``, else return ``default``.
+
+    Misconfigured installs sometimes paste an API key into ``OLLAMA_BASE_URL``
+    (or a custom provider ``base_url``). urllib then raises
+    ``ValueError: unknown url type`` and the whole model picker 500s — see
+    remote logs 2026-05-24. Never treat non-URL values as a base URL.
+    """
+    raw = (os.getenv(env_var, "") or "").strip()
+    if raw and _is_http_base_url(raw):
+        return raw.rstrip("/")
+    if raw:
+        logger.warning(
+            "%s is set for %s but is not an http(s) URL — using default %s",
+            env_var,
+            label,
+            default,
+        )
+    return (default or "").strip().rstrip("/")
+
+
 def _strip_ollama_cloud_suffix(model_id: str) -> str:
     """Strip :cloud / -cloud suffixes that models.dev appends to Ollama Cloud IDs.
 
@@ -3285,7 +3333,17 @@ def fetch_ollama_cloud_models(
     if not api_key:
         api_key = os.getenv("OLLAMA_API_KEY", "")
     if not base_url:
-        base_url = os.getenv("OLLAMA_BASE_URL", "") or "https://ollama.com/v1"
+        base_url = _resolve_http_base_url(
+            "OLLAMA_BASE_URL",
+            "https://ollama.com/v1",
+            label="ollama-cloud",
+        )
+    elif not _is_http_base_url(base_url):
+        logger.warning(
+            "ollama-cloud base_url %r is not http(s) — using https://ollama.com/v1",
+            str(base_url)[:80],
+        )
+        base_url = "https://ollama.com/v1"
 
     live_models: list[str] = []
     if api_key:

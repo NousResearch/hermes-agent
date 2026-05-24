@@ -1570,6 +1570,14 @@ DEFAULT_CONFIG = {
         # large bulk-load of triage tasks from spending a burst of aux
         # LLM calls in one tick. Excess tasks defer to the next tick.
         "auto_decompose_per_tick": 3,
+        # Linear.app issue linkage for kanban tasks (shared parent/children).
+        # Requires LINEAR_API_KEY in the environment. ``team`` is the team
+        # key (e.g. ENG) used when creating a new issue.
+        "linear": {
+            "enabled": True,
+            "team": "",
+            "default_priority": None,
+        },
         # Stale detection: running tasks that have exceeded this many
         # seconds without a heartbeat (since ``last_heartbeat_at``) are
         # auto-reclaimed to ``ready`` on the next dispatcher tick. The
@@ -3251,11 +3259,14 @@ def get_compatible_custom_providers(
             seen_name_url_pairs.add(pair)
 
     custom_providers = config.get("custom_providers")
-    if custom_providers is not None:
-        if not isinstance(custom_providers, list):
-            return []
+    if isinstance(custom_providers, list):
         for entry in custom_providers:
             _append_if_new(_normalize_custom_provider_entry(entry))
+    elif custom_providers is not None:
+        logger.warning(
+            "custom_providers must be a list, got %s — ignoring that key",
+            type(custom_providers).__name__,
+        )
 
     for entry in providers_dict_to_custom_providers(config.get("providers")):
         _append_if_new(entry)

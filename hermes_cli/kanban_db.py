@@ -658,6 +658,9 @@ class Task:
     # set the env var. Lets clients render a per-session board without
     # relying on tenant + time-window heuristics.
     session_id: Optional[str] = None
+    # External Linear issue linkage (shared by umbrella tasks and children).
+    linear_issue_id: Optional[str] = None
+    linear_issue_url: Optional[str] = None
 
     @classmethod
     def from_row(cls, row: sqlite3.Row) -> "Task":
@@ -726,6 +729,12 @@ class Task:
             ),
             session_id=(
                 row["session_id"] if "session_id" in keys else None
+            ),
+            linear_issue_id=(
+                row["linear_issue_id"] if "linear_issue_id" in keys else None
+            ),
+            linear_issue_url=(
+                row["linear_issue_url"] if "linear_issue_url" in keys else None
             ),
         )
 
@@ -864,7 +873,11 @@ CREATE TABLE IF NOT EXISTS tasks (
     -- for tasks created from the CLI, dashboard, or any path that doesn't
     -- set the env var. Indexed so per-session list queries stay cheap on
     -- larger boards.
-    session_id           TEXT
+    session_id           TEXT,
+  -- Linear.app issue linkage (uuid + browser url). Children inherit the
+  -- parent's issue instead of creating duplicates.
+    linear_issue_id      TEXT,
+    linear_issue_url     TEXT
 );
 
 CREATE TABLE IF NOT EXISTS task_links (
@@ -1354,6 +1367,15 @@ def _migrate_add_optional_columns(conn: sqlite3.Connection) -> None:
             conn, "tasks", "session_id", "session_id TEXT"
         )
 
+    if "linear_issue_id" not in cols:
+        _add_column_if_missing(
+            conn, "tasks", "linear_issue_id", "linear_issue_id TEXT"
+        )
+    if "linear_issue_url" not in cols:
+        _add_column_if_missing(
+            conn, "tasks", "linear_issue_url", "linear_issue_url TEXT"
+        )
+
     # Indexes over additive ``tasks`` columns must be created after the
     # columns exist. Keeping them in SCHEMA_SQL breaks legacy boards: SQLite
     # parses each statement in ``executescript`` against the live schema, so a
@@ -1750,6 +1772,8 @@ def create_task(
                         "skills": list(skills_list) if skills_list else None,
                     },
                 )
+            if parents:
+                inherit_linear_from_parents(conn, task_id)
             return task_id
         except sqlite3.IntegrityError:
             if attempt == 1:
@@ -1877,6 +1901,99 @@ def assign_task(conn: sqlite3.Connection, task_id: str, profile: Optional[str]) 
 
 
 # ---------------------------------------------------------------------------
+# Linear issue linkage
+# ---------------------------------------------------------------------------
+
+def set_linear_link(
+    conn: sqlite3.Connection,
+    task_id: str,
+    linear_issue_id: str,
+    linear_issue_url: str,
+    *,
+    propagate: bool = True,
+    source: str = "linked",
+) -> bool:
+    """Persist Linear issue ids on a task and optionally backfill children.
+
+    Does not overwrite a child that already has its own ``linear_issue_id``
+    (explicit override). Returns False when the task does not exist.
+    """
+    issue_id = str(linear_issue_id).strip()
+    issue_url = str(linear_issue_url).strip()
+    if not issue_id or not issue_url:
+        raise ValueError("linear_issue_id and linear_issue_url are required")
+    with write_txn(conn):
+        row = conn.execute(
+            "SELECT linear_issue_id, linear_issue_url FROM tasks WHERE id = ?",
+            (task_id,),
+        ).fetchone()
+        if row is None:
+            return False
+        if row["linear_issue_id"] == issue_id and row["linear_issue_url"] == issue_url:
+            return True
+        conn.execute(
+            "UPDATE tasks SET linear_issue_id = ?, linear_issue_url = ? WHERE id = ?",
+            (issue_id, issue_url, task_id),
+        )
+        _append_event(
+            conn,
+            task_id,
+            "linear_linked",
+            {
+                "linear_issue_id": issue_id,
+                "linear_issue_url": issue_url,
+                "source": source,
+            },
+        )
+    if propagate:
+        propagate_linear_to_children(conn, task_id, issue_id, issue_url)
+    return True
+
+
+def propagate_linear_to_children(
+    conn: sqlite3.Connection,
+    parent_id: str,
+    linear_issue_id: str,
+    linear_issue_url: str,
+) -> int:
+    """Copy the parent's Linear link onto descendants that lack one."""
+    updated = 0
+    for child_id in child_ids(conn, parent_id):
+        child = get_task(conn, child_id)
+        if child is None or child.linear_issue_id:
+            continue
+        if set_linear_link(
+            conn,
+            child_id,
+            linear_issue_id,
+            linear_issue_url,
+            propagate=True,
+            source="inherited",
+        ):
+            updated += 1
+    return updated
+
+
+def inherit_linear_from_parents(conn: sqlite3.Connection, task_id: str) -> bool:
+    """If any parent has a Linear link, copy it onto ``task_id`` when unset."""
+    task = get_task(conn, task_id)
+    if task is None or task.linear_issue_id:
+        return False
+    for parent_id in parent_ids(conn, task_id):
+        parent = get_task(conn, parent_id)
+        if parent and parent.linear_issue_id and parent.linear_issue_url:
+            return set_linear_link(
+                conn,
+                task_id,
+                parent.linear_issue_id,
+                parent.linear_issue_url,
+                propagate=False,
+                source="inherited",
+            )
+    return False
+
+
+# ---------------------------------------------------------------------------
 # Links
 # ---------------------------------------------------------------------------
 
@@ -1908,6 +2025,7 @@ def link_tasks(conn: sqlite3.Connection, parent_id: str, child_id: str) -> None:
             conn, child_id, "linked",
             {"parent": parent_id, "child": child_id},
         )
+    inherit_linear_from_parents(conn, child_id)
 
 
 def _would_cycle(conn: sqlite3.Connection, parent_id: str, child_id: str) -> bool:
@@ -3716,6 +3834,16 @@ def decompose_triage_task(
         if root_row["status"] != "triage":
             return None
         tenant = root_row["tenant"]
+        root_linear = conn.execute(
+            "SELECT linear_issue_id, linear_issue_url FROM tasks WHERE id = ?",
+            (task_id,),
+        ).fetchone()
+        root_linear_id = (
+            root_linear["linear_issue_id"] if root_linear else None
+        )
+        root_linear_url = (
+            root_linear["linear_issue_url"] if root_linear else None
+        )
 
         # Create children. Status is 'todo' regardless of parents — we
         # link them under the root AFTER creation so the dispatcher
@@ -3729,8 +3857,8 @@ def decompose_triage_task(
             conn.execute(
                 "INSERT INTO tasks "
                 "(id, title, body, assignee, status, workspace_kind, "
-                " tenant, created_at, created_by) "
-                "VALUES (?, ?, ?, ?, 'todo', 'scratch', ?, ?, ?)",
+                " tenant, created_at, created_by, linear_issue_id, linear_issue_url) "
+                "VALUES (?, ?, ?, ?, 'todo', 'scratch', ?, ?, ?, ?, ?)",
                 (
                     new_id,
                     title,
@@ -3739,6 +3867,8 @@ def decompose_triage_task(
                     tenant,
                     now,
                     (author or "decomposer"),
+                    root_linear_id,
+                    root_linear_url,
                 ),
             )
             _append_event(

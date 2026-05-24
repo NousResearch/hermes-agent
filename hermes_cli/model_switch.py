@@ -1170,7 +1170,15 @@ def list_authenticated_providers(
     # Ollama Cloud uses dynamic discovery (no static curated list)
     if "ollama-cloud" not in curated:
         from hermes_cli.models import fetch_ollama_cloud_models
-        curated["ollama-cloud"] = fetch_ollama_cloud_models()
+        try:
+            curated["ollama-cloud"] = fetch_ollama_cloud_models()
+        except Exception as exc:
+            logger.warning(
+                "ollama-cloud model discovery failed — picker will omit or "
+                "fall back to curated list: %s",
+                exc,
+            )
+            curated["ollama-cloud"] = curated.get("ollama-cloud") or []
     # LM Studio has no static catalog — probe its native /api/v1/models
     # endpoint live so the picker reflects whatever the user has loaded.
     # Base URL precedence: LM_BASE_URL env var > active config's base_url

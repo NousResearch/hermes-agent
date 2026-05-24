@@ -816,6 +816,23 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
         help="Emit one JSON object per task on stdout",
     )
 
+    # --- linear --- (ensure Linear issue link for a task)
+    p_linear = sub.add_parser(
+        "linear",
+        help="Linear issue linkage for kanban tasks (create, inherit, backfill children)",
+    )
+    linear_sub = p_linear.add_subparsers(dest="linear_action")
+    p_linear_ensure = linear_sub.add_parser(
+        "ensure",
+        help="Ensure this task has a Linear issue (reuse, inherit, or create)",
+    )
+    p_linear_ensure.add_argument("task_id", help="Kanban task id")
+    p_linear_ensure.add_argument(
+        "--json",
+        action="store_true",
+        help="Emit JSON result on stdout",
+    )
+
     # --- gc ---
     p_gc = sub.add_parser(
         "gc", help="Garbage-collect archived-task workspaces, old events, and old logs",
@@ -950,6 +967,7 @@ def kanban_command(args: argparse.Namespace) -> int:
         "specify":  _cmd_specify,
         "decompose":  _cmd_decompose,
         "gc":       _cmd_gc,
+        "linear":   _dispatch_linear,
     }
     handler = handlers.get(action)
     if not handler:
@@ -986,6 +1004,47 @@ def _profile_author() -> str:
 # ---------------------------------------------------------------------------
 # Boards management (hermes kanban boards …)
 # ---------------------------------------------------------------------------
+
+def _dispatch_linear(args: argparse.Namespace) -> int:
+    """Handle ``hermes kanban linear <action>``."""
+    sub = getattr(args, "linear_action", None) or "ensure"
+    if sub == "ensure":
+        return _cmd_linear_ensure(args)
+    print(f"kanban linear: unknown action {sub!r}", file=sys.stderr)
+    return 2
+
+
+def _cmd_linear_ensure(args: argparse.Namespace) -> int:
+    from hermes_cli import kanban_linear
+
+    task_id = getattr(args, "task_id", None)
+    if not task_id:
+        print("kanban linear ensure: task_id is required", file=sys.stderr)
+        return 2
+    want_json = bool(getattr(args, "json", False))
+    with kb.connect() as conn:
+        try:
+            task = kanban_linear.ensure_linear_issue_for_task(conn, task_id)
+        except ValueError as exc:
+            print(f"kanban linear: {exc}", file=sys.stderr)
+            return 1
+        except kanban_linear.LinearKanbanError as exc:
+            print(f"kanban linear: {exc}", file=sys.stderr)
+            return 1
+    if want_json:
+        print(json.dumps({
+            "ok": True,
+            "task_id": task.id,
+            "linear_issue_id": task.linear_issue_id,
+            "linear_issue_url": task.linear_issue_url,
+        }))
+    else:
+        print(
+            f"Linear: {task.linear_issue_url or '(none)'} "
+            f"({task.linear_issue_id or 'no id'})"
+        )
+    return 0
+
 
 def _dispatch_boards(args: argparse.Namespace) -> int:
     """Handle ``hermes kanban boards <action>``.

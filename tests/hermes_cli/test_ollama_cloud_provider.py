@@ -204,6 +204,42 @@ class TestOllamaCloudMergedDiscovery:
         assert "nemotron-3-super" in result  # from models.dev only
         assert result.count("glm-5") == 1    # no duplicates
 
+    def test_invalid_ollama_base_url_does_not_crash(self, tmp_path, monkeypatch):
+        """OLLAMA_BASE_URL must be http(s); API keys pasted there must not 500 the picker."""
+        from hermes_cli.models import fetch_ollama_cloud_models
+
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.setenv("OLLAMA_API_KEY", "test-key")
+        monkeypatch.setenv("OLLAMA_BASE_URL", "not-a-url-looks-like-api-key")
+
+        mock_mdev = {
+            "ollama-cloud": {
+                "models": {
+                    "glm-5": {"tool_call": True},
+                }
+            }
+        }
+        with patch("hermes_cli.models.fetch_api_models") as mock_api, \
+             patch("agent.models_dev.fetch_models_dev", return_value=mock_mdev):
+            result = fetch_ollama_cloud_models(force_refresh=True)
+            mock_api.assert_called_once()
+            _key, base_url = mock_api.call_args[0][:2]
+            assert _key == "test-key"
+            assert base_url == "https://ollama.com/v1"
+        assert "glm-5" in result
+
+    def test_list_authenticated_providers_survives_invalid_ollama_base_url(
+        self, monkeypatch,
+    ):
+        """One bad Ollama env must not take down /api/model/options."""
+        from hermes_cli.model_switch import list_authenticated_providers
+
+        monkeypatch.setenv("OLLAMA_API_KEY", "test-key")
+        monkeypatch.setenv("OLLAMA_BASE_URL", "definitely-not-a-url")
+        providers = list_authenticated_providers(max_models=8)
+        slugs = {p["slug"] for p in providers}
+        assert "openrouter" in slugs or len(slugs) > 0
+
     def test_falls_back_to_models_dev_without_api_key(self, tmp_path, monkeypatch):
         """Without API key, only models.dev results are returned."""
         from hermes_cli.models import fetch_ollama_cloud_models

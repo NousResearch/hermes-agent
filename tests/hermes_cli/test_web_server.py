@@ -125,6 +125,16 @@ class TestWebServerEndpoints:
         assert "hermes_home" in data
         assert "active_sessions" in data
 
+    def test_get_model_options_survives_invalid_ollama_base_url(self, monkeypatch):
+        """Mis-set OLLAMA_BASE_URL must not 500 the Models page picker."""
+        monkeypatch.setenv("OLLAMA_API_KEY", "test-key")
+        monkeypatch.setenv("OLLAMA_BASE_URL", "not-an-http-url")
+        resp = self.client.get("/api/model/options")
+        assert resp.status_code == 200, resp.text
+        data = resp.json()
+        assert "providers" in data
+        assert isinstance(data["providers"], list)
+
     def test_get_status_filters_unconfigured_gateway_platforms(self, monkeypatch):
         import gateway.config as gateway_config
         import hermes_cli.web_server as web_server

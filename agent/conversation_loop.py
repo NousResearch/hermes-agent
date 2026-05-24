@@ -74,6 +74,33 @@ from utils import base_url_host_matches, env_var_enabled
 logger = logging.getLogger(__name__)
 
 
+# Failover reasons that should NOT cause the retry loop to abort as a
+# "non-retryable client error".  Every reason here has either:
+#   * its own retry/recovery path elsewhere in the loop
+#     (rate_limit → credential rotation + eager fallback;
+#      overloaded → exponential backoff retry;
+#      long_context_tier / thinking_signature → specialized recovery), OR
+#   * a compression path that the next iteration will take
+#     (context_overflow, payload_too_large set should_compress=True).
+#
+# FailoverReason.billing is INTENTIONALLY EXCLUDED.  Billing is
+# non-retryable: credential-pool rotation and eager fallback both run
+# earlier in the loop, BEFORE the is_client_error decision below.  If
+# neither recovered (single-credential pool with no fallback chain — the
+# OpenRouter "credits depleted" case from #31273), the request must
+# abort with the billing-specific actionable guidance rather than fall
+# through to the generic retry loop, which would burn api_max_retries
+# more 402 charges against the depleted balance.
+_NON_CLIENT_ERROR_REASONS = frozenset({
+    FailoverReason.rate_limit,
+    FailoverReason.overloaded,
+    FailoverReason.context_overflow,
+    FailoverReason.payload_too_large,
+    FailoverReason.long_context_tier,
+    FailoverReason.thinking_signature,
+})
+
+
 def _ollama_context_limit_error(agent: Any, request_tokens: int) -> Optional[str]:
     """Return a user-facing error when Ollama is loaded with too little context."""
     if not getattr(agent, "tools", None):
@@ -2826,14 +2853,7 @@ def run_conversation(
                     or (
                         not classified.retryable
                         and not classified.should_compress
-                        and classified.reason not in {
-                            FailoverReason.rate_limit,
-                            FailoverReason.overloaded,
-                            FailoverReason.context_overflow,
-                            FailoverReason.payload_too_large,
-                            FailoverReason.long_context_tier,
-                            FailoverReason.thinking_signature,
-                        }
+                        and classified.reason not in _NON_CLIENT_ERROR_REASONS
                     )
                 ) and not is_context_length_error
 

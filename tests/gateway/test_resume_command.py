@@ -39,6 +39,14 @@ def _make_runner(session_db=None, current_session_id="current_session_001",
     runner._voice_mode = {}
     runner._session_db = session_db
     runner._running_agents = {}
+    runner._running_agents_ts = {}
+    runner._busy_ack_ts = {}
+    runner._pending_messages = {}
+    runner._queued_events = {}
+    runner._pending_approvals = {}
+    runner._update_prompt_pending = {}
+    runner._session_run_generation = {}
+    runner._agent_cache_lock = None
 
     # Compute the real session key if an event is provided
     session_key = build_session_key(event.source) if event else "agent:main:telegram:dm"
@@ -256,4 +264,36 @@ class TestHandleResumeCommand:
         await runner._handle_resume_command(event)
 
         assert real_key not in runner._agent_cache
+        db.close()
+
+    @pytest.mark.asyncio
+    async def test_resume_interrupts_active_run_invalidates_generation_and_clears_queue(self, tmp_path):
+        """Mid-run /resume must behave like a real session boundary."""
+        from gateway.run import _INTERRUPT_REASON_RESET
+        from hermes_state import SessionDB
+
+        db = SessionDB(db_path=tmp_path / "state.db")
+        db.create_session("old_session", "telegram")
+        db.set_session_title("old_session", "Old Work")
+        db.create_session("current_session_001", "telegram")
+
+        event = _make_event(text="/resume Old Work")
+        runner = _make_runner(
+            session_db=db,
+            current_session_id="current_session_001",
+            event=event,
+        )
+
+        real_key = _session_key_for_event(event)
+        running_agent = MagicMock()
+        runner._running_agents[real_key] = running_agent
+        runner._queued_events[real_key] = [MagicMock()]
+        runner._session_run_generation[real_key] = 7
+
+        await runner._handle_resume_command(event)
+
+        running_agent.interrupt.assert_called_once_with(_INTERRUPT_REASON_RESET)
+        assert real_key not in runner._running_agents
+        assert real_key not in runner._queued_events
+        assert runner._session_run_generation[real_key] == 8
         db.close()

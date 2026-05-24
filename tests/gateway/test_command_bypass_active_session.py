@@ -77,6 +77,23 @@ def _session_key(chat_id="12345"):
     return build_session_key(source)
 
 
+def _make_runner_for_active_command(event):
+    from gateway.run import GatewayRunner
+
+    runner = object.__new__(GatewayRunner)
+    runner.adapters = {}
+    runner.session_store = MagicMock()
+    runner._detect_stale_code = lambda: False
+    runner._trigger_stale_code_restart = lambda: None
+    runner._update_prompt_pending = {}
+    runner._running_agents = {_session_key(chat_id=event.source.chat_id): MagicMock()}
+    runner._running_agents_ts = {}
+    runner._pending_messages = {}
+    runner._busy_input_mode = "interrupt"
+    runner._draining = False
+    return runner
+
+
 # ---------------------------------------------------------------------------
 # Tests: commands bypass Level 1 when session is active
 # ---------------------------------------------------------------------------
@@ -342,6 +359,26 @@ class TestAllResolvableCommandsBypassGuard:
         assert should_bypass_active_session("") is False
         # A file path split on whitespace: '/path/to/file.py' -> 'path/to/file.py'
         assert should_bypass_active_session("path/to/file.py") is False
+
+    @pytest.mark.parametrize(
+        "command_text,handler_name,expected",
+        [
+            ("/resume yesterday", "_handle_resume_command", "handled:resume-boundary"),
+            ("/branch alt-path", "_handle_branch_command", "handled:branch-boundary"),
+        ],
+    )
+    @pytest.mark.asyncio
+    async def test_active_run_dispatches_session_boundary_handlers(self, command_text, handler_name, expected):
+        """Mid-run /resume and /branch must reach their real boundary handlers."""
+        event = _make_event(command_text)
+        event.internal = True
+        runner = _make_runner_for_active_command(event)
+        setattr(runner, handler_name, AsyncMock(return_value=expected))
+
+        result = await runner._handle_message(event)
+
+        getattr(runner, handler_name).assert_awaited_once_with(event)
+        assert result == expected
 
 
 # ---------------------------------------------------------------------------

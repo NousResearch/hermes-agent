@@ -3203,8 +3203,8 @@ class BasePlatformAdapter(ABC):
             from hermes_cli.commands import should_bypass_active_session
 
             if should_bypass_active_session(cmd):
-                # /stop, /new, /reset must cancel the in-flight adapter task
-                # and preserve ordering of queued follow-ups.  Route those
+                # Session-boundary commands must cancel the in-flight adapter
+                # task and preserve ordering of queued follow-ups. Route those
                 # through the dedicated handoff path that serializes
                 # cancellation + runner response + pending drain.
                 if cmd in {"stop", "new", "reset"}:

@@ -6912,6 +6912,15 @@ class GatewayRunner:
                 # doesn't think an agent is still active.
                 return await self._handle_reset_command(event)
 
+            # /resume and /branch are full session-boundary operations.
+            # They must invalidate the current run before switching the
+            # session binding, otherwise the old run can finish late and
+            # leak results or queued follow-ups into the new session.
+            if _cmd_def_inner and _cmd_def_inner.name == "resume":
+                return await self._handle_resume_command(event)
+            if _cmd_def_inner and _cmd_def_inner.name == "branch":
+                return await self._handle_branch_command(event)
+
             # /queue <prompt> — queue without interrupting.
             # Semantics: each /queue invocation produces its own full agent
             # turn, processed in FIFO order after the current run (and any
@@ -12717,8 +12726,21 @@ class GatewayRunner:
         if current_entry.session_id == target_id:
             return t("gateway.resume.already_on", name=name)
 
+        if session_key in self._running_agents:
+            await self._interrupt_and_clear_session(
+                session_key,
+                source,
+                interrupt_reason=_INTERRUPT_REASON_RESET,
+                invalidation_reason="resume_command",
+            )
+
         # Clear any running agent for this session key
         self._release_running_agent_state(session_key)
+
+        # Discard any queued follow-ups from the previous conversation.
+        _qe = getattr(self, "_queued_events", None)
+        if _qe is not None:
+            _qe.pop(session_key, None)
 
         # Switch the session entry to point at the old session
         new_entry = self.session_store.switch_session(session_key, target_id)
@@ -12823,6 +12845,22 @@ class GatewayRunner:
             self._session_db.set_session_title(new_session_id, branch_title)
         except Exception:
             pass
+
+        if session_key in self._running_agents:
+            await self._interrupt_and_clear_session(
+                session_key,
+                source,
+                interrupt_reason=_INTERRUPT_REASON_RESET,
+                invalidation_reason="branch_command",
+            )
+
+        # Clear any running agent for this session key
+        self._release_running_agent_state(session_key)
+
+        # Discard any queued follow-ups from the previous conversation.
+        _qe = getattr(self, "_queued_events", None)
+        if _qe is not None:
+            _qe.pop(session_key, None)
 
         # Switch the session store entry to the new session
         new_entry = self.session_store.switch_session(session_key, new_session_id)

@@ -220,6 +220,26 @@ async def test_branch_preserves_persisted_assistant_metadata():
     assert assistant_kwargs["codex_message_items"] == [{"id": "m1", "type": "message"}]
 
 
+@pytest.mark.asyncio
+async def test_branch_interrupts_active_run_invalidates_generation_and_clears_queue():
+    from gateway.run import _INTERRUPT_REASON_RESET
+
+    runner, session_key = _make_branch_runner()
+    running_agent = MagicMock()
+    runner._running_agents[session_key] = running_agent
+    runner._pending_messages = {}
+    runner._queued_events = {session_key: [MagicMock()]}
+    runner._session_run_generation = {session_key: 11}
+
+    result = await runner._handle_branch_command(_make_event("/branch"))
+
+    assert "Branched to" in result
+    running_agent.interrupt.assert_called_once_with(_INTERRUPT_REASON_RESET)
+    assert session_key not in runner._running_agents
+    assert session_key not in runner._queued_events
+    assert runner._session_run_generation[session_key] == 12
+
+
 def test_clear_session_boundary_security_state_is_scoped():
     """The helper must wipe only the target session's approval/yolo state.
 

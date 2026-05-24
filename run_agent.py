@@ -1174,6 +1174,13 @@ class AIAgent:
         Ensures conversations are never lost, even on errors or early returns.
         """
         self._drop_trailing_empty_response_scaffolding(messages)
+        # Scaffolding drop can pop messages already counted in
+        # _last_flushed_db_idx. Clamp so the next flush's
+        # ``messages[flush_from:]`` slice isn't empty and silently skip every
+        # newly-appended message (e.g. the final assistant response). See
+        # #31507.
+        if self._last_flushed_db_idx > len(messages):
+            self._last_flushed_db_idx = len(messages)
         self._apply_persist_user_message_override(messages)
         self._session_messages = messages
         self._save_session_log(messages)

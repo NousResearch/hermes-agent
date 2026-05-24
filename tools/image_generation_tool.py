@@ -1041,7 +1041,12 @@ def _resolve_custom_image_host_model(provider_name: str, entry: Dict[str, Any]) 
         if isinstance(model_cfg, dict):
             active_provider = str(model_cfg.get("provider", "") or "").strip().lower()
             if active_provider == provider_name.lower():
-                active_model = str(model_cfg.get("name", "") or model_cfg.get("model", "") or "").strip()
+                active_model = str(
+                    model_cfg.get("default", "")
+                    or model_cfg.get("name", "")
+                    or model_cfg.get("model", "")
+                    or ""
+                ).strip()
                 if active_model:
                     return active_model
     except Exception as exc:

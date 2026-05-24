@@ -158,6 +158,25 @@ class TestPluginDispatch:
         assert payload["provider"] == "custom:yuna"
         assert payload["model"] == "gpt-image-2"
 
+    def test_custom_provider_host_model_uses_main_model_default(self, monkeypatch, tmp_path):
+        from tools import image_generation_tool
+
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        (tmp_path / "config.yaml").write_text(
+            "model:\n"
+            "  provider: custom:yuna\n"
+            "  default: configured-host-model\n"
+            "custom_providers:\n"
+            "  - name: yuna\n"
+            "    base_url: https://example.test/codex/v1\n"
+            "    api_key: sk-test\n"
+            "    api_mode: codex_responses\n"
+        )
+
+        entry = image_generation_tool._resolve_custom_image_provider_config("custom:yuna")
+
+        assert image_generation_tool._resolve_custom_image_host_model("custom:yuna", entry) == "configured-host-model"
+
     def test_custom_provider_uses_named_custom_responses_image_generation(self, monkeypatch, tmp_path):
         from tools import image_generation_tool
 

@@ -7662,3 +7662,355 @@ Observability is purely log-based and status-file-based.
 | Observability | Log-based + runtime status file; no structured metrics; status writes silently swallow errors |
 
 *Pass #67 complete — 2026-05-25*
+
+---
+
+## Pass #68 – ACP (Agent Communication Protocol) & IPC Deep Dive – 2026-05-25T01:30:00Z
+
+### Scope
+`acp_adapter/` — auth.py, events.py, permissions.py, server.py, session.py, tools.py, entry.py, edit_approval.py
+
+---
+
+### SECTION A: ACP PROTOCOL SECURITY
+
+#### 1. Authentication
+
+**Finding P68-1 (INFO): ACP authentication is local-trust, design-appropriate**
+
+`auth.py:build_auth_methods()` advertises auth methods based on runtime provider detection. `authenticate()` at `server.py:855-875` validates `method_id` by exact match against:
+- The detected provider name (e.g. `"openrouter"`)
+- The special `"hermes-setup"` terminal-setup method
+
+```python
+# server.py:873-875
+if not provider or normalized_method != provider:
+    return None
+return AuthenticateResponse()
+```
+
+The comment at lines 857-861 explicitly states this is local-trust:
+> "ACP is stdio-only, local-trust... poor API hygiene and confusing if ACP ever grows multi-method auth."
+
+**Assessment**: Authentication is appropriate for the stdio-only local communication model. No untrusted network attackers can reach the ACP socket.
+
+---
+
+#### 2. Message Injection / Session Hijacking
+
+**Finding P68-2 (LOW): Client-supplied session_id not validated — within local trust model**
+
+The ACP session lifecycle methods (`get_session`, `load_session`, `resume_session`, `cancel`, `fork_session`) all accept `session_id` as a plain string from the client with no validation:
+
+```python
+# server.py:1256 — prompt()
+state = self.session_manager.get_session(session_id)  # session_id from ACP client
+```
+
+`get_session()` at `session.py:231-242` does a plain `self._sessions.get(session_id)` dict lookup — no format validation, no ownership check.
+
+**Threat model**: ACP is stdio. A client with access to the same stdin/stdout pipe (the user's IDE — Zed, VS Code, JetBrains) can supply any session_id. Sessions are stored in the user's own `~/.hermes/state.db`. Within this boundary, "session hijacking" is the intended ACP behavior: reconnecting to an existing session.
+
+**If** Hermes ACP ever listens on a network socket or a shared filesystem FIFO, this becomes exploitable. Currently it's not.
+
+**Recommendation**: Add a comment clarifying the local-trust assumption, or add a session ownership check (e.g. validate that the connecting client info matches the session's originating client).
+
+---
+
+#### 3. Message Routing
+
+**Finding P68-3 (INFO): Single-connection model — routing via session_id parameter is clean**
+
+`HermesACPAgent` holds a single `self._conn: Optional[acp.Client]` set at `on_connect()`. All updates use `conn.session_update(session_id=session_id, update=update)` — the `session_id` param routes to the correct session on the client side. No cross-session leakage observed.
+
+```python
+# server.py:519,523-525
+self._conn: Optional[acp.Client] = None
+
+def on_connect(self, conn: acp.Client) -> None:
+    self._conn = conn
+```
+
+Session updates are sent via `events.py:_send_update()` which calls `conn.session_update()` with a 5-second timeout and fire-and-forget error handling.
+
+---
+
+### SECTION B: IPC MESSAGE HANDLING
+
+#### 4. Race Conditions
+
+**Finding P68-4 (LOW): Two-lock system with non-atomic state transitions**
+
+`SessionManager` uses `_lock: Lock()` to protect `_sessions` dict operations. But `SessionState` has a separate `runtime_lock: Lock` used to guard `is_running` and `queued_prompts` in `prompt()`:
+
+```python
+# session.py:181
+queued_prompts: List[str] = field(default_factory=list)
+
+# server.py:1320-1332 — prompt()
+with state.runtime_lock:
+    if state.is_running:
+        queued_prompts.append(...)
+        return PromptResponse(stop_reason="end_turn")
+    state.is_running = True
+    state.current_prompt_text = user_text
+```
+
+The two-lock system means:
+1. Session A can hold `runtime_lock` and be modifying `is_running` / `queued_prompts`
+2. Concurrently, `SessionManager.remove_session()` acquires `_lock` and deletes the session from `_sessions`
+
+This is a TOCTOU (time-of-check-time-of-use) window. However, since `prompt()` already holds `runtime_lock` when the AIAgent runs in the executor, and `cancel()` also acquires `runtime_lock`, the race would manifest as a dangling reference rather than data corruption.
+
+**Not critical** — the locks protect different granularities and the session object itself is the synchronization point for in-flight prompts.
+
+---
+
+#### 5. Message Ordering & Delivery
+
+**Finding P68-5 (LOW): `_send_update` fire-and-forget with 5s timeout — no guaranteed delivery**
+
+```python
+# events.py:105
+future.result(timeout=5)
+```
+
+If the event loop is saturated or the connection is slow, the 5-second timeout can expire and the update is silently dropped. The caller catches this via `try/except` and only logs at DEBUG level:
+
+```python
+# events.py:106-107
+except Exception:
+    logger.debug("Failed to send ACP update", exc_info=True)
+```
+
+Important updates (tool start/complete, agent message text) could be lost if the client misses them. The protocol has no ack/retry mechanism for individual session updates.
+
+---
+
+#### 6. Message Deduplication
+
+**Finding P68-6 (INFO): No deduplication — idempotent operation relies on ACP client**
+
+No explicit deduplication layer in the ACP adapter. The `_replay_session_history()` replay mechanism at `server.py:979-1068` sends all historical messages as fresh updates, but the ACP client is responsible for deduplicating if needed. For live updates (not replay), no deduplication is needed since each has a unique tool call ID or message content.
+
+---
+
+#### 7. Tool Call Tracking / Ordering
+
+**Finding P68-7 (INFO): Per-tool-name deque correctly handles parallel same-name tool calls**
+
+```python
+# events.py:146-154
+tc_id = make_tool_call_id()  # uuid-based unique ID
+queue = tool_call_ids.get(name)
+if queue is None:
+    queue = deque()
+    tool_call_ids[name] = queue
+elif isinstance(queue, str):
+    queue = deque([queue])
+    tool_call_ids[name] = queue
+queue.append(tc_id)
+```
+
+Tool call IDs are UUID-based, so concurrent calls to the same tool get different IDs and are correctly tracked. The step callback pops from the correct queue.
+
+---
+
+### SECTION C: ACP ADAPTER REGISTRATION
+
+#### 8. Adapter Registration / Unauthorized Injection
+
+**Finding P68-8 (INFO): ACP adapter is not dynamically registered — it's a stdio server entry point**
+
+The ACP adapter is started via `python -m acp_adapter` or `hermes acp`. It's not a plugin that gets discovered and loaded at runtime. There is no `register_adapter()` or similar mechanism.
+
+The Zed/VS Code ACP protocol (`agent-client-protocol` package) starts the adapter as a subprocess. Hermes provides the adapter binary through the Python entry point.
+
+**No unauthorized injection risk** — the adapter is explicitly invoked by the client, not dynamically discovered.
+
+---
+
+#### 9. MCP Server Capability Validation
+
+**Finding P68-9 (LOW): MCP server toolsets are not validated before being added to agent tools**
+
+When `mcp_servers` list is passed to `new_session`/`load_session`/`resume_session`:
+
+```python
+# server.py:793-811
+async def _register_session_mcp_servers(self, state, mcp_servers):
+    for server_name in list(mcp_servers or []):
+        toolset_name = f"mcp-{server_name}"
+        if toolset_name not in (state.agent.enabled_toolsets or []):
+            state.agent.enabled_toolsets = (state.agent.enabled_toolsets or []) + [toolset_name]
+```
+
+No validation that:
+1. The MCP server is a known/trusted server
+2. The MCP server's toolset actually exists
+3. The tools in the MCP server's toolset are appropriate for the ACP session
+
+If a malicious or compromised ACP client sends a list of arbitrary MCP server names, those toolset names are added to `enabled_toolsets` and the agent tries to use them. A toolset that doesn't exist would cause a failure at usage time (not silently), but a toolset that exists but has dangerous tools would be enabled without additional guardrails.
+
+---
+
+### SECTION D: CHANNEL / PLATFORM BINDING
+
+#### 10. Session Isolation
+
+**Finding P68-10 (INFO): Sessions are fully isolated — `session_id` is the partition key**
+
+The `HermesACPAgent` processes all sessions through one `_conn` ACP connection, but each `session_update(session_id=session_id, ...)` carries the `session_id` so the ACP client (Zed/VS Code) routes to the correct tab/window. There is no mechanism for a session to access another session's `state.history` or `state.agent`.
+
+`SessionManager._sessions: Dict[str, SessionState]` is the partition boundary.
+
+---
+
+#### 11. Message Leakage
+
+**Finding P68-11 (INFO): No cross-session message leakage observed**
+
+All `_send_update()` calls pass the correct `session_id`:
+- Tool progress: `session_id`
+- Thinking: `session_id`
+- Step (tool complete): `session_id`
+- Message (agent text): `session_id`
+- Plan update: `session_id`
+- Usage update: `session_id`
+
+The ACP client is expected to filter by `session_id`.
+
+---
+
+### SECTION E: ACP HEARTBEAT / LIVENESS
+
+#### 12. Stale Connection Detection
+
+**Finding P68-12 (LOW): No server-side stale connection detection**
+
+The ACP adapter (`entry.py`) has no heartbeat/keepalive mechanism:
+- No periodic ping from server to client
+- No timeout for client responses
+- No background task monitoring active sessions
+
+The `asyncio.run(acp.run_agent(agent, use_unstable_protocol=True))` call at `entry.py:257` runs the agent loop which processes requests but doesn't proactively detect dead connections.
+
+If an ACP client (Zed, VS Code) crashes or is killed while a session is running, the server continues indefinitely — the session stays in `is_running=True` state and the next prompt will wait forever (or until the next `cancel` call).
+
+The `_executor` ThreadPoolExecutor has `max_workers=4` — if 4 sessions go zombie, no new sessions can run.
+
+---
+
+#### 13. Zombie Session Cleanup
+
+**Finding P68-13 (INFO): No automatic zombie session cleanup — cleanup() must be called explicitly**
+
+`SessionManager.cleanup()` at `session.py:368-386` exists and removes all sessions, but it must be called explicitly. There's no `__del__` or atexit handler.
+
+In normal operation (IDE gracefully closes session), the ACP client sends `session/cancel` and the session transitions to `is_running=False` correctly. The zombie problem only occurs if the client crashes without sending cancel.
+
+**Mitigation**: ACP clients (Zed, VS Code) that crash are expected to reconnect and either resume the session or start a new one. The `is_running` flag on a zombie session will cause `prompt()` to queue subsequent prompts (not reject them), so recovery is possible when the user restarts the IDE.
+
+---
+
+#### 14. Liveness Probe Handling
+
+**Finding P68-14 (INFO): Benign probe noise correctly suppressed**
+
+```python
+# entry.py:35-72
+_BENIGN_PROBE_METHODS = frozenset({"ping", "health", "healthcheck"})
+
+class _BenignProbeMethodFilter(logging.Filter):
+    def filter(self, record: logging.LogRecord) -> bool:
+        if record.getMessage() != "Background task failed":
+            return True
+        exc = exc_info[1]
+        if isinstance(exc, RequestError) and getattr(exc, "code") == -32601:
+            data = getattr(exc, "data", {})
+            method = data.get("method") if isinstance(data, dict) else None
+            return method not in _BENIGN_PROBE_METHODS
+        return True
+```
+
+This correctly suppresses noisy tracebacks from unknown-method probes (clients probing for liveness) while leaving all other errors visible. This is a positive finding — the logging noise problem was identified and fixed.
+
+---
+
+### SECTION F: ADDITIONAL OBSERVATIONS
+
+#### 15. Thread Pool Configuration
+
+```python
+# server.py:85
+_executor = ThreadPoolExecutor(max_workers=4, thread_name_prefix="acp-agent")
+```
+
+- `max_workers=4` limits concurrent ACP sessions to 4. Beyond that, prompts queue in the executor.
+- `thread_name_prefix="acp-agent"` enables nice thread naming for debugging.
+
+#### 16. Context Isolation
+
+```python
+# server.py:1497-1502
+ctx = contextvars.copy_context()
+result = await loop.run_in_executor(_executor, ctx.run, _run_agent)
+```
+
+Correctly uses `contextvars.copy_context()` so concurrent sessions on the shared executor don't stomp on each other's ContextVar writes (e.g. `HERMES_SESSION_KEY`). Positive finding.
+
+#### 17. Session Persistence
+
+`SessionManager._persist()` at `session.py:423-474` is called after every prompt completion. Sessions survive process restarts. History replay on `load_session`/`resume_session` uses a try/except guard so corrupted DB entries don't crash the load.
+
+---
+
+### SECTION G: NEW FINDINGS SUMMARY
+
+| ID | Severity | Location | Description |
+|----|----------|----------|-------------|
+| P68-1 | INFO | acp_adapter/auth.py, server.py | ACP auth is local-trust, design-appropriate |
+| P68-2 | LOW | acp_adapter/server.py:1256 | Client-supplied session_id not validated (local-trust only) |
+| P68-3 | INFO | acp_adapter/server.py:519-525 | Single-conn model; routing via session_id is clean |
+| P68-4 | LOW | acp_adapter/server.py + session.py | Two-lock system (global _lock + per-session runtime_lock) — minor TOCTOU |
+| P68-5 | LOW | acp_adapter/events.py:105 | _send_update fire-and-forget with 5s timeout — updates can be silently dropped |
+| P68-6 | INFO | acp_adapter/events.py | No deduplication — relies on ACP client |
+| P68-7 | INFO | acp_adapter/events.py:146-154 | Per-tool-name deque correctly handles parallel same-name calls |
+| P68-8 | INFO | acp_adapter/entry.py | ACP adapter is explicit entry point, not dynamically discovered |
+| P68-9 | LOW | acp_adapter/server.py:793-811 | MCP server names not validated before enabling toolset |
+| P68-10 | INFO | acp_adapter/session.py | Sessions fully isolated via Dict partition |
+| P68-11 | INFO | acp_adapter/events.py | No cross-session message leakage observed |
+| P68-12 | LOW | acp_adapter/entry.py | No server-side stale/zombie connection detection |
+| P68-13 | INFO | acp_adapter/session.py:368-386 | No automatic zombie cleanup — cleanup() must be called explicitly |
+| P68-14 | INFO | acp_adapter/entry.py:35-72 | Benign probe noise correctly suppressed (positive) |
+| P68-15 | INFO | acp_adapter/server.py:85 | max_workers=4 limits concurrent sessions; acceptable |
+| P68-16 | INFO | acp_adapter/server.py:1497-1502 | ContextVar isolation for concurrent executor sessions (positive) |
+
+---
+
+### SECTION H: PRIOR FINDING CROSS-REFERENCES
+
+| Prior ID | Related Finding | Notes |
+|----------|-----------------|-------|
+| P50-6 | P68-2, P68-9 | ACP adapter exec_module / MCP server injection — same attack surface |
+| P49-7 | P68-3, P68-11 | ACP encoding fallback chain — positive finding confirmed |
+
+---
+
+### Summary
+
+| Area | Assessment |
+|------|------------|
+| ACP authentication | Appropriate for local-trust stdio model |
+| Session injection risk | Low — local-only access to session store |
+| IPC race conditions | Low — two-lock system with minor TOCTOU window |
+| Message delivery guarantees | Low — fire-and-forget with 5s timeout, silent drop on failure |
+| Message deduplication | Not implemented — not needed for live updates (UUID-based IDs) |
+| Adapter registration | No dynamic registration — entry point model, no injection risk |
+| MCP capability validation | Low — arbitrary MCP server names can be added to toolset list |
+| Channel isolation | Good — session_id partition works correctly |
+| Message leakage | None observed |
+| Heartbeat/liveness | Missing — no server-side stale connection detection |
+| Zombie cleanup | Absent — relies on explicit cleanup() or client reconnect |
+
+*Pass #68 complete — 2026-05-25*

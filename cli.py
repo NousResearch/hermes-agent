@@ -3167,9 +3167,7 @@ class HermesCLI:
             parts.append(f"{prefix}{remaining}%")
         if not parts:
             return ""
-        provider = str(getattr(snapshot, "provider", "") or "").lower()
-        label = "Codex" if "codex" in provider else "Acct"
-        return f"{label} {' '.join(parts[:2])}"
+        return f"Acct {' '.join(parts[:2])}"
 
     def _maybe_refresh_account_limits_badge(self, agent: Any) -> str:
         """Return cached account limits and refresh them in the background if stale."""

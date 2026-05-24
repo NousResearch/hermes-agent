@@ -20,7 +20,7 @@ def _snapshot(provider: str = "openai-codex") -> AccountUsageSnapshot:
 
 
 def test_format_account_limits_badge_uses_remaining_percentages() -> None:
-    assert HermesCLI._format_account_limits_badge(_snapshot()) == "Codex S86% W98%"
+    assert HermesCLI._format_account_limits_badge(_snapshot()) == "Acct S86% W98%"
 
 
 def test_format_account_limits_badge_falls_back_for_generic_provider() -> None:
@@ -57,8 +57,8 @@ def test_status_bar_text_includes_cached_account_limits(monkeypatch) -> None:
         session_api_calls=0,
         context_compressor=None,
     )
-    monkeypatch.setattr(shell, "_maybe_refresh_account_limits_badge", lambda agent: "Codex S86% W98%")
+    monkeypatch.setattr(shell, "_maybe_refresh_account_limits_badge", lambda agent: "Acct S86% W98%")
 
     text = shell._build_status_bar_text(width=100)
 
-    assert "Codex S86% W98%" in text
+    assert "Acct S86% W98%" in text

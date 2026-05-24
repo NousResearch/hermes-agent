@@ -1155,12 +1155,22 @@ def anthropic_prompt_cache_policy(
         if is_minimax_provider or is_minimax_host:
             return True, True
 
+    # Qwen on Anthropic-compatible wire (third-party proxies like one-api,
+    # LiteLLM, etc.).  These gateways translate cache_control markers to
+    # the upstream Qwen/DashScope KV-cache protocol.  Users who route
+    # Qwen through an Anthropic-speaking proxy get 0% cache hits without
+    # this branch, paying full input cost every turn.
+    # Uses native content-block layout because the wire is Anthropic.
+    model_is_qwen = "qwen" in model_lower
+    if is_anthropic_wire and model_is_qwen:
+        return True, True
+
     # Qwen/Alibaba on OpenCode (Zen/Go) and native DashScope: OpenAI-wire
     # transport that accepts Anthropic-style cache_control markers and
     # rewards them with real cache hits.  Without this branch
     # qwen3.6-plus on opencode-go reports 0% cached tokens and burns
     # through the subscription on every turn.
-    model_is_qwen = "qwen" in model_lower
+    # Note: model_is_qwen is defined above (Anthropic-wire Qwen branch).
     provider_is_alibaba_family = provider_lower in {
         "opencode", "opencode-zen", "opencode-go", "alibaba",
     }

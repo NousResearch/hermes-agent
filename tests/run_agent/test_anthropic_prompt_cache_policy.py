@@ -90,16 +90,67 @@ class TestThirdPartyAnthropicGateway:
         assert native is True, "Third-party Anthropic gateway uses native cache_control layout"
 
     def test_third_party_anthropic_non_claude_unknown_provider_does_not_cache(self):
-        # A provider exposing e.g. GLM via anthropic_messages transport from
-        # a host we don't recognize — we don't know whether it supports
-        # cache_control, so stay conservative.
+        # A provider exposing an unrecognised model via anthropic_messages
+        # transport from a host we don't recognise — we don't know whether
+        # it supports cache_control, so stay conservative.
         agent = _make_agent(
             provider="custom",
             base_url="https://some-unknown-gateway.example.com/anthropic",
             api_mode="anthropic_messages",
-            model="glm-4.5",
+            model="llama-4-scout",
         )
         assert agent._anthropic_prompt_cache_policy() == (False, False)
+
+
+class TestQwenAnthropicWire:
+    """Qwen via Anthropic-compatible transport (one-api, LiteLLM, etc.).
+
+    Users who proxy Qwen through a gateway that speaks the Anthropic
+    protocol (api_mode=anthropic_messages) expect cache_control markers
+    to be injected so the gateway can translate them to upstream
+    DashScope KV-cache.  Without this, every turn pays full input cost.
+    Native layout because the wire format is Anthropic.
+    """
+
+    def test_qwen_on_custom_provider_anthropic_wire_caches_native_layout(self):
+        agent = _make_agent(
+            provider="custom",
+            base_url="https://one-api.example.com",
+            api_mode="anthropic_messages",
+            model="qwen3.6-plus",
+        )
+        assert agent._anthropic_prompt_cache_policy() == (True, True)
+
+    def test_qwen37_max_on_custom_anthropic_wire_caches(self):
+        agent = _make_agent(
+            provider="custom",
+            base_url="https://one-api.example.com",
+            api_mode="anthropic_messages",
+            model="qwen3.7-max",
+        )
+        assert agent._anthropic_prompt_cache_policy() == (True, True)
+
+    def test_qwen_on_openai_wire_does_not_hit_anthropic_branch(self):
+        # Qwen on chat_completions should still fall through to the
+        # alibaba-family check (only matches opencode/alibaba providers).
+        agent = _make_agent(
+            provider="custom",
+            base_url="https://one-api.example.com",
+            api_mode="chat_completions",
+            model="qwen3.6-plus",
+        )
+        assert agent._anthropic_prompt_cache_policy() == (False, False)
+
+    def test_qwen_opengo_openai_wire_still_uses_envelope_layout(self):
+        # Existing opencode-go path must not be affected — it uses
+        # OpenAI wire with envelope layout, not native Anthropic layout.
+        agent = _make_agent(
+            provider="opencode-go",
+            base_url="https://opencode.ai/v1",
+            api_mode="chat_completions",
+            model="qwen3.6-plus",
+        )
+        assert agent._anthropic_prompt_cache_policy() == (True, False)
 
 
 class TestMiniMaxAnthropicWire:

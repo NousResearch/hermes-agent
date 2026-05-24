@@ -485,6 +485,16 @@ class TestMattermostMentionBehavior:
             assert "@hermes-bot" not in msg.text
             assert "2+2" in msg.text
 
+    @pytest.mark.asyncio
+    async def test_prefix_collision_does_not_count_as_mention(self):
+        """@hermes-bot2 must not trigger mention-gating for @hermes-bot."""
+        with patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("MATTERMOST_REQUIRE_MENTION", None)
+            await self.adapter._handle_ws_event(
+                self._make_event("@hermes-bot2 hello")
+            )
+            assert not self.adapter.handle_message.called
+
 
 # ---------------------------------------------------------------------------
 # File upload (send_image)

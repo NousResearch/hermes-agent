@@ -50,6 +50,12 @@ _RECONNECT_MAX_DELAY = 60.0
 _RECONNECT_JITTER = 0.2
 
 
+def _mention_token_regex(pattern: str) -> re.Pattern[str]:
+    """Match a Mattermost mention token without swallowing prefix collisions."""
+    escaped = re.escape(pattern)
+    return re.compile(rf"(?<![A-Za-z0-9_.-]){escaped}(?![A-Za-z0-9_.-])", re.IGNORECASE)
+
+
 def check_mattermost_requirements() -> bool:
     """Return True if the Mattermost adapter can be used."""
     token = os.getenv("MATTERMOST_TOKEN", "")
@@ -763,10 +769,8 @@ class MattermostAdapter(BasePlatformAdapter):
                 f"@{self._bot_username}",
                 f"@{self._bot_user_id}",
             ]
-            has_mention = any(
-                pattern.lower() in message_text.lower()
-                for pattern in mention_patterns
-            )
+            mention_regexes = [_mention_token_regex(pattern) for pattern in mention_patterns]
+            has_mention = any(regex.search(message_text) for regex in mention_regexes)
 
             if require_mention and not is_free_channel and not has_mention:
                 logger.debug(
@@ -777,10 +781,8 @@ class MattermostAdapter(BasePlatformAdapter):
 
             # Strip @mention from the message text so the agent sees clean input.
             if has_mention:
-                for pattern in mention_patterns:
-                    message_text = re.sub(
-                        re.escape(pattern), "", message_text, flags=re.IGNORECASE
-                    ).strip()
+                for regex in mention_regexes:
+                    message_text = regex.sub("", message_text).strip()
 
         # Resolve sender info.
         sender_id = post.get("user_id", "")
@@ -869,5 +871,4 @@ class MattermostAdapter(BasePlatformAdapter):
         )
 
         await self.handle_message(msg_event)
-
 

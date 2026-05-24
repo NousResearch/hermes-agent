@@ -30,6 +30,7 @@ from agent.display import (
     _detect_tool_failure,
 )
 from agent.tool_guardrails import ToolGuardrailDecision
+from agent.attribution_ledger import record_tool_event
 from agent.tool_dispatch_helpers import (
     _is_destructive_command,
     _is_multimodal_tool_result,
@@ -233,6 +234,14 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
             except Exception:
                 pass
         start = time.time()
+        record_tool_event(
+            agent,
+            function_name,
+            function_args,
+            status="started",
+            tool_call_id=tool_call.id,
+            started_at=start,
+        )
         try:
             result = agent._invoke_tool(
                 function_name,
@@ -245,8 +254,19 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
         except Exception as tool_error:
             result = f"Error executing tool '{function_name}': {tool_error}"
             logger.error("_invoke_tool raised for %s: %s", function_name, tool_error, exc_info=True)
-        duration = time.time() - start
+        ended = time.time()
+        duration = ended - start
         is_error, _ = _detect_tool_failure(function_name, result)
+        record_tool_event(
+            agent,
+            function_name,
+            function_args,
+            status="failed" if is_error else "completed",
+            tool_call_id=tool_call.id,
+            started_at=start,
+            ended_at=ended,
+            result=result,
+        )
         if is_error:
             logger.info("tool %s failed (%.2fs): %s", function_name, duration, result[:200])
         else:
@@ -349,15 +369,37 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
     for i, (tc, name, args, block_result, blocked_by_guardrail) in enumerate(parsed_calls):
         r = results[i]
         blocked = False
+        function_name = name
+        function_args = args
+        is_error = True
         if r is None:
             # Tool was cancelled (interrupt) or thread didn't return
             if agent._interrupt_requested:
                 function_result = f"[Tool execution cancelled — {name} was skipped due to user interrupt]"
+                event_status = "cancelled"
             else:
                 function_result = f"Error executing tool '{name}': thread did not return a result"
+                event_status = "failed"
             tool_duration = 0.0
+            record_tool_event(
+                agent,
+                name,
+                args,
+                status=event_status,
+                tool_call_id=tc.id,
+                result=function_result,
+            )
         else:
             function_name, function_args, function_result, tool_duration, is_error, blocked = r
+            if blocked:
+                record_tool_event(
+                    agent,
+                    function_name,
+                    function_args,
+                    status="blocked",
+                    tool_call_id=tc.id,
+                    result=function_result,
+                )
 
             if not blocked:
                 function_result = agent._append_guardrail_observation(
@@ -478,6 +520,14 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
                 agent._vprint(f"{agent.log_prefix}⚡ Interrupt: skipping {len(remaining_calls)} tool call(s)", force=True)
             for skipped_tc in remaining_calls:
                 skipped_name = skipped_tc.function.name
+                record_tool_event(
+                    agent,
+                    skipped_name,
+                    {},
+                    status="cancelled",
+                    tool_call_id=skipped_tc.id,
+                    result=f"[Tool execution cancelled — {skipped_name} was skipped due to user interrupt]",
+                )
                 skip_msg = {
                     "role": "tool",
                     "name": skipped_name,
@@ -586,6 +636,15 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
                 pass  # never block tool execution
 
         tool_start_time = time.time()
+        if not _execution_blocked:
+            record_tool_event(
+                agent,
+                function_name,
+                function_args,
+                status="started",
+                tool_call_id=tool_call.id,
+                started_at=tool_start_time,
+            )
 
         if _block_msg is not None:
             # Tool blocked by plugin policy — return error without executing.
@@ -801,6 +860,16 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
             result_preview = function_result if agent.verbose_logging else (
                 function_result[:200] if len(function_result) > 200 else function_result
             )
+        record_tool_event(
+            agent,
+            function_name,
+            function_args,
+            status="blocked" if _execution_blocked else ("failed" if _is_error_result else "completed"),
+            tool_call_id=tool_call.id,
+            started_at=tool_start_time,
+            ended_at=tool_start_time + tool_duration,
+            result=function_result,
+        )
         if _is_error_result:
             logger.warning("Tool %s returned error (%.2fs): %s", function_name, tool_duration, result_preview)
         else:
@@ -882,6 +951,14 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
             agent._vprint(f"{agent.log_prefix}⚡ Interrupt: skipping {remaining} remaining tool call(s)", force=True)
             for skipped_tc in assistant_message.tool_calls[i:]:
                 skipped_name = skipped_tc.function.name
+                record_tool_event(
+                    agent,
+                    skipped_name,
+                    {},
+                    status="cancelled",
+                    tool_call_id=skipped_tc.id,
+                    result=f"[Tool execution skipped — {skipped_name} was not started. User sent a new message]",
+                )
                 messages.append(make_tool_result_message(
                     skipped_name,
                     f"[Tool execution skipped — {skipped_name} was not started. User sent a new message]",

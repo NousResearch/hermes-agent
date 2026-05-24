@@ -1,407 +1,509 @@
-"""Memory provider plugin discovery.
+"""Mem0 memory plugin — MemoryProvider interface.
 
-Scans two directories for memory provider plugins:
+Server-side LLM fact extraction, semantic search with reranking, and
+automatic deduplication via the Mem0 Platform API or a self-hosted instance.
 
-1. Bundled providers: ``plugins/memory/<name>/`` (shipped with hermes-agent)
-2. User-installed providers: ``$HERMES_HOME/plugins/<name>/``
+Original PR #2933 by kartik-mem0, adapted to MemoryProvider ABC.
+Self-hosted support added in PR #XXXX.
 
-Each subdirectory must contain ``__init__.py`` with a class implementing
-the MemoryProvider ABC.  On name collisions, bundled providers take
-precedence.
+Config via environment variables:
+  MEM0_API_KEY       — Mem0 Platform API key (required)
+  MEM0_USER_ID       — User identifier (default: hermes-user)
+  MEM0_AGENT_ID      — Agent identifier (default: hermes)
+  MEM0_HOST          — Self-hosted mem0 server URL (e.g. http://192.168.1.10:8888)
+                       When set, bypasses the cloud SDK and speaks the OSS REST API
+                       directly. MEM0_API_KEY is still required (used as X-API-Key).
 
-Only ONE provider can be active at a time, selected via
-``memory.provider`` in config.yaml.
-
-Usage:
-    from plugins.memory import discover_memory_providers, load_memory_provider
-
-    available = discover_memory_providers()   # [(name, desc, available), ...]
-    provider = load_memory_provider("mnemosyne")  # MemoryProvider instance
+Or via $HERMES_HOME/mem0.json:
+  {
+    "api_key": "...",
+    "host": "http://192.168.1.10:8888",   # omit for cloud
+    "user_id": "hermes-user",
+    "agent_id": "hermes"
+  }
 """
 
 from __future__ import annotations
 
-import importlib
-import importlib.util
+import json
 import logging
-import sys
-from pathlib import Path
-from typing import List, Optional, Tuple
-from hermes_cli.config import cfg_get
+import os
+import threading
+import time
+from typing import Any, Dict, List
+
+from agent.memory_provider import MemoryProvider
+from tools.registry import tool_error
 
 logger = logging.getLogger(__name__)
 
-_MEMORY_PLUGINS_DIR = Path(__file__).parent
+# Circuit breaker: after this many consecutive failures, pause API calls
+# for _BREAKER_COOLDOWN_SECS to avoid hammering a down server.
+_BREAKER_THRESHOLD = 5
+_BREAKER_COOLDOWN_SECS = 120
 
 
 # ---------------------------------------------------------------------------
-# Directory helpers
+# Config
 # ---------------------------------------------------------------------------
 
-def _get_user_plugins_dir() -> Optional[Path]:
-    """Return ``$HERMES_HOME/plugins/`` or None if unavailable."""
-    try:
-        from hermes_constants import get_hermes_home
-        d = get_hermes_home() / "plugins"
-        return d if d.is_dir() else None
-    except Exception:
-        return None
+def _load_config() -> dict:
+    """Load config from env vars, with $HERMES_HOME/mem0.json overrides.
 
-
-def _is_memory_provider_dir(path: Path) -> bool:
-    """Heuristic: does *path* look like a memory provider plugin?
-
-    Checks for ``register_memory_provider`` or ``MemoryProvider`` in the
-    ``__init__.py`` source.  Cheap text scan — no import needed.
+    Environment variables provide defaults; mem0.json (if present) overrides
+    individual keys.  This avoids a silent failure when the JSON file exists
+    but is missing fields like ``api_key`` that the user set in ``.env``.
     """
-    init_file = path / "__init__.py"
-    if not init_file.exists():
-        return False
-    try:
-        source = init_file.read_text(errors="replace")[:8192]
-        return "register_memory_provider" in source or "MemoryProvider" in source
-    except Exception:
-        return False
+    from hermes_constants import get_hermes_home
 
+    config = {
+        "api_key": os.environ.get("MEM0_API_KEY", ""),
+        "user_id": os.environ.get("MEM0_USER_ID", "hermes-user"),
+        "agent_id": os.environ.get("MEM0_AGENT_ID", "hermes"),
+        "host": os.environ.get("MEM0_HOST", ""),
+        "rerank": True,
+        "keyword_search": False,
+    }
 
-def _iter_provider_dirs() -> List[Tuple[str, Path]]:
-    """Yield ``(name, path)`` for all discovered provider directories.
-
-    Scans bundled first, then user-installed.  Bundled takes precedence
-    on name collisions (first-seen wins via ``seen`` set).
-    """
-    seen: set = set()
-    dirs: List[Tuple[str, Path]] = []
-
-    # 1. Bundled providers (plugins/memory/<name>/)
-    if _MEMORY_PLUGINS_DIR.is_dir():
-        for child in sorted(_MEMORY_PLUGINS_DIR.iterdir()):
-            if not child.is_dir() or child.name.startswith(("_", ".")):
-                continue
-            if not (child / "__init__.py").exists():
-                continue
-            seen.add(child.name)
-            dirs.append((child.name, child))
-
-    # 2. User-installed providers ($HERMES_HOME/plugins/<name>/)
-    user_dir = _get_user_plugins_dir()
-    if user_dir:
-        for child in sorted(user_dir.iterdir()):
-            if not child.is_dir() or child.name.startswith(("_", ".")):
-                continue
-            if child.name in seen:
-                continue  # bundled takes precedence
-            if not _is_memory_provider_dir(child):
-                continue  # skip non-memory plugins
-            dirs.append((child.name, child))
-
-    return dirs
-
-
-def find_provider_dir(name: str) -> Optional[Path]:
-    """Resolve a provider name to its directory.
-
-    Checks bundled first, then user-installed.
-    """
-    # Bundled
-    bundled = _MEMORY_PLUGINS_DIR / name
-    if bundled.is_dir() and (bundled / "__init__.py").exists():
-        return bundled
-    # User-installed
-    user_dir = _get_user_plugins_dir()
-    if user_dir:
-        user = user_dir / name
-        if user.is_dir() and _is_memory_provider_dir(user):
-            return user
-    return None
-
-
-# ---------------------------------------------------------------------------
-# Public API
-# ---------------------------------------------------------------------------
-
-def discover_memory_providers() -> List[Tuple[str, str, bool]]:
-    """Scan bundled and user-installed directories for available providers.
-
-    Returns list of (name, description, is_available) tuples.
-    Bundled providers take precedence on name collisions.
-    """
-    results = []
-
-    for name, child in _iter_provider_dirs():
-        # Read description from plugin.yaml if available
-        desc = ""
-        yaml_file = child / "plugin.yaml"
-        if yaml_file.exists():
-            try:
-                import yaml
-                with open(yaml_file, encoding="utf-8-sig") as f:
-                    meta = yaml.safe_load(f) or {}
-                desc = meta.get("description", "")
-            except Exception:
-                pass
-
-        # Quick availability check — try loading and calling is_available()
-        available = True
+    config_path = get_hermes_home() / "mem0.json"
+    if config_path.exists():
         try:
-            provider = _load_provider_from_dir(child)
-            if provider:
-                available = provider.is_available()
-            else:
-                available = False
+            file_cfg = json.loads(config_path.read_text(encoding="utf-8"))
+            config.update({k: v for k, v in file_cfg.items()
+                           if v is not None and v != ""})
         except Exception:
-            available = False
+            pass
 
-        results.append((name, desc, available))
-
-    return results
+    return config
 
 
-def load_memory_provider(name: str) -> Optional["MemoryProvider"]:
-    """Load and return a MemoryProvider instance by name.
+# ---------------------------------------------------------------------------
+# Tool schemas
+# ---------------------------------------------------------------------------
 
-    Checks both bundled (``plugins/memory/<name>/``) and user-installed
-    (``$HERMES_HOME/plugins/<name>/``) directories.  Bundled takes
-    precedence on name collisions.
+PROFILE_SCHEMA = {
+    "name": "mem0_profile",
+    "description": (
+        "Retrieve all stored memories about the user — preferences, facts, "
+        "project context. Fast, no reranking. Use at conversation start."
+    ),
+    "parameters": {"type": "object", "properties": {}, "required": []},
+}
 
-    Returns None if the provider is not found or fails to load.
+SEARCH_SCHEMA = {
+    "name": "mem0_search",
+    "description": (
+        "Search memories by meaning. Returns relevant facts ranked by similarity. "
+        "Set rerank=true for higher accuracy on important queries."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "query": {"type": "string", "description": "What to search for."},
+            "rerank": {"type": "boolean", "description": "Enable reranking for precision (default: false)."},
+            "top_k": {"type": "integer", "description": "Max results (default: 10, max: 50)."},
+        },
+        "required": ["query"],
+    },
+}
+
+CONCLUDE_SCHEMA = {
+    "name": "mem0_conclude",
+    "description": (
+        "Store a durable fact about the user. Stored verbatim (no LLM extraction). "
+        "Use for explicit preferences, corrections, or decisions."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "conclusion": {"type": "string", "description": "The fact to store."},
+        },
+        "required": ["conclusion"],
+    },
+}
+
+
+# ---------------------------------------------------------------------------
+# Self-hosted HTTP client
+# ---------------------------------------------------------------------------
+
+class _SelfHostedClient:
+    """Minimal HTTP client for the mem0 self-hosted OSS REST API.
+
+    The mem0 cloud SDK (MemoryClient) targets /v1/* endpoints and validates
+    against api.mem0.ai on init — it cannot be pointed at a self-hosted
+    server. This client speaks the OSS server's native API directly:
+
+        POST /memories          — add / extract memories from messages
+        POST /memories/search   — semantic search
+        GET  /memories          — retrieve all memories for a user
+
+    Authentication uses the X-API-Key header (the key issued by the OSS
+    server's /api-keys endpoint, not a Mem0 Platform key).
     """
-    provider_dir = find_provider_dir(name)
-    if not provider_dir:
-        logger.debug("Memory provider '%s' not found in bundled or user plugins", name)
-        return None
 
-    try:
-        provider = _load_provider_from_dir(provider_dir)
-        if provider:
-            return provider
-        logger.warning("Memory provider '%s' loaded but no provider instance found", name)
-        return None
-    except Exception as e:
-        logger.warning("Failed to load memory provider '%s': %s", name, e)
-        return None
+    def __init__(self, api_key: str, host: str) -> None:
+        self._base = host.rstrip("/")
+        self._headers = {
+            "X-API-Key": api_key,
+            "Content-Type": "application/json",
+        }
 
-
-def _load_provider_from_dir(provider_dir: Path) -> Optional["MemoryProvider"]:
-    """Import a provider module and extract the MemoryProvider instance.
-
-    The module must have either:
-    - A register(ctx) function (plugin-style) — we simulate a ctx
-    - A top-level class that extends MemoryProvider — we instantiate it
-    """
-    name = provider_dir.name
-    # Use a separate namespace for user-installed plugins so they don't
-    # collide with bundled providers in sys.modules.
-    _is_bundled = _MEMORY_PLUGINS_DIR in provider_dir.parents or provider_dir.parent == _MEMORY_PLUGINS_DIR
-    module_name = f"plugins.memory.{name}" if _is_bundled else f"_hermes_user_memory.{name}"
-    init_file = provider_dir / "__init__.py"
-
-    if not init_file.exists():
-        return None
-
-    # Check if already loaded
-    if module_name in sys.modules:
-        mod = sys.modules[module_name]
-    else:
-        # Handle relative imports within the plugin
-        # First ensure the parent packages are registered
-        for parent in ("plugins", "plugins.memory"):
-            if parent not in sys.modules:
-                parent_path = Path(__file__).parent
-                if parent == "plugins":
-                    parent_path = parent_path.parent
-                parent_init = parent_path / "__init__.py"
-                if parent_init.exists():
-                    spec = importlib.util.spec_from_file_location(
-                        parent, str(parent_init),
-                        submodule_search_locations=[str(parent_path)]
-                    )
-                    if spec:
-                        parent_mod = importlib.util.module_from_spec(spec)
-                        sys.modules[parent] = parent_mod
-                        try:
-                            spec.loader.exec_module(parent_mod)
-                        except Exception:
-                            pass
-
-        # Now load the provider module
-        spec = importlib.util.spec_from_file_location(
-            module_name, str(init_file),
-            submodule_search_locations=[str(provider_dir)]
+    def _req(self, method: str, path: str, payload: Any = None) -> Any:
+        import urllib.request
+        url = f"{self._base}{path}"
+        data = json.dumps(payload).encode() if payload is not None else None
+        req = urllib.request.Request(
+            url, data=data, headers=self._headers, method=method
         )
-        if not spec:
-            return None
+        with urllib.request.urlopen(req, timeout=10) as r:
+            return json.loads(r.read())
 
-        mod = importlib.util.module_from_spec(spec)
-        sys.modules[module_name] = mod
+    def add(
+        self,
+        messages: list,
+        *,
+        user_id: str = "",
+        agent_id: str = "",
+        infer: bool = True,
+        **kw: Any,
+    ) -> Any:
+        payload: Dict[str, Any] = {"messages": messages, "user_id": user_id}
+        if agent_id:
+            payload["agent_id"] = agent_id
+        if not infer:
+            payload["infer"] = False
+        return self._req("POST", "/memories", payload)
 
-        # Register submodules so relative imports work
-        # e.g., "from .store import MemoryStore" in holographic plugin
-        for sub_file in provider_dir.glob("*.py"):
-            if sub_file.name == "__init__.py":
-                continue
-            sub_name = sub_file.stem
-            full_sub_name = f"{module_name}.{sub_name}"
-            if full_sub_name not in sys.modules:
-                sub_spec = importlib.util.spec_from_file_location(
-                    full_sub_name, str(sub_file)
-                )
-                if sub_spec:
-                    sub_mod = importlib.util.module_from_spec(sub_spec)
-                    sys.modules[full_sub_name] = sub_mod
-                    try:
-                        sub_spec.loader.exec_module(sub_mod)
-                    except Exception as e:
-                        logger.debug("Failed to load submodule %s: %s", full_sub_name, e)
+    def search(
+        self,
+        *,
+        query: str,
+        filters: Dict[str, Any] | None = None,
+        rerank: bool = False,
+        top_k: int = 10,
+        **kw: Any,
+    ) -> Any:
+        payload: Dict[str, Any] = {"query": query, "top_k": top_k}
+        if filters:
+            payload.update(filters)
+        return self._req("POST", "/memories/search", payload)
 
-        try:
-            spec.loader.exec_module(mod)
-        except Exception as e:
-            logger.debug("Failed to exec_module %s: %s", module_name, e)
-            sys.modules.pop(module_name, None)
-            return None
-
-    # Try register(ctx) pattern first (how our plugins are written)
-    if hasattr(mod, "register"):
-        collector = _ProviderCollector()
-        try:
-            mod.register(collector)
-            if collector.provider:
-                return collector.provider
-        except Exception as e:
-            logger.debug("register() failed for %s: %s", name, e)
-
-    # Fallback: find a MemoryProvider subclass and instantiate it
-    from agent.memory_provider import MemoryProvider
-    for attr_name in dir(mod):
-        attr = getattr(mod, attr_name, None)
-        if (isinstance(attr, type) and issubclass(attr, MemoryProvider)
-                and attr is not MemoryProvider):
-            try:
-                return attr()
-            except Exception:
-                pass
-
-    return None
+    def get_all(
+        self,
+        *,
+        filters: Dict[str, Any] | None = None,
+        **kw: Any,
+    ) -> Any:
+        uid = (filters or {}).get("user_id", "")
+        path = f"/memories?user_id={uid}" if uid else "/memories"
+        return self._req("GET", path)
 
 
-class _ProviderCollector:
-    """Fake plugin context that captures register_memory_provider calls."""
+# ---------------------------------------------------------------------------
+# MemoryProvider implementation
+# ---------------------------------------------------------------------------
+
+class Mem0MemoryProvider(MemoryProvider):
+    """Mem0 memory with server-side extraction and semantic search.
+
+    Supports both Mem0 Platform (cloud) and self-hosted OSS deployments.
+    Set MEM0_HOST to use a self-hosted instance; omit it for cloud.
+    """
 
     def __init__(self):
-        self.provider = None
+        self._config = None
+        self._client = None
+        self._client_lock = threading.Lock()
+        self._api_key = ""
+        self._host = ""
+        self._user_id = "hermes-user"
+        self._agent_id = "hermes"
+        self._rerank = True
+        self._prefetch_result = ""
+        self._prefetch_lock = threading.Lock()
+        self._prefetch_thread = None
+        self._sync_thread = None
+        # Circuit breaker state
+        self._consecutive_failures = 0
+        self._breaker_open_until = 0.0
 
-    def register_memory_provider(self, provider):
-        self.provider = provider
+    @property
+    def name(self) -> str:
+        return "mem0"
 
-    # No-op for other registration methods
-    def register_tool(self, *args, **kwargs):
-        pass
+    def is_available(self) -> bool:
+        cfg = _load_config()
+        return bool(cfg.get("api_key"))
 
-    def register_hook(self, *args, **kwargs):
-        pass
-
-    def register_cli_command(self, *args, **kwargs):
-        pass  # CLI registration happens via discover_plugin_cli_commands()
-
-
-def _get_active_memory_provider() -> Optional[str]:
-    """Read the active memory provider name from config.yaml.
-
-    Returns the provider name (e.g. ``"honcho"``) or None if no
-    external provider is configured.  Lightweight — only reads config,
-    no plugin loading.
-    """
-    try:
-        from hermes_cli.config import load_config
-        config = load_config()
-        return cfg_get(config, "memory", "provider") or None
-    except Exception:
-        return None
-
-
-def discover_plugin_cli_commands() -> List[dict]:
-    """Return CLI commands for the **active** memory plugin only.
-
-    Only one memory provider can be active at a time (set via
-    ``memory.provider`` in config.yaml).  This function reads that
-    value and only loads CLI registration for the matching plugin.
-    If no provider is active, no commands are registered.
-
-    Looks for a ``register_cli(subparser)`` function in the active
-    plugin's ``cli.py``.  Returns a list of at most one dict with
-    keys: ``name``, ``help``, ``description``, ``setup_fn``,
-    ``handler_fn``.
-
-    This is a lightweight scan — it only imports ``cli.py``, not the
-    full plugin module.  Safe to call during argparse setup before
-    any provider is loaded.
-    """
-    results: List[dict] = []
-    if not _MEMORY_PLUGINS_DIR.is_dir():
-        return results
-
-    active_provider = _get_active_memory_provider()
-    if not active_provider:
-        return results
-
-    # Only look at the active provider's directory
-    plugin_dir = find_provider_dir(active_provider)
-    if not plugin_dir:
-        return results
-
-    cli_file = plugin_dir / "cli.py"
-    if not cli_file.exists():
-        return results
-
-    _is_bundled = _MEMORY_PLUGINS_DIR in plugin_dir.parents or plugin_dir.parent == _MEMORY_PLUGINS_DIR
-    module_name = f"plugins.memory.{active_provider}.cli" if _is_bundled else f"_hermes_user_memory.{active_provider}.cli"
-    try:
-        # Import the CLI module (lightweight — no SDK needed)
-        if module_name in sys.modules:
-            cli_mod = sys.modules[module_name]
-        else:
-            spec = importlib.util.spec_from_file_location(
-                module_name, str(cli_file)
-            )
-            if not spec or not spec.loader:
-                return results
-            cli_mod = importlib.util.module_from_spec(spec)
-            sys.modules[module_name] = cli_mod
-            spec.loader.exec_module(cli_mod)
-
-        register_cli = getattr(cli_mod, "register_cli", None)
-        if not callable(register_cli):
-            return results
-
-        # Read metadata from plugin.yaml if available
-        help_text = f"Manage {active_provider} memory plugin"
-        description = ""
-        yaml_file = plugin_dir / "plugin.yaml"
-        if yaml_file.exists():
+    def save_config(self, values, hermes_home):
+        """Write config to $HERMES_HOME/mem0.json."""
+        from pathlib import Path
+        config_path = Path(hermes_home) / "mem0.json"
+        existing = {}
+        if config_path.exists():
             try:
-                import yaml
-                with open(yaml_file, encoding="utf-8-sig") as f:
-                    meta = yaml.safe_load(f) or {}
-                desc = meta.get("description", "")
-                if desc:
-                    help_text = desc
-                    description = desc
+                existing = json.loads(config_path.read_text())
             except Exception:
                 pass
+        existing.update(values)
+        config_path.write_text(json.dumps(existing, indent=2))
 
-        handler_fn = getattr(cli_mod, f"{active_provider}_command", None) or \
-                     getattr(cli_mod, "honcho_command", None)
+    def get_config_schema(self):
+        return [
+            {
+                "key": "api_key",
+                "description": "Mem0 Platform API key (cloud) or OSS server API key (self-hosted)",
+                "secret": True,
+                "required": True,
+                "env_var": "MEM0_API_KEY",
+                "url": "https://app.mem0.ai",
+            },
+            {
+                "key": "host",
+                "description": "Self-hosted mem0 server URL (e.g. http://192.168.1.10:8888). Leave blank for cloud.",
+                "env_var": "MEM0_HOST",
+                "default": "",
+            },
+            {"key": "user_id", "description": "User identifier", "default": "hermes-user"},
+            {"key": "agent_id", "description": "Agent identifier", "default": "hermes"},
+            {
+                "key": "rerank",
+                "description": "Enable reranking for recall (cloud only)",
+                "default": "true",
+                "choices": ["true", "false"],
+            },
+        ]
 
-        results.append({
-            "name": active_provider,
-            "help": help_text,
-            "description": description,
-            "setup_fn": register_cli,
-            "handler_fn": handler_fn,
-            "plugin": active_provider,
-        })
-    except Exception as e:
-        logger.debug("Failed to scan CLI for memory plugin '%s': %s", active_provider, e)
+    def _get_client(self):
+        """Thread-safe client accessor with lazy initialization.
 
-    return results
+        Returns a _SelfHostedClient when MEM0_HOST is configured, otherwise
+        falls back to the mem0 cloud MemoryClient.
+        """
+        with self._client_lock:
+            if self._client is not None:
+                return self._client
+            if self._host:
+                logger.debug("Mem0: using self-hosted client at %s", self._host)
+                self._client = _SelfHostedClient(
+                    api_key=self._api_key, host=self._host
+                )
+            else:
+                try:
+                    from mem0 import MemoryClient
+                    self._client = MemoryClient(api_key=self._api_key)
+                except ImportError:
+                    raise RuntimeError(
+                        "mem0 package not installed. Run: pip install mem0ai"
+                    )
+            return self._client
+
+    def _is_breaker_open(self) -> bool:
+        """Return True if the circuit breaker is tripped (too many failures)."""
+        if self._consecutive_failures < _BREAKER_THRESHOLD:
+            return False
+        if time.monotonic() >= self._breaker_open_until:
+            # Cooldown expired — reset and allow a retry
+            self._consecutive_failures = 0
+            return False
+        return True
+
+    def _record_success(self):
+        self._consecutive_failures = 0
+
+    def _record_failure(self):
+        self._consecutive_failures += 1
+        if self._consecutive_failures >= _BREAKER_THRESHOLD:
+            self._breaker_open_until = time.monotonic() + _BREAKER_COOLDOWN_SECS
+            logger.warning(
+                "Mem0 circuit breaker tripped after %d consecutive failures. "
+                "Pausing API calls for %ds.",
+                self._consecutive_failures,
+                _BREAKER_COOLDOWN_SECS,
+            )
+
+    def initialize(self, session_id: str, **kwargs) -> None:
+        self._config = _load_config()
+        self._api_key = self._config.get("api_key", "")
+        self._host = self._config.get("host", "")
+        # Prefer gateway-provided user_id for per-user memory scoping;
+        # fall back to config/env default for CLI (single-user) sessions.
+        self._user_id = kwargs.get("user_id") or self._config.get("user_id", "hermes-user")
+        self._agent_id = self._config.get("agent_id", "hermes")
+        self._rerank = self._config.get("rerank", True)
+
+    def _read_filters(self) -> Dict[str, Any]:
+        """Filters for search/get_all — scoped to user only for cross-session recall."""
+        return {"user_id": self._user_id}
+
+    def _write_filters(self) -> Dict[str, Any]:
+        """Filters for add — scoped to user + agent for attribution."""
+        return {"user_id": self._user_id, "agent_id": self._agent_id}
+
+    @staticmethod
+    def _unwrap_results(response: Any) -> list:
+        """Normalize Mem0 API response — both cloud and OSS wrap in {"results": [...]}."""
+        if isinstance(response, dict):
+            return response.get("results", [])
+        if isinstance(response, list):
+            return response
+        return []
+
+    def system_prompt_block(self) -> str:
+        mode = f"self-hosted ({self._host})" if self._host else "cloud"
+        return (
+            "# Mem0 Memory\n"
+            f"Active ({mode}). User: {self._user_id}.\n"
+            "Use mem0_search to find memories, mem0_conclude to store facts, "
+            "mem0_profile for a full overview."
+        )
+
+    def prefetch(self, query: str, *, session_id: str = "") -> str:
+        if self._prefetch_thread and self._prefetch_thread.is_alive():
+            self._prefetch_thread.join(timeout=3.0)
+        with self._prefetch_lock:
+            result = self._prefetch_result
+            self._prefetch_result = ""
+        if not result:
+            return ""
+        return f"## Mem0 Memory\n{result}"
+
+    def queue_prefetch(self, query: str, *, session_id: str = "") -> None:
+        if self._is_breaker_open():
+            return
+
+        def _run():
+            try:
+                client = self._get_client()
+                results = self._unwrap_results(client.search(
+                    query=query,
+                    filters=self._read_filters(),
+                    rerank=self._rerank,
+                    top_k=5,
+                ))
+                if results:
+                    lines = [r.get("memory", "") for r in results if r.get("memory")]
+                    with self._prefetch_lock:
+                        self._prefetch_result = "\n".join(f"- {l}" for l in lines)
+                self._record_success()
+            except Exception as e:
+                self._record_failure()
+                logger.debug("Mem0 prefetch failed: %s", e)
+
+        self._prefetch_thread = threading.Thread(
+            target=_run, daemon=True, name="mem0-prefetch"
+        )
+        self._prefetch_thread.start()
+
+    def sync_turn(
+        self, user_content: str, assistant_content: str, *, session_id: str = ""
+    ) -> None:
+        """Send the turn to Mem0 for server-side fact extraction (non-blocking)."""
+        if self._is_breaker_open():
+            return
+
+        def _sync():
+            try:
+                client = self._get_client()
+                messages = [
+                    {"role": "user", "content": user_content},
+                    {"role": "assistant", "content": assistant_content},
+                ]
+                client.add(messages, **self._write_filters())
+                self._record_success()
+            except Exception as e:
+                self._record_failure()
+                logger.warning("Mem0 sync failed: %s", e)
+
+        # Wait for any previous sync before starting a new one
+        if self._sync_thread and self._sync_thread.is_alive():
+            self._sync_thread.join(timeout=5.0)
+
+        self._sync_thread = threading.Thread(
+            target=_sync, daemon=True, name="mem0-sync"
+        )
+        self._sync_thread.start()
+
+    def get_tool_schemas(self) -> List[Dict[str, Any]]:
+        return [PROFILE_SCHEMA, SEARCH_SCHEMA, CONCLUDE_SCHEMA]
+
+    def handle_tool_call(self, tool_name: str, args: dict, **kwargs) -> str:
+        if self._is_breaker_open():
+            return json.dumps({
+                "error": "Mem0 API temporarily unavailable (multiple consecutive failures). Will retry automatically."
+            })
+
+        try:
+            client = self._get_client()
+        except Exception as e:
+            return tool_error(str(e))
+
+        if tool_name == "mem0_profile":
+            try:
+                memories = self._unwrap_results(
+                    client.get_all(filters=self._read_filters())
+                )
+                self._record_success()
+                if not memories:
+                    return json.dumps({"result": "No memories stored yet."})
+                lines = [m.get("memory", "") for m in memories if m.get("memory")]
+                return json.dumps({"result": "\n".join(lines), "count": len(lines)})
+            except Exception as e:
+                self._record_failure()
+                return tool_error(f"Failed to fetch profile: {e}")
+
+        elif tool_name == "mem0_search":
+            query = args.get("query", "")
+            if not query:
+                return tool_error("Missing required parameter: query")
+            rerank = args.get("rerank", False)
+            top_k = min(int(args.get("top_k", 10)), 50)
+            try:
+                results = self._unwrap_results(client.search(
+                    query=query,
+                    filters=self._read_filters(),
+                    rerank=rerank,
+                    top_k=top_k,
+                ))
+                self._record_success()
+                if not results:
+                    return json.dumps({"result": "No relevant memories found."})
+                items = [
+                    {"memory": r.get("memory", ""), "score": r.get("score", 0)}
+                    for r in results
+                ]
+                return json.dumps({"results": items, "count": len(items)})
+            except Exception as e:
+                self._record_failure()
+                return tool_error(f"Search failed: {e}")
+
+        elif tool_name == "mem0_conclude":
+            conclusion = args.get("conclusion", "")
+            if not conclusion:
+                return tool_error("Missing required parameter: conclusion")
+            try:
+                client.add(
+                    [{"role": "user", "content": conclusion}],
+                    **self._write_filters(),
+                    infer=False,
+                )
+                self._record_success()
+                return json.dumps({"result": "Fact stored."})
+            except Exception as e:
+                self._record_failure()
+                return tool_error(f"Failed to store: {e}")
+
+        return tool_error(f"Unknown tool: {tool_name}")
+
+    def shutdown(self) -> None:
+        for t in (self._prefetch_thread, self._sync_thread):
+            if t and t.is_alive():
+                t.join(timeout=5.0)
+        with self._client_lock:
+            self._client = None
+
+
+def register(ctx) -> None:
+    """Register Mem0 as a memory provider plugin."""
+    ctx.register_memory_provider(Mem0MemoryProvider())

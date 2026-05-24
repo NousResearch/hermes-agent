@@ -300,66 +300,67 @@ def decompose_task(
     try:
         from agent.auxiliary_client import (  # type: ignore
             get_auxiliary_extra_body,
-            get_text_auxiliary_client,
         )
-        from agent.cursor_auxiliary_client import prepare_cursor_auxiliary_credentials
+        from hermes_cli.kanban_auxiliary import (
+            kanban_auxiliary_timeout,
+            kanban_card_auxiliary_client,
+        )
     except Exception as exc:
         logger.debug("decompose: auxiliary client import failed: %s", exc)
         return DecomposeOutcome(task_id, False, "auxiliary client unavailable")
 
-    try:
-        prepare_cursor_auxiliary_credentials()
-        client, model = get_text_auxiliary_client("kanban_decomposer")
-    except Exception as exc:
-        logger.debug("decompose: get_text_auxiliary_client failed: %s", exc)
-        return DecomposeOutcome(task_id, False, "auxiliary client unavailable")
+    with kanban_card_auxiliary_client(task_id, "kanban_decomposer") as (client, model):
+        if client is None or not model:
+            return DecomposeOutcome(task_id, False, "no auxiliary client configured")
 
-    if client is None or not model:
-        return DecomposeOutcome(task_id, False, "no auxiliary client configured")
-
-    user_msg = _USER_TEMPLATE.format(
-        task_id=task.id,
-        title=_truncate(task.title or "", 400),
-        body=_truncate(task.body or "(no body)", 4000),
-        roster=_format_roster(roster),
-        default_assignee=default_assignee,
-    )
-
-    from hermes_cli.kanban_worker_log import emit_task_worker_log, task_worker_log
-
-    try:
-        with task_worker_log(task_id, operation="decompose", model=model or ""):
-            emit_task_worker_log("Calling auxiliary LLM…\n")
-            resp = client.chat.completions.create(
-                model=model,
-                messages=[
-                    {"role": "system", "content": _SYSTEM_PROMPT},
-                    {"role": "user", "content": user_msg},
-                ],
-                temperature=0.3,
-                timeout=timeout or 180,
-                extra_body=get_auxiliary_extra_body() or None,
-            )
-            try:
-                raw = resp.choices[0].message.content or ""
-            except Exception:
-                raw = ""
-            try:
-                from agent.cursor_auxiliary_client import CursorAuxiliaryClient
-
-                streamed = isinstance(client, CursorAuxiliaryClient)
-            except ImportError:
-                streamed = False
-            if not streamed:
-                emit_task_worker_log("\n--- LLM response ---\n")
-                if raw:
-                    emit_task_worker_log(raw if raw.endswith("\n") else raw + "\n")
-    except Exception as exc:
-        logger.info(
-            "decompose: API call failed for %s (%s)", task_id, exc,
+        user_msg = _USER_TEMPLATE.format(
+            task_id=task.id,
+            title=_truncate(task.title or "", 400),
+            body=_truncate(task.body or "(no body)", 4000),
+            roster=_format_roster(roster),
+            default_assignee=default_assignee,
         )
-        detail = str(exc).strip() or type(exc).__name__
-        return DecomposeOutcome(task_id, False, f"LLM error: {detail}")
+
+        from hermes_cli.kanban_worker_log import emit_task_worker_log, task_worker_log
+
+        try:
+            with task_worker_log(task_id, operation="decompose", model=model or ""):
+                emit_task_worker_log("Calling auxiliary LLM…\n")
+                resp = client.chat.completions.create(
+                    model=model,
+                    messages=[
+                        {"role": "system", "content": _SYSTEM_PROMPT},
+                        {"role": "user", "content": user_msg},
+                    ],
+                    temperature=0.3,
+                    timeout=kanban_auxiliary_timeout(
+                        "kanban_decomposer",
+                        client,
+                        explicit=timeout,
+                        default=180.0,
+                    ),
+                    extra_body=get_auxiliary_extra_body() or None,
+                )
+                try:
+                    raw = resp.choices[0].message.content or ""
+                except Exception:
+                    raw = ""
+                try:
+                    from agent.cursor_auxiliary_client import CursorAuxiliaryClient
+
+                    streamed = isinstance(client, CursorAuxiliaryClient)
+                except ImportError:
+                    streamed = False
+                if not streamed:
+                    emit_task_worker_log("\n--- LLM response ---\n")
+                    if raw:
+                        emit_task_worker_log(raw if raw.endswith("\n") else raw + "\n")
+        except Exception as exc:
+            logger.info(
+                "decompose: API call failed for %s (%s)", task_id, exc,
+            )
+            detail = str(exc).strip() or type(exc).__name__
+            return DecomposeOutcome(task_id, False, f"LLM error: {detail}")
 
     parsed = _extract_json_blob(raw)
     if parsed is None:

@@ -8,6 +8,7 @@ and the assignee-fallback logic.
 from __future__ import annotations
 
 import argparse
+import contextlib
 import json as jsonlib
 from pathlib import Path
 from unittest.mock import MagicMock, patch
@@ -44,9 +45,14 @@ def _mock_client_returning(content: str):
 
 def _patch_aux_client(content: str, *, model: str = "test-model"):
     client = _mock_client_returning(content)
+
+    @contextlib.contextmanager
+    def _fake_ctx(task_id, aux_task):
+        yield client, model
+
     return patch(
-        "agent.auxiliary_client.get_text_auxiliary_client",
-        return_value=(client, model),
+        "hermes_cli.kanban_auxiliary.kanban_card_auxiliary_client",
+        _fake_ctx,
     )
 
 
@@ -336,9 +342,13 @@ def test_decompose_no_aux_client_configured(kanban_home):
     for p in patches:
         p.start()
     try:
+        @contextlib.contextmanager
+        def _empty_ctx(task_id, aux_task):
+            yield None, ""
+
         with patch(
-            "agent.auxiliary_client.get_text_auxiliary_client",
-            return_value=(None, ""),
+            "hermes_cli.kanban_auxiliary.kanban_card_auxiliary_client",
+            _empty_ctx,
         ):
             outcome = decomp.decompose_task(tid, author="me")
     finally:

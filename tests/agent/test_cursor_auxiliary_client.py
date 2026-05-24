@@ -94,6 +94,68 @@ class CursorAuxiliaryClientTests(unittest.TestCase):
         )
         self.assertEqual("".join(chunks), "Hello world")
 
+    def test_prepare_reload_only_never_resets_clients(self):
+        from agent import cursor_auxiliary_client as cac
+
+        with patch.object(cac, "reset_cursor_sdk_client") as reset_mock, patch(
+            "agent.auxiliary_client.evict_cached_auxiliary_clients"
+        ) as evict_mock:
+            cac.prepare_cursor_auxiliary_credentials(reload_only=True)
+        reset_mock.assert_not_called()
+        evict_mock.assert_not_called()
+
+    def test_per_task_sdk_clients_are_isolated(self):
+        from agent import cursor_auxiliary_client as cac
+
+        created = []
+
+        def _fake_from_bridge(**kwargs):
+            client = MagicMock(name=f"client-{len(created)}")
+            created.append(client)
+            return client
+
+        with patch.object(cac, "_client_from_shared_bridge", side_effect=_fake_from_bridge):
+            a = cac.get_cursor_sdk_client(kanban_isolation_key="t_a")
+            b = cac.get_cursor_sdk_client(kanban_isolation_key="t_b")
+        self.assertIsNot(a, b)
+        self.assertEqual(len(created), 2)
+        cac.release_cursor_sdk_client("t_a")
+        a.close.assert_called_once()
+        b.close.assert_not_called()
+
+    def test_effective_cursor_auxiliary_timeout_floor(self, monkeypatch):
+        from agent.cursor_auxiliary_client import effective_cursor_auxiliary_timeout
+
+        monkeypatch.delenv("HERMES_KANBAN_CURSOR_AUX_TIMEOUT", raising=False)
+        # Reload module constant after env change
+        import agent.cursor_auxiliary_client as cac
+
+        monkeypatch.setattr(cac, "_CURSOR_KANBAN_AUX_TIMEOUT_FLOOR", 600.0)
+        self.assertEqual(cac.effective_cursor_auxiliary_timeout(120), 600.0)
+        self.assertEqual(cac.effective_cursor_auxiliary_timeout(900), 900.0)
+
+    def test_prepare_skips_client_reset_while_other_aux_ops_in_flight(self):
+        from agent import cursor_auxiliary_client as cac
+
+        sentinel = object()
+        with patch.object(cac, "reset_cursor_sdk_client") as reset_mock, patch(
+            "agent.auxiliary_client.evict_cached_auxiliary_clients"
+        ) as evict_mock, patch.object(
+            cac, "_active_auxiliary_ops", 2
+        ):
+            cac.prepare_cursor_auxiliary_credentials()
+        reset_mock.assert_not_called()
+        evict_mock.assert_not_called()
+
+        with patch.object(cac, "reset_cursor_sdk_client") as reset_mock, patch(
+            "agent.auxiliary_client.evict_cached_auxiliary_clients"
+        ) as evict_mock, patch.object(
+            cac, "_active_auxiliary_ops", 1
+        ):
+            cac.prepare_cursor_auxiliary_credentials()
+        reset_mock.assert_called_once()
+        evict_mock.assert_called_once()
+
 
 if __name__ == "__main__":
     unittest.main()

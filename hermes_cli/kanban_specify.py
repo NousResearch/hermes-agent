@@ -185,78 +185,80 @@ def specify_task(
         )
 
     try:
-        from agent.auxiliary_client import get_auxiliary_extra_body, get_text_auxiliary_client
-        from agent.cursor_auxiliary_client import prepare_cursor_auxiliary_credentials
+        from agent.auxiliary_client import get_auxiliary_extra_body
+        from hermes_cli.kanban_auxiliary import (
+            kanban_auxiliary_timeout,
+            kanban_card_auxiliary_client,
+        )
     except Exception as exc:  # pragma: no cover — import smoke test
         logger.debug("specify: auxiliary client import failed: %s", exc)
         return SpecifyOutcome(task_id, False, "auxiliary client unavailable")
 
-    try:
-        prepare_cursor_auxiliary_credentials()
-        client, model = get_text_auxiliary_client("triage_specifier")
-    except Exception as exc:
-        logger.debug("specify: get_text_auxiliary_client failed: %s", exc)
-        return SpecifyOutcome(task_id, False, "auxiliary client unavailable")
+    with kanban_card_auxiliary_client(task_id, "triage_specifier") as (client, model):
+        if client is None or not model:
+            return SpecifyOutcome(
+                task_id, False, "no auxiliary client configured"
+            )
 
-    if client is None or not model:
-        return SpecifyOutcome(
-            task_id, False, "no auxiliary client configured"
+        user_msg = _USER_TEMPLATE.format(
+            task_id=task.id,
+            title=_truncate(task.title or "", 400),
+            body=_truncate(task.body or "(no body)", 4000),
         )
 
-    user_msg = _USER_TEMPLATE.format(
-        task_id=task.id,
-        title=_truncate(task.title or "", 400),
-        body=_truncate(task.body or "(no body)", 4000),
-    )
+        request_kwargs = {
+            "model": model,
+            "messages": [
+                {"role": "system", "content": _SYSTEM_PROMPT},
+                {"role": "user", "content": user_msg},
+            ],
+            "temperature": 0.3,
+            "max_tokens": HERMES_KANBAN_SPECIFY_MAX_TOKENS,
+            "timeout": kanban_auxiliary_timeout(
+                "triage_specifier",
+                client,
+                explicit=timeout,
+                default=180.0,
+            ),
+            "extra_body": get_auxiliary_extra_body() or None,
+        }
+        if _specifier_uses_lmstudio():
+            # LM Studio thinking models can spend the whole completion budget in
+            # reasoning_content and leave message.content empty. Specify needs the
+            # final JSON in content, so disable reasoning for this formatting step.
+            request_kwargs["reasoning_effort"] = "none"
 
-    request_kwargs = {
-        "model": model,
-        "messages": [
-            {"role": "system", "content": _SYSTEM_PROMPT},
-            {"role": "user", "content": user_msg},
-        ],
-        "temperature": 0.3,
-        "max_tokens": HERMES_KANBAN_SPECIFY_MAX_TOKENS,
-        "timeout": timeout or 120,
-        "extra_body": get_auxiliary_extra_body() or None,
-    }
-    if _specifier_uses_lmstudio():
-        # LM Studio thinking models can spend the whole completion budget in
-        # reasoning_content and leave message.content empty. Specify needs the
-        # final JSON in content, so disable reasoning for this formatting step.
-        request_kwargs["reasoning_effort"] = "none"
+        from hermes_cli.kanban_worker_log import emit_task_worker_log, task_worker_log
 
-    from hermes_cli.kanban_worker_log import emit_task_worker_log, task_worker_log
+        try:
+            with task_worker_log(task_id, operation="specify", model=model or ""):
+                emit_task_worker_log("Calling auxiliary LLM…\n")
+                resp = client.chat.completions.create(**request_kwargs)
+                try:
+                    raw = (resp.choices[0].message.content or "").strip()
+                except Exception:
+                    raw = ""
+                try:
+                    from agent.cursor_auxiliary_client import CursorAuxiliaryClient
 
-    try:
-        with task_worker_log(task_id, operation="specify", model=model or ""):
-            emit_task_worker_log("Calling auxiliary LLM…\n")
-            resp = client.chat.completions.create(**request_kwargs)
-            try:
-                raw = (resp.choices[0].message.content or "").strip()
-            except Exception:
-                raw = ""
-            try:
-                from agent.cursor_auxiliary_client import CursorAuxiliaryClient
-
-                streamed = isinstance(client, CursorAuxiliaryClient)
-            except ImportError:
-                streamed = False
-            if not streamed:
-                emit_task_worker_log("\n--- LLM response ---\n")
-                if raw:
-                    emit_task_worker_log(raw)
-                    if not raw.endswith("\n"):
-                        emit_task_worker_log("\n")
-    except Exception as exc:
-        logger.info(
-            "specify: API call failed for %s (%s) — skipping",
-            task_id, exc,
-        )
-        detail = str(exc).strip() or type(exc).__name__
-        return SpecifyOutcome(
-            task_id, False, f"LLM error: {detail}"
-        )
+                    streamed = isinstance(client, CursorAuxiliaryClient)
+                except ImportError:
+                    streamed = False
+                if not streamed:
+                    emit_task_worker_log("\n--- LLM response ---\n")
+                    if raw:
+                        emit_task_worker_log(raw)
+                        if not raw.endswith("\n"):
+                            emit_task_worker_log("\n")
+        except Exception as exc:
+            logger.info(
+                "specify: API call failed for %s (%s) — skipping",
+                task_id, exc,
+            )
+            detail = str(exc).strip() or type(exc).__name__
+            return SpecifyOutcome(
+                task_id, False, f"LLM error: {detail}"
+            )
 
     parsed = _extract_json_blob(raw)
 

@@ -8,6 +8,7 @@ writes, and CLI flag surface.
 from __future__ import annotations
 
 import argparse
+import contextlib
 import json as jsonlib
 from pathlib import Path
 from unittest.mock import MagicMock, patch
@@ -48,14 +49,16 @@ def _mock_client_returning(content: str):
 
 
 def _patch_aux_client(content: str, *, model: str = "test-model"):
-    """Patch get_text_auxiliary_client at its source + at the module that
-    imported it lazily inside specify_task. Both patches are needed
-    because kanban_specify imports the function inside the function body.
-    """
+    """Patch kanban per-card auxiliary client at the source + lazy import site."""
     client = _mock_client_returning(content)
+
+    @contextlib.contextmanager
+    def _fake_ctx(task_id, aux_task):
+        yield client, model
+
     return patch(
-        "agent.auxiliary_client.get_text_auxiliary_client",
-        return_value=(client, model),
+        "hermes_cli.kanban_auxiliary.kanban_card_auxiliary_client",
+        _fake_ctx,
     ), client
 
 
@@ -164,9 +167,13 @@ def test_specify_task_no_aux_client_configured(kanban_home):
     with kb.connect() as conn:
         tid = kb.create_task(conn, title="rough", triage=True)
 
+    @contextlib.contextmanager
+    def _empty_ctx(task_id, aux_task):
+        yield None, ""
+
     with patch(
-        "agent.auxiliary_client.get_text_auxiliary_client",
-        return_value=(None, ""),
+        "hermes_cli.kanban_auxiliary.kanban_card_auxiliary_client",
+        _empty_ctx,
     ):
         outcome = spec.specify_task(tid)
 
@@ -183,9 +190,14 @@ def test_specify_task_llm_api_error_keeps_task_in_triage(kanban_home):
 
     client = MagicMock()
     client.chat.completions.create = MagicMock(side_effect=RuntimeError("429 rate limited"))
+
+    @contextlib.contextmanager
+    def _err_ctx(task_id, aux_task):
+        yield client, "test-model"
+
     with patch(
-        "agent.auxiliary_client.get_text_auxiliary_client",
-        return_value=(client, "test-model"),
+        "hermes_cli.kanban_auxiliary.kanban_card_auxiliary_client",
+        _err_ctx,
     ):
         outcome = spec.specify_task(tid)
 
@@ -293,9 +305,13 @@ def test_cli_specify_all_returns_1_when_every_task_fails(kanban_home, capsys):
         kb.create_task(conn, title="a", triage=True)
         kb.create_task(conn, title="b", triage=True)
 
+    @contextlib.contextmanager
+    def _empty_ctx(task_id, aux_task):
+        yield None, ""
+
     with patch(
-        "agent.auxiliary_client.get_text_auxiliary_client",
-        return_value=(None, ""),  # no aux client → every task fails
+        "hermes_cli.kanban_auxiliary.kanban_card_auxiliary_client",
+        _empty_ctx,
     ):
         rc = _run_cli("specify", "--all")
 

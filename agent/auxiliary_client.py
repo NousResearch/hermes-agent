@@ -3085,6 +3085,7 @@ def resolve_provider_client(
     api_mode: str = None,
     main_runtime: Optional[Dict[str, Any]] = None,
     is_vision: bool = False,
+    kanban_isolation_key: Optional[str] = None,
 ) -> Tuple[Optional[Any], Optional[str]]:
     """Central router: given a provider name and optional model, return a
     configured client with the correct auth, base URL, and API format.
@@ -3261,7 +3262,10 @@ def resolve_provider_client(
     if provider == "cursor":
         from agent.cursor_auxiliary_client import build_cursor_auxiliary_client
 
-        client, default = build_cursor_auxiliary_client(model)
+        client, default = build_cursor_auxiliary_client(
+            model,
+            kanban_isolation_key=kanban_isolation_key,
+        )
         if client is None:
             logger.warning(
                 "resolve_provider_client: cursor requested but CURSOR_API_KEY "
@@ -3727,6 +3731,31 @@ def get_text_auxiliary_client(
         explicit_api_key=api_key,
         api_mode=api_mode,
         main_runtime=main_runtime,
+    )
+
+
+def get_isolated_text_auxiliary_client(
+    task: str,
+    kanban_isolation_key: str,
+    *,
+    main_runtime: Optional[Dict[str, Any]] = None,
+) -> Tuple[Optional[OpenAI], Optional[str]]:
+    """Return a dedicated auxiliary client for one kanban card operation.
+
+    Bypasses the process-wide client cache so concurrent specify/decompose
+    calls on different cards do not share or close each other's transports.
+    Call :func:`hermes_cli.kanban_auxiliary.release_kanban_auxiliary_client`
+    when the operation finishes.
+    """
+    provider, model, base_url, api_key, api_mode = _resolve_task_provider_model(task or None)
+    return resolve_provider_client(
+        provider,
+        model=model,
+        explicit_base_url=base_url,
+        explicit_api_key=api_key,
+        api_mode=api_mode,
+        main_runtime=main_runtime,
+        kanban_isolation_key=kanban_isolation_key,
     )
 
 

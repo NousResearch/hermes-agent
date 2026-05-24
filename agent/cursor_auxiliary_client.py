@@ -13,8 +13,9 @@ import logging
 import os
 import threading
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError
+from contextlib import contextmanager
 from types import SimpleNamespace
-from typing import Any, Callable, Optional
+from typing import Any, Callable, Iterator, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -22,7 +23,174 @@ CURSOR_AUX_BASE_URL = "cursor://sdk"
 _DEFAULT_AUX_TIMEOUT = 120.0
 
 _sdk_client: Any = None
+_sdk_clients: dict[str, Any] = {}
+_shared_bridge: Any = None
+_shared_bridge_endpoint: Any = None
 _sdk_client_lock = threading.Lock()
+_bridge_launch_lock = threading.Lock()
+_active_auxiliary_ops = 0
+_active_auxiliary_ops_lock = threading.Lock()
+
+# Cursor specify/decompose agents may tool-loop in the repo; HTTP timeouts are too tight.
+_CURSOR_KANBAN_AUX_TIMEOUT_FLOOR = max(
+    120.0,
+    float(os.getenv("HERMES_KANBAN_CURSOR_AUX_TIMEOUT", "600")),
+)
+
+
+def _emit_aux_progress(text: str) -> None:
+    if not text:
+        return
+    try:
+        from hermes_cli.kanban_worker_log import get_task_worker_log_sink
+
+        sink = get_task_worker_log_sink()
+        if sink is not None:
+            sink(text)
+            return
+    except ImportError:
+        pass
+    logger.info(text.rstrip())
+
+
+def _ensure_shared_bridge(*, cwd: Optional[str] = None) -> Any:
+    """Launch or reuse the process-wide cursor-sdk-bridge subprocess."""
+    global _shared_bridge, _shared_bridge_endpoint
+
+    bridge_url = os.environ.get("CURSOR_SDK_BRIDGE_URL", "").strip()
+    bridge_token = (
+        os.environ.get("CURSOR_SDK_BRIDGE_TOKEN")
+        or os.environ.get("CURSOR_SDK_BRIDGE_AUTH_TOKEN")
+        or ""
+    ).strip()
+    if bridge_url and bridge_token:
+        from cursor_sdk import Client
+
+        return Client(
+            base_url=bridge_url,
+            auth_token=bridge_token,
+            allow_api_key_env_fallback=True,
+        )
+
+    with _sdk_client_lock:
+        if _shared_bridge_endpoint is not None:
+            return _shared_bridge_endpoint
+
+    with _bridge_launch_lock:
+        with _sdk_client_lock:
+            if _shared_bridge_endpoint is not None:
+                return _shared_bridge_endpoint
+
+        from agent.transports.cursor_sdk_session import (
+            _bridge_launch_needs_workaround,
+            _launch_bridge_threaded,
+            preflight_cursor_sdk,
+        )
+
+        _emit_aux_progress("Starting Cursor bridge…\n")
+        preflight_cursor_sdk()
+        workspace = cwd or _aux_cursor_cwd()
+
+        if _bridge_launch_needs_workaround():
+            bridge, _process = _launch_bridge_threaded(workspace)
+        else:
+            from cursor_sdk._client import Client as SdkClient
+
+            launched = SdkClient.launch_bridge(
+                workspace=workspace,
+                allow_api_key_env_fallback=True,
+            )
+            bridge = getattr(launched, "_owned_bridge", None)
+            if bridge is None:
+                # External bridge config — launched client owns transport only.
+                return launched
+
+        with _sdk_client_lock:
+            _shared_bridge = bridge
+            _shared_bridge_endpoint = bridge.endpoint
+        logger.info(
+            "cursor auxiliary bridge ready url=%s pid=%s",
+            getattr(_shared_bridge_endpoint, "url", "?"),
+            getattr(getattr(_shared_bridge, "process", None), "pid", "?"),
+        )
+        return _shared_bridge_endpoint
+
+
+def _client_from_shared_bridge(*, cwd: Optional[str] = None) -> Any:
+    """New SDK Client transport to the shared bridge (does not own the subprocess)."""
+    from cursor_sdk import Client
+
+    bridge_or_client = _ensure_shared_bridge(cwd=cwd)
+    if hasattr(bridge_or_client, "agents"):
+        return bridge_or_client
+    return Client(
+        bridge_or_client,
+        allow_api_key_env_fallback=True,
+    )
+
+
+def _create_cursor_sdk_client(*, cwd: Optional[str] = None) -> Any:
+    """Create a Cursor SDK ``Client`` connected to the shared bridge."""
+    return _client_from_shared_bridge(cwd=cwd)
+
+
+def get_cursor_sdk_client(
+    *,
+    cwd: Optional[str] = None,
+    kanban_isolation_key: Optional[str] = None,
+) -> Any:
+    """Return a Cursor SDK ``Client``.
+
+    Kanban specify/decompose pass ``kanban_isolation_key`` (task id) so
+    concurrent cards get separate transports to the same bridge subprocess.
+    Non-kanban auxiliary calls reuse the process-global client.
+    """
+    if kanban_isolation_key:
+        key = str(kanban_isolation_key).strip()
+        if not key:
+            raise ValueError("kanban_isolation_key must be non-empty")
+        with _sdk_client_lock:
+            existing = _sdk_clients.get(key)
+            if existing is not None:
+                return existing
+        client = _client_from_shared_bridge(cwd=cwd)
+        with _sdk_client_lock:
+            return _sdk_clients.setdefault(key, client)
+
+    global _sdk_client
+    with _sdk_client_lock:
+        if _sdk_client is not None:
+            return _sdk_client
+    client = _client_from_shared_bridge(cwd=cwd)
+    with _sdk_client_lock:
+        if _sdk_client is None:
+            _sdk_client = client
+        return _sdk_client
+
+
+def release_cursor_sdk_client(kanban_isolation_key: str) -> None:
+    """Drop a per-card SDK client and close its transport (not the shared bridge)."""
+    key = str(kanban_isolation_key or "").strip()
+    if not key:
+        return
+    with _sdk_client_lock:
+        client = _sdk_clients.pop(key, None)
+    if client is None or client is _sdk_client:
+        return
+    try:
+        close_fn = getattr(client, "close", None)
+        if callable(close_fn):
+            close_fn()
+    except Exception:
+        pass
+
+
+def effective_cursor_auxiliary_timeout(requested: float) -> float:
+    """Apply the Cursor kanban auxiliary floor so tool loops can finish."""
+    try:
+        return max(float(requested), _CURSOR_KANBAN_AUX_TIMEOUT_FLOOR)
+    except (TypeError, ValueError):
+        return _CURSOR_KANBAN_AUX_TIMEOUT_FLOOR
 
 
 def _aux_cursor_cwd() -> str:
@@ -41,52 +209,6 @@ def _aux_cursor_cwd() -> str:
         return str(get_hermes_home())
     except Exception:
         return os.path.expanduser("~")
-
-
-def get_cursor_sdk_client(*, cwd: Optional[str] = None) -> Any:
-    """Return a process-cached Cursor SDK ``Client`` (bridge launched if needed)."""
-    global _sdk_client
-    with _sdk_client_lock:
-        if _sdk_client is not None:
-            return _sdk_client
-
-        from agent.transports.cursor_sdk_session import (
-            _bridge_launch_needs_workaround,
-            _launch_bridge_threaded,
-            preflight_cursor_sdk,
-        )
-
-        preflight_cursor_sdk()
-        workspace = cwd or _aux_cursor_cwd()
-
-        bridge_url = os.environ.get("CURSOR_SDK_BRIDGE_URL", "").strip()
-        bridge_token = (
-            os.environ.get("CURSOR_SDK_BRIDGE_TOKEN")
-            or os.environ.get("CURSOR_SDK_BRIDGE_AUTH_TOKEN")
-            or ""
-        ).strip()
-        from cursor_sdk import Client
-
-        if bridge_url and bridge_token:
-            _sdk_client = Client(
-                base_url=bridge_url,
-                auth_token=bridge_token,
-                allow_api_key_env_fallback=True,
-            )
-            return _sdk_client
-
-        if _bridge_launch_needs_workaround():
-            bridge, _process = _launch_bridge_threaded(workspace)
-            _sdk_client = Client(bridge.endpoint, allow_api_key_env_fallback=True)
-            return _sdk_client
-
-        from cursor_sdk._client import Client as SdkClient
-
-        _sdk_client = SdkClient.launch_bridge(
-            workspace=workspace,
-            allow_api_key_env_fallback=True,
-        )
-        return _sdk_client
 
 
 def _messages_to_prompt(messages: list) -> str:
@@ -190,28 +312,68 @@ def _cursor_api_key(explicit: Optional[str] = None) -> str:
 
 
 def reset_cursor_sdk_client() -> None:
-    """Drop the process-global Cursor SDK client (bridge + HTTP pool)."""
-    global _sdk_client
+    """Drop SDK clients and the shared bridge subprocess."""
+    global _sdk_client, _shared_bridge, _shared_bridge_endpoint
     with _sdk_client_lock:
-        if _sdk_client is None:
-            return
+        per_card = list(_sdk_clients.values())
+        _sdk_clients.clear()
+        client = _sdk_client
+        _sdk_client = None
+    for extra in per_card:
+        if extra is client:
+            continue
         try:
-            close_fn = getattr(_sdk_client, "close", None)
+            close_fn = getattr(extra, "close", None)
             if callable(close_fn):
                 close_fn()
         except Exception:
             pass
-        _sdk_client = None
+    if client is not None:
+        try:
+            close_fn = getattr(client, "close", None)
+            if callable(close_fn):
+                close_fn()
+        except Exception:
+            pass
+    with _bridge_launch_lock:
+        bridge = _shared_bridge
+        _shared_bridge = None
+        _shared_bridge_endpoint = None
+    if bridge is not None:
+        try:
+            bridge.close()
+        except Exception:
+            pass
 
 
-def prepare_cursor_auxiliary_credentials() -> None:
-    """Reload Cursor credentials and reset SDK state before an auxiliary call.
+@contextmanager
+def auxiliary_operation_in_flight() -> Iterator[None]:
+    """Track concurrent kanban specify/decompose auxiliary LLM calls.
 
-    ``hermes kanban specify`` from the CLI starts a fresh process that loads
-    ``~/.hermes/.env`` on startup. The dashboard is long-lived: without this
-    refresh it can keep a stale API key, an empty env placeholder, or a dead
-    bridge — surfacing as ``AuthenticationError`` / unauthorized while the
-    CLI still works.
+    While more than one call is active, ``prepare_cursor_auxiliary_credentials``
+    reloads credentials without closing shared SDK/HTTP clients that an
+    in-flight call may still be using.
+    """
+    global _active_auxiliary_ops
+    with _active_auxiliary_ops_lock:
+        _active_auxiliary_ops += 1
+    try:
+        yield
+    finally:
+        with _active_auxiliary_ops_lock:
+            _active_auxiliary_ops -= 1
+
+
+def prepare_cursor_auxiliary_credentials(
+    *,
+    force_reset: bool = False,
+    reload_only: bool = False,
+) -> None:
+    """Reload Cursor credentials and optionally reset SDK state.
+
+    ``reload_only=True`` refreshes ``~/.hermes/.env`` into the process without
+    closing any clients — used by per-card kanban auxiliary ops that own
+    their own client for the duration of the call.
     """
     try:
         from hermes_cli.config import get_hermes_home, invalidate_env_cache
@@ -221,6 +383,12 @@ def prepare_cursor_auxiliary_credentials() -> None:
         invalidate_env_cache()
     except Exception:
         pass
+    if reload_only:
+        return
+    with _active_auxiliary_ops_lock:
+        skip_reset = (not force_reset) and _active_auxiliary_ops > 1
+    if skip_reset:
+        return
     reset_cursor_sdk_client()
     try:
         from agent import auxiliary_client as aux
@@ -240,10 +408,12 @@ class _CursorCompletionsAdapter:
         model: str,
         api_key: str,
         cwd: Optional[str] = None,
+        kanban_isolation_key: Optional[str] = None,
     ) -> None:
         self._model = model
         self._api_key = api_key
         self._cwd = cwd or _aux_cursor_cwd()
+        self._kanban_isolation_key = kanban_isolation_key
 
     def create(self, **kwargs: Any) -> Any:
         from cursor_sdk import Agent, AgentOptions, CursorAgentError, LocalAgentOptions
@@ -251,7 +421,9 @@ class _CursorCompletionsAdapter:
 
         messages = kwargs.get("messages") or []
         model = str(kwargs.get("model") or self._model or "composer-2.5")
-        timeout = float(kwargs.get("timeout") or _DEFAULT_AUX_TIMEOUT)
+        timeout = effective_cursor_auxiliary_timeout(
+            float(kwargs.get("timeout") or _DEFAULT_AUX_TIMEOUT)
+        )
         prompt = _messages_to_prompt(messages)
         if not prompt:
             raise ValueError("Cursor auxiliary call requires at least one message")
@@ -271,7 +443,6 @@ class _CursorCompletionsAdapter:
             api_key=api_key,
             local=LocalAgentOptions(cwd=self._cwd, setting_sources=[]),
         )
-        client = get_cursor_sdk_client(cwd=self._cwd)
 
         try:
             from hermes_cli.kanban_worker_log import (
@@ -282,6 +453,11 @@ class _CursorCompletionsAdapter:
             progress_emit = get_task_worker_log_sink()
         except ImportError:
             progress_emit = None
+
+        client = get_cursor_sdk_client(
+            cwd=self._cwd,
+            kanban_isolation_key=self._kanban_isolation_key,
+        )
 
         def _prompt() -> Any:
             if progress_emit is not None:
@@ -319,9 +495,22 @@ class _CursorChatShim:
 class CursorAuxiliaryClient:
     """OpenAI-compatible wrapper over ``Agent.prompt`` for side tasks."""
 
-    def __init__(self, *, model: str, api_key: str = "", cwd: Optional[str] = None) -> None:
+    def __init__(
+        self,
+        *,
+        model: str,
+        api_key: str = "",
+        cwd: Optional[str] = None,
+        kanban_isolation_key: Optional[str] = None,
+    ) -> None:
         self._model = model
-        adapter = _CursorCompletionsAdapter(model=model, api_key=api_key, cwd=cwd)
+        self._kanban_isolation_key = kanban_isolation_key
+        adapter = _CursorCompletionsAdapter(
+            model=model,
+            api_key=api_key,
+            cwd=cwd,
+            kanban_isolation_key=kanban_isolation_key,
+        )
         self.chat = _CursorChatShim(adapter)
         self.api_key = api_key or _cursor_api_key()
         self.base_url = CURSOR_AUX_BASE_URL
@@ -356,6 +545,7 @@ def build_cursor_auxiliary_client(
     model: Optional[str] = None,
     *,
     api_key: Optional[str] = None,
+    kanban_isolation_key: Optional[str] = None,
 ) -> tuple[Optional[CursorAuxiliaryClient], Optional[str]]:
     """Build a Cursor SDK auxiliary client when ``CURSOR_API_KEY`` is available."""
     resolved_model = (model or "").strip() or "composer-2.5"
@@ -366,4 +556,11 @@ def build_cursor_auxiliary_client(
         )
         return None, None
     logger.debug("Auxiliary client: Cursor SDK (%s)", resolved_model)
-    return CursorAuxiliaryClient(model=resolved_model, api_key=key), resolved_model
+    return (
+        CursorAuxiliaryClient(
+            model=resolved_model,
+            api_key=key,
+            kanban_isolation_key=kanban_isolation_key,
+        ),
+        resolved_model,
+    )

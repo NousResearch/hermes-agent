@@ -853,6 +853,7 @@ class APIServerAdapter(BasePlatformAdapter):
         ephemeral_system_prompt: Optional[str] = None,
         session_id: Optional[str] = None,
         stream_delta_callback=None,
+        reasoning_callback=None,
         tool_progress_callback=None,
         tool_start_callback=None,
         tool_complete_callback=None,
@@ -902,6 +903,7 @@ class APIServerAdapter(BasePlatformAdapter):
             session_id=session_id,
             platform="api_server",
             stream_delta_callback=stream_delta_callback,
+            reasoning_callback=reasoning_callback,
             tool_progress_callback=tool_progress_callback,
             tool_start_callback=tool_start_callback,
             tool_complete_callback=tool_complete_callback,
@@ -1427,11 +1429,46 @@ class APIServerAdapter(BasePlatformAdapter):
                 if delta is not None:
                     _stream_q.put(delta)
 
+            def _on_reasoning(delta):
+                if delta:
+                    _stream_q.put(("__reasoning_delta__", {"text": delta}))
+
             # Track which tool_call_ids we've emitted a "running" lifecycle
             # event for, so a "completed" event without a matching "running"
             # (e.g. internal/filtered tools) is silently dropped instead of
             # producing an orphaned event clients can't correlate.
             _started_tool_call_ids: set[str] = set()
+            _legacy_started_tools: set[str] = set()
+            _legacy_completed_tools: set[str] = set()
+
+            def _on_tool_progress(event_type, tool_name=None, preview=None, args=None, **kwargs):
+                """Bridge legacy tool progress into chat-completions SSE.
+
+                Hermes still emits some user-visible tool activity through the
+                legacy progress callback before structured tool callbacks fire.
+                Prefer this path for display labels, then suppress the later
+                structured duplicate for the same tool name.
+                """
+                if event_type == "reasoning.available" and preview:
+                    _stream_q.put(("__reasoning_delta__", {"text": preview}))
+                    return
+                if not tool_name or str(tool_name).startswith("_"):
+                    return
+                if event_type == "tool.started":
+                    _legacy_started_tools.add(tool_name)
+                    from agent.display import get_tool_emoji
+                    _stream_q.put(("__tool_progress__", {
+                        "tool": tool_name,
+                        "emoji": get_tool_emoji(tool_name),
+                        "label": preview or tool_name,
+                        "status": "running",
+                    }))
+                elif event_type == "tool.completed":
+                    _legacy_completed_tools.add(tool_name)
+                    _stream_q.put(("__tool_progress__", {
+                        "tool": tool_name,
+                        "status": "failed" if kwargs.get("is_error") else "completed",
+                    }))
 
             def _on_tool_start(tool_call_id, function_name, function_args):
                 """Emit ``hermes.tool.progress`` with ``status: running``.
@@ -1449,6 +1486,8 @@ class APIServerAdapter(BasePlatformAdapter):
                 if not tool_call_id or function_name.startswith("_"):
                     return
                 _started_tool_call_ids.add(tool_call_id)
+                if function_name in _legacy_started_tools:
+                    return
                 from agent.display import build_tool_preview, get_tool_emoji
                 label = build_tool_preview(function_name, function_args) or function_name
                 _stream_q.put(("__tool_progress__", {
@@ -1469,6 +1508,8 @@ class APIServerAdapter(BasePlatformAdapter):
                 if not tool_call_id or tool_call_id not in _started_tool_call_ids:
                     return
                 _started_tool_call_ids.discard(tool_call_id)
+                if function_name in _legacy_completed_tools:
+                    return
                 _stream_q.put(("__tool_progress__", {
                     "tool": function_name,
                     "toolCallId": tool_call_id,
@@ -1506,6 +1547,8 @@ class APIServerAdapter(BasePlatformAdapter):
                 ephemeral_system_prompt=system_prompt,
                 session_id=session_id,
                 stream_delta_callback=_on_delta,
+                reasoning_callback=_on_reasoning,
+                tool_progress_callback=_on_tool_progress,
                 tool_start_callback=_on_tool_start,
                 tool_complete_callback=_on_tool_complete,
                 agent_ref=agent_ref,
@@ -1682,16 +1725,21 @@ class APIServerAdapter(BasePlatformAdapter):
                 """Write a single queue item to the SSE stream.
 
                 Plain strings are sent as normal ``delta.content`` chunks.
-                Tagged tuples ``("__tool_progress__", payload)`` are sent
-                as a custom ``event: hermes.tool.progress`` SSE event so
-                frontends can display them without storing the markers in
-                conversation history.  See #6972 for the original event,
-                #16588 for the ``toolCallId``/``status`` lifecycle fields.
+                Tagged tuples are sent as custom SSE events so frontends can
+                display auxiliary agent state without storing markers in
+                conversation history. Tool progress uses
+                ``hermes.tool.progress`` (see #6972 / #16588), and reasoning
+                deltas use ``hermes.reasoning.delta`` for live thought panels.
                 """
                 if isinstance(item, tuple) and len(item) == 2 and item[0] == "__tool_progress__":
                     event_data = json.dumps(item[1])
                     await response.write(
                         f"event: hermes.tool.progress\ndata: {event_data}\n\n".encode()
+                    )
+                elif isinstance(item, tuple) and len(item) == 2 and item[0] == "__reasoning_delta__":
+                    event_data = json.dumps(item[1])
+                    await response.write(
+                        f"event: hermes.reasoning.delta\ndata: {event_data}\n\n".encode()
                     )
                 elif isinstance(item, tuple) and len(item) == 2 and item[0] == "__approval_request__":
                     event_data = json.dumps(item[1])
@@ -3119,6 +3167,7 @@ class APIServerAdapter(BasePlatformAdapter):
         ephemeral_system_prompt: Optional[str] = None,
         session_id: Optional[str] = None,
         stream_delta_callback=None,
+        reasoning_callback=None,
         tool_progress_callback=None,
         tool_start_callback=None,
         tool_complete_callback=None,
@@ -3148,6 +3197,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 ephemeral_system_prompt=ephemeral_system_prompt,
                 session_id=session_id,
                 stream_delta_callback=stream_delta_callback,
+                reasoning_callback=reasoning_callback,
                 tool_progress_callback=tool_progress_callback,
                 tool_start_callback=tool_start_callback,
                 tool_complete_callback=tool_complete_callback,

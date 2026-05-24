@@ -280,12 +280,15 @@ function SessionRow({
 
   useEffect(() => {
     if (isExpanded && messages === null && !loading) {
-      setLoading(true);
-      api
-        .getSessionMessages(session.id)
-        .then((resp) => setMessages(resp.messages))
-        .catch((err) => setError(String(err)))
-        .finally(() => setLoading(false));
+      const timer = window.setTimeout(() => {
+        setLoading(true);
+        api
+          .getSessionMessages(session.id)
+          .then((resp) => setMessages(resp.messages))
+          .catch((err) => setError(String(err)))
+          .finally(() => setLoading(false));
+      }, 0);
+      return () => window.clearTimeout(timer);
     }
   }, [isExpanded, session.id, messages, loading]);
 
@@ -526,7 +529,8 @@ export default function SessionsPage() {
   }, []);
 
   useEffect(() => {
-    loadSessions(page);
+    const timer = window.setTimeout(() => loadSessions(page), 0);
+    return () => window.clearTimeout(timer);
   }, [loadSessions, page]);
 
   useEffect(() => {
@@ -554,22 +558,26 @@ export default function SessionsPage() {
   useEffect(() => {
     if (debounceRef.current) clearTimeout(debounceRef.current);
 
-    if (!search.trim()) {
-      setSearchResults(null);
-      setSearching(false);
-      return;
-    }
+    const query = search.trim();
+    const timer = window.setTimeout(() => {
+      if (!query) {
+        setSearchResults(null);
+        setSearching(false);
+        return;
+      }
 
-    setSearching(true);
-    debounceRef.current = setTimeout(() => {
-      api
-        .searchSessions(search.trim())
-        .then((resp) => setSearchResults(resp.results))
-        .catch(() => setSearchResults(null))
-        .finally(() => setSearching(false));
-    }, 300);
+      setSearching(true);
+      debounceRef.current = setTimeout(() => {
+        api
+          .searchSessions(query)
+          .then((resp) => setSearchResults(resp.results))
+          .catch(() => setSearchResults(null))
+          .finally(() => setSearching(false));
+      }, 300);
+    }, 0);
 
     return () => {
+      window.clearTimeout(timer);
       if (debounceRef.current) clearTimeout(debounceRef.current);
     };
   }, [search]);
@@ -627,10 +635,6 @@ export default function SessionsPage() {
     platformEntries.length > 0 || recentSessions.length > 0;
   const showList = view === "list" || isSearching || !showOverviewTab;
   const showPagination = showList && !searchResults && total > PAGE_SIZE;
-
-  useEffect(() => {
-    if (isSearching) setView("list");
-  }, [isSearching]);
 
   const alerts: { message: string; detail?: string }[] = [];
   if (status) {

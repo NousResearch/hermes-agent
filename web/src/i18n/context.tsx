@@ -1,4 +1,4 @@
-import { createContext, useContext, useState, useCallback, type ReactNode } from "react";
+import { useState, useCallback, type ReactNode } from "react";
 import type { Locale, Translations } from "./types";
 import { en } from "./en";
 import { zh } from "./zh";
@@ -16,6 +16,7 @@ import { ga } from "./ga";
 import { pt } from "./pt";
 import { ru } from "./ru";
 import { hu } from "./hu";
+import { I18nContext, type I18nContextValue } from "./i18nContext";
 
 const TRANSLATIONS: Record<Locale, Translations> = {
   en,
@@ -36,34 +37,6 @@ const TRANSLATIONS: Record<Locale, Translations> = {
   hu,
 };
 
-// Display metadata for the language picker — endonym (native name) so users
-// recognize their language even if they don't speak the current UI language.
-// Exposed as a constant so the LanguageSwitcher and any future settings page
-// can share the same list.
-//
-// We intentionally do NOT pair locales with country flags. Languages are not
-// countries (English ≠ GB, Portuguese ≠ PT, Spanish ≠ ES, Chinese variants ≠
-// any single jurisdiction). Endonyms are unambiguous and avoid the political
-// mismapping that flag pairings inevitably create.
-export const LOCALE_META: Record<Locale, { name: string }> = {
-  en: { name: "English" },
-  zh: { name: "简体中文" },
-  "zh-hant": { name: "繁體中文" },
-  ja: { name: "日本語" },
-  de: { name: "Deutsch" },
-  es: { name: "Español" },
-  fr: { name: "Français" },
-  tr: { name: "Türkçe" },
-  uk: { name: "Українська" },
-  af: { name: "Afrikaans" },
-  ko: { name: "한국어" },
-  it: { name: "Italiano" },
-  ga: { name: "Gaeilge" },
-  pt: { name: "Português" },
-  ru: { name: "Русский" },
-  hu: { name: "Magyar" },
-};
-
 const SUPPORTED_LOCALES = Object.keys(TRANSLATIONS) as Locale[];
 const STORAGE_KEY = "hermes-locale";
 
@@ -80,18 +53,6 @@ function getInitialLocale(): Locale {
   }
   return "en";
 }
-
-interface I18nContextValue {
-  locale: Locale;
-  setLocale: (l: Locale) => void;
-  t: Translations;
-}
-
-const I18nContext = createContext<I18nContextValue>({
-  locale: "en",
-  setLocale: () => {},
-  t: en,
-});
 
 export function I18nProvider({ children }: { children: ReactNode }) {
   const [locale, setLocaleState] = useState<Locale>(getInitialLocale);
@@ -116,8 +77,4 @@ export function I18nProvider({ children }: { children: ReactNode }) {
       {children}
     </I18nContext.Provider>
   );
-}
-
-export function useI18n() {
-  return useContext(I18nContext);
 }

@@ -1,4 +1,4 @@
-import { useEffect, useState, useCallback, useRef } from "react";
+import { useEffect, useState, useCallback } from "react";
 import {
   ShieldCheck,
   ShieldOff,
@@ -58,20 +58,18 @@ export function OAuthProvidersCard({ onError, onSuccess }: Props) {
     useState<OAuthProvider | null>(null);
   const { t } = useI18n();
 
-  const onErrorRef = useRef(onError);
-  onErrorRef.current = onError;
-
   const refresh = useCallback(() => {
     setLoading(true);
     api
       .getOAuthProviders()
       .then((resp) => setProviders(resp.providers))
-      .catch((e) => onErrorRef.current?.(`Failed to load providers: ${e}`))
+      .catch((e) => onError?.(`Failed to load providers: ${e}`))
       .finally(() => setLoading(false));
-  }, []);
+  }, [onError]);
 
   useEffect(() => {
-    refresh();
+    const timer = window.setTimeout(refresh, 0);
+    return () => window.clearTimeout(timer);
   }, [refresh]);
 
   const handleDisconnect = async (provider: OAuthProvider) => {

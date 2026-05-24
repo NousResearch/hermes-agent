@@ -9,6 +9,14 @@ import { useI18n } from "@/i18n";
 import { cn } from "@/lib/utils";
 import type { Translations } from "@/i18n/types";
 
+function RegisteredPlugin({
+  Component,
+}: {
+  Component: React.ComponentType;
+}) {
+  return <Component />;
+}
+
 /** Renders a plugin tab once its bundle has called `register()`. */
 export function PluginPage({ name }: { name: string }) {
   const { t } = useI18n();
@@ -26,7 +34,7 @@ export function PluginPage({ name }: { name: string }) {
   );
 
   if (Component) {
-    return <Component />;
+    return <RegisteredPlugin Component={Component} />;
   }
 
   if (loadError) {

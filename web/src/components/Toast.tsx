@@ -6,14 +6,22 @@ export function Toast({ toast }: { toast: { message: string; type: "success" | "
   const [current, setCurrent] = useState(toast);
 
   useEffect(() => {
-    if (toast) {
-      setCurrent(toast);
-      setVisible(true);
-    } else {
-      setVisible(false);
-      const timer = setTimeout(() => setCurrent(null), 200);
-      return () => clearTimeout(timer);
-    }
+    let clearCurrentTimer: number | undefined;
+    const applyTimer = window.setTimeout(() => {
+      if (toast) {
+        setCurrent(toast);
+        setVisible(true);
+      } else {
+        setVisible(false);
+        clearCurrentTimer = window.setTimeout(() => setCurrent(null), 200);
+      }
+    }, 0);
+    return () => {
+      window.clearTimeout(applyTimer);
+      if (clearCurrentTimer !== undefined) {
+        window.clearTimeout(clearCurrentTimer);
+      }
+    };
   }, [toast]);
 
   if (!current) return null;

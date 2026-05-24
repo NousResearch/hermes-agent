@@ -475,7 +475,8 @@ export default function AnalyticsPage() {
   }, [days, loading, load, setAfterTitle, setEnd, t.common.refresh, showTokens]);
 
   useEffect(() => {
-    load();
+    const timer = window.setTimeout(load, 0);
+    return () => window.clearTimeout(timer);
   }, [load]);
 
   return (

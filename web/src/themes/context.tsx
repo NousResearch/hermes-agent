@@ -1,7 +1,5 @@
 import {
-  createContext,
   useCallback,
-  useContext,
   useEffect,
   useMemo,
   useState,
@@ -22,6 +20,7 @@ import type {
   ThemeTypography,
 } from "./types";
 import { api } from "@/lib/api";
+import { ThemeContext, type ThemeContextValue } from "./themeContext";
 
 /** LocalStorage key — pre-applied before the React tree mounts to avoid
  *  a visible flash of the default palette on theme-overridden installs. */
@@ -412,26 +411,4 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
   );
 
   return <ThemeContext.Provider value={value}>{children}</ThemeContext.Provider>;
-}
-
-export function useTheme(): ThemeContextValue {
-  return useContext(ThemeContext);
-}
-
-const ThemeContext = createContext<ThemeContextValue>({
-  theme: defaultTheme,
-  themeName: "default",
-  availableThemes: Object.values(BUILTIN_THEMES).map((t) => ({
-    name: t.name,
-    label: t.label,
-    description: t.description,
-  })),
-  setTheme: () => {},
-});
-
-interface ThemeContextValue {
-  availableThemes: ThemeListEntry[];
-  setTheme: (name: string) => void;
-  theme: DashboardTheme;
-  themeName: string;
 }

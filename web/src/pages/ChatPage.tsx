@@ -52,7 +52,8 @@ function buildWsUrl(
 // (subscriber).  Generated once per mount so a tab refresh starts a fresh
 // channel — the previous PTY child terminates with the old WS, and its
 // channel auto-evicts when no subscribers remain.
-function generateChannelId(): string {
+function generateChannelId(_resumeTarget?: string | null): string {
+  void _resumeTarget;
   if (typeof crypto !== "undefined" && "randomUUID" in crypto) {
     return crypto.randomUUID();
   }
@@ -156,7 +157,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
   // treat the current resume target as part of the PTY identity and rebuild the
   // terminal session when it changes.
   const resumeParam = searchParams.get("resume");
-  const channel = useMemo(() => generateChannelId(), [resumeParam]);
+  const channel = useMemo(() => generateChannelId(resumeParam), [resumeParam]);
 
   useEffect(() => {
     if (!resumeParam) return;

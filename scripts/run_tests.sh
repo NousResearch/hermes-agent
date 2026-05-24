@@ -49,6 +49,20 @@ fi
 PYTHON="$VENV/bin/python"
 
 
+# ── Ensure pytest-timeout is installed (required for --timeout flags) ──────
+if ! "$PYTHON" -c "import pytest_timeout" 2>/dev/null; then
+  echo "→ installing pytest-timeout into $VENV"
+  if command -v uv >/dev/null 2>&1; then
+    uv pip install --python "$PYTHON" --quiet "pytest-timeout==2.4.0"
+  elif "$PYTHON" -m pip --version >/dev/null 2>&1; then
+    "$PYTHON" -m pip install --quiet "pytest-timeout==2.4.0"
+  else
+    echo "error: neither uv nor pip is available in $VENV — pytest-timeout is missing" >&2
+    echo "  fix: run  uv pip install -e \".[dev]\"  from $REPO_ROOT" >&2
+    exit 1
+  fi
+fi
+
 # ── Live-gateway plugin (computed before we drop env) ───────────────────────
 EXTRA_PYTHONPATH=""
 EXTRA_PYTEST_PLUGINS=""

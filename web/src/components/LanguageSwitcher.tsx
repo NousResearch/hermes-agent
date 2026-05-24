@@ -3,8 +3,7 @@ import { Button } from "@nous-research/ui/ui/components/button";
 import { BottomPickSheet } from "@/components/BottomPickSheet";
 import { Typography } from "@/components/NouiTypography";
 import { useBelowBreakpoint } from "@/hooks/useBelowBreakpoint";
-import { useI18n } from "@/i18n/context";
-import { LOCALE_META } from "@/i18n";
+import { LOCALE_META, useI18n } from "@/i18n";
 import type { Locale } from "@/i18n";
 import { cn } from "@/lib/utils";
 

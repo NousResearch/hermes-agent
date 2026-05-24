@@ -333,7 +333,7 @@ export const ko: Translations = {
     rawYaml: "원본 YAML 설정",
     searchResults: "검색 결과",
     fields: "개 필드",
-    noFieldsMatch: '\"{query}\"와(과) 일치하는 필드가 없습니다',
+    noFieldsMatch: '"{query}"와(과) 일치하는 필드가 없습니다',
     configSaved: "설정이 저장되었습니다",
     yamlConfigSaved: "YAML 설정이 저장되었습니다",
     failedToSave: "저장에 실패했습니다",

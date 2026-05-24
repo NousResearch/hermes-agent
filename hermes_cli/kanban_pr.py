@@ -28,6 +28,7 @@ GITHUB_PR_URL_RE = re.compile(
 
 _PR_STATUS_CACHE: dict[str, tuple[float, Optional["PullRequestInfo"]]] = {}
 _PR_STATUS_CACHE_TTL = 60.0
+PR_MERGED_SUMMARY_PREFIX = "PR Merged into "
 
 
 @dataclass(frozen=True)
@@ -131,17 +132,61 @@ def _pr_label(*, state: str, merged: bool, draft: bool) -> str:
     return state.capitalize() if state else "Unknown"
 
 
-def fetch_pull_request_info(url: str) -> Optional[PullRequestInfo]:
+def invalidate_pr_status_cache(url: Optional[str] = None) -> None:
+    """Drop cached GitHub PR state so the next fetch is live."""
+    if url is None:
+        _PR_STATUS_CACHE.clear()
+        return
+    normalized = normalize_github_pr_url(url)
+    _PR_STATUS_CACHE.pop(normalized, None)
+
+
+def _cache_pr_status(url: str, info: Optional[PullRequestInfo]) -> None:
+    normalized = normalize_github_pr_url(url)
+    _PR_STATUS_CACHE[normalized] = (time.time(), info)
+
+
+def _pr_status_from_merge_summary(summary: Optional[str], url: str) -> Optional[dict[str, Any]]:
+    """Return merged PR status derived from an auto-complete handoff summary."""
+    text = (summary or "").strip()
+    if not text.startswith(PR_MERGED_SUMMARY_PREFIX):
+        return None
+    target_branch = text[len(PR_MERGED_SUMMARY_PREFIX):].strip() or "target branch"
+    info = PullRequestInfo(
+        url=url,
+        state="closed",
+        merged=True,
+        draft=False,
+        target_branch=target_branch,
+        label="Merged",
+    )
+    _cache_pr_status(url, info)
+    return info.to_dict()
+
+
+def _task_merge_summary(task_dict: dict[str, Any]) -> Optional[str]:
+    """Best-effort completion summary for PR merge inference."""
+    summary = task_dict.get("latest_summary")
+    if isinstance(summary, str) and summary.strip():
+        return summary.strip()
+    result = task_dict.get("result")
+    if isinstance(result, str) and result.strip():
+        return result.strip()
+    return None
+
+
+def fetch_pull_request_info(url: str, *, force_refresh: bool = False) -> Optional[PullRequestInfo]:
     """Return live GitHub PR state for ``url``, with a short TTL cache."""
     normalized = normalize_github_pr_url(url)
     now = time.time()
-    cached = _PR_STATUS_CACHE.get(normalized)
-    if cached and now - cached[0] < _PR_STATUS_CACHE_TTL:
-        return cached[1]
+    if not force_refresh:
+        cached = _PR_STATUS_CACHE.get(normalized)
+        if cached and now - cached[0] < _PR_STATUS_CACHE_TTL:
+            return cached[1]
 
     parsed = _parse_github_pr_path(normalized)
     if not parsed:
-        _PR_STATUS_CACHE[normalized] = (now, None)
+        _cache_pr_status(normalized, None)
         return None
 
     owner, repo, number = parsed
@@ -187,7 +232,7 @@ def fetch_pull_request_info(url: str) -> Optional[PullRequestInfo]:
     except Exception as exc:
         logger.debug("GitHub PR fetch error for %s: %s", normalized, exc)
 
-    _PR_STATUS_CACHE[normalized] = (now, info)
+    _cache_pr_status(normalized, info)
     return info
 
 
@@ -271,12 +316,30 @@ def pr_info_for_task(
     task_id: str,
     *,
     fetch_live: bool = True,
+    task_dict: Optional[dict[str, Any]] = None,
 ) -> Optional[dict[str, Any]]:
     """Return PR status dict for a task, or None when no PR URL is known."""
     urls = find_pr_urls_for_tasks(conn, [task_id])
     url = urls.get(task_id)
     if not url:
         return None
+
+    if task_dict is None:
+        from hermes_cli import kanban_db as kb
+
+        task = kb.get_task(conn, task_id)
+        if task is not None:
+            task_dict = {
+                "status": task.status,
+                "latest_summary": kb.latest_summary(conn, task_id),
+                "result": task.result,
+            }
+
+    if task_dict and task_dict.get("status") == "done":
+        merged = _pr_status_from_merge_summary(_task_merge_summary(task_dict), url)
+        if merged:
+            return merged
+
     if not fetch_live:
         return {"url": url, "label": "Unknown", "state": "unknown", "merged": False, "draft": False, "target_branch": ""}
     info = fetch_pull_request_info(url)
@@ -314,6 +377,11 @@ def attach_pr_status_to_task_dicts(
         url = urls.get(d["id"])
         if not url:
             continue
+        if d.get("status") == "done":
+            merged = _pr_status_from_merge_summary(_task_merge_summary(d), url)
+            if merged:
+                d["pr"] = merged
+                continue
         if fetch_live:
             info = info_by_url.get(url)
             if info:
@@ -358,10 +426,10 @@ def sync_merged_pull_requests(conn) -> list[str]:
 
     completed: list[str] = []
     for task_id, url in urls.items():
-        info = fetch_pull_request_info(url)
+        info = fetch_pull_request_info(url, force_refresh=True)
         if not info or not info.merged:
             continue
-        summary = f"PR Merged into {info.target_branch or 'target branch'}"
+        summary = f"{PR_MERGED_SUMMARY_PREFIX}{info.target_branch or 'target branch'}"
         ok = kb.complete_task(
             conn,
             task_id,

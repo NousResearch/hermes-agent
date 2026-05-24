@@ -159,3 +159,40 @@ def test_attach_pr_status_to_task_dicts(kanban_home, monkeypatch):
 
     assert task_dicts[0]["pr"]["label"] == "Open"
     assert task_dicts[0]["pr"]["url"] == "https://github.com/acme/widget/pull/3"
+
+
+def test_attach_pr_status_uses_merge_summary_for_done_tasks(kanban_home, monkeypatch):
+    kp._PR_STATUS_CACHE.clear()
+
+    url = "https://github.com/acme/widget/pull/8"
+    stale_open = kp.PullRequestInfo(
+        url=url,
+        state="open",
+        merged=False,
+        draft=False,
+        target_branch="main",
+        label="Open",
+    )
+    kp._cache_pr_status(url, stale_open)
+
+    with kb.connect() as conn:
+        task_id = kb.create_task(conn, title="merged-card", assignee="alice")
+        kb.add_comment(conn, task_id, "worker", url)
+        kb.complete_task(
+            conn,
+            task_id,
+            summary="PR Merged into main",
+        )
+
+    with patch.object(kp, "fetch_pull_request_info", return_value=stale_open):
+        with kb.connect() as conn:
+            task_dicts = [{
+                "id": task_id,
+                "status": "done",
+                "latest_summary": "PR Merged into main",
+            }]
+            kp.attach_pr_status_to_task_dicts(conn, task_dicts)
+
+    assert task_dicts[0]["pr"]["label"] == "Merged"
+    assert task_dicts[0]["pr"]["merged"] is True
+    assert task_dicts[0]["pr"]["target_branch"] == "main"

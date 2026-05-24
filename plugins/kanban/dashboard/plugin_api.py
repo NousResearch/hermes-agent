@@ -374,6 +374,11 @@ def get_board(
     board = _resolve_board(board)
     conn = _conn(board=board)
     try:
+        try:
+            kanban_pr.sync_merged_pull_requests(conn)
+        except Exception:
+            log.debug("PR merge sync failed on board load", exc_info=True)
+
         tasks = kanban_db.list_tasks(
             conn,
             tenant=tenant,
@@ -456,7 +461,6 @@ def get_board(
             board_task_dicts.append(d)
 
         try:
-            kanban_pr.sync_merged_pull_requests(conn)
             kanban_pr.attach_pr_status_to_task_dicts(conn, board_task_dicts)
         except Exception:
             log.debug("PR status enrichment failed", exc_info=True)
@@ -533,8 +537,7 @@ def get_task(
             task_d["diagnostics"] = diag_list
             task_d["warnings"] = _warnings_summary_from_diagnostics(diag_list)
         try:
-            kanban_pr.sync_merged_pull_requests(conn)
-            pr = kanban_pr.pr_info_for_task(conn, task_id)
+            pr = kanban_pr.pr_info_for_task(conn, task_id, task_dict=task_d)
             if pr:
                 task_d["pr"] = pr
         except Exception:

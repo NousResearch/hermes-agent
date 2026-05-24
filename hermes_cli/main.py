@@ -5337,32 +5337,27 @@ def _model_flow_bedrock_api_key(config, region, current_model=""):
     if selected:
         _save_model_choice(selected)
 
-        # Save as custom provider pointing to bedrock-mantle
+        # Use native bedrock provider (bearer token auth handles credentials)
         cfg = load_config()
         model = cfg.get("model")
         if not isinstance(model, dict):
             model = {"default": model} if model else {}
             cfg["model"] = model
-        model["provider"] = "custom"
-        model["base_url"] = mantle_base_url
-        model.pop("api_mode", None)  # chat_completions is the default
+        model["provider"] = "bedrock"
+        model.pop("base_url", None)
+        model.pop("api_mode", None)
 
-        # Also save region in bedrock config for reference
+        # Save region in bedrock config
         bedrock_cfg = cfg.get("bedrock", {})
         if not isinstance(bedrock_cfg, dict):
             bedrock_cfg = {}
         bedrock_cfg["region"] = region
         cfg["bedrock"] = bedrock_cfg
 
-        # Save the API key env var name so hermes knows where to find it
-        save_env_value("OPENAI_API_KEY", existing_key)
-        save_env_value("OPENAI_BASE_URL", mantle_base_url)
-
         save_config(cfg)
         deactivate_provider()
 
         print(f"  Default model set to: {selected} (via Bedrock API Key, {region})")
-        print(f"  Endpoint: {mantle_base_url}")
     else:
         print("  No change.")
 

@@ -848,6 +848,20 @@ def run_conversation(
         effective_system = active_system_prompt or ""
         if agent.ephemeral_system_prompt:
             effective_system = (effective_system + "\n\n" + agent.ephemeral_system_prompt).strip()
+        # Per-turn wall-clock time injection (agent.time_injection config).
+        # Injected as an ephemeral addition — outside the cached system
+        # prompt — so the prefix cache stays warm across turns.  The
+        # volatile-block date-only timestamp in build_system_prompt_parts
+        # is left unchanged for sessions that don't want per-turn time.
+        if getattr(agent, "time_injection", False):
+            from hermes_time import now as _hermes_now
+            _now = _hermes_now()
+            _tz = _now.strftime("%Z") or ""
+            time_line = (
+                f"Current time: {_now.strftime('%A, %B %d, %Y %I:%M %p')}"
+                f"{' ' + _tz if _tz else ''}"
+            )
+            effective_system = (effective_system + "\n\n" + time_line).strip()
         if effective_system:
             api_messages = [{"role": "system", "content": effective_system}] + api_messages
 
@@ -4115,6 +4129,7 @@ def run_conversation(
         "estimated_cost_usd": agent.session_estimated_cost_usd,
         "cost_status": agent.session_cost_status,
         "cost_source": agent.session_cost_source,
+        "cost_tags": dict(agent.cost_tags) if agent.cost_tagging else {},
     }
     if agent._tool_guardrail_halt_decision is not None:
         result["guardrail"] = agent._tool_guardrail_halt_decision.to_metadata()

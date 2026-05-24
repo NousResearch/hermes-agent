@@ -586,8 +586,18 @@ DEFAULT_CONFIG = {
         # only controls how inbound user images are presented.
         "image_input_mode": "auto",
         "disabled_toolsets": [],
+        # Per-turn time injection: when true, the current time (with
+        # minute precision) is injected into the system prompt before
+        # every LLM call.  The existing date-only timestamp in the
+        # volatile system prompt block is left unchanged for byte-stable
+        # prompt caching; this field lives outside the cache.
+        "time_injection": False,
+        # Cost tagging — when True, attaches departmental/service tags
+        # to token usage for downstream cost attribution per department,
+        # skill, or service.  Default: False (backward compatible).
+        "cost_tagging": False,
     },
-    
+
     "terminal": {
         "backend": "local",
         "modal_mode": "auto",

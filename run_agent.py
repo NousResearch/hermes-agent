@@ -563,6 +563,24 @@ class AIAgent:
         if hasattr(self, "context_compressor") and self.context_compressor:
             self.context_compressor.on_session_reset()
 
+    def set_cost_tags(self, tags: Dict[str, str]) -> None:
+        """Set cost attribution tags for departmental/service token tracking.
+
+        When ``cost_tagging`` is enabled in config, these tags are attached
+        to every usage-info payload returned by ``run_conversation()`` so
+        downstream aggregators can attribute token consumption by
+        department, skill, service, or any other dimension.
+
+        ``cost_tagging`` must be ``True`` in config.yaml for tags to have
+        any effect; calling this method when disabled is a no-op.
+
+        Args:
+            tags: Key-value pairs such as
+                  ``{"department": "framework", "service": "research"}``.
+        """
+        if self.cost_tagging:
+            self.cost_tags = tags
+
     def _ensure_lmstudio_runtime_loaded(self, config_context_length: Optional[int] = None) -> None:
         """
         Preload the LM Studio model with at least Hermes' minimum context.

@@ -57,6 +57,18 @@ source ~/.bashrc   # or: source ~/.zshrc
 hermes             # Start chatting!
 ```
 
+If you use [RTK](https://github.com/rtk-ai/rtk) for terminal command rewriting, register
+its Hermes plugin once after installing RTK:
+
+```bash
+rtk init -g --agent hermes
+```
+
+This creates the RTK plugin under `~/.hermes/plugins/rtk-rewrite/`, updates
+`~/.hermes/config.yaml`, and prevents Hermes from warning that the RTK binary is
+missing even though `rtk` is already on your `PATH`. Restart Hermes after the
+registration step.
+
 To reconfigure individual settings later, use the dedicated commands:
 
 ```bash
@@ -149,6 +161,7 @@ The same pattern works on Arch (the installer uses pacman with the same sudo-det
 | `hermes: command not found` | Reload your shell (`source ~/.bashrc`) or check PATH |
 | `API key not set` | Run `hermes model` to configure your provider, or `hermes config set OPENROUTER_API_KEY your_key` |
 | Missing config after update | Run `hermes config check` then `hermes config migrate` |
+| `hermes plugin warning: rtk binary not found in PATH; Hermes hook not registered` | Run `rtk init -g --agent hermes`, then restart Hermes |
 
 For more diagnostics, run `hermes doctor` — it will tell you exactly what's missing and how to fix it.
 

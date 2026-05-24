@@ -144,8 +144,21 @@ OWN_SCOPE:
 Final answer should not persist recalled briefing facts.
 """
 
-    provider._maybe_live_capture_exchange("sid-capture-sanitize", "Fix MemoryMunch capture sanitizer", assistant)
+    user = """
+Fix MemoryMunch capture sanitizer.
+<memory-context>
+<memorymunch-briefing isolation="soft" scope_entity="tg-7475127948" domain="general">
+OWN_SCOPE:
+- Al Cooke closed on 245 Lake View Drive and has unrelated income streams. [source=vault,activation; atom=noise]
+</memorymunch-briefing>
+</memory-context>
+"""
 
+    provider._maybe_live_capture_exchange("sid-capture-sanitize", user, assistant)
+
+    assert "245 Lake View" not in captured["user_message"]
+    assert "income streams" not in captured["user_message"]
+    assert "memory-context" not in captured["user_message"]
     assert "245 Lake View" not in captured["bot_response"]
     assert "income streams" not in captured["bot_response"]
     assert "memorymunch-briefing" not in captured["bot_response"]

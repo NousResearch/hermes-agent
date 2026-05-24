@@ -2000,9 +2000,20 @@ class MemoryMunchProvider(MemoryProvider):
                 env_auto_capture=os.environ.get("HERMES_MEMORYMUNCH_AUTO_CAPTURE_ENABLE", ""),
             )
             return
-        clean_user = redact_for_shadow_seed(user_content)
+        stripped_user, stripped_user_recall_context = _strip_memorymunch_recall_context(user_content)
+        clean_user = redact_for_shadow_seed(stripped_user)
         stripped_assistant, stripped_recall_context = _strip_memorymunch_recall_context(assistant_content)
         clean_assistant = redact_for_shadow_seed(stripped_assistant)
+        if stripped_user_recall_context:
+            self._append_session_event(
+                session_id,
+                "live_capture_sanitized",
+                reason="recalled_memory_context_stripped_from_user_message",
+                live_db_write=False,
+                live_vault_write=False,
+                user_original_chars=len(user_content or ""),
+                user_sanitized_chars=len(clean_user or ""),
+            )
         if stripped_recall_context:
             self._append_session_event(
                 session_id,

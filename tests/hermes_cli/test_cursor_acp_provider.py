@@ -2,7 +2,7 @@
 
 from unittest.mock import patch
 
-from agent.cursor_acp_client import CursorACPClient, _normalize_cursor_model
+from agent.cursor_acp_client import CursorACPClient, _normalize_cursor_model, _split_command
 from hermes_cli import runtime_provider as rp
 from hermes_cli.model_switch import list_authenticated_providers
 from hermes_cli.models import provider_model_ids
@@ -33,6 +33,23 @@ def test_cursor_acp_client_passes_configured_model_to_agent_cli():
         acp_model="cursor/composer-2.5",
     )
 
+    assert client._acp_args == ["--model", "composer-2.5", "acp"]
+
+
+def test_cursor_acp_command_override_supports_wrapper_args():
+    assert _split_command('/opt/cursor/bin/agent --profile work') == [
+        "/opt/cursor/bin/agent",
+        "--profile",
+        "work",
+    ]
+
+    client = CursorACPClient(
+        command='/opt/cursor/bin/agent --profile work',
+        args=["acp"],
+        acp_model="cursor/composer-2.5",
+    )
+
+    assert client._acp_command_argv == ["/opt/cursor/bin/agent", "--profile", "work"]
     assert client._acp_args == ["--model", "composer-2.5", "acp"]
 
 

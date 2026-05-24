@@ -45,6 +45,18 @@ def _resolve_command() -> str:
     )
 
 
+def _split_command(command: str) -> list[str]:
+    """Split a Cursor ACP command override into argv.
+
+    This keeps the default path simple (``agent`` + args) while allowing the
+    same env-var shape used by other external-process providers, for example
+    ``CURSOR_ACP_COMMAND=\"/opt/cursor/bin/agent\"`` or a wrapper command with
+    fixed leading arguments.
+    """
+    parts = shlex.split((command or "").strip())
+    return parts or ["agent"]
+
+
 def _normalize_cursor_model(model: str | None) -> str | None:
     """Return the model id expected by Cursor's `agent --model` flag.
 
@@ -370,6 +382,7 @@ class CursorACPClient:
         self.base_url = base_url or ACP_MARKER_BASE_URL
         self._default_headers = dict(default_headers or {})
         self._acp_command = acp_command or command or _resolve_command()
+        self._acp_command_argv = _split_command(self._acp_command)
         if acp_args or args:
             self._acp_args = list(acp_args or args or [])
         else:
@@ -463,7 +476,7 @@ class CursorACPClient:
     def _run_prompt(self, prompt_text: str, *, timeout_seconds: float) -> tuple[str, str]:
         try:
             proc = subprocess.Popen(
-                [self._acp_command] + self._acp_args,
+                self._acp_command_argv + self._acp_args,
                 stdin=subprocess.PIPE,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
@@ -475,7 +488,8 @@ class CursorACPClient:
         except FileNotFoundError as exc:
             raise RuntimeError(
                 f"Could not start Cursor ACP command '{self._acp_command}'. "
-                "Install Cursor CLI (npm install -g @cursor/agent) or set CURSOR_ACP_COMMAND/CURSOR_CLI_PATH."
+                "Install Cursor Agent CLI (`curl https://cursor.com/install -fsS | bash`), "
+                "run `agent login`, or set CURSOR_ACP_COMMAND/CURSOR_CLI_PATH."
             ) from exc
 
         if proc.stdin is None or proc.stdout is None:
@@ -585,7 +599,7 @@ class CursorACPClient:
             )
             if auth_result and not auth_result.get("success", True):
                 raise RuntimeError(
-                    "Cursor ACP authentication failed. Run 'cursor login' first."
+                    "Cursor ACP authentication failed. Run 'agent login' first."
                 )
 
             # Step 3: Create session

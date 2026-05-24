@@ -4623,3 +4623,193 @@ Finding P50-6 (MEDIUM): heremes_cli/claw.py exec_module on user-supplied script_
 ---
 
 **End Pass #50**
+
+---
+
+## Pass #51 - Testing, CI/CD & Deployment Audit - 2026-05-24T12:00:00Z
+
+### 1. Test Coverage Gaps
+
+**Untested environment adapters:**
+
+| File | LOC | Test file exists? |
+|------|-----|-------------------|
+| `tools/environments/singularity.py` | 262 | NO |
+| `tools/environments/file_sync.py` | 402 | NO |
+| `tools/environments/local.py` | 677 | NO |
+| `tools/environments/ssh.py` | 308 | YES (partial) |
+
+- `local.py` (677 LOC) is the most critical gap — it's the default fallback environment. No `test_local_environment.py` found.
+- `file_sync.py` (402 LOC) has no dedicated test file either.
+- `singularity.py` (262 LOC) has no tests. Singularity-specific edge cases (GPU passthrough, bind paths, singularity exec vs run) are untested.
+- `ssh.py` has `test_ssh_environment.py` but likely doesn't cover error paths (connection timeout, key permission errors, tunnel failures).
+
+**Existing environment tests (partial coverage only):**
+`test_docker_environment.py` (23 tests), `test_daytona_environment.py`, `test_ssh_environment.py`, `test_vercel_sandbox_environment.py`, `test_managed_modal_environment.py`, `test_base_environment.py`
+
+**Platform adapter tests:**
+`gateway/platforms/` has ~30+ platform adapters (telegram, discord, slack, whatsapp, signal, matrix, etc.). While `tests/gateway/` has platform-specific tests for some, many platforms (dingtalk, wecom, weixin, feishu, qqbot, bluebubbles, yuanbao, mattermost, homeassistant, etc.) have no dedicated test files.
+
+**Error path gaps (inferred from code patterns):**
+- `_check_auth` in `api_server.py` has a bypass when `API_SERVER_KEY=""` (empty string) — this error path has a test (`tests/gateway/test_api_server_jobs.py`) but the empty-string variant is a known gap (documented in findings as P46-item).
+- No tests found for the Signal platform's reconnect-on-health-check-failure logic (`gateway/platforms/signal.py` lines 421-424).
+- No tests for kanban worker heartbeat/liveness edge cases.
+
+---
+
+### 2. CI/CD Pipeline Security
+
+**Secrets masking:**
+- All workflow secrets accessed via `${{ secrets.NAME }}` syntax — correct, GitHub auto-masks these in logs.
+- `::add-mask::` not found in any workflow YAML — GitHub Actions masks secrets automatically when accessed via the `secrets.` context, so explicit masking is not required.
+- `set-output` / `GITHUB_OUTPUT` used correctly via `$GITHUB_OUTPUT` environment variable (modern approach) in `nix/lib.nix` — not in direct workflow steps. No deprecated `set-output` command found in YAML steps.
+- `tests.yml` passes empty strings for `OPENROUTER_API_KEY`, `OPENAI_API_KEY`, `NOUS_API_KEY` — prevents accidental real API calls but these are empty, not masked secrets, so no leakage risk.
+
+**CI environment:**
+- All workflows use pinned action SHAs (e.g. `actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd` v6.0.2) — good practice against action tampering.
+- `permissions:` declared at job level with least-privilege (e.g. `contents: read` for tests).
+- `upload_to_pypi.yml` uses `persist-credentials: false` on checkout — good.
+- Docker publishing restricted to `github.repository == 'NousResearch/hermes-agent'` — forks cannot publish.
+
+**No injection vulnerabilities found:**
+- Workflow steps use single-quoted heredocs or `run: |` with shell `set -euo pipefail` — safe from variable injection.
+- No user-provided input interpolated into shell commands without quoting.
+
+---
+
+### 3. Deployment Configuration
+
+**Dockerfile:**
+- Base: `debian:13.4` (slim, not alpine — avoids musl edge cases).
+- PID 1: `tini` installed and used — properly reaps zombie MCP subprocesses, git, bun, etc. (see `#15012` fix). This is correct.
+- User: `hermes` (UID 10000) — runs as non-root. Entry point drops to this user via `gosu`.
+- `docker-cli` installed (line 17: `build-essential curl nodejs npm python3 ripgrep ffmpeg gcc python3-dev libffi-dev procps git openssh-client docker-cli tini`) — enables in-container Docker management.
+- No default passwords hardcoded.
+- `PYTHONUNBUFFERED=1` set — logs stream correctly.
+- `PLAYWRIGHT_BROWSERS_PATH=/opt/hermes/.playwright` — browser binaries survive volume overlay.
+
+**docker-compose.yml:**
+- No CPU/memory resource limits on either `gateway` or `dashboard` services. Both use `restart: unless-stopped`.
+- `network_mode: host` used for both services — intentionally bypasses Docker networking (simplifies bind-mount of `~/.hermes`). This is documented but means services are directly on the host network.
+- Dashboard binds to `127.0.0.1` by default — correct, prevents remote exposure without an SSH tunnel or reverse proxy.
+- No `API_SERVER_KEY` set by default (commented out) — API server is off unless explicitly enabled.
+- No Docker socket volume mount in the compose file — the host's Docker socket is NOT exposed to containers by default.
+- Note: The Dockerfile installs `docker-cli` but the compose file does NOT mount `/var/run/docker.sock`. The socket is only used if the agent invokes Docker from within a running container (not the published image scenario).
+
+**No Kubernetes/Helm configs found:**
+- No `deployment.yaml`, `kubeconfig`, or helm charts. The project does not target k8s deployments natively.
+
+**Resource limits gap:**
+- Neither `docker-compose.yml` nor any Dockerfile sets `--memory`, `--cpus`, `--ulimit`. For production, resource constraints should be documented or enforced.
+
+---
+
+### 4. Environment Variable Handling
+
+**.gitignore:**
+```
+.env
+.env.local
+.env.development.local
+.env.test.local
+.env.production.local
+.env.development
+.env.test
+export*
+```
+Correctly excludes all `.env` variants including `export*` patterns. ✓
+
+**.dockerignore:**
+Also excludes `.env` explicitly. ✓
+
+**docker-compose.yml:**
+- All secrets commented out as `${VAR}` substitutions (e.g. `${TEAMS_CLIENT_ID}`, `${API_SERVER_KEY}`) — no hardcoded values.
+- `HERMES_UID`/`HERMES_GID` default to 10000 — not a secret, just an ID mapping.
+
+**No hardcoded secrets found in docker configs:**
+- No plaintext API keys, passwords, or tokens in `docker-compose.yml` or `Dockerfile`.
+
+---
+
+### 5. Startup/Shutdown Scripts
+
+**Signal handling (cli.py lines 14141-14246):**
+- SIGTERM/SIGHUP handlers installed via `_signal_handler()`.
+- `HERMES_SIGTERM_GRACE` env var controls grace window (default 1.5s).
+- Handler calls `agent.interrupt()` which sets `_interrupt_requested` flag — lets the agent loop exit cleanly between tool calls.
+- After grace window: `SIGTERM` sent to subprocess, 1s wait, `SIGKILL` if still alive.
+- On Windows: SIGINT is absorbed to prevent accidental interrupt on Ctrl+C.
+- This is a well-designed graceful shutdown.
+
+**Entry point (docker/entrypoint.sh):**
+- Uses `gosu` to drop from root to `hermes` user before creating gateway files.
+- Creates `/opt/data` directory.
+- Falls back to `hermes` user if `HERMES_UID`/`HERMES_GID` not set.
+
+**Health checks:**
+- `gateway/platforms/api_server.py`: `GET /health` endpoint defined.
+- `gateway/platforms/webhook.py`: `GET /health` endpoint defined.
+- Signal platform: periodic health check every 30s (`HEALTH_CHECK_INTERVAL = 30.0`).
+- ACP adapter: `_BENIGN_PROBE_METHODS = frozenset({"ping", "health", "healthcheck"})` for liveness probes.
+- No explicit readiness/liveness probes in docker-compose.yml or Dockerfile HEALTHCHECK.
+
+**Race conditions at startup:**
+- `depends_on: gateway` on dashboard service — only waits for container to start, not for gateway to be ready. No health check dependency.
+- The `network_mode: host` means services are immediately reachable but the gateway may not have finished initializing.
+
+---
+
+### 6. Rollout Strategy
+
+**No documented blue-green, canary, or rolling restart strategy.**
+
+**Current deployment approach (inferred from CI/CD):**
+- On push to `main`: builds `nousresearch/hermes-agent:main` (amd64 + arm64 manifest list) via `docker-publish.yml`.
+- On release tag (`v20*`): builds and publishes to Docker Hub with version tag.
+- `restart: unless-stopped` in docker-compose — simple restart on failure.
+- No orchestration for rolling updates, blue-green swaps, or canary traffic splitting.
+
+**Gap:** For self-hosted deployments, there is no guidance on how to perform zero-downtime updates. Users running via docker-compose will get a brief outage on `docker compose pull && docker compose up -d`.
+
+**CI/CD build pipeline quality:**
+- Multi-arch builds (amd64 via `ubuntu-latest`, arm64 via `ubuntu-24.04-arm`).
+- Smoke test via `.github/actions/hermes-smoke-test/action.yml` (runs `hermes --help` and `dashboard --help`).
+- Build caching via GitHub Actions cache (`type=gha`).
+- Digest-based pushing for multi-arch manifest lists.
+- Duration-based test slicing across 6 parallel jobs.
+
+---
+
+### Summary of New Findings (Pass #51)
+
+| ID | Category | Finding | Severity |
+|----|----------|---------|----------|
+| P51-1 | Test Coverage | No tests for `local.py` environment (677 LOC, the default fallback) | Medium |
+| P51-2 | Test Coverage | No tests for `file_sync.py` (402 LOC) | Medium |
+| P51-3 | Test Coverage | No tests for `singularity.py` environment | Medium |
+| P51-4 | Test Coverage | No tests for many platform adapters (dingtalk, wecom, weixin, feishu, qqbot, bluebubbles, yuanbao, etc.) | Low |
+| P51-5 | Deployment | No CPU/memory resource limits in docker-compose.yml | Low |
+| P51-6 | Deployment | No healthcheck in docker-compose for gateway/dashboard dependency readiness | Low |
+| P51-7 | Deployment | No documented zero-downtime rollout strategy for docker-compose updates | Low |
+| P51-8 | CI/CD | `tests.yml` passes empty strings rather than mock objects for API keys (not a security issue but unusual) | Info |
+
+**Already well-protected (from prior passes / confirmed):**
+- Secrets properly masked via GitHub Actions `secrets.` context ✓
+- Action SHAs pinned ✓
+- Least-privilege permissions in workflows ✓
+- `.env` excluded from `.gitignore` and `.dockerignore` ✓
+- No hardcoded secrets in Docker configs ✓
+- Non-root user in container (hermes:10000) ✓
+- tini as PID 1 for zombie reaping ✓
+- Graceful shutdown with SIGTERM/SIGHUP handlers ✓
+- API server auth correctly enforced for non-loopback binding ✓
+- Dashboard bound to 127.0.0.1 only ✓
+
+**Still present (critical from prior passes):**
+- P29-9: No shutdown()/unload() in PluginManager
+- P36-5: sys.path mutation at import time
+- P38-6: coerce_tool_args no length limit
+
+---
+
+**End Pass #51**

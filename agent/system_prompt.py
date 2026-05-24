@@ -186,8 +186,12 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
             )
             if toolset
         }
-        # Parse project-scoped skill config from context files / config.yaml
-        project_cfg = parse_project_skill_config()
+        # Parse project-scoped skill config from context files / config.yaml.
+        # Use TERMINAL_CWD for gateway-mode sessions so we look at the user's
+        # project directory, not the hermes-agent install directory.
+        project_cfg = parse_project_skill_config(
+            cwd=os.getenv("TERMINAL_CWD") or None
+        )
         skills_prompt = _r.build_skills_system_prompt(
             available_tools=agent.valid_tool_names,
             available_toolsets=avail_toolsets,

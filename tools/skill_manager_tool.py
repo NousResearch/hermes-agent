@@ -875,9 +875,9 @@ def skill_manage(
             "action": "stow",
             "name": name,
             "message": (
-                f"Skill '{name}' stowed. Its full content will be compressed "
-                f"on the next context compression cycle. The compressed skill "
-                f"index remains available for future reference."
+                f"Skill '{name}' stowed. Its usage has been recorded. "
+                f"The compact skill index remains available. "
+                f"Load again with skill_view(name='{name}') if needed."
             ),
         }
 
@@ -885,11 +885,14 @@ def skill_manage(
         result = {"success": False, "error": f"Unknown action '{action}'. Use: create, edit, patch, delete, write_file, remove_file, stow"}
 
     if result.get("success"):
-        try:
-            from agent.prompt_builder import clear_skills_system_prompt_cache
-            clear_skills_system_prompt_cache(clear_snapshot=True)
-        except Exception:
-            pass
+        # Clear prompt cache on mutations so the next prompt rebuild picks up
+        # changes. Stow is a read-only signal (no file changes) — skip it.
+        if action in ("create", "edit", "patch", "delete", "write_file", "remove_file"):
+            try:
+                from agent.prompt_builder import clear_skills_system_prompt_cache
+                clear_skills_system_prompt_cache(clear_snapshot=True)
+            except Exception:
+                pass
         # Curator telemetry: bump patch_count on edit/patch/write_file (the actions
         # that mutate an existing skill's guidance), drop the record on delete.
         # Only mark a skill as agent-created when the background self-improvement

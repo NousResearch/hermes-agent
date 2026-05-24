@@ -964,7 +964,7 @@ def _build_snapshot_entry(
     parts = rel_path.parts
     if len(parts) >= 2:
         skill_name = parts[-2]
-        category = "/".join(parts[:-2]) if len(parts) > 2 else parts[0]
+        category = "/".join(parts[:-2]) if len(parts) > 2 else "general"
     else:
         category = "general"
         skill_name = skill_file.parent.name
@@ -1117,16 +1117,20 @@ def build_skills_system_prompt(
     skills_by_category: dict[str, list[tuple[str, str]]] = {}
     category_descriptions: dict[str, str] = {}
 
-    def _skill_passes_project_filters(name: str, category: str) -> bool:
+    def _skill_passes_project_filters(name: str, category: str, alt_name: str | None = None) -> bool:
         name_lower = name.lower()
+        alt_lower = alt_name.lower() if alt_name else None
         cat_lower = category.lower()
-        # Positive filters (OR): skill passes if name/category matches include_set
-        # OR category matches cats_include_set. If neither is set, pass by default.
+        # Positive filters (OR): skill passes if name/alt_name/category matches
+        # include_set OR category matches cats_include_set. If neither is set,
+        # pass by default.
         has_positive = bool(include_set or cats_include_set)
         if has_positive:
             matched = False
             if include_set:
                 if name_lower in include_set or cat_lower in include_set:
+                    matched = True
+                elif alt_lower and alt_lower in include_set:
                     matched = True
                 else:
                     cat_parts = cat_lower.split("/")
@@ -1138,10 +1142,12 @@ def build_skills_system_prompt(
                     matched = True
             if not matched:
                 return False
-        # Negative filters (OR): skill removed if name/category matches exclude_set
-        # OR category matches cats_exclude_set.
+        # Negative filters (OR): skill removed if name/alt_name/category matches
+        # exclude_set OR category matches cats_exclude_set.
         if exclude_set:
             if name_lower in exclude_set or cat_lower in exclude_set:
+                return False
+            if alt_lower and alt_lower in exclude_set:
                 return False
             cat_parts = cat_lower.split("/")
             if any("/".join(cat_parts[:i]) in exclude_set for i in range(1, len(cat_parts)+1)):
@@ -1171,7 +1177,7 @@ def build_skills_system_prompt(
                 available_toolsets,
             ):
                 continue
-            if not _skill_passes_project_filters(frontmatter_name, category):
+            if not _skill_passes_project_filters(frontmatter_name, category, skill_name):
                 continue
             skills_by_category.setdefault(category, []).append(
                 (frontmatter_name, entry.get("description", ""))
@@ -1198,7 +1204,7 @@ def build_skills_system_prompt(
                 available_toolsets,
             ):
                 continue
-            if not _skill_passes_project_filters(entry["frontmatter_name"], entry["category"]):
+            if not _skill_passes_project_filters(entry["frontmatter_name"], entry["category"], entry["skill_name"]):
                 continue
             skills_by_category.setdefault(entry["category"], []).append(
                 (entry["frontmatter_name"], entry["description"])
@@ -1255,7 +1261,7 @@ def build_skills_system_prompt(
                     available_toolsets,
                 ):
                     continue
-                if not _skill_passes_project_filters(frontmatter_name, entry["category"]):
+                if not _skill_passes_project_filters(frontmatter_name, entry["category"], skill_name):
                     continue
                 seen_skill_names.add(frontmatter_name)
                 skills_by_category.setdefault(entry["category"], []).append(
@@ -1501,11 +1507,6 @@ def parse_project_skill_config(cwd: "str | None" = None) -> dict:
                                 result[result_key].extend(items)
                             else:
                                 result[result_key] = items
-                        # Check for trailing single-item on same line
-                        rest = line[m.end():].strip()
-                        if rest and not rest.startswith("[") and not rest.startswith("-"):
-                            extra = [rest.strip().strip("'\"")]
-                            result[result_key].extend(extra)
                         break
                 else:
                     for key, result_key in [
@@ -1570,8 +1571,7 @@ def parse_project_skill_config(cwd: "str | None" = None) -> dict:
             for key in ("include", "exclude", "categories_include", "categories_exclude"):
                 val = project_cfg.get(key)
                 if isinstance(val, list) and val:
-                    if key not in result:
-                        result[key] = [str(v) for v in val]
+                    result.setdefault(key, []).extend([str(v) for v in val])
             fmt = project_cfg.get("index_format")
             if fmt and isinstance(fmt, str):
                 result.setdefault("index_format", fmt)

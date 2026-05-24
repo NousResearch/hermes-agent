@@ -29,6 +29,7 @@ _IS_WINDOWS = platform.system() == "Windows"
 from pathlib import Path
 from typing import Dict, Optional, Any
 
+from hermes_cli._subprocess_compat import windows_hide_flags
 from hermes_constants import get_hermes_dir
 
 logger = logging.getLogger(__name__)
@@ -617,6 +618,7 @@ class WhatsAppAdapter(BasePlatformAdapter):
             if self._reply_prefix is not None:
                 bridge_env["WHATSAPP_REPLY_PREFIX"] = self._reply_prefix
 
+            _popen_kwargs = {"creationflags": windows_hide_flags()} if _IS_WINDOWS else {}
             self._bridge_process = subprocess.Popen(
                 [
                     "node",
@@ -629,6 +631,7 @@ class WhatsAppAdapter(BasePlatformAdapter):
                 stderr=bridge_log_fh,
                 preexec_fn=None if _IS_WINDOWS else os.setsid,
                 env=bridge_env,
+                **_popen_kwargs,
             )
             _write_bridge_pidfile(self._session_path, self._bridge_process.pid)
             

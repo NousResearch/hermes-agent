@@ -3730,6 +3730,37 @@ _VISION_AUTO_PROVIDER_ORDER = (
 )
 
 
+def _main_model_supports_vision(provider: str, model: Optional[str]) -> bool:
+    """Return True when ``provider``/``model`` is known to accept image input.
+
+    Used by the vision auto-detect chain to skip the user's main provider
+    when it's known to be text-only (e.g. DeepSeek, gpt-oss without vision).
+    Without this guard, ``resolve_vision_provider_client(provider="auto")``
+    would happily return the main-provider client and any subsequent image
+    payload would surface as a cryptic provider-side error
+    (``unknown variant `image_url`, expected `text```, #31179).
+
+    Returns True when capability lookup is unknown — preserves the historical
+    behaviour of attempting the call, so providers we haven't catalogued yet
+    don't silently regress to text-only.
+    """
+    try:
+        from agent.image_routing import _lookup_supports_vision
+        from hermes_cli.config import load_config
+    except ImportError:
+        return True
+    try:
+        supports = _lookup_supports_vision(provider, model, load_config())
+    except Exception:  # pragma: no cover - defensive
+        return True
+    if supports is None:
+        # No capability data — keep current behaviour and let the call attempt
+        # happen rather than silently skipping. This avoids false-positive
+        # skips for new/custom providers.
+        return True
+    return bool(supports)
+
+
 def _normalize_vision_provider(provider: Optional[str]) -> str:
     return _normalize_aux_provider(provider)
 
@@ -3869,6 +3900,18 @@ def resolve_vision_provider_client(
                     "Vision auto-detect: skipping main provider %s (no "
                     "vision support) — falling through to aggregator chain",
                     main_provider,
+                )
+            elif not _main_model_supports_vision(main_provider, vision_model):
+                # The main model is known to be text-only (e.g. DeepSeek V4,
+                # gpt-oss-120b without vision). Building a client and sending
+                # an image would produce a cryptic provider-side error like
+                # ``unknown variant `image_url`, expected `text``` (#31179).
+                # Fall through to the aggregator chain instead.
+                logger.debug(
+                    "Vision auto-detect: skipping main provider %s (%s "
+                    "reports no vision capability) — falling through to "
+                    "aggregator chain",
+                    main_provider, vision_model,
                 )
             else:
                 rpc_client, rpc_model = resolve_provider_client(
@@ -4281,6 +4324,23 @@ def _get_cached_client(
     return client, model or default_model
 
 
+# Aliases that target direct REST APIs not modeled as first-class providers
+# in PROVIDER_REGISTRY. Used for ``auxiliary.<task>.provider`` so users can
+# write the obvious name and have it resolve to a working ``custom`` endpoint
+# without needing to know our internal provider IDs.
+#
+# Why these specifically: PROVIDER_REGISTRY has ``openai-codex`` (OAuth) and
+# ``custom`` (manual base_url + OPENAI_API_KEY) but no plain ``openai`` for
+# direct API-key access. Users predictably type ``provider: openai`` and
+# expect it to use OPENAI_API_KEY against api.openai.com. Previously this
+# silently fell back to the user's main provider, sending OpenAI model names
+# to e.g. DeepSeek and producing cryptic ``unknown variant 'image_url'``
+# errors (issue #31179).
+_AUX_DIRECT_API_BASE_URLS: Dict[str, str] = {
+    "openai": "https://api.openai.com/v1",
+}
+
+
 def _resolve_task_provider_model(
     task: str = None,
     provider: str = None,
@@ -4316,6 +4376,25 @@ def _resolve_task_provider_model(
 
     resolved_model = model or cfg_model
     resolved_api_mode = cfg_api_mode
+
+    # Convenience aliases for direct API-key endpoints that aren't first-class
+    # providers (e.g. ``provider: openai`` → custom + api.openai.com/v1).
+    # Applied to both explicit args and config-derived values. When the user
+    # has already supplied a base_url we keep their endpoint but still rewrite
+    # the provider to ``custom`` so resolution doesn't hit the
+    # PROVIDER_REGISTRY-only path (which has no ``openai`` entry).
+    def _expand_direct_api_alias(prov: Optional[str], existing_base: Optional[str]) -> Tuple[Optional[str], Optional[str]]:
+        if not prov:
+            return prov, existing_base
+        target_base = _AUX_DIRECT_API_BASE_URLS.get(prov.strip().lower())
+        if target_base is None:
+            return prov, existing_base
+        return "custom", existing_base or target_base
+
+    if provider:
+        provider, base_url = _expand_direct_api_alias(provider, base_url)
+    if cfg_provider:
+        cfg_provider, cfg_base_url = _expand_direct_api_alias(cfg_provider, cfg_base_url)
 
     if base_url:
         return "custom", resolved_model, base_url, api_key, resolved_api_mode

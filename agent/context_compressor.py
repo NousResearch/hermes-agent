@@ -75,6 +75,43 @@ _IMAGE_TOKEN_ESTIMATE = 1600
 _IMAGE_CHAR_EQUIVALENT = _IMAGE_TOKEN_ESTIMATE * _CHARS_PER_TOKEN
 _SUMMARY_FAILURE_COOLDOWN_SECONDS = 600
 
+# Hard ceiling for the deterministic summary-failure handoff.  The fallback is
+# only meant to preserve continuity anchors from the dropped window, not to
+# become another unbounded transcript copy after the LLM summarizer failed.
+_FALLBACK_SUMMARY_MAX_CHARS = 8_000
+
+
+_PATH_MENTION_RE = re.compile(r"(?:/|~/?|[A-Za-z]:\\)[^\s`'\")\]}<>]+")
+
+
+def _dedupe_append(items: list[str], value: str, *, limit: int) -> None:
+    value = value.strip()
+    if value and value not in items and len(items) < limit:
+        items.append(value)
+
+
+def _extract_tool_call_name_and_args(tool_call: Any) -> tuple[str, str]:
+    """Return a best-effort ``(name, arguments)`` pair for dict/object tool calls."""
+    if isinstance(tool_call, dict):
+        fn = tool_call.get("function") or {}
+        return str(fn.get("name") or "unknown"), str(fn.get("arguments") or "")
+
+    fn = getattr(tool_call, "function", None)
+    if fn is None:
+        return "unknown", ""
+    return str(getattr(fn, "name", None) or "unknown"), str(getattr(fn, "arguments", None) or "")
+
+
+def _extract_tool_call_id(tool_call: Any) -> str:
+    if isinstance(tool_call, dict):
+        return str(tool_call.get("id") or "")
+    return str(getattr(tool_call, "id", "") or "")
+
+
+def _collect_path_mentions(text: str, relevant_files: list[str], *, limit: int = 12) -> None:
+    for match in _PATH_MENTION_RE.findall(text):
+        _dedupe_append(relevant_files, match.rstrip(".,:;"), limit=limit)
+
 
 def _content_length_for_budget(raw_content: Any) -> int:
     """Return the effective char-length of a message's content for token budgeting.
@@ -905,37 +942,40 @@ class ContextCompressor(ContextEngine):
         relevant_files: list[str] = []
         blockers: list[str] = []
 
+        def _collect_paths_from_jsonish(obj: Any) -> None:
+            if isinstance(obj, dict):
+                for key, val in obj.items():
+                    if key in {"path", "workdir", "file_path", "output_path"} and isinstance(val, str):
+                        _dedupe_append(relevant_files, val, limit=12)
+                    _collect_paths_from_jsonish(val)
+            elif isinstance(obj, list):
+                for val in obj:
+                    _collect_paths_from_jsonish(val)
+            elif isinstance(obj, str):
+                _collect_path_mentions(obj, relevant_files)
+
         call_id_to_tool: dict[str, tuple[str, str]] = {}
         for msg in turns_to_summarize:
             if msg.get("role") == "assistant" and msg.get("tool_calls"):
                 for tc in msg.get("tool_calls") or []:
-                    if not isinstance(tc, dict):
-                        continue
-                    fn = tc.get("function") or {}
-                    name = str(fn.get("name") or "unknown")
-                    args = redact_sensitive_text(str(fn.get("arguments") or ""))
-                    call_id = str(tc.get("id") or "")
+                    name, raw_args = _extract_tool_call_name_and_args(tc)
+                    args = redact_sensitive_text(raw_args)
+                    call_id = _extract_tool_call_id(tc)
                     if call_id:
                         call_id_to_tool[call_id] = (name, args)
                     if args:
                         try:
                             parsed = json.loads(args)
                         except Exception:
-                            parsed = {}
-                        for key in ("path", "workdir", "file_path"):
-                            val = parsed.get(key) if isinstance(parsed, dict) else None
-                            if (
-                                isinstance(val, str)
-                                and val
-                                and len(relevant_files) < 12
-                            ):
-                                relevant_files.append(val)
+                            parsed = args
+                        _collect_paths_from_jsonish(parsed)
 
         for msg in turns_to_summarize:
             role = msg.get("role", "unknown")
             text = redact_sensitive_text(
                 _content_text_for_contains(msg.get("content"))
             ).strip()
+            _collect_path_mentions(text, relevant_files)
             if len(text) > 600:
                 text = text[:420].rstrip() + " ... " + text[-160:].lstrip()
 
@@ -944,9 +984,8 @@ class ContextCompressor(ContextEngine):
             elif role == "assistant":
                 tool_names: list[str] = []
                 for tc in msg.get("tool_calls") or []:
-                    if isinstance(tc, dict):
-                        name = ((tc.get("function") or {}).get("name")) or "unknown"
-                        tool_names.append(str(name))
+                    name, _args = _extract_tool_call_name_and_args(tc)
+                    tool_names.append(name)
                 if tool_names:
                     assistant_actions.append(
                         "Called tool(s): " + ", ".join(tool_names[:6])
@@ -1036,7 +1075,10 @@ Continue from the most recent unfulfilled user ask and protected tail messages. 
 
 ## Critical Context
 Summary generation was unavailable, so this is a best-effort deterministic fallback for {len(turns_to_summarize)} compacted message(s).{reason_text}"""
-        return self._with_summary_prefix(redact_sensitive_text(body.strip()))
+        summary = self._with_summary_prefix(redact_sensitive_text(body.strip()))
+        if len(summary) > _FALLBACK_SUMMARY_MAX_CHARS:
+            summary = summary[: _FALLBACK_SUMMARY_MAX_CHARS - 42].rstrip() + "\n...[fallback summary truncated]"
+        return summary
 
     def _fallback_to_main_for_compression(self, e: Exception, reason: str) -> None:
         """Switch from a separate ``summary_model`` back to the main model.

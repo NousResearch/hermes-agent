@@ -815,6 +815,97 @@ class TestSummaryFailureTrackingForGatewayWarning:
             for m in result
         )
 
+    def test_summary_failure_fallback_preserves_tool_paths_and_redacts_secret_context(self):
+        with patch("agent.context_compressor.get_model_context_length", return_value=100000):
+            c = ContextCompressor(model="test", quiet_mode=True, protect_first_n=1, protect_last_n=1)
+
+        secret = "ghp_" + ("a" * 36)
+        msgs = [
+            {"role": "system", "content": "sys"},
+            {"role": "user", "content": f"Fix /tmp/project/app.py and never leak {secret}"},
+            {
+                "role": "assistant",
+                "content": "I will inspect it.",
+                "tool_calls": [
+                    {
+                        "id": "call-1",
+                        "function": {
+                            "name": "read_file",
+                            "arguments": '{"path":"/tmp/project/app.py"}',
+                        },
+                    }
+                ],
+            },
+            {"role": "tool", "tool_call_id": "call-1", "content": f"read /tmp/project/app.py with token {secret}"},
+            {"role": "assistant", "content": "Found the bug in /tmp/project/app.py"},
+            {"role": "user", "content": "Patch it after this"},
+            {"role": "assistant", "content": "Ready to patch"},
+            {"role": "user", "content": "current live request should stay in tail"},
+        ]
+
+        with patch("agent.context_compressor.call_llm", side_effect=Exception("timeout")):
+            result = c.compress(msgs)
+
+        fallback = next(m["content"] for m in result if "Summary generation was unavailable" in m.get("content", ""))
+        assert "Called tool(s): read_file" in fallback
+        assert "/tmp/project/app.py" in fallback
+        assert secret not in fallback
+        assert "ghp_" not in fallback
+
+    def test_summary_failure_fallback_supports_object_tool_calls_and_content_path_mentions(self):
+        with patch("agent.context_compressor.get_model_context_length", return_value=100000):
+            c = ContextCompressor(model="test", quiet_mode=True, protect_first_n=1, protect_last_n=1)
+
+        tool_call = MagicMock()
+        tool_call.id = "call-object"
+        tool_call.function.name = "terminal"
+        tool_call.function.arguments = '{"command":"python /repo/scripts/fix.py", "workdir":"/repo"}'
+        msgs = [
+            {"role": "system", "content": "sys"},
+            {"role": "user", "content": "Review ~/src/pkg/module.py before editing"},
+            {"role": "assistant", "content": "Running command", "tool_calls": [tool_call]},
+            {"role": "tool", "tool_call_id": "call-object", "content": "Traceback in /repo/src/pkg/module.py: boom"},
+            {"role": "assistant", "content": "Need to update C:\\work\\pkg\\module.py too"},
+            {"role": "user", "content": "Patch ~/src/pkg/module.py after checking those files"},
+            {"role": "assistant", "content": "Ready to patch"},
+            {"role": "user", "content": "tail task"},
+        ]
+
+        with patch("agent.context_compressor.call_llm", side_effect=Exception("timeout")):
+            result = c.compress(msgs)
+
+        fallback = next(m["content"] for m in result if "Summary generation was unavailable" in m.get("content", ""))
+        assert "Called tool(s): terminal" in fallback
+        assert "/repo/scripts/fix.py" in fallback
+        assert "/repo" in fallback
+        assert "/repo/src/pkg/module.py" in fallback
+        assert "C:\\work\\pkg\\module.py" in fallback
+        assert "Traceback" in fallback
+
+    def test_summary_failure_fallback_is_bounded(self):
+        with patch("agent.context_compressor.get_model_context_length", return_value=100000):
+            c = ContextCompressor(model="test", quiet_mode=True, protect_first_n=1, protect_last_n=1)
+
+        long_text = "important detail " * 2000
+        msgs = [
+            {"role": "system", "content": "sys"},
+            {"role": "user", "content": "head user"},
+            {"role": "assistant", "content": "head assistant"},
+            {"role": "user", "content": long_text},
+            {"role": "assistant", "content": long_text},
+            {"role": "user", "content": long_text},
+            {"role": "assistant", "content": long_text},
+            {"role": "user", "content": "tail"},
+        ]
+
+        with patch("agent.context_compressor.call_llm", side_effect=Exception("timeout")):
+            result = c.compress(msgs)
+
+        fallback = next(m["content"] for m in result if "Summary generation was unavailable" in m.get("content", ""))
+        assert len(fallback) <= 8300
+        assert "deterministic fallback" in fallback
+        assert "important detail" in fallback
+
     def test_compress_clears_fallback_flag_on_subsequent_success(self):
         mock_response = MagicMock()
         mock_response.choices = [MagicMock()]

@@ -4047,7 +4047,6 @@ def run_conversation(
                 model=agent.model,
                 platform=getattr(agent, "platform", None) or "",
             )
-            _response_transformed = False
             for _hook_result in _transform_results:
                 if isinstance(_hook_result, str) and _hook_result:
                     final_response = _hook_result

@@ -381,6 +381,8 @@ def _create_app(adapter: APIServerAdapter) -> web.Application:
     app.router.add_get("/v1/models", adapter._handle_models)
     app.router.add_get("/v1/capabilities", adapter._handle_capabilities)
     app.router.add_post("/v1/chat/completions", adapter._handle_chat_completions)
+    app.router.add_post("/v1/approvals", adapter._handle_chat_approval)
+    app.router.add_post("/v1/commands", adapter._handle_api_command)
     app.router.add_post("/v1/responses", adapter._handle_responses)
     app.router.add_get("/v1/responses/{response_id}", adapter._handle_get_response)
     app.router.add_delete("/v1/responses/{response_id}", adapter._handle_delete_response)
@@ -624,6 +626,8 @@ class TestCapabilitiesEndpoint:
             assert data["features"]["run_events_sse"] is True
             assert data["features"]["session_continuity_header"] == "X-Hermes-Session-Id"
             assert data["endpoints"]["run_status"]["path"] == "/v1/runs/{run_id}"
+            assert data["endpoints"]["commands"] == {"method": "POST", "path": "/v1/commands"}
+            assert "command_list" not in data["endpoints"]
 
     @pytest.mark.asyncio
     async def test_capabilities_requires_auth_when_key_configured(self, auth_adapter):
@@ -639,6 +643,60 @@ class TestCapabilitiesEndpoint:
             assert authed.status == 200
             data = await authed.json()
             assert data["auth"]["required"] is True
+
+
+# ---------------------------------------------------------------------------
+# /v1/commands endpoint
+# ---------------------------------------------------------------------------
+
+
+class TestCommandsEndpoint:
+    @pytest.mark.asyncio
+    async def test_help_returns_structured_command_metadata(self, adapter):
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.post("/v1/commands", json={"command": "/help"})
+
+            assert resp.status == 200
+            data = await resp.json()
+            assert data["object"] == "hermes.api_command.result"
+            assert data["command"] == "help"
+            assert "/status" in data["content"]
+            assert any(command["name"] == "title" for command in data["commands"])
+
+    @pytest.mark.asyncio
+    async def test_recognized_command_dispatches_through_gateway_handler(self, adapter):
+        app = _create_app(adapter)
+        with patch.object(
+            adapter,
+            "_dispatch_api_gateway_command",
+            new=AsyncMock(return_value="title set"),
+        ) as dispatch:
+            async with TestClient(TestServer(app)) as cli:
+                resp = await cli.post(
+                    "/v1/commands",
+                    json={"command": "/title test", "session_id": "api-session-1"},
+                )
+                assert resp.status == 200
+                data = await resp.json()
+
+        assert data["command"] == "title"
+        assert data["content"] == "title set"
+        dispatch.assert_awaited_once_with("/title test", "api-session-1")
+
+    @pytest.mark.asyncio
+    async def test_commands_requires_auth_when_key_configured(self, auth_adapter):
+        app = _create_app(auth_adapter)
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.post("/v1/commands", json={"command": "/help"})
+            assert resp.status == 401
+
+            authed = await cli.post(
+                "/v1/commands",
+                json={"command": "/help"},
+                headers={"Authorization": "Bearer sk-secret"},
+            )
+            assert authed.status == 200
 
 
 # ---------------------------------------------------------------------------

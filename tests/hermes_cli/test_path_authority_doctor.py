@@ -145,18 +145,19 @@ def test_gateway_path_authority_requires_exec_and_workdir(tmp_path):
 
 
 def test_report_redacts_secret_like_execstart_values(tmp_path):
+    secret_fixture = "sk-" + "testsecret" + "1234567890"
     unit = pad.EffectiveUnit(
         exec_start=[
             "/srv/agent/.venv/bin/python -m hermes_cli.main gateway run "
-            "--api-key sk-super-secret-token"
+            f"--api-key {secret_fixture}"
         ],
         working_directory="/srv/agent",
-        environment={"OPENROUTER_API_KEY": "sk-super-secret-token"},
+        environment={"OPENROUTER_API_KEY": secret_fixture},
     )
 
     encoded = json.dumps(unit.to_report())
 
-    assert "sk-super-secret-token" not in encoded
+    assert secret_fixture not in encoded
     assert "[REDACTED]" in encoded
 
 

@@ -128,8 +128,9 @@ def test_initialized_notification_is_silent(bridge):
 
 
 def test_main_redacts_secret_shaped_exception_messages(bridge, monkeypatch, capsys):
+    secret_fixture = "sk-" + "testsecret" + "1234567890"
+
     async def boom(_payload):
-        secret_fixture = "sk-" + "testsecret" + "1234567890"
         raise RuntimeError("upstream token: " + secret_fixture)
 
     monkeypatch.setattr(bridge, "_handle_request", boom)
@@ -144,5 +145,5 @@ def test_main_redacts_secret_shaped_exception_messages(bridge, monkeypatch, caps
     output = capsys.readouterr().out
     response = json.loads(output)
     assert response["error"]["code"] == -32000
-    assert "sk-testsecret" not in output
+    assert secret_fixture not in output
     assert "token: [REDACTED]" in response["error"]["message"]

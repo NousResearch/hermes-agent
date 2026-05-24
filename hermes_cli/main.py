@@ -10294,6 +10294,7 @@ _BUILTIN_SUBCOMMANDS = frozenset(
         "acp", "auth", "backup", "bundles", "checkpoints", "claw", "completion",
         "computer-use",
         "config", "cron", "curator", "dashboard", "debug", "doctor",
+        "extensions",
         "dump", "fallback", "gateway", "hooks", "import", "insights",
         "kanban", "login", "logout", "logs", "lsp", "mcp", "memory",
         "model", "pairing", "plugins", "postinstall", "profile", "proxy",
@@ -11774,6 +11775,39 @@ Examples:
     from hermes_cli.bundles import register_cli as _bundles_register, bundles_command
     _bundles_register(bundles_parser)
     bundles_parser.set_defaults(func=bundles_command)
+
+    # =========================================================================
+    # extensions command — inspect-only registry receipts
+    # =========================================================================
+    extensions_parser = subparsers.add_parser(
+        "extensions",
+        help="Search and inspect Hermes extension manifests without installing",
+        description=(
+            "Inspect Hermes extension registry entries and extension.yaml manifests. "
+            "Phase 1 is read-only: no files, config, MCP servers, cron jobs, or plugins are installed."
+        ),
+    )
+    extensions_subparsers = extensions_parser.add_subparsers(dest="extensions_action")
+    extensions_search = extensions_subparsers.add_parser(
+        "search", help="Search a local extension registry index"
+    )
+    extensions_search.add_argument("query", help="Search query")
+    extensions_search.add_argument(
+        "--index",
+        required=True,
+        help="Path to a registry index JSON file",
+    )
+    extensions_inspect = extensions_subparsers.add_parser(
+        "inspect", help="Render a permission/risk receipt for an extension manifest"
+    )
+    extensions_inspect.add_argument("manifest", help="Path to extension.yaml")
+
+    def cmd_extensions(args):
+        from hermes_cli.extensions import extensions_command
+
+        sys.exit(extensions_command(args))
+
+    extensions_parser.set_defaults(func=cmd_extensions)
 
     # =========================================================================
     # plugins command

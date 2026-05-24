@@ -229,6 +229,27 @@ def _restore_or_build_system_prompt(agent, system_message, conversation_history)
             )
 
 
+def _set_live_state(
+    agent,
+    state: str,
+    tool_name: str = None,
+    detail: str = None,
+) -> None:
+    """Set live execution state in the session DB.
+
+    Best-effort: failures are logged at DEBUG and never raised.
+    Safe to call before _session_db is initialized or without a session_id.
+    """
+    if not agent or not getattr(agent, "_session_db", None) or not getattr(agent, "session_id", None):
+        return
+    try:
+        agent._session_db.set_session_live_state(
+            agent.session_id, state, tool_name, detail,
+        )
+    except Exception:
+        logger.debug("_set_live_state(%s, %s) failed", getattr(agent, "session_id", "?"), state)
+
+
 def run_conversation(
     agent,
     user_message: str,
@@ -443,7 +464,10 @@ def run_conversation(
     messages.append(user_msg)
     current_turn_user_idx = len(messages) - 1
     agent._persist_user_message_idx = current_turn_user_idx
-    
+
+    # Live state: user has just spoken → listening
+    _set_live_state(agent, "listening")
+
     if not agent.quiet_mode:
         _print_preview = _summarize_user_message_for_log(user_message)
         agent._safe_print(f"💬 Starting conversation: '{_print_preview[:60]}{'...' if len(_print_preview) > 60 else ''}'")
@@ -1138,10 +1162,14 @@ def run_conversation(
                         _use_streaming = False
 
                 if _use_streaming:
+                    # Live state: model is being called → thinking
+                    _set_live_state(agent, "thinking")
                     response = agent._interruptible_streaming_api_call(
                         api_kwargs, on_first_delta=_stop_spinner
                     )
                 else:
+                    # Live state: model is being called → thinking
+                    _set_live_state(agent, "thinking")
                     response = agent._interruptible_api_call(api_kwargs)
                 
                 api_duration = time.time() - api_start_time
@@ -3426,6 +3454,17 @@ def run_conversation(
                     except Exception:
                         pass
 
+                # Live state: tool execution starting → tool_running
+                _first_tool_name = None
+                _tool_calls_list = getattr(assistant_message, "tool_calls", None)
+                if _tool_calls_list and len(_tool_calls_list) > 0:
+                    _first = _tool_calls_list[0]
+                    if isinstance(_first, dict):
+                        _first_tool_name = _first.get("function", {}).get("name")
+                    elif hasattr(_first, "function"):
+                        _first_tool_name = _first.function.name
+                _set_live_state(agent, "tool_running", tool_name=_first_tool_name)
+
                 agent._execute_tool_calls(assistant_message, messages, effective_task_id, api_call_count)
 
                 if agent._tool_guardrail_halt_decision is not None:
@@ -3839,6 +3878,8 @@ def run_conversation(
             
         except Exception as e:
             error_msg = f"Error during OpenAI-compatible API call #{api_call_count}: {str(e)}"
+            # Live state: turn failed → error
+            _set_live_state(agent, "error", detail=error_msg[:200])
             try:
                 print(f"❌ {error_msg}")
             except (OSError, ValueError):
@@ -3961,6 +4002,8 @@ def run_conversation(
     # same empty-response loop again.
     agent._drop_trailing_empty_response_scaffolding(messages)
     agent._persist_session(messages, conversation_history)
+    # Live state: turn completed → done
+    _set_live_state(agent, "done")
 
     # ── Turn-exit diagnostic log ─────────────────────────────────────
     # Always logged at INFO so agent.log captures WHY every turn ended.

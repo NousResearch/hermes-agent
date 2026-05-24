@@ -232,8 +232,17 @@ def _install_npm(
             staging,
             " ".join(install_targets),
         )
+        # ``shutil.which("npm")`` resolves to ``npm.cmd`` on Windows.
+        # Wrap with safe_subprocess_argv so the staging path and pkg
+        # names — which can legitimately contain ``@`` (scoped pkgs),
+        # spaces (``Program Files``), or ``(`` / ``)`` (system dirs) —
+        # don't get re-parsed by cmd.exe's outer pass as shell
+        # metacharacters.  No-op on POSIX.  Issue #31419.
+        from hermes_cli._subprocess_compat import safe_subprocess_argv
         proc = subprocess.run(
-            [npm, "install", "--prefix", str(staging), "--silent", "--no-fund", "--no-audit", *install_targets],
+            safe_subprocess_argv(
+                [npm, "install", "--prefix", str(staging), "--silent", "--no-fund", "--no-audit", *install_targets]
+            ),
             check=False,
             capture_output=True,
             text=True,

@@ -70,6 +70,8 @@ AUTHOR_MAP = {
     "qiyin.zuo@pcitc.com": "qiyin-code",
     "mr.aashiz@gmail.com": "aashizpoudel",
     "70629228+shaun0927@users.noreply.github.com": "shaun0927",
+    "soju06@users.noreply.github.com": "Soju06",
+    "34199905+Soju06@users.noreply.github.com": "Soju06",
     "98262967+Bihruze@users.noreply.github.com": "Bihruze",
     "189280367+Lempkey@users.noreply.github.com": "Lempkey",
     "34853915+m0n3r0@users.noreply.github.com": "m0n3r0",

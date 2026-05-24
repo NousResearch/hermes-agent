@@ -508,7 +508,7 @@ class TestHTTPHandling:
         app = _create_app(adapter)
         async with TestClient(TestServer(app)) as cli:
             resp = await cli.post("/webhooks/test", json={"data": "value"})
-            assert resp.status == 500
+            assert resp.status == 403
             data = await resp.json()
             assert data["error"] == "Webhook route is missing an HMAC secret"
 

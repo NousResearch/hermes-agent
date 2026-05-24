@@ -3021,7 +3021,18 @@ class APIServerAdapter(BasePlatformAdapter):
             return _api_json_error(str(exc), status=500)
 
     async def _handle_list_toolsets(self, request: "web.Request") -> "web.Response":
-        """GET /api/tools/toolsets — list configurable toolsets."""
+        """GET /api/tools/toolsets — list configurable toolsets.
+
+        Scoping (per plan v11):
+        - ``?platform=<key>`` (default ``api_server``) selects which
+          platform's toolset config to inspect.
+        - ``?profile=<name>`` (optional) selects WHICH profile's
+          ``config.yaml`` is read. Omitted → falls through to
+          ``get_hermes_home()`` exactly as before (back-compat).
+          Named → reads ``<profile_dir>/config.yaml`` via
+          ``load_config(profile_dir)``. Invalid name → 400 via
+          ``_resolve_profile_dir`` raising ValueError.
+        """
         auth_err = self._check_auth(request)
         if auth_err:
             return auth_err
@@ -3036,7 +3047,16 @@ class APIServerAdapter(BasePlatformAdapter):
             )
             from toolsets import resolve_toolset
 
-            config = load_config()
+            # Profile resolution: None means "default process scope"
+            # so we keep load_config() back-compat. Named profile →
+            # pass profile_dir through.
+            profile_query = request.query.get("profile")
+            profile_dir = (
+                _resolve_profile_dir(profile_query)
+                if profile_query
+                else None
+            )
+            config = load_config(profile_dir)
             enabled = _get_platform_tools(config, platform, include_default_mcp_servers=False)
             toolsets = []
             for key, label, description in _get_effective_configurable_toolsets():
@@ -3057,13 +3077,24 @@ class APIServerAdapter(BasePlatformAdapter):
                         "tools": tools,
                     }
                 )
-            return web.json_response({"toolsets": toolsets, "platform": platform})
+            return web.json_response({
+                "toolsets": toolsets,
+                "platform": platform,
+                "profile": profile_query or None,
+            })
+        except (ValueError, FileNotFoundError) as exc:
+            return _api_json_error(str(exc), status=400)
         except Exception as exc:
             logger.exception("GET /api/tools/toolsets failed")
             return _api_json_error(str(exc), status=500)
 
     async def _handle_set_toolset(self, request: "web.Request") -> "web.Response":
-        """PUT /api/tools/toolsets/{key} — enable or disable a toolset."""
+        """PUT /api/tools/toolsets/{key} — enable or disable a toolset.
+
+        Same scoping rules as ``_handle_list_toolsets`` above:
+        ``?profile=<name>`` selects which profile's ``config.yaml``
+        is mutated. Omitted → default process scope (back-compat).
+        """
         auth_err = self._check_auth(request)
         if auth_err:
             return auth_err
@@ -3079,10 +3110,24 @@ class APIServerAdapter(BasePlatformAdapter):
             from hermes_cli.config import load_config, save_config
             from hermes_cli.tools_config import _apply_toolset_change
 
-            config = load_config()
+            profile_query = request.query.get("profile")
+            profile_dir = (
+                _resolve_profile_dir(profile_query)
+                if profile_query
+                else None
+            )
+            config = load_config(profile_dir)
             _apply_toolset_change(config, platform, [key], "enable" if enabled else "disable")
-            save_config(config)
-            return web.json_response({"ok": True, "key": key, "enabled": enabled, "platform": platform})
+            save_config(config, profile_dir)
+            return web.json_response({
+                "ok": True,
+                "key": key,
+                "enabled": enabled,
+                "platform": platform,
+                "profile": profile_query or None,
+            })
+        except (ValueError, FileNotFoundError) as exc:
+            return _api_json_error(str(exc), status=400)
         except Exception as exc:
             logger.exception("PUT /api/tools/toolsets/%s failed", key)
             return _api_json_error(str(exc), status=500)

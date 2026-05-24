@@ -330,21 +330,23 @@ class TestMatrixAllowedRooms:
         assert allowed == {"!room1:srv", "!room2:srv"}
 
     def test_block_logic(self):
-        """Replicates the matrix.py gate: if allowed non-empty and room not in it, drop."""
+        """Replicates the matrix.py gate: allowed_rooms applies to DMs too.
+
+        Matrix multi-profile setups may use several 1:1 rooms with the same
+        Matrix account; exempting DMs lets every profile answer in every
+        profile room.
+        """
         allowed = {"!allowed:srv"}
 
-        # Non-allowed room in group (is_dm=False) → blocked
         def would_process(room_id, is_dm):
-            if is_dm:
-                return True
             if allowed and room_id not in allowed:
                 return False
             return True
 
         assert would_process("!blocked:srv", is_dm=False) is False
         assert would_process("!allowed:srv", is_dm=False) is True
-        # DM always allowed
-        assert would_process("!blocked:srv", is_dm=True) is True
+        assert would_process("!blocked:srv", is_dm=True) is False
+        assert would_process("!allowed:srv", is_dm=True) is True
 
     def test_config_bridge(self, monkeypatch, tmp_path):
         from gateway.config import load_gateway_config

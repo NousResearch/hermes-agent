@@ -1412,6 +1412,9 @@ DEFAULT_CONFIG = {
         "require_mention": True,       # Require @mention to respond in rooms
         "free_response_rooms": "",     # Comma-separated room IDs where bot responds without mention
         "allowed_rooms": "",           # If set, bot ONLY responds in these room IDs (whitelist)
+        "auto_thread": True,            # Auto-create threads for group/room messages
+        "dm_auto_thread": False,        # Auto-create threads for DM messages
+        "dm_mention_threads": False,    # Auto-create DM threads only when the bot is @mentioned
     },
 
     # Approval mode for dangerous commands:

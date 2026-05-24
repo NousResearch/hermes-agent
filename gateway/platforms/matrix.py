@@ -18,7 +18,7 @@ Environment variables:
                             (eyes/checkmark/cross). Default: true
     MATRIX_REQUIRE_MENTION      Require @mention in rooms (default: true)
     MATRIX_FREE_RESPONSE_ROOMS  Comma-separated room IDs exempt from mention requirement (alias of matrix.free_response_rooms)
-    MATRIX_ALLOWED_ROOMS    Comma-separated room IDs; if set, bot ONLY responds in these rooms (whitelist, DMs exempt; alias of matrix.allowed_rooms)
+    MATRIX_ALLOWED_ROOMS    Comma-separated room IDs; if set, bot ONLY responds in these rooms (whitelist; alias of matrix.allowed_rooms)
     MATRIX_AUTO_THREAD          Auto-create threads for room messages (default: true)
     MATRIX_DM_AUTO_THREAD       Auto-create threads for DM messages (default: false)
     MATRIX_RECOVERY_KEY         Recovery key for cross-signing verification after device key rotation
@@ -392,7 +392,7 @@ class MatrixAdapter(BasePlatformAdapter):
             self._free_rooms: Set[str] = {
                 r.strip() for r in str(free_rooms_raw).split(",") if r.strip()
             }
-        # If non-empty, bot ONLY responds in these rooms (whitelist); DMs exempt.
+        # If non-empty, bot ONLY responds in these rooms (whitelist).
         allowed_rooms_raw = config.extra.get("allowed_rooms")
         if allowed_rooms_raw is None:
             allowed_rooms_raw = os.getenv("MATRIX_ALLOWED_ROOMS", "")
@@ -1697,20 +1697,22 @@ class MatrixAdapter(BasePlatformAdapter):
         )
         is_mentioned = self._is_bot_mentioned(body, formatted_body, mention_user_ids)
 
+        # allowed_rooms check (whitelist — must pass before other gating).
+        # When set, messages from rooms NOT in this whitelist are silently
+        # ignored, even if @mentioned. Apply this to DMs too: multi-profile
+        # setups may use several 1:1 rooms with the same Matrix account, and
+        # treating DMs as exempt lets every profile answer in every profile room.
+        if self._allowed_rooms and room_id not in self._allowed_rooms:
+            logger.debug(
+                "Matrix: ignoring message %s in %s — room not in "
+                "MATRIX_ALLOWED_ROOMS whitelist",
+                event_id,
+                room_id,
+            )
+            return None
+
         # Require-mention gating.
         if not is_dm:
-            # allowed_rooms check (whitelist — must pass before other gating).
-            # When set, messages from rooms NOT in this whitelist are silently
-            # ignored, even if @mentioned.  DMs are already excluded above.
-            if self._allowed_rooms and room_id not in self._allowed_rooms:
-                logger.debug(
-                    "Matrix: ignoring message %s in %s — room not in "
-                    "MATRIX_ALLOWED_ROOMS whitelist",
-                    event_id,
-                    room_id,
-                )
-                return None
-
             is_free_room = room_id in self._free_rooms
             in_bot_thread = bool(thread_id and thread_id in self._threads)
             if self._require_mention and not is_free_room and not in_bot_thread:

@@ -1122,6 +1122,8 @@ def load_gateway_config() -> GatewayConfig:
                     os.environ["MATRIX_ALLOWED_ROOMS"] = str(ar)
                 if "auto_thread" in matrix_cfg and not os.getenv("MATRIX_AUTO_THREAD"):
                     os.environ["MATRIX_AUTO_THREAD"] = str(matrix_cfg["auto_thread"]).lower()
+                if "dm_auto_thread" in matrix_cfg and not os.getenv("MATRIX_DM_AUTO_THREAD"):
+                    os.environ["MATRIX_DM_AUTO_THREAD"] = str(matrix_cfg["dm_auto_thread"]).lower()
                 if "dm_mention_threads" in matrix_cfg and not os.getenv("MATRIX_DM_MENTION_THREADS"):
                     os.environ["MATRIX_DM_MENTION_THREADS"] = str(matrix_cfg["dm_mention_threads"]).lower()
 

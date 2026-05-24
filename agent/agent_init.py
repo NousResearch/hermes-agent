@@ -1058,6 +1058,7 @@ def init_agent(
 
     # Persistent memory (MEMORY.md + USER.md) -- loaded from disk
     agent._memory_store = None
+    agent._memory_retriever = None  # tiering-only; None when feature flag off
     agent._memory_enabled = False
     agent._user_profile_enabled = False
     agent._memory_nudge_interval = 10
@@ -1070,12 +1071,72 @@ def init_agent(
             agent._user_profile_enabled = mem_config.get("user_profile_enabled", False)
             agent._memory_nudge_interval = int(mem_config.get("nudge_interval", 10))
             if agent._memory_enabled or agent._user_profile_enabled:
-                from tools.memory_tool import MemoryStore
-                agent._memory_store = MemoryStore(
-                    memory_char_limit=mem_config.get("memory_char_limit", 2200),
-                    user_char_limit=mem_config.get("user_char_limit", 1375),
-                )
-                agent._memory_store.load_from_disk()
+                # Tiering opt-in. When `memory.tiering.enabled = true`, swap the
+                # MemoryStore for TieredMemoryStore (T0/T1/T2 + recall). Falls
+                # back to the legacy flat MemoryStore on any init failure so
+                # an agent never refuses to start because of memory.
+                tiering_cfg = mem_config.get("tiering", {}) or {}
+                tiering_on = bool(tiering_cfg.get("enabled", False))
+                if tiering_on:
+                    try:
+                        from tools.memory_embedder import make_embedder
+                        from tools.memory_retriever import MemoryRetriever
+                        from tools.memory_metrics import MemoryMetrics
+                        from tools.memory_tiered_store import TieredMemoryStore
+                        embedder = make_embedder(
+                            prefer_local=bool(tiering_cfg.get("prefer_local", True)),
+                        )
+                        # Metrics opt-in (default ON when tiering is on, since
+                        # the whole point is to evaluate whether tiering helps).
+                        metrics = None
+                        if bool(tiering_cfg.get("metrics_enabled", True)):
+                            metrics = MemoryMetrics(
+                                session_id=getattr(agent, "session_id", "") or "",
+                            )
+                        agent._memory_store = TieredMemoryStore(
+                            embedder=embedder,
+                            memory_char_limit=mem_config.get("memory_char_limit", 2200),
+                            user_char_limit=mem_config.get("user_char_limit", 1375),
+                            t1_char_limit=int(tiering_cfg.get("t1_char_limit", 3000)),
+                            tau_days=float(tiering_cfg.get("tau_days", 14.0)),
+                            beta=float(tiering_cfg.get("beta", 0.2)),
+                            gamma=float(tiering_cfg.get("gamma", 0.1)),
+                            metrics=metrics,
+                        )
+                        agent._memory_store.load_from_disk()
+                        # Per-turn retriever (recall + <recalled-memory> injection)
+                        retrieval_cfg = (tiering_cfg.get("retrieval") or {})
+                        if bool(retrieval_cfg.get("enabled", True)):
+                            agent._memory_retriever = MemoryRetriever(
+                                store=agent._memory_store,
+                                embedder=embedder,
+                                alpha=float(retrieval_cfg.get("alpha", 0.7)),
+                                beta=float(retrieval_cfg.get("beta", 0.2)),
+                                gamma=float(retrieval_cfg.get("gamma", 0.1)),
+                                tau_days=float(retrieval_cfg.get("tau_days", 14.0)),
+                                min_similarity=float(
+                                    retrieval_cfg.get("min_similarity", 0.5),
+                                ),
+                                k=int(retrieval_cfg.get("k", 5)),
+                                metrics=metrics,
+                            )
+                    except Exception as e:
+                        # Any init failure → fall back to legacy flat store.
+                        import logging as _logging
+                        _logging.getLogger(__name__).warning(
+                            "TieredMemoryStore init failed (%s); "
+                            "falling back to flat MemoryStore.",
+                            e.__class__.__name__,
+                        )
+                        agent._memory_store = None
+                        agent._memory_retriever = None
+                if agent._memory_store is None:
+                    from tools.memory_tool import MemoryStore
+                    agent._memory_store = MemoryStore(
+                        memory_char_limit=mem_config.get("memory_char_limit", 2200),
+                        user_char_limit=mem_config.get("user_char_limit", 1375),
+                    )
+                    agent._memory_store.load_from_disk()
         except Exception:
             pass  # Memory is optional -- don't break agent init
     

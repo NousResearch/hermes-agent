@@ -304,6 +304,35 @@ def run_conversation(
     if isinstance(persist_user_message, str):
         persist_user_message = _sanitize_surrogates(persist_user_message)
 
+    # ── Memory retrieval (tiering opt-in) ───────────────────────────────
+    # When memory.tiering.enabled is on and the retriever was created
+    # successfully in agent_init, prepend a <recalled-memory> block to the
+    # API-bound user_message — but NOT to persist_user_message, so the
+    # block doesn't pollute session history, the background_review fork's
+    # conversation snapshot, or external memory provider sync_turn() calls.
+    # Future turns will run their own recall on the actual user words.
+    _retriever = getattr(agent, "_memory_retriever", None)
+    if _retriever is not None and isinstance(user_message, str) and user_message.strip():
+        try:
+            _hits = _retriever.recall(user_message)
+            if _hits:
+                _block = _retriever.render_block(_hits)
+                if _block:
+                    # Capture the clean message into persist_user_message
+                    # BEFORE we mutate user_message — otherwise downstream
+                    # `original_user_message = persist_user_message if ...
+                    # else user_message` would fall through to our polluted
+                    # version and the recall block would leak into history,
+                    # external memory provider sync, and background review.
+                    if persist_user_message is None:
+                        persist_user_message = user_message
+                    user_message = _block + "\n\n" + user_message
+        except Exception as _retr_err:
+            # Recall is a best-effort enhancement; never break the turn for it.
+            logger.debug(
+                "Memory recall failed (non-fatal): %s", _retr_err, exc_info=True,
+            )
+
     # Store stream callback for _interruptible_api_call to pick up
     agent._stream_callback = stream_callback
     agent._persist_user_message_idx = None

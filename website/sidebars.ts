@@ -687,6 +687,7 @@ const sidebars: SidebarsConfig = {
         'guides/team-telegram-assistant',
         'guides/python-library',
         'guides/use-mcp-with-hermes',
+        'guides/hermes-as-an-mcp-server',
         'guides/use-soul-with-hermes',
         'guides/use-voice-mode-with-hermes',
         'guides/automate-with-cron',

@@ -64,6 +64,13 @@ def get_hermes_home() -> Path:
     if val:
         return Path(val)
 
+    # Honor HERMES_PROFILE to scope the home directory per profile,
+    # so that multiple gateways with different profiles don't collide
+    # on the same PID file (see issue #29948).
+    profile = os.environ.get("HERMES_PROFILE", "").strip()
+    if profile:
+        return Path.home() / ".hermes" / profile
+
     # Guard: if a non-default profile is sticky-active, warn once that
     # the fallback to the default profile is almost certainly wrong.
     global _profile_fallback_warned

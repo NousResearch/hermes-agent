@@ -142,6 +142,39 @@ export const api = {
     });
   },
 
+  // Custom providers
+  getCustomProviders: () =>
+    fetchJSON<CustomProvidersResponse>("/api/providers/custom"),
+  createCustomProvider: (provider: CustomProviderPayload) =>
+    fetchJSON<CustomProviderInfo>("/api/providers/custom", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(provider),
+    }),
+  updateCustomProvider: (key: string, provider: CustomProviderPayload) =>
+    fetchJSON<CustomProviderInfo>(
+      `/api/providers/custom/${encodeURIComponent(key)}`,
+      {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(provider),
+      },
+    ),
+  deleteCustomProvider: (key: string) =>
+    fetchJSON<{ ok: boolean; key: string }>(
+      `/api/providers/custom/${encodeURIComponent(key)}`,
+      { method: "DELETE" },
+    ),
+  probeCustomProvider: (key: string, body: CustomProviderProbePayload) =>
+    fetchJSON<{ models: string[] }>(
+      `/api/providers/custom/${encodeURIComponent(key)}/probe`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      },
+    ),
+
   // Cron jobs
   getCronJobs: (profile = "all") =>
     fetchJSON<CronJob[]>(`/api/cron/jobs?profile=${encodeURIComponent(profile)}`),
@@ -427,6 +460,61 @@ export interface EnvVarInfo {
   is_password: boolean;
   tools: string[];
   advanced: boolean;
+}
+
+export interface CustomProviderModelInfo {
+  name: string;
+  context_length?: number;
+}
+
+export interface CustomProviderInfo {
+  key: string;
+  name: string;
+  base_url: string;
+  key_env: string;
+  api_mode: string;
+  default_model: string;
+  models: CustomProviderModelInfo[];
+  context_length: number | null;
+  discover_models: boolean;
+  extra_body: Record<string, unknown>;
+  rate_limit_delay: number | null;
+  request_timeout_seconds: number | null;
+  stale_timeout_seconds: number | null;
+  api_key_set: boolean;
+  api_key_redacted: string | null;
+  api_key_source: string | null;
+  model_count: number;
+}
+
+export interface CustomProvidersResponse {
+  providers: CustomProviderInfo[];
+  active_provider: string | null;
+}
+
+export interface CustomProviderPayload {
+  key: string;
+  name?: string;
+  base_url: string;
+  key_env?: string;
+  api_mode: string;
+  default_model?: string;
+  models?: string[];
+  context_length?: number | null;
+  discover_models?: boolean;
+  extra_body?: Record<string, unknown>;
+  rate_limit_delay?: number | null;
+  request_timeout_seconds?: number | null;
+  stale_timeout_seconds?: number | null;
+  api_key?: string;
+  clear_api_key?: boolean;
+}
+
+export interface CustomProviderProbePayload {
+  key?: string;
+  base_url?: string;
+  key_env?: string;
+  api_key?: string;
 }
 
 export interface SessionMessage {

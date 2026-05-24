@@ -218,6 +218,114 @@ class TestWebServerEndpoints:
         # Should contain known env var names
         assert any(k.endswith("_API_KEY") or k.endswith("_TOKEN") for k in data.keys())
 
+    def test_custom_provider_create_lists_and_stores_secret_in_env(self):
+        """Dashboard custom providers write providers: config and keep secrets in .env."""
+        from hermes_cli.config import load_config, load_env
+
+        resp = self.client.post(
+            "/api/providers/custom",
+            json={
+                "key": "router",
+                "name": "Router",
+                "base_url": "http://localhost:20128/v1",
+                "key_env": "ROUTER_API_KEY",
+                "api_mode": "chat_completions",
+                "default_model": "openai-all",
+                "models": ["openai-all", "gemini"],
+                "api_key": "sk-router-secret",
+            },
+        )
+
+        assert resp.status_code == 200
+        created = resp.json()
+        assert created["key"] == "router"
+        assert created["api_key_set"] is True
+        cfg = load_config()
+        assert cfg["providers"]["router"]["base_url"] == "http://localhost:20128/v1"
+        assert cfg["providers"]["router"]["key_env"] == "ROUTER_API_KEY"
+        assert "api_key" not in cfg["providers"]["router"]
+        assert sorted(cfg["providers"]["router"]["models"]) == ["gemini", "openai-all"]
+        assert load_env()["ROUTER_API_KEY"] == "sk-router-secret"
+
+        listed = self.client.get("/api/providers/custom")
+        assert listed.status_code == 200
+        providers = listed.json()["providers"]
+        assert [p["key"] for p in providers] == ["router"]
+
+    def test_custom_provider_update_preserves_model_metadata(self):
+        """Editing model names keeps per-model metadata for unchanged models."""
+        from hermes_cli.config import load_config, save_config
+
+        save_config({
+            "providers": {
+                "router": {
+                    "name": "Router",
+                    "base_url": "http://localhost:20128/v1",
+                    "key_env": "ROUTER_API_KEY",
+                    "models": {"openai-all": {"context_length": 256000}},
+                }
+            }
+        })
+
+        resp = self.client.put(
+            "/api/providers/custom/router",
+            json={
+                "key": "router",
+                "name": "Router",
+                "base_url": "http://localhost:20128/v1",
+                "key_env": "ROUTER_API_KEY",
+                "api_mode": "chat_completions",
+                "models": ["openai-all", "gemini"],
+            },
+        )
+
+        assert resp.status_code == 200
+        models = load_config()["providers"]["router"]["models"]
+        assert models["openai-all"]["context_length"] == 256000
+        assert models["gemini"] == {}
+
+    def test_custom_provider_delete_rejects_active_provider(self):
+        from hermes_cli.config import save_config
+
+        save_config({
+            "model": {"provider": "custom:router", "default": "openai-all"},
+            "providers": {
+                "router": {
+                    "name": "Router",
+                    "base_url": "http://localhost:20128/v1",
+                    "key_env": "ROUTER_API_KEY",
+                }
+            },
+        })
+
+        resp = self.client.delete("/api/providers/custom/router")
+
+        assert resp.status_code == 409
+
+    def test_custom_provider_delete_keeps_shared_env_key(self):
+        from hermes_cli.config import load_env, save_config, save_env_value
+
+        save_env_value("SHARED_ROUTER_KEY", "shared-secret")
+        save_config({
+            "providers": {
+                "router-a": {
+                    "name": "Router A",
+                    "base_url": "http://localhost:20128/v1",
+                    "key_env": "SHARED_ROUTER_KEY",
+                },
+                "router-b": {
+                    "name": "Router B",
+                    "base_url": "http://localhost:20129/v1",
+                    "key_env": "SHARED_ROUTER_KEY",
+                },
+            }
+        })
+
+        resp = self.client.delete("/api/providers/custom/router-a")
+
+        assert resp.status_code == 200
+        assert load_env()["SHARED_ROUTER_KEY"] == "shared-secret"
+
     def test_reveal_env_var(self, tmp_path):
         """POST /api/env/reveal should return the real unredacted value."""
         from hermes_cli.config import save_env_value

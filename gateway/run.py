@@ -1348,7 +1348,7 @@ _GATEWAY_EXPLICIT_MEDIA_TOOL_PREFIXES = ("mcp_",)
 _GATEWAY_EXPLICIT_MEDIA_TAGS_KEY = "_hermes_media_tags"
 
 _GATEWAY_TOOL_MEDIA_RE = re.compile(
-    r'MEDIA:\s*((?:/|~\/)\S+\.(?:png|jpe?g|gif|webp|'
+    r'MEDIA:\s*((?:/|~\/)\S+\.(?:png|jpe?g|gif|webp|bmp|'
     r'mp4|mov|avi|mkv|webm|ogg|opus|mp3|wav|m4a|'
     r'flac|epub|pdf|zip|rar|7z|docx?|xlsx?|pptx?|'
     r'txt|csv|apk|ipa))',
@@ -1491,6 +1491,49 @@ def _extract_trusted_tool_media_tags(
             has_voice_directive = True
 
     return media_tags, has_voice_directive
+
+
+def _append_trusted_tool_media_tags_to_response(
+    response: str,
+    result_messages: list,
+    *,
+    history_media_paths: set | None = None,
+) -> str:
+    """Append trusted current-turn tool MEDIA tags to a response string.
+
+    Both normal gateway replies and background tasks need this path.  The
+    extractor still ignores arbitrary tool text and only trusts known media
+    tools or wrapper-marked MCP ImageContent metadata.
+    """
+    media_tags, has_voice_directive = _extract_trusted_tool_media_tags(
+        result_messages,
+        history_media_paths=history_media_paths,
+    )
+    if not media_tags:
+        return response
+
+    try:
+        existing_response_paths = {
+            path for path, _is_voice in BasePlatformAdapter.extract_media(response)[0]
+        }
+    except Exception:
+        existing_response_paths = set()
+
+    seen_paths = set()
+    unique_tags = []
+    for tag in media_tags:
+        tag_path = os.path.expanduser(tag[len("MEDIA:"):])
+        if tag_path in seen_paths or tag_path in existing_response_paths:
+            continue
+        seen_paths.add(tag_path)
+        unique_tags.append(tag)
+    if not unique_tags:
+        return response
+    if has_voice_directive:
+        unique_tags.insert(0, "[[audio_as_voice]]")
+
+    suffix = "\n".join(unique_tags)
+    return f"{response}\n{suffix}" if response else suffix
 
 
 def _resolve_runtime_agent_kwargs() -> dict:
@@ -12211,6 +12254,12 @@ class GatewayRunner:
             response = result.get("final_response", "") if result else ""
             if not response and result and result.get("error"):
                 response = f"Error: {result['error']}"
+            if result:
+                response = _append_trusted_tool_media_tags_to_response(
+                    response,
+                    result.get("messages", []),
+                    history_media_paths=set(),
+                )
 
             # Extract media files from the response
             if response:
@@ -17547,29 +17596,11 @@ class GatewayRunner:
             # Uses path-based deduplication against _history_media_paths (collected
             # before run_conversation) instead of index slicing. This is safe even
             # when context compression shrinks the message list. (Fixes #160)
-            media_tags, has_voice_directive = _extract_trusted_tool_media_tags(
+            final_response = _append_trusted_tool_media_tags_to_response(
+                final_response,
                 result.get("messages", []),
                 history_media_paths=_history_media_paths,
             )
-            if media_tags:
-                try:
-                    existing_response_paths = {
-                        path for path, _is_voice in BasePlatformAdapter.extract_media(final_response)[0]
-                    }
-                except Exception:
-                    existing_response_paths = set()
-                seen_paths = set()
-                unique_tags = []
-                for tag in media_tags:
-                    tag_path = os.path.expanduser(tag[len("MEDIA:"):])
-                    if tag_path in seen_paths or tag_path in existing_response_paths:
-                        continue
-                    seen_paths.add(tag_path)
-                    unique_tags.append(tag)
-                if unique_tags:
-                    if has_voice_directive:
-                        unique_tags.insert(0, "[[audio_as_voice]]")
-                    final_response = final_response + "\n" + "\n".join(unique_tags)
 
             # Sync session_id: the agent may have created a new session during
             # mid-run context compression (_compress_context splits sessions).

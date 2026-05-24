@@ -945,6 +945,7 @@ SUPPORTED_IMAGE_DOCUMENT_TYPES = {
     ".png": "image/png",
     ".webp": "image/webp",
     ".gif": "image/gif",
+    ".bmp": "image/bmp",
 }
 
 
@@ -2318,7 +2319,7 @@ class BasePlatformAdapter(ABC):
         # MEDIA strings in prose, quotes, inline code, fenced code, logs, or
         # history snippets are evidence text, not attachment controls.
         media_pattern = re.compile(
-            r'''^[ \t]*MEDIA:\s*(?P<path>`[^`\n]+`|"[^"\n]+"|'[^'\n]+'|(?:~/|/).+?\.(?:png|jpe?g|gif|webp|mp4|mov|avi|mkv|webm|ogg|opus|mp3|wav|m4a|flac|epub|pdf|zip|rar|7z|docx?|xlsx?|pptx?|txt|csv|apk|ipa))[ \t]*$''',
+            r'''^[ \t]*MEDIA:\s*(?P<path>`[^`\n]+`|"[^"\n]+"|'[^'\n]+'|(?:~/|/).+?\.(?:png|jpe?g|gif|webp|bmp|mp4|mov|avi|mkv|webm|ogg|opus|mp3|wav|m4a|flac|epub|pdf|zip|rar|7z|docx?|xlsx?|pptx?|txt|csv|apk|ipa))[ \t]*$''',
             re.MULTILINE,
         )
 

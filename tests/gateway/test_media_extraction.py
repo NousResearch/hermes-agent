@@ -11,6 +11,8 @@ import json
 import pytest
 import re
 
+import gateway.run as gateway_run
+from gateway.platforms.base import BasePlatformAdapter
 from gateway.run import _extract_trusted_tool_media_tags
 
 
@@ -178,6 +180,77 @@ class TestMediaExtraction:
 
         assert tags == [tag]
         assert voice_directive is False
+
+    def test_mcp_explicit_bmp_media_tags_are_extracted_from_current_turn(self, tmp_path):
+        """Gateway media extraction should accept every image type its cache can produce."""
+        image = tmp_path / "screenshot.bmp"
+        image.write_bytes(b"BMfake bmp bytes")
+        tag = f"MEDIA:{image}"
+        messages = [
+            {
+                "role": "assistant",
+                "tool_calls": [
+                    {"id": "call_mcp", "function": {"name": "mcp_renderer_snapshot"}},
+                ],
+            },
+            {
+                "role": "tool",
+                "tool_call_id": "call_mcp",
+                "content": json.dumps(
+                    {"result": tag, "_hermes_media_tags": [tag]},
+                    ensure_ascii=False,
+                ),
+            },
+        ]
+
+        tags, voice_directive = _extract_trusted_tool_media_tags(
+            messages,
+            history_media_paths=set(),
+        )
+
+        assert tags == [tag]
+        assert voice_directive is False
+
+    def test_base_media_extraction_accepts_bmp_tags_for_delivery(self, tmp_path):
+        """The final adapter extraction layer must also recognize BMP MEDIA tags."""
+        image = tmp_path / "delivered.bmp"
+        image.write_bytes(b"BMfake bmp bytes")
+
+        media_files, text = BasePlatformAdapter.extract_media(f"MEDIA:{image}")
+
+        assert media_files == [(str(image), False)]
+        assert text == ""
+
+    def test_background_delivery_appends_explicit_mcp_media_tags(self, tmp_path):
+        """Background task delivery should not depend on the model echoing MCP MEDIA tags."""
+        assert hasattr(gateway_run, "_append_trusted_tool_media_tags_to_response")
+        image = tmp_path / "background.png"
+        image.write_bytes(b"fake png bytes")
+        tag = f"MEDIA:{image}"
+        messages = [
+            {
+                "role": "assistant",
+                "tool_calls": [
+                    {"id": "call_mcp", "function": {"name": "mcp_playwright_screenshot"}},
+                ],
+            },
+            {
+                "role": "tool",
+                "tool_call_id": "call_mcp",
+                "content": json.dumps(
+                    {"result": tag, "_hermes_media_tags": [tag]},
+                    ensure_ascii=False,
+                ),
+            },
+        ]
+
+        response = gateway_run._append_trusted_tool_media_tags_to_response(
+            "Background done",
+            messages,
+            history_media_paths=set(),
+        )
+
+        assert response == f"Background done\n{tag}"
 
     def test_mcp_plain_result_media_tags_are_not_extracted_without_metadata(self, tmp_path):
         """MCP text evidence mentioning MEDIA must not become an attachment directive."""

@@ -852,6 +852,7 @@ class APIServerAdapter(BasePlatformAdapter):
         self,
         ephemeral_system_prompt: Optional[str] = None,
         session_id: Optional[str] = None,
+        request_model: Optional[str] = None,
         stream_delta_callback=None,
         tool_progress_callback=None,
         tool_start_callback=None,
@@ -879,12 +880,16 @@ class APIServerAdapter(BasePlatformAdapter):
 
         runtime_kwargs = _resolve_runtime_agent_kwargs()
         reasoning_config = GatewayRunner._load_reasoning_config()
-        model = _resolve_gateway_model()
+        model = request_model or _resolve_gateway_model()
 
         user_config = _load_gateway_config()
         enabled_toolsets = sorted(_get_platform_tools(user_config, "api_server"))
 
         max_iterations = int(os.getenv("HERMES_MAX_ITERATIONS", "90"))
+        is_optimize_session = (
+            isinstance(gateway_session_key, str)
+            and gateway_session_key.startswith("opt:")
+        )
 
         # Load fallback provider chain so the API server platform has the
         # same fallback behaviour as Telegram/Discord/Slack (fixes #4954).
@@ -908,6 +913,7 @@ class APIServerAdapter(BasePlatformAdapter):
             fallback_model=fallback_model,
             reasoning_config=reasoning_config,
             gateway_session_key=gateway_session_key,
+            skip_context_files=is_optimize_session,
         )
         return agent
 
@@ -1219,6 +1225,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 tool_start_callback=_on_tool_start,
                 tool_complete_callback=_on_tool_complete,
                 agent_ref=agent_ref,
+                request_model=model_name,
                 gateway_session_key=gateway_session_key,
             ))
             # Ensure SSE drain loops can terminate without relying on polling
@@ -1238,6 +1245,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 conversation_history=history,
                 ephemeral_system_prompt=system_prompt,
                 session_id=session_id,
+                request_model=model_name,
                 gateway_session_key=gateway_session_key,
             )
 
@@ -2251,6 +2259,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 tool_start_callback=_on_tool_start,
                 tool_complete_callback=_on_tool_complete,
                 agent_ref=agent_ref,
+                request_model=body.get("model", self._model_name),
                 gateway_session_key=gateway_session_key,
             ))
             # Ensure SSE drain loops can terminate without relying on polling
@@ -2284,6 +2293,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 conversation_history=conversation_history,
                 ephemeral_system_prompt=instructions,
                 session_id=session_id,
+                request_model=body.get("model", self._model_name),
                 gateway_session_key=gateway_session_key,
             )
 
@@ -2737,6 +2747,7 @@ class APIServerAdapter(BasePlatformAdapter):
         conversation_history: List[Dict[str, str]],
         ephemeral_system_prompt: Optional[str] = None,
         session_id: Optional[str] = None,
+        request_model: Optional[str] = None,
         stream_delta_callback=None,
         tool_progress_callback=None,
         tool_start_callback=None,
@@ -2758,23 +2769,45 @@ class APIServerAdapter(BasePlatformAdapter):
         loop = asyncio.get_running_loop()
 
         def _run():
-            agent = self._create_agent(
-                ephemeral_system_prompt=ephemeral_system_prompt,
-                session_id=session_id,
-                stream_delta_callback=stream_delta_callback,
-                tool_progress_callback=tool_progress_callback,
-                tool_start_callback=tool_start_callback,
-                tool_complete_callback=tool_complete_callback,
-                gateway_session_key=gateway_session_key,
-            )
-            if agent_ref is not None:
-                agent_ref[0] = agent
             effective_task_id = session_id or str(uuid.uuid4())
-            result = agent.run_conversation(
-                user_message=user_message,
-                conversation_history=conversation_history,
-                task_id=effective_task_id,
-            )
+            session_tokens = []
+            previous_env_session_key = os.environ.get("HERMES_SESSION_KEY")
+            try:
+                from gateway.session_context import clear_session_vars, set_session_vars
+
+                if gateway_session_key:
+                    os.environ["HERMES_SESSION_KEY"] = gateway_session_key
+                session_tokens = set_session_vars(
+                    platform="api_server",
+                    session_key=gateway_session_key or session_id or effective_task_id,
+                )
+                agent = self._create_agent(
+                    ephemeral_system_prompt=ephemeral_system_prompt,
+                    session_id=session_id,
+                    request_model=request_model,
+                    stream_delta_callback=stream_delta_callback,
+                    tool_progress_callback=tool_progress_callback,
+                    tool_start_callback=tool_start_callback,
+                    tool_complete_callback=tool_complete_callback,
+                    gateway_session_key=gateway_session_key,
+                )
+                if agent_ref is not None:
+                    agent_ref[0] = agent
+                result = agent.run_conversation(
+                    user_message=user_message,
+                    conversation_history=conversation_history,
+                    task_id=effective_task_id,
+                )
+            finally:
+                if session_tokens:
+                    try:
+                        clear_session_vars(session_tokens)
+                    except Exception:
+                        pass
+                if previous_env_session_key is None:
+                    os.environ.pop("HERMES_SESSION_KEY", None)
+                else:
+                    os.environ["HERMES_SESSION_KEY"] = previous_env_session_key
             usage = {
                 "input_tokens": getattr(agent, "session_prompt_tokens", 0) or 0,
                 "output_tokens": getattr(agent, "session_completion_tokens", 0) or 0,
@@ -3014,11 +3047,14 @@ class APIServerAdapter(BasePlatformAdapter):
                     effective_task_id = session_id or run_id
                     approval_token = None
                     session_tokens = []
+                    previous_env_session_key = os.environ.get("HERMES_SESSION_KEY")
                     try:
                         # Bind approval/session identity for this API run via
                         # contextvars so concurrent runs do not share process
                         # environment state.
                         approval_token = set_current_session_key(approval_session_key)
+                        if approval_session_key:
+                            os.environ["HERMES_SESSION_KEY"] = approval_session_key
                         session_tokens = set_session_vars(
                             platform="api_server",
                             session_key=approval_session_key,
@@ -3043,6 +3079,10 @@ class APIServerAdapter(BasePlatformAdapter):
                                     clear_session_vars(session_tokens)
                                 except Exception:
                                     pass
+                            if previous_env_session_key is None:
+                                os.environ.pop("HERMES_SESSION_KEY", None)
+                            else:
+                                os.environ["HERMES_SESSION_KEY"] = previous_env_session_key
                     u = {
                         "input_tokens": getattr(agent, "session_prompt_tokens", 0) or 0,
                         "output_tokens": getattr(agent, "session_completion_tokens", 0) or 0,

@@ -831,7 +831,8 @@ class TestDiskFailureMarker:
         with patch("tools.tirith_security._failure_marker_path", return_value=marker):
             from tools.tirith_security import _mark_install_failed, _is_install_failed_on_disk
             _mark_install_failed("cosign_missing")
-            assert _is_install_failed_on_disk()  # cosign still absent
+            with patch("tools.tirith_security.shutil.which", return_value=None):
+                assert _is_install_failed_on_disk()  # cosign still absent
 
             # Now cosign appears on PATH
             with patch("tools.tirith_security.shutil.which", return_value="/usr/local/bin/cosign"):

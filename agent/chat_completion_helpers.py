@@ -91,23 +91,55 @@ def interruptible_api_call(agent, api_kwargs: dict):
     provider fallback.
     """
     result = {"response": None, "error": None}
-    request_client_holder = {"client": None}
+    request_client_holder = {"client": None, "owner_tid": None}
     request_client_lock = threading.Lock()
 
     def _set_request_client(client):
         with request_client_lock:
             request_client_holder["client"] = client
+            # #29507: stamp the owning thread so a stranger-thread interrupt
+            # only shuts the connection down rather than racing the worker
+            # for FD ownership during ``client.close()``.
+            request_client_holder["owner_tid"] = threading.get_ident()
         return client
 
     def _take_request_client():
         with request_client_lock:
             client = request_client_holder.get("client")
             request_client_holder["client"] = None
+            request_client_holder["owner_tid"] = None
             return client
 
     def _close_request_client_once(reason: str) -> None:
-        request_client = _take_request_client()
-        if request_client is not None:
+        # #29507: dispatch on the calling thread.
+        #
+        # When ``_call`` (the worker) reaches its ``finally`` it owns the
+        # close and we pop + fully close as before. When a *stranger* thread
+        # (the interrupt-check loop, the stale-call detector) drives the
+        # close, only shut the sockets down so the worker's blocked
+        # ``recv``/``send`` unwinds with an ``EPIPE`` / EOF — and let the
+        # worker close ``client`` from its own thread on its way out. That
+        # avoids the FD-recycling race where the kernel reassigned a
+        # just-closed TLS socket FD to ``kanban.db``, and the still-live SSL
+        # BIO on the worker thread then wrote a 24-byte TLS application-data
+        # record into the SQLite header (#29507).
+        with request_client_lock:
+            request_client = request_client_holder.get("client")
+            owner_tid = request_client_holder.get("owner_tid")
+            stranger_thread = (
+                request_client is not None
+                and owner_tid is not None
+                and owner_tid != threading.get_ident()
+            )
+            if not stranger_thread:
+                # Owning thread (or no recorded owner) → pop and fully close.
+                request_client_holder["client"] = None
+                request_client_holder["owner_tid"] = None
+        if request_client is None:
+            return
+        if stranger_thread:
+            agent._abort_request_openai_client(request_client, reason=reason)
+        else:
             agent._close_request_openai_client(request_client, reason=reason)
 
     def _call():
@@ -725,7 +757,7 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
     current_base_url = str(getattr(agent, "base_url", "") or "").rstrip("/").lower()
     fb_base_url_for_dedup = (fb.get("base_url") or "").strip().rstrip("/").lower()
     if fb_provider == current_provider and fb_model == current_model:
-        logging.warning(
+        logger.warning(
             "Fallback skip: chain entry %s/%s matches current provider/model",
             fb_provider, fb_model,
         )
@@ -736,7 +768,7 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
         and fb_base_url_for_dedup == current_base_url
         and fb_model == current_model
     ):
-        logging.warning(
+        logger.warning(
             "Fallback skip: chain entry base_url %s matches current backend",
             fb_base_url_for_dedup,
         )
@@ -768,7 +800,7 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
             explicit_base_url=fb_base_url_hint,
             explicit_api_key=fb_api_key_hint)
         if fb_client is None:
-            logging.warning(
+            logger.warning(
                 "Fallback to %s failed: provider not configured",
                 fb_provider)
             return agent._try_activate_fallback()  # try next in chain
@@ -776,8 +808,11 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
             from hermes_cli.model_normalize import normalize_model_for_provider
 
             fb_model = normalize_model_for_provider(fb_model, fb_provider)
-        except Exception:
-            pass
+        except Exception as _norm_err:
+            logger.warning(
+                "Could not normalize fallback model %r for provider %r: %s",
+                fb_model, fb_provider, _norm_err,
+            )
 
         # Determine api_mode from provider / base URL / model
         fb_api_mode = "chat_completions"
@@ -905,19 +940,20 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
                 base_url=agent.base_url,
                 api_key=getattr(agent, "api_key", ""),  # callable preserved → call_llm
                 provider=agent.provider,
+                api_mode=agent.api_mode,
             )
 
         agent._emit_status(
             f"🔄 Primary model failed — switching to fallback: "
             f"{fb_model} via {fb_provider}"
         )
-        logging.info(
+        logger.info(
             "Fallback activated: %s → %s (%s)",
             old_model, fb_model, fb_provider,
         )
         return True
     except Exception as e:
-        logging.error("Failed to activate fallback %s: %s", fb_model, e)
+        logger.error("Failed to activate fallback %s: %s", fb_model, e)
         return agent._try_activate_fallback()  # try next in chain
 
 
@@ -1133,7 +1169,7 @@ def handle_max_iterations(agent, messages: list, api_call_count: int) -> str:
                 final_response = "I reached the iteration limit and couldn't generate a summary."
 
     except Exception as e:
-        logging.warning(f"Failed to get summary response: {e}")
+        logger.warning(f"Failed to get summary response: {e}")
         final_response = f"I reached the maximum iterations ({agent.max_iterations}) but couldn't summarize. Error: {str(e)}"
 
     return final_response
@@ -1162,12 +1198,12 @@ def cleanup_task_resources(agent, task_id: str) -> None:
             _ra().cleanup_vm(task_id)
     except Exception as e:
         if agent.verbose_logging:
-            logging.warning(f"Failed to cleanup VM for task {task_id}: {e}")
+            logger.warning(f"Failed to cleanup VM for task {task_id}: {e}")
     try:
         _ra().cleanup_browser(task_id)
     except Exception as e:
         if agent.verbose_logging:
-            logging.warning(f"Failed to cleanup browser for task {task_id}: {e}")
+            logger.warning(f"Failed to cleanup browser for task {task_id}: {e}")
 
 
 
@@ -1271,23 +1307,44 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
         return result["response"]
 
     result = {"response": None, "error": None, "partial_tool_names": []}
-    request_client_holder = {"client": None, "diag": None}
+    request_client_holder = {"client": None, "diag": None, "owner_tid": None}
     request_client_lock = threading.Lock()
 
     def _set_request_client(client):
         with request_client_lock:
             request_client_holder["client"] = client
+            # See #29507 explanation in the non-streaming variant above.
+            request_client_holder["owner_tid"] = threading.get_ident()
         return client
 
     def _take_request_client():
         with request_client_lock:
             client = request_client_holder.get("client")
             request_client_holder["client"] = None
+            request_client_holder["owner_tid"] = None
             return client
 
     def _close_request_client_once(reason: str) -> None:
-        request_client = _take_request_client()
-        if request_client is not None:
+        # See #29507 explanation in the non-streaming variant above. A
+        # stranger thread (the interrupt-check / stale-stream detector loop)
+        # only aborts sockets — never pops, never calls ``client.close()`` —
+        # so the worker thread retains ownership of the FD release.
+        with request_client_lock:
+            request_client = request_client_holder.get("client")
+            owner_tid = request_client_holder.get("owner_tid")
+            stranger_thread = (
+                request_client is not None
+                and owner_tid is not None
+                and owner_tid != threading.get_ident()
+            )
+            if not stranger_thread:
+                request_client_holder["client"] = None
+                request_client_holder["owner_tid"] = None
+        if request_client is None:
+            return
+        if stranger_thread:
+            agent._abort_request_openai_client(request_client, reason=reason)
+        else:
             agent._close_request_openai_client(request_client, reason=reason)
 
     first_delta_fired = {"done": False}

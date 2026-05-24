@@ -10,7 +10,7 @@
     "preview": "vite preview"
   },
   "dependencies": {
-    "@nous-research/ui": "^0.14.2",
+    "@nous-research/ui": "0.16.0",
     "@observablehq/plot": "^0.6.17",
     "@react-three/fiber": "^9.6.0",
     "@tailwindcss/vite": "^4.2.1",
@@ -21,7 +21,6 @@
     "@xterm/xterm": "^6.0.0",
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",
-    "flag-icons": "^7.5.0",
     "gsap": "^3.15.0",
     "leva": "^0.10.1",
     "lucide-react": "^0.577.0",

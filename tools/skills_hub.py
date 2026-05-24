@@ -26,6 +26,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
 from hermes_constants import get_hermes_home
+from agent.skill_utils import is_excluded_skill_path
 from typing import Any, Dict, List, Optional, Tuple, Union
 from urllib.parse import urljoin, urlparse, urlunparse
 
@@ -2639,6 +2640,8 @@ class OptionalSkillSource(SkillSource):
         if not self._optional_dir.is_dir():
             return None
         for skill_md in self._optional_dir.rglob("SKILL.md"):
+            if is_excluded_skill_path(skill_md):
+                continue
             if skill_md.parent.name == name:
                 return skill_md.parent
         return None
@@ -2650,10 +2653,9 @@ class OptionalSkillSource(SkillSource):
 
         results: List[SkillMeta] = []
         for skill_md in sorted(self._optional_dir.rglob("SKILL.md")):
-            parent = skill_md.parent
-            rel_parts = parent.relative_to(self._optional_dir).parts
-            if any(part.startswith(".") for part in rel_parts):
+            if is_excluded_skill_path(skill_md):
                 continue
+            parent = skill_md.parent
 
             try:
                 content = skill_md.read_text(encoding="utf-8")
@@ -2998,6 +3000,13 @@ def uninstall_skill(skill_name: str) -> Tuple[bool, str]:
         return False, f"'{skill_name}' is not a hub-installed skill (may be a builtin)"
 
     install_path = SKILLS_DIR / entry["install_path"]
+    # Prevent path traversal from poisoned lock.json entries
+    try:
+        resolved = install_path.resolve()
+        if not resolved.is_relative_to(SKILLS_DIR.resolve()):
+            return False, f"Refusing to remove '{entry['install_path']}': resolves outside skills directory"
+    except (ValueError, OSError):
+        return False, f"Refusing to remove '{entry['install_path']}': path resolution failed"
     if install_path.exists():
         shutil.rmtree(install_path)
 
@@ -3011,6 +3020,10 @@ def bundle_content_hash(bundle: SkillBundle) -> str:
     """Compute a deterministic hash for an in-memory skill bundle."""
     h = hashlib.sha256()
     for rel_path in sorted(bundle.files):
+        # Include the path so swapping file contents between two paths
+        # changes the hash (avoids filename-swap evading update detection).
+        h.update(rel_path.encode("utf-8"))
+        h.update(b"\x00")
         content = bundle.files[rel_path]
         if isinstance(content, bytes):
             h.update(content)

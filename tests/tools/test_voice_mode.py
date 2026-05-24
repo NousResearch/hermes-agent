@@ -10,6 +10,18 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 
+def _non_wsl_proc_version(real_open):
+    """Return an open() shim that makes host WSL detection deterministic."""
+    def _fake_open(file, *args, **kwargs):
+        if file == "/proc/version":
+            from io import StringIO
+
+            return StringIO("Linux test-kernel")
+        return real_open(file, *args, **kwargs)
+
+    return _fake_open
+
+
 # ============================================================================
 # Fixtures
 # ============================================================================
@@ -68,6 +80,7 @@ class TestDetectAudioEnvironment:
         monkeypatch.delenv("SSH_CONNECTION", raising=False)
         monkeypatch.setattr("tools.voice_mode._import_audio",
                             lambda: (MagicMock(), MagicMock()))
+        monkeypatch.setattr("builtins.open", _non_wsl_proc_version(open))
 
         from tools.voice_mode import detect_audio_environment
         result = detect_audio_environment()
@@ -225,6 +238,7 @@ class TestDetectAudioEnvironment:
         monkeypatch.setattr("tools.voice_mode.shutil.which", lambda cmd: "/data/data/com.termux/files/usr/bin/termux-microphone-record" if cmd == "termux-microphone-record" else None)
         monkeypatch.setattr("tools.voice_mode._termux_api_app_installed", lambda: True)
         monkeypatch.setattr("tools.voice_mode._import_audio", lambda: (_ for _ in ()).throw(ImportError("no audio libs")))
+        monkeypatch.setattr("builtins.open", _non_wsl_proc_version(open))
 
         from tools.voice_mode import detect_audio_environment
         result = detect_audio_environment()
@@ -585,6 +599,73 @@ class TestTranscribeRecording:
 
         assert result["transcript"] == "Thank you for helping me with this code."
         assert "filtered" not in result
+
+    def test_oversized_wav_is_chunked_and_stitched(self, tmp_path, monkeypatch):
+        wav_path = tmp_path / "long.wav"
+        n_frames = 50000
+        audio = struct.pack(f"<{n_frames}h", *([1000] * n_frames))
+        with wave.open(str(wav_path), "wb") as wf:
+            wf.setnchannels(1)
+            wf.setsampwidth(2)
+            wf.setframerate(16000)
+            wf.writeframes(audio)
+
+        temp_dir = tmp_path / "chunks"
+        temp_dir.mkdir()
+        monkeypatch.setattr("tools.voice_mode._TEMP_DIR", str(temp_dir))
+        monkeypatch.setattr("tools.transcription_tools.MAX_FILE_SIZE", 70 * 1024)
+
+        seen_paths = []
+
+        def fake_transcribe(path, model=None):
+            seen_paths.append(path)
+            assert model == "base"
+            assert path != str(wav_path)
+            assert os.path.getsize(path) <= 70 * 1024
+            return {
+                "success": True,
+                "transcript": f"part {len(seen_paths)}",
+                "provider": "local",
+            }
+
+        with patch("tools.transcription_tools.transcribe_audio", side_effect=fake_transcribe):
+            from tools.voice_mode import transcribe_recording
+            result = transcribe_recording(str(wav_path), model="base")
+
+        assert result["success"] is True
+        assert result["transcript"] == " ".join(
+            f"part {i}" for i in range(1, len(seen_paths) + 1)
+        )
+        assert result["chunks"] == len(seen_paths)
+        assert len(seen_paths) > 1
+        assert all(not os.path.exists(path) for path in seen_paths)
+
+    def test_oversized_wav_reports_failing_chunk(self, tmp_path, monkeypatch):
+        wav_path = tmp_path / "long.wav"
+        n_frames = 50000
+        audio = struct.pack(f"<{n_frames}h", *([1000] * n_frames))
+        with wave.open(str(wav_path), "wb") as wf:
+            wf.setnchannels(1)
+            wf.setsampwidth(2)
+            wf.setframerate(16000)
+            wf.writeframes(audio)
+
+        temp_dir = tmp_path / "chunks"
+        temp_dir.mkdir()
+        monkeypatch.setattr("tools.voice_mode._TEMP_DIR", str(temp_dir))
+        monkeypatch.setattr("tools.transcription_tools.MAX_FILE_SIZE", 70 * 1024)
+
+        def fake_transcribe(path, model=None):
+            return {"success": False, "transcript": "", "error": "provider rejected audio"}
+
+        with patch("tools.transcription_tools.transcribe_audio", side_effect=fake_transcribe):
+            from tools.voice_mode import transcribe_recording
+            result = transcribe_recording(str(wav_path), model="base")
+
+        assert result["success"] is False
+        assert result["error"].startswith("Chunk 1/")
+        assert "provider rejected audio" in result["error"]
+        assert list(temp_dir.iterdir()) == []
 
 
 class TestWhisperHallucinationFilter:

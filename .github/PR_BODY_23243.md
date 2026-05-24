@@ -14,7 +14,7 @@ The point isn't "add Chinese." The framework is built for extension: adding a la
 
 **English unchanged.** When `locale` is `'en'`, every code path returns the same English text as before — zero behavioral difference. For any other locale, the framework looks up that language's pack; a missing pack or key falls back to English silently. No crash, no blank screen.
 
-**Framework knows nothing about languages.** Verb padding, CJK glyph width — all behaviors declared by the language pack. The framework iterates all 16 packs to compute layout constants. No `if (locale === 'zh')` anywhere. Every language — including English — is simply one of the 16.
+**Framework knows nothing about languages.** Verb padding, CJK glyph width — all behaviors declared by the language pack. The framework iterates all 16 packs to compute layout constants. Every language, including English, is simply one of the 16.
 
 ## Related Issue
 
@@ -59,7 +59,7 @@ Full `zh.ts` translation. `schemaZh.ts` maps ~180 config-page field labels for `
 
 ### Key design refinements
 
-- Language-pack-driven verb layout: each pack declares `verbStyle` (`'pad'` for Latin, `'ellipsis'` for CJK). `VERB_PAD_LEN` computed by iterating all 16 locales, not by checking if locale happens to be Chinese or Japanese.
+- Language-pack-driven verb layout: each pack declares `verbStyle` (`'pad'` for Latin, `'ellipsis'` for CJK). `VERB_PAD_LEN` iterates all 16 locales to compute the maximum required padding.
 - Traditional Chinese (`zh-hant`) has its own pack — not blindly mapped to simplified.
 - `normalizeLocale` alias table covers all 16 languages, not just en+zh.
 - Toolset labels and internal metadata (`_tui_extra_meta`) no longer bake `'zh'` as default.
@@ -126,7 +126,7 @@ Hermes 的 TUI 和 Web Dashboard 目前只有英文。这个 PR 建了一套 16 
 
 **英文零影响。** locale 为 `'en'` 时，所有代码路径返回的英文文本与 PR 前完全一致。其他 locale 各走各的翻译路径，缺包或缺 key 才降级到英文——不会崩，不会白屏。
 
-**框架不认语言。** 动词 padding、CJK 字符宽度——这些行为全部由语言包自己声明，框架只是遍历所有 16 个包来算出布局常量。代码里没有 `if (locale === 'zh')`。每种语言——包括英文——只是 16 种里的一员。
+**框架不认语言。** 动词 padding、CJK 字符宽度——这些行为全部由语言包自己声明，框架只是遍历所有 16 个包来算出布局常量。每种语言，包括英文，只是 16 种里的一员。
 
 ## 关联 Issue
 
@@ -171,7 +171,7 @@ Fixes #23224
 
 ### 关键设计细化
 
-- 语言包驱动动词布局：每个包声明 `verbStyle`（英文 `'ellipsis'`、CJK `'pad'`）。`VERB_PAD_LEN` 遍历 16 个 locale 计算，不靠判断是不是中文或日语。
+- 语言包驱动动词布局：每个包声明 `verbStyle`（拉丁 `'pad'`、CJK `'ellipsis'`）。`VERB_PAD_LEN` 遍历 16 个 locale 计算最大 padding 宽度。
 - 繁体中文走自己的包，不盲目映射到简体。
 - `normalizeLocale` 别名表覆盖全部 16 种语言，不再只认识中英。
 - 工具集标签和内部元数据不再把 zh 当隐式默认值。

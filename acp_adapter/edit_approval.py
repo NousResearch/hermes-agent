@@ -10,6 +10,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import re
 import tempfile
 from concurrent.futures import TimeoutError as FutureTimeout
 from contextvars import ContextVar, Token
@@ -32,11 +33,24 @@ class EditProposal:
     arguments: dict[str, Any]
 
 
+@dataclass(frozen=True)
+class DeniedEdit:
+    """A denied ACP edit path that later write-capable tools must not mutate."""
+
+    path: str
+    resolved_path: str
+    tool_name: str
+
+
 EditApprovalRequester = Callable[[EditProposal], bool]
 
 _EDIT_APPROVAL_REQUESTER: ContextVar[EditApprovalRequester | None] = ContextVar(
     "ACP_EDIT_APPROVAL_REQUESTER",
     default=None,
+)
+_DENIED_EDITS: ContextVar[tuple[DeniedEdit, ...]] = ContextVar(
+    "ACP_DENIED_EDITS",
+    default=(),
 )
 _PERMISSION_REQUEST_IDS = count(1)
 
@@ -45,23 +59,35 @@ SENSITIVE_AUTO_APPROVE_NAMES = {".env", ".env.local", ".env.production", "id_rsa
 AUTO_APPROVE_ASK = "ask"
 AUTO_APPROVE_WORKSPACE = "workspace_session"
 AUTO_APPROVE_SESSION = "session"
+DENIED_EDIT_BYPASS_TOOLS = {"terminal", "execute_code"}
+_DENIED_EDIT_WRITE_PATTERNS = (
+    re.compile(r"\bwrite_(?:text|bytes)\s*\("),
+    re.compile(r"\bopen\s*\([^)]*,\s*['\"][^'\"]*[wax+][^'\"]*['\"]", re.DOTALL),
+    re.compile(r"(?:^|[\s;&|])(?:cat|echo|printf)\b[^\n]*(?:>|>>)", re.DOTALL),
+    re.compile(r"(?:^|[^<])>{1,2}\s*\S+"),
+    re.compile(r"\b(?:tee|truncate|touch|mv|cp|rm|install)\b"),
+    re.compile(r"\b(?:sed|perl)\b[^\n]*\s-i(?:\s|$)", re.DOTALL),
+)
 
 
 def set_edit_approval_requester(requester: EditApprovalRequester | None) -> Token:
     """Bind an ACP edit approval requester for the current context."""
 
+    _DENIED_EDITS.set(())
     return _EDIT_APPROVAL_REQUESTER.set(requester)
 
 
 def reset_edit_approval_requester(token: Token) -> None:
     """Restore a previous edit approval requester binding."""
 
+    _DENIED_EDITS.set(())
     _EDIT_APPROVAL_REQUESTER.reset(token)
 
 
 def clear_edit_approval_requester() -> None:
     """Clear the current requester; primarily used by tests."""
 
+    _DENIED_EDITS.set(())
     _EDIT_APPROVAL_REQUESTER.set(None)
 
 
@@ -178,6 +204,59 @@ def should_auto_approve_edit(proposal: EditProposal, policy: str, cwd: str | Non
     return False
 
 
+def _resolved_edit_path(path: str) -> str:
+    return str(Path(path).expanduser().resolve(strict=False))
+
+
+def _record_denied_edit(proposal: EditProposal) -> None:
+    denied = DeniedEdit(
+        path=proposal.path,
+        resolved_path=_resolved_edit_path(proposal.path),
+        tool_name=proposal.tool_name,
+    )
+    existing = tuple(item for item in _DENIED_EDITS.get() if item.resolved_path != denied.resolved_path)
+    _DENIED_EDITS.set((*existing, denied))
+
+
+def _forget_denied_edit(proposal: EditProposal) -> None:
+    resolved_path = _resolved_edit_path(proposal.path)
+    _DENIED_EDITS.set(tuple(item for item in _DENIED_EDITS.get() if item.resolved_path != resolved_path))
+
+
+def _write_capable_tool_text(tool_name: str, arguments: dict[str, Any]) -> str | None:
+    if tool_name == "terminal":
+        command = arguments.get("command")
+        return str(command) if command is not None else None
+    if tool_name == "execute_code":
+        code = arguments.get("code")
+        return str(code) if code is not None else None
+    return None
+
+
+def _mentions_denied_path(text: str, denied: DeniedEdit) -> bool:
+    path_candidates = {denied.path, denied.resolved_path}
+    path_candidates.discard("")
+    return any(candidate in text for candidate in path_candidates)
+
+
+def _has_write_intent(text: str) -> bool:
+    return any(pattern.search(text) for pattern in _DENIED_EDIT_WRITE_PATTERNS)
+
+
+def _blocked_denied_edit_path(tool_name: str, arguments: dict[str, Any]) -> str | None:
+    """Return the denied path if a write-capable tool tries to mutate it."""
+
+    if tool_name not in DENIED_EDIT_BYPASS_TOOLS:
+        return None
+    text = _write_capable_tool_text(tool_name, arguments)
+    if not text or not _has_write_intent(text):
+        return None
+    for denied in _DENIED_EDITS.get():
+        if _mentions_denied_path(text, denied):
+            return denied.path
+    return None
+
+
 def maybe_require_edit_approval(tool_name: str, arguments: dict[str, Any]) -> str | None:
     """Run ACP edit approval if bound.
 
@@ -196,6 +275,17 @@ def maybe_require_edit_approval(tool_name: str, arguments: dict[str, Any]) -> st
         return json.dumps({"error": f"Edit approval denied: could not prepare diff ({exc})"}, ensure_ascii=False)
 
     if proposal is None:
+        denied_path = _blocked_denied_edit_path(tool_name, arguments)
+        if denied_path is not None:
+            return json.dumps(
+                {
+                    "error": (
+                        "Tool call blocked because it attempts to modify a path "
+                        f"from a denied ACP edit approval: {denied_path}"
+                    )
+                },
+                ensure_ascii=False,
+            )
         return None
 
     try:
@@ -205,7 +295,9 @@ def maybe_require_edit_approval(tool_name: str, arguments: dict[str, Any]) -> st
         approved = False
 
     if approved:
+        _forget_denied_edit(proposal)
         return None
+    _record_denied_edit(proposal)
     return json.dumps({"error": "Edit approval denied by ACP client; file was not modified."}, ensure_ascii=False)
 
 

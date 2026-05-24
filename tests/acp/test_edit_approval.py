@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import json
+import shlex
+import sys
 import tempfile
 from pathlib import Path
 
@@ -57,6 +59,97 @@ def test_write_file_rejection_does_not_mutate_existing_file(tmp_path):
 
     assert "error" in result
     assert "Edit approval denied" in result["error"]
+    assert target.read_text(encoding="utf-8") == "before\n"
+
+
+def test_denied_write_file_blocks_terminal_write_to_same_path(tmp_path):
+    target = tmp_path / "sample.txt"
+    target.write_text("before\n", encoding="utf-8")
+    set_edit_approval_requester(lambda _proposal: False)
+
+    denied = json.loads(
+        handle_function_call(
+            "write_file",
+            {"path": str(target), "content": "after\n"},
+            task_id="acp-edit-terminal-bypass",
+        )
+    )
+    assert "Edit approval denied" in denied["error"]
+
+    code = f"from pathlib import Path; Path({str(target)!r}).write_text('after\\n', encoding='utf-8')"
+    command = f"{shlex.quote(sys.executable)} -c {shlex.quote(code)}"
+    result = json.loads(
+        handle_function_call(
+            "terminal",
+            {"command": command},
+            task_id="acp-edit-terminal-bypass",
+        )
+    )
+
+    assert "error" in result
+    assert "denied ACP edit" in result["error"]
+    assert target.read_text(encoding="utf-8") == "before\n"
+
+
+def test_denied_write_file_blocks_execute_code_write_to_same_path(tmp_path):
+    target = tmp_path / "sample.txt"
+    target.write_text("before\n", encoding="utf-8")
+    set_edit_approval_requester(lambda _proposal: False)
+
+    denied = json.loads(
+        handle_function_call(
+            "write_file",
+            {"path": str(target), "content": "after\n"},
+            task_id="acp-edit-code-bypass",
+        )
+    )
+    assert "Edit approval denied" in denied["error"]
+
+    result = json.loads(
+        handle_function_call(
+            "execute_code",
+            {
+                "code": (
+                    "from pathlib import Path\n"
+                    f"Path({str(target)!r}).write_text('after\\n', encoding='utf-8')\n"
+                    "print('wrote file')\n"
+                )
+            },
+            task_id="acp-edit-code-bypass",
+        )
+    )
+
+    assert "error" in result
+    assert "denied ACP edit" in result["error"]
+    assert target.read_text(encoding="utf-8") == "before\n"
+
+
+def test_denied_write_file_still_allows_terminal_read_of_same_path(tmp_path):
+    target = tmp_path / "sample.txt"
+    target.write_text("before\n", encoding="utf-8")
+    set_edit_approval_requester(lambda _proposal: False)
+
+    denied = json.loads(
+        handle_function_call(
+            "write_file",
+            {"path": str(target), "content": "after\n"},
+            task_id="acp-edit-terminal-read",
+        )
+    )
+    assert "Edit approval denied" in denied["error"]
+
+    code = f"from pathlib import Path; print(Path({str(target)!r}).read_text(encoding='utf-8'), end='')"
+    command = f"{shlex.quote(sys.executable)} -c {shlex.quote(code)}"
+    result = json.loads(
+        handle_function_call(
+            "terminal",
+            {"command": command},
+            task_id="acp-edit-terminal-read",
+        )
+    )
+
+    assert result.get("exit_code") == 0
+    assert result.get("output") == "before"
     assert target.read_text(encoding="utf-8") == "before\n"
 
 

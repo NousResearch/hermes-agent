@@ -393,6 +393,10 @@ class FeishuAdapterSettings:
     group_rules: Dict[str, FeishuGroupRule] = field(default_factory=dict)
     allow_bots: str = "none"  # "none" | "mentions" | "all"
     require_mention: bool = True
+    # Display-name overrides: open_id → human-readable name.
+    # When set, these names are used in approval cards and update-prompt
+    # resolved cards instead of the raw open_id fallback.
+    display_names: Dict[str, str] = field(default_factory=dict)
 
 
 @dataclass
@@ -1567,6 +1571,11 @@ class FeishuAdapter(BasePlatformAdapter):
             require_mention=_to_boolean(
                 extra.get("require_mention", os.getenv("FEISHU_REQUIRE_MENTION", "true"))
             ),
+            display_names={
+                str(k).strip(): str(v).strip()
+                for k, v in (extra.get("display_names", {}) or {}).items()
+                if k and v
+            },
         )
 
     def _apply_settings(self, settings: FeishuAdapterSettings) -> None:
@@ -2567,7 +2576,7 @@ class FeishuAdapter(BasePlatformAdapter):
 
         operator = getattr(event, "operator", None)
         open_id = str(getattr(operator, "open_id", "") or "")
-        user_name = self._get_cached_sender_name(open_id) or open_id
+        user_name = self._resolve_display_name(open_id) or open_id
 
         if not self._submit_on_loop(loop, self._resolve_approval(approval_id, choice, user_name)):
             return P2CardActionTriggerResponse() if P2CardActionTriggerResponse else None
@@ -2603,7 +2612,7 @@ class FeishuAdapter(BasePlatformAdapter):
             logger.warning("[Feishu] Unauthorized update prompt click by %s", open_id or "<unknown>")
             return P2CardActionTriggerResponse() if P2CardActionTriggerResponse else None
 
-        user_name = self._get_cached_sender_name(open_id) or open_id
+        user_name = self._resolve_display_name(open_id) or open_id
         if not self._submit_on_loop(loop, self._resolve_update_prompt(prompt_id, answer, user_name)):
             return P2CardActionTriggerResponse() if P2CardActionTriggerResponse else None
 
@@ -3788,6 +3797,23 @@ class FeishuAdapter(BasePlatformAdapter):
             return name
         self._sender_name_cache.pop(sender_id, None)
         return None
+
+    def _resolve_display_name(self, open_id: str) -> Optional[str]:
+        """Resolve a human-readable display name for card rendering.
+
+        Priority:
+          1. Config-driven ``display_names`` mapping (``config.extra.display_names``)
+          2. Sender-name cache (populated by the message pipeline)
+          3. ``None`` — caller falls back to the raw open_id.
+        """
+        if not open_id:
+            return None
+        # 1. Config override
+        mapped = self._settings.display_names.get(open_id)
+        if mapped:
+            return mapped
+        # 2. Cached sender name
+        return self._get_cached_sender_name(open_id)
 
     async def _resolve_sender_name_from_api(
         self,

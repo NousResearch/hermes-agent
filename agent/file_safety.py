@@ -254,3 +254,148 @@ def get_read_block_error(path: str) -> Optional[str]:
         )
 
     return None
+
+
+# ---------------------------------------------------------------------------
+# Cross-profile write guard (#TBD)
+#
+# Hermes profiles are separate HERMES_HOME dirs under
+# ``<root>/profiles/<name>/``. Each profile has its own skills/, plugins/,
+# cron/, memories/. When an agent runs under one profile, writing into
+# ANOTHER profile's directories is almost always wrong — those skills /
+# plugins / cron jobs / memories affect a different session the user runs
+# from a different shell.
+#
+# Soft guard, NOT a security boundary: the agent runs as the same OS user
+# and has unrestricted terminal access, so this returns a warning the model
+# can choose to honor or override with ``cross_profile=True``. Same shape
+# as the dangerous-command approval flow — the agent is told the boundary
+# exists, and explicit user direction is required to cross it.
+#
+# Reference: May 2026 incident where a hermes-security profile session
+# edited skills under both ``~/.hermes/profiles/hermes-security/skills/``
+# AND ``~/.hermes/skills/`` (the default profile's skills) without realizing
+# the second path belonged to a different profile.
+# ---------------------------------------------------------------------------
+
+# Profile-scoped directories under HERMES_HOME / <root> / <root>/profiles/<X>/
+# that should be guarded. Adding a new area here extends the guard with no
+# other code change.
+PROFILE_SCOPED_AREAS = ("skills", "plugins", "cron", "memories")
+
+
+def _resolve_active_profile_name() -> str:
+    """Return the active profile name derived from HERMES_HOME.
+
+    ``~/.hermes``              -> ``"default"``
+    ``~/.hermes/profiles/X``  -> ``"X"``
+
+    Falls back to ``"default"`` on any resolution failure so the guard
+    never raises into the tool path.
+    """
+    try:
+        home_real = _hermes_home_path().resolve()
+        root_real = _hermes_root_path().resolve()
+    except (OSError, RuntimeError):
+        return "default"
+    profiles_dir = root_real / "profiles"
+    try:
+        rel = home_real.relative_to(profiles_dir)
+        parts = rel.parts
+        if len(parts) >= 1:
+            return parts[0]
+    except ValueError:
+        pass
+    return "default"
+
+
+def classify_cross_profile_target(path: str) -> Optional[dict]:
+    """Classify a write target as cross-profile if it lands in another
+    profile's scoped area (skills/plugins/cron/memories).
+
+    Returns ``None`` when the target is outside Hermes scope, or is inside
+    the ACTIVE profile, or doesn't hit a profile-scoped area. Otherwise
+    returns a dict with:
+
+      * ``active_profile``: name of the profile the agent is running as
+      * ``target_profile``: name of the profile the path belongs to
+      * ``area``: which scoped area (``"skills"``, ``"plugins"``, etc.)
+      * ``target_path``: the resolved path string
+
+    The caller decides what to do with the result — surface a warning to
+    the model, prompt the user, or (with explicit consent /
+    ``cross_profile=True``) proceed anyway.
+    """
+    try:
+        target = Path(os.path.expanduser(str(path))).resolve()
+        root_real = _hermes_root_path().resolve()
+    except (OSError, RuntimeError):
+        return None
+
+    target_profile: Optional[str] = None
+    area: Optional[str] = None
+
+    try:
+        rel = target.relative_to(root_real)
+    except ValueError:
+        return None
+
+    parts = rel.parts
+    if not parts:
+        return None
+
+    if parts[0] in PROFILE_SCOPED_AREAS:
+        # ``<root>/<area>/...`` → default profile.
+        target_profile = "default"
+        area = parts[0]
+    elif (
+        parts[0] == "profiles"
+        and len(parts) >= 3
+        and parts[2] in PROFILE_SCOPED_AREAS
+    ):
+        # ``<root>/profiles/<name>/<area>/...`` → named profile.
+        target_profile = parts[1]
+        area = parts[2]
+    else:
+        return None
+
+    active_profile = _resolve_active_profile_name()
+    if target_profile == active_profile:
+        # In-profile write — not a cross-profile event.
+        return None
+
+    return {
+        "active_profile": active_profile,
+        "target_profile": target_profile,
+        "area": area,
+        "target_path": str(target),
+    }
+
+
+def get_cross_profile_warning(path: str) -> Optional[str]:
+    """Return a model-facing warning string when ``path`` is cross-profile.
+
+    Returns ``None`` when the write is in-scope (same profile) or outside
+    Hermes entirely. Caller is expected to surface the warning to the
+    agent as a tool-result error, NOT to silently allow the write — the
+    agent must either get explicit user direction to proceed, or pass
+    ``cross_profile=True`` to its write tool.
+
+    This is defense-in-depth: the terminal tool runs as the same OS user
+    and can write any of these paths without going through this guard.
+    Treat the guard as a confusion-reducer, not a security boundary.
+    """
+    info = classify_cross_profile_target(path)
+    if info is None:
+        return None
+    return (
+        f"Cross-profile write blocked by soft guard: {info['target_path']} "
+        f"belongs to Hermes profile {info['target_profile']!r}, but the "
+        f"agent is running under profile {info['active_profile']!r}. "
+        f"Editing another profile's {info['area']}/ will affect that "
+        f"profile's future sessions, not the one you are currently in. "
+        f"Confirm with the user before proceeding. To bypass this guard "
+        f"after explicit user direction, retry the call with "
+        f"``cross_profile=True``. (Defense-in-depth — not a security "
+        f"boundary; the terminal tool can still bypass.)"
+    )

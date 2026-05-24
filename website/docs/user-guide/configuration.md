@@ -83,6 +83,25 @@ Multiple references in a single value work: `url: "${HOST}:${PORT}"`. If a refer
 
 For AI provider setup (OpenRouter, Anthropic, Copilot, custom endpoints, self-hosted LLMs, fallback models, etc.), see [AI Providers](/integrations/providers).
 
+## Optional Credential Broker
+
+Hermes keeps secrets in `.env` by default. For commands that need one of those secrets without broadly forwarding it to every terminal call, you can opt into the small credential broker. The broker is disabled unless `credentials.broker.enabled` is `true`, supports env-backed secrets, and only injects a named secret when the requesting tool and command match an explicit allow rule.
+
+```yaml
+credentials:
+  broker:
+    enabled: true
+    secrets:
+      github_token:
+        source: env
+        name: GITHUB_TOKEN
+        allow:
+          tools: [terminal]
+          commands: [gh]
+```
+
+Then a terminal tool call can request `credentials: ["github_token"]`; Hermes injects the secret only for that command. This is intentionally a lightweight local broker, not a Vault/KMS replacement.
+
 ### Provider Timeouts
 
 You can set `providers.<id>.request_timeout_seconds` for a provider-wide request timeout, plus `providers.<id>.models.<model>.timeout_seconds` for a model-specific override. Applies to the primary turn client on every transport (OpenAI-wire, native Anthropic, Anthropic-compatible), the fallback chain, rebuilds after credential rotation, and (for OpenAI-wire) the per-request timeout kwarg — so the configured value wins over the legacy `HERMES_API_TIMEOUT` env var.

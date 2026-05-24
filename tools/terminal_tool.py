@@ -2018,6 +2018,7 @@ def terminal_tool(
     pty: bool = False,
     notify_on_complete: bool = False,
     watch_patterns: Optional[List[str]] = None,
+    credentials: Optional[List[str]] = None,
 ) -> str:
     """
     Execute a command in the configured terminal environment.
@@ -2033,6 +2034,7 @@ def terminal_tool(
         pty: If True, use pseudo-terminal for interactive CLI tools (local backend only)
         notify_on_complete: If True and background=True, you'll be notified exactly once when the process exits. The right choice for almost every long task. MUTUALLY EXCLUSIVE with watch_patterns.
         watch_patterns: List of strings to watch for in background output. HARD rate limit: 1 notification per 15s per process. After 3 strike windows in a row, watch_patterns is disabled and the session is auto-promoted to notify_on_complete. Use ONLY for rare, one-shot mid-process signals on long-lived processes (server readiness, migration-done markers). NEVER use in loops/batch jobs — error patterns there will hit the strike limit and get disabled. MUTUALLY EXCLUSIVE with notify_on_complete — set one, not both.
+        credentials: Optional names from credentials.broker.secrets to inject for this one command when the broker policy allows terminal access.
 
     Returns:
         str: JSON string with output, exit_code, and error fields
@@ -2344,13 +2346,7 @@ def terminal_tool(
                 "EOF."
             )
 
-        # Claim the (shared "default") terminal env for the session driving this
-        # command. File tools read env.cwd_owner to decide whether the env's live
-        # cwd is THIS session's `cd` or a different worktree session's — without
-        # it, two open worktree sessions sharing the env route each other's edits
-        # to the wrong checkout. get_current_session_key()'s contextvar doesn't
-        # cross tool-worker threads, so fall back to the raw task_id (which IS the
-        # session_key for the top-level agent) — a stable, thread-safe anchor.
+        # Claim the shared terminal environment for this session.
         from tools.approval import get_current_session_key
 
         session_key = get_current_session_key(default="") or (task_id or "")
@@ -2358,6 +2354,28 @@ def terminal_tool(
             env.cwd_owner = session_key
         except Exception:
             pass
+
+        brokered_env_overrides = {}
+        if credentials:
+            try:
+                from agent.credential_broker import (
+                    canonicalize_command,
+                    resolve_env_overrides,
+                )
+
+                command = canonicalize_command(command)
+                brokered_env_overrides = resolve_env_overrides(
+                    credentials,
+                    requester="terminal",
+                    command=command,
+                )
+            except Exception as e:
+                return json.dumps({
+                    "output": "",
+                    "exit_code": -1,
+                    "error": f"Credential broker denied request: {e}",
+                    "status": "blocked",
+                }, ensure_ascii=False)
 
         if background:
             # Spawn a tracked background process via the process registry.
@@ -2372,12 +2390,14 @@ def terminal_tool(
             )
             try:
                 if env_type == "local":
+                    local_env_vars = dict(env.env) if hasattr(env, "env") else {}
                     proc_session = process_registry.spawn_local(
                         command=command,
                         cwd=effective_cwd,
                         task_id=effective_task_id,
                         session_key=session_key,
-                        env_vars=env.env if hasattr(env, 'env') else None,
+                        env_vars=local_env_vars,
+                        env_overrides=brokered_env_overrides,
                         use_pty=effective_pty,
                     )
                 else:
@@ -2387,6 +2407,7 @@ def terminal_tool(
                         cwd=effective_cwd,
                         task_id=effective_task_id,
                         session_key=session_key,
+                        env_overrides=brokered_env_overrides,
                     )
 
                 result_data = {
@@ -2633,6 +2654,7 @@ def terminal_tool(
                     execute_kwargs = {
                         "timeout": effective_timeout,
                         "cwd": command_cwd,
+                        "env_overrides": brokered_env_overrides,
                     }
                     result = env.execute(command, **execute_kwargs)
                 except Exception as e:
@@ -2999,6 +3021,11 @@ TERMINAL_SCHEMA = {
                 "type": "array",
                 "items": {"type": "string"},
                 "description": "Strings to watch for in background process output. HARD RATE LIMIT: at most 1 notification per 15 seconds per process — matches arriving inside the cooldown are dropped. After 3 consecutive 15-second windows with dropped matches, watch_patterns is automatically disabled for that process and promoted to notify_on_complete behavior (one notification on exit, no more mid-process spam). USE ONLY for truly rare, one-shot mid-process signals on LONG-LIVED processes that will never exit on their own — e.g. ['Application startup complete'] on a server so you know when to hit its endpoint, or ['migration done'] on a daemon. DO NOT use for: (1) end-of-run markers like 'DONE'/'PASS' — use notify_on_complete instead; (2) error patterns like 'ERROR'/'Traceback' in loops or multi-item batch jobs — they fire on every iteration and you'll hit the strike limit fast; (3) anything you'd ever combine with notify_on_complete. When in doubt, choose notify_on_complete. MUTUALLY EXCLUSIVE with notify_on_complete — set one, not both."
+            },
+            "credentials": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": "Optional credential broker secret names to inject only for this command. Credentialed terminal calls must be one simple command; shell chaining, pipelines, substitutions, grouping, background operators, and redirections are rejected. Requires credentials.broker.enabled=true and an allow rule for tool 'terminal' and, when configured, the exact command executable. Managed Modal does not currently support brokered credentials."
             }
         },
         "required": ["command"]
@@ -3017,6 +3044,7 @@ def _handle_terminal(args, **kw):
         pty=args.get("pty", False),
         notify_on_complete=args.get("notify_on_complete", False),
         watch_patterns=args.get("watch_patterns"),
+        credentials=args.get("credentials"),
     )
 
 

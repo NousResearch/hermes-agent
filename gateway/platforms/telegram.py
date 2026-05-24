@@ -86,6 +86,7 @@ from gateway.platforms.telegram_network import (
     discover_fallback_ips,
     parse_fallback_ip_env,
 )
+from gateway.platforms._http_client_limits import platform_httpx_limits
 from utils import atomic_replace
 
 _TELEGRAM_IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".webp", ".gif"}
@@ -106,6 +107,33 @@ _TELEGRAM_IMAGE_EXT_TO_MIME = {
 
 
 MAX_COMMANDS_PER_SCOPE = 30
+
+
+def _proxy_request_httpx_kwargs(connection_pool_size: int) -> Dict[str, Any]:
+    """``httpx_kwargs`` for the proxy-path HTTPXRequest pools.
+
+    Through a proxy, httpcore's tunnel path can leave the underlying socket
+    half-closed on ConnectError. With httpx's default ``keepalive_expiry`` of
+    5s those CLOSED sockets pile up in the pool faster than they drain,
+    exhausting the fd budget after days of flaky-proxy operation (#31599).
+
+    We reuse the shared keepalive tuning (#18451) so idle/dead connections
+    are evicted promptly, while keeping ``max_connections`` at the configured
+    pool size so concurrent sends are unaffected. Returns an empty dict when
+    httpx is unavailable, letting HTTPXRequest fall back to its own limits.
+    """
+    base_limits = platform_httpx_limits()
+    if base_limits is None:
+        return {}
+    import httpx
+
+    return {
+        "limits": httpx.Limits(
+            max_connections=connection_pool_size,
+            max_keepalive_connections=base_limits.max_keepalive_connections,
+            keepalive_expiry=base_limits.keepalive_expiry,
+        )
+    }
 
 
 def check_telegram_requirements() -> bool:
@@ -1421,8 +1449,9 @@ class TelegramAdapter(BasePlatformAdapter):
                 )
             elif proxy_url:
                 logger.info("[%s] Proxy detected; passing explicitly to HTTPXRequest: %s", self.name, proxy_url)
-                request = HTTPXRequest(**request_kwargs, proxy=proxy_url)
-                get_updates_request = HTTPXRequest(**request_kwargs, proxy=proxy_url)
+                proxy_httpx_kwargs = _proxy_request_httpx_kwargs(request_kwargs["connection_pool_size"])
+                request = HTTPXRequest(**request_kwargs, proxy=proxy_url, httpx_kwargs=proxy_httpx_kwargs)
+                get_updates_request = HTTPXRequest(**request_kwargs, proxy=proxy_url, httpx_kwargs=proxy_httpx_kwargs)
             else:
                 if disable_fallback:
                     logger.info("[%s] Telegram fallback-IP transport disabled via env", self.name)

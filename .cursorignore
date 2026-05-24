@@ -1,0 +1,73 @@
+# .cursorignore — hermes-agent
+# Exclude heavy/generated directories from Cursor's indexing.
+# Smaller index = faster AI retrieval = better suggestions.
+
+# Data directories
+data/
+
+# Logs (runtime generated)
+logs/
+testlogs/
+
+# Virtual environments
+.venv/
+venv/
+
+# Git internals
+.git/
+
+# Python bytecode
+__pycache__/
+*.pyc
+hermes_agent.egg-info/
+
+# Node modules (web UI)
+node_modules/
+
+# Build outputs
+hermes_cli/web_dist/
+hermes_cli/tui_dist/
+
+# Temporary/scratch
+tmp/
+temp_vision_images/
+images/
+
+# Browser automation
+browser-use/
+agent-browser/
+
+# Benchmarks/evals (large datasets)
+environments/benchmarks/evals/
+
+# WandB experiment tracking
+wandb/
+
+# Source data (large)
+source-data/
+
+# Nix build
+.direnv/
+.nix-stamps/
+result/
+
+# Worktrees
+.worktrees/
+
+# Ignored/archived
+ignored/
+
+# Mini SWE agent (vendored)
+mini-swe-agent/
+
+# Models (large binaries)
+models-dev-upstream/
+
+# Release temp files
+.release_notes.md
+
+# Skills Hub state
+skills/.hub/
+
+# OS files
+.DS_Store

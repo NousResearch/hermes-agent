@@ -159,6 +159,8 @@ class QQInboundAttachmentPolicy:
             return self.ARCHIVE
         if suffix in self._AUDIO_EXTENSIONS or suffix in self._VIDEO_EXTENSIONS:
             return self.MEDIA
+        if content_type.startswith("audio/") or content_type.startswith("video/"):
+            return self.MEDIA
         if content_type in {"text/plain", "text/markdown", "text/csv", "text/html"}:
             return self.REGULAR
         if content_type in {"application/pdf", "application/zip"}:

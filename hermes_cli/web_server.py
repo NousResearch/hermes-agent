@@ -55,7 +55,7 @@ try:
     from fastapi.middleware.cors import CORSMiddleware
     from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response
     from fastapi.staticfiles import StaticFiles
-    from pydantic import BaseModel
+    from pydantic import BaseModel, Field
 except ImportError:
     # First try lazy-installing the dashboard extras. Only the user actually
     # running `hermes dashboard` needs fastapi+uvicorn; lazy install keeps
@@ -67,7 +67,7 @@ except ImportError:
         from fastapi.middleware.cors import CORSMiddleware
         from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response
         from fastapi.staticfiles import StaticFiles
-        from pydantic import BaseModel
+        from pydantic import BaseModel, Field
     except Exception:
         raise SystemExit(
             "Web UI requires fastapi and uvicorn.\n"
@@ -474,6 +474,45 @@ class ModelAssignment(BaseModel):
     task: str = ""
 
 
+class YouTubeQueueCreate(BaseModel):
+    channel_id: str
+    title: str
+    format: str = "short"
+    owner: str = "Hermes"
+    description: str = ""
+    visibility: str = "private"
+    scheduled_for: Optional[str] = None
+    timezone: Optional[str] = None
+    playlist: Optional[str] = None
+    tags: List[str] = Field(default_factory=list)
+    source_refs: List[str] = Field(default_factory=list)
+    asset_paths: Dict[str, Any] = Field(default_factory=dict)
+    checks: Dict[str, bool] = Field(default_factory=dict)
+    risk: str = "medium"
+    notes: str = ""
+    review_status: str = "needs_review"
+    reviewer: str = ""
+    review_notes: str = ""
+
+
+class YouTubeQueuePatch(BaseModel):
+    updates: Dict[str, Any]
+
+
+class YouTubeBulkPatch(BaseModel):
+    item_ids: List[str] = Field(default_factory=list)
+    updates: Dict[str, Any] = Field(default_factory=dict)
+
+
+class YouTubeBulkIds(BaseModel):
+    item_ids: List[str] = Field(default_factory=list)
+
+
+class YouTubeManifestBody(BaseModel):
+    format: str = "csv"
+    content: str
+
+
 _GATEWAY_HEALTH_URL = os.getenv("GATEWAY_HEALTH_URL")
 try:
     _GATEWAY_HEALTH_TIMEOUT = float(os.getenv("GATEWAY_HEALTH_TIMEOUT", "3"))
@@ -711,6 +750,144 @@ def _tail_lines(path: Path, n: int) -> List[str]:
         return []
     lines = text.splitlines()
     return lines[-n:] if n > 0 else lines
+
+
+def _request_meta(request: Request) -> Dict[str, Any]:
+    client = request.client.host if request.client else None
+    return {"client": client, "path": request.url.path}
+
+
+def _body_dict(model: BaseModel) -> Dict[str, Any]:
+    if hasattr(model, "model_dump"):
+        return model.model_dump()  # type: ignore[attr-defined]
+    return model.dict()
+
+
+@app.get("/api/youtube/dashboard")
+async def get_youtube_dashboard():
+    from hermes_cli import youtube_queue
+
+    try:
+        return youtube_queue.dashboard_state()
+    except ValueError as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
+
+
+@app.post("/api/youtube/queue")
+async def create_youtube_queue_item(body: YouTubeQueueCreate, request: Request):
+    from hermes_cli import youtube_queue
+
+    try:
+        return youtube_queue.create_item(_body_dict(body), request=_request_meta(request))
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+
+@app.patch("/api/youtube/queue/{item_id}")
+async def patch_youtube_queue_item(item_id: str, body: YouTubeQueuePatch, request: Request):
+    from hermes_cli import youtube_queue
+
+    try:
+        return youtube_queue.patch_item(item_id, body.updates, request=_request_meta(request))
+    except KeyError:
+        raise HTTPException(status_code=404, detail="Queue item not found")
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+
+@app.post("/api/youtube/queue/{item_id}/archive")
+async def archive_youtube_queue_item(item_id: str, request: Request):
+    from hermes_cli import youtube_queue
+
+    try:
+        return youtube_queue.archive_item(item_id, request=_request_meta(request))
+    except KeyError:
+        raise HTTPException(status_code=404, detail="Queue item not found")
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+
+@app.get("/api/youtube/queue/{item_id}/publish-readiness")
+async def get_youtube_publish_readiness(item_id: str):
+    from hermes_cli import youtube_queue
+
+    try:
+        return youtube_queue.publish_readiness(item_id)
+    except KeyError:
+        raise HTTPException(status_code=404, detail="Queue item not found")
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+
+@app.get("/api/youtube/queue/{item_id}/publish-plan")
+async def get_youtube_publish_plan(item_id: str):
+    from hermes_cli import youtube_queue
+
+    try:
+        return youtube_queue.publish_plan(item_id)
+    except KeyError:
+        raise HTTPException(status_code=404, detail="Queue item not found")
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+
+@app.patch("/api/youtube/bulk/queue")
+async def bulk_patch_youtube_queue_items(body: YouTubeBulkPatch, request: Request):
+    from hermes_cli import youtube_queue
+
+    try:
+        return youtube_queue.bulk_update(body.item_ids, body.updates, request=_request_meta(request))
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+
+@app.post("/api/youtube/bulk/archive")
+async def bulk_archive_youtube_queue_items(body: YouTubeBulkIds, request: Request):
+    from hermes_cli import youtube_queue
+
+    try:
+        return youtube_queue.bulk_archive(body.item_ids, request=_request_meta(request))
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+
+@app.get("/api/youtube/audit")
+async def get_youtube_audit(limit: int = 100, item_id: Optional[str] = None):
+    from hermes_cli import youtube_queue
+
+    return youtube_queue.read_audit(limit=limit, item_id=item_id)
+
+
+@app.get("/api/youtube/manifest/template")
+async def get_youtube_manifest_template(format: str = "csv"):
+    from hermes_cli import youtube_queue
+
+    try:
+        return youtube_queue.manifest_template(format)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+
+@app.get("/api/youtube/manifest/export")
+async def export_youtube_manifest(format: str = "json", include_archived: bool = False):
+    from hermes_cli import youtube_queue
+
+    try:
+        return youtube_queue.export_manifest(format, include_archived=include_archived)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+
+@app.post("/api/youtube/manifest/import")
+async def import_youtube_manifest(body: YouTubeManifestBody, request: Request):
+    from hermes_cli import youtube_queue
+
+    try:
+        return youtube_queue.import_manifest(body.content, body.format, request=_request_meta(request))
+    except json.JSONDecodeError as exc:
+        raise HTTPException(status_code=400, detail=f"Invalid JSON manifest: {exc}")
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
 
 
 @app.post("/api/gateway/restart")

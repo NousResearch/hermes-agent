@@ -160,6 +160,58 @@ export const api = {
   deleteCronJob: (id: string, profile = "default") =>
     fetchJSON<{ ok: boolean }>(`/api/cron/jobs/${encodeURIComponent(id)}?profile=${encodeURIComponent(profile)}`, { method: "DELETE" }),
 
+  // YouTube dashboard local queue (no external YouTube side effects)
+  getYouTubeDashboard: () => fetchJSON<YouTubeDashboardResponse>("/api/youtube/dashboard"),
+  createYouTubeQueueItem: (body: YouTubeQueueCreateRequest) =>
+    fetchJSON<YouTubeQueueItem>("/api/youtube/queue", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    }),
+  patchYouTubeQueueItem: (id: string, updates: Partial<YouTubeQueueItem>) =>
+    fetchJSON<YouTubeQueueItem>(`/api/youtube/queue/${encodeURIComponent(id)}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ updates }),
+    }),
+  archiveYouTubeQueueItem: (id: string) =>
+    fetchJSON<YouTubeQueueItem>(`/api/youtube/queue/${encodeURIComponent(id)}/archive`, {
+      method: "POST",
+    }),
+  getYouTubePublishReadiness: (id: string) =>
+    fetchJSON<YouTubePublishReadiness>(`/api/youtube/queue/${encodeURIComponent(id)}/publish-readiness`),
+  getYouTubePublishPlan: (id: string) =>
+    fetchJSON<YouTubePublishPlan>(`/api/youtube/queue/${encodeURIComponent(id)}/publish-plan`),
+  getYouTubeAudit: (limit = 100, itemId?: string) => {
+    const qs = new URLSearchParams({ limit: String(limit) });
+    if (itemId) qs.set("item_id", itemId);
+    return fetchJSON<YouTubeAuditResponse>(`/api/youtube/audit?${qs.toString()}`);
+  },
+  getYouTubeManifestTemplate: (format: "csv" | "json" = "csv") =>
+    fetchJSON<YouTubeManifestFile>(`/api/youtube/manifest/template?format=${encodeURIComponent(format)}`),
+  exportYouTubeManifest: (format: "csv" | "json" = "json", includeArchived = false) => {
+    const qs = new URLSearchParams({ format, include_archived: String(includeArchived) });
+    return fetchJSON<YouTubeManifestFile>(`/api/youtube/manifest/export?${qs.toString()}`);
+  },
+  importYouTubeManifest: (format: "csv" | "json", content: string) =>
+    fetchJSON<YouTubeManifestImportResponse>("/api/youtube/manifest/import", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ format, content }),
+    }),
+  bulkPatchYouTubeQueueItems: (itemIds: string[], updates: Partial<YouTubeQueueItem>) =>
+    fetchJSON<YouTubeBulkUpdateResponse>("/api/youtube/bulk/queue", {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ item_ids: itemIds, updates }),
+    }),
+  bulkArchiveYouTubeQueueItems: (itemIds: string[]) =>
+    fetchJSON<YouTubeBulkUpdateResponse>("/api/youtube/bulk/archive", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ item_ids: itemIds }),
+    }),
+
   // Profiles (minimal)
   getProfiles: () =>
     fetchJSON<{ profiles: ProfileInfo[] }>("/api/profiles"),
@@ -352,6 +404,166 @@ export interface ActionResponse {
   name: string;
   ok: boolean;
   pid: number;
+}
+
+export type YouTubeChannelId = "scripturedepth" | "newslish";
+export type YouTubeQueueStatus =
+  | "idea"
+  | "metadata"
+  | "assets"
+  | "review"
+  | "ready"
+  | "scheduled_local"
+  | "published_manual"
+  | "archived";
+export type YouTubeQueueFormat = "short" | "long_form" | "clip";
+export type YouTubeRisk = "low" | "medium" | "high";
+export type YouTubeReviewStatus = "needs_review" | "approved" | "changes_requested" | "rejected";
+
+export interface YouTubeChannelConfig {
+  id: YouTubeChannelId;
+  name: string;
+  handle: string;
+  default_visibility: string;
+  playlist: string;
+  cadence: string;
+  voice: string;
+  guardrail: string;
+}
+
+export interface YouTubeQueueItem {
+  id: string;
+  channel_id: YouTubeChannelId;
+  title: string;
+  description: string;
+  format: YouTubeQueueFormat;
+  status: YouTubeQueueStatus;
+  visibility: "private" | "unlisted" | "scheduled";
+  scheduled_for: string | null;
+  timezone: string | null;
+  playlist: string;
+  tags: string[];
+  source_refs: string[];
+  asset_paths: Record<string, string | null>;
+  checks: Record<string, boolean>;
+  risk: YouTubeRisk;
+  owner: string;
+  notes: string;
+  review_status: YouTubeReviewStatus;
+  reviewer: string;
+  review_notes: string;
+  external: { youtube_video_id: string | null; published_at: string | null };
+  created_at: string;
+  updated_at: string;
+  missing: string[];
+  blocked: boolean;
+}
+
+export interface YouTubeDashboardResponse {
+  channels: YouTubeChannelConfig[];
+  items: YouTubeQueueItem[];
+  summary: {
+    total: number;
+    ready: number;
+    blocked: number;
+    needs_approval: number;
+    review_changes_requested: number;
+    review_rejected: number;
+    archived: number;
+  };
+  capabilities: {
+    local_queue: boolean;
+    youtube_publish: boolean;
+    youtube_analytics: boolean;
+  };
+  updated_at: string;
+  schema_version: number;
+}
+
+export interface YouTubeQueueCreateRequest {
+  channel_id: YouTubeChannelId;
+  title: string;
+  format?: YouTubeQueueFormat;
+  owner?: string;
+  description?: string;
+  visibility?: "private" | "unlisted" | "scheduled";
+  scheduled_for?: string | null;
+  timezone?: string | null;
+  playlist?: string | null;
+  tags?: string[];
+  source_refs?: string[];
+  asset_paths?: Record<string, string | null>;
+  checks?: Record<string, boolean>;
+  risk?: YouTubeRisk;
+  notes?: string;
+  review_status?: YouTubeReviewStatus;
+  reviewer?: string;
+  review_notes?: string;
+}
+
+export interface YouTubeAuditResponse {
+  events: Array<Record<string, unknown>>;
+}
+
+export interface YouTubeManifestFile {
+  format: "csv" | "json";
+  content: string;
+}
+
+export interface YouTubeManifestImportResponse {
+  created: YouTubeQueueItem[];
+  errors: Array<{ row: number; title?: string | null; error: string }>;
+  created_count: number;
+  error_count: number;
+}
+
+export interface YouTubeBulkUpdateResponse {
+  updated: YouTubeQueueItem[];
+  errors: Array<{ item_id: string; error: string }>;
+  updated_count: number;
+  error_count: number;
+}
+
+export interface YouTubePublishReadiness {
+  item_id: string;
+  ready: boolean;
+  publish_enabled: boolean;
+  youtube_side_effects_enabled: boolean;
+  blockers: string[];
+  warnings: string[];
+  required_checks: string[];
+  channel_rule_checks: Array<{ id: string; label: string; ok: boolean }>;
+  review_status: YouTubeReviewStatus;
+  risk: YouTubeRisk;
+  capability_reason: string;
+}
+
+export interface YouTubePublishPlan {
+  item_id: string;
+  generated_at: string;
+  publish_enabled: boolean;
+  youtube_api_call_allowed: boolean;
+  side_effects: string[];
+  readiness: YouTubePublishReadiness;
+  payload_preview: {
+    channel_id: YouTubeChannelId;
+    channel_name: string;
+    channel_handle: string | null;
+    title: string;
+    description: string;
+    tags: string[];
+    playlist: string;
+    visibility: "private" | "unlisted" | "scheduled";
+    scheduled_for: string | null;
+    timezone: string | null;
+    video_path: string | null;
+    thumbnail_path: string | null;
+    captions_path: string | null;
+    source_refs: string[];
+    category: string;
+    made_for_kids: boolean;
+  };
+  safety_note: string;
 }
 
 export interface ActionStatusResponse {

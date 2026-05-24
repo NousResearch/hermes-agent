@@ -1004,9 +1004,7 @@ def skill_view(
                     _record(found_skill_md.parent, found_skill_md)
 
             # Strategy 3: legacy flat <name>.md files anywhere under the dir.
-            # Use iter_skill_index_files so symlinked skill dirs are followed.
-            from agent.skill_utils import iter_skill_index_files as _iter
-            for found_md in _iter(search_dir, f"{name}.md"):
+            for found_md in search_dir.rglob(f"{name}.md"):
                 if found_md.name != "SKILL.md":
                     _record(None, found_md)
 
@@ -1159,10 +1157,7 @@ def skill_view(
                 }
 
                 # Scan for all readable files
-                # Use os.walk(followlinks=True) instead of rglob to follow symlinks.
-                for root, dirs, files in os.walk(skill_dir, followlinks=True):
-                    for fname in files:
-                        f = Path(root) / fname
+                for f in skill_dir.rglob("*"):
                     if f.is_file() and f.name != "SKILL.md":
                         rel = str(f.relative_to(skill_dir))
                         if rel.startswith("references/"):

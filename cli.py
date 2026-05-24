@@ -420,6 +420,7 @@ def load_cli_config() -> Dict[str, Any]:
             "busy_input_mode": "interrupt",
             "persistent_output": True,
             "persistent_output_max_lines": 200,
+            "status_bar_style": "default",
 
             "skin": "default",
         },
@@ -2855,6 +2856,13 @@ class HermesCLI:
         self.bell_on_complete = CLI_CONFIG["display"].get("bell_on_complete", False)
         # show_reasoning: display model thinking/reasoning before the response
         self.show_reasoning = CLI_CONFIG["display"].get("show_reasoning", False)
+        self._status_bar_style = str(
+            CLI_CONFIG["display"].get("status_bar_style", "default") or "default"
+        ).strip().lower()
+        self._status_bar_codex_usage_cache: dict[str, Any] = {"at": 0.0, "value": ""}
+        self._status_bar_token_rollup_cache: dict[str, Any] = {"at": 0.0, "tokens": None, "value": ""}
+        self._status_bar_token_log_last_at = 0.0
+        self._status_bar_token_log_last_tokens = -1
         _configure_output_history(
             enabled=CLI_CONFIG["display"].get("persistent_output", True),
             max_lines=CLI_CONFIG["display"].get("persistent_output_max_lines", 200),
@@ -3502,6 +3510,211 @@ class HermesCLI:
         return "".join(out).rstrip() + ellipsis
 
     @staticmethod
+    def _lifeos_status_bar_style_enabled(style: object) -> bool:
+        return str(style or "default").strip().lower() in {"lifeos", "anirvan", "claude"}
+
+    @staticmethod
+    def _valid_lifeos_codex_usage_label(value: str) -> bool:
+        """Return True for compact Codex usage-window labels.
+
+        The source is a local helper script, but this runs on the prompt redraw
+        path. Treat unexpected output as absent instead of splashing tracebacks
+        or warnings into the status bar.
+        """
+        return bool(
+            re.fullmatch(
+                r"\d+[dhm]:\d+%/\d+%(?:\s*\|\s*\d+[dhm]:\d+%/\d+%)*",
+                value.strip(),
+            )
+        )
+
+    def _use_lifeos_status_bar(self) -> bool:
+        return self._lifeos_status_bar_style_enabled(getattr(self, "_status_bar_style", "default"))
+
+    @staticmethod
+    def _status_bar_abbrev_cwd(cwd: object = None) -> str:
+        """Abbreviate a working directory for a compact status bar."""
+        try:
+            path = Path(str(cwd or os.getcwd())).expanduser()
+            if not path.is_absolute():
+                path = Path(os.getcwd()) / path
+            path = path.resolve(strict=False)
+            home = Path.home().resolve(strict=False)
+            try:
+                rel = path.relative_to(home)
+                rel_text = str(rel)
+                return "~" if rel_text == "." else f"~/{rel_text}"
+            except ValueError:
+                return str(path)
+        except Exception:
+            return ""
+
+    def _status_bar_current_cwd(self) -> str:
+        cfg = getattr(self, "config", {}) or {}
+        cwd = None
+        try:
+            term_cfg = cfg.get("terminal", {}) if isinstance(cfg, dict) else {}
+            cwd = term_cfg.get("cwd") if isinstance(term_cfg, dict) else None
+        except Exception:
+            cwd = None
+        return self._status_bar_abbrev_cwd(cwd)
+
+    def _get_lifeos_codex_usage_label(self, ttl_seconds: float = 30.0) -> str:
+        """Return cached Codex-window usage text for the LifeOS status bar."""
+        now = time.monotonic()
+        cache = getattr(self, "_status_bar_codex_usage_cache", None)
+        if isinstance(cache, dict) and now - float(cache.get("at") or 0.0) < ttl_seconds:
+            return str(cache.get("value") or "")
+
+        value = ""
+        script = Path.home() / "bin" / "codex-usage-status"
+        if script.exists():
+            try:
+                import subprocess
+                result = subprocess.run(
+                    [str(script), "--cache-only"],
+                    capture_output=True,
+                    text=True,
+                    timeout=0.75,
+                    check=False,
+                )
+                if result.returncode == 0:
+                    first_line = (result.stdout or "").splitlines()[0:1]
+                    if first_line:
+                        # Strip ANSI codes defensively; the status bar supplies
+                        # its own prompt_toolkit styles.
+                        label = re.sub(r"\x1b\[[0-9;?]*[A-Za-z]", "", first_line[0]).strip()
+                        if self._valid_lifeos_codex_usage_label(label):
+                            value = label
+            except Exception:
+                value = ""
+
+        setattr(self, "_status_bar_codex_usage_cache", {"at": now, "value": value})
+        return value
+
+    @staticmethod
+    def _format_lifeos_token_count(value: int) -> str:
+        try:
+            return format_token_count_compact(int(value or 0))
+        except Exception:
+            return "0"
+
+    def _get_lifeos_token_rollup_label(self, snapshot: Dict[str, Any], ttl_seconds: float = 30.0) -> str:
+        """Best-effort session/day/week/month token rollup for the status bar."""
+        try:
+            session_total = int(snapshot.get("session_total_tokens") or 0)
+        except Exception:
+            session_total = 0
+        if session_total <= 0:
+            return ""
+
+        now = time.time()
+        cache = getattr(self, "_status_bar_token_rollup_cache", None)
+        if (
+            isinstance(cache, dict)
+            and cache.get("tokens") == session_total
+            and now - float(cache.get("at") or 0.0) < ttl_seconds
+        ):
+            return str(cache.get("value") or "")
+
+        label = f"tok:{self._format_lifeos_token_count(session_total)}(s)"
+        try:
+            cache_dir = _hermes_home / "cache"
+            path = cache_dir / "statusbar-token-usage.tsv"
+            session_id = str(getattr(self, "session_id", "") or "unknown")
+            cutoff_month = now - (31 * 86400)
+            entries: list[tuple[float, str, int]] = []
+
+            if path.exists():
+                for line in path.read_text(encoding="utf-8").splitlines():
+                    try:
+                        ts_text, sid, tok_text = line.split("\t", 2)
+                        ts = float(ts_text)
+                        tok = int(tok_text)
+                    except Exception:
+                        continue
+                    if ts >= cutoff_month and tok > 0:
+                        entries.append((ts, sid, tok))
+
+            last_at = float(getattr(self, "_status_bar_token_log_last_at", 0.0) or 0.0)
+            last_tokens = int(getattr(self, "_status_bar_token_log_last_tokens", -1) or -1)
+            if session_total != last_tokens or now - last_at >= 1800:
+                entries.append((now, session_id, session_total))
+                try:
+                    cache_dir.mkdir(parents=True, exist_ok=True)
+                    tmp_path = path.with_suffix(".tmp")
+                    tmp_path.write_text(
+                        "".join(f"{ts:.0f}\t{sid}\t{tok}\n" for ts, sid, tok in entries),
+                        encoding="utf-8",
+                    )
+                    tmp_path.replace(path)
+                    self._status_bar_token_log_last_at = now
+                    self._status_bar_token_log_last_tokens = session_total
+                except Exception:
+                    pass
+
+            def _window_total(days: int) -> int:
+                cutoff = now - (days * 86400)
+                latest_by_session: dict[str, int] = {}
+                for ts, sid, tok in entries:
+                    if ts >= cutoff:
+                        latest_by_session[sid] = max(latest_by_session.get(sid, 0), tok)
+                latest_by_session[session_id] = max(latest_by_session.get(session_id, 0), session_total)
+                return sum(latest_by_session.values())
+
+            day = _window_total(1)
+            week = _window_total(7)
+            month = _window_total(30)
+            label = (
+                f"tok:{self._format_lifeos_token_count(session_total)}(s)/"
+                f"{self._format_lifeos_token_count(day)}(d)/"
+                f"{self._format_lifeos_token_count(week)}(w)/"
+                f"{self._format_lifeos_token_count(month)}(m)"
+            )
+        except Exception:
+            pass
+
+        setattr(self, "_status_bar_token_rollup_cache", {"at": now, "tokens": session_total, "value": label})
+        return label
+
+    def _build_lifeos_status_bar_text(self, snapshot: Dict[str, Any], width: int) -> str:
+        """Build Anirvan's preferred Claude/Codex-style status line."""
+        percent = snapshot.get("context_percent")
+        ctx_label = "ctx:--"
+        if percent is not None:
+            try:
+                remaining = max(0, min(100, 100 - int(percent)))
+                ctx_label = f"ctx:{remaining}%"
+            except Exception:
+                ctx_label = "ctx:--"
+
+        cwd_label = self._status_bar_current_cwd()
+        model_label = str(snapshot.get("model_short") or "Hermes")
+        token_label = self._get_lifeos_token_rollup_label(snapshot)
+        codex_label = self._get_lifeos_codex_usage_label()
+
+        parts: list[str] = []
+        if width >= 76 and codex_label:
+            parts.append(f"cdx:{codex_label}")
+        if width >= 64 and token_label:
+            parts.append(token_label)
+        parts.append(ctx_label)
+
+        bg_count = snapshot.get("active_background_tasks", 0) or 0
+        if bg_count:
+            parts.append(f"▶{bg_count}")
+        compressions = snapshot.get("compressions", 0) or 0
+        if compressions and width >= 76:
+            parts.append(f"zip:{compressions}")
+        if bool(os.getenv("HERMES_YOLO_MODE")):
+            parts.append("YOLO")
+
+        parts.append(model_label)
+        if cwd_label:
+            parts.append(cwd_label)
+        return self._trim_status_bar_text(" | ".join(parts), width)
+
+    @staticmethod
     def _get_tui_terminal_width(default: tuple[int, int] = (80, 24)) -> int:
         """Return the live prompt_toolkit width, falling back to ``shutil``.
 
@@ -3654,6 +3867,8 @@ class HermesCLI:
             snapshot = self._get_status_bar_snapshot()
             if width is None:
                 width = self._get_tui_terminal_width()
+            if self._use_lifeos_status_bar():
+                return self._build_lifeos_status_bar_text(snapshot, width)
             percent = snapshot["context_percent"]
             percent_label = f"{percent}%" if percent is not None else "--"
             duration_label = snapshot["duration"]
@@ -3712,6 +3927,9 @@ class HermesCLI:
             # actually renders, causing the fragments to overflow to a second
             # line and produce duplicated status bar rows over long sessions.
             width = self._get_tui_terminal_width()
+            if self._use_lifeos_status_bar():
+                text = self._build_lifeos_status_bar_text(snapshot, max(0, width - 2))
+                return [("class:status-bar", self._trim_status_bar_text(f" {text} ", width))]
             duration_label = snapshot["duration"]
             yolo_active = bool(os.getenv("HERMES_YOLO_MODE"))
 
@@ -8054,7 +8272,44 @@ class HermesCLI:
             print("       DISCORD_BOT_TOKEN=your_token")
             print(f"    2. Or configure settings in {display_hermes_home()}/config.yaml")
             print()
-    
+
+    def _handle_statusbar_command(self, cmd_original: str) -> None:
+        """Handle /statusbar visibility toggles and style selection."""
+        usage = "  Usage: /statusbar [on|off|toggle|default|lifeos|anirvan|claude]"
+        parts = cmd_original.split(None, 1)
+        arg = parts[1].strip().lower() if len(parts) > 1 else "toggle"
+
+        if arg in {"", "toggle"}:
+            self._status_bar_visible = not self._status_bar_visible
+            state = "visible" if self._status_bar_visible else "hidden"
+            self._console_print(f"  Status bar {state}")
+            return
+
+        if arg == "on":
+            self._status_bar_visible = True
+            self._console_print("  Status bar visible")
+            return
+
+        if arg == "off":
+            self._status_bar_visible = False
+            self._console_print("  Status bar hidden")
+            return
+
+        if arg in {"default", "lifeos", "anirvan", "claude"}:
+            if not save_config_value("display.status_bar_style", arg):
+                self._console_print("  Failed to save status bar style")
+                return
+            self._status_bar_style = arg
+            cfg = getattr(self, "config", None)
+            if isinstance(cfg, dict):
+                display_cfg = cfg.setdefault("display", {})
+                if isinstance(display_cfg, dict):
+                    display_cfg["status_bar_style"] = arg
+            self._console_print(f"  Status bar style set to {arg}")
+            return
+
+        self._console_print(usage)
+
     def process_command(self, command: str) -> bool:
         """
         Process a slash command.
@@ -8286,9 +8541,7 @@ class HermesCLI:
         elif canonical == "status":
             self._show_session_status()
         elif canonical == "statusbar":
-            self._status_bar_visible = not self._status_bar_visible
-            state = "visible" if self._status_bar_visible else "hidden"
-            self._console_print(f"  Status bar {state}")
+            self._handle_statusbar_command(cmd_original)
         elif canonical == "verbose":
             self._toggle_verbose()
         elif canonical == "footer":

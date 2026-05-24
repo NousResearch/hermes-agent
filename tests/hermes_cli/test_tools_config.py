@@ -3,6 +3,7 @@
 from unittest.mock import patch
 
 import pytest
+import subprocess
 
 from hermes_cli.tools_config import (
     _DEFAULT_OFF_TOOLSETS,
@@ -13,6 +14,7 @@ from hermes_cli.tools_config import (
     _platform_toolset_summary,
     _reconfigure_tool,
     _run_post_setup,
+    _run_cua_driver_installer,
     _save_platform_tools,
     _toolset_has_keys,
     _toolset_needs_configuration_prompt,
@@ -837,6 +839,138 @@ def test_computer_use_post_setup_missing_override_does_not_accept_default_binary
     run.assert_not_called()
     assert "custom-cua" in seen
     assert "curl" in seen
+
+
+def test_computer_use_post_setup_downloads_and_executes_script_without_shell():
+    """The cua-driver installer should use argv lists and pipe script text into bash."""
+    seen = []
+
+    def fake_which(name: str):
+        seen.append(name)
+        if name == "cua-driver":
+            # Force installer on first check and success on post-install check.
+            if seen.count(name) > 1:
+                return "/usr/local/bin/cua-driver"
+            return None
+        if name == "curl":
+            return "/usr/bin/curl"
+        if name == "bash":
+            return "/bin/bash"
+        return None
+
+    install_url = "https://raw.githubusercontent.com/trycua/cua/main/libs/cua-driver/scripts/install.sh"
+    curl_result = subprocess.CompletedProcess(
+        args=["/usr/bin/curl", "-fsSL", install_url],
+        returncode=0,
+        stdout="#!/bin/bash\necho install\n",
+        stderr="",
+    )
+    bash_result = subprocess.CompletedProcess(
+        args=["/bin/bash"], returncode=0, stdout="", stderr=""
+    )
+
+    with patch("platform.system", return_value="Darwin"), \
+         patch("shutil.which", side_effect=fake_which), \
+         patch("hermes_cli.tools_config._check_cua_driver_asset_for_arch", return_value=True), \
+         patch("subprocess.run") as run:
+        run.side_effect = [curl_result, bash_result]
+
+        _run_post_setup("cua_driver")
+
+    assert run.call_count == 2
+    curl_call = run.call_args_list[0]
+    bash_call = run.call_args_list[1]
+
+    assert curl_call.args[0] == ["/usr/bin/curl", "-fsSL", install_url]
+    assert bash_call.args[0] == ["/bin/bash"]
+    assert bash_call.kwargs["input"] == "#!/bin/bash\necho install\n"
+    assert not curl_call.kwargs.get("shell")
+    assert not bash_call.kwargs.get("shell")
+    assert "cua-driver" in seen
+
+
+def test_computer_use_post_setup_fails_when_curl_fails_and_skips_bash():
+    """curl non-zero exit should abort without invoking bash."""
+    def fake_which(name: str):
+        if name == "cua-driver":
+            return None
+        if name == "curl":
+            return "/usr/bin/curl"
+        if name == "bash":
+            return "/bin/bash"
+        return None
+
+    curl_error = subprocess.CompletedProcess(
+        args=[
+            "/usr/bin/curl",
+            "-fsSL",
+            "https://raw.githubusercontent.com/trycua/cua/main/libs/cua-driver/scripts/install.sh",
+        ],
+        returncode=1,
+        stdout="",
+        stderr="network fail",
+    )
+
+    with patch("platform.system", return_value="Darwin"), \
+         patch("shutil.which", side_effect=fake_which), \
+         patch("hermes_cli.tools_config._check_cua_driver_asset_for_arch", return_value=True), \
+         patch("subprocess.run") as run:
+        run.return_value = curl_error
+
+        _run_post_setup("cua_driver")
+
+    assert run.call_count == 1
+    assert run.call_args_list[0].args[0] == [
+        "/usr/bin/curl",
+        "-fsSL",
+        "https://raw.githubusercontent.com/trycua/cua/main/libs/cua-driver/scripts/install.sh",
+    ]
+    assert not run.call_args_list[0].kwargs.get("shell")
+
+
+def test_cua_driver_installer_reports_manual_command_when_curl_missing_and_bash_found():
+    """curl missing path should explain how to rerun install manually with bash."""
+    info_calls = []
+    warn_calls = []
+
+    def fake_which(name: str):
+        if name == "bash":
+            return "/bin/bash"
+        return None
+
+    with patch("shutil.which", side_effect=fake_which), \
+         patch("hermes_cli.tools_config._print_warning", side_effect=lambda msg: warn_calls.append(msg)), \
+         patch("hermes_cli.tools_config._print_info", side_effect=lambda msg: info_calls.append(msg)), \
+         patch("subprocess.run") as run:
+        assert _run_cua_driver_installer() is False
+
+    assert not run.called
+    assert any("curl not found — install manually:" in msg for msg in warn_calls)
+    assert any(
+        "curl -fsSL https://raw.githubusercontent.com/trycua/cua/main/libs/cua-driver/scripts/install.sh | /bin/bash" in msg
+        for msg in info_calls
+    )
+
+
+def test_cua_driver_installer_reports_missing_bash_without_referring_to_bin_bash():
+    """When bash is unavailable, do not print a stale /bin/bash manual hint."""
+    info_calls = []
+    warn_calls = []
+
+    with patch("shutil.which", return_value=None), \
+         patch("pathlib.Path.exists", return_value=False), \
+         patch("hermes_cli.tools_config._print_warning", side_effect=lambda msg: warn_calls.append(msg)), \
+         patch("hermes_cli.tools_config._print_info", side_effect=lambda msg: info_calls.append(msg)), \
+         patch("subprocess.run") as run:
+        assert _run_cua_driver_installer() is False
+
+    assert not run.called
+    assert any("curl not found — install manually:" in msg for msg in warn_calls)
+    assert not any("/bin/bash" in msg for msg in info_calls)
+    assert any(
+        "Download the installer script and run it with a local shell." in msg
+        for msg in info_calls
+    )
 
 
 class TestImagegenBackendRegistry:

@@ -1019,6 +1019,7 @@ DEFAULT_CONFIG = {
         "streaming": False,
         "timestamps": False,      # Show [HH:MM] on user and assistant labels
         "final_response_markdown": "strip",  # render | strip | raw
+        "status_bar_style": "default",  # default | lifeos/anirvan/claude
         # Preserve recent classic CLI output across Ctrl+L, /redraw, and
         # terminal resize full-screen clears. Disable if a terminal emulator
         # behaves badly with replayed scrollback.

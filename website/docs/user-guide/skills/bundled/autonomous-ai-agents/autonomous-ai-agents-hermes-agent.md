@@ -287,7 +287,8 @@ The registry of record is `hermes_cli/commands.py` — every consumer
                      (styles: kaomoji, emoji, unicode, ascii)
 /footer [on|off]     Toggle gateway runtime-metadata footer on final replies
 /skin [name]         Change theme (CLI)
-/statusbar           Toggle status bar (CLI)
+/statusbar [on|off|toggle|default|lifeos|anirvan|claude]
+                     Toggle status bar or set style (CLI)
 ```
 
 ### Tools & Skills

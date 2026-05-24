@@ -704,22 +704,62 @@ def _run_cua_driver_installer(label: str = "Installing", verbose: bool = True) -
     The script is idempotent: it always downloads the latest release, so
     re-running it on an already-installed system performs an upgrade.
     """
+    import pathlib
     import shutil
     import subprocess
 
-    install_cmd = (
-        "/bin/bash -c \"$(curl -fsSL "
+    install_url = (
         "https://raw.githubusercontent.com/trycua/cua/main/"
-        "libs/cua-driver/scripts/install.sh)\""
+        "libs/cua-driver/scripts/install.sh"
     )
     if verbose:
         _print_info(f"    {label} cua-driver (macOS background computer-use)...")
     else:
         _print_info(f"    {label} cua-driver...")
+
+    curl_bin = shutil.which("curl")
+    bash_bin = shutil.which("bash")
+    if not bash_bin and pathlib.Path("/bin/bash").exists():
+        bash_bin = "/bin/bash"
+
+    if not curl_bin:
+        _print_warning("    curl not found — install manually:")
+        manual_shell = bash_bin or shutil.which("sh")
+        if manual_shell:
+            _print_info(f"      curl -fsSL {install_url} | {manual_shell}")
+        else:
+            _print_info("    Download the installer script and run it with a local shell.")
+            _print_info(f"      {install_url}")
+        return False
+
+    if not bash_bin:
+        _print_warning("    bash not found — cannot run the cua-driver installer.")
+        _print_info("    Install manually with an external shell:")
+        _print_info(f"      curl -fsSL {install_url} | bash")
+        return False
+
     driver_cmd = _cua_driver_cmd()
     try:
-        result = subprocess.run(install_cmd, shell=True, timeout=300)
-        if result.returncode == 0 and shutil.which(driver_cmd):
+        curl_result = subprocess.run(
+            [curl_bin, "-fsSL", install_url],
+            capture_output=True,
+            text=True,
+            timeout=60,
+            check=False,
+        )
+        if curl_result.returncode != 0 or not curl_result.stdout:
+            _print_warning(f"    cua-driver {label.lower()} did not complete. Re-run manually:")
+            _print_info(f"      curl -fsSL {install_url} | {bash_bin}")
+            return False
+
+        bash_result = subprocess.run(
+            [bash_bin],
+            input=curl_result.stdout,
+            text=True,
+            timeout=300,
+            check=False,
+        )
+        if bash_result.returncode == 0 and shutil.which(driver_cmd):
             if verbose:
                 _print_success(f"    {driver_cmd} installed.")
                 _print_info("    IMPORTANT — grant macOS permissions now:")
@@ -728,7 +768,7 @@ def _run_cua_driver_installer(label: str = "Installing", verbose: bool = True) -
                 _print_info("    Both must allow the terminal / Hermes process.")
             return True
         _print_warning(f"    cua-driver {label.lower()} did not complete. Re-run manually:")
-        _print_info(f"      {install_cmd}")
+        _print_info(f"      curl -fsSL {install_url} | {bash_bin}")
         return False
     except subprocess.TimeoutExpired:
         _print_warning(f"    cua-driver {label.lower()} timed out. Re-run manually.")

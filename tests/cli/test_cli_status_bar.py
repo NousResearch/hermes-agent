@@ -1,5 +1,6 @@
 import time
 from datetime import datetime, timedelta
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
@@ -52,6 +53,14 @@ def _attach_agent(
     return cli_obj
 
 
+def _make_statusbar_command_cli(*, visible: bool = True, style: str = "default"):
+    cli_obj = _make_cli()
+    cli_obj._status_bar_visible = visible
+    cli_obj._status_bar_style = style
+    cli_obj.config = {"display": {"status_bar_style": style}}
+    return cli_obj
+
+
 class TestCLIStatusBar:
     def test_context_style_thresholds(self):
         cli_obj = _make_cli()
@@ -80,6 +89,138 @@ class TestCLIStatusBar:
         assert "6%" in text
         assert "$0.06" not in text  # cost hidden by default
         assert "15m" in text
+
+    def test_lifeos_status_bar_includes_codex_tokens_context_model_and_cwd(self):
+        cli_obj = _attach_agent(
+            _make_cli(model="openai-codex/gpt-5.5"),
+            prompt_tokens=10_230,
+            completion_tokens=2_220,
+            total_tokens=12_450,
+            api_calls=7,
+            context_tokens=50_000,
+            context_length=200_000,
+        )
+        cli_obj._status_bar_style = "lifeos"
+        cli_obj.config = {"terminal": {"cwd": str(Path.home() / "Builds" / "hermes-agent")}}
+
+        with patch.object(cli_obj, "_get_lifeos_codex_usage_label", return_value="7d:95%/100% | 5h:68%/99%"), \
+             patch.object(cli_obj, "_get_lifeos_token_rollup_label", return_value="tok:12.4K(s)/20K(d)/30K(w)/40K(m)"):
+            text = cli_obj._build_status_bar_text(width=160)
+
+        assert "cdx:7d:95%/100% | 5h:68%/99%" in text
+        assert "tok:12.4K(s)/20K(d)/30K(w)/40K(m)" in text
+        assert "ctx:75%" in text  # remaining context, not used context
+        assert "gpt-5.5" in text
+        assert "~/Builds/hermes-agent" in text
+
+    def test_lifeos_status_bar_omits_expensive_sections_on_narrow_width(self):
+        cli_obj = _attach_agent(
+            _make_cli(model="openai-codex/gpt-5.5"),
+            prompt_tokens=100,
+            completion_tokens=25,
+            total_tokens=125,
+            api_calls=1,
+            context_tokens=10,
+            context_length=100,
+        )
+        cli_obj._status_bar_style = "lifeos"
+
+        with patch.object(cli_obj, "_get_lifeos_codex_usage_label", return_value="7d:95%/100% | 5h:68%/99%"), \
+             patch.object(cli_obj, "_get_lifeos_token_rollup_label", return_value="tok:125(s)/125(d)/125(w)/125(m)"):
+            text = cli_obj._build_status_bar_text(width=52)
+
+        assert "cdx:" not in text
+        assert "tok:" not in text
+        assert "ctx:90%" in text
+        assert cli_obj._status_bar_display_width(text) <= 52
+
+    def test_lifeos_codex_usage_status_is_cached(self):
+        cli_obj = _make_cli()
+        cli_obj._status_bar_codex_usage_cache = {"at": 0.0, "value": ""}
+        result = SimpleNamespace(returncode=0, stdout="\x1b[32m7d:1%/100% | 5h:2%/99%\x1b[0m\n")
+
+        with patch.object(Path, "exists", return_value=True), \
+             patch("subprocess.run", return_value=result) as run_mock:
+            assert cli_obj._get_lifeos_codex_usage_label() == "7d:1%/100% | 5h:2%/99%"
+            assert cli_obj._get_lifeos_codex_usage_label() == "7d:1%/100% | 5h:2%/99%"
+
+        assert run_mock.call_count == 1
+
+    def test_lifeos_token_rollup_uses_hermes_cache_file(self, tmp_path, monkeypatch):
+        monkeypatch.setattr("cli._hermes_home", tmp_path)
+        cli_obj = _make_cli()
+        cli_obj.session_id = "current-session"
+        snapshot = {"session_total_tokens": 1_250}
+
+        label = cli_obj._get_lifeos_token_rollup_label(snapshot)
+
+        assert label == "tok:1.25K(s)/1.25K(d)/1.25K(w)/1.25K(m)"
+        assert (tmp_path / "cache" / "statusbar-token-usage.tsv").exists()
+
+    def test_lifeos_token_rollup_skips_malformed_cache_rows(self, tmp_path, monkeypatch):
+        monkeypatch.setattr("cli._hermes_home", tmp_path)
+        cache_dir = tmp_path / "cache"
+        cache_dir.mkdir()
+        now = time.time()
+        (cache_dir / "statusbar-token-usage.tsv").write_text(
+            "not-a-tsv-row\n"
+            f"{now}\tother-session\t250\n"
+            f"{now}\tbad-session\tnot-an-int\n"
+            f"{now}\tnegative-session\t-10\n",
+            encoding="utf-8",
+        )
+        cli_obj = _make_cli()
+        cli_obj.session_id = "current-session"
+
+        label = cli_obj._get_lifeos_token_rollup_label({"session_total_tokens": 100})
+
+        assert label == "tok:100(s)/350(d)/350(w)/350(m)"
+
+    def test_lifeos_codex_usage_rejects_malformed_output(self):
+        cli_obj = _make_cli()
+        cli_obj._status_bar_codex_usage_cache = {"at": 0.0, "value": ""}
+        result = SimpleNamespace(returncode=0, stdout="\x1b[31munexpected failure output\x1b[0m\n")
+
+        with patch.object(Path, "exists", return_value=True), \
+             patch("subprocess.run", return_value=result):
+            assert cli_obj._get_lifeos_codex_usage_label() == ""
+
+    def test_statusbar_command_sets_visibility_without_persisting(self):
+        cli_obj = _make_statusbar_command_cli(visible=False)
+        with patch("cli.save_config_value") as save_mock, \
+             patch.object(cli_obj, "_console_print"):
+            cli_obj._handle_statusbar_command("/statusbar on")
+            assert cli_obj._status_bar_visible is True
+            cli_obj._handle_statusbar_command("/statusbar off")
+            assert cli_obj._status_bar_visible is False
+            cli_obj._handle_statusbar_command("/statusbar toggle")
+            assert cli_obj._status_bar_visible is True
+
+        save_mock.assert_not_called()
+
+    def test_statusbar_command_sets_style_and_updates_session_config(self):
+        cli_obj = _make_statusbar_command_cli(style="default")
+
+        with patch("cli.save_config_value", return_value=True) as save_mock, \
+             patch.object(cli_obj, "_console_print"):
+            cli_obj._handle_statusbar_command("/statusbar claude")
+
+        save_mock.assert_called_once_with("display.status_bar_style", "claude")
+        assert cli_obj._status_bar_style == "claude"
+        assert cli_obj.config["display"]["status_bar_style"] == "claude"
+
+    def test_statusbar_command_invalid_arg_does_not_mutate_state(self):
+        cli_obj = _make_statusbar_command_cli(visible=False, style="lifeos")
+
+        with patch("cli.save_config_value") as save_mock, \
+             patch.object(cli_obj, "_console_print") as print_mock:
+            cli_obj._handle_statusbar_command("/statusbar plasma")
+
+        save_mock.assert_not_called()
+        assert cli_obj._status_bar_visible is False
+        assert cli_obj._status_bar_style == "lifeos"
+        printed = "\n".join(str(call.args[0]) for call in print_mock.call_args_list)
+        assert "Usage: /statusbar" in printed
 
     def test_input_height_counts_wide_characters_using_cell_width(self):
         cli_obj = _make_cli()

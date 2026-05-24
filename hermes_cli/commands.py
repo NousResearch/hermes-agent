@@ -130,8 +130,10 @@ COMMAND_REGISTRY: list[CommandDef] = [
 
     CommandDef("personality", "Set a predefined personality", "Configuration",
                args_hint="[name]"),
-    CommandDef("statusbar", "Toggle the context/model status bar", "Configuration",
-               cli_only=True, aliases=("sb",)),
+    CommandDef("statusbar", "Toggle the context/model status bar or set its style", "Configuration",
+               cli_only=True, aliases=("sb",),
+               args_hint="[on|off|toggle|default|lifeos|anirvan|claude]",
+               subcommands=("on", "off", "toggle", "default", "lifeos", "anirvan", "claude")),
     CommandDef("verbose", "Cycle tool progress display: off -> new -> all -> verbose",
                "Configuration", cli_only=True,
                gateway_config_gate="display.tool_progress_command"),

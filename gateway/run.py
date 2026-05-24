@@ -13131,10 +13131,11 @@ class GatewayRunner:
     async def _handle_reload_skills_command(self, event: MessageEvent) -> str:
         """Handle /reload-skills — rescan skills dir, queue a note for next turn.
 
-        Skills don't need to be in the system prompt for the model to use
-        them (they're invoked via ``/skill-name``, ``skills_list``, or
-        ``skill_view`` at runtime), so this does NOT clear the prompt cache
-        — prefix caching stays intact.
+        When skills are added or removed, the skills system-prompt cache is
+        cleared so the ``<available_skills>`` block in future sessions reflects
+        the new catalog. The slash-command map is rescanned, adapters refresh
+        their platform-side state, and a one-shot note is queued for the next
+        user turn so the model sees the diff.
 
         If any skills were added or removed, a one-shot note is queued on
         ``self._pending_skills_reload_notes[session_key]``. The gateway

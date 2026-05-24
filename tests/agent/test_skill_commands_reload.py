@@ -2,9 +2,8 @@
 
 Covers the helper that powers ``/reload-skills`` (CLI + gateway slash command).
 The helper rescans the skills directory and returns a diff of what changed.
-It does NOT invalidate the skills system-prompt cache — skills are invoked
-at runtime via ``/skill-name``, ``skills_list``, or ``skill_view`` and don't
-need to live in the system prompt.
+When skills are added or removed it also clears the skills system-prompt cache
+so the ``<available_skills>`` block in future sessions reflects the new catalog.
 
 ``added`` and ``removed`` are lists of ``{"name": str, "description": str}``
 dicts. Descriptions are truncated to 60 chars.
@@ -137,12 +136,13 @@ class TestReloadSkillsHelper:
         assert result["added"] == []
         assert result["removed"] == []
 
-    def test_does_not_invalidate_prompt_cache_snapshot(self, hermes_home):
-        """reload_skills must NOT delete the skills prompt-cache snapshot.
+    def test_preserves_snapshot_when_no_skills_changed(self, hermes_home):
+        """reload_skills preserves the prompt-cache snapshot when nothing changed.
 
-        Skills are called at runtime — the system prompt doesn't need to
-        mention them for the model to use them — so reloading them should
-        preserve prefix caching.
+        When no skills are added or removed the cache is left intact so
+        prefix caching across the reload is preserved in the common no-op
+        case. The test creates a snapshot, calls reload without touching
+        any skill files, and verifies the snapshot survives.
         """
         from agent.prompt_builder import _skills_prompt_snapshot_path
         from agent.skill_commands import reload_skills
@@ -155,6 +155,34 @@ class TestReloadSkillsHelper:
         reload_skills()
 
         assert snapshot.exists(), (
-            "prompt cache snapshot should be preserved — skills don't live "
-            "in the system prompt so there's no reason to invalidate it"
+            "prompt cache snapshot should be preserved when no skills "
+            "changed — clearing it would waste a cold-path rescan"
+        )
+
+    def test_clears_snapshot_when_skills_added(self, hermes_home):
+        """reload_skills clears the prompt-cache snapshot when skills change.
+
+        When a new skill is detected, the system-prompt cache must be
+        invalidated so the ``<available_skills>`` block in future sessions
+        reflects the new catalog.
+        """
+        from agent.prompt_builder import _skills_prompt_snapshot_path
+        from agent.skill_commands import reload_skills, get_skill_commands
+
+        # Prime the cache
+        get_skill_commands()
+
+        # Create a snapshot that should be cleared
+        snapshot = _skills_prompt_snapshot_path()
+        snapshot.parent.mkdir(parents=True, exist_ok=True)
+        snapshot.write_text("{}")
+        assert snapshot.exists()
+
+        # Add a new skill and reload
+        _write_skill(hermes_home / "skills", "new-skill", "brand new")
+        reload_skills()
+
+        assert not snapshot.exists(), (
+            "prompt cache snapshot should be cleared when a new skill is "
+            "added so the <available_skills> block reflects the change"
         )

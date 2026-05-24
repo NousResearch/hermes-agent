@@ -1238,6 +1238,112 @@ logger = logging.getLogger(__name__)
 # between the guard check and actual agent creation.
 _AGENT_PENDING_SENTINEL = object()
 
+_GATEWAY_TRUSTED_MEDIA_TOOL_NAMES = frozenset({
+    # Tools whose current-turn result is itself an attachment directive.
+    # Other tools can mention MEDIA: as logs, history, code, or evidence and
+    # must not trigger native uploads just because the string appears there.
+    "text_to_speech",
+    "image_generate",
+    "video_generate",
+})
+
+_GATEWAY_TOOL_MEDIA_RE = re.compile(
+    r'MEDIA:\s*((?:/|~\/)\S+\.(?:png|jpe?g|gif|webp|'
+    r'mp4|mov|avi|mkv|webm|ogg|opus|mp3|wav|m4a|'
+    r'flac|epub|pdf|zip|rar|7z|docx?|xlsx?|pptx?|'
+    r'txt|csv|apk|ipa))',
+    re.IGNORECASE,
+)
+
+
+def _mapping_get(value: Any, key: str, default: Any = None) -> Any:
+    """Read *key* from either a dict-like object or SDK object."""
+    if isinstance(value, dict):
+        return value.get(key, default)
+    return getattr(value, key, default)
+
+
+def _gateway_tool_call_name(tool_call: Any) -> str:
+    """Return a normalized tool/function name from an assistant tool_call."""
+    function = _mapping_get(tool_call, "function", {}) or {}
+    name = _mapping_get(function, "name") or _mapping_get(tool_call, "name")
+    return str(name or "").strip()
+
+
+def _gateway_tool_result_name(msg: dict, tool_call_names: dict) -> str:
+    """Resolve the producing tool name for a tool/function result message."""
+    for key in ("name", "tool_name"):
+        value = msg.get(key)
+        if value:
+            return str(value).strip()
+    metadata = msg.get("metadata")
+    if isinstance(metadata, dict):
+        for key in ("name", "tool_name"):
+            value = metadata.get(key)
+            if value:
+                return str(value).strip()
+    tool_call_id = msg.get("tool_call_id")
+    if tool_call_id is not None:
+        return str(tool_call_names.get(tool_call_id, "")).strip()
+    return ""
+
+
+def _extract_trusted_tool_media_tags(
+    result_messages: list,
+    *,
+    history_media_paths: set | None = None,
+) -> tuple[list[str], bool]:
+    """Extract MEDIA tags only from trusted current media tool results.
+
+    Generic tool output is plain evidence text.  In particular, session_search,
+    terminal, log readers, and file readers may include historical ``MEDIA:``
+    strings; those must never be promoted into current native attachments.
+    """
+    history_media_paths = {
+        os.path.expanduser(str(path)) for path in (history_media_paths or set())
+    }
+    tool_call_names: dict[str, str] = {}
+    media_tags: list[str] = []
+    has_voice_directive = False
+
+    for msg in result_messages or []:
+        if not isinstance(msg, dict):
+            continue
+        if msg.get("role") == "assistant":
+            for tool_call in msg.get("tool_calls") or []:
+                tool_call_id = _mapping_get(tool_call, "id")
+                tool_name = _gateway_tool_call_name(tool_call)
+                if tool_call_id and tool_name:
+                    tool_call_names[str(tool_call_id)] = tool_name
+            continue
+
+        if msg.get("role") not in {"tool", "function"}:
+            continue
+        tool_name = _gateway_tool_result_name(msg, tool_call_names)
+        if tool_name not in _GATEWAY_TRUSTED_MEDIA_TOOL_NAMES:
+            continue
+
+        content = msg.get("content", "")
+        if not isinstance(content, str):
+            try:
+                content = json.dumps(content, ensure_ascii=False)
+            except Exception:
+                content = str(content)
+        if "media:" not in content.lower():
+            continue
+
+        found_for_message = False
+        for match in _GATEWAY_TOOL_MEDIA_RE.finditer(content):
+            raw_path = match.group(1).strip().rstrip('",}')
+            path = os.path.expanduser(raw_path)
+            if raw_path and path not in history_media_paths:
+                media_tags.append(f"MEDIA:{raw_path}")
+                found_for_message = True
+        if found_for_message and "[[audio_as_voice]]" in content:
+            has_voice_directive = True
+
+    return media_tags, has_voice_directive
+
 
 def _resolve_runtime_agent_kwargs() -> dict:
     """Resolve provider credentials for gateway-created AIAgent instances.
@@ -16929,18 +17035,16 @@ class GatewayRunner:
             for _hm in agent_history:
                 if _hm.get("role") in {"tool", "function"}:
                     _hc = _hm.get("content", "")
-                    if "MEDIA:" in _hc:
-                        _TOOL_MEDIA_RE = re.compile(
-                            r'MEDIA:((?:/|~\/)\S+\.(?:png|jpe?g|gif|webp|'
-                            r'mp4|mov|avi|mkv|webm|ogg|opus|mp3|wav|m4a|'
-                            r'flac|epub|pdf|zip|rar|7z|docx?|xlsx?|pptx?|'
-                            r'txt|csv|apk|ipa))',
-                            re.IGNORECASE
-                        )
-                        for _match in _TOOL_MEDIA_RE.finditer(_hc):
+                    if not isinstance(_hc, str):
+                        try:
+                            _hc = json.dumps(_hc, ensure_ascii=False)
+                        except Exception:
+                            _hc = str(_hc)
+                    if "media:" in _hc.lower():
+                        for _match in _GATEWAY_TOOL_MEDIA_RE.finditer(_hc):
                             _p = _match.group(1).strip().rstrip('",}')
                             if _p:
-                                _history_media_paths.add(_p)
+                                _history_media_paths.add(os.path.expanduser(_p))
             
             # Register per-session gateway approval callback so dangerous
             # command approval blocks the agent thread (mirrors CLI input()).
@@ -17216,48 +17320,38 @@ class GatewayRunner:
                     "context_length": _context_length,
                 }
             
-            # Scan tool results for MEDIA:<path> tags that need to be delivered
-            # as native audio/file attachments.  The TTS tool embeds MEDIA: tags
-            # in its JSON response, but the model's final text reply usually
-            # doesn't include them.  We collect unique tags from tool results and
-            # append any that aren't already present in the final response, so the
-            # adapter's extract_media() can find and deliver the files exactly once.
+            # Scan trusted media tool results for MEDIA:<path> tags that need
+            # to be delivered as native attachments. Generic tool output is not
+            # a control channel: session_search, terminal, logs, and file reads
+            # may contain historical MEDIA strings and must not re-send them.
             #
             # Uses path-based deduplication against _history_media_paths (collected
             # before run_conversation) instead of index slicing. This is safe even
             # when context compression shrinks the message list. (Fixes #160)
-            if "MEDIA:" not in final_response:
-                media_tags = []
-                has_voice_directive = False
-                for msg in result.get("messages", []):
-                    if msg.get("role") in {"tool", "function"}:
-                        content = msg.get("content", "")
-                        if "MEDIA:" in content:
-                            _TOOL_MEDIA_RE = re.compile(
-                                r'MEDIA:((?:/|~\/)\S+\.(?:png|jpe?g|gif|webp|'
-                                r'mp4|mov|avi|mkv|webm|ogg|opus|mp3|wav|m4a|'
-                                r'flac|epub|pdf|zip|rar|7z|docx?|xlsx?|pptx?|'
-                                r'txt|csv|apk|ipa))',
-                                re.IGNORECASE
-                            )
-                            for match in _TOOL_MEDIA_RE.finditer(content):
-                                path = match.group(1).strip().rstrip('",}')
-                                if path and path not in _history_media_paths:
-                                    media_tags.append(f"MEDIA:{path}")
-                            if "[[audio_as_voice]]" in content:
-                                has_voice_directive = True
-                
-                if media_tags:
-                    seen = set()
-                    unique_tags = []
-                    for tag in media_tags:
-                        if tag not in seen:
-                            seen.add(tag)
-                            unique_tags.append(tag)
+            media_tags, has_voice_directive = _extract_trusted_tool_media_tags(
+                result.get("messages", []),
+                history_media_paths=_history_media_paths,
+            )
+            if media_tags:
+                try:
+                    existing_response_paths = {
+                        path for path, _is_voice in BasePlatformAdapter.extract_media(final_response)[0]
+                    }
+                except Exception:
+                    existing_response_paths = set()
+                seen_paths = set()
+                unique_tags = []
+                for tag in media_tags:
+                    tag_path = os.path.expanduser(tag[len("MEDIA:"):])
+                    if tag_path in seen_paths or tag_path in existing_response_paths:
+                        continue
+                    seen_paths.add(tag_path)
+                    unique_tags.append(tag)
+                if unique_tags:
                     if has_voice_directive:
                         unique_tags.insert(0, "[[audio_as_voice]]")
                     final_response = final_response + "\n" + "\n".join(unique_tags)
-            
+
             # Sync session_id: the agent may have created a new session during
             # mid-run context compression (_compress_context splits sessions).
             # If so, update the session store entry so the NEXT message loads

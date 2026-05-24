@@ -10,6 +10,8 @@ times per reply. (Regression test for #160)
 import pytest
 import re
 
+from gateway.run import _extract_trusted_tool_media_tags
+
 
 def extract_media_tags_fixed(result_messages, history_len):
     """
@@ -67,6 +69,113 @@ def extract_media_tags_broken(result_messages):
 
 class TestMediaExtraction:
     """Tests for MEDIA tag extraction from tool results."""
+
+    def test_session_search_media_tags_are_not_extracted_from_current_turn(self, tmp_path):
+        """Historical MEDIA strings returned by session_search are evidence, not attachments."""
+        old_image = tmp_path / "old.png"
+        old_image.write_bytes(b"fake png bytes")
+        messages = [
+            {
+                "role": "assistant",
+                "tool_calls": [
+                    {"id": "call_search", "function": {"name": "session_search"}},
+                ],
+            },
+            {
+                "role": "tool",
+                "tool_call_id": "call_search",
+                "content": f"Past transcript said MEDIA:{old_image}",
+            },
+        ]
+
+        tags, voice_directive = _extract_trusted_tool_media_tags(
+            messages,
+            history_media_paths=set(),
+        )
+
+        assert tags == []
+        assert voice_directive is False
+
+    def test_terminal_media_tags_are_not_extracted_from_current_turn(self, tmp_path):
+        """Command output can print MEDIA-looking text without requesting upload."""
+        artifact = tmp_path / "artifact.png"
+        artifact.write_bytes(b"fake png bytes")
+        messages = [
+            {
+                "role": "assistant",
+                "tool_calls": [
+                    {"id": "call_terminal", "function": {"name": "terminal"}},
+                ],
+            },
+            {
+                "role": "tool",
+                "tool_call_id": "call_terminal",
+                "content": f"stdout: MEDIA:{artifact}",
+            },
+        ]
+
+        tags, voice_directive = _extract_trusted_tool_media_tags(
+            messages,
+            history_media_paths=set(),
+        )
+
+        assert tags == []
+        assert voice_directive is False
+
+    def test_text_to_speech_media_tags_are_extracted_from_current_turn(self, tmp_path):
+        """Trusted media tools still auto-append generated media for delivery."""
+        audio = tmp_path / "speech.ogg"
+        audio.write_bytes(b"fake audio bytes")
+        messages = [
+            {
+                "role": "assistant",
+                "tool_calls": [
+                    {"id": "call_tts", "function": {"name": "text_to_speech"}},
+                ],
+            },
+            {
+                "role": "tool",
+                "tool_call_id": "call_tts",
+                "content": f'{{"media_tag": "[[audio_as_voice]]\\nMEDIA:{audio}"}}',
+            },
+        ]
+
+        tags, voice_directive = _extract_trusted_tool_media_tags(
+            messages,
+            history_media_paths=set(),
+        )
+
+        assert tags == [f"MEDIA:{audio}"]
+        assert voice_directive is True
+
+    def test_history_media_paths_are_compared_after_expanding_user(self, tmp_path, monkeypatch):
+        """A trusted tool must not resend a ~/ path already present as an absolute history path."""
+        home = tmp_path / "home"
+        home.mkdir()
+        monkeypatch.setenv("HOME", str(home))
+        audio = home / "speech.ogg"
+        audio.write_bytes(b"fake audio bytes")
+        messages = [
+            {
+                "role": "assistant",
+                "tool_calls": [
+                    {"id": "call_tts", "function": {"name": "text_to_speech"}},
+                ],
+            },
+            {
+                "role": "tool",
+                "tool_call_id": "call_tts",
+                "content": "MEDIA:~/speech.ogg",
+            },
+        ]
+
+        tags, voice_directive = _extract_trusted_tool_media_tags(
+            messages,
+            history_media_paths={str(audio)},
+        )
+
+        assert tags == []
+        assert voice_directive is False
     
     def test_media_tags_not_extracted_from_history(self):
         """MEDIA tags from previous turns should NOT be extracted again."""

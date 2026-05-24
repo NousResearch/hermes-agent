@@ -329,6 +329,30 @@ class TestExtractMedia:
         assert media == [("/tmp/Jane Doe/speech.flac", False)]
         assert cleaned == ""
 
+    def test_media_tag_in_inline_code_is_not_an_attachment(self):
+        content = "历史记录里出现了 `MEDIA:/tmp/old.png`，不要发送它。"
+        media, cleaned = BasePlatformAdapter.extract_media(content)
+        assert media == []
+        assert cleaned == content
+
+    def test_media_tag_in_fenced_code_is_not_an_attachment(self):
+        content = "```text\nMEDIA:/tmp/old.png\n```"
+        media, cleaned = BasePlatformAdapter.extract_media(content)
+        assert media == []
+        assert cleaned == content
+
+    def test_media_tag_in_quote_is_not_an_attachment(self):
+        content = "> MEDIA:/tmp/old.png"
+        media, cleaned = BasePlatformAdapter.extract_media(content)
+        assert media == []
+        assert cleaned == content
+
+    def test_media_tag_mid_sentence_is_not_an_attachment(self):
+        content = "session_search returned MEDIA:/tmp/old.png yesterday"
+        media, cleaned = BasePlatformAdapter.extract_media(content)
+        assert media == []
+        assert cleaned == content
+
     def test_as_document_directive_stripped_from_cleaned_text(self):
         """[[as_document]] is a routing directive — strip it from
         user-visible text just like [[audio_as_voice]]. Callers detect the

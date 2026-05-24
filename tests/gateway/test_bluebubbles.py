@@ -698,3 +698,148 @@ class TestBlueBubblesWebhookRegistration:
             adapter._unregister_webhook()
         )
         assert ok is False
+
+
+class TestBlueBubblesTypingIndicator:
+    """Phantom-typing regression coverage (#31534).
+
+    `_keep_typing` in base.py refreshes typing every ~2s; if its last
+    `send_typing` POST is still in flight when the agent finishes, BlueBubbles'
+    server can forward the typing-start to IMCore *after* our typing-cancel
+    DELETE, leaving the bubble lingering for ~10s. The adapter must serialize
+    the two requests on the wire and re-issue the cancel after IMCore settles.
+    """
+
+    @staticmethod
+    def _wire_adapter(monkeypatch, calls):
+        adapter = _make_adapter(monkeypatch)
+        adapter._private_api_enabled = True
+        adapter._helper_connected = True
+
+        async def fake_resolve(chat_id):
+            return f"iMessage;-;{chat_id}"
+        monkeypatch.setattr(adapter, "_resolve_chat_guid", fake_resolve)
+
+        class _Resp:
+            def raise_for_status(self):
+                pass
+
+        class _MockClient:
+            async def post(self, url, **kwargs):
+                calls.append(("POST", url))
+                return _Resp()
+
+            async def delete(self, url, **kwargs):
+                calls.append(("DELETE", url))
+                return _Resp()
+
+        adapter.client = _MockClient()
+        return adapter
+
+    @staticmethod
+    def _patch_settle_sleep(monkeypatch):
+        """Bypass the 0.5s settle delay in stop_typing without touching the
+        global asyncio.sleep (which would recurse if tests also await it)."""
+        import asyncio as _asyncio
+        sleeps = []
+        real_sleep = _asyncio.sleep
+
+        async def fast_sleep(seconds):
+            sleeps.append(seconds)
+            await real_sleep(0)
+
+        # asyncio is imported as a module attribute on the bluebubbles module;
+        # patching that attribute keeps the production code calling our fake
+        # while leaving the test's own _asyncio.sleep untouched.
+        import gateway.platforms.bluebubbles as bb
+        fake_module = type("FakeAsyncio", (), {"sleep": fast_sleep,
+                                                "Lock": _asyncio.Lock,
+                                                "CancelledError": _asyncio.CancelledError,
+                                                "Event": _asyncio.Event,
+                                                "create_task": _asyncio.create_task})
+        # Only override .sleep so the rest of asyncio (Lock, CancelledError,
+        # Event, create_task) keeps resolving to the real module — that's
+        # what the production code already uses for its lock setup.
+        monkeypatch.setattr(bb.asyncio, "sleep", fast_sleep)
+        return sleeps
+
+    @pytest.mark.asyncio
+    async def test_stop_typing_issues_two_deletes_for_imcore_settle(
+        self, monkeypatch
+    ):
+        calls = []
+        adapter = self._wire_adapter(monkeypatch, calls)
+        sleeps = self._patch_settle_sleep(monkeypatch)
+
+        await adapter.stop_typing("user@example.com")
+
+        delete_count = sum(1 for verb, _ in calls if verb == "DELETE")
+        assert delete_count == 2, (
+            f"Expected two DELETEs (immediate + post-settle); got {calls}"
+        )
+        assert 0.5 in sleeps, (
+            "Settle delay between the two DELETEs must be ~0.5s"
+        )
+
+    @pytest.mark.asyncio
+    async def test_send_and_stop_typing_serialized_via_lock(self, monkeypatch):
+        """An in-flight send_typing POST must complete on the wire before the
+        cancel DELETE goes out — otherwise HTTP/1.1 keepalive can reorder them
+        and BlueBubbles forwards the stale start to IMCore after the cancel."""
+        import asyncio as _asyncio
+        calls = []
+        adapter = self._wire_adapter(monkeypatch, calls)
+        self._patch_settle_sleep(monkeypatch)
+
+        # Block the send POST until we explicitly release it, so the stop
+        # call must wait on the lock — without serialization, the stop's
+        # DELETE would beat the still-pending POST.
+        post_release = _asyncio.Event()
+        original_client = adapter.client
+
+        class _SlowPostClient:
+            async def post(self_inner, url, **kwargs):
+                await post_release.wait()
+                return await original_client.post(url, **kwargs)
+
+            async def delete(self_inner, url, **kwargs):
+                return await original_client.delete(url, **kwargs)
+
+        adapter.client = _SlowPostClient()
+
+        send_task = _asyncio.create_task(adapter.send_typing("user@example.com"))
+        # Yield so send_task starts the POST coroutine and acquires the lock.
+        await _asyncio.sleep(0)
+        stop_task = _asyncio.create_task(adapter.stop_typing("user@example.com"))
+        await _asyncio.sleep(0)
+
+        # send_typing is parked inside slow_post; stop_typing should be
+        # blocked on the per-chat lock, so no DELETE has gone out yet.
+        assert all(verb != "DELETE" for verb, _ in calls), (
+            f"DELETE leaked while send_typing POST was still in flight: {calls}"
+        )
+
+        post_release.set()
+        await send_task
+        await stop_task
+
+        ordering = [verb for verb, _ in calls]
+        assert ordering[0] == "POST", (
+            f"send_typing POST must land on the wire first; got {ordering}"
+        )
+        # Two DELETEs from stop_typing's IMCore-settle pattern; both after POST.
+        assert ordering.count("DELETE") == 2
+        first_delete_idx = ordering.index("DELETE")
+        assert first_delete_idx > 0 and ordering[:first_delete_idx] == ["POST"]
+
+    @pytest.mark.asyncio
+    async def test_stop_typing_noop_when_private_api_disabled(self, monkeypatch):
+        calls = []
+        adapter = self._wire_adapter(monkeypatch, calls)
+        adapter._private_api_enabled = False
+
+        await adapter.stop_typing("user@example.com")
+
+        assert calls == [], (
+            "stop_typing must not issue any HTTP when private API is unavailable"
+        )

@@ -132,6 +132,9 @@ class BlueBubblesAdapter(BasePlatformAdapter):
         self._private_api_enabled: Optional[bool] = None
         self._helper_connected: bool = False
         self._guid_cache: OrderedDict[str, str] = OrderedDict()
+        # Serializes send_typing / stop_typing per chat so a stale typing-start
+        # POST can't reorder past a typing-cancel DELETE on the wire (#31534).
+        self._typing_locks: Dict[str, asyncio.Lock] = {}
 
     # ------------------------------------------------------------------
     # API helpers
@@ -613,28 +616,61 @@ class BlueBubblesAdapter(BasePlatformAdapter):
     async def send_typing(self, chat_id: str, metadata=None) -> None:
         if not self._private_api_enabled or not self._helper_connected or not self.client:
             return
-        try:
-            guid = await self._resolve_chat_guid(chat_id)
-            if guid:
-                encoded = quote(guid, safe="")
-                await self.client.post(
-                    self._api_url(f"/api/v1/chat/{encoded}/typing"), timeout=5
-                )
-        except Exception:
-            pass
+        lock = self._typing_locks.setdefault(chat_id, asyncio.Lock())
+        async with lock:
+            try:
+                guid = await self._resolve_chat_guid(chat_id)
+                if guid:
+                    encoded = quote(guid, safe="")
+                    await self.client.post(
+                        self._api_url(f"/api/v1/chat/{encoded}/typing"), timeout=5
+                    )
+            except Exception:
+                pass
 
     async def stop_typing(self, chat_id: str) -> None:
         if not self._private_api_enabled or not self._helper_connected or not self.client:
             return
-        try:
-            guid = await self._resolve_chat_guid(chat_id)
-            if guid:
-                encoded = quote(guid, safe="")
-                await self.client.delete(
-                    self._api_url(f"/api/v1/chat/{encoded}/typing"), timeout=5
-                )
-        except Exception:
-            pass
+        lock = self._typing_locks.setdefault(chat_id, asyncio.Lock())
+        # Acquire the lock so the cancel DELETE is serialized after any
+        # in-flight refresh POST. Without this, base.py's keep-typing loop
+        # can have a send_typing in-flight when the agent finishes; HTTP/1.1
+        # keepalive then makes the wire arrival order non-deterministic.
+        async with lock:
+            try:
+                guid = await self._resolve_chat_guid(chat_id)
+                if guid:
+                    encoded = quote(guid, safe="")
+                    await self.client.delete(
+                        self._api_url(f"/api/v1/chat/{encoded}/typing"), timeout=5
+                    )
+            except Exception:
+                pass
+            # IMCore's isIncomingTypingMessage / isCancelTypingMessage queue is
+            # not strictly ordered: a typing-start that BlueBubbles forwarded
+            # before the DELETE can still be surfaced to the iMessage UI after
+            # our cancel, leaving the bubble visible for ~10s until IMCore's
+            # own timeout clears it (#31534). Re-issue the cancel after a brief
+            # settle window so the stop is the last signal IMCore observes.
+            try:
+                await asyncio.sleep(0.5)
+            except asyncio.CancelledError:
+                return
+            if (
+                not self._private_api_enabled
+                or not self._helper_connected
+                or not self.client
+            ):
+                return
+            try:
+                guid = await self._resolve_chat_guid(chat_id)
+                if guid:
+                    encoded = quote(guid, safe="")
+                    await self.client.delete(
+                        self._api_url(f"/api/v1/chat/{encoded}/typing"), timeout=5
+                    )
+            except Exception:
+                pass
 
     # ------------------------------------------------------------------
     # Read receipts

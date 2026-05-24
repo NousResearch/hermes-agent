@@ -129,7 +129,7 @@ When provider resolution selects `anthropic`, Hermes uses:
 - the native Anthropic Messages API
 - `agent/anthropic_adapter.py` for translation
 
-Credential resolution for native Anthropic now prefers refreshable Claude Code credentials over copied env tokens when both are present. In practice that means:
+Credential resolution for native Anthropic supports API keys and OAuth-like Claude credentials. `ANTHROPIC_API_KEY` is the recommended path for normal third-party use; Claude/claude.ai OAuth and Claude Code credential reuse are policy-sensitive and should only be used when Anthropic explicitly permits the use case. When multiple Anthropic credentials exist, `hermes auth list anthropic` shows the selected credential; remove/suppress OAuth entries with `hermes auth remove anthropic <index-or-label>` before relying on API-key auth. Mechanically, Hermes handles those credential sources as follows:
 
 - Claude Code credential files are treated as the preferred source when they include refreshable auth
 - manual `ANTHROPIC_TOKEN` / `CLAUDE_CODE_OAUTH_TOKEN` values still work as explicit overrides

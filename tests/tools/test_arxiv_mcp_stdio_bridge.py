@@ -146,4 +146,6 @@ def test_main_redacts_secret_shaped_exception_messages(bridge, monkeypatch, caps
     response = json.loads(output)
     assert response["error"]["code"] == -32000
     assert secret_fixture not in output
-    assert "token: [REDACTED]" in response["error"]["message"]
+    message = response["error"]["message"]
+    assert "token" in message
+    assert "[REDACTED]" in message

@@ -127,6 +127,22 @@ def _ra():
     return run_agent
 
 
+def _emit_synthesized_final_delta(agent: Any, final_response: str) -> None:
+    """Stream final text synthesized outside the normal model delta path.
+
+    A few recovery paths assign ``final_response`` from already-available
+    text and then break out of the loop without another model stream event.
+    Gateway/SSE clients only see streamed deltas, so emit that synthesized
+    final answer before the loop closes.
+    """
+    if not final_response or not getattr(agent, "stream_delta_callback", None):
+        return
+    try:
+        agent.stream_delta_callback(final_response)
+    except Exception:
+        pass
+
+
 def _restore_or_build_system_prompt(agent, system_message, conversation_history):
     """Restore the cached system prompt from the session DB or build it fresh.
 
@@ -3470,6 +3486,7 @@ def run_conversation(
                         f"⚠️ Tool guardrail halted {decision.tool_name}: {decision.code}"
                     )
                     messages.append({"role": "assistant", "content": final_response})
+                    _emit_synthesized_final_delta(agent, final_response)
                     break
 
                 # Reset per-turn retry counters after successful tool
@@ -3576,6 +3593,7 @@ def run_conversation(
                         )
                         final_response = _recovered
                         agent._response_was_previewed = True
+                        _emit_synthesized_final_delta(agent, final_response)
                         break
 
                     # If the previous turn already delivered real content alongside
@@ -3602,6 +3620,7 @@ def run_conversation(
                         # fallback text as the final response and break.
                         final_response = agent._strip_think_blocks(fallback).strip()
                         agent._response_was_previewed = True
+                        _emit_synthesized_final_delta(agent, final_response)
                         break
 
                     # ── Post-tool-call empty response nudge ───────────

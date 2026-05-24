@@ -92,6 +92,75 @@ class TestStrictApiValidation:
         # Standard fields should remain
         assert tool_call["id"] == "call_123"
         assert tool_call["function"]["name"] == "terminal"
+        # Substantive assistant narration should be preserved.
+        assert assistant_msg["content"] == "Checking now."
+
+    @pytest.mark.parametrize("content", ["", "   \n\t"])
+    def test_empty_assistant_content_with_tool_calls_becomes_null(self, monkeypatch, content):
+        """Strict chat APIs should not receive empty text with assistant tool_calls."""
+        agent = _make_agent(monkeypatch, "openrouter")
+        agent.api_mode = "chat_completions"
+
+        messages = [
+            {"role": "user", "content": "hi"},
+            {
+                "role": "assistant",
+                "content": content,
+                "tool_calls": [
+                    {
+                        "id": "call_123",
+                        "call_id": "call_123",
+                        "response_item_id": "fc_123",
+                        "type": "function",
+                        "function": {"name": "terminal", "arguments": '{"command":"pwd"}'},
+                    }
+                ],
+            },
+        ]
+
+        kwargs = agent._build_api_kwargs(messages)
+
+        assert kwargs["messages"][1]["content"] is None
+        # The session history copy remains unchanged for Codex replay/fallback.
+        assert messages[1]["content"] == content
+
+    def test_missing_assistant_content_with_tool_calls_becomes_null(self, monkeypatch):
+        """Strict chat APIs should receive explicit null content for pure tool-call turns."""
+        agent = _make_agent(monkeypatch, "openrouter")
+        agent.api_mode = "chat_completions"
+
+        messages = [
+            {"role": "user", "content": "hi"},
+            {
+                "role": "assistant",
+                "tool_calls": [
+                    {
+                        "id": "call_123",
+                        "type": "function",
+                        "function": {"name": "terminal", "arguments": '{"command":"pwd"}'},
+                    }
+                ],
+            },
+        ]
+
+        kwargs = agent._build_api_kwargs(messages)
+
+        assert kwargs["messages"][1]["content"] is None
+        assert "content" not in messages[1]
+
+    def test_empty_assistant_content_without_tool_calls_stays_empty(self, monkeypatch):
+        """Only pure tool-call assistant turns need content normalization."""
+        agent = _make_agent(monkeypatch, "openrouter")
+        agent.api_mode = "chat_completions"
+
+        messages = [
+            {"role": "user", "content": "hi"},
+            {"role": "assistant", "content": ""},
+        ]
+
+        kwargs = agent._build_api_kwargs(messages)
+
+        assert kwargs["messages"][1]["content"] == ""
 
     def test_codex_preserves_fields_for_replay(self, monkeypatch):
         """Codex mode should preserve fields for Responses API replay."""

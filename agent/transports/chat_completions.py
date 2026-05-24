@@ -120,6 +120,9 @@ class ChatCompletionsTransport(ProviderTransport):
         - Codex Responses API fields: ``codex_reasoning_items`` /
           ``codex_message_items`` on the message, ``call_id`` /
           ``response_item_id`` on ``tool_calls`` entries.
+        - Empty assistant ``content`` on pure tool-call turns. Strict OpenAI-
+          compatible providers reject empty text blocks there; ``null`` is the
+          compatible Chat Completions representation.
         - ``tool_name`` on tool-result messages — written by
           ``make_tool_result_message()`` for the SQLite FTS index, but not
           part of the Chat Completions schema. Strict providers (Fireworks,
@@ -141,6 +144,14 @@ class ChatCompletionsTransport(ProviderTransport):
                 break
             tool_calls = msg.get("tool_calls")
             if isinstance(tool_calls, list):
+                content = msg.get("content")
+                if (
+                    msg.get("role") == "assistant"
+                    and tool_calls
+                    and (content is None or (isinstance(content, str) and not content.strip()))
+                ):
+                    needs_sanitize = True
+                    break
                 for tc in tool_calls:
                     if isinstance(tc, dict) and (
                         "call_id" in tc or "response_item_id" in tc
@@ -162,6 +173,13 @@ class ChatCompletionsTransport(ProviderTransport):
             msg.pop("tool_name", None)
             tool_calls = msg.get("tool_calls")
             if isinstance(tool_calls, list):
+                content = msg.get("content")
+                if (
+                    msg.get("role") == "assistant"
+                    and tool_calls
+                    and (content is None or (isinstance(content, str) and not content.strip()))
+                ):
+                    msg["content"] = None
                 for tc in tool_calls:
                     if isinstance(tc, dict):
                         tc.pop("call_id", None)

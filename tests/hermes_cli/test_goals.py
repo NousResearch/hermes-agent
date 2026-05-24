@@ -738,3 +738,123 @@ class TestStatusLineSubgoalCount:
         mgr.add_subgoal("b")
         line = mgr.status_line()
         assert "2 subgoals" in line
+
+
+# ──────────────────────────────────────────────────────────────────────
+# apply_continuation_hooks — pre_goal_continuation plugin veto
+# ──────────────────────────────────────────────────────────────────────
+
+
+class TestApplyContinuationHooks:
+    """Cover the ``pre_goal_continuation`` veto path. We patch
+    ``hermes_cli.plugins.invoke_hook`` directly so the test doesn't have
+    to spin up the full plugin manager."""
+
+    def _decision(self) -> dict:
+        return {
+            "status": "active",
+            "should_continue": True,
+            "continuation_prompt": "keep going",
+            "verdict": "continue",
+            "reason": "judge says continue",
+            "message": "",
+        }
+
+    def test_no_plugins_proceeds(self, hermes_home, monkeypatch):
+        from hermes_cli.goals import GoalManager, apply_continuation_hooks
+
+        mgr = GoalManager(session_id="ach-none")
+        mgr.set("ship it")
+
+        monkeypatch.setattr(
+            "hermes_cli.plugins.invoke_hook", lambda *_a, **_kw: []
+        )
+        proceed = apply_continuation_hooks(
+            session_id="ach-none",
+            goal_manager=mgr,
+            decision=self._decision(),
+            last_response="...",
+        )
+        assert proceed is True
+        assert mgr.state and mgr.state.status == "active"
+
+    def test_allow_proceeds(self, hermes_home, monkeypatch):
+        from hermes_cli.goals import GoalManager, apply_continuation_hooks
+
+        mgr = GoalManager(session_id="ach-allow")
+        mgr.set("ship it")
+
+        monkeypatch.setattr(
+            "hermes_cli.plugins.invoke_hook",
+            lambda *_a, **_kw: [{"action": "allow"}, None],
+        )
+        proceed = apply_continuation_hooks(
+            session_id="ach-allow",
+            goal_manager=mgr,
+            decision=self._decision(),
+            last_response="...",
+        )
+        assert proceed is True
+        assert mgr.state and mgr.state.status == "active"
+
+    def test_pause_action_pauses_goal_and_skips_continuation(self, hermes_home, monkeypatch):
+        from hermes_cli.goals import GoalManager, apply_continuation_hooks
+
+        mgr = GoalManager(session_id="ach-pause")
+        mgr.set("ship it")
+
+        monkeypatch.setattr(
+            "hermes_cli.plugins.invoke_hook",
+            lambda *_a, **_kw: [{"action": "pause", "reason": "rate limit"}],
+        )
+        proceed = apply_continuation_hooks(
+            session_id="ach-pause",
+            goal_manager=mgr,
+            decision=self._decision(),
+            last_response="...",
+        )
+        assert proceed is False
+        assert mgr.state is not None
+        assert mgr.state.status == "paused"
+        assert mgr.state.paused_reason == "rate limit"
+
+    def test_first_pause_wins(self, hermes_home, monkeypatch):
+        from hermes_cli.goals import GoalManager, apply_continuation_hooks
+
+        mgr = GoalManager(session_id="ach-firstwin")
+        mgr.set("ship it")
+
+        monkeypatch.setattr(
+            "hermes_cli.plugins.invoke_hook",
+            lambda *_a, **_kw: [
+                {"action": "pause", "reason": "first"},
+                {"action": "pause", "reason": "second"},
+            ],
+        )
+        proceed = apply_continuation_hooks(
+            session_id="ach-firstwin",
+            goal_manager=mgr,
+            decision=self._decision(),
+            last_response="...",
+        )
+        assert proceed is False
+        assert mgr.state.paused_reason == "first"
+
+    def test_hook_exception_is_fail_open(self, hermes_home, monkeypatch):
+        from hermes_cli.goals import GoalManager, apply_continuation_hooks
+
+        mgr = GoalManager(session_id="ach-raise")
+        mgr.set("ship it")
+
+        def _boom(*_a, **_kw):
+            raise RuntimeError("plugin manager exploded")
+
+        monkeypatch.setattr("hermes_cli.plugins.invoke_hook", _boom)
+        proceed = apply_continuation_hooks(
+            session_id="ach-raise",
+            goal_manager=mgr,
+            decision=self._decision(),
+            last_response="...",
+        )
+        assert proceed is True
+        assert mgr.state.status == "active"

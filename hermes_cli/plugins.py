@@ -165,6 +165,18 @@ VALID_HOOKS: Set[str] = {
     #   choice: "once" | "session" | "always" | "deny" | "timeout"
     "pre_approval_request",
     "post_approval_response",
+    # Goal continuation hook. Fired AFTER GoalManager.evaluate_after_turn
+    # has voted ``should_continue=True`` but BEFORE the continuation
+    # prompt is enqueued back into ``run_conversation``. Plugins may
+    # return a dict to influence flow:
+    #   {"action": "pause",  "reason": "..."} -> pause goal, skip tick
+    #   {"action": "allow"}  /  None           -> proceed normally
+    # First plugin returning ``{"action": "pause"}`` wins; remaining
+    # callbacks still run for their observer side-effects but their
+    # action verbs are ignored. Kwargs:
+    #   session_id: str, goal_manager: GoalManager, decision: dict,
+    #   last_response: str
+    "pre_goal_continuation",
 }
 
 ENTRY_POINTS_GROUP = "hermes_agent.plugins"

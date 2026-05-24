@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-import hashlib
-import json
 from copy import deepcopy
 from typing import Any, Mapping
 
@@ -9,6 +7,13 @@ from agent.memory_human_approval_token_review_gate import (
     explain_human_approval_token_review_outcome,
     recommend_human_approval_token_review_action,
     validate_human_approval_token_review_outcome,
+)
+from agent.memory_read_only_candidate_utils import (
+    build_stable_digest,
+    deep_copy_mapping,
+    summarize_candidates,
+    validate_forbidden_true_keys_false_or_absent,
+    validate_policy_flags,
 )
 
 
@@ -211,12 +216,8 @@ def validate_human_approval_token_issuance_plan(plan: Mapping[str, Any]) -> dict
         errors.append("source_pattern_ids_must_match_source_review_outcome_snapshot")
     if plan.get("source_fact_ids") != list(source_snapshot.get("source_fact_ids", []) or []):
         errors.append("source_fact_ids_must_match_source_review_outcome_snapshot")
-    for forbidden_key in _FORBIDDEN_TRUE_KEYS:
-        if plan.get(forbidden_key) is True:
-            errors.append(f"{forbidden_key}_must_be_false_or_absent")
-    for key, expected in MEMORY_HUMAN_APPROVAL_TOKEN_ISSUANCE_PLAN_POLICY.items():
-        if policy.get(key) is not expected:
-            errors.append(f"policy_{key}_must_be_{str(expected).lower()}")
+    errors.extend(validate_forbidden_true_keys_false_or_absent(plan, _FORBIDDEN_TRUE_KEYS))
+    errors.extend(validate_policy_flags(policy, MEMORY_HUMAN_APPROVAL_TOKEN_ISSUANCE_PLAN_POLICY))
 
     return {"valid": not errors, "errors": _dedupe(errors)}
 
@@ -297,20 +298,13 @@ def recommend_human_approval_token_issuance_plan_action(plan: Mapping[str, Any])
 def summarize_human_approval_token_issuance_plans(
     plans: list[Mapping[str, Any]] | tuple[Mapping[str, Any], ...],
 ) -> dict[str, Any]:
-    by_block_type: dict[str, int] = {}
-    by_status: dict[str, int] = {}
-    by_lock_reason: dict[str, int] = {}
+    candidate_summary = summarize_candidates(plans, "plan_status")
+    lock_reason_summary = summarize_candidates(plans, "lock_reason")
     plan_required_count = 0
     locked_count = 0
     valid_count = 0
     invalid_count = 0
     for plan in plans:
-        block_type = str(plan.get("block_type"))
-        by_block_type[block_type] = by_block_type.get(block_type, 0) + 1
-        status = str(plan.get("plan_status"))
-        by_status[status] = by_status.get(status, 0) + 1
-        reason = str(plan.get("lock_reason"))
-        by_lock_reason[reason] = by_lock_reason.get(reason, 0) + 1
         if plan.get("plan_status") == MEMORY_HUMAN_APPROVAL_TOKEN_ISSUANCE_PLAN_REQUIRED:
             plan_required_count += 1
         if plan.get("plan_status") == MEMORY_HUMAN_APPROVAL_TOKEN_ISSUANCE_PLAN_LOCKED:
@@ -326,9 +320,9 @@ def summarize_human_approval_token_issuance_plans(
         "invalid_count": invalid_count,
         "plan_required_count": plan_required_count,
         "locked_count": locked_count,
-        "by_block_type": dict(sorted(by_block_type.items())),
-        "by_status": dict(sorted(by_status.items())),
-        "by_lock_reason": dict(sorted(by_lock_reason.items())),
+        "by_block_type": candidate_summary["by_block_type"],
+        "by_status": candidate_summary["by_status"],
+        "by_lock_reason": lock_reason_summary["by_status"],
         "policy": dict(MEMORY_HUMAN_APPROVAL_TOKEN_ISSUANCE_PLAN_POLICY),
     }
 
@@ -434,12 +428,11 @@ def _plan_id(plan: Mapping[str, Any]) -> str:
         "review_outcome_validation": plan.get("review_outcome_validation", {}),
         "policy": plan.get("policy", {}),
     }
-    payload = json.dumps(identity, sort_keys=True, separators=(",", ":"), default=str)
-    return f"memory-human-approval-token-issuance-plan:v0.1:{hashlib.sha256(payload.encode('utf-8')).hexdigest()[:16]}"
+    return build_stable_digest("memory-human-approval-token-issuance-plan:v0.1", identity)
 
 
 def _as_dict(value: Any) -> dict[str, Any]:
-    return deepcopy(dict(value)) if isinstance(value, Mapping) else {}
+    return deep_copy_mapping(value)
 
 
 def _dedupe(values: list[str]) -> list[str]:

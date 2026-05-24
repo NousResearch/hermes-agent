@@ -89,6 +89,15 @@ def test_approve_token_issuance_outcome_creates_manual_token_issuance_plan_requi
     assert plan["next_step_recommendation"]["writes_operation_ledger"] is False
 
 
+def test_valid_human_approval_token_issuance_plan_id_matches_v0_1_baseline():
+    plan = create_human_approval_token_issuance_plan(_review_outcome())
+
+    assert (
+        plan["plan_id"]
+        == "memory-human-approval-token-issuance-plan:v0.1:95dce5d20a600fdf"
+    )
+
+
 def test_request_changes_creates_locked_plan():
     plan = create_human_approval_token_issuance_plan(_review_outcome(outcome="request_changes"))
 

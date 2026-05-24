@@ -237,6 +237,29 @@ export function lineNav(s: string, p: number, dir: -1 | 1): null | number {
   return snapPos(s, Math.min(nextBreak + 1 + col, lineEnd))
 }
 
+/**
+ * Move cursor one visual row up or down, taking into account both hard newlines
+ * and soft-wrap boundaries at the given column width. Uses cursorLayout()
+ * to find the cursor's current visual row/col, then offsetFromPosition()
+ * to land on the same column in the adjacent row.
+ *
+ * Returns null when the cursor is already on the first visual row (up) or
+ * last visual row (down). Callers use that to fall through to history navigation.
+ */
+export function visualRowNav(s: string, p: number, dir: -1 | 1, cols: number): null | number {
+  const w = Math.max(1, cols)
+  const pos = snapPos(s, p)
+  const { line: curRow, column: curCol } = cursorLayout(s, pos, w)
+  const { line: lastRow } = cursorLayout(s, s.length, w)
+  const targetRow = curRow + dir
+
+  if (targetRow < 0 || targetRow > lastRow) {
+    return null
+  }
+
+  return snapPos(s, offsetFromPosition(s, targetRow, curCol, w))
+}
+
 export { offsetFromPosition }
 
 const ASCII_PRINTABLE_RE = /^[\x20-\x7e]+$/
@@ -1051,9 +1074,10 @@ export function TextInput({
       if (k.upArrow || k.downArrow) {
         flushKeyBurst()
 
-        const next = lineNav(vRef.current, curRef.current, k.upArrow ? -1 : 1)
+        const next = visualRowNav(vRef.current, curRef.current, k.upArrow ? -1 : 1, columns)
 
         if (next !== null) {
+          event.stopImmediatePropagation?.()
           moveCursor(next, k.shift)
 
           return

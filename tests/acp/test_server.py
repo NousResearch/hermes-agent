@@ -971,17 +971,14 @@ class TestSessionConfiguration:
             "hermes_cli.runtime_provider.resolve_runtime_provider",
             fake_resolve_runtime_provider,
         )
-        # Pin the parser so this test doesn't depend on live
-        # ``_KNOWN_PROVIDER_NAMES`` / ``_PROVIDER_ALIASES`` module state
-        # (sibling of the same hardening on
-        # ``test_model_switch_uses_requested_provider``).
+        # Pin ACP's resolver directly so the test doesn't depend on live
+        # ``hermes_cli.models`` module state or import aliases in this xdist
+        # worker. Mutating provider registries in sibling tests has flaked
+        # this class as ``custom`` instead of ``anthropic``.
         monkeypatch.setattr(
-            "hermes_cli.models.parse_model_input",
-            lambda raw, current: ("anthropic", "claude-sonnet-4-6"),
-        )
-        monkeypatch.setattr(
-            "hermes_cli.models.detect_provider_for_model",
-            lambda model, current: None,
+            HermesACPAgent,
+            "_resolve_model_selection",
+            staticmethod(lambda raw, current: ("anthropic", "claude-sonnet-4-6")),
         )
         manager = SessionManager(db=SessionDB(tmp_path / "state.db"))
 
@@ -1597,19 +1594,15 @@ class TestSlashCommands:
             "hermes_cli.runtime_provider.resolve_runtime_provider",
             fake_resolve_runtime_provider,
         )
-        # Pin the model-string parser independently of the live
-        # ``_KNOWN_PROVIDER_NAMES`` / ``_PROVIDER_ALIASES`` module state.
-        # Otherwise any test in the same xdist worker that mutates those
-        # globals (e.g. registers a custom provider that shadows
-        # ``anthropic``) flakes this one — observed once in CI as
-        # ``'custom' == 'anthropic'``.
+        # Pin ACP's resolver directly so this slash-command test is isolated
+        # from mutable ``hermes_cli.models`` provider-registry state and module
+        # aliasing in the xdist worker. Patching parse_model_input indirectly
+        # still allowed this to flake in CI as ``custom`` instead of
+        # ``anthropic``.
         monkeypatch.setattr(
-            "hermes_cli.models.parse_model_input",
-            lambda raw, current: ("anthropic", "claude-sonnet-4-6"),
-        )
-        monkeypatch.setattr(
-            "hermes_cli.models.detect_provider_for_model",
-            lambda model, current: None,
+            HermesACPAgent,
+            "_resolve_model_selection",
+            staticmethod(lambda raw, current: ("anthropic", "claude-sonnet-4-6")),
         )
         manager = SessionManager(db=SessionDB(tmp_path / "state.db"))
 

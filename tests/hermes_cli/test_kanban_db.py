@@ -2464,13 +2464,31 @@ def test_task_dict_survives_corrupt_created_at(tmp_path, monkeypatch):
 # ---------------------------------------------------------------------------
 
 
-def test_create_task_without_workspace_inherits_board_default_workdir(kanban_home, monkeypatch):
-    """Board with default_workdir → create_task without workspace_path → inherits default."""
+def test_create_task_scratch_without_workspace_ignores_board_default_workdir(kanban_home, monkeypatch):
+    """Scratch tasks must not inherit default_workdir; scratch paths are auto-deleted."""
     default_wd = "/home/user/project"
     kb.create_board("work-proj", default_workdir=default_wd)
 
     with kb.connect(board="work-proj") as conn:
-        tid = kb.create_task(conn, title="inherited", board="work-proj")
+        tid = kb.create_task(conn, title="scratch", board="work-proj")
+        t = kb.get_task(conn, tid)
+    assert t is not None
+    assert t.workspace_kind == "scratch"
+    assert t.workspace_path is None
+
+
+def test_create_task_dir_without_workspace_inherits_board_default_workdir(kanban_home, monkeypatch):
+    """Board default_workdir is for persistent dir/worktree workspaces, not scratch."""
+    default_wd = "/home/user/project"
+    kb.create_board("work-proj", default_workdir=default_wd)
+
+    with kb.connect(board="work-proj") as conn:
+        tid = kb.create_task(
+            conn,
+            title="inherited",
+            workspace_kind="dir",
+            board="work-proj",
+        )
         t = kb.get_task(conn, tid)
     assert t is not None
     assert t.workspace_path == default_wd
@@ -2498,6 +2516,68 @@ def test_create_task_with_explicit_workspace_ignores_board_default(kanban_home):
     assert t is not None
     assert t.workspace_path == explicit
     assert t.workspace_path != "/board/default"
+
+
+def test_complete_task_refuses_to_delete_scratch_workspace_outside_kanban_root(kanban_home, tmp_path):
+    """Misclassified scratch tasks must not rmtree a real project checkout."""
+    kb.create_board("guard-board")
+    project_dir = tmp_path / "Workspace-nep" / "real-repo"
+    project_dir.mkdir(parents=True)
+    marker = project_dir / "keep.txt"
+    marker.write_text("important", encoding="utf-8")
+
+    with kb.connect(board="guard-board") as conn:
+        tid = kb.create_task(
+            conn,
+            title="dangerous legacy row",
+            workspace_kind="scratch",
+            workspace_path=str(project_dir),
+            board="guard-board",
+        )
+        assert kb.complete_task(conn, tid, result="done") is True
+
+    assert project_dir.is_dir()
+    assert marker.read_text(encoding="utf-8") == "important"
+
+
+def test_complete_task_deletes_scratch_workspace_inside_kanban_root(kanban_home):
+    """Legitimate scratch workspaces under the Kanban workspaces root are cleaned."""
+    kb.create_board("cleanup-board")
+
+    with kb.connect(board="cleanup-board") as conn:
+        tid = kb.create_task(conn, title="scratch", board="cleanup-board")
+        task = kb.claim_task(conn, tid)
+        assert task is not None
+        workspace = kb.resolve_workspace(task, board="cleanup-board")
+        kb.set_workspace_path(conn, tid, str(workspace))
+        marker = workspace / "temp.txt"
+        marker.write_text("artifact", encoding="utf-8")
+
+        assert kb.complete_task(conn, tid, result="done") is True
+
+    assert not workspace.exists()
+
+
+def test_complete_task_refuses_to_delete_workspaces_root_itself(kanban_home):
+    """Even a scratch task must not delete the entire board workspaces root."""
+    kb.create_board("root-guard-board")
+    root = kb.workspaces_root("root-guard-board")
+    root.mkdir(parents=True, exist_ok=True)
+    marker = root / "keep-root.txt"
+    marker.write_text("important", encoding="utf-8")
+
+    with kb.connect(board="root-guard-board") as conn:
+        tid = kb.create_task(
+            conn,
+            title="malformed root path",
+            workspace_kind="scratch",
+            workspace_path=str(root),
+            board="root-guard-board",
+        )
+        assert kb.complete_task(conn, tid, result="done") is True
+
+    assert root.is_dir()
+    assert marker.read_text(encoding="utf-8") == "important"
 
 
 # ---------------------------------------------------------------------------

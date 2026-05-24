@@ -1518,8 +1518,11 @@ def create_task(
     now = int(time.time())
 
     # Resolve workspace_path from board-level default_workdir when the
-    # caller did not specify one explicitly.
-    if workspace_path is None:
+    # caller did not specify one explicitly.  Board defaults represent
+    # persistent project checkouts, so only persistent workspace kinds may
+    # inherit them.  Scratch workspaces are auto-deleted on completion and
+    # must stay under the per-board scratch root created by resolve_workspace.
+    if workspace_path is None and workspace_kind in {"dir", "worktree"}:
         board_slug = board if board else get_current_board()
         board_meta = read_board_metadata(board_slug)
         board_default = board_meta.get("default_workdir")
@@ -2904,13 +2907,50 @@ def complete_task(
 # Workspace / tmux cleanup
 # ---------------------------------------------------------------------------
 
+def _path_is_strict_child_of(path: Path, root: Path) -> bool:
+    """Return True when path is below root after best-effort resolution."""
+    try:
+        resolved_path = path.resolve()
+        resolved_root = root.resolve()
+        resolved_path.relative_to(resolved_root)
+        return resolved_path != resolved_root
+    except (OSError, ValueError):
+        return False
+
+
+def _is_safe_scratch_workspace_path(path: Path) -> bool:
+    """Return whether a scratch workspace path is safe to auto-delete.
+
+    Scratch cleanup is destructive by design, but only for Hermes-created
+    scratch directories.  Real project checkouts can appear in legacy/misfiled
+    rows (workspace_kind='scratch' + workspace_path=<repo>); those must never
+    be removed on task completion.
+    """
+    override = os.environ.get("HERMES_KANBAN_WORKSPACES_ROOT", "").strip()
+    if override and _path_is_strict_child_of(path, Path(override).expanduser()):
+        return True
+
+    root = kanban_home()
+    allowed_roots = [
+        root / "kanban" / "workspaces",
+    ]
+    boards_root = root / "kanban" / "boards"
+    if boards_root.is_dir():
+        allowed_roots.extend(
+            child / "workspaces" for child in boards_root.iterdir() if child.is_dir()
+        )
+
+    return any(_path_is_strict_child_of(path, allowed) for allowed in allowed_roots)
+
+
 def _cleanup_workspace(conn: sqlite3.Connection, task_id: str) -> None:
     """Remove a task's scratch workspace dir and kill its stale tmux session.
 
     Called from :func:`complete_task` after the DB transaction commits.
     Best-effort — any error is swallowed so cleanup never blocks task completion.
-    Only ``scratch`` workspaces are removed; ``worktree`` and ``dir`` workspaces
-    are intentionally preserved.
+    Only ``scratch`` workspaces under Hermes' Kanban scratch roots are removed;
+    ``worktree`` and ``dir`` workspaces are intentionally preserved, and legacy
+    misclassified scratch rows pointing at real project folders are refused.
     """
     try:
         row = conn.execute(
@@ -2924,10 +2964,13 @@ def _cleanup_workspace(conn: sqlite3.Connection, task_id: str) -> None:
         if kind != "scratch" or not path:
             return
         import shutil
-        wp = Path(path)
+        wp = Path(path).expanduser()
         if wp.is_dir():
-            shutil.rmtree(wp, ignore_errors=True)
-            _log.debug("Removed scratch workspace: %s", wp)
+            if not _is_safe_scratch_workspace_path(wp):
+                _log.warning("Refusing to remove scratch workspace outside Kanban scratch roots: %s", wp)
+            else:
+                shutil.rmtree(wp, ignore_errors=True)
+                _log.debug("Removed scratch workspace: %s", wp)
         # Also kill the tmux session for the worker that owned this task,
         # if the tmux session is now dead (worker process exited).
         _cleanup_worker_tmux(conn, task_id)

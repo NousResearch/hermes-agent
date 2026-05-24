@@ -59,6 +59,12 @@ def test_approve_real_proposal_creation_outcome_creates_valid_manual_plan():
     assert plan["next_step_recommendation"]["converts_to_real_proposal"] is False
 
 
+def test_valid_manual_plan_id_matches_v0_1_baseline():
+    plan = create_real_proposal_creation_plan(_outcome(), planner="plan-reviewer")
+
+    assert plan["plan_id"] == "memory-real-proposal-creation-plan:v0.1:ec09132b407b8a96"
+
+
 def test_request_changes_creates_invalid_plan_with_human_review_requested_changes():
     plan = create_real_proposal_creation_plan(_outcome(outcome="request_changes"))
 

@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-import hashlib
-import json
 from copy import deepcopy
 from typing import Any, Mapping
 
@@ -9,6 +7,12 @@ from agent.memory_human_review_outcome_gate import (
     explain_human_review_outcome_candidate,
     recommend_human_review_outcome_action,
     validate_human_review_outcome_candidate,
+)
+from agent.memory_read_only_candidate_utils import (
+    build_stable_digest,
+    deep_copy_mapping,
+    summarize_candidates,
+    validate_policy_flags,
 )
 
 
@@ -159,9 +163,7 @@ def validate_real_proposal_creation_plan(plan: Mapping[str, Any]) -> dict[str, A
     for forbidden_key in _FORBIDDEN_TRUE_KEYS:
         if plan.get(forbidden_key) is True:
             errors.append(f"{forbidden_key}_must_be_false_or_absent")
-    for key, expected in MEMORY_REAL_PROPOSAL_CREATION_PLAN_POLICY.items():
-        if policy.get(key) is not expected:
-            errors.append(f"policy_{key}_must_be_{str(expected).lower()}")
+    errors.extend(validate_policy_flags(policy, MEMORY_REAL_PROPOSAL_CREATION_PLAN_POLICY))
 
     return {"valid": not errors, "errors": _dedupe(errors)}
 
@@ -231,15 +233,10 @@ def recommend_real_proposal_creation_plan_action(plan: Mapping[str, Any]) -> dic
 def summarize_real_proposal_creation_plans(
     plans: list[Mapping[str, Any]] | tuple[Mapping[str, Any], ...],
 ) -> dict[str, Any]:
-    by_block_type: dict[str, int] = {}
-    by_status: dict[str, int] = {}
+    candidate_summary = summarize_candidates(plans, "plan_status")
     valid_count = 0
     invalid_count = 0
     for plan in plans:
-        block_type = str(plan.get("block_type"))
-        by_block_type[block_type] = by_block_type.get(block_type, 0) + 1
-        status = str(plan.get("plan_status"))
-        by_status[status] = by_status.get(status, 0) + 1
         validation = validate_real_proposal_creation_plan(plan)
         if validation["valid"]:
             valid_count += 1
@@ -249,8 +246,8 @@ def summarize_real_proposal_creation_plans(
         "total": len(plans),
         "valid_count": valid_count,
         "invalid_count": invalid_count,
-        "by_block_type": dict(sorted(by_block_type.items())),
-        "by_status": dict(sorted(by_status.items())),
+        "by_block_type": candidate_summary["by_block_type"],
+        "by_status": candidate_summary["by_status"],
         "policy": dict(MEMORY_REAL_PROPOSAL_CREATION_PLAN_POLICY),
     }
 
@@ -358,12 +355,11 @@ def _plan_id(plan: Mapping[str, Any]) -> str:
         "invalid_reason": plan.get("invalid_reason"),
         "policy": plan.get("policy", {}),
     }
-    payload = json.dumps(identity, sort_keys=True, separators=(",", ":"), default=str)
-    return f"memory-real-proposal-creation-plan:v0.1:{hashlib.sha256(payload.encode('utf-8')).hexdigest()[:16]}"
+    return build_stable_digest("memory-real-proposal-creation-plan:v0.1", identity)
 
 
 def _as_dict(value: Any) -> dict[str, Any]:
-    return deepcopy(dict(value)) if isinstance(value, Mapping) else {}
+    return deep_copy_mapping(value)
 
 
 def _dedupe(values: list[str]) -> list[str]:

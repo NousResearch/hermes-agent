@@ -31,12 +31,14 @@ import re
 import secrets
 import shlex
 import shutil
+import sqlite3
 import stat
 import subprocess
 import sys
 import tempfile
 import threading
 import time
+import uuid
 import urllib.error
 import urllib.parse
 import zipfile
@@ -63,6 +65,7 @@ from hermes_cli.config import (
     get_hermes_home,
     load_config,
     load_env,
+    get_env_value,
     read_raw_config,
     save_config,
     save_env_value,
@@ -603,6 +606,1003 @@ async def _token_auth_seam(request: Request, call_next):
     """
     from hermes_cli.dashboard_auth.token_auth import token_auth_middleware
     return await token_auth_middleware(request, call_next)
+
+
+# ---------------------------------------------------------------------------
+# Realtime voice dispatch support (dashboard-local, xAI token broker only)
+# ---------------------------------------------------------------------------
+_XAI_REALTIME_CLIENT_SECRETS_URL = "https://api.x.ai/v1/realtime/client_secrets"
+_VOICE_TERMINAL_STATUSES = {"completed", "failed", "cancelled", "stopped"}
+_VOICE_APPROVAL_CHOICES: Tuple[str, ...] = ("once", "session", "deny")
+_VOICE_RUN_STATUSES: Dict[str, Dict[str, Any]] = {}
+_VOICE_ACTIVE_RUN_AGENTS: Dict[str, Any] = {}
+_VOICE_ACTIVE_RUN_TASKS: Dict[str, asyncio.Task] = {}
+_VOICE_RUN_APPROVAL_SESSIONS: Dict[str, str] = {}
+_VOICE_STOP_REQUESTED: set[str] = set()
+_VOICE_DELEGATE_LEDGER_LOCK = threading.RLock()
+_VOICE_MAX_INPUT_CHARS = 65_536
+_VOICE_LEDGER_SENSITIVE_KEY_RE = re.compile(r"(^|[_-])(api[_-]?key|authorization|bearer|client[_-]?secret|credential|password|secret|token)([_-]|$)", re.I)
+_VOICE_LEDGER_SECRET_VALUE_RES = (
+    re.compile(r"(?i)(Bearer\s+)[A-Za-z0-9._\-]{12,}"),
+    re.compile(r"(?i)\b(sk|xai|ghp|github_pat|glpat|sk-or|sk-ant|AIza)[A-Za-z0-9._\-]{8,}\b"),
+    re.compile(r"(?i)((?:api[_-]?key|authorization|client[_-]?secret|password|secret|token)\s*[:=]\s*)[^\s,;\]})]+"),
+)
+
+
+class VoiceRunCreate(BaseModel):
+    input: Optional[str] = None
+    objective: Optional[str] = None
+    instructions: Optional[str] = None
+    session_id: Optional[str] = None
+
+
+class VoiceRunApproval(BaseModel):
+    choice: str
+    resolve_all: bool = False
+
+
+_VOICE_REALTIME_TOOLS: Tuple[Dict[str, Any], ...] = (
+    {
+        "type": "function",
+        "name": "start_delegate",
+        "description": "Start an isolated Hermes delegate run from a spoken user objective.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "input": {
+                    "type": "string",
+                    "description": "The user's complete objective for the Hermes delegate to execute.",
+                }
+            },
+            "required": ["input"],
+            "additionalProperties": False,
+        },
+    },
+    {
+        "type": "function",
+        "name": "get_delegate_status",
+        "description": "Read a Hermes voice delegate status, output, and recent event trail. Defaults to the active delegate when delegate_id is omitted.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "delegate_id": {
+                    "type": "string",
+                    "description": "Optional delegate ID to inspect when more than one delegate exists.",
+                }
+            },
+            "additionalProperties": False,
+        },
+    },
+    {
+        "type": "function",
+        "name": "stop_delegate",
+        "description": "Interrupt a Hermes voice delegate run. Defaults to the active delegate when delegate_id is omitted.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "delegate_id": {
+                    "type": "string",
+                    "description": "Optional delegate ID to stop when more than one delegate exists.",
+                }
+            },
+            "additionalProperties": False,
+        },
+    },
+)
+
+def _voice_realtime_config() -> Dict[str, Any]:
+    """Return voice.realtime config merged with safe defaults.
+
+    Older config files will not contain ``voice.realtime`` yet.  Keep the
+    feature disabled and default-shaped instead of raising, so upgraded
+    dashboards remain safe until the user explicitly enables realtime voice.
+    """
+    base = json.loads(json.dumps(DEFAULT_CONFIG.get("voice", {}).get("realtime", {})))
+    cfg = load_config()
+    voice = cfg.get("voice") if isinstance(cfg, dict) else None
+    realtime = voice.get("realtime") if isinstance(voice, dict) else None
+    if isinstance(realtime, dict):
+        for key, value in realtime.items():
+            if key in {"turn_detection", "audio", "dispatch"} and isinstance(value, dict):
+                nested = base.get(key)
+                if not isinstance(nested, dict):
+                    nested = {}
+                nested.update(value)
+                base[key] = nested
+            else:
+                base[key] = value
+    return base
+
+
+def _voice_realtime_ttl_seconds(cfg: Dict[str, Any]) -> int:
+    try:
+        raw = int(cfg.get("ephemeral_token_ttl_seconds", 300))
+    except (TypeError, ValueError):
+        raw = 300
+    return max(30, min(raw, 300))
+
+
+def _voice_realtime_payload(cfg: Dict[str, Any]) -> Dict[str, Any]:
+    turn_detection = cfg.get("turn_detection") if isinstance(cfg.get("turn_detection"), dict) else {}
+    audio = cfg.get("audio") if isinstance(cfg.get("audio"), dict) else {}
+    return {
+        "enabled": bool(cfg.get("enabled", False)),
+        "provider": str(cfg.get("provider") or "xai"),
+        "model": str(cfg.get("model") or "grok-voice-latest"),
+        "voice": str(cfg.get("voice") or "eve"),
+        "turn_detection": {
+            "type": str(turn_detection.get("type") or "server_vad"),
+            "threshold": float(turn_detection.get("threshold", 0.85)),
+            "silence_duration_ms": int(turn_detection.get("silence_duration_ms", 900)),
+            "prefix_padding_ms": int(turn_detection.get("prefix_padding_ms", 333)),
+        },
+        "audio": {
+            "input_rate": int(audio.get("input_rate", 24000)),
+            "output_rate": int(audio.get("output_rate", 24000)),
+        },
+        "tools": list(_VOICE_REALTIME_TOOLS),
+    }
+
+
+def _voice_normalize_profile(profile: Optional[str]) -> str:
+    """Canonical management-profile key used for in-memory isolation."""
+    return str(profile or "").strip()
+
+
+def _voice_status_matches_profile(status: Optional[Dict[str, Any]], profile: Optional[str]) -> bool:
+    if status is None:
+        return False
+    return _voice_normalize_profile(status.get("profile")) == _voice_normalize_profile(profile)
+
+
+def _mint_xai_realtime_client_secret(api_key: str, ttl_seconds: int) -> Dict[str, Any]:
+    """Blocking xAI client-secret request — always call via asyncio.to_thread."""
+    body = json.dumps({"expires_after": {"seconds": int(ttl_seconds)}}).encode("utf-8")
+    req = urllib.request.Request(
+        _XAI_REALTIME_CLIENT_SECRETS_URL,
+        data=body,
+        headers={
+            "Authorization": f"Bearer {api_key}",
+            "Content-Type": "application/json",
+        },
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            raw = resp.read().decode("utf-8")
+            return json.loads(raw) if raw else {}
+    except urllib.error.HTTPError as exc:
+        detail = "xAI rejected the realtime client secret request"
+        try:
+            upstream = exc.read().decode("utf-8", errors="ignore")[:300]
+            if upstream:
+                detail = f"{detail}: {upstream}"
+        except Exception:
+            pass
+        raise HTTPException(status_code=502, detail=detail) from exc
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(
+            status_code=502,
+            detail=f"Unable to reach xAI realtime token service: {type(exc).__name__}",
+        ) from exc
+
+
+@app.get("/api/voice/realtime/config")
+async def get_voice_realtime_config(profile: Optional[str] = None):
+    """Return sanitized realtime voice configuration for the dashboard client."""
+    with _profile_scope(profile):
+        return _voice_realtime_payload(_voice_realtime_config())
+
+
+@app.post("/api/voice/realtime/xai-client-secret")
+async def create_xai_realtime_client_secret(profile: Optional[str] = None):
+    """Mint a short-lived xAI realtime client secret for browser voice mode.
+
+    The dashboard session token middleware gates this endpoint.  The long-lived
+    ``XAI_API_KEY`` remains server-side; the browser receives only xAI's
+    ephemeral client secret. Config/env lookup is scoped to the selected
+    dashboard management profile. The upstream HTTP call is offloaded so the
+    FastAPI event loop is not blocked for the full request timeout.
+    """
+    # Resolve profile-scoped config/env under the scope lock, then release
+    # before awaiting the network call (``_profile_scope`` must not span await).
+    with _profile_scope(profile):
+        cfg = _voice_realtime_config()
+        if not bool(cfg.get("enabled", False)):
+            raise HTTPException(status_code=400, detail="Realtime voice dispatch is disabled")
+        if str(cfg.get("provider") or "xai").lower() != "xai":
+            raise HTTPException(status_code=400, detail="Only provider 'xai' is supported for realtime voice")
+
+        api_key = str(get_env_value("XAI_API_KEY") or "").strip()
+        if not api_key:
+            raise HTTPException(status_code=400, detail="XAI_API_KEY is required for realtime voice")
+        ttl_seconds = _voice_realtime_ttl_seconds(cfg)
+        payload = _voice_realtime_payload(cfg)
+
+    data = await asyncio.to_thread(_mint_xai_realtime_client_secret, api_key, ttl_seconds)
+
+    value = data.get("value") or data.get("client_secret") or data.get("secret")
+    expires_at = data.get("expires_at")
+    if not value or expires_at is None:
+        raise HTTPException(status_code=502, detail="xAI client secret response was missing required fields")
+
+    return {
+        "client_secret": {"value": value, "expires_at": expires_at},
+        "model": payload["model"],
+        "voice": payload["voice"],
+        "profile": _voice_normalize_profile(profile) or None,
+    }
+
+
+def _voice_active_run_count(profile: Optional[str] = None) -> int:
+    return sum(
+        1
+        for status in _VOICE_RUN_STATUSES.values()
+        if status.get("status") not in _VOICE_TERMINAL_STATUSES
+        and _voice_status_matches_profile(status, profile)
+    )
+
+
+def _voice_max_active_runs(cfg: Dict[str, Any]) -> int:
+    dispatch = cfg.get("dispatch") if isinstance(cfg.get("dispatch"), dict) else {}
+    raw_value = dispatch.get("max_active_delegates", cfg.get("max_active_runs", 1))
+    try:
+        raw = int(raw_value)
+    except (TypeError, ValueError):
+        raw = 1
+    return max(1, min(raw, 5))
+
+
+def _voice_trim_text(value: Any, max_chars: int = _VOICE_MAX_INPUT_CHARS) -> str:
+    text = str(value or "").strip()
+    return text[:max_chars]
+
+
+def _voice_run_input(body: VoiceRunCreate) -> str:
+    return _voice_trim_text(body.input if body.input is not None else body.objective)
+
+
+def _voice_delegate_db_path() -> Path:
+    return get_hermes_home() / "voice_dispatch.db"
+
+
+def _voice_delegate_connect() -> sqlite3.Connection:
+    path = _voice_delegate_db_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    conn = sqlite3.connect(str(path))
+    conn.row_factory = sqlite3.Row
+    try:
+        from hermes_state import apply_wal_with_fallback
+        apply_wal_with_fallback(conn, db_label="voice_dispatch.db")
+    except Exception:
+        try:
+            conn.execute("PRAGMA journal_mode=WAL")
+        except Exception:
+            pass
+    conn.execute("PRAGMA foreign_keys=ON")
+    _voice_delegate_init_db(conn)
+    return conn
+
+
+def _voice_delegate_init_db(conn: sqlite3.Connection) -> None:
+    conn.executescript(
+        """
+        CREATE TABLE IF NOT EXISTS voice_delegate_runs (
+            delegate_id TEXT PRIMARY KEY,
+            session_id TEXT NOT NULL,
+            status TEXT NOT NULL,
+            input_preview TEXT,
+            output TEXT,
+            error TEXT,
+            usage_json TEXT,
+            created_at REAL NOT NULL,
+            updated_at REAL NOT NULL,
+            last_event TEXT
+        );
+
+        CREATE TABLE IF NOT EXISTS voice_delegate_events (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            delegate_id TEXT NOT NULL,
+            event_name TEXT,
+            timestamp REAL NOT NULL,
+            event_json TEXT NOT NULL,
+            FOREIGN KEY (delegate_id) REFERENCES voice_delegate_runs(delegate_id) ON DELETE CASCADE
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_voice_delegate_runs_updated
+            ON voice_delegate_runs(updated_at DESC);
+        CREATE INDEX IF NOT EXISTS idx_voice_delegate_events_delegate
+            ON voice_delegate_events(delegate_id, id);
+        """
+    )
+    conn.commit()
+
+
+def _voice_redact_ledger_string(value: str) -> str:
+    redacted = value
+    for pattern in _VOICE_LEDGER_SECRET_VALUE_RES:
+        if pattern.pattern.startswith("(?i)(Bearer"):
+            redacted = pattern.sub(r"\1[redacted]", redacted)
+        elif "api[_-]?key" in pattern.pattern and "[:=]" in pattern.pattern:
+            redacted = pattern.sub(r"\1[redacted]", redacted)
+        else:
+            redacted = pattern.sub("[redacted]", redacted)
+    return redacted
+
+
+def _voice_sanitize_for_ledger(value: Any) -> Any:
+    if isinstance(value, dict):
+        sanitized: Dict[str, Any] = {}
+        for key, item in value.items():
+            key_text = str(key)
+            if _VOICE_LEDGER_SENSITIVE_KEY_RE.search(key_text):
+                sanitized[key_text] = "[redacted]"
+            else:
+                sanitized[key_text] = _voice_sanitize_for_ledger(item)
+        return sanitized
+    if isinstance(value, list):
+        return [_voice_sanitize_for_ledger(item) for item in value]
+    if isinstance(value, tuple):
+        return [_voice_sanitize_for_ledger(item) for item in value]
+    if isinstance(value, str):
+        return _voice_redact_ledger_string(value)
+    return value
+
+
+def _voice_approval_choices(raw_choices: Any = None) -> List[str]:
+    choices: List[str] = []
+    candidates = raw_choices if isinstance(raw_choices, list) else list(_VOICE_APPROVAL_CHOICES)
+    for choice in candidates:
+        normalized = str(choice or "").strip().lower()
+        if normalized in _VOICE_APPROVAL_CHOICES and normalized not in choices:
+            choices.append(normalized)
+    return choices or list(_VOICE_APPROVAL_CHOICES)
+
+
+def _voice_approval_request_from_status(status: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    if status.get("status") != "waiting_for_approval":
+        return None
+    approval_event: Optional[Dict[str, Any]] = None
+    for event in reversed(status.get("events") or []):
+        if isinstance(event, dict) and event.get("event") == "approval.request":
+            approval_event = event
+            break
+    if approval_event is None:
+        return None
+
+    details: Dict[str, Any] = {}
+    for key in (
+        "command",
+        "description",
+        "pattern_key",
+        "pattern_keys",
+        "tool",
+        "action",
+        "preview",
+        "timestamp",
+        "delegate_id",
+        "run_id",
+    ):
+        if key in approval_event and approval_event.get(key) is not None:
+            details[key] = approval_event.get(key)
+    details["choices"] = _voice_approval_choices(approval_event.get("choices"))
+    return _voice_sanitize_for_ledger(details)
+
+
+def _voice_status_payload(delegate_id: str, status: Dict[str, Any]) -> Dict[str, Any]:
+    payload = dict(status)
+    payload["object"] = "hermes.voice.delegate"
+    payload["delegate_id"] = delegate_id
+    payload["run_id"] = delegate_id  # backwards-compatible dashboard/run alias
+    payload.setdefault("events", [])
+    approval_request = _voice_approval_request_from_status(payload)
+    if approval_request is not None:
+        payload["approval_request"] = approval_request
+    else:
+        payload.pop("approval_request", None)
+    return payload
+
+
+def _persist_voice_run_status(status: Dict[str, Any]) -> None:
+    delegate_id = str(status.get("delegate_id") or status.get("run_id") or "").strip()
+    if not delegate_id:
+        return
+    status = _voice_sanitize_for_ledger(status)
+    usage = status.get("usage")
+    profile = status.get("profile")
+    with _VOICE_DELEGATE_LEDGER_LOCK:
+        try:
+            with _profile_scope(profile):
+                with _voice_delegate_connect() as conn:
+                    conn.execute(
+                        """
+                        INSERT INTO voice_delegate_runs (
+                            delegate_id, session_id, status, input_preview, output, error,
+                            usage_json, created_at, updated_at, last_event
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        ON CONFLICT(delegate_id) DO UPDATE SET
+                            session_id=excluded.session_id,
+                            status=excluded.status,
+                            input_preview=excluded.input_preview,
+                            output=excluded.output,
+                            error=excluded.error,
+                            usage_json=excluded.usage_json,
+                            created_at=excluded.created_at,
+                            updated_at=excluded.updated_at,
+                            last_event=excluded.last_event
+                        """,
+                        (
+                            delegate_id,
+                            str(status.get("session_id") or delegate_id),
+                            str(status.get("status") or "unknown"),
+                            status.get("input_preview"),
+                            status.get("output"),
+                            status.get("error"),
+                            json.dumps(usage) if usage is not None else None,
+                            float(status.get("created_at") or time.time()),
+                            float(status.get("updated_at") or time.time()),
+                            status.get("last_event"),
+                        ),
+                    )
+                    conn.commit()
+        except Exception:
+            _log.debug("Unable to persist voice delegate status", exc_info=True)
+
+
+def _persist_voice_run_event(delegate_id: str, event: Dict[str, Any], profile: Optional[str] = None) -> None:
+    if not delegate_id:
+        return
+    event = dict(event)
+    event.setdefault("delegate_id", delegate_id)
+    event.setdefault("run_id", delegate_id)
+    if profile is not None:
+        event.setdefault("profile", _voice_normalize_profile(profile) or None)
+    timestamp = float(event.get("timestamp") or time.time())
+    event_name = str(event.get("event") or "")
+    with _VOICE_DELEGATE_LEDGER_LOCK:
+        try:
+            with _profile_scope(event.get("profile") if profile is None else profile):
+                with _voice_delegate_connect() as conn:
+                    conn.execute(
+                        """
+                        INSERT INTO voice_delegate_events (delegate_id, event_name, timestamp, event_json)
+                        VALUES (?, ?, ?, ?)
+                        """,
+                        (delegate_id, event_name, timestamp, json.dumps(event)),
+                    )
+                    conn.commit()
+        except Exception:
+            _log.debug("Unable to persist voice delegate event", exc_info=True)
+
+
+def _load_voice_run_events(delegate_id: str, limit: int = 20, profile: Optional[str] = None) -> List[Dict[str, Any]]:
+    with _VOICE_DELEGATE_LEDGER_LOCK:
+        try:
+            with _profile_scope(profile):
+                with _voice_delegate_connect() as conn:
+                    rows = conn.execute(
+                        """
+                        SELECT event_json FROM voice_delegate_events
+                        WHERE delegate_id = ?
+                        ORDER BY id DESC
+                        LIMIT ?
+                        """,
+                        (delegate_id, max(1, min(int(limit), 200))),
+                    ).fetchall()
+        except Exception:
+            return []
+    events: List[Dict[str, Any]] = []
+    for row in reversed(rows):
+        try:
+            events.append(json.loads(row["event_json"]))
+        except Exception:
+            continue
+    return events
+
+
+def _load_voice_run_status(delegate_id: str, profile: Optional[str] = None) -> Optional[Dict[str, Any]]:
+    with _VOICE_DELEGATE_LEDGER_LOCK:
+        try:
+            with _profile_scope(profile):
+                with _voice_delegate_connect() as conn:
+                    row = conn.execute(
+                        "SELECT * FROM voice_delegate_runs WHERE delegate_id = ?",
+                        (delegate_id,),
+                    ).fetchone()
+        except Exception:
+            return None
+    if row is None:
+        return None
+    usage = None
+    if row["usage_json"]:
+        try:
+            usage = json.loads(row["usage_json"])
+        except Exception:
+            usage = None
+    status: Dict[str, Any] = {
+        "object": "hermes.voice.delegate",
+        "delegate_id": row["delegate_id"],
+        "run_id": row["delegate_id"],
+        "session_id": row["session_id"],
+        "status": row["status"],
+        "created_at": row["created_at"],
+        "updated_at": row["updated_at"],
+        "input_preview": row["input_preview"],
+        "last_event": row["last_event"],
+        "profile": _voice_normalize_profile(profile) or None,
+        "events": _load_voice_run_events(row["delegate_id"], profile=profile),
+    }
+    if row["output"] is not None:
+        status["output"] = row["output"]
+    if row["error"] is not None:
+        status["error"] = row["error"]
+    if usage is not None:
+        status["usage"] = usage
+    return status
+
+
+def _get_voice_run_status(delegate_id: str, profile: Optional[str] = None) -> Optional[Dict[str, Any]]:
+    status = _VOICE_RUN_STATUSES.get(delegate_id)
+    loaded_from_ledger = False
+    if status is not None and not _voice_status_matches_profile(status, profile):
+        status = None
+    if status is None:
+        status = _load_voice_run_status(delegate_id, profile=profile)
+        if status is not None:
+            _VOICE_RUN_STATUSES[delegate_id] = status
+            loaded_from_ledger = True
+    if status is None:
+        return None
+    if (
+        status.get("status") not in _VOICE_TERMINAL_STATUSES
+        and (status.get("status") != "waiting_for_approval" or loaded_from_ledger)
+        and delegate_id not in _VOICE_ACTIVE_RUN_TASKS
+        and delegate_id not in _VOICE_ACTIVE_RUN_AGENTS
+    ):
+        status = _set_voice_run_status(
+            delegate_id,
+            "stopped",
+            error="Delegate is no longer active; dashboard process restarted.",
+            last_event="run.stopped",
+        )
+        _append_voice_run_event(
+            delegate_id,
+            {"event": "run.stopped", "delegate_id": delegate_id, "run_id": delegate_id, "timestamp": time.time()},
+        )
+    return status
+
+
+def _set_voice_run_status(run_id: str, status: str, **fields: Any) -> Dict[str, Any]:
+    now = time.time()
+    current = dict(_VOICE_RUN_STATUSES.get(run_id, {}))
+    current.update({
+        "object": "hermes.voice.delegate",
+        "delegate_id": run_id,
+        "run_id": run_id,
+        "status": status,
+        "updated_at": now,
+    })
+    current.setdefault("created_at", fields.pop("created_at", now))
+    if "profile" in fields:
+        current["profile"] = _voice_normalize_profile(fields.pop("profile")) or None
+    else:
+        current.setdefault("profile", None)
+    current.update(_voice_sanitize_for_ledger(fields))
+    current = _voice_status_payload(run_id, _voice_sanitize_for_ledger(current))
+    _VOICE_RUN_STATUSES[run_id] = current
+    _persist_voice_run_status(current)
+    return current
+
+
+def _append_voice_run_event(run_id: str, event: Dict[str, Any]) -> None:
+    status = _VOICE_RUN_STATUSES.get(run_id)
+    if status is None:
+        # Unknown profile until we find an in-memory entry; callers always
+        # create status before appending events, so this is a last resort.
+        status = _load_voice_run_status(run_id, profile=event.get("profile") if isinstance(event, dict) else None)
+    if status is None:
+        return
+    event = _voice_sanitize_for_ledger(dict(event))
+    event.setdefault("delegate_id", run_id)
+    event.setdefault("run_id", run_id)
+    event.setdefault("profile", status.get("profile"))
+    events = list(status.get("events") or [])
+    events.append(event)
+    status["events"] = events[-20:]
+    status["last_event"] = event.get("event")
+    status["updated_at"] = time.time()
+    status = _voice_status_payload(run_id, status)
+    _VOICE_RUN_STATUSES[run_id] = status
+    _persist_voice_run_status(status)
+    _persist_voice_run_event(run_id, event, profile=status.get("profile"))
+
+
+def _create_voice_dispatch_agent(
+    *,
+    ephemeral_system_prompt: Optional[str] = None,
+    session_id: Optional[str] = None,
+    stream_delta_callback=None,
+    tool_progress_callback=None,
+    gateway_session_key: Optional[str] = None,
+) -> Any:
+    """Create the Hermes worker used by dashboard voice dispatch.
+
+    Grok Voice never receives local tools directly.  It can only call the
+    dashboard bridge, and this worker then runs through normal Hermes agent
+    construction, toolsets, and approval handling.
+    """
+    from run_agent import AIAgent
+    from gateway.run import (
+        GatewayRunner,
+        _load_gateway_config,
+        _resolve_gateway_model,
+        _resolve_runtime_agent_kwargs,
+    )
+    from hermes_cli.tools_config import _get_platform_tools
+
+    runtime_kwargs = _resolve_runtime_agent_kwargs()
+    reasoning_config = GatewayRunner._load_reasoning_config()
+    model = _resolve_gateway_model()
+    user_config = _load_gateway_config()
+
+    dispatch_cfg = _voice_realtime_config().get("dispatch")
+    configured_toolsets = None
+    if isinstance(dispatch_cfg, dict) and isinstance(dispatch_cfg.get("default_toolsets"), list):
+        configured_toolsets = [str(item) for item in dispatch_cfg.get("default_toolsets") if str(item).strip()]
+    enabled_toolsets = configured_toolsets or sorted(_get_platform_tools(user_config, "api_server"))
+
+    try:
+        max_iterations = int(os.getenv("HERMES_MAX_ITERATIONS", "90"))
+    except (TypeError, ValueError):
+        max_iterations = 90
+
+    return AIAgent(
+        model=model,
+        **runtime_kwargs,
+        max_iterations=max_iterations,
+        quiet_mode=True,
+        verbose_logging=False,
+        ephemeral_system_prompt=ephemeral_system_prompt or None,
+        enabled_toolsets=enabled_toolsets,
+        session_id=session_id,
+        platform="dashboard_voice",
+        stream_delta_callback=stream_delta_callback,
+        tool_progress_callback=tool_progress_callback,
+        fallback_model=GatewayRunner._load_fallback_model(),
+        reasoning_config=reasoning_config,
+        gateway_session_key=gateway_session_key,
+    )
+
+
+async def _run_voice_dispatch(run_id: str, body: VoiceRunCreate, profile: Optional[str] = None) -> None:
+    user_message = _voice_run_input(body)
+    session_id = _voice_trim_text(body.session_id, 256) or run_id
+    approval_session_key = _VOICE_RUN_APPROVAL_SESSIONS.get(run_id, f"voice:{session_id}")
+    loop = asyncio.get_running_loop()
+    output_chunks: List[str] = []
+    profile_key = _voice_normalize_profile(profile) or None
+
+    def _push(event: Dict[str, Any]) -> None:
+        _append_voice_run_event(run_id, event)
+
+    def _stream_delta(delta: Optional[str]) -> None:
+        if delta is None:
+            return
+        text = str(delta)
+        output_chunks.append(text)
+        try:
+            loop.call_soon_threadsafe(
+                _push,
+                {"event": "message.delta", "run_id": run_id, "timestamp": time.time(), "delta": text},
+            )
+        except Exception:
+            pass
+
+    def _tool_progress(event_type: str, tool_name: str = None, preview: str = None, args=None, **kwargs) -> None:
+        if event_type not in {"tool.started", "tool.completed", "reasoning.available"}:
+            return
+        event: Dict[str, Any] = {
+            "event": event_type,
+            "run_id": run_id,
+            "timestamp": time.time(),
+        }
+        if tool_name:
+            event["tool"] = tool_name
+        if preview:
+            event["preview"] = preview
+        if "duration" in kwargs:
+            event["duration"] = kwargs.get("duration")
+        if "is_error" in kwargs:
+            event["error"] = bool(kwargs.get("is_error"))
+        try:
+            loop.call_soon_threadsafe(_push, event)
+        except Exception:
+            pass
+
+    def _approval_notify(approval_data: Dict[str, Any]) -> None:
+        event = dict(approval_data or {})
+        event.update({
+            "event": "approval.request",
+            "run_id": run_id,
+            "timestamp": time.time(),
+            "choices": list(_VOICE_APPROVAL_CHOICES),
+        })
+        _set_voice_run_status(run_id, "waiting_for_approval", last_event="approval.request")
+        try:
+            loop.call_soon_threadsafe(_push, event)
+        except Exception:
+            pass
+
+    def _run_sync() -> tuple[Dict[str, Any], Dict[str, int]]:
+        from gateway.session_context import clear_session_vars, set_session_vars
+        from tools.approval import (
+            register_gateway_notify,
+            reset_current_session_key,
+            set_current_session_key,
+            unregister_gateway_notify,
+        )
+
+        # Agent construction + execution must see the selected profile's
+        # config/env/home. Scope stays inside this worker thread only.
+        with _profile_scope(profile):
+            agent = _create_voice_dispatch_agent(
+                ephemeral_system_prompt=body.instructions,
+                session_id=session_id,
+                stream_delta_callback=_stream_delta,
+                tool_progress_callback=_tool_progress,
+                gateway_session_key=approval_session_key,
+            )
+            _VOICE_ACTIVE_RUN_AGENTS[run_id] = agent
+            if run_id in _VOICE_STOP_REQUESTED:
+                try:
+                    agent.interrupt("Stop requested via voice dispatch")
+                except Exception:
+                    pass
+            approval_token = None
+            session_tokens = []
+            try:
+                approval_token = set_current_session_key(approval_session_key)
+                session_tokens = set_session_vars(platform="dashboard_voice_delegate", session_key=approval_session_key)
+                register_gateway_notify(approval_session_key, _approval_notify)
+                result = agent.run_conversation(
+                    user_message=user_message,
+                    conversation_history=[],
+                    task_id=f"voice_delegate:{session_id}",
+                )
+            finally:
+                try:
+                    unregister_gateway_notify(approval_session_key)
+                finally:
+                    if approval_token is not None:
+                        try:
+                            reset_current_session_key(approval_token)
+                        except Exception:
+                            pass
+                    if session_tokens:
+                        try:
+                            clear_session_vars(session_tokens)
+                        except Exception:
+                            pass
+            usage = {
+                "input_tokens": getattr(agent, "session_prompt_tokens", 0) or 0,
+                "output_tokens": getattr(agent, "session_completion_tokens", 0) or 0,
+                "total_tokens": getattr(agent, "session_total_tokens", 0) or 0,
+            }
+            return result if isinstance(result, dict) else {}, usage
+
+    try:
+        if run_id in _VOICE_STOP_REQUESTED:
+            _set_voice_run_status(run_id, "stopped", last_event="run.stopped")
+            _push({"event": "run.stopped", "run_id": run_id, "timestamp": time.time()})
+            return
+        _set_voice_run_status(run_id, "running")
+        if run_id in _VOICE_STOP_REQUESTED:
+            _set_voice_run_status(run_id, "stopped", last_event="run.stopped")
+            _push({"event": "run.stopped", "run_id": run_id, "timestamp": time.time()})
+            return
+        result, usage = await loop.run_in_executor(None, _run_sync)
+        if result.get("failed"):
+            error = result.get("error") or "agent run failed"
+            _set_voice_run_status(run_id, "failed", error=error, usage=usage, last_event="run.failed")
+            _push({"event": "run.failed", "run_id": run_id, "timestamp": time.time(), "error": error})
+        else:
+            output = result.get("final_response") or "".join(output_chunks)
+            _set_voice_run_status(run_id, "completed", output=output, usage=usage, last_event="run.completed")
+            _push({"event": "run.completed", "run_id": run_id, "timestamp": time.time(), "output": output, "usage": usage})
+    except asyncio.CancelledError:
+        _set_voice_run_status(run_id, "cancelled", last_event="run.cancelled")
+        _push({"event": "run.cancelled", "run_id": run_id, "timestamp": time.time()})
+        raise
+    except Exception as exc:
+        _log.exception("Voice dispatch run %s failed", run_id)
+        _set_voice_run_status(run_id, "failed", error=str(exc), last_event="run.failed")
+        _push({"event": "run.failed", "run_id": run_id, "timestamp": time.time(), "error": str(exc)})
+    finally:
+        try:
+            from tools.approval import unregister_gateway_notify
+            unregister_gateway_notify(approval_session_key)
+        except Exception:
+            pass
+        _VOICE_ACTIVE_RUN_AGENTS.pop(run_id, None)
+        _VOICE_ACTIVE_RUN_TASKS.pop(run_id, None)
+        _VOICE_RUN_APPROVAL_SESSIONS.pop(run_id, None)
+        _VOICE_STOP_REQUESTED.discard(run_id)
+
+
+async def _start_voice_delegate(body: VoiceRunCreate, profile: Optional[str] = None):
+    with _profile_scope(profile):
+        cfg = _voice_realtime_config()
+        if not bool(cfg.get("enabled", False)):
+            raise HTTPException(status_code=400, detail="Realtime voice dispatch is disabled")
+        max_active = _voice_max_active_runs(cfg)
+
+    user_message = _voice_run_input(body)
+    if not user_message:
+        raise HTTPException(status_code=400, detail="Missing voice delegate input")
+
+    if _voice_active_run_count(profile) >= max_active:
+        raise HTTPException(status_code=429, detail=f"Too many active voice delegates (max {max_active})")
+
+    delegate_id = f"voice_delegate_{uuid.uuid4().hex}"
+    session_id = _voice_trim_text(body.session_id, 256) or delegate_id
+    approval_session_key = f"voice:{delegate_id}"
+    profile_key = _voice_normalize_profile(profile) or None
+    _VOICE_RUN_APPROVAL_SESSIONS[delegate_id] = approval_session_key
+    _set_voice_run_status(
+        delegate_id,
+        "queued",
+        created_at=time.time(),
+        session_id=session_id,
+        input_preview=user_message[:300],
+        profile=profile_key,
+    )
+    _append_voice_run_event(
+        delegate_id,
+        {
+            "event": "delegate.queued",
+            "delegate_id": delegate_id,
+            "run_id": delegate_id,
+            "timestamp": time.time(),
+            "profile": profile_key,
+        },
+    )
+    task = asyncio.create_task(_run_voice_dispatch(delegate_id, body, profile=profile))
+    _VOICE_ACTIVE_RUN_TASKS[delegate_id] = task
+    return JSONResponse(
+        status_code=202,
+        content={
+            "object": "hermes.voice.delegate",
+            "delegate_id": delegate_id,
+            "run_id": delegate_id,
+            "status": "started",
+            "profile": profile_key,
+        },
+    )
+
+
+@app.post("/api/voice/delegates")
+async def start_voice_delegate(body: VoiceRunCreate, profile: Optional[str] = None):
+    return await _start_voice_delegate(body, profile=profile)
+
+
+@app.post("/api/voice/runs")
+async def start_voice_run(body: VoiceRunCreate, profile: Optional[str] = None):
+    """Backward-compatible alias for the delegate launcher."""
+    return await _start_voice_delegate(body, profile=profile)
+
+
+async def _get_voice_delegate_or_404(delegate_id: str, profile: Optional[str] = None) -> Dict[str, Any]:
+    status = _get_voice_run_status(delegate_id, profile=profile)
+    if status is None:
+        raise HTTPException(status_code=404, detail=f"Voice delegate not found: {delegate_id}")
+    return status
+
+
+@app.get("/api/voice/delegates/{delegate_id}")
+async def get_voice_delegate(delegate_id: str, profile: Optional[str] = None):
+    return await _get_voice_delegate_or_404(delegate_id, profile=profile)
+
+
+@app.get("/api/voice/delegates/{delegate_id}/events")
+async def get_voice_delegate_events(delegate_id: str, profile: Optional[str] = None):
+    status = await _get_voice_delegate_or_404(delegate_id, profile=profile)
+    return {"object": "hermes.voice.delegate.events", "delegate_id": delegate_id, "run_id": delegate_id, "events": status.get("events") or []}
+
+
+@app.get("/api/voice/runs/{run_id}/events")
+async def get_voice_run_events(run_id: str, profile: Optional[str] = None):
+    """Backward-compatible alias for delegate event history."""
+    status = await _get_voice_delegate_or_404(run_id, profile=profile)
+    return {"object": "hermes.voice.delegate.events", "delegate_id": run_id, "run_id": run_id, "events": status.get("events") or []}
+
+
+@app.get("/api/voice/runs/{run_id}")
+async def get_voice_run(run_id: str, profile: Optional[str] = None):
+    """Backward-compatible alias for delegate status."""
+    return await _get_voice_delegate_or_404(run_id, profile=profile)
+
+
+async def _approve_voice_delegate(delegate_id: str, body: VoiceRunApproval, profile: Optional[str] = None):
+    if _get_voice_run_status(delegate_id, profile=profile) is None:
+        raise HTTPException(status_code=404, detail=f"Voice delegate not found: {delegate_id}")
+
+    raw_choice = str(body.choice or "").strip().lower()
+    choice = {"approve": "once", "approved": "once", "allow": "once"}.get(raw_choice, raw_choice)
+    if choice not in _VOICE_APPROVAL_CHOICES:
+        expected = ", ".join(_VOICE_APPROVAL_CHOICES)
+        raise HTTPException(status_code=400, detail=f"Approval choice '{choice}' is not allowed for voice dispatch; expected {expected}")
+
+    approval_session_key = _VOICE_RUN_APPROVAL_SESSIONS.get(delegate_id)
+    if not approval_session_key:
+        raise HTTPException(status_code=409, detail=f"Voice delegate has no active approval session: {delegate_id}")
+
+    try:
+        from tools.approval import resolve_gateway_approval
+        resolved = resolve_gateway_approval(approval_session_key, choice, resolve_all=bool(body.resolve_all))
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+    if resolved <= 0:
+        raise HTTPException(status_code=409, detail=f"Voice delegate has no pending approval: {delegate_id}")
+
+    _set_voice_run_status(delegate_id, "running", last_event="approval.responded")
+    _append_voice_run_event(
+        delegate_id,
+        {"event": "approval.responded", "delegate_id": delegate_id, "run_id": delegate_id, "timestamp": time.time(), "choice": choice, "resolved": resolved},
+    )
+    return {"object": "hermes.voice.delegate.approval_response", "delegate_id": delegate_id, "run_id": delegate_id, "choice": choice, "resolved": resolved}
+
+
+@app.post("/api/voice/delegates/{delegate_id}/approval")
+async def approve_voice_delegate(delegate_id: str, body: VoiceRunApproval, profile: Optional[str] = None):
+    return await _approve_voice_delegate(delegate_id, body, profile=profile)
+
+
+@app.post("/api/voice/runs/{run_id}/approval")
+async def approve_voice_run(run_id: str, body: VoiceRunApproval, profile: Optional[str] = None):
+    """Backward-compatible alias for delegate approval."""
+    return await _approve_voice_delegate(run_id, body, profile=profile)
+
+
+async def _stop_voice_delegate(delegate_id: str, profile: Optional[str] = None):
+    status = _get_voice_run_status(delegate_id, profile=profile)
+    agent = _VOICE_ACTIVE_RUN_AGENTS.get(delegate_id)
+    task = _VOICE_ACTIVE_RUN_TASKS.get(delegate_id)
+    if status is None:
+        # Reject cross-profile active-task leakage when status is missing.
+        agent = None
+        task = None
+    if status is None and agent is None and task is None:
+        raise HTTPException(status_code=404, detail=f"Voice delegate not found: {delegate_id}")
+
+    if status is not None and status.get("status") in _VOICE_TERMINAL_STATUSES:
+        return status
+
+    _VOICE_STOP_REQUESTED.add(delegate_id)
+    _set_voice_run_status(delegate_id, "stopping", last_event="delegate.stopping")
+    _append_voice_run_event(
+        delegate_id,
+        {"event": "delegate.stopping", "delegate_id": delegate_id, "run_id": delegate_id, "timestamp": time.time()},
+    )
+    if agent is not None:
+        try:
+            agent.interrupt("Stop requested via voice dispatch")
+        except Exception:
+            pass
+    return {"object": "hermes.voice.delegate", "delegate_id": delegate_id, "run_id": delegate_id, "status": "stopping"}
+
+
+@app.post("/api/voice/delegates/{delegate_id}/stop")
+async def stop_voice_delegate(delegate_id: str, profile: Optional[str] = None):
+    return await _stop_voice_delegate(delegate_id, profile=profile)
+
+
+@app.post("/api/voice/runs/{run_id}/stop")
+async def stop_voice_run(run_id: str, profile: Optional[str] = None):
+    """Backward-compatible alias for delegate stop."""
+    return await _stop_voice_delegate(run_id, profile=profile)
 
 
 # ---------------------------------------------------------------------------

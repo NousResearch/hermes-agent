@@ -1,6 +1,7 @@
 """Tests for setup.py configuration flows."""
 import sys
 import types
+from pathlib import Path
 
 
 from hermes_cli.config import load_config, save_config
@@ -48,6 +49,147 @@ def _write_model_config(tmp_path, provider, base_url="", model_name="test-model"
     if model_name:
         m["default"] = model_name
     save_config(cfg)
+
+
+def test_setup_voice_dispatch_decline_keeps_realtime_disabled(tmp_path, monkeypatch, capsys):
+    """Voice Dispatch stays disabled unless the user explicitly opts in."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    config = load_config()
+    saved_env = {}
+
+    monkeypatch.setattr(setup_mod, "get_env_value", lambda key: "")
+    monkeypatch.setattr(setup_mod, "save_env_value", lambda key, value: saved_env.update({key: value}))
+    monkeypatch.setattr(setup_mod, "prompt_yes_no", lambda question, default=True: False)
+
+    setup_mod.setup_voice_dispatch(config)
+
+    assert config["voice"]["realtime"]["enabled"] is False
+    assert saved_env == {}
+    out = capsys.readouterr().out
+    assert "disabled by default" in out.lower()
+
+
+def test_setup_voice_dispatch_opt_in_saves_xai_key_without_printing_secret(
+    tmp_path, monkeypatch, capsys
+):
+    """Opting in enables config and stores XAI_API_KEY through Hermes env helpers."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    config = load_config()
+    saved_env = {}
+    secret = "xai-test-secret-value"
+
+    monkeypatch.setattr(setup_mod, "get_env_value", lambda key: "")
+    monkeypatch.setattr(setup_mod, "save_env_value", lambda key, value: saved_env.update({key: value}))
+    monkeypatch.setattr(setup_mod, "prompt_yes_no", lambda question, default=True: True)
+
+    def fake_prompt(question, default=None, password=False):
+        if "model" in question.lower():
+            return default
+        if "voice" in question.lower():
+            return default
+        assert password is True
+        assert "XAI" in question or "xAI" in question
+        return secret
+
+    monkeypatch.setattr(setup_mod, "prompt", fake_prompt)
+
+    setup_mod.setup_voice_dispatch(config)
+
+    realtime = config["voice"]["realtime"]
+    assert realtime["enabled"] is True
+    assert realtime["provider"] == "xai"
+    assert realtime["model"] == "grok-voice-latest"
+    assert realtime["voice"] == "eve"
+    assert realtime["ephemeral_token_ttl_seconds"] <= 300
+    assert saved_env == {"XAI_API_KEY": secret}
+    assert secret not in capsys.readouterr().out
+
+
+def test_setup_voice_dispatch_existing_key_is_not_reprinted_or_replaced_by_default(
+    tmp_path, monkeypatch, capsys
+):
+    """Existing xAI credentials are detected without echoing or replacing them."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    config = load_config()
+    saved_env = {}
+    existing_secret = "xai-existing-secret-value"
+
+    monkeypatch.setattr(
+        setup_mod,
+        "get_env_value",
+        lambda key: existing_secret if key == "XAI_API_KEY" else "",
+    )
+    monkeypatch.setattr(setup_mod, "save_env_value", lambda key, value: saved_env.update({key: value}))
+
+    def fake_yes_no(question, default=True):
+        if "Enable Grok Voice Dispatch" in question:
+            return True
+        if "Replace existing XAI_API_KEY" in question:
+            return False
+        raise AssertionError(f"Unexpected prompt_yes_no call: {question}")
+
+    monkeypatch.setattr(setup_mod, "prompt_yes_no", fake_yes_no)
+    monkeypatch.setattr(setup_mod, "prompt", lambda question, default=None, **kwargs: default)
+
+    setup_mod.setup_voice_dispatch(config)
+
+    assert config["voice"]["realtime"]["enabled"] is True
+    assert saved_env == {}
+    out = capsys.readouterr().out
+    assert "XAI_API_KEY is already configured" in out
+    assert existing_secret not in out
+
+
+def test_setup_sections_include_voice_dispatch():
+    sections = {name: (label, func) for name, label, func in setup_mod.SETUP_SECTIONS}
+
+    assert "voice" in sections
+    label, func = sections["voice"]
+    assert label == "Grok Voice Dispatch"
+    assert func is setup_mod.setup_voice_dispatch
+
+
+def test_setup_cli_parser_accepts_voice_section():
+    repo_root = Path(__file__).resolve().parents[2]
+    setup_parser_source = (repo_root / "hermes_cli" / "subcommands" / "setup.py").read_text(encoding="utf-8")
+
+    assert "hermes setup model|tts|terminal|gateway|tools|voice|agent" in setup_parser_source
+    assert '"voice"' in setup_parser_source
+
+
+def test_full_setup_runs_voice_dispatch_section(tmp_path, monkeypatch):
+    """The full setup path includes the disabled-by-default voice section."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    _clear_provider_env(monkeypatch)
+    calls = []
+
+    monkeypatch.setattr(setup_mod, "is_interactive_stdin", lambda: True)
+    monkeypatch.setattr(setup_mod, "_offer_openclaw_migration", lambda hermes_home: False)
+    monkeypatch.setattr(setup_mod, "_print_setup_summary", lambda config, hermes_home: None)
+    monkeypatch.setattr("hermes_cli.auth.get_active_provider", lambda: None)
+    monkeypatch.setattr(setup_mod, "prompt_choice", lambda question, choices, default=0: 1)
+    monkeypatch.setattr(setup_mod, "setup_model_provider", lambda config, *args, **kwargs: calls.append("model"))
+    monkeypatch.setattr(setup_mod, "setup_terminal_backend", lambda config, *args, **kwargs: calls.append("terminal"))
+    monkeypatch.setattr(setup_mod, "setup_agent_settings", lambda config, *args, **kwargs: calls.append("agent"))
+    monkeypatch.setattr(setup_mod, "setup_gateway", lambda config, *args, **kwargs: calls.append("gateway"))
+    monkeypatch.setattr(setup_mod, "setup_tools", lambda config, *args, **kwargs: calls.append("tools"))
+    monkeypatch.setattr(setup_mod, "setup_voice_dispatch", lambda config, *args, **kwargs: calls.append("voice"))
+
+    setup_mod.run_setup_wizard(
+        types.SimpleNamespace(
+            reset=False,
+            reconfigure=False,
+            quick=False,
+            non_interactive=False,
+            portal=False,
+            section=None,
+        )
+    )
+
+    # Agent settings are applied as silent defaults on first install; the
+    # interactive section path is model → terminal → gateway → tools → voice.
+    assert calls == ["model", "terminal", "gateway", "tools", "voice"]
+    assert "voice" in calls
 
 
 def test_setup_delegates_to_select_provider_and_model(tmp_path, monkeypatch):

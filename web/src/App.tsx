@@ -35,6 +35,7 @@ import {
   KeyRound,
   Menu,
   MessageSquare,
+  Mic,
   Package,
   PanelLeftClose,
   PanelLeftOpen,
@@ -91,6 +92,7 @@ import ChannelsPage from "@/pages/ChannelsPage";
 import WebhooksPage from "@/pages/WebhooksPage";
 import SystemPage from "@/pages/SystemPage";
 import ChatPage from "@/pages/ChatPage";
+import VoiceDispatchPage from "@/pages/VoiceDispatchPage";
 import { LanguageSwitcher } from "@/components/LanguageSwitcher";
 import { ThemeSwitcher } from "@/components/ThemeSwitcher";
 import { useI18n } from "@/i18n";
@@ -134,6 +136,7 @@ const BUILTIN_ROUTES_CORE: Record<string, ComponentType> = {
   "/": RootRedirect,
   "/sessions": SessionsPage,
   "/files": FilesPage,
+  "/voice": VoiceDispatchPage,
   "/analytics": AnalyticsPage,
   "/models": ModelsPage,
   "/logs": LogsPage,
@@ -168,6 +171,11 @@ const BUILTIN_NAV_REST: NavItem[] = [
     icon: MessageSquare,
   },
   { path: "/files", label: "Files", icon: FolderOpen },
+  {
+    path: "/voice",
+    label: "Voice",
+    icon: Mic,
+  },
   {
     path: "/analytics",
     labelKey: "analytics",
@@ -209,6 +217,7 @@ const ICON_MAP: Record<string, ComponentType<{ className?: string }>> = {
   FolderOpen,
   KeyRound,
   MessageSquare,
+  Mic,
   Package,
   Settings,
   Puzzle,

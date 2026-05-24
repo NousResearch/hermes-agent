@@ -3,10 +3,12 @@ Interactive setup wizard for Hermes Agent.
 
 Modular wizard with independently-runnable sections:
   1. Model & Provider — choose your AI provider and model
-  2. Terminal Backend — where your agent runs commands
-  3. Agent Settings — iterations, compression, session reset
+  2. Text-to-Speech — configure spoken responses
+  3. Terminal Backend — where your agent runs commands
   4. Messaging Platforms — connect Telegram, Discord, etc.
-  5. Tools — configure TTS, web search, image generation, etc.
+  5. Tools — configure web search, image generation, browser, etc.
+  6. Grok Voice Dispatch — realtime voice control for Hermes delegates
+  7. Agent Settings — iterations, compression, session reset
 
 Config files are stored in ~/.hermes/ for easy access.
 """
@@ -556,6 +558,15 @@ def _print_setup_summary(config: dict, hermes_home):
     elif managed_nous_tools_enabled() and subscription_features.nous_auth_present:
         tool_status.append(("Modal Execution (optional via Nous subscription)", True, None))
 
+    # Grok Voice Dispatch — dashboard realtime voice controller for delegates.
+    voice_realtime_enabled = bool(cfg_get(config, "voice", "realtime", "enabled", default=False))
+    if voice_realtime_enabled and get_env_value("XAI_API_KEY"):
+        tool_status.append(("Grok Voice Dispatch (xAI realtime)", True, None))
+    elif voice_realtime_enabled:
+        tool_status.append(("Grok Voice Dispatch", False, "XAI_API_KEY"))
+    else:
+        tool_status.append(("Grok Voice Dispatch (disabled by default)", True, None))
+
     # Home Assistant
     if get_env_value("HASS_TOKEN"):
         tool_status.append(("Smart Home (Home Assistant)", True, None))
@@ -649,6 +660,7 @@ def _print_setup_summary(config: dict, hermes_home):
     print(f"   {color('hermes setup terminal', Colors.GREEN)} Change terminal backend")
     print(f"   {color('hermes setup gateway', Colors.GREEN)}  Configure messaging")
     print(f"   {color('hermes setup tools', Colors.GREEN)}    Configure tool providers")
+    print(f"   {color('hermes setup voice', Colors.GREEN)}    Configure Grok Voice Dispatch")
     print()
     print(f"   {color('hermes config', Colors.GREEN)}         View current settings")
     print(
@@ -2199,6 +2211,92 @@ def setup_tools(config: dict, first_install: bool = False):
 
 
 # =============================================================================
+# Section 6: Grok Voice Dispatch
+# =============================================================================
+
+
+def _voice_realtime_config(config: dict) -> Dict[str, Any]:
+    """Return the mutable voice.realtime config dict, repairing shape if needed."""
+    voice_cfg = config.get("voice")
+    if not isinstance(voice_cfg, dict):
+        voice_cfg = {}
+        config["voice"] = voice_cfg
+    realtime_cfg = voice_cfg.get("realtime")
+    if not isinstance(realtime_cfg, dict):
+        realtime_cfg = {}
+        voice_cfg["realtime"] = realtime_cfg
+    return realtime_cfg
+
+
+def setup_voice_dispatch(config: dict):
+    """Configure dashboard Grok Voice Dispatch.
+
+    Voice Dispatch is intentionally disabled by default. The browser receives
+    only short-lived xAI realtime credentials from the Hermes dashboard; the
+    long-lived XAI_API_KEY stays in the Hermes .env file.
+    """
+    print_header("Grok Voice Dispatch")
+    print_info("Grok Voice Dispatch adds a /voice dashboard page for realtime voice control.")
+    print_info("Grok Voice listens and speaks; Hermes delegates do the actual work.")
+    print_info("It is disabled by default and must be explicitly enabled here.")
+    print_info("Secrets are stored in .env; config values are stored in config.yaml.")
+    print()
+
+    realtime = _voice_realtime_config(config)
+    currently_enabled = bool(realtime.get("enabled", False))
+    if not prompt_yes_no("Enable Grok Voice Dispatch?", default=currently_enabled):
+        realtime["enabled"] = False
+        realtime.setdefault("provider", "xai")
+        realtime.setdefault("model", "grok-voice-latest")
+        realtime.setdefault("voice", "eve")
+        try:
+            ttl = int(realtime.get("ephemeral_token_ttl_seconds") or 300)
+        except (TypeError, ValueError):
+            ttl = 300
+        realtime["ephemeral_token_ttl_seconds"] = max(1, min(ttl, 300))
+        save_config(config)
+        print_info("Grok Voice Dispatch remains disabled by default.")
+        return
+
+    realtime["enabled"] = True
+    realtime["provider"] = "xai"
+
+    current_model = str(realtime.get("model") or "grok-voice-latest")
+    current_voice = str(realtime.get("voice") or "eve")
+    realtime["model"] = prompt("Realtime voice model", current_model) or current_model
+    realtime["voice"] = prompt("Realtime voice", current_voice) or current_voice
+
+    try:
+        ttl = int(realtime.get("ephemeral_token_ttl_seconds") or 300)
+    except (TypeError, ValueError):
+        ttl = 300
+    realtime["ephemeral_token_ttl_seconds"] = max(1, min(ttl, 300))
+
+    existing_key = get_env_value("XAI_API_KEY")
+    if existing_key:
+        print_info(f"XAI_API_KEY is already configured in {get_env_path()}.")
+        replace_key = prompt_yes_no("Replace existing XAI_API_KEY?", default=False)
+    else:
+        replace_key = True
+
+    if replace_key:
+        api_key = prompt("XAI_API_KEY", password=True)
+        if api_key:
+            save_env_value("XAI_API_KEY", api_key)
+            print_success("XAI_API_KEY saved")
+        else:
+            print_warning(
+                "No XAI_API_KEY saved. Voice Dispatch will stay configured, "
+                "but the dashboard cannot mint xAI realtime credentials until the key is set."
+            )
+
+    save_config(config)
+    print_success(
+        f"Grok Voice Dispatch enabled ({realtime['model']} / voice {realtime['voice']})"
+    )
+
+
+# =============================================================================
 # Post-Migration Section Skip Logic
 # =============================================================================
 
@@ -2321,6 +2419,15 @@ def _get_section_config_summary(config: dict, section_key: str) -> Optional[str]
             tools.append("Firecrawl")
         if tools:
             return ", ".join(tools)
+        return None
+
+    elif section_key == "voice":
+        if bool(cfg_get(config, "voice", "realtime", "enabled", default=False)):
+            model = cfg_get(config, "voice", "realtime", "model", default="grok-voice-latest")
+            voice = cfg_get(config, "voice", "realtime", "voice", default="eve")
+            return f"enabled: {model} / {voice}"
+        if get_env_value("XAI_API_KEY"):
+            return "XAI_API_KEY configured; disabled"
         return None
 
     return None
@@ -2606,6 +2713,7 @@ SETUP_SECTIONS = [
     ("terminal", "Terminal Backend", setup_terminal_backend),
     ("gateway", "Messaging Platforms (Gateway)", setup_gateway),
     ("tools", "Tools", setup_tools),
+    ("voice", "Grok Voice Dispatch", setup_voice_dispatch),
     ("agent", "Agent Settings", setup_agent_settings),
 ]
 
@@ -2846,8 +2954,8 @@ def run_setup_wizard(args):
         print_info("Running the full wizard — each prompt shows your current value.")
         print_info("Press Enter to keep it, or type a new value to change it.")
         print_info("")
-        print_info("Tip: jump straight to a section with 'hermes setup model|terminal|")
-        print_info("     gateway|tools|agent', or fill only missing items with --quick.")
+        print_info("Tip: jump straight to a section with 'hermes setup model|tts|terminal|")
+        print_info("     gateway|tools|voice|agent', or fill only missing items with --quick.")
         # Fall through to the "Full Setup — run all sections" block below.
         # --reconfigure is now the default on existing installs; the flag
         # is preserved for backwards compatibility but is a no-op here.
@@ -2919,6 +3027,10 @@ def run_setup_wizard(args):
     # Section 5: Tools
     if not (migration_ran and _skip_configured_section(config, "tools", "Tools")):
         setup_tools(config, first_install=not is_existing)
+
+    # Section 6: Grok Voice Dispatch — remains disabled unless explicitly enabled.
+    if not (migration_ran and _skip_configured_section(config, "voice", "Grok Voice Dispatch")):
+        setup_voice_dispatch(config)
 
     # Save and show summary
     save_config(config)

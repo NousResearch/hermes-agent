@@ -2154,6 +2154,28 @@ DEFAULT_CONFIG = {
         "beep_enabled": True,         # Play record start/stop beeps in CLI voice mode
         "silence_threshold": 200,     # RMS below this = silence (0-32767)
         "silence_duration": 3.0,      # Seconds of silence before auto-stop
+        "realtime": {
+            "enabled": False,          # Browser/phone realtime voice dispatch (off by default)
+            "provider": "xai",
+            "model": "grok-voice-latest",
+            "voice": "eve",           # Built-ins: eve, ara, rex, sal, leo; custom voice IDs also work
+            "ephemeral_token_ttl_seconds": 300,
+            "turn_detection": {
+                "type": "server_vad",
+                "threshold": 0.85,
+                "silence_duration_ms": 900,
+                "prefix_padding_ms": 333,
+            },
+            "audio": {
+                "input_rate": 24000,
+                "output_rate": 24000,
+            },
+            "dispatch": {
+                "max_active_delegates": 1,
+                "default_toolsets": [],
+                "summarize_events_for_voice": True,
+            },
+        },
     },
     
     "human_delay": {

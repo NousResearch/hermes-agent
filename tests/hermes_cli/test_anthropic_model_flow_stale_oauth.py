@@ -54,7 +54,7 @@ class TestStaleOAuthTokenDetection:
 
         # Simulate user types "3" (Cancel) when prompted for re-auth
         monkeypatch.setattr("builtins.input", lambda _: "3")
-        monkeypatch.setattr("getpass.getpass", lambda _: "")
+        monkeypatch.setattr("hermes_cli.secret_prompt.masked_secret_prompt", lambda _: "")
 
         from hermes_cli.main import _model_flow_anthropic
         cfg = {}

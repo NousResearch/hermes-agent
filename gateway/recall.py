@@ -160,42 +160,63 @@ def _prior_sessions_for_key(
     session_store,
     session_db,
 ) -> list[SourceRef]:
-    """All historical sessions for this session_key, most-recent first, excluding current."""
+    """All historical sessions for this session_key, most-recent first, excluding current.
+
+    Strategy: walk the parent_session_id chain starting from the current session.
+    Sessions are stored with source='telegram' (platform name only), NOT the
+    full session_key like 'telegram:469214623:94316', so searching by source=session_key
+    never matches. The parent chain is the reliable way to find prior sessions
+    in the same thread.
+    """
     refs: list[SourceRef] = []
 
-    # session_store._entries is a dict of session_key → SessionEntry.
-    # session_key is a stable identifier for (platform, chat_id, thread_id).
-    # After /new, the current entry has a fresh session_id; prior sessions
-    # only exist in SQLite / JSONL. We need to look at session_db.
     if session_db is None:
         logger.debug("recall: no session_db, cannot resolve prior sessions")
         return []
 
     try:
-        # session_db.search_sessions() orders by most-recently-used first.
-        # The source column in SQLite maps to session_key for gateway sessions.
-        # We need sessions that had this session_key as their source.
-        rows = session_db.search_sessions(source=session_key, limit=20)
         current_entry = session_store._entries.get(session_key) if session_store else None
         current_sid = current_entry.session_id if current_entry else None
 
-        for row in rows:
-            sid = row.get("id") or row.get("session_id") or row.get("session_id")
-            if not sid or sid == current_sid:
-                continue
-            title = row.get("title") or f"Session {sid[:8]}"
-            last_active = row.get("last_active") or row.get("started_at") or 0
-            msg_count = session_db.message_count(session_id=sid)
+        if not current_sid:
+            logger.debug("recall: no current session_id for key %s", session_key)
+            return []
+
+        # Walk the parent_session_id chain: current → parent → grandparent → ...
+        # Skip the current (live) session — only return prior sessions.
+        visited: set[str] = set()
+        next_sid = _get_parent_session_id(session_db, current_sid)
+        while next_sid and next_sid not in visited and len(refs) < 20:
+            visited.add(next_sid)
+            row = session_db.get_session(next_sid)
+            if row is None:
+                break
+            title = row.get("title") or f"Session {next_sid[:8]}"
+            ended_at = row.get("ended_at") or row.get("started_at") or 0
+            msg_count = session_db.message_count(session_id=next_sid)
             refs.append(SourceRef(
-                session_id=sid,
+                session_id=next_sid,
                 title=title,
                 message_count=msg_count,
-                ended_at=float(last_active),
+                ended_at=float(ended_at),
             ))
+            next_sid = _get_parent_session_id(session_db, next_sid)
+
     except Exception:
         logger.debug("recall: error querying prior sessions", exc_info=True)
 
     return refs
+
+
+def _get_parent_session_id(session_db, session_id: str) -> Optional[str]:
+    """Return the parent_session_id for the given session, or None."""
+    try:
+        row = session_db.get_session(session_id)
+        if row is None:
+            return None
+        return row.get("parent_session_id")
+    except Exception:
+        return None
 
 
 def _resolve_topic(

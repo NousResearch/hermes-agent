@@ -8392,15 +8392,16 @@ class GatewayRunner:
         except Exception:
             _tip_line = ""
 
-        # Append /recall nudge when a prior session exists in this thread
+        # Append /recall nudge when a prior session exists in this thread.
+        # Sessions are stored with source='telegram' (platform name only), so
+        # search_sessions(source=session_key) never matches. Instead check if
+        # the new session has a parent_session_id — that's the reliable signal
+        # that there's prior history in this thread.
         try:
             _session_db = getattr(self, "_session_db", None)
-            if _session_db is not None:
-                _prior_rows = _session_db.search_sessions(source=session_key, limit=2)
-                _has_prior = any(
-                    r.get("id") != (new_entry.session_id if new_entry else None)
-                    for r in _prior_rows
-                )
+            if _session_db is not None and new_entry is not None:
+                _cur_row = _session_db.get_session(new_entry.session_id)
+                _has_prior = bool(_cur_row and _cur_row.get("parent_session_id"))
                 if _has_prior:
                     _tip_line = (_tip_line or "") + "\n💡 Run /recall to restore context from your prior session."
         except Exception:

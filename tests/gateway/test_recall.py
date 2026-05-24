@@ -133,6 +133,9 @@ class FakeSessionDB:
         self._sessions = sessions
         self._messages: dict[str, list[dict]] = messages or {}
 
+    def get_session(self, session_id: str):
+        return next((dict(r) for r in self._sessions if r.get("id") == session_id), None)
+
     def search_sessions(self, source: str = None, limit: int = 20, offset: int = 0):
         rows = self._sessions
         if source:
@@ -177,10 +180,17 @@ def _make_ts(hours_ago: float) -> float:
 
 def test_resolve_sources_thread_default():
     from gateway.recall import resolve_sources
+    # Sessions linked by parent_session_id chain (real structure after /new).
+    # current → sid-a → sid-b  (sid-c is a different thread, unlinked)
     sessions = [
-        {"id": "sid-a", "source": "tg:123:456", "title": "Alpha", "started_at": _make_ts(2), "last_active": _make_ts(2)},
-        {"id": "sid-b", "source": "tg:123:456", "title": "Beta",  "started_at": _make_ts(5), "last_active": _make_ts(5)},
-        {"id": "sid-c", "source": "tg:999:0",   "title": "Other", "started_at": _make_ts(1), "last_active": _make_ts(1)},
+        {"id": "sid-current", "source": "telegram", "title": "Current",
+         "parent_session_id": "sid-a", "started_at": _make_ts(0), "ended_at": None},
+        {"id": "sid-a", "source": "telegram", "title": "Alpha",
+         "parent_session_id": "sid-b", "started_at": _make_ts(2), "ended_at": _make_ts(1)},
+        {"id": "sid-b", "source": "telegram", "title": "Beta",
+         "parent_session_id": None, "started_at": _make_ts(5), "ended_at": _make_ts(3)},
+        {"id": "sid-c", "source": "telegram", "title": "Other thread",
+         "parent_session_id": None, "started_at": _make_ts(1), "ended_at": _make_ts(0.5)},
     ]
     db = FakeSessionDB(sessions)
     store = FakeSessionStore({"sid-current": {}})
@@ -194,35 +204,48 @@ def test_resolve_sources_thread_default():
 
 def test_resolve_sources_thread_count():
     from gateway.recall import resolve_sources
-    sessions = [
-        {"id": f"sid-{i}", "source": "tg:1:1", "title": f"S{i}", "started_at": _make_ts(i), "last_active": _make_ts(i)}
-        for i in range(1, 6)
-    ]
+    # Build a chain of 5 sessions: current → s4 → s3 → s2 → s1 → s0
+    sessions = [{"id": "sid-current", "source": "telegram", "title": "Current",
+                 "parent_session_id": "sid-4", "started_at": _make_ts(0), "ended_at": None}]
+    for i in range(4, -1, -1):
+        sessions.append({
+            "id": f"sid-{i}", "source": "telegram", "title": f"S{i}",
+            "parent_session_id": f"sid-{i-1}" if i > 0 else None,
+            "started_at": _make_ts(i + 1), "ended_at": _make_ts(i + 0.5),
+        })
     db = FakeSessionDB(sessions)
     store = FakeSessionStore({})
-    store._entries = {}
+    store._entries = {"tg:1:1": type("E", (), {"session_id": "sid-current"})()}
 
     spec = RecallSpec(mode="thread", count=3)
     refs = resolve_sources(spec, "tg:1:1", store, db)
     assert len(refs) == 3
+    assert refs[0].session_id == "sid-4"
+    assert refs[1].session_id == "sid-3"
+    assert refs[2].session_id == "sid-2"
 
 
 def test_resolve_sources_window():
     from gateway.recall import resolve_sources
     import time
     now = time.time()
+    # current → new (1h ago) → old (48h ago)
     sessions = [
-        {"id": "new", "source": "tg:1:1", "title": "New", "started_at": now - 3600, "last_active": now - 3600},
-        {"id": "old", "source": "tg:1:1", "title": "Old", "started_at": now - 48*3600, "last_active": now - 48*3600},
+        {"id": "sid-current", "source": "telegram", "title": "Current",
+         "parent_session_id": "new", "started_at": now - 600, "ended_at": None},
+        {"id": "new", "source": "telegram", "title": "New",
+         "parent_session_id": "old", "started_at": now - 3600, "ended_at": now - 700},
+        {"id": "old", "source": "telegram", "title": "Old",
+         "parent_session_id": None, "started_at": now - 48*3600, "ended_at": now - 47*3600},
     ]
     db = FakeSessionDB(sessions)
     store = FakeSessionStore({})
-    store._entries = {}
+    store._entries = {"tg:1:1": type("E", (), {"session_id": "sid-current"})()}
 
     spec = RecallSpec(mode="window", window_hours=24)
     refs = resolve_sources(spec, "tg:1:1", store, db, now=now)
-    assert all(r.session_id == "new" for r in refs)
     assert len(refs) == 1
+    assert refs[0].session_id == "new"
 
 
 def test_resolve_sources_topic():

@@ -17,26 +17,50 @@ These tests prove:
 2. The downstream ``tools.browser_dialog_tool`` also imports cleanly, so
    tool registration no longer fails at startup.
 3. Attempting to actually start a supervisor without ``websockets`` raises
-   a clear ``ImportError`` pointing to the install command, instead of a
+   a clear ImportError pointing to the install command, instead of a
    confusing ``NameError`` deep inside the background thread.
 """
 
 from __future__ import annotations
 
+import builtins
 import importlib
 import sys
 
 import pytest
 
 
-def _reload_supervisor_module(monkeypatch: pytest.MonkeyPatch, available: bool):
+def _block_websockets_import(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Patch ``builtins.__import__`` to raise ``ImportError`` for ``websockets*``.
+
+    Mirrors the canonical pattern used in
+    ``tests/tools/test_memory_tool_import_fallback.py`` and
+    ``tests/gateway/test_discord_imports.py``: rather than setting
+    ``sys.modules[name] = None`` (which can leak through to attribute access),
+    intercept the import call itself so any form of ``import websockets`` /
+    ``from websockets... import X`` raises the same ``ImportError`` Python
+    would raise if the package were genuinely missing.
+    """
+    real_import = builtins.__import__
+
+    def fake_import(name, globals=None, locals=None, fromlist=(), level=0):
+        if name == "websockets" or name.startswith("websockets."):
+            raise ImportError(f"No module named '{name}'")
+        return real_import(name, globals, locals, fromlist, level)
+
+    monkeypatch.setattr(builtins, "__import__", fake_import)
+
+
+def _reload_supervisor_module(
+    monkeypatch: pytest.MonkeyPatch, available: bool
+):
     """Reload ``tools.browser_supervisor`` with websockets present or absent."""
     if not available:
-        monkeypatch.setitem(sys.modules, "websockets", None)
-        monkeypatch.setitem(sys.modules, "websockets.asyncio", None)
-        monkeypatch.setitem(sys.modules, "websockets.asyncio.client", None)
-    sys.modules.pop("tools.browser_supervisor", None)
-    sys.modules.pop("tools.browser_dialog_tool", None)
+        for cached in ("websockets", "websockets.asyncio", "websockets.asyncio.client"):
+            monkeypatch.delitem(sys.modules, cached, raising=False)
+        _block_websockets_import(monkeypatch)
+    monkeypatch.delitem(sys.modules, "tools.browser_supervisor", raising=False)
+    monkeypatch.delitem(sys.modules, "tools.browser_dialog_tool", raising=False)
     return importlib.import_module("tools.browser_supervisor")
 
 
@@ -57,6 +81,17 @@ def test_supervisor_start_raises_clear_importerror_without_websockets(monkeypatc
     supervisor = module.CDPSupervisor(task_id="t", cdp_url="ws://example/devtools")
     with pytest.raises(ImportError, match="websockets"):
         supervisor.start()
+
+
+def test_supervisor_importerror_message_includes_min_version_and_original(monkeypatch):
+    module = _reload_supervisor_module(monkeypatch, available=False)
+    supervisor = module.CDPSupervisor(task_id="t", cdp_url="ws://example/devtools")
+    with pytest.raises(ImportError) as exc:
+        supervisor.start()
+    message = str(exc.value)
+    assert ">=13" in message, "expected min-version hint in error message"
+    assert "pip install" in message
+    assert "original error" in message, "expected original ImportError detail"
 
 
 def test_browser_supervisor_module_state_with_websockets_present():

@@ -42,10 +42,12 @@ try:
     from websockets.asyncio.client import ClientConnection
 
     _WS_AVAILABLE = True
-except ImportError:
+    _WS_IMPORT_ERROR: Optional[BaseException] = None
+except ImportError as exc:
     websockets = None  # type: ignore[assignment]
     ClientConnection = Any  # type: ignore[assignment,misc]
     _WS_AVAILABLE = False
+    _WS_IMPORT_ERROR = exc
 
 
 def _assert_websockets() -> None:
@@ -56,13 +58,20 @@ def _assert_websockets() -> None:
     only reached when the user wires up a browser) do not pay an import-time
     cost. Without this guard, missing ``websockets`` would surface as a
     confusing ``NameError`` deep inside the supervisor's background thread.
+
+    The minimum supported version is ``websockets>=13`` because the
+    ``websockets.asyncio.client`` module landed in 13.0 — older releases only
+    ship the legacy ``websockets.client`` API and will trigger the same
+    ImportError as a missing package.
     """
     if not _WS_AVAILABLE:
+        detail = f" (original error: {_WS_IMPORT_ERROR})" if _WS_IMPORT_ERROR else ""
         raise ImportError(
-            "The 'websockets' Python package is required to run the browser "
-            "CDP supervisor but is not installed. Install it with: "
-            "pip install websockets"
-        )
+            "The 'websockets' Python package (>=13) is required to run the "
+            "browser CDP supervisor but is not installed or is too old. "
+            "Install or upgrade it with: pip install -U 'websockets>=13'"
+            + detail
+        ) from _WS_IMPORT_ERROR
 
 logger = logging.getLogger(__name__)
 

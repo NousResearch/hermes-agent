@@ -14,6 +14,7 @@ from acp_adapter.edit_approval import (
     build_acp_edit_tool_call,
     build_acp_write_reattempt_tool_call,
     clear_edit_approval_requester,
+    reset_edit_approval_requester,
     set_edit_approval_requester,
     should_auto_approve_edit,
 )
@@ -321,6 +322,117 @@ def test_inactive_acp_guard_exception_does_not_block_terminal_tool(monkeypatch, 
 
     assert result.get("exit_code") == 0
     assert target.read_text(encoding="utf-8") == "after\n"
+
+
+def test_inactive_acp_guard_exception_does_not_block_execute_code_tool(monkeypatch, tmp_path):
+    target = tmp_path / "sample.txt"
+    target.write_text("before\n", encoding="utf-8")
+
+    import acp_adapter.edit_approval as edit_approval
+
+    def broken_guard(_tool_name, _arguments):
+        raise RuntimeError("guard bug")
+
+    monkeypatch.setattr(edit_approval, "maybe_require_edit_approval", broken_guard)
+
+    result = json.loads(
+        handle_function_call(
+            "execute_code",
+            {
+                "code": (
+                    "from pathlib import Path\n"
+                    f"Path({str(target)!r}).write_text('after\\n', encoding='utf-8')\n"
+                )
+            },
+            task_id="non-acp-code-guard-exception",
+        )
+    )
+
+    assert result.get("status") == "success"
+    assert target.read_text(encoding="utf-8") == "after\n"
+
+
+def test_reset_edit_approval_requester_clears_denied_reattempt_state(tmp_path):
+    target = tmp_path / "sample.txt"
+    target.write_text("before\n", encoding="utf-8")
+    outer_requests = []
+
+    outer_token = set_edit_approval_requester(lambda proposal: outer_requests.append(proposal) or False)
+    inner_token = set_edit_approval_requester(lambda _proposal: False)
+
+    try:
+        denied = json.loads(
+            handle_function_call(
+                "write_file",
+                {"path": str(target), "content": "after direct\n"},
+                task_id="acp-edit-reset-clears-denied-state",
+            )
+        )
+        assert "Edit approval denied" in denied["error"]
+
+        reset_edit_approval_requester(inner_token)
+
+        code = f"from pathlib import Path; Path({str(target)!r}).write_text('after\\n', encoding='utf-8')"
+        command = f"{shlex.quote(sys.executable)} -c {shlex.quote(code)}"
+        result = json.loads(
+            handle_function_call(
+                "terminal",
+                {"command": command},
+                task_id="acp-edit-reset-clears-denied-state",
+            )
+        )
+
+        assert result.get("exit_code") == 0
+        assert target.read_text(encoding="utf-8") == "after\n"
+        assert outer_requests == []
+    finally:
+        reset_edit_approval_requester(outer_token)
+
+
+def test_approved_direct_edit_forgets_prior_denial_for_same_path(tmp_path):
+    target = tmp_path / "sample.txt"
+    target.write_text("before\n", encoding="utf-8")
+    requests = []
+
+    def decide(proposal):
+        requests.append(proposal)
+        return len(requests) == 2
+
+    set_edit_approval_requester(decide)
+
+    denied = json.loads(
+        handle_function_call(
+            "write_file",
+            {"path": str(target), "content": "denied direct\n"},
+            task_id="acp-edit-forget-approved-direct-edit",
+        )
+    )
+    assert "Edit approval denied" in denied["error"]
+
+    approved = json.loads(
+        handle_function_call(
+            "write_file",
+            {"path": str(target), "content": "approved direct\n"},
+            task_id="acp-edit-forget-approved-direct-edit",
+        )
+    )
+    assert approved.get("bytes_written") == len("approved direct\n")
+    assert target.read_text(encoding="utf-8") == "approved direct\n"
+    assert len(requests) == 2
+
+    code = f"from pathlib import Path; Path({str(target)!r}).write_text('after terminal\\n', encoding='utf-8')"
+    command = f"{shlex.quote(sys.executable)} -c {shlex.quote(code)}"
+    result = json.loads(
+        handle_function_call(
+            "terminal",
+            {"command": command},
+            task_id="acp-edit-forget-approved-direct-edit",
+        )
+    )
+
+    assert result.get("exit_code") == 0
+    assert target.read_text(encoding="utf-8") == "after terminal\n"
+    assert len(requests) == 2
 
 
 def test_denied_write_file_prompts_for_shell_quoted_terminal_redirect_to_same_path(tmp_path):

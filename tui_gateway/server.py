@@ -212,7 +212,7 @@ def _start_kanban_fifo_reader(sid: str, session: dict) -> None:
                 # open() blocks until a writer opens the FIFO.
                 # for line in fifo blocks until a full line is written.
                 # Both are OS-level sleeps — zero polling.
-                with open(_KANBAN_FIFO_PATH, "r") as _fifo:
+                with open(_KANBAN_FIFO_PATH, "r", encoding="utf-8") as _fifo:
                     for _line in _fifo:
                         if session.get("_finalized"):
                             return

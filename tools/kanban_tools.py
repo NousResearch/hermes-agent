@@ -707,10 +707,34 @@ def _handle_create(args: dict, **kw) -> str:
                 session_id=session_id,
             )
             new_task = kb.get_task(conn, new_tid)
-            return _ok(
+            result = _ok(
                 task_id=new_tid,
                 status=new_task.status if new_task else None,
             )
+            # Auto-subscribe: when the orchestrator creates a task and provides
+            # notify_chat_id, subscribe the gateway's kanban notifier so
+            # results are delivered back to the originating conversation.
+            _notify_chat = args.get("notify_chat_id")
+            if _notify_chat:
+                profile = os.environ.get("HERMES_PROFILE") or ""
+                if profile and profile != str(assignee):
+                    try:
+                        from hermes_cli import kanban_db as _ksub
+                        _sub_conn = _ksub.connect(board=board)
+                        try:
+                            _ksub.add_notify_sub(
+                                _sub_conn, task_id=new_tid,
+                                platform="telegram",
+                                chat_id=_notify_chat,
+                                thread_id=args.get("notify_thread_id") or "",
+                                notifier_profile=profile,
+                            )
+                        finally:
+                            _sub_conn.close()
+                        result = result.rstrip() + "\n[auto-subscribed for result delivery]"
+                    except Exception as _sub_exc:
+                        logger.warning("kanban_create auto-subscribe failed: %s", _sub_exc)
+            return result
         finally:
             conn.close()
     except ValueError as e:
@@ -1167,6 +1191,22 @@ KANBAN_CREATE_SCHEMA = {
                 ),
             },
             "board": _board_schema_prop(),
+            "notify_chat_id": {
+                "type": "string",
+                "description": (
+                    "Optional. When set (and the caller profile differs "
+                    "from the assignee), auto-subscribe this chat/thread "
+                    "for task completion notifications so results are "
+                    "delivered back to the originating conversation."
+                ),
+            },
+            "notify_thread_id": {
+                "type": "string",
+                "description": (
+                    "Optional thread ID for notify_chat_id. Required "
+                    "when notifying a Telegram forum topic."
+                ),
+            },
         },
         "required": ["title", "assignee"],
     },

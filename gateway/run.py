@@ -4716,6 +4716,8 @@ class GatewayRunner:
             return
 
         TERMINAL_KINDS = ("completed", "blocked", "gave_up", "crashed", "timed_out")
+        # Progress events: also deliver spawned/claimed so users see task lifecycle
+        NOTIFY_KINDS = TERMINAL_KINDS + ("spawned", "claimed")
         # Subscriptions are removed only when the task reaches a truly final
         # status (done / archived). We used to also unsub on any terminal
         # event kind (gave_up / crashed / timed_out / blocked), but that
@@ -4823,7 +4825,7 @@ class GatewayRunner:
                                     platform=sub["platform"],
                                     chat_id=sub["chat_id"],
                                     thread_id=sub.get("thread_id") or "",
-                                    kinds=TERMINAL_KINDS,
+                                    kinds=NOTIFY_KINDS,
                                 )
                                 if not events:
                                     continue
@@ -4919,6 +4921,16 @@ class GatewayRunner:
                                 f"✖ {tag}Kanban {sub['task_id']} worker crashed "
                                 f"(pid gone); dispatcher will retry"
                             )
+                        elif kind == "spawned":
+                            msg = (
+                                f"🔄 {tag}Kanban {sub['task_id']} spawned "
+                                f"— {title}"
+                            )
+                        elif kind == "claimed":
+                            msg = (
+                                f"📋 {tag}Kanban {sub['task_id']} claimed "
+                                f"— working on: {title}"
+                            )
                         elif kind == "timed_out":
                             limit = 0
                             if ev.payload and ev.payload.get("limit_seconds"):
@@ -4969,6 +4981,55 @@ class GatewayRunner:
                                     )
                             # Reset the failure counter on success.
                             sub_fail_counts.pop(sub_key, None)
+                            # After delivering the completion notification,
+                            # trigger a new agent turn so the orchestrator
+                            # can synthesize the result for the user.
+                            if kind == "completed" and platform_str == "telegram":
+                                try:
+                                    from gateway.platforms.base import (
+                                        MessageEvent as _ME,
+                                        MessageType as _MT,
+                                        Platform as _Plat,
+                                    )
+                                    from gateway.session import SessionSource as _SS
+                                    _thread_id = sub.get("thread_id")
+                                    _resume_source = _SS(
+                                        platform=_Plat.TELEGRAM,
+                                        chat_id=str(sub["chat_id"]),
+                                        chat_type="group",
+                                        thread_id=str(_thread_id) if _thread_id else None,
+                                        user_id="system",
+                                        user_name="Kanban System",
+                                        is_bot=True,
+                                    )
+                                    # Fetch the task result to include in the resume prompt
+                                    _task_result_summary = ""
+                                    if task and task.get("result"):
+                                        _task_result_summary = str(task["result"])[:2000]
+                                    _resume_text = (
+                                        f"[System: Kanban task {sub['task_id']} completed. "
+                                        f"Read the completion notification above, then synthesize "
+                                        f"the result and present it clearly to the user.]"
+                                    )
+                                    if _task_result_summary:
+                                        _resume_text += f"\n\nTask result preview: {_task_result_summary}"
+                                    _resume_event = _ME(
+                                        text=_resume_text,
+                                        message_type=_MT.TEXT,
+                                        source=_resume_source,
+                                        internal=True,
+                                    )
+                                    asyncio.create_task(adapter.handle_message(_resume_event))
+                                    logger.info(
+                                        "kanban notifier: triggered orchestrator resume "
+                                        "for completed task %s in %s/%s",
+                                        sub["task_id"], sub["chat_id"], _thread_id,
+                                    )
+                                except Exception as _resume_exc:
+                                    logger.warning(
+                                        "kanban notifier: orchestrator resume failed for %s: %s",
+                                        sub["task_id"], _resume_exc, exc_info=True,
+                                    )
                         except Exception as exc:
                             fails = sub_fail_counts.get(sub_key, 0) + 1
                             sub_fail_counts[sub_key] = fails

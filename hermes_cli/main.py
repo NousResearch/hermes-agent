@@ -11269,7 +11269,16 @@ def main():
     gateway_subparsers.add_parser("list", help="List all profiles and their gateway status")
 
     # gateway setup
-    gateway_subparsers.add_parser("setup", help="Configure messaging platforms")
+    gateway_setup_parser = gateway_subparsers.add_parser(
+        "setup",
+        help="Configure messaging platforms and API-server clients",
+    )
+    gateway_setup_parser.add_argument(
+        "setup_target",
+        nargs="?",
+        choices=["chrome-extension"],
+        help="Optional client setup target",
+    )
 
     # gateway migrate-legacy
     gateway_migrate_legacy = gateway_subparsers.add_parser(

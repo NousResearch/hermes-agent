@@ -4718,6 +4718,40 @@ def _setup_signal():
     print_info(f"  Groups: {'enabled' if get_env_value('SIGNAL_GROUP_ALLOWED_USERS') else 'disabled'}")
 
 
+def _setup_chrome_extension():
+    """Configure API-server settings for the Chrome extension client."""
+    if is_managed():
+        managed_error("configure Chrome extension API server access")
+        return
+
+    print()
+    print(color("  ─── Chrome Extension Setup ───", Colors.CYAN))
+    print()
+    print_info("  The Chrome extension connects through the Hermes API server.")
+    print_info("  API server will listen on port 8642 by default")
+
+    extension_id = prompt(
+        "  Enter your Chrome extension ID (leave blank during development)",
+        password=False,
+    ).strip()
+
+    save_env_value("API_SERVER_ENABLED", "true")
+    if extension_id:
+        extension_id = extension_id.removeprefix("chrome-extension://").strip().strip("/")
+        cors_origin = f"chrome-extension://{extension_id}"
+        save_env_value("API_SERVER_CORS_ORIGINS", cors_origin)
+        print_success("  Saved API_SERVER_CORS_ORIGINS for the Chrome extension origin.")
+    else:
+        save_env_value("API_SERVER_CORS_ORIGINS", "*")
+        print_warning(
+            "  Wildcard CORS is fine for development. Set a specific extension "
+            "ID before exposing Hermes to the internet."
+        )
+
+    print_success("  Saved API_SERVER_ENABLED=true")
+    print_info("  Setup guide: website/docs/user-guide/messaging/chrome-extension.md")
+
+
 def _builtin_setup_fn(key: str):
     """Resolve the interactive setup function for a built-in platform key.
 
@@ -5040,7 +5074,11 @@ def _gateway_command_inner(args):
         return
 
     if subcmd == "setup":
-        gateway_setup()
+        setup_target = getattr(args, 'setup_target', None)
+        if setup_target == "chrome-extension":
+            _setup_chrome_extension()
+        else:
+            gateway_setup()
         return
 
     # Service management commands

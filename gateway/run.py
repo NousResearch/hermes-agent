@@ -480,6 +480,24 @@ def _uses_telegram_observed_group_context(channel_prompt: Optional[str]) -> bool
     return bool(channel_prompt and _TELEGRAM_OBSERVED_CONTEXT_PROMPT_MARKER in channel_prompt)
 
 
+def _history_offset_for_session_split(
+    *,
+    original_session_id: str,
+    effective_session_id: str,
+    original_history_len: int,
+) -> int:
+    """Return the transcript slice offset after an agent run.
+
+    Automatic context compression creates a new continuation session and
+    returns a shortened compressed message list. In that case the old history
+    length points past the end of the compressed list, so the gateway must write
+    the entire compressed continuation to JSONL.
+    """
+    if effective_session_id and effective_session_id != original_session_id:
+        return 0
+    return original_history_len
+
+
 def _build_gateway_agent_history(
     history: List[Dict[str, Any]],
     *,
@@ -1540,6 +1558,89 @@ def _preserve_queued_followup_history_offset(
     merged = dict(followup_result)
     merged["history_offset"] = current_offset
     return merged
+
+
+def _messages_to_persist_after_agent_run(
+    *,
+    agent_result: dict,
+    current_session_id: str,
+    original_session_id: str,
+    agent_messages: list,
+    message_text: Any,
+    timestamp: str,
+    platform_message_id: Optional[str] = None,
+    session_db_available: bool = False,
+) -> tuple[list[dict], bool]:
+    """Return transcript rows to persist for an agent result.
+
+    Normal transient failures persist only the current user message so retrying
+    keeps the user's request.  A compression session split is different: the
+    agent result's message list is already the new continuation transcript, so
+    persisting only the user turn would duplicate the tail and skip the compacted
+    summary for stores that rely on the gateway persistence path.
+
+    The returned ``skip_db`` flag mirrors the existing successful-turn path: if
+    SessionDB is available, the agent has already flushed these messages itself
+    and the gateway should only perform any non-DB compatibility write.
+    """
+
+    split_session = bool(
+        original_session_id
+        and current_session_id
+        and current_session_id != original_session_id
+    )
+    if not split_session:
+        entry = {"role": "user", "content": message_text, "timestamp": timestamp}
+        if platform_message_id:
+            entry["message_id"] = str(platform_message_id)
+        return [entry], False
+
+    history_len = agent_result.get("history_offset", 0)
+    if not isinstance(history_len, int) or history_len < 0:
+        history_len = 0
+    new_messages = agent_messages[history_len:] if len(agent_messages) > history_len else []
+    if not new_messages:
+        entry = {"role": "user", "content": message_text, "timestamp": timestamp}
+        if platform_message_id:
+            entry["message_id"] = str(platform_message_id)
+        return [entry], False
+
+    def _is_compaction_summary_content(content: Any) -> bool:
+        if not isinstance(content, str):
+            return False
+        stripped = content.lstrip()
+        return stripped.startswith("[CONTEXT COMPACTION") or stripped.startswith("[CONTEXT SUMMARY]")
+
+    def _content_matches_message_text(content: Any) -> bool:
+        if content == message_text:
+            return True
+        if isinstance(content, list) and isinstance(message_text, str):
+            text_parts = [
+                str(part.get("text", ""))
+                for part in content
+                if isinstance(part, dict) and part.get("type") == "text"
+            ]
+            return bool(text_parts) and "\n".join(text_parts) == message_text
+        return False
+
+    rows: list[dict] = []
+    user_msg_id_attached = False
+    fallback_user_without_msg_id: Optional[dict] = None
+    for msg in new_messages:
+        if msg.get("role") == "system":
+            continue
+        entry = {**msg, "timestamp": timestamp}
+        if msg.get("role") == "user" and "message_id" not in entry:
+            content = entry.get("content")
+            if not _is_compaction_summary_content(content):
+                fallback_user_without_msg_id = entry
+            if platform_message_id and _content_matches_message_text(content):
+                entry["message_id"] = str(platform_message_id)
+                user_msg_id_attached = True
+        rows.append(entry)
+    if platform_message_id and not user_msg_id_attached and fallback_user_without_msg_id is not None:
+        fallback_user_without_msg_id["message_id"] = str(platform_message_id)
+    return rows, bool(session_db_available)
 
 
 class GatewayRunner:
@@ -8509,6 +8610,10 @@ class GatewayRunner:
             }
             await self.hooks.emit("agent:start", hook_ctx)
 
+            # Capture before _run_agent(): context compression can mutate the
+            # shared SessionEntry via session_store._entries while returning.
+            _original_session_id_for_turn = session_entry.session_id
+
             # Run the agent
             agent_result = await self._run_agent(
                 message=message_text,
@@ -8781,17 +8886,32 @@ class GatewayRunner:
             if is_context_overflow_failure:
                 pass  # handled above — skip all transcript writes
             elif agent_failed_early:
-                # Transient failure (429/timeout/5xx): persist only the user
+                # Transient failure (429/timeout/5xx): persist the user's
                 # message so the next message can load a transcript that
                 # reflects what was said.  Skip the assistant error text since
                 # it's a gateway-generated hint, not model output. (#7100)
-                _user_entry = {"role": "user", "content": message_text, "timestamp": ts}
-                if event.message_id:
-                    _user_entry["message_id"] = str(event.message_id)
-                self.session_store.append_to_transcript(
-                    session_entry.session_id,
-                    _user_entry,
+                #
+                # If the agent compressed into a continuation session before
+                # failing, its returned message list is the new session's full
+                # compacted transcript.  Preserve that slice (and avoid a DB
+                # duplicate when the agent already flushed it) instead of
+                # appending only another copy of the current user turn.
+                _rows_to_persist, _skip_db_for_rows = _messages_to_persist_after_agent_run(
+                    agent_result=agent_result,
+                    current_session_id=session_entry.session_id,
+                    original_session_id=_original_session_id_for_turn,
+                    agent_messages=agent_messages,
+                    message_text=message_text,
+                    timestamp=ts,
+                    platform_message_id=event.message_id,
+                    session_db_available=self._session_db is not None,
                 )
+                for _row in _rows_to_persist:
+                    self.session_store.append_to_transcript(
+                        session_entry.session_id,
+                        _row,
+                        skip_db=_skip_db_for_rows,
+                    )
             else:
                 history_len = agent_result.get("history_offset", len(history))
                 new_messages = agent_messages[history_len:] if len(agent_messages) > history_len else []
@@ -8816,29 +8936,51 @@ class GatewayRunner:
                     # to prevent the duplicate-write bug (#860).  We still write
                     # to JSONL for backward compatibility and as a backup.
                     agent_persisted = self._session_db is not None
-                    # Attach the inbound platform message_id to the first user
-                    # entry written this turn so platform-level quote-resolution
-                    # (e.g. Yuanbao QuoteContextMiddleware's transcript fallback)
-                    # can find earlier @bot messages by their original message_id.
-                    _user_msg_id_attached = False
-                    for msg in new_messages:
-                        # Skip system messages (they're rebuilt each run)
-                        if msg.get("role") == "system":
-                            continue
-                        # Add timestamp to each message for debugging
-                        entry = {**msg, "timestamp": ts}
-                        if (
-                            not _user_msg_id_attached
-                            and msg.get("role") == "user"
-                            and event.message_id
-                            and "message_id" not in entry
-                        ):
-                            entry["message_id"] = str(event.message_id)
-                            _user_msg_id_attached = True
-                        self.session_store.append_to_transcript(
-                            session_entry.session_id, entry,
-                            skip_db=agent_persisted,
+                    if session_entry.session_id != _original_session_id_for_turn:
+                        # Compression splits replay the compacted continuation from
+                        # offset 0.  Reuse the same row builder as failed paths so
+                        # platform message_id binds to the real current user turn,
+                        # not the compaction summary row.
+                        _rows_to_persist, _skip_db_for_rows = _messages_to_persist_after_agent_run(
+                            agent_result=agent_result,
+                            current_session_id=session_entry.session_id,
+                            original_session_id=_original_session_id_for_turn,
+                            agent_messages=agent_messages,
+                            message_text=message_text,
+                            timestamp=ts,
+                            platform_message_id=event.message_id,
+                            session_db_available=self._session_db is not None,
                         )
+                        for _row in _rows_to_persist:
+                            self.session_store.append_to_transcript(
+                                session_entry.session_id,
+                                _row,
+                                skip_db=_skip_db_for_rows,
+                            )
+                    else:
+                        # Attach the inbound platform message_id to the first user
+                        # entry written this turn so platform-level quote-resolution
+                        # (e.g. Yuanbao QuoteContextMiddleware's transcript fallback)
+                        # can find earlier @bot messages by their original message_id.
+                        _user_msg_id_attached = False
+                        for msg in new_messages:
+                            # Skip system messages (they're rebuilt each run)
+                            if msg.get("role") == "system":
+                                continue
+                            # Add timestamp to each message for debugging
+                            entry = {**msg, "timestamp": ts}
+                            if (
+                                not _user_msg_id_attached
+                                and msg.get("role") == "user"
+                                and event.message_id
+                                and "message_id" not in entry
+                            ):
+                                entry["message_id"] = str(event.message_id)
+                                _user_msg_id_attached = True
+                            self.session_store.append_to_transcript(
+                                session_entry.session_id, entry,
+                                skip_db=agent_persisted,
+                            )
             
             # Token counts and model are now persisted by the agent directly.
             # Keep only last_prompt_tokens here for context-window tracking and
@@ -16841,6 +16983,32 @@ class GatewayRunner:
                 _context_length = getattr(_agent.context_compressor, "context_length", 0) or 0
             _resolved_model = getattr(_agent, "model", None) if _agent else None
 
+            # Sync session_id before any return: the agent may have created a
+            # new session during mid-run context compression (_compress_context
+            # splits sessions). Error/no-response paths must update the session
+            # store too, otherwise the next message reloads the stale
+            # pre-compression transcript.
+            agent = agent_holder[0]
+            _session_was_split = False
+            if agent and session_key and hasattr(agent, 'session_id') and agent.session_id != session_id:
+                _session_was_split = True
+                logger.info(
+                    "Session split detected: %s → %s (compression)",
+                    session_id, agent.session_id,
+                )
+                entry = self.session_store._entries.get(session_key)
+                if entry:
+                    entry.session_id = agent.session_id
+                    self.session_store._save()
+
+            effective_session_id = getattr(agent, 'session_id', session_id) if agent else session_id
+            effective_session_id = effective_session_id or session_id
+            _effective_history_offset = _history_offset_for_session_split(
+                original_session_id=session_id,
+                effective_session_id=effective_session_id,
+                original_history_len=len(agent_history),
+            )
+
             if not final_response:
                 error_msg = f"⚠️ {result['error']}" if result.get("error") else ""
                 return {
@@ -16855,12 +17023,13 @@ class GatewayRunner:
                     "error": result.get("error"),
                     "compression_exhausted": result.get("compression_exhausted", False),
                     "tools": tools_holder[0] or [],
-                    "history_offset": len(agent_history),
+                    "history_offset": _effective_history_offset,
                     "last_prompt_tokens": _last_prompt_toks,
                     "input_tokens": _input_toks,
                     "output_tokens": _output_toks,
                     "model": _resolved_model,
                     "context_length": _context_length,
+                    "session_id": effective_session_id,
                 }
             
             # Scan tool results for MEDIA:<path> tags that need to be delivered
@@ -16905,62 +17074,37 @@ class GatewayRunner:
                         unique_tags.insert(0, "[[audio_as_voice]]")
                     final_response = final_response + "\n" + "\n".join(unique_tags)
             
-            # Sync session_id: the agent may have created a new session during
-            # mid-run context compression (_compress_context splits sessions).
-            # If so, update the session store entry so the NEXT message loads
-            # the compressed transcript, not the stale pre-compression one.
-            agent = agent_holder[0]
-            _session_was_split = False
-            if agent and session_key and hasattr(agent, 'session_id') and agent.session_id != session_id:
-                _session_was_split = True
-                logger.info(
-                    "Session split detected: %s → %s (compression)",
-                    session_id, agent.session_id,
-                )
-                entry = self.session_store._entries.get(session_key)
-                if entry:
-                    entry.session_id = agent.session_id
-                    self.session_store._save()
-
-                # If this is a Telegram DM and source.thread_id was lost during
-                # the session split (synthetic / recovered event), restore it
-                # from the binding so _thread_metadata_for_source produces the
-                # correct message_thread_id instead of routing to the General
-                # thread.  Failure here is non-fatal — we log and continue;
-                # worst case the message lands in General, which is the
-                # pre-fix behaviour.
-                if (
-                    getattr(source, "platform", None) == Platform.TELEGRAM
-                    and getattr(source, "chat_type", None) == "dm"
-                    and getattr(source, "thread_id", None) is None
-                    and self._session_db is not None
-                ):
-                    try:
-                        _binding = self._session_db.get_telegram_topic_binding_by_session(
-                            session_id=agent.session_id,
-                        )
-                        if _binding and _binding.get("thread_id"):
-                            source.thread_id = str(_binding["thread_id"])
-                            logger.debug(
-                                "Restored source.thread_id=%s from binding after session split %s → %s",
-                                source.thread_id,
-                                session_id,
-                                agent.session_id,
-                            )
-                    except Exception:
+            # If this is a Telegram DM and source.thread_id was lost during the
+            # session split (synthetic / recovered event), restore it from the
+            # binding so _thread_metadata_for_source produces the correct
+            # message_thread_id instead of routing to the General thread.
+            # Failure here is non-fatal — we log and continue; worst case the
+            # message lands in General, which is the pre-fix behaviour.
+            if (
+                _session_was_split
+                and agent
+                and getattr(source, "platform", None) == Platform.TELEGRAM
+                and getattr(source, "chat_type", None) == "dm"
+                and getattr(source, "thread_id", None) is None
+                and self._session_db is not None
+            ):
+                try:
+                    _binding = self._session_db.get_telegram_topic_binding_by_session(
+                        session_id=agent.session_id,
+                    )
+                    if _binding and _binding.get("thread_id"):
+                        source.thread_id = str(_binding["thread_id"])
                         logger.debug(
-                            "Failed to restore thread_id from binding after session split",
-                            exc_info=True,
+                            "Restored source.thread_id=%s from binding after session split %s → %s",
+                            source.thread_id,
+                            session_id,
+                            agent.session_id,
                         )
-
-            effective_session_id = getattr(agent, 'session_id', session_id) if agent else session_id
-
-            # When compression created a new session, the messages list was
-            # shortened.  Using the original history offset would produce an
-            # empty new_messages slice, causing the gateway to write only a
-            # user/assistant pair — losing the compressed summary and tail.
-            # Reset to 0 so the gateway writes ALL compressed messages.
-            _effective_history_offset = 0 if _session_was_split else len(agent_history)
+                except Exception:
+                    logger.debug(
+                        "Failed to restore thread_id from binding after session split",
+                        exc_info=True,
+                    )
 
             # Auto-generate session title after first exchange (non-blocking)
             if final_response and self._session_db:

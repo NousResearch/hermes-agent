@@ -604,3 +604,56 @@ class TestFinalizeOrphanedCompressionSessions:
 
         session = db.get_session("titled-ghost")
         assert session["end_reason"] == "orphaned_compression"
+
+
+# ===========================================================================
+# CLI one-shot closeout: chat -q does not enter interactive run() finally
+# ===========================================================================
+
+class TestCliSessionCloseoutHelper:
+    """CLI session closeout must be reusable outside interactive run()."""
+
+    def test_finalize_cli_session_targets_agent_session_id_after_compression(self, tmp_path):
+        """If compression rotated the agent to a child session, close the child."""
+        from cli import HermesCLI
+
+        db = _make_session_db(tmp_path)
+        db.create_session(session_id="parent-cli", source="cli", model="test")
+        db.end_session("parent-cli", "compression")
+        db.create_session(
+            session_id="child-cli",
+            source="cli",
+            model="test",
+            parent_session_id="parent-cli",
+        )
+
+        cli = HermesCLI.__new__(HermesCLI)
+        cli._session_db = db
+        cli.session_id = "parent-cli"
+        cli.agent = types.SimpleNamespace(session_id="child-cli")
+
+        cli._finalize_cli_session("cli_close")
+
+        parent = db.get_session("parent-cli")
+        child = db.get_session("child-cli")
+        assert parent["end_reason"] == "compression"
+        assert child["end_reason"] == "cli_close"
+        assert child["ended_at"] is not None
+
+    def test_finalize_cli_session_falls_back_to_cli_session_without_agent(self, tmp_path):
+        """Lazy/no-agent closeout should still end the known CLI session id."""
+        from cli import HermesCLI
+
+        db = _make_session_db(tmp_path)
+        db.create_session(session_id="lazy-cli", source="cli", model="test")
+
+        cli = HermesCLI.__new__(HermesCLI)
+        cli._session_db = db
+        cli.session_id = "lazy-cli"
+        cli.agent = None
+
+        cli._finalize_cli_session("cli_close")
+
+        session = db.get_session("lazy-cli")
+        assert session["end_reason"] == "cli_close"
+        assert session["ended_at"] is not None

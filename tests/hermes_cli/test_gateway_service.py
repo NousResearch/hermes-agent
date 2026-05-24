@@ -1716,6 +1716,25 @@ class TestProfileArg:
         assert "/pytest-of-" not in path_value
         assert "/hermes_test/" not in path_value
 
+    def test_launchd_plist_keeps_user_dir_named_hermes_test(self, tmp_path, monkeypatch):
+        # A real user directory called ``hermes_test`` (no ``pytest-of-`` ancestor)
+        # must NOT be filtered out as a pytest tmpdir artifact. (#31074)
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir(parents=True)
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.setattr(gateway_cli, "get_hermes_home", lambda: hermes_home)
+        monkeypatch.setenv(
+            "PATH",
+            "/Users/alice/code/hermes_test/scripts:/usr/local/bin:/usr/bin",
+        )
+        monkeypatch.setattr(gateway_cli.shutil, "which", lambda cmd: None)
+
+        path_value = self._launchd_path_value(gateway_cli.generate_launchd_plist())
+
+        assert "/Users/alice/code/hermes_test/scripts" in path_value
+        assert "/pytest-of-" not in path_value
+
     def test_launchd_plist_path_uses_real_user_home_not_profile_home(self, tmp_path, monkeypatch):
         profile_dir = tmp_path / ".hermes" / "profiles" / "orcha"
         profile_dir.mkdir(parents=True)

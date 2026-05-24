@@ -2258,13 +2258,11 @@ def _looks_like_pytest_temp_path(path: str | Path) -> bool:
     stale `/tmp/pytest-of-.../hermes_test/...` paths that a previous test run
     may have left behind on the developer's machine (e.g. via a
     `~/.local/bin/node` symlink that still resolves into a pytest tempdir).
+
+    Requires ``/pytest-of-`` to appear in the path so a legitimate user
+    directory called ``hermes_test`` is not mistaken for a pytest leftover.
     """
-    raw = str(path)
-    return (
-        "/pytest-of-" in raw
-        or "/hermes_test/" in raw
-        or raw.endswith("/hermes_test")
-    )
+    return "/pytest-of-" in str(path)
 
 
 def _build_service_path_dirs(project_root: Path | None = None) -> list[str]:

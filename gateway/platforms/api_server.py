@@ -669,6 +669,7 @@ class APIServerAdapter(BasePlatformAdapter):
         # in-flight run by run_id.
         self._run_approval_sessions: Dict[str, str] = {}
         self._session_db: Optional[Any] = None  # Lazy-init SessionDB for session continuity
+        self._session_model_overrides: Dict[str, Dict[str, Any]] = {}
 
     @staticmethod
     def _parse_cors_origins(value: Any) -> tuple[str, ...]:
@@ -881,7 +882,8 @@ class APIServerAdapter(BasePlatformAdapter):
 
         runtime_kwargs = _resolve_runtime_agent_kwargs()
         reasoning_config = GatewayRunner._load_reasoning_config()
-        model = model_override or _resolve_gateway_model()
+        model = self._request_model_override(model_override) or _resolve_gateway_model()
+        model, runtime_kwargs = self._apply_session_model_override(session_id, model, runtime_kwargs)
 
         user_config = _load_gateway_config()
         enabled_toolsets = sorted(_get_platform_tools(user_config, "api_server"))
@@ -913,6 +915,36 @@ class APIServerAdapter(BasePlatformAdapter):
             gateway_session_key=gateway_session_key,
         )
         return agent
+
+    def _request_model_override(self, requested_model: Optional[str]) -> Optional[str]:
+        """Treat the advertised profile model as an alias for the configured LLM."""
+        if not requested_model:
+            return None
+        model = str(requested_model).strip()
+        if not model or model == self._model_name:
+            return None
+        return model
+
+    def _apply_session_model_override(
+        self,
+        session_id: Optional[str],
+        model: str,
+        runtime_kwargs: Dict[str, Any],
+    ) -> tuple[str, Dict[str, Any]]:
+        """Apply API-server session-scoped model routing overrides."""
+        if not session_id:
+            return model, runtime_kwargs
+
+        override = self._session_model_overrides.get(session_id)
+        if not override:
+            return model, runtime_kwargs
+
+        next_kwargs = dict(runtime_kwargs)
+        model = override.get("model", model)
+        for key in ("provider", "api_key", "base_url", "api_mode"):
+            if key in override and override[key] is not None:
+                next_kwargs[key] = override[key]
+        return model, next_kwargs
 
     # ------------------------------------------------------------------
     # HTTP Handlers
@@ -963,6 +995,101 @@ class APIServerAdapter(BasePlatformAdapter):
                 }
             ],
         })
+
+    async def _handle_current_model(self, request: "web.Request") -> "web.Response":
+        """GET /v1/model/current — return the configured gateway model."""
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+
+        try:
+            from hermes_cli.inventory import load_picker_context
+
+            ctx = load_picker_context()
+            return web.json_response({
+                "object": "hermes.model.current",
+                "provider": ctx.current_provider,
+                "model": ctx.current_model,
+                "base_url": ctx.current_base_url,
+            })
+        except Exception as exc:
+            logger.warning("Failed to resolve current API-server model: %s", exc)
+            return web.json_response(_openai_error(str(exc)), status=500)
+
+    async def _handle_set_session_model(self, request: "web.Request") -> "web.Response":
+        """POST /v1/sessions/{session_id}/model — switch one API session."""
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+
+        session_id = str(request.match_info.get("session_id", "")).strip()
+        if not session_id or len(session_id) > self._MAX_SESSION_HEADER_LEN or re.search(r'[\r\n\x00]', session_id):
+            return web.json_response(
+                {"error": {"message": "Invalid session ID", "type": "invalid_request_error"}},
+                status=400,
+            )
+
+        try:
+            body = await request.json()
+        except (json.JSONDecodeError, Exception):
+            return web.json_response(_openai_error("Invalid JSON in request body"), status=400)
+
+        model_input = str(body.get("model") or "").strip()
+        explicit_provider = str(body.get("provider") or "").strip()
+        if not model_input or not explicit_provider:
+            return web.json_response(
+                _openai_error("'provider' and 'model' are required"),
+                status=400,
+            )
+
+        try:
+            from gateway.run import _resolve_gateway_model
+            from hermes_cli.config import get_compatible_custom_providers, load_config
+            from hermes_cli.model_switch import switch_model
+            from hermes_cli.runtime_provider import resolve_runtime_provider
+
+            runtime = resolve_runtime_provider(requested=None)
+            current_api_key = runtime.get("api_key", "")
+            if not callable(current_api_key):
+                current_api_key = str(current_api_key or "")
+
+            cfg = load_config()
+            result = switch_model(
+                raw_input=model_input,
+                current_provider=str(runtime.get("provider", "") or ""),
+                current_model=_resolve_gateway_model(),
+                current_base_url=str(runtime.get("base_url", "") or ""),
+                current_api_key=current_api_key,
+                is_global=False,
+                explicit_provider=explicit_provider,
+                user_providers=cfg.get("providers") if isinstance(cfg.get("providers"), dict) else None,
+                custom_providers=get_compatible_custom_providers(cfg),
+            )
+            if not result.success:
+                return web.json_response(
+                    _openai_error(result.error_message or "model switch failed"),
+                    status=400,
+                )
+
+            self._session_model_overrides[session_id] = {
+                "model": result.new_model,
+                "provider": result.target_provider,
+                "api_key": result.api_key,
+                "base_url": result.base_url,
+                "api_mode": result.api_mode,
+            }
+            return web.json_response({
+                "object": "hermes.session.model",
+                "session_id": session_id,
+                "model": result.new_model,
+                "provider": result.target_provider,
+                "base_url": result.base_url,
+                "api_mode": result.api_mode,
+                "warning": result.warning_message or "",
+            })
+        except Exception as exc:
+            logger.warning("Session model switch failed for %s: %s", session_id, exc)
+            return web.json_response(_openai_error(str(exc)), status=500)
 
 
     async def _handle_commands(self, request: "web.Request") -> "web.Response":
@@ -1054,6 +1181,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 "run_approval_response": True,
                 "tool_progress_events": True,
                 "approval_events": True,
+                "session_model_selection": True,
                 "session_continuity_header": "X-Hermes-Session-Id",
                 "session_key_header": "X-Hermes-Session-Key",
                 "cors": bool(self._cors_origins),
@@ -1062,6 +1190,8 @@ class APIServerAdapter(BasePlatformAdapter):
                 "health": {"method": "GET", "path": "/health"},
                 "health_detailed": {"method": "GET", "path": "/health/detailed"},
                 "models": {"method": "GET", "path": "/v1/models"},
+                "current_model": {"method": "GET", "path": "/v1/model/current"},
+                "session_model": {"method": "POST", "path": "/v1/sessions/{session_id}/model"},
                 "chat_completions": {"method": "POST", "path": "/v1/chat/completions"},
                 "responses": {"method": "POST", "path": "/v1/responses"},
                 "runs": {"method": "POST", "path": "/v1/runs"},
@@ -3895,6 +4025,8 @@ class APIServerAdapter(BasePlatformAdapter):
             self._app.router.add_get("/health/detailed", self._handle_health_detailed)
             self._app.router.add_get("/v1/health", self._handle_health)
             self._app.router.add_get("/v1/models", self._handle_models)
+            self._app.router.add_get("/v1/model/current", self._handle_current_model)
+            self._app.router.add_post("/v1/sessions/{session_id}/model", self._handle_set_session_model)
             self._app.router.add_get("/v1/capabilities", self._handle_capabilities)
             self._app.router.add_get("/v1/commands", self._handle_commands)
             self._app.router.add_post("/v1/chat/completions", self._handle_chat_completions)

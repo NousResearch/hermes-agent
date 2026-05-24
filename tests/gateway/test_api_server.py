@@ -16,6 +16,7 @@ import asyncio
 import json
 import time
 import uuid
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -305,6 +306,72 @@ class TestAdapterInit:
         assert isinstance(agent, FakeAgent)
         assert captured["reasoning_config"] == {"enabled": True, "effort": "xhigh"}
 
+    def test_create_agent_ignores_advertised_profile_model_override(self, monkeypatch):
+        captured = {}
+
+        class FakeAgent:
+            def __init__(self, **kwargs):
+                captured.update(kwargs)
+
+        monkeypatch.setattr("run_agent.AIAgent", FakeAgent)
+        monkeypatch.setattr(
+            "gateway.run._resolve_runtime_agent_kwargs",
+            lambda: {"provider": "openrouter", "base_url": "", "api_mode": "chat_completions"},
+        )
+        monkeypatch.setattr("gateway.run._resolve_gateway_model", lambda: "google/gemini-3.5-flash")
+        monkeypatch.setattr("gateway.run._load_gateway_config", lambda: {})
+        monkeypatch.setattr("gateway.run.GatewayRunner._load_reasoning_config", staticmethod(lambda: None))
+        monkeypatch.setattr("gateway.run.GatewayRunner._load_fallback_model", staticmethod(lambda: None))
+        monkeypatch.setattr("hermes_cli.tools_config._get_platform_tools", lambda *_: set())
+
+        adapter = APIServerAdapter(PlatformConfig(enabled=True))
+        monkeypatch.setattr(adapter, "_ensure_session_db", lambda: None)
+
+        adapter._create_agent(session_id="api-session", model_override=adapter._model_name)
+
+        assert captured["model"] == "google/gemini-3.5-flash"
+
+    def test_create_agent_applies_session_model_override(self, monkeypatch):
+        captured = {}
+
+        class FakeAgent:
+            def __init__(self, **kwargs):
+                captured.update(kwargs)
+
+        monkeypatch.setattr("run_agent.AIAgent", FakeAgent)
+        monkeypatch.setattr(
+            "gateway.run._resolve_runtime_agent_kwargs",
+            lambda: {
+                "provider": "openrouter",
+                "api_key": "or-key",
+                "base_url": "https://openrouter.ai/api/v1",
+                "api_mode": "chat_completions",
+            },
+        )
+        monkeypatch.setattr("gateway.run._resolve_gateway_model", lambda: "google/gemini-3.5-flash")
+        monkeypatch.setattr("gateway.run._load_gateway_config", lambda: {})
+        monkeypatch.setattr("gateway.run.GatewayRunner._load_reasoning_config", staticmethod(lambda: None))
+        monkeypatch.setattr("gateway.run.GatewayRunner._load_fallback_model", staticmethod(lambda: None))
+        monkeypatch.setattr("hermes_cli.tools_config._get_platform_tools", lambda *_: set())
+
+        adapter = APIServerAdapter(PlatformConfig(enabled=True))
+        adapter._session_model_overrides["api-session"] = {
+            "model": "gpt-5.3-codex",
+            "provider": "openai-codex",
+            "api_key": "codex-key",
+            "base_url": "https://chatgpt.com/backend-api/codex",
+            "api_mode": "codex_responses",
+        }
+        monkeypatch.setattr(adapter, "_ensure_session_db", lambda: None)
+
+        adapter._create_agent(session_id="api-session")
+
+        assert captured["model"] == "gpt-5.3-codex"
+        assert captured["provider"] == "openai-codex"
+        assert captured["api_key"] == "codex-key"
+        assert captured["base_url"] == "https://chatgpt.com/backend-api/codex"
+        assert captured["api_mode"] == "codex_responses"
+
 
 # ---------------------------------------------------------------------------
 # Auth checking
@@ -379,6 +446,8 @@ def _create_app(adapter: APIServerAdapter) -> web.Application:
     app.router.add_get("/health/detailed", adapter._handle_health_detailed)
     app.router.add_get("/v1/health", adapter._handle_health)
     app.router.add_get("/v1/models", adapter._handle_models)
+    app.router.add_get("/v1/model/current", adapter._handle_current_model)
+    app.router.add_post("/v1/sessions/{session_id}/model", adapter._handle_set_session_model)
     app.router.add_get("/v1/capabilities", adapter._handle_capabilities)
     app.router.add_get("/v1/commands", adapter._handle_commands)
     app.router.add_post("/v1/chat/completions", adapter._handle_chat_completions)
@@ -580,6 +649,7 @@ class TestModelsEndpoint:
         with patch("hermes_cli.profiles.get_active_profile_name", return_value="lucas"):
             assert APIServerAdapter._resolve_model_name("") == "lucas"
 
+
     @pytest.mark.asyncio
     async def test_models_requires_auth(self, auth_adapter):
         app = _create_app(auth_adapter)
@@ -596,6 +666,57 @@ class TestModelsEndpoint:
                 headers={"Authorization": "Bearer sk-secret"},
             )
             assert resp.status == 200
+
+
+# ---------------------------------------------------------------------------
+# /v1/sessions/{session_id}/model endpoint
+# ---------------------------------------------------------------------------
+
+
+class TestSessionModelEndpoint:
+    @pytest.mark.asyncio
+    async def test_session_model_switch_stores_resolved_codex_routing(self, adapter, monkeypatch):
+        result = SimpleNamespace(
+            success=True,
+            new_model="gpt-5.3-codex",
+            target_provider="openai-codex",
+            api_key="codex-token",
+            base_url="https://chatgpt.com/backend-api/codex",
+            api_mode="codex_responses",
+            warning_message="",
+        )
+
+        monkeypatch.setattr(
+            "hermes_cli.runtime_provider.resolve_runtime_provider",
+            lambda requested=None: {
+                "provider": "openrouter",
+                "api_key": "or-key",
+                "base_url": "https://openrouter.ai/api/v1",
+            },
+        )
+        monkeypatch.setattr("gateway.run._resolve_gateway_model", lambda: "google/gemini-3.5-flash")
+        monkeypatch.setattr("hermes_cli.config.load_config", lambda: {"providers": {}})
+        monkeypatch.setattr("hermes_cli.config.get_compatible_custom_providers", lambda _cfg: [])
+        monkeypatch.setattr("hermes_cli.model_switch.switch_model", lambda **_kwargs: result)
+
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.post(
+                "/v1/sessions/api-session/model",
+                json={"provider": "openai-codex", "model": "gpt-5.3-codex"},
+            )
+            data = await resp.json()
+
+        assert resp.status == 200
+        assert data["model"] == "gpt-5.3-codex"
+        assert data["provider"] == "openai-codex"
+        assert adapter._session_model_overrides["api-session"] == {
+            "model": "gpt-5.3-codex",
+            "provider": "openai-codex",
+            "api_key": "codex-token",
+            "base_url": "https://chatgpt.com/backend-api/codex",
+            "api_mode": "codex_responses",
+        }
 
 
 # ---------------------------------------------------------------------------

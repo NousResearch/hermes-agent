@@ -184,12 +184,15 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
     if skills_prompt:
         stable_parts.append(skills_prompt)
 
-    # Alibaba Coding Plan API always returns "glm-4.7" as model name regardless
-    # of the requested model. Inject explicit model identity into the system prompt
-    # so the agent can correctly report which model it is (workaround for API bug).
-    # Stable for the lifetime of an agent instance — model and provider are fixed
-    # at construction time.
-    if agent.provider == "alibaba":
+    # Inject explicit model identity so the agent can correctly report which
+    # model it is. Models cannot introspect their runtime; without this hint
+    # they guess from training data or conversation history, which is wrong
+    # whenever a fallback provider takes over mid-session (e.g. codex →
+    # xai-oauth) or when an API echoes a misleading model name (Alibaba
+    # Coding Plan always returns "glm-4.7" regardless of the requested model).
+    # Stable for the lifetime of an agent instance — model and provider are
+    # fixed at construction time.
+    if agent.model:
         _model_short = agent.model.split("/")[-1] if "/" in agent.model else agent.model
         stable_parts.append(
             f"You are powered by the model named {_model_short}. "

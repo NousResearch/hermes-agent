@@ -285,6 +285,161 @@ def test_doctor_reports_vercel_backend_diagnostics(monkeypatch, tmp_path):
     assert "snapshot filesystem only" in out
 
 
+def test_doctor_ssh_probe_uses_strict_host_checking(monkeypatch, tmp_path):
+    """SSH probe must include StrictHostKeyChecking=accept-new to match runtime backend."""
+    home = tmp_path / ".hermes"
+    home.mkdir(parents=True, exist_ok=True)
+    (home / "config.yaml").write_text("model:\n  provider: auto\n", encoding="utf-8")
+
+    monkeypatch.setattr(doctor_mod, "HERMES_HOME", home)
+    monkeypatch.setattr(doctor_mod, "PROJECT_ROOT", tmp_path / "project")
+    monkeypatch.setattr(doctor_mod, "_DHH", str(home))
+    (tmp_path / "project").mkdir(exist_ok=True)
+
+    monkeypatch.setenv("TERMINAL_ENV", "ssh")
+    monkeypatch.setenv("TERMINAL_SSH_HOST", "hermes-terminal")
+    monkeypatch.setenv("TERMINAL_SSH_USER", "hermes")
+    monkeypatch.setenv("TERMINAL_SSH_PORT", "2222")
+    monkeypatch.setenv("TERMINAL_SSH_KEY", "/opt/data/ssh/hermes_terminal")
+
+    fake_model_tools = types.SimpleNamespace(
+        check_tool_availability=lambda *a, **kw: ([], []),
+        TOOLSET_REQUIREMENTS={},
+    )
+    monkeypatch.setitem(sys.modules, "model_tools", fake_model_tools)
+
+    ssh_commands = []
+
+    def fake_run(cmd, *args, **kwargs):
+        if cmd and cmd[0] == "ssh":
+            ssh_commands.append(cmd)
+            return SimpleNamespace(returncode=0, stdout="ok\n", stderr="")
+        return SimpleNamespace(returncode=1, stdout="", stderr="")
+
+    monkeypatch.setattr(doctor_mod.subprocess, "run", fake_run)
+
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        doctor_mod.run_doctor(Namespace(fix=False))
+
+    assert ssh_commands == [[
+        "ssh",
+        "-o", "ConnectTimeout=5",
+        "-o", "BatchMode=yes",
+        "-o", "StrictHostKeyChecking=accept-new",
+        "-p", "2222",
+        "-i", "/opt/data/ssh/hermes_terminal",
+        "hermes@hermes-terminal",
+        "echo ok",
+    ]]
+    assert "SSH connection to hermes-terminal" in buf.getvalue()
+
+
+def test_doctor_ssh_reads_env_file(monkeypatch, tmp_path):
+    """SSH probe should read TERMINAL_SSH_* from .env file, not just process env."""
+    home = tmp_path / ".hermes"
+    home.mkdir(parents=True, exist_ok=True)
+    (home / "config.yaml").write_text("model:\n  provider: auto\n", encoding="utf-8")
+    # Write SSH config to .env file only (not process env)
+    (home / ".env").write_text(
+        "TERMINAL_SSH_HOST=remote-server\n"
+        "TERMINAL_SSH_USER=deploy\n"
+        "TERMINAL_SSH_PORT=2222\n"
+        "TERMINAL_SSH_KEY=/home/deploy/.ssh/id_ed25519\n",
+        encoding="utf-8",
+    )
+
+    monkeypatch.setattr(doctor_mod, "HERMES_HOME", home)
+    monkeypatch.setattr(doctor_mod, "PROJECT_ROOT", tmp_path / "project")
+    monkeypatch.setattr(doctor_mod, "_DHH", str(home))
+    # Patch get_hermes_home so get_env_value reads our tmp .env
+    import hermes_cli.config as config_mod
+    monkeypatch.setattr(config_mod, "get_hermes_home", lambda: home)
+    config_mod._env_cache = None
+    (tmp_path / "project").mkdir(exist_ok=True)
+
+    monkeypatch.setenv("TERMINAL_ENV", "ssh")
+    # Explicitly remove SSH vars from process env to force .env file reading
+    for k in ("TERMINAL_SSH_HOST", "TERMINAL_SSH_USER", "TERMINAL_SSH_PORT", "TERMINAL_SSH_KEY"):
+        monkeypatch.delenv(k, raising=False)
+
+    fake_model_tools = types.SimpleNamespace(
+        check_tool_availability=lambda *a, **kw: ([], []),
+        TOOLSET_REQUIREMENTS={},
+    )
+    monkeypatch.setitem(sys.modules, "model_tools", fake_model_tools)
+
+    ssh_commands = []
+
+    def fake_run(cmd, *args, **kwargs):
+        if cmd and cmd[0] == "ssh":
+            ssh_commands.append(cmd)
+            return SimpleNamespace(returncode=0, stdout="ok\n", stderr="")
+        return SimpleNamespace(returncode=1, stdout="", stderr="")
+
+    monkeypatch.setattr(doctor_mod.subprocess, "run", fake_run)
+
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        doctor_mod.run_doctor(Namespace(fix=False))
+
+    # Should have found the SSH config from .env and attempted connection
+    assert len(ssh_commands) == 1
+    cmd = ssh_commands[0]
+    assert "deploy@remote-server" in cmd  # user@host from .env
+    assert "/home/deploy/.ssh/id_ed25519" in cmd  # key from .env
+    assert "-p" in cmd and "2222" in cmd  # port from .env
+    assert "SSH connection to remote-server" in buf.getvalue()
+
+
+def test_doctor_terminal_env_from_env_file(monkeypatch, tmp_path):
+    """TERMINAL_ENV should be read from .env file so doctor enters the right backend section."""
+    home = tmp_path / ".hermes"
+    home.mkdir(parents=True, exist_ok=True)
+    (home / "config.yaml").write_text("model:\n  provider: auto\n", encoding="utf-8")
+    (home / ".env").write_text(
+        "TERMINAL_ENV=ssh\n"
+        "TERMINAL_SSH_HOST=from-dotenv\n",
+        encoding="utf-8",
+    )
+
+    monkeypatch.setattr(doctor_mod, "HERMES_HOME", home)
+    monkeypatch.setattr(doctor_mod, "PROJECT_ROOT", tmp_path / "project")
+    monkeypatch.setattr(doctor_mod, "_DHH", str(home))
+    import hermes_cli.config as config_mod
+    monkeypatch.setattr(config_mod, "get_hermes_home", lambda: home)
+    config_mod._env_cache = None
+    (tmp_path / "project").mkdir(exist_ok=True)
+
+    # Remove TERMINAL_ENV from process env so ONLY .env has it
+    monkeypatch.delenv("TERMINAL_ENV", raising=False)
+    monkeypatch.delenv("TERMINAL_SSH_HOST", raising=False)
+
+    fake_model_tools = types.SimpleNamespace(
+        check_tool_availability=lambda *a, **kw: ([], []),
+        TOOLSET_REQUIREMENTS={},
+    )
+    monkeypatch.setitem(sys.modules, "model_tools", fake_model_tools)
+
+    ssh_commands = []
+
+    def fake_run(cmd, *args, **kwargs):
+        if cmd and cmd[0] == "ssh":
+            ssh_commands.append(cmd)
+            return SimpleNamespace(returncode=0, stdout="ok\n", stderr="")
+        return SimpleNamespace(returncode=1, stdout="", stderr="")
+
+    monkeypatch.setattr(doctor_mod.subprocess, "run", fake_run)
+
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        doctor_mod.run_doctor(Namespace(fix=False))
+
+    # If TERMINAL_ENV wasn't read from .env, doctor would skip SSH entirely
+    assert len(ssh_commands) == 1, "SSH probe not run — TERMINAL_ENV not read from .env"
+    assert "from-dotenv" in ssh_commands[0][-2]  # target host
+
+
 # ── Memory provider section (doctor should only check the *active* provider) ──
 
 
@@ -571,8 +726,6 @@ def test_run_doctor_accepts_hermes_provider_ids_that_catalog_aliases(
             f"model.default '{default_model}' uses a vendor/model slug but provider is '{provider}'"
             not in out
         )
-
-
 
 
 def test_run_doctor_accepts_kimi_coding_cn_provider(monkeypatch, tmp_path):

@@ -231,6 +231,7 @@ class HonchoMemoryProvider(MemoryProvider):
 
         # Port #4053: cron guard — when True, plugin is fully inactive
         self._cron_skipped = False
+        self._is_optimize_session = False
 
     @property
     def name(self) -> str:
@@ -283,6 +284,11 @@ class HonchoMemoryProvider(MemoryProvider):
             # ----- Port #4053: cron guard -----
             agent_context = kwargs.get("agent_context", "")
             platform = kwargs.get("platform", "cli")
+            gateway_session_key = kwargs.get("gateway_session_key")
+            self._is_optimize_session = (
+                isinstance(gateway_session_key, str)
+                and gateway_session_key.startswith("opt:")
+            )
             if agent_context in {"cron", "flush"} or platform == "cron":
                 logger.debug("Honcho skipped: cron/flush context (agent_context=%s, platform=%s)",
                              agent_context, platform)
@@ -365,15 +371,33 @@ class HonchoMemoryProvider(MemoryProvider):
         # ----- B3: resolve_session_name -----
         session_title = kwargs.get("session_title")
         gateway_session_key = kwargs.get("gateway_session_key")
-        self._session_key = (
-            cfg.resolve_session_name(
-                session_title=session_title,
-                session_id=session_id,
-                gateway_session_key=gateway_session_key,
-            )
-            or session_id
-            or "hermes-default"
+        is_optimize_session = (
+            isinstance(gateway_session_key, str)
+            and gateway_session_key.startswith("opt:")
         )
+        self._is_optimize_session = is_optimize_session
+        if is_optimize_session and session_id:
+            # Optimize uses gateway_session_key as the signed tenant/auth scope.
+            # Honcho sessions must follow the UI thread id so "Nova conversa"
+            # creates a new conversation session inside the same ad-account
+            # workspace.
+            import re
+            sanitized = re.sub(r'[^a-zA-Z0-9_-]+', '-', session_id).strip('-')
+            self._session_key = (
+                cfg._enforce_session_id_limit(f"opt-thread-{sanitized}", session_id)
+                if sanitized
+                else "opt-thread-default"
+            )
+        else:
+            self._session_key = (
+                cfg.resolve_session_name(
+                    session_title=session_title,
+                    session_id=session_id,
+                    gateway_session_key=gateway_session_key,
+                )
+                or session_id
+                or "hermes-default"
+            )
         logger.debug("Honcho session key resolved: %s", self._session_key)
 
         # Create session eagerly
@@ -386,7 +410,12 @@ class HonchoMemoryProvider(MemoryProvider):
         # each one would flood the backend with short-lived duplicates instead
         # of performing a one-time migration.
         try:
-            if not session.messages and cfg.session_strategy != "per-session":
+            if is_optimize_session:
+                logger.debug(
+                    "Honcho memory file migration skipped: Optimize runtime session (%s)",
+                    self._session_key,
+                )
+            elif not session.messages and cfg.session_strategy != "per-session":
                 from hermes_constants import get_hermes_home
                 mem_dir = str(get_hermes_home() / "memories")
                 self._manager.migrate_memory_files(self._session_key, mem_dir)
@@ -503,6 +532,13 @@ class HonchoMemoryProvider(MemoryProvider):
         """
         if self._cron_skipped:
             return ""
+        if self._is_optimize_session:
+            return (
+                "# Workspace Memory\n"
+                "Workspace-scoped memory is active. Use available memory tools only when "
+                "they materially improve the answer. Do not mention memory providers, "
+                "tool names, or implementation details to the user."
+            )
         if not self._manager or not self._session_key:
             # tools-only mode without session yet still returns a minimal block
             if self._recall_mode == "tools" and self._config:

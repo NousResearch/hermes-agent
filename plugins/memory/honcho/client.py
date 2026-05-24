@@ -17,6 +17,8 @@ import json
 import os
 import logging
 import hashlib
+import hmac
+import base64
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -265,6 +267,9 @@ class HonchoClientConfig:
     # Write frequency: "async" (background thread), "turn" (sync per turn),
     # "session" (flush on session end), or int (every N turns)
     write_frequency: str | int = "async"
+    # Schedule a Honcho dream after a turn is persisted. This makes managed
+    # Honcho consolidate peer cards/conclusions without a manual UI refresh.
+    dream_on_turn: bool = False
     # Prefetch budget (None = no cap; set to an integer to bound auto-injected context)
     context_tokens: int | None = None
     # Dialectic (peer.chat) settings
@@ -461,6 +466,11 @@ class HonchoClientConfig:
             enabled=enabled,
             save_messages=save_messages,
             write_frequency=write_frequency,
+            dream_on_turn=_resolve_bool(
+                host_block.get("dreamOnTurn"),
+                raw.get("dreamOnTurn"),
+                default=False,
+            ),
             context_tokens=_parse_context_tokens(
                 host_block.get("contextTokens"),
                 raw.get("contextTokens"),
@@ -664,6 +674,111 @@ class HonchoClientConfig:
 
 
 _honcho_client: Honcho | None = None
+_honcho_clients: dict[str, Honcho] = {}
+
+
+def _session_secret() -> str:
+    return (
+        os.environ.get("HERMES_SESSION_KEY_SECRET")
+        or os.environ.get("HERMES_API_SERVER_KEY")
+        or os.environ.get("API_SERVER_KEY")
+        or ""
+    )
+
+
+def _sign_optimize_v3_session(workspace_id: str, ad_account_id: str, user_payload: str) -> str:
+    digest = hmac.new(
+        _session_secret().encode("utf-8"),
+        f"v3.{workspace_id}.{ad_account_id}.{user_payload}".encode("utf-8"),
+        "sha256",
+    ).digest()
+    return base64.urlsafe_b64encode(digest).decode("ascii").rstrip("=")[:22]
+
+
+def _sign_optimize_v4_session(workspace_id: str, platform: str, ad_account_id: str, user_payload: str) -> str:
+    digest = hmac.new(
+        _session_secret().encode("utf-8"),
+        f"v4.{workspace_id}.{platform}.{ad_account_id}.{user_payload}".encode("utf-8"),
+        "sha256",
+    ).digest()
+    return base64.urlsafe_b64encode(digest).decode("ascii").rstrip("=")[:22]
+
+
+def _runtime_workspace_id(workspace_id: str, platform: str, ad_account_id: str) -> str:
+    account_scope = ad_account_id if platform == "META" else f"{platform}_{ad_account_id}"
+    return f"{workspace_id}_{account_scope}"
+
+
+def _session_fingerprint(session_key: str) -> str:
+    return base64.urlsafe_b64encode(
+        hashlib.sha256(session_key.encode("utf-8")).digest()
+    ).decode("ascii").rstrip("=")[:12]
+
+
+def _runtime_workspace_from_session_key() -> str | None:
+    try:
+        from gateway.session_context import get_session_env
+        session_key = get_session_env("HERMES_SESSION_KEY", "").strip()
+    except Exception:
+        session_key = os.environ.get("HERMES_SESSION_KEY", "").strip()
+    if not session_key:
+        return None
+    parts = session_key.split(":")
+    if len(parts) < 2 or parts[0] != "opt":
+        return None
+    if parts[1] == "v4":
+        if len(parts) < 7:
+            return None
+        workspace_id = parts[2]
+        platform = parts[3]
+        ad_account_id = parts[4]
+        user_payload = parts[5]
+        signature = parts[6]
+        if platform not in {"META", "TIKTOK", "GOOGLE_ADS"}:
+            return None
+        if not workspace_id or not ad_account_id or not user_payload or not signature:
+            return None
+        if _session_secret() and _sign_optimize_v4_session(workspace_id, platform, ad_account_id, user_payload) != signature:
+            logger.warning("Ignoring Honcho runtime workspace from invalid Optimize session signature")
+            return None
+        runtime_workspace = _runtime_workspace_id(workspace_id, platform, ad_account_id)
+        logger.info(
+            "Resolved Honcho runtime workspace from Optimize session key",
+            extra={
+                "workspace_id": workspace_id,
+                "platform": platform,
+                "ad_account_id": ad_account_id,
+                "runtime_workspace": runtime_workspace,
+                "session_key_len": len(session_key),
+                "session_key_fingerprint": _session_fingerprint(session_key),
+            },
+        )
+        return runtime_workspace
+    if len(parts) < 6 or parts[1] != "v3":
+        return None
+    workspace_id = parts[2]
+    platform = "META"
+    ad_account_id = parts[3]
+    user_payload = parts[4]
+    signature = parts[5]
+    if not workspace_id or not ad_account_id or not user_payload or not signature:
+        return None
+    if _session_secret() and _sign_optimize_v3_session(workspace_id, ad_account_id, user_payload) != signature:
+        logger.warning("Ignoring Honcho runtime workspace from invalid Optimize session signature")
+        return None
+    runtime_workspace = _runtime_workspace_id(workspace_id, platform, ad_account_id)
+    logger.info(
+        "Resolved Honcho runtime workspace from Optimize session key",
+        extra={
+            "workspace_id": workspace_id,
+            "platform": platform,
+            "ad_account_id": ad_account_id,
+            "runtime_workspace": runtime_workspace,
+            "session_key_len": len(session_key),
+            "session_key_fingerprint": _session_fingerprint(session_key),
+        },
+    )
+    return runtime_workspace
 
 
 def get_honcho_client(config: HonchoClientConfig | None = None) -> Honcho:
@@ -674,11 +789,22 @@ def get_honcho_client(config: HonchoClientConfig | None = None) -> Honcho:
     """
     global _honcho_client
 
-    if _honcho_client is not None:
-        return _honcho_client
-
     if config is None:
         config = HonchoClientConfig.from_global_config()
+
+    runtime_workspace = _runtime_workspace_from_session_key()
+    if runtime_workspace:
+        config.workspace_id = runtime_workspace
+    cache_key = "|".join([
+        config.workspace_id,
+        config.environment or "",
+        config.base_url or "",
+        hashlib.sha256((config.api_key or "").encode("utf-8")).hexdigest()[:12],
+    ])
+    if cache_key in _honcho_clients:
+        return _honcho_clients[cache_key]
+    if _honcho_client is not None and not runtime_workspace:
+        return _honcho_client
 
     if not config.api_key and not config.base_url:
         raise ValueError(
@@ -772,12 +898,16 @@ def get_honcho_client(config: HonchoClientConfig | None = None) -> Honcho:
     if resolved_timeout is not None:
         kwargs["timeout"] = resolved_timeout
 
-    _honcho_client = Honcho(**kwargs)
+    client = Honcho(**kwargs)
+    _honcho_clients[cache_key] = client
+    if not runtime_workspace:
+        _honcho_client = client
 
-    return _honcho_client
+    return client
 
 
 def reset_honcho_client() -> None:
     """Reset the Honcho client singleton (useful for testing)."""
     global _honcho_client
     _honcho_client = None
+    _honcho_clients.clear()

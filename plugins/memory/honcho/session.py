@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import queue
 import re
+import os
+import base64
 import logging
 import threading
 from dataclasses import dataclass, field
@@ -102,6 +104,7 @@ class HonchoSessionManager:
         # Write frequency state
         write_frequency = (config.write_frequency if config else "async")
         self._write_frequency = write_frequency
+        self._dream_on_turn = bool(getattr(config, "dream_on_turn", False))
         self._turn_counter: int = 0
 
         # Prefetch cache: session_key → last context result (consumed once per turn).
@@ -183,7 +186,12 @@ class HonchoSessionManager:
                 logger.debug("Honcho session '%s' retrieved from cache", session_id)
                 return self._sessions_cache[session_id], []
 
-        session = self.honcho.session(session_id)
+        # Honcho SDK v3 returns a lazy handle for session(id). Passing
+        # metadata forces get-or-create before add_peers/add_messages.
+        session = self.honcho.session(
+            session_id,
+            metadata={"source": "hermes", "managed_by": "optimize_supercomputer"},
+        )
 
         # Configure per-peer observation from granular booleans.
         # These map 1:1 to Honcho's SessionPeerConfig toggles.
@@ -264,8 +272,42 @@ class HonchoSessionManager:
         return session, existing_messages
 
     def _sanitize_id(self, id_str: str) -> str:
-        """Sanitize an ID to match Honcho's pattern: ^[a-zA-Z0-9_-]+"""
-        return re.sub(r'[^a-zA-Z0-9_-]', '-', id_str)
+        """Sanitize an ID to match Honcho's stable peer/session behavior."""
+        return re.sub(r'[^a-zA-Z0-9_-]', '_', id_str)
+
+    def _optimize_user_peer_from_session_key(self, key: str) -> str | None:
+        raw_key = key if ":" in key else ""
+        if not raw_key:
+            try:
+                from gateway.session_context import get_session_env
+                raw_key = get_session_env("HERMES_SESSION_KEY", "").strip()
+            except Exception:
+                raw_key = os.environ.get("HERMES_SESSION_KEY", "").strip()
+        parts = raw_key.split(":")
+        if len(parts) < 2 or parts[0] != "opt":
+            return None
+
+        if parts[1] == "v4":
+            if len(parts) < 7:
+                return None
+            user_payload = parts[5]
+        elif parts[1] == "v3":
+            if len(parts) < 6:
+                return None
+            user_payload = parts[4]
+        else:
+            return None
+
+        if not user_payload or user_payload == "_":
+            return None
+        if user_payload.startswith("h"):
+            return self._sanitize_id(f"user_{user_payload}")
+        try:
+            padding = "=" * (-len(user_payload) % 4)
+            user_id = base64.urlsafe_b64decode((user_payload + padding).encode("ascii")).decode("utf-8")
+        except Exception:
+            return None
+        return self._sanitize_id(f"user_{user_id}")
 
     def get_or_create(self, key: str) -> HonchoSession:
         """
@@ -301,7 +343,10 @@ class HonchoSessionManager:
             and bool(getattr(self._config, "peer_name", None))
             and getattr(self._config, "pin_peer_name", False) is True
         )
-        if self._runtime_user_peer_name and not pin_peer_name:
+        optimize_user_peer_id = self._optimize_user_peer_from_session_key(key)
+        if optimize_user_peer_id:
+            user_peer_id = optimize_user_peer_id
+        elif self._runtime_user_peer_name and not pin_peer_name:
             user_peer_id = self._sanitize_id(self._runtime_user_peer_name)
         elif self._config and self._config.peer_name:
             user_peer_id = self._sanitize_id(self._config.peer_name)
@@ -312,7 +357,7 @@ class HonchoSessionManager:
             user_peer_id = self._sanitize_id(f"user-{channel}-{chat_id}")
 
         assistant_peer_id = self._sanitize_id(
-            self._config.ai_peer if self._config else "hermes-assistant"
+            self._config.ai_peer if self._config else "agent"
         )
 
         # All expensive I/O outside the lock — Honcho's persistence is source of truth
@@ -376,6 +421,7 @@ class HonchoSessionManager:
             logger.debug("Synced %d messages to Honcho for %s", len(honcho_messages), session.key)
             with self._cache_lock:
                 self._cache[session.key] = session
+            self._schedule_turn_dream(session)
             return True
         except Exception as e:
             for msg in new_messages:
@@ -384,6 +430,34 @@ class HonchoSessionManager:
             with self._cache_lock:
                 self._cache[session.key] = session
             return False
+
+    def _schedule_turn_dream(self, session: HonchoSession) -> None:
+        """Schedule managed Honcho consolidation for the assistant's view.
+
+        Cloud Honcho can persist messages while leaving peer cards/conclusions
+        empty until a dream is explicitly scheduled. Keep this non-blocking so
+        post-turn writes do not add chat latency.
+        """
+        if not self._dream_on_turn:
+            return
+
+        def _run() -> None:
+            try:
+                self.honcho.schedule_dream(
+                    observer=session.assistant_peer_id,
+                    observed=session.user_peer_id,
+                    session=session.honcho_session_id,
+                )
+                logger.info(
+                    "Scheduled Honcho dream for %s observing %s in %s",
+                    session.assistant_peer_id,
+                    session.user_peer_id,
+                    session.honcho_session_id,
+                )
+            except Exception as e:
+                logger.warning("Honcho dream scheduling failed for %s: %s", session.key, e)
+
+        threading.Thread(target=_run, name="honcho-dream-scheduler", daemon=True).start()
 
     def _async_writer_loop(self) -> None:
         """Background daemon thread: drains the async write queue."""

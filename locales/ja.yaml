@@ -657,6 +657,8 @@ gateway:
 
 
     `/compress` でコンテキストを圧縮するか、`/new` で新しいセッションを開始してください。'
+  detail_new: '新しいセッションを開始し、現在の会話履歴を破棄します。'
+  detail_undo: '最後のユーザー/アシスタントのやり取りを削除します。'
   steer_failed: '⚠️ ステアリング失敗: {error}'
   still_working: ⏳ まだ処理中... ({elapsed} 分経過{detail})
   update_failed: ❌ Hermesの更新に失敗しました。ゲートウェイログを確認するか `hermes update` を実行してください。

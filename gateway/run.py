@@ -7220,10 +7220,7 @@ class GatewayRunner:
                 event=event,
                 command="new",
                 title="/new",
-                detail=(
-                    "This starts a fresh session and discards the current "
-                    "conversation history."
-                ),
+                detail=t("gateway.detail_new"),
                 execute=_do_reset,
             )
 
@@ -7294,7 +7291,7 @@ class GatewayRunner:
                 event=event,
                 command="undo",
                 title="/undo",
-                detail="This removes the last user/assistant exchange from history.",
+                detail=t("gateway.detail_undo"),
                 execute=_do_undo,
             )
         

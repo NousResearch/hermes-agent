@@ -452,6 +452,8 @@ gateway:
   dangerous_confirm: '⚠️ **/{command} onayla**
 
     {detail}'
+  detail_new: 'Bu yeni bir oturum başlatır ve mevcut konuşma geçmişini siler.'
+  detail_undo: 'Bu, son kullanıcı/asistan alışverişini geçmişten kaldırır.'
   steer_failed: '⚠️ Yönlendirme başarısız: {error}'
   resume:
     db_unavailable: Oturum veritabanı kullanılamıyor.

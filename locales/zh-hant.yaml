@@ -722,6 +722,8 @@ gateway:
     • `/compress` — compress earlier messages
 
     • `/new` — fresh start with optional title'
+  detail_new: '這將開啟一個新會話並丟棄當前對話歷史。'
+  detail_undo: '這將移除最後一組使用者/助手對話。'
   steer_failed: '⚠️ Steer failed: {error}'
   still_working: ⏳ Still working... ({elapsed} min elapsed{detail})
   update_failed: ❌ Hermes update failed. Check the gateway logs or run `hermes update` manually for details.

@@ -742,6 +742,8 @@ gateway:
     • `/compress` — compress earlier messages
 
     • `/new` — fresh start with optional title'
+  detail_new: 'Ez egy új munkamenetet indít, és elveti a jelenlegi beszélgetés előzményeit.'
+  detail_undo: 'Ez eltávolítja az utolsó felhasználó/asszisztens cserét az előzményekből.'
   steer_failed: '⚠️ Steer failed: {error}'
   still_working: ⏳ Still working... ({elapsed} min elapsed{detail})
   update_failed: ❌ Hermes update failed. Check the gateway logs or run `hermes update` manually for details.

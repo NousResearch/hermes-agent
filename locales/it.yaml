@@ -732,6 +732,8 @@ gateway:
     • `/compress` — comprimere i messaggi precedenti
 
     • `/new` — ricominciare con titolo opzionale'
+  detail_new: 'Questo avvia una nuova sessione e scarta la cronologia della conversazione corrente.'
+  detail_undo: "Questo rimuove l'ultimo scambio utente/assistente dalla cronologia."
   steer_failed: '⚠️ Reindirizzamento non riuscito: {error}'
   still_working: ⏳ Ancora in lavorazione... ({elapsed} min trascorsi{detail})
   update_failed: ❌ Aggiornamento di Hermes non riuscito. Controlla i log del gateway o esegui `hermes update` manualmente

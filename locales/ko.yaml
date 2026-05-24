@@ -446,6 +446,8 @@ gateway:
   dangerous_confirm: '⚠️ **/{command} 확인**
 
     {detail}'
+  detail_new: '새 세션을 시작하고 현재 대화 기록을 삭제합니다.'
+  detail_undo: '마지막 사용자/어시스턴트 교환을 제거합니다.'
   steer_failed: '⚠️ 안내 실패: {error}'
   resume:
     db_unavailable: 세션 데이터베이스를 사용할 수 없습니다.

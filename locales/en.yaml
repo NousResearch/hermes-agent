@@ -488,6 +488,8 @@ gateway:
 
 
     _Text fallback: reply `/approve`, `/always`, or `/cancel`._'
+  detail_new: 'This starts a fresh session and discards the current conversation history.'
+  detail_undo: 'This removes the last user/assistant exchange from history.'
   steer_failed: '⚠️ Steer failed: {error}'
   resume:
     db_unavailable: Session database not available.

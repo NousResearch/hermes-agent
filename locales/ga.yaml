@@ -742,6 +742,8 @@ gateway:
     • `/compress` — compress earlier messages
 
     • `/new` — fresh start with optional title'
+  detail_new: 'Tosaíonn seo seisiún nua agus diúltaíonn sé stair an chomhrá reatha.'
+  detail_undo: 'Baineann seo an malartú úsáideora/cúntóra deireanach as an stair.'
   steer_failed: '⚠️ Steer failed: {error}'
   still_working: ⏳ Still working... ({elapsed} min elapsed{detail})
   update_failed: ❌ Hermes update failed. Check the gateway logs or run `hermes update` manually for details.

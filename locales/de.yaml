@@ -750,6 +750,8 @@ gateway:
     • `/compress` — frühere Nachrichten komprimieren
 
     • `/new` — Neustart mit optionalem Titel'
+  detail_new: 'Dies startet eine neue Sitzung und verwirft die aktuelle Konversationshistorie.'
+  detail_undo: 'Dies entfernt den letzten Benutzer/Assistenten-Austausch aus dem Verlauf.'
   steer_failed: '⚠️ Steuerung fehlgeschlagen: {error}'
   still_working: ⏳ Arbeit noch nicht abgeschlossen... ({elapsed} Min. vergangen{detail})
   update_failed: ❌ Hermes-Update fehlgeschlagen. Überprüfen Sie die Gateway-Logs oder führen Sie `hermes update` manuell aus.

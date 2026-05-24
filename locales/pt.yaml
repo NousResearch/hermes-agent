@@ -452,6 +452,8 @@ gateway:
   dangerous_confirm: '⚠️ **Confirmar /{command}**
 
     {detail}'
+  detail_new: 'Isso inicia uma nova sessão e descarta o histórico da conversa atual.'
+  detail_undo: 'Isso remove a última troca usuário/assistente do histórico.'
   steer_failed: '⚠️ Falha ao direcionar: {error}'
   resume:
     db_unavailable: Base de dados de sessões indisponível.

@@ -562,6 +562,8 @@ gateway:
 
 
     _文字回复方式：回复 `/approve`、`/always` 或 `/cancel`。_'
+  detail_new: '这将开启一个新会话并丢弃当前对话历史。'
+  detail_undo: '这将移除最后一组用户/助手对话。'
   steer_failed: ⚠️ Steer 失败：{error}
   resume:
     db_unavailable: 会话数据库不可用。

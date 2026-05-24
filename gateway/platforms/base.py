@@ -2773,10 +2773,10 @@ class BasePlatformAdapter(ABC):
         )
         if result:
             logger.debug(
-                "[%s] Queue-text debounce candidate accepted: session=%s text=%.60s",
+                "[%s] Queue-text debounce candidate accepted: session=%s text_len=%d",
                 self.name,
                 getattr(event, "session_key", "?"),
-                (event.text or "")[:60],
+                len(event.text or ""),
             )
         return result
 

@@ -2122,9 +2122,13 @@ def build_anthropic_kwargs(
                 block["text"] = text
 
         # 3. Prefix tool names with mcp_ (Claude Code convention)
+        #    Skip names that already begin with the marker — native MCP server
+        #    tools (from mcp_servers: in config.yaml) are registered under their
+        #    full mcp_<server>_<tool> name and would double-prefix otherwise,
+        #    breaking round-trip registry lookup in normalize_response. GH-25255.
         if anthropic_tools:
             for tool in anthropic_tools:
-                if "name" in tool:
+                if "name" in tool and not tool["name"].startswith(_MCP_TOOL_PREFIX):
                     tool["name"] = _MCP_TOOL_PREFIX + tool["name"]
 
         # 4. Prefix tool names in message history (tool_use and tool_result blocks)

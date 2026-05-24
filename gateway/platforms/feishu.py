@@ -2978,12 +2978,16 @@ class FeishuAdapter(BasePlatformAdapter):
                 text = f"{hint}\n\n{text}" if text else hint
 
         thread_id = getattr(message, "thread_id", None) or getattr(message, "root_id", None) or None
-        reply_to_message_id = (
-            getattr(message, "parent_id", None)
-            or getattr(message, "upper_message_id", None)
-            or getattr(message, "root_id", None)
-            or None
-        )
+        parent_id = getattr(message, "parent_id", None)
+        upper_message_id = getattr(message, "upper_message_id", None)
+        root_id = getattr(message, "root_id", None)
+
+        # In thread groups, if message has thread_id but no parent/upper/root,
+        # use the message's own message_id as reply_to so responses go under the thread
+        if thread_id and not parent_id and not upper_message_id and not root_id:
+            reply_to_message_id = message_id
+        else:
+            reply_to_message_id = parent_id or upper_message_id or root_id or None
         reply_to_text = await self._fetch_message_text(reply_to_message_id) if reply_to_message_id else None
 
         sender_primary = (
@@ -3971,7 +3975,10 @@ class FeishuAdapter(BasePlatformAdapter):
             getattr(sender, "sender_id", None), chat_id, is_bot=is_bot,
         ):
             return "group_policy_rejected"
-        if require_mention and not self._mentions_self(message):
+        # Open/proactive mode: accept all messages from allowed users without @mention
+        if not require_mention or self._get_effective_policy(chat_id) in ("open", "proactive"):
+            return None
+        if not self._mentions_self(message):
             return "group_policy_rejected"
         return None
 
@@ -3980,6 +3987,13 @@ class FeishuAdapter(BasePlatformAdapter):
         if rule and rule.require_mention is not None:
             return rule.require_mention
         return self._require_mention
+
+    def _get_effective_policy(self, chat_id: str) -> str:
+        """Get the effective policy for a chat."""
+        rule = self._group_rules.get(chat_id) if chat_id else None
+        if rule:
+            return rule.policy
+        return self._default_group_policy or self._group_policy
 
     # --- Group policy ---------------------------------------------------------
 

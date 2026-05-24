@@ -2806,6 +2806,21 @@ def run_conversation(
                     # retryable=True mapping takes effect instead.
                     and not isinstance(api_error, ssl.SSLError)
                 )
+                # ``FailoverReason.billing`` (HTTP 402) is NOT in this
+                # exclusion set.  By the time we reach this block:
+                #   • credential-pool rotation (line ~2031) has already
+                #     fired for billing and either ``continue``d or
+                #     returned (False, ...) — pool is exhausted or absent.
+                #   • the eager-fallback branch above (line ~2422) also
+                #     fires on billing and ``continue``s if a fallback
+                #     provider is configured.
+                # Falling through to here means BOTH recovery paths
+                # gave up.  Treating 402 as retryable from this point
+                # just burns more paid requests against a depleted
+                # balance with no recovery mechanism left — see #31273
+                # (real-world: ~$40 in 48h on a 24/7 gateway).  Aborting
+                # mirrors how 401/403 (also ``should_fallback=True``)
+                # already behave once their recovery paths have failed.
                 is_client_error = (
                     is_local_validation_error
                     or (
@@ -2813,7 +2828,6 @@ def run_conversation(
                         and not classified.should_compress
                         and classified.reason not in {
                             FailoverReason.rate_limit,
-                            FailoverReason.billing,
                             FailoverReason.overloaded,
                             FailoverReason.context_overflow,
                             FailoverReason.payload_too_large,

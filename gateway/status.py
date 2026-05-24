@@ -17,6 +17,7 @@ import os
 import signal
 import subprocess
 import sys
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 from hermes_constants import get_hermes_home
@@ -34,6 +35,7 @@ _LOCKS_DIRNAME = "gateway-locks"
 _IS_WINDOWS = sys.platform == "win32"
 _UNSET = object()
 _GATEWAY_LOCK_FILENAME = "gateway.lock"
+_RUNTIME_STATUS_SCHEMA_VERSION = 2
 _gateway_lock_handle = None
 # Windows byte-range locks are mandatory for other readers. Lock a byte well
 # past the JSON payload so runtime status / PID readers can still read the file
@@ -212,14 +214,38 @@ def _build_pid_record() -> dict:
 def _build_runtime_status_record() -> dict[str, Any]:
     payload = _build_pid_record()
     payload.update({
+        "gateway_status_schema_version": _RUNTIME_STATUS_SCHEMA_VERSION,
         "gateway_state": "starting",
         "exit_reason": None,
         "restart_requested": False,
         "active_agents": 0,
         "platforms": {},
+        "process_heartbeat_at": None,
+        "process_heartbeat_mono": None,
+        "last_forward_progress_at": None,
+        "last_forward_progress_mono": None,
+        "forward_progress_counter": 0,
+        "liveness_state": "starting",
+        "liveness_reason": None,
+        "work_active": False,
+        "active_session_key": None,
+        "active_task_started_at": None,
+        "active_task_started_mono": None,
+        "current_tool": None,
+        "last_activity_desc": None,
+        "api_call_count": 0,
+        "provider_chunk_count": 0,
+        "tool_transition_count": 0,
+        "tool_completion_count": 0,
+        "api_completion_count": 0,
+        "run_lifecycle_count": 0,
         "updated_at": _utc_now_iso(),
     })
     return payload
+
+
+def _is_number(value: Any) -> bool:
+    return value is not None and not isinstance(value, bool) and isinstance(value, (int, float))
 
 
 def _read_json_file(path: Path) -> Optional[dict[str, Any]]:
@@ -511,6 +537,25 @@ def write_runtime_status(
     platform_state: Any = _UNSET,
     error_code: Any = _UNSET,
     error_message: Any = _UNSET,
+    process_heartbeat_at: Any = _UNSET,
+    process_heartbeat_mono: Any = _UNSET,
+    last_forward_progress_at: Any = _UNSET,
+    last_forward_progress_mono: Any = _UNSET,
+    forward_progress_counter: Any = _UNSET,
+    liveness_state: Any = _UNSET,
+    liveness_reason: Any = _UNSET,
+    work_active: Any = _UNSET,
+    active_session_key: Any = _UNSET,
+    active_task_started_at: Any = _UNSET,
+    active_task_started_mono: Any = _UNSET,
+    current_tool: Any = _UNSET,
+    last_activity_desc: Any = _UNSET,
+    api_call_count: Any = _UNSET,
+    provider_chunk_count: Any = _UNSET,
+    tool_transition_count: Any = _UNSET,
+    tool_completion_count: Any = _UNSET,
+    api_completion_count: Any = _UNSET,
+    run_lifecycle_count: Any = _UNSET,
 ) -> None:
     """Persist gateway runtime health information for diagnostics/status."""
     path = _get_runtime_status_path()
@@ -518,6 +563,7 @@ def write_runtime_status(
     current_record = _build_pid_record()
     payload.setdefault("platforms", {})
     payload["kind"] = current_record["kind"]
+    payload["gateway_status_schema_version"] = _RUNTIME_STATUS_SCHEMA_VERSION
     payload["pid"] = current_record["pid"]
     payload["argv"] = current_record["argv"]
     payload["start_time"] = current_record["start_time"]
@@ -531,6 +577,47 @@ def write_runtime_status(
         payload["restart_requested"] = bool(restart_requested)
     if active_agents is not _UNSET:
         payload["active_agents"] = max(0, int(active_agents))
+
+    scalar_updates = {
+        "process_heartbeat_at": process_heartbeat_at,
+        "process_heartbeat_mono": process_heartbeat_mono,
+        "last_forward_progress_at": last_forward_progress_at,
+        "last_forward_progress_mono": last_forward_progress_mono,
+        "forward_progress_counter": forward_progress_counter,
+        "liveness_state": liveness_state,
+        "liveness_reason": liveness_reason,
+        "work_active": work_active,
+        "active_session_key": active_session_key,
+        "active_task_started_at": active_task_started_at,
+        "active_task_started_mono": active_task_started_mono,
+        "current_tool": current_tool,
+        "last_activity_desc": last_activity_desc,
+        "api_call_count": api_call_count,
+        "provider_chunk_count": provider_chunk_count,
+        "tool_transition_count": tool_transition_count,
+        "tool_completion_count": tool_completion_count,
+        "api_completion_count": api_completion_count,
+        "run_lifecycle_count": run_lifecycle_count,
+    }
+    for key, value in scalar_updates.items():
+        if value is not _UNSET:
+            payload[key] = value
+
+    if process_heartbeat_at is _UNSET and process_heartbeat_mono is _UNSET:
+        # Preserve compatibility with the stricter external watchdog even when
+        # callers only update coarse runtime state. This intentionally refreshes
+        # stale or None values rather than preserving them.
+        payload["process_heartbeat_at"] = _utc_now_iso()
+        payload["process_heartbeat_mono"] = time.monotonic()
+
+    payload.setdefault("last_forward_progress_at", None)
+    payload.setdefault("last_forward_progress_mono", None)
+    payload["forward_progress_counter"] = int(payload.get("forward_progress_counter") or 0)
+    payload["work_active"] = bool(payload.get("work_active", False))
+    payload["run_lifecycle_count"] = int(payload.get("run_lifecycle_count") or 0)
+    if not _is_number(payload.get("process_heartbeat_mono")):
+        payload["process_heartbeat_at"] = _utc_now_iso()
+        payload["process_heartbeat_mono"] = time.monotonic()
 
     if platform is not _UNSET:
         platform_payload = payload["platforms"].get(platform, {})

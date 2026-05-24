@@ -1693,6 +1693,15 @@ class GatewayRunner:
         self._running_agents: Dict[str, Any] = {}
         self._running_agents_ts: Dict[str, float] = {}  # start timestamp per session
         self._pending_messages: Dict[str, str] = {}  # Queued messages during interrupt
+        self._liveness_lock = threading.Lock()
+        self._liveness_stop = threading.Event()
+        self._liveness_thread: Optional[threading.Thread] = None
+        self._liveness_interval = max(1.0, float(os.getenv("HERMES_WATCHDOG_HEARTBEAT_INTERVAL", "15")))
+        self._liveness_last_progress_tuple: Optional[tuple[int, int, int, int, int, int]] = None
+        self._liveness_last_forward_progress_mono: Optional[float] = None
+        self._liveness_last_forward_progress_at: Optional[str] = None
+        self._liveness_forward_progress_counter = 0
+        self._liveness_run_lifecycle_count = 0
         # Overflow buffer for explicit /queue commands.  The adapter-level
         # _pending_messages dict is a single slot per session (designed for
         # "next-turn" follow-ups where repeated sends collapse into one
@@ -4195,6 +4204,8 @@ class GatewayRunner:
         self._wire_teams_pipeline_runtime()
 
         self._running = True
+        self._publish_liveness_snapshot()
+        self._start_liveness_thread()
         self._update_runtime_status("running")
         
         # Emit gateway:startup hook
@@ -5980,6 +5991,7 @@ class GatewayRunner:
             if hasattr(self, '_busy_ack_ts'):
                 self._busy_ack_ts.clear()
             self._shutdown_event.set()
+            self._stop_liveness_thread()
 
             # Global cleanup: kill any remaining tool subprocesses not tied
             # to a specific agent (catch-all for zombie prevention). On the
@@ -6071,6 +6083,154 @@ class GatewayRunner:
     async def wait_for_shutdown(self) -> None:
         """Wait for shutdown signal."""
         await self._shutdown_event.wait()
+
+    def _liveness_now_iso(self) -> str:
+        return datetime.now().astimezone().isoformat()
+
+    def _ensure_liveness_state(self) -> None:
+        if not hasattr(self, "_liveness_lock"):
+            self._liveness_lock = threading.Lock()
+        if not hasattr(self, "_liveness_stop"):
+            self._liveness_stop = threading.Event()
+        if not hasattr(self, "_liveness_thread"):
+            self._liveness_thread = None
+        if not hasattr(self, "_liveness_interval"):
+            self._liveness_interval = max(1.0, float(os.getenv("HERMES_WATCHDOG_HEARTBEAT_INTERVAL", "15")))
+        if not hasattr(self, "_liveness_last_progress_tuple"):
+            self._liveness_last_progress_tuple = None
+        if not hasattr(self, "_liveness_last_forward_progress_mono"):
+            self._liveness_last_forward_progress_mono = None
+        if not hasattr(self, "_liveness_last_forward_progress_at"):
+            self._liveness_last_forward_progress_at = None
+        if not hasattr(self, "_liveness_forward_progress_counter"):
+            self._liveness_forward_progress_counter = 0
+        if not hasattr(self, "_liveness_run_lifecycle_count"):
+            self._liveness_run_lifecycle_count = 0
+
+    def _snapshot_active_agent_liveness(self) -> dict[str, Any]:
+        self._ensure_liveness_state()
+        running_items = []
+        for _ in range(3):
+            try:
+                running_items = list(getattr(self, "_running_agents", {}).items())
+                break
+            except RuntimeError:
+                time.sleep(0)
+
+        active_agents = []
+        for session_key, agent in running_items:
+            if agent is _AGENT_PENDING_SENTINEL or not hasattr(agent, "get_activity_summary"):
+                continue
+            try:
+                active_agents.append((session_key, agent.get_activity_summary()))
+            except Exception:
+                continue
+
+        current_tool = None
+        last_activity_desc = None
+        for _, summary in active_agents:
+            if current_tool is None and summary.get("current_tool"):
+                current_tool = summary.get("current_tool")
+            if last_activity_desc is None and summary.get("last_activity_desc"):
+                last_activity_desc = summary.get("last_activity_desc")
+
+        return {
+            "work_active": bool(running_items),
+            "active_agents": len(running_items),
+            "current_tool": current_tool,
+            "last_activity_desc": last_activity_desc,
+            "api_call_count": sum(int(summary.get("api_call_count") or 0) for _, summary in active_agents),
+            "provider_chunk_count": sum(int(summary.get("provider_chunk_count") or 0) for _, summary in active_agents),
+            "tool_transition_count": sum(int(summary.get("tool_transition_count") or 0) for _, summary in active_agents),
+            "tool_completion_count": sum(int(summary.get("tool_completion_count") or 0) for _, summary in active_agents),
+            "api_completion_count": sum(int(summary.get("api_completion_count") or 0) for _, summary in active_agents),
+            "run_lifecycle_count": int(getattr(self, "_liveness_run_lifecycle_count", 0)),
+        }
+
+    def _publish_liveness_snapshot(self) -> None:
+        """Publish watchdog-compatible process heartbeat fields.
+
+        The Kanban release checkout predates the stricter external watchdog
+        schema used by the active stable gateway. During cutover both versions
+        share ~/.hermes/gateway_state.json, so keep the v2 heartbeat fields
+        fresh to prevent the watchdog from rolling back a healthy Kanban
+        gateway because it read stale fields left by the previous process.
+        """
+        self._ensure_liveness_state()
+        from gateway.status import write_runtime_status
+
+        now_iso = self._liveness_now_iso()
+        now_mono = time.monotonic()
+        snapshot = self._snapshot_active_agent_liveness()
+        active_count = int(snapshot["active_agents"])
+        progress_tuple = (
+            int(snapshot["api_call_count"]),
+            int(snapshot["provider_chunk_count"]),
+            int(snapshot["tool_transition_count"]),
+            int(snapshot["tool_completion_count"]),
+            int(snapshot["api_completion_count"]),
+            int(snapshot["run_lifecycle_count"]),
+        )
+        with self._liveness_lock:
+            if self._liveness_last_progress_tuple is None:
+                self._liveness_last_progress_tuple = progress_tuple
+                self._liveness_last_forward_progress_mono = now_mono
+                self._liveness_last_forward_progress_at = now_iso
+            elif progress_tuple != self._liveness_last_progress_tuple:
+                self._liveness_last_progress_tuple = progress_tuple
+                self._liveness_last_forward_progress_mono = now_mono
+                self._liveness_last_forward_progress_at = now_iso
+                self._liveness_forward_progress_counter += 1
+            last_forward_progress_mono = self._liveness_last_forward_progress_mono
+            last_forward_progress_at = self._liveness_last_forward_progress_at
+            progress_counter = self._liveness_forward_progress_counter
+
+        write_runtime_status(
+            gateway_state="running" if self._running else "draining",
+            process_heartbeat_at=now_iso,
+            process_heartbeat_mono=now_mono,
+            last_forward_progress_at=last_forward_progress_at,
+            last_forward_progress_mono=last_forward_progress_mono,
+            forward_progress_counter=progress_counter,
+            liveness_state="working" if active_count else ("idle" if self._running else "stopping"),
+            liveness_reason=None,
+            work_active=bool(snapshot["work_active"]),
+            active_agents=active_count,
+            current_tool=snapshot["current_tool"] or "",
+            last_activity_desc=snapshot["last_activity_desc"] or "",
+            api_call_count=int(snapshot["api_call_count"]),
+            provider_chunk_count=int(snapshot["provider_chunk_count"]),
+            tool_transition_count=int(snapshot["tool_transition_count"]),
+            tool_completion_count=int(snapshot["tool_completion_count"]),
+            api_completion_count=int(snapshot["api_completion_count"]),
+            run_lifecycle_count=int(snapshot["run_lifecycle_count"]),
+        )
+
+    def _liveness_loop(self) -> None:
+        self._ensure_liveness_state()
+        while not self._liveness_stop.is_set():
+            try:
+                self._publish_liveness_snapshot()
+            except Exception as exc:
+                logger.debug("Gateway liveness publish error: %s", exc)
+            if self._liveness_stop.wait(self._liveness_interval):
+                break
+
+    def _start_liveness_thread(self) -> None:
+        self._ensure_liveness_state()
+        if self._liveness_thread and self._liveness_thread.is_alive():
+            return
+        self._liveness_stop.clear()
+        self._liveness_thread = threading.Thread(target=self._liveness_loop, daemon=True, name="gateway-liveness")
+        self._liveness_thread.start()
+
+    def _stop_liveness_thread(self, timeout: float = 5.0) -> None:
+        self._ensure_liveness_state()
+        self._liveness_stop.set()
+        thread = self._liveness_thread
+        if thread and thread.is_alive() and thread is not threading.current_thread():
+            thread.join(timeout=timeout)
+        self._liveness_thread = None
 
     def _create_adapter(
         self, 

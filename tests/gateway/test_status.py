@@ -287,10 +287,52 @@ class TestGatewayRuntimeStatus:
         assert payload["pid"] == os.getpid(), "PID should be overwritten, not preserved via setdefault"
         assert payload["start_time"] != 1000.0, "start_time should be overwritten on restart"
 
+    def test_write_runtime_status_initializes_numeric_v2_heartbeat(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.setattr(status.time, "monotonic", lambda: 123.456)
+
+        status.write_runtime_status(gateway_state="running")
+
+        payload = status.read_runtime_status()
+        assert payload["gateway_status_schema_version"] == 2
+        assert payload["process_heartbeat_mono"] == 123.456
+        assert isinstance(payload["process_heartbeat_at"], str)
+        assert payload["forward_progress_counter"] == 0
+        assert payload["work_active"] is False
+        assert payload["run_lifecycle_count"] == 0
+
+    def test_write_runtime_status_refreshes_stale_v2_heartbeat(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        state_path = tmp_path / "gateway_state.json"
+        state_path.write_text(json.dumps({
+            "pid": 99999,
+            "start_time": 1000.0,
+            "kind": "hermes-gateway",
+            "gateway_status_schema_version": 2,
+            "gateway_state": "running",
+            "platforms": {},
+            "process_heartbeat_at": "2025-01-01T00:00:00Z",
+            "process_heartbeat_mono": 1.0,
+            "last_forward_progress_mono": None,
+            "forward_progress_counter": 7,
+            "work_active": True,
+            "run_lifecycle_count": 3,
+            "updated_at": "2025-01-01T00:00:00Z",
+        }))
+        monkeypatch.setattr(status.time, "monotonic", lambda: 456.789)
+
+        status.write_runtime_status(gateway_state="running")
+
+        payload = status.read_runtime_status()
+        assert payload["process_heartbeat_mono"] == 456.789
+        assert payload["process_heartbeat_at"] != "2025-01-01T00:00:00Z"
+        assert payload["forward_progress_counter"] == 7
+        assert payload["work_active"] is True
+        assert payload["run_lifecycle_count"] == 3
+
     def test_write_runtime_status_overwrites_stale_argv_on_restart(self, tmp_path, monkeypatch):
         """Regression: gateway_state.json must not keep the previous launch argv."""
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-
         state_path = tmp_path / "gateway_state.json"
         state_path.write_text(json.dumps({
             "pid": 99999,

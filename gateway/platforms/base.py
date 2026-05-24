@@ -3579,6 +3579,14 @@ class BasePlatformAdapter(ABC):
                 # typing task is already cancelled; if the parent task is also
                 # cancelling, let this message-processing task unwind now.
                 pass
+            # Brief settling delay: _keep_typing may have had a send_typing()
+            # POST in-flight when cancelled.  If that POST arrives at the
+            # platform server after the stop_typing() DELETE below, the
+            # typing indicator gets re-enabled and stays on permanently.
+            # A short pause lets any racing POST be properly aborted or
+            # settle before the DELETE goes out.  (0.2s is enough — the
+            # aiohttp connection pool reaper handles the rest.)
+            await asyncio.sleep(0.2)
         
         try:
             await self._run_processing_hook("on_processing_start", event)

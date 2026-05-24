@@ -13,6 +13,10 @@ Mid-session writes update files on disk immediately (durable) but do NOT change
 the system prompt -- this preserves the prefix cache for the entire session.
 The snapshot refreshes on the next session start.
 
+A helper `get_live_vs_snapshot_status()` is provided so agents performing
+proactive compaction can detect when live usage has diverged from the
+numbers shown in the current system prompt (a normal and expected situation).
+
 Entry delimiter: § (section sign). Entries can be multiline.
 Character limits (not tokens) because char counts are model-independent.
 
@@ -23,21 +27,39 @@ Design:
 - Frozen snapshot pattern: system prompt is stable, tool responses show live state
 """
 
-import fcntl
 import json
 import logging
 import os
 import re
 import tempfile
+import time
 from contextlib import contextmanager
 from pathlib import Path
 from hermes_constants import get_hermes_home
 from typing import Dict, Any, List, Optional
 
+from utils import atomic_replace
+
+# fcntl is Unix-only; on Windows use msvcrt for file locking
+msvcrt = None
+try:
+    import fcntl
+except ImportError:
+    fcntl = None
+    try:
+        import msvcrt
+    except ImportError:
+        pass
+
 logger = logging.getLogger(__name__)
 
-# Where memory files live
-MEMORY_DIR = get_hermes_home() / "memories"
+# Where memory files live — resolved dynamically so profile overrides
+# (HERMES_HOME env var changes) are always respected.  The old module-level
+# constant was cached at import time and could go stale if a profile switch
+# happened after the first import.
+def get_memory_dir() -> Path:
+    """Return the profile-scoped memories directory."""
+    return get_hermes_home() / "memories"
 
 ENTRY_DELIMITER = "\n§\n"
 
@@ -87,6 +109,36 @@ def _scan_memory_content(content: str) -> Optional[str]:
     return None
 
 
+def _drift_error(path: "Path", bak_path: str) -> Dict[str, Any]:
+    """Build the error dict returned when external drift is detected.
+
+    The on-disk memory file contains content that wouldn't round-trip
+    through the tool's parser/serializer — flushing would discard the
+    appended/edited content from a patch tool, shell append, manual edit,
+    or sister-session write. We refuse the mutation, point the operator at
+    the .bak.<ts> snapshot we took, and tell them what to do next.
+    """
+    return {
+        "success": False,
+        "error": (
+            f"Refusing to write {path.name}: file on disk has content that "
+            f"wouldn't round-trip through the memory tool (likely added by "
+            f"the patch tool, a shell append, a manual edit, or a "
+            f"concurrent session). A snapshot was saved to {bak_path}. "
+            f"Resolve the drift first — either rewrite the file as a clean "
+            f"§-delimited list of entries, or move the extra content out — "
+            f"then retry. This guard exists to prevent silent data loss "
+            f"(issue #26045)."
+        ),
+        "drift_backup": bak_path,
+        "remediation": (
+            "Open the .bak file, integrate the missing entries into the "
+            "memory tool one at a time via memory(action=add, content=...), "
+            "then remove or rewrite the original file to a clean state."
+        ),
+    }
+
+
 class MemoryStore:
     """
     Bounded curated memory with file persistence. One instance per AIAgent.
@@ -108,10 +160,11 @@ class MemoryStore:
 
     def load_from_disk(self):
         """Load entries from MEMORY.md and USER.md, capture system prompt snapshot."""
-        MEMORY_DIR.mkdir(parents=True, exist_ok=True)
+        mem_dir = get_memory_dir()
+        mem_dir.mkdir(parents=True, exist_ok=True)
 
-        self.memory_entries = self._read_file(MEMORY_DIR / "MEMORY.md")
-        self.user_entries = self._read_file(MEMORY_DIR / "USER.md")
+        self.memory_entries = self._read_file(mem_dir / "MEMORY.md")
+        self.user_entries = self._read_file(mem_dir / "USER.md")
 
         # Deduplicate entries (preserves order, keeps first occurrence)
         self.memory_entries = list(dict.fromkeys(self.memory_entries))
@@ -133,32 +186,61 @@ class MemoryStore:
         """
         lock_path = path.with_suffix(path.suffix + ".lock")
         lock_path.parent.mkdir(parents=True, exist_ok=True)
-        fd = open(lock_path, "w")
+
+        if fcntl is None and msvcrt is None:
+            yield
+            return
+
+        fd = open(lock_path, "a+", encoding="utf-8")
         try:
-            fcntl.flock(fd, fcntl.LOCK_EX)
+            if fcntl:
+                fcntl.flock(fd, fcntl.LOCK_EX)
+            else:
+                fd.seek(0)
+                msvcrt.locking(fd.fileno(), msvcrt.LK_LOCK, 1)
             yield
         finally:
-            fcntl.flock(fd, fcntl.LOCK_UN)
+            if fcntl:
+                try:
+                    fcntl.flock(fd, fcntl.LOCK_UN)
+                except (OSError, IOError):
+                    pass
+            elif msvcrt:
+                try:
+                    fd.seek(0)
+                    msvcrt.locking(fd.fileno(), msvcrt.LK_UNLCK, 1)
+                except (OSError, IOError):
+                    pass
             fd.close()
 
     @staticmethod
     def _path_for(target: str) -> Path:
+        mem_dir = get_memory_dir()
         if target == "user":
-            return MEMORY_DIR / "USER.md"
-        return MEMORY_DIR / "MEMORY.md"
+            return mem_dir / "USER.md"
+        return mem_dir / "MEMORY.md"
 
-    def _reload_target(self, target: str):
+    def _reload_target(self, target: str) -> Optional[str]:
         """Re-read entries from disk into in-memory state.
 
         Called under file lock to get the latest state before mutating.
+        Returns the backup path if external drift was detected (the on-disk
+        file contains content that wouldn't round-trip through our
+        parser/serializer, OR an entry larger than the store's char limit).
+        When drift is detected the caller must abort the mutation —
+        flushing would discard the un-roundtrippable content.
+        Returns None on clean reload.
         """
-        fresh = self._read_file(self._path_for(target))
+        path = self._path_for(target)
+        bak = self._detect_external_drift(target)
+        fresh = self._read_file(path)
         fresh = list(dict.fromkeys(fresh))  # deduplicate
         self._set_entries(target, fresh)
+        return bak
 
     def save_to_disk(self, target: str):
         """Persist entries to the appropriate file. Called after every mutation."""
-        MEMORY_DIR.mkdir(parents=True, exist_ok=True)
+        get_memory_dir().mkdir(parents=True, exist_ok=True)
         self._write_file(self._path_for(target), self._entries_for(target))
 
     def _entries_for(self, target: str) -> List[str]:
@@ -195,8 +277,13 @@ class MemoryStore:
             return {"success": False, "error": scan_error}
 
         with self._file_lock(self._path_for(target)):
-            # Re-read from disk under lock to pick up writes from other sessions
-            self._reload_target(target)
+            # Re-read from disk under lock to pick up writes from other sessions.
+            # If external drift was detected, the file was backed up to .bak.<ts>
+            # — refuse the mutation so we don't clobber the un-roundtrippable
+            # content the patch tool / shell append / sister session wrote.
+            bak = self._reload_target(target)
+            if bak:
+                return _drift_error(self._path_for(target), bak)
 
             entries = self._entries_for(target)
             limit = self._char_limit(target)
@@ -243,17 +330,19 @@ class MemoryStore:
             return {"success": False, "error": scan_error}
 
         with self._file_lock(self._path_for(target)):
-            self._reload_target(target)
+            bak = self._reload_target(target)
+            if bak:
+                return _drift_error(self._path_for(target), bak)
 
             entries = self._entries_for(target)
             matches = [(i, e) for i, e in enumerate(entries) if old_text in e]
 
-            if len(matches) == 0:
+            if not matches:
                 return {"success": False, "error": f"No entry matched '{old_text}'."}
 
             if len(matches) > 1:
                 # If all matches are identical (exact duplicates), operate on the first one
-                unique_texts = set(e for _, e in matches)
+                unique_texts = {e for _, e in matches}
                 if len(unique_texts) > 1:
                     previews = [e[:80] + ("..." if len(e) > 80 else "") for _, e in matches]
                     return {
@@ -293,17 +382,19 @@ class MemoryStore:
             return {"success": False, "error": "old_text cannot be empty."}
 
         with self._file_lock(self._path_for(target)):
-            self._reload_target(target)
+            bak = self._reload_target(target)
+            if bak:
+                return _drift_error(self._path_for(target), bak)
 
             entries = self._entries_for(target)
             matches = [(i, e) for i, e in enumerate(entries) if old_text in e]
 
-            if len(matches) == 0:
+            if not matches:
                 return {"success": False, "error": f"No entry matched '{old_text}'."}
 
             if len(matches) > 1:
                 # If all matches are identical (exact duplicates), remove the first one
-                unique_texts = set(e for _, e in matches)
+                unique_texts = {e for _, e in matches}
                 if len(unique_texts) > 1:
                     previews = [e[:80] + ("..." if len(e) > 80 else "") for _, e in matches]
                     return {
@@ -333,13 +424,48 @@ class MemoryStore:
         block = self._system_prompt_snapshot.get(target, "")
         return block if block else None
 
+    def get_live_vs_snapshot_status(self, target: str = "memory") -> dict:
+        """
+        Return live memory usage compared to the frozen snapshot used in the
+        system prompt.
+
+        This allows agents and governance reviews that perform proactive
+        memory compaction to reliably detect when the capacity numbers in
+        the injected system prompt are stale. The snapshot is frozen at
+        session start for prompt cache stability; mid-session compaction
+        updates the live state and disk file but not the prompt block until
+        the next session.
+        """
+        if target not in {"memory", "user"}:
+            return {"error": "invalid_target"}
+
+        live_current = self._char_count(target)
+        live_limit = self._char_limit(target)
+        live_pct = min(100, int((live_current / live_limit) * 100)) if live_limit > 0 else 0
+
+        snapshot_block = self._system_prompt_snapshot.get(target, "")
+        snapshot_current = len(snapshot_block)
+
+        differs = abs(live_current - snapshot_current) > 80
+
+        return {
+            "target": target,
+            "live_usage": f"{live_pct}% — {live_current:,}/{live_limit:,} chars",
+            "snapshot_differs_significantly": differs,
+            "note": (
+                "Live state has diverged from the frozen snapshot used in the "
+                "system prompt (expected after compaction this session)."
+                if differs else "Live state is close to the snapshot."
+            ),
+        }
+
     # -- Internal helpers --
 
     def _success_response(self, target: str, message: str = None) -> Dict[str, Any]:
         entries = self._entries_for(target)
         current = self._char_count(target)
         limit = self._char_limit(target)
-        pct = int((current / limit) * 100) if limit > 0 else 0
+        pct = min(100, int((current / limit) * 100)) if limit > 0 else 0
 
         resp = {
             "success": True,
@@ -360,7 +486,7 @@ class MemoryStore:
         limit = self._char_limit(target)
         content = ENTRY_DELIMITER.join(entries)
         current = len(content)
-        pct = int((current / limit) * 100) if limit > 0 else 0
+        pct = min(100, int((current / limit) * 100)) if limit > 0 else 0
 
         if target == "user":
             header = f"USER PROFILE (who the user is) [{pct}% — {current:,}/{limit:,} chars]"
@@ -392,6 +518,61 @@ class MemoryStore:
         entries = [e.strip() for e in raw.split(ENTRY_DELIMITER)]
         return [e for e in entries if e]
 
+    def _detect_external_drift(self, target: str) -> Optional[str]:
+        """Return a backup-path string if on-disk content shows external drift.
+
+        The memory file is supposed to be a list of small entries the tool
+        wrote, joined by §. Detect drift via two signals:
+
+        1. Round-trip mismatch — re-parsing and re-serializing the file
+           doesn't produce identical bytes (rare; would catch oddly-encoded
+           delimiters).
+        2. Entry-size overflow — any single parsed entry exceeds the
+           store's whole-file char limit. The tool budgets the ENTIRE store
+           against that limit; no single tool-written entry can exceed it.
+           When we see one entry larger than the limit, an external writer
+           (patch tool, shell append, manual edit, sister session) appended
+           free-form content into what the tool will treat as one entry.
+           Flushing would then truncate that entry to the model's new
+           content, discarding the appended bytes — issue #26045.
+
+        Returns the absolute path of the .bak file when drift was found and
+        backed up; returns None when the file looks tool-shaped.
+
+        Note: this is an INSTANCE method (not static) because we need the
+        per-target char_limit for signal #2.
+        """
+        path = self._path_for(target)
+        if not path.exists():
+            return None
+        try:
+            raw = path.read_text(encoding="utf-8")
+        except (OSError, IOError):
+            return None
+        if not raw.strip():
+            return None
+
+        parsed = [e.strip() for e in raw.split(ENTRY_DELIMITER) if e.strip()]
+        roundtrip = ENTRY_DELIMITER.join(parsed)
+
+        char_limit = self._char_limit(target)
+        max_entry_len = max((len(e) for e in parsed), default=0)
+
+        drift_detected = (raw.strip() != roundtrip) or (max_entry_len > char_limit)
+        if not drift_detected:
+            return None
+
+        # Drift confirmed — snapshot the file so the operator can recover
+        # whatever the external writer added, then return the .bak path so
+        # the caller can refuse the mutation.
+        ts = int(time.time())
+        bak_path = path.with_suffix(path.suffix + f".bak.{ts}")
+        try:
+            bak_path.write_text(raw, encoding="utf-8")
+        except (OSError, IOError):
+            return str(bak_path) + " (BACKUP FAILED — file unchanged on disk)"
+        return str(bak_path)
+
     @staticmethod
     def _write_file(path: Path, entries: List[str]):
         """Write entries to a memory file using atomic temp-file + rename.
@@ -412,7 +593,7 @@ class MemoryStore:
                     f.write(content)
                     f.flush()
                     os.fsync(f.fileno())
-                os.replace(tmp_path, str(path))  # Atomic on same filesystem
+                atomic_replace(tmp_path, path)
             except BaseException:
                 # Clean up temp file on any failure
                 try:
@@ -437,30 +618,30 @@ def memory_tool(
     Returns JSON string with results.
     """
     if store is None:
-        return json.dumps({"success": False, "error": "Memory is not available. It may be disabled in config or this environment."}, ensure_ascii=False)
+        return tool_error("Memory is not available. It may be disabled in config or this environment.", success=False)
 
-    if target not in ("memory", "user"):
-        return json.dumps({"success": False, "error": f"Invalid target '{target}'. Use 'memory' or 'user'."}, ensure_ascii=False)
+    if target not in {"memory", "user"}:
+        return tool_error(f"Invalid target '{target}'. Use 'memory' or 'user'.", success=False)
 
     if action == "add":
         if not content:
-            return json.dumps({"success": False, "error": "Content is required for 'add' action."}, ensure_ascii=False)
+            return tool_error("Content is required for 'add' action.", success=False)
         result = store.add(target, content)
 
     elif action == "replace":
         if not old_text:
-            return json.dumps({"success": False, "error": "old_text is required for 'replace' action."}, ensure_ascii=False)
+            return tool_error("old_text is required for 'replace' action.", success=False)
         if not content:
-            return json.dumps({"success": False, "error": "content is required for 'replace' action."}, ensure_ascii=False)
+            return tool_error("content is required for 'replace' action.", success=False)
         result = store.replace(target, old_text, content)
 
     elif action == "remove":
         if not old_text:
-            return json.dumps({"success": False, "error": "old_text is required for 'remove' action."}, ensure_ascii=False)
+            return tool_error("old_text is required for 'remove' action.", success=False)
         result = store.remove(target, old_text)
 
     else:
-        return json.dumps({"success": False, "error": f"Unknown action '{action}'. Use: add, replace, remove"}, ensure_ascii=False)
+        return tool_error(f"Unknown action '{action}'. Use: add, replace, remove", success=False)
 
     return json.dumps(result, ensure_ascii=False)
 
@@ -504,8 +685,8 @@ MEMORY_SCHEMA = {
         "properties": {
             "action": {
                 "type": "string",
-                "enum": ["add", "replace", "remove"],
-                "description": "The action to perform."
+                "enum": ["add", "replace", "remove", "status"],
+                "description": "The action to perform. Use 'status' to check whether live memory has diverged from the frozen snapshot in the current system prompt."
             },
             "target": {
                 "type": "string",
@@ -527,7 +708,7 @@ MEMORY_SCHEMA = {
 
 
 # --- Registry ---
-from tools.registry import registry
+from tools.registry import registry, tool_error
 
 registry.register(
     name="memory",

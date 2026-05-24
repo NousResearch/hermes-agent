@@ -47,6 +47,8 @@ except ImportError:
 from gateway.config import Platform, PlatformConfig
 from gateway.platforms.base import (
     BasePlatformAdapter,
+    MessageEvent,
+    MessageType,
     SendResult,
     is_network_accessible,
 )
@@ -669,6 +671,41 @@ class APIServerAdapter(BasePlatformAdapter):
         # in-flight run by run_id.
         self._run_approval_sessions: Dict[str, str] = {}
         self._session_db: Optional[Any] = None  # Lazy-init SessionDB for session continuity
+        self._adapter_registry: Optional[Dict[Platform, BasePlatformAdapter]] = None
+
+    def set_adapter_registry(self, adapters: Dict[Platform, BasePlatformAdapter]) -> None:
+        """Share the live gateway adapter registry for internal event routing."""
+        self._adapter_registry = adapters
+
+    @staticmethod
+    def _render_internal_event(
+        event_type: str,
+        message: Any,
+        metadata: Any,
+    ) -> str:
+        """Render a compact, neutral agent-facing message for an internal event.
+
+        Shape is intentionally generic — a type header, any caller-supplied
+        metadata as ``- key: value`` lines, the free-text message, and a
+        closing instruction.  Event payloads are not schema-validated per
+        ``type``; callers decide what metadata is meaningful.
+        """
+        lines = [f"[Hermes internal event] {event_type}"]
+        if isinstance(metadata, dict):
+            for key, value in metadata.items():
+                if value is None or value == "":
+                    continue
+                lines.append(f"- {key}: {value}")
+        rendered = "\n".join(lines)
+
+        if isinstance(message, str) and message.strip():
+            rendered += f"\n\n{message.strip()}"
+
+        rendered += (
+            "\n\nUse the current conversation context to assess the result "
+            "and report the next step to the user."
+        )
+        return rendered
 
     @staticmethod
     def _parse_cors_origins(value: Any) -> tuple[str, ...]:
@@ -1002,6 +1039,11 @@ class APIServerAdapter(BasePlatformAdapter):
                 "run_approval_response": True,
                 "tool_progress_events": True,
                 "approval_events": True,
+                # /internal/events hard-requires an API key (returns 403 when
+                # API_SERVER_KEY is unset), so advertise the feature as usable
+                # only when a key is configured.  The route itself is still
+                # listed under "endpoints" for discovery parity.
+                "internal_events": bool(self._api_key),
                 "session_continuity_header": "X-Hermes-Session-Id",
                 "session_key_header": "X-Hermes-Session-Key",
                 "cors": bool(self._cors_origins),
@@ -1017,8 +1059,144 @@ class APIServerAdapter(BasePlatformAdapter):
                 "run_events": {"method": "GET", "path": "/v1/runs/{run_id}/events"},
                 "run_approval": {"method": "POST", "path": "/v1/runs/{run_id}/approval"},
                 "run_stop": {"method": "POST", "path": "/v1/runs/{run_id}/stop"},
+                "internal_events": {"method": "POST", "path": "/internal/events"},
             },
         })
+
+    async def _handle_internal_events(self, request: "web.Request") -> "web.Response":
+        """POST /internal/events — inject a session-scoped internal event.
+
+        Lets trusted local automation or a delegated agent post an event into
+        an *existing* Hermes session so Hermes can resume the original context
+        and report the next step.  This is not a durable queue and does not
+        create sessions: the event re-enters the normal platform adapter
+        pipeline as a ``MessageEvent(internal=True)`` routed to the adapter
+        for the session's stored origin.
+        """
+        # This endpoint injects a MessageEvent(internal=True) into existing
+        # gateway sessions, so it is held stricter than ordinary local API
+        # calls: an API key MUST be configured.  _check_auth() alone would
+        # allow all callers when no key is set (local-only convenience).
+        if not self._api_key:
+            return web.json_response(
+                _openai_error(
+                    "Internal events require API key authentication. "
+                    "Configure API_SERVER_KEY to enable this endpoint.",
+                    code="api_key_required",
+                ),
+                status=403,
+            )
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+
+        try:
+            body = await request.json()
+        except Exception:
+            return web.json_response(_openai_error("Invalid JSON"), status=400)
+        if not isinstance(body, dict):
+            return web.json_response(_openai_error("Request body must be a JSON object"), status=400)
+
+        event_type = str(body.get("type") or "").strip()
+        if not event_type:
+            return web.json_response(_openai_error("Missing 'type' field"), status=400)
+
+        session_id = str(body.get("session_id") or "").strip()
+        session_key = str(body.get("session_key") or "").strip()
+        if not session_id and not session_key:
+            return web.json_response(_openai_error("Missing 'session_id' or 'session_key' field"), status=400)
+
+        session_store = getattr(self, "_session_store", None)
+        if session_store is None:
+            return web.json_response(
+                _openai_error("Gateway session store is unavailable", code="session_store_unavailable"),
+                status=503,
+            )
+
+        entry_by_id = session_store.get_by_session_id(session_id) if session_id else None
+        entry_by_key = session_store.get_by_session_key(session_key) if session_key else None
+
+        if session_id and session_key:
+            # Both identifiers supplied: fail closed unless they both resolve
+            # and point at the same active entry.  Routing by one while the
+            # other is stale/wrong would silently target a different session.
+            if (
+                entry_by_id is None
+                or entry_by_key is None
+                or entry_by_id.session_key != entry_by_key.session_key
+            ):
+                return web.json_response(
+                    _openai_error(
+                        "session_id and session_key do not identify the same active session",
+                        code="session_identifier_mismatch",
+                    ),
+                    status=409,
+                )
+            entry = entry_by_id
+        else:
+            entry = entry_by_id or entry_by_key
+
+        if entry is None:
+            return web.json_response(_openai_error("Session not found", code="session_not_found"), status=404)
+
+        origin = entry.origin
+        if origin is None or getattr(origin, "platform", None) is None:
+            return web.json_response(
+                _openai_error("Session has no routable origin", code="session_origin_unavailable"),
+                status=422,
+            )
+
+        registry = self._adapter_registry or {}
+        target_adapter = registry.get(origin.platform)
+        if target_adapter is None:
+            return web.json_response(
+                _openai_error(
+                    f"Platform adapter is not connected: {origin.platform.value}",
+                    code="platform_not_connected",
+                ),
+                status=503,
+            )
+
+        event = MessageEvent(
+            text=self._render_internal_event(event_type, body.get("message"), body.get("metadata")),
+            message_type=MessageType.TEXT,
+            source=origin,
+            internal=True,
+        )
+
+        # Dispatch asynchronously so the caller gets a prompt 202; the agent
+        # turn it triggers can take a long time.  Failures can't be surfaced
+        # to the already-answered caller, so they are logged.
+        async def _dispatch() -> None:
+            try:
+                await target_adapter.handle_message(event)
+            except Exception:
+                logger.exception(
+                    "Internal event dispatch failed (type=%s session_id=%s platform=%s)",
+                    event_type,
+                    entry.session_id,
+                    origin.platform.value,
+                )
+
+        task = asyncio.create_task(_dispatch())
+        try:
+            self._background_tasks.add(task)
+        except TypeError:
+            pass
+        if hasattr(task, "add_done_callback"):
+            task.add_done_callback(self._background_tasks.discard)
+
+        return web.json_response(
+            {
+                "object": "hermes.internal_event",
+                "status": "accepted",
+                "type": event_type,
+                "session_id": entry.session_id,
+                "session_key": entry.session_key,
+                "platform": origin.platform.value,
+            },
+            status=202,
+        )
 
     async def _handle_chat_completions(self, request: "web.Request") -> "web.Response":
         """POST /v1/chat/completions — OpenAI Chat Completions format."""
@@ -3406,6 +3584,7 @@ class APIServerAdapter(BasePlatformAdapter):
             self._app.router.add_post("/v1/responses", self._handle_responses)
             self._app.router.add_get("/v1/responses/{response_id}", self._handle_get_response)
             self._app.router.add_delete("/v1/responses/{response_id}", self._handle_delete_response)
+            self._app.router.add_post("/internal/events", self._handle_internal_events)
             # Cron jobs management API
             self._app.router.add_get("/api/jobs", self._handle_list_jobs)
             self._app.router.add_post("/api/jobs", self._handle_create_job)

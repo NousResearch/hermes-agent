@@ -1,0 +1,83 @@
+# .cursorrules — hermes-agent
+
+## Project Context
+Hermes agent fleet platform (v0.13.0). Python, Docker, WSL2 runtime.
+30 agents, cron-driven, DeepSeek v4 flash model via Together AI.
+Skills-based architecture with tool execution pipeline.
+
+## Core Rules
+
+### Decimal Arithmetic (when scoring)
+- If any code touches scoring paths shared with biotech-screener, use `Decimal`.
+- Agent orchestration/routing logic may use standard float.
+
+### Point-in-Time Safety
+- All dates ISO 8601 (`YYYY-MM-DD`).
+- Never call `datetime.now()` in data pipelines. Use explicit `as_of_date`.
+- Agent runtime timestamps (logging, scheduling) may use `datetime.now()`.
+
+### Deterministic Output
+- Pipeline outputs: sorted keys, content hashes, no side effects.
+- Agent responses: best-effort determinism (LLM outputs are inherently stochastic).
+
+## Model Routing
+- "llama" / "deepseek" models -> Together API
+- "claude" models -> Anthropic SDK
+- Routing logic lives in the gateway layer — do not hard-code provider URLs in agents.
+
+## Llama/DeepSeek Prompting Conventions
+- IF/THEN chains for conditional logic
+- Step numbering for multi-step instructions
+- Schema-first output (define JSON shape before asking for content)
+- Never ask model to infer data not explicitly provided
+
+## Naming
+- Python files: `snake_case.py`
+- Config: `snake_case.yaml`
+- Skill docs: `SKILL.md` (frontmatter required)
+- Agent configs: reference AGENTS.md for canonical names
+
+## Commands
+```bash
+# Docker
+docker compose up -d
+docker compose logs -f <service>
+
+# Test
+pytest -p no:warnings
+
+# Lint
+ruff check .
+ruff format --check .
+```
+
+## Key Constraints
+- Read-only/observe-only defaults for agent-related work.
+- No live cron, agent, or production mutation unless explicitly requested.
+- No broad refactors. One task per session.
+- Skill documents load from disk each run — changes take effect on next invocation.
+- Exec allowlist governs which tools agents can use.
+
+## Architecture Notes
+- Session lifecycle: skill load -> context build -> LLM call -> tool exec -> response
+- Cron jobs managed via system crontab in WSL2
+- API gateway: port 52379 (local), relay-connected for remote access
+- MCP server: 8 read-only tools, skills + gateway modes
+
+## Anti-Patterns (DO NOT)
+1. Hard-code provider URLs in agent code
+2. Activate agents/crons without explicit approval
+3. Bypass exec allowlist
+4. Push red main
+5. Expand beyond requested scope
+6. Convert prep-only agents into live automations without approval
+7. Treat metadata freshness as proof of content freshness
+8. Invent project state (branches, PRs, commits) without verification
+
+## File Structure Awareness
+- `src/` — core platform code
+- `agents/` — agent definitions and configs
+- `skills/` — SKILL.md documents
+- `docker/` — Dockerfile, compose
+- `scripts/` — operational scripts
+- `tools/` — tool implementations

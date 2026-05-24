@@ -4532,6 +4532,41 @@ class TelegramAdapter(BasePlatformAdapter):
                     return True
         return False
 
+
+    async def _eager_transcribe_voice(self, msg) -> "str | None":
+        """Download voice/audio and run STT eagerly. Used by `_handle_media_message`
+        to evaluate mention patterns against the transcript BEFORE applying the
+        `_should_process_message` filter -- the raw Telegram message has no
+        ``text``/``caption`` for the filter to match a wake word against,
+        which would otherwise silently drop every voice note in
+        ``require_mention`` group chats.
+
+        Returns the transcript text on success, or ``None`` on transcription
+        failure / unsupported attachment / STT module unavailable.
+        """
+        try:
+            from tools.transcription_tools import transcribe_audio
+        except Exception as e:
+            logger.debug("[%s] STT module unavailable: %s", self.name, e)
+            return None
+        try:
+            if getattr(msg, "voice", None):
+                file_obj = await msg.voice.get_file()
+                ext = ".ogg"
+            elif getattr(msg, "audio", None):
+                file_obj = await msg.audio.get_file()
+                ext = ".mp3"
+            else:
+                return None
+            audio_bytes = await file_obj.download_as_bytearray()
+            cached_path = cache_audio_from_bytes(bytes(audio_bytes), ext=ext)
+            result = await asyncio.to_thread(transcribe_audio, cached_path)
+            if isinstance(result, dict) and result.get("success"):
+                return (result.get("text") or result.get("transcript") or "").strip() or None
+        except Exception as e:
+            logger.warning("[%s] Eager voice transcription failed: %s", self.name, e)
+        return None
+
     def _is_guest_mention(self, message: Message) -> bool:
         """Return True for the narrow guest-mode bypass: explicit bot mention.
 
@@ -5002,6 +5037,37 @@ class TelegramAdapter(BasePlatformAdapter):
         """Handle incoming media messages, downloading images to local cache."""
         if not update.message:
             return
+        msg = update.message
+        # Voice/audio with ``require_mention``: transcribe BEFORE the mention filter.
+        # The raw Telegram message has no ``text``/``caption`` for a wake-word
+        # regex to match against; without this pre-pass every voice note in a
+        # group chat would be silently dropped, even one whose spoken content
+        # is exactly the configured mention pattern. See discussion in #31328.
+        if (getattr(msg, "voice", None) or getattr(msg, "audio", None)) \
+                and self._is_group_chat(msg) and self._telegram_require_mention() \
+                and self._mention_patterns:
+            chat_id_str = str(getattr(getattr(msg, "chat", None), "id", ""))
+            voice_bypass = (
+                self._is_reply_to_bot(msg)
+                or self._is_guest_mention(msg)
+                or chat_id_str in self._telegram_free_response_chats()
+                or self._message_mentions_bot(msg)
+                or self._message_matches_mention_patterns(msg)
+            )
+            if not voice_bypass:
+                transcript = await self._eager_transcribe_voice(msg)
+                if not transcript:
+                    logger.info("[%s] Voice dropped: STT failed or empty transcript", self.name)
+                    return
+                matched_voice = False
+                for pattern in self._mention_patterns:
+                    if pattern.search(transcript):
+                        matched_voice = True
+                        break
+                if not matched_voice:
+                    logger.info("[%s] Voice dropped: no mention-pattern match in transcript %r", self.name, transcript[:80])
+                    return
+                logger.info("[%s] Voice accepted via transcript mention match: %r", self.name, transcript[:80])
         if not self._should_process_message(update.message):
             if self._should_observe_unmentioned_group_message(update.message):
                 _m = update.message

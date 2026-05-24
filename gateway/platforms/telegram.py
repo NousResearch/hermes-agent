@@ -15,6 +15,7 @@ import os
 import tempfile
 import html as _html
 import re
+import time as _time
 from datetime import datetime, timezone
 from typing import Dict, List, Optional, Any
 
@@ -429,6 +430,15 @@ class TelegramAdapter(BasePlatformAdapter):
         self._polling_conflict_count: int = 0
         self._polling_network_error_count: int = 0
         self._polling_error_callback_ref = None
+        # Send-path health tracking.  After sustained reconnect storms
+        # (Bad Gateway / TimedOut), the PTB httpx client can enter a
+        # wedged state where send_message returns a valid Message
+        # object but the message never reaches the recipient.  This flag
+        # gates a post-send getMe() probe that catches the wedge and
+        # surfaces a failure so callers (cron, send_message_tool) can
+        # fall back to a fresh HTTP session.
+        self._send_path_degraded: bool = False
+        self._last_reconnect_error_at: float = 0.0
         # DM Topics: map of topic_name -> message_thread_id (populated at startup)
         self._dm_topics: Dict[str, int] = {}
         # Track forum chats where we've already registered bot commands
@@ -875,6 +885,8 @@ class TelegramAdapter(BasePlatformAdapter):
 
         self._polling_network_error_count += 1
         attempt = self._polling_network_error_count
+        self._send_path_degraded = True
+        self._last_reconnect_error_at = _time.monotonic()
 
         if attempt > MAX_NETWORK_RETRIES:
             message = (
@@ -971,6 +983,12 @@ class TelegramAdapter(BasePlatformAdapter):
 
         try:
             await asyncio.wait_for(self._app.bot.get_me(), PROBE_TIMEOUT)
+            # Polling heartbeat passed — the Bot client is responsive.
+            # Clear the degraded flag so send() stops probing and
+            # callers (cron) trust live-adapter results again.
+            if self._send_path_degraded:
+                logger.info("[%s] Send-path health probe passed, clearing degraded flag", self.name)
+                self._send_path_degraded = False
         except Exception as probe_err:
             logger.warning(
                 "[%s] Polling heartbeat probe failed %ds after reconnect: %s",
@@ -1871,6 +1889,27 @@ class TelegramAdapter(BasePlatformAdapter):
                                 continue
                         raise
                 message_ids.append(str(msg.message_id))
+
+            # After a reconnect storm the PTB httpx pool can be wedged:
+            # send_message returns a valid Message (real message_id) but
+            # the message never reaches the recipient.  Probe the send
+            # path with a lightweight getMe() so callers see a failure
+            # and can fall through to the standalone delivery path.
+            if self._send_path_degraded and self._bot:
+                try:
+                    await asyncio.wait_for(self._bot.get_me(), 5)
+                    logger.info("[%s] Post-send health probe passed, clearing degraded flag", self.name)
+                    self._send_path_degraded = False
+                except Exception as probe_err:
+                    logger.warning(
+                        "[%s] Post-send health probe failed (send path still wedged): %s",
+                        self.name, probe_err,
+                    )
+                    return SendResult(
+                        success=False,
+                        error=f"send_path_degraded: {probe_err}",
+                        retryable=True,
+                    )
 
             # Re-trigger typing indicator after sending a message.
             # Telegram clears the typing state when a new message is delivered,

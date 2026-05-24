@@ -871,6 +871,18 @@ def _set_status_direct(
             "VALUES (?, ?, 'status', ?, ?)",
             (task_id, run_id, json.dumps({"status": new_status}), int(time.time())),
         )
+
+        if (
+            prev["status"] in {"done", "archived"}
+            and new_status not in {"done", "archived"}
+        ):
+            kanban_db.record_operator_reopen(
+                conn,
+                task_id,
+                from_status=prev["status"],
+                to_status=new_status,
+                reason="dashboard",
+            )
         if reopening_satisfied_parent:
             # A parent leaving done/archived invalidates any direct child that
             # was sitting in ready solely because that parent used to satisfy

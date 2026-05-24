@@ -344,6 +344,49 @@ def test_patch_status_complete(client):
     assert any(x["id"] == t["id"] for x in done["tasks"])
 
 
+def test_patch_done_to_ready_records_operator_reopen(client):
+  """Moving a completed card back to ready should clear respawn guards."""
+  import time
+  from hermes_cli import kanban_db as kb
+
+  t = client.post(
+      "/api/plugins/kanban/tasks",
+      json={"title": "follow-up", "assignee": "default"},
+  ).json()["task"]
+  r = client.patch(
+      f"/api/plugins/kanban/tasks/{t['id']}",
+      json={"status": "done", "summary": "first pass"},
+  )
+  assert r.status_code == 200
+
+  with kb.connect() as conn:
+      now = int(time.time())
+      conn.execute(
+          "INSERT INTO task_runs (task_id, status, outcome, started_at, ended_at) "
+          "VALUES (?, 'done', 'completed', ?, ?)",
+          (t["id"], now - 120, now - 60),
+      )
+      assert kb.check_respawn_guard(conn, t["id"]) == "recent_success"
+
+  r = client.patch(
+      f"/api/plugins/kanban/tasks/{t['id']}",
+      json={"status": "ready"},
+  )
+  assert r.status_code == 200
+  assert r.json()["task"]["status"] == "ready"
+
+  with kb.connect() as conn:
+      assert kb.check_respawn_guard(conn, t["id"]) is None
+      kinds = [
+          row["kind"]
+          for row in conn.execute(
+              "SELECT kind FROM task_events WHERE task_id = ? ORDER BY id",
+              (t["id"],),
+          ).fetchall()
+      ]
+      assert "reopened" in kinds
+
+
 def test_patch_block_then_unblock(client):
     t = client.post("/api/plugins/kanban/tasks", json={"title": "x"}).json()["task"]
     r = client.patch(

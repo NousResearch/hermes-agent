@@ -1303,6 +1303,55 @@ def test_respawn_guard_recent_success(kanban_home):
     assert reason == "recent_success"
 
 
+def test_respawn_guard_recent_success_bypassed_after_operator_reopen(kanban_home):
+    """Explicit operator reopen after completion clears the recent_success guard."""
+    with kb.connect() as conn:
+        t = kb.create_task(conn, title="follow-up", assignee="alice")
+        now = int(time.time())
+        completed_at = now - 60
+        conn.execute(
+            "INSERT INTO task_runs (task_id, status, outcome, started_at, ended_at) "
+            "VALUES (?, 'done', 'completed', ?, ?)",
+            (t, completed_at - 120, completed_at),
+        )
+        assert kb.check_respawn_guard(conn, t) == "recent_success"
+        kb.record_operator_reopen(
+            conn,
+            t,
+            from_status="done",
+            to_status="ready",
+            reason="dashboard",
+        )
+        assert kb.check_respawn_guard(conn, t) is None
+
+
+def test_dispatch_spawns_after_operator_reopen(
+    kanban_home, all_assignees_spawnable,
+):
+    """dispatch_once spawns a task that was re-opened after a recent success."""
+    spawned_ids = []
+
+    def fake_spawn(task, workspace):
+        spawned_ids.append(task.id)
+
+    with kb.connect() as conn:
+        t = kb.create_task(conn, title="reopened-followup", assignee="alice")
+        now = int(time.time())
+        completed_at = now - 60
+        conn.execute(
+            "INSERT INTO task_runs (task_id, status, outcome, started_at, ended_at) "
+            "VALUES (?, 'done', 'completed', ?, ?)",
+            (t, completed_at - 120, completed_at),
+        )
+        kb.record_operator_reopen(
+            conn, t, from_status="done", to_status="ready", reason="dashboard",
+        )
+        res = kb.dispatch_once(conn, spawn_fn=fake_spawn)
+
+    assert t in spawned_ids
+    assert (t, "recent_success") not in res.respawn_guarded
+
+
 def test_respawn_guard_stale_success_not_guarded(kanban_home):
     """A completed run outside the guard window does not block re-spawn."""
     with kb.connect() as conn:

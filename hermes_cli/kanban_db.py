@@ -4664,6 +4664,43 @@ def _clear_failure_counter(conn: sqlite3.Connection, task_id: str) -> None:
 _clear_spawn_failures = _clear_failure_counter
 
 
+def _operator_reopened_since(
+    conn: sqlite3.Connection, task_id: str, since_ts: int,
+) -> bool:
+    """True when an operator explicitly re-queued the task after ``since_ts``."""
+    row = conn.execute(
+        "SELECT id FROM task_events "
+        "WHERE task_id = ? AND kind = 'reopened' AND created_at >= ?",
+        (task_id, since_ts),
+    ).fetchone()
+    return row is not None
+
+
+def record_operator_reopen(
+    conn: sqlite3.Connection,
+    task_id: str,
+    *,
+    from_status: str,
+    to_status: str,
+    reason: str = "operator",
+) -> None:
+    """Record that an operator intentionally re-queued work on this task.
+
+    Dispatch respawn guards (``recent_success``, ``active_pr``) honour this
+    so follow-up instructions on a completed card can spawn a new worker.
+    """
+    _append_event(
+        conn,
+        task_id,
+        kind="reopened",
+        payload={
+            "from_status": from_status,
+            "to_status": to_status,
+            "reason": reason,
+        },
+    )
+
+
 def check_respawn_guard(conn: sqlite3.Connection, task_id: str) -> Optional[str]:
     """Return a guard reason if ``task_id`` should NOT be re-spawned, else None.
 
@@ -4714,21 +4751,27 @@ def check_respawn_guard(conn: sqlite3.Connection, task_id: str) -> Optional[str]
 
     # 2. Completed run within guard window — proof of recent success.
     cutoff = now - _RESPAWN_GUARD_SUCCESS_WINDOW
-    if conn.execute(
-        "SELECT id FROM task_runs "
-        "WHERE task_id = ? AND outcome = 'completed' AND ended_at >= ?",
+    recent_completed = conn.execute(
+        "SELECT ended_at FROM task_runs "
+        "WHERE task_id = ? AND outcome = 'completed' AND ended_at >= ? "
+        "ORDER BY ended_at DESC LIMIT 1",
         (task_id, cutoff),
-    ).fetchone():
+    ).fetchone()
+    if recent_completed and not _operator_reopened_since(
+        conn, task_id, int(recent_completed["ended_at"]),
+    ):
         return "recent_success"
 
     # 3. GitHub PR URL in a recent comment — prior worker already opened a PR.
     pr_cutoff = now - _RESPAWN_GUARD_PR_WINDOW
     for c in conn.execute(
-        "SELECT body FROM task_comments WHERE task_id = ? AND created_at >= ?",
+        "SELECT body, created_at FROM task_comments "
+        "WHERE task_id = ? AND created_at >= ?",
         (task_id, pr_cutoff),
     ).fetchall():
         if c["body"] and _RESPAWN_GUARD_PR_URL_RE.search(c["body"]):
-            return "active_pr"
+            if not _operator_reopened_since(conn, task_id, int(c["created_at"])):
+                return "active_pr"
 
     return None
 

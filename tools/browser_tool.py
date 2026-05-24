@@ -1591,6 +1591,11 @@ BROWSER_TOOL_SCHEMAS = [
                     "type": "boolean",
                     "default": False,
                     "description": "If true, overlay numbered [N] labels on interactive elements. Each [N] maps to ref @eN for subsequent browser commands. Useful for QA and spatial reasoning about page layout."
+                },
+                "full": {
+                    "type": "boolean",
+                    "default": False,
+                    "description": "If true, capture the full page instead of just the visible viewport."
                 }
             },
             "required": ["question"]
@@ -3045,7 +3050,7 @@ def browser_get_images(task_id: Optional[str] = None) -> str:
         return json.dumps(_copy_fallback_warning(response, result), ensure_ascii=False)
 
 
-def browser_vision(question: str, annotate: bool = False, task_id: Optional[str] = None) -> str:
+def browser_vision(question: str, annotate: bool = False, full: bool = False, task_id: Optional[str] = None) -> str:
     """
     Take a screenshot of the current page and analyze it with vision AI.
 
@@ -3060,6 +3065,7 @@ def browser_vision(question: str, annotate: bool = False, task_id: Optional[str]
     Args:
         question: What you want to know about the page visually
         annotate: If True, overlay numbered [N] labels on interactive elements
+        full: If True, capture the full page instead of the visible viewport
         task_id: Task identifier for session isolation
 
     Returns:
@@ -3089,6 +3095,8 @@ def browser_vision(question: str, annotate: bool = False, task_id: Optional[str]
         screenshot_args = []
         if annotate:
             screenshot_args.append("--annotate")
+        if full:
+            screenshot_args.append("--full")
         fb_result = _chrome_fallback_screenshot(
             effective_task_id, screenshot_args, _get_command_timeout(),
         )
@@ -3144,7 +3152,8 @@ def browser_vision(question: str, annotate: bool = False, task_id: Optional[str]
             screenshot_args = []
             if annotate:
                 screenshot_args.append("--annotate")
-            screenshot_args.append("--full")
+            if full:
+                screenshot_args.append("--full")
             screenshot_args.append(str(screenshot_path))
             result = _run_browser_command(
                 effective_task_id,
@@ -3785,7 +3794,7 @@ registry.register(
     name="browser_vision",
     toolset="browser",
     schema=_BROWSER_SCHEMA_MAP["browser_vision"],
-    handler=lambda args, **kw: browser_vision(question=args.get("question", ""), annotate=args.get("annotate", False), task_id=kw.get("task_id")),
+    handler=lambda args, **kw: browser_vision(question=args.get("question", ""), annotate=args.get("annotate", False), full=args.get("full", False), task_id=kw.get("task_id")),
     check_fn=check_browser_requirements,
     emoji="👁️",
 )

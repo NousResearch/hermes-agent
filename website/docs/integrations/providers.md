@@ -18,6 +18,7 @@ You need at least one way to connect to an LLM. Use `hermes model` to switch pro
 | **OpenAI Codex** | `hermes model` (ChatGPT OAuth, uses Codex models) |
 | **GitHub Copilot** | `hermes model` (OAuth device code flow, `COPILOT_GITHUB_TOKEN`, `GH_TOKEN`, or `gh auth token`) |
 | **GitHub Copilot ACP** | `hermes model` (spawns local `copilot --acp --stdio`) |
+| **Cursor ACP** | `hermes model` (spawns local Cursor Agent CLI via `agent acp`; supports subscription auth after `agent login`) |
 | **Anthropic** | `hermes model` (Claude Max + extra usage credits via OAuth; also supports Anthropic API key or manual setup-token — see note below) |
 | **OpenRouter** | `OPENROUTER_API_KEY` in `~/.hermes/.env` |
 | **NovitaAI** | `NOVITA_API_KEY` in `~/.hermes/.env` (provider: `novita`, 200+ models, Model API, Agent Sandbox, GPU Cloud) |
@@ -266,7 +267,35 @@ hermes chat --provider copilot-acp --model copilot-acp
 # Requires the GitHub Copilot CLI in PATH and an existing `copilot login` session
 ```
 
+**`cursor-acp` — Cursor Agent Client Protocol backend**. Spawns Cursor's local Agent CLI as an ACP subprocess:
+
+```bash
+# Install Cursor Agent CLI, then authenticate with the browser/subscription flow.
+curl https://cursor.com/install -fsS | bash
+agent login
+
+# Run Composer through Hermes. The Hermes model id keeps the provider prefix,
+# and the ACP subprocess receives Cursor's bare model id (`composer-2.5`).
+hermes chat --provider cursor-acp --model cursor/composer-2.5 -q "Say hello from Cursor ACP"
+```
+
+Use this provider when you want Cursor Composer as the active Hermes backend. The separate Cursor SDK tool integrations are better for delegated coding-agent tasks; `cursor-acp` is the provider-selection path that keeps Hermes' normal session, memory, and message routing in charge.
+
 **Permanent config:**
+```yaml
+model:
+  provider: "cursor-acp"
+  default: "cursor/composer-2.5"
+```
+
+| Environment variable | Description |
+|---------------------|-------------|
+| `CURSOR_ACP_COMMAND` | Override the Cursor Agent binary path (default: `agent`) |
+| `CURSOR_CLI_PATH` | Legacy/alternate override for the Cursor Agent binary path |
+| `CURSOR_ACP_MODEL` | Override the Cursor model sent to `agent --model`; accepts `composer-2.5` or `cursor/composer-2.5` |
+| `CURSOR_ACP_ARGS` | Override ACP args entirely; when set, Hermes does not add `--model` automatically |
+
+**Copilot permanent config:**
 ```yaml
 model:
   provider: "copilot"

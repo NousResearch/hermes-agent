@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import logging
 import os
+import time
 from typing import Any, Dict
 
 from agent.web_search_provider import WebSearchProvider
@@ -72,26 +73,44 @@ class BraveFreeWebSearchProvider(WebSearchProvider):
         # Brave's `count` is capped at 20.
         count = max(1, min(int(limit), 20))
 
-        try:
-            resp = httpx.get(
-                _BRAVE_ENDPOINT,
-                params={"q": query, "count": count},
-                headers={
-                    "X-Subscription-Token": api_key,
-                    "Accept": "application/json",
-                },
-                timeout=15,
-            )
-            resp.raise_for_status()
-        except httpx.HTTPStatusError as exc:
-            logger.warning("Brave Search HTTP error: %s", exc)
-            return {
-                "success": False,
-                "error": f"Brave Search returned HTTP {exc.response.status_code}",
-            }
-        except httpx.RequestError as exc:
-            logger.warning("Brave Search request error: %s", exc)
-            return {"success": False, "error": f"Could not reach Brave Search: {exc}"}
+        retry_delay = 1.1
+        resp = None
+        for attempt in range(2):
+            try:
+                resp = httpx.get(
+                    _BRAVE_ENDPOINT,
+                    params={"q": query, "count": count},
+                    headers={
+                        "X-Subscription-Token": api_key,
+                        "Accept": "application/json",
+                    },
+                    timeout=15,
+                )
+                resp.raise_for_status()
+                break
+            except httpx.HTTPStatusError as exc:
+                status_code = exc.response.status_code
+                if status_code == 429 and attempt == 0:
+                    retry_after = exc.response.headers.get("Retry-After")
+                    if retry_after:
+                        try:
+                            retry_delay = max(float(retry_after), 0.0)
+                        except ValueError:
+                            pass
+                    logger.warning("Brave Search rate-limited; retrying once after %.2fs", retry_delay)
+                    time.sleep(retry_delay)
+                    continue
+                logger.warning("Brave Search HTTP error: %s", exc)
+                return {
+                    "success": False,
+                    "error": f"Brave Search returned HTTP {status_code}",
+                }
+            except httpx.RequestError as exc:
+                logger.warning("Brave Search request error: %s", exc)
+                return {"success": False, "error": f"Could not reach Brave Search: {exc}"}
+
+        if resp is None:
+            return {"success": False, "error": "Brave Search returned no response"}
 
         try:
             data = resp.json()

@@ -32,7 +32,7 @@ What you'll see:
 1. **Goal accepted** — `⊙ Goal set (20-turn budget): <your goal>`
 2. **Turn 1 runs** — Hermes starts working as if you'd sent the goal as a normal message.
 3. **Judge runs** — after the turn, the judge model decides `done` or `continue`.
-4. **Loop fires if needed** — if `continue`, you'll see `↻ Continuing toward goal (1/20): <judge's reason>` and Hermes takes the next step automatically.
+4. **Loop fires if needed** — if `continue`, you'll see `↻ Continuing toward goal (1/20): <judge's reason>` and Hermes takes the next step automatically. For `/goal_prompt_oneshot`, the continuation line preserves both control-plane facts: `judge: CONTINUE; GOAL.md definition of done: NOT SATISFIED; next action: <exact NEXT_ACTIONS.md slice>`.
 5. **Terminates** — eventually you see either `✓ Goal achieved: <reason>` or `⏸ Goal paused — N/20 turns used`.
 
 ## Commands

@@ -108,6 +108,8 @@ class TestResolveCommand:
         assert resolve_command("set-home").name == "sethome"
         assert resolve_command("reload_mcp").name == "reload-mcp"
         assert resolve_command("codex_runtime").name == "codex-runtime"
+        assert resolve_command("goal_prompt").name == "goal-prompt"
+        assert resolve_command("goal_prompt_oneshot").name == "goal-prompt-oneshot"
         assert resolve_command("tasks").name == "agents"
 
     def test_topic_is_gateway_command(self):
@@ -189,6 +191,10 @@ class TestGatewayKnownCommands:
         assert "bg" in GATEWAY_KNOWN_COMMANDS
         assert "background" in GATEWAY_KNOWN_COMMANDS
 
+    def test_goal_prompt_available_in_gateway(self):
+        assert "goal-prompt" in GATEWAY_KNOWN_COMMANDS
+        assert "goal_prompt" in GATEWAY_KNOWN_COMMANDS
+
     def test_is_frozenset(self):
         assert isinstance(GATEWAY_KNOWN_COMMANDS, frozenset)
 
@@ -228,6 +234,10 @@ class TestTelegramBotCommands:
         """Telegram does not support hyphens in command names."""
         for name, _ in telegram_bot_commands():
             assert "-" not in name, f"Telegram command '{name}' contains a hyphen"
+
+    def test_goal_prompt_appears_as_telegram_safe_command(self):
+        names = {name for name, _ in telegram_bot_commands()}
+        assert "goal_prompt" in names
 
     def test_all_names_valid_telegram_chars(self):
         """Telegram requires: lowercase a-z, 0-9, underscores only."""

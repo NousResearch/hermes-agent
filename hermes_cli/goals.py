@@ -92,6 +92,19 @@ CONTINUATION_PROMPT_WITH_SUBGOALS_TEMPLATE = (
 )
 
 
+ONESHOT_CONTINUATION_PROMPT_TEMPLATE = (
+    "[Continuing /goal_prompt_oneshot from disk frontier]\n"
+    "Goal: {goal}\n\n"
+    "Before acting, re-read GOAL.md, NEXT_ACTIONS.md, GOAL_PROMPT.md, "
+    "and SAFETY.md when present. Take the exact next safe autonomous slice "
+    "from the updated docs. At the end of the slice, include a final "
+    "machine-readable continuation block using exactly one of CONTINUE, "
+    "STOP_FOR_OPERATOR, or COMPLETE. Use CONTINUE whenever GOAL.md is not "
+    "satisfied and NEXT_ACTIONS.md names safe autonomous work. Reserve "
+    "STOP_FOR_OPERATOR for true non-bypassable gates only."
+)
+
+
 JUDGE_SYSTEM_PROMPT = (
     "You are a strict judge evaluating whether an autonomous agent has "
     "achieved a user's stated goal. You receive the goal text and the "
@@ -103,6 +116,24 @@ JUDGE_SYSTEM_PROMPT = (
     "- The response explains the goal is unachievable / blocked / needs "
     "user input (treat this as DONE with reason describing the block).\n\n"
     "Otherwise the goal is NOT done — CONTINUE.\n\n"
+    "Reply ONLY with a single JSON object on one line:\n"
+    '{\"done\": <true|false>, \"reason\": \"<one-sentence rationale>\"}'
+)
+
+
+ONESHOT_JUDGE_SYSTEM_PROMPT = (
+    "You are a strict judge evaluating a Hermes /goal_prompt_oneshot "
+    "project loop. The loop should keep taking safe autonomous slices until "
+    "GOAL.md is satisfied, the configured budget is exhausted, or the agent "
+    "explicitly reports a true non-bypassable operator gate.\n\n"
+    "For /goal_prompt_oneshot, DO NOT treat generic phrases like blocked, "
+    "needs direction, next operator step, or waiting for approval as DONE "
+    "unless the response explicitly says STOP_FOR_OPERATOR and explains why "
+    "no safe autonomous slice remains. If the response says GOAL.md is not "
+    "satisfied, NEXT_ACTIONS.md has a next safe action, or operator input is "
+    "not needed before the next slice, the verdict is NOT done — CONTINUE.\n\n"
+    "A goal is DONE only when the response explicitly says the GOAL.md "
+    "definition of done is satisfied or the final deliverable is complete.\n\n"
     "Reply ONLY with a single JSON object on one line:\n"
     '{\"done\": <true|false>, \"reason\": \"<one-sentence rationale>\"}'
 )
@@ -153,6 +184,13 @@ class GoalState:
     last_reason: Optional[str] = None
     paused_reason: Optional[str] = None       # why we auto-paused (budget, etc.)
     consecutive_parse_failures: int = 0       # judge-output parse failures in a row
+    # Optional source metadata for goals created by higher-level shortcuts.
+    # /goal_prompt_oneshot uses these to refresh into a fresh /new session
+    # after repeated context compactions, then re-load the current
+    # GOAL_PROMPT.md from disk instead of continuing from stale summaries.
+    goal_mode: str = ""
+    goal_prompt_path: str = ""
+    compaction_refresh_interval: int = 0
     # User-added criteria appended mid-loop via the /subgoal command.
     # When non-empty the judge prompt and continuation prompt both
     # include them so the agent works toward them and the judge factors
@@ -181,6 +219,9 @@ class GoalState:
             last_reason=data.get("last_reason"),
             paused_reason=data.get("paused_reason"),
             consecutive_parse_failures=int(data.get("consecutive_parse_failures", 0) or 0),
+            goal_mode=str(data.get("goal_mode") or ""),
+            goal_prompt_path=str(data.get("goal_prompt_path") or ""),
+            compaction_refresh_interval=int(data.get("compaction_refresh_interval", 0) or 0),
             subgoals=subgoals,
         )
 
@@ -368,12 +409,118 @@ def _parse_judge_response(raw: str) -> Tuple[bool, str, bool]:
     return done, reason, False
 
 
+_ONESHOT_DECISION_RE = re.compile(
+    r"^\s*/?goal_prompt_oneshot\s+continuation\s+decision\s*:\s*(?P<decision>[A-Z_ -]+)\s*$",
+    re.IGNORECASE | re.MULTILINE,
+)
+_DONE_LINE_RE = re.compile(
+    r"^\s*GOAL\.md\s+definition\s+of\s+done\s*:\s*(?P<done>[^\n]+)$",
+    re.IGNORECASE | re.MULTILINE,
+)
+
+
+def _line_value(text: str, label: str) -> str:
+    pattern = re.compile(rf"^\s*{re.escape(label)}\s*:\s*(.+?)\s*$", re.IGNORECASE | re.MULTILINE)
+    match = pattern.search(text or "")
+    return match.group(1).strip() if match else ""
+
+
+def _oneshot_decision_raw_label(last_response: str, fallback: str = "") -> str:
+    """Return the explicit /goal_prompt_oneshot decision label for status output."""
+    match = _ONESHOT_DECISION_RE.search(last_response or "")
+    if match:
+        return match.group("decision").strip().upper().replace("-", "_").replace(" ", "_")
+    return (fallback or "").strip().upper()
+
+
+def _oneshot_done_line(last_response: str) -> str:
+    match = _DONE_LINE_RE.search(last_response or "")
+    return match.group("done").strip().upper() if match else ""
+
+
+def _oneshot_continue_status_reason(last_response: str, verdict: str, reason: str) -> str:
+    """Build the user-visible CONTINUE line for /goal_prompt_oneshot.
+
+    The loop's machine-readable final block carries two distinct facts users
+    need between iterations: the deterministic judge/verdict block and the
+    exact next action. Preserve both in the one-line continuation banner so the
+    CLI/TUI no longer replaces the verdict with only the NEXT_ACTIONS text.
+    """
+    raw = _oneshot_decision_raw_label(last_response, verdict or "continue") or "CONTINUE"
+    done_line = _oneshot_done_line(last_response)
+    next_action = _line_value(last_response, "Next safe autonomous slice") or reason
+    parts = [f"judge: {raw}"]
+    if done_line:
+        parts.append(f"GOAL.md definition of done: {done_line}")
+    if next_action:
+        parts.append(f"next action: {next_action}")
+    return "; ".join(parts)
+
+
+def parse_oneshot_continuation_decision(last_response: str) -> Optional[Tuple[str, str]]:
+    """Parse an explicit /goal_prompt_oneshot final-report verdict.
+
+    Returns ``(verdict, reason)`` where verdict is ``continue``, ``done``, or
+    ``stop_for_operator``. Returns None when no deterministic signal exists,
+    so callers can fall back to the normal judge. This parser intentionally
+    recognizes the wording users found reliable (GOAL.md not satisfied) while
+    preferring the explicit machine-readable decision block.
+    """
+    text = (last_response or "").strip()
+    if not text:
+        return None
+
+    match = _ONESHOT_DECISION_RE.search(text)
+    if match:
+        raw = _oneshot_decision_raw_label(text)
+        done_line = _oneshot_done_line(text)
+        reason = (
+            _line_value(text, "Reason")
+            or _line_value(text, "Next safe autonomous slice")
+            or _line_value(text, "Completed slice")
+            or raw
+        )
+        if raw in {"CONTINUE", "NOT_DONE", "NOT_SATISFIED"}:
+            return "continue", reason
+        if raw in {"COMPLETE", "COMPLETED", "DONE"}:
+            if "NOT" not in done_line:
+                return "done", reason
+            return "continue", "decision said complete but GOAL.md was reported not satisfied"
+        if raw in {"STOP_FOR_OPERATOR", "STOP", "HARD_STOP", "OPERATOR_REQUIRED"}:
+            return "stop_for_operator", reason
+
+    lowered = text.lower()
+    goal_unsatisfied = (
+        "goal.md" in lowered
+        and ("not satisfied" in lowered or "not yet satisfied" in lowered or "has not been satisfied" in lowered)
+    )
+    safe_next = (
+        "next_actions.md" in lowered
+        or "next safe autonomous" in lowered
+        or "operator input needed before next slice: none" in lowered
+    )
+    hard_stop = (
+        "stop_for_operator" in lowered
+        or "hard stop: yes" in lowered
+        or "no safe autonomous slice remains" in lowered
+    )
+    if goal_unsatisfied and not hard_stop:
+        reason = _line_value(text, "Next safe autonomous slice") or (
+            "GOAL.md is not satisfied; continue from the updated frontier"
+        )
+        return "continue", reason
+    if goal_unsatisfied and safe_next and not hard_stop:
+        return "continue", "GOAL.md is not satisfied and a safe next action remains"
+    return None
+
+
 def judge_goal(
     goal: str,
     last_response: str,
     *,
     timeout: float = DEFAULT_JUDGE_TIMEOUT,
     subgoals: Optional[List[str]] = None,
+    goal_mode: str = "",
 ) -> Tuple[str, str, bool]:
     """Ask the auxiliary model whether the goal is satisfied.
 
@@ -440,7 +587,7 @@ def judge_goal(
         resp = client.chat.completions.create(
             model=model,
             messages=[
-                {"role": "system", "content": JUDGE_SYSTEM_PROMPT},
+                {"role": "system", "content": ONESHOT_JUDGE_SYSTEM_PROMPT if goal_mode == "goal_prompt_oneshot" else JUDGE_SYSTEM_PROMPT},
                 {"role": "user", "content": prompt},
             ],
             temperature=0,
@@ -519,7 +666,15 @@ class GoalManager:
 
     # --- mutation -----------------------------------------------------
 
-    def set(self, goal: str, *, max_turns: Optional[int] = None) -> GoalState:
+    def set(
+        self,
+        goal: str,
+        *,
+        max_turns: Optional[int] = None,
+        goal_mode: str = "",
+        goal_prompt_path: str = "",
+        compaction_refresh_interval: int = 0,
+    ) -> GoalState:
         goal = (goal or "").strip()
         if not goal:
             raise ValueError("goal text is empty")
@@ -530,6 +685,9 @@ class GoalManager:
             max_turns=int(max_turns) if max_turns else self.default_max_turns,
             created_at=time.time(),
             last_turn_at=0.0,
+            goal_mode=(goal_mode or "").strip(),
+            goal_prompt_path=(goal_prompt_path or "").strip(),
+            compaction_refresh_interval=max(0, int(compaction_refresh_interval or 0)),
         )
         self._state = state
         save_goal(self.session_id, state)
@@ -652,9 +810,20 @@ class GoalManager:
         state.turns_used += 1
         state.last_turn_at = time.time()
 
-        verdict, reason, parse_failed = judge_goal(
-            state.goal, last_response, subgoals=state.subgoals or None
-        )
+        parse_failed = False
+        deterministic = None
+        if state.goal_mode == "goal_prompt_oneshot":
+            deterministic = parse_oneshot_continuation_decision(last_response)
+
+        if deterministic is not None:
+            verdict, reason = deterministic
+        else:
+            verdict, reason, parse_failed = judge_goal(
+                state.goal,
+                last_response,
+                subgoals=state.subgoals or None,
+                goal_mode=state.goal_mode,
+            )
         state.last_verdict = verdict
         state.last_reason = reason
 
@@ -665,6 +834,19 @@ class GoalManager:
             state.consecutive_parse_failures += 1
         else:
             state.consecutive_parse_failures = 0
+
+        if verdict == "stop_for_operator":
+            state.status = "paused"
+            state.paused_reason = f"operator direction required: {reason}"
+            save_goal(self.session_id, state)
+            return {
+                "status": "paused",
+                "should_continue": False,
+                "continuation_prompt": None,
+                "verdict": "stop_for_operator",
+                "reason": reason,
+                "message": f"⏸ /goal_prompt_oneshot stopped for operator: {reason}",
+            }
 
         if verdict == "done":
             state.status = "done"
@@ -725,6 +907,9 @@ class GoalManager:
             }
 
         save_goal(self.session_id, state)
+        status_reason = reason
+        if state.goal_mode == "goal_prompt_oneshot" and deterministic is not None:
+            status_reason = _oneshot_continue_status_reason(last_response, verdict, reason)
         return {
             "status": "active",
             "should_continue": True,
@@ -732,13 +917,15 @@ class GoalManager:
             "verdict": "continue",
             "reason": reason,
             "message": (
-                f"↻ Continuing toward goal ({state.turns_used}/{state.max_turns}): {reason}"
+                f"↻ Continuing toward goal ({state.turns_used}/{state.max_turns}): {status_reason}"
             ),
         }
 
     def next_continuation_prompt(self) -> Optional[str]:
         if not self._state or self._state.status != "active":
             return None
+        if self._state.goal_mode == "goal_prompt_oneshot":
+            return ONESHOT_CONTINUATION_PROMPT_TEMPLATE.format(goal=self._state.goal)
         if self._state.subgoals:
             return CONTINUATION_PROMPT_WITH_SUBGOALS_TEMPLATE.format(
                 goal=self._state.goal,
@@ -752,6 +939,8 @@ __all__ = [
     "GoalManager",
     "CONTINUATION_PROMPT_TEMPLATE",
     "CONTINUATION_PROMPT_WITH_SUBGOALS_TEMPLATE",
+    "ONESHOT_CONTINUATION_PROMPT_TEMPLATE",
+    "parse_oneshot_continuation_decision",
     "JUDGE_USER_PROMPT_TEMPLATE",
     "JUDGE_USER_PROMPT_WITH_SUBGOALS_TEMPLATE",
     "DEFAULT_MAX_TURNS",

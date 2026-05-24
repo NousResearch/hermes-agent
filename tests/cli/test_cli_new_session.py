@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import importlib
 import os
+import queue
 import sys
 from datetime import datetime, timedelta
 from unittest.mock import MagicMock, patch
@@ -21,6 +22,13 @@ class _FakeCompressor:
         self.last_total_tokens = 700
         self.compression_count = 3
         self._context_probed = True
+
+    def on_session_reset(self):
+        self.last_prompt_tokens = 0
+        self.last_completion_tokens = 0
+        self.last_total_tokens = 0
+        self.compression_count = 0
+        self._context_probed = False
 
 
 class _FakeAgent:
@@ -66,11 +74,7 @@ class _FakeAgent:
         self.session_cost_status = "unknown"
         self.session_cost_source = "none"
         if hasattr(self, "context_compressor") and self.context_compressor:
-            self.context_compressor.last_prompt_tokens = 0
-            self.context_compressor.last_completion_tokens = 0
-            self.context_compressor.last_total_tokens = 0
-            self.context_compressor.compression_count = 0
-            self.context_compressor._context_probed = False
+            self.context_compressor.on_session_reset()
 
 
 def _make_cli(env_overrides=None, config_overrides=None, **kwargs):
@@ -280,3 +284,112 @@ def test_new_session_with_duplicate_title_surfaces_error(capsys):
     captured = capsys.readouterr()
     assert "New session started: Dup" not in captured.out
     assert "New session started!" in captured.out
+
+
+def test_compression_session_sync_carries_active_goal_metadata(tmp_path):
+    cli = _prepare_cli_with_active_session(tmp_path)
+    mgr = cli._get_goal_manager()
+    state = mgr.set(
+        "Continue project\n\n[Hermes /goal_prompt_oneshot mode]",
+        goal_mode="goal_prompt_oneshot",
+        goal_prompt_path=str(tmp_path / "docs" / "runbooks" / "GOAL_PROMPT.md"),
+        compaction_refresh_interval=5,
+    )
+    state.turns_used = 4
+
+    old_session_id = cli.session_id
+    new_session_id = "compression_child"
+    assert cli._carry_goal_state_to_session(new_session_id, reason="compression") is True
+
+    from hermes_cli.goals import GoalManager
+
+    carried = GoalManager(new_session_id).state
+    assert carried is not None
+    assert carried.goal == state.goal
+    assert carried.goal_mode == "goal_prompt_oneshot"
+    assert carried.goal_prompt_path.endswith("GOAL_PROMPT.md")
+    assert carried.compaction_refresh_interval == 5
+    assert carried.turns_used == 4
+    assert cli._goal_manager is not None
+    assert cli._goal_manager.session_id == new_session_id
+    assert GoalManager(old_session_id).state.goal == state.goal
+
+
+def test_compression_session_sync_carries_persisted_goal_without_cached_manager(tmp_path):
+    cli = _prepare_cli_with_active_session(tmp_path)
+    mgr = cli._get_goal_manager()
+    state = mgr.set(
+        "Continue from persisted goal state",
+        max_turns=123,
+        goal_mode="goal_prompt_oneshot",
+        goal_prompt_path=str(tmp_path / "docs" / "runbooks" / "GOAL_PROMPT.md"),
+        compaction_refresh_interval=5,
+    )
+    state.turns_used = 7
+
+    from hermes_cli.goals import GoalManager, save_goal
+
+    save_goal(cli.session_id, state)
+    cli._goal_manager = None
+    new_session_id = "compression_child_from_persisted_goal"
+
+    assert cli._carry_goal_state_to_session(
+        new_session_id,
+        old_session_id=cli.session_id,
+        reason="compression",
+    ) is True
+
+    carried = GoalManager(new_session_id).state
+    assert carried is not None
+    assert carried.goal == "Continue from persisted goal state"
+    assert carried.goal_mode == "goal_prompt_oneshot"
+    assert carried.goal_prompt_path.endswith("GOAL_PROMPT.md")
+    assert carried.compaction_refresh_interval == 5
+    assert carried.turns_used == 7
+    assert carried.max_turns == 123
+    assert cli._goal_manager is not None
+    assert cli._goal_manager.session_id == new_session_id
+
+
+def test_goal_prompt_oneshot_refreshes_with_new_session_after_five_compactions(tmp_path, monkeypatch):
+    cli = _prepare_cli_with_active_session(tmp_path)
+    prompt = tmp_path / "docs" / "runbooks" / "GOAL_PROMPT.md"
+    prompt.parent.mkdir(parents=True)
+    prompt.write_text("Continue from updated docs", encoding="utf-8")
+    cli._pending_input = queue.Queue()
+    cli.conversation_history = [{"role": "assistant", "content": "slice done; more remains"}]
+
+    mgr = cli._get_goal_manager()
+    mgr.set(
+        "Continue project\n\n[Hermes /goal_prompt_oneshot mode]",
+        goal_mode="goal_prompt_oneshot",
+        goal_prompt_path=str(prompt),
+        compaction_refresh_interval=5,
+    )
+    cli.agent.context_compressor.compression_count = 5
+    monkeypatch.setattr("hermes_cli.goals.judge_goal", lambda *a, **k: ("continue", "more remains", False))
+
+    old_session_id = cli.session_id
+    cli._maybe_continue_goal_after_turn()
+
+    assert cli.session_id != old_session_id
+    assert cli.agent.session_id == cli.session_id
+    assert cli.agent.context_compressor.compression_count == 0
+    queued = cli._pending_input.get_nowait()
+    assert queued == f"/goal_prompt_oneshot {prompt}"
+
+
+def test_regular_goal_does_not_new_session_after_five_compactions(tmp_path, monkeypatch):
+    cli = _prepare_cli_with_active_session(tmp_path)
+    cli._pending_input = queue.Queue()
+    cli.conversation_history = [{"role": "assistant", "content": "not done"}]
+    cli._get_goal_manager().set("Regular standing goal")
+    cli.agent.context_compressor.compression_count = 5
+    monkeypatch.setattr("hermes_cli.goals.judge_goal", lambda *a, **k: ("continue", "more remains", False))
+
+    old_session_id = cli.session_id
+    cli._maybe_continue_goal_after_turn()
+
+    assert cli.session_id == old_session_id
+    queued = cli._pending_input.get_nowait()
+    assert queued.startswith("[Continuing toward your standing goal]")

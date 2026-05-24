@@ -6997,6 +6997,10 @@ class GatewayRunner:
                     return await self._handle_goal_command(event)
                 return "Agent is running — use /goal status / pause / clear mid-run, or /stop before setting a new goal."
 
+            if _cmd_def_inner and _cmd_def_inner.name in {"goal-prompt", "goal-prompt-oneshot"}:
+                usage = "/goal_prompt_oneshot" if _cmd_def_inner.name == "goal-prompt-oneshot" else "/goal_prompt"
+                return f"Agent is running — wait or /stop first, then load a GOAL_PROMPT.md with {usage}."
+
             # /subgoal is safe mid-run — it only modifies the goal's
             # subgoals list, which the judge reads at the next turn
             # boundary. No race with the running turn.
@@ -7389,6 +7393,12 @@ class GatewayRunner:
 
         if canonical == "goal":
             return await self._handle_goal_command(event)
+
+        if canonical == "goal-prompt":
+            return await self._handle_goal_prompt_command(event)
+
+        if canonical == "goal-prompt-oneshot":
+            return await self._handle_goal_prompt_command(event, oneshot=True)
 
         if canonical == "subgoal":
             return await self._handle_subgoal_command(event)
@@ -10475,6 +10485,29 @@ class GatewayRunner:
         except Exception:
             return 20
 
+    def _goal_oneshot_config(self) -> dict:
+        try:
+            goals_cfg = (
+                (self.config or {}).get("goals", {})
+                if isinstance(self.config, dict)
+                else getattr(self.config, "goals", {}) or {}
+            )
+            if not goals_cfg:
+                from hermes_cli.config import load_config
+
+                goals_cfg = (load_config() or {}).get("goals") or {}
+        except Exception:
+            goals_cfg = {}
+        try:
+            max_turns = int(goals_cfg.get("oneshot_max_turns", 200) or 200)
+        except Exception:
+            max_turns = 200
+        try:
+            interval = int(goals_cfg.get("oneshot_compaction_refresh_interval", 5) or 0)
+        except Exception:
+            interval = 5
+        return {"max_turns": max_turns, "compaction_refresh_interval": max(0, interval)}
+
     def _get_goal_manager_for_event(self, event: "MessageEvent"):
         """Return a GoalManager bound to the session for this gateway event.
 
@@ -10496,6 +10529,54 @@ class GatewayRunner:
             return None, None
         max_turns = self._goal_max_turns_from_config()
         return GoalManager(session_id=sid, default_max_turns=max_turns), session_entry
+
+    async def _handle_goal_prompt_command(self, event: "MessageEvent", *, oneshot: bool = False) -> str:
+        """Load a GOAL_PROMPT.md-style file and dispatch it through /goal."""
+        from hermes_cli.goal_prompt import (
+            extract_goal_prompt_text,
+            goal_command_from_prompt_text,
+            resolve_goal_prompt_path,
+        )
+
+        args = (event.get_command_args() or "").strip()
+        command_name = "/goal_prompt_oneshot" if oneshot else "/goal_prompt"
+        prompt_path = resolve_goal_prompt_path(args, search_parents=not oneshot)
+        if prompt_path is None or not prompt_path.exists():
+            return (
+                "No GOAL_PROMPT.md found.\n"
+                f"Expected: `{prompt_path or 'docs/runbooks/GOAL_PROMPT.md'}`\n"
+                f"Usage: `{command_name} [project-root-or-prompt-file]`"
+            )
+
+        try:
+            raw = prompt_path.read_text(encoding="utf-8")
+        except Exception as exc:
+            return f"Failed to read `{prompt_path}`: {exc}"
+
+        prompt_text = extract_goal_prompt_text(raw)
+        command_to_run = goal_command_from_prompt_text(prompt_text, oneshot=oneshot)
+        if not command_to_run:
+            return f"`{prompt_path}` is empty or has no prompt text."
+
+        original_text = event.text
+        old_metadata = getattr(self, "_pending_goal_metadata", None)
+        try:
+            if oneshot:
+                cfg = self._goal_oneshot_config()
+                self._pending_goal_metadata = {
+                    "goal_mode": "goal_prompt_oneshot",
+                    "goal_prompt_path": str(prompt_path),
+                    "compaction_refresh_interval": cfg["compaction_refresh_interval"],
+                    "max_turns": cfg["max_turns"],
+                }
+            event.text = command_to_run
+            result = await self._handle_goal_command(event)
+        finally:
+            event.text = original_text
+            self._pending_goal_metadata = old_metadata
+
+        mode = "one-shot goal prompt" if oneshot else "goal prompt"
+        return f"⊙ Loading {mode} from `{prompt_path}`\n{result}"
 
     async def _handle_goal_command(self, event: "MessageEvent") -> str:
         """Handle /goal for gateway platforms.
@@ -10551,7 +10632,14 @@ class GatewayRunner:
 
         # Otherwise — treat the remaining text as the new goal.
         try:
-            state = mgr.set(args)
+            metadata = getattr(self, "_pending_goal_metadata", None) or {}
+            state = mgr.set(
+                args,
+                max_turns=int(metadata.get("max_turns", 0) or 0) or None,
+                goal_mode=str(metadata.get("goal_mode") or ""),
+                goal_prompt_path=str(metadata.get("goal_prompt_path") or ""),
+                compaction_refresh_interval=int(metadata.get("compaction_refresh_interval", 0) or 0),
+            )
         except ValueError as exc:
             return t("gateway.goal.invalid", error=str(exc))
 
@@ -10687,6 +10775,118 @@ class GatewayRunner:
 
         await _deliver()
 
+    def _agent_compression_count_for_session_key(self, session_key: str) -> int:
+        try:
+            cached = getattr(self, "_agent_cache", {}).get(session_key)
+            agent = cached[0] if isinstance(cached, tuple) else cached
+            comp = getattr(agent, "context_compressor", None)
+            return int(getattr(comp, "compression_count", 0) or 0)
+        except Exception:
+            return 0
+
+    def _carry_goal_state_between_sessions(
+        self,
+        old_session_id: str,
+        new_session_id: str,
+        *,
+        reason: str = "session-switch",
+    ) -> bool:
+        """Copy active/paused durable goal state across logical session splits.
+
+        Gateway turns can compress mid-run and mutate ``agent.session_id``.
+        The session store then points future messages at the child transcript,
+        but /goal state is persisted separately under ``goal:<session_id>``.
+        If we do not copy that row before post-turn evaluation, a valid
+        /goal_prompt_oneshot CONTINUE block becomes inert in the child session.
+        """
+        old_session_id = (old_session_id or "").strip()
+        new_session_id = (new_session_id or "").strip()
+        if not old_session_id or not new_session_id or old_session_id == new_session_id:
+            return False
+        try:
+            from copy import deepcopy
+            from hermes_cli.goals import load_goal, save_goal
+
+            state = load_goal(old_session_id)
+            if state is None or getattr(state, "status", None) not in {"active", "paused"}:
+                return False
+            save_goal(new_session_id, deepcopy(state))
+            logger.debug(
+                "carried goal state %s → %s after %s",
+                old_session_id,
+                new_session_id,
+                reason,
+            )
+            return True
+        except Exception as exc:
+            logger.debug(
+                "goal state carry %s → %s failed after %s: %s",
+                old_session_id,
+                new_session_id,
+                reason,
+                exc,
+            )
+            return False
+
+    def _maybe_refresh_oneshot_goal_after_compactions_gateway(
+        self,
+        *,
+        mgr: Any,
+        session_entry: Any,
+        source: Any,
+    ) -> bool:
+        state = getattr(mgr, "state", None)
+        if state is None or getattr(state, "status", None) != "active":
+            return False
+        if getattr(state, "goal_mode", "") != "goal_prompt_oneshot":
+            return False
+        interval = int(getattr(state, "compaction_refresh_interval", 0) or 0)
+        if interval <= 0 or source is None:
+            return False
+        session_key = self._session_key_for_source(source)
+        compression_count = self._agent_compression_count_for_session_key(session_key)
+        if compression_count < interval:
+            return False
+        prompt_path = (getattr(state, "goal_prompt_path", "") or "").strip()
+        if not prompt_path:
+            return False
+        try:
+            adapter = self.adapters.get(source.platform)
+            if not adapter:
+                return False
+            # Start a fresh gateway session and enqueue the slash command so the
+            # normal /goal_prompt_oneshot loader re-reads GOAL_PROMPT.md from disk.
+            try:
+                self._clear_goal_pending_continuations(session_key, adapter)
+            except Exception:
+                pass
+            try:
+                self._evict_cached_agent(session_key)
+            except Exception:
+                pass
+            new_entry = self.session_store.reset_session(session_key)
+            if new_entry is not None and session_entry is not None:
+                try:
+                    session_entry.session_id = new_entry.session_id
+                except Exception:
+                    pass
+            try:
+                self._clear_session_boundary_security_state(session_key)
+            except Exception:
+                pass
+            reload_event = MessageEvent(
+                text=f"/goal_prompt_oneshot {prompt_path}",
+                message_type=MessageType.TEXT,
+                source=source,
+                message_id=None,
+                channel_prompt=None,
+            )
+            self._enqueue_fifo(session_key, reload_event, adapter)
+            return True
+        except Exception as exc:
+            logger.debug("goal oneshot compaction refresh failed: %s", exc)
+            return False
+
     async def _post_turn_goal_continuation(
         self,
         *,
@@ -10733,6 +10933,11 @@ class GatewayRunner:
             await self._defer_goal_status_notice_after_delivery(source, msg)
 
         if not decision.get("should_continue"):
+            return
+
+        if self._maybe_refresh_oneshot_goal_after_compactions_gateway(
+            mgr=mgr, session_entry=session_entry, source=source
+        ):
             return
 
         prompt = decision.get("continuation_prompt") or ""
@@ -16910,13 +17115,19 @@ class GatewayRunner:
             _session_was_split = False
             if agent and session_key and hasattr(agent, 'session_id') and agent.session_id != session_id:
                 _session_was_split = True
+                new_session_id = getattr(agent, 'session_id', '')
                 logger.info(
                     "Session split detected: %s → %s (compression)",
-                    session_id, agent.session_id,
+                    session_id, new_session_id,
+                )
+                self._carry_goal_state_between_sessions(
+                    session_id,
+                    new_session_id,
+                    reason="compression",
                 )
                 entry = self.session_store._entries.get(session_key)
                 if entry:
-                    entry.session_id = agent.session_id
+                    entry.session_id = new_session_id
                     self.session_store._save()
 
                 # If this is a Telegram DM and source.thread_id was lost during

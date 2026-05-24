@@ -1263,6 +1263,14 @@ DEFAULT_CONFIG = {
         # negatives (goal actually done but judge says continue) and
         # unbounded model spend on fuzzy / unachievable goals.
         "max_turns": 20,
+        # /goal_prompt_oneshot is intended for longer autonomous project
+        # runs composed of many verified slices, so it gets a larger budget
+        # unless the user overrides it.
+        "oneshot_max_turns": 200,
+        # When a oneshot loop has survived this many context compactions,
+        # finish the current slice, start a fresh session, and reload the
+        # current GOAL_PROMPT.md from disk truth.
+        "oneshot_compaction_refresh_interval": 5,
     },
 
     # Skills — external skill directories for sharing skills across tools/agents.

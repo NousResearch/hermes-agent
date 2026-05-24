@@ -8394,6 +8394,10 @@ class HermesCLI:
                 _cprint(f"  No agent running; queued as next turn: {payload[:80]}{'...' if len(payload) > 80 else ''}")
         elif canonical == "goal":
             self._handle_goal_command(cmd_original)
+        elif canonical == "goal-prompt":
+            self._handle_goal_prompt_command(cmd_original)
+        elif canonical == "goal-prompt-oneshot":
+            self._handle_goal_prompt_command(cmd_original, oneshot=True)
         elif canonical == "subgoal":
             self._handle_subgoal_command(cmd_original)
         elif canonical == "skin":
@@ -8982,6 +8986,161 @@ class HermesCLI:
         self._goal_manager = mgr
         return mgr
 
+    def _goal_oneshot_config(self) -> dict:
+        """Resolve /goal_prompt_oneshot budget/refresh defaults."""
+        try:
+            from hermes_cli.config import load_config
+            goals_cfg = (load_config() or {}).get("goals") or {}
+        except Exception:
+            goals_cfg = {}
+        try:
+            max_turns = int(goals_cfg.get("oneshot_max_turns", 200) or 200)
+        except Exception:
+            max_turns = 200
+        try:
+            interval = int(goals_cfg.get("oneshot_compaction_refresh_interval", 5) or 0)
+        except Exception:
+            interval = 5
+        return {"max_turns": max_turns, "compaction_refresh_interval": max(0, interval)}
+
+    def _carry_goal_state_to_session(
+        self,
+        new_session_id: str,
+        *,
+        old_session_id: str = "",
+        reason: str = "session-switch",
+    ) -> bool:
+        """Copy the current active/paused goal state to a new session id.
+
+        Compression rotates ``agent.session_id`` while the logical task should
+        continue. Goal state is stored under ``goal:<session_id>``, so without
+        an explicit copy a /goal or /goal_prompt_oneshot loop silently stops at
+        the first compaction boundary. /new normally does not preserve goals;
+        callers opt in only for logical-continuation boundaries.
+        """
+        if not new_session_id:
+            return False
+        try:
+            from copy import deepcopy
+            from hermes_cli.goals import GoalManager, load_goal, save_goal
+
+            old_session_id = (old_session_id or getattr(self, "session_id", "") or "").strip()
+            existing = getattr(self, "_goal_manager", None)
+            state = getattr(existing, "state", None)
+            if state is None or getattr(state, "status", None) not in {"active", "paused"}:
+                # Compression/session-sync can happen after a restart, after a
+                # compaction handoff, or before this CLI instance has refreshed
+                # its in-memory manager. The durable source of truth is the
+                # state_meta goal:<session_id> row for the old session.
+                state = load_goal(old_session_id) if old_session_id else None
+            if state is None or getattr(state, "status", None) not in {"active", "paused"}:
+                return False
+
+            carried_state = deepcopy(state)
+            save_goal(new_session_id, carried_state)
+            max_turns = int(
+                getattr(existing, "default_max_turns", 0)
+                or getattr(carried_state, "max_turns", 0)
+                or 20
+            )
+            mgr = GoalManager(session_id=new_session_id, default_max_turns=max_turns)
+            mgr._state = carried_state
+            self._goal_manager = mgr
+            logging.debug(
+                "carried goal state %s → %s after %s",
+                old_session_id or "<unknown>",
+                new_session_id,
+                reason,
+            )
+            return True
+        except Exception as exc:
+            logging.debug("goal state carry to %s failed after %s: %s", new_session_id, reason, exc)
+            return False
+
+    def _maybe_refresh_oneshot_goal_after_compactions(self, mgr) -> bool:
+        """For /goal_prompt_oneshot, inject /new + reload after N compactions."""
+        state = getattr(mgr, "state", None)
+        if state is None or getattr(state, "status", None) != "active":
+            return False
+        if getattr(state, "goal_mode", "") != "goal_prompt_oneshot":
+            return False
+        interval = int(getattr(state, "compaction_refresh_interval", 0) or 0)
+        if interval <= 0:
+            return False
+        comp = getattr(getattr(self, "agent", None), "context_compressor", None)
+        compression_count = int(getattr(comp, "compression_count", 0) or 0)
+        if compression_count < interval:
+            return False
+
+        prompt_path = (getattr(state, "goal_prompt_path", "") or "").strip()
+        if not prompt_path:
+            return False
+
+        _cprint(
+            f"  {_DIM}↺ /goal_prompt_oneshot reached {compression_count} context compactions; "
+            f"starting a fresh /new session and reloading GOAL_PROMPT.md.{_RST}"
+        )
+        try:
+            self.new_session(silent=True)
+        except Exception as exc:
+            logging.debug("oneshot compaction refresh /new failed: %s", exc)
+            return False
+
+        try:
+            self._pending_input.put(f"/goal_prompt_oneshot {prompt_path}")
+            return True
+        except Exception as exc:
+            logging.debug("oneshot compaction refresh enqueue failed: %s", exc)
+            return False
+
+    def _handle_goal_prompt_command(self, cmd: str, *, oneshot: bool = False) -> None:
+        """Load GOAL_PROMPT.md and set it as the active /goal."""
+        from hermes_cli.goal_prompt import (
+            extract_goal_prompt_text,
+            goal_command_from_prompt_text,
+            resolve_goal_prompt_path,
+        )
+
+        parts = (cmd or "").strip().split(None, 1)
+        arg = parts[1].strip() if len(parts) > 1 else ""
+        command_name = "/goal_prompt_oneshot" if oneshot else "/goal_prompt"
+        prompt_path = resolve_goal_prompt_path(arg, search_parents=not oneshot)
+        if prompt_path is None or not prompt_path.exists():
+            _cprint(
+                f"  {_DIM}No GOAL_PROMPT.md found. Expected: "
+                f"{prompt_path or 'docs/runbooks/GOAL_PROMPT.md'}{_RST}"
+            )
+            _cprint(f"  Usage: {command_name} [project-root-or-prompt-file]")
+            return
+
+        try:
+            raw = prompt_path.read_text(encoding="utf-8")
+        except Exception as exc:
+            _cprint(f"  Failed to read {prompt_path}: {exc}")
+            return
+
+        prompt_text = extract_goal_prompt_text(raw)
+        command_to_run = goal_command_from_prompt_text(prompt_text, oneshot=oneshot)
+        if not command_to_run:
+            _cprint(f"  {prompt_path} is empty or has no prompt text.")
+            return
+
+        mode = "one-shot goal prompt" if oneshot else "goal prompt"
+        _cprint(f"  ⊙ Loading {mode} from {prompt_path}")
+        if oneshot:
+            cfg = self._goal_oneshot_config()
+            self._pending_goal_metadata = {
+                "goal_mode": "goal_prompt_oneshot",
+                "goal_prompt_path": str(prompt_path),
+                "compaction_refresh_interval": cfg["compaction_refresh_interval"],
+                "max_turns": cfg["max_turns"],
+            }
+        try:
+            self._handle_goal_command(command_to_run)
+        finally:
+            if oneshot:
+                self._pending_goal_metadata = None
+
     def _handle_goal_command(self, cmd: str) -> None:
         """Dispatch /goal subcommands: set / status / pause / resume / clear."""
         parts = (cmd or "").strip().split(None, 1)
@@ -9030,7 +9189,14 @@ class HermesCLI:
 
         # Otherwise treat the arg as the goal text.
         try:
-            state = mgr.set(arg)
+            metadata = getattr(self, "_pending_goal_metadata", None) or {}
+            state = mgr.set(
+                arg,
+                max_turns=int(metadata.get("max_turns", 0) or 0) or None,
+                goal_mode=str(metadata.get("goal_mode") or ""),
+                goal_prompt_path=str(metadata.get("goal_prompt_path") or ""),
+                compaction_refresh_interval=int(metadata.get("compaction_refresh_interval", 0) or 0),
+            )
         except ValueError as exc:
             _cprint(f"  Invalid goal: {exc}")
             return
@@ -9232,6 +9398,8 @@ class HermesCLI:
             _cprint(f"  {msg}")
 
         if decision.get("should_continue"):
+            if self._maybe_refresh_oneshot_goal_after_compactions(mgr):
+                return
             prompt = decision.get("continuation_prompt")
             if prompt:
                 try:
@@ -11626,7 +11794,13 @@ class HermesCLI:
                 and getattr(self.agent, "session_id", None)
                 and self.agent.session_id != self.session_id
             ):
-                self.session_id = self.agent.session_id
+                new_session_id = self.agent.session_id
+                self._carry_goal_state_to_session(
+                    new_session_id,
+                    old_session_id=self.session_id,
+                    reason="compression",
+                )
+                self.session_id = new_session_id
                 self._pending_title = None
 
             # Get the final response

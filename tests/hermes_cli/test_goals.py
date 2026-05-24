@@ -738,3 +738,142 @@ class TestStatusLineSubgoalCount:
         mgr.add_subgoal("b")
         line = mgr.status_line()
         assert "2 subgoals" in line
+
+
+# ──────────────────────────────────────────────────────────────────────
+# /goal_prompt_oneshot deterministic continuation controls
+# ──────────────────────────────────────────────────────────────────────
+
+
+def test_parse_oneshot_explicit_continue():
+    from hermes_cli.goals import parse_oneshot_continuation_decision
+
+    verdict = parse_oneshot_continuation_decision(
+        "Slice done.\n\n"
+        "/goal_prompt_oneshot continuation decision: CONTINUE\n"
+        "GOAL.md definition of done: NOT SATISFIED\n"
+        "Completed slice: tests added\n"
+        "Next safe autonomous slice: implement the next helper\n"
+        "Operator input needed before next slice: None\n"
+        "Hard stop: No"
+    )
+
+    assert verdict == ("continue", "implement the next helper")
+
+
+def test_parse_oneshot_stop_for_operator():
+    from hermes_cli.goals import parse_oneshot_continuation_decision
+
+    verdict, reason = parse_oneshot_continuation_decision(
+        "/goal_prompt_oneshot continuation decision: STOP_FOR_OPERATOR\n"
+        "GOAL.md definition of done: NOT SATISFIED\n"
+        "Reason: production private key is required\n"
+        "No safe autonomous slice remains because: only live signing is left"
+    )
+
+    assert verdict == "stop_for_operator"
+    assert "private key" in reason
+
+
+def test_oneshot_continue_sentinel_skips_llm_judge(hermes_home):
+    from hermes_cli import goals
+    from hermes_cli.goals import GoalManager
+
+    mgr = GoalManager(session_id="oneshot-deterministic", default_max_turns=10)
+    mgr.set("continue project", goal_mode="goal_prompt_oneshot")
+
+    with patch.object(goals, "judge_goal") as judge:
+        decision = mgr.evaluate_after_turn(
+            "/goal_prompt_oneshot continuation decision: CONTINUE\n"
+            "GOAL.md definition of done: NOT SATISFIED\n"
+            "Next safe autonomous slice: update the adapter\n"
+            "Operator input needed before next slice: None\n"
+            "Hard stop: No"
+        )
+
+    judge.assert_not_called()
+    assert decision["should_continue"] is True
+    assert decision["verdict"] == "continue"
+    assert "disk frontier" in decision["continuation_prompt"]
+
+
+def test_oneshot_continue_status_line_shows_judge_and_next_action(hermes_home):
+    from hermes_cli import goals
+    from hermes_cli.goals import GoalManager
+
+    mgr = GoalManager(session_id="oneshot-status-line", default_max_turns=10)
+    mgr.set("continue project", goal_mode="goal_prompt_oneshot")
+
+    with patch.object(goals, "judge_goal") as judge:
+        decision = mgr.evaluate_after_turn(
+            "/goal_prompt_oneshot continuation decision: CONTINUE\n"
+            "GOAL.md definition of done: NOT SATISFIED\n"
+            "Completed slice: refreshed the wrapper\n"
+            "Next safe autonomous slice: update the adapter\n"
+            "Operator input needed before next slice: None\n"
+            "Hard stop: No"
+        )
+
+    judge.assert_not_called()
+    assert decision["should_continue"] is True
+    assert "judge: CONTINUE" in decision["message"]
+    assert "GOAL.md definition of done: NOT SATISFIED" in decision["message"]
+    assert "next action: update the adapter" in decision["message"]
+
+
+def test_oneshot_stop_for_operator_pauses_not_done(hermes_home):
+    from hermes_cli.goals import GoalManager
+
+    mgr = GoalManager(session_id="oneshot-stop", default_max_turns=10)
+    mgr.set("continue project", goal_mode="goal_prompt_oneshot")
+
+    decision = mgr.evaluate_after_turn(
+        "/goal_prompt_oneshot continuation decision: STOP_FOR_OPERATOR\n"
+        "GOAL.md definition of done: NOT SATISFIED\n"
+        "Reason: only production signing remains\n"
+    )
+
+    assert decision["should_continue"] is False
+    assert decision["verdict"] == "stop_for_operator"
+    assert mgr.state.status == "paused"
+    assert "operator" in (mgr.state.paused_reason or "")
+
+
+def test_oneshot_judge_uses_mode_aware_prompt(monkeypatch):
+    from hermes_cli import goals
+
+    captured = {}
+
+    class _FakeMsg:
+        content = '{"done": false, "reason": "more work remains"}'
+
+    class _FakeChoice:
+        message = _FakeMsg()
+
+    class _FakeResp:
+        choices = [_FakeChoice()]
+
+    class _FakeCompletions:
+        @staticmethod
+        def create(**kwargs):
+            captured.update(kwargs)
+            return _FakeResp()
+
+    class _FakeChat:
+        completions = _FakeCompletions()
+
+    class _FakeClient:
+        chat = _FakeChat()
+
+    with patch(
+        "agent.auxiliary_client.get_text_auxiliary_client",
+        return_value=(_FakeClient(), "judge-model"),
+    ), patch("agent.auxiliary_client.get_auxiliary_extra_body", return_value={}):
+        verdict, reason, parse_failed = goals.judge_goal(
+            "goal", "blocked but safe work remains", goal_mode="goal_prompt_oneshot"
+        )
+
+    assert verdict == "continue"
+    assert parse_failed is False
+    assert "STOP_FOR_OPERATOR" in captured["messages"][0]["content"]
+    assert "DO NOT treat generic phrases" in captured["messages"][0]["content"]

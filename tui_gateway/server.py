@@ -3503,9 +3503,52 @@ def _run_prompt_submit(rid, sid: str, session: dict, text: Any) -> None:
                                     {"kind": "goal", "text": verdict_msg},
                                 )
                             if decision.get("should_continue"):
-                                cont_prompt = decision.get("continuation_prompt") or ""
-                                if cont_prompt:
-                                    goal_followup = cont_prompt
+                                refreshed = False
+                                try:
+                                    state = getattr(goal_mgr, "state", None)
+                                    interval = int(getattr(state, "compaction_refresh_interval", 0) or 0)
+                                    prompt_path = (getattr(state, "goal_prompt_path", "") or "").strip()
+                                    comp = getattr(session.get("agent"), "context_compressor", None)
+                                    compression_count = int(getattr(comp, "compression_count", 0) or 0)
+                                    if (
+                                        getattr(state, "goal_mode", "") == "goal_prompt_oneshot"
+                                        and interval > 0
+                                        and compression_count >= interval
+                                        and prompt_path
+                                    ):
+                                        from hermes_cli.goal_prompt import extract_goal_prompt_text, goal_command_from_prompt_text
+                                        new_key = _new_session_key()
+                                        session["session_key"] = new_key
+                                        _reset_session_agent(sid, session)
+                                        raw_prompt = Path(prompt_path).read_text(encoding="utf-8")
+                                        command_to_run = goal_command_from_prompt_text(
+                                            extract_goal_prompt_text(raw_prompt), oneshot=True
+                                        )
+                                        goal_text = command_to_run.split(None, 1)[1].strip() if " " in command_to_run else ""
+                                        oneshot_cfg = _load_cfg().get("goals") or {}
+                                        new_mgr = GoalManager(
+                                            session_id=new_key,
+                                            default_max_turns=int(oneshot_cfg.get("max_turns", 20) or 20),
+                                        )
+                                        new_state = new_mgr.set(
+                                            goal_text,
+                                            max_turns=int(oneshot_cfg.get("oneshot_max_turns", 200) or 200),
+                                            goal_mode="goal_prompt_oneshot",
+                                            goal_prompt_path=prompt_path,
+                                            compaction_refresh_interval=interval,
+                                        )
+                                        goal_followup = new_state.goal
+                                        refreshed = True
+                                except Exception as _refresh_exc:
+                                    print(
+                                        f"[tui_gateway] goal oneshot refresh failed: "
+                                        f"{type(_refresh_exc).__name__}: {_refresh_exc}",
+                                        file=sys.stderr,
+                                    )
+                                if not refreshed:
+                                    cont_prompt = decision.get("continuation_prompt") or ""
+                                    if cont_prompt:
+                                        goal_followup = cont_prompt
                 except Exception as _goal_exc:
                     print(
                         f"[tui_gateway] goal continuation hook failed: "
@@ -4854,6 +4897,64 @@ def _(rid, params: dict) -> dict:
                 pass
         # Fallback: no active run, treat as next-turn message
         return _ok(rid, {"type": "send", "message": arg})
+
+    if name in {"goal_prompt", "goal-prompt", "goal_prompt_oneshot", "goal-prompt-oneshot"}:
+        if not session:
+            return _err(rid, 4001, "no active session")
+        oneshot = name in {"goal_prompt_oneshot", "goal-prompt-oneshot"}
+        try:
+            from hermes_cli.goal_prompt import (
+                extract_goal_prompt_text,
+                goal_command_from_prompt_text,
+                resolve_goal_prompt_path,
+            )
+            from hermes_cli.goals import GoalManager
+        except Exception as exc:
+            return _err(rid, 5030, f"goal prompt unavailable: {exc}")
+        command_name = "/goal_prompt_oneshot" if oneshot else "/goal_prompt"
+        prompt_path = resolve_goal_prompt_path((arg or "").strip(), search_parents=not oneshot)
+        if prompt_path is None or not prompt_path.exists():
+            return _err(
+                rid,
+                4004,
+                f"No GOAL_PROMPT.md found. Expected: {prompt_path or 'docs/runbooks/GOAL_PROMPT.md'}\n"
+                f"Usage: {command_name} [project-root-or-prompt-file]",
+            )
+        try:
+            raw = prompt_path.read_text(encoding="utf-8")
+        except Exception as exc:
+            return _err(rid, 5030, f"Failed to read {prompt_path}: {exc}")
+        command_to_run = goal_command_from_prompt_text(
+            extract_goal_prompt_text(raw), oneshot=oneshot
+        )
+        if not command_to_run:
+            return _err(rid, 4004, f"{prompt_path} is empty or has no prompt text")
+        goal_text = command_to_run.split(None, 1)[1].strip() if " " in command_to_run else ""
+        sid_key = session.get("session_key") or ""
+        try:
+            goals_cfg = _load_cfg().get("goals") or {}
+            default_max_turns = int(goals_cfg.get("max_turns", 20) or 20)
+            oneshot_max_turns = int(goals_cfg.get("oneshot_max_turns", 200) or 200)
+            refresh_interval = int(goals_cfg.get("oneshot_compaction_refresh_interval", 5) or 0)
+        except Exception:
+            default_max_turns, oneshot_max_turns, refresh_interval = 20, 200, 5
+        mgr = GoalManager(session_id=sid_key, default_max_turns=default_max_turns)
+        try:
+            state = mgr.set(
+                goal_text,
+                max_turns=oneshot_max_turns if oneshot else None,
+                goal_mode="goal_prompt_oneshot" if oneshot else "",
+                goal_prompt_path=str(prompt_path) if oneshot else "",
+                compaction_refresh_interval=max(0, refresh_interval) if oneshot else 0,
+            )
+        except ValueError as exc:
+            return _err(rid, 4004, f"invalid goal prompt: {exc}")
+        mode = "one-shot goal prompt" if oneshot else "goal prompt"
+        notice = (
+            f"⊙ Loading {mode} from {prompt_path}\n"
+            f"⊙ Goal set ({state.max_turns}-turn budget): {state.goal}"
+        )
+        return _ok(rid, {"type": "send", "notice": notice, "message": state.goal})
 
     if name == "goal":
         if not session:

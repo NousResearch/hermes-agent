@@ -65,6 +65,11 @@ def session(server):
         "cols": 120,
     }
     server._sessions[sid] = s
+    try:
+        from hermes_cli.goals import clear_goal
+        clear_goal(session_key)
+    except Exception:
+        pass
     return sid, session_key, s
 
 
@@ -194,3 +199,31 @@ def test_pending_input_commands_includes_goal(server):
     """Guard: _PENDING_INPUT_COMMANDS must list 'goal' — removing it would
     silently re-break the TUI."""
     assert "goal" in server._PENDING_INPUT_COMMANDS
+
+
+def test_goal_prompt_oneshot_dispatch_sets_metadata(server, session, tmp_path):
+    sid, session_key, _ = session
+    prompt = tmp_path / "docs" / "runbooks" / "GOAL_PROMPT.md"
+    prompt.parent.mkdir(parents=True)
+    prompt.write_text("```text\nContinue from NEXT_ACTIONS.md\n```", encoding="utf-8")
+
+    r = _call(
+        server,
+        "command.dispatch",
+        name="goal_prompt_oneshot",
+        arg=str(tmp_path),
+        session_id=sid,
+    )
+
+    result = r["result"]
+    assert result["type"] == "send"
+    assert "one-shot goal prompt" in result["notice"]
+    assert "/goal_prompt_oneshot mode" in result["message"]
+
+    from hermes_cli.goals import GoalManager
+
+    state = GoalManager(session_key).state
+    assert state.goal_mode == "goal_prompt_oneshot"
+    assert state.goal_prompt_path == str(prompt)
+    assert state.max_turns == 200
+    assert state.compaction_refresh_interval == 5

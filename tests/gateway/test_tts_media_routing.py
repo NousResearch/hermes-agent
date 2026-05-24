@@ -199,8 +199,11 @@ class _DiscordMediaFailureAdapter(BasePlatformAdapter):
 
 
 @pytest.mark.asyncio
-async def test_queued_followup_delivery_strips_media_tag_from_text_and_sends_image():
+async def test_queued_followup_delivery_strips_media_tag_from_text_and_sends_image(
+    tmp_path, monkeypatch,
+):
     event = _event(thread_id="topic-1")
+    media_file = _allowed_media_path(tmp_path, monkeypatch, "pricelist.png")
     runner = object.__new__(GatewayRunner)
     runner._thread_metadata_for_source = lambda source, anchor=None: {"thread_id": "topic-1"}
     runner._reply_anchor_for_event = lambda event: event.message_id
@@ -219,7 +222,7 @@ async def test_queued_followup_delivery_strips_media_tag_from_text_and_sends_ima
 
     await GatewayRunner._deliver_queued_first_response(
         runner,
-        "Quote here\nMEDIA:/tmp/pricelist.png",
+        f"Quote here\nMEDIA:{media_file}",
         source=event.source,
         adapter=adapter,
         metadata={"thread_id": "topic-1"},
@@ -233,7 +236,7 @@ async def test_queued_followup_delivery_strips_media_tag_from_text_and_sends_ima
     )
     adapter.send_multiple_images.assert_awaited_once_with(
         chat_id="chat-1",
-        images=[("file:///tmp/pricelist.png", "")],
+        images=[(f"file://{media_file.as_posix()}", "")],
         metadata={"thread_id": "topic-1"},
     )
 

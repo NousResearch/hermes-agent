@@ -234,6 +234,13 @@ It turns executor contract candidates into read-only review outcomes for a
 later implementation plan without issuing tokens, writing files, persisting
 approvals, creating ledger events, or implementing or invoking an executor.
 
+Memory Human Approval Token Real Write Executor Implementation Plan v0.1 lives
+in `agent.memory_human_approval_token_real_write_executor_implementation_plan`.
+It turns approved executor contract review outcomes into read-only
+implementation plan candidates for future executor dry runs without writing
+files, issuing tokens, persisting approvals, creating ledger events, or
+implementing or invoking an executor.
+
 ---
 
 ## Migrating from OpenClaw

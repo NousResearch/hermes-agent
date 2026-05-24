@@ -50,6 +50,7 @@ python -m benchmarks.hermes_memory_bench.run --suite smoke --output /tmp/hermes-
 - `memory_human_approval_token_write_final_gate`
 - `memory_human_approval_token_real_write_executor_contract`
 - `memory_human_approval_token_real_write_executor_contract_review_gate`
+- `memory_human_approval_token_real_write_executor_implementation_plan`
 - `latency_ms`
 
 ## Hybrid Retrieval Fusion v0.1
@@ -573,6 +574,31 @@ submit to governance, write memory, write the Memory Graph, or modify config.
 The smoke suite includes
 `memory_human_approval_token_real_write_executor_contract_review_gate`, proving
 that a valid contract becomes `approve_executor_contract` without issuing a
+token, persisting approval, creating a real proposal, writing token files,
+writing approval audit, invoking or implementing a real token write executor,
+or creating an operation event.
+
+### Memory Human Approval Token Real Write Executor Implementation Plan v0.1
+
+Implemented in
+`agent.memory_human_approval_token_real_write_executor_implementation_plan`.
+It turns an `approve_executor_contract` review outcome candidate into a
+deterministic, read-only implementation plan candidate with
+`real_token_write_executor_implementation_plan_required` status.
+
+The plan defines future executor interfaces, planned module boundaries,
+idempotency, filesystem safety, audit, rollback, tests, and forbidden actions.
+Non-approved, invalid, incomplete, or integrity-failed contract review outcomes
+become locked plan candidates with explicit reasons. v0.1 does not implement or
+invoke a real token write executor, issue approval tokens, persist approvals,
+create real proposals, write proposal files, write operation-ledger events,
+write token files, write approval audit records, submit to governance, write
+memory, write the Memory Graph, or modify config.
+
+The smoke suite includes
+`memory_human_approval_token_real_write_executor_implementation_plan`, proving
+that a valid contract review outcome becomes
+`real_token_write_executor_implementation_plan_required` without issuing a
 token, persisting approval, creating a real proposal, writing token files,
 writing approval audit, invoking or implementing a real token write executor,
 or creating an operation event.

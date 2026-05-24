@@ -1576,5 +1576,74 @@
         }
       }
     ]
+  },
+  {
+    "id": "memory_human_approval_token_real_write_executor_implementation_plan_required",
+    "dimension": "memory_human_approval_token_real_write_executor_implementation_plan",
+    "description": "Valid contract review outcome becomes a read-only implementation plan candidate.",
+    "query": "Can Hermes Memory Fabric create a real token write executor implementation plan without issuing a token, persisting approval, creating a real proposal, writing token files, writing approval audit, invoking or implementing a real token write executor, or creating an operation event?",
+    "project_scope": "memory-fabric",
+    "reviewer": "memory-fabric-reviewer",
+    "author": "memory-fabric-author",
+    "governance_reviewer": "memory-fabric-governance-reviewer",
+    "packet_reviewer": "memory-fabric-packet-reviewer",
+    "human_reviewer": "memory-fabric-human-reviewer",
+    "planner": "memory-fabric-plan-reviewer",
+    "operator": "memory-fabric-final-preflight-operator",
+    "write_lock_operator": "memory-fabric-write-lock-operator",
+    "approval_token_requester": "memory-fabric-approval-token-requester",
+    "approval_token_reviewer": "memory-fabric-approval-token-reviewer",
+    "approval_token_issuance_planner": "memory-fabric-approval-token-issuance-planner",
+    "approval_token_issuance_dry_run_operator": "memory-fabric-approval-token-issuance-dry-run-operator",
+    "approval_token_write_lock_operator": "memory-fabric-approval-token-write-lock-operator",
+    "approval_token_final_confirmation_requester": "memory-fabric-approval-token-final-confirmation-requester",
+    "approval_token_final_confirmation_confirmer": "memory-fabric-approval-token-final-confirmation-confirmer",
+    "approval_token_write_execution_plan_executor": "memory-fabric-approval-token-write-execution-plan-executor",
+    "approval_token_write_execution_dry_run_operator": "memory-fabric-approval-token-write-execution-dry-run-operator",
+    "approval_token_write_final_gate_operator": "memory-fabric-approval-token-write-final-gate-operator",
+    "approval_token_real_write_executor_contract_operator": "memory-fabric-approval-token-real-write-executor-contract-operator",
+    "approval_token_real_write_executor_contract_reviewer": "memory-fabric-approval-token-real-write-executor-contract-reviewer",
+    "approval_token_real_write_executor_implementation_plan_implementer": "memory-fabric-approval-token-real-write-executor-implementation-plan-implementer",
+    "expected_answer": "real_token_write_executor_implementation_plan_required",
+    "memories": [
+      {
+        "fact_id": "human-approval-token-real-write-executor-implementation-plan-procedure-1",
+        "subject": "Hermes Memory Fabric",
+        "predicate": "procedure",
+        "object": "create read-only human approval token real write executor implementation plan candidates",
+        "project_id": "memory-fabric",
+        "source_episode_id": "episode-memory-human-approval-token-real-write-executor-implementation-plan-a",
+        "provenance": "bench:memory-human-approval-token-real-write-executor-implementation-plan:a",
+        "confidence": 0.92,
+        "valid_from": "2026-05-24T00:00:00Z",
+        "system_created_at": "2026-05-24T00:00:00Z",
+        "governance": {
+          "read_only": true,
+          "would_write_memory": false,
+          "would_modify_config": false,
+          "would_write_graph": false,
+          "does_not_create_operation_events": true
+        }
+      },
+      {
+        "fact_id": "human-approval-token-real-write-executor-implementation-plan-procedure-2",
+        "subject": "Hermes Memory Fabric",
+        "predicate": "procedure",
+        "object": "plan future executor interfaces idempotency filesystem safety audit rollback and tests without creating executor code",
+        "project_id": "memory-fabric",
+        "source_episode_id": "episode-memory-human-approval-token-real-write-executor-implementation-plan-b",
+        "provenance": "bench:memory-human-approval-token-real-write-executor-implementation-plan:b",
+        "confidence": 0.91,
+        "valid_from": "2026-05-24T00:00:00Z",
+        "system_created_at": "2026-05-24T01:00:00Z",
+        "governance": {
+          "read_only": true,
+          "would_write_memory": false,
+          "would_modify_config": false,
+          "would_write_graph": false,
+          "does_not_create_operation_events": true
+        }
+      }
+    ]
   }
 ]

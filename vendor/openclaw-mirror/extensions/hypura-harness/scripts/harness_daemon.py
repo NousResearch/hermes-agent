@@ -125,6 +125,7 @@ def _vrchat_osc_config(cfg: dict[str, Any]) -> dict[str, Any]:
 
 
 def _handle_vrchat_avatar_change(avatar_id: str) -> None:
+    osc_listen.telemetry["avatar_id"] = avatar_id
     catalog = vrchat_registry.set_current_avatar(avatar_id)
     profile = vrchat_profiles.load_profile(avatar_id, suggested=False)
     companion3d_events.add_event(
@@ -138,6 +139,7 @@ def _handle_vrchat_avatar_change(avatar_id: str) -> None:
 
 
 def _handle_vrchat_parameter(address: str, value: Any) -> None:
+    osc_listen.telemetry[address] = value
     companion3d_events.add_event(
         "state",
         {
@@ -1616,9 +1618,11 @@ if __name__ == "__main__":
         port = config.get("daemon_port", DEFAULT_DAEMON_PORT)
         logger.info("Starting Hypura Harness on port %s", port)
         
-        # Start OSC Listener in background daemon thread
-        listener_thread = threading.Thread(target=osc_listen.start, daemon=True)
-        listener_thread.start()
+        # The VRChat bridge owns the receive port when enabled; the legacy
+        # listener is only used for telemetry-only mode.
+        if not _vrchat_osc_config(config)["enabled"]:
+            listener_thread = threading.Thread(target=osc_listen.start, daemon=True)
+            listener_thread.start()
         
         uvicorn.run(app, host="127.0.0.1", port=port, log_level="info")
     except Exception as e:

@@ -101,6 +101,26 @@ def test_direct_vrc_parameter_write_is_disabled_by_default() -> None:
     assert resp.json()["error"] == "direct_parameter_write_disabled"
 
 
+def test_vrchat_bridge_callbacks_update_legacy_telemetry(monkeypatch) -> None:
+    import harness_daemon as hd
+
+    event_bus = Mock()
+    registry = Mock()
+    registry.set_current_avatar.return_value = None
+    profiles = Mock()
+    profiles.load_profile.return_value = None
+    monkeypatch.setattr(hd, "companion3d_events", event_bus)
+    monkeypatch.setattr(hd, "vrchat_registry", registry)
+    monkeypatch.setattr(hd, "vrchat_profiles", profiles)
+    hd.osc_listen.telemetry.clear()
+
+    hd._handle_vrchat_avatar_change("avtr_test")
+    hd._handle_vrchat_parameter("/avatar/parameters/Smile", True)
+
+    assert hd.osc_listen.telemetry["avatar_id"] == "avtr_test"
+    assert hd.osc_listen.telemetry["/avatar/parameters/Smile"] is True
+
+
 def test_companion3d_rejects_remote_model_url() -> None:
     from harness_daemon import app
 

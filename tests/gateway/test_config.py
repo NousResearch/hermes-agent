@@ -450,6 +450,70 @@ class TestLoadGatewayConfig:
         assert os.getenv("DISCORD_HISTORY_BACKFILL") == "true"
         assert os.getenv("DISCORD_HISTORY_BACKFILL_LIMIT") == "17"
 
+    def test_plugin_platform_dependency_check_alone_does_not_enable(self, tmp_path, monkeypatch):
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        (hermes_home / "config.yaml").write_text("{}\n", encoding="utf-8")
+
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.setattr("hermes_cli.plugins.discover_plugins", lambda: None)
+
+        from gateway.platform_registry import PlatformEntry, platform_registry
+
+        original_entries = dict(platform_registry._entries)
+        platform_registry._entries.clear()
+        try:
+            platform_registry.register(
+                PlatformEntry(
+                    name="unit_disconnected",
+                    label="Unit Disconnected",
+                    adapter_factory=lambda cfg: object(),
+                    check_fn=lambda: True,
+                    is_connected=lambda cfg: False,
+                )
+            )
+
+            config = load_gateway_config()
+            platform = Platform("unit_disconnected")
+
+            assert config.platforms[platform].enabled is False
+        finally:
+            platform_registry._entries.clear()
+            platform_registry._entries.update(original_entries)
+
+    def test_plugin_platform_env_seed_is_validated_before_enable(self, tmp_path, monkeypatch):
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        (hermes_home / "config.yaml").write_text("{}\n", encoding="utf-8")
+
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.setattr("hermes_cli.plugins.discover_plugins", lambda: None)
+
+        from gateway.platform_registry import PlatformEntry, platform_registry
+
+        original_entries = dict(platform_registry._entries)
+        platform_registry._entries.clear()
+        try:
+            platform_registry.register(
+                PlatformEntry(
+                    name="unit_connected",
+                    label="Unit Connected",
+                    adapter_factory=lambda cfg: object(),
+                    check_fn=lambda: True,
+                    validate_config=lambda cfg: cfg.extra.get("server") == "example",
+                    env_enablement_fn=lambda: {"server": "example"},
+                )
+            )
+
+            config = load_gateway_config()
+            platform = Platform("unit_connected")
+
+            assert config.platforms[platform].enabled is True
+            assert config.platforms[platform].extra["server"] == "example"
+        finally:
+            platform_registry._entries.clear()
+            platform_registry._entries.update(original_entries)
+
     def test_bridges_telegram_channel_prompts_from_config_yaml(self, tmp_path, monkeypatch):
         hermes_home = tmp_path / ".hermes"
         hermes_home.mkdir()

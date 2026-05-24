@@ -26,15 +26,15 @@ LEGACY_STATUS_PATH = "/status"
 LEGACY_STATUS_TIMEOUT = 5.0
 _FALSE_ENV_VALUES = {"0", "false", "no", "off", "disabled"}
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
-DEFAULT_DAEMON_SCRIPT = (
-    PROJECT_ROOT
-    / "vendor"
-    / "openclaw-mirror"
-    / "extensions"
-    / "hypura-harness"
-    / "scripts"
-    / "harness_daemon.py"
+_DAEMON_SCRIPT_RELATIVE_PATH = Path(
+    "vendor",
+    "openclaw-mirror",
+    "extensions",
+    "hypura-harness",
+    "scripts",
+    "harness_daemon.py",
 )
+DEFAULT_DAEMON_SCRIPT = PROJECT_ROOT / _DAEMON_SCRIPT_RELATIVE_PATH
 
 
 def _env_flag_disabled(name: str) -> bool:
@@ -94,6 +94,10 @@ def get_harness_script_path() -> Path:
     script = os.getenv("HYPURA_HARNESS_SCRIPT") or _harness_config().get("script_path")
     if script:
         return Path(str(script)).expanduser().resolve()
+    for root in (PROJECT_ROOT, Path.cwd(), *Path.cwd().parents):
+        candidate = root / _DAEMON_SCRIPT_RELATIVE_PATH
+        if candidate.is_file():
+            return candidate.resolve()
     return DEFAULT_DAEMON_SCRIPT
 
 

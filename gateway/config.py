@@ -1825,7 +1825,7 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
             platform = Platform(entry.name)
             if platform not in config.platforms:
                 config.platforms[platform] = PlatformConfig()
-            config.platforms[platform].enabled = True
+            pconfig = config.platforms[platform]
             # Seed extras from env if the plugin opted in.
             if entry.env_enablement_fn is not None:
                 try:
@@ -1840,9 +1840,9 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
                     # up as a proper HomeChannel dataclass.  Everything else is
                     # merged into ``extra``.
                     home = seed.pop("home_channel", None)
-                    config.platforms[platform].extra.update(seed)
+                    pconfig.extra.update(seed)
                     if isinstance(home, dict) and home.get("chat_id"):
-                        config.platforms[platform].home_channel = HomeChannel(
+                        pconfig.home_channel = HomeChannel(
                             platform=platform,
                             chat_id=str(home["chat_id"]),
                             name=str(home.get("name") or "Home"),
@@ -1852,5 +1852,18 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
                                 else None
                             ),
                         )
+            try:
+                if entry.is_connected is not None:
+                    configured = bool(entry.is_connected(pconfig))
+                elif entry.validate_config is not None:
+                    configured = bool(entry.validate_config(pconfig))
+                else:
+                    configured = True
+            except Exception as e:
+                logger.debug("config check for %s raised: %s", entry.name, e)
+                configured = False
+            if not configured:
+                continue
+            pconfig.enabled = True
     except Exception as e:
         logger.debug("Plugin platform enable pass failed: %s", e)

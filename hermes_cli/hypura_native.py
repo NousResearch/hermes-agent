@@ -26,15 +26,9 @@ def _hypura_script_path() -> Path:
     raw = os.getenv("HYPURA_HARNESS_SCRIPT", "").strip()
     if raw:
         return Path(raw).expanduser().resolve()
-    return (
-        _project_root()
-        / "vendor"
-        / "openclaw-mirror"
-        / "extensions"
-        / "hypura-harness"
-        / "scripts"
-        / "harness_daemon.py"
-    )
+    from hermes_cli.harness import get_harness_script_path
+
+    return get_harness_script_path()
 
 
 def _pid_file() -> Path:

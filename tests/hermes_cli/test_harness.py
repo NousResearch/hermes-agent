@@ -95,6 +95,36 @@ def test_get_harness_url_falls_back_on_invalid_port(monkeypatch):
     assert harness_mod.get_harness_url() == "http://127.0.0.1:18794"
 
 
+def test_get_harness_script_path_falls_back_to_repo_cwd(monkeypatch, tmp_path):
+    script_path = (
+        tmp_path
+        / "vendor"
+        / "openclaw-mirror"
+        / "extensions"
+        / "hypura-harness"
+        / "scripts"
+        / "harness_daemon.py"
+    )
+    script_path.parent.mkdir(parents=True)
+    script_path.write_text("# test daemon\n", encoding="utf-8")
+
+    monkeypatch.delenv("HYPURA_HARNESS_SCRIPT", raising=False)
+    monkeypatch.setattr(harness_mod, "_harness_config", lambda: {})
+    monkeypatch.setattr(
+        harness_mod,
+        "DEFAULT_DAEMON_SCRIPT",
+        tmp_path / ".venv" / "Lib" / "site-packages" / "missing.py",
+    )
+    monkeypatch.setattr(
+        harness_mod,
+        "PROJECT_ROOT",
+        tmp_path / ".venv" / "Lib" / "site-packages",
+    )
+    monkeypatch.chdir(tmp_path)
+
+    assert harness_mod.get_harness_script_path() == script_path.resolve()
+
+
 def test_is_harness_running_uses_lightweight_health(monkeypatch):
     calls = []
 

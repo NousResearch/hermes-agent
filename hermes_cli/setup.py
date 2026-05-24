@@ -1094,7 +1094,7 @@ def _xai_oauth_logged_in_for_setup() -> bool:
     """True iff xAI Grok OAuth credentials are already stored locally.
 
     Lets TTS / STT setup skip the API-key prompt for users who logged in
-    through ``hermes model`` -> xAI Grok OAuth (SuperGrok Subscription).
+    through ``hermes model`` -> xAI Grok OAuth (SuperGrok / Premium+).
     """
     try:
         from hermes_cli.auth import get_xai_oauth_auth_status
@@ -1124,7 +1124,7 @@ def _run_xai_oauth_login_from_setup() -> bool:
 
     open_browser = not _is_remote_session()
     print()
-    print_info("Signing in to xAI Grok OAuth (SuperGrok Subscription)...")
+    print_info("Signing in to xAI Grok OAuth (SuperGrok / Premium+)...")
     try:
         creds = _xai_oauth_loopback_login(open_browser=open_browser)
         _save_xai_oauth_tokens(
@@ -1259,7 +1259,7 @@ def _setup_tts_provider(config: dict):
 
         if oauth_logged_in:
             print_success(
-                "xAI TTS will use your xAI Grok OAuth (SuperGrok Subscription) "
+                "xAI TTS will use your xAI Grok OAuth (SuperGrok / Premium+) "
                 "credentials"
             )
         elif existing_api_key:
@@ -1269,7 +1269,7 @@ def _setup_tts_provider(config: dict):
             choice_idx = prompt_choice(
                 "How do you want xAI TTS to authenticate?",
                 choices=[
-                    "Sign in with xAI Grok OAuth (SuperGrok Subscription) — browser login",
+                    "Sign in with xAI Grok OAuth (SuperGrok / Premium+) — browser login",
                     "Paste an xAI API key (console.x.ai)",
                     "Skip → fallback to Edge TTS",
                 ],

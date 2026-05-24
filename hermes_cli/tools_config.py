@@ -101,7 +101,7 @@ def _xai_credentials_present() -> bool:
     """Cheap, side-effect-free check for usable xAI credentials.
 
     Used to auto-enable the ``x_search`` toolset when the user has either
-    completed xAI Grok OAuth (SuperGrok subscription) or set
+    completed xAI Grok OAuth (SuperGrok / Premium+) or set
     ``XAI_API_KEY``. Does NOT hit the network — only inspects the local
     auth store and environment. The tool's runtime ``check_fn`` still
     gates schema registration if creds later expire or get revoked.
@@ -356,7 +356,7 @@ TOOL_CATEGORIES = {
         "icon": "🐦",
         "providers": [
             {
-                "name": "xAI Grok OAuth (SuperGrok Subscription)",
+                "name": "xAI Grok OAuth (SuperGrok / Premium+)",
                 "badge": "subscription",
                 "tag": "Browser login at accounts.x.ai — no API key required",
                 "env_vars": [],
@@ -1008,7 +1008,7 @@ def _run_post_setup(post_setup_key: str):
 
         if oauth_logged_in:
             _print_success(
-                "    xAI will use your xAI Grok OAuth (SuperGrok Subscription) credentials"
+                "    xAI will use your xAI Grok OAuth (SuperGrok / Premium+) credentials"
             )
             return
         if existing_api_key:
@@ -1031,7 +1031,7 @@ def _run_post_setup(post_setup_key: str):
         idx = prompt_choice(
             "    How do you want xAI to authenticate?",
             choices=[
-                "Sign in with xAI Grok OAuth (SuperGrok Subscription) — browser login",
+                "Sign in with xAI Grok OAuth (SuperGrok / Premium+) — browser login",
                 "Paste an xAI API key (console.x.ai)",
                 "Skip — configure later via `hermes auth add xai-oauth`",
             ],

@@ -198,7 +198,7 @@ PROVIDER_REGISTRY: Dict[str, ProviderConfig] = {
     ),
     "xai-oauth": ProviderConfig(
         id="xai-oauth",
-        name="xAI Grok OAuth (SuperGrok Subscription)",
+        name="xAI Grok OAuth (SuperGrok / Premium+)",
         auth_type="oauth_external",
         inference_base_url=DEFAULT_XAI_OAUTH_BASE_URL,
     ),
@@ -3407,7 +3407,7 @@ def _read_xai_oauth_tokens(*, _lock: bool = True) -> Dict[str, Any]:
     state = _load_provider_state(auth_store, "xai-oauth")
     if not state:
         raise AuthError(
-            "No xAI OAuth credentials stored. Select xAI Grok OAuth (SuperGrok Subscription) in `hermes model`.",
+            "No xAI OAuth credentials stored. Select xAI Grok OAuth (SuperGrok / Premium+) in `hermes model`.",
             provider="xai-oauth",
             code="xai_auth_missing",
             relogin_required=True,
@@ -6338,7 +6338,7 @@ def _login_xai_oauth(
             pass
 
     print()
-    print("Signing in to xAI Grok OAuth (SuperGrok Subscription)...")
+    print("Signing in to xAI Grok OAuth (SuperGrok / Premium+)...")
     print("(Hermes creates its own local OAuth session)")
     print()
 

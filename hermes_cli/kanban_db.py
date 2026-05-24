@@ -2083,7 +2083,7 @@ def _append_event(
         try:
             _fifo_path = os.path.expanduser("~/.hermes/tui_kanban.fifo")
             if os.path.exists(_fifo_path):
-                with open(_fifo_path, "w") as _fifo:
+                with open(_fifo_path, "w", encoding="utf-8") as _fifo:
                     _fifo.write(json.dumps({"task_id": task_id, "kind": kind}) + "\n")
         except Exception:
             pass  # Non-fatal — don't break the event write

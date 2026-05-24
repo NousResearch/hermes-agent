@@ -612,6 +612,8 @@ def recover_with_credential_pool(
             context_message = str(error_context.get("message") or "").lower()
             usage_limit_reached = (
                 "usage_limit_reached" in context_reason
+                or "gousagelimit" in context_reason
+                or "usage limit reached" in context_message
                 or "usage limit has been reached" in context_message
             )
         if not has_retried_429 and not usage_limit_reached:
@@ -2090,19 +2092,33 @@ def extract_api_error_context(error: Exception) -> Dict[str, Any]:
     if "reset_at" not in context:
         message = context.get("message") or ""
         if isinstance(message, str):
-            delay_match = re.search(r"quotaResetDelay[:\s\"]+(\\d+(?:\\.\\d+)?)(ms|s)", message, re.IGNORECASE)
+            delay_match = re.search(r"quotaResetDelay[:\s\"]+(\d+(?:\.\d+)?)(ms|s)", message, re.IGNORECASE)
             if delay_match:
                 value = float(delay_match.group(1))
                 seconds = value / 1000.0 if delay_match.group(2).lower() == "ms" else value
                 context["reset_at"] = time.time() + seconds
             else:
-                sec_match = re.search(
-                    r"retry\s+(?:after\s+)?(\d+(?:\.\d+)?)\s*(?:sec|secs|seconds|s\b)",
+                resets_in_match = re.search(
+                    r"resets?\s+in\s+"
+                    r"(?:(\d+(?:\.\d+)?)\s*(?:h|hr|hrs|hour|hours)\b\s*)?"
+                    r"(?:(\d+(?:\.\d+)?)\s*(?:m|min|mins|minute|minutes)\b\s*)?"
+                    r"(?:(\d+(?:\.\d+)?)\s*(?:s|sec|secs|second|seconds)\b)?",
                     message,
                     re.IGNORECASE,
                 )
-                if sec_match:
-                    context["reset_at"] = time.time() + float(sec_match.group(1))
+                if resets_in_match and any(resets_in_match.groups()):
+                    hours = float(resets_in_match.group(1) or 0)
+                    minutes = float(resets_in_match.group(2) or 0)
+                    seconds = float(resets_in_match.group(3) or 0)
+                    context["reset_at"] = time.time() + (hours * 3600) + (minutes * 60) + seconds
+                else:
+                    sec_match = re.search(
+                        r"retry\s+(?:after\s+)?(\d+(?:\.\d+)?)\s*(?:sec|secs|seconds|s\b)",
+                        message,
+                        re.IGNORECASE,
+                    )
+                    if sec_match:
+                        context["reset_at"] = time.time() + float(sec_match.group(1))
 
     return context
 

@@ -6,7 +6,7 @@ import json
 import pytest
 
 from gateway.config import GatewayConfig, Platform, PlatformConfig, _apply_env_overrides
-from gateway.platforms.msgraph_webhook import MSGraphWebhookAdapter
+from gateway.platforms.msgraph_webhook import AIOHTTP_AVAILABLE, MSGraphWebhookAdapter
 
 
 def _make_adapter(**extra_overrides) -> MSGraphWebhookAdapter:
@@ -71,6 +71,15 @@ class TestMSGraphWebhookConfig:
 
 class TestMSGraphValidationHandshake:
     @pytest.mark.anyio
+    async def test_connect_requires_client_state(self):
+        if not AIOHTTP_AVAILABLE:
+            pytest.skip("aiohttp not installed")
+        adapter = MSGraphWebhookAdapter(PlatformConfig(enabled=True, extra={}))
+        connected = await adapter.connect()
+        assert connected is False
+        assert adapter.is_connected() is False
+
+    @pytest.mark.anyio
     async def test_validation_token_echo_on_get(self):
         adapter = _make_adapter()
         resp = await adapter._handle_validation(
@@ -99,6 +108,22 @@ class TestMSGraphValidationHandshake:
 
 
 class TestMSGraphNotifications:
+    @pytest.mark.anyio
+    async def test_missing_client_state_is_auth_rejected(self):
+        adapter = _make_adapter(client_state=None)
+        payload = {
+            "value": [
+                {
+                    "id": "notif-no-client-state",
+                    "subscriptionId": "sub-1",
+                    "changeType": "updated",
+                    "resource": "communications/onlineMeetings/meeting-1",
+                }
+            ]
+        }
+        resp = await adapter._handle_notification(_FakeRequest(json_payload=payload))
+        assert resp.status == 403
+
     @pytest.mark.anyio
     async def test_valid_notification_accepted_and_scheduled(self):
         adapter = _make_adapter()

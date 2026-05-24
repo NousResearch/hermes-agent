@@ -950,6 +950,18 @@ class TestBuildAssistantMessage:
 class TestAuxiliaryClientProviderPriority:
     """Verify auxiliary client resolution doesn't break for any provider."""
 
+    @pytest.fixture(autouse=True)
+    def _clear_aux_unhealthy_cache(self):
+        # The auxiliary provider unhealthy cache is deliberately process-wide
+        # in production, but provider-priority tests patch credentials per
+        # test.  Reset it here so earlier run_agent tests cannot poison the
+        # fallback chain for this class in a full-suite run.
+        from agent.auxiliary_client import _reset_aux_unhealthy_cache
+
+        _reset_aux_unhealthy_cache()
+        yield
+        _reset_aux_unhealthy_cache()
+
     def test_openrouter_always_wins(self, monkeypatch):
         monkeypatch.setenv("OPENROUTER_API_KEY", "or-key")
         from agent.auxiliary_client import get_text_auxiliary_client

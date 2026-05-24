@@ -9871,5 +9871,451 @@ Pickle RCE risk is scoped to darwinian-evolver optional skill script — not in 
 
 ---
 
-*Pass #76 complete — 2026-05-25T21:15:00Z*
+## Pass #77 – Error Handling, Exception Safety & Graceful Degradation Deep Dive – 2026-05-25T21:30:00Z
+
+**Scope:** Exception handling patterns (try/except, bare clauses, swallowing), error recovery paths (graceful recovery, state inconsistencies, unhandled exceptions), timeout handling (values, indefinite waits, timeout exceptions), circuit breaker patterns (trip conditions, race conditions, recovery), graceful degradation (degradation, fallbacks, cascading failures).
+
+**Audit scope:** `run_agent.py`, `model_tools.py`, `cli.py`, `gateway/platforms/base.py`, `gateway/status.py`, `gateway/stream_consumer.py`, `cron/scheduler.py`, `tools/mcp_tool.py`, `agent/tool_guardrails.py`, `hermes_cli/kanban.py`, and key platform adapters.
+
+---
+
+### 1. Exception Handling Patterns
+
+#### P77-1 · Bare `except:` Clause — Fixed in Gateway Base — ✅ ACQUIRED KNOWLEDGE
+
+**File:** `gateway/platforms/base.py` lines 1572–1601
+
+A historically bare `except: pass` on status file writes was previously present and has been replaced with a structured handler. The current implementation:
+
+```python
+try:
+    from gateway.status import write_runtime_status
+    write_runtime_status(platform=self.platform.value, **kwargs)
+except Exception as exc:
+    logged = getattr(self, "_status_write_logged", None)
+    if logged is None:
+        logged = set()
+        try:
+            self._status_write_logged = logged
+        except Exception:
+            pass
+    key = (self.platform.value, context)
+    if key not in logged:
+        logger.warning("Failed to write runtime status (%s) for %s: %s ...", ...)
+        logged.add(key)
+    else:
+        logger.debug(...)
+```
+
+**Analysis:** Correctly scoped to `Exception` (not bare), first-per-(platform, context) failure surfaced at WARNING, subsequent at DEBUG. The nested `except Exception: pass` guarding `_status_write_logged` assignment is acceptable — it's a test-harness compatibility guard for object `__new__` that skips `__init__`.
+
+**Status:** ✅ No issue.
+
+---
+
+#### P77-2 · `except Exception: pass` in `cli.py` pt_input_extras — ✅ ACCEPTABLE
+
+**File:** `cli.py` lines 76–82
+
+```python
+try:
+    from hermes_cli.pt_input_extras import install_shift_enter_alias, install_ctrl_enter_alias
+    install_shift_enter_alias()
+    install_ctrl_enter_alias()
+    del install_shift_enter_alias, install_ctrl_enter_alias
+except Exception:
+    pass
+```
+
+**Analysis:** This is a progressive-enhancement import (keybindings for prompt_toolkit). Silencing all exceptions here is intentional — non-critical UX feature that degrades gracefully when unavailable. Not a bug.
+
+**Status:** ✅ Acceptable — fail-open for non-critical UI enhancement.
+
+---
+
+#### P77-3 · `except Exception: pass` in `hermes_cli/kanban.py` Gateway Probe — ✅ DELIBERATE
+
+**File:** `hermes_cli/kanban.py` lines 149–164
+
+The `gateway_is_alive()` probe returns `(True, "")` on ANY exception from `get_running_pid()` or `load_config()`. Comment in code states: *"probe itself errors, we return (True, "") so we don't spam false warnings (better to miss a warning than to cry wolf)."*
+
+**Analysis:** Intentional fail-open. The probe is a best-effort health check; returning false-positive (gateway alive) on error is the chosen tradeoff.
+
+**Status:** ✅ Deliberate design decision documented in code.
+
+---
+
+#### P77-4 · `except Exception: pass` in `model_tools.py` Plugin Discovery — ✅ ACCEPTABLE
+
+**File:** `model_tools.py` lines 196–200
+
+```python
+try:
+    from hermes_cli.plugins import discover_plugins
+    discover_plugins()
+except Exception as e:
+    logger.debug("Plugin discovery failed: %s", e)
+```
+
+**Analysis:** Plugin discovery failure is non-fatal. Debug-level logging is appropriate (would be noise at WARNING for optional plugin load failures). This is the correct pattern for optional plugin loading.
+
+**Status:** ✅ Good — debug-level only, no swallowing.
+
+---
+
+#### P77-5 · `except Exception as exc: pass` in `model_tools.py` Worker Loop Cleanup — ✅ CORRECT
+
+**File:** `model_tools.py` lines 138–139
+
+```python
+except Exception:
+    pass
+```
+
+Nested inside `_run_in_worker()`'s `finally` block which cancels pending tasks. Catching all exceptions here prevents `RuntimeError` (loop already closed — nothing to cancel) from propagating into the caller. This is defensive and correct.
+
+**Status:** ✅ Correct.
+
+---
+
+#### P77-6 · Multiple `except Exception: pass` in `cron/scheduler.py` — ⚠️ PREVIOUSLY FLAGGED AS P34-1
+
+**Files:** `cron/scheduler.py` lines 83–86, 251–252, 335–336, 395–396
+
+These were fully catalogued in Pass #34 findings (P34-1). Lines 83 warns via `logger.warning`; the others are fully silent. These remain outstanding as low-medium issues — cron delivery silently falls back to defaults if platform plugin loading fails.
+
+**Status:** ⚠️ Outstanding — previously flagged, not yet remediated.
+
+---
+
+### 2. Error Recovery Paths
+
+#### P77-7 · SessionDB Failure in `run_agent.py` — ✅ GRACEFUL DEGRADATION
+
+**Files:** `run_agent.py` lines 501–503, 520–524
+
+```python
+try:
+    self._session_db = SessionDB()
+    return self._session_db
+except Exception as exc:
+    logger.debug("SessionDB unavailable for recall", exc_info=True)
+    return None
+```
+
+and:
+
+```python
+except Exception as e:
+    # Transient failure (e.g. SQLite lock). Keep _session_db alive —
+    # _session_db_created stays False so next run_conversation() retries.
+    logger.warning("Session DB creation failed (will retry next turn): %s", e)
+```
+
+**Analysis:** Good. Transient SQLite lock failures retry on next turn. SessionDB unavailability is non-fatal — agent continues without session persistence.
+
+**Status:** ✅ Good recovery pattern.
+
+---
+
+#### P77-8 · `RuntimeError` Handling in `model_tools.py` — ✅ ROBUST
+
+**File:** `model_tools.py` lines 106–107
+
+```python
+try:
+    loop = asyncio.get_running_loop()
+except RuntimeError:
+    loop = None
+```
+
+Handles the case when no running event loop exists (outside async context). The code then branches based on whether `loop` is `None` and whether it's already running.
+
+**Status:** ✅ Good — handles non-async caller context.
+
+---
+
+#### P77-9 · Client Recreation on `RuntimeError` in `run_agent.py` — ✅ RECOVERY
+
+**File:** `run_agent.py` line 2526
+
+```python
+if not self._replace_primary_openai_client(reason=f"recreate_closed:{reason}"):
+    raise RuntimeError("Failed to recreate closed OpenAI client")
+```
+
+**Analysis:** When a closed OpenAI client is detected, the agent attempts to recreate it. If recreation fails, it raises a `RuntimeError` — not silently continuing with a broken client. This is correct.
+
+**Status:** ✅ Good — hard fail on unrecoverable client state.
+
+---
+
+#### P77-10 · `append_message` Failure in `run_agent.py` — ✅ WARNING-ONLY GRACEFUL
+
+**File:** `run_agent.py` lines 1296–1297
+
+```python
+except Exception as e:
+    logger.warning("Session DB append_message failed: %s", e)
+```
+
+**Analysis:** Session DB write failure is non-fatal for the current turn. The message is still in memory. This is acceptable — persistent session storage is best-effort.
+
+**Status:** ✅ Acceptable — warning-only, non-fatal.
+
+---
+
+### 3. Timeout Handling
+
+#### P77-11 · Tool Call Timeout in `model_tools.py` — ✅ 300s FIXED TIMEOUT
+
+**File:** `model_tools.py` lines 145–161
+
+```python
+return future.result(timeout=300)
+except concurrent.futures.TimeoutError:
+    # Cancel the coroutine inside its own loop so the worker thread
+    # can wind down instead of running forever.
+    if loop_ready.wait(timeout=1.0) and worker_loop is not None:
+        try:
+            for t in asyncio.all_tasks(worker_loop):
+                worker_loop.call_soon_threadsafe(t.cancel)
+        except RuntimeError:
+            # Loop already closed — nothing to cancel.
+            pass
+    raise
+finally:
+    pool.shutdown(wait=False)
+```
+
+**Analysis:** 300-second timeout on all tool calls. On timeout:
+1. Tasks are cancelled inside their own loop via `call_soon_threadsafe`
+2. Worker loop is cleanly torn down
+3. `pool.shutdown(wait=False)` ensures the thread doesn't block the caller
+
+This was a fix for a prior bug where the worker thread leaked on every timeout. The current implementation is correct.
+
+**Status:** ✅ Good — hard timeout with clean cancellation.
+
+---
+
+#### P77-12 · MCP Server Config Timeouts — ✅ DOCUMENTED
+
+**File:** `tools/mcp_tool.py` lines 20–45
+
+```python
+timeout: 120         # per-tool-call timeout in seconds (default: 120)
+connect_timeout: 60  # initial connection timeout (default: 60)
+```
+
+Per-server configurable timeouts with sensible defaults. The module-level documentation explicitly describes the timeout architecture.
+
+**Status:** ✅ Good — documented, configurable.
+
+---
+
+#### P77-13 · `asyncio.timeout` / `asyncio.wait_for` Usage in `cron/scheduler.py` — ✅ CORRECT
+
+**Files:** `cron/scheduler.py` lines 558–560, 687–689
+
+```python
+try:
+    result = future.result(timeout=30)
+except TimeoutError:
+    future.cancel()
+    raise
+```
+
+```python
+try:
+    send_result = future.result(timeout=60)
+except TimeoutError:
+    future.cancel()
+    raise
+```
+
+**Analysis:** Cron scheduler uses explicit `timeout=` parameter on `future.result()`. After `TimeoutError`, the future is cancelled and the error is re-raised. Correct.
+
+**Status:** ✅ Good — explicit timeouts with cancellation on timeout.
+
+---
+
+#### P77-14 · No Indefinite Waits Found — ✅ CLEAN
+
+**Analysis:** Across `run_agent.py`, `model_tools.py`, `gateway/`, `cron/scheduler.py`, all wait operations have explicit timeouts:
+- Tool calls: 300s (`model_tools.py`)
+- MCP connection: 60s connect, 120s per-call
+- Cron futures: 30s / 60s
+- Status writes: no wait (fire-and-forget with logging)
+- Stream consumer: uses `queue.Queue` with `get(timeout=...)`
+
+No `while True:` loops without sleep/timeout were found in error-handling paths.
+
+**Status:** ✅ Clean — no indefinite waits detected.
+
+---
+
+### 4. Circuit Breaker Patterns
+
+#### P77-15 · MCP Circuit Breaker — ✅ ROBUST 3-STATE DESIGN
+
+**Files:** `tools/mcp_tool.py` lines 1718–1764, test at `tests/tools/test_mcp_circuit_breaker.py`
+
+**State machine:**
+```
+closed    — error count below threshold; all calls go through.
+open      — threshold reached; calls short-circuit until cooldown elapses.
+half-open — cooldown elapsed; next call is a probe. Probe success → closed.
+           Probe failure → reopens (cooldown re-armed).
+```
+
+**Key details:**
+- `_CIRCUIT_BREAKER_THRESHOLD = 3` — trips after 3 consecutive failures
+- `_CIRCUIT_BREAKER_COOLDOWN_SEC = 60.0` — 60-second cooldown before half-open
+- `_server_breaker_opened_at` records monotonic timestamp for cooldown clock
+- `_reset_server_error` clears both count and timestamp on any success
+- `_bump_server_error` stamps the open timestamp when threshold is crossed
+- Tests verify the half-open probe resets the breaker correctly (fixed from earlier 2-state design where breaker stayed open forever)
+
+**Analysis:** The circuit breaker is well-designed:
+- No race condition between `_bump_server_error` and `_reset_server_error` — they're called in distinct code paths (failure vs success)
+- Cooldown prevents thundering-herd on a recovering server
+- Half-open probe ensures only one test call before resetting
+
+**Status:** ✅ Good — properly implements 3-state circuit breaker with cooldown.
+
+---
+
+#### P77-16 · Telegram Polling Network Error Circuit — ✅ BACKOFF WITH LIMIT
+
+**File:** `gateway/platforms/telegram.py` lines 878–922
+
+```python
+MAX_NETWORK_RETRIES = 10
+BASE_DELAY = 5
+MAX_DELAY = 60
+```
+
+Reconnect ladder with bounded retries. After 10 failed network error retries, the gateway is restarted. This prevents infinite reconnect loops while still attempting recovery.
+
+**Status:** ✅ Good — bounded retry with escalation.
+
+---
+
+#### P77-17 · Tool Guardrail Circuit Breaker — ✅ ADVISORY (NOT HARD)
+
+**File:** `agent/tool_guardrails.py` lines 63–80
+
+```python
+@dataclass(frozen=True)
+class ToolCallGuardrailConfig:
+    warnings_enabled: bool = True
+    hard_stop_enabled: bool = False  # Opt-in
+    exact_failure_warn_after: int = 2
+    exact_failure_block_after: int = 5
+    same_tool_failure_warn_after: int = 3
+    same_tool_failure_halt_after: int = 8
+```
+
+**Analysis:** Guardrail is *advisory by default* (`hard_stop_enabled=False`). When hard stops are enabled via config, the agent halts the tool loop after thresholds. This is a soft circuit breaker — the model can still be instructed to continue. The default is warnings only.
+
+**Status:** ✅ Good — fails gracefully to warnings by default; hard stop is opt-in.
+
+---
+
+### 5. Graceful Degradation
+
+#### P77-18 · MCP Tool Handler — Graceful Degradation on Server Failure — ✅ GOOD
+
+**File:** `tools/mcp_tool.py` lines 2067–2072
+
+```python
+except Exception as retry_exc:
+    logger.warning("MCP %s/%s retry after session reconnect failed: %s", ...)
+return None
+```
+
+When retry after reconnect fails, the handler returns `None` (not an exception). The calling code converts this to an error tool result message telling the model the server is unreachable.
+
+**Status:** ✅ Good — clean degradation, model informed, no exception leaking to user.
+
+---
+
+#### P77-19 · `_write_runtime_status_safe` — Silent Degradation — ✅ DOCUMENTED
+
+**File:** `gateway/platforms/base.py` lines 1571–1601
+
+Status writes fail silently (first failure at WARNING, rest at DEBUG). This is documented as intentional to prevent log spam on reconnect loops when the status directory has permissions/ENOSPC issues.
+
+**Analysis:** Platform adapter's `has_fatal_error` and `fatal_error_message` properties remain functional even if status file writes fail. The system degrades to in-memory state tracking only.
+
+**Status:** ✅ Acceptable — explicitly documented, in-memory state still works.
+
+---
+
+#### P77-20 · Stream Consumer — Rate-Limited Progressive Editing — ✅ GRACEFUL
+
+**File:** `gateway/stream_consumer.py`
+
+Stream consumer buffers tokens and edits the platform message at configured intervals. If the platform edit fails, the stream consumer falls back to sending a new message rather than losing content.
+
+**Status:** ✅ Good — buffers and retries, degrades to new-message on edit failure.
+
+---
+
+#### P77-21 · MCP Discovery Moved from Module-Level to Lazy Import — ✅ FIXED
+
+**File:** `model_tools.py` lines 182–193
+
+> MCP tool discovery used to run as a module-level side effect using a blocking `future.result(timeout=120)`, freezing Discord/Telegram heartbeats for up to 120s when any MCP server was slow. This was fixed by moving discovery to explicit call sites with their own async handling.
+
+**Analysis:** This was a significant graceful degradation improvement — slow/unreachable MCP servers no longer block gateway startup or freeze platform heartbeats.
+
+**Status:** ✅ Fixed — lazy import, no blocking on startup.
+
+---
+
+#### P77-22 · Platform Adapter Fatal Error State — ✅ CLEAN DEGRADATION
+
+**File:** `gateway/platforms/base.py` lines 1518–1523
+
+```python
+@property
+def has_fatal_error(self) -> bool:
+    return self._fatal_error_message is not None
+
+@property
+def fatal_error_message(self) -> Optional[str]:
+    return self._fatal_error_message
+```
+
+Platform adapters track fatal errors and expose them to the gateway layer. When `has_fatal_error` is True, the gateway can route around the broken adapter or surface the error to operators.
+
+**Status:** ✅ Good — explicit fatal error state for operator visibility.
+
+---
+
+### Summary Table
+
+| Topic | Status | Notes |
+|-------|--------|-------|
+| Bare `except:` clauses | ✅ CLEAN | Historical bare `except: pass` in base.py replaced with scoped Exception handler |
+| `except Exception: pass` patterns | ✅ MOSTLY CLEAN | All instances either intentionally silent (UI enhancement, gateway probe) or debug-level logged |
+| `cron/scheduler.py` silent exceptions | ⚠️ OUTSTANDING | P34-1 — fully silent `except: pass` for platform plugin routing failures |
+| SessionDB/agent state failure recovery | ✅ GOOD | Non-fatal, retries next turn, warning logged |
+| Timeout values (300s tools, 120s MCP, 60s connect) | ✅ APPROPRIATE | Fixed timeouts throughout, no indefinite waits |
+| Timeout cancellation (`concurrent.futures.TimeoutError`) | ✅ GOOD | Proper task cancellation inside worker loop |
+| MCP circuit breaker (3-state: closed/open/half-open) | ✅ ROBUST | Threshold=3, cooldown=60s, probe resets on success |
+| Telegram reconnect ladder (max 10 retries) | ✅ BOUNDED | Escalates to gateway restart after exhaustion |
+| Tool guardrail advisory circuit | ✅ SAFE | Defaults to warnings-only; hard stop opt-in |
+| MCP graceful degradation on server failure | ✅ GOOD | Returns None, model informed, no exception leaking |
+| Stream consumer progressive editing | ✅ GOOD | Rate-limited, falls back to new message on edit failure |
+| MCP discovery blocking on startup | ✅ FIXED | Moved to lazy import, no 120s freeze on gateway startup |
+| Platform fatal error state exposure | ✅ GOOD | has_fatal_error / fatal_error_message for operator visibility |
+
+**FINDING:** 0 new critical issues. 1 pre-existing outstanding issue (P34-1, cron silent exception swallowing in `cron/scheduler.py`). All other patterns are correctly implemented.
+
+---
+
+*Pass #77 complete — 2026-05-25T21:35:00Z*
 *Commit at scan: 5a51a1f65*

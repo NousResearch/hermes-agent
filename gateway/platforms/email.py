@@ -100,6 +100,32 @@ def _is_automated_sender(address: str, headers: dict) -> bool:
             return True
     return False
     
+
+
+def _email_live_replies_enabled() -> bool:
+    """Return true only when live inbound-email replies are explicitly enabled.
+
+    Email is a high-risk external-send surface: a user reply can otherwise
+    turn an agent's intermediate/tool-progress text into an SMTP reply. Keep
+    inbound email listening usable for future explicit opt-in, but default the
+    reply path closed until a final-only delivery contract is proven.
+    """
+    return os.getenv("EMAIL_ENABLE_LIVE_REPLIES", "").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
+
+
+def _raise_if_live_replies_disabled() -> None:
+    if not _email_live_replies_enabled():
+        raise RuntimeError(
+            "live inbound-email replies are disabled; set "
+            "EMAIL_ENABLE_LIVE_REPLIES=true only after final-only send "
+            "boundaries are verified"
+        )
+
 def check_email_requirements() -> bool:
     """Check if email platform dependencies are available."""
     addr = os.getenv("EMAIL_ADDRESS")
@@ -435,6 +461,13 @@ class EmailAdapter(BasePlatformAdapter):
         """Convert a fetched email into a MessageEvent and dispatch it."""
         sender_addr = msg_data["sender_addr"]
 
+        if not _email_live_replies_enabled():
+            logger.warning(
+                "[Email] Live inbound reply handling disabled; dropping message from %s",
+                sender_addr,
+            )
+            return
+
         # Skip self-messages
         if sender_addr == self._address.lower():
             return
@@ -512,6 +545,7 @@ class EmailAdapter(BasePlatformAdapter):
     ) -> SendResult:
         """Send an email reply to the given address."""
         try:
+            _raise_if_live_replies_disabled()
             loop = asyncio.get_running_loop()
             message_id = await loop.run_in_executor(
                 None, self._send_email, chat_id, content, reply_to
@@ -528,6 +562,7 @@ class EmailAdapter(BasePlatformAdapter):
         reply_to_msg_id: Optional[str] = None,
     ) -> str:
         """Send an email via SMTP. Runs in executor thread."""
+        _raise_if_live_replies_disabled()
         msg = MIMEMultipart()
         msg["From"] = self._address
         msg["To"] = to_addr
@@ -639,6 +674,7 @@ class EmailAdapter(BasePlatformAdapter):
         file_paths: List[str],
     ) -> str:
         """Send an email with multiple file attachments via SMTP."""
+        _raise_if_live_replies_disabled()
         msg = MIMEMultipart()
         msg["From"] = self._address
         msg["To"] = to_addr
@@ -698,6 +734,7 @@ class EmailAdapter(BasePlatformAdapter):
     ) -> SendResult:
         """Send a file as an email attachment."""
         try:
+            _raise_if_live_replies_disabled()
             loop = asyncio.get_running_loop()
             message_id = await loop.run_in_executor(
                 None,
@@ -720,6 +757,7 @@ class EmailAdapter(BasePlatformAdapter):
         file_name: Optional[str] = None,
     ) -> str:
         """Send an email with a file attachment via SMTP."""
+        _raise_if_live_replies_disabled()
         msg = MIMEMultipart()
         msg["From"] = self._address
         msg["To"] = to_addr

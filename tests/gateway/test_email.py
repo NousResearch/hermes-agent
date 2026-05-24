@@ -554,6 +554,74 @@ class TestThreadContext(unittest.TestCase):
         self.assertEqual(ctx["subject"], "Project question")
         self.assertEqual(ctx["message_id"], "<original@test.com>")
 
+
+    def test_live_replies_disabled_drops_inbound_before_dispatch(self):
+        """Inbound email should not create agent turns unless explicitly enabled."""
+        import asyncio
+        adapter = self._make_adapter()
+        called = []
+
+        async def capture(event):
+            called.append(event)
+
+        adapter.handle_message = capture
+        msg_data = {
+            "uid": b"11",
+            "sender_addr": "user@test.com",
+            "sender_name": "User",
+            "subject": "Project question",
+            "message_id": "<original@test.com>",
+            "in_reply_to": "",
+            "body": "Hello",
+            "attachments": [],
+            "date": "",
+        }
+
+        with patch.dict(os.environ, {"EMAIL_ENABLE_LIVE_REPLIES": ""}, clear=False):
+            asyncio.run(adapter._dispatch_message(msg_data))
+
+        self.assertEqual(called, [])
+        self.assertNotIn("user@test.com", adapter._thread_context)
+
+    def test_live_replies_enabled_allows_dispatch(self):
+        """Explicit opt-in preserves the previous inbound email behavior."""
+        import asyncio
+        adapter = self._make_adapter()
+        captured_events = []
+
+        async def capture(event):
+            captured_events.append(event)
+
+        adapter.handle_message = capture
+        msg_data = {
+            "uid": b"12",
+            "sender_addr": "user@test.com",
+            "sender_name": "User",
+            "subject": "Project question",
+            "message_id": "<original@test.com>",
+            "in_reply_to": "",
+            "body": "Hello",
+            "attachments": [],
+            "date": "",
+        }
+
+        with patch.dict(os.environ, {"EMAIL_ENABLE_LIVE_REPLIES": "true"}, clear=False):
+            asyncio.run(adapter._dispatch_message(msg_data))
+
+        self.assertEqual(len(captured_events), 1)
+        self.assertIn("Hello", captured_events[0].text)
+
+    def test_live_replies_disabled_blocks_smtp_send(self):
+        """The adapter must fail closed before SMTP when email replies are disabled."""
+        adapter = self._make_adapter()
+
+        with patch.dict(os.environ, {"EMAIL_ENABLE_LIVE_REPLIES": ""}, clear=False):
+            with patch("smtplib.SMTP") as mock_smtp:
+                with self.assertRaisesRegex(RuntimeError, "live inbound-email replies are disabled"):
+                    adapter._send_email("user@test.com", "No leak")
+
+        mock_smtp.assert_not_called()
+
     def test_reply_uses_re_prefix(self):
         """Reply subject should have Re: prefix."""
         adapter = self._make_adapter()
@@ -562,11 +630,12 @@ class TestThreadContext(unittest.TestCase):
             "message_id": "<original@test.com>",
         }
 
-        with patch("smtplib.SMTP") as mock_smtp:
-            mock_server = MagicMock()
-            mock_smtp.return_value = mock_server
+        with patch.dict(os.environ, {"EMAIL_ENABLE_LIVE_REPLIES": "true"}, clear=False):
+            with patch("smtplib.SMTP") as mock_smtp:
+                mock_server = MagicMock()
+                mock_smtp.return_value = mock_server
 
-            adapter._send_email("user@test.com", "Here is the answer.", None)
+                adapter._send_email("user@test.com", "Here is the answer.", None)
 
             # Check the sent message
             send_call = mock_server.send_message.call_args[0][0]
@@ -583,11 +652,12 @@ class TestThreadContext(unittest.TestCase):
             "message_id": "<reply@test.com>",
         }
 
-        with patch("smtplib.SMTP") as mock_smtp:
-            mock_server = MagicMock()
-            mock_smtp.return_value = mock_server
+        with patch.dict(os.environ, {"EMAIL_ENABLE_LIVE_REPLIES": "true"}, clear=False):
+            with patch("smtplib.SMTP") as mock_smtp:
+                mock_server = MagicMock()
+                mock_smtp.return_value = mock_server
 
-            adapter._send_email("user@test.com", "Follow up.", None)
+                adapter._send_email("user@test.com", "Follow up.", None)
 
             send_call = mock_server.send_message.call_args[0][0]
             self.assertEqual(send_call["Subject"], "Re: Project question")
@@ -597,11 +667,12 @@ class TestThreadContext(unittest.TestCase):
         """Without thread context, subject should be 'Re: Hermes Agent'."""
         adapter = self._make_adapter()
 
-        with patch("smtplib.SMTP") as mock_smtp:
-            mock_server = MagicMock()
-            mock_smtp.return_value = mock_server
+        with patch.dict(os.environ, {"EMAIL_ENABLE_LIVE_REPLIES": "true"}, clear=False):
+            with patch("smtplib.SMTP") as mock_smtp:
+                mock_server = MagicMock()
+                mock_smtp.return_value = mock_server
 
-            adapter._send_email("newuser@test.com", "Hello!", None)
+                adapter._send_email("newuser@test.com", "Hello!", None)
 
             send_call = mock_server.send_message.call_args[0][0]
             self.assertEqual(send_call["Subject"], "Re: Hermes Agent")
@@ -623,18 +694,56 @@ class TestSendMethods(unittest.TestCase):
             adapter = EmailAdapter(PlatformConfig(enabled=True))
         return adapter
 
+
+    def test_send_disabled_blocks_before_smtp(self):
+        """Public send() must fail closed before SMTP when live replies are disabled."""
+        import asyncio
+        adapter = self._make_adapter()
+
+        with patch.dict(os.environ, {"EMAIL_ENABLE_LIVE_REPLIES": ""}, clear=False):
+            with patch("smtplib.SMTP") as mock_smtp:
+                result = asyncio.run(adapter.send("user@test.com", "No leak"))
+
+        self.assertFalse(result.success)
+        self.assertIn("live inbound-email replies are disabled", result.error)
+        mock_smtp.assert_not_called()
+
+    def test_send_document_disabled_blocks_before_smtp(self):
+        """send_document() must fail closed before SMTP when live replies are disabled."""
+        import asyncio
+        import tempfile
+        adapter = self._make_adapter()
+
+        with tempfile.NamedTemporaryFile(suffix=".txt", delete=False) as f:
+            f.write(b"Test document content")
+            tmp_path = f.name
+
+        try:
+            with patch.dict(os.environ, {"EMAIL_ENABLE_LIVE_REPLIES": ""}, clear=False):
+                with patch("smtplib.SMTP") as mock_smtp:
+                    result = asyncio.run(
+                        adapter.send_document("user@test.com", tmp_path, "No leak")
+                    )
+
+            self.assertFalse(result.success)
+            self.assertIn("live inbound-email replies are disabled", result.error)
+            mock_smtp.assert_not_called()
+        finally:
+            os.unlink(tmp_path)
+
     def test_send_calls_smtp(self):
         """send() should use SMTP to deliver email."""
         import asyncio
         adapter = self._make_adapter()
 
-        with patch("smtplib.SMTP") as mock_smtp:
-            mock_server = MagicMock()
-            mock_smtp.return_value = mock_server
+        with patch.dict(os.environ, {"EMAIL_ENABLE_LIVE_REPLIES": "true"}, clear=False):
+            with patch("smtplib.SMTP") as mock_smtp:
+                mock_server = MagicMock()
+                mock_smtp.return_value = mock_server
 
-            result = asyncio.run(
-                adapter.send("user@test.com", "Hello from Hermes!")
-            )
+                result = asyncio.run(
+                    adapter.send("user@test.com", "Hello from Hermes!")
+                )
 
             self.assertTrue(result.success)
             mock_server.starttls.assert_called_once()
@@ -647,12 +756,13 @@ class TestSendMethods(unittest.TestCase):
         import asyncio
         adapter = self._make_adapter()
 
-        with patch("smtplib.SMTP") as mock_smtp:
-            mock_smtp.side_effect = Exception("Connection refused")
+        with patch.dict(os.environ, {"EMAIL_ENABLE_LIVE_REPLIES": "true"}, clear=False):
+            with patch("smtplib.SMTP") as mock_smtp:
+                mock_smtp.side_effect = Exception("Connection refused")
 
-            result = asyncio.run(
-                adapter.send("user@test.com", "Hello")
-            )
+                result = asyncio.run(
+                    adapter.send("user@test.com", "Hello")
+                )
 
             self.assertFalse(result.success)
             self.assertIn("Connection refused", result.error)
@@ -685,13 +795,14 @@ class TestSendMethods(unittest.TestCase):
             tmp_path = f.name
 
         try:
-            with patch("smtplib.SMTP") as mock_smtp:
-                mock_server = MagicMock()
-                mock_smtp.return_value = mock_server
+            with patch.dict(os.environ, {"EMAIL_ENABLE_LIVE_REPLIES": "true"}, clear=False):
+                with patch("smtplib.SMTP") as mock_smtp:
+                    mock_server = MagicMock()
+                    mock_smtp.return_value = mock_server
 
-                result = asyncio.run(
-                    adapter.send_document("user@test.com", tmp_path, "Here is the file")
-                )
+                    result = asyncio.run(
+                        adapter.send_document("user@test.com", tmp_path, "Here is the file")
+                    )
 
                 self.assertTrue(result.success)
                 mock_server.send_message.assert_called_once()

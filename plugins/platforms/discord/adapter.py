@@ -68,6 +68,72 @@ from gateway.platforms.base import (
 from tools.url_safety import is_safe_url
 
 
+DISCORD_QUICK_ACTION_COMMANDS: tuple[str, ...] = (
+    "status", "usage", "help",
+    "model", "agents", "personality",
+    "whoami", "insights", "new",
+    "retry", "undo", "stop",
+    "compress", "fast", "yolo",
+)
+DISCORD_QUICK_ACTION_CONFIRM_COMMANDS: frozenset[str] = frozenset({"stop", "yolo"})
+DISCORD_QUICK_ACTION_PRIMARY_COMMANDS: frozenset[str] = frozenset({
+    "model", "personality", "retry", "compress", "fast",
+})
+def _quick_action_row(command_name: str) -> int:
+    try:
+        return min(DISCORD_QUICK_ACTION_COMMANDS.index(command_name) // 3, 4)
+    except ValueError:
+        return 0
+
+
+def _quick_action_prompt(command_name: str) -> str:
+    prompts = {
+        "new": "Start a fresh Hermes session for this Discord thread?",
+        "undo": "Undo the last user/assistant exchange in this Discord thread?",
+        "stop": "Stop the active Hermes response in this Discord thread?",
+        "yolo": "Enable YOLO mode for this session and skip dangerous-command approvals?",
+    }
+    return prompts.get(command_name, f"Run /{command_name}?")
+
+
+def _load_quick_action_personalities() -> dict[str, Any]:
+    try:
+        from hermes_cli.config import cfg_get, load_config
+
+        personalities = cfg_get(load_config(), "agent", "personalities", default={})
+    except Exception:
+        return {}
+    return personalities if isinstance(personalities, dict) else {}
+
+
+def _quick_action_personality_preview(value: Any) -> str:
+    if isinstance(value, dict):
+        preview = value.get("description") or value.get("system_prompt", "")
+    else:
+        preview = str(value)
+    preview = " ".join(preview.split())
+    return preview[:97] + "..." if len(preview) > 100 else preview
+
+
+async def _dispatch_quick_action_slash(
+    platform: "DiscordAdapter",
+    interaction: discord.Interaction,
+    command_text: str,
+    *,
+    cleanup_response: bool = False,
+) -> None:
+    if not await platform._check_slash_authorization(interaction, command_text):
+        return
+    await interaction.response.defer(ephemeral=True)
+    event = platform._build_slash_event(interaction, command_text)
+    await platform.handle_message(event)
+    if cleanup_response:
+        try:
+            await interaction.delete_original_response()
+        except Exception as e:
+            logger.debug("Discord quick-action cleanup failed: %s", e)
+
+
 def _clean_discord_id(entry: str) -> str:
     """Strip common prefixes from a Discord user ID or username entry.
 
@@ -2960,6 +3026,19 @@ class DiscordAdapter(BasePlatformAdapter):
         async def slash_retry(interaction: discord.Interaction):
             await self._run_simple_slash(interaction, "/retry", "Retrying~")
 
+        @tree.command(name="palette", description="Show Discord quick action palette")
+        async def slash_palette(interaction: discord.Interaction):
+            if not await self._check_slash_authorization(interaction, "/palette"):
+                return
+            await interaction.response.defer(ephemeral=False)
+            await interaction.edit_original_response(
+                content=(
+                    "Hermes Quick Actions\n\n"
+                    "Choose a button below. Sensitive actions ask for confirmation first."
+                ),
+                view=CommandQuickActionsView(self),
+            )
+
         @tree.command(name="undo", description="Remove the last exchange")
         async def slash_undo(interaction: discord.Interaction):
             await self._run_simple_slash(interaction, "/undo")
@@ -5002,6 +5081,206 @@ def _define_discord_view_classes() -> None:
     undefined, causing NameError on the first button interaction.
     """
     global ExecApprovalView, SlashConfirmView, UpdatePromptView, ModelPickerView, ClarifyChoiceView
+    global CommandQuickActionButton, CommandQuickActionsView, QuickActionConfirmView
+    global FastQuickActionView, PersonalityQuickActionView
+
+    def _quick_action_style(command_name: str):
+        if command_name in DISCORD_QUICK_ACTION_CONFIRM_COMMANDS:
+            return discord.ButtonStyle.red
+        if command_name in DISCORD_QUICK_ACTION_PRIMARY_COMMANDS:
+            return discord.ButtonStyle.primary
+        return discord.ButtonStyle.secondary
+
+    class QuickActionConfirmView(discord.ui.View):
+        def __init__(self, platform: "DiscordAdapter", command_name: str):
+            super().__init__(timeout=300)
+            self.platform = platform
+            self.command_name = command_name
+            self.allowed_user_ids = platform._allowed_user_ids
+            self.allowed_role_ids = platform._allowed_role_ids
+            self.resolved = False
+
+        def _check_auth(self, interaction: discord.Interaction) -> bool:
+            return _component_check_auth(interaction, self.allowed_user_ids, self.allowed_role_ids)
+
+        @discord.ui.button(label="Confirm", style=discord.ButtonStyle.red)
+        async def confirm(self, interaction: discord.Interaction, button: discord.ui.Button):
+            if self.resolved:
+                await interaction.response.send_message("This prompt has already been resolved~", ephemeral=True)
+                return
+            if not self._check_auth(interaction):
+                await interaction.response.send_message("You're not authorized to use this action~", ephemeral=True)
+                return
+            self.resolved = True
+            for child in self.children:
+                child.disabled = True
+            await _dispatch_quick_action_slash(
+                self.platform,
+                interaction,
+                f"/{self.command_name}",
+                cleanup_response=True,
+            )
+
+        @discord.ui.button(label="Cancel", style=discord.ButtonStyle.secondary)
+        async def cancel(self, interaction: discord.Interaction, button: discord.ui.Button):
+            if self.resolved:
+                await interaction.response.send_message("This prompt has already been resolved~", ephemeral=True)
+                return
+            if not self._check_auth(interaction):
+                await interaction.response.send_message("You're not authorized to use this action~", ephemeral=True)
+                return
+            self.resolved = True
+            for child in self.children:
+                child.disabled = True
+            await interaction.response.edit_message(content="Quick action cancelled.", view=self)
+
+    class FastQuickActionView(discord.ui.View):
+        def __init__(self, platform: "DiscordAdapter"):
+            super().__init__(timeout=120)
+            self.platform = platform
+            self.allowed_user_ids = platform._allowed_user_ids
+            self.allowed_role_ids = platform._allowed_role_ids
+            select = discord.ui.Select(
+                placeholder="Choose fast mode...",
+                options=[
+                    discord.SelectOption(label="Show current mode", value="status"),
+                    discord.SelectOption(label="Fast / priority", value="fast"),
+                    discord.SelectOption(label="Normal", value="normal"),
+                ],
+                custom_id="hermes:quick-action:fast:select",
+            )
+            select.callback = self._on_selected
+            self.add_item(select)
+
+        def _check_auth(self, interaction: discord.Interaction) -> bool:
+            return _component_check_auth(interaction, self.allowed_user_ids, self.allowed_role_ids)
+
+        async def _on_selected(self, interaction: discord.Interaction):
+            if not self._check_auth(interaction):
+                await interaction.response.send_message("You're not authorized to use this action~", ephemeral=True)
+                return
+            choice = interaction.data["values"][0]
+            await _dispatch_quick_action_slash(
+                self.platform,
+                interaction,
+                f"/fast {choice}",
+                cleanup_response=False,
+            )
+            self.clear_items()
+            await interaction.edit_original_response(
+                content=f"Fast mode action sent: `/fast {choice}`",
+                view=self,
+            )
+
+    class PersonalityQuickActionView(discord.ui.View):
+        def __init__(self, platform: "DiscordAdapter", personalities: Optional[dict[str, Any]] = None):
+            super().__init__(timeout=120)
+            self.platform = platform
+            self.allowed_user_ids = platform._allowed_user_ids
+            self.allowed_role_ids = platform._allowed_role_ids
+            self.personalities = personalities if personalities is not None else _load_quick_action_personalities()
+            options = [
+                discord.SelectOption(
+                    label="None / default",
+                    value="none",
+                    description="Clear the current personality",
+                )
+            ]
+            for name, prompt in list(self.personalities.items())[:24]:
+                options.append(
+                    discord.SelectOption(
+                        label=str(name)[:100],
+                        value=str(name)[:100],
+                        description=_quick_action_personality_preview(prompt) or None,
+                    )
+                )
+            select = discord.ui.Select(
+                placeholder="Choose personality...",
+                options=options,
+                custom_id="hermes:quick-action:personality:select",
+            )
+            select.callback = self._on_selected
+            self.add_item(select)
+
+        def _check_auth(self, interaction: discord.Interaction) -> bool:
+            return _component_check_auth(interaction, self.allowed_user_ids, self.allowed_role_ids)
+
+        async def _on_selected(self, interaction: discord.Interaction):
+            if not self._check_auth(interaction):
+                await interaction.response.send_message("You're not authorized to use this action~", ephemeral=True)
+                return
+            choice = interaction.data["values"][0]
+            await _dispatch_quick_action_slash(
+                self.platform,
+                interaction,
+                f"/personality {choice}",
+                cleanup_response=False,
+            )
+            self.clear_items()
+            await interaction.edit_original_response(
+                content=f"Personality action sent: `/personality {choice}`",
+                view=self,
+            )
+
+    class CommandQuickActionButton(discord.ui.Button):
+        def __init__(self, command_name: str):
+            super().__init__(
+                label=command_name,
+                style=_quick_action_style(command_name),
+                custom_id=f"hermes:quick-action:{command_name}",
+                row=_quick_action_row(command_name),
+            )
+            self.command_name = command_name
+
+        async def callback(self, interaction: discord.Interaction):
+            platform = getattr(self.view, "platform", None)
+            if platform is None:
+                await interaction.response.send_message("Quick actions are unavailable right now.", ephemeral=True)
+                return
+            if self.command_name in DISCORD_QUICK_ACTION_CONFIRM_COMMANDS:
+                await interaction.response.send_message(
+                    _quick_action_prompt(self.command_name),
+                    view=QuickActionConfirmView(platform, self.command_name),
+                    ephemeral=True,
+                )
+                return
+            if self.command_name == "model":
+                await _dispatch_quick_action_slash(
+                    platform,
+                    interaction,
+                    "/model",
+                    cleanup_response=False,
+                )
+                return
+            if self.command_name == "fast":
+                await interaction.response.send_message(
+                    "Choose a fast-mode action:",
+                    view=FastQuickActionView(platform),
+                    ephemeral=True,
+                )
+                return
+            if self.command_name == "personality":
+                if not await platform._check_slash_authorization(interaction, "/personality"):
+                    return
+                await interaction.response.send_message(
+                    "Choose a personality:",
+                    view=PersonalityQuickActionView(platform),
+                    ephemeral=True,
+                )
+                return
+            await _dispatch_quick_action_slash(
+                platform,
+                interaction,
+                f"/{self.command_name}",
+                cleanup_response=False,
+            )
+
+    class CommandQuickActionsView(discord.ui.View):
+        def __init__(self, platform: "DiscordAdapter"):
+            super().__init__(timeout=300)
+            self.platform = platform
+            for command_name in DISCORD_QUICK_ACTION_COMMANDS:
+                self.add_item(CommandQuickActionButton(command_name))
 
     class ExecApprovalView(discord.ui.View):
         """

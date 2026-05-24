@@ -846,6 +846,72 @@ class TestSendVideo:
         connected_adapter._bot.send_video.assert_called_once()
 
     @pytest.mark.asyncio
+    async def test_send_video_passes_probe_metadata_and_thumbnail(
+        self, connected_adapter, tmp_path, monkeypatch
+    ):
+        test_file = tmp_path / "vertical.mp4"
+        test_file.write_bytes(b"\x00\x00\x00\x1c" + b"ftyp" + b"\x00" * 100)
+
+        def fake_run(cmd, **_kwargs):
+            if cmd[0] == "ffprobe":
+                return SimpleNamespace(
+                    returncode=0,
+                    stdout='{ "streams": [{ "width": 1080, "height": 1920, "duration": "3.4" }] }',
+                )
+            if cmd[0] == "ffmpeg":
+                assert any("scale=320:320:force_original_aspect_ratio=decrease" in part for part in cmd)
+                with open(cmd[-1], "wb") as thumb:
+                    thumb.write(b"jpeg-bytes")
+                return SimpleNamespace(returncode=0, stdout="", stderr="")
+            raise AssertionError(f"unexpected command: {cmd}")
+
+        monkeypatch.setattr("gateway.platforms.telegram.subprocess.run", fake_run)
+        mock_msg = MagicMock()
+        mock_msg.message_id = 202
+        connected_adapter._bot.send_video = AsyncMock(return_value=mock_msg)
+
+        result = await connected_adapter.send_video(
+            chat_id="12345",
+            video_path=str(test_file),
+        )
+
+        assert result.success is True
+        call_kwargs = connected_adapter._bot.send_video.call_args.kwargs
+        assert call_kwargs["supports_streaming"] is True
+        assert call_kwargs["width"] == 1080
+        assert call_kwargs["height"] == 1920
+        assert call_kwargs["duration"] == 3
+        assert "thumbnail" in call_kwargs
+        assert call_kwargs["thumbnail"].closed is True
+
+    @pytest.mark.asyncio
+    async def test_send_video_continues_when_probe_tools_fail(
+        self, connected_adapter, tmp_path, monkeypatch
+    ):
+        test_file = tmp_path / "clip.mp4"
+        test_file.write_bytes(b"\x00\x00\x00\x1c" + b"ftyp" + b"\x00" * 100)
+
+        def fake_run(_cmd, **_kwargs):
+            raise FileNotFoundError("ffmpeg/ffprobe not installed")
+
+        monkeypatch.setattr("gateway.platforms.telegram.subprocess.run", fake_run)
+        mock_msg = MagicMock()
+        mock_msg.message_id = 203
+        connected_adapter._bot.send_video = AsyncMock(return_value=mock_msg)
+
+        result = await connected_adapter.send_video(
+            chat_id="12345",
+            video_path=str(test_file),
+        )
+
+        assert result.success is True
+        call_kwargs = connected_adapter._bot.send_video.call_args.kwargs
+        assert call_kwargs["supports_streaming"] is True
+        assert "width" not in call_kwargs
+        assert "height" not in call_kwargs
+        assert "thumbnail" not in call_kwargs
+
+    @pytest.mark.asyncio
     async def test_send_video_file_not_found(self, connected_adapter):
         result = await connected_adapter.send_video(
             chat_id="12345",

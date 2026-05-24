@@ -64,6 +64,14 @@ _NOISY_LOGGERS = (
     "markdown_it",
 )
 
+# Streamable-HTTP MCP clients can emit low-level post-writer errors during
+# transient upstream 503s even when Hermes retries/fails gracefully at the tool
+# layer. Keep those internals out of errors.log; user-visible failures still
+# surface via tools.mcp_tool and tool results.
+_QUIET_TRANSPORT_LOGGERS = {
+    "mcp.client.streamable_http": logging.CRITICAL,
+}
+
 
 # ---------------------------------------------------------------------------
 # Public session context API
@@ -254,6 +262,8 @@ def setup_logging(
     # Suppress noisy third-party loggers.
     for name in _NOISY_LOGGERS:
         logging.getLogger(name).setLevel(logging.WARNING)
+    for name, quiet_level in _QUIET_TRANSPORT_LOGGERS.items():
+        logging.getLogger(name).setLevel(quiet_level)
 
     _logging_initialized = True
     return log_dir
@@ -287,6 +297,8 @@ def setup_verbose_logging() -> None:
     # Keep third-party libraries at WARNING to reduce noise.
     for name in _NOISY_LOGGERS:
         logging.getLogger(name).setLevel(logging.WARNING)
+    for name, quiet_level in _QUIET_TRANSPORT_LOGGERS.items():
+        logging.getLogger(name).setLevel(quiet_level)
     # rex-deploy at INFO for sandbox status.
     logging.getLogger("rex-deploy").setLevel(logging.INFO)
 

@@ -15,6 +15,7 @@ import os
 import tempfile
 import html as _html
 import re
+import subprocess
 from datetime import datetime, timezone
 from typing import Dict, List, Optional, Any
 
@@ -3804,22 +3805,116 @@ class TelegramAdapter(BasePlatformAdapter):
                 reply_to_message_id=reply_to_id,
                 reply_to_mode=self._reply_to_mode
             )
-            with open(video_path, "rb") as f:
-                msg = await self._send_with_dm_topic_reply_anchor_retry(
-                    self._bot.send_video,
-                    {
-                        "chat_id": int(chat_id),
-                        "video": f,
-                        "caption": caption[:1024] if caption else None,
-                        "reply_to_message_id": reply_to_id,
-                        **thread_kwargs,
-                        **self._notification_kwargs(metadata),
-                    },
-                    metadata,
-                    reply_to_id,
-                    "video",
-                    reset_media=lambda: f.seek(0),
+            # Telegram can sometimes infer a poor cover/aspect ratio for freshly
+            # encoded MP4s unless dimensions and thumbnail are supplied explicitly.
+            # Probe the local file and pass width/height/duration so native video
+            # messages preserve vertical 9:16 display in clients.
+            video_kwargs: Dict[str, Any] = {}
+            thumb_path: Optional[str] = None
+            thumb_file = None
+            try:
+                probe = await asyncio.to_thread(
+                    subprocess.run,
+                    [
+                        "ffprobe",
+                        "-v",
+                        "error",
+                        "-select_streams",
+                        "v:0",
+                        "-show_entries",
+                        "stream=width,height,duration",
+                        "-of",
+                        "json",
+                        video_path,
+                    ],
+                    capture_output=True,
+                    text=True,
+                    timeout=10,
                 )
+                if probe.returncode == 0 and probe.stdout:
+                    info = json.loads(probe.stdout)
+                    stream = (info.get("streams") or [{}])[0]
+                    width = int(stream.get("width") or 0)
+                    height = int(stream.get("height") or 0)
+                    try:
+                        duration = float(stream.get("duration") or 0)
+                    except (TypeError, ValueError):
+                        duration = 0
+                    if width > 0 and height > 0:
+                        video_kwargs.update({"width": width, "height": height})
+                    if duration > 0:
+                        video_kwargs["duration"] = int(round(duration))
+
+                fd, thumb_path = tempfile.mkstemp(suffix=".jpg", prefix="telegram_video_thumb_")
+                os.close(fd)
+                thumb = await asyncio.to_thread(
+                    subprocess.run,
+                    [
+                        "ffmpeg",
+                        "-y",
+                        "-hide_banner",
+                        "-loglevel",
+                        "error",
+                        "-ss",
+                        "1",
+                        "-i",
+                        video_path,
+                        "-frames:v",
+                        "1",
+                        "-vf",
+                        "scale=320:320:force_original_aspect_ratio=decrease:flags=lanczos",
+                        thumb_path,
+                    ],
+                    capture_output=True,
+                    text=True,
+                    timeout=20,
+                )
+                if thumb.returncode == 0 and os.path.exists(thumb_path) and os.path.getsize(thumb_path) > 0:
+                    thumb_file = open(thumb_path, "rb")
+                    video_kwargs["thumbnail"] = thumb_file
+                else:
+                    if thumb_path and os.path.exists(thumb_path):
+                        os.unlink(thumb_path)
+                    thumb_path = None
+            except Exception as meta_exc:
+                logger.debug("Failed to prepare Telegram video metadata/thumbnail for %s: %s", video_path, meta_exc)
+                if thumb_path and os.path.exists(thumb_path):
+                    try:
+                        os.unlink(thumb_path)
+                    except OSError:
+                        pass
+                thumb_path = None
+
+            try:
+                with open(video_path, "rb") as f:
+                    msg = await self._send_with_dm_topic_reply_anchor_retry(
+                        self._bot.send_video,
+                        {
+                            "chat_id": int(chat_id),
+                            "video": f,
+                            "caption": caption[:1024] if caption else None,
+                            "reply_to_message_id": reply_to_id,
+                            "supports_streaming": True,
+                            **video_kwargs,
+                            **thread_kwargs,
+                            **self._notification_kwargs(metadata),
+                        },
+                        metadata,
+                        reply_to_id,
+                        "video",
+                        reset_media=lambda: (
+                            f.seek(0),
+                            thumb_file.seek(0) if thumb_file is not None else None,
+                        ),
+                    )
+            finally:
+                if thumb_file is not None:
+                    thumb_file.close()
+                if thumb_path and os.path.exists(thumb_path):
+                    try:
+                        os.unlink(thumb_path)
+                    except OSError:
+                        pass
             return SendResult(success=True, message_id=str(msg.message_id))
         except Exception as e:
             print(f"[{self.name}] Failed to send video: {e}")

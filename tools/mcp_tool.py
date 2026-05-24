@@ -1611,7 +1611,7 @@ class MCPServerTask:
                         self._ready.set()
                         return
 
-                    logger.warning(
+                    logger.info(
                         "MCP server '%s' initial connection failed "
                         "(attempt %d/%d), retrying in %.0fs: %s",
                         self.name, initial_retries,
@@ -1644,7 +1644,7 @@ class MCPServerTask:
                     )
                     return
 
-                logger.warning(
+                logger.info(
                     "MCP server '%s' connection lost (attempt %d/%d), "
                     "reconnecting in %.0fs: %s",
                     self.name, retries, _MAX_RECONNECT_RETRIES,

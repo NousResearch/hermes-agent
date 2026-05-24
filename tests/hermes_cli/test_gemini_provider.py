@@ -584,3 +584,58 @@ class TestVertexAgentInit:
             )
             assert agent.api_mode == "chat_completions"
             assert agent.provider == "gemini-vertex"
+
+
+# ── --provider Flag Resolution ──
+
+class TestVertexProviderFlagResolution:
+    """Regression tests for /model --provider gemini-vertex (and aliases).
+
+    Vertex was originally registered only in the plugin registry
+    (``providers/__init__.py``), which the model picker reads. The
+    ``--provider`` flag handler used ``resolve_provider_full()`` from
+    ``hermes_cli/providers.py``, which only looked at HERMES_OVERLAYS +
+    models.dev + user config — so vertex was unreachable via the flag
+    even though the picker showed it. ``get_provider()`` now falls back
+    to the plugin registry as a final step; these tests pin that.
+    """
+
+    def test_resolves_canonical_name(self):
+        from hermes_cli.providers import resolve_provider_full
+        pdef = resolve_provider_full("gemini-vertex")
+        assert pdef is not None
+        assert pdef.id == "gemini-vertex"
+        assert pdef.source == "plugin"
+
+    def test_resolves_short_alias_vertex(self):
+        from hermes_cli.providers import resolve_provider_full
+        pdef = resolve_provider_full("vertex")
+        assert pdef is not None
+        assert pdef.id == "gemini-vertex"
+
+    def test_resolves_vertex_express_alias(self):
+        from hermes_cli.providers import resolve_provider_full
+        pdef = resolve_provider_full("vertex-express")
+        assert pdef is not None
+        assert pdef.id == "gemini-vertex"
+
+    def test_resolves_vertex_ai_alias(self):
+        from hermes_cli.providers import resolve_provider_full
+        pdef = resolve_provider_full("vertex-ai")
+        assert pdef is not None
+        assert pdef.id == "gemini-vertex"
+
+    def test_carries_express_mode_env_vars(self):
+        """Make sure the resolved ProviderDef has the API-key envs, not the
+        service-account envs that models.dev's google-vertex carries."""
+        from hermes_cli.providers import resolve_provider_full
+        pdef = resolve_provider_full("gemini-vertex")
+        assert pdef is not None
+        assert "VERTEX_API_KEY" in pdef.api_key_env_vars
+        assert pdef.auth_type == "api_key"
+
+    def test_uses_express_mode_base_url(self):
+        from hermes_cli.providers import resolve_provider_full
+        pdef = resolve_provider_full("gemini-vertex")
+        assert pdef is not None
+        assert "aiplatform.googleapis.com" in pdef.base_url

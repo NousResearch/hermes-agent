@@ -31,6 +31,17 @@ logger = logging.getLogger(__name__)
 # -- Hermes overlay ----------------------------------------------------------
 # Hermes-specific metadata that models.dev doesn't provide.
 
+# Maps ProviderProfile.api_mode → ProviderDef.transport. Used by the plugin
+# fallback in get_provider() so that plugin-only profiles register with the
+# right wire format. Keep in sync with agent/transports/.
+_API_MODE_TO_TRANSPORT: Dict[str, str] = {
+    "chat_completions": "openai_chat",
+    "anthropic_messages": "anthropic_messages",
+    "codex_responses": "codex_responses",
+    "bedrock_converse": "bedrock_converse",
+}
+
+
 @dataclass(frozen=True)
 class HermesOverlay:
     """Hermes-specific provider metadata layered on top of models.dev."""
@@ -472,6 +483,31 @@ def get_provider(name: str) -> Optional[ProviderDef]:
             auth_type=overlay.auth_type,
             source="hermes",
         )
+
+    # Last resort: consult the plugin provider registry (providers/__init__.py).
+    # Plugin-only profiles (e.g. gemini-vertex registered by
+    # plugins/model-providers/gemini/__init__.py) live there and are not
+    # mirrored into HERMES_OVERLAYS, so without this fallback the
+    # ``--provider <plugin-name>`` flag handler can't resolve them even
+    # though the model picker can.
+    try:
+        from providers import get_provider_profile
+        profile = get_provider_profile(canonical)
+        if profile is not None:
+            transport = _API_MODE_TO_TRANSPORT.get(
+                profile.api_mode, "openai_chat"
+            )
+            return ProviderDef(
+                id=profile.name,
+                name=profile.display_name or profile.name,
+                transport=transport,
+                api_key_env_vars=tuple(profile.env_vars),
+                base_url=profile.base_url,
+                auth_type=profile.auth_type,
+                source="plugin",
+            )
+    except Exception as exc:
+        logger.debug("plugin registry lookup failed for %s: %s", canonical, exc)
 
     return None
 

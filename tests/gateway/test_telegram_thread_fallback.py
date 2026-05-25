@@ -420,7 +420,7 @@ async def test_send_retries_transient_thread_not_found_before_fallback():
     adapter._bot = SimpleNamespace(send_message=mock_send_message)
 
     result = await adapter.send(
-        chat_id="123",
+        chat_id="-100123",
         content="test message",
         metadata={"thread_id": "99999"},
     )

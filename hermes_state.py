@@ -1542,6 +1542,34 @@ class SessionDB:
 
         return self._execute_write(_do)
 
+    def update_message_content(
+        self,
+        message_id: int,
+        content: Any,
+        *,
+        session_id: Optional[str] = None,
+        role: Optional[str] = None,
+    ) -> bool:
+        """Update a single message's content without rewriting the transcript."""
+        stored_content = self._encode_content(content)
+
+        def _do(conn):
+            clauses = ["id = ?"]
+            params = [message_id]
+            if session_id is not None:
+                clauses.append("session_id = ?")
+                params.append(session_id)
+            if role is not None:
+                clauses.append("role = ?")
+                params.append(role)
+            cursor = conn.execute(
+                f"UPDATE messages SET content = ? WHERE {' AND '.join(clauses)}",
+                (stored_content, *params),
+            )
+            return cursor.rowcount > 0
+
+        return self._execute_write(_do)
+
     def replace_messages(self, session_id: str, messages: List[Dict[str, Any]]) -> None:
         """Atomically replace every message for a session.
 

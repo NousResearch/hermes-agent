@@ -2192,6 +2192,75 @@ def _content_display_text(content: Any) -> str:
     return str(content)
 
 
+def _replace_session_messages_best_effort(
+    session_key: str,
+    messages: list[dict],
+    *,
+    model: str | None = None,
+) -> bool:
+    """Best-effort durable final transcript rewrite for TUI-owned sessions."""
+    if not session_key:
+        return False
+    db = _get_db()
+    if db is None:
+        return False
+    try:
+        db.create_session(session_id=session_key, source="tui", model=model)
+        db.replace_messages(session_key, messages)
+        return True
+    except Exception:
+        logger.debug("TUI session transcript rewrite failed", exc_info=True)
+        return False
+
+
+def _append_session_message_best_effort(
+    session_key: str,
+    role: str,
+    content: Any,
+    *,
+    model: str | None = None,
+) -> int | None:
+    """Best-effort append of one in-flight TUI message row."""
+    if not session_key:
+        return None
+    db = _get_db()
+    if db is None:
+        return None
+    try:
+        db.create_session(session_id=session_key, source="tui", model=model)
+        return db.append_message(session_key, role=role, content=content)
+    except Exception:
+        logger.debug("TUI session message append failed", exc_info=True)
+        return None
+
+
+def _update_session_message_content_best_effort(
+    session_key: str,
+    message_id: int | None,
+    content: Any,
+    *,
+    role: str | None = None,
+) -> bool:
+    """Best-effort update of one in-flight TUI message row."""
+    if not session_key or message_id is None:
+        return False
+    db = _get_db()
+    if db is None or not hasattr(db, "update_message_content"):
+        return False
+    try:
+        return bool(
+            db.update_message_content(
+                message_id,
+                content,
+                session_id=session_key,
+                role=role,
+            )
+        )
+    except Exception:
+        logger.debug("TUI session message update failed", exc_info=True)
+        return False
+
+
 def _history_to_messages(history: list[dict]) -> list[dict]:
     messages = []
     tool_call_args = {}
@@ -3387,11 +3456,57 @@ def _run_prompt_submit(rid, sid: str, session: dict, text: Any) -> None:
                 else:
                     run_message = _enrich_with_attached_images(prompt, images)
 
+            persist_session_key = session.get("session_key") or getattr(agent, "session_id", "") or sid
+            persist_model = getattr(agent, "model", None) or None
+            _append_session_message_best_effort(
+                persist_session_key,
+                "user",
+                run_message,
+                model=persist_model,
+            )
+            stream_chunks: list[str] = []
+            stream_last_persist = 0.0
+            stream_assistant_msg_id: int | None = None
+            stream_persist_interval_s = 2.0
+
+            def _persist_stream_snapshot(force: bool = False) -> None:
+                nonlocal stream_assistant_msg_id, stream_last_persist
+                if not stream_chunks:
+                    return
+                now = time.monotonic()
+                if (
+                    not force
+                    and stream_assistant_msg_id is not None
+                    and now - stream_last_persist < stream_persist_interval_s
+                ):
+                    return
+                partial_text = "".join(stream_chunks)
+                current_key = session.get("session_key") or getattr(agent, "session_id", "") or sid
+                if stream_assistant_msg_id is None:
+                    stream_assistant_msg_id = _append_session_message_best_effort(
+                        current_key,
+                        "assistant",
+                        partial_text,
+                        model=persist_model,
+                    )
+                else:
+                    _update_session_message_content_best_effort(
+                        current_key,
+                        stream_assistant_msg_id,
+                        partial_text,
+                        role="assistant",
+                    )
+                stream_last_persist = now
+
             def _stream(delta):
                 payload = {"text": delta}
                 if streamer and (r := streamer.feed(delta)) is not None:
                     payload["rendered"] = r
                 _emit("message.delta", sid, payload)
+
+                if delta:
+                    stream_chunks.append(str(delta))
+                    _persist_stream_snapshot()
 
             result = agent.run_conversation(
                 run_message,
@@ -3401,13 +3516,16 @@ def _run_prompt_submit(rid, sid: str, session: dict, text: Any) -> None:
 
             last_reasoning = None
             status_note = None
+            result_messages_persistable = False
             if isinstance(result, dict):
-                if isinstance(result.get("messages"), list):
+                result_messages = result.get("messages")
+                if isinstance(result_messages, list):
                     with session["history_lock"]:
                         current_version = int(session.get("history_version", 0))
                         if current_version == history_version:
-                            session["history"] = result["messages"]
+                            session["history"] = result_messages
                             session["history_version"] = history_version + 1
+                            result_messages_persistable = True
                         else:
                             # History mutated externally during the turn
                             # (undo/compress/retry/rollback now guard on
@@ -3437,6 +3555,16 @@ def _run_prompt_submit(rid, sid: str, session: dict, text: Any) -> None:
                 _sync_session_key_after_compress(
                     sid, session, clear_pending_title=False, restart_slash_worker=True,
                 )
+                if result_messages_persistable:
+                    _replace_session_messages_best_effort(
+                        session.get("session_key")
+                        or getattr(agent, "session_id", "")
+                        or sid,
+                        result_messages,
+                        model=persist_model,
+                    )
+                else:
+                    _persist_stream_snapshot(force=True)
 
                 raw = result.get("final_response", "")
                 status = (

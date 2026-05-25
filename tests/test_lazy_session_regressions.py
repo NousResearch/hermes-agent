@@ -49,6 +49,172 @@ def _tui_session(agent=None, session_key="session-key-old", **extra):
 
 
 # ===========================================================================
+# Dashboard Chat: in-flight turn survives PTY/dashboard restart
+# ===========================================================================
+
+class TestPromptSubmitPersistsInflightTurn:
+    """Dashboard /chat runs the TUI behind a PTY.  If that PTY is closed
+    while a model response is still streaming, resume can only hydrate what
+    has already reached the session DB.  The gateway therefore needs to keep
+    an in-flight user+partial-assistant snapshot durable during streaming,
+    not only after run_conversation() returns."""
+
+    def test_stream_callback_persists_user_and_partial_assistant_snapshot(self, tmp_path, monkeypatch):
+        from tui_gateway import server
+
+        db = _make_session_db(tmp_path)
+        db.create_session(session_id="test-session", source="tui", model="test/model")
+        observed = {}
+
+        class _StreamingAgent:
+            session_id = "test-session"
+            model = "test/model"
+            _cached_system_prompt = ""
+
+            def run_conversation(self, prompt, conversation_history=None, stream_callback=None):
+                assert conversation_history == []
+                stream_callback("partial answer")
+                observed["during_stream"] = db.get_messages_as_conversation("test-session")
+                return {
+                    "final_response": "partial answer done",
+                    "messages": [
+                        {"role": "user", "content": prompt},
+                        {"role": "assistant", "content": "partial answer done"},
+                    ],
+                }
+
+        session = _tui_session(agent=_StreamingAgent(), session_key="test-session")
+
+        monkeypatch.setattr(server, "_get_db", lambda: db)
+        monkeypatch.setattr(server, "_emit", lambda *a, **kw: None)
+        monkeypatch.setattr(server, "make_stream_renderer", lambda cols: None)
+        monkeypatch.setattr(server, "render_message", lambda raw, cols: None)
+        monkeypatch.setattr(
+            server, "_sync_session_key_after_compress", lambda *a, **kw: None
+        )
+
+        class _ImmediateThread:
+            def __init__(self, target=None, daemon=None, **kw):
+                self._target = target
+
+            def start(self):
+                self._target()
+
+        server._sessions["sid"] = session
+        monkeypatch.setattr(server.threading, "Thread", _ImmediateThread)
+
+        try:
+            server.handle_request({
+                "id": "1",
+                "method": "prompt.submit",
+                "params": {"session_id": "sid", "text": "hello"},
+            })
+        finally:
+            server._sessions.pop("sid", None)
+
+        assert observed["during_stream"] == [
+            {"role": "user", "content": "hello"},
+            {"role": "assistant", "content": "partial answer"},
+        ]
+
+        assert db.get_messages_as_conversation("test-session") == [
+            {"role": "user", "content": "hello"},
+            {"role": "assistant", "content": "partial answer done"},
+        ]
+
+    def test_streaming_persistence_does_not_rewrite_full_history_per_delta(self, tmp_path, monkeypatch):
+        """Long streaming turns must not repeatedly DELETE+reinsert the
+        whole transcript.  A full replace touches every historical message and
+        all FTS rows; doing that once per streamed chunk would create visible DB
+        pressure on long sessions."""
+        from hermes_state import SessionDB
+        from tui_gateway import server
+
+        class _CountingDB(SessionDB):
+            def __init__(self, db_path):
+                super().__init__(db_path=db_path)
+                self.replace_calls = 0
+
+            def replace_messages(self, session_id, messages):
+                self.replace_calls += 1
+                return super().replace_messages(session_id, messages)
+
+        db = _CountingDB(tmp_path / "test_state.db")
+        db.create_session(session_id="test-session", source="tui", model="test/model")
+        history = []
+        for i in range(60):
+            history.extend([
+                {"role": "user", "content": f"user {i}"},
+                {"role": "assistant", "content": f"assistant {i}"},
+            ])
+        db.replace_messages("test-session", history)
+        db.replace_calls = 0
+        observed = {}
+
+        class _StreamingAgent:
+            session_id = "test-session"
+            model = "test/model"
+            _cached_system_prompt = ""
+
+            def run_conversation(self, prompt, conversation_history=None, stream_callback=None):
+                for chunk in ["a", "b", "c", "d", "e"]:
+                    stream_callback(chunk)
+                observed["during_stream"] = db.get_messages_as_conversation("test-session")
+                return {
+                    "final_response": "abcde",
+                    "messages": [
+                        *conversation_history,
+                        {"role": "user", "content": prompt},
+                        {"role": "assistant", "content": "abcde"},
+                    ],
+                }
+
+        session = _tui_session(
+            agent=_StreamingAgent(),
+            session_key="test-session",
+            history=history,
+        )
+
+        monotonic_values = iter([0, 1, 2, 3, 4])
+        monkeypatch.setattr(server.time, "monotonic", lambda: next(monotonic_values))
+        monkeypatch.setattr(server, "_get_db", lambda: db)
+        monkeypatch.setattr(server, "_emit", lambda *a, **kw: None)
+        monkeypatch.setattr(server, "make_stream_renderer", lambda cols: None)
+        monkeypatch.setattr(server, "render_message", lambda raw, cols: None)
+        monkeypatch.setattr(
+            server, "_sync_session_key_after_compress", lambda *a, **kw: None
+        )
+
+        class _ImmediateThread:
+            def __init__(self, target=None, daemon=None, **kw):
+                self._target = target
+
+            def start(self):
+                self._target()
+
+        server._sessions["sid"] = session
+        monkeypatch.setattr(server.threading, "Thread", _ImmediateThread)
+
+        try:
+            server.handle_request({
+                "id": "1",
+                "method": "prompt.submit",
+                "params": {"session_id": "sid", "text": "hello"},
+            })
+        finally:
+            server._sessions.pop("sid", None)
+
+        assert observed["during_stream"][-2:] == [
+            {"role": "user", "content": "hello"},
+            {"role": "assistant", "content": "abcde"},
+        ]
+        assert db.replace_calls <= 1, (
+            "streaming persistence should update only the in-flight assistant row; "
+            f"full transcript rewrites during one turn: {db.replace_calls}"
+        )
+
+
+# ===========================================================================
 # Bug #20001: _finalize_session uses stale session_key
 # ===========================================================================
 

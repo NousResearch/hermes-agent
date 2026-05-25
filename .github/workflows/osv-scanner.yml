@@ -56,7 +56,7 @@ permissions:
 jobs:
   scan:
     name: Scan lockfiles
-    uses: google/osv-scanner-action/.github/workflows/osv-scanner-reusable.yml@c51854704019a247608d928f370c98740469d4b5  # v2.3.5
+    uses: google/osv-scanner-action/.github/workflows/osv-scanner-reusable.yml@9a498708959aeaef5ef730655706c5a1df1edbc2  # v2.3.8
     with:
       # Scan explicit lockfiles rather than recursing, so we only look at
       # the three sources of truth and skip vendored / test / worktree dirs.

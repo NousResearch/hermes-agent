@@ -21,7 +21,7 @@ Configure, extend, or contribute to Hermes Agent.
 | License | MIT |
 | Platforms | linux, macos, windows |
 | Tags | `hermes`, `setup`, `configuration`, `multi-agent`, `spawning`, `cli`, `gateway`, `development` |
-| Related skills | [`claude-code`](/docs/user-guide/skills/bundled/autonomous-ai-agents/autonomous-ai-agents-claude-code), [`codex`](/docs/user-guide/skills/bundled/autonomous-ai-agents/autonomous-ai-agents-codex), [`opencode`](/docs/user-guide/skills/bundled/autonomous-ai-agents/autonomous-ai-agents-opencode) |
+| Related skills | [`claude-code`](/user-guide/skills/bundled/autonomous-ai-agents/autonomous-ai-agents-claude-code), [`codex`](/user-guide/skills/bundled/autonomous-ai-agents/autonomous-ai-agents-codex), [`opencode`](/user-guide/skills/bundled/autonomous-ai-agents/autonomous-ai-agents-opencode) |
 
 ## Reference: full SKILL.md
 
@@ -697,19 +697,24 @@ User docs: https://hermes-agent.nousresearch.com/docs/user-guide/features/curato
 
 Durable SQLite board for multi-profile / multi-worker collaboration.
 Users drive it via `hermes kanban <verb>`; dispatcher-spawned workers
-see a focused `kanban_*` toolset gated by `HERMES_KANBAN_TASK` so the
-schema footprint is zero outside worker processes.
+see a focused `kanban_*` toolset gated by `HERMES_KANBAN_TASK`, and
+orchestrator profiles can opt into the broader `kanban` toolset. Normal
+sessions still have zero `kanban_*` schema footprint unless configured.
 
 - **CLI verbs (common):** `init`, `create`, `list` (alias `ls`),
   `show`, `assign`, `link`, `unlink`, `comment`, `complete`, `block`,
   `unblock`, `archive`, `tail`. Less common: `watch`, `stats`, `runs`,
   `log`, `dispatch`, `daemon`, `gc`.
-- **Worker toolset:** `kanban_show`, `kanban_complete`, `kanban_block`,
-  `kanban_heartbeat`, `kanban_comment`, `kanban_create`, `kanban_link`.
+- **Worker/orchestrator toolset:** `kanban_show`, `kanban_complete`,
+  `kanban_block`, `kanban_heartbeat`, `kanban_comment`, `kanban_create`,
+  `kanban_link`; profiles that explicitly enable the `kanban` toolset
+  outside a dispatcher-spawned task also get `kanban_list` and
+  `kanban_unblock` for board routing.
 - **Dispatcher** runs inside the gateway by default
   (`kanban.dispatch_in_gateway: true`) — reclaims stale claims,
   promotes ready tasks, atomically claims, spawns assigned profiles.
-  Auto-blocks a task after ~5 consecutive spawn failures.
+  Auto-blocks a task after the configured `kanban.failure_limit`
+  consecutive non-success attempts (default: 2).
 - **Isolation:** board is the hard boundary (workers get
   `HERMES_KANBAN_BOARD` pinned in env); tenant is a soft namespace
   within a board for workspace-path + memory-key isolation.
@@ -853,7 +858,7 @@ Common gateway problems:
 - **Windows-specific issues** (`Alt+Enter` newline, WinError 10106, UTF-8 BOM config, test suite, line endings): see the dedicated **Windows-Specific Quirks** section above.
 
 ### Auxiliary models not working
-If `auxiliary` tasks (vision, compression, session_search) fail silently, the `auto` provider can't find a backend. Either set `OPENROUTER_API_KEY` or `GOOGLE_API_KEY`, or explicitly configure each auxiliary task's provider:
+If `auxiliary` tasks (vision, compression) fail silently, the `auto` provider can't find a backend. Either set `OPENROUTER_API_KEY` or `GOOGLE_API_KEY`, or explicitly configure each auxiliary task's provider:
 ```bash
 hermes config set auxiliary.vision.provider <your_provider>
 hermes config set auxiliary.vision.model <model_name>

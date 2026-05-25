@@ -1,6 +1,6 @@
 ---
 title: Browser Automation
-description: Control browsers with multiple providers, local Chrome via CDP, or cloud browsers for web interaction, form filling, scraping, and more.
+description: Control browsers with multiple providers, local Chromium-family browsers via CDP, or cloud browsers for web interaction, form filling, scraping, and more.
 sidebar_label: Browser
 sidebar_position: 5
 ---
@@ -13,7 +13,7 @@ Hermes Agent includes a full browser automation toolset with multiple backend op
 - **Browser Use cloud mode** via [Browser Use](https://browser-use.com) as an alternative cloud browser provider
 - **Firecrawl cloud mode** via [Firecrawl](https://firecrawl.dev) for cloud browsers with built-in scraping
 - **Camofox local mode** via [Camofox](https://github.com/jo-inc/camofox-browser) for local anti-detection browsing (Firefox-based fingerprint spoofing)
-- **Local Chrome via CDP** — connect browser tools to your own Chrome instance using `/browser connect`
+- **Local Chromium-family CDP** — connect browser tools to your own Chrome, Brave, Chromium, or Edge instance using `/browser connect`
 - **Local browser mode** via the `agent-browser` CLI and a local Chromium installation
 
 In all modes, the agent can navigate websites, interact with page elements, fill forms, and extract information.
@@ -25,7 +25,7 @@ Pages are represented as **accessibility trees** (text-based snapshots), making 
 Key capabilities:
 
 - **Multi-provider cloud execution** — Browserbase, Browser Use, or Firecrawl — no local browser needed
-- **Local Chrome integration** — attach to your running Chrome via CDP for hands-on browsing
+- **Local Chromium-family integration** — attach to your running Chrome, Brave, Chromium, or Edge browser via CDP for hands-on browsing
 - **Built-in stealth** — random fingerprints, CAPTCHA solving, residential proxies (Browserbase)
 - **Session isolation** — each task gets its own browser session
 - **Automatic cleanup** — inactive sessions are closed after a timeout
@@ -34,7 +34,7 @@ Key capabilities:
 ## Setup
 
 :::tip Nous Subscribers
-If you have a paid [Nous Portal](https://portal.nousresearch.com) subscription, you can use browser automation through the **[Tool Gateway](tool-gateway.md)** without any separate API keys. Run `hermes model` or `hermes tools` to enable it.
+If you have a paid [Nous Portal](https://portal.nousresearch.com) subscription, you can use browser automation through the **[Tool Gateway](tool-gateway.md)** without any separate API keys. New installs can run `hermes setup --portal` to log in and turn on every gateway tool at once; existing installs can pick **Nous Subscription** as the browser provider via `hermes model` or `hermes tools`.
 :::
 
 ### Browserbase cloud mode
@@ -285,9 +285,9 @@ Adoption only fires until `tab_id` is populated for the session. If the external
 
 When Camofox runs in headed mode (with a visible browser window), it exposes a VNC port in its health check response. Hermes automatically discovers this and includes the VNC URL in navigation responses, so the agent can share a link for you to watch the browser live.
 
-### Local Chrome via CDP (`/browser connect`)
+### Local Chromium-family browser via CDP (`/browser connect`)
 
-Instead of a cloud provider, you can attach Hermes browser tools to your own running Chrome instance via the Chrome DevTools Protocol (CDP). This is useful when you want to see what the agent is doing in real-time, interact with pages that require your own cookies/sessions, or avoid cloud browser costs.
+Instead of a cloud provider, you can attach Hermes browser tools to your own running Chrome, Brave, Chromium, or Edge instance via the Chrome DevTools Protocol (CDP). This is useful when you want to see what the agent is doing in real-time, interact with pages that require your own cookies/sessions, or avoid cloud browser costs.
 
 :::note
 `/browser connect` is an **interactive-CLI slash command** — it is not dispatched by the gateway. If you try to run it inside a WebUI, Telegram, Discord, or other gateway chat, the message will be sent to the agent as plain text and the command will not execute. Start Hermes from the terminal (`hermes` or `hermes chat`) and issue `/browser connect` there.
@@ -296,26 +296,40 @@ Instead of a cloud provider, you can attach Hermes browser tools to your own run
 In the CLI, use:
 
 ```
-/browser connect              # Connect to Chrome at ws://localhost:9222
+/browser connect                 # Auto-launch/connect to a local Chromium-family browser at http://127.0.0.1:9222
 /browser connect ws://host:port  # Connect to a specific CDP endpoint
-/browser status               # Check current connection
-/browser disconnect            # Detach and return to cloud/local mode
+/browser status                  # Check current connection
+/browser disconnect              # Detach and return to cloud/local mode
 ```
 
-If Chrome isn't already running with remote debugging, Hermes will attempt to auto-launch it with `--remote-debugging-port=9222`.
+If a browser isn't already running with remote debugging, Hermes will attempt to auto-launch a supported Chromium-family browser with `--remote-debugging-port=9222`. Detection includes Brave, Google Chrome, Chromium, and Microsoft Edge, with common Linux install paths such as `/opt/brave-bin/brave` and `/snap/bin/brave`.
 
 :::tip
-To start Chrome manually with CDP enabled, use a dedicated user-data-dir so the debug port actually comes up even if Chrome is already running with your normal profile:
+To start a Chromium-family browser manually with CDP enabled, use a dedicated user-data-dir so the debug port actually comes up even if the browser is already running with your normal profile:
 
 ```bash
-# Linux
+# Linux — Brave
+brave-browser \
+  --remote-debugging-port=9222 \
+  --user-data-dir=$HOME/.hermes/chrome-debug \
+  --no-first-run \
+  --no-default-browser-check &
+
+# Linux — Google Chrome
 google-chrome \
   --remote-debugging-port=9222 \
   --user-data-dir=$HOME/.hermes/chrome-debug \
   --no-first-run \
   --no-default-browser-check &
 
-# macOS
+# macOS — Brave
+"/Applications/Brave Browser.app/Contents/MacOS/Brave Browser" \
+  --remote-debugging-port=9222 \
+  --user-data-dir="$HOME/.hermes/chrome-debug" \
+  --no-first-run \
+  --no-default-browser-check &
+
+# macOS — Google Chrome
 "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" \
   --remote-debugging-port=9222 \
   --user-data-dir="$HOME/.hermes/chrome-debug" \
@@ -325,10 +339,10 @@ google-chrome \
 
 Then launch the Hermes CLI and run `/browser connect`.
 
-**Why `--user-data-dir`?** Without it, launching Chrome while a regular Chrome instance is already running typically opens a new window on the existing process — and that existing process was not started with `--remote-debugging-port`, so port 9222 never opens. A dedicated user-data-dir forces a fresh Chrome process where the debug port actually listens. `--no-first-run --no-default-browser-check` skips the first-launch wizard for the fresh profile.
+**Why `--user-data-dir`?** Without it, launching a Chromium-family browser while a regular instance is already running typically opens a new window on the existing process — and that existing process was not started with `--remote-debugging-port`, so port 9222 never opens. A dedicated user-data-dir forces a fresh browser process where the debug port actually listens. `--no-first-run --no-default-browser-check` skips the first-launch wizard for the fresh profile.
 :::
 
-When connected via CDP, all browser tools (`browser_navigate`, `browser_click`, etc.) operate on your live Chrome instance instead of spinning up a cloud session.
+When connected via CDP, all browser tools (`browser_navigate`, `browser_click`, etc.) operate on your live browser instance instead of spinning up a cloud session.
 
 ### WSL2 + Windows Chrome: prefer MCP over `/browser connect`
 
@@ -368,6 +382,13 @@ BROWSERBASE_SESSION_TIMEOUT=600000
 
 # Inactivity timeout before auto-cleanup in seconds (default: 120)
 BROWSER_INACTIVITY_TIMEOUT=120
+
+# Extra Chromium launch flags (comma- or newline-separated). Hermes auto-injects
+# `--no-sandbox,--disable-dev-shm-usage` when it detects root or AppArmor-restricted
+# unprivileged user namespaces (Ubuntu 23.10+, DGX Spark, many container images),
+# so most users don't need to set this. Set it manually only if you need a flag
+# Hermes doesn't add automatically; setting it disables the auto-injection.
+AGENT_BROWSER_ARGS=--no-sandbox
 ```
 
 ### Install agent-browser CLI
@@ -482,7 +503,7 @@ When a CDP supervisor is active for the current session (typical for any session
 
 Raw Chrome DevTools Protocol passthrough — the escape hatch for browser operations not covered by the other tools. Use for native dialog handling, iframe-scoped evaluation, cookie/network control, or any CDP verb the agent needs.
 
-**Only available when a CDP endpoint is reachable at session start** — meaning `/browser connect` has attached to a running Chrome, or `browser.cdp_url` is set in `config.yaml`. The default local agent-browser mode, Camofox, and cloud providers (Browserbase, Browser Use, Firecrawl) do not currently expose CDP to this tool — cloud providers have per-session CDP URLs but live-session routing is a follow-up.
+**Only available when a CDP endpoint is reachable at session start** — meaning `/browser connect` has attached to a running Chrome, Brave, Chromium, or Edge browser, or `browser.cdp_url` is set in `config.yaml`. The default local agent-browser mode, Camofox, and cloud providers (Browserbase, Browser Use, Firecrawl) do not currently expose CDP to this tool — cloud providers have per-session CDP URLs but live-session routing is a follow-up.
 
 **CDP method reference:** https://chromedevtools.github.io/devtools-protocol/ — the agent can `web_extract` a specific method's page to look up parameters and return shape.
 

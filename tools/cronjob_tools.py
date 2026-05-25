@@ -21,12 +21,14 @@ logger = logging.getLogger(__name__)
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from cron.jobs import (
+    AmbiguousJobReference,
     create_job,
     get_job,
     list_jobs,
     parse_schedule,
     pause_job,
     remove_job,
+    resolve_job_ref,
     resume_job,
     trigger_job,
     update_job,
@@ -68,6 +70,49 @@ _CRON_INVISIBLE_CHARS = {
     '\u202a', '\u202b', '\u202c', '\u202d', '\u202e',
 }
 
+# U+200D Zero-Width Joiner is also a legitimate, required part of many
+# Unicode emoji sequences (for example 👨‍👩‍👧, 🏳️‍🌈, ❤️‍🩹, 🧑‍💻).
+# We should still block ZWJ when it is hiding between plain text characters,
+# but not when it is clearly part of an emoji grapheme cluster.
+_EMOJI_NEIGHBOUR_CP_RANGES = (
+    (0x1F000, 0x1FFFF),
+    (0x2600, 0x27BF),
+    (0x2300, 0x23FF),
+    (0x1F1E6, 0x1F1FF),
+    (0x20E3, 0x20E3),
+)
+_VARIATION_SELECTOR_CP = 0xFE0F
+
+
+def _is_emoji_cp(cp: int) -> bool:
+    return any(lo <= cp <= hi for lo, hi in _EMOJI_NEIGHBOUR_CP_RANGES)
+
+
+def _zwj_has_emoji_neighbour(text: str, idx: int) -> bool:
+    """Return True when the ZWJ at text[idx] appears inside an emoji sequence."""
+    left = idx - 1
+    while left >= 0 and ord(text[left]) == _VARIATION_SELECTOR_CP:
+        left -= 1
+    right = idx + 1
+    while right < len(text) and ord(text[right]) == _VARIATION_SELECTOR_CP:
+        right += 1
+    return (
+        left >= 0 and right < len(text)
+        and _is_emoji_cp(ord(text[left]))
+        and _is_emoji_cp(ord(text[right]))
+    )
+
+
+def _strip_legitimate_emoji_zwj(prompt: str) -> str:
+    if '\u200d' not in prompt:
+        return prompt
+    cleaned: list[str] = []
+    for idx, ch in enumerate(prompt):
+        if ch == '\u200d' and _zwj_has_emoji_neighbour(prompt, idx):
+            continue
+        cleaned.append(ch)
+    return ''.join(cleaned)
+
 
 def _scan_cron_prompt(prompt: str) -> str:
     """Scan a cron prompt for critical threats. Returns error string if blocked, else empty."""
@@ -82,8 +127,9 @@ def _scan_cron_prompt(prompt: str) -> str:
         # Allow the bundled GitHub skill fallback shape without opening a
         # blanket exemption for arbitrary Authorization-header exfiltration.
         prompt_to_scan = prompt.replace(github_auth_header.group(0), "curl https://api.github.com/user")
+    prompt_for_invisible_scan = _strip_legitimate_emoji_zwj(prompt_to_scan)
     for char in _CRON_INVISIBLE_CHARS:
-        if char in prompt_to_scan:
+        if char in prompt_for_invisible_scan:
             return f"Blocked: prompt contains invisible unicode U+{ord(char):04X} (possible injection)."
     for pattern, pid in _CRON_THREAT_PATTERNS:
         if re.search(pattern, prompt_to_scan, re.IGNORECASE):
@@ -279,6 +325,8 @@ def _format_job(job: Dict[str, Any]) -> Dict[str, Any]:
         result["enabled_toolsets"] = job["enabled_toolsets"]
     if job.get("workdir"):
         result["workdir"] = job["workdir"]
+    if job.get("profile"):
+        result["profile"] = job["profile"]
     return result
 
 
@@ -301,6 +349,7 @@ def cronjob(
     context_from: Optional[Union[str, List[str]]] = None,
     enabled_toolsets: Optional[List[str]] = None,
     workdir: Optional[str] = None,
+    profile: Optional[str] = None,
     no_agent: Optional[bool] = None,
     task_id: str = None,
 ) -> str:
@@ -367,6 +416,7 @@ def cronjob(
                 context_from=context_from,
                 enabled_toolsets=enabled_toolsets or None,
                 workdir=_normalize_optional_job_value(workdir),
+                profile=_normalize_optional_job_value(profile),
                 no_agent=_no_agent,
             )
             return json.dumps(
@@ -393,12 +443,32 @@ def cronjob(
         if not job_id:
             return tool_error(f"job_id is required for action '{normalized}'", success=False)
 
-        job = get_job(job_id)
-        if not job:
+        try:
+            job = resolve_job_ref(job_id)
+        except AmbiguousJobReference as exc:
             return json.dumps(
-                {"success": False, "error": f"Job with ID '{job_id}' not found. Use cronjob(action='list') to inspect jobs."},
+                {
+                    "success": False,
+                    "error": str(exc),
+                    "matches": [
+                        {
+                            "id": m["id"],
+                            "name": m.get("name"),
+                            "schedule": m.get("schedule_display"),
+                            "next_run_at": m.get("next_run_at"),
+                        }
+                        for m in exc.matches
+                    ],
+                },
                 indent=2,
             )
+        if not job:
+            return json.dumps(
+                {"success": False, "error": f"Job with ID or name '{job_id}' not found. Use cronjob(action='list') to inspect jobs."},
+                indent=2,
+            )
+        # Resolve to canonical ID (supports name-based lookup)
+        job_id = job["id"]
 
         if normalized == "remove":
             removed = remove_job(job_id)
@@ -481,6 +551,10 @@ def cronjob(
                 # Empty string clears the field (restores old behaviour);
                 # otherwise pass raw — update_job() validates / normalizes.
                 updates["workdir"] = _normalize_optional_job_value(workdir) or None
+            if profile is not None:
+                # Empty string clears the field (restores old behaviour);
+                # otherwise pass raw — update_job() validates / normalizes.
+                updates["profile"] = _normalize_optional_job_value(profile) or None
             if no_agent is not None:
                 # Toggling no_agent on/off at update time. If flipping to True,
                 # we need a script to already exist on the job (or be part of
@@ -634,6 +708,10 @@ Important safety rule: cron-run sessions should not recursively schedule more cr
                 "type": "string",
                 "description": "Optional absolute path to run the job from. When set, AGENTS.md / CLAUDE.md / .cursorrules from that directory are injected into the system prompt, and the terminal/file/code_exec tools use it as their working directory — useful for running a job inside a specific project repo. Must be an absolute path that exists. When unset (default), preserves the original behaviour: no project context files, tools use the scheduler's cwd. On update, pass an empty string to clear. Jobs with workdir run sequentially (not parallel) to keep per-job directories isolated."
             },
+            "profile": {
+                "type": "string",
+                "description": "Optional Hermes profile name to run the job under. When set, the scheduler resolves that profile, applies a context-local Hermes home override, loads that profile's config/.env for the run, and bridges HERMES_HOME into subprocesses. Any temporary process-environment changes from profile .env loading are restored after the job exits. Use 'default' for the root Hermes profile. Named profiles must already exist. When unset (default), preserves the scheduler's existing profile. On update, pass an empty string to clear. Jobs with profile run sequentially (not parallel) to keep profile-scoped runtime state isolated."
+            },
         },
         "required": ["action"]
     }
@@ -647,11 +725,18 @@ def check_cronjob_requirements() -> bool:
     Available in interactive CLI mode and gateway/messaging platforms.
     The cron system is internal (JSON file-based scheduler ticked by the gateway),
     so no external crontab executable is required.
+
+    Session env vars must hold an explicit truthy string (``1``, ``true``,
+    ``yes``, ``on``) — false-like values (``0``, ``false``, ``no``, ``off``)
+    leave the tool disabled. Uses the shared ``env_var_enabled`` helper so
+    every consumer of these flags agrees on the truthy set.
     """
-    return bool(
-        os.getenv("HERMES_INTERACTIVE")
-        or os.getenv("HERMES_GATEWAY_SESSION")
-        or os.getenv("HERMES_EXEC_ASK")
+    from utils import env_var_enabled
+
+    return (
+        env_var_enabled("HERMES_INTERACTIVE")
+        or env_var_enabled("HERMES_GATEWAY_SESSION")
+        or env_var_enabled("HERMES_EXEC_ASK")
     )
 
 
@@ -681,6 +766,7 @@ registry.register(
         context_from=args.get("context_from"),
         enabled_toolsets=args.get("enabled_toolsets"),
         workdir=args.get("workdir"),
+        profile=args.get("profile"),
         no_agent=args.get("no_agent"),
         task_id=kw.get("task_id"),
     ))(),

@@ -145,6 +145,7 @@ export interface Translations {
   // ── Sessions page ──
   sessions: {
     title: string;
+    overview: string;
     searchPlaceholder: string;
     noSessions: string;
     noMatch: string;
@@ -396,6 +397,8 @@ export interface Translations {
     providersConfigured: string;
     replaceCurrentValue: string;
     showAdvanced: string;
+    showLess: string;
+    showMore: string;
     showValue: string;
   };
 
@@ -586,6 +589,8 @@ export interface Translations {
     createTask: string;
     noTasks: string;
     unassigned: string;
+    needsAssignee?: string;
+    needsAssigneeHint?: string;
     untitled: string;
     loadingDetail: string;
     addComment: string;
@@ -664,6 +669,7 @@ export interface Translations {
     columnLabels: {
       triage: string;
       todo: string;
+      scheduled: string;
       ready: string;
       running: string;
       blocked: string;
@@ -673,6 +679,7 @@ export interface Translations {
     columnHelp: {
       triage: string;
       todo: string;
+      scheduled: string;
       ready: string;
       running: string;
       blocked: string;
@@ -682,6 +689,7 @@ export interface Translations {
     confirmDone: string;
     confirmArchive: string;
     confirmBlocked: string;
+    confirmScheduled?: string;
     completionSummary: string;
     completionSummaryRequired: string;
     triagePlaceholder: string;

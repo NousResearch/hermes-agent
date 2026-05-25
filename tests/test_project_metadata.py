@@ -11,6 +11,13 @@ def _load_optional_dependencies():
     return project["optional-dependencies"]
 
 
+def _load_package_data():
+    pyproject_path = Path(__file__).resolve().parents[1] / "pyproject.toml"
+    with pyproject_path.open("rb") as handle:
+        tool = tomllib.load(handle)["tool"]
+    return tool["setuptools"]["package-data"]
+
+
 def test_matrix_extra_not_in_all():
     """The [matrix] extra pulls `mautrix[encryption]` -> `python-olm`,
     which has Linux-only wheels and no native build path on Windows or
@@ -103,3 +110,15 @@ def test_feishu_extra_includes_qrcode_for_qr_login():
 
     feishu_extra = optional_dependencies["feishu"]
     assert any(dep.startswith("qrcode") for dep in feishu_extra)
+
+
+def test_dashboard_plugin_manifests_and_assets_are_packaged():
+    """Bundled dashboard plugins need their manifests and built assets in
+    wheel installs so /api/dashboard/plugins can discover them outside a
+    source checkout."""
+    package_data = _load_package_data()
+    plugin_data = package_data["plugins"]
+
+    assert "*/dashboard/manifest.json" in plugin_data
+    assert "*/dashboard/dist/*" in plugin_data
+    assert "*/dashboard/dist/**/*" in plugin_data

@@ -16,6 +16,7 @@ Credit: jobless0x (#774, #1312), OutThisLife (#798), clicksingh (#697).
 from __future__ import annotations
 
 import asyncio
+import inspect
 import logging
 import queue
 import re
@@ -65,9 +66,9 @@ class StreamConsumerConfig:
     #             when the adapter + chat supports it; fall back to edit.
     #   "draft" — explicitly request native draft streaming; fall back to
     #             edit when unsupported.
-    #   "edit"  — progressive editMessageText (legacy behavior).
+    #   "edit"  — progressive editMessageText (legacy/default behavior).
     #   "off"   — handled by the gateway before the consumer is even built.
-    transport: str = "auto"
+    transport: str = "edit"
     # Hint for the consumer about the originating chat type (e.g. "dm",
     # "group", "supergroup", "forum").  Used to gate native draft streaming,
     # which is platform-specific (Telegram drafts are DM-only).
@@ -150,6 +151,10 @@ class GatewayStreamConsumer:
         self._flood_strikes = 0         # Consecutive flood-control edit failures
         self._current_edit_interval = self.cfg.edit_interval  # Adaptive backoff
         self._final_response_sent = False
+        # Set when the final response content was sent to the user via
+        # streaming, even if the final edit (cursor removal etc.)
+        # subsequently failed.
+        self._final_content_delivered = False
         # Cache adapter lifecycle capability: only platforms that need an
         # explicit finalize call (e.g. DingTalk AI Cards) force us to make
         # a redundant final edit.  Everyone else keeps the fast path.
@@ -186,6 +191,46 @@ class GatewayStreamConsumer:
     def final_response_sent(self) -> bool:
         """True when the stream consumer delivered the final assistant reply."""
         return self._final_response_sent
+
+    @property
+    def message_id(self) -> str | None:
+        """The Discord/chat message ID of the last-sent or edited message."""
+        return self._message_id
+
+    @property
+    def final_content_delivered(self) -> bool:
+        """True when the final response content reached the user, even if
+        the subsequent cosmetic edit (cursor removal) failed."""
+        return self._final_content_delivered
+
+    async def _edit_message(
+        self,
+        *,
+        message_id: str,
+        content: str,
+        finalize: bool = False,
+    ):
+        """Edit via the adapter, passing routing metadata when supported."""
+        kwargs = {
+            "chat_id": self.chat_id,
+            "message_id": message_id,
+            "content": content,
+        }
+        # Keep the long-standing stream-consumer contract: concrete adapters
+        # must accept finalize= even when it is False (guarded by tests).
+        kwargs["finalize"] = finalize
+
+        if self.metadata:
+            try:
+                params = inspect.signature(self.adapter.edit_message).parameters
+                if "metadata" in params or any(
+                    param.kind is inspect.Parameter.VAR_KEYWORD
+                    for param in params.values()
+                ):
+                    kwargs["metadata"] = self.metadata
+            except (TypeError, ValueError):
+                pass
+        return await self.adapter.edit_message(**kwargs)
 
     def on_segment_break(self) -> None:
         """Finalize the current stream segment and start a fresh message."""
@@ -455,6 +500,8 @@ class GatewayStreamConsumer:
                             # tool-progress edits or fallback-mode promotion (#10748)
                             # — that doesn't mean the final answer reached the user.
                             self._final_response_sent = chunks_delivered
+                            if chunks_delivered:
+                                self._final_content_delivered = True
                             return
                         if got_segment_break:
                             self._message_id = None
@@ -505,6 +552,11 @@ class GatewayStreamConsumer:
                     self._last_edit_time = time.monotonic()
 
                 if got_done:
+                    # Record that the final content reached the user even
+                    # if the cosmetic final edit below fails.
+                    if current_update_visible and self._accumulated:
+                        self._final_content_delivered = True
+
                     # Final edit without cursor. If progressive editing failed
                     # mid-stream, send a single continuation/fallback message
                     # here instead of letting the base gateway path send the
@@ -716,8 +768,7 @@ class GatewayStreamConsumer:
                 ):
                     clean_text = self._last_sent_text[:-len(self.cfg.cursor)]
                     try:
-                        result = await self.adapter.edit_message(
-                            chat_id=self.chat_id,
+                        result = await self._edit_message(
                             message_id=self._message_id,
                             content=clean_text,
                         )
@@ -829,7 +880,7 @@ class GatewayStreamConsumer:
         the chat type (e.g. Telegram drafts are DM-only) and platform-version
         gates (e.g. python-telegram-bot 22.6+).
         """
-        transport = (self.cfg.transport or "auto").lower()
+        transport = (self.cfg.transport or "edit").lower()
         if transport == "edit":
             return False
         # "off" is filtered upstream by the gateway; treat as edit defensively.
@@ -942,8 +993,7 @@ class GatewayStreamConsumer:
         if not prefix or not prefix.strip():
             return
         try:
-            await self.adapter.edit_message(
-                chat_id=self.chat_id,
+            await self._edit_message(
                 message_id=self._message_id,
                 content=prefix,
             )
@@ -1150,8 +1200,7 @@ class GatewayStreamConsumer:
                     ):
                         return True
                     # Edit existing message
-                    result = await self.adapter.edit_message(
-                        chat_id=self.chat_id,
+                    result = await self._edit_message(
                         message_id=self._message_id,
                         content=text,
                         finalize=finalize,

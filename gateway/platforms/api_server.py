@@ -35,6 +35,7 @@ import re
 import sqlite3
 import time
 import uuid
+from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 try:
@@ -69,6 +70,35 @@ def _coerce_port(value: Any, default: int = DEFAULT_PORT) -> int:
         return int(value)
     except (TypeError, ValueError):
         return default
+
+
+_TRUE_REQUEST_BOOL_STRINGS = frozenset({"1", "true", "yes", "on"})
+_FALSE_REQUEST_BOOL_STRINGS = frozenset({"0", "false", "no", "off"})
+
+
+def _coerce_request_bool(value: Any, default: bool = False) -> bool:
+    """Normalize boolean-like API payload values.
+
+    External clients should send real JSON booleans, but some OpenAI-compatible
+    frontends and middleware serialize flags like ``stream`` as strings.  Using
+    Python truthiness on those values misroutes requests because ``"false"`` is
+    still truthy.  Treat only explicit bool-ish scalars as booleans; everything
+    else falls back to the caller's default.
+    """
+    if isinstance(value, bool):
+        return value
+    if value is None:
+        return default
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized in _TRUE_REQUEST_BOOL_STRINGS:
+            return True
+        if normalized in _FALSE_REQUEST_BOOL_STRINGS:
+            return False
+        return default
+    if isinstance(value, (int, float)):
+        return bool(value)
+    return default
 
 
 def _normalize_chat_content(
@@ -308,10 +338,12 @@ class ResponseStore:
                 db_path = str(get_hermes_home() / "response_store.db")
             except Exception:
                 db_path = ":memory:"
+        self._db_path: Optional[str] = db_path if db_path != ":memory:" else None
         try:
             self._conn = sqlite3.connect(db_path, check_same_thread=False)
         except Exception:
             self._conn = sqlite3.connect(":memory:", check_same_thread=False)
+            self._db_path = None
         # Use shared WAL-fallback helper so response_store.db degrades
         # gracefully on NFS/SMB/FUSE-mounted HERMES_HOME (same filesystem
         # issue addressed for state.db/kanban.db — see
@@ -332,6 +364,31 @@ class ResponseStore:
             )"""
         )
         self._conn.commit()
+        # response_store.db contains conversation history (tool payloads,
+        # prompts, results). Tighten to owner-only after creation so other
+        # local users on a shared box can't read it. Run once at __init__
+        # rather than after every commit — chmod-on-every-write is wasted
+        # syscalls on a hot path.
+        self._tighten_file_permissions()
+
+    def _tighten_file_permissions(self) -> None:
+        """Force owner-only permissions on the DB and SQLite sidecars."""
+        if not self._db_path:
+            return
+        for candidate in (
+            Path(self._db_path),
+            Path(f"{self._db_path}-wal"),
+            Path(f"{self._db_path}-shm"),
+        ):
+            try:
+                if candidate.exists():
+                    candidate.chmod(0o600)
+            except OSError:
+                logger.debug(
+                    "Failed to restrict response store permissions for %s",
+                    candidate,
+                    exc_info=True,
+                )
 
     def get(self, response_id: str) -> Optional[Dict[str, Any]]:
         """Retrieve a stored response by ID (updates access time for LRU)."""
@@ -356,15 +413,34 @@ class ResponseStore:
         # Evict oldest entries beyond max_size
         count = self._conn.execute("SELECT COUNT(*) FROM responses").fetchone()[0]
         if count > self._max_size:
-            self._conn.execute(
-                "DELETE FROM responses WHERE response_id IN "
-                "(SELECT response_id FROM responses ORDER BY accessed_at ASC LIMIT ?)",
-                (count - self._max_size,),
-            )
+            # Collect IDs that will be evicted
+            evict_ids = [
+                row[0]
+                for row in self._conn.execute(
+                    "SELECT response_id FROM responses ORDER BY accessed_at ASC LIMIT ?",
+                    (count - self._max_size,),
+                ).fetchall()
+            ]
+            if evict_ids:
+                placeholders = ",".join("?" for _ in evict_ids)
+                # Clear conversation mappings pointing to evicted responses
+                self._conn.execute(
+                    f"DELETE FROM conversations WHERE response_id IN ({placeholders})",
+                    evict_ids,
+                )
+                # Delete evicted responses
+                self._conn.execute(
+                    f"DELETE FROM responses WHERE response_id IN ({placeholders})",
+                    evict_ids,
+                )
         self._conn.commit()
 
     def delete(self, response_id: str) -> bool:
         """Remove a response from the store. Returns True if found and deleted."""
+        # Clear conversation mappings pointing to this response
+        self._conn.execute(
+            "DELETE FROM conversations WHERE response_id = ?", (response_id,)
+        )
         cursor = self._conn.execute(
             "DELETE FROM responses WHERE response_id = ?", (response_id,)
         )
@@ -462,7 +538,12 @@ else:
     body_limit_middleware = None  # type: ignore[assignment]
 
 _SECURITY_HEADERS = {
+    "Content-Security-Policy": "default-src 'none'; frame-ancestors 'none'",
+    "Permissions-Policy": "camera=(), microphone=(), geolocation=()",
+    "Strict-Transport-Security": "max-age=31536000; includeSubDomains",
     "X-Content-Type-Options": "nosniff",
+    "X-Frame-Options": "DENY",
+    "X-XSS-Protection": "0",
     "Referrer-Policy": "no-referrer",
 }
 
@@ -682,6 +763,58 @@ class APIServerAdapter(BasePlatformAdapter):
 
         return "*" in self._cors_origins or origin in self._cors_origins
 
+    @staticmethod
+    def _clean_log_value(value: Any, *, max_len: int = 200) -> str:
+        """Sanitize request metadata before it reaches security logs."""
+        if value is None:
+            return ""
+        text = str(value).replace("\r", " ").replace("\n", " ").strip()
+        return text[:max_len]
+
+    def _request_audit_context(self, request: "web.Request") -> Dict[str, str]:
+        """Return non-secret source metadata for security/audit warnings."""
+        peer_ip = ""
+        try:
+            peer = request.transport.get_extra_info("peername") if request.transport else None
+            if isinstance(peer, (tuple, list)) and peer:
+                peer_ip = str(peer[0])
+        except Exception:
+            peer_ip = ""
+
+        return {
+            "remote": self._clean_log_value(getattr(request, "remote", "") or peer_ip),
+            "peer_ip": self._clean_log_value(peer_ip),
+            "forwarded_for": self._clean_log_value(request.headers.get("X-Forwarded-For", "")),
+            "real_ip": self._clean_log_value(request.headers.get("X-Real-IP", "")),
+            "method": self._clean_log_value(request.method, max_len=16),
+            "path": self._clean_log_value(request.path_qs, max_len=500),
+            "user_agent": self._clean_log_value(request.headers.get("User-Agent", ""), max_len=300),
+        }
+
+    def _request_audit_log_suffix(self, request: "web.Request") -> str:
+        ctx = self._request_audit_context(request)
+        fields = [f"{key}={value!r}" for key, value in ctx.items() if value]
+        return " ".join(fields) if fields else "source='unknown'"
+
+    def _cron_origin_from_request(self, request: "web.Request") -> Dict[str, str]:
+        """Persist safe API source metadata on cron jobs created over HTTP."""
+        ctx = self._request_audit_context(request)
+        origin = {
+            "platform": "api_server",
+            "chat_id": "api",
+        }
+        if ctx.get("remote"):
+            origin["source_ip"] = ctx["remote"]
+        if ctx.get("peer_ip"):
+            origin["peer_ip"] = ctx["peer_ip"]
+        if ctx.get("forwarded_for"):
+            origin["forwarded_for"] = ctx["forwarded_for"]
+        if ctx.get("real_ip"):
+            origin["real_ip"] = ctx["real_ip"]
+        if ctx.get("user_agent"):
+            origin["user_agent"] = ctx["user_agent"]
+        return origin
+
     # ------------------------------------------------------------------
     # Auth helper
     # ------------------------------------------------------------------
@@ -703,6 +836,10 @@ class APIServerAdapter(BasePlatformAdapter):
             if hmac.compare_digest(token, self._api_key):
                 return None  # Auth OK
 
+        logger.warning(
+            "API server rejected invalid API key: %s",
+            self._request_audit_log_suffix(request),
+        )
         return web.json_response(
             {"error": {"message": "Invalid API key", "type": "invalid_request_error", "code": "invalid_api_key"}},
             status=401,
@@ -986,7 +1123,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 status=400,
             )
 
-        stream = body.get("stream", False)
+        stream = _coerce_request_bool(body.get("stream"), default=False)
 
         # Extract system message (becomes ephemeral system prompt layered ON TOP of core)
         system_prompt = None
@@ -2063,7 +2200,7 @@ class APIServerAdapter(BasePlatformAdapter):
         instructions = body.get("instructions")
         previous_response_id = body.get("previous_response_id")
         conversation = body.get("conversation")
-        store = body.get("store", True)
+        store = _coerce_request_bool(body.get("store"), default=True)
 
         # conversation and previous_response_id are mutually exclusive
         if conversation and previous_response_id:
@@ -2146,7 +2283,7 @@ class APIServerAdapter(BasePlatformAdapter):
         # groups the entire conversation under one session entry.
         session_id = stored_session_id or str(uuid.uuid4())
 
-        stream = bool(body.get("stream", False))
+        stream = _coerce_request_bool(body.get("stream"), default=False)
         if stream:
             # Streaming branch — emit OpenAI Responses SSE events as the
             # agent runs so frontends can render text deltas and tool
@@ -2373,6 +2510,11 @@ class APIServerAdapter(BasePlatformAdapter):
         """Validate and extract job_id. Returns (job_id, error_response)."""
         job_id = request.match_info["job_id"]
         if not self._JOB_ID_RE.fullmatch(job_id):
+            logger.warning(
+                "Cron jobs API rejected invalid job_id %r: %s",
+                job_id,
+                self._request_audit_log_suffix(request),
+            )
             return job_id, web.json_response(
                 {"error": "Invalid job ID format"}, status=400,
             )
@@ -2430,6 +2572,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 "schedule": schedule,
                 "name": name,
                 "deliver": deliver,
+                "origin": self._cron_origin_from_request(request),
             }
             if skills:
                 kwargs["skills"] = skills
@@ -3209,7 +3352,10 @@ class APIServerAdapter(BasePlatformAdapter):
                 status=409,
             )
 
-        resolve_all = bool(body.get("all") or body.get("resolve_all"))
+        resolve_all = (
+            _coerce_request_bool(body.get("all"), default=False)
+            or _coerce_request_bool(body.get("resolve_all"), default=False)
+        )
         try:
             from tools.approval import resolve_gateway_approval
 

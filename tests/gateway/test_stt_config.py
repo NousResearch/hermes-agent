@@ -33,23 +33,49 @@ def test_load_gateway_config_bridges_stt_enabled_from_config_yaml(tmp_path, monk
 
 
 @pytest.mark.asyncio
-async def test_enrich_message_with_transcription_skips_when_stt_disabled():
+async def test_enrich_message_with_transcription_surfaces_path_when_stt_disabled():
     from gateway.run import GatewayRunner
 
     runner = GatewayRunner.__new__(GatewayRunner)
     runner.config = GatewayConfig(stt_enabled=False)
+    runner._has_setup_skill = lambda: True  # Should NOT be consulted in disabled branch.
 
     with patch(
         "tools.transcription_tools.transcribe_audio",
         side_effect=AssertionError("transcribe_audio should not be called when STT is disabled"),
+    ), patch(
+        "gateway.run._probe_audio_duration",
+        new=AsyncMock(return_value="0:12"),
     ):
         result = await runner._enrich_message_with_transcription(
             "caption",
             ["/tmp/voice.ogg"],
         )
 
-    assert "transcription is disabled" in result.lower()
+    assert "/tmp/voice.ogg" in result
+    assert "voice message" in result.lower()
+    assert "(duration: 0:12)" in result
     assert "caption" in result
+
+
+@pytest.mark.asyncio
+async def test_enrich_message_with_transcription_omits_duration_on_probe_failure():
+    from gateway.run import GatewayRunner
+
+    runner = GatewayRunner.__new__(GatewayRunner)
+    runner.config = GatewayConfig(stt_enabled=False)
+
+    with patch(
+        "gateway.run._probe_audio_duration",
+        new=AsyncMock(return_value=None),
+    ):
+        result = await runner._enrich_message_with_transcription(
+            "",
+            ["/tmp/voice.ogg"],
+        )
+
+    assert "/tmp/voice.ogg" in result
+    assert "duration" not in result.lower()
 
 
 @pytest.mark.asyncio

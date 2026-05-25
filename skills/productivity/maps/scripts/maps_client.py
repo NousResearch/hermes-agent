@@ -181,7 +181,7 @@ def http_get(url, params=None, retries=MAX_RETRIES, silent=False):
                 return json.loads(raw)
         except urllib.error.HTTPError as exc:
             last_error = f"HTTP {exc.code}: {exc.reason} for {url}"
-            if exc.code in (429, 503, 502, 504):
+            if exc.code in {429, 503, 502, 504}:
                 time.sleep(RETRY_DELAY * attempt)
             else:
                 if silent:
@@ -217,7 +217,7 @@ def http_get_text(url, params=None, retries=MAX_RETRIES, silent=False):
                 return resp.read().decode("utf-8")
         except urllib.error.HTTPError as exc:
             last_error = f"HTTP {exc.code}: {exc.reason} for {url}"
-            if exc.code in (429, 503, 502, 504):
+            if exc.code in {429, 503, 502, 504}:
                 time.sleep(RETRY_DELAY * attempt)
             else:
                 if silent:
@@ -256,7 +256,7 @@ def http_post(url, data_str, retries=MAX_RETRIES):
                 return json.loads(raw)
         except urllib.error.HTTPError as exc:
             last_error = f"HTTP {exc.code}: {exc.reason}"
-            if exc.code in (429, 503, 502, 504):
+            if exc.code in {429, 503, 502, 504}:
                 time.sleep(RETRY_DELAY * attempt)
             else:
                 error_exit(last_error)
@@ -459,8 +459,8 @@ def parse_overpass_elements(elements, ref_lat=None, ref_lon=None):
             "maps_url": f"https://www.google.com/maps/search/?api=1&query={el_lat},{el_lon}",
             "tags": {
                 k: v for k, v in tags.items()
-                if k not in ("name", "name:en",
-                             "addr:housenumber", "addr:street", "addr:city")
+                if k not in {"name", "name:en",
+                             "addr:housenumber", "addr:street", "addr:city"}
             },
         }
 

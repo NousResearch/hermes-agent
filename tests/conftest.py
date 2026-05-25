@@ -20,12 +20,9 @@ test runner at ``scripts/run_tests.sh``.
 """
 
 import asyncio
-import logging
 import os
 import re
-import signal
 import sys
-import tempfile
 from pathlib import Path
 from unittest.mock import patch
 
@@ -35,6 +32,22 @@ import pytest
 PROJECT_ROOT = Path(__file__).parent.parent
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
+
+
+# ── Per-file process isolation ──────────────────────────────────────────────
+# Tests run via ``scripts/run_tests_parallel.py``, which spawns a fresh
+# ``python -m pytest <file>`` subprocess per test file. Cross-file state
+# leakage (module-level dicts, ContextVars, caches) is impossible: each
+# file gets a clean Python interpreter. Intra-file ordering is the test
+# author's responsibility — if test A in foo.py mutates state that test B
+# in foo.py reads, that's a real bug to fix in the file (it would also
+# bite anyone running ``pytest tests/foo.py`` directly).
+#
+# This replaces the historic _reset_module_state autouse fixture (manual
+# state clearing) and the brief experiment with subprocess-per-test
+# isolation (too slow at ~17k tests).
+#
+# See ``scripts/run_tests_parallel.py`` for the runner.
 
 
 # ── Credential env-var filter ──────────────────────────────────────────────
@@ -101,7 +114,6 @@ _CREDENTIAL_NAMES = frozenset({
     "RETAINDB_API_KEY",
     "HINDSIGHT_API_KEY",
     "HINDSIGHT_LLM_API_KEY",
-    "TINKER_API_KEY",
     "DAYTONA_API_KEY",
     "TWILIO_AUTH_TOKEN",
     "TELEGRAM_BOT_TOKEN",
@@ -188,15 +200,20 @@ _HERMES_BEHAVIORAL_VARS = frozenset({
     "HERMES_BACKGROUND_NOTIFICATIONS",
     "HERMES_EXEC_ASK",
     "HERMES_HOME_MODE",
+    "HERMES_AGENT_USE_LEGACY_SESSION_KEYS",
     # Kanban path/board pins must never leak from a developer shell or
     # dispatched worker into tests; otherwise tests can write fake tasks to
     # the real ~/.hermes/kanban.db instead of the per-test HERMES_HOME.
     "HERMES_KANBAN_DB",
     "HERMES_KANBAN_BOARD",
+    "HERMES_KANBAN_HOME",
     "HERMES_KANBAN_WORKSPACES_ROOT",
     "HERMES_KANBAN_LOGS_ROOT",
     "HERMES_KANBAN_TASK",
     "HERMES_KANBAN_WORKSPACE",
+    "HERMES_KANBAN_RUN_ID",
+    "HERMES_KANBAN_CLAIM_LOCK",
+    "HERMES_KANBAN_DISPATCH_IN_GATEWAY",
     "HERMES_TENANT",
     "TERMINAL_CWD",
     "TERMINAL_ENV",
@@ -239,6 +256,7 @@ _HERMES_BEHAVIORAL_VARS = frozenset({
     "TELEGRAM_HOME_CHANNEL",
     "TELEGRAM_HOME_CHANNEL_THREAD_ID",
     "TELEGRAM_HOME_CHANNEL_NAME",
+    "TELEGRAM_CRON_THREAD_ID",
     "DISCORD_HOME_CHANNEL",
     "DISCORD_HOME_CHANNEL_THREAD_ID",
     "DISCORD_HOME_CHANNEL_NAME",
@@ -274,7 +292,7 @@ _HERMES_BEHAVIORAL_VARS = frozenset({
     "WECOM_HOME_CHANNEL_NAME",
     # Platform gating — set by load_gateway_config() as a side effect when
     # a config.yaml is present, so individual test bodies that call the
-    # loader leak these values into later tests on the same xdist worker.
+    # loader leak these values into later tests in the same process.
     # Force-clear on every test setup so the leak can't happen.
     "SLACK_REQUIRE_MENTION",
     "SLACK_STRICT_MENTION",
@@ -340,6 +358,10 @@ def _hermetic_environment(tmp_path, monkeypatch):
     monkeypatch.setenv("AWS_EC2_METADATA_DISABLED", "true")
     monkeypatch.setenv("AWS_METADATA_SERVICE_TIMEOUT", "1")
     monkeypatch.setenv("AWS_METADATA_SERVICE_NUM_ATTEMPTS", "1")
+    # Tirith auto-installs from GitHub when enabled and missing. Unit tests
+    # should never perform that implicit network/bootstrap path; Tirith-specific
+    # tests opt back in by patching the security config directly.
+    monkeypatch.setenv("TIRITH_ENABLED", "false")
 
     # 5. Reset plugin singleton so tests don't leak plugins from
     #    ~/.hermes/plugins/ (which, per step 3, is now empty — but the
@@ -363,142 +385,21 @@ def _isolate_hermes_home(_hermetic_environment):
     return None
 
 
-# ── Module-level state reset ───────────────────────────────────────────────
+# ── Module-level state reset — replaced by per-file process isolation ──────
 #
-# Python modules are singletons per process, and pytest-xdist workers are
-# long-lived. Module-level dicts/sets (tool registries, approval state,
-# interrupt flags) and ContextVars persist across tests in the same worker,
-# causing tests that pass alone to fail when run with siblings.
+# Each test FILE runs in a freshly-spawned ``python -m pytest <file>``
+# subprocess via ``scripts/run_tests_parallel.py``, so module-level dicts /
+# sets / ContextVars from tests in one file cannot leak into tests in
+# another file. No manual per-module clearing needed.
 #
-# Each entry in this fixture clears state that belongs to a specific module.
-# New state buckets go here too — this is the single gate that prevents
-# "works alone, flakes in CI" bugs from state leakage.
+# Within a single file, ordering is the author's responsibility. If your
+# tests in the same file share mutable state, either reset it explicitly
+# in a fixture or split them across files.
 #
-# The skill `test-suite-cascade-diagnosis` documents the concrete patterns
-# this closes; the running example was `test_command_guards` failing 12/15
-# CI runs because ``tools.approval._session_approved`` carried approvals
-# from one test's session into another's.
-
-@pytest.fixture(autouse=True)
-def _reset_module_state():
-    """Clear module-level mutable state and ContextVars between tests.
-
-    Keeps state from leaking across tests on the same xdist worker. Modules
-    that don't exist yet (test collection before production import) are
-    skipped silently — production import later creates fresh empty state.
-    """
-    # --- logging — quiet/one-shot paths mutate process-global logger state ---
-    logging.disable(logging.NOTSET)
-    for _logger_name in ("tools", "run_agent", "trajectory_compressor", "cron", "hermes_cli"):
-        _logger = logging.getLogger(_logger_name)
-        _logger.disabled = False
-        _logger.setLevel(logging.NOTSET)
-        _logger.propagate = True
-
-    # --- tools.approval — the single biggest source of cross-test pollution ---
-    try:
-        from tools import approval as _approval_mod
-        _approval_mod._session_approved.clear()
-        _approval_mod._session_yolo.clear()
-        _approval_mod._permanent_approved.clear()
-        _approval_mod._pending.clear()
-        _approval_mod._gateway_queues.clear()
-        _approval_mod._gateway_notify_cbs.clear()
-        # ContextVar: reset to empty string so get_current_session_key()
-        # falls through to the env var / default path, matching a fresh
-        # process.
-        _approval_mod._approval_session_key.set("")
-    except Exception:
-        pass
-
-    # --- tools.interrupt — per-thread interrupt flag set ---
-    try:
-        from tools import interrupt as _interrupt_mod
-        with _interrupt_mod._lock:
-            _interrupt_mod._interrupted_threads.clear()
-    except Exception:
-        pass
-
-    # --- gateway.session_context — 9 ContextVars that represent
-    #     the active gateway session. If set in one test and not reset,
-    #     the next test's get_session_env() reads stale values.
-    try:
-        from gateway import session_context as _sc_mod
-        for _cv in (
-            _sc_mod._SESSION_PLATFORM,
-            _sc_mod._SESSION_CHAT_ID,
-            _sc_mod._SESSION_CHAT_NAME,
-            _sc_mod._SESSION_THREAD_ID,
-            _sc_mod._SESSION_USER_ID,
-            _sc_mod._SESSION_USER_NAME,
-            _sc_mod._SESSION_KEY,
-            _sc_mod._CRON_AUTO_DELIVER_PLATFORM,
-            _sc_mod._CRON_AUTO_DELIVER_CHAT_ID,
-            _sc_mod._CRON_AUTO_DELIVER_THREAD_ID,
-        ):
-            _cv.set(_sc_mod._UNSET)
-    except Exception:
-        pass
-
-    # --- tools.env_passthrough — ContextVar<set[str]> with no default ---
-    # LookupError is normal if the test never set it. Setting it to an
-    # empty set unconditionally normalizes the starting state.
-    try:
-        from tools import env_passthrough as _envp_mod
-        _envp_mod._allowed_env_vars_var.set(set())
-    except Exception:
-        pass
-
-    # --- tools.terminal_tool — active environment/cwd cache ---
-    # File tools prefer a live terminal cwd when one is cached for the task.
-    # Clear terminal environments between tests so a prior terminal call can't
-    # override TERMINAL_CWD in path-resolution tests.
-    try:
-        from tools import terminal_tool as _term_mod
-        _envs_to_cleanup = []
-        with _term_mod._env_lock:
-            _envs_to_cleanup = list(_term_mod._active_environments.values())
-            _term_mod._active_environments.clear()
-            _term_mod._last_activity.clear()
-            _term_mod._creation_locks.clear()
-        for _env in _envs_to_cleanup:
-            try:
-                _env.cleanup()
-            except Exception:
-                pass
-    except Exception:
-        pass
-
-    # --- tools.credential_files — ContextVar<dict> ---
-    try:
-        from tools import credential_files as _credf_mod
-        _credf_mod._registered_files_var.set({})
-    except Exception:
-        pass
-
-    # --- agent.auxiliary_client — runtime main provider/model override ---
-    # Set per-turn by AIAgent.run_conversation; tests that import it must
-    # see a clean state so config.yaml fallback works as expected.
-    try:
-        from agent import auxiliary_client as _aux_mod
-        _aux_mod.clear_runtime_main()
-    except Exception:
-        pass
-
-    # --- tools.file_tools — per-task read history + file-ops cache ---
-    # _read_tracker accumulates per-task_id read history for loop detection,
-    # capped by _READ_HISTORY_CAP. If entries from a prior test persist, the
-    # cap is hit faster than expected and capacity-related tests flake.
-    try:
-        from tools import file_tools as _ft_mod
-        with _ft_mod._read_tracker_lock:
-            _ft_mod._read_tracker.clear()
-        with _ft_mod._file_ops_lock:
-            _ft_mod._file_ops_cache.clear()
-    except Exception:
-        pass
-
-    yield
+# The skill ``test-suite-cascade-diagnosis`` documents the cascade patterns
+# this replaces; the running example was ``test_command_guards`` failing
+# 12/15 CI runs because ``tools.approval._session_approved`` carried
+# approvals from one test's session into another's.
 
 
 @pytest.fixture()
@@ -525,13 +426,12 @@ def mock_config():
     }
 
 
-# ── Global test timeout ─────────────────────────────────────────────────────
-# Kill any individual test that takes longer than 30 seconds.
-# Prevents hanging tests (subprocess spawns, blocking I/O) from stalling the
-# entire test suite.
+# ── Per-test timeout — handled by the isolation plugin ─────────────────────
+#
+# The subprocess-per-test plugin enforces the configured ``isolate_timeout``
+# ini key by terminating the child if it overruns. The old SIGALRM-based
+# fixture (POSIX-only, didn't work on Windows) is gone.
 
-def _timeout_handler(signum, frame):
-    raise TimeoutError("Test exceeded 30 second timeout")
 
 @pytest.fixture(autouse=True)
 def _ensure_current_event_loop(request):
@@ -575,45 +475,6 @@ def _ensure_current_event_loop(request):
                 loop.close()
             finally:
                 asyncio.set_event_loop(None)
-
-
-@pytest.fixture(autouse=True)
-def _enforce_test_timeout():
-    """Kill any individual test that takes longer than 30 seconds.
-    SIGALRM is Unix-only; skip on Windows."""
-    if sys.platform == "win32":
-        yield
-        return
-    old = signal.signal(signal.SIGALRM, _timeout_handler)
-    signal.alarm(30)
-    yield
-    signal.alarm(0)
-    signal.signal(signal.SIGALRM, old)
-
-
-@pytest.fixture(autouse=True)
-def _reset_tool_registry_caches():
-    """Clear tool-registry-level caches between tests.
-
-    The production registry caches ``check_fn()`` results for 30 s
-    (see tools/registry.py) and :func:`get_tool_definitions` memoizes
-    its result (see model_tools.py). Both are keyed on state that tests
-    routinely mutate (env vars, registry._generation, config.yaml mtime)
-    — but a stale result from test A can still be served to test B
-    because 30 s covers the entire suite, and xdist worker reuse means
-    one test's cache lands in another's process. Clearing before every
-    test keeps hermetic behavior.
-    """
-    try:
-        from tools.registry import invalidate_check_fn_cache
-        invalidate_check_fn_cache()
-    except ImportError:
-        pass
-    try:
-        from model_tools import _clear_tool_defs_cache
-        _clear_tool_defs_cache()
-    except ImportError:
-        pass
 
 
 # ── Live-system guard ──────────────────────────────────────────────────────

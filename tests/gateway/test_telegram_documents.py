@@ -134,6 +134,11 @@ def adapter():
     a = TelegramAdapter(config)
     # Capture events instead of processing them
     a.handle_message = AsyncMock()
+    # After PR #28494 made the empty-allowlist callback auth fail-closed
+    # (and #28492 wired _is_callback_user_authorized into _should_process_message),
+    # document-routing tests need to bypass the new gate so messages from fake
+    # senders reach handle_message.
+    a._is_callback_user_authorized = lambda user_id, **_kw: True
     return a
 
 

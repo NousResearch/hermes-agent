@@ -47,7 +47,7 @@ def _resolve_requests_verify() -> bool | str:
 _PROVIDER_PREFIXES: frozenset[str] = frozenset({
     "openrouter", "nous", "openai-codex", "copilot", "copilot-acp",
     "gemini", "ollama-cloud", "zai", "kimi-coding", "kimi-coding-cn", "stepfun", "minimax", "minimax-oauth", "minimax-cn", "anthropic", "deepseek",
-    "opencode-zen", "opencode-go", "ai-gateway", "kilocode", "alibaba",
+    "opencode-zen", "opencode-go", "ai-gateway", "kilocode", "alibaba", "novita",
     "qwen-oauth",
     "xiaomi",
     "arcee",
@@ -66,7 +66,7 @@ _PROVIDER_PREFIXES: frozenset[str] = frozenset({
     "gmi-cloud", "gmicloud",
     "xai", "x-ai", "x.ai", "grok",
     "nvidia", "nim", "nvidia-nim", "nemotron",
-    "qwen-portal",
+    "qwen-portal", "novita-ai", "novitaai",
 })
 
 
@@ -104,6 +104,8 @@ def _strip_provider_prefix(model: str) -> str:
 
 _model_metadata_cache: Dict[str, Dict[str, Any]] = {}
 _model_metadata_cache_time: float = 0
+_novita_metadata_cache: Dict[str, Dict[str, Any]] = {}
+_novita_metadata_cache_time: float = 0
 _MODEL_CACHE_TTL = 3600
 _endpoint_model_metadata_cache: Dict[str, Dict[str, Dict[str, Any]]] = {}
 _endpoint_model_metadata_cache_time: Dict[str, float] = {}
@@ -192,6 +194,7 @@ DEFAULT_CONTEXT_LENGTHS = {
     "llama": 131072,
     # Qwen — specific model families before the catch-all.
     # Official docs: https://help.aliyun.com/zh/model-studio/developer-reference/
+    "qwen3.6-plus": 1048576,      # 1M context (DashScope/Alibaba & OpenRouter)
     "qwen3-coder-plus": 1000000,  # 1M context
     "qwen3-coder": 262144,        # 256K context
     "qwen": 131072,
@@ -206,11 +209,13 @@ DEFAULT_CONTEXT_LENGTHS = {
     # via a custom provider. Values sourced from models.dev (2026-04).
     # Keys use substring matching (longest-first), so e.g. "grok-4.20"
     # matches "grok-4.20-0309-reasoning" / "-non-reasoning" / "-multi-agent-0309".
+    "grok-build": 256000,       # grok-build-0.1
     "grok-code-fast": 256000,   # grok-code-fast-1
     "grok-4-1-fast": 2000000,   # grok-4-1-fast-(non-)reasoning
     "grok-2-vision": 8192,      # grok-2-vision, -1212, -latest
     "grok-4-fast": 2000000,     # grok-4-fast-(non-)reasoning
     "grok-4.20": 2000000,       # grok-4.20-0309-(non-)reasoning, -multi-agent-0309
+    "grok-4.3": 1000000,        # grok-4.3, grok-4.3-latest — 1M context per docs.x.ai
     "grok-4": 256000,           # grok-4, grok-4-0709
     "grok-3": 131072,           # grok-3, grok-3-mini, grok-3-fast, grok-3-mini-fast
     "grok-2": 131072,           # grok-2, grok-2-1212, grok-2-latest
@@ -285,6 +290,7 @@ def grok_supports_reasoning_effort(model: str) -> bool:
 _CONTEXT_LENGTH_KEYS = (
     "context_length",
     "context_window",
+    "context_size",
     "max_context_length",
     "max_position_embeddings",
     "max_model_len",
@@ -354,6 +360,12 @@ _URL_TO_PROVIDER: Dict[str, str] = {
     "api.deepseek.com": "deepseek",
     "api.githubcopilot.com": "copilot",
     "models.github.ai": "copilot",
+    # GitHub Models free tier (Azure-hosted prototyping endpoint) — same
+    # canonical provider as the Copilot API.  Hard per-request token cap
+    # (often 8K) makes it unusable for Hermes' system prompt, but mapping
+    # it here lets us recognize the endpoint and emit a targeted hint
+    # instead of falling through the unknown-custom-endpoint path.
+    "models.inference.ai.azure.com": "copilot",
     "api.fireworks.ai": "fireworks",
     "opencode.ai": "opencode-go",
     "api.x.ai": "xai",
@@ -361,6 +373,7 @@ _URL_TO_PROVIDER: Dict[str, str] = {
     "api.xiaomimimo.com": "xiaomi",
     "xiaomimimo.com": "xiaomi",
     "api.gmi-serving.com": "gmi",
+    "api.novita.ai": "novita",
     "tokenhub.tencentmaas.com": "tencent-tokenhub",
     "ollama.com": "ollama-cloud",
 }
@@ -557,6 +570,16 @@ def _extract_max_completion_tokens(payload: Dict[str, Any]) -> Optional[int]:
 
 
 def _extract_pricing(payload: Dict[str, Any]) -> Dict[str, Any]:
+    novita_input = payload.get("input_token_price_per_m")
+    novita_output = payload.get("output_token_price_per_m")
+    if novita_input is not None or novita_output is not None:
+        pricing: Dict[str, Any] = {}
+        if novita_input is not None:
+            pricing["prompt"] = str(float(novita_input) / 10_000 / 1_000_000)
+        if novita_output is not None:
+            pricing["completion"] = str(float(novita_output) / 10_000 / 1_000_000)
+        return pricing
+
     alias_map = {
         "prompt": ("prompt", "input", "input_cost_per_token", "prompt_token_cost"),
         "completion": ("completion", "output", "output_cost_per_token", "completion_token_cost"),
@@ -618,7 +641,7 @@ def fetch_model_metadata(force_refresh: bool = False) -> Dict[str, Dict[str, Any
         return cache
 
     except Exception as e:
-        logging.warning(f"Failed to fetch model metadata from OpenRouter: {e}")
+        logger.warning(f"Failed to fetch model metadata from OpenRouter: {e}")
         return _model_metadata_cache or {}
 
 
@@ -1526,6 +1549,13 @@ def get_model_context_length(
             return get_bedrock_context_length(model)
         except ImportError:
             pass  # boto3 not installed — fall through to generic resolution
+
+    if provider == "novita" or (base_url and base_url_host_matches(base_url, "api.novita.ai")):
+        ctx = _resolve_endpoint_context_length(model, base_url or "https://api.novita.ai/openai/v1", api_key=api_key)
+        if ctx is not None:
+            if base_url:
+                save_context_length(model, base_url, ctx)
+            return ctx
 
     # 2. Active endpoint metadata for truly custom/unknown endpoints.
     # Known providers (Copilot, OpenAI, Anthropic, etc.) skip this — their

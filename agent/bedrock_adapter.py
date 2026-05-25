@@ -37,6 +37,19 @@ from typing import Any, Dict, List, Optional, Tuple
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
+# Ensure boto3/botocore are installed before any code in this module runs.
+# Upstream removed boto3 from [all] extras (PRs #24220, #24515); lazy_deps
+# handles on-demand installation so the Bedrock provider still works in the
+# EKS deployment without baking boto3 into the base image.
+# ---------------------------------------------------------------------------
+try:
+    from tools.lazy_deps import ensure
+    ensure("provider.bedrock", prompt=False)
+except Exception:
+    pass  # lazy_deps unavailable or install failed — let downstream imports surface the real error
+
+
+# ---------------------------------------------------------------------------
 # Lazy boto3 import — only loaded when the Bedrock provider is actually used.
 # This keeps startup fast for users who don't use Bedrock.
 # ---------------------------------------------------------------------------

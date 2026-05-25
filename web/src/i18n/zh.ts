@@ -126,6 +126,7 @@ export const zh: Translations = {
 
   sessions: {
     title: "会话",
+    overview: "概览",
     searchPlaceholder: "搜索消息内容...",
     noSessions: "暂无会话",
     noMatch: "没有匹配的会话",
@@ -265,7 +266,7 @@ export const zh: Translations = {
     headline: "发现、安装、启用和更新 Hermes 插件（对齐 `hermes plugins` CLI）。",
     identifierLabel: "Git 地址或 owner/repo",
     inactive: "未启用",
-    installBtn: "从 Git 安装",
+    installBtn: "安装",
     installHeading: "从 GitHub / Git 地址安装",
     installHint: "使用 owner/repo 简写或完整的 https:// / git@ 克隆地址。",
     memoryProviderLabel: "记忆提供方",
@@ -362,6 +363,8 @@ export const zh: Translations = {
     description: "管理存储在以下位置的 API 密钥和凭据",
     hideAdvanced: "隐藏高级选项",
     showAdvanced: "显示高级选项",
+    showLess: "显示更少",
+    showMore: "显示更多",
     llmProviders: "LLM 提供商",
     providersConfigured: "已配置 {configured}/{total} 个提供商",
     getKey: "获取密钥",
@@ -387,7 +390,7 @@ export const zh: Translations = {
     disconnect: "断开连接",
     managedExternally: "外部管理",
     copied: "已复制 ✓",
-    cli: "CLI",
+    cli: "复制",
     copyCliCommand: "复制 CLI 命令（用于外部/备用方式）",
     connect: "连接",
     sessionExpires: "会话将在 {time} 后过期",
@@ -650,6 +653,7 @@ export const zh: Translations = {
     columnLabels: {
       triage: "待分类",
       todo: "待办",
+      scheduled: "已调度",
       ready: "就绪",
       running: "进行中",
       blocked: "阻塞",
@@ -659,7 +663,8 @@ export const zh: Translations = {
     columnHelp: {
       triage: "原始想法 — 规范制定者将完善规格",
       todo: "等待依赖项或未分配",
-      ready: "已分配，等待调度器轮询",
+      scheduled: "等待已知的时间延迟或已调度的跟进",
+      ready: "依赖项已满足；分配一个配置文件以便调度",
       running: "已被工作者认领 — 执行中",
       blocked: "工作者请求人工输入",
       done: "已完成",

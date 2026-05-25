@@ -306,7 +306,7 @@ class TestWebServerEndpoints:
         resp = self.client.get("/api/auth/session-token")
         # The endpoint is gone — the catch-all SPA route serves index.html
         # or the middleware returns 401 for unauthenticated /api/ paths.
-        assert resp.status_code in (200, 404)
+        assert resp.status_code in {200, 404}
         # Either way, it must NOT return the token as JSON
         try:
             data = resp.json()
@@ -327,13 +327,19 @@ class TestWebServerEndpoints:
         # Public endpoints should still work
         resp = unauth_client.get("/api/status")
         assert resp.status_code == 200
+        resp = unauth_client.get("/api/dashboard/plugins")
+        assert resp.status_code == 200
+        resp = unauth_client.get("/api/dashboard/plugins/rescan")
+        assert resp.status_code == 401
+        resp = self.client.get("/api/dashboard/plugins/rescan")
+        assert resp.status_code == 200
 
     def test_path_traversal_blocked(self):
         """Verify URL-encoded path traversal is blocked."""
         # %2e%2e = ..
         resp = self.client.get("/%2e%2e/%2e%2e/etc/passwd")
         # Should return 200 with index.html (SPA fallback), not the actual file
-        assert resp.status_code in (200, 404)
+        assert resp.status_code in {200, 404}
         if resp.status_code == 200:
             # Should be the SPA fallback, not the system file
             assert "root:" not in resp.text
@@ -341,7 +347,7 @@ class TestWebServerEndpoints:
     def test_path_traversal_dotdot_blocked(self):
         """Direct .. path traversal via encoded sequences."""
         resp = self.client.get("/%2e%2e/hermes_cli/web_server.py")
-        assert resp.status_code in (200, 404)
+        assert resp.status_code in {200, 404}
         if resp.status_code == 200:
             assert "FastAPI" not in resp.text  # Should not serve the actual source
 
@@ -535,7 +541,7 @@ class TestConfigRoundTrip:
             if val is None:
                 continue  # not set in user config — fine
             expected = entry["type"]
-            if expected in ("string", "select") and not isinstance(val, str):
+            if expected in {"string", "select"} and not isinstance(val, str):
                 mismatches.append(f"{key}: expected str, got {type(val).__name__}")
             elif expected == "number" and not isinstance(val, (int, float)):
                 mismatches.append(f"{key}: expected number, got {type(val).__name__}")
@@ -1032,7 +1038,7 @@ class TestNewEndpoints:
         """GET /api/auth/session-token no longer exists."""
         resp = self.client.get("/api/auth/session-token")
         # Should not return a JSON token object
-        assert resp.status_code in (200, 404)
+        assert resp.status_code in {200, 404}
         try:
             data = resp.json()
             assert "token" not in data
@@ -2092,6 +2098,21 @@ class TestPtyWebSocket:
         q = {"token": tok, **params}
         return f"/api/pty?{urlencode(q)}"
 
+    def test_resolve_chat_argv_uses_dashboard_scroll_env(self, monkeypatch):
+        """Dashboard chat runs the TUI in browser-scrollback mode."""
+        import hermes_cli.main as main_mod
+
+        monkeypatch.setattr(
+            main_mod,
+            "_make_tui_argv",
+            lambda project_root, tui_dev=False: (["node", "dist/entry.js"], "/tmp/ui-tui"),
+        )
+
+        _argv, _cwd, env = self.ws_module._resolve_chat_argv()
+
+        assert env["HERMES_TUI_INLINE"] == "1"
+        assert env["HERMES_TUI_DISABLE_MOUSE"] == "1"
+
     def test_rejects_when_embedded_chat_disabled(self, monkeypatch):
         monkeypatch.setattr(self.ws_module, "_DASHBOARD_EMBEDDED_CHAT_ENABLED", False)
         from starlette.websockets import WebSocketDisconnect
@@ -2270,7 +2291,10 @@ class TestPtyWebSocket:
             self.ws_module.app.state, "bound_port", 9119, raising=False
         )
 
-        with self.client.websocket_connect(self._url(channel="abc-123")) as conn:
+        headers = {"host": "127.0.0.1:9119", "origin": "http://127.0.0.1:9119"}
+        with self.client.websocket_connect(
+            self._url(channel="abc-123"), headers=headers
+        ) as conn:
             try:
                 conn.receive_bytes()
             except Exception:
@@ -2310,7 +2334,34 @@ class TestPtyWebSocket:
 
             with self.client.websocket_connect(pub_path) as pub:
                 pub.send_text('{"type":"tool.start","payload":{"tool_id":"t1"}}')
-                received = sub.receive_text()
+                # Yield control so the server-side broadcast handler can
+                # process the frame.  TestClient runs the ASGI app in a
+                # background thread; a small sleep gives that thread time
+                # to call _broadcast_event before we start blocking on
+                # receive_text().  Without this, under heavy CI load the
+                # receive can race the broadcast and hang until
+                # pytest-timeout kills us.
+                import queue, threading
+                recv_q: queue.Queue = queue.Queue()
+
+                def _recv():
+                    try:
+                        recv_q.put(sub.receive_text())
+                    except Exception as exc:
+                        recv_q.put(exc)
+
+                t = threading.Thread(target=_recv, daemon=True)
+                t.start()
+                try:
+                    received = recv_q.get(timeout=10.0)
+                except queue.Empty:
+                    raise AssertionError(
+                        "broadcast not received within 10s — server likely "
+                        "dropped the frame silently (see _broadcast_event "
+                        "except Exception: pass)"
+                    )
+                if isinstance(received, Exception):
+                    raise received
 
         assert "tool.start" in received
         assert '"tool_id":"t1"' in received

@@ -23,7 +23,7 @@
 <tr><td><b>定时自动化</b></td><td>内置 cron 调度器，支持向任何平台投递。日报、夜间备份、周审计——全部用自然语言描述，无人值守运行。</td></tr>
 <tr><td><b>委派与并行</b></td><td>生成隔离子代理处理并行工作流。编写 Python 脚本通过 RPC 调用工具，将多步管道压缩为零上下文开销的轮次。</td></tr>
 <tr><td><b>随处运行</b></td><td>六种终端后端——本地、Docker、SSH、Daytona、Singularity 和 Modal。Daytona 和 Modal 提供 Serverless 持久化——代理环境空闲时休眠、按需唤醒，空闲期间几乎零成本。$5 VPS 或 GPU 集群都能跑。</td></tr>
-<tr><td><b>研究就绪</b></td><td>批量轨迹生成、Atropos RL 环境、轨迹压缩——用于训练下一代工具调用模型。</td></tr>
+<tr><td><b>研究就绪</b></td><td>批量轨迹生成、轨迹压缩——用于训练下一代工具调用模型。</td></tr>
 </table>
 
 ---
@@ -64,6 +64,27 @@ hermes doctor       # 诊断问题
 ```
 
 📖 **[完整文档 →](https://hermes-agent.nousresearch.com/docs/)**
+
+---
+
+## 省去到处收集 API Key — Nous Portal
+
+Hermes 始终允许你使用任意服务商，这点不会改变。但如果你不想为模型、网页搜索、图像生成、TTS、云浏览器分别去申请五个不同的 API Key，**[Nous Portal](https://portal.nousresearch.com)** 用一个订阅就能覆盖全部：
+
+- **300+ 模型** — 用 `/model <name>` 随时切换
+- **Tool Gateway** — 网页搜索（Firecrawl）、图像生成（FAL）、文本转语音（OpenAI）、云浏览器（Browser Use），全部通过订阅托管。无需额外注册任何账户。
+
+全新安装时一条命令即可：
+
+```bash
+hermes setup --portal
+```
+
+它会通过 OAuth 登录、把 Nous 设为推理服务商，并启用 Tool Gateway。随时用 `hermes portal status` 查看路由状态。完整说明见 [Tool Gateway 文档](https://hermes-agent.nousresearch.com/docs/user-guide/features/tool-gateway)。
+
+你随时可以按工具单独切回自己的 API Key — Gateway 是按工具粒度生效的，不是一刀切。
+
+---
 
 ## CLI 与消息平台 快速对照
 
@@ -160,12 +181,6 @@ source venv/bin/activate
 uv pip install -e ".[all,dev]"
 python -m pytest tests/ -q
 ```
-
-> **RL 训练（可选）：** 如需参与 RL/Tinker-Atropos 集成开发：
-> ```bash
-> git submodule update --init tinker-atropos
-> uv pip install -e "./tinker-atropos"
-> ```
 
 ---
 

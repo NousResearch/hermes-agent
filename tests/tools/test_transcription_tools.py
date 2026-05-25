@@ -6,12 +6,24 @@ end-to-end dispatch.  All external dependencies are mocked.
 """
 
 import os
+import sys
 import struct
 import subprocess
+import types
 import wave
 from unittest.mock import MagicMock, patch
 
 import pytest
+
+if "faster_whisper" not in sys.modules:
+    faster_whisper_stub = types.ModuleType("faster_whisper")
+    faster_whisper_stub.WhisperModel = MagicMock(name="WhisperModel")
+    # Set ``__spec__`` so ``importlib.util.find_spec("faster_whisper")``
+    # doesn't raise ``ValueError: faster_whisper.__spec__ is None`` during
+    # collection (used by skipif markers further down in this file).
+    from importlib.machinery import ModuleSpec
+    faster_whisper_stub.__spec__ = ModuleSpec("faster_whisper", loader=None)
+    sys.modules["faster_whisper"] = faster_whisper_stub
 
 
 # ============================================================================
@@ -40,6 +52,9 @@ def sample_ogg(tmp_path):
     ogg_path = tmp_path / "test.ogg"
     ogg_path.write_bytes(b"fake audio data")
     return str(ogg_path)
+
+
+pytestmark = pytest.mark.usefixtures("disable_lazy_stt_install")
 
 
 @pytest.fixture(autouse=True)
@@ -758,6 +773,23 @@ class TestValidateAudioFileEdgeCases:
         assert result is not None
         assert "not a file" in result["error"]
 
+    def test_symlink_with_supported_extension_is_rejected(self, tmp_path):
+        if not hasattr(os, "symlink"):
+            pytest.skip("symlinks are not supported on this platform")
+
+        target = tmp_path / "target.txt"
+        target.write_bytes(b"not audio")
+        link = tmp_path / "linked.wav"
+        try:
+            os.symlink(target, link)
+        except (OSError, NotImplementedError) as exc:
+            pytest.skip(f"symlink creation unavailable: {exc}")
+
+        from tools.transcription_tools import _validate_audio_file
+        result = _validate_audio_file(str(link))
+        assert result is not None
+        assert "symbolic link" in result["error"]
+
     def test_stat_oserror(self, tmp_path):
         f = tmp_path / "test.ogg"
         f.write_bytes(b"data")
@@ -1363,3 +1395,45 @@ class TestTranscribeAudioXAIDispatch:
             transcribe_audio(sample_ogg, model="custom-stt")
 
         assert mock_xai.call_args[0][1] == "custom-stt"
+
+
+# ============================================================================
+# Shell safety — shlex.split on auto-detected templates
+# ============================================================================
+class TestShellSafety:
+    def test_auto_detected_template_is_shlex_safe(self, monkeypatch):
+        """Auto-detected whisper command should be safely splittable."""
+        import shlex
+        monkeypatch.delenv("HERMES_LOCAL_STT_COMMAND", raising=False)
+        monkeypatch.setattr(
+            "tools.transcription_tools._find_whisper_binary",
+            lambda: "/usr/bin/whisper",
+        )
+        from tools.transcription_tools import _get_local_command_template
+        template = _get_local_command_template()
+        assert template is not None
+        cmd = template.format(
+            input_path=shlex.quote("/tmp/test.wav"),
+            output_dir=shlex.quote("/tmp/out"),
+            language=shlex.quote("en"),
+            model=shlex.quote("base"),
+        )
+        parts = shlex.split(cmd)
+        assert parts[0] == "/usr/bin/whisper"
+        assert "/tmp/test.wav" in parts
+
+    def test_env_var_template_uses_shell_path(self, monkeypatch):
+        """When HERMES_LOCAL_STT_COMMAND is set, use_shell should be True."""
+        import os
+        from tools.transcription_tools import LOCAL_STT_COMMAND_ENV
+        monkeypatch.setenv(LOCAL_STT_COMMAND_ENV, "whisper {input_path} | tee log.txt")
+        use_shell = bool(os.getenv(LOCAL_STT_COMMAND_ENV, "").strip())
+        assert use_shell is True
+
+    def test_no_env_var_uses_list_mode(self, monkeypatch):
+        """When no env var is set, use_shell should be False."""
+        import os
+        from tools.transcription_tools import LOCAL_STT_COMMAND_ENV
+        monkeypatch.delenv(LOCAL_STT_COMMAND_ENV, raising=False)
+        use_shell = bool(os.getenv(LOCAL_STT_COMMAND_ENV, "").strip())
+        assert use_shell is False

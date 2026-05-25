@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
-import { ExternalLink, RefreshCw, Puzzle, Trash2, Eye, EyeOff } from "lucide-react";
+import { ExternalLink, RefreshCw, Trash2, Eye, EyeOff } from "lucide-react";
 import type { Translations } from "@/i18n/types";
 import { Link } from "react-router-dom";
 import { api } from "@/lib/api";
@@ -39,7 +39,7 @@ export default function PluginsPage() {
 
   const { toast, showToast } = useToast();
   const { t } = useI18n();
-  const { setEnd } = usePageHeader();
+  const { setAfterTitle } = usePageHeader();
 
   const loadHub = useCallback(() => {
     return api
@@ -59,20 +59,20 @@ export default function PluginsPage() {
   }, [loadHub]);
 
   useEffect(() => {
-    setEnd(
+    setAfterTitle(
       <Button
         ghost
-        size="sm"
-        className="shrink-0 gap-2"
+        size="icon"
+        className="shrink-0 text-muted-foreground hover:text-foreground"
         disabled={loading || rescanBusy}
         onClick={() => void onRescan()}
+        aria-label={t.pluginsPage.refreshDashboard}
       >
-        {rescanBusy ? <Spinner /> : <RefreshCw className="h-3.5 w-3.5" />}
-        {t.pluginsPage.refreshDashboard}
+        {rescanBusy ? <Spinner /> : <RefreshCw />}
       </Button>,
     );
-    return () => setEnd(null);
-  }, [loading, rescanBusy, setEnd, t.pluginsPage.refreshDashboard]);
+    return () => setAfterTitle(null);
+  }, [loading, rescanBusy, setAfterTitle, t.pluginsPage.refreshDashboard]);
 
   const onInstall = async () => {
     const id = installId.trim();
@@ -158,7 +158,7 @@ export default function PluginsPage() {
           <Card>
             <CardHeader>
               <CardTitle>{t.pluginsPage.providersHeading}</CardTitle>
-              <p className="text-[0.7rem] tracking-[0.08em] text-midground/55 normal-case">
+              <p className="text-xs tracking-[0.08em] text-text-tertiary">
                 {t.pluginsPage.providersHint}
               </p>
             </CardHeader>
@@ -210,13 +210,13 @@ export default function PluginsPage() {
               </div>
 
               <Button
-                className="w-fit gap-2"
+                className="w-fit uppercase"
                 size="sm"
                 disabled={providerBusy}
                 onClick={() => void onSaveProviders()}
+                prefix={providerBusy ? <Spinner /> : undefined}
               >
-                {providerBusy ? <Spinner /> : null}
-                {t.pluginsPage.saveProviders}
+                {t.common.save}
               </Button>
             </CardContent>
           </Card>
@@ -225,7 +225,7 @@ export default function PluginsPage() {
         <Card>
           <CardHeader>
             <CardTitle>{t.pluginsPage.installHeading}</CardTitle>
-            <p className="text-[0.7rem] tracking-[0.08em] text-midground/55 normal-case">
+            <p className="text-xs tracking-[0.08em] text-text-tertiary">
               {t.pluginsPage.installHint}
             </p>
           </CardHeader>
@@ -238,7 +238,7 @@ export default function PluginsPage() {
               <Label htmlFor="install-url">{t.pluginsPage.identifierLabel}</Label>
 
               <Input
-                className="normal-case font-sans lowercase"
+                className="font-mono-ui lowercase"
                 id="install-url"
                 placeholder="owner/repo or https://..."
                 spellCheck={false}
@@ -254,7 +254,7 @@ export default function PluginsPage() {
 
                 <Switch checked={installForce} onCheckedChange={setInstallForce} />
 
-                <span className="text-[0.7rem] tracking-[0.06em] text-midforeground/85 normal-case">
+                <span className="text-xs tracking-[0.06em] text-text-secondary">
                   {t.pluginsPage.forceReinstall}
                 </span>
               </div>
@@ -263,27 +263,27 @@ export default function PluginsPage() {
 
                 <Switch checked={installEnable} onCheckedChange={setInstallEnable} />
 
-                <span className="text-[0.7rem] tracking-[0.06em] text-midforeground/85 normal-case">
+                <span className="text-xs tracking-[0.06em] text-text-secondary">
                   {t.pluginsPage.enableAfterInstall}
                 </span>
               </div>
             </div>
 
             <Button
-              className="w-fit gap-2"
+              className="w-fit uppercase"
               size="sm"
               disabled={installBusy}
               onClick={() => void onInstall()}
+              prefix={installBusy ? <Spinner /> : undefined}
             >
-              {installBusy ? <Spinner /> : <Puzzle className="h-3.5 w-3.5" />}
               {t.pluginsPage.installBtn}
             </Button>
 
-            <p className="text-[0.65rem] tracking-[0.06em] text-midforeground/55 normal-case">
+            <p className="text-xs tracking-[0.06em] text-text-tertiary">
               {t.pluginsPage.rescanHint}
             </p>
 
-            <p className="text-[0.65rem] tracking-[0.06em] text-midforeground/55 normal-case">
+            <p className="text-xs tracking-[0.06em] text-text-tertiary">
               {t.pluginsPage.removeHint}
             </p>
           </CardContent>
@@ -291,20 +291,20 @@ export default function PluginsPage() {
 
         <div className="flex flex-col gap-3">
 
-          <h3 className="font-mondwest text-[0.75rem] tracking-[0.12em] text-midground/85">
+          <h3 className="font-mondwest text-display text-xs tracking-[0.12em] text-text-secondary">
             {t.pluginsPage.pluginListHeading}
           </h3>
 
           {loading ? (
 
-            <div className="flex items-center gap-2 py-8 text-[0.8rem] text-midforeground/65">
+            <div className="flex items-center gap-2 py-8 text-xs text-text-tertiary">
 
               <Spinner />
               <span>{t.common.loading}</span>
             </div>
           ) : rows.length === 0 ? (
 
-            <p className="text-[0.75rem] text-midforeground/55 normal-case">{t.common.noResults}</p>
+            <p className="text-xs text-text-tertiary">{t.common.noResults}</p>
           ) : (
 
             <ul className="flex flex-col gap-3">
@@ -329,7 +329,7 @@ export default function PluginsPage() {
 
           <div className="flex flex-col gap-3 opacity-95">
 
-            <h3 className="font-mondwest text-[0.75rem] tracking-[0.12em] text-midforeground/85">
+            <h3 className="font-mondwest text-display text-xs tracking-[0.12em] text-text-secondary">
               {t.pluginsPage.orphanHeading}
             </h3>
 
@@ -337,7 +337,7 @@ export default function PluginsPage() {
 
               {hub!.orphan_dashboard_plugins.map((m) => (
 
-                <li className="text-[0.7rem] normal-case opacity-85" key={m.name}>
+                <li className="text-xs text-text-secondary" key={m.name}>
 
 
                   {m.label ?? m.name} — {m.description || m.tab?.path}
@@ -413,66 +413,53 @@ function PluginRowCard(props: PluginRowCardProps) {
 
         <div className="flex flex-wrap items-start justify-between gap-4">
 
+          <div className="flex min-w-0 flex-1 flex-wrap items-center gap-3">
 
-          <div className="min-w-0 flex-1">
+            <span className="truncate font-semibold">{row.name}</span>
 
-            <div className="flex flex-wrap items-center gap-3">
+            <Badge tone="outline">
+              {t.pluginsPage.sourceBadge}: {row.source}
+            </Badge>
 
-              <span className="truncate font-semibold">{row.name}</span>
+            <Badge tone="outline">v{row.version || "—"}</Badge>
 
-              <Badge tone="outline">
-                {t.pluginsPage.sourceBadge}: {row.source}
-              </Badge>
+            <Badge tone={badgeTone}>{row.runtime_status}</Badge>
 
-
-              <Badge tone="outline">v{row.version || "—"}</Badge>
-
-              <Badge tone={badgeTone}>{row.runtime_status}</Badge>
-
-              {row.auth_required ? (
-                <Badge tone="destructive">{t.pluginsPage.authRequired}</Badge>
-              ) : null}
-            </div>
-
-            {row.description ? (
-
-              <p className="mt-2 max-w-2xl text-[0.7rem] tracking-[0.06em] text-midforeground/75 normal-case">
-                {row.description}
-              </p>
+            {row.auth_required ? (
+              <Badge tone="destructive">{t.pluginsPage.authRequired}</Badge>
             ) : null}
           </div>
 
           <div className="flex flex-wrap items-center gap-2 shrink-0">
-
-
-            <Button
-              disabled={busy || row.runtime_status === "enabled"}
-              ghost
-              size="sm"
-              onClick={() => {
-                void setRuntimeLoading(row.name, async () => {
-                  await api.enableAgentPlugin(row.name);
-                  showToast(t.pluginsPage.enableRuntime, "success");
-                });
-              }}
-            >
-              {t.pluginsPage.enableRuntime}
-            </Button>
-
-
-            <Button
-              disabled={busy || row.runtime_status === "disabled"}
-              ghost
-              size="sm"
-              onClick={() => {
-                void setRuntimeLoading(row.name, async () => {
-                  await api.disableAgentPlugin(row.name);
-                  showToast(t.pluginsPage.disableRuntime, "success");
-                });
-              }}
-            >
-              {t.pluginsPage.disableRuntime}
-            </Button>
+            {row.runtime_status === "enabled" ? (
+              <Button
+                disabled={busy}
+                ghost
+                size="sm"
+                onClick={() => {
+                  void setRuntimeLoading(row.name, async () => {
+                    await api.disableAgentPlugin(row.name);
+                    showToast(t.pluginsPage.disableRuntime, "success");
+                  });
+                }}
+              >
+                {t.pluginsPage.disableRuntime}
+              </Button>
+            ) : (
+              <Button
+                disabled={busy}
+                ghost
+                size="sm"
+                onClick={() => {
+                  void setRuntimeLoading(row.name, async () => {
+                    await api.enableAgentPlugin(row.name);
+                    showToast(t.pluginsPage.enableRuntime, "success");
+                  });
+                }}
+              >
+                {t.pluginsPage.enableRuntime}
+              </Button>
+            )}
 
             {tabPath ? (
 
@@ -480,7 +467,7 @@ function PluginRowCard(props: PluginRowCardProps) {
                 className={cn(
                   "inline-flex items-center rounded-none px-3 py-1.5",
                   "border border-current/25 hover:bg-current/10",
-                  "font-mondwest text-[0.65rem] tracking-[0.1em] uppercase",
+                  "font-mondwest text-display text-xs tracking-[0.1em]",
                 )}
                 to={tabPath}
               >
@@ -544,9 +531,15 @@ function PluginRowCard(props: PluginRowCardProps) {
           </div>
         </div>
 
+        {row.description ? (
+          <p className="min-w-0 w-full text-xs tracking-[0.06em] text-text-secondary break-words">
+            {row.description}
+          </p>
+        ) : null}
+
         {dm?.slots?.length ? (
 
-          <p className="text-[0.65rem] tracking-[0.05em] text-midforeground/55 normal-case">
+          <p className="text-xs tracking-[0.05em] text-text-tertiary">
             {t.pluginsPage.dashboardSlots}: {dm.slots.join(", ")}
           </p>
         ) : null}
@@ -561,7 +554,7 @@ function PluginRowCard(props: PluginRowCardProps) {
         {!row.has_dashboard_manifest && !dm ? (
 
 
-          <p className="text-[0.65rem] italic text-midforeground/45 normal-case">
+          <p className="text-xs italic text-text-disabled">
             {t.pluginsPage.noDashboardTab}
           </p>
         ) : null}

@@ -51,6 +51,11 @@ export async function fetchJSON<T>(url: string, init?: RequestInit): Promise<T> 
   return res.json();
 }
 
+/** Encode a plugin registry key for URL paths (preserves `/` segment separators). */
+function pluginPath(name: string): string {
+  return name.split("/").map(encodeURIComponent).join("/");
+}
+
 async function getSessionToken(): Promise<string> {
   if (_sessionToken) return _sessionToken;
   const injected = window.__HERMES_SESSION_TOKEN__;
@@ -138,21 +143,22 @@ export const api = {
   },
 
   // Cron jobs
-  getCronJobs: () => fetchJSON<CronJob[]>("/api/cron/jobs"),
-  createCronJob: (job: { prompt: string; schedule: string; name?: string; deliver?: string }) =>
-    fetchJSON<CronJob>("/api/cron/jobs", {
+  getCronJobs: (profile = "all") =>
+    fetchJSON<CronJob[]>(`/api/cron/jobs?profile=${encodeURIComponent(profile)}`),
+  createCronJob: (job: { prompt: string; schedule: string; name?: string; deliver?: string }, profile = "default") =>
+    fetchJSON<CronJob>(`/api/cron/jobs?profile=${encodeURIComponent(profile)}`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(job),
     }),
-  pauseCronJob: (id: string) =>
-    fetchJSON<{ ok: boolean }>(`/api/cron/jobs/${id}/pause`, { method: "POST" }),
-  resumeCronJob: (id: string) =>
-    fetchJSON<{ ok: boolean }>(`/api/cron/jobs/${id}/resume`, { method: "POST" }),
-  triggerCronJob: (id: string) =>
-    fetchJSON<{ ok: boolean }>(`/api/cron/jobs/${id}/trigger`, { method: "POST" }),
-  deleteCronJob: (id: string) =>
-    fetchJSON<{ ok: boolean }>(`/api/cron/jobs/${id}`, { method: "DELETE" }),
+  pauseCronJob: (id: string, profile = "default") =>
+    fetchJSON<CronJob>(`/api/cron/jobs/${encodeURIComponent(id)}/pause?profile=${encodeURIComponent(profile)}`, { method: "POST" }),
+  resumeCronJob: (id: string, profile = "default") =>
+    fetchJSON<CronJob>(`/api/cron/jobs/${encodeURIComponent(id)}/resume?profile=${encodeURIComponent(profile)}`, { method: "POST" }),
+  triggerCronJob: (id: string, profile = "default") =>
+    fetchJSON<CronJob>(`/api/cron/jobs/${encodeURIComponent(id)}/trigger?profile=${encodeURIComponent(profile)}`, { method: "POST" }),
+  deleteCronJob: (id: string, profile = "default") =>
+    fetchJSON<{ ok: boolean }>(`/api/cron/jobs/${encodeURIComponent(id)}?profile=${encodeURIComponent(profile)}`, { method: "DELETE" }),
 
   // Profiles (minimal)
   getProfiles: () =>
@@ -292,25 +298,25 @@ export const api = {
 
   enableAgentPlugin: (name: string) =>
     fetchJSON<{ ok: boolean; name: string; unchanged?: boolean }>(
-      `/api/dashboard/agent-plugins/${encodeURIComponent(name)}/enable`,
+      `/api/dashboard/agent-plugins/${pluginPath(name)}/enable`,
       { method: "POST" },
     ),
 
   disableAgentPlugin: (name: string) =>
     fetchJSON<{ ok: boolean; name: string; unchanged?: boolean }>(
-      `/api/dashboard/agent-plugins/${encodeURIComponent(name)}/disable`,
+      `/api/dashboard/agent-plugins/${pluginPath(name)}/disable`,
       { method: "POST" },
     ),
 
   updateAgentPlugin: (name: string) =>
     fetchJSON<AgentPluginUpdateResponse>(
-      `/api/dashboard/agent-plugins/${encodeURIComponent(name)}/update`,
+      `/api/dashboard/agent-plugins/${pluginPath(name)}/update`,
       { method: "POST" },
     ),
 
   removeAgentPlugin: (name: string) =>
     fetchJSON<{ ok: boolean; name: string }>(
-      `/api/dashboard/agent-plugins/${encodeURIComponent(name)}`,
+      `/api/dashboard/agent-plugins/${pluginPath(name)}`,
       { method: "DELETE" },
     ),
 
@@ -323,7 +329,7 @@ export const api = {
 
   setPluginVisibility: (name: string, hidden: boolean) =>
     fetchJSON<{ ok: boolean; name: string; hidden: boolean }>(
-      `/api/dashboard/plugins/${encodeURIComponent(name)}/visibility`,
+      `/api/dashboard/plugins/${pluginPath(name)}/visibility`,
       {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -553,6 +559,10 @@ export interface ModelsAnalyticsResponse {
 
 export interface CronJob {
   id: string;
+  profile?: string | null;
+  profile_name?: string | null;
+  hermes_home?: string | null;
+  is_default_profile?: boolean;
   name?: string | null;
   prompt?: string | null;
   script?: string | null;

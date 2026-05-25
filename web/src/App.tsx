@@ -32,6 +32,7 @@ import {
   MessageSquare,
   Package,
   Puzzle,
+  Rocket,
   RotateCw,
   Settings,
   Shield,
@@ -67,6 +68,8 @@ import ProfilesPage from "@/pages/ProfilesPage";
 import SkillsPage from "@/pages/SkillsPage";
 import PluginsPage from "@/pages/PluginsPage";
 import ChatPage from "@/pages/ChatPage";
+import MissionControlPage from "@/pages/MissionControlPage";
+import OpsRunsPage from "@/pages/OpsRunsPage";
 import { LanguageSwitcher } from "@/components/LanguageSwitcher";
 import { ThemeSwitcher } from "@/components/ThemeSwitcher";
 import { useI18n } from "@/i18n";
@@ -78,7 +81,7 @@ import { isDashboardEmbeddedChatEnabled } from "@/lib/dashboard-flags";
 import { api } from "@/lib/api";
 
 function RootRedirect() {
-  return <Navigate to="/sessions" replace />;
+  return <Navigate to="/mission-control" replace />;
 }
 
 function UnknownRouteFallback({ pluginsLoading }: { pluginsLoading: boolean }) {
@@ -107,6 +110,8 @@ const CHAT_NAV_ITEM: NavItem = {
  */
 const BUILTIN_ROUTES_CORE: Record<string, ComponentType> = {
   "/": RootRedirect,
+  "/mission-control": MissionControlPage,
+  "/ops-runs": OpsRunsPage,
   "/sessions": SessionsPage,
   "/analytics": AnalyticsPage,
   "/models": ModelsPage,
@@ -129,6 +134,18 @@ function ChatRouteSink() {
 }
 
 const BUILTIN_NAV_REST: NavItem[] = [
+  {
+    path: "/mission-control",
+    labelKey: "missionControl",
+    label: "Mission Control",
+    icon: Rocket,
+  },
+  {
+    path: "/ops-runs",
+    labelKey: "opsRuns",
+    label: "Ops Runs",
+    icon: Activity,
+  },
   {
     path: "/sessions",
     labelKey: "sessions",
@@ -173,6 +190,7 @@ const ICON_MAP: Record<string, ComponentType<{ className?: string }>> = {
   Package,
   Settings,
   Puzzle,
+  Rocket,
   Sparkles,
   Terminal,
   Globe,

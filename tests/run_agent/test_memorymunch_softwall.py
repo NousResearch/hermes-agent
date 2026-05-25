@@ -175,7 +175,8 @@ def test_curator_briefing_downranks_activation_only_smart_search_noise(monkeypat
         "sid-search",
     )
 
-    assert "MemoryMunch curator briefing filters" in context
+    assert "CURATOR_UNAVAILABLE" in context
+    assert "MemoryMunch curator briefing filters" not in context
     assert "245 Lake View" not in context
     assert "income streams" not in context
 
@@ -220,7 +221,9 @@ def test_compose_prefetch_context_uses_one_bounded_briefing_for_active_and_recal
     assert context.count("<memorymunch-briefing") == 1
     assert context.count("</memorymunch-briefing>") == 1
     assert "ACTIVE_SESSION_LEDGER_CURRENT:" in context
-    assert "OBSIDIAN_VAULT_OWN_SCOPE:" in context
+    assert "CURATOR_UNAVAILABLE" in context
+    assert "OBSIDIAN_VAULT_OWN_SCOPE:" not in context
+    assert "MemoryMunch production readiness recall fact." not in context
 
 
 def test_memorymunch_recall_tool_curates_results_and_active_briefing_by_query(monkeypatch):

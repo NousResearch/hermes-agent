@@ -14,6 +14,116 @@ def load_plugin():
     return module
 
 
+def test_no_raw_search_rows_injected_when_curator_unavailable(monkeypatch):
+    mm = load_plugin()
+    provider = mm.MemoryMunchProvider()
+    provider._session_id = "sid-curator-unavailable"
+    provider._scope_entity = "scope-a"
+    provider._domain = "general"
+
+    monkeypatch.delenv("HERMES_MEMORYMUNCH_CURATOR_MODEL_ENABLE", raising=False)
+    monkeypatch.setattr(
+        provider,
+        "_active_session_rows",
+        lambda session_id, query="": [
+            {
+                "id": "active-1",
+                "source": "ACTIVE_SESSION_LEDGER",
+                "provenance_class": "ACTIVE_SESSION_LEDGER_CURRENT",
+                "content_preview": "Current session asked for OpenClaw parity.",
+            }
+        ],
+    )
+    monkeypatch.setattr(
+        provider,
+        "_run_readonly_recall",
+        lambda query, max_results=6: {
+            "results": [
+                {
+                    "id": "raw-noise",
+                    "source": "vault,activation",
+                    "provenance_class": "OWN_SCOPE",
+                    "content_preview": "Al Cooke closed on 245 Lake View Drive and has unrelated income streams.",
+                }
+            ]
+        },
+    )
+
+    context = provider._compose_prefetch_context("OpenClaw MemoryMunch curator parity", "sid-curator-unavailable")
+
+    assert context.count("<memorymunch-briefing") == 1
+    assert "CURATOR_UNAVAILABLE" in context
+    assert "Current session asked for OpenClaw parity" in context
+    assert "Lake View Drive" not in context
+    assert "income streams" not in context
+
+
+def test_pasted_memory_context_is_stripped_before_prefetch_query(monkeypatch):
+    mm = load_plugin()
+    provider = mm.MemoryMunchProvider()
+    provider._session_id = "sid-prefetch-sanitize"
+    provider._scope_entity = "scope-a"
+    provider._domain = "general"
+    seen = {}
+    events = []
+
+    monkeypatch.setattr(provider, "_active_session_rows", lambda session_id, query="": [])
+
+    def fake_recall(query, max_results=6):
+        seen["query"] = query
+        return {"results": []}
+
+    monkeypatch.setattr(provider, "_run_readonly_recall", fake_recall)
+    monkeypatch.setattr(provider, "_append_session_event", lambda session_id, event, **kwargs: events.append((event, kwargs)))
+
+    provider._compose_prefetch_context(
+        """
+        Explain MemoryMunch OpenClaw parity.
+        <memory-context>
+        <memorymunch-briefing>
+        - unrelated theology/email/property atom [source=vault,activation; atom=noise]
+        </memorymunch-briefing>
+        </memory-context>
+        """,
+        "sid-prefetch-sanitize",
+    )
+
+    assert "theology" not in seen["query"]
+    assert "email" not in seen["query"]
+    assert "property atom" not in seen["query"]
+    assert "Explain MemoryMunch OpenClaw parity" in seen["query"]
+    assert any(event == "prefetch_query_sanitized" for event, _ in events)
+
+
+def test_janitor_runs_every_turn_review_mode(monkeypatch):
+    mm = load_plugin()
+    provider = mm.MemoryMunchProvider()
+    provider._session_id = "sid-janitor-every-turn"
+    events = []
+
+    monkeypatch.delenv("HERMES_MEMORYMUNCH_JANITOR_APPLY_ENABLE", raising=False)
+    monkeypatch.setattr(provider, "_append_jsonl", lambda session_id, row: None)
+    monkeypatch.setattr(provider, "_append_session_event", lambda session_id, event, **kwargs: events.append((event, kwargs)))
+    monkeypatch.setattr(provider, "_maybe_live_capture_exchange", lambda session_id, user, assistant: None)
+    monkeypatch.setattr(
+        provider,
+        "run_janitor_cycle",
+        lambda exchange_text, **kwargs: {
+            "hermes_mode": "openclaw_janitor_model_review",
+            "proposed_actions": {"archive": []},
+            "live_db_write": False,
+            "live_vault_write": False,
+        },
+    )
+
+    provider.sync_turn("User request", "Assistant answer", session_id="sid-janitor-every-turn")
+
+    janitor_events = [(event, payload) for event, payload in events if event == "janitor_cycle_completed"]
+    assert janitor_events
+    assert janitor_events[-1][1]["live_db_write"] is False
+    assert janitor_events[-1][1]["status"] == "REVIEWED"
+
+
 def test_curator_model_parity_uses_search_and_deep_read_before_injection(monkeypatch):
     mm = load_plugin()
     provider = mm.MemoryMunchProvider()
@@ -92,7 +202,7 @@ def test_janitor_model_cycle_builds_review_plan_without_mutation(monkeypatch):
     assert all(call[0] not in {"archive_memory", "edge_cleanup", "edge_prune"} for call in bridge_calls)
 
 
-def test_janitor_apply_gate_blocks_without_exact_approval(tmp_path, monkeypatch):
+def test_janitor_apply_refuses_protected_atoms_even_with_al_direct_approval(tmp_path, monkeypatch):
     mm = load_plugin()
     provider = mm.MemoryMunchProvider()
     provider._session_id = "sid-janitor"
@@ -103,18 +213,51 @@ def test_janitor_apply_gate_blocks_without_exact_approval(tmp_path, monkeypatch)
 
     monkeypatch.setenv("HERMES_MEMORYMUNCH_JANITOR_MODEL_ENABLE", "1")
     monkeypatch.setenv("HERMES_MEMORYMUNCH_JANITOR_APPLY_ENABLE", "1")
-    monkeypatch.setattr(provider, "_run_janitor_model_review", lambda exchange_text, max_candidates=20: {"archive": ["dup-1"], "edge_cleanup": False, "edge_prune": []})
+    monkeypatch.setattr(provider, "_run_janitor_model_review", lambda exchange_text, max_candidates=20: {"archive": ["system::janitor-prompt#procedural"], "edge_cleanup": False, "edge_prune": []})
 
     result = provider.run_janitor_cycle(
         "User: duplicate cleanup\nBot: ok",
         apply=True,
-        approval_phrase="wrong",
+        approval_phrase="AL_DIRECT_APPROVAL",
         rollback_pack_path=str(rollback),
     )
 
     assert result["status"] == "BLOCKED"
-    assert result["expected_approval_phrase"] == "APPROVE memorymunch janitor apply sid-janitor"
+    assert "protected_atom_requested" in result["blocked_by"]
     assert result["live_db_write"] is False
+
+
+def test_janitor_apply_accepts_al_direct_approval_with_rollback(tmp_path, monkeypatch):
+    mm = load_plugin()
+    provider = mm.MemoryMunchProvider()
+    provider._session_id = "sid-janitor"
+    rollback = tmp_path / "rollback"
+    (rollback / "db").mkdir(parents=True)
+    (rollback / "vault").mkdir(parents=True)
+    calls = []
+
+    monkeypatch.setenv("HERMES_MEMORYMUNCH_JANITOR_APPLY_ENABLE", "1")
+    monkeypatch.setattr(provider, "_run_janitor_model_review", lambda exchange_text, max_candidates=20: {"archive": ["dup-1"], "edge_cleanup": True, "edge_prune": []})
+
+    def fake_bridge(tool, args, timeout=180):
+        calls.append((tool, args))
+        if tool == "archive_memory":
+            return {"result": {"ok": True, "vault_archived": True, "archived_vault_path": "/vault/_archived/dup-1.md"}}
+        return {"result": {"ok": True}}
+
+    monkeypatch.setattr(provider, "_run_original_bridge", fake_bridge)
+
+    result = provider.run_janitor_cycle(
+        "User: duplicate cleanup\nBot: ok",
+        apply=True,
+        approval_phrase="AL_DIRECT_APPROVAL",
+        rollback_pack_path=str(rollback),
+    )
+
+    assert result["status"] == "APPLIED"
+    assert result["live_vault_write"] is True
+    assert ("archive_memory", {"memory_id": "dup-1"}) in calls
+    assert any(tool == "edge_cleanup" for tool, _ in calls)
 
 
 def test_live_capture_sanitizes_recalled_memory_before_ingest(monkeypatch):

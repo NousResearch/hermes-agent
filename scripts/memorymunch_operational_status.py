@@ -30,6 +30,7 @@ def load_env_names_only(env_path: Path) -> None:
 HERMES_HOME = Path(os.environ.get('HERMES_HOME', '/home/alcoo/.hermes'))
 MM_SESS = HERMES_HOME/'memorymunch'/'sessions'
 PLUGIN = HERMES_HOME/'plugins'/'memorymunch'/'__init__.py'
+VENDORED_PLUGIN = HERMES_HOME/'hermes-agent'/'contrib'/'plugins'/'memorymunch'/'__init__.py'
 TESTS = HERMES_HOME/'hermes-agent'/'tests'/'run_agent'/'test_memorymunch_curator_relevance.py'
 DOC = Path('/home/alcoo/tmp/memorymunch-live-repair-living-doc-20260523.md')
 CC = Path('/mnt/c/Users/paulcooke1976')
@@ -40,6 +41,68 @@ GRAPH_DIR = CC/'.claude'/'graphify'
 
 def sha(p: Path) -> str:
     return hashlib.sha256(p.read_bytes()).hexdigest() if p.exists() else ''
+
+
+def plugin_parity(runtime_plugin: Path, vendored_plugin: Path):
+    runtime_sha = sha(runtime_plugin)
+    vendored_sha = sha(vendored_plugin)
+    ok = bool(runtime_sha and vendored_sha and runtime_sha == vendored_sha)
+    return {
+        'ok': ok,
+        'runtime_path': str(runtime_plugin),
+        'vendored_path': str(vendored_plugin),
+        'runtime_sha256': runtime_sha,
+        'vendored_sha256': vendored_sha,
+        'gap': '' if ok else 'runtime_plugin_drift',
+    }
+
+
+def detect_live_briefing_contradictions(text: str):
+    text = text or ''
+    lower = text.lower()
+    gaps = []
+    if lower.count('<memorymunch-briefing') > 1:
+        gaps.append('duplicate_memorymunch_briefing')
+    technical_terms = {'memorymunch', 'hermes', 'openclaw', 'plugin', 'audit', 'production', 'curator', 'janitor'}
+    unrelated_terms = {'kipbo mortgage', 'fulfilled eschatology', 'theology', 'preterist'}
+    if any(term in lower for term in technical_terms) and any(term in lower for term in unrelated_terms):
+        gaps.append('unrelated_activation_atom_in_technical_query')
+    return {'ok': not gaps, 'gaps': gaps}
+
+
+def iter_strings(value):
+    if isinstance(value, str):
+        yield value
+    elif isinstance(value, dict):
+        for item in value.values():
+            yield from iter_strings(item)
+    elif isinstance(value, (list, tuple)):
+        for item in value:
+            yield from iter_strings(item)
+
+
+def rows_text(rows):
+    return '\n'.join(s for row in rows for s in iter_strings(row))
+
+
+def latest_turn_briefing_state(rows):
+    last_completed = -1
+    for idx, row in enumerate(rows):
+        if isinstance(row, dict) and row.get('event') == 'turn_completed':
+            last_completed = idx
+    if last_completed < 0:
+        return {'ok': False, 'gaps': ['latest_turn_missing']}
+    last_start = -1
+    for idx, row in enumerate(rows[:last_completed + 1]):
+        if isinstance(row, dict) and row.get('event') == 'turn_started':
+            last_start = idx
+    window = rows[last_start:last_completed + 1] if last_start >= 0 else rows[:last_completed + 1]
+    inspectable_events = {'turn_started', 'turn_completed', 'session_attached', 'session_opened'}
+    inspectable_rows = [
+        row for row in window
+        if isinstance(row, dict) and row.get('event') in inspectable_events
+    ]
+    return detect_live_briefing_contradictions(rows_text(inspectable_rows))
 
 def latest_session():
     files = sorted(MM_SESS.glob('*.jsonl'), key=lambda p:p.stat().st_mtime, reverse=True) if MM_SESS.exists() else []
@@ -124,7 +187,9 @@ def main():
     latest_capture_events=[r for r in rows if r.get('event') in {'live_capture_attempted','live_capture_completed','live_capture_failed','live_capture_skipped'}]
     capture_state=latest_capture_ok(rows)
     latest_capture_ok_bool=bool(capture_state.get('ok'))
+    plugin_parity_state = plugin_parity(PLUGIN, VENDORED_PLUGIN)
     completed=[r for r in rows if r.get('event')=='turn_completed']
+    briefing_state = latest_turn_briefing_state(rows)
     comp=[r for r in all_recent_rows if r.get('event') in {'session_attached','compaction_checkpoint'} or r.get('reason')=='compression']
     gj=GRAPH_OUT/'graph.json'; gr=GRAPH_OUT/'GRAPH_REPORT.md'; gh=GRAPH_OUT/'graph.html'
     verdict=GRAPH_DIR/'verdict.jsonl'
@@ -136,6 +201,8 @@ def main():
         'live_write_env_enabled': env.get('HERMES_MEMORYMUNCH_LIVE_WRITE_ENABLE','').lower() in {'1','true','yes'},
         'auto_capture_env_enabled': env.get('HERMES_MEMORYMUNCH_AUTO_CAPTURE_ENABLE','').lower() in {'1','true','yes'},
         'plugin_exists': PLUGIN.exists(),
+        'runtime_plugin_matches_vendored': plugin_parity_state['ok'],
+        'live_briefing_clean': briefing_state['ok'],
         'latest_ledger_exists': bool(p and p.exists()),
         'visible_turn_ledgering': len(completed)>0,
         'live_capture_firing': latest_capture_ok_bool,
@@ -160,7 +227,10 @@ def main():
         'latest_ledger_counts': {'rows':len(rows),'turn_completed':len(completed),'live_capture_attempted':len(attempted),'live_capture_completed':len(live),'live_capture_failed':len(failed),'compression_events':len(comp)},
         'latest_live_exchange_id': live[-1].get('exchange_id','') if live else '',
         'latest_capture_state': capture_state,
+        'plugin_parity': plugin_parity_state,
+        'live_briefing_state': briefing_state,
         'plugin_sha256': sha(PLUGIN),
+        'vendored_plugin_sha256': sha(VENDORED_PLUGIN),
         'test_sha256': sha(TESTS),
         'graphify': {
             'graph_json': str(gj), 'graph_report': str(gr),

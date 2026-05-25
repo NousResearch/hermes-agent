@@ -14,7 +14,9 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import re
 import sys
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -66,17 +68,67 @@ async def edge_cleanup() -> dict[str, Any]:
         "total_edges_after": total_edges_after,
     }
 
+def _find_vault_atom_file(memory_id: str, memory_type: str = "") -> Path | None:
+    """Find the vault markdown file for an atom.
+
+    OpenClaw first derives the filename from the atom id and type folder. The
+    YAML-id scan is a compatibility fallback for older/non-standard filenames.
+    """
+    needle = str(memory_id or "").strip()
+    if not needle:
+        return None
+    if memory_type:
+        filename = needle.replace("::", "-").replace("#", "-") + ".md"
+        candidate = VAULT_PATH / str(memory_type) / filename
+        if candidate.exists():
+            return candidate
+    for path in VAULT_PATH.rglob("*.md"):
+        if "_archived" in path.parts:
+            continue
+        try:
+            head = path.read_text(encoding="utf-8", errors="replace")[:2000]
+        except OSError:
+            continue
+        if re.search(rf"(?m)^id:\s*{re.escape(needle)}\s*$", head):
+            return path
+    return None
+
+
+def _archive_vault_atom(memory_id: str, memory_type: str = "") -> dict[str, Any]:
+    """Move the matching vault atom into vault/_archived/<type>/.
+
+    This is the user-approved safer Hermes layout: preserve the source type
+    folder under _archived while keeping DB/edge behavior OpenClaw-compatible.
+    Returns explicit telemetry for Hermes ledger proof.
+    """
+    source = _find_vault_atom_file(memory_id, memory_type)
+    if not source:
+        return {"vault_archived": False, "vault_reason": "vault_atom_not_found"}
+    try:
+        rel = source.relative_to(VAULT_PATH)
+    except ValueError:
+        rel = Path(source.name)
+    dest = VAULT_PATH / "_archived" / rel
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    if dest.exists():
+        stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+        dest = dest.with_name(f"{dest.stem}-{stamp}{dest.suffix}")
+    source.replace(dest)
+    return {"vault_archived": True, "vault_path": str(source), "archived_vault_path": str(dest)}
+
+
 async def archive_memory(memory_id: str) -> dict[str, Any]:
     protected_prefixes = ("system::", "identity::", "hub::", "skill-", "rule::")
     if memory_id.lower().startswith(protected_prefixes) or "absolute-rule" in memory_id.lower():
         raise ValueError(f"refusing to archive protected atom: {memory_id}")
     pool = await get_pool()
     async with pool.acquire() as conn:
-        before = await conn.fetchrow("SELECT id, archived FROM memories WHERE id=$1", memory_id)
+        before = await conn.fetchrow("SELECT id, archived, type FROM memories WHERE id=$1", memory_id)
         if not before:
             raise ValueError(f"memory not found: {memory_id}")
         result = await conn.execute("UPDATE memories SET archived=true WHERE id=$1", memory_id)
         edge_result = await conn.execute("DELETE FROM edges WHERE source_id=$1 OR target_id=$1", memory_id)
+    vault_result = _archive_vault_atom(memory_id, str(before["type"] or ""))
     def _affected(text: str) -> int:
         try:
             return int(str(text).split()[-1])
@@ -87,6 +139,7 @@ async def archive_memory(memory_id: str) -> dict[str, Any]:
         "already_archived": bool(before["archived"]),
         "archived_rows": _affected(result),
         "edges_deleted": _affected(edge_result),
+        **vault_result,
     }
 
 

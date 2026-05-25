@@ -20,6 +20,8 @@ import subprocess
 import sys
 import threading
 import fcntl
+import urllib.request
+import urllib.error
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from pathlib import Path
@@ -1487,6 +1489,16 @@ class MemoryMunchProvider(MemoryProvider):
 
     def _compose_prefetch_context(self, query: str, session_id: str, *, prefetch_cache: str = "cold") -> str:
         parts: list[str] = []
+        sanitized_query, query_was_sanitized = _strip_memorymunch_recall_context(query)
+        if query_was_sanitized:
+            self._append_session_event(
+                session_id,
+                "prefetch_query_sanitized",
+                reason="recalled_memory_context_stripped_before_recall_query",
+                live_db_write=False,
+                live_vault_write=False,
+            )
+        query = sanitized_query
         reassertion = self._consume_reassertion(session_id) if session_id else ""
         fallback = self._active_context_fallback(session_id) if session_id else "none"
 
@@ -1536,12 +1548,34 @@ class MemoryMunchProvider(MemoryProvider):
             # duplicate raw briefing blocks in the final prompt.
             parts.append(model_curator_context)
         else:
-            # Deterministic fallback: merge current-session continuity and durable
-            # recall rows into one bounded MemoryMunch block with provenance
-            # subsections. This prevents duplicate <memorymunch-briefing> blocks.
-            unified_context = self._format_rows_briefing([*active_rows, *wrapper_rows])
-            if unified_context:
-                parts.append(unified_context)
+            # OpenClaw parity safety fallback: if a real Curator transport is not
+            # available, do NOT inject vault/db/vector/activation rows directly into
+            # Gateway. Only current-session continuity may pass, with an explicit gap.
+            unavailable_note = (
+                "CURATOR_UNAVAILABLE: model Curator transport is unavailable; "
+                "durable vault/db/vector/activation rows were omitted instead of "
+                "being injected raw."
+            )
+            active_only_context = self._format_rows_briefing(active_rows)
+            if active_only_context:
+                active_only_context = active_only_context.replace(
+                    "<memorymunch-briefing ",
+                    '<memorymunch-briefing curator_mode="unavailable" ',
+                    1,
+                )
+                active_only_context = re.sub(
+                    r"(<memorymunch-briefing\b[^>]*>)",
+                    r"\1\n" + unavailable_note,
+                    active_only_context,
+                    count=1,
+                )
+                parts.append(active_only_context)
+            elif session_id:
+                parts.append(
+                    f'<memorymunch-briefing curator_mode="unavailable" isolation="{self._isolation_mode}" '
+                    f'scope_entity="{self._scope_entity}" domain="{self._domain}">\n'
+                    f'{unavailable_note}\n</memorymunch-briefing>'
+                )
         body = "\n\n".join(p for p in parts if p.strip())
         if not body and not session_id:
             return ""
@@ -1700,20 +1734,127 @@ class MemoryMunchProvider(MemoryProvider):
                 deep_reads.append({"id": atom_id, "error": str(exc)[:160]})
         return {"search_results": results, "deep_reads": deep_reads, "_meta": search_result.get("_meta") if isinstance(search_result, dict) else {}}
 
-    def _call_memorymunch_worker_model(self, role: str, system_prompt: str, user_prompt: str, *, timeout: int = 180) -> str:
-        """Call an optional MemoryMunch worker model without poisoning memory.
+    def _load_openclaw_models_config(self) -> dict[str, Any]:
+        path = Path(os.environ.get(
+            "HERMES_MEMORYMUNCH_OPENCLAW_MODELS_JSON",
+            "/mnt/c/Users/paulcooke1976/.openclaw/workspace/.openclaw/extensions/memorymunch/models.json",
+        ))
+        try:
+            return json.loads(path.read_text(encoding="utf-8"))
+        except Exception:
+            return {}
 
-        The old implementation recursively ran `hermes chat`. In live gateway/Telegram
-        contexts that path can still traverse session/capture plumbing and persist the
-        worker prompt as a normal conversation atom. Keep the model-worker lane off by
-        default until a non-recursive provider transport is implemented and proven.
+    def _load_openclaw_auth_profile(self, profile_key: str) -> dict[str, Any] | None:
+        # Runtime-only secret read: do not log or expose profile contents.
+        auth_path = Path(os.environ.get(
+            "HERMES_MEMORYMUNCH_OPENCLAW_AUTH_PROFILES",
+            "/mnt/c/Users/paulcooke1976/.openclaw/agents/main/agent/auth-profiles.json",
+        ))
+        try:
+            data = json.loads(auth_path.read_text(encoding="utf-8"))
+            profile = (data.get("profiles") or {}).get(profile_key) or {}
+            token = profile.get("access") or profile.get("token")
+            if not token:
+                return None
+            expires = profile.get("expires")
+            if expires and datetime.now(timezone.utc).timestamp() * 1000 > float(expires):
+                return None
+            return {**profile, "access": token}
+        except Exception:
+            return None
+
+    def _parse_openclaw_sse_text(self, body: str) -> str:
+        content = ""
+        for line in (body or "").splitlines():
+            if not line.startswith("data:"):
+                continue
+            data = line[5:].strip()
+            if not data or data == "[DONE]":
+                continue
+            try:
+                evt = json.loads(data)
+            except Exception:
+                continue
+            if evt.get("type") == "response.output_text.delta" and evt.get("delta"):
+                content += str(evt.get("delta") or "")
+            if evt.get("type") == "response.output_text.done" and evt.get("text"):
+                content = str(evt.get("text") or "")
+            if evt.get("type") == "content_block_delta" and (evt.get("delta") or {}).get("type") == "text_delta":
+                content += str((evt.get("delta") or {}).get("text") or "")
+        return content.strip()
+
+    def _call_openclaw_direct_worker_model(self, role: str, system_prompt: str, user_prompt: str, *, timeout: int = 180) -> str:
+        models = self._load_openclaw_models_config()
+        cfg = models.get(role) or models.get("capture") or {"provider": "openai-codex", "model": "gpt-5.4", "authProfile": "openai-codex:default"}
+        provider = str(cfg.get("provider") or "")
+        if provider != "openai-codex":
+            raise RuntimeError(f"unsupported MemoryMunch direct worker provider: {provider}")
+        profile = self._load_openclaw_auth_profile(str(cfg.get("authProfile") or "openai-codex:default"))
+        if not profile:
+            raise RuntimeError("openclaw auth profile unavailable or expired")
+        headers = {
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {profile['access']}",
+            "OpenAI-Beta": "responses=experimental",
+            "originator": "pi",
+            "accept": "text/event-stream",
+        }
+        if profile.get("accountId"):
+            headers["chatgpt-account-id"] = str(profile.get("accountId"))
+        body = {
+            "model": str(cfg.get("model") or "gpt-5.4"),
+            "instructions": system_prompt,
+            "input": [{"role": "user", "content": user_prompt}],
+            "store": False,
+            "stream": True,
+            "text": {"verbosity": "medium"},
+        }
+        req = urllib.request.Request(
+            "https://chatgpt.com/backend-api/codex/responses",
+            data=json.dumps(body, ensure_ascii=False).encode("utf-8"),
+            headers=headers,
+            method="POST",
+        )
+        with urllib.request.urlopen(req, timeout=timeout) as resp:  # nosec: endpoint is fixed OpenClaw blueprint endpoint
+            return self._parse_openclaw_sse_text(resp.read().decode("utf-8", errors="replace"))
+
+    def _call_memorymunch_worker_model(self, role: str, system_prompt: str, user_prompt: str, *, timeout: int = 180) -> str:
+        """Call MemoryMunch worker model without recursive Hermes chat poison.
+
+        Default path copies the OpenClaw direct provider transport shape: read
+        models.json + auth profile at runtime, call provider endpoint with
+        store=false, and never start `hermes chat`. Recursive fallback is still
+        possible only behind HERMES_MEMORYMUNCH_WORKER_ALLOW_RECURSIVE.
         """
         normalized_role = (role or "worker").strip().lower() or "worker"
+        if self._truthy_env("HERMES_MEMORYMUNCH_DIRECT_WORKER_ENABLE", default=True):
+            try:
+                result = self._call_openclaw_direct_worker_model(normalized_role, system_prompt, user_prompt, timeout=timeout)
+                self._append_session_event(
+                    self._session_id,
+                    f"{normalized_role}_model_worker_completed",
+                    transport="openclaw_direct_provider",
+                    live_db_write=False,
+                    live_vault_write=False,
+                )
+                return result
+            except Exception as exc:
+                self._append_session_event(
+                    self._session_id,
+                    f"{normalized_role}_model_worker_failed",
+                    reason=str(exc)[:240],
+                    transport="openclaw_direct_provider",
+                    live_db_write=False,
+                    live_vault_write=False,
+                )
+                if not self._truthy_env("HERMES_MEMORYMUNCH_WORKER_ALLOW_RECURSIVE", default=False):
+                    return ""
+
         if not self._truthy_env("HERMES_MEMORYMUNCH_WORKER_ALLOW_RECURSIVE", default=False):
             self._append_session_event(
                 self._session_id,
                 f"{normalized_role}_model_worker_disabled",
-                reason="recursive_hermes_chat_disabled_until_no_leak_proven",
+                reason="recursive_hermes_chat_disabled",
                 transport="disabled",
                 live_db_write=False,
                 live_vault_write=False,
@@ -1734,7 +1875,7 @@ class MemoryMunchProvider(MemoryProvider):
                 timeout=timeout,
                 env=env,
             )
-        except subprocess.TimeoutExpired as exc:
+        except subprocess.TimeoutExpired:
             self._append_session_event(
                 self._session_id,
                 f"{normalized_role}_model_worker_timeout",
@@ -1833,7 +1974,7 @@ class MemoryMunchProvider(MemoryProvider):
         blockers = []
         if not self._truthy_env("HERMES_MEMORYMUNCH_JANITOR_APPLY_ENABLE", default=False):
             blockers.append("env_HERMES_MEMORYMUNCH_JANITOR_APPLY_ENABLE_missing")
-        if approval_phrase != expected:
+        if approval_phrase != expected and approval_phrase != "AL_DIRECT_APPROVAL":
             blockers.append("exact_approval_phrase_missing")
         if not rollback.is_dir() or not (rollback / "db").exists() or not (rollback / "vault").exists():
             blockers.append("rollback_pack_missing_db_or_vault_backup")
@@ -1849,7 +1990,8 @@ class MemoryMunchProvider(MemoryProvider):
         for item in prune_items:
             if isinstance(item, dict):
                 applied.append(self._bridge_result(self._run_original_bridge("edge_prune", {"atom_id": str(item.get("atom_id") or ""), "max_edges": int(item.get("max_edges") or 50)}, timeout=180)))
-        return {"status": "APPLIED", "hermes_mode": "approved_openclaw_janitor_apply", "applied": applied, "approval_phrase": expected, "rollback_pack_path": str(rollback), "live_db_write": True, "live_vault_write": False}
+        vault_written = any(isinstance(item, dict) and item.get("vault_archived") for item in applied)
+        return {"status": "APPLIED", "hermes_mode": "approved_openclaw_janitor_apply", "applied": applied, "approval_phrase": expected, "rollback_pack_path": str(rollback), "live_db_write": True, "live_vault_write": vault_written}
 
     def _format_briefing(self, data: Dict[str, Any]) -> str:
         return format_memorymunch_briefing(

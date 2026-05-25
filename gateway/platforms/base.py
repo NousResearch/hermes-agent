@@ -947,11 +947,14 @@ def _media_delivery_denied_paths() -> List[Path]:
     home = Path(os.path.expanduser("~"))
     for sub in _MEDIA_DELIVERY_DENIED_HOME_SUBPATHS:
         denied.append(home / sub)
-    # The Hermes home itself contains credentials (auth.json, .env) — only the
-    # cache subdirectories under it are explicitly allowlisted above.
-    denied.append(_HERMES_HOME / ".env")
-    denied.append(_HERMES_HOME / "auth.json")
-    denied.append(_HERMES_HOME / "credentials")
+    # Deny the entire Hermes home directory tree. It contains credentials
+    # (auth.json, .env, mcp-tokens/, pairing/, .anthropic_oauth.json, etc.)
+    # that must never be delivered as gateway attachments regardless of mtime.
+    # Cache subdirectories within HERMES_HOME (image_cache/, cache/documents/,
+    # etc.) live in MEDIA_DELIVERY_SAFE_ROOTS and are returned by the allowlist
+    # check before this denylist is ever consulted — denying HERMES_HOME here
+    # does not affect legitimate cache deliveries.
+    denied.append(_HERMES_HOME)
     return denied
 
 

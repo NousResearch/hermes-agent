@@ -256,6 +256,28 @@ class TestBuildSessionContextPrompt:
         assert "pin" in prompt.lower()
         assert "current message's slack block/attachment payload" in prompt.lower()
 
+    def test_canon_prompt_includes_agent_identity(self, monkeypatch):
+        canon = Platform("canon")
+        monkeypatch.setenv("HERMES_CANON_AGENT_NAME", "Leonardo 2")
+        config = GatewayConfig(
+            platforms={
+                canon: PlatformConfig(enabled=True, api_key="fake"),
+            },
+        )
+        source = SessionSource(
+            platform=canon,
+            chat_id="group-1",
+            chat_name="Ops Group",
+            chat_type="group",
+            user_name="Moty",
+        )
+        ctx = build_session_context(source, config)
+        prompt = build_session_context_prompt(ctx)
+
+        assert "inside Canon as Leonardo 2" in prompt
+        assert "@mention" in prompt
+        assert "group chats" in prompt
+
     def test_discord_prompt_with_channel_topic(self):
         """Channel topic should appear in the session context prompt."""
         config = GatewayConfig(

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
@@ -1090,7 +1091,8 @@ class TestCanonLifecycle:
             self.closed = True
 
     @pytest.mark.asyncio
-    async def test_connect_hydrates_identity_and_conversations(self):
+    async def test_connect_hydrates_identity_and_conversations(self, monkeypatch):
+        monkeypatch.delenv("HERMES_CANON_AGENT_NAME", raising=False)
         adapter = CanonAdapter(_config(extra={"api_key": "key"}))
         fake = self.FakeClient()
         block = asyncio.Event()
@@ -1104,6 +1106,8 @@ class TestCanonLifecycle:
         assert await adapter.connect() is True
         assert adapter.is_connected is True
         assert adapter._agent_id == "agent-1"
+        assert adapter.profile_agent_name == "Hermes"
+        assert os.environ["HERMES_CANON_AGENT_NAME"] == "Hermes"
         assert adapter._conversation_cache["convo-1"]["name"] == "Ada"
 
         block.set()

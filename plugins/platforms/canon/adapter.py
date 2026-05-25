@@ -529,6 +529,8 @@ class CanonAdapter(BasePlatformAdapter):
         self.profile_name = resolved.profile
         self.profile_agent_id = resolved.agent_id
         self.profile_agent_name = resolved.agent_name
+        if self.profile_agent_name:
+            os.environ.setdefault("HERMES_CANON_AGENT_NAME", self.profile_agent_name)
 
         self.base_url = (
             _config_value(config, "base_url", "CANON_BASE_URL", "")
@@ -578,6 +580,10 @@ class CanonAdapter(BasePlatformAdapter):
         try:
             ctx = await self._client.get_me()
             self._agent_id = _first_string(ctx, "agentId", "id", "userId")
+            agent_display_name = _first_string(ctx, "displayName", "agentName", "name")
+            if agent_display_name:
+                self.profile_agent_name = agent_display_name
+                os.environ["HERMES_CANON_AGENT_NAME"] = agent_display_name
             await self._refresh_conversations()
             self._mark_connected()
             await self._publish_runtime_status()

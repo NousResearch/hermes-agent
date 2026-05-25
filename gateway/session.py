@@ -373,6 +373,23 @@ def build_session_context_prompt(
             "Use target='yuanbao:direct:<account_id>' for DM "
             "and target='yuanbao:group:<group_code>' for group chat."
         )
+    elif getattr(context.source.platform, "value", "") == "canon":
+        lines.append("")
+        canon_name = os.getenv("HERMES_CANON_AGENT_NAME", "").strip()
+        if canon_name:
+            lines.append(
+                f"**Platform notes:** You are running inside Canon as {canon_name}. "
+                "If a human addresses that name, a nickname for that name, or an @mention "
+                "of that name, treat it as addressed to you. Canon conversations can be "
+                "direct or group chats; answer only when addressed or when your help is "
+                "clearly requested."
+            )
+        else:
+            lines.append(
+                "**Platform notes:** You are running inside Canon. Canon conversations "
+                "can be direct or group chats; answer only when addressed or when your "
+                "help is clearly requested."
+            )
 
     # Connected platforms
     platforms_list = ["local (files on this machine)"]

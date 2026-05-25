@@ -1,10 +1,9 @@
-"""Behavior-parity check for the STT plugin hook (follow-up to #30398).
+"""Behavior-parity check for the STT plugin hook + command-provider registry.
 
 Spawns one subprocess per (version, scenario) cell — pinned to either
-``origin/main`` (no plugin hook; ``stt.provider: openrouter`` falls
-through to the "No STT provider available" error path) or this PR's
-worktree (plugin hook present; same config routes through the plugin
-registry when a plugin is registered).
+``origin/main`` (no plugin hook, no STT command-provider registry; only
+the legacy ``HERMES_LOCAL_STT_COMMAND`` escape hatch exists) or this PR's
+worktree (both new surfaces present).
 
 Each subprocess clears all STT-related env vars + writes a
 ``config.yaml``, then asks the dispatcher how it would route a
@@ -14,13 +13,18 @@ Each subprocess clears all STT-related env vars + writes a
 
 Where ``dispatch_kind`` ∈
 ``{"builtin_local", "builtin_groq", "builtin_openai", ...,
-"plugin", "plugin_unavailable", "no_provider_error", "stt_disabled"}``.
+"plugin", "plugin_unavailable", "command_provider",
+"no_provider_error", "stt_disabled"}``.
 
 Acceptable diffs:
 - ``no_provider_error → plugin`` for the ``plugin-installed`` scenario.
 - ``no_provider_error → plugin_unavailable`` for the
   ``plugin-installed-unavailable`` scenario (PR returns the cleaner
   unavailability envelope instead of the generic auto-detect error).
+- ``no_provider_error → command_provider`` for the
+  ``command-provider-installed`` scenario (registry shipped with this PR).
+- ``no_provider_error → command_provider`` for
+  ``command-vs-plugin-same-name`` (command wins precedence, same as TTS).
 
 Run from the PR worktree::
 
@@ -101,7 +105,7 @@ try:
             @property
             def name(self): return "openrouter"
             def transcribe(self, file_path, **kw):
-                return {"success": True, "transcript": "plugin transcript", "provider": "openrouter"}
+                return {"success": True, "transcript": "PLUGIN: openrouter transcript", "provider": "openrouter"}
 
         transcription_registry._reset_for_tests()
         transcription_registry.register_provider(_FakeProvider())
@@ -183,6 +187,13 @@ elif not success and "No STT provider" in error_text:
     dispatch_kind = "no_provider_error"
 elif provider_name in ("local", "local_command", "groq", "openai", "mistral", "xai"):
     dispatch_kind = "builtin_" + provider_name
+elif success and isinstance(result, dict) and result.get("transcript", "").startswith("CMD:"):
+    # Command-provider scenarios below emit transcripts prefixed with "CMD:"
+    # so the harness can distinguish command-provider dispatch from a
+    # plugin dispatch even when they share a provider name.
+    dispatch_kind = "command_provider"
+elif success and isinstance(result, dict) and result.get("transcript", "").startswith("PLUGIN:"):
+    dispatch_kind = "plugin"
 elif success and provider_name and provider_name not in ("local", "local_command", "groq", "openai", "mistral", "xai"):
     dispatch_kind = "plugin"
 else:
@@ -195,6 +206,35 @@ shape = {
 }
 print(json.dumps(shape))
 """
+
+
+def _cmd_yaml(provider_name: str, transcript: str) -> str:
+    """Build a YAML snippet for an stt.providers.<name>: type: command entry.
+
+    Produces a shell command that writes ``transcript`` to {output_path}.
+    Backslashes in the venv python path are doubled for YAML, and the
+    inner double quotes around the python -c payload are YAML-escaped.
+    Keeps the test scenarios readable.
+    """
+    interp = sys.executable.replace("\\", "\\\\")
+    # Inside the YAML double-quoted string, we use single quotes around
+    # the python -c body so we don't have to YAML-escape inner double
+    # quotes. Single quotes inside the body are not needed; the body uses
+    # double quotes for module references and string literals.
+    payload = (
+        f"import sys; open(sys.argv[1], 'w').write('{transcript}')"
+    )
+    command = f'{interp} -c "{payload}" {{output_path}}'
+    # YAML-escape: double-quote the whole thing, escape inner " and \.
+    yaml_escaped = command.replace("\\", "\\\\").replace('"', '\\"')
+    return (
+        "stt:\n"
+        f"  provider: {provider_name}\n"
+        "  providers:\n"
+        f"    {provider_name}:\n"
+        "      type: command\n"
+        f'      command: "{yaml_escaped}"\n'
+    )
 
 
 SCENARIOS: list[tuple[str, str, dict[str, str], str]] = [
@@ -215,7 +255,44 @@ SCENARIOS: list[tuple[str, str, dict[str, str], str]] = [
     ("plugin-installed-unavailable", "stt:\n  provider: openrouter\n", {}, "unavailable"),
     # Built-in name + plugin tries to shadow → both: built-in
     ("explicit-openai-with-plugin-registered", "stt:\n  provider: openai\n", {}, "yes"),
+    # NEW (this PR): stt.providers.<name>: type: command registry.
+    # Provider name "fake-cli" + transcript prefixed "CMD:" so dispatch_kind
+    # detection routes it to "command_provider". On main (no registry),
+    # this falls through to no_provider_error.
+    (
+        "command-provider-installed",
+        _cmd_yaml("fake-cli", "CMD: fake-cli transcript"),
+        {},
+        "no",
+    ),
+    # NEW (this PR): same name registered as BOTH a command provider and
+    # a plugin under "openrouter". Command must win (config more local
+    # than plugin install). The plugin emits "PLUGIN:..." — assertion is
+    # that the transcript is "CMD:...", proving command-wins precedence.
+    (
+        "command-vs-plugin-same-name",
+        _cmd_yaml("openrouter", "CMD: openrouter via command wins"),
+        {},
+        "yes",  # also register a plugin under "openrouter" — must NOT fire
+    ),
+    # NEW (this PR): built-in name with a command provider declared under
+    # it → built-in still wins (built-in elif chain has precedence).
+    # The command would write "CMD: HIJACK" if it fired — assertion is
+    # that built-in OpenAI dispatch fires instead.
+    (
+        "explicit-openai-with-command-shadow",
+        _cmd_yaml("openai", "CMD: HIJACK"),
+        {},
+        "no",
+    ),
 ]
+
+
+# Subprocesses reset the registry between runs via ``_reset_for_tests`` so
+# registrations from earlier scenarios don't leak. The command-provider
+# scenarios also work on origin/main — the subprocess just executes the
+# native dispatch path, which falls through to "no_provider_error" because
+# main has no registry for stt.providers.<name>.
 
 
 def _run_scenario(repo_path: Path, label: str, config_yaml: str, env: dict, plugin_register: str) -> dict:
@@ -297,7 +374,9 @@ def main() -> int:
         # On main, "plugin-installed" returns no_provider_error (no
         # plugin hook); on PR, plugin dispatches. Same shape for
         # "plugin-installed-unavailable" but PR returns the cleaner
-        # plugin_unavailable envelope. Both diffs are expected.
+        # plugin_unavailable envelope. The new command-provider scenarios
+        # also intentionally diff against main (which has no stt.providers
+        # registry yet).
         no_provider_to_plugin = (
             main_reduced.get("dispatch_kind") == "no_provider_error"
             and pr_reduced.get("dispatch_kind") == "plugin"
@@ -308,11 +387,19 @@ def main() -> int:
             and pr_reduced.get("dispatch_kind") == "plugin_unavailable"
             and label == "plugin-installed-unavailable"
         )
+        no_provider_to_command = (
+            main_reduced.get("dispatch_kind") == "no_provider_error"
+            and pr_reduced.get("dispatch_kind") == "command_provider"
+            and label in {"command-provider-installed", "command-vs-plugin-same-name"}
+        )
         if no_provider_to_plugin:
             print(f"  [DIFF] {label}: no_provider_error → plugin — expected")
             intentional_diffs.append((label, main_reduced, pr_reduced))
         elif no_provider_to_unavailable:
             print(f"  [DIFF] {label}: no_provider_error → plugin_unavailable — expected")
+            intentional_diffs.append((label, main_reduced, pr_reduced))
+        elif no_provider_to_command:
+            print(f"  [DIFF] {label}: no_provider_error → command_provider — expected")
             intentional_diffs.append((label, main_reduced, pr_reduced))
         else:
             print(f"  [FAIL] {label}")

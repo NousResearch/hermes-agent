@@ -5924,8 +5924,8 @@ DEFAULT_LOG_BACKUP_COUNT = 1
 # `git config --global` state. Operators on this fork can override via
 # `kanban.git_identity_email` / `kanban.git_identity_name` in config.yaml,
 # or via the env vars themselves (the worker's own .env wins).
-DEFAULT_KANBAN_GIT_IDENTITY_EMAIL = "97122673+sahilm-ti@users.noreply.github.com"
-DEFAULT_KANBAN_GIT_IDENTITY_NAME = "Sahil Marwaha"
+DEFAULT_KANBAN_GIT_IDENTITY_EMAIL = "266772320+sahilm-ai@users.noreply.github.com"
+DEFAULT_KANBAN_GIT_IDENTITY_NAME = "Sahil (AI)"
 
 # Keep a little wall-clock budget for the worker to observe a terminal timeout
 # and call kanban_block/kanban_complete before max_runtime_seconds kills it.

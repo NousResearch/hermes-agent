@@ -260,6 +260,8 @@ AUTHOR_MAP = {
     # sahilm-ti
     "sahil.marwaha@trilogy.com": "sahilm-ti",
     "sahil@nousresearch.com": "sahilm-ti",
+    # sahilm-ai (dedicated AI persona for agent-generated commits)
+    "266772320+sahilm-ai@users.noreply.github.com": "sahilm-ai",
     # teknium (multiple emails)
     "teknium1@gmail.com": "teknium1",
     "kenyon1977@gmail.com": "kenyonxu",

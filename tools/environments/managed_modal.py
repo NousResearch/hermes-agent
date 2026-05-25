@@ -60,7 +60,8 @@ class ManagedModalEnvironment(BaseModalExecutionEnvironment):
         if gateway is None:
             raise ValueError("Managed Modal requires a configured tool gateway and Nous user token")
 
-        self._gateway_origin = gateway.gateway_origin.rstrip("/")
+        self._gateway_origin = gateway.resolved_origin.rstrip("/")
+        self._gateway_host_header = gateway.gateway_host_header
         self._nous_user_token = gateway.nous_user_token
         self._task_id = task_id
         self._persistent = persistent_filesystem
@@ -234,6 +235,8 @@ class ManagedModalEnvironment(BaseModalExecutionEnvironment):
             "Authorization": f"Bearer {self._nous_user_token}",
             "Content-Type": "application/json",
         }
+        if self._gateway_host_header:
+            headers["Host"] = self._gateway_host_header
         if extra_headers:
             headers.update(extra_headers)
 

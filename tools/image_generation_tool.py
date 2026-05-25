@@ -362,7 +362,7 @@ def _get_managed_fal_client(managed_gateway):
     global _managed_fal_client, _managed_fal_client_config
 
     client_config = (
-        managed_gateway.gateway_origin.rstrip("/"),
+        managed_gateway.resolved_origin.rstrip("/"),
         managed_gateway.nous_user_token,
     )
     with _managed_fal_client_lock:
@@ -375,7 +375,7 @@ def _get_managed_fal_client(managed_gateway):
         _managed_fal_client = _ManagedFalSyncClient(
             fal_client,
             key=managed_gateway.nous_user_token,
-            queue_run_origin=managed_gateway.gateway_origin,
+            queue_run_origin=managed_gateway.resolved_origin,
         )
         _managed_fal_client_config = client_config
         return _managed_fal_client

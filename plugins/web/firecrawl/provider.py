@@ -238,7 +238,7 @@ def _get_firecrawl_client() -> Any:
 
         kwargs = {
             "api_key": managed_gateway.nous_user_token,
-            "api_url": managed_gateway.gateway_origin,
+            "api_url": managed_gateway.resolved_origin,
         }
         client_config = (
             "tool-gateway",

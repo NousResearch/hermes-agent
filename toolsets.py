@@ -58,6 +58,8 @@ _HERMES_CORE_TOOLS = [
     "cronjob",
     # Cross-platform messaging (gated on gateway running via check_fn)
     "send_message",
+    # App integrations (500+ apps via Nous tool gateway, gated via check_fn)
+    "app_search_tools", "app_tool_schemas", "app_execute_tools", "app_manage_connections",
     # Home Assistant smart home control (gated on HASS_TOKEN via check_fn)
     "ha_list_entities", "ha_get_state", "ha_list_services", "ha_call_service",
     # Kanban multi-agent coordination — only in schema when the agent is
@@ -246,6 +248,12 @@ TOOLSETS = {
     "homeassistant": {
         "description": "Home Assistant smart home control and monitoring",
         "tools": ["ha_list_entities", "ha_get_state", "ha_list_services", "ha_call_service"],
+        "includes": []
+    },
+
+    "app_tools": {
+        "description": "External app integrations (Gmail, Slack, GitHub, Notion, 500+ apps) via Nous tool gateway",
+        "tools": ["app_search_tools", "app_tool_schemas", "app_execute_tools", "app_manage_connections"],
         "includes": []
     },
 

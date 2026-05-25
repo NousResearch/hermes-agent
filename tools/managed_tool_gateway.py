@@ -7,7 +7,8 @@ import logging
 import os
 from datetime import datetime, timezone
 from dataclasses import dataclass
-from typing import Callable, Optional
+from typing import Callable, Optional, Tuple
+from urllib.parse import urlparse, urlunparse
 
 logger = logging.getLogger(__name__)
 
@@ -15,6 +16,27 @@ from hermes_constants import get_hermes_home
 from tools.tool_backend_helpers import managed_nous_tools_enabled
 
 _DEFAULT_TOOL_GATEWAY_DOMAIN = "nousresearch.com"
+
+
+def _rewrite_localhost_origin(origin: str) -> Tuple[str, Optional[str]]:
+    """Rewrite ``*.localhost`` hostnames to ``127.0.0.1`` for DNS compatibility.
+
+    Python's :func:`socket.getaddrinfo` doesn't special-case ``*.localhost``
+    subdomains (RFC 6761), so ``tools-gateway.localhost`` fails DNS resolution
+    on most platforms.  Bare ``localhost`` resolves fine and is left untouched.
+
+    Returns ``(resolved_origin, host_header_or_none)``.
+    """
+    parsed = urlparse(origin)
+    hostname = parsed.hostname
+    if not hostname or not hostname.endswith(".localhost"):
+        return origin, None
+
+    port = parsed.port
+    netloc = f"127.0.0.1:{port}" if port else "127.0.0.1"
+    host_header = f"{hostname}:{port}" if port else hostname
+    resolved = urlunparse(parsed._replace(netloc=netloc))
+    return resolved, host_header
 _DEFAULT_TOOL_GATEWAY_SCHEME = "https"
 _NOUS_ACCESS_TOKEN_REFRESH_SKEW_SECONDS = 120
 
@@ -25,6 +47,16 @@ class ManagedToolGatewayConfig:
     gateway_origin: str
     nous_user_token: str
     managed_mode: bool
+
+    @property
+    def resolved_origin(self) -> str:
+        """Origin with ``*.localhost`` hostnames rewritten to ``127.0.0.1``."""
+        return _rewrite_localhost_origin(self.gateway_origin)[0]
+
+    @property
+    def gateway_host_header(self) -> Optional[str]:
+        """Original ``host[:port]`` when the origin was rewritten, else ``None``."""
+        return _rewrite_localhost_origin(self.gateway_origin)[1]
 
 
 def auth_json_path():

@@ -941,7 +941,7 @@ def _resolve_openai_audio_client_config() -> tuple[str, str]:
         raise ValueError(message)
 
     return managed_gateway.nous_user_token, urljoin(
-        f"{managed_gateway.gateway_origin.rstrip('/')}/", "v1"
+        f"{managed_gateway.resolved_origin.rstrip('/')}/", "v1"
     )
 
 

@@ -74,8 +74,12 @@ class NousSubscriptionFeatures:
     def modal(self) -> NousFeatureState:
         return self.features["modal"]
 
+    @property
+    def app_tools(self) -> NousFeatureState:
+        return self.features["app_tools"]
+
     def items(self) -> Iterable[NousFeatureState]:
-        ordered = ("web", "image_gen", "tts", "browser", "modal")
+        ordered = ("web", "image_gen", "tts", "browser", "modal", "app_tools")
         for key in ordered:
             yield self.features[key]
 
@@ -225,6 +229,22 @@ def _resolve_browser_feature_state(
     return "local", available, active, False
 
 
+def _read_portal_app_tools_enabled(config: Optional[Dict[str, object]] = None) -> bool:
+    """Return True when the portal.app_tools config flag is on."""
+    if config is not None:
+        # Fast path: use the pre-loaded config snapshot from the caller
+        import os
+        env_val = os.getenv("PORTAL_APP_TOOLS")
+        if env_val is not None:
+            return is_truthy_value(env_val)
+        portal = config.get("portal")
+        if isinstance(portal, dict):
+            return bool(portal.get("app_tools", True))
+        return True
+    from tools.tool_backend_helpers import portal_app_tools_enabled
+    return portal_app_tools_enabled()
+
+
 def get_nous_subscription_features(
     config: Optional[Dict[str, object]] = None,
 ) -> NousSubscriptionFeatures:
@@ -313,6 +333,8 @@ def get_nous_subscription_features(
     managed_tts_available = managed_tools_flag and nous_auth_present and is_managed_tool_gateway_ready("openai-audio")
     managed_browser_available = managed_tools_flag and nous_auth_present and is_managed_tool_gateway_ready("browser-use")
     managed_modal_available = managed_tools_flag and nous_auth_present and is_managed_tool_gateway_ready("modal")
+    app_gw_ready = bool(managed_tools_flag and nous_auth_present and is_managed_tool_gateway_ready("tools"))
+    app_config_on = _read_portal_app_tools_enabled(config)
     modal_state = resolve_modal_backend_state(
         modal_mode,
         has_direct=direct_modal,
@@ -475,6 +497,17 @@ def get_nous_subscription_features(
             toolset_enabled=modal_tool_enabled,
             current_provider="Modal" if terminal_backend == "modal" else terminal_backend or "local",
             explicit_configured=terminal_backend == "modal",
+        ),
+        "app_tools": NousFeatureState(
+            key="app_tools",
+            label="App tools (500+ apps)",
+            included_by_default=True,
+            available=app_gw_ready,
+            active=app_gw_ready and app_config_on,
+            managed_by_nous=app_gw_ready and app_config_on,
+            direct_override=False,
+            toolset_enabled=app_config_on,
+            current_provider="Nous Tool Gateway",
         ),
     }
 

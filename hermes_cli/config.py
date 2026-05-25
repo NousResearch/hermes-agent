@@ -1799,8 +1799,17 @@ DEFAULT_CONFIG = {
         },
     },
 
+    # ── Nous Portal feature flags ──────────────────────────────────────
+    "portal": {
+        # App tools: 500+ external app integrations (Gmail, Slack, GitHub,
+        # Notion, etc.) via the Nous tool gateway.  Requires an active Nous
+        # subscription.  Set to False to hide the app_tools toolset even
+        # when a subscription is present.
+        "app_tools": True,
+    },
+
     # Config schema version - bump this when adding new required fields
-    "_config_version": 23,
+    "_config_version": 24,
 }
 
 # =============================================================================
@@ -2285,6 +2294,22 @@ OPTIONAL_ENV_VARS = {
         "prompt": "Tool-gateway user token",
         "url": None,
         "password": True,
+        "category": "tool",
+        "advanced": True,
+    },
+    "TOOLS_GATEWAY_URL": {
+        "description": "Explicit URL for the tools-gateway (app integrations). Overrides the auto-derived tools-gateway.nousresearch.com",
+        "prompt": "Tools-gateway URL",
+        "url": None,
+        "password": False,
+        "category": "tool",
+        "advanced": True,
+    },
+    "PORTAL_APP_TOOLS": {
+        "description": "Enable app integration tools (500+ apps via Nous tool gateway). Requires Nous subscription.",
+        "prompt": "Enable app tools (500+ apps)",
+        "url": None,
+        "password": False,
         "category": "tool",
         "advanced": True,
     },
@@ -3322,7 +3347,7 @@ _KNOWN_ROOT_KEYS = {
     "fallback_providers", "credential_pool_strategies", "toolsets",
     "agent", "terminal", "display", "compression", "delegation",
     "auxiliary", "custom_providers", "context", "memory", "gateway",
-    "sessions",
+    "sessions", "portal",
 }
 
 # Valid fields inside a custom_providers list entry
@@ -3984,6 +4009,26 @@ def migrate_config(interactive: bool = True, quiet: bool = False) -> Dict[str, A
                         "  ✓ Seeded auxiliary.curator defaults in config.yaml: "
                         f"{', '.join(added_aux)}"
                     )
+
+    # ── Version 23 → 24: inject app_tools into saved platform_toolsets ──
+    # The portal.app_tools config flag is handled by deep-merge (DEFAULT_CONFIG
+    # has it, so load_config() always includes it). But platform_toolsets are
+    # user-owned lists that deep-merge can't append to — existing users who
+    # ran `hermes tools` have a saved list that won't include app_tools.
+    if current_ver < 24:
+        config = read_raw_config()
+        pt = config.get("platform_toolsets")
+        if isinstance(pt, dict):
+            patched = False
+            for plat_key, ts_list in pt.items():
+                if isinstance(ts_list, list) and "app_tools" not in ts_list:
+                    ts_list.append("app_tools")
+                    patched = True
+            if patched:
+                save_config(config)
+                results["config_added"].append("app_tools added to platform_toolsets")
+                if not quiet:
+                    print("  ✓ Added app_tools to saved platform toolset lists")
 
     if current_ver < latest_ver and not quiet:
         print(f"Config version: {current_ver} → {latest_ver}")

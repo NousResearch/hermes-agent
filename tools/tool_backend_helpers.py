@@ -21,6 +21,11 @@ def managed_nous_tools_enabled() -> bool:
     the free tier.  We intentionally catch all exceptions and return
     False — never block the agent startup path.
     """
+    import os
+
+    if os.getenv("TOOL_GATEWAY_USER_TOKEN", "").strip():
+        return True
+
     try:
         from hermes_cli.auth import get_nous_auth_status
 
@@ -121,6 +126,25 @@ def prefers_gateway(config_section: str) -> bool:
     except Exception:
         pass
     return False
+
+
+def portal_app_tools_enabled() -> bool:
+    """Return True when the portal.app_tools config flag is on.
+
+    Resolution: PORTAL_APP_TOOLS env var → config.yaml → default True.
+    Never raises — safe for check_fn and registration-time use.
+    """
+    env_val = os.getenv("PORTAL_APP_TOOLS")
+    if env_val is not None:
+        return is_truthy_value(env_val)
+    try:
+        from hermes_cli.config import load_config
+        portal = (load_config() or {}).get("portal")
+        if isinstance(portal, dict):
+            return bool(portal.get("app_tools", True))
+    except Exception:
+        pass
+    return True
 
 
 def fal_key_is_configured() -> bool:

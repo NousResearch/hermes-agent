@@ -1258,6 +1258,10 @@ def build_nous_subscription_prompt(valid_tool_names: "set[str] | None" = None) -
         "terminal",
         "process",
         "execute_code",
+        "app_search_tools",
+        "app_tool_schemas",
+        "app_execute_tools",
+        "app_manage_connections",
     }
 
     if valid_names and not (valid_names & relevant_tool_names):
@@ -1279,7 +1283,7 @@ def build_nous_subscription_prompt(valid_tool_names: "set[str] | None" = None) -
 
     lines = [
         "# Nous Subscription",
-        "Nous subscription includes managed web tools (Firecrawl), image generation (FAL), OpenAI TTS, and browser automation (Browser Use) by default. Modal execution is optional.",
+        "Nous subscription includes managed web tools (Firecrawl), image generation (FAL), OpenAI TTS, browser automation (Browser Use), and app integrations (500+ apps) by default. Modal execution is optional.",
         "Current capability status:",
     ]
     lines.extend(_status_line(feature) for feature in features.items())
@@ -1292,6 +1296,39 @@ def build_nous_subscription_prompt(valid_tool_names: "set[str] | None" = None) -
         ]
     )
     return "\n".join(lines)
+
+
+# =========================================================================
+# App tools (500+ external integrations) behavioural prompt
+# =========================================================================
+
+_APP_TOOLS_PROMPT = """\
+## App Tools (500+ External Integrations)
+
+You have app_search_tools, app_tool_schemas, app_execute_tools, and app_manage_connections available RIGHT NOW as callable tools. They are already configured and connected to the Nous tool gateway — no SDK installation, no API keys, no plugin setup needed. Just call them.
+
+**When to use:** When a user asks to interact with ANY external app or service — Gmail, Slack, GitHub, Jira, Notion, Google Sheets, Linear, HubSpot, Figma, Salesforce, or any of 500+ other apps. ALWAYS prefer these tools over loading skills about the same service (e.g. do NOT load the 'linear', 'airtable', 'google-workspace', 'notion', or any similar skill — use app_search_tools instead). Do NOT suggest installing SDKs, CLI tools, MCP servers, or API keys for external services — call app_search_tools directly.
+
+**Workflow:**
+1. Call app_search_tools with a clear use_case description to discover available tools
+2. Check the response for connection status — if no active connection, call app_manage_connections and share the auth link with the user
+3. Review the execution plan and pitfalls in the search response before executing
+4. If a tool has schemaRef instead of input_schema, call app_tool_schemas to get the full schema
+5. Execute tools via app_execute_tools with schema-compliant arguments
+
+**Session tracking:** Pass session: {generate_id: true} on your first app_search_tools call. Reuse the returned session.id in all subsequent calls. Generate a new session when the user pivots to a different task.
+
+**Important:** Never fabricate tool slugs or argument field names. Only use slugs and schemas returned by app_search_tools or app_tool_schemas."""
+
+
+def build_app_tools_prompt(valid_tool_names: "set[str] | None" = None) -> str:
+    """Return the app tools behavioural guidance when the toolset is active."""
+    if valid_tool_names and "app_search_tools" not in valid_tool_names:
+        return ""
+    if not valid_tool_names:
+        # No tool names known — skip (conservative)
+        return ""
+    return _APP_TOOLS_PROMPT
 
 
 # =========================================================================

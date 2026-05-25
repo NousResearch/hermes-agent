@@ -90,6 +90,7 @@ def test_show_status_reports_managed_nous_features(monkeypatch, capsys, tmp_path
                 "tts": NousFeatureState("tts", "OpenAI TTS", True, True, True, True, False, True, "OpenAI TTS"),
                 "browser": NousFeatureState("browser", "Browser automation", True, True, True, True, False, True, "Browser Use"),
                 "modal": NousFeatureState("modal", "Modal execution", False, True, False, False, False, True, "local"),
+                "app_tools": NousFeatureState("app_tools", "App tools (500+ apps)", True, True, True, True, False, True, "Nous Subscription"),
             },
         ),
         raising=False,

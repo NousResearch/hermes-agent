@@ -130,6 +130,12 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
     nous_subscription_prompt = _r.build_nous_subscription_prompt(agent.valid_tool_names)
     if nous_subscription_prompt:
         stable_parts.append(nous_subscription_prompt)
+
+    # App tools (500+ external integrations) behavioural guidance
+    app_tools_prompt = _r.build_app_tools_prompt(agent.valid_tool_names)
+    if app_tools_prompt:
+        stable_parts.append(app_tools_prompt)
+
     # Tool-use enforcement: tells the model to actually call tools instead
     # of describing intended actions.  Controlled by config.yaml
     # agent.tool_use_enforcement:

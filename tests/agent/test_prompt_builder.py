@@ -444,6 +444,7 @@ class TestBuildNousSubscriptionPrompt:
                     "tts": NousFeatureState("tts", "OpenAI TTS", True, True, True, True, False, True, "OpenAI TTS"),
                     "browser": NousFeatureState("browser", "Browser automation", True, True, True, True, False, True, "Browser Use"),
                     "modal": NousFeatureState("modal", "Modal execution", False, True, False, False, False, True, "local"),
+                    "app_tools": NousFeatureState("app_tools", "App tools (500+ apps)", True, True, True, True, False, True, "Nous Subscription"),
                 },
             ),
         )
@@ -468,6 +469,7 @@ class TestBuildNousSubscriptionPrompt:
                     "tts": NousFeatureState("tts", "OpenAI TTS", True, False, False, False, False, True, ""),
                     "browser": NousFeatureState("browser", "Browser automation", True, False, False, False, False, True, ""),
                     "modal": NousFeatureState("modal", "Modal execution", False, False, False, False, False, True, ""),
+                    "app_tools": NousFeatureState("app_tools", "App tools (500+ apps)", True, False, False, False, False, True, ""),
                 },
             ),
         )

@@ -78,6 +78,7 @@ CONFIGURABLE_TOOLSETS = [
     ("discord_admin",   "🛡️  Discord Server Admin",    "list channels/roles, pin, assign roles"),
     ("yuanbao",          "🤖 Yuanbao",                  "group info, member queries, DM"),
     ("computer_use",     "🖱️  Computer Use (macOS)",     "background desktop control via cua-driver"),
+    ("app_tools",        "🔌 App Integrations (500+)",   "Gmail, Slack, GitHub, Jira, Notion, etc. via Nous tool gateway"),
 ]
 
 # Toolsets that are OFF by default for new installs.

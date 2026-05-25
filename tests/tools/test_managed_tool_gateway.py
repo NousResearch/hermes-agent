@@ -78,6 +78,63 @@ def test_resolve_managed_tool_gateway_is_disabled_without_subscription():
     assert result is None
 
 
+def test_rewrite_localhost_origin_rewrites_subdomain():
+    rewrite = managed_tool_gateway._rewrite_localhost_origin
+    resolved, host = rewrite("http://tools-gateway.localhost:3009")
+    assert resolved == "http://127.0.0.1:3009"
+    assert host == "tools-gateway.localhost:3009"
+
+
+def test_rewrite_localhost_origin_preserves_path():
+    rewrite = managed_tool_gateway._rewrite_localhost_origin
+    resolved, host = rewrite("http://tools-gateway.localhost:3009/v1/foo")
+    assert resolved == "http://127.0.0.1:3009/v1/foo"
+    assert host == "tools-gateway.localhost:3009"
+
+
+def test_rewrite_localhost_origin_no_port():
+    rewrite = managed_tool_gateway._rewrite_localhost_origin
+    resolved, host = rewrite("http://tools-gateway.localhost")
+    assert resolved == "http://127.0.0.1"
+    assert host == "tools-gateway.localhost"
+
+
+def test_rewrite_localhost_origin_ignores_bare_localhost():
+    rewrite = managed_tool_gateway._rewrite_localhost_origin
+    resolved, host = rewrite("http://localhost:3009")
+    assert resolved == "http://localhost:3009"
+    assert host is None
+
+
+def test_rewrite_localhost_origin_ignores_real_domains():
+    rewrite = managed_tool_gateway._rewrite_localhost_origin
+    resolved, host = rewrite("https://tools-gateway.nousresearch.com")
+    assert resolved == "https://tools-gateway.nousresearch.com"
+    assert host is None
+
+
+def test_gateway_config_resolved_origin_and_host_header():
+    cfg = managed_tool_gateway.ManagedToolGatewayConfig(
+        vendor="tools",
+        gateway_origin="http://tools-gateway.localhost:3009",
+        nous_user_token="tok",
+        managed_mode=True,
+    )
+    assert cfg.resolved_origin == "http://127.0.0.1:3009"
+    assert cfg.gateway_host_header == "tools-gateway.localhost:3009"
+
+
+def test_gateway_config_resolved_origin_passthrough_for_real_domain():
+    cfg = managed_tool_gateway.ManagedToolGatewayConfig(
+        vendor="firecrawl",
+        gateway_origin="https://firecrawl-gateway.nousresearch.com",
+        nous_user_token="tok",
+        managed_mode=True,
+    )
+    assert cfg.resolved_origin == "https://firecrawl-gateway.nousresearch.com"
+    assert cfg.gateway_host_header is None
+
+
 def test_read_nous_access_token_refreshes_expiring_cached_token(tmp_path, monkeypatch):
     monkeypatch.delenv("TOOL_GATEWAY_USER_TOKEN", raising=False)
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))

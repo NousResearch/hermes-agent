@@ -48,8 +48,8 @@ cat "$HERMES_HOME/config.yaml"
 echo "[debug] ===== HERMES CHECK ====="
 hermes config check || echo "[debug] config check failed"
 
-echo "[debug] ===== LLM TEST ====="
-hermes chat "Say hello in one short sentence." || echo "[debug] LLM test failed"
+echo "[debug] ===== LLM TEST (background) ====="
+(hermes chat -z "Say hello briefly" || echo "[debug] LLM test failed") &
 
 # --- Start server ---
 echo "[start.sh] Starting admin server..."

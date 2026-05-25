@@ -924,6 +924,84 @@ def test_default_live_candidate_load_does_not_limit_out_active_flights(tmp_path,
     assert "BO-ACTIVE-LIMIT" in {candidate["public_id"] for candidate in candidates}
 
 
+def test_parent_focused_dry_run_loads_only_hierarchy_children_without_dispatch(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setenv("HERMES_KANBAN_HOME", str(tmp_path))
+
+    from gateway import kanban_autopilot
+    from gateway.kanban_autopilot import handle_autopilot_command, load_live_kanban_candidates
+    from hermes_cli import kanban_db as kb
+
+    with kb.connect() as conn:
+        parent_id = kb.create_task(
+            conn,
+            title="parent envelope",
+            body="Parent envelope task.",
+            assignee="manager",
+            public_id="BO-PARENT",
+        )
+        ready_child_id = kb.create_task(
+            conn,
+            title="eligible child",
+            body=_ready_candidate("BO-CHILD-READY")["body"],
+            assignee="worker",
+            public_id="BO-CHILD-READY",
+            routing_verdict={"verdict": "Hermes direct", "reason": "test"},
+            closeout_evidence=_worker_done_evidence(),
+        )
+        raw_child_id = kb.create_task(
+            conn,
+            title="raw child",
+            body="Please handle this later.",
+            assignee="worker",
+            public_id="BO-CHILD-RAW",
+        )
+        kb.link_tasks(conn, parent_id, ready_child_id, relation_type="hierarchy")
+        kb.link_tasks(conn, parent_id, raw_child_id, relation_type="hierarchy")
+        other_parent_id = kb.create_task(
+            conn,
+            title="other parent",
+            body="Other parent.",
+            assignee="manager",
+            public_id="BO-OTHER-PARENT",
+        )
+        other_child_id = kb.create_task(
+            conn,
+            title="other child",
+            body=_ready_candidate("BO-OTHER-READY")["body"],
+            assignee="worker",
+            public_id="BO-OTHER-READY",
+            routing_verdict={"verdict": "Hermes direct", "reason": "test"},
+            closeout_evidence=_worker_done_evidence(),
+        )
+        kb.link_tasks(conn, other_parent_id, other_child_id, relation_type="hierarchy")
+
+    candidates = load_live_kanban_candidates(parent_public_id="BO-PARENT")
+    child_ids = {candidate["public_id"] for candidate in candidates}
+
+    assert child_ids == {"BO-CHILD-READY", "BO-CHILD-RAW"}
+    assert all(candidate["parent_public_id"] == "BO-PARENT" for candidate in candidates)
+
+    handle_autopilot_command("on", actor="tester")
+
+    calls: list[str] = []
+
+    def forbidden_dispatch(*_args, **_kwargs):
+        calls.append("dispatch")
+        raise AssertionError("dry-run must not dispatch")
+
+    monkeypatch.setattr(kanban_autopilot, "dispatch_selected_once", forbidden_dispatch, raising=False)
+    result = handle_autopilot_command("dry-run BO-PARENT", actor="tester")
+
+    assert result.ok is True
+    assert calls == []
+    assert result.decision["status"] == "DRY_RUN"
+    assert result.decision["closed_loop"]["would_select"][0]["public_id"] == "BO-CHILD-READY"
+    would_skip_ids = {item["public_id"] for item in result.decision["closed_loop"]["would_skip"]}
+    assert would_skip_ids == {"BO-CHILD-RAW"}
+    assert result.decision["dry_run_side_effects"] == {"claimed": 0, "spawned": 0, "mutated": 0, "dispatched": 0}
+
+
 def test_hard_stop_pauses_lane_and_blocks_eligibility_until_recovered(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
 

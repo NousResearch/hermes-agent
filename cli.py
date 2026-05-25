@@ -8347,38 +8347,38 @@ class HermesCLI:
 
         # No args → show usage + list
         if len(tokens) == 1:
-            print()
-            print("+" + "-" * 68 + "+")
-            print("|" + " " * 22 + "(^_^) /loop — Scheduled Prompts" + " " * 23 + "|")
-            print("+" + "-" * 68 + "+")
-            print()
-            print("  Usage:")
-            print('    /loop <schedule> <prompt>     e.g. /loop 5m "check deployment"')
-            print('    /loop list                    Show all loop jobs')
-            print('    /loop pause <job_id>          Pause a loop job')
-            print('    /loop resume <job_id>         Resume a paused loop job')
-            print('    /loop remove <job_id>         Delete a loop job')
-            print()
-            print("  Schedules:  5m, 30m, 2h, 1d, every 5m, every 2h, 0 9 * * *")
-            print()
+            _cprint("")
+            _cprint("+" + "-" * 68 + "+")
+            _cprint("|" + " " * 22 + "(^_^) /loop — Scheduled Prompts" + " " * 23 + "|")
+            _cprint("+" + "-" * 68 + "+")
+            _cprint("")
+            _cprint("  Usage:")
+            _cprint('    /loop <schedule> <prompt>     e.g. /loop 5m "check deployment"')
+            _cprint('    /loop list                    Show all loop jobs')
+            _cprint('    /loop pause <job_id>          Pause a loop job')
+            _cprint('    /loop resume <job_id>         Resume a paused loop job')
+            _cprint('    /loop remove <job_id>         Delete a loop job')
+            _cprint("")
+            _cprint("  Schedules:  5m, 30m, 2h, 1d, every 5m, every 2h, 0 9 * * *")
+            _cprint("")
 
             result = _cron_api(action="list", include_disabled=True)
             jobs = result.get("jobs", []) if result.get("success") else []
             loop_jobs = [j for j in jobs if j.get("name", "").startswith("loop:")]
             if loop_jobs:
-                print("  Loop Jobs:")
-                print("  " + "-" * 63)
+                _cprint("  Loop Jobs:")
+                _cprint("  " + "-" * 63)
                 for job in loop_jobs:
                     state = job.get("state", "?")
                     state_icon = "▶" if state == "active" else "⏸"
-                    print(f"    {state_icon} {job['job_id'][:12]:<12} | {job['schedule']:<15} | {job.get('repeat', 'forever')}")
-                    print(f"      {job.get('prompt_preview', '')}")
+                    _cprint(f"    {state_icon} {job['job_id'][:12]:<12} | {job['schedule']:<15} | {job.get('repeat', 'forever')}")
+                    _cprint(f"      {job.get('prompt_preview', '')}")
                     if job.get("next_run_at"):
-                        print(f"      Next: {job['next_run_at']}")
-                    print()
+                        _cprint(f"      Next: {job['next_run_at']}")
+                    _cprint("")
             else:
-                print("  No loop jobs. Use '/loop <schedule> <prompt>' to create one.")
-            print()
+                _cprint("  No loop jobs. Use '/loop <schedule> <prompt>' to create one.")
+            _cprint("")
             return
 
         subcommand = tokens[1].lower()
@@ -8389,61 +8389,61 @@ class HermesCLI:
             jobs = result.get("jobs", []) if result.get("success") else []
             loop_jobs = [j for j in jobs if j.get("name", "").startswith("loop:")]
             if not loop_jobs:
-                print("(._.) No loop jobs found.")
+                _cprint("(._.) No loop jobs found.")
                 return
-            print()
-            print("Loop Jobs:")
-            print("-" * 80)
+            _cprint("")
+            _cprint("Loop Jobs:")
+            _cprint("-" * 80)
             for job in loop_jobs:
-                print(f"  ID: {job['job_id']}")
-                print(f"  Name: {job['name']}")
-                print(f"  State: {job.get('state', '?')}")
-                print(f"  Schedule: {job['schedule']} ({job.get('repeat', '?')})")
-                print(f"  Next run: {job.get('next_run_at', 'N/A')}")
-                print(f"  Prompt: {job.get('prompt_preview', '')}")
+                _cprint(f"  ID: {job['job_id']}")
+                _cprint(f"  Name: {job['name']}")
+                _cprint(f"  State: {job.get('state', '?')}")
+                _cprint(f"  Schedule: {job['schedule']} ({job.get('repeat', '?')})")
+                _cprint(f"  Next run: {job.get('next_run_at', 'N/A')}")
+                _cprint(f"  Prompt: {job.get('prompt_preview', '')}")
                 if job.get("last_run_at"):
-                    print(f"  Last run: {job['last_run_at']} ({job.get('last_status', '?')})")
-                print()
+                    _cprint(f"  Last run: {job['last_run_at']} ({job.get('last_status', '?')})")
+                _cprint("")
             return
 
         # /loop pause <job_id>
         if subcommand == "pause":
             if len(tokens) < 3:
-                print("(._.) Usage: /loop pause <job_id>")
+                _cprint("(._.) Usage: /loop pause <job_id>")
                 return
             job_id = tokens[2]
             result = _cron_api(action="pause", job_id=job_id, reason="paused from /loop")
             if result.get("success"):
-                print(f"(^_^)b Paused loop job: {result['job']['name']} ({job_id})")
+                _cprint(f"(^_^)b Paused loop job: {result['job']['name']} ({job_id})")
             else:
-                print(f"(x_x) Failed to pause: {result.get('error')}")
+                _cprint(f"(x_x) Failed to pause: {result.get('error')}")
             return
 
         # /loop resume <job_id>
         if subcommand == "resume":
             if len(tokens) < 3:
-                print("(._.) Usage: /loop resume <job_id>")
+                _cprint("(._.) Usage: /loop resume <job_id>")
                 return
             job_id = tokens[2]
             result = _cron_api(action="resume", job_id=job_id)
             if result.get("success"):
-                print(f"(^_^)b Resumed loop job: {result['job']['name']} ({job_id})")
-                print(f"  Next run: {result['job'].get('next_run_at')}")
+                _cprint(f"(^_^)b Resumed loop job: {result['job']['name']} ({job_id})")
+                _cprint(f"  Next run: {result['job'].get('next_run_at')}")
             else:
-                print(f"(x_x) Failed to resume: {result.get('error')}")
+                _cprint(f"(x_x) Failed to resume: {result.get('error')}")
             return
 
         # /loop remove <job_id>
         if subcommand == "remove":
             if len(tokens) < 3:
-                print("(._.) Usage: /loop remove <job_id>")
+                _cprint("(._.) Usage: /loop remove <job_id>")
                 return
             job_id = tokens[2]
             result = _cron_api(action="remove", job_id=job_id)
             if result.get("success"):
-                print(f"(^_^)b Removed loop job: {result.get('removed_job', {}).get('name', job_id)}")
+                _cprint(f"(^_^)b Removed loop job: {result.get('removed_job', {}).get('name', job_id)}")
             else:
-                print(f"(x_x) Failed to remove: {result.get('error')}")
+                _cprint(f"(x_x) Failed to remove: {result.get('error')}")
             return
 
         # /loop <schedule> <prompt>  (create)
@@ -8457,9 +8457,9 @@ class HermesCLI:
             prompt = " ".join(tokens[2:]) if len(tokens) > 2 else ""
 
         if not prompt:
-            print("(._.) Usage: /loop <schedule> <prompt>")
-            print('  Example: /loop 5m "check deployment status"')
-            print('  Example: /loop every 30m "summarize news"')
+            _cprint("(._.) Usage: /loop <schedule> <prompt>")
+            _cprint('  Example: /loop 5m "check deployment status"')
+            _cprint('  Example: /loop every 30m "summarize news"')
             return
 
         # Warn if interval looks very short
@@ -8467,7 +8467,7 @@ class HermesCLI:
         try:
             minutes = parse_duration(schedule.lstrip("every "))
             if minutes < 1:
-                print("⚠ Interval is very short (< 1 minute). The scheduler ticks every 60s, so this may not fire as expected.")
+                _cprint("⚠ Interval is very short (< 1 minute). The scheduler ticks every 60s, so this may not fire as expected.")
         except Exception:
             pass  # Not a simple duration — could be cron expr or "every X" form
 
@@ -8475,7 +8475,7 @@ class HermesCLI:
         try:
             from hermes_cli.cron import _is_gateway_running
             if not _is_gateway_running():
-                print("⚠ No gateway is running. The job will be scheduled but will not execute until a gateway starts.")
+                _cprint("⚠ No gateway is running. The job will be scheduled but will not execute until a gateway starts.")
         except Exception:
             pass
 
@@ -8488,12 +8488,12 @@ class HermesCLI:
             deliver="origin",
         )
         if result.get("success"):
-            print(f"(^_^)b Loop job created: {result['job_id']}")
-            print(f"  Schedule: {result['schedule']}")
-            print(f"  Next run: {result['next_run_at']}")
-            print(f"  To stop: /loop remove {result['job_id']}")
+            _cprint(f"(^_^)b Loop job created: {result['job_id']}")
+            _cprint(f"  Schedule: {result['schedule']}")
+            _cprint(f"  Next run: {result['next_run_at']}")
+            _cprint(f"  To stop: /loop remove {result['job_id']}")
         else:
-            print(f"(x_x) Failed to create loop: {result.get('error')}")
+            _cprint(f"(x_x) Failed to create loop: {result.get('error')}")
 
     def _handle_curator_command(self, cmd: str):
         """Handle /curator slash command.

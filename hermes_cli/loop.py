@@ -140,12 +140,13 @@ def _load_ids(session_id: str) -> List[str]:
         ids = json.loads(raw)
         if isinstance(ids, list):
             return [str(i) for i in ids]
-    except Exception:
-        pass
+    except Exception as exc:
+        logger.debug("LoopManager: could not parse id registry for %s: %s", session_id, exc)
     return []
 
 
 def _save_ids(session_id: str, ids: List[str]) -> None:
+    """Persist the list of loop UIDs to the registry key."""
     if not session_id:
         return
     db = _get_session_db()
@@ -161,6 +162,7 @@ def _save_ids(session_id: str, ids: List[str]) -> None:
 
 
 def _add_id_to_registry(session_id: str, uid: str) -> None:
+    """Add a UID to the session's loop registry if not already present."""
     ids = _load_ids(session_id)
     if uid not in ids:
         ids.append(uid)
@@ -168,6 +170,7 @@ def _add_id_to_registry(session_id: str, uid: str) -> None:
 
 
 def _remove_id_from_registry(session_id: str, uid: str) -> None:
+    """Remove a UID from the session's loop registry."""
     ids = _load_ids(session_id)
     if uid in ids:
         ids.remove(uid)
@@ -654,8 +657,8 @@ class LoopManager:
         self._states.clear()
         try:
             _del_all_loop_meta(self.session_id)
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug("LoopManager: delete failed to clear metadata: %s", exc)
         return existed
 
     def shutdown(self) -> None:
@@ -816,7 +819,8 @@ __all__ = [
 # ──────────────────────────────────────────────────────────────────────
 
 
-# Public aliases for external callers (tests, gateway)
+# Public alias for external callers (tests, gateway).
+# Signature matches _save_loop: (session_id: str, state: LoopState) -> None
 save_loop = _save_loop
 
 

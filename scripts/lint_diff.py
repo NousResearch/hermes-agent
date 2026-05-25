@@ -21,6 +21,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import sys
 from collections import Counter
 from pathlib import Path
@@ -69,13 +70,21 @@ def _normalize_ty(entries: list[dict]) -> list[dict]:
     for e in entries:
         loc = e.get("location") or {}
         begin = (loc.get("positions") or {}).get("begin") or {}
+        description = e.get("description", "")
+        if isinstance(description, str):
+            description = re.sub(
+                r"`/[^`]*(/)(agent|gateway|hermes_cli|scripts|tests|tools)/([^`]+)`",
+                r"`\2/\3`",
+                description,
+            )
+            description = re.sub(r"Id\([0-9a-fA-F]+\)", "Id(<normalized>)", description)
         out.append(
             {
                 "tool": "ty",
                 "rule": e.get("check_name", "unknown"),
                 "path": loc.get("path", ""),
                 "line": begin.get("line", 0),
-                "message": e.get("description", ""),
+                "message": description,
             }
         )
     return out
@@ -106,6 +115,10 @@ def _diff(base: list[dict], head: list[dict]) -> tuple[list[dict], list[dict], l
 
 def _rule_counts(entries: list[dict]) -> list[tuple[str, int]]:
     return Counter(e["rule"] for e in entries).most_common()
+
+
+def _unique_count(entries: list[dict]) -> int:
+    return len({_key(d) for d in entries})
 
 
 def _section(title: str, entries: list[dict], limit: int = 25) -> str:
@@ -139,7 +152,9 @@ def _tool_report(
     base_available: bool,
 ) -> str:
     new, fixed, unchanged = _diff(base, head)
-    delta = len(head) - len(base)
+    base_total = _unique_count(base)
+    head_total = _unique_count(head)
+    delta = head_total - base_total
     delta_str = f"+{delta}" if delta > 0 else str(delta)
     emoji = "🆕" if delta > 0 else ("✅" if delta < 0 else "➖")
 
@@ -150,9 +165,11 @@ def _tool_report(
             "treating all head diagnostics as new._\n"
         )
     lines.append(
-        f"**Total:** {len(head)} on HEAD, {len(base)} on base "
+        f"**Unique total:** {head_total} on HEAD, {base_total} on base "
         f"({emoji} {delta_str})\n"
     )
+    if len(head) != head_total or len(base) != base_total:
+        lines.append(f"_Raw diagnostic events: {len(head)} on HEAD, {len(base)} on base._\n")
     lines.append(_section("🆕 New issues", new))
     lines.append(_section("✅ Fixed issues", fixed))
     lines.append(

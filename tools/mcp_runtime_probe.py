@@ -9,6 +9,7 @@ import shutil
 import tomllib
 import argparse
 import asyncio
+import importlib
 from collections import Counter, defaultdict
 from dataclasses import dataclass
 from pathlib import Path
@@ -16,7 +17,7 @@ from typing import Any, Awaitable, Callable, Mapping
 from urllib.parse import urlparse
 
 try:
-    import yaml
+    yaml: Any | None = importlib.import_module("yaml")
 except ImportError:  # pragma: no cover - yaml is optional; _load_yaml handles absence
     yaml = None
 

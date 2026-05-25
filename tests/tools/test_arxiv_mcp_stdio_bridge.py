@@ -40,11 +40,11 @@ def bridge(monkeypatch):
             "messages": [{"role": "user", "content": arguments or {}}],
         }
 
-    server.call_tool = call_tool
-    server.get_prompt = get_prompt
-    server.list_prompts = list_prompts
-    server.list_tools = list_tools
-    server.settings = SimpleNamespace(APP_NAME="fake-arxiv", APP_VERSION="9.9.9")
+    setattr(server, "call_tool", call_tool)
+    setattr(server, "get_prompt", get_prompt)
+    setattr(server, "list_prompts", list_prompts)
+    setattr(server, "list_tools", list_tools)
+    setattr(server, "settings", SimpleNamespace(APP_NAME="fake-arxiv", APP_VERSION="9.9.9"))
 
     monkeypatch.setitem(sys.modules, "arxiv_mcp_server", package)
     monkeypatch.setitem(sys.modules, "arxiv_mcp_server.server", server)

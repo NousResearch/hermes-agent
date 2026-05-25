@@ -41,7 +41,7 @@ def _agent_attr_assign_line(func: ast.FunctionDef, attr_name: str) -> int | None
                 and target.value.id == "agent"
                 and target.attr == attr_name
             ):
-                return node.lineno
+                return getattr(node, "lineno", 0)
     return None
 
 

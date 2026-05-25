@@ -13,16 +13,16 @@ import asyncio
 import json
 import re
 import sys
+from importlib import import_module
 from importlib.metadata import PackageNotFoundError, version
 from typing import Any
 
-from arxiv_mcp_server.server import (
-    call_tool,
-    get_prompt,
-    list_prompts,
-    list_tools,
-    settings,
-)
+_arxiv_server: Any = import_module("arxiv_mcp_server.server")
+call_tool: Any = getattr(_arxiv_server, "call_tool")
+get_prompt: Any = getattr(_arxiv_server, "get_prompt")
+list_prompts: Any = getattr(_arxiv_server, "list_prompts")
+list_tools: Any = getattr(_arxiv_server, "list_tools")
+settings: Any = getattr(_arxiv_server, "settings")
 
 JSONRPC_VERSION = "2.0"
 DEFAULT_PROTOCOL_VERSION = "2025-11-25"
@@ -74,7 +74,8 @@ def _package_version() -> str:
 async def _handle_request(payload: dict[str, Any]) -> dict[str, Any] | None:
     method = payload.get("method")
     message_id = payload.get("id")
-    params = payload.get("params") if isinstance(payload.get("params"), dict) else {}
+    raw_params = payload.get("params")
+    params: dict[str, Any] = raw_params if isinstance(raw_params, dict) else {}
 
     if method == "notifications/initialized":
         return None

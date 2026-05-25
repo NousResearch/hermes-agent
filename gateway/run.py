@@ -1033,6 +1033,18 @@ from gateway.whatsapp_identity import (
 logger = logging.getLogger(__name__)
 
 
+def _is_fatal_kanban_board_db_error(exc: Exception) -> bool:
+    """Return True for SQLite failures that should disable a Kanban board."""
+    if not isinstance(exc, sqlite3.DatabaseError):
+        return False
+    msg = str(exc).lower()
+    return (
+        "disk i/o error" in msg
+        or "file is not a database" in msg
+        or "database disk image is malformed" in msg
+    )
+
+
 # Sentinel placed into _running_agents immediately when a session starts
 # processing, *before* any await.  Prevents a second message for the same
 # session from bypassing the "already running" guard during the async gap
@@ -5332,13 +5344,7 @@ class GatewayRunner:
             return (resolved, stat.st_mtime_ns, stat.st_size)
 
         def _is_corrupt_board_db_error(exc: Exception) -> bool:
-            if not isinstance(exc, sqlite3.DatabaseError):
-                return False
-            msg = str(exc).lower()
-            return (
-                "file is not a database" in msg
-                or "database disk image is malformed" in msg
-            )
+            return _is_fatal_kanban_board_db_error(exc)
 
         def _tick_once_for_board(slug: str) -> "Optional[object]":
             """Run one dispatch_once for a specific board.
@@ -5380,13 +5386,14 @@ class GatewayRunner:
                 if _is_corrupt_board_db_error(exc):
                     disabled_corrupt_boards[slug] = fingerprint
                     logger.error(
-                        "kanban dispatcher: board %s database %s is not a valid "
-                        "SQLite database; disabling dispatch for this board "
+                        "kanban dispatcher: board %s database %s hit fatal "
+                        "SQLite error (%s); disabling dispatch for this board "
                         "until the file changes or the gateway restarts. Move "
                         "or restore the file, then run `hermes kanban init` if "
                         "you need a fresh board.",
                         slug,
                         fingerprint[0],
+                        exc,
                     )
                     return None
                 logger.exception("kanban dispatcher: tick failed on board %s", slug)
@@ -5436,6 +5443,9 @@ class GatewayRunner:
                 boards = [_kb.read_board_metadata(_kb.DEFAULT_BOARD)]
             for b in boards:
                 slug = b.get("slug") or _kb.DEFAULT_BOARD
+                fingerprint = _board_db_fingerprint(slug)
+                if disabled_corrupt_boards.get(slug) == fingerprint:
+                    continue
                 conn = None
                 try:
                     conn = _kb.connect(board=slug)
@@ -5489,6 +5499,9 @@ class GatewayRunner:
             successes = 0
             for b in boards:
                 slug = b.get("slug") or _kb.DEFAULT_BOARD
+                fingerprint = _board_db_fingerprint(slug)
+                if disabled_corrupt_boards.get(slug) == fingerprint:
+                    continue
                 if attempted >= auto_decompose_per_tick:
                     break
                 # Pin this board for the duration of the call — same

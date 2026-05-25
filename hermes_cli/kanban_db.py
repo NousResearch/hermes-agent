@@ -58,11 +58,12 @@ worktrees so that research / ops / digital-twin workloads work alongside
 coding workloads.  See ``docs/hermes-kanban-v1-spec.pdf`` for the full
 design specification.
 
-Concurrency strategy: WAL mode + ``BEGIN IMMEDIATE`` for write
-transactions + compare-and-swap (CAS) updates on ``tasks.status`` and
-``tasks.claim_lock``.  SQLite serializes writers via its WAL lock, so at
-most one claimer can win any given task.  Losers observe zero affected
-rows and move on -- no retry loops, no distributed-lock machinery.
+Concurrency strategy: WAL mode + an app-level per-DB interprocess write
+lock + ``BEGIN IMMEDIATE`` for write transactions + compare-and-swap
+(CAS) updates on ``tasks.status`` and ``tasks.claim_lock``.  SQLite still
+enforces transactional correctness; the file lock throttles Hermes worker
+fan-out before the journal layer so storage/lock IOERRs fail closed
+instead of compounding under retry pressure.
 The CAS coordination is **per-board** — each board is a separate DB,
 so multi-board installs get the same atomicity guarantees without any
 new locking.
@@ -1467,6 +1468,63 @@ def _migrate_add_optional_columns(conn: sqlite3.Connection) -> None:
 
 
 @contextlib.contextmanager
+def _interprocess_file_lock(lock_path: Path, *, timeout_seconds: float = 30.0):
+    """Acquire an exclusive process-wide file lock with a bounded wait."""
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    deadline = time.monotonic() + max(0.1, timeout_seconds)
+    with lock_path.open("a+b") as fh:
+        if _IS_WINDOWS:  # pragma: no cover - exercised on Windows CI only
+            import msvcrt
+
+            lock_fn = getattr(msvcrt, "locking")
+            lk_nblck = getattr(msvcrt, "LK_NBLCK")
+            lk_unlck = getattr(msvcrt, "LK_UNLCK")
+            while True:
+                try:
+                    fh.seek(0)
+                    lock_fn(fh.fileno(), lk_nblck, 1)
+                    break
+                except OSError:
+                    if time.monotonic() >= deadline:
+                        raise TimeoutError(f"timed out acquiring kanban write lock {lock_path}")
+                    time.sleep(0.05)
+            try:
+                yield
+            finally:
+                fh.seek(0)
+                lock_fn(fh.fileno(), lk_unlck, 1)
+        else:
+            import fcntl
+
+            while True:
+                try:
+                    fcntl.flock(fh.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    break
+                except BlockingIOError:
+                    if time.monotonic() >= deadline:
+                        raise TimeoutError(f"timed out acquiring kanban write lock {lock_path}")
+                    time.sleep(0.05)
+            try:
+                yield
+            finally:
+                fcntl.flock(fh.fileno(), fcntl.LOCK_UN)
+
+
+def _connection_db_path(conn: sqlite3.Connection) -> Path:
+    """Return the main database path for a sqlite connection."""
+    row = conn.execute("PRAGMA database_list").fetchone()
+    if row is None:
+        raise RuntimeError("unable to resolve kanban database path")
+    try:
+        value = row["file"]
+    except (IndexError, KeyError, TypeError):
+        value = row[2]
+    if not value:
+        raise RuntimeError("kanban database path is empty")
+    return Path(value)
+
+
+@contextlib.contextmanager
 def write_txn(conn: sqlite3.Connection):
     """Context manager for an IMMEDIATE write transaction.
 
@@ -1474,14 +1532,17 @@ def write_txn(conn: sqlite3.Connection):
     task + recording an event, etc.).  A claim CAS inside this context is
     atomic -- at most one concurrent writer can succeed.
     """
-    conn.execute("BEGIN IMMEDIATE")
-    try:
-        yield conn
-    except Exception:
-        conn.execute("ROLLBACK")
-        raise
-    else:
-        conn.execute("COMMIT")
+    db_path = _connection_db_path(conn)
+    lock_path = db_path.with_suffix(db_path.suffix + ".write.lock")
+    with _interprocess_file_lock(lock_path):
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            yield conn
+        except Exception:
+            conn.execute("ROLLBACK")
+            raise
+        else:
+            conn.execute("COMMIT")
 
 
 # ---------------------------------------------------------------------------

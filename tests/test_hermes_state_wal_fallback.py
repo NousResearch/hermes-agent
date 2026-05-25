@@ -110,13 +110,13 @@ class TestApplyWalWithFallback:
         assert mode == "delete"
         conn.close()
 
-    def test_falls_back_on_disk_io_error(self, tmp_path):
-        """Flaky network FS → disk I/O error → still fall back."""
+    def test_reraises_disk_io_error(self, tmp_path):
+        """Generic IOERR is storage failure, not a WAL-compat signal."""
         conn, _ = _open_blocking(
             tmp_path / "flaky.db", reason="disk I/O error", isolation_level=None
         )
-        mode = apply_wal_with_fallback(conn)
-        assert mode == "delete"
+        with pytest.raises(sqlite3.OperationalError, match="disk I/O error"):
+            apply_wal_with_fallback(conn)
         conn.close()
 
     def test_reraises_unrelated_operational_error(self, tmp_path):

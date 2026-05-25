@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import concurrent.futures
+import contextlib
 import os
 import sqlite3
 import time
@@ -316,6 +317,35 @@ def test_claim_once_wins_second_loses(kanban_home):
         assert first is not None and first.status == "running"
         second = kb.claim_task(conn, t, claimer="host:2")
         assert second is None
+
+
+def test_write_txn_takes_interprocess_lock_before_begin(monkeypatch, tmp_path):
+    events: list[str] = []
+    db_path = tmp_path / "kanban.db"
+
+    class FakeConn:
+        def execute(self, sql):
+            events.append(f"sql:{sql}")
+
+    @contextlib.contextmanager
+    def fake_lock(path):
+        events.append(f"lock:{path.name}:enter")
+        yield
+        events.append(f"lock:{path.name}:exit")
+
+    monkeypatch.setattr(kb, "_connection_db_path", lambda conn: db_path)
+    monkeypatch.setattr(kb, "_interprocess_file_lock", fake_lock)
+
+    with kb.write_txn(FakeConn()):
+        events.append("inside")
+
+    assert events == [
+        "lock:kanban.db.write.lock:enter",
+        "sql:BEGIN IMMEDIATE",
+        "inside",
+        "sql:COMMIT",
+        "lock:kanban.db.write.lock:exit",
+    ]
 
 
 def test_claim_uses_env_default_ttl(kanban_home, monkeypatch):

@@ -269,6 +269,7 @@ def apply_automatic_transitions(now: Optional[datetime] = None) -> Dict[str, int
     for row in _u.agent_created_report():
         counts["checked"] += 1
         name = row["name"]
+        identity = row.get("usage_key") or name
         if row.get("pinned"):
             continue
 
@@ -282,15 +283,15 @@ def apply_automatic_transitions(now: Optional[datetime] = None) -> Dict[str, int
         current = row.get("state", _u.STATE_ACTIVE)
 
         if anchor <= archive_cutoff and current != _u.STATE_ARCHIVED:
-            ok, _msg = _u.archive_skill(name)
+            ok, _msg = _u.archive_skill(identity)
             if ok:
                 counts["archived"] += 1
         elif anchor <= stale_cutoff and current == _u.STATE_ACTIVE:
-            _u.set_state(name, _u.STATE_STALE)
+            _u.set_state(identity, _u.STATE_STALE)
             counts["marked_stale"] += 1
         elif anchor > stale_cutoff and current == _u.STATE_STALE:
             # Skill got used again after being marked stale — reactivate.
-            _u.set_state(name, _u.STATE_ACTIVE)
+            _u.set_state(identity, _u.STATE_ACTIVE)
             counts["reactivated"] += 1
 
     return counts
@@ -1353,8 +1354,10 @@ def _render_candidate_list() -> str:
         return "No agent-created skills to review."
     lines = [f"Agent-created skills ({len(rows)}):\n"]
     for r in rows:
+        identity = r.get("usage_key") or r["name"]
+        label = r["name"] if identity == r["name"] else f"{r['name']} ({identity})"
         lines.append(
-            f"- {r['name']}  "
+            f"- {label}  "
             f"state={r['state']}  "
             f"pinned={'yes' if r.get('pinned') else 'no'}  "
             f"activity={r.get('activity_count', 0)}  "

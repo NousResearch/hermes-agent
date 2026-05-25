@@ -1298,6 +1298,32 @@ def skill_view(
         skill_name = frontmatter.get(
             "name", skill_md.stem if not skill_dir else skill_dir.name
         )
+        usage_root = None
+        for candidate_root in all_dirs:
+            try:
+                skill_md.resolve().relative_to(candidate_root.resolve())
+                usage_root = candidate_root
+                break
+            except (OSError, ValueError):
+                continue
+        try:
+            from tools.skill_usage import skill_usage_key_for_path
+
+            provenance = skill_usage_key_for_path(
+                skill_md,
+                root=usage_root or SKILLS_DIR,
+                skill_name=str(skill_name),
+                frontmatter=frontmatter,
+            )
+        except Exception:
+            provenance = {
+                "skill_name": str(skill_name),
+                "usage_key": str(skill_name),
+                "bundle_id": None,
+                "source_repo": None,
+                "source_ref": None,
+                "source_commit": None,
+            }
         legacy_env_vars, _ = _collect_prerequisite_values(frontmatter)
         required_env_vars = _get_required_environment_variables(
             frontmatter, legacy_env_vars
@@ -1382,6 +1408,11 @@ def skill_view(
         result = {
             "success": True,
             "name": skill_name,
+            "usage_key": provenance.get("usage_key") or str(skill_name),
+            "bundle_id": provenance.get("bundle_id"),
+            "source_repo": provenance.get("source_repo"),
+            "source_ref": provenance.get("source_ref"),
+            "source_commit": provenance.get("source_commit"),
             "description": frontmatter.get("description", ""),
             "tags": tags,
             "related_skills": related_skills,
@@ -1544,7 +1575,7 @@ def _skill_view_with_bump(args, **kw):
         if isinstance(parsed, dict) and parsed.get("success"):
             # Use the resolved skill name from the payload when present —
             # qualified forms ("plugin:skill") return with the canonical name.
-            resolved = parsed.get("name") or name
+            resolved = parsed.get("usage_key") or parsed.get("name") or name
             if resolved:
                 from tools.skill_usage import bump_use, bump_view
                 bump_view(str(resolved))

@@ -48,6 +48,7 @@ def test_status_uses_last_activity_not_only_last_used(monkeypatch, capsys):
             "activity_count": 4,
         }
     ])
+    monkeypatch.setattr(skill_usage, "bundle_usage_report", lambda: [])
 
     assert curator_cli._cmd_status(SimpleNamespace()) == 0
     out = capsys.readouterr().out
@@ -92,10 +93,26 @@ def curator_status_env(tmp_path, monkeypatch):
             f"# {name}\n"
         )
 
+    def _write_bundle_skill(bundle: str, name: str) -> None:
+        d = skills / bundle / name
+        d.mkdir(parents=True)
+        (d / "SKILL.md").write_text(
+            "---\n"
+            f"name: {name}\n"
+            "description: bundled test\n"
+            "metadata:\n"
+            "  hermes:\n"
+            f"    bundle_id: {bundle}\n"
+            "    source_repo: https://example.com/source.git\n"
+            "---\n"
+            f"# {name}\n"
+        )
+
     return {
         "home": home,
         "skills": skills,
         "make_skill": _write_skill,
+        "make_bundle_skill": _write_bundle_skill,
         "skill_usage": skill_usage,
         "curator_cli": curator_cli,
     }
@@ -166,6 +183,23 @@ def test_status_hides_most_active_when_all_zero(curator_status_env):
     assert "most active (top 5):" not in out
     # least-active still renders — it's part of the catalog overview
     assert "least active (top 5):" in out
+
+
+def test_status_shows_bundle_usage_summary(curator_status_env):
+    env = curator_status_env
+    env["make_bundle_skill"]("superpowers-zh", "using-superpowers")
+    env["make_bundle_skill"]("superpowers-zh", "verification-before-completion")
+    env["skill_usage"].bump_use("using-superpowers")
+    env["skill_usage"].bump_view("superpowers-zh/using-superpowers")
+
+    out = _capture_status(env["curator_cli"])
+
+    assert "skill bundles: 1 total" in out
+    assert "superpowers-zh" in out
+    assert "skills=  2" in out
+    assert "recorded=  1" in out
+    assert "activity=  2" in out
+    assert "source=https://example.com/source.git" in out
 
 
 def test_status_no_skills_produces_clean_empty_output(curator_status_env):

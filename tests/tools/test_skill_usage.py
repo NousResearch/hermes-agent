@@ -258,6 +258,26 @@ def test_agent_created_excludes_hub_installed(skills_home):
     assert "hub-skill" not in names
 
 
+def test_categorized_agent_created_skill_is_listed_and_reported(skills_home):
+    from tools.skill_usage import (
+        agent_created_report,
+        list_agent_created_skill_names,
+        load_usage,
+        mark_agent_created,
+    )
+
+    skills_dir = skills_home / "skills"
+    _write_skill(skills_dir, "agent-made", category="devops")
+
+    mark_agent_created("agent-made")
+
+    usage = load_usage()
+    assert "devops/agent-made" in usage
+    assert "agent-made" in list_agent_created_skill_names()
+    report_by_name = {row["name"]: row for row in agent_created_report()}
+    assert report_by_name["agent-made"]["created_by"] == "agent"
+
+
 def test_agent_created_excludes_hub_installed_frontmatter_name(skills_home):
     from tools.skill_usage import (
         is_agent_created,
@@ -350,6 +370,282 @@ def test_archive_skill_moves_directory(skills_home):
     assert (skills_dir / ".archive" / "old-skill" / "SKILL.md").exists()
     assert get_record("old-skill")["state"] == "archived"
     assert get_record("old-skill")["archived_at"] is not None
+
+
+def test_archive_categorized_agent_created_skill_updates_canonical_record(skills_home):
+    from tools.skill_usage import archive_skill, bump_view, load_usage, mark_agent_created
+
+    skills_dir = skills_home / "skills"
+    skill_dir = _write_skill(skills_dir, "agent-made", category="devops")
+    mark_agent_created("agent-made")
+    bump_view("agent-made")
+
+    before = load_usage()
+    assert before["devops/agent-made"]["created_by"] == "agent"
+    assert before["devops/agent-made"]["state"] == "active"
+    assert before["devops/agent-made"]["view_count"] == 1
+
+    ok, msg = archive_skill("agent-made")
+    assert ok, msg
+
+    after = load_usage()
+    assert not skill_dir.exists()
+    assert (skills_dir / ".archive" / "agent-made" / "SKILL.md").exists()
+    assert "agent-made" not in after
+    assert after["devops/agent-made"]["created_by"] == "agent"
+    assert after["devops/agent-made"]["state"] == "archived"
+    assert after["devops/agent-made"]["view_count"] == 1
+    assert after["devops/agent-made"]["archived_at"] is not None
+
+
+def test_forget_categorized_agent_created_skill_removes_canonical_record(skills_home):
+    from tools.skill_usage import forget, load_usage, mark_agent_created
+
+    skills_dir = skills_home / "skills"
+    skill_dir = _write_skill(skills_dir, "agent-made", category="devops")
+    mark_agent_created("agent-made")
+    assert "devops/agent-made" in load_usage()
+
+    import shutil
+    shutil.rmtree(skill_dir)
+    forget("agent-made")
+
+    assert "devops/agent-made" not in load_usage()
+
+
+def test_forget_qualified_key_does_not_delete_other_namespace_suffix(skills_home):
+    from tools.skill_usage import forget, load_usage, save_usage
+
+    save_usage({
+        "qa/agent-made": {
+            "created_by": "agent",
+            "state": "active",
+            "view_count": 7,
+        }
+    })
+
+    forget("devops/agent-made")
+
+    after = load_usage()
+    assert after["qa/agent-made"]["view_count"] == 7
+
+
+def test_mutate_qualified_key_does_not_update_other_namespace_suffix(skills_home):
+    from tools.skill_usage import bump_view, load_usage, save_usage
+
+    save_usage({
+        "qa/agent-made": {
+            "created_by": "agent",
+            "state": "active",
+            "view_count": 7,
+        }
+    })
+
+    bump_view("devops/agent-made")
+
+    after = load_usage()
+    assert after["qa/agent-made"]["view_count"] == 7
+
+
+def test_get_record_qualified_key_does_not_read_other_namespace_suffix(skills_home):
+    from tools.skill_usage import get_record, save_usage
+
+    save_usage({
+        "qa/agent-made": {
+            "created_by": "agent",
+            "state": "active",
+            "view_count": 7,
+        }
+    })
+
+    rec = get_record("devops/agent-made")
+
+    assert rec["view_count"] == 0
+
+
+def test_list_agent_created_does_not_use_other_namespace_suffix_record(skills_home):
+    from tools.skill_usage import list_agent_created_skill_names, save_usage
+
+    skills_dir = skills_home / "skills"
+    _write_skill(skills_dir, "agent-made", category="devops")
+    save_usage({
+        "qa/agent-made": {
+            "created_by": "agent",
+            "state": "active",
+            "view_count": 7,
+        }
+    })
+
+    assert "agent-made" not in list_agent_created_skill_names()
+
+
+def test_agent_created_report_does_not_read_other_namespace_suffix_record(skills_home):
+    from tools.skill_usage import agent_created_report, save_usage
+
+    skills_dir = skills_home / "skills"
+    _write_skill(skills_dir, "agent-made", category="devops")
+    save_usage({
+        "qa/agent-made": {
+            "created_by": "agent",
+            "state": "active",
+            "view_count": 7,
+        }
+    })
+
+    assert "agent-made" not in {row["name"] for row in agent_created_report()}
+
+
+def test_bundle_usage_report_does_not_count_other_namespace_suffix_record(skills_home):
+    from tools.skill_usage import bundle_usage_report, save_usage
+
+    skills_dir = skills_home / "skills"
+    _write_skill(skills_dir, "agent-made", category="devops")
+    save_usage({
+        "qa/agent-made": {
+            "created_by": "agent",
+            "state": "active",
+            "view_count": 7,
+        }
+    })
+
+    by_bundle = {row["bundle_id"]: row for row in bundle_usage_report()}
+    assert by_bundle["devops"]["recorded_skill_count"] == 0
+    assert by_bundle["devops"]["view_count"] == 0
+
+
+def test_bundle_usage_report_does_not_double_count_same_suffix_record(skills_home):
+    from tools.skill_usage import bundle_usage_report, save_usage
+
+    skills_dir = skills_home / "skills"
+    _write_skill(skills_dir, "agent-made", category="devops")
+    _write_skill(skills_dir, "agent-made", category="qa")
+    save_usage({
+        "qa/agent-made": {
+            "created_by": "agent",
+            "state": "active",
+            "view_count": 7,
+        }
+    })
+
+    by_bundle = {row["bundle_id"]: row for row in bundle_usage_report()}
+    assert by_bundle["qa"]["recorded_skill_count"] == 1
+    assert by_bundle["qa"]["view_count"] == 7
+    assert by_bundle["devops"]["recorded_skill_count"] == 0
+    assert by_bundle["devops"]["view_count"] == 0
+
+
+def test_restore_categorized_agent_created_skill_remains_reported(skills_home):
+    from tools.skill_usage import (
+        archive_skill,
+        agent_created_report,
+        list_agent_created_skill_names,
+        load_usage,
+        mark_agent_created,
+        restore_skill,
+    )
+
+    skills_dir = skills_home / "skills"
+    _write_skill(skills_dir, "agent-made", category="devops")
+    mark_agent_created("agent-made")
+    archive_skill("agent-made")
+
+    ok, msg = restore_skill("agent-made")
+    assert ok, msg
+
+    usage = load_usage()
+    assert "devops/agent-made" not in usage
+    assert usage["agent-made"]["state"] == "active"
+    assert "agent-made" in list_agent_created_skill_names()
+    report_by_name = {row["name"]: row for row in agent_created_report()}
+    assert report_by_name["agent-made"]["state"] == "active"
+
+
+def test_agent_created_report_keeps_same_name_namespaces_distinct(skills_home):
+    from tools.skill_usage import agent_created_report, mark_agent_created, save_usage
+
+    skills_dir = skills_home / "skills"
+    _write_skill(skills_dir, "agent-made", category="devops")
+    _write_skill(skills_dir, "agent-made", category="qa")
+    save_usage({
+        "devops/agent-made": {
+            "created_by": "agent",
+            "state": "active",
+            "view_count": 3,
+        },
+        "qa/agent-made": {
+            "created_by": "agent",
+            "state": "active",
+            "view_count": 7,
+        },
+    })
+
+    rows = agent_created_report()
+    by_key = {row["usage_key"]: row for row in rows}
+
+    assert set(by_key) == {"devops/agent-made", "qa/agent-made"}
+    assert by_key["devops/agent-made"]["name"] == "agent-made"
+    assert by_key["devops/agent-made"]["bundle_id"] == "devops"
+    assert by_key["devops/agent-made"]["view_count"] == 3
+    assert by_key["qa/agent-made"]["name"] == "agent-made"
+    assert by_key["qa/agent-made"]["bundle_id"] == "qa"
+    assert by_key["qa/agent-made"]["view_count"] == 7
+
+
+def test_archive_accepts_usage_key_for_same_name_namespace(skills_home):
+    from tools.skill_usage import archive_skill, load_usage, save_usage
+
+    skills_dir = skills_home / "skills"
+    devops_dir = _write_skill(skills_dir, "agent-made", category="devops")
+    qa_dir = _write_skill(skills_dir, "agent-made", category="qa")
+    save_usage({
+        "devops/agent-made": {
+            "created_by": "agent",
+            "state": "active",
+            "view_count": 3,
+        },
+        "qa/agent-made": {
+            "created_by": "agent",
+            "state": "active",
+            "view_count": 7,
+        },
+    })
+
+    ok, msg = archive_skill("devops/agent-made")
+    assert ok, msg
+
+    usage = load_usage()
+    assert not devops_dir.exists()
+    assert qa_dir.exists()
+    assert usage["devops/agent-made"]["state"] == "archived"
+    assert usage["qa/agent-made"]["state"] == "active"
+
+
+def test_restore_does_not_migrate_other_namespace_unique_suffix_record(skills_home):
+    from tools.skill_usage import load_usage, restore_skill, save_usage
+
+    skills_dir = skills_home / "skills"
+    archive_dir = skills_dir / ".archive" / "agent-made"
+    archive_dir.mkdir(parents=True)
+    (archive_dir / "SKILL.md").write_text(
+        "---\nname: agent-made\ndescription: test\n---\n# body\n",
+        encoding="utf-8",
+    )
+    save_usage({
+        "qa/agent-made": {
+            "created_by": "agent",
+            "state": "archived",
+            "view_count": 7,
+        }
+    })
+
+    ok, msg = restore_skill("agent-made")
+    assert ok, msg
+
+    after = load_usage()
+    assert after["qa/agent-made"]["state"] == "archived"
+    assert after["qa/agent-made"]["view_count"] == 7
+    assert after["agent-made"]["state"] == "active"
+    assert after["agent-made"]["view_count"] == 0
 
 
 def test_archive_refuses_bundled_skill(skills_home):
@@ -637,3 +933,74 @@ def test_end_to_end_no_code_path_mutates_bundled_skill(skills_home):
     # The agent-created skill can still be mutated normally
     bump_view("mine")
     assert load_usage()["mine"]["view_count"] == 1
+
+
+# ---------------------------------------------------------------------------
+# Bundle/package provenance and canonical usage keys
+# ---------------------------------------------------------------------------
+
+def test_usage_key_canonicalizes_nested_bundle_skill(skills_home):
+    from tools.skill_usage import bump_view, load_usage
+
+    skills_dir = skills_home / "skills"
+    _write_skill(skills_dir, "using-superpowers", category="superpowers-zh")
+
+    bump_view("using-superpowers")
+
+    data = load_usage()
+    assert "superpowers-zh/using-superpowers" in data
+    assert "using-superpowers" not in data
+    assert data["superpowers-zh/using-superpowers"]["view_count"] == 1
+
+
+def test_bundle_usage_report_groups_metadata_and_activity(skills_home):
+    from tools.skill_usage import bump_use, bump_view, bundle_usage_report
+
+    skills_dir = skills_home / "skills"
+    bundle_skill = skills_dir / "superpowers-zh" / "using-superpowers"
+    bundle_skill.mkdir(parents=True)
+    (bundle_skill / "SKILL.md").write_text(
+        """---
+name: using-superpowers
+description: test skill
+metadata:
+  hermes:
+    bundle_id: superpowers-zh
+    source_repo: https://example.com/superpowers-zh.git
+    source_ref: main
+    source_commit: abc123
+---
+
+# body
+""",
+        encoding="utf-8",
+    )
+    _write_skill(skills_dir, "verification-before-completion", category="superpowers-zh")
+
+    bump_use("using-superpowers")
+    bump_view("superpowers-zh/using-superpowers")
+
+    rows = bundle_usage_report()
+    by_bundle = {r["bundle_id"]: r for r in rows}
+    row = by_bundle["superpowers-zh"]
+    assert row["skill_count"] == 2
+    assert row["recorded_skill_count"] == 1
+    assert row["use_count"] == 1
+    assert row["view_count"] == 1
+    assert row["activity_count"] == 2
+    assert row["source_repo"] == "https://example.com/superpowers-zh.git"
+    assert row["source_ref"] == "main"
+    assert row["source_commit"] == "abc123"
+
+
+def test_canonical_bundled_alias_stays_off_limits(skills_home):
+    from tools.skill_usage import bump_view, load_usage
+
+    skills_dir = skills_home / "skills"
+    _write_skill(skills_dir, "bundled-skill", category="github")
+    (skills_dir / ".bundled_manifest").write_text(
+        "bundled-skill:abc\n", encoding="utf-8",
+    )
+
+    bump_view("github/bundled-skill")
+    assert "github/bundled-skill" not in load_usage()

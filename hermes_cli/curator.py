@@ -36,6 +36,16 @@ def _fmt_ts(ts: Optional[str]) -> str:
     return f"{secs // 86400}d ago"
 
 
+def _row_identity(row: dict) -> str:
+    return str(row.get("usage_key") or row.get("name") or "")
+
+
+def _row_label(row: dict) -> str:
+    identity = _row_identity(row)
+    name = str(row.get("name") or identity)
+    return name if identity == name else f"{name} ({identity})"
+
+
 def _cmd_status(args) -> int:
     from agent import curator
     from tools import skill_usage
@@ -78,6 +88,21 @@ def _cmd_status(args) -> int:
     print(f"  stale after:    {curator.get_stale_after_days()}d unused")
     print(f"  archive after:  {curator.get_archive_after_days()}d unused")
 
+    bundle_rows = skill_usage.bundle_usage_report()
+    if bundle_rows:
+        print(f"\nskill bundles: {len(bundle_rows)} total")
+        for r in bundle_rows[:5]:
+            source = r.get("source_repo") or "local"
+            print(
+                f"  {r.get('bundle_id', ''):32s}  "
+                f"skills={r.get('skill_count', 0):3d}  "
+                f"recorded={r.get('recorded_skill_count', 0):3d}  "
+                f"activity={r.get('activity_count', 0):3d}  "
+                f"use={r.get('use_count', 0):3d}  "
+                f"view={r.get('view_count', 0):3d}  "
+                f"source={source}"
+            )
+
     rows = skill_usage.agent_created_report()
     if not rows:
         print("\nno agent-created skills")
@@ -89,7 +114,7 @@ def _cmd_status(args) -> int:
         state_name = r.get("state", "active")
         by_state.setdefault(state_name, []).append(r)
         if r.get("pinned"):
-            pinned.append(r["name"])
+            pinned.append(_row_label(r))
 
     print(f"\nagent-created skills: {len(rows)} total")
     for state_name in ("active", "stale", "archived"):
@@ -111,7 +136,7 @@ def _cmd_status(args) -> int:
         for r in active:
             last = _fmt_ts(r.get("last_activity_at"))
             print(
-                f"  {r['name']:40s}  "
+                f"  {_row_label(r):40s}  "
                 f"activity={r.get('activity_count', 0):3d}  "
                 f"use={r.get('use_count', 0):3d}  "
                 f"view={r.get('view_count', 0):3d}  "
@@ -137,7 +162,7 @@ def _cmd_status(args) -> int:
             for r in most_active:
                 last = _fmt_ts(r.get("last_activity_at"))
                 print(
-                    f"  {r['name']:40s}  "
+                    f"  {_row_label(r):40s}  "
                     f"activity={r.get('activity_count', 0):3d}  "
                     f"use={r.get('use_count', 0):3d}  "
                     f"view={r.get('view_count', 0):3d}  "
@@ -154,7 +179,7 @@ def _cmd_status(args) -> int:
             for r in least_active:
                 last = _fmt_ts(r.get("last_activity_at"))
                 print(
-                    f"  {r['name']:40s}  "
+                    f"  {_row_label(r):40s}  "
                     f"activity={r.get('activity_count', 0):3d}  "
                     f"use={r.get('use_count', 0):3d}  "
                     f"view={r.get('view_count', 0):3d}  "
@@ -326,16 +351,16 @@ def _cmd_prune(args) -> int:
         idle = _idle_days(r)
         if idle is None or idle < days:
             continue
-        candidates.append((r["name"], idle))
+        candidates.append((_row_identity(r), _row_label(r), idle))
 
     if not candidates:
         print(f"curator: nothing to prune (no unpinned skills idle >= {days}d)")
         return 0
 
-    candidates.sort(key=lambda c: -c[1])
+    candidates.sort(key=lambda c: -c[2])
     print(f"curator: {len(candidates)} skill(s) idle >= {days}d:")
-    for name, idle in candidates:
-        print(f"  {name:40s} idle {idle}d")
+    for _identity, label, idle in candidates:
+        print(f"  {label:40s} idle {idle}d")
 
     if dry_run:
         print("\n(dry run — no changes made)")
@@ -353,12 +378,12 @@ def _cmd_prune(args) -> int:
 
     archived = 0
     failures = []
-    for name, _ in candidates:
-        ok, msg = skill_usage.archive_skill(name)
+    for identity, label, _idle in candidates:
+        ok, msg = skill_usage.archive_skill(identity)
         if ok:
             archived += 1
         else:
-            failures.append((name, msg))
+            failures.append((label, msg))
 
     print(f"\ncurator: archived {archived}/{len(candidates)}")
     if failures:

@@ -551,6 +551,17 @@ class TestSkillView:
             skill["name"] for skill in list_result["skills"]
         ]
 
+    def test_view_exposes_canonical_usage_key_for_bundle_skill(self, tmp_path):
+        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+            _make_skill(tmp_path, "using-superpowers", category="superpowers-zh")
+            raw = skill_view("superpowers-zh/using-superpowers")
+
+        result = json.loads(raw)
+        assert result["success"] is True
+        assert result["name"] == "using-superpowers"
+        assert result["usage_key"] == "superpowers-zh/using-superpowers"
+        assert result["bundle_id"] == "superpowers-zh"
+
 
 class TestSkillViewSecureSetupOnLoad:
     def test_requests_missing_required_env_and_continues(self, tmp_path, monkeypatch):

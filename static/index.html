@@ -1,20 +1,58 @@
 <!DOCTYPE html>
-<html>
+<html lang="en">
 <head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Hermes UI</title>
-
-  <script src="https://unpkg.com/react@18/umd/react.development.js"></script>
-  <script src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"></script>
-
-  <style>
-    body { margin:0; font-family: Arial; }
-  </style>
+  <link rel="stylesheet" href="styles.css" />
 </head>
-
 <body>
-<div id="root"></div>
 
-<script src="/static/app.js"></script>
+<div id="app">
+
+  <!-- Sidebar -->
+  <aside id="sidebar" class="collapsed">
+    <button id="toggleSidebar">☰</button>
+
+    <nav>
+      <button>Setup</button>
+      <button>Sessions</button>
+      <button>Models</button>
+      <button>Skills</button>
+      <button>Plugins</button>
+      <button>Logs</button>
+      <button>Config</button>
+    </nav>
+  </aside>
+
+  <!-- Main Layout -->
+  <div id="main">
+
+    <!-- Left panel -->
+    <div id="leftPanel">
+      <h2>Agent Controls</h2>
+      <div class="card">Controls go here</div>
+    </div>
+
+    <!-- Resizer -->
+    <div id="resizer"></div>
+
+    <!-- Right panel (chat) -->
+    <div id="rightPanel">
+
+      <div id="chatWindow"></div>
+
+      <div id="chatInputWrapper">
+        <input id="chatInput" placeholder="Message..." />
+        <button id="sendBtn">Send</button>
+      </div>
+
+    </div>
+
+  </div>
+
+</div>
+
+<script type="module" src="app.js"></script>
 </body>
 </html>
-``

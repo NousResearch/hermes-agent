@@ -221,6 +221,21 @@ _EXTRA_ENV_KEYS = frozenset({
     "LANGFUSE_PUBLIC_KEY",
     "LANGFUSE_SECRET_KEY",
     "LANGFUSE_BASE_URL",
+    # PostHog observability plugin — optional tuning keys + standard SDK vars.
+    # Activation is via plugins.enabled (opt-in through `hermes plugins enable
+    # observability/posthog`); credentials gate the plugin at runtime.
+    "HERMES_POSTHOG_PROJECT_TOKEN",
+    "HERMES_POSTHOG_HOST",
+    "HERMES_POSTHOG_DISTINCT_ID",
+    "HERMES_POSTHOG_ENV",
+    "HERMES_POSTHOG_RELEASE",
+    "HERMES_POSTHOG_SAMPLE_RATE",
+    "HERMES_POSTHOG_MAX_CHARS",
+    "HERMES_POSTHOG_PRIVACY_MODE",
+    "HERMES_POSTHOG_SYNC_MODE",
+    "HERMES_POSTHOG_DEBUG",
+    "POSTHOG_PROJECT_API_KEY",
+    "POSTHOG_HOST",
 })
 import yaml
 

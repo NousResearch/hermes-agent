@@ -14,6 +14,7 @@ import yaml
 from hermes_cli.plugins_cmd import (
     PluginOperationError,
     _copy_example_files,
+    _missing_pip_dependencies,
     _read_manifest,
     _repo_name_from_url,
     _resolve_git_executable,
@@ -249,6 +250,27 @@ class TestReadManifest:
         (tmp_path / "plugin.yaml").write_text("")
         result = _read_manifest(tmp_path)
         assert result == {}
+
+
+class TestPipDependencyWarnings:
+    def test_missing_pip_dependencies_checks_manifest_packages(self, tmp_path, monkeypatch):
+        import importlib.util
+        import hermes_cli.plugins_cmd as pc
+
+        home = tmp_path / ".hermes"
+        plugin_dir = home / "plugins" / "observability" / "posthog"
+        plugin_dir.mkdir(parents=True)
+        (plugin_dir / "plugin.yaml").write_text(
+            yaml.dump({"name": "posthog", "pip_dependencies": ["posthog", "requests>=2"]})
+        )
+        monkeypatch.setattr(pc, "get_hermes_home", lambda: home)
+
+        def fake_find_spec(name):
+            return object() if name == "requests" else None
+
+        monkeypatch.setattr(importlib.util, "find_spec", fake_find_spec)
+
+        assert _missing_pip_dependencies("observability/posthog") == ["posthog"]
 
 
 # ── cmd_install tests ─────────────────────────────────────────────────────────

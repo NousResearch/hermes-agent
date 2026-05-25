@@ -1,0 +1,15 @@
+name: posthog
+version: "1.0.0"
+description: "Optional PostHog AI observability for Hermes — captures LLM generations and tool spans. Opt-in via `hermes plugins enable observability/posthog` (or check the box in `hermes plugins`)."
+author: NousResearch
+pip_dependencies:
+  - posthog
+requires_env:
+  - HERMES_POSTHOG_PROJECT_TOKEN
+hooks:
+  - pre_api_request
+  - post_api_request
+  - pre_llm_call
+  - post_llm_call
+  - pre_tool_call
+  - post_tool_call

@@ -663,6 +663,14 @@ def cmd_enable(name: str) -> None:
 
     if name in enabled and name not in disabled:
         console.print(f"[dim]Plugin '{name}' is already enabled.[/dim]")
+        missing_deps = _missing_pip_dependencies(name)
+        if missing_deps:
+            console.print(
+                "[yellow]![/yellow] Missing optional Python package(s): "
+                f"[bold]{', '.join(missing_deps)}[/bold]. Install them into the "
+                "Hermes Python environment before restarting, e.g. "
+                f"[cyan]{sys.executable} -m pip install {' '.join(missing_deps)}[/cyan]"
+            )
         return
 
     enabled.add(name)
@@ -673,6 +681,14 @@ def cmd_enable(name: str) -> None:
         f"[green]✓[/green] Plugin [bold]{name}[/bold] enabled. "
         "Takes effect on next session."
     )
+    missing_deps = _missing_pip_dependencies(name)
+    if missing_deps:
+        console.print(
+            "[yellow]![/yellow] Missing optional Python package(s): "
+            f"[bold]{', '.join(missing_deps)}[/bold]. Install them into the "
+            "Hermes Python environment before restarting, e.g. "
+            f"[cyan]{sys.executable} -m pip install {' '.join(missing_deps)}[/cyan]"
+        )
 
 
 def cmd_disable(name: str) -> None:
@@ -725,6 +741,66 @@ def _plugin_exists(name: str) -> bool:
         ):
             return True
     return False
+
+
+def _plugin_manifest_for_name(name: str) -> dict:
+    """Return the manifest for a user-installed or bundled plugin key/name."""
+    user_dir = _plugins_dir()
+    if user_dir.is_dir():
+        try:
+            candidate = _sanitize_plugin_name(name, user_dir, allow_subdir=True)
+        except ValueError:
+            candidate = None
+        if candidate and candidate.is_dir():
+            manifest = _read_manifest(candidate)
+            if manifest:
+                return manifest
+        for child in user_dir.iterdir():
+            if child.is_dir():
+                manifest = _read_manifest(child)
+                if manifest.get("name") == name:
+                    return manifest
+
+    from hermes_cli.plugins import get_bundled_plugins_dir
+    repo_plugins = get_bundled_plugins_dir()
+    if repo_plugins.is_dir():
+        try:
+            candidate = _sanitize_plugin_name(name, repo_plugins, allow_subdir=True)
+        except ValueError:
+            candidate = None
+        if candidate and candidate.is_dir():
+            manifest = _read_manifest(candidate)
+            if manifest:
+                return manifest
+    return {}
+
+
+def _missing_pip_dependencies(name: str) -> list[str]:
+    """Return ``pip_dependencies`` declared by a plugin but missing locally."""
+    manifest = _plugin_manifest_for_name(name)
+    deps = manifest.get("pip_dependencies") or []
+    if not isinstance(deps, list):
+        return []
+
+    import importlib.util
+
+    missing: list[str] = []
+    for dep in deps:
+        if not isinstance(dep, str) or not dep.strip():
+            continue
+        package = dep.strip()
+        module_name = (
+            package.split("[", 1)[0]
+            .split("=", 1)[0]
+            .split("<", 1)[0]
+            .split(">", 1)[0]
+            .split("~", 1)[0]
+            .strip()
+            .replace("-", "_")
+        )
+        if module_name and importlib.util.find_spec(module_name) is None:
+            missing.append(package)
+    return missing
 
 
 def _discover_all_plugins() -> list:

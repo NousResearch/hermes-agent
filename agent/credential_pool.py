@@ -1472,12 +1472,22 @@ def _normalize_pool_priorities(provider: str, entries: List[PooledCredential]) -
     if provider != "anthropic":
         return False
 
+    # Explicit user-configured credentials (env vars in ~/.hermes/.env) win
+    # over autodiscovered OAuth tokens from other tools' credential files.
+    # If a user has set ANTHROPIC_API_KEY they want the API-key path —
+    # x-api-key auth, no Claude Code identity injection, no mcp_ tool prefix.
+    # Autodiscovered Claude Code / Hermes PKCE tokens are kept as fallback so
+    # users without explicit env config still get a working anthropic session.
+    #
+    # env:ANTHROPIC_TOKEN remains ahead of env:ANTHROPIC_API_KEY because
+    # ANTHROPIC_TOKEN is the OAuth-specific env var — setting it explicitly
+    # is the user opting into the OAuth/subscription path.
     source_rank = {
         "env:ANTHROPIC_TOKEN": 0,
         "env:CLAUDE_CODE_OAUTH_TOKEN": 1,
-        "hermes_pkce": 2,
-        "claude_code": 3,
-        "env:ANTHROPIC_API_KEY": 4,
+        "env:ANTHROPIC_API_KEY": 2,
+        "hermes_pkce": 3,
+        "claude_code": 4,
     }
     manual_entries = sorted(
         (entry for entry in entries if _is_manual_source(entry.source)),

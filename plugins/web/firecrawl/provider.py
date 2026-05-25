@@ -196,8 +196,12 @@ def _raise_web_backend_configuration_error() -> None:
     )
     if _wt.managed_nous_tools_enabled():
         message += (
-            " With your Nous subscription you can also use the Tool Gateway — "
+            " With your Nous subscription you can also use the Tool Gateway. "
             "run `hermes tools` and select Nous Subscription as the web provider."
+        )
+    else:
+        message += " " + _wt.nous_tool_gateway_unavailable_message(
+            "managed Firecrawl web tools",
         )
     raise ValueError(message)
 

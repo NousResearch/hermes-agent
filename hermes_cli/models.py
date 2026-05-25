@@ -518,9 +518,19 @@ def fetch_nous_account_tier(access_token: str, portal_base_url: str = "") -> dic
 def is_nous_free_tier(account_info: dict[str, Any]) -> bool:
     """Return True if the account info indicates a free (unpaid) tier.
 
-    Checks ``subscription.monthly_charge == 0``.  Returns False when
-    the field is missing or unparseable (assumes paid — don't block users).
+    Prefer the Portal's explicit ``paid_service_access.allowed`` entitlement
+    decision.  Legacy payloads fall back to ``subscription.monthly_charge == 0``.
+    Returns False when both signals are missing or unparseable.
     """
+    paid_access = account_info.get("paid_service_access")
+    if isinstance(paid_access, dict):
+        allowed = paid_access.get("allowed")
+        if isinstance(allowed, bool):
+            return not allowed
+        paid = paid_access.get("paid_access")
+        if isinstance(paid, bool):
+            return not paid
+
     sub = account_info.get("subscription")
     if not isinstance(sub, dict):
         return False
@@ -699,40 +709,28 @@ _FREE_TIER_CACHE_TTL: int = 180  # seconds (3 minutes)
 _free_tier_cache: tuple[bool, float] | None = None  # (result, timestamp)
 
 
-def check_nous_free_tier() -> bool:
+def check_nous_free_tier(*, force_fresh: bool = False) -> bool:
     """Check if the current Nous Portal user is on a free (unpaid) tier.
 
     Results are cached for ``_FREE_TIER_CACHE_TTL`` seconds to avoid
     hitting the Portal API on every call.  The cache is short-lived so
     that an account upgrade is reflected within a few minutes.
 
-    Returns False (assume paid) on any error — never blocks paying users.
+    Returns True only when entitlement is known to be free.  Unknown/error
+    states return False so this compatibility wrapper does not block users.
     """
     global _free_tier_cache
     now = time.monotonic()
-    if _free_tier_cache is not None:
+    if not force_fresh and _free_tier_cache is not None:
         cached_result, cached_at = _free_tier_cache
         if now - cached_at < _FREE_TIER_CACHE_TTL:
             return cached_result
 
     try:
-        from hermes_cli.auth import get_provider_auth_state, resolve_nous_runtime_credentials
+        from hermes_cli.nous_account import get_nous_portal_account_info
 
-        # Ensure we have a fresh token (triggers refresh if needed)
-        resolve_nous_runtime_credentials(min_key_ttl_seconds=60)
-
-        state = get_provider_auth_state("nous")
-        if not state:
-            _free_tier_cache = (False, now)
-            return False
-        access_token = state.get("access_token", "")
-        portal_url = state.get("portal_base_url", "")
-        if not access_token:
-            _free_tier_cache = (False, now)
-            return False
-
-        account_info = fetch_nous_account_tier(access_token, portal_url)
-        result = is_nous_free_tier(account_info)
+        account_info = get_nous_portal_account_info(force_fresh=force_fresh)
+        result = account_info.is_free_tier
         _free_tier_cache = (result, now)
         return result
     except Exception:

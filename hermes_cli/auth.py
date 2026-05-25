@@ -802,21 +802,42 @@ def format_auth_error(error: Exception) -> str:
         return f"{error} Run `hermes model` to re-authenticate."
 
     if error.code == "subscription_required":
-        return (
-            "No active paid subscription found on Nous Portal. "
-            "Please purchase/activate a subscription, then retry."
-        )
+        if error.provider == "nous":
+            return _format_nous_entitlement_auth_error(error)
+        return "No active paid subscription found. Please purchase/activate a subscription, then retry."
 
     if error.code == "insufficient_credits":
-        return (
-            "Subscription credits are exhausted. "
-            "Top up/renew credits in Nous Portal, then retry."
-        )
+        if error.provider == "nous":
+            return _format_nous_entitlement_auth_error(error)
+        return "Subscription credits are exhausted. Top up/renew credits, then retry."
+
+    if error.code in {"subscription_expired", "no_usable_credits", "account_missing"}:
+        if error.provider == "nous":
+            return _format_nous_entitlement_auth_error(error)
 
     if error.code == "temporarily_unavailable":
         return f"{error} Please retry in a few seconds."
 
     return str(error)
+
+
+def _format_nous_entitlement_auth_error(error: AuthError) -> str:
+    try:
+        from hermes_cli.nous_account import (
+            format_nous_portal_entitlement_message,
+            get_nous_portal_account_info,
+        )
+
+        account_info = get_nous_portal_account_info(force_fresh=True)
+        message = format_nous_portal_entitlement_message(
+            account_info,
+            capability="Nous model access",
+        )
+        if message:
+            return message
+    except Exception:
+        pass
+    return f"{error} Check credits or billing in Nous Portal, then retry."
 
 
 def _token_fingerprint(token: Any) -> Optional[str]:
@@ -5627,6 +5648,8 @@ def _empty_nous_auth_status() -> Dict[str, Any]:
         "access_expires_at": None,
         "agent_key_expires_at": None,
         "has_refresh_token": False,
+        "inference_credential_present": False,
+        "credential_source": None,
     }
 
 
@@ -5655,24 +5678,36 @@ def _snapshot_nous_pool_status() -> Dict[str, Any]:
             return (agent_exp, access_exp, -priority)
 
         entry = max(entries, key=_entry_sort_key)
-        access_token = (
-            getattr(entry, "access_token", None)
-            or getattr(entry, "runtime_api_key", "")
-        )
-        if not access_token:
+        runtime_key = getattr(entry, "runtime_api_key", None) or getattr(entry, "access_token", "")
+        if not runtime_key:
             return _empty_nous_auth_status()
+        access_token = getattr(entry, "access_token", None)
+        auth_type = str(getattr(entry, "auth_type", "") or "").strip().lower()
+        refresh_token = getattr(entry, "refresh_token", None)
+        is_portal_oauth = bool(access_token) and (
+            auth_type.startswith("oauth") or bool(refresh_token)
+        )
+        label = getattr(entry, "label", "unknown")
+        portal_status_url = None
+        if is_portal_oauth:
+            portal_status_url = (
+                getattr(entry, "portal_base_url", None)
+                or DEFAULT_NOUS_PORTAL_URL
+            )
 
         return {
-            "logged_in": True,
-            "portal_base_url": getattr(entry, "portal_base_url", None)
-            or getattr(entry, "base_url", None),
+            "logged_in": is_portal_oauth,
+            "portal_base_url": portal_status_url,
             "inference_base_url": getattr(entry, "inference_base_url", None)
+            or getattr(entry, "runtime_base_url", None)
             or getattr(entry, "base_url", None),
-            "access_token": access_token,
+            "access_token": access_token if is_portal_oauth else None,
             "access_expires_at": getattr(entry, "expires_at", None),
             "agent_key_expires_at": getattr(entry, "agent_key_expires_at", None),
-            "has_refresh_token": bool(getattr(entry, "refresh_token", None)),
-            "source": f"pool:{getattr(entry, 'label', 'unknown')}",
+            "has_refresh_token": bool(refresh_token),
+            "inference_credential_present": True,
+            "credential_source": f"pool:{label}",
+            "source": f"pool:{label}",
         }
     except Exception:
         return _empty_nous_auth_status()
@@ -5755,6 +5790,10 @@ def _compute_nous_auth_status() -> Dict[str, Any]:
             "agent_key_expires_at": state.get("agent_key_expires_at"),
             "has_refresh_token": bool(state.get("refresh_token")),
             "access_token": state.get("access_token"),
+            "inference_credential_present": bool(
+                state.get("access_token") or state.get("agent_key")
+            ),
+            "credential_source": "auth_store",
             "source": "auth_store",
         }
         try:
@@ -5772,6 +5811,8 @@ def _compute_nous_auth_status() -> Dict[str, Any]:
                     or refreshed_state.get("agent_key_expires_at")
                     or base_status.get("agent_key_expires_at"),
                     "has_refresh_token": bool(refreshed_state.get("refresh_token")),
+                    "inference_credential_present": True,
+                    "credential_source": "auth_store",
                     "source": f"runtime:{creds.get('source', 'portal')}",
                     "key_id": creds.get("key_id"),
                 }
@@ -6283,6 +6324,7 @@ def _prompt_model_selection(
     pricing: Optional[Dict[str, Dict[str, str]]] = None,
     unavailable_models: Optional[List[str]] = None,
     portal_url: str = "",
+    unavailable_message: str = "",
 ) -> Optional[str]:
     """Interactive model selection. Puts current_model first with a marker. Returns chosen model ID or None.
 
@@ -6374,18 +6416,22 @@ def _prompt_model_selection(
         choices.append("  Enter custom model name")
         choices.append("  Skip (keep current)")
 
+        _upgrade_url = (portal_url or DEFAULT_NOUS_PORTAL_URL).rstrip("/")
+        unavailable_footer = unavailable_message.strip()
+        if not unavailable_footer and _unavailable:
+            unavailable_footer = f"Upgrade at {_upgrade_url} for paid models"
+
         # Print the unavailable block BEFORE the menu via regular print().
         # simple_term_menu pads title lines to terminal width (causes wrapping),
         # so we keep the title minimal and use stdout for the static block.
         # clear_screen=False means our printed output stays visible above.
-        _upgrade_url = (portal_url or DEFAULT_NOUS_PORTAL_URL).rstrip("/")
         if _unavailable:
             print(menu_title)
             print()
             for mid in _unavailable:
                 print(f"{_DIM}     {_label(mid)}{_RESET}")
             print()
-            print(f"{_DIM}  ── Upgrade at {_upgrade_url} for paid models ──{_RESET}")
+            print(f"{_DIM}  ── {unavailable_footer} ──{_RESET}")
             print()
             effective_title = "Available free models:"
         else:
@@ -6427,8 +6473,11 @@ def _prompt_model_selection(
 
     if _unavailable:
         _upgrade_url = (portal_url or DEFAULT_NOUS_PORTAL_URL).rstrip("/")
+        unavailable_footer = unavailable_message.strip() or (
+            f"Unavailable models (requires paid tier — upgrade at {_upgrade_url})"
+        )
         print()
-        print(f"  {_DIM}── Unavailable models (requires paid tier — upgrade at {_upgrade_url}) ──{_RESET}")
+        print(f"  {_DIM}── {unavailable_footer} ──{_RESET}")
         for mid in _unavailable:
             print(f"  {'':>{num_width}}  {_DIM}{_label(mid)}{_RESET}")
     print()
@@ -7626,8 +7675,9 @@ def _nous_device_code_login(
             portal_url = auth_state.get(
                 "portal_base_url", DEFAULT_NOUS_PORTAL_URL
             ).rstrip("/")
+            message = format_auth_error(exc)
             print()
-            print("Your Nous Portal account does not have an active subscription.")
+            print(message)
             print(f"  Subscribe here: {portal_url}/billing")
             print()
             print("After subscribing, run `hermes model` again to finish setup.")
@@ -7737,11 +7787,30 @@ def _login_nous(args, pconfig: ProviderConfig) -> None:
 
             print()
             unavailable_models: list = []
+            unavailable_message = ""
             if model_ids:
                 pricing = get_pricing_for_provider("nous")
-                free_tier = check_nous_free_tier()
+                # Force fresh account data for model selection so recent credit
+                # purchases are reflected immediately.
+                free_tier = check_nous_free_tier(force_fresh=True)
                 _portal_for_recs = auth_state.get("portal_base_url", "")
                 if free_tier:
+                    try:
+                        from hermes_cli.nous_account import (
+                            format_nous_portal_entitlement_message,
+                            get_nous_portal_account_info,
+                        )
+
+                        _account_info = get_nous_portal_account_info(force_fresh=True)
+                        unavailable_message = (
+                            format_nous_portal_entitlement_message(
+                                _account_info,
+                                capability="paid Nous models",
+                            )
+                            or ""
+                        )
+                    except Exception:
+                        unavailable_message = ""
                     # The Portal's freeRecommendedModels endpoint is the
                     # source of truth for what's free *right now*. Augment
                     # the curated list with anything new the Portal flags
@@ -7768,11 +7837,12 @@ def _login_nous(args, pconfig: ProviderConfig) -> None:
                     model_ids, pricing=pricing,
                     unavailable_models=unavailable_models,
                     portal_url=_portal,
+                    unavailable_message=unavailable_message,
                 )
             elif unavailable_models:
                 _url = (_portal or DEFAULT_NOUS_PORTAL_URL).rstrip("/")
                 print("No free models currently available.")
-                print(f"Upgrade at {_url} to access paid models.")
+                print(unavailable_message or f"Upgrade at {_url} to access paid models.")
             else:
                 print("No curated models available for Nous Portal.")
         except Exception as exc:

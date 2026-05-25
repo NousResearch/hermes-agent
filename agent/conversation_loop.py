@@ -127,6 +127,106 @@ def _ra():
     return run_agent
 
 
+def _nous_entitlement_message(capability: str) -> str:
+    try:
+        from hermes_cli.nous_account import (
+            format_nous_portal_entitlement_message,
+            get_nous_portal_account_info,
+        )
+
+        account_info = get_nous_portal_account_info(force_fresh=True)
+        message = format_nous_portal_entitlement_message(
+            account_info,
+            capability=capability,
+        )
+        return message or ""
+    except Exception:
+        return ""
+
+
+def _print_nous_entitlement_guidance(agent, capability: str) -> bool:
+    message = _nous_entitlement_message(capability)
+    if not message:
+        return False
+    for line in message.splitlines():
+        agent._vprint(f"{agent.log_prefix}   💡 {line}", force=True)
+    return True
+
+
+def _is_nous_inference_route(provider: str, base_url: str) -> bool:
+    provider = (provider or "").strip().lower()
+    if provider == "nous":
+        return True
+    base = str(base_url or "")
+    return (
+        base_url_host_matches(base, "inference-api.nousresearch.com")
+        or base_url_host_matches(base, "inference.nousresearch.com")
+    )
+
+
+def _billing_or_entitlement_message(
+    *,
+    capability: str,
+    provider: str,
+    base_url: str,
+    model: str,
+) -> str:
+    if _is_nous_inference_route(provider, base_url):
+        return _nous_entitlement_message(capability)
+
+    provider_label = (provider or "").strip() or "the selected provider"
+    model_label = (model or "").strip() or "the selected model"
+    lines = [
+        (
+            f"{provider_label} reported that billing, credits, or account "
+            f"entitlement is exhausted for {model_label}."
+        ),
+        "Add credits or update billing with that provider, then retry.",
+    ]
+    if base_url_host_matches(str(base_url or ""), "openrouter.ai"):
+        lines.append("OpenRouter credits: https://openrouter.ai/settings/credits")
+    lines.append("You can switch providers temporarily with /model <model> --provider <provider>.")
+    return "\n".join(lines)
+
+
+def _print_billing_or_entitlement_guidance(
+    agent,
+    *,
+    capability: str,
+    provider: str,
+    base_url: str,
+    model: str,
+) -> bool:
+    message = _billing_or_entitlement_message(
+        capability=capability,
+        provider=provider,
+        base_url=base_url,
+        model=model,
+    )
+    if not message:
+        return False
+    for line in message.splitlines():
+        agent._vprint(f"{agent.log_prefix}   💡 {line}", force=True)
+    return True
+
+
+def _try_refresh_nous_paid_entitlement_credentials(agent) -> bool:
+    """Refresh Nous runtime credentials after a fresh paid-entitlement check."""
+    try:
+        from hermes_cli.auth import NOUS_INFERENCE_AUTH_MODE_LEGACY
+        from hermes_cli.nous_account import get_nous_portal_account_info
+
+        account_info = get_nous_portal_account_info(force_fresh=True)
+        if account_info.paid_service_access is not True:
+            return False
+        return agent._try_refresh_nous_client_credentials(
+            force=False,
+            inference_auth_mode=NOUS_INFERENCE_AUTH_MODE_LEGACY,
+        )
+    except Exception:
+        return False
+
+
 def _restore_or_build_system_prompt(agent, system_message, conversation_history):
     """Restore the cached system prompt from the session DB or build it fresh.
 
@@ -1017,6 +1117,7 @@ def run_conversation(
         codex_auth_retry_attempted=False
         anthropic_auth_retry_attempted=False
         nous_auth_retry_attempted=False
+        nous_paid_entitlement_refresh_attempted=False
         copilot_auth_retry_attempted=False
         thinking_sig_retry_attempted = False
         invalid_encrypted_content_retry_attempted = False
@@ -2093,6 +2194,23 @@ def run_conversation(
                     classified.should_rotate_credential, classified.should_fallback,
                 )
 
+                if (
+                    classified.reason == FailoverReason.billing
+                    and _is_nous_inference_route(
+                        getattr(agent, "provider", "") or "",
+                        getattr(agent, "base_url", "") or "",
+                    )
+                    and not nous_paid_entitlement_refresh_attempted
+                ):
+                    nous_paid_entitlement_refresh_attempted = True
+                    if _try_refresh_nous_paid_entitlement_credentials(agent):
+                        agent._vprint(
+                            f"{agent.log_prefix}🔐 Nous paid access verified — "
+                            "refreshed runtime credentials and retrying request...",
+                            force=True,
+                        )
+                        continue
+
                 recovered_with_pool, has_retried_429 = agent._recover_with_credential_pool(
                     status_code=status_code,
                     has_retried_429=has_retried_429,
@@ -2217,7 +2335,8 @@ def run_conversation(
                     print(f"{agent.log_prefix}🔐 Nous 401 — Portal authentication failed.")
                     if _body_text:
                         print(f"{agent.log_prefix}   Response: {_body_text}")
-                    print(f"{agent.log_prefix}   Most likely: Portal OAuth expired, account out of credits, or agent key revoked.")
+                    if not _print_nous_entitlement_guidance(agent, "Nous model access"):
+                        print(f"{agent.log_prefix}   Most likely: Portal OAuth expired, account out of credits, or agent key revoked.")
                     print(f"{agent.log_prefix}   Troubleshooting:")
                     print(f"{agent.log_prefix}     • Re-authenticate: hermes auth add nous")
                     print(f"{agent.log_prefix}     • Check credits / billing: https://portal.nousresearch.com")
@@ -2538,7 +2657,12 @@ def run_conversation(
                         base_url=getattr(agent, "base_url", None),
                     )
                     if not pool_may_recover:
-                        agent._emit_status("⚠️ Rate limited — switching to fallback provider...")
+                        if classified.reason == FailoverReason.billing:
+                            agent._emit_status(
+                                "⚠️ Billing or credits exhausted — switching to fallback provider..."
+                            )
+                        else:
+                            agent._emit_status("⚠️ Rate limited — switching to fallback provider...")
                         if agent._try_activate_fallback(reason=classified.reason):
                             retry_count = 0
                             compression_attempts = 0
@@ -2948,7 +3072,20 @@ def run_conversation(
                     agent._vprint(f"{agent.log_prefix}   🌐 Endpoint: {_base}", force=True)
                     # Actionable guidance for common auth errors
                     if classified.is_auth or classified.reason == FailoverReason.billing:
-                        if _provider in {"openai-codex", "xai-oauth", "nous"} and status_code == 401:
+                        if classified.reason == FailoverReason.billing and _print_billing_or_entitlement_guidance(
+                            agent,
+                            capability="model access",
+                            provider=_provider,
+                            base_url=str(_base),
+                            model=_model,
+                        ):
+                            pass
+                        elif _provider == "nous" and _print_nous_entitlement_guidance(
+                            agent,
+                            "Nous model access",
+                        ):
+                            pass
+                        elif _provider in {"openai-codex", "xai-oauth", "nous"} and status_code == 401:
                             if _provider == "openai-codex":
                                 agent._vprint(f"{agent.log_prefix}   💡 Codex OAuth token was rejected (HTTP 401). Your token may have been", force=True)
                                 agent._vprint(f"{agent.log_prefix}      refreshed by another client (Codex CLI, VS Code). To fix:", force=True)
@@ -3018,7 +3155,23 @@ def run_conversation(
                         primary_recovery_attempted = False
                         continue
                     _final_summary = agent._summarize_api_error(api_error)
-                    if is_rate_limited:
+                    _billing_guidance = ""
+                    if classified.reason == FailoverReason.billing:
+                        agent._emit_status(f"❌ Billing or credits exhausted — {_final_summary}")
+                        _billing_guidance = _billing_or_entitlement_message(
+                            capability="model access",
+                            provider=_provider,
+                            base_url=str(_base),
+                            model=_model,
+                        )
+                        _print_billing_or_entitlement_guidance(
+                            agent,
+                            capability="model access",
+                            provider=_provider,
+                            base_url=str(_base),
+                            model=_model,
+                        )
+                    elif is_rate_limited:
                         agent._emit_status(f"❌ Rate limited after {max_retries} retries — {_final_summary}")
                     else:
                         agent._emit_status(f"❌ API failed after {max_retries} retries — {_final_summary}")
@@ -3063,7 +3216,12 @@ def run_conversation(
                             api_kwargs, reason="max_retries_exhausted", error=api_error,
                         )
                     agent._persist_session(messages, conversation_history)
-                    _final_response = f"API call failed after {max_retries} retries: {_final_summary}"
+                    if classified.reason == FailoverReason.billing:
+                        _final_response = f"Billing or credits exhausted: {_final_summary}"
+                        if _billing_guidance:
+                            _final_response += f"\n\n{_billing_guidance}"
+                    else:
+                        _final_response = f"API call failed after {max_retries} retries: {_final_summary}"
                     if _is_stream_drop:
                         _final_response += (
                             "\n\nThe provider's stream connection keeps "

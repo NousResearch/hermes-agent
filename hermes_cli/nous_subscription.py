@@ -6,8 +6,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, Iterable, Optional, Set
 
-from hermes_cli.auth import get_nous_auth_status
 from hermes_cli.config import get_env_value, load_config
+from hermes_cli.nous_account import NousPortalAccountInfo, get_nous_portal_account_info
 from tools.managed_tool_gateway import is_managed_tool_gateway_ready
 from utils import is_truthy_value
 from tools.tool_backend_helpers import (
@@ -53,6 +53,7 @@ class NousSubscriptionFeatures:
     nous_auth_present: bool
     provider_is_nous: bool
     features: Dict[str, NousFeatureState]
+    account_info: Optional[NousPortalAccountInfo] = None
 
     @property
     def web(self) -> NousFeatureState:
@@ -235,12 +236,16 @@ def get_nous_subscription_features(
     provider_is_nous = str(model_cfg.get("provider") or "").strip().lower() == "nous"
 
     try:
-        nous_status = get_nous_auth_status()
+        account_info = get_nous_portal_account_info()
     except Exception:
-        nous_status = {}
+        account_info = None
 
-    managed_tools_flag = managed_nous_tools_enabled()
-    nous_auth_present = bool(nous_status.get("logged_in"))
+    managed_tools_flag = bool(
+        account_info
+        and account_info.logged_in
+        and account_info.paid_service_access is True
+    )
+    nous_auth_present = bool(account_info and account_info.logged_in)
     subscribed = provider_is_nous or nous_auth_present
 
     web_tool_enabled = _toolset_enabled(config, "web")
@@ -483,6 +488,7 @@ def get_nous_subscription_features(
         nous_auth_present=nous_auth_present,
         provider_is_nous=provider_is_nous,
         features=features,
+        account_info=account_info,
     )
 
 

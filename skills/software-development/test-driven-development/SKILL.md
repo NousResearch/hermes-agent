@@ -146,13 +146,15 @@ We'll fix it in REFACTOR.
 # Run the specific test
 pytest tests/test_feature.py::test_specific_behavior -v
 
-# Then run ALL tests to check for regressions
-pytest tests/ -q
+# Then run the smallest related slice that covers regression risk
+pytest tests/test_feature.py -q
 ```
+
+For Al/Hermes live Telegram or resumed CLI sessions, do not escalate to full-suite `pytest tests/ -q` by default. Full suite is a release/final-validation action and needs explicit approval for that exact run.
 
 Confirm:
 - Test passes
-- Other tests still pass
+- Related regression slice still passes
 - Output pristine (no errors, warnings)
 
 **Test fails?** Fix the code, not the test.
@@ -284,7 +286,7 @@ Can't check all boxes? You skipped TDD. Start over.
 
 ### Running Tests
 
-Use the `terminal` tool to run tests at each step:
+Use the `terminal` tool to run tests at each step. Preserve pytest; reduce blast radius.
 
 ```python
 # RED — verify failure
@@ -293,9 +295,11 @@ terminal("pytest tests/test_feature.py::test_name -v")
 # GREEN — verify pass
 terminal("pytest tests/test_feature.py::test_name -v")
 
-# Full suite — verify no regressions
-terminal("pytest tests/ -q")
+# Related regression slice — smallest useful scope
+terminal("pytest tests/test_feature.py -q")
 ```
+
+Full-suite `pytest tests/ -q` is not the default for Al's live Telegram/gateway/resumed CLI sessions. Use it only for approved release/final-validation or when Al approves that exact command.
 
 ### With delegate_task
 
@@ -313,7 +317,7 @@ delegate_task(
     5. Refactor if needed
     6. Commit
 
-    Project test command: pytest tests/ -q
+    Project test command: targeted pytest first (`pytest tests/path/test_file.py::test_name -q` or `pytest tests/path/test_file.py -q`). Do not run full-suite `pytest tests/ -q` in Al's live sessions unless explicitly approved as release/final validation.
     Project structure: [describe relevant files]
     """,
     toolsets=['terminal', 'file']

@@ -948,12 +948,20 @@ run_conversation():
 ### Testing
 
 ```bash
-python -m pytest tests/ -o 'addopts=' -q   # Full suite
-python -m pytest tests/tools/ -q            # Specific area
+python -m pytest tests/plugins/test_truth_gate_contrib_plugin.py -q -o 'addopts='   # Targeted file
+python -m pytest tests/plugins/test_truth_gate_contrib_plugin.py::test_name -q      # Targeted node
+python -m pytest tests/ -o 'addopts=' -q                                           # Full suite: release/final-validation only
 ```
 
 - Tests auto-redirect `HERMES_HOME` to temp dirs — never touch real `~/.hermes/`
-- Run full suite before pushing any change
+- **Default to the smallest test slice that proves the touched change.** Do not run the full suite by reflex.
+- Full-suite `pytest tests/` is a release/final-validation action, not a live-session/debugging reflex. In Telegram/live gateway/resumed CLI sessions, run it only when Al explicitly approves that exact full-suite run or the task is already in an approved release/final-validation phase.
+- Blast-radius ladder for Al:
+  - one function/bugfix → nearest exact node ID first: `tests/path/test_file.py::test_case`
+  - one file/module → matching test file/module only
+  - plugin/tool change → related plugin/tool test slice only
+  - infra/config/core dependency change → directly affected package tests; broaden only with proof
+  - merge/release/final validation → full suite allowed if approved
 - Use `-o 'addopts='` to clear any baked-in pytest flags
 
 **Windows contributors:** `scripts/run_tests.sh` currently looks for POSIX venvs (`.venv/bin/activate` / `venv/bin/activate`) and will error out on Windows where the layout is `venv/Scripts/activate` + `python.exe`. The Hermes-installed venv at `venv/Scripts/` also has no `pip` or `pytest` — it's stripped for end-user install size. Workaround: install pytest + pytest-xdist + pyyaml into a system Python 3.11 user site (`/c/Program Files/Python311/python -m pip install --user pytest pytest-xdist pyyaml`), then run tests directly:

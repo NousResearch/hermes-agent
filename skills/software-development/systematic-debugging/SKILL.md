@@ -244,9 +244,11 @@ search_files("similar_pattern", path="src/", file_glob="*.py")
 # Run the specific regression test
 pytest tests/test_module.py::test_regression -v
 
-# Run full suite — no regressions
-pytest tests/ -q
+# Run the smallest related regression slice
+pytest tests/test_module.py -q
 ```
+
+For Al/Hermes live Telegram or resumed CLI sessions, full-suite `pytest tests/ -q` is not default verification. It is release/final-validation only, or requires Al's explicit approval for that exact run. Preserve pytest; reduce blast radius.
 
 ### 4. If Fix Doesn't Work — The Rule of Three
 

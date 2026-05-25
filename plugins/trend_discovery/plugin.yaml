@@ -1,0 +1,5 @@
+name: trend-discovery
+version: 0.1.0
+description: "Reliable trend discovery with watchdogs, fallbacks, and compliance logs."
+author: "Hermes Agent"
+kind: standalone

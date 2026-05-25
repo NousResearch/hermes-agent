@@ -704,6 +704,12 @@ def _plugin_exists(name: str) -> bool:
             or (candidate / "plugin.yml").exists()
         ):
             return True
+        for child in repo_plugins.iterdir():
+            if not child.is_dir():
+                continue
+            manifest = _read_manifest(child)
+            if manifest.get("name") == name:
+                return True
     return False
 
 

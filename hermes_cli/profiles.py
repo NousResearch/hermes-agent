@@ -994,12 +994,30 @@ def _maybe_register_gateway_service(profile_name: str) -> None:
     (``[gateway] port = …``) — there is no Python-side allocator
     (PR #30136 review item I5 retired the SHA-256-derived range
     [9200, 9800) because it was dead code through the entire stack).
+
+    Host short-circuit: check ``detect_service_manager()`` first and
+    return immediately if it isn't ``"s6"``. This keeps host
+    (systemd/launchd/windows) profile creation completely silent —
+    no ``get_service_manager()`` call, no exception path, no chance
+    of the ``⚠ Could not register s6 gateway service`` warning ever
+    rendering on a non-container machine. The earlier
+    ``supports_runtime_registration()`` check still catches the case
+    where detection somehow returns ``"s6"`` but the backend isn't
+    actually the S6 one.
     """
     try:
+        from hermes_cli.service_manager import detect_service_manager
+        if detect_service_manager() != "s6":
+            return  # host path — silent, no registration needed
         from hermes_cli.service_manager import get_service_manager
         mgr = get_service_manager()
     except RuntimeError:
         return  # no backend on this host — nothing to do
+    except Exception:
+        # Defensive: detect_service_manager failed for some other
+        # reason. Stay silent on host rather than printing a confusing
+        # s6 warning to users who have never touched the container.
+        return
     if not mgr.supports_runtime_registration():
         return  # host backend; no-op
     try:
@@ -1018,11 +1036,19 @@ def _maybe_unregister_gateway_service(profile_name: str) -> None:
 
     No-op on host. Idempotent: absent services are silently skipped
     by ``unregister_profile_gateway``.
+
+    Same host short-circuit as :func:`_maybe_register_gateway_service`
+    — see that docstring.
     """
     try:
+        from hermes_cli.service_manager import detect_service_manager
+        if detect_service_manager() != "s6":
+            return  # host path — silent
         from hermes_cli.service_manager import get_service_manager
         mgr = get_service_manager()
     except RuntimeError:
+        return
+    except Exception:
         return
     if not mgr.supports_runtime_registration():
         return

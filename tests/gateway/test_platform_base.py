@@ -330,6 +330,14 @@ class TestExtractMedia:
         assert media == [("/tmp/Jane Doe/speech.flac", False)]
         assert cleaned == ""
 
+    @pytest.mark.parametrize("suffix", [".sh", ".py", ".md", ".yaml", ".toml", ".log"])
+    def test_media_tag_supports_code_script_and_config_documents(self, suffix):
+        content = f"Here is the file:\nMEDIA:/home/adam/.hermes/media_cache/report{suffix}"
+        media, cleaned = BasePlatformAdapter.extract_media(content)
+        assert media == [(f"/home/adam/.hermes/media_cache/report{suffix}", False)]
+        assert "MEDIA:" not in cleaned
+        assert "Here is the file" in cleaned
+
     def test_as_document_directive_stripped_from_cleaned_text(self):
         """[[as_document]] is a routing directive — strip it from
         user-visible text just like [[audio_as_voice]]. Callers detect the
@@ -381,6 +389,17 @@ class TestMediaDeliveryPathValidation:
         self._patch_roots(monkeypatch, root)
 
         assert BasePlatformAdapter.validate_media_delivery_path(str(media_file)) == str(media_file.resolve())
+
+    def test_default_safe_roots_include_legacy_generic_media_cache(self):
+        """MEDIA:<path> guidance historically pointed agents at ~/.hermes/media_cache.
+
+        Keep that generic cache deliverable so generated scripts/documents don't
+        get stripped after extract_media finds them.
+        """
+        import gateway.platforms.base as base
+
+        roots = {root.name for root in base.MEDIA_DELIVERY_SAFE_ROOTS}
+        assert "media_cache" in roots
 
     def test_rejects_existing_file_outside_safe_root(self, tmp_path, monkeypatch):
         root = tmp_path / "media-cache"

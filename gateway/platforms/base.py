@@ -835,6 +835,7 @@ MEDIA_DELIVERY_SAFE_ROOTS = (
     VIDEO_CACHE_DIR,
     DOCUMENT_CACHE_DIR,
     SCREENSHOT_CACHE_DIR,
+    _HERMES_HOME / "media_cache",
     _HERMES_HOME / "image_cache",
     _HERMES_HOME / "audio_cache",
     _HERMES_HOME / "video_cache",
@@ -2413,7 +2414,7 @@ class BasePlatformAdapter(ABC):
         # Extract MEDIA:<path> tags, allowing optional whitespace after the colon
         # and quoted/backticked paths for LLM-formatted outputs.
         media_pattern = re.compile(
-            r'''[`"']?MEDIA:\s*(?P<path>`[^`\n]+`|"[^"\n]+"|'[^'\n]+'|(?:~/|/)\S+(?:[^\S\n]+\S+)*?\.(?:png|jpe?g|gif|webp|mp4|mov|avi|mkv|webm|ogg|opus|mp3|wav|m4a|flac|epub|pdf|zip|rar|7z|docx?|xlsx?|pptx?|txt|csv|apk|ipa)(?=[\s`"',;:)\]}]|$))[`"']?'''
+            r'''[`"']?MEDIA:\s*(?P<path>`[^`\n]+`|"[^"\n]+"|'[^'\n]+'|(?:~/|/)\S+(?:[^\S\n]+\S+)*?\.(?:png|jpe?g|gif|webp|mp4|mov|avi|mkv|webm|ogg|opus|mp3|wav|m4a|flac|epub|pdf|zip|rar|7z|docx?|xlsx?|pptx?|txt|md|csv|tsv|json|xml|ya?ml|toml|ini|cfg|log|py|sh|ts|js|html?|apk|ipa)(?=[\s`"',;:)\]}]|$))[`"']?'''
         )
         for match in media_pattern.finditer(content):
             path = match.group("path").strip()
@@ -2463,9 +2464,12 @@ class BasePlatformAdapter(ABC):
             # Audio (delivered as voice/audio where supported)
             '.mp3', '.wav', '.ogg', '.m4a', '.flac',
             # Documents (uploaded as file attachments)
-            '.pdf', '.docx', '.doc', '.odt', '.rtf', '.txt', '.md',
+            '.pdf', '.docx', '.doc', '.odt', '.rtf', '.txt', '.md', '.log',
+            # Code/scripts/configs (uploaded as file attachments)
+            '.py', '.sh', '.bash', '.zsh', '.js', '.ts', '.json', '.xml', '.yaml', '.yml',
+            '.toml', '.ini', '.cfg',
             # Spreadsheets / data
-            '.xlsx', '.xls', '.ods', '.csv', '.tsv', '.json', '.xml', '.yaml', '.yml',
+            '.xlsx', '.xls', '.ods', '.csv', '.tsv',
             # Presentations
             '.pptx', '.ppt', '.odp', '.key',
             # Archives

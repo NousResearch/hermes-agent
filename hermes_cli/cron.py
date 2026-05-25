@@ -126,6 +126,59 @@ def cron_list(show_all: bool = False):
         print()
 
 
+def _print_full_job(job: dict):
+    """Print one cron job with the full stored prompt."""
+    print()
+    print(color(f"Cron job: {job.get('name') or job.get('job_id')}", Colors.CYAN))
+    print(f"  ID:        {job.get('job_id')}")
+    print(f"  State:     {job.get('state', '?')}")
+    print(f"  Schedule:  {job.get('schedule', '?')}")
+    print(f"  Repeat:    {job.get('repeat', '?')}")
+    print(f"  Enabled:   {job.get('enabled', True)}")
+    print(f"  Deliver:   {job.get('deliver', 'local')}")
+    if job.get("skills"):
+        print(f"  Skills:    {', '.join(job['skills'])}")
+    if job.get("enabled_toolsets"):
+        print(f"  Toolsets:  {', '.join(job['enabled_toolsets'])}")
+    if job.get("script"):
+        print(f"  Script:    {job['script']}")
+    if job.get("no_agent"):
+        print(f"  Mode:      {color('no-agent', Colors.DIM)}")
+    if job.get("workdir"):
+        print(f"  Workdir:   {job['workdir']}")
+    if job.get("profile"):
+        print(f"  Profile:   {job['profile']}")
+    if job.get("model"):
+        print(f"  Model:     {job['model']}")
+    if job.get("provider"):
+        print(f"  Provider:  {job['provider']}")
+    if job.get("base_url"):
+        print(f"  Base URL:  {job['base_url']}")
+    if job.get("next_run_at"):
+        print(f"  Next run:  {job['next_run_at']}")
+    if job.get("last_run_at"):
+        print(f"  Last run:  {job['last_run_at']} ({job.get('last_status', '?')})")
+    if job.get("last_delivery_error"):
+        print(f"  {color('Delivery failed:', Colors.YELLOW)} {job['last_delivery_error']}")
+    print()
+    print("Prompt:")
+    print(job.get("prompt", ""))
+    print()
+
+
+def cron_show(job_id: str) -> int:
+    """Show one scheduled job, including its full prompt."""
+    result = _cron_api(action="show", job_id=job_id)
+    if not result.get("success"):
+        print(color(f"Failed to show job: {result.get('error', 'unknown error')}", Colors.RED))
+        matches = result.get("matches") or []
+        for match in matches:
+            print(f"  {match.get('id')}  (name: {match.get('name')!r})")
+        return 1
+    _print_full_job(result)
+    return 0
+
+
 def cron_tick():
     """Run due jobs once and exit."""
     from cron.scheduler import tick
@@ -305,6 +358,9 @@ def cron_command(args):
     if subcmd == "edit":
         return cron_edit(args)
 
+    if subcmd == "show":
+        return cron_show(args.job_id)
+
     if subcmd == "pause":
         return _job_action("pause", args.job_id, "Paused")
 
@@ -318,5 +374,5 @@ def cron_command(args):
         return _job_action("remove", args.job_id, "Removed")
 
     print(f"Unknown cron command: {subcmd}")
-    print("Usage: hermes cron [list|create|edit|pause|resume|run|remove|status|tick]")
+    print("Usage: hermes cron [list|show|create|edit|pause|resume|run|remove|status|tick]")
     sys.exit(1)

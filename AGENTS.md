@@ -13,6 +13,18 @@ source .venv/bin/activate   # or: source venv/bin/activate
 `$HOME/.hermes/hermes-agent/venv` (for worktrees that share a venv with the
 main checkout).
 
+## Spec Development Workflow
+
+When developing from a spec, create a dedicated branch, switch to that branch,
+develop the requested feature there, then commit the completed work.
+
+## Search Scope
+
+Avoid broad searches from `/home/gweeteve`. Restrict searches to
+`/home/gweeteve/projects` or explicitly exclude
+`/home/gweeteve/.hindsight-docker/instances/hindsight/data`, which is not
+readable and causes `Permission denied` errors.
+
 ## Project Structure
 
 File counts shift constantly — don't treat the tree below as exhaustive.

@@ -1,4 +1,4 @@
-#!/bin/sh
+#!/command/with-contenv sh
 # /opt/hermes/docker/main-wrapper.sh — wraps the container's CMD with
 # the same argument-routing logic the pre-s6 entrypoint.sh used. Runs
 # as /init's "main program" (Docker CMD) so it inherits stdin/stdout/
@@ -16,6 +16,14 @@ set -e
 cd /opt/data
 # shellcheck disable=SC1091
 . /opt/hermes/.venv/bin/activate
+if [ -f /opt/data/.env ]; then
+    set -a
+    # shellcheck disable=SC1091
+    . /opt/data/.env
+    set +a
+fi
+export HERMES_HOME=/opt/data
+export HOME=/opt/data
 
 if [ $# -eq 0 ]; then
     exec s6-setuidgid hermes hermes

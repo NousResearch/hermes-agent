@@ -291,7 +291,7 @@ def _validate_cron_script_path(script: Optional[str]) -> Optional[str]:
     return None
 
 
-def _format_job(job: Dict[str, Any]) -> Dict[str, Any]:
+def _format_job(job: Dict[str, Any], *, include_prompt: bool = False) -> Dict[str, Any]:
     prompt = str(job.get("prompt") or "")
     skills = _canonical_skills(job.get("skill"), job.get("skills"))
     job_id = str(job.get("id") or "unknown")
@@ -317,6 +317,8 @@ def _format_job(job: Dict[str, Any]) -> Dict[str, Any]:
         "paused_at": job.get("paused_at"),
         "paused_reason": job.get("paused_reason"),
     }
+    if include_prompt:
+        result["prompt"] = prompt
     if job.get("script"):
         result["script"] = job["script"]
     if job.get("no_agent"):
@@ -327,6 +329,13 @@ def _format_job(job: Dict[str, Any]) -> Dict[str, Any]:
         result["workdir"] = job["workdir"]
     if job.get("profile"):
         result["profile"] = job["profile"]
+    if include_prompt:
+        result["script"] = job.get("script")
+        result["no_agent"] = bool(job.get("no_agent", False))
+        result["enabled_toolsets"] = job.get("enabled_toolsets") or None
+        result["workdir"] = job.get("workdir")
+        result["profile"] = job.get("profile")
+        result["context_from"] = job.get("context_from")
     return result
 
 
@@ -470,6 +479,9 @@ def cronjob(
         # Resolve to canonical ID (supports name-based lookup)
         job_id = job["id"]
 
+        if normalized == "show":
+            return json.dumps({"success": True, **_format_job(job, include_prompt=True)}, indent=2)
+
         if normalized == "remove":
             removed = remove_job(job_id)
             if not removed:
@@ -600,9 +612,10 @@ CRONJOB_SCHEMA = {
 
 Use action='create' to schedule a new job from a prompt or one or more skills.
 Use action='list' to inspect jobs.
+Use action='show' to inspect one job's full prompt and details.
 Use action='update', 'pause', 'resume', 'remove', or 'run' to manage an existing job.
 
-To stop a job the user no longer wants: first action='list' to find the job_id, then action='remove' with that job_id. Never guess job IDs — always list first.
+To inspect or stop a job: first action='list' to find the job_id, then action='show' or action='remove' with that job_id. Never guess job IDs — always list first.
 
 Jobs run in a fresh session with no current-chat context, so prompts must be self-contained.
 If skills are provided on create, the future cron run loads those skills in order, then follows the prompt as the task instruction.
@@ -618,11 +631,11 @@ Important safety rule: cron-run sessions should not recursively schedule more cr
         "properties": {
             "action": {
                 "type": "string",
-                "description": "One of: create, list, update, pause, resume, remove, run"
+                "description": "One of: create, list, show, update, pause, resume, remove, run"
             },
             "job_id": {
                 "type": "string",
-                "description": "Required for update/pause/resume/remove/run"
+                "description": "Required for show/update/pause/resume/remove/run"
             },
             "prompt": {
                 "type": "string",

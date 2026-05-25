@@ -194,6 +194,7 @@ Cron jobs now have a fuller lifecycle than just create/remove.
 
 ```bash
 /cron list
+/cron show <job_id>
 /cron pause <job_id>
 /cron resume <job_id>
 /cron run <job_id>
@@ -204,6 +205,7 @@ Cron jobs now have a fuller lifecycle than just create/remove.
 
 ```bash
 hermes cron list
+hermes cron show <job_id>
 hermes cron pause <job_id>
 hermes cron resume <job_id>
 hermes cron run <job_id>
@@ -215,9 +217,23 @@ hermes cron tick
 What they do:
 
 - `pause` — keep the job but stop scheduling it
+- `show` — inspect one job, including its full stored prompt
 - `resume` — re-enable the job and compute the next future run
 - `run` — trigger the job on the next scheduler tick
 - `remove` — delete it entirely
+
+### Inspecting the full prompt
+
+`list` intentionally stays compact and shows only `prompt_preview`. Use `show` when you need to audit or debug the exact prompt that will run:
+
+```python
+cronjob(action="show", job_id="d420021ac742")
+```
+
+```bash
+/cron show d420021ac742
+hermes cron show d420021ac742
+```
 
 ## How it works
 

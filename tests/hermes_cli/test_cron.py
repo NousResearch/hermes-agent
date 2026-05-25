@@ -17,6 +17,27 @@ def tmp_cron_dir(tmp_path, monkeypatch):
 
 
 class TestCronCommandLifecycle:
+    def test_show_prints_full_prompt(self, tmp_cron_dir, capsys):
+        long_prompt = "Inspect the full prompt for debugging. " * 8
+        job = create_job(
+            prompt=long_prompt,
+            schedule="every 1h",
+            name="Inspectable Job",
+            skills=["blogwatcher"],
+            enabled_toolsets=["web"],
+        )
+
+        result = cron_command(Namespace(cron_command="show", job_id=job["id"]))
+
+        assert result == 0
+        out = capsys.readouterr().out
+        assert "Cron job: Inspectable Job" in out
+        assert f"ID:        {job['id']}" in out
+        assert "Skills:    blogwatcher" in out
+        assert "Toolsets:  web" in out
+        assert long_prompt in out
+        assert "..." not in out
+
     def test_pause_resume_run(self, tmp_cron_dir, capsys):
         job = create_job(prompt="Check server status", schedule="every 1h")
 

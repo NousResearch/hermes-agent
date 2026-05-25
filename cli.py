@@ -7921,6 +7921,44 @@ class HermesCLI:
                     normalized.append(text)
             return normalized
 
+        def _print_full_job(job):
+            print()
+            print(f"Cron job: {job.get('name') or job.get('job_id')}")
+            print(f"  ID:        {job.get('job_id')}")
+            print(f"  State:     {job.get('state', '?')}")
+            print(f"  Schedule:  {job.get('schedule', '?')}")
+            print(f"  Repeat:    {job.get('repeat', '?')}")
+            print(f"  Enabled:   {job.get('enabled', True)}")
+            print(f"  Deliver:   {job.get('deliver', 'local')}")
+            if job.get("skills"):
+                print(f"  Skills:    {', '.join(job['skills'])}")
+            if job.get("enabled_toolsets"):
+                print(f"  Toolsets:  {', '.join(job['enabled_toolsets'])}")
+            if job.get("script"):
+                print(f"  Script:    {job['script']}")
+            if job.get("no_agent"):
+                print("  Mode:      no-agent")
+            if job.get("workdir"):
+                print(f"  Workdir:   {job['workdir']}")
+            if job.get("profile"):
+                print(f"  Profile:   {job['profile']}")
+            if job.get("model"):
+                print(f"  Model:     {job['model']}")
+            if job.get("provider"):
+                print(f"  Provider:  {job['provider']}")
+            if job.get("base_url"):
+                print(f"  Base URL:  {job['base_url']}")
+            if job.get("next_run_at"):
+                print(f"  Next run:  {job['next_run_at']}")
+            if job.get("last_run_at"):
+                print(f"  Last run:  {job['last_run_at']} ({job.get('last_status', '?')})")
+            if job.get("last_delivery_error"):
+                print(f"  Delivery failed: {job['last_delivery_error']}")
+            print()
+            print("Prompt:")
+            print(job.get("prompt", ""))
+            print()
+
         def _parse_flags(tokens):
             opts = {
                 "name": None,
@@ -7987,6 +8025,7 @@ class HermesCLI:
             print()
             print("  Commands:")
             print("    /cron list")
+            print("    /cron show <job_id>")
             print('    /cron add "every 2h" "Check server status" [--skill blogwatcher]')
             print('    /cron edit <job_id> --schedule "every 4h" --prompt "New task"')
             print("    /cron edit <job_id> --skill blogwatcher --skill maps")
@@ -8043,6 +8082,20 @@ class HermesCLI:
                 if job.get("last_run_at"):
                     print(f"  Last run: {job['last_run_at']} ({job.get('last_status', '?')})")
                 print()
+            return
+
+        if subcommand == "show":
+            positionals = opts["positionals"]
+            if not positionals:
+                print("(._.) Usage: /cron show <job_id>")
+                return
+            result = _cron_api(action="show", job_id=positionals[0])
+            if not result.get("success"):
+                print(f"(x_x) Failed to show job: {result.get('error')}")
+                for match in result.get("matches") or []:
+                    print(f"  {match.get('id')}  (name: {match.get('name')!r})")
+                return
+            _print_full_job(result)
             return
 
         if subcommand in {"add", "create"}:
@@ -8148,7 +8201,7 @@ class HermesCLI:
             return
 
         print(f"(._.) Unknown cron command: {subcommand}")
-        print("  Available: list, add, edit, pause, resume, run, remove")
+        print("  Available: list, show, add, edit, pause, resume, run, remove")
 
     def _handle_curator_command(self, cmd: str):
         """Handle /curator slash command.

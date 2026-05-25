@@ -199,6 +199,72 @@ class TestUnifiedCronjobTool:
         assert listing["jobs"][0]["prompt_preview"] == ""
         assert listing["jobs"][0]["schedule"] == "every 60m"
 
+    def test_show_returns_full_prompt_without_changing_list_shape(self):
+        long_prompt = "Investigate the complete cron prompt. " * 12
+        created = json.loads(
+            cronjob(
+                action="create",
+                prompt=long_prompt,
+                schedule="every 1h",
+                name="Full Prompt Job",
+            )
+        )
+
+        shown = json.loads(cronjob(action="show", job_id=created["job_id"]))
+        assert shown["success"] is True
+        assert shown["job_id"] == created["job_id"]
+        assert shown["name"] == "Full Prompt Job"
+        assert shown["prompt"] == long_prompt
+        assert shown["prompt_preview"] != long_prompt
+        assert shown["prompt_preview"].endswith("...")
+        assert shown["script"] is None
+        assert shown["enabled_toolsets"] is None
+        assert shown["no_agent"] is False
+
+        listing = json.loads(cronjob(action="list"))
+        assert listing["success"] is True
+        assert "prompt" not in listing["jobs"][0]
+        assert listing["jobs"][0]["prompt_preview"] == shown["prompt_preview"]
+
+    def test_show_supports_name_lookup_and_optional_fields(self):
+        from cron.jobs import update_job
+
+        prompt = "Use tools and report the result."
+        created = json.loads(
+            cronjob(
+                action="create",
+                prompt=prompt,
+                schedule="every 1h",
+                name="Detailed Cron",
+                skills=["blogwatcher", "maps"],
+                enabled_toolsets=["web", "file"],
+            )
+        )
+        update_job(
+            created["job_id"],
+            {
+                "script": "collector.py",
+                "last_run_at": "2026-05-24T17:19:12Z",
+                "last_status": "ok",
+            },
+        )
+
+        shown = json.loads(cronjob(action="show", job_id="Detailed Cron"))
+        assert shown["success"] is True
+        assert shown["job_id"] == created["job_id"]
+        assert shown["prompt"] == prompt
+        assert shown["skills"] == ["blogwatcher", "maps"]
+        assert shown["enabled_toolsets"] == ["web", "file"]
+        assert shown["script"] == "collector.py"
+        assert shown["last_run_at"] == "2026-05-24T17:19:12Z"
+        assert shown["last_status"] == "ok"
+
+    def test_show_missing_job_returns_not_found_error(self):
+        shown = json.loads(cronjob(action="show", job_id="missing-job"))
+
+        assert shown["success"] is False
+        assert "not found" in shown["error"]
+
     def test_pause_and_resume(self):
         created = json.loads(cronjob(action="create", prompt="Check", schedule="every 1h"))
         job_id = created["job_id"]

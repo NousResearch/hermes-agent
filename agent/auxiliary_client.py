@@ -50,6 +50,8 @@ from types import SimpleNamespace
 from typing import Any, Dict, List, Optional, Tuple, TYPE_CHECKING
 from urllib.parse import urlparse, parse_qs, urlunparse
 
+import httpx
+
 # NOTE: `from openai import OpenAI` is deliberately NOT at module top — the
 # openai SDK pulls a large type tree (~240 ms cold, including responses/*,
 # graders/*). We expose `OpenAI` here as a thin proxy that imports the SDK on
@@ -440,6 +442,64 @@ _AUTH_JSON_PATH = get_hermes_home() / "auth.json"
 # or the user's active Codex model selection).
 _CODEX_AUX_BASE_URL = "https://chatgpt.com/backend-api/codex"
 
+# MiniMax operates two separate APIs (see issue #15715):
+#   /anthropic/v1/messages   — Anthropic-compatible text chat. Silently
+#                              strips image blocks, returning a useless
+#                              text-only reply for vision requests.
+#   /v1/coding_plan/vlm      — Dedicated VLM endpoint. Native body shape:
+#                              {"prompt": str, "image_url": "data:image/..."}
+#                              Response: {"content": str, "base_resp": {...}}
+#
+# MinimaxVlmAuxiliaryClient routes vision traffic through the second URL while
+# preserving the OpenAI-shape ``chat.completions.create()`` contract every
+# vision caller already uses.
+_MINIMAX_VLM_BASE_URLS: Dict[str, str] = {
+    "minimax": "https://api.minimax.io/v1/coding_plan/vlm",
+    "minimax-cn": "https://api.minimaxi.com/v1/coding_plan/vlm",
+}
+_MINIMAX_VLM_TIMEOUT = 120.0
+
+
+def _derive_minimax_vlm_endpoint(provider: str, base_url: Optional[str]) -> str:
+    """Derive the VLM endpoint URL from the configured base_url, falling back
+    to provider defaults. The VLM endpoint is the sibling of the Anthropic-
+    compat endpoint at /v1/coding_plan/vlm under the same host.
+
+    Honours user-configured base URLs (``MINIMAX_BASE_URL`` / ``MINIMAX_CN_BASE_URL``
+    env vars, or a corporate proxy). Without this, vision calls bypass the
+    proxy that text calls correctly use, breaking proxied/airgapped deployments.
+
+    Transformation rule (terminal-suffix only, applied to the rstrip'd base):
+      - Strip a trailing ``/anthropic`` suffix (the default Anthropic-compat
+        path) so the VLM path lands as a sibling, not a child.
+      - Strip a trailing ``/v1`` suffix as well — ``MINIMAX_BASE_URL`` is also
+        documented and supported as a chat-completions-style ``…/v1`` URL
+        (see ``hermes_cli/doctor.py:945``), so a config like
+        ``https://api.minimax.chat/v1`` must not double-stack into ``/v1/v1``.
+      - Only the *terminal* segment is stripped: an internal ``/v1`` like
+        ``https://proxy.com/api/v1/minimax`` is preserved (the proxy owns its
+        own prefix and is responsible for routing both endpoints).
+      - For custom proxies that match neither suffix (e.g.
+        ``https://proxy.example.com/minimax-shim``), append the VLM path
+        directly — the proxy routes both Anthropic and VLM traffic under the
+        same prefix.
+      - Strip trailing slashes before suffix detection so we never produce ``//``.
+      - Fall back to the hardcoded defaults when no base_url is resolved
+        (rare; user has no env config and provider has no default override).
+    """
+    if base_url:
+        base = base_url.rstrip("/")
+        # Suffix order is mutually exclusive in practice — neither ``/anthropic``
+        # nor ``/v1`` is a substring of the other — but check both so any
+        # documented MiniMax base_url shape resolves to a single, canonical
+        # ``/v1/coding_plan/vlm`` endpoint.
+        if base.endswith("/anthropic"):
+            base = base[: -len("/anthropic")]
+        elif base.endswith("/v1"):
+            base = base[: -len("/v1")]
+        return f"{base}/v1/coding_plan/vlm"
+    return _MINIMAX_VLM_BASE_URLS[provider]
+
 
 def _codex_cloudflare_headers(access_token: str) -> Dict[str, str]:
     """Headers required to avoid Cloudflare 403s on chatgpt.com/backend-api/codex.
@@ -707,21 +767,6 @@ class _CodexCompletionsAdapter:
         # Tools support for auxiliary callers (e.g. skills_hub) that pass function schemas
         tools = kwargs.get("tools")
         if tools:
-            # xAI's Responses endpoint rejects ``pattern`` and ``format`` JSON Schema
-            # keywords (HTTP 400). Strip them here to match the parity guarantee that
-            # chat_completion_helpers.py provides for the main-agent xAI path.
-            try:
-                from tools.schema_sanitizer import (
-                    strip_pattern_and_format,
-                    strip_slash_enum,
-                )
-                tools, _ = strip_pattern_and_format(list(tools))
-                tools, _ = strip_slash_enum(tools)
-            except Exception as exc:
-                logger.warning(
-                    "Auxiliary client: failed to sanitize tool schemas for "
-                    "Codex/xAI Responses path: %s", exc,
-                )
             converted = []
             for t in tools:
                 fn = t.get("function", {}) if isinstance(t, dict) else {}
@@ -1210,6 +1255,180 @@ def _maybe_wrap_anthropic(
     )
 
 
+# ── MiniMax VLM (vision) → chat.completions adapter ────────────────────────
+# MiniMax's Anthropic-compat endpoint silently drops image content blocks
+# (issue #15715). The dedicated /v1/coding_plan/vlm endpoint takes a native
+# {"prompt", "image_url"} body and returns {"content", "base_resp"}. This
+# adapter accepts an OpenAI-shape multimodal ``messages`` list, extracts the
+# text prompt + first image data URL, POSTs them to the right regional VLM
+# endpoint, and converts the response back into a chat.completions-shaped
+# object so callers (vision_analyze, async_call_llm) need no changes.
+
+
+def _extract_vision_parts(messages: list) -> Tuple[str, str]:
+    """Pull the text prompt and image data URL out of an OpenAI-shape
+    multimodal message list.
+
+    Returns ``(prompt, image_url)``. Raises ``ValueError`` if no image block
+    is present — the VLM endpoint exists specifically for vision traffic, so
+    a missing image is a programming error worth surfacing loudly.
+    """
+    text_parts: List[str] = []
+    image_url: Optional[str] = None
+    for msg in messages:
+        content = msg.get("content")
+        if isinstance(content, str):
+            if msg.get("role") != "system":
+                text_parts.append(content)
+            continue
+        if not isinstance(content, list):
+            continue
+        for block in content:
+            if not isinstance(block, dict):
+                continue
+            btype = block.get("type")
+            if btype == "text":
+                text_parts.append(str(block.get("text", "")))
+            elif btype == "image_url" and image_url is None:
+                raw = block.get("image_url")
+                if isinstance(raw, dict):
+                    image_url = str(raw.get("url", ""))
+                elif isinstance(raw, str):
+                    image_url = raw
+    if not image_url:
+        raise ValueError(
+            "MiniMax VLM endpoint requires an image_url block in messages "
+            "(none found). Use a text-only provider for plain chat."
+        )
+    return "\n\n".join(p for p in text_parts if p).strip(), image_url
+
+
+class _MinimaxVlmCompletionsAdapter:
+    """Translates ``chat.completions.create()`` calls to MiniMax /v1/coding_plan/vlm POSTs."""
+
+    def __init__(self, api_key: str, endpoint_url: str):
+        self._api_key = api_key
+        self._endpoint = endpoint_url
+
+    def create(self, **kwargs) -> Any:
+        messages = kwargs.get("messages") or []
+        model = kwargs.get("model", "MiniMax-M2.7")
+        timeout = kwargs.get("timeout") or _MINIMAX_VLM_TIMEOUT
+
+        prompt, image_url = _extract_vision_parts(messages)
+        body = {"prompt": prompt, "image_url": image_url}
+        headers = {
+            "Authorization": f"Bearer {self._api_key}",
+            "Content-Type": "application/json",
+        }
+
+        try:
+            resp = httpx.post(self._endpoint, headers=headers, json=body, timeout=timeout)
+        except httpx.TimeoutException as exc:
+            raise RuntimeError(
+                f"MiniMax VLM endpoint timed out after {timeout}s: {exc}"
+            ) from exc
+        except httpx.HTTPError as exc:
+            raise RuntimeError(
+                f"MiniMax VLM endpoint request failed: {exc}"
+            ) from exc
+        if getattr(resp, "status_code", 0) >= 400:
+            text = getattr(resp, "text", "")
+            raise RuntimeError(
+                f"MiniMax VLM endpoint returned HTTP {resp.status_code}: {text[:200]}"
+            )
+        try:
+            payload = resp.json()
+        except Exception as exc:
+            raise RuntimeError(
+                f"MiniMax VLM endpoint returned non-JSON response: {exc}"
+            ) from exc
+
+        if "base_resp" not in payload:
+            logger.warning(
+                "MiniMax VLM: base_resp missing from response; proceeding optimistically"
+            )
+        base_resp = payload.get("base_resp") or {}
+        status_code = base_resp.get("status_code")
+        if status_code not in (0, None):
+            status_msg = base_resp.get("status_msg", "")
+            raise RuntimeError(
+                f"MiniMax VLM endpoint error {status_code}: {status_msg}"
+            )
+
+        content = payload.get("content") or ""
+        message = SimpleNamespace(role="assistant", content=content, tool_calls=None)
+        choice = SimpleNamespace(index=0, message=message, finish_reason="stop")
+        # MiniMax VLM does not return token counts; zero is the safest stand-in
+        # so callers reading prompt/completion/total don't crash.
+        usage = SimpleNamespace(prompt_tokens=0, completion_tokens=0, total_tokens=0)
+        return SimpleNamespace(choices=[choice], model=model, usage=usage)
+
+
+class _MinimaxVlmChatShim:
+    def __init__(self, adapter: _MinimaxVlmCompletionsAdapter):
+        self.completions = adapter
+
+
+class MinimaxVlmAuxiliaryClient:
+    """OpenAI-client-compatible wrapper that routes through MiniMax's
+    dedicated VLM endpoint (``/v1/coding_plan/vlm``) instead of the
+    Anthropic-compat text chat URL, which silently strips images.
+
+    Consumers can call ``client.chat.completions.create(**kwargs)`` as normal.
+    Also exposes ``.api_key`` and ``.base_url`` for introspection by async
+    wrappers (matching CodexAuxiliaryClient / AnthropicAuxiliaryClient).
+    """
+
+    def __init__(
+        self,
+        api_key: str,
+        provider: str = "minimax",
+        base_url: Optional[str] = None,
+    ):
+        if provider not in _MINIMAX_VLM_BASE_URLS:
+            raise ValueError(
+                f"Unknown MiniMax VLM provider {provider!r}; "
+                f"expected one of {sorted(_MINIMAX_VLM_BASE_URLS)}"
+            )
+        endpoint = _derive_minimax_vlm_endpoint(provider, base_url)
+        adapter = _MinimaxVlmCompletionsAdapter(api_key, endpoint)
+        self.chat = _MinimaxVlmChatShim(adapter)
+        self.api_key = api_key
+        self.base_url = endpoint
+        self._provider = provider
+
+    def close(self):  # symmetry with the OpenAI/Anthropic/Codex adapters
+        pass
+
+
+class _AsyncMinimaxVlmCompletionsAdapter:
+    """Async wrapper — runs the sync adapter via asyncio.to_thread()."""
+
+    def __init__(self, sync_adapter: _MinimaxVlmCompletionsAdapter):
+        self._sync = sync_adapter
+
+    async def create(self, **kwargs) -> Any:
+        import asyncio
+        return await asyncio.to_thread(self._sync.create, **kwargs)
+
+
+class _AsyncMinimaxVlmChatShim:
+    def __init__(self, adapter: _AsyncMinimaxVlmCompletionsAdapter):
+        self.completions = adapter
+
+
+class AsyncMinimaxVlmAuxiliaryClient:
+    """Async-compatible wrapper matching AsyncOpenAI.chat.completions.create()."""
+
+    def __init__(self, sync_wrapper: "MinimaxVlmAuxiliaryClient"):
+        sync_adapter = sync_wrapper.chat.completions
+        async_adapter = _AsyncMinimaxVlmCompletionsAdapter(sync_adapter)
+        self.chat = _AsyncMinimaxVlmChatShim(async_adapter)
+        self.api_key = sync_wrapper.api_key
+        self.base_url = sync_wrapper.base_url
+
+
 def _read_nous_auth() -> Optional[dict]:
     """Read and validate ~/.hermes/auth.json for an active Nous provider.
 
@@ -1307,10 +1526,7 @@ def _resolve_xai_oauth_for_aux() -> Optional[Tuple[str, str]]:
     with xAI Grok OAuth.
     """
     try:
-        from hermes_cli.auth import (
-            DEFAULT_XAI_OAUTH_BASE_URL,
-            _xai_validate_inference_base_url,
-        )
+        from hermes_cli.auth import DEFAULT_XAI_OAUTH_BASE_URL
 
         pool = load_pool("xai-oauth")
         if pool and pool.has_credentials():
@@ -1321,13 +1537,13 @@ def _resolve_xai_oauth_for_aux() -> Optional[Tuple[str, str]]:
                     or getattr(entry, "access_token", "")
                     or ""
                 ).strip()
-                base_url = _xai_validate_inference_base_url(
+                base_url = str(
                     os.getenv("HERMES_XAI_BASE_URL", "").strip().rstrip("/")
                     or os.getenv("XAI_BASE_URL", "").strip().rstrip("/")
-                    or str(getattr(entry, "runtime_base_url", None) or "").strip().rstrip("/")
-                    or str(getattr(entry, "base_url", None) or "").strip().rstrip("/"),
-                    fallback=DEFAULT_XAI_OAUTH_BASE_URL,
-                )
+                    or getattr(entry, "runtime_base_url", None)
+                    or getattr(entry, "base_url", None)
+                    or DEFAULT_XAI_OAUTH_BASE_URL
+                ).strip().rstrip("/")
                 if api_key and base_url:
                     return api_key, base_url
     except Exception as exc:
@@ -1405,9 +1621,6 @@ def _resolve_api_key_provider() -> Tuple[Optional[OpenAI], Optional[str]]:
 
     for provider_id, pconfig in PROVIDER_REGISTRY.items():
         if pconfig.auth_type != "api_key":
-            continue
-        if _is_provider_unhealthy(provider_id):
-            logger.debug("Auxiliary api-key chain: %s is unhealthy, skipping", provider_id)
             continue
         if provider_id == "anthropic":
             # Only try anthropic when the user has explicitly configured it.
@@ -1699,6 +1912,28 @@ def clear_runtime_main() -> None:
     _RUNTIME_MAIN_MODEL = ""
 
 
+def _read_main_base_url() -> str:
+    """Read the user's configured main model base_url from config.yaml.
+
+    Returns the configured ``model.base_url`` (trailing slash stripped) or ""
+    when unset. Used by the vision auto-resolver so MiniMax VLM calls land on
+    the same proxy as text traffic — mirrors the precedence in
+    ``hermes_cli/runtime_provider.py`` where ``model.base_url`` overrides the
+    pool-default URL when the configured provider matches.
+    """
+    try:
+        from hermes_cli.config import load_config
+        cfg = load_config()
+        model_cfg = cfg.get("model", {})
+        if isinstance(model_cfg, dict):
+            base_url = model_cfg.get("base_url", "")
+            if isinstance(base_url, str) and base_url.strip():
+                return base_url.strip().rstrip("/")
+    except Exception:
+        pass
+    return ""
+
+
 def _resolve_custom_runtime() -> Tuple[Optional[str], Optional[str], Optional[str]]:
     """Resolve the active custom/main endpoint the same way the main CLI does.
 
@@ -1912,120 +2147,6 @@ def _build_codex_client(model: str) -> Tuple[Optional[Any], Optional[str]]:
     return CodexAuxiliaryClient(real_client, model), model
 
 
-def _try_azure_foundry(
-    *,
-    model: Optional[str] = None,
-    explicit_api_key: Optional[str] = None,
-    explicit_base_url: Optional[str] = None,
-    api_mode: Optional[str] = None,
-) -> Tuple[Optional[Any], Optional[str]]:
-    """Resolve an Azure Foundry auxiliary client via the runtime resolver.
-
-    Mirrors the ``_try_anthropic`` / ``_try_nous`` shape but delegates to
-    :func:`hermes_cli.runtime_provider._resolve_azure_foundry_runtime` —
-    the same resolver the main agent uses — so:
-
-    * ``auth_mode: api_key`` (default) gets the static
-      ``AZURE_FOUNDRY_API_KEY`` string.
-    * ``auth_mode: entra_id`` gets a callable bearer-token provider
-      (``Callable[[], str]`` from
-      :mod:`agent.azure_identity_adapter`).
-    * Per-model ``api_mode`` auto-routing for GPT-5.x / o-series /
-      codex models works.
-    * ``model.entra.{tenant_id,client_id,authority,scope}`` config
-      fields propagate.
-    * Non-default ``model.base_url`` overrides are honored.
-
-    The OpenAI SDK accepts both shapes for ``api_key`` so the caller
-    can forward the result without coercion.
-
-    Returns ``(client, model)`` or ``(None, None)`` on failure.
-    """
-    try:
-        from hermes_cli.runtime_provider import _resolve_azure_foundry_runtime
-        from hermes_cli.auth import AuthError
-        from hermes_cli.config import load_config
-    except ImportError:
-        return None, None
-
-    try:
-        cfg = load_config()
-        model_cfg = cfg.get("model") if isinstance(cfg, dict) else {}
-        if not isinstance(model_cfg, dict):
-            model_cfg = {}
-    except Exception:
-        model_cfg = {}
-
-    try:
-        runtime = _resolve_azure_foundry_runtime(
-            requested_provider="azure-foundry",
-            model_cfg=model_cfg,
-            explicit_api_key=explicit_api_key,
-            explicit_base_url=explicit_base_url,
-            target_model=model,
-        )
-    except AuthError as exc:
-        logger.debug("Auxiliary azure-foundry: %s", exc)
-        return None, None
-    except Exception as exc:
-        logger.debug("Auxiliary azure-foundry runtime error: %s", exc)
-        return None, None
-
-    api_key = runtime.get("api_key")
-    base_url = str(runtime.get("base_url", "") or "")
-    runtime_api_mode = api_mode or runtime.get("api_mode") or "chat_completions"
-
-    # Empty-string check on api_key here would be wrong for callable
-    # token providers (callables are truthy and non-empty by definition).
-    # Bail only when api_key is None / empty string.
-    _has_key = bool(api_key) if not callable(api_key) else True
-    if not _has_key or not base_url:
-        return None, None
-
-    final_model = _normalize_resolved_model(
-        model or str(model_cfg.get("default") or ""),
-        "azure-foundry",
-    )
-    if not final_model:
-        # No fallback aux model for Azure — the user must have a
-        # deployment name. Surface that as "no client" so the auto
-        # chain falls through to the next provider rather than 404ing.
-        logger.debug(
-            "Auxiliary azure-foundry: no model resolved (model=%r, default=%r)",
-            model, model_cfg.get("default"),
-        )
-        return None, None
-
-    # Azure pre-v1 endpoints sometimes carry api-version query params
-    # in the base URL; the OpenAI SDK drops them when joining paths,
-    # so lift them out and pass via default_query.
-    extra: Dict[str, Any] = {}
-    _clean_base, _dq = _extract_url_query_params(base_url)
-    if _dq:
-        extra["default_query"] = _dq
-
-    client = OpenAI(api_key=api_key, base_url=_clean_base, **extra)
-
-    if runtime_api_mode == "codex_responses":
-        # GPT-5.x / o-series / codex models on Azure Foundry are
-        # Responses-API-only — wrap so chat.completions.create() is
-        # translated to /responses behind the scenes.
-        return CodexAuxiliaryClient(client, final_model), final_model
-
-    if runtime_api_mode == "anthropic_messages":
-        # Forward ``api_key`` verbatim — for static keys it's a string,
-        # for Entra ID it's a callable. ``_maybe_wrap_anthropic`` →
-        # ``build_anthropic_client`` detects the callable and installs
-        # the bearer-injecting httpx hook.
-        return _maybe_wrap_anthropic(
-            client, final_model, api_key,
-            base_url, runtime_api_mode,
-        ), final_model
-
-    # chat_completions — return the plain OpenAI client.
-    return client, final_model
-
-
 def _try_anthropic(explicit_api_key: str = None) -> Tuple[Optional[Any], Optional[str]]:
     try:
         from agent.anthropic_adapter import build_anthropic_client, resolve_anthropic_token
@@ -2081,31 +2202,20 @@ _AUTO_PROVIDER_LABELS = {
     "_resolve_api_key_provider": "api-key",
 }
 
-_MAIN_RUNTIME_FIELDS = ("provider", "model", "base_url", "api_key", "api_mode", "auth_mode")
+_MAIN_RUNTIME_FIELDS = ("provider", "model", "base_url", "api_key", "api_mode")
 
 
-def _normalize_main_runtime(main_runtime: Optional[Dict[str, Any]]) -> Dict[str, Any]:
-    """Return a sanitized copy of a live main-runtime override.
-
-    Most fields are stripped strings. ``api_key`` may legitimately be a
-    zero-arg callable (Azure Foundry Entra ID token provider) — preserve
-    those as-is so auxiliary clients inherit the same authentication
-    surface as the main agent. The OpenAI SDK accepts ``Callable[[], str]``
-    for ``api_key`` and calls it before every request.
-    """
+def _normalize_main_runtime(main_runtime: Optional[Dict[str, Any]]) -> Dict[str, str]:
+    """Return a sanitized copy of a live main-runtime override."""
     if not isinstance(main_runtime, dict):
         return {}
-    normalized: Dict[str, Any] = {}
+    normalized: Dict[str, str] = {}
     for field in _MAIN_RUNTIME_FIELDS:
         value = main_runtime.get(field)
-        # Preserve a callable api_key (Entra ID bearer provider) unchanged.
-        if field == "api_key" and callable(value) and not isinstance(value, str):
-            normalized[field] = value
-            continue
         if isinstance(value, str) and value.strip():
             normalized[field] = value.strip()
     provider = normalized.get("provider")
-    if isinstance(provider, str):
+    if provider:
         normalized["provider"] = provider.lower()
     return normalized
 
@@ -2263,12 +2373,11 @@ def _is_payment_error(exc: Exception) -> bool:
             "credits", "insufficient funds",
             "can only afford", "billing",
             "payment required",
-            # Daily / monthly / weekly quota exhaustion keywords
+            # Daily / monthly quota exhaustion keywords
             "quota exceeded", "quota_exceeded",
             "too many tokens per day", "daily limit",
             "tokens per day", "daily quota",
             "resource exhausted",  # Vertex AI / gRPC quota errors
-            "weekly usage limit", "weekly limit",  # OpenCode Go weekly subscription cap
         )):
             return True
     return False
@@ -2482,11 +2591,7 @@ def _pool_error_context(exc: Exception) -> Dict[str, Any]:
     return payload
 
 
-def _recoverable_pool_provider(
-    resolved_provider: str,
-    client: Any,
-    main_runtime: Optional[Dict[str, Any]] = None,
-) -> Optional[str]:
+def _recoverable_pool_provider(resolved_provider: str, client: Any) -> Optional[str]:
     """Infer which provider pool can recover the current auxiliary client."""
     normalized = _normalize_aux_provider(resolved_provider)
     if normalized not in {"", "auto", "custom"}:
@@ -2504,33 +2609,11 @@ def _recoverable_pool_provider(
         return "copilot"
     if base_url_host_matches(base, "api.kimi.com"):
         return "kimi-coding"
-    # For api_key providers not in the hardcoded list (e.g. opencode-go), match
-    # the client base URL against all registered api_key providers so that
-    # credential-pool rotation works for any provider the user configured.
-    if main_runtime:
-        rt = _normalize_main_runtime(main_runtime)
-        rt_provider = rt.get("provider", "")
-        if rt_provider and rt_provider not in {"", "auto", "custom"}:
-            try:
-                from hermes_cli.auth import PROVIDER_REGISTRY
-                pconfig = PROVIDER_REGISTRY.get(rt_provider)
-                if pconfig and getattr(pconfig, "auth_type", None) == "api_key":
-                    rt_base = str(getattr(pconfig, "inference_base_url", "") or "").rstrip("/")
-                    if rt_base and base_url_host_matches(base, base_url_hostname(rt_base)):
-                        return rt_provider
-            except Exception:
-                pass
     return None
 
 
-def _recover_provider_pool(provider: str, exc: Exception, *, failed_api_key: str = "") -> bool:
-    """Try same-provider credential-pool recovery for auxiliary calls.
-
-    ``failed_api_key`` is the API key that was actually used for the failing
-    request.  Passing it lets mark_exhausted_and_rotate identify the correct
-    pool entry even when another process has already rotated the pool (which
-    would leave current() as None, causing the wrong entry to be marked).
-    """
+def _recover_provider_pool(provider: str, exc: Exception) -> bool:
+    """Try same-provider credential-pool recovery for auxiliary calls."""
     normalized = _normalize_aux_provider(provider)
     try:
         pool = load_pool(normalized)
@@ -2542,7 +2625,6 @@ def _recover_provider_pool(provider: str, exc: Exception, *, failed_api_key: str
 
     status_code = getattr(exc, "status_code", None)
     error_context = _pool_error_context(exc)
-    hint = failed_api_key or None
 
     if _is_auth_error(exc):
         refreshed = pool.try_refresh_current()
@@ -2552,7 +2634,6 @@ def _recover_provider_pool(provider: str, exc: Exception, *, failed_api_key: str
         next_entry = pool.mark_exhausted_and_rotate(
             status_code=status_code if status_code is not None else 401,
             error_context=error_context,
-            api_key_hint=hint,
         )
         if next_entry is not None:
             _evict_cached_clients(normalized)
@@ -2564,7 +2645,6 @@ def _recover_provider_pool(provider: str, exc: Exception, *, failed_api_key: str
         next_entry = pool.mark_exhausted_and_rotate(
             status_code=status_code if status_code is not None else fallback_status,
             error_context=error_context,
-            api_key_hint=hint,
         )
         if next_entry is not None:
             _evict_cached_clients(normalized)
@@ -2623,7 +2703,8 @@ def _retry_same_provider_sync(
         extra_body=effective_extra_body,
         base_url=retry_base or resolved_base_url,
     )
-    if _is_anthropic_compat_endpoint(resolved_provider, retry_base):
+    if (not isinstance(retry_client, MinimaxVlmAuxiliaryClient)
+            and _is_anthropic_compat_endpoint(resolved_provider, retry_base)):
         retry_kwargs["messages"] = _convert_openai_images_to_anthropic(retry_kwargs["messages"])
     return _validate_llm_response(
         retry_client.chat.completions.create(**retry_kwargs), task,
@@ -2680,7 +2761,8 @@ async def _retry_same_provider_async(
         extra_body=effective_extra_body,
         base_url=retry_base or resolved_base_url,
     )
-    if _is_anthropic_compat_endpoint(resolved_provider, retry_base):
+    if (not isinstance(retry_client, AsyncMinimaxVlmAuxiliaryClient)
+            and _is_anthropic_compat_endpoint(resolved_provider, retry_base)):
         retry_kwargs["messages"] = _convert_openai_images_to_anthropic(retry_kwargs["messages"])
     return _validate_llm_response(
         await retry_client.chat.completions.create(**retry_kwargs), task,
@@ -2927,10 +3009,10 @@ def _resolve_auto(main_runtime: Optional[Dict[str, Any]] = None) -> Tuple[Option
     auxiliary_is_nous = False  # Reset — _try_nous() will set True if it wins
     runtime = _normalize_main_runtime(main_runtime)
     runtime_provider = runtime.get("provider", "")
-    runtime_model = str(runtime.get("model") or "")
-    runtime_base_url = str(runtime.get("base_url") or "")
+    runtime_model = runtime.get("model", "")
+    runtime_base_url = runtime.get("base_url", "")
     runtime_api_key = runtime.get("api_key", "")
-    runtime_api_mode = str(runtime.get("api_mode") or "")
+    runtime_api_mode = runtime.get("api_mode", "")
 
     # ── Warn once if OPENAI_BASE_URL is set but config.yaml uses a named
     #    provider (not 'custom').  This catches the common "env poisoning"
@@ -2958,8 +3040,8 @@ def _resolve_auto(main_runtime: Optional[Dict[str, Any]] = None) -> Tuple[Option
     # on aggregators (OpenRouter, Nous) who previously got routed to a
     # cheap provider-side default.  Explicit per-task overrides set via
     # config.yaml (auxiliary.<task>.provider) still win over this.
-    main_provider = str(runtime_provider or _read_main_provider() or "")
-    main_model = str(runtime_model or _read_main_model() or "")
+    main_provider = runtime_provider or _read_main_provider()
+    main_model = runtime_model or _read_main_model()
     if (main_provider and main_model
             and main_provider not in {"auto", ""}):
         resolved_provider = main_provider
@@ -2969,11 +3051,6 @@ def _resolve_auto(main_runtime: Optional[Dict[str, Any]] = None) -> Tuple[Option
             resolved_provider = "custom"
             explicit_base_url = runtime_base_url
             explicit_api_key = runtime_api_key or None
-        elif runtime_api_key:
-            # Pin auxiliary to the same api_key as the active main chat session
-            # so that a working key is reused instead of re-selecting from the pool
-            # (which might pick a different, potentially exhausted key).
-            explicit_api_key = runtime_api_key
         # Skip Step-1 if the main provider was recently 402'd. The unhealthy
         # cache TTL bounds how long we bypass it, so a topped-up account
         # recovers automatically. If we tried Step-1 anyway, every aux call
@@ -3043,6 +3120,8 @@ def _to_async_client(sync_client, model: str, is_vision: bool = False):
         return AsyncCodexAuxiliaryClient(sync_client), model
     if isinstance(sync_client, AnthropicAuxiliaryClient):
         return AsyncAnthropicAuxiliaryClient(sync_client), model
+    if isinstance(sync_client, MinimaxVlmAuxiliaryClient):
+        return AsyncMinimaxVlmAuxiliaryClient(sync_client), model
     try:
         from agent.gemini_native_adapter import GeminiNativeClient, AsyncGeminiNativeClient
 
@@ -3153,34 +3232,6 @@ def resolve_provider_client(
     original_provider = (provider or "").strip().lower()
     # Normalise aliases
     provider = _normalize_aux_provider(provider)
-
-    # Universal model-resolution fallback chain.  Callers (notably title
-    # generation, vision, session search, and other auxiliary tasks) can
-    # reach this function without an explicit model — the user picked their
-    # main provider, didn't bother configuring a per-task ``auxiliary.<task>.model``,
-    # and just expects "use my main model for side tasks too."  Resolve in
-    # this order, stopping at the first non-empty answer:
-    #
-    #   1. ``model`` argument (caller knew what they wanted)
-    #   2. Provider's catalog default — cheap/fast model the provider
-    #      registered via ``ProviderProfile.default_aux_model`` or the
-    #      legacy ``_API_KEY_PROVIDER_AUX_MODELS_FALLBACK`` dict.  Empty
-    #      string for OAuth-gated providers (openai-codex, xai-oauth)
-    #      whose accepted-model lists drift on the backend, so we don't
-    #      pin a default that can silently rot.
-    #   3. User's main model from ``model.model`` in config.yaml.  This is
-    #      the load-bearing step for OAuth providers: an xai-oauth user
-    #      with grok-4.3 configured gets grok-4.3 for title generation
-    #      instead of silently dropping to whatever Step-2 fallback (#31845).
-    #
-    # Each provider branch below sees a non-empty ``model`` whenever the
-    # user has *anything* configured — no provider-specific empty-model
-    # guards needed.  When the user has NOTHING configured (fresh install,
-    # main_model also empty), the branches still hit their own
-    # missing-credentials returns and ``_resolve_auto`` falls through to
-    # the Step-2 chain as before.
-    if not model:
-        model = _get_aux_model_for_provider(provider) or _read_main_model() or model
 
     def _needs_codex_wrap(client_obj, base_url_str: str, model_str: str) -> bool:
         """Decide if a plain OpenAI client should be wrapped for Responses API.
@@ -3326,7 +3377,7 @@ def resolve_provider_client(
         if client is None:
             logger.warning(
                 "resolve_provider_client: xai-oauth requested but no xAI "
-                "OAuth token found (run: hermes model -> xAI Grok OAuth — SuperGrok / Premium+)"
+                "OAuth token found (run: hermes model -> xAI Grok OAuth — SuperGrok Subscription)"
             )
             return None, None
         final_model = _normalize_resolved_model(model or default, provider)
@@ -3386,11 +3437,7 @@ def resolve_provider_client(
             if client is not None:
                 final_model = _normalize_resolved_model(model or default, provider)
                 _cbase = str(getattr(client, "base_url", "") or "")
-                # ``client.api_key`` may be a callable (Azure Foundry Entra
-                # bearer provider). Pass empty string for the wrapper-detection
-                # path — wrapping decisions are based on base_url + api_mode.
-                _raw_ckey = getattr(client, "api_key", "")
-                _ckey = "" if (callable(_raw_ckey) and not isinstance(_raw_ckey, str)) else str(_raw_ckey or "")
+                _ckey = str(getattr(client, "api_key", "") or "")
                 client = _wrap_if_needed(client, final_model, _cbase, _ckey)
                 return (_to_async_client(client, final_model, is_vision=is_vision) if async_mode
                         else (client, final_model))
@@ -3501,40 +3548,6 @@ def resolve_provider_client(
             return None, None
     except ImportError:
         pass
-
-    # ── Azure Foundry (delegates to runtime resolver for auth_mode-aware routing) ─
-    #
-    # The generic PROVIDER_REGISTRY path below uses
-    # ``resolve_api_key_provider_credentials`` which only knows about the
-    # static ``AZURE_FOUNDRY_API_KEY`` env var. That misses two important
-    # cases for the ``azure-foundry`` provider:
-    #
-    #   1. ``model.auth_mode: entra_id`` — no static key exists; we need
-    #      a callable bearer-token provider from ``azure_identity_adapter``.
-    #   2. Non-default ``model.base_url`` (Foundry projects path) — the
-    #      env-var-only resolver doesn't apply config-yaml-driven URL
-    #      overrides.
-    #
-    # Delegate to the same runtime resolver the main agent uses so
-    # auxiliary tasks (title generation, compression, vision, embedding,
-    # session search) inherit the user's full Azure config.
-    if provider == "azure-foundry":
-        client, default_model = _try_azure_foundry(
-            model=model,
-            explicit_api_key=explicit_api_key,
-            explicit_base_url=explicit_base_url,
-            api_mode=api_mode,
-        )
-        if client is None:
-            logger.warning(
-                "resolve_provider_client: azure-foundry requested but "
-                "runtime resolution failed (run: hermes doctor for "
-                "diagnostics)"
-            )
-            return None, None
-        final_model = _normalize_resolved_model(model or default_model, provider)
-        return (_to_async_client(client, final_model, is_vision=is_vision) if async_mode
-                else (client, final_model))
 
     # ── API-key providers from PROVIDER_REGISTRY ─────────────────────
     try:
@@ -3796,37 +3809,6 @@ _VISION_AUTO_PROVIDER_ORDER = (
 )
 
 
-def _main_model_supports_vision(provider: str, model: Optional[str]) -> bool:
-    """Return True when ``provider``/``model`` is known to accept image input.
-
-    Used by the vision auto-detect chain to skip the user's main provider
-    when it's known to be text-only (e.g. DeepSeek, gpt-oss without vision).
-    Without this guard, ``resolve_vision_provider_client(provider="auto")``
-    would happily return the main-provider client and any subsequent image
-    payload would surface as a cryptic provider-side error
-    (``unknown variant `image_url`, expected `text```, #31179).
-
-    Returns True when capability lookup is unknown — preserves the historical
-    behaviour of attempting the call, so providers we haven't catalogued yet
-    don't silently regress to text-only.
-    """
-    try:
-        from agent.image_routing import _lookup_supports_vision
-        from hermes_cli.config import load_config
-    except ImportError:
-        return True
-    try:
-        supports = _lookup_supports_vision(provider, model, load_config())
-    except Exception:  # pragma: no cover - defensive
-        return True
-    if supports is None:
-        # No capability data — keep current behaviour and let the call attempt
-        # happen rather than silently skipping. This avoids false-positive
-        # skips for new/custom providers.
-        return True
-    return bool(supports)
-
-
 def _normalize_vision_provider(provider: Optional[str]) -> str:
     return _normalize_aux_provider(provider)
 
@@ -3883,6 +3865,114 @@ def get_available_vision_backends() -> List[str]:
     return available
 
 
+def _resolve_minimax_vlm_client(
+    provider: str,
+    explicit_api_key: Optional[str] = None,
+    main_model_base_url: Optional[str] = None,
+) -> Optional[MinimaxVlmAuxiliaryClient]:
+    """Build a MinimaxVlmAuxiliaryClient for a given MiniMax region.
+
+    MiniMax's Anthropic-compat endpoint silently strips images (#15715), so
+    vision traffic must hit ``/v1/coding_plan/vlm`` instead. Returns ``None``
+    when no API key is available so the resolver can fall through to other
+    backends.
+
+    Base URL precedence (matches ``hermes_cli/runtime_provider.py`` for text
+    traffic so vision lands on the same proxy):
+
+      1. ``MINIMAX_BASE_URL`` / ``MINIMAX_CN_BASE_URL`` env var (#6039).
+      2. Credential pool entry's ``runtime_base_url`` — pool credentials may
+         carry their own proxy URL, captured at credential-load time.
+      3. ``model.base_url`` from config.yaml — only when neither (1) nor (2)
+         supplied a non-default URL (i.e. the resolved URL is still the
+         provider default).
+      4. Provider default (``https://api.minimax.io/anthropic`` etc.).
+    """
+    if provider not in _MINIMAX_VLM_BASE_URLS:
+        return None
+    api_key = (explicit_api_key or "").strip()
+    # Capture the user's configured base_url (env override or proxy) so the
+    # VLM endpoint can be derived from the same root as their text endpoint
+    # — otherwise vision calls bypass the proxy that text calls use (#15715
+    # follow-up). resolve_api_key_provider_credentials() returns a dict with
+    # both ``api_key`` and ``base_url``; only the api_key was previously kept.
+    resolved_base_url: Optional[str] = None
+    try:
+        from hermes_cli.auth import (
+            PROVIDER_REGISTRY,
+            resolve_api_key_provider_credentials,
+        )
+    except ImportError:
+        PROVIDER_REGISTRY = None  # type: ignore[assignment]
+        resolve_api_key_provider_credentials = None  # type: ignore[assignment]
+
+    if not api_key and resolve_api_key_provider_credentials is None:
+        return None
+
+    if not api_key:
+        pool_present, entry = _select_pool_entry(provider)
+        if pool_present and entry is not None:
+            api_key = _pool_runtime_api_key(entry)
+            # Mirror the text-path pool branch (runtime_provider.py:196 and
+            # auxiliary_client.py:1099): when a pool entry is selected, its
+            # ``runtime_base_url`` is the canonical source for the API target
+            # (env-var overrides are baked into the pool entry at load time).
+            # Without this, vision falls back to the hardcoded provider default
+            # while text correctly uses the pool's proxy URL — same #15715
+            # symptom on a different code path.
+            if api_key:
+                pool_base = _pool_runtime_base_url(entry, "")
+                resolved_base_url = pool_base or None
+        if not api_key:
+            try:
+                creds = resolve_api_key_provider_credentials(provider)
+                api_key = str(creds.get("api_key", "")).strip()
+                candidate_base = str(creds.get("base_url", "")).strip()
+                resolved_base_url = candidate_base or None
+            except Exception:
+                api_key = ""
+        if not api_key and PROVIDER_REGISTRY is not None:
+            pconfig = PROVIDER_REGISTRY.get(provider)
+            if pconfig is not None:
+                for env_var in pconfig.api_key_env_vars:
+                    api_key = (os.getenv(env_var) or "").strip()
+                    if api_key:
+                        break
+    else:
+        # Even with an explicit api_key, still try to honour a configured
+        # base_url override so the VLM endpoint matches the text endpoint.
+        if resolve_api_key_provider_credentials is not None:
+            try:
+                creds = resolve_api_key_provider_credentials(provider)
+                candidate_base = str(creds.get("base_url", "")).strip()
+                resolved_base_url = candidate_base or None
+            except Exception:
+                resolved_base_url = None
+    if not api_key:
+        return None
+
+    # Precedence step 2: when the credential resolver returned the provider
+    # default (i.e. no env-var override), fall back to ``model.base_url`` from
+    # config.yaml. Same rule used by ``runtime_provider.py:243-248`` for text
+    # traffic — env var wins (#6039), then model.base_url, then default.
+    main_base = (main_model_base_url or "").strip().rstrip("/") or None
+    if main_base and PROVIDER_REGISTRY is not None:
+        pconfig = PROVIDER_REGISTRY.get(provider)
+        provider_default = (
+            pconfig.inference_base_url.rstrip("/") if pconfig is not None else ""
+        )
+        resolver_returned_default = (
+            not resolved_base_url
+            or resolved_base_url.rstrip("/") == provider_default
+        )
+        if resolver_returned_default:
+            resolved_base_url = main_base
+
+    return MinimaxVlmAuxiliaryClient(
+        api_key=api_key, provider=provider, base_url=resolved_base_url,
+    )
+
+
 def resolve_vision_provider_client(
     provider: Optional[str] = None,
     model: Optional[str] = None,
@@ -3911,6 +4001,36 @@ def resolve_vision_provider_client(
             async_client, async_model = _to_async_client(sync_client, final_model, is_vision=True)
             return resolved_provider, async_client, async_model
         return resolved_provider, sync_client, final_model
+
+    # MiniMax routes through a dedicated VLM endpoint, never through the
+    # Anthropic-compat URL (which drops images, #15715). This applies whether
+    # the caller explicitly requested minimax/minimax-cn or the auto-resolver
+    # landed on it as the user's main provider.
+    #
+    # Read ``model.base_url`` from config so vision honours the same proxy as
+    # text traffic — _resolve_task_provider_model only surfaces per-task
+    # overrides (auxiliary.vision.base_url), not the main-model setting. But
+    # only plumb it through when the main provider IS this MiniMax region:
+    # otherwise (e.g. main = openrouter, vision = minimax) we'd resolve the
+    # VLM endpoint from an unrelated host like
+    # ``https://openrouter.ai/api/v1/v1/coding_plan/vlm``. Mirrors the
+    # provider-match gate in ``hermes_cli/runtime_provider.py:1170-1173``.
+    if requested in _MINIMAX_VLM_BASE_URLS:
+        main_provider_for_vision = _read_main_provider()
+        main_base_for_vision = (
+            _read_main_base_url() or None
+            if main_provider_for_vision == requested
+            else None
+        )
+        vlm_client = _resolve_minimax_vlm_client(
+            requested,
+            resolved_api_key,
+            main_model_base_url=main_base_for_vision,
+        )
+        if vlm_client is not None:
+            return _finalize(requested, vlm_client, resolved_model or "MiniMax-M2.7")
+        # Fall through to the normal resolver if no key is configured —
+        # downstream code will surface a clean "no provider configured" error.
 
     if resolved_base_url:
         provider_for_base_override = (
@@ -3967,23 +4087,24 @@ def resolve_vision_provider_client(
                     "vision support) — falling through to aggregator chain",
                     main_provider,
                 )
-            elif not _main_model_supports_vision(main_provider, vision_model):
-                # The main model is known to be text-only (e.g. DeepSeek V4,
-                # gpt-oss-120b without vision). Building a client and sending
-                # an image would produce a cryptic provider-side error like
-                # ``unknown variant `image_url`, expected `text``` (#31179).
-                # Fall through to the aggregator chain instead.
-                #
-                # Only log the provider name (not the model) — mirrors the
-                # sibling _PROVIDERS_WITHOUT_VISION branch above, and avoids
-                # CodeQL py/clear-text-logging-sensitive-data heuristic false
-                # positives on multi-value interpolations.
-                logger.debug(
-                    "Vision auto-detect: skipping main provider %s "
-                    "(reports no vision capability) — falling through to "
-                    "aggregator chain",
+            elif main_provider in _MINIMAX_VLM_BASE_URLS:
+                # MiniMax requires its dedicated VLM endpoint (#15715). Plumb
+                # ``model.base_url`` through so a custom proxy configured for
+                # text traffic also routes vision (P2 follow-up — auto path
+                # was previously losing the main-model base_url).
+                vlm_client = _resolve_minimax_vlm_client(
                     main_provider,
+                    resolved_api_key,
+                    main_model_base_url=_read_main_base_url() or None,
                 )
+                if vlm_client is not None:
+                    logger.info(
+                        "Vision auto-detect: using MiniMax VLM endpoint (%s)",
+                        main_provider,
+                    )
+                    return _finalize(
+                        main_provider, vlm_client, resolved_model or main_model or "MiniMax-M2.7",
+                    )
             else:
                 rpc_client, rpc_model = resolve_provider_client(
                     main_provider, vision_model,
@@ -4366,25 +4487,13 @@ def _get_cached_client(
             else:
                 effective = _compat_model(cached_client, model, cached_default)
                 return cached_client, effective
-    # Build outside the lock.
-    # For pool-backed api_key providers, derive the active API key from the
-    # pool entry rather than from env vars.  resolve_api_key_provider_credentials
-    # always prefers env vars (first-entry bias), which bypasses pool rotation:
-    # after key #1 is marked exhausted the retry would still get key #1 from
-    # the env var and fail again, causing the retry2_err handler to mark key #2.
-    effective_api_key = api_key
-    if not effective_api_key:
-        _pe = _peek_pool_entry(_normalize_aux_provider(provider))
-        if _pe is not None:
-            _pk = _pool_runtime_api_key(_pe)
-            if _pk:
-                effective_api_key = _pk
+    # Build outside the lock
     client, default_model = resolve_provider_client(
         provider,
         model,
         async_mode,
         explicit_base_url=base_url,
-        explicit_api_key=effective_api_key,
+        explicit_api_key=api_key,
         api_mode=api_mode,
         main_runtime=runtime,
         is_vision=is_vision,
@@ -4405,23 +4514,6 @@ def _get_cached_client(
             else:
                 client, default_model, _ = _client_cache[cache_key]
     return client, model or default_model
-
-
-# Aliases that target direct REST APIs not modeled as first-class providers
-# in PROVIDER_REGISTRY. Used for ``auxiliary.<task>.provider`` so users can
-# write the obvious name and have it resolve to a working ``custom`` endpoint
-# without needing to know our internal provider IDs.
-#
-# Why these specifically: PROVIDER_REGISTRY has ``openai-codex`` (OAuth) and
-# ``custom`` (manual base_url + OPENAI_API_KEY) but no plain ``openai`` for
-# direct API-key access. Users predictably type ``provider: openai`` and
-# expect it to use OPENAI_API_KEY against api.openai.com. Previously this
-# silently fell back to the user's main provider, sending OpenAI model names
-# to e.g. DeepSeek and producing cryptic ``unknown variant 'image_url'``
-# errors (issue #31179).
-_AUX_DIRECT_API_BASE_URLS: Dict[str, str] = {
-    "openai": "https://api.openai.com/v1",
-}
 
 
 def _resolve_task_provider_model(
@@ -4460,25 +4552,6 @@ def _resolve_task_provider_model(
     resolved_model = model or cfg_model
     resolved_api_mode = cfg_api_mode
 
-    # Convenience aliases for direct API-key endpoints that aren't first-class
-    # providers (e.g. ``provider: openai`` → custom + api.openai.com/v1).
-    # Applied to both explicit args and config-derived values. When the user
-    # has already supplied a base_url we keep their endpoint but still rewrite
-    # the provider to ``custom`` so resolution doesn't hit the
-    # PROVIDER_REGISTRY-only path (which has no ``openai`` entry).
-    def _expand_direct_api_alias(prov: Optional[str], existing_base: Optional[str]) -> Tuple[Optional[str], Optional[str]]:
-        if not prov:
-            return prov, existing_base
-        target_base = _AUX_DIRECT_API_BASE_URLS.get(prov.strip().lower())
-        if target_base is None:
-            return prov, existing_base
-        return "custom", existing_base or target_base
-
-    if provider:
-        provider, base_url = _expand_direct_api_alias(provider, base_url)
-    if cfg_provider:
-        cfg_provider, cfg_base_url = _expand_direct_api_alias(cfg_provider, cfg_base_url)
-
     if base_url:
         return "custom", resolved_model, base_url, api_key, resolved_api_mode
     if provider:
@@ -4506,17 +4579,7 @@ _DEFAULT_AUX_TIMEOUT = 30.0
 
 
 def _get_auxiliary_task_config(task: str) -> Dict[str, Any]:
-    """Return the config dict for auxiliary.<task>, or {} when unavailable.
-
-    For plugin-registered auxiliary tasks (see
-    :meth:`hermes_cli.plugins.PluginContext.register_auxiliary_task`) the
-    plugin's declared *defaults* are layered underneath the user's config
-    so an unconfigured plugin task still works:
-
-        plugin defaults  ←  config.yaml auxiliary.<task>  (user wins)
-
-    Built-in tasks ignore this path (their defaults live in DEFAULT_CONFIG).
-    """
+    """Return the config dict for auxiliary.<task>, or {} when unavailable."""
     if not task:
         return {}
     try:
@@ -4526,27 +4589,7 @@ def _get_auxiliary_task_config(task: str) -> Dict[str, Any]:
         return {}
     aux = config.get("auxiliary", {}) if isinstance(config, dict) else {}
     task_config = aux.get(task, {}) if isinstance(aux, dict) else {}
-    if not isinstance(task_config, dict):
-        task_config = {}
-
-    # Layer plugin-declared defaults underneath user config so
-    # ctx.register_auxiliary_task(defaults={...}) takes effect without
-    # forcing the user to write config.yaml entries.
-    try:
-        from hermes_cli.plugins import get_plugin_auxiliary_tasks
-        for _entry in get_plugin_auxiliary_tasks():
-            if _entry.get("key") == task:
-                _defaults = _entry.get("defaults") or {}
-                if isinstance(_defaults, dict):
-                    merged = dict(_defaults)
-                    merged.update(task_config)
-                    return merged
-                break
-    except Exception:
-        # Plugin discovery failure must not break aux task config reads.
-        pass
-
-    return task_config
+    return task_config if isinstance(task_config, dict) else {}
 
 
 def _get_task_timeout(task: str, default: float = _DEFAULT_AUX_TIMEOUT) -> float:
@@ -4881,9 +4924,12 @@ def call_llm(
         tools=tools, timeout=effective_timeout, extra_body=effective_extra_body,
         base_url=_base_info or resolved_base_url)
 
-    # Convert image blocks for Anthropic-compatible endpoints (e.g. MiniMax)
+    # Convert image blocks for Anthropic-compatible endpoints (e.g. MiniMax
+    # text chat). The MiniMax VLM adapter handles its own native body shape
+    # so it must skip the Anthropic conversion.
     _client_base = str(getattr(client, "base_url", "") or "")
-    if _is_anthropic_compat_endpoint(resolved_provider, _client_base):
+    if (not isinstance(client, MinimaxVlmAuxiliaryClient)
+            and _is_anthropic_compat_endpoint(resolved_provider, _client_base)):
         kwargs["messages"] = _convert_openai_images_to_anthropic(kwargs["messages"])
 
     # Handle unsupported temperature, max_tokens vs max_completion_tokens retry,
@@ -4998,17 +5044,10 @@ def call_llm(
                 )
 
         # ── Same-provider credential-pool recovery ─────────────────────
-        pool_provider = _recoverable_pool_provider(resolved_provider, client, main_runtime=main_runtime)
-        # Capture the exact API key used so mark_exhausted_and_rotate can find
-        # the correct pool entry even when another process rotated the pool
-        # between this call and recovery (which leaves current()=None and makes
-        # _select_unlocked() return the NEXT key by mistake).
-        _client_api_key = str(getattr(client, "api_key", "") or "")
+        pool_provider = _recoverable_pool_provider(resolved_provider, client)
         if pool_provider and (_is_auth_error(first_err) or _is_payment_error(first_err) or _is_rate_limit_error(first_err)):
             recovery_err = first_err
-            # Skip the extra retry for clear payment/quota errors — the endpoint
-            # won't accept another request with the same exhausted key.
-            if _is_rate_limit_error(first_err) and not _is_payment_error(first_err):
+            if _is_rate_limit_error(first_err):
                 try:
                     return _validate_llm_response(
                         client.chat.completions.create(**kwargs), task)
@@ -5016,40 +5055,27 @@ def call_llm(
                     if not (_is_auth_error(retry_err) or _is_payment_error(retry_err) or _is_rate_limit_error(retry_err)):
                         raise
                     recovery_err = retry_err
-            if _recover_provider_pool(pool_provider, recovery_err, failed_api_key=_client_api_key):
+            if _recover_provider_pool(pool_provider, recovery_err):
                 logger.info(
                     "Auxiliary %s: recovered %s via credential-pool rotation after %s",
                     task or "call", pool_provider, type(recovery_err).__name__,
                 )
-                try:
-                    return _retry_same_provider_sync(
-                        task=task,
-                        resolved_provider=resolved_provider,
-                        resolved_model=resolved_model,
-                        resolved_base_url=resolved_base_url,
-                        resolved_api_key=resolved_api_key,
-                        resolved_api_mode=resolved_api_mode,
-                        main_runtime=main_runtime,
-                        final_model=final_model,
-                        messages=messages,
-                        temperature=temperature,
-                        max_tokens=max_tokens,
-                        tools=tools,
-                        effective_timeout=effective_timeout,
-                        effective_extra_body=effective_extra_body,
-                    )
-                except Exception as retry2_err:
-                    # The rotated key also hit a quota/auth wall.  Mark it
-                    # immediately so concurrent processes don't make a
-                    # redundant API call to discover it's exhausted too.
-                    # Then fall through to the payment fallback below so
-                    # alternative providers can still serve the request.
-                    if (_is_payment_error(retry2_err) or _is_auth_error(retry2_err)
-                            or _is_rate_limit_error(retry2_err)):
-                        _recover_provider_pool(pool_provider, retry2_err)
-                        first_err = retry2_err
-                    else:
-                        raise
+                return _retry_same_provider_sync(
+                    task=task,
+                    resolved_provider=resolved_provider,
+                    resolved_model=resolved_model,
+                    resolved_base_url=resolved_base_url,
+                    resolved_api_key=resolved_api_key,
+                    resolved_api_mode=resolved_api_mode,
+                    main_runtime=main_runtime,
+                    final_model=final_model,
+                    messages=messages,
+                    temperature=temperature,
+                    max_tokens=max_tokens,
+                    tools=tools,
+                    effective_timeout=effective_timeout,
+                    effective_extra_body=effective_extra_body,
+                )
 
         # ── Payment / credit exhaustion fallback ──────────────────────
         # When the resolved provider returns 402 or a credit-related error,
@@ -5091,7 +5117,7 @@ def call_llm(
                 # 402). Mark THAT label unhealthy so subsequent aux calls
                 # skip it instead of paying another doomed RTT.
                 _mark_provider_unhealthy(
-                    _recoverable_pool_provider(resolved_provider, client, main_runtime=main_runtime) or resolved_provider
+                    _recoverable_pool_provider(resolved_provider, client) or resolved_provider
                 )
             elif _is_rate_limit_error(first_err):
                 reason = "rate limit"
@@ -5211,7 +5237,6 @@ async def async_call_llm(
     model: str = None,
     base_url: str = None,
     api_key: str = None,
-    main_runtime: Optional[Dict[str, Any]] = None,
     messages: list,
     temperature: float = None,
     max_tokens: int = None,
@@ -5290,8 +5315,11 @@ async def async_call_llm(
         tools=tools, timeout=effective_timeout, extra_body=effective_extra_body,
         base_url=_client_base or resolved_base_url)
 
-    # Convert image blocks for Anthropic-compatible endpoints (e.g. MiniMax)
-    if _is_anthropic_compat_endpoint(resolved_provider, _client_base):
+    # Convert image blocks for Anthropic-compatible endpoints (e.g. MiniMax
+    # text chat). The MiniMax VLM adapter handles its own native body shape
+    # so it must skip the Anthropic conversion.
+    if (not isinstance(client, AsyncMinimaxVlmAuxiliaryClient)
+            and _is_anthropic_compat_endpoint(resolved_provider, _client_base)):
         kwargs["messages"] = _convert_openai_images_to_anthropic(kwargs["messages"])
 
     try:
@@ -5398,13 +5426,10 @@ async def async_call_llm(
                 )
 
         # ── Same-provider credential-pool recovery (mirrors sync) ─────
-        pool_provider = _recoverable_pool_provider(resolved_provider, client, main_runtime=main_runtime)
-        _client_api_key = str(getattr(client, "api_key", "") or "")
+        pool_provider = _recoverable_pool_provider(resolved_provider, client)
         if pool_provider and (_is_auth_error(first_err) or _is_payment_error(first_err) or _is_rate_limit_error(first_err)):
             recovery_err = first_err
-            # Skip the extra retry for clear payment/quota errors — the endpoint
-            # won't accept another request with the same exhausted key.
-            if _is_rate_limit_error(first_err) and not _is_payment_error(first_err):
+            if _is_rate_limit_error(first_err):
                 try:
                     return _validate_llm_response(
                         await client.chat.completions.create(**kwargs), task)
@@ -5412,34 +5437,26 @@ async def async_call_llm(
                     if not (_is_auth_error(retry_err) or _is_payment_error(retry_err) or _is_rate_limit_error(retry_err)):
                         raise
                     recovery_err = retry_err
-            if _recover_provider_pool(pool_provider, recovery_err, failed_api_key=_client_api_key):
+            if _recover_provider_pool(pool_provider, recovery_err):
                 logger.info(
                     "Auxiliary %s (async): recovered %s via credential-pool rotation after %s",
                     task or "call", pool_provider, type(recovery_err).__name__,
                 )
-                try:
-                    return await _retry_same_provider_async(
-                        task=task,
-                        resolved_provider=resolved_provider,
-                        resolved_model=resolved_model,
-                        resolved_base_url=resolved_base_url,
-                        resolved_api_key=resolved_api_key,
-                        resolved_api_mode=resolved_api_mode,
-                        final_model=final_model,
-                        messages=messages,
-                        temperature=temperature,
-                        max_tokens=max_tokens,
-                        tools=tools,
-                        effective_timeout=effective_timeout,
-                        effective_extra_body=effective_extra_body,
-                    )
-                except Exception as retry2_err:
-                    if (_is_payment_error(retry2_err) or _is_auth_error(retry2_err)
-                            or _is_rate_limit_error(retry2_err)):
-                        _recover_provider_pool(pool_provider, retry2_err)
-                        first_err = retry2_err
-                    else:
-                        raise
+                return await _retry_same_provider_async(
+                    task=task,
+                    resolved_provider=resolved_provider,
+                    resolved_model=resolved_model,
+                    resolved_base_url=resolved_base_url,
+                    resolved_api_key=resolved_api_key,
+                    resolved_api_mode=resolved_api_mode,
+                    final_model=final_model,
+                    messages=messages,
+                    temperature=temperature,
+                    max_tokens=max_tokens,
+                    tools=tools,
+                    effective_timeout=effective_timeout,
+                    effective_extra_body=effective_extra_body,
+                )
 
         # ── Payment / connection / rate-limit fallback (mirrors sync call_llm) ──
         should_fallback = (

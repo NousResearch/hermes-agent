@@ -1,0 +1,71 @@
+{
+  "services": {
+    "hermes-gateway": {
+      "source": {
+        "repo": "bubg61/hermes-variant",
+        "branch": "main"
+      },
+      "build": {
+        "dockerfile": "Dockerfile"
+      },
+      "deploy": {
+        "startCommand": "/opt/hermes/docker/railway-entrypoint.sh gateway",
+        "healthcheckPath": "/health",
+        "healthcheckTimeout": 30
+      },
+      "networking": {
+        "serviceDomains": {
+          "<hasDomain>": {}
+        }
+      },
+      "variables": {
+        "HERMES_MODE": "gateway",
+        "HERMES_HOME": "/opt/data",
+        "HERMES_UID": "10000",
+        "HERMES_GID": "10000"
+      },
+      "volumeMounts": {
+        "hermes-data": {
+          "mountPath": "/opt/data"
+        }
+      }
+    },
+    "hermes-dashboard": {
+      "source": {
+        "repo": "bubg61/hermes-variant",
+        "branch": "main"
+      },
+      "build": {
+        "dockerfile": "Dockerfile"
+      },
+      "deploy": {
+        "startCommand": "/opt/hermes/docker/railway-entrypoint.sh dashboard",
+        "healthcheckPath": "/health",
+        "healthcheckTimeout": 30
+      },
+      "networking": {
+        "serviceDomains": {
+          "<hasDomain>": {
+            "port": 9119
+          }
+        }
+      },
+      "variables": {
+        "HERMES_MODE": "dashboard",
+        "HERMES_HOME": "/opt/data",
+        "HERMES_UID": "10000",
+        "HERMES_GID": "10000"
+      },
+      "volumeMounts": {
+        "hermes-data": {
+          "mountPath": "/opt/data"
+        }
+      }
+    }
+  },
+  "volumes": {
+    "hermes-data": {
+      "sizeMB": 10240
+    }
+  }
+}

@@ -327,6 +327,7 @@ AUTHOR_MAP = {
     # Curator fixes (Apr 30 2026)
     "yuxiangl490@gmail.com": "y0shua1ee",
     "manmit0x@gmail.com": "0xDevNinja",
+    "steveonjava@gmail.com": "steveonjava",
     "stevekelly622@gmail.com": "steezkelly",
     "brian@dralth.com": "btorresgil",
     "momowind@gmail.com": "momowind",

@@ -17,6 +17,9 @@ Cron jobs can:
 - attach zero, one, or multiple skills to a job
 - deliver results back to the origin chat, local files, or configured platform targets
 - run in fresh agent sessions with the normal static tool list
+- run in **no-agent mode** — a script on a schedule, its stdout delivered verbatim, zero LLM involvement (see the [no-agent mode](#no-agent-mode-script-only-jobs) section below)
+
+All of this is available to Hermes itself through the `cronjob` tool, so you can create, pause, edit, and remove jobs by asking in plain language — no CLI required.
 
 :::warning
 Cron-run sessions cannot recursively create more cron jobs. Hermes disables cron management tools inside cron executions to prevent runaway scheduling loops.
@@ -91,10 +94,10 @@ This is useful when you want a scheduled agent to inherit reusable workflows wit
 Cron jobs default to running detached from any repo — no `AGENTS.md`, `CLAUDE.md`, or `.cursorrules` is loaded, and the terminal / file / code-exec tools run from whatever working directory the gateway started in. Pass `--workdir` (CLI) or `workdir=` (tool call) to change that:
 
 ```bash
-# Standalone CLI
-hermes cron create --schedule "every 1d at 09:00" \
-  --workdir /home/me/projects/acme \
-  --prompt "Audit open PRs, summarize CI health, and post to #eng"
+# Standalone CLI (schedule and prompt are positional)
+hermes cron create "every 1d at 09:00" \
+  "Audit open PRs, summarize CI health, and post to #eng" \
+  --workdir /home/me/projects/acme
 ```
 
 ```python
@@ -237,8 +240,19 @@ When scheduling jobs, you specify where the output goes:
 | `"weixin"` | Weixin (WeChat) | |
 | `"bluebubbles"` | BlueBubbles (iMessage) | |
 | `"qqbot"` | QQ Bot (Tencent QQ) | |
+| `"all"` | Fan out to every connected home channel | Resolved at fire time |
+| `"telegram,discord"` | Fan out to a specific set of channels | Comma-separated list |
+| `"origin,all"` | Deliver to the origin **plus** every other connected channel | Combine any tokens |
 
 The agent's final response is automatically delivered. You do not need to call `send_message` in the cron prompt.
+
+### Routing intent (`all`)
+
+`all` lets you ship one cron job to every messaging channel you have configured, without having to enumerate them by name. It is **resolved at fire time**, so a job created before you wired up Telegram will pick up Telegram on the next tick after you set `TELEGRAM_HOME_CHANNEL`.
+
+Semantics: `all` expands to every platform with a configured home channel. Zero is fine; the job simply produces no delivery targets and is recorded as a delivery failure upstream.
+
+`all` composes with explicit targets. `origin,all` delivers to the origin chat *plus* every other connected home channel, de-duplicating by `(platform, chat_id, thread_id)`.
 
 ### Response wrapping
 
@@ -285,6 +299,103 @@ cron:
 ```
 
 Or set the `HERMES_CRON_SCRIPT_TIMEOUT` environment variable. The resolution order is: env var → config.yaml → 120s default.
+
+## No-agent mode (script-only jobs)
+
+For recurring jobs that don't need LLM reasoning — classic watchdogs, disk/memory alerts, heartbeats, CI pings — pass `no_agent=True` at creation time. The scheduler runs your script on schedule and delivers its stdout directly, skipping the agent entirely:
+
+```bash
+hermes cron create "every 5m" \
+  --no-agent \
+  --script memory-watchdog.sh \
+  --deliver telegram \
+  --name "memory-watchdog"
+```
+
+Semantics:
+
+- Script stdout (trimmed) → delivered verbatim as the message.
+- **Empty stdout → silent tick**, no delivery. This is the watchdog pattern: "only say something when something is wrong".
+- Non-zero exit or timeout → an error alert is delivered, so a broken watchdog can't fail silently.
+- `{"wakeAgent": false}` on the last line → silent tick (same gate LLM jobs use).
+- No tokens, no model, no provider fallback — the job never touches the inference layer.
+
+`.sh` / `.bash` files run under `/bin/bash`; anything else under the current Python interpreter (`sys.executable`). Scripts must live in `~/.hermes/scripts/` (same sandboxing rule as the pre-run script gate).
+
+### The agent sets these up for you
+
+The `cronjob` tool's schema exposes `no_agent` to Hermes directly, so you can describe a watchdog in chat and let the agent wire it up:
+
+```text
+Ping me on Telegram if RAM is over 85%, every 5 minutes.
+```
+
+Hermes will write the check script to `~/.hermes/scripts/` via `write_file`, then call:
+
+```python
+cronjob(action="create", schedule="every 5m",
+        script="memory-watchdog.sh", no_agent=True,
+        deliver="telegram", name="memory-watchdog")
+```
+
+It picks `no_agent=True` automatically when the message content is fully determined by the script (watchdogs, threshold alerts, heartbeats). The same tool also lets the agent pause, resume, edit, and remove jobs — so the whole lifecycle is chat-driven without anyone touching the CLI.
+
+See the [Script-Only Cron Jobs guide](/docs/guides/cron-script-only) for worked examples.
+
+## Chaining jobs with `context_from`
+
+Cron jobs run in isolated sessions with no memory of previous runs. But sometimes one job's output is exactly what the next job needs. The `context_from` parameter wires that connection automatically — Job B's prompt gets Job A's most recent output prepended as context at runtime.
+
+```python
+# Job 1: Collect raw data
+cronjob(
+    action="create",
+    prompt="Fetch the top 10 AI/ML stories from Hacker News. Save them to ~/.hermes/data/briefs/raw.md in markdown format with title, URL, and score.",
+    schedule="0 7 * * *",
+    name="AI News Collector",
+)
+
+# Job 2: Triage — receives Job 1's output as context
+# Get Job 1's ID from: cronjob(action="list")
+cronjob(
+    action="create",
+    prompt="Read ~/.hermes/data/briefs/raw.md. Score each story 1–10 for engagement potential and novelty. Output the top 5 to ~/.hermes/data/briefs/ranked.md.",
+    schedule="30 7 * * *",
+    context_from="<job1_id>",
+    name="AI News Triage",
+)
+
+# Job 3: Ship — receives Job 2's output as context
+cronjob(
+    action="create",
+    prompt="Read ~/.hermes/data/briefs/ranked.md. Write 3 tweet drafts (hook + body + hashtags). Deliver to telegram:7976161601.",
+    schedule="0 8 * * *",
+    context_from="<job2_id>",
+    name="AI News Brief",
+)
+```
+
+**How it works:**
+
+- When Job 2 fires, Hermes reads Job 1's most recent output from `~/.hermes/cron/output/{job1_id}/*.md`
+- That output is prepended to Job 2's prompt automatically
+- Job 2 doesn't need to hardcode "read this file" — it receives the content as context
+- The chain can be any length: Job 1 → Job 2 → Job 3 → ...
+
+**What `context_from` accepts:**
+
+| Format | Example |
+|--------|---------|
+| Single job ID (string) | `context_from="a1b2c3d4"` |
+| Multiple job IDs (list) | `context_from=["job_a", "job_b"]` |
+
+Outputs are concatenated in the order listed.
+
+**When to use it:**
+
+- Multi-stage pipelines (collect → filter → format → deliver)
+- Dependent tasks where step N's work depends on step N−1's output
+- Fan-out/fan-in patterns where one job aggregates results from several others
 
 ## Provider recovery
 
@@ -365,6 +476,144 @@ cronjob(action="remove", job_id="...")
 ```
 
 For `update`, pass `skills=[]` to remove all attached skills.
+
+## Toolsets available to cron jobs
+
+Cron runs each job in a fresh agent session with no chat platform attached. By default the cron agent gets **the toolset you configured for the `cron` platform in `hermes tools`** — not the CLI default, not everything under the sun.
+
+```bash
+hermes tools
+# → pick the "cron" platform in the curses UI
+# → toggle toolsets on/off just like you would for Telegram/Discord/etc.
+```
+
+Tighter per-job control is available via the `enabled_toolsets` field on `cronjob.create` (or on an existing job via `cronjob.update`):
+
+```text
+cronjob(action="create", name="weekly-news-summary",
+        schedule="every sunday 9am",
+        enabled_toolsets=["web", "file"],      # just web + file, no terminal/browser/etc.
+        prompt="Summarize this week's AI news: ...")
+```
+
+When `enabled_toolsets` is set on a job it wins; otherwise the `hermes tools` cron-platform config wins; otherwise Hermes falls back to the built-in defaults. This matters for cost control: carrying `moa`, `browser`, `delegation` into every tiny "fetch news" job bloats the tool-schema prompt on every LLM call.
+
+### Skipping the agent entirely: `wakeAgent`
+
+If your cron job attaches a pre-check script (via `script=`), the script can decide at runtime whether Hermes should even invoke the agent. Emit a final stdout line of the form:
+
+```text
+{"wakeAgent": false}
+```
+
+…and cron skips the agent run entirely for this tick. Useful for frequent polls (every 1–5 min) that only need to wake the LLM when state actually changed — otherwise you pay for zero-content agent turns over and over.
+
+```python
+# pre-check script
+import json, sys
+latest = fetch_latest_issue_count()
+prev = read_state("issue_count")
+if latest == prev:
+    print(json.dumps({"wakeAgent": False}))   # skip this tick
+    sys.exit(0)
+write_state("issue_count", latest)
+print(json.dumps({"wakeAgent": True, "context": {"new_issues": latest - prev}}))
+```
+
+When `wakeAgent` is omitted, the default is `true` (wake the agent as usual).
+
+#### Recipes: cheap pre-run gates
+
+The `wakeAgent` gate gives you a $0 way to decide whether a scheduled job should spend any LLM tokens at all. Three patterns cover most use cases.
+
+**File-change gate** — only run when a watched file has new content since the last successful tick. The scheduler records each job's `last_run_at`; compare it against the file's mtime.
+
+```bash
+#!/bin/bash
+# ~/.hermes/scripts/feed-changed.sh
+FEED="$HOME/data/feed.json"
+STATE="$HOME/.hermes/scripts/.feed-changed.last"
+test -f "$FEED" || { echo '{"wakeAgent": false}'; exit 0; }
+mtime=$(stat -c %Y "$FEED")
+last=$(cat "$STATE" 2>/dev/null || echo 0)
+if [ "$mtime" -le "$last" ]; then
+  echo '{"wakeAgent": false}'
+else
+  echo "$mtime" > "$STATE"
+  echo '{"wakeAgent": true}'
+fi
+```
+
+```text
+cronjob(action="create", name="process-feed",
+        schedule="every 30m",
+        script="feed-changed.sh",
+        prompt="A new ~/data/feed.json has landed. Summarize what changed.")
+```
+
+**External-flag gate** — only run when some other process has signalled readiness (e.g. a deploy hook drops a file, a CI job sets a value in your state store).
+
+```bash
+#!/bin/bash
+# ~/.hermes/scripts/flag-ready.sh
+if test -f /tmp/new-data-ready; then
+  rm -f /tmp/new-data-ready
+  echo '{"wakeAgent": true}'
+else
+  echo '{"wakeAgent": false}'
+fi
+```
+
+```text
+cronjob(action="create", name="nightly-analysis",
+        schedule="0 9 * * *",
+        script="flag-ready.sh",
+        prompt="Run the nightly analysis over today's batch.")
+```
+
+**SQL-count gate** — only run when there are new rows to process in your own database. The script can also pass the count through to the agent via `context`, so the agent knows how much it's looking at without re-querying.
+
+```python
+#!/usr/bin/env python
+# ~/.hermes/scripts/new-rows.py
+import json, sqlite3
+conn = sqlite3.connect("/home/me/data/app.db")
+n = conn.execute(
+    "SELECT COUNT(*) FROM messages WHERE ts > strftime('%s','now','-2 hours')"
+).fetchone()[0]
+if n < 1:
+    print(json.dumps({"wakeAgent": False}))
+else:
+    print(json.dumps({"wakeAgent": True, "context": {"new_rows": n}}))
+```
+
+```text
+cronjob(action="create", name="summarize-new-msgs",
+        schedule="every 2h",
+        script="new-rows.py",
+        prompt="Summarize the new messages from the last 2 hours.")
+```
+
+The same pattern works for any data source you can query from a script — Postgres, an HTTP API, your own state store — without baking a SQL evaluator into the cron subsystem.
+
+:::tip
+Hermes's own `~/.hermes/state.db` is an internal schema that changes between releases. Don't query it from a pre-run gate — point at your own database or feed instead.
+:::
+
+Credit: this recipe set was prompted by @iankar8's exploration in [#2654](https://github.com/NousResearch/hermes-agent/pull/2654), which proposed adding sql/file/command triggers as a parallel mechanism. The `script` + `wakeAgent` gate already covers all three cases at $0, so the work landed as documentation instead.
+
+### Chaining jobs: `context_from`
+
+A cron job can consume the most recent successful output of one or more other jobs by listing their names (or IDs) in `context_from`:
+
+```text
+cronjob(action="create", name="daily-digest",
+        schedule="every day 7am",
+        context_from=["ai-news-fetch", "github-prs-fetch"],
+        prompt="Write the daily digest using the outputs above.")
+```
+
+The referenced jobs' most recent completed outputs are injected above the prompt as context for this run. Each upstream entry must be a valid job ID or name (see `cronjob action="list"`). Note: chaining reads the *most recent completed* output — it does not wait for upstream jobs that are running in the same tick.
 
 ## Job storage
 

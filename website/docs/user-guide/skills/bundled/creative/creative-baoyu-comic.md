@@ -1,14 +1,14 @@
 ---
-title: "Baoyu Comic — Knowledge comic creator supporting multiple art styles and tones"
+title: "Baoyu Comic — Knowledge comics (知识漫画): educational, biography, tutorial"
 sidebar_label: "Baoyu Comic"
-description: "Knowledge comic creator supporting multiple art styles and tones"
+description: "Knowledge comics (知识漫画): educational, biography, tutorial"
 ---
 
 {/* This page is auto-generated from the skill's SKILL.md by website/scripts/generate-skill-docs.py. Edit the source SKILL.md, not this page. */}
 
 # Baoyu Comic
 
-Knowledge comic creator supporting multiple art styles and tones. Creates original educational comics with detailed panel layouts and sequential image generation. Use when user asks to create "知识漫画", "教育漫画", "biography comic", "tutorial comic", or "Logicomix-style comic".
+Knowledge comics (知识漫画): educational, biography, tutorial.
 
 ## Skill metadata
 
@@ -19,6 +19,7 @@ Knowledge comic creator supporting multiple art styles and tones. Creates origin
 | Version | `1.56.1` |
 | Author | 宝玉 (JimLiu) |
 | License | MIT |
+| Platforms | linux, macos, windows |
 | Tags | `comic`, `knowledge-comic`, `creative`, `image-generation` |
 
 ## Reference: full SKILL.md

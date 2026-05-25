@@ -12,10 +12,22 @@ Covers:
 import json
 import os
 import time
-from types import SimpleNamespace
+from contextlib import contextmanager
+from types import ModuleType, SimpleNamespace
 from unittest.mock import MagicMock, patch, PropertyMock
 
 import pytest
+
+
+@contextmanager
+def _mock_botocore_session(*, return_value=None, side_effect=None):
+    """Patch botocore.session even when botocore is not installed."""
+    botocore_mod = ModuleType("botocore")
+    session_mod = ModuleType("botocore.session")
+    session_mod.get_session = MagicMock(return_value=return_value, side_effect=side_effect)
+    botocore_mod.session = session_mod
+    with patch.dict("sys.modules", {"botocore": botocore_mod, "botocore.session": session_mod}):
+        yield session_mod.get_session
 
 
 # ---------------------------------------------------------------------------
@@ -120,7 +132,7 @@ class TestResolveBedrocRegion:
         from unittest.mock import patch, MagicMock
         mock_session = MagicMock()
         mock_session.get_config_variable.return_value = None
-        with patch("botocore.session.get_session", return_value=mock_session):
+        with _mock_botocore_session(return_value=mock_session):
             assert resolve_bedrock_region({}) == "us-east-1"
 
     def test_falls_back_to_botocore_profile_region(self):
@@ -128,13 +140,13 @@ class TestResolveBedrocRegion:
         from unittest.mock import patch, MagicMock
         mock_session = MagicMock()
         mock_session.get_config_variable.return_value = "eu-central-1"
-        with patch("botocore.session.get_session", return_value=mock_session):
+        with _mock_botocore_session(return_value=mock_session):
             assert resolve_bedrock_region({}) == "eu-central-1"
 
     def test_botocore_failure_falls_back_to_us_east_1(self):
         from agent.bedrock_adapter import resolve_bedrock_region
         from unittest.mock import patch
-        with patch("botocore.session.get_session", side_effect=Exception("no botocore")):
+        with _mock_botocore_session(side_effect=Exception("no botocore")):
             assert resolve_bedrock_region({}) == "us-east-1"
 
 
@@ -994,6 +1006,7 @@ class TestStreamConverseWithCallbacks:
             events, on_reasoning_delta=lambda t: reasoning.append(t),
         )
         assert reasoning == ["Let me think..."]
+        assert result.choices[0].message.reasoning_content == "Let me think..."
 
 
 # ---------------------------------------------------------------------------
@@ -1283,18 +1296,21 @@ class TestIsStaleConnectionError:
     """Classifier that decides whether an exception warrants client eviction."""
 
     def test_detects_botocore_connection_closed_error(self):
+        pytest.importorskip("botocore", reason="botocore required for Bedrock exception tests")
         from agent.bedrock_adapter import is_stale_connection_error
         from botocore.exceptions import ConnectionClosedError
         exc = ConnectionClosedError(endpoint_url="https://bedrock.example")
         assert is_stale_connection_error(exc) is True
 
     def test_detects_botocore_endpoint_connection_error(self):
+        pytest.importorskip("botocore", reason="botocore required for Bedrock exception tests")
         from agent.bedrock_adapter import is_stale_connection_error
         from botocore.exceptions import EndpointConnectionError
         exc = EndpointConnectionError(endpoint_url="https://bedrock.example")
         assert is_stale_connection_error(exc) is True
 
     def test_detects_botocore_read_timeout(self):
+        pytest.importorskip("botocore", reason="botocore required for Bedrock exception tests")
         from agent.bedrock_adapter import is_stale_connection_error
         from botocore.exceptions import ReadTimeoutError
         exc = ReadTimeoutError(endpoint_url="https://bedrock.example")
@@ -1355,6 +1371,7 @@ class TestCallConverseInvalidatesOnStaleError:
     reconnects instead of reusing the dead socket."""
 
     def test_converse_evicts_client_on_stale_error(self):
+        pytest.importorskip("botocore", reason="botocore required for Bedrock exception tests")
         from agent.bedrock_adapter import (
             _bedrock_runtime_client_cache,
             call_converse,
@@ -1381,6 +1398,7 @@ class TestCallConverseInvalidatesOnStaleError:
         )
 
     def test_converse_stream_evicts_client_on_stale_error(self):
+        pytest.importorskip("botocore", reason="botocore required for Bedrock exception tests")
         from agent.bedrock_adapter import (
             _bedrock_runtime_client_cache,
             call_converse_stream,
@@ -1406,6 +1424,7 @@ class TestCallConverseInvalidatesOnStaleError:
 
     def test_converse_does_not_evict_on_non_stale_error(self):
         """Non-stale errors (e.g. ValidationException) leave the client cache alone."""
+        pytest.importorskip("botocore", reason="botocore required for Bedrock exception tests")
         from agent.bedrock_adapter import (
             _bedrock_runtime_client_cache,
             call_converse,

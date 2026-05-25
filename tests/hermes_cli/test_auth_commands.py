@@ -5,8 +5,10 @@ from __future__ import annotations
 import base64
 import json
 from datetime import datetime, timezone
+from unittest.mock import patch
 
 import pytest
+import yaml
 
 
 def _write_auth_store(tmp_path, payload: dict) -> None:
@@ -166,6 +168,50 @@ def test_auth_add_nous_oauth_persists_pool_entry(tmp_path, monkeypatch):
     assert singleton["agent_key"] == "ak-test"
     assert singleton["portal_base_url"] == "https://portal.example.com"
     assert singleton["inference_base_url"] == "https://inference.example.com/v1"
+
+
+def test_auth_add_minimax_oauth_starts_login_and_persists_pool_entry(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    _write_auth_store(tmp_path, {"version": 1, "providers": {}})
+    token = _jwt_with_email("minimax@example.com")
+    monkeypatch.setattr(
+        "hermes_cli.auth._minimax_oauth_login",
+        lambda **kwargs: {
+            "provider": "minimax-oauth",
+            "region": "global",
+            "portal_base_url": "https://api.minimax.io",
+            "inference_base_url": "https://api.minimax.io/anthropic",
+            "client_id": "client-id",
+            "scope": "group_id profile model.completion",
+            "token_type": "Bearer",
+            "access_token": token,
+            "refresh_token": "refresh-token",
+            "resource_url": None,
+            "obtained_at": "2026-05-11T10:00:00+00:00",
+            "expires_at": "2026-05-14T10:00:00+00:00",
+            "expires_in": 259200,
+        },
+    )
+
+    from hermes_cli.auth_commands import auth_add_command
+
+    class _Args:
+        provider = "minimax-oauth"
+        auth_type = "oauth"
+        api_key = None
+        label = None
+        no_browser = True
+        timeout = None
+
+    auth_add_command(_Args())
+
+    payload = json.loads((tmp_path / "hermes" / "auth.json").read_text())
+    entries = payload["credential_pool"]["minimax-oauth"]
+    entry = next(item for item in entries if item["source"] == "manual:minimax_oauth")
+    assert entry["label"] == "minimax@example.com"
+    assert entry["access_token"] == token
+    assert entry["refresh_token"] == "refresh-token"
+    assert entry["base_url"] == "https://api.minimax.io/anthropic"
 
 
 def test_auth_add_nous_oauth_honors_custom_label(tmp_path, monkeypatch):
@@ -587,6 +633,39 @@ def test_logout_clears_stale_active_codex_without_provider_credentials(tmp_path,
     assert auth_payload.get("active_provider") is None
     config_text = (hermes_home / "config.yaml").read_text()
     assert "provider: auto" in config_text
+
+
+def test_reset_config_provider_uses_atomic_yaml_write(tmp_path, monkeypatch):
+    """Logout config reset should delegate the YAML write atomically."""
+    hermes_home = tmp_path / "hermes"
+    hermes_home.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    config_path = hermes_home / "config.yaml"
+    original = {
+        "model": {
+            "default": "gpt-5.3-codex",
+            "provider": "openai-codex",
+            "base_url": "https://chatgpt.com/backend-api/codex",
+        }
+    }
+    config_path.write_text(yaml.safe_dump(original, sort_keys=False), encoding="utf-8")
+    original_text = config_path.read_text(encoding="utf-8")
+
+    from hermes_cli.auth import _reset_config_provider
+
+    def _boom(path, data, **kwargs):
+        assert path == config_path
+        assert data["model"]["provider"] == "auto"
+        assert data["model"]["base_url"] == "https://openrouter.ai/api/v1"
+        assert kwargs["sort_keys"] is False
+        raise OSError("simulated atomic write failure")
+
+    with patch("hermes_cli.auth.atomic_yaml_write", side_effect=_boom) as mock_write:
+        with pytest.raises(OSError, match="simulated atomic write failure"):
+            _reset_config_provider()
+
+    assert mock_write.call_count == 1
+    assert config_path.read_text(encoding="utf-8") == original_text
 
 
 def test_auth_list_does_not_call_mutating_select(monkeypatch, capsys):
@@ -1446,23 +1525,36 @@ def test_seed_custom_pool_respects_config_suppression(tmp_path, monkeypatch):
 def test_credential_sources_registry_has_expected_steps():
     """Sanity check — the registry contains the expected RemovalSteps.
 
-    Guards against accidentally dropping a step during future refactors.
-    If you add a new credential source, add it to the expected set below.
+    Adding a new credential source is routine, so this is a structural
+    invariant check (every step has a description, every step is unique,
+    core steps are present) rather than a frozen snapshot. Frozen
+    snapshots of catalog-like data violate the AGENTS.md "don't write
+    change-detector tests" rule — they break every time someone adds a
+    provider.
     """
     from agent.credential_sources import _REGISTRY
 
-    descriptions = {step.description for step in _REGISTRY}
-    expected = {
+    descriptions = [step.description for step in _REGISTRY]
+    # No empty descriptions, no duplicates.
+    assert all(d for d in descriptions), "Every removal step must have a description"
+    assert len(descriptions) == len(set(descriptions)), (
+        f"Registry has duplicate step descriptions: {descriptions}"
+    )
+    # Core steps must be present — these are the ones the rest of the code
+    # assumes exist. When deliberately dropping one, update this list.
+    required = {
         "gh auth token / COPILOT_GITHUB_TOKEN / GH_TOKEN",
         "Any env-seeded credential (XAI_API_KEY, DEEPSEEK_API_KEY, etc.)",
         "~/.claude/.credentials.json",
         "~/.hermes/.anthropic_oauth.json",
         "auth.json providers.nous",
         "auth.json providers.openai-codex + ~/.codex/auth.json",
+        "auth.json providers.minimax-oauth",
         "~/.qwen/oauth_creds.json",
         "Custom provider config.yaml api_key field",
     }
-    assert descriptions == expected, f"Registry mismatch. Got: {descriptions}"
+    missing = required - set(descriptions)
+    assert not missing, f"Registry missing required steps: {missing}"
 
 
 def test_credential_sources_find_step_returns_none_for_manual():

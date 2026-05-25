@@ -28,8 +28,10 @@
 
   let
     cfg = config.services.hermes-agent;
-    effectivePackage = if cfg.extraPythonPackages == [ ] then cfg.package
-      else cfg.package.override { inherit (cfg) extraPythonPackages; };
+    effectivePackage =
+      if cfg.extraPythonPackages == [ ] && cfg.extraDependencyGroups == [ ]
+      then cfg.package
+      else cfg.package.override { inherit (cfg) extraPythonPackages extraDependencyGroups; };
     hermes-agent = inputs.self.packages.${pkgs.stdenv.hostPlatform.system}.default;
 
     # Deep-merge config type (from 0xrsydn/nix-hermes-agent)
@@ -115,9 +117,13 @@
       chown "$HERMES_UID:$HERMES_GID" "$TARGET_HOME"
       chmod 0750 "$TARGET_HOME"
 
-      # Ensure HERMES_HOME is owned by the target user
+      # Ensure HERMES_HOME is owned by the target user.
+      # Use find instead of chown -R: chown strips the setgid bit (kernel
+      # behavior), destroying the 2770 permissions the NixOS activation
+      # script sets for group access by hostUsers.  Only touch files with
+      # wrong ownership so correctly-owned dirs keep their permission bits.
       if [ -n "''${HERMES_HOME:-}" ] && [ -d "$HERMES_HOME" ]; then
-        chown -R "$HERMES_UID:$HERMES_GID" "$HERMES_HOME"
+        find "$HERMES_HOME" \! -user "$HERMES_UID" -exec chown "$HERMES_UID:$HERMES_GID" {} +
       fi
 
       # ── Provision apt packages (first boot only, cached in writable layer) ──
@@ -456,14 +462,13 @@
         type = types.listOf types.package;
         default = [ ];
         description = ''
-          **Deprecated.** Extra packages on the systemd service PATH.
+          Extra packages available to the agent — terminal commands, skills,
+          cron jobs, and the service process all see them.
 
-          This option does NOT make packages available to terminal commands
-          or skills — the terminal backend's login shell rebuilds PATH from
-          NixOS system profiles, discarding the service PATH.
-
-          Use `environment.systemPackages` instead, which works everywhere:
-          service process, terminal commands, skills, cron jobs.
+          Implemented via the hermes user's per-user profile
+          (`/etc/profiles/per-user/${cfg.user}/bin`), which NixOS includes
+          in PATH for login shells.  The packages are also added to the
+          systemd service PATH for direct process access.
         '';
       };
 
@@ -511,6 +516,21 @@
             })
           ]
         '';
+      };
+
+      extraDependencyGroups = mkOption {
+        type = types.listOf types.str;
+        default = [ ];
+        description = ''
+          Additional pyproject.toml optional-dependency groups to include in
+          the sealed Python venv. These are resolved by uv alongside core
+          dependencies — no PYTHONPATH patching or collision risk.
+
+          Use this for optional extras already declared in hermes-agent's
+          pyproject.toml (e.g. "hindsight", "honcho", "voice").
+          Use extraPythonPackages for external packages not in pyproject.toml.
+        '';
+        example = [ "hindsight" ];
       };
 
       restart = mkOption {
@@ -648,22 +668,26 @@
         }];
       }
 
+      # ── Assertions ─────────────────────────────────────────────────────
+      {
+        assertions = let
+          names = map lib.getName cfg.extraPlugins;
+        in [{
+          assertion = (lib.length names) == (lib.length (lib.unique names));
+          message = "services.hermes-agent.extraPlugins: duplicate plugin names detected: ${toString names}. If using fetchFromGitHub, set name = \"plugin-name\" to disambiguate.";
+        }];
+      }
+
       # ── Warnings ──────────────────────────────────────────────────────
+      # ── Per-user profile for extraPackages ───────────────────────────
+      # Wire extraPackages into the hermes user's per-user profile so the
+      # login-shell snapshot (which rebuilds PATH from NixOS profiles) sees
+      # them.  The systemd service PATH also includes them for direct access.
       (lib.mkIf (cfg.extraPackages != []) {
-        warnings = [
-          ''
-            services.hermes-agent: `extraPackages` is deprecated and will be removed in a future release.
-
-            Packages added via `extraPackages` are only visible to the systemd
-            service process itself. Terminal commands, skills, and cron jobs do
-            NOT see them because the terminal backend starts a login shell whose
-            PATH is rebuilt from NixOS system profiles, discarding the service PATH.
-
-            Migrate to `environment.systemPackages`, which works everywhere:
-
-              environment.systemPackages = [ ${lib.concatMapStringsSep " " (p: "pkgs.${p.pname or (lib.getName p)}") cfg.extraPackages} ];
-          ''
-        ];
+        # listOf options are merged by the NixOS module system — this appends to
+        # any packages the operator assigned to this user externally (e.g. when
+        # createUser = false and the user definition lives elsewhere in the config).
+        users.users.${cfg.user}.packages = cfg.extraPackages;
       })
 
       (lib.mkIf (cfg.container.enable && !cfg.addToSystemPackages && cfg.container.hostUsers != []) {
@@ -737,12 +761,12 @@
           # is disabled so the host CLI falls back to native execution.
           ${if cfg.container.enable then ''
             cat > ${cfg.stateDir}/.hermes/.container-mode <<'HERMES_CONTAINER_MODE_EOF'
-# Written by NixOS activation script. Do not edit manually.
-backend=${cfg.container.backend}
-container_name=${containerName}
-exec_user=${cfg.user}
-hermes_bin=${containerDataDir}/current-package/bin/hermes
-HERMES_CONTAINER_MODE_EOF
+    # Written by NixOS activation script. Do not edit manually.
+    backend=${cfg.container.backend}
+    container_name=${containerName}
+    exec_user=${cfg.user}
+    hermes_bin=${containerDataDir}/current-package/bin/hermes
+    HERMES_CONTAINER_MODE_EOF
             chown ${cfg.user}:${cfg.group} ${cfg.stateDir}/.hermes/.container-mode
             chmod 0644 ${cfg.stateDir}/.hermes/.container-mode
           '' else ''
@@ -803,8 +827,8 @@ HERMES_CONTAINER_MODE_EOF
             ENV_FILE="${cfg.stateDir}/.hermes/.env"
             install -o ${cfg.user} -g ${cfg.group} -m 0640 /dev/null "$ENV_FILE"
             cat > "$ENV_FILE" <<'HERMES_NIX_ENV_EOF'
-${envFileContent}
-HERMES_NIX_ENV_EOF
+    ${envFileContent}
+    HERMES_NIX_ENV_EOF
             ${lib.concatStringsSep "\n" (map (f: ''
               if [ -f "${f}" ]; then
                 echo "" >> "$ENV_FILE"

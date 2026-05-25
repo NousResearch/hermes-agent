@@ -66,7 +66,7 @@ export HERMES_TUI_DIR=/path/to/prebuilt/ui-tui
 hermes --tui
 ```
 
-The directory must contain `dist/entry.js` and an up-to-date `node_modules`.
+The directory must contain `dist/entry.js`.
 
 ## Keybindings
 
@@ -76,6 +76,8 @@ Keybindings match the [Classic CLI](cli.md#keybindings) exactly. The only behavi
 - **`Cmd+V` / `Ctrl+V`** first tries normal text paste, then falls back to OSC52/native clipboard reads, and finally image attach when the clipboard or pasted payload resolves to an image.
 - **`/terminal-setup`** installs local VS Code / Cursor / Windsurf terminal bindings for better `Cmd+Enter` and undo/redo parity on macOS.
 - **Slash autocompletion** opens as a floating panel with descriptions, not an inline dropdown.
+- **`Ctrl+X`** — when a queued message is highlighted (sent while the agent was still running), delete it from the queue. **`Esc`** cancels editing and unhighlights without deleting.
+- **`Ctrl+G` / `Ctrl+X Ctrl+E`** — open the current input buffer in `$EDITOR` for multi-line / long-prompt composition; save-and-exit sends the contents back as the prompt.
 
 ## Slash commands
 
@@ -89,8 +91,54 @@ All slash commands work unchanged. A few are TUI-owned — they produce richer o
 | `/skin` | Live preview — theme change applies as you browse |
 | `/details` | Toggle verbose tool-call details (global or per-section) |
 | `/usage` | Rich token / cost / context panel |
+| `/agents` (alias `/tasks`) | Observability overlay — live subagent tree with kill/pause controls, per-branch cost / token / file rollups, turn-by-turn history |
+| `/reload` | Re-reads `~/.hermes/.env` into the running TUI process so newly added API keys take effect without a restart |
+| `/mouse` | Toggle mouse tracking on/off at runtime (also persists to `display.mouse_tracking` in `config.yaml`) |
 
 Every other slash command (including installed skills, quick commands, and personality toggles) works identically to the classic CLI. See [Slash Commands Reference](../reference/slash-commands.md).
+
+## LaTeX math rendering
+
+The TUI's markdown pipeline renders LaTeX math inline: `$E = mc^2$` and `$$\frac{a}{b}$$` render as Unicode-formatted math instead of the raw TeX source. Works for inline and block math; unsupported syntax falls back to showing the literal TeX wrapped in a code span so it remains copyable.
+
+This is always-on — nothing to configure. Classic CLI keeps the raw TeX.
+
+## Light-terminal detection
+
+The TUI auto-detects light terminals and swaps to the light theme accordingly. Detection works in three layers:
+
+1. `HERMES_TUI_THEME` env var — highest priority. Values: `light`, `dark`, or a raw 6-char background hex (e.g. `ffffff`, `1a1a2e`).
+2. `COLORFGBG` env var — the classic "what's my background color?" hint used by xterm-derived terminals.
+3. Terminal background probe via OSC 11 — works on modern terminals (Ghostty, Warp, iTerm2, WezTerm, Kitty) that don't set `COLORFGBG`.
+
+If you want the light theme permanently regardless of terminal:
+
+```bash
+export HERMES_TUI_THEME=light
+```
+
+## Busy indicator styles
+
+The status-bar busy indicator is pluggable — the default rotates Hermes' kawaii face palette every 2.5 seconds during agent work. Pick a different style via config or the `/indicator` slash command:
+
+```yaml
+display:
+  tui_status_indicator: kaomoji   # kaomoji | emoji | unicode | ascii
+```
+
+Or in-session: `/indicator emoji` (etc.). Styles ship with matched glyph widths so the rest of the status bar doesn't jitter on rotation.
+
+## Auto-resume
+
+By default, `hermes --tui` starts a fresh session each launch. To re-attach to the most recent TUI session automatically (useful when your terminal or SSH connection drops unexpectedly), opt in:
+
+```bash
+export HERMES_TUI_RESUME=1          # most-recent TUI session
+# or:
+export HERMES_TUI_RESUME=<session-id>   # specific session
+```
+
+Unset the variable or pass `--resume <id>` explicitly to override on a per-launch basis.
 
 ## Status line
 
@@ -105,6 +153,11 @@ The TUI's status line tracks agent state in real time:
 | `forging session…` / `resuming…` | Initial connect or `--resume` handshake. |
 
 The per-skin status-bar colors and thresholds are shared with the classic CLI — see [Skins](features/skins.md) for customization.
+
+The status line also shows:
+
+- **Working directory with git branch** — `~/projects/hermes-agent (docs/two-week-gap-sweep)`. The branch suffix updates when you `git checkout` in a side terminal (mtime-cached) so the TUI reflects your actual active branch, not whatever it was at launch.
+- **Per-prompt elapsed time** — `⏱ 12s/3m 45s` while the turn is running (live), frozen to `⏲ 32s / 3m 45s` after the turn completes. First number is time since last user message; second is total session duration. Resets on every new prompt.
 
 ## Configuration
 

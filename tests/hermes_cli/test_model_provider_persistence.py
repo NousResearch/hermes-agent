@@ -71,6 +71,32 @@ class TestSaveModelChoiceAlwaysDict:
 
 
 class TestProviderPersistsAfterModelSave:
+    def test_update_config_for_provider_uses_atomic_yaml_write(self, config_home):
+        """Provider switches should delegate config writes to atomic_yaml_write."""
+        from hermes_cli.auth import _update_config_for_provider
+
+        config_path = config_home / "config.yaml"
+        original_text = config_path.read_text(encoding="utf-8")
+
+        def _boom(path, data, **kwargs):
+            assert path == config_path
+            assert data["model"]["provider"] == "nous"
+            assert data["model"]["base_url"] == "https://inference.example.com/v1"
+            assert data["model"]["default"] == "some-old-model"
+            assert kwargs["sort_keys"] is False
+            raise OSError("simulated atomic write failure")
+
+        with patch("hermes_cli.auth.atomic_yaml_write", side_effect=_boom) as mock_write:
+            with pytest.raises(OSError, match="simulated atomic write failure"):
+                _update_config_for_provider(
+                    "nous",
+                    "https://inference.example.com/v1/",
+                    default_model="llama-3.3",
+                )
+
+        assert mock_write.call_count == 1
+        assert config_path.read_text(encoding="utf-8") == original_text
+
     def test_api_key_provider_saved_when_model_was_string(self, config_home, monkeypatch):
         """_model_flow_api_key_provider must persist the provider even when
         config.model started as a plain string."""
@@ -150,6 +176,40 @@ class TestProviderPersistsAfterModelSave:
         assert model.get("default") == "gpt-5.4"
         assert model.get("api_mode") == "codex_responses"
         assert config["agent"]["reasoning_effort"] == "high"
+
+    def test_named_custom_provider_preserves_explicit_api_mode(self, config_home):
+        """Named custom providers should re-activate with their saved api_mode."""
+        import yaml
+
+        from hermes_cli.main import _model_flow_named_custom
+
+        provider_info = {
+            "name": "Packy",
+            "base_url": "https://packy.example.com/v1",
+            "api_key": "sk-test",
+            "model": "gpt-5.4",
+            "api_mode": "codex_responses",
+        }
+
+        # Patch fetch_api_models so the named custom flow returns one model;
+        # patch simple_term_menu to force the input() fallback; patch input to
+        # auto-select the first model from the fallback prompt.
+        from unittest.mock import MagicMock
+        fake_menu_module = MagicMock()
+        fake_menu_module.TerminalMenu.side_effect = OSError("no tty in test")
+        with patch("hermes_cli.auth._save_model_choice"), \
+             patch("hermes_cli.auth.deactivate_provider"), \
+             patch("hermes_cli.models.fetch_api_models", return_value=["gpt-5.4"]), \
+             patch.dict("sys.modules", {"simple_term_menu": fake_menu_module}), \
+             patch("builtins.input", return_value="1"):
+            _model_flow_named_custom({}, provider_info)
+
+        config = yaml.safe_load((config_home / "config.yaml").read_text()) or {}
+        model = config.get("model")
+        assert isinstance(model, dict)
+        assert model.get("provider") == "custom"
+        assert model.get("base_url") == "https://packy.example.com/v1"
+        assert model.get("api_mode") == "codex_responses"
 
     def test_copilot_acp_provider_saved_when_selected(self, config_home):
         """_model_flow_copilot_acp should persist provider/base_url/model together."""
@@ -261,6 +321,7 @@ class TestProviderPersistsAfterModelSave:
         assert model.get("api_mode") == "anthropic_messages"
 
 
+
 class TestBaseUrlValidation:
     """Reject non-URL values in the base URL prompt (e.g. shell commands)."""
 
@@ -333,32 +394,3 @@ class TestBaseUrlValidation:
         saved = get_env_value("GLM_BASE_URL") or ""
         assert saved == "", "Empty input should not save a base URL"
 
-    def test_stepfun_provider_saved_with_selected_region(self, config_home, monkeypatch):
-        from hermes_cli.main import _model_flow_stepfun
-        from hermes_cli.config import load_config, get_env_value
-
-        monkeypatch.setenv("STEPFUN_API_KEY", "stepfun-test-key")
-
-        with patch(
-            "hermes_cli.main._prompt_provider_choice",
-            return_value=1,
-        ), patch(
-            "hermes_cli.models.fetch_api_models",
-            return_value=["step-3.5-flash", "step-3-agent-lite"],
-        ), patch(
-            "hermes_cli.auth._prompt_model_selection",
-            return_value="step-3-agent-lite",
-        ), patch(
-            "hermes_cli.auth.deactivate_provider",
-        ):
-            _model_flow_stepfun(load_config(), "old-model")
-
-        import yaml
-
-        config = yaml.safe_load((config_home / "config.yaml").read_text()) or {}
-        model = config.get("model")
-        assert isinstance(model, dict)
-        assert model.get("provider") == "stepfun"
-        assert model.get("default") == "step-3-agent-lite"
-        assert model.get("base_url") == "https://api.stepfun.com/step_plan/v1"
-        assert get_env_value("STEPFUN_BASE_URL") == "https://api.stepfun.com/step_plan/v1"

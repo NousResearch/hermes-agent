@@ -96,6 +96,7 @@ def test_marker_message_inserted_when_missing():
     assert repaired == 1
     assert messages[1] == {
         "role": "tool",
+        "name": "read_file",
         "tool_call_id": "call_1",
         "content": marker,
     }

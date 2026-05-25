@@ -111,9 +111,33 @@ DINGTALK_TYPE_MAPPING = {
 
 
 def check_dingtalk_requirements() -> bool:
-    """Check if DingTalk dependencies are available and configured."""
+    """Check if DingTalk dependencies are available and configured.
+
+    Lazy-installs dingtalk-stream via ``tools.lazy_deps.ensure("platform.dingtalk")``
+    on first call if not present.
+    """
+    global DINGTALK_STREAM_AVAILABLE, dingtalk_stream, ChatbotMessage, CallbackMessage, AckMessage
+    global HTTPX_AVAILABLE, httpx
     if not DINGTALK_STREAM_AVAILABLE or not HTTPX_AVAILABLE:
-        return False
+        try:
+            from tools.lazy_deps import ensure as _lazy_ensure
+            _lazy_ensure("platform.dingtalk", prompt=False)
+        except Exception:
+            return False
+        try:
+            import dingtalk_stream as _ds
+            from dingtalk_stream import ChatbotMessage as _CM
+            from dingtalk_stream.frames import CallbackMessage as _CBM, AckMessage as _AM
+            import httpx as _httpx
+        except ImportError:
+            return False
+        dingtalk_stream = _ds
+        ChatbotMessage = _CM
+        CallbackMessage = _CBM
+        AckMessage = _AM
+        httpx = _httpx
+        DINGTALK_STREAM_AVAILABLE = True
+        HTTPX_AVAILABLE = True
     if not os.getenv("DINGTALK_CLIENT_ID") or not os.getenv("DINGTALK_CLIENT_SECRET"):
         return False
     return True
@@ -228,7 +252,11 @@ class DingTalkAdapter(BasePlatformAdapter):
             return False
 
         try:
-            self._http_client = httpx.AsyncClient(timeout=30.0)
+            # Tighter keepalive so idle CLOSE_WAIT drains promptly (#18451).
+            from gateway.platforms._http_client_limits import platform_httpx_limits
+            self._http_client = httpx.AsyncClient(
+                timeout=30.0, limits=platform_httpx_limits(),
+            )
 
             credential = dingtalk_stream.Credential(
                 self._client_id, self._client_secret
@@ -349,14 +377,28 @@ class DingTalkAdapter(BasePlatformAdapter):
         configured = self.config.extra.get("require_mention")
         if configured is not None:
             if isinstance(configured, str):
-                return configured.lower() in ("true", "1", "yes", "on")
+                return configured.lower() in {"true", "1", "yes", "on"}
             return bool(configured)
-        return os.getenv("DINGTALK_REQUIRE_MENTION", "false").lower() in ("true", "1", "yes", "on")
+        return os.getenv("DINGTALK_REQUIRE_MENTION", "false").lower() in {"true", "1", "yes", "on"}
 
     def _dingtalk_free_response_chats(self) -> Set[str]:
         raw = self.config.extra.get("free_response_chats")
         if raw is None:
             raw = os.getenv("DINGTALK_FREE_RESPONSE_CHATS", "")
+        if isinstance(raw, list):
+            return {str(part).strip() for part in raw if str(part).strip()}
+        return {part.strip() for part in str(raw).split(",") if part.strip()}
+
+    def _dingtalk_allowed_chats(self) -> Set[str]:
+        """Return the whitelist of group chat IDs the bot will respond in.
+
+        When non-empty, group messages from chats NOT in this set are silently
+        ignored — even if the bot is @mentioned.  DMs are never filtered.
+        Empty set means no restriction (fully backward compatible).
+        """
+        raw = self.config.extra.get("allowed_chats") if self.config.extra else None
+        if raw is None:
+            raw = os.getenv("DINGTALK_ALLOWED_CHATS", "")
         if isinstance(raw, list):
             return {str(part).strip() for part in raw if str(part).strip()}
         return {part.strip() for part in str(raw).split(",") if part.strip()}
@@ -439,13 +481,21 @@ class DingTalkAdapter(BasePlatformAdapter):
 
         DMs remain unrestricted (subject to ``allowed_users`` which is enforced
         earlier). Group messages are accepted when:
+        - the chat passes the ``allowed_chats`` whitelist (when set)
         - the chat is explicitly allowlisted in ``free_response_chats``
         - ``require_mention`` is disabled
         - the bot is @mentioned (``is_in_at_list``)
         - the text matches a configured regex wake-word pattern
+
+        When ``allowed_chats`` is non-empty, it acts as a hard gate — messages
+        from any group chat not in the list are ignored regardless of the
+        other rules.
         """
         if not is_group:
             return True
+        allowed = self._dingtalk_allowed_chats()
+        if allowed and chat_id and chat_id not in allowed:
+            return False
         if chat_id and chat_id in self._dingtalk_free_response_chats():
             return True
         if not self._dingtalk_require_mention():
@@ -859,6 +909,67 @@ class DingTalkAdapter(BasePlatformAdapter):
     async def send_typing(self, chat_id: str, metadata=None) -> None:
         """DingTalk does not support typing indicators."""
         pass
+
+    async def send_image(
+        self,
+        chat_id: str,
+        image_url: str,
+        caption: Optional[str] = None,
+        reply_to: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> SendResult:
+        """Send an image via DingTalk markdown.
+
+        DingTalk's session webhook only supports text/markdown payloads, not
+        native image/file attachments. For remote image URLs, render the image
+        inline with markdown so the user still sees the image. Local files need
+        OpenAPI media upload and are handled separately.
+        """
+        image_block = f"![image]({image_url})"
+        content = f"{caption}\n\n{image_block}" if caption else image_block
+        return await self.send(
+            chat_id=chat_id,
+            content=content,
+            reply_to=reply_to,
+            metadata=metadata,
+        )
+
+    async def send_image_file(
+        self,
+        chat_id: str,
+        image_path: str,
+        caption: Optional[str] = None,
+        reply_to: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+        **kwargs,
+    ) -> SendResult:
+        """DingTalk webhook replies cannot send local image files directly."""
+        return SendResult(
+            success=False,
+            error=(
+                "DingTalk session webhook replies do not support local image uploads. "
+                "Only markdown/text replies are supported without OpenAPI media upload."
+            ),
+        )
+
+    async def send_document(
+        self,
+        chat_id: str,
+        file_path: str,
+        caption: Optional[str] = None,
+        file_name: Optional[str] = None,
+        reply_to: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+        **kwargs,
+    ) -> SendResult:
+        """DingTalk webhook replies cannot send local file attachments directly."""
+        return SendResult(
+            success=False,
+            error=(
+                "DingTalk session webhook replies do not support local file attachments. "
+                "Only markdown/text replies are supported without OpenAPI message send."
+            ),
+        )
 
     async def get_chat_info(self, chat_id: str) -> Dict[str, Any]:
         """Return basic info about a DingTalk conversation."""

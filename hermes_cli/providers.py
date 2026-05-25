@@ -60,6 +60,12 @@ HERMES_OVERLAYS: Dict[str, HermesOverlay] = {
         auth_type="oauth_external",
         base_url_override="https://chatgpt.com/backend-api/codex",
     ),
+    "xai-oauth": HermesOverlay(
+        transport="codex_responses",
+        auth_type="oauth_external",
+        base_url_override="https://api.x.ai/v1",
+        base_url_env_var="XAI_BASE_URL",
+    ),
     "qwen-oauth": HermesOverlay(
         transport="openai_chat",
         auth_type="oauth_external",
@@ -70,6 +76,13 @@ HERMES_OVERLAYS: Dict[str, HermesOverlay] = {
         transport="openai_chat",
         auth_type="oauth_external",
         base_url_override="cloudcode-pa://google",
+    ),
+    "lmstudio": HermesOverlay(
+        transport="openai_chat",
+        auth_type="api_key",
+        extra_env_vars=("LM_API_KEY",),
+        base_url_override="http://127.0.0.1:1234/v1",
+        base_url_env_var="LM_BASE_URL",
     ),
     "copilot-acp": HermesOverlay(
         transport="codex_responses",
@@ -103,6 +116,11 @@ HERMES_OVERLAYS: Dict[str, HermesOverlay] = {
     "minimax": HermesOverlay(
         transport="anthropic_messages",
         base_url_env_var="MINIMAX_BASE_URL",
+    ),
+    "minimax-oauth": HermesOverlay(
+        transport="anthropic_messages",
+        auth_type="oauth_external",
+        base_url_override="https://api.minimax.io/anthropic",
     ),
     "minimax-cn": HermesOverlay(
         transport="anthropic_messages",
@@ -143,6 +161,11 @@ HERMES_OVERLAYS: Dict[str, HermesOverlay] = {
         transport="openai_chat",
         is_aggregator=True,
         base_url_env_var="HF_BASE_URL",
+    ),
+    "novita": HermesOverlay(
+        transport="openai_chat",
+        is_aggregator=True,
+        base_url_env_var="NOVITA_BASE_URL",
     ),
     "xai": HermesOverlay(
         transport="codex_responses",
@@ -227,6 +250,10 @@ ALIASES: Dict[str, str] = {
     "x-ai": "xai",
     "x.ai": "xai",
     "grok": "xai",
+    "grok-oauth": "xai-oauth",
+    "xai-oauth": "xai-oauth",
+    "x-ai-oauth": "xai-oauth",
+    "xai-grok-oauth": "xai-oauth",
 
     # nvidia
     "nim": "nvidia",
@@ -297,6 +324,10 @@ ALIASES: Dict[str, str] = {
     "hugging-face": "huggingface",
     "huggingface-hub": "huggingface",
 
+    # novita
+    "novita-ai": "novita",
+    "novitaai": "novita",
+
     # xiaomi
     "mimo": "xiaomi",
     "xiaomi-mimo": "xiaomi",
@@ -345,6 +376,7 @@ _LABEL_OVERRIDES: Dict[str, str] = {
     "xiaomi": "Xiaomi MiMo",
     "gmi": "GMI Cloud",
     "tencent-tokenhub": "Tencent TokenHub",
+    "lmstudio": "LM Studio",
     "local": "Local endpoint",
     "bedrock": "AWS Bedrock",
     "ollama-cloud": "Ollama Cloud",
@@ -572,6 +604,12 @@ def resolve_custom_provider(
     if not requested:
         return None
 
+    # If the stored provider is the bare string "custom" (corrupt state
+    # from a prior model-switch bug), fall back to the first custom
+    # provider entry so existing configs self-heal.  (GH #17478)
+    bare_custom_fallback = requested == "custom"
+    first_valid = None
+
     for entry in custom_providers:
         if not isinstance(entry, dict):
             continue
@@ -586,6 +624,10 @@ def resolve_custom_provider(
         if not display_name or not api_url:
             continue
 
+        # Stash the first valid entry for bare-"custom" fallback
+        if first_valid is None:
+            first_valid = (display_name, api_url)
+
         slug = custom_provider_slug(display_name)
         if requested not in {display_name.lower(), slug}:
             continue
@@ -596,6 +638,21 @@ def resolve_custom_provider(
             transport="openai_chat",
             api_key_env_vars=(),
             base_url=api_url,
+            is_aggregator=False,
+            auth_type="api_key",
+            source="user-config",
+        )
+
+    # Self-heal: bare "custom" matched nothing — return first valid entry
+    if bare_custom_fallback and first_valid:
+        dname, aurl = first_valid
+        slug = custom_provider_slug(dname)
+        return ProviderDef(
+            id=slug,
+            name=dname,
+            transport="openai_chat",
+            api_key_env_vars=(),
+            base_url=aurl,
             is_aggregator=False,
             auth_type="api_key",
             source="user-config",

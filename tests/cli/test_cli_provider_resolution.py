@@ -531,8 +531,8 @@ def test_model_flow_custom_saves_verified_v1_base_url(monkeypatch, capsys):
 
     # After the probe detects a single model ("llm"), the flow asks
     # "Use this model? [Y/n]:" — confirm with Enter, then context length,
-    # then display name.
-    answers = iter(["http://localhost:8000", "local-key", "", "", "", ""])
+    # then display name. The api_mode prompt also runs before model selection.
+    answers = iter(["http://localhost:8000", "local-key", "", "", "", "", ""])
     monkeypatch.setattr("builtins.input", lambda _prompt="": next(answers))
     monkeypatch.setattr("getpass.getpass", lambda _prompt="": next(answers))
 
@@ -544,6 +544,63 @@ def test_model_flow_custom_saves_verified_v1_base_url(monkeypatch, capsys):
     # OPENAI_BASE_URL is no longer saved to .env — config.yaml is authoritative
     assert "OPENAI_BASE_URL" not in saved_env
     assert saved_env["MODEL"] == "llm"
+
+
+def test_model_flow_custom_persists_selected_api_mode(monkeypatch):
+    saved_cfg = {"model": {"default": "", "provider": "custom", "base_url": ""}}
+    captured_provider = {}
+
+    monkeypatch.setattr(
+        "hermes_cli.config.get_env_value",
+        lambda key: "" if key in {"OPENAI_BASE_URL", "OPENAI_API_KEY"} else "",
+    )
+    monkeypatch.setattr("hermes_cli.auth._save_model_choice", lambda model: None)
+    monkeypatch.setattr("hermes_cli.auth.deactivate_provider", lambda: None)
+    monkeypatch.setattr(
+        "hermes_cli.models.probe_api_models",
+        lambda api_key, base_url: {
+            "models": [],
+            "probed_url": f"{base_url.rstrip('/')}/models",
+            "resolved_base_url": None,
+            "suggested_base_url": None,
+            "used_fallback": False,
+        },
+    )
+    monkeypatch.setattr("hermes_cli.config.load_config", lambda: saved_cfg)
+    monkeypatch.setattr("hermes_cli.config.save_config", lambda cfg: saved_cfg.update(cfg))
+    monkeypatch.setattr(
+        "hermes_cli.main._save_custom_provider",
+        lambda base_url, api_key="", model="", context_length=None, name=None, api_mode=None: captured_provider.update(
+            {
+                "base_url": base_url,
+                "api_key": api_key,
+                "model": model,
+                "context_length": context_length,
+                "name": name,
+                "api_mode": api_mode,
+            }
+        ),
+    )
+
+    answers = iter(
+        [
+            "https://codex.example.com/v1",
+            "3",
+            "chosen-model",
+            "",
+            "",
+        ]
+    )
+    monkeypatch.setattr("builtins.input", lambda _prompt="": next(answers))
+    monkeypatch.setattr("getpass.getpass", lambda _prompt="": "test-key")
+
+    hermes_main._model_flow_custom({"model": {"provider": "custom"}})
+
+    assert saved_cfg["model"]["provider"] == "custom"
+    assert saved_cfg["model"]["base_url"] == "https://codex.example.com/v1"
+    assert saved_cfg["model"]["api_key"] == "test-key"
+    assert saved_cfg["model"]["api_mode"] == "codex_responses"
+    assert captured_provider["api_mode"] == "codex_responses"
 
 
 def test_cmd_model_forwards_nous_login_tls_options(monkeypatch):

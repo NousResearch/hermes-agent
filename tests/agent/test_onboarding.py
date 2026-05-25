@@ -205,10 +205,21 @@ class TestDetectOpenclawResidue:
 
 
 class TestOpenclawResidueHint:
-    def test_hint_mentions_cleanup_command(self):
+    def test_hint_mentions_migrate_command(self):
+        # `migrate` is the non-destructive path — should lead the banner.
         msg = openclaw_residue_hint_cli()
-        assert "hermes claw cleanup" in msg
+        assert "hermes claw migrate" in msg
         assert "~/.openclaw" in msg
+
+    def test_hint_mentions_cleanup_command(self):
+        # `cleanup` is mentioned as the follow-up archive step.
+        assert "hermes claw cleanup" in openclaw_residue_hint_cli()
+
+    def test_hint_warns_cleanup_breaks_openclaw(self):
+        # Archiving the directory breaks OpenClaw for users still running it —
+        # the banner must flag that side effect.
+        msg = openclaw_residue_hint_cli().lower()
+        assert "openclaw will stop working" in msg or "stop working" in msg
 
     def test_hint_not_empty(self):
         assert openclaw_residue_hint_cli().strip()

@@ -1,10 +1,11 @@
 import { Ansi, Box, NoSelect, Text } from '@hermes/ink'
-import { memo } from 'react'
+import { memo, useState } from 'react'
 
 import { LONG_MSG } from '../config/limits.js'
 import { sectionMode } from '../domain/details.js'
 import { userDisplay } from '../domain/messages.js'
 import { ROLE } from '../domain/roles.js'
+import { transcriptBodyWidth, transcriptGutterWidth } from '../lib/inputMetrics.js'
 import {
   boundedHistoryRenderText,
   boundedLiveRenderText,
@@ -20,6 +21,9 @@ import { Md } from './markdown.js'
 import { StreamingMd } from './streamingMarkdown.js'
 import { ToolTrail } from './thinking.js'
 import { TodoPanel } from './todoPanel.js'
+
+// Collapse threshold for long system messages (system prompt etc.)
+const SYSTEM_COLLAPSE_CHARS = 400
 
 export const MessageLine = memo(function MessageLine({
   cols,
@@ -44,6 +48,10 @@ export const MessageLine = memo(function MessageLine({
   const toolsMode = sectionMode('tools', detailsMode, sections, detailsModeCommandOverride)
   const activityMode = sectionMode('activity', detailsMode, sections, detailsModeCommandOverride)
   const thinking = msg.thinking?.trim() ?? ''
+
+  // Collapse toggle for long system messages
+  const systemIsLong = msg.role === 'system' && msg.text.length > SYSTEM_COLLAPSE_CHARS
+  const [systemOpen, setSystemOpen] = useState(false)
 
   if (msg.kind === 'trail' && msg.todos?.length) {
     return (
@@ -80,13 +88,13 @@ export const MessageLine = memo(function MessageLine({
     const preview = compactPreview(stripped, maxChars) || '(empty tool result)'
 
     return (
-      <Box alignSelf="flex-start" borderColor={t.color.dim} borderStyle="round" marginLeft={3} paddingX={1}>
+      <Box alignSelf="flex-start" borderColor={t.color.muted} borderStyle="round" marginLeft={3} paddingX={1}>
         {hasAnsi(msg.text) ? (
           <Text wrap="truncate-end">
             <Ansi>{msg.text}</Ansi>
           </Text>
         ) : (
-          <Text color={t.color.dim} wrap="truncate-end">
+          <Text color={t.color.muted} wrap="truncate-end">
             {preview}
           </Text>
         )}
@@ -95,13 +103,35 @@ export const MessageLine = memo(function MessageLine({
   }
 
   const { body, glyph, prefix } = ROLE[msg.role](t)
+  const gutterWidth = transcriptGutterWidth(msg.role, t.brand.prompt)
 
   const showDetails =
     (toolsMode !== 'hidden' && Boolean(msg.tools?.length)) || (thinkingMode !== 'hidden' && Boolean(thinking))
 
   const content = (() => {
     if (msg.kind === 'slash') {
-      return <Text color={t.color.dim}>{msg.text}</Text>
+      return <Text color={t.color.muted}>{msg.text}</Text>
+    }
+
+    // ── Collapsible long system message (system prompt, AGENTS.md, etc.) ──
+    // MUST come before the hasAnsi check — system messages from the backend
+    // contain Rich markup escape codes that would otherwise hit <Ansi> full render.
+    if (systemIsLong) {
+      const firstLine = (msg.text.split('\n')[0] ?? '').trim().slice(0, 120) || '(system message)'
+
+      return (
+        <Box flexDirection="column">
+          <Box onClick={() => setSystemOpen(v => !v)}>
+            <Text color={t.color.accent}>{systemOpen ? '▾ ' : '▸ '}</Text>
+            <Text color={t.color.muted}>{firstLine}</Text>
+            <Text color={t.color.muted} dimColor>
+              {' — '}
+              {msg.text.length.toLocaleString()} chars
+            </Text>
+          </Box>
+          {systemOpen && <Ansi>{msg.text}</Ansi>}
+        </Box>
+      )
     }
 
     if (msg.role !== 'user' && hasAnsi(msg.text)) {
@@ -109,13 +139,15 @@ export const MessageLine = memo(function MessageLine({
     }
 
     if (msg.role === 'assistant') {
+      const bodyWidth = transcriptBodyWidth(cols, msg.role, t.brand.prompt)
+
       return isStreaming ? (
         // Incremental markdown: split at the last stable block boundary so
         // only the in-flight tail re-tokenizes per delta. See
         // streamingMarkdown.tsx for the cost model.
-        <StreamingMd compact={compact} t={t} text={boundedLiveRenderText(msg.text)} />
+        <StreamingMd cols={bodyWidth} compact={compact} t={t} text={boundedLiveRenderText(msg.text)} />
       ) : (
-        <Md compact={compact} t={t} text={limitHistoryRender ? boundedHistoryRenderText(msg.text) : msg.text} />
+        <Md cols={bodyWidth} compact={compact} t={t} text={limitHistoryRender ? boundedHistoryRenderText(msg.text) : msg.text} />
       )
     }
 
@@ -125,7 +157,7 @@ export const MessageLine = memo(function MessageLine({
       return (
         <Text color={body}>
           {head}
-          <Text color={t.color.dim} dimColor>
+          <Text color={t.color.muted} dimColor>
             [long message]
           </Text>
           {rest.join('')}
@@ -163,13 +195,13 @@ export const MessageLine = memo(function MessageLine({
       )}
 
       <Box>
-        <NoSelect flexShrink={0} fromLeftEdge width={3}>
+        <NoSelect flexShrink={0} fromLeftEdge width={gutterWidth}>
           <Text bold={msg.role === 'user'} color={prefix}>
             {glyph}{' '}
           </Text>
         </NoSelect>
 
-        <Box width={Math.max(20, cols - 5)}>{content}</Box>
+        <Box width={transcriptBodyWidth(cols, msg.role, t.brand.prompt)}>{content}</Box>
       </Box>
     </Box>
   )

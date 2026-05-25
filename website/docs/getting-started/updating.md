@@ -8,26 +8,66 @@ description: "How to update Hermes Agent to the latest version or uninstall it"
 
 ## Updating
 
+### Git installs
+
 Update to the latest version with a single command:
 
 ```bash
 hermes update
 ```
 
-This pulls the latest code, updates dependencies, and prompts you to configure any new options that were added since your last update.
+This pulls the latest code from `main`, updates dependencies, and prompts you to configure any new options that were added since your last update.
+
+### pip installs
+
+PyPI releases track **tagged versions** (major and minor releases), not every commit on `main`. Check for updates and upgrade with:
+
+```bash
+hermes update --check    # see if a newer release is on PyPI
+hermes update            # runs pip install --upgrade hermes-agent
+```
+
+Or manually:
+
+```bash
+pip install --upgrade hermes-agent    # or: uv pip install --upgrade hermes-agent
+```
 
 :::tip
 `hermes update` automatically detects new configuration options and prompts you to add them. If you skipped that prompt, you can manually run `hermes config check` to see missing options, then `hermes config migrate` to interactively add them.
 :::
 
-### What happens during an update
+### What happens during an update (git installs)
 
 When you run `hermes update`, the following steps occur:
 
-1. **Git pull** — pulls the latest code from the `main` branch and updates submodules
-2. **Dependency install** — runs `uv pip install -e ".[all]"` to pick up new or changed dependencies
-3. **Config migration** — detects new config options added since your version and prompts you to set them
-4. **Gateway auto-restart** — if the gateway service is running (systemd on Linux, launchd on macOS), it is **automatically restarted** after the update completes so the new code takes effect immediately
+1. **Pairing-data snapshot** — a lightweight pre-update state snapshot is saved (covers `~/.hermes/pairing/`, Feishu comment rules, and other state files that get modified at runtime). Recoverable via the snapshot restore flow described under [Snapshots and rollback](../user-guide/checkpoints-and-rollback.md), or by extracting the most recent quick-snapshot zip Hermes wrote next to your `~/.hermes/` directory.
+2. **Git pull** — pulls the latest code from the `main` branch and updates submodules
+3. **Dependency install** — runs `uv pip install -e ".[all]"` to pick up new or changed dependencies
+4. **Config migration** — detects new config options added since your version and prompts you to set them
+5. **Gateway auto-restart** — running gateways are refreshed after the update completes so the new code takes effect immediately. Service-managed gateways (systemd on Linux, launchd on macOS) are restarted through the service manager. Manual gateways are relaunched automatically when Hermes can map the running PID back to a profile.
+
+### Preview-only: `hermes update --check`
+
+Want to know if an update is available before pulling? Run `hermes update --check` — for git installs it fetches and compares commits against `origin/main`; for pip installs it queries PyPI for the latest release. No files are modified, no gateway is restarted. Useful in scripts and cron jobs that gate on "is there an update".
+
+### Full pre-update backup: `--backup`
+
+For high-value profiles (production gateways, shared team installs) you can opt into a full pre-pull backup of `HERMES_HOME` (config, auth, sessions, skills, pairing):
+
+```bash
+hermes update --backup
+```
+
+Or make it the default for every run:
+
+```yaml
+# ~/.hermes/config.yaml
+updates:
+  pre_update_backup: true
+```
+
+`--backup` was the always-on behavior in earlier builds, but it was adding minutes to every update on large homes, so it's now opt-in. The lightweight pairing-data snapshot above still runs unconditionally.
 
 Expected output looks like:
 
@@ -40,7 +80,7 @@ Already up to date.  (or: Updating abc1234..def5678)
 ✅ Dependencies updated
 🔍 Checking for new config options...
 ✅ Config is up to date  (or: Found 2 new options — running migration...)
-🔄 Restarting gateway service...
+🔄 Restarting gateways...
 ✅ Gateway restarted
 ✅ Hermes Agent updated successfully!
 ```
@@ -84,13 +124,13 @@ Compare against the latest release at the [GitHub releases page](https://github.
 
 ### Updating from Messaging Platforms
 
-You can also update directly from Telegram, Discord, Slack, or WhatsApp by sending:
+You can also update directly from Telegram, Discord, Slack, WhatsApp, or Teams by sending:
 
 ```
 /update
 ```
 
-This pulls the latest code, updates dependencies, and restarts the gateway. The bot will briefly go offline during the restart (typically 5–15 seconds) and then resume.
+This pulls the latest code, updates dependencies, and restarts running gateways. The bot will briefly go offline during the restart (typically 5–15 seconds) and then resume.
 
 ### Manual Update
 
@@ -100,13 +140,11 @@ If you installed manually (not via the quick installer):
 cd /path/to/hermes-agent
 export VIRTUAL_ENV="$(pwd)/venv"
 
-# Pull latest code and submodules
+# Pull latest code
 git pull origin main
-git submodule update --init --recursive
 
 # Reinstall (picks up new dependencies)
 uv pip install -e ".[all]"
-uv pip install -e "./tinker-atropos"
 
 # Check for new config options
 hermes config check
@@ -168,11 +206,20 @@ See [Nix Setup](./nix-setup.md) for more details.
 
 ## Uninstalling
 
+### Git installs
+
 ```bash
 hermes uninstall
 ```
 
 The uninstaller gives you the option to keep your configuration files (`~/.hermes/`) for a future reinstall.
+
+### pip installs
+
+```bash
+pip uninstall hermes-agent
+rm -rf ~/.hermes            # Optional — keep if you plan to reinstall
+```
 
 ### Manual Uninstall
 

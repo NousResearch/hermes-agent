@@ -160,11 +160,13 @@ class HonchoSessionManager:
         Peers are lazy -- no API call until first use.
         Observation settings are controlled per-session via SessionPeerConfig.
         """
-        if peer_id in self._peers_cache:
-            return self._peers_cache[peer_id]
+        with self._cache_lock:
+            if peer_id in self._peers_cache:
+                return self._peers_cache[peer_id]
 
         peer = self.honcho.peer(peer_id)
-        self._peers_cache[peer_id] = peer
+        with self._cache_lock:
+            self._peers_cache[peer_id] = peer
         return peer
 
     def _get_or_create_honcho_session(
@@ -176,9 +178,10 @@ class HonchoSessionManager:
         Returns:
             Tuple of (honcho_session, existing_messages).
         """
-        if session_id in self._sessions_cache:
-            logger.debug("Honcho session '%s' retrieved from cache", session_id)
-            return self._sessions_cache[session_id], []
+        with self._cache_lock:
+            if session_id in self._sessions_cache:
+                logger.debug("Honcho session '%s' retrieved from cache", session_id)
+                return self._sessions_cache[session_id], []
 
         session = self.honcho.session(session_id)
 
@@ -623,14 +626,15 @@ class HonchoSessionManager:
         Pre-fetch user and AI peer context from Honcho.
 
         Fetches peer_representation and peer_card for both peers, plus the
-        session summary when available. search_query is intentionally omitted
-        — it would only affect additional excerpts that this code does not
-        consume, and passing the raw message exposes conversation content in
-        server access logs.
+        session summary when available. When user_message is provided, it is
+        passed as search_query to the peer context call so Honcho returns
+        conclusions relevant to the session topic rather than the full
+        observation dump.
 
         Args:
             session_key: The session key to get context for.
-            user_message: Unused; kept for call-site compatibility.
+            user_message: Optional first user message used as search_query for
+                          topic-relevant context retrieval.
 
         Returns:
             Dictionary with 'representation', 'card', 'ai_representation',
@@ -656,7 +660,7 @@ class HonchoSessionManager:
             logger.debug("Failed to fetch session summary from Honcho: %s", e)
 
         try:
-            user_ctx = self._fetch_peer_context(session.user_peer_id, target=session.user_peer_id)
+            user_ctx = self._fetch_peer_context(session.user_peer_id, search_query=user_message or None, target=session.user_peer_id)
             result["representation"] = user_ctx["representation"]
             result["card"] = "\n".join(user_ctx["card"])
         except Exception as e:

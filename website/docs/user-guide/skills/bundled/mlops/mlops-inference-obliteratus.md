@@ -1,14 +1,14 @@
 ---
-title: "Obliteratus"
+title: "Obliteratus — OBLITERATUS: abliterate LLM refusals (diff-in-means)"
 sidebar_label: "Obliteratus"
-description: "Remove refusal behaviors from open-weight LLMs using OBLITERATUS — mechanistic interpretability techniques (diff-in-means, SVD, whitened SVD, LEACE, SAE deco..."
+description: "OBLITERATUS: abliterate LLM refusals (diff-in-means)"
 ---
 
 {/* This page is auto-generated from the skill's SKILL.md by website/scripts/generate-skill-docs.py. Edit the source SKILL.md, not this page. */}
 
 # Obliteratus
 
-Remove refusal behaviors from open-weight LLMs using OBLITERATUS — mechanistic interpretability techniques (diff-in-means, SVD, whitened SVD, LEACE, SAE decomposition, etc.) to excise guardrails while preserving reasoning. 9 CLI methods, 28 analysis modules, 116 model presets across 5 compute tiers, tournament evaluation, and telemetry-driven recommendations. Use when a user wants to uncensor, abliterate, or remove refusal from an LLM.
+OBLITERATUS: abliterate LLM refusals (diff-in-means).
 
 ## Skill metadata
 
@@ -20,6 +20,7 @@ Remove refusal behaviors from open-weight LLMs using OBLITERATUS — mechanistic
 | Author | Hermes Agent |
 | License | MIT |
 | Dependencies | `obliteratus`, `torch`, `transformers`, `bitsandbytes`, `accelerate`, `safetensors` |
+| Platforms | linux, macos |
 | Tags | `Abliteration`, `Uncensoring`, `Refusal-Removal`, `LLM`, `Weight-Projection`, `SVD`, `Mechanistic-Interpretability`, `HuggingFace`, `Model-Surgery` |
 | Related skills | `vllm`, `gguf`, [`huggingface-tokenizers`](/docs/user-guide/skills/optional/mlops/mlops-huggingface-tokenizers) |
 
@@ -31,9 +32,20 @@ The following is the complete skill definition that Hermes loads when this skill
 
 # OBLITERATUS Skill
 
+## What's inside
+
+9 CLI methods, 28 analysis modules, 116 model presets across 5 compute tiers, tournament evaluation, and telemetry-driven recommendations.
+
 Remove refusal behaviors (guardrails) from open-weight LLMs without retraining or fine-tuning. Uses mechanistic interpretability techniques — including diff-in-means, SVD, whitened SVD, LEACE concept erasure, SAE decomposition, Bayesian kernel projection, and more — to identify and surgically excise refusal directions from model weights while preserving reasoning capabilities.
 
 **License warning:** OBLITERATUS is AGPL-3.0. NEVER import it as a Python library. Always invoke via CLI (`obliteratus` command) or subprocess. This keeps Hermes Agent's MIT license clean.
+
+## Video Guide
+
+Walkthrough of OBLITERATUS used by a Hermes agent to abliterate Gemma:
+https://www.youtube.com/watch?v=8fG9BrNTeHs ("OBLITERATUS: An AI Agent Removed Gemma 4's Safety Guardrails")
+
+Useful when the user wants a visual overview of the end-to-end workflow before running it themselves.
 
 ## When to Use This Skill
 

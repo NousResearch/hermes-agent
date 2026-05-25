@@ -62,6 +62,7 @@ from .config import (
 )
 from .whatsapp_identity import (
     canonical_whatsapp_identifier,
+    normalize_whatsapp_identifier,  # noqa: F401 - re-exported for gateway.session callers
 )
 from utils import atomic_replace
 
@@ -234,7 +235,7 @@ def build_session_context_prompt(
 ) -> str:
     """
     Build the dynamic system prompt section that tells the agent about its context.
-    
+
     This is injected into the system prompt so the agent knows:
     - Where messages are coming from
     - What platforms are connected
@@ -246,13 +247,23 @@ def build_session_context_prompt(
     Platforms like Discord are excluded because mentions need real IDs.
     Routing still uses the original values (they stay in SessionSource).
     """
-    # Only apply redaction on platforms where IDs aren't needed for mentions
-    redact_pii = redact_pii and context.source.platform in _PII_SAFE_PLATFORMS
+    # Only apply redaction on platforms where IDs aren't needed for mentions.
+    # Check both the hardcoded set (builtins) and the plugin registry.
+    _is_pii_safe = context.source.platform in _PII_SAFE_PLATFORMS
+    if not _is_pii_safe:
+        try:
+            from gateway.platform_registry import platform_registry
+            entry = platform_registry.get(context.source.platform.value)
+            if entry and entry.pii_safe:
+                _is_pii_safe = True
+        except Exception:
+            pass
+    redact_pii = redact_pii and _is_pii_safe
     lines = [
         "## Current Session Context",
         "",
     ]
-    
+
     # Source info
     platform_name = context.source.platform.value.title()
     if context.source.platform == Platform.LOCAL:
@@ -277,7 +288,7 @@ def build_session_context_prompt(
         else:
             desc = src.description
         lines.append(f"**Source:** {platform_name} ({desc})")
-    
+
     # Channel topic (if available - provides context about the channel's purpose)
     if context.source.chat_topic:
         lines.append(f"**Channel Topic:** {context.source.chat_topic}")
@@ -302,7 +313,7 @@ def build_session_context_prompt(
         if redact_pii:
             uid = _hash_sender_id(uid)
         lines.append(f"**User ID:** {uid}")
-    
+
     # Platform-specific behavioral notes
     if context.source.platform == Platform.SLACK:
         lines.append("")
@@ -368,9 +379,9 @@ def build_session_context_prompt(
     for p in context.connected_platforms:
         if p != Platform.LOCAL:
             platforms_list.append(f"{p.value}: Connected ✓")
-    
+
     lines.append(f"**Connected Platforms:** {', '.join(platforms_list)}")
-    
+
     # Home channels
     if context.home_channels:
         lines.append("")
@@ -378,11 +389,11 @@ def build_session_context_prompt(
         for platform, home in context.home_channels.items():
             hc_id = _hash_chat_id(home.chat_id) if redact_pii else home.chat_id
             lines.append(f"  - {platform.value}: {home.name} (ID: {hc_id})")
-    
+
     # Delivery options for scheduled tasks
     lines.append("")
     lines.append("**Delivery options for scheduled tasks:**")
-    
+
     from hermes_constants import display_hermes_home
 
     # Origin delivery
@@ -398,15 +409,15 @@ def build_session_context_prompt(
     lines.append(
         f"- `\"local\"` → Save to local files only ({display_hermes_home()}/cron/output/)"
     )
-    
+
     # Platform home channels
     for platform, home in context.home_channels.items():
         lines.append(f"- `\"{platform.value}\"` → Home channel ({home.name})")
-    
+
     # Note about explicit targeting
     lines.append("")
     lines.append("*For explicit targeting, use `\"platform:chat_id\"` format if the user provides a specific chat ID.*")
-    
+
     return "\n".join(lines)
 
 
@@ -447,6 +458,15 @@ class SessionEntry:
     was_auto_reset: bool = False
     auto_reset_reason: Optional[str] = None  # "idle" or "daily"
     reset_had_activity: bool = False  # whether the expired session had any messages
+
+    # Set by reset_session() when the user explicitly sends /new or /reset.
+    # Consumed once by _handle_message_with_agent to trigger topic/channel
+    # skill re-injection on the first message of the new session.  We can't
+    # reuse was_auto_reset for this because that flag fires the "session
+    # expired due to inactivity" user-facing notice and a misleading
+    # context-note prepend — both wrong for an explicit manual reset.
+    # See issue #6508.
+    is_fresh_reset: bool = False
     
     # Set by the background expiry watcher after it finalizes an expired
     # session (invoking on_session_finalize hooks and evicting the cached
@@ -497,6 +517,10 @@ class SessionEntry:
                 if self.last_resume_marked_at
                 else None
             ),
+            "is_fresh_reset": self.is_fresh_reset,
+            "was_auto_reset": self.was_auto_reset,
+            "auto_reset_reason": self.auto_reset_reason,
+            "reset_had_activity": self.reset_had_activity,
         }
         if self.origin:
             result["origin"] = self.origin.to_dict()
@@ -545,6 +569,10 @@ class SessionEntry:
             resume_pending=data.get("resume_pending", False),
             resume_reason=data.get("resume_reason"),
             last_resume_marked_at=last_resume_marked_at,
+            is_fresh_reset=data.get("is_fresh_reset", False),
+            was_auto_reset=data.get("was_auto_reset", False),
+            auto_reset_reason=data.get("auto_reset_reason"),
+            reset_had_activity=data.get("reset_had_activity", False),
         )
 
 
@@ -742,12 +770,12 @@ class SessionStore:
 
         now = _now()
 
-        if policy.mode in ("idle", "both"):
+        if policy.mode in {"idle", "both"}:
             idle_deadline = entry.updated_at + timedelta(minutes=policy.idle_minutes)
             if now > idle_deadline:
                 return True
 
-        if policy.mode in ("daily", "both"):
+        if policy.mode in {"daily", "both"}:
             today_reset = now.replace(
                 hour=policy.at_hour,
                 minute=0, second=0, microsecond=0,
@@ -783,12 +811,12 @@ class SessionStore:
         
         now = _now()
         
-        if policy.mode in ("idle", "both"):
+        if policy.mode in {"idle", "both"}:
             idle_deadline = entry.updated_at + timedelta(minutes=policy.idle_minutes)
             if now > idle_deadline:
                 return "idle"
         
-        if policy.mode in ("daily", "both"):
+        if policy.mode in {"daily", "both"}:
             today_reset = now.replace(
                 hour=policy.at_hour, 
                 minute=0, 
@@ -1064,19 +1092,22 @@ class SessionStore:
         return len(removed_keys)
 
     def suspend_recently_active(self, max_age_seconds: int = 120) -> int:
-        """Mark recently-active sessions as suspended.
+        """Mark recently-active sessions as resumable after an unexpected exit.
 
-        Called on gateway startup to prevent sessions that were likely
-        in-flight when the gateway last exited from being blindly resumed
-        (#7536).  Only suspends sessions updated within *max_age_seconds*
-        to avoid resetting long-idle sessions that are harmless to resume.
-        Returns the number of sessions that were suspended.
+        Called on gateway startup after a crash or fast restart to preserve
+        in-flight sessions instead of destroying their conversation history
+        (#7536).  Only marks sessions updated within *max_age_seconds* to
+        avoid touching long-idle sessions.  Sets ``resume_pending=True`` so
+        the next incoming message on the same session_key auto-resumes from
+        the existing transcript.
 
-        Entries flagged ``resume_pending=True`` are skipped — those were
-        marked intentionally by the drain-timeout path as recoverable.
-        Terminal escalation for genuinely stuck ``resume_pending`` sessions
-        is handled by the existing ``.restart_failure_counts`` stuck-loop
-        counter, which runs after this method on startup.
+        Entries already flagged ``resume_pending=True`` are skipped.  Entries
+        explicitly ``suspended=True`` (from /stop or stuck-loop escalation)
+        are also skipped.  Terminal escalation for genuinely stuck sessions
+        is still handled by the existing ``.restart_failure_counts`` counter
+        (threshold 3), which runs after this method and sets ``suspended=True``.
+
+        Returns the number of sessions marked resumable.
         """
         from datetime import timedelta
 
@@ -1088,13 +1119,15 @@ class SessionStore:
                 if entry.resume_pending:
                     continue
                 if not entry.suspended and entry.updated_at >= cutoff:
-                    entry.suspended = True
+                    entry.resume_pending = True
+                    entry.resume_reason = "restart_interrupted"
+                    entry.last_resume_marked_at = _now()
                     count += 1
             if count:
                 self._save()
         return count
 
-    def reset_session(self, session_key: str) -> Optional[SessionEntry]:
+    def reset_session(self, session_key: str, display_name: Optional[str] = None) -> Optional[SessionEntry]:
         """Force reset a session, creating a new session ID."""
         db_end_session_id = None
         db_create_kwargs = None
@@ -1118,9 +1151,10 @@ class SessionStore:
                 created_at=now,
                 updated_at=now,
                 origin=old_entry.origin,
-                display_name=old_entry.display_name,
+                display_name=display_name if display_name is not None else old_entry.display_name,
                 platform=old_entry.platform,
                 chat_type=old_entry.chat_type,
+                is_fresh_reset=True,
             )
 
             self._entries[session_key] = new_entry
@@ -1248,8 +1282,14 @@ class SessionStore:
         
         # Also write legacy JSONL (keeps existing tooling working during transition)
         transcript_path = self.get_transcript_path(session_id)
-        with open(transcript_path, "a", encoding="utf-8") as f:
-            f.write(json.dumps(message, ensure_ascii=False) + "\n")
+        try:
+            with self._lock:
+                with open(transcript_path, "a", encoding="utf-8") as f:
+                    f.write(json.dumps(message, ensure_ascii=False) + "\n")
+        except OSError as e:
+            # Disk full / read-only fs / permission errors must not crash the
+            # message handler — the SQLite write above is the primary store.
+            logger.debug("Failed to write JSONL transcript for %s: %s", session_id, e)
     
     def rewrite_transcript(self, session_id: str, messages: List[Dict[str, Any]]) -> None:
         """Replace the entire transcript for a session with new messages.

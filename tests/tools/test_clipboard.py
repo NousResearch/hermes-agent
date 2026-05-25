@@ -39,6 +39,7 @@ from cli import _should_auto_attach_clipboard_image_on_paste
 
 FAKE_PNG = b"\x89PNG\r\n\x1a\n" + b"\x00" * 100
 FAKE_BMP = b"BM" + b"\x00" * 100
+FAKE_JPEG = b"\xff\xd8\xff\xe0" + b"\x00" * 100
 
 
 # ═════════════════════════════════════════════════════════════════════════
@@ -205,36 +206,53 @@ class TestMacosOsascript:
 
 class TestIsWsl:
     def setup_method(self):
-        # _is_wsl is now hermes_constants.is_wsl — reset its cache
+        # _is_wsl is hermes_constants.is_wsl; reset the function's own module
+        # globals so this stays stable even if hermes_constants was imported
+        # through a different module object earlier in a large xdist run.
         import hermes_constants
         hermes_constants._wsl_detected = None
+        _is_wsl.__globals__["_wsl_detected"] = None
+
+    def teardown_method(self):
+        # Reset again after the test so we don't leak a cached value
+        # (True/False) into whichever test the xdist worker runs next.
+        import hermes_constants
+        hermes_constants._wsl_detected = None
+        _is_wsl.__globals__["_wsl_detected"] = None
 
     def test_wsl2_detected(self):
         content = "Linux version 5.15.0 (microsoft-standard-WSL2)"
-        with patch("builtins.open", mock_open(read_data=content)):
+        with patch.dict(_is_wsl.__globals__, {"open": mock_open(read_data=content)}):
             assert _is_wsl() is True
 
     def test_wsl1_detected(self):
         content = "Linux version 4.4.0-microsoft-standard"
-        with patch("builtins.open", mock_open(read_data=content)):
+        with patch.dict(_is_wsl.__globals__, {"open": mock_open(read_data=content)}):
             assert _is_wsl() is True
 
     def test_regular_linux(self):
+        # GHA hosted runners are Azure VMs whose real /proc/version often
+        # contains "microsoft". Patching builtins.open with mock_open is
+        # supposed to intercept hermes_constants.is_wsl's `open` call,
+        # but if another test on the same xdist worker already cached
+        # _wsl_detected=True, the mock never runs because the function
+        # short-circuits on the cache. setup_method resets, so we just
+        # need to be sure the patched `open` is actually reached.
         content = "Linux version 6.14.0-37-generic (buildd@lcy02-amd64-049)"
-        with patch("builtins.open", mock_open(read_data=content)):
+        with patch.dict(_is_wsl.__globals__, {"open": mock_open(read_data=content)}):
             assert _is_wsl() is False
 
     def test_proc_version_missing(self):
-        with patch("builtins.open", side_effect=FileNotFoundError):
+        with patch.dict(_is_wsl.__globals__, {"open": MagicMock(side_effect=FileNotFoundError)}):
             assert _is_wsl() is False
 
     def test_result_is_cached(self):
-        import hermes_constants
         content = "Linux version 5.15.0 (microsoft-standard-WSL2)"
-        with patch("builtins.open", mock_open(read_data=content)) as m:
+        opener = mock_open(read_data=content)
+        with patch.dict(_is_wsl.__globals__, {"open": opener}):
             assert _is_wsl() is True
             assert _is_wsl() is True
-            m.assert_called_once()  # only read once
+            opener.assert_called_once()  # only read once
 
 
 # ── WSL (powershell.exe) ────────────────────────────────────────────────
@@ -376,9 +394,53 @@ class TestWaylandSave:
             if "stdout" in kw and hasattr(kw["stdout"], "write"):
                 kw["stdout"].write(FAKE_BMP)
             return MagicMock(returncode=0)
+
+        def fake_convert(path):
+            assert path == dest
+            path.write_bytes(FAKE_PNG)
+            return True
+
+        with patch("hermes_cli.clipboard.subprocess.run", side_effect=fake_run):
+            with patch("hermes_cli.clipboard._convert_to_png", side_effect=fake_convert):
+                assert _wayland_save(dest) is True
+
+    def test_jpeg_extraction_converts_to_real_png(self, tmp_path):
+        dest = tmp_path / "out.png"
+
+        def fake_run(cmd, **kw):
+            if "--list-types" in cmd:
+                return MagicMock(stdout="image/jpeg\ntext/plain\n", returncode=0)
+            if "stdout" in kw and hasattr(kw["stdout"], "write"):
+                kw["stdout"].write(FAKE_JPEG)
+            return MagicMock(returncode=0)
+
+        def fake_convert(path):
+            assert path == dest
+            path.write_bytes(FAKE_PNG)
+            return True
+
+        with patch("hermes_cli.clipboard.subprocess.run", side_effect=fake_run):
+            with patch("hermes_cli.clipboard._convert_to_png", side_effect=fake_convert) as mock_convert:
+                assert _wayland_save(dest) is True
+
+        mock_convert.assert_called_once_with(dest)
+        assert dest.read_bytes() == FAKE_PNG
+
+    def test_non_png_conversion_failure_cleans_up(self, tmp_path):
+        dest = tmp_path / "out.png"
+
+        def fake_run(cmd, **kw):
+            if "--list-types" in cmd:
+                return MagicMock(stdout="image/jpeg\n", returncode=0)
+            if "stdout" in kw and hasattr(kw["stdout"], "write"):
+                kw["stdout"].write(FAKE_JPEG)
+            return MagicMock(returncode=0)
+
         with patch("hermes_cli.clipboard.subprocess.run", side_effect=fake_run):
             with patch("hermes_cli.clipboard._convert_to_png", return_value=True):
-                assert _wayland_save(dest) is True
+                assert _wayland_save(dest) is False
+
+        assert not dest.exists()
 
     def test_no_image_types(self, tmp_path):
         dest = tmp_path / "out.png"

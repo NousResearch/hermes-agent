@@ -4,18 +4,26 @@ import { type MutableRefObject, useEffect, useMemo, useRef, useState } from 'rea
 
 import { setInputSelection } from '../app/inputSelectionStore.js'
 import { readClipboardText, writeClipboardText } from '../lib/clipboard.js'
-import { cursorLayout } from '../lib/inputMetrics.js'
-import { isActionMod, isMac, isMacActionFallback } from '../lib/platform.js'
+import { cursorLayout, offsetFromPosition } from '../lib/inputMetrics.js'
+import {
+  DEFAULT_VOICE_RECORD_KEY,
+  isActionMod,
+  isMac,
+  isMacActionFallback,
+  isVoiceToggleKey,
+  type ParsedVoiceRecordKey
+} from '../lib/platform.js'
 
 type InkExt = typeof Ink & {
   stringWidth: (s: string) => number
+  useCursorAdvance: () => (dx: number, dy?: number) => void
   useDeclaredCursor: (a: { line: number; column: number; active: boolean }) => (el: any) => void
   useStdout: () => { stdout?: NodeJS.WriteStream }
   useTerminalFocus: () => boolean
 }
 
 const ink = Ink as unknown as InkExt
-const { Box, Text, useStdin, useInput, useStdout, stringWidth, useDeclaredCursor, useTerminalFocus } = ink
+const { Box, Text, useStdin, useInput, useStdout, stringWidth, useCursorAdvance, useDeclaredCursor, useTerminalFocus } = ink
 
 const ESC = '\x1b'
 const INV = `${ESC}[7m`
@@ -170,56 +178,109 @@ export function lineNav(s: string, p: number, dir: -1 | 1): null | number {
   return snapPos(s, Math.min(nextBreak + 1 + col, lineEnd))
 }
 
-export function offsetFromPosition(value: string, row: number, col: number, cols: number) {
-  if (!value.length) {
-    return 0
+export { offsetFromPosition }
+
+const ASCII_PRINTABLE_RE = /^[\x20-\x7e]+$/
+
+/**
+ * Pure shape-only precondition for the fast-echo append path.
+ *
+ * The fast-echo path bypasses Ink's renderer and writes text directly to
+ * stdout, so the stored value, the rendered terminal cells, and the cursor
+ * column must all stay in sync without any layout work. We only allow it
+ * when the inserted text is pure printable ASCII so that:
+ *
+ *   - `text.length` matches the number of grapheme clusters (no combining
+ *     marks, no surrogate pairs, no precomposed CJK / Latin-Extended
+ *     letters that an IME might still be holding open as a composition),
+ *   - terminal width is exactly 1 cell per character (no East-Asian wide,
+ *     no zero-width, no ambiguous-width fonts),
+ *   - input methods (Vietnamese Telex, IME, dead-keys) cannot leak
+ *     intermediate composition bytes through the bypass before the final
+ *     commit arrives — those always go through the normal Ink render path
+ *     and stay layout-accurate (closes #5221, #7443, #17602/#17603).
+ *
+ * We deliberately do NOT just check `stringWidth(text) === text.length`:
+ * Vietnamese precomposed letters like "ề" (U+1EC1) report width 1 and
+ * length 1 but are still produced by IME compositions and must not be
+ * fast-echoed.
+ */
+export function canFastAppendShape(
+  current: string,
+  cursor: number,
+  text: string,
+  columns: number,
+  currentLineWidth: number
+): boolean {
+  if (cursor !== current.length) {
+    return false
   }
 
-  const targetRow = Math.max(0, Math.floor(row))
-  const targetCol = Math.max(0, Math.floor(col))
-  const w = Math.max(1, cols)
-
-  let line = 0
-  let column = 0
-  let lastOffset = 0
-
-  for (const { segment, index } of seg().segment(value)) {
-    lastOffset = index
-
-    if (segment === '\n') {
-      if (line === targetRow) {
-        return index
-      }
-
-      line++
-      column = 0
-
-      continue
-    }
-
-    const sw = Math.max(1, stringWidth(segment))
-
-    if (column + sw > w) {
-      if (line === targetRow) {
-        return index
-      }
-
-      line++
-      column = 0
-    }
-
-    if (line === targetRow && targetCol <= column + Math.max(0, sw - 1)) {
-      return index
-    }
-
-    column += sw
+  if (current.length === 0) {
+    return false
   }
 
-  if (targetRow >= line) {
-    return value.length
+  if (current.includes('\n')) {
+    return false
   }
 
-  return lastOffset
+  if (!ASCII_PRINTABLE_RE.test(text)) {
+    return false
+  }
+
+  return currentLineWidth + text.length < Math.max(1, columns)
+}
+
+/**
+ * Pure shape-only precondition for the fast-echo backspace path.
+ *
+ * Same reasoning as canFastAppendShape — only allow the direct
+ * "\b \b" stdout shortcut when the deleted grapheme is pure printable
+ * ASCII. Anything else (combining marks, IME compositions, wide chars,
+ * tabs, ANSI fragments) goes through the normal render path so Ink can
+ * recompute cell widths.
+ *
+ * When `columns` is supplied, ALSO rejects when the physical cursor
+ * sits at visual column 0 — i.e., right after a soft-wrap boundary.
+ * The "\b \b" sequence cannot move the cursor onto the previous visual
+ * row (terminals don't back-step across line wraps), so the physical
+ * cursor would stay put while the logical caret moves to the end of
+ * the previous visual line, desyncing both Ink's `displayCursor` model
+ * and the user-visible position.
+ *
+ * When `columns` is OMITTED, the wrap-boundary check is skipped
+ * entirely and the function reverts to the legacy non-wrap-aware
+ * contract — values like `'hello '` will return `true` even though
+ * they would be unsafe at a width of 6. Production callers (the
+ * composer's `canFastBackspace` helper) always pass `columns`;
+ * `columns` is optional only so unit tests of the pre-wrap shape
+ * contract can keep calling the helper without threading width
+ * through. Do NOT omit it from any new caller that relies on the
+ * wrap-boundary protection.
+ */
+export function canFastBackspaceShape(current: string, cursor: number, columns?: number): boolean {
+  if (cursor !== current.length) {
+    return false
+  }
+
+  if (cursor <= 0) {
+    return false
+  }
+
+  if (current.includes('\n')) {
+    return false
+  }
+
+  // If we know the wrap width, reject at the soft-wrap boundary: the
+  // caret's visual column is 0, so "\b \b" can't represent the physical
+  // move back to the previous visual line.
+  if (columns !== undefined && cursorLayout(current, cursor, columns).column === 0) {
+    return false
+  }
+
+  const removed = current.slice(prevPos(current, cursor), cursor)
+
+  return ASCII_PRINTABLE_RE.test(removed)
 }
 
 function renderWithCursor(value: string, cursor: number) {
@@ -289,6 +350,7 @@ export function TextInput({
   onSubmit,
   mask,
   mouseApiRef,
+  voiceRecordKey = DEFAULT_VOICE_RECORD_KEY,
   placeholder = '',
   focus = true
 }: TextInputProps) {
@@ -297,6 +359,7 @@ export function TextInput({
   const fwdDel = useFwdDelete(focus)
   const termFocus = useTerminalFocus()
   const { stdout } = useStdout()
+  const noteCursorAdvance = useCursorAdvance()
 
   const curRef = useRef(cur)
   const selRef = useRef<null | { end: number; start: number }>(null)
@@ -332,7 +395,19 @@ export function TextInput({
     [sel]
   )
 
-  const layout = useMemo(() => cursorLayout(display, cur, columns), [columns, cur, display])
+  // Read `curRef.current` (always up-to-date) rather than the `cur`
+  // React state. The fast-echo path defers the React `setCur` by 16ms
+  // to batch re-renders during heavy typing; if an unrelated render
+  // flushes this component during that window and we used the stale
+  // `cur` state here, the layout effect inside `useDeclaredCursor`
+  // would publish a stale cursor declaration and clobber the Ink-level
+  // bump from `noteCursorAdvance(...)`. `cur` is still in scope and
+  // referenced by setSel/setCur paths below, so React tracks the
+  // dependency naturally — we just don't use it as the source of truth
+  // for layout. The cursorLayout call is cheap (one wrap-text pass
+  // over a single-line string in the common case), so dropping useMemo
+  // is fine.
+  const layout = cursorLayout(display, curRef.current, columns)
 
   const boxRef = useDeclaredCursor({
     line: layout.line,
@@ -360,6 +435,10 @@ export function TextInput({
 
   const nativeCursor = focus && termFocus && !selected && !!stdout?.isTTY
 
+  // Placeholder text is just a hint, not a selection — render it dim
+  // without inverse styling. In a TTY the hardware cursor parks at column
+  // 0 and visually marks the input start. Non-TTY surfaces still need the
+  // synthetic inverse first-char to draw a cursor at all.
   const rendered = useMemo(() => {
     if (!focus) {
       return display || dim(placeholder)
@@ -482,26 +561,11 @@ export function TextInput({
 
   const canFastEchoBase = () => focus && termFocus && !selected && !mask && !!stdout?.isTTY
 
-  const canFastAppend = (current: string, cursor: number, text: string) => {
-    const sw = stringWidth(text)
+  const canFastAppend = (current: string, cursor: number, text: string) =>
+    canFastEchoBase() && canFastAppendShape(current, cursor, text, columns, lineWidthRef.current)
 
-    return (
-      canFastEchoBase() &&
-      cursor === current.length &&
-      current.length > 0 &&
-      !current.includes('\n') &&
-      sw === text.length &&
-      lineWidthRef.current + sw < Math.max(1, columns)
-    )
-  }
-
-  const canFastBackspace = (current: string, cursor: number) => {
-    if (!canFastEchoBase() || cursor !== current.length || cursor <= 0 || current.includes('\n')) {
-      return false
-    }
-
-    return stringWidth(current.slice(prevPos(current, cursor), cursor)) === 1
-  }
+  const canFastBackspace = (current: string, cursor: number) =>
+    canFastEchoBase() && canFastBackspaceShape(current, cursor, columns)
 
   const commit = (
     next: string,
@@ -711,6 +775,14 @@ export function TextInput({
     if (range && range.start === range.end) {
       selRef.current = null
       setSel(null)
+
+      return
+    }
+
+    const normalized = selRange()
+
+    if (isMac && normalized) {
+      void writeClipboardText(vRef.current.slice(normalized.start, normalized.end))
     }
   }
 
@@ -736,6 +808,15 @@ export function TextInput({
   useInput(
     (inp: string, k: Key, event: InputEvent) => {
       const eventRaw = event.keypress.raw
+
+      // Configured voice shortcut wins over composer-level defaults like
+      // paste/copy so users who bind voice to ctrl+v / alt+v / cmd+v
+      // actually get voice toggled instead of a paste (Copilot round-7
+      // follow-up on #19835). The pass-through predicate is a no-op for
+      // ordinary typing and plain paste when voice is unbound to 'v'.
+      if (shouldPassThroughToGlobalHandler(inp, k, voiceRecordKey)) {
+        return
+      }
 
       if (
         eventRaw === '\x1bv' ||
@@ -779,22 +860,6 @@ export function TextInput({
           return
         }
 
-        return
-      }
-
-      // Ctrl chords claimed by useInputHandlers — pass through instead of
-      // letting them fall into readline-style nav or a literal char insert.
-      // Ctrl+B = voice toggle, Ctrl+X = delete queued message while editing.
-      if (
-        (k.ctrl && inp === 'c') ||
-        (k.ctrl && inp === 'b') ||
-        (k.ctrl && inp === 'x') ||
-        k.tab ||
-        (k.shift && k.tab) ||
-        k.pageUp ||
-        k.pageDown ||
-        k.escape
-      ) {
         return
       }
 
@@ -885,6 +950,12 @@ export function TextInput({
           v = v.slice(0, t) + v.slice(c)
           c = t
           stdout!.write('\b \b')
+          // The "\b \b" sequence ends with the cursor one column to the
+          // LEFT of where Ink last parked it. Tell Ink so its `displayCursor`
+          // (and log-update's relative-move basis on the next frame) stays
+          // in sync — otherwise the cursor parks one cell to the right of
+          // the caret on the next unrelated re-render.
+          noteCursorAdvance(-1)
           commit(v, c, true, false, false, Math.max(0, lineWidthRef.current - 1))
 
           return
@@ -927,8 +998,8 @@ export function TextInput({
         } else {
           v = v.slice(0, c)
         }
-      } else if (inp.length > 0) {
-        const bracketed = inp.includes('[200~')
+      } else if (event.keypress.isPasted || inp.length > 0) {
+        const bracketed = event.keypress.isPasted || inp.includes('[200~')
         const text = inp.replace(BRACKET_PASTE, '').replace(/\r\n/g, '\n').replace(/\r/g, '\n')
 
         if (bracketed && emitPaste({ bracketed: true, cursor: c, text, value: v })) {
@@ -972,6 +1043,14 @@ export function TextInput({
 
             if (simpleAppend) {
               stdout!.write(text)
+              // ASCII-printable text advances the physical cursor by exactly
+              // text.length cells (canFastAppendShape rejects non-ASCII,
+              // wide chars, newlines). Notify Ink so the cached displayCursor
+              // / log-update relative-move basis advances with it; otherwise
+              // any unrelated re-render that happens before the 16ms
+              // setCur/setParent flush parks the cursor text.length cells
+              // too far right (#cursor-drift).
+              noteCursorAdvance(text.length)
               commit(v, c, true, false, false, lineWidthRef.current + stringWidth(text))
 
               return
@@ -1007,10 +1086,15 @@ export function TextInput({
           return
         }
 
-        // Right-click → route through the same path as Alt+V so the composer
-        // clipboard RPC (text or image) handles it.
+        // Right-click → copy active selection if any, otherwise paste.
         if (e.button === 2) {
           e.stopImmediatePropagation?.()
+          const decision = decideRightClickAction(vRef.current, selRange())
+          if (decision.action === 'copy') {
+            void writeClipboardText(decision.text)
+
+            return
+          }
           emitPaste({ cursor: curRef.current, hotkey: true, text: '', value: vRef.current })
 
           return
@@ -1047,7 +1131,7 @@ export function TextInput({
       ref={boxRef}
       width={columns}
     >
-      <Text wrap="wrap-char">{rendered}</Text>
+      <Text wrap="wrap">{rendered}</Text>
     </Box>
   )
 }
@@ -1079,7 +1163,50 @@ interface TextInputProps {
   onSubmit?: (v: string) => void
   placeholder?: string
   value: string
+  voiceRecordKey?: ParsedVoiceRecordKey
 }
+
+export type RightClickDecision =
+  | { action: 'copy'; text: string }
+  | { action: 'paste' }
+
+/**
+ * Decide what right-click should do on the composer:
+ *   - non-empty selection → copy that text to the clipboard
+ *   - no selection (or empty/collapsed range) → fall through to paste
+ *
+ * Mirrors terminal-native behavior (xterm, iTerm, gnome-terminal) where
+ * right-click pastes only when there is nothing selected to copy.
+ *
+ * Callers pass the already-normalized range from `selRange()` (start <= end,
+ * or null when collapsed), so this helper does not need to re-normalize.
+ */
+export function decideRightClickAction(
+  value: string,
+  range: { end: number; start: number } | null
+): RightClickDecision {
+  if (range && range.end > range.start) {
+    const text = value.slice(range.start, range.end)
+    if (text) {
+      return { action: 'copy', text }
+    }
+  }
+  return { action: 'paste' }
+}
+
+export const shouldPassThroughToGlobalHandler = (
+  input: string,
+  key: Key,
+  voiceRecordKey: ParsedVoiceRecordKey = DEFAULT_VOICE_RECORD_KEY
+): boolean =>
+  (key.ctrl && input === 'c') ||
+  (key.ctrl && input === 'x') ||
+  key.tab ||
+  (key.shift && key.tab) ||
+  key.pageUp ||
+  key.pageDown ||
+  key.escape ||
+  isVoiceToggleKey(key, input, voiceRecordKey)
 
 export interface TextInputMouseApi {
   dragAt: (row: number, col: number) => void

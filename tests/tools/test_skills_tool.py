@@ -932,7 +932,7 @@ class TestSkillViewPrerequisites:
 
     @pytest.mark.parametrize(
         "backend",
-        ["ssh", "daytona", "docker", "singularity", "modal"],
+        ["ssh", "daytona", "docker", "singularity", "modal", "vercel_sandbox"],
     )
     def test_remote_backend_becomes_available_after_local_secret_capture(
         self, tmp_path, monkeypatch, backend
@@ -1076,3 +1076,168 @@ Do the legacy thing.
         assert result["setup_needed"] is False
         assert result["missing_required_environment_variables"] == []
         assert result["readiness_status"] == "available"
+
+
+class TestSkillViewCollisionDetection:
+    """Regression tests for skill_view name collision handling.
+
+    When a skill name resolves to multiple paths across the local skills
+    dir and external_dirs, skill_view must refuse to guess. Silent
+    shadowing — where ``/skills`` shows the local version but
+    ``skill_view`` loads the external one — is the bug class this guards
+    against. Reproduces with `skills.external_dirs` registered in
+    config.yaml and a same-name skill nested under a category locally.
+
+    Adapted from a regression suite originally proposed by @polkn in PR
+    #6136 (which used local-first precedence). The collision-refusal
+    behavior preserves the same protection without silently picking a
+    side, and gives the user an actionable hint (use the categorized
+    path) to recover.
+    """
+
+    def _patch_dirs(self, local_dir, external_dirs):
+        """Patch SKILLS_DIR (module-level) and get_external_skills_dirs at source."""
+        return (
+            patch("tools.skills_tool.SKILLS_DIR", local_dir),
+            patch(
+                "agent.skill_utils.get_external_skills_dirs",
+                return_value=list(external_dirs),
+            ),
+        )
+
+    def test_nested_local_collides_with_top_level_external(self, tmp_path):
+        """The original bug scenario: nested local + top-level external,
+        same name. Now refuses with both paths surfaced."""
+        local_dir = tmp_path / "local"
+        external_dir = tmp_path / "external"
+        local_dir.mkdir()
+        external_dir.mkdir()
+
+        _make_skill(
+            local_dir,
+            "explore-codebase",
+            category="foundations/runtime",
+            body="LOCAL VERSION",
+        )
+        _make_skill(external_dir, "explore-codebase", body="EXTERNAL VERSION")
+
+        p1, p2 = self._patch_dirs(local_dir, [external_dir])
+        with p1, p2:
+            raw = skill_view("explore-codebase")
+
+        result = json.loads(raw)
+        assert result["success"] is False
+        assert "Ambiguous skill name 'explore-codebase'" in result["error"]
+        assert "matches" in result
+        assert len(result["matches"]) == 2
+        # Both paths surfaced
+        assert any("foundations/runtime" in p for p in result["matches"])
+        assert any("external" in p for p in result["matches"])
+        assert "hint" in result
+
+    def test_top_level_local_collides_with_external(self, tmp_path):
+        """Top-level local + top-level external with the same name also
+        refuses — same-name shadowing is ambiguous regardless of nesting."""
+        local_dir = tmp_path / "local"
+        external_dir = tmp_path / "external"
+        local_dir.mkdir()
+        external_dir.mkdir()
+
+        _make_skill(local_dir, "shared-name", body="LOCAL VERSION")
+        _make_skill(external_dir, "shared-name", body="EXTERNAL VERSION")
+
+        p1, p2 = self._patch_dirs(local_dir, [external_dir])
+        with p1, p2:
+            raw = skill_view("shared-name")
+
+        result = json.loads(raw)
+        assert result["success"] is False
+        assert "Ambiguous" in result["error"]
+        assert len(result["matches"]) == 2
+
+    def test_collision_resolvable_via_categorized_path(self, tmp_path):
+        """User can recover from a collision by passing the full
+        categorized path — the bare name is ambiguous, the path is not."""
+        local_dir = tmp_path / "local"
+        external_dir = tmp_path / "external"
+        local_dir.mkdir()
+        external_dir.mkdir()
+
+        _make_skill(
+            local_dir,
+            "explore-codebase",
+            category="foundations/runtime",
+            body="LOCAL VERSION",
+        )
+        _make_skill(external_dir, "explore-codebase", body="EXTERNAL VERSION")
+
+        p1, p2 = self._patch_dirs(local_dir, [external_dir])
+        with p1, p2:
+            raw = skill_view("foundations/runtime/explore-codebase")
+
+        result = json.loads(raw)
+        assert result["success"] is True
+        assert "LOCAL VERSION" in result["content"]
+
+    def test_external_skill_resolves_when_no_collision(self, tmp_path):
+        """External-only skills still resolve normally when there's no
+        local skill of the same name."""
+        local_dir = tmp_path / "local"
+        external_dir = tmp_path / "external"
+        local_dir.mkdir()
+        external_dir.mkdir()
+
+        _make_skill(external_dir, "external-only", body="EXTERNAL BODY")
+
+        p1, p2 = self._patch_dirs(local_dir, [external_dir])
+        with p1, p2:
+            raw = skill_view("external-only")
+
+        result = json.loads(raw)
+        assert result["success"] is True
+        assert "EXTERNAL BODY" in result["content"]
+
+    def test_two_externals_same_name_also_refuse(self, tmp_path):
+        """Collision detection is symmetric — two external dirs with
+        same-name skills also trigger the refusal."""
+        local_dir = tmp_path / "local"
+        ext_a = tmp_path / "ext_a"
+        ext_b = tmp_path / "ext_b"
+        local_dir.mkdir()
+        ext_a.mkdir()
+        ext_b.mkdir()
+
+        _make_skill(ext_a, "pr", body="EXT_A VERSION")
+        _make_skill(ext_b, "pr", body="EXT_B VERSION")
+
+        p1, p2 = self._patch_dirs(local_dir, [ext_a, ext_b])
+        with p1, p2:
+            raw = skill_view("pr")
+
+        result = json.loads(raw)
+        assert result["success"] is False
+        assert "Ambiguous" in result["error"]
+        assert len(result["matches"]) == 2
+
+    def test_local_only_skill_loads_normally(self, tmp_path):
+        """Sanity: a single local skill (no external collision) loads
+        without any error."""
+        local_dir = tmp_path / "local"
+        external_dir = tmp_path / "external"
+        local_dir.mkdir()
+        external_dir.mkdir()
+
+        _make_skill(
+            local_dir,
+            "my-skill",
+            category="foundations/runtime",
+            body="LOCAL BODY",
+        )
+
+        p1, p2 = self._patch_dirs(local_dir, [external_dir])
+        with p1, p2:
+            raw = skill_view("my-skill")
+
+        result = json.loads(raw)
+        assert result["success"] is True
+        assert "LOCAL BODY" in result["content"]

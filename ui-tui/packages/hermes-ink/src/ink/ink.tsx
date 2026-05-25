@@ -16,6 +16,7 @@ import { logError } from '../utils/log.js'
 
 import { colorize } from './colorize.js'
 import App from './components/App.js'
+import type { CursorAdvanceNotifier } from './components/CursorAdvanceContext.js'
 import type { CursorDeclaration, CursorDeclarationSetter } from './components/CursorDeclarationContext.js'
 import { FRAME_INTERVAL_MS } from './constants.js'
 import * as dom from './dom.js'
@@ -24,6 +25,7 @@ import { KeyboardEvent } from './events/keyboard-event.js'
 import { FocusManager } from './focus.js'
 import { emptyFrame, type Frame, type FrameEvent } from './frame.js'
 import { dispatchClick, dispatchHover, dispatchMouse } from './hit-test.js'
+import { applyHyperlinkHoverHighlight } from './hyperlinkHover.js'
 import instances from './instances.js'
 import { LogUpdate } from './log-update.js'
 import { nodeCache } from './node-cache.js'
@@ -63,6 +65,7 @@ import {
   hasSelection,
   moveFocus,
   selectionBounds,
+  selectionSignature,
   type SelectionState,
   selectLineAt,
   selectWordAt,
@@ -72,7 +75,13 @@ import {
   startSelection,
   updateSelection
 } from './selection.js'
-import { supportsExtendedKeys, SYNC_OUTPUT_SUPPORTED, type Terminal, writeDiffToTerminal } from './terminal.js'
+import {
+  needsAltScreenResizeScrollbackClear,
+  supportsExtendedKeys,
+  SYNC_OUTPUT_SUPPORTED,
+  type Terminal,
+  writeDiffToTerminal
+} from './terminal.js'
 import {
   CURSOR_HOME,
   cursorMove,
@@ -81,7 +90,8 @@ import {
   DISABLE_MODIFY_OTHER_KEYS,
   ENABLE_KITTY_KEYBOARD,
   ENABLE_MODIFY_OTHER_KEYS,
-  ERASE_SCREEN
+  ERASE_SCREEN,
+  ERASE_SCROLLBACK
 } from './termio/csi.js'
 import {
   DBP,
@@ -120,6 +130,11 @@ const ERASE_THEN_HOME_PATCH = Object.freeze({
   content: ERASE_SCREEN + CURSOR_HOME
 })
 
+const DEEP_ERASE_THEN_HOME_PATCH = Object.freeze({
+  type: 'stdout' as const,
+  content: ERASE_SCREEN + ERASE_SCROLLBACK + CURSOR_HOME
+})
+
 // Cached per-Ink-instance, invalidated on resize. frame.cursor.y for
 // alt-screen is always terminalRows - 1 (renderer.ts).
 function makeAltScreenParkPatch(terminalRows: number) {
@@ -137,6 +152,21 @@ export type Options = {
   patchConsole: boolean
   waitUntilExit?: () => Promise<void>
   onFrame?: (event: FrameEvent) => void
+  /**
+   * Called when a click lands on a cell with an OSC 8 hyperlink (or a
+   * plain-text URL detected by findPlainTextUrlAt). The host is responsible
+   * for opening the URL — `child_process.spawn` with an argv array (NOT
+   * shell-mode) to the platform's native opener: `open` on macOS,
+   * `xdg-open` on Linux/BSD, `explorer.exe` on Windows. Avoid
+   * `cmd.exe /c start` — `start` is a cmd builtin that reparses the URL
+   * through cmd's tokenizer (`&` / `|` / `^` / `<` / `>` get split or
+   * reinterpreted), which both breaks plain URLs with `&` in query
+   * strings and undermines any caller-side protocol allowlist. Without
+   * this wired up, links rendered by `<Link>` look underlined but do
+   * nothing on click in any terminal where mouse tracking is on
+   * (Cmd+click is consumed by the TUI, not Terminal.app).
+   */
+  onHyperlinkClick?: (url: string) => void
 }
 export default class Ink {
   private readonly log: LogUpdate
@@ -213,11 +243,25 @@ export default class Ink {
   // Fired alongside the terminal repaint whenever the selection mutates
   // so UI (e.g. footer hints) can react to selection appearing/clearing.
   private readonly selectionListeners = new Set<() => void>()
-  private selectionWasActive = false
+  private selectionVersion = 0
+  private lastSelectionSignature = ''
   // DOM nodes currently under the pointer (mode-1003 motion). Held here
   // so App.tsx's handleMouseEvent is stateless — dispatchHover diffs
   // against this set and mutates it in place.
   private readonly hoveredNodes = new Set<dom.DOMElement>()
+
+  // The OSC 8 hyperlink URL under the pointer, or undefined when the cursor
+  // isn't on a link. Updated from dispatchHover; consumed by the render-pass
+  // overlay (applyHyperlinkHoverHighlight) to invert link cells under the
+  // pointer. This is the closest the TUI can get to the desktop's
+  // cursor-changes-on-hover affordance — terminals don't expose cursor
+  // shape control to applications.
+  private hoveredHyperlink: string | undefined = undefined
+
+  // Last value of hoveredHyperlink that we actually painted. Compared in
+  // onRender so we can scope full-screen damage to enter/leave/change
+  // transitions, not every steady-state hover frame.
+  private lastRenderedHoveredHyperlink: string | undefined = undefined
   // Set by <AlternateScreen> via setAltScreenActive(). Controls the
   // renderer's cursor.y clamping (keeps cursor in-viewport to avoid
   // LF-induced scroll when screen.height === terminalRows) and gates
@@ -272,6 +316,14 @@ export default class Ink {
       this.restoreConsole = this.patchConsole()
       this.restoreStderr = this.patchStderr()
     }
+
+    // Host-supplied hyperlink-open callback. The mouse-event pipeline
+    // (App.tsx → onOpenHyperlink → Ink.openHyperlink → onHyperlinkClick)
+    // is fully wired internally; without this assignment the optional
+    // chain in openHyperlink() bails silently and clicks on URLs do
+    // nothing. The field stays writable so tests / debug overlays can
+    // still rebind it after construction.
+    this.onHyperlinkClick = options.onHyperlinkClick
 
     this.terminal = {
       stdout: options.stdout,
@@ -433,17 +485,22 @@ export default class Ink {
   private handleResize = () => {
     const cols = this.options.stdout.columns || 80
     const rows = this.options.stdout.rows || 24
+    const dimsChanged = cols !== this.terminalColumns || rows !== this.terminalRows
 
-    // Terminals often emit 2+ resize events for one user action (window
-    // settling). Same-dimension events are no-ops; skip to avoid redundant
-    // frame resets and renders.
-    if (cols === this.terminalColumns && rows === this.terminalRows) {
+    // Terminals often emit 2+ resize events for one user action
+    // (window settling). Same-dimension events are usually no-ops,
+    // but in alt-screen mode a same-dimension resize can signal a
+    // terminal host reflow or buffer restore that leaves stale glyphs
+    // on the physical screen — treat it as a repaint signal.
+    if (!dimsChanged && !(this.altScreenActive && !this.isPaused && this.options.stdout.isTTY)) {
       return
     }
 
-    this.terminalColumns = cols
-    this.terminalRows = rows
-    this.altScreenParkPatch = makeAltScreenParkPatch(this.terminalRows)
+    if (dimsChanged) {
+      this.terminalColumns = cols
+      this.terminalRows = rows
+      this.altScreenParkPatch = makeAltScreenParkPatch(this.terminalRows)
+    }
 
     // Pending throttled/drain work captured stale dims — cancel so
     // the upcoming microtask owns the next frame.
@@ -470,26 +527,7 @@ export default class Ink {
     // doesn't exit alt-screen. Do NOT write ERASE_SCREEN: render() below
     // can take ~80ms; erasing first leaves the screen blank that whole time.
     if (this.altScreenActive && !this.isPaused && this.options.stdout.isTTY) {
-      if (this.altScreenMouseTracking) {
-        this.options.stdout.write(ENABLE_MOUSE_TRACKING)
-      }
-
-      this.resetFramesForAltScreen()
-      this.needsEraseBeforePaint = true
-
-      // One last repaint after the resize burst settles closes any host-side
-      // reflow drift the normal diff path can't see.
-      this.resizeSettleTimer = setTimeout(() => {
-        this.resizeSettleTimer = null
-
-        if (!this.canAltScreenRepaint()) {
-          return
-        }
-
-        this.resetFramesForAltScreen()
-        this.needsEraseBeforePaint = true
-        this.render(this.currentNode!)
-      }, 160)
+      this.prepareAltScreenResizeRepaint()
     }
 
     // Already queued: later events in this burst updated dims/alt-screen
@@ -520,6 +558,36 @@ export default class Ink {
       !!this.options.stdout.isTTY &&
       this.currentNode !== null
     )
+  }
+
+  private prepareAltScreenResizeRepaint(): void {
+    // Clear any pending settle timer from a previous resize burst so
+    // rapid events don't stack redundant delayed repaints. (handleResize
+    // also clears this, but the defensive clear keeps the method safe
+    // if it's ever called from other code paths.)
+    if (this.resizeSettleTimer !== null) {
+      clearTimeout(this.resizeSettleTimer)
+      this.resizeSettleTimer = null
+    }
+
+    if (this.altScreenMouseTracking) {
+      this.options.stdout.write(ENABLE_MOUSE_TRACKING)
+    }
+
+    this.resetFramesForAltScreen()
+    this.needsEraseBeforePaint = true
+
+    this.resizeSettleTimer = setTimeout(() => {
+      this.resizeSettleTimer = null
+
+      if (!this.canAltScreenRepaint()) {
+        return
+      }
+
+      this.resetFramesForAltScreen()
+      this.needsEraseBeforePaint = true
+      this.render(this.currentNode!)
+    }, 160)
   }
 
   resolveExitPromise: () => void = () => {}
@@ -755,6 +823,26 @@ export default class Ink {
       // Position-highlight (below) overlays CURRENT (yellow) on top.
       hlActive = applySearchHighlight(frame.screen, this.searchHighlightQuery, this.stylePool)
 
+      // Hyperlink hover overlay: inverts every cell of the link currently
+      // under the pointer. Cheap-ish (linear scan of the visible buffer),
+      // only fires when hoveredHyperlink is set.
+      //
+      // hlActive controls full-screen damage (used by selection/search to
+      // make sure the previous frame's inverted cells get re-diffed when
+      // the highlight set changes). For hover, the *transition* is what
+      // needs the full-damage hammer — enter / leave / change-to-other-link.
+      // During steady-state hover the painted cells don't change and the
+      // ordinary per-cell diff handles the no-op. Folding the steady-state
+      // case into hlActive would burn full-screen diffs every frame while
+      // the pointer just sits on the link.
+      const hoverApplied = applyHyperlinkHoverHighlight(frame.screen, this.hoveredHyperlink, this.stylePool)
+      const hoverTransition = this.hoveredHyperlink !== this.lastRenderedHoveredHyperlink
+      this.lastRenderedHoveredHyperlink = this.hoveredHyperlink
+
+      if (hoverApplied && hoverTransition) {
+        hlActive = true
+      }
+
       // Position-based CURRENT: write yellow at positions[currentIdx] +
       // rowOffset. No scanning — positions came from a prior scan when
       // the message first mounted. Message-relative + rowOffset = screen.
@@ -848,8 +936,9 @@ export default class Ink {
     const optimized = optimize(diff)
     const optimizeMs = performance.now() - tOptimize
     const hasDiff = optimized.length > 0
+    const needsAltScreenErase = this.altScreenActive && this.needsEraseBeforePaint
 
-    if (this.altScreenActive && hasDiff) {
+    if (this.altScreenActive && (hasDiff || needsAltScreenErase)) {
       // Prepend CSI H to anchor the physical cursor to (0,0) so
       // log-update's relative moves compute from a known spot (self-healing
       // against out-of-band cursor drift, see the ALT_SCREEN_ANCHOR_CURSOR
@@ -861,17 +950,17 @@ export default class Ink {
       // position independently. Parking at bottom (not 0,0) keeps the guide
       // where the user's attention is.
       //
-      // After resize, prepend ERASE_SCREEN too. The diff only writes cells
+      // After resize, prepend a clear too. The diff only writes cells
       // that changed; cells where new=blank and prev-buffer=blank get skipped
       // — but the physical terminal still has stale content there (shorter
-      // lines at new width leave old-width text tails visible). ERASE inside
-      // BSU/ESU is atomic: old content stays visible until the whole
-      // erase+paint lands, then swaps in one go. Writing ERASE_SCREEN
-      // synchronously in handleResize would blank the screen for the ~80ms
-      // render() takes.
-      if (this.needsEraseBeforePaint) {
+      // lines at new width leave old-width text tails visible). Apple Terminal
+      // can also preserve alt-screen reflow artifacts in scrollback during
+      // resize, so it gets CSI 3J in this one recovery path. When BSU/ESU is
+      // supported, the clear+paint lands atomically; otherwise the final state
+      // is still healed even if the repaint is visible.
+      if (needsAltScreenErase) {
         this.needsEraseBeforePaint = false
-        optimized.unshift(ERASE_THEN_HOME_PATCH)
+        optimized.unshift(needsAltScreenResizeScrollbackClear() ? DEEP_ERASE_THEN_HOME_PATCH : ERASE_THEN_HOME_PATCH)
       } else {
         optimized.unshift(CURSOR_HOME_PATCH)
       }
@@ -991,7 +1080,7 @@ export default class Ink {
     this.lastDrainMs = 0
 
     // Only track drain on TTY. Piped/non-TTY stdout bypasses flow control.
-    const trackDrain = this.options.stdout.isTTY && hasDiff
+    const trackDrain = this.options.stdout.isTTY && optimized.length > 0
     const drainStart = trackDrain ? tWrite : 0
 
     if (trackDrain) {
@@ -1167,6 +1256,16 @@ export default class Ink {
 
     this.altScreenActive = active
     this.altScreenMouseTracking = active && mouseTracking
+
+    // Hover state is alt-screen-scoped: dispatchHover is gated on
+    // altScreenActive, so once we leave the alt screen there's no path to
+    // clear it on our own. Without this reset, remounting <AlternateScreen>
+    // would render a phantom hover highlight from the previous session
+    // until the next mouse-move event arrived. Clear both the live value
+    // and the last-rendered tracker so the next onRender sees no transition
+    // and no overlay.
+    this.hoveredHyperlink = undefined
+    this.lastRenderedHoveredHyperlink = undefined
 
     if (active) {
       this.resetFramesForAltScreen()
@@ -1661,9 +1760,16 @@ export default class Ink {
     return hasSelection(this.selection)
   }
 
+  getSelectionVersion(): number {
+    return this.selectionVersion
+  }
+
   /**
    * Subscribe to selection state changes. Fires whenever the selection
-   * is started, updated, cleared, or copied. Returns an unsubscribe fn.
+   * mutates — anchor/focus moves, drag updates, programmatic clears.
+   * Does NOT fire on `copySelectionNoClear()` (no mutation, no notify),
+   * which is why version-based subscribers don't risk re-entrant copies.
+   * Returns an unsubscribe fn.
    */
   subscribeToSelectionChange(cb: () => void): () => void {
     this.selectionListeners.add(cb)
@@ -1673,14 +1779,18 @@ export default class Ink {
   private notifySelectionChange(): void {
     this.scheduleRender()
 
-    const active = hasSelection(this.selection)
+    // Only bump version when the selection range actually mutated.
+    // Listeners still fire unconditionally — useHasSelection() snapshots
+    // through React, which dedupes via Object.is on the boolean value.
+    const sig = selectionSignature(this.selection)
 
-    if (active !== this.selectionWasActive) {
-      this.selectionWasActive = active
+    if (sig !== this.lastSelectionSignature) {
+      this.lastSelectionSignature = sig
+      this.selectionVersion += 1
+    }
 
-      for (const cb of this.selectionListeners) {
-        cb()
-      }
+    for (const cb of this.selectionListeners) {
+      cb()
     }
   }
 
@@ -1745,6 +1855,34 @@ export default class Ink {
     }
 
     dispatchHover(this.rootNode, col, row, this.hoveredNodes)
+
+    // Hover affordance for hyperlinks: read the cell at the pointer, store
+    // its URL (or clear when the pointer leaves a link), and request a
+    // repaint when the value changes. The render-pass overlay paints the
+    // highlight; we just track which URL is "hot".
+    //
+    // IMPORTANT: bypass getHyperlinkAt() here — its plain-text URL fallback
+    // (findPlainTextUrlAt) would return URLs for cells whose `cell.hyperlink`
+    // is undefined, which the overlay (applyHyperlinkHoverHighlight)
+    // wouldn't match. That'd burn re-renders without ever producing an
+    // affordance. Read the OSC 8 hyperlink directly off the cell so the
+    // hover state is a 1:1 fit for what the overlay can paint. The
+    // plain-text URL fallback still works for clicks; hover is a strictly
+    // weaker signal and OK to skip on plain-text URLs.
+    const screen = this.frontFrame.screen
+    const cell = cellAt(screen, col, row)
+    let next = cell?.hyperlink
+
+    // SpacerTail (second half of a wide-char / emoji glyph) stores the
+    // hyperlink on the head cell at col-1. Same logic as getHyperlinkAt.
+    if (!next && cell?.width === CellWidth.SpacerTail && col > 0) {
+      next = cellAt(screen, col - 1, row)?.hyperlink
+    }
+
+    if (next !== this.hoveredHyperlink) {
+      this.hoveredHyperlink = next
+      this.scheduleRender()
+    }
   }
   dispatchKeyboardEvent(parsedKey: ParsedKey): void {
     const target = this.focusManager.activeElement ?? this.rootNode
@@ -1789,8 +1927,13 @@ export default class Ink {
   }
 
   /**
-   * Optional callback fired when clicking an OSC 8 hyperlink in fullscreen
-   * mode. Set by FullscreenLayout via useLayoutEffect.
+   * Optional callback fired when clicking a cell that has an associated URL
+   * in fullscreen mode. `url` may be either an OSC 8 hyperlink (from a
+   * `<Link>` render or external OSC 8 escape that landed in the buffer) or
+   * a plain-text URL detected on the clicked row by findPlainTextUrlAt
+   * (App.tsx routes both into the same callback). Set from the host via
+   * the `onHyperlinkClick` Render/Ink option, or directly on the instance
+   * for late-bound test scenarios.
    */
   onHyperlinkClick: ((url: string) => void) | undefined
 
@@ -2077,6 +2220,85 @@ export default class Ink {
 
     this.cursorDeclaration = decl
   }
+  // Caller writes raw bytes to stdout that move the physical terminal
+  // cursor (e.g. TextInput's fast-echo bypass). Without this notification,
+  // Ink's `displayCursor` cache and log-update's prevFrame.cursor stay
+  // unchanged, so the next frame's relative cursor moves compute from a
+  // stale position and the hardware cursor parks `dx` cells offset from
+  // the actual caret. Visible symptom: extra whitespace between the just-
+  // typed character and the cursor block, more pronounced on long
+  // sessions where unrelated components re-render between fast-echo and
+  // the deferred composer re-render.
+  //
+  // If displayCursor was already tracked, just bump it. Otherwise seed it
+  // to (prevFrame.cursor + delta) so the next frame's preamble emits a
+  // (-dx, -dy) relative move that brings the cursor back to log-update's
+  // expected start position before the diff body runs.
+  //
+  // Public so tests can drive it directly without mounting App.
+  //
+  // Bumps BOTH `displayCursor` (used by log-update's relative-move
+  // preamble) AND, if non-null, `cursorDeclaration.relativeX/Y` (the
+  // target the cursor parks at after every frame). Advancing only one
+  // of the two would leave the other stale: e.g. if the deferred React
+  // `setCur` hasn't flushed yet, the next unrelated re-render would
+  // re-compute `target` from the stale declaration and park the
+  // hardware cursor back at the old caret column. We advance both so
+  // the fast-echo is invisible to intervening frames until React
+  // catches up.
+  noteExternalCursorAdvance: CursorAdvanceNotifier = (dx, dy = 0) => {
+    if (dx === 0 && dy === 0) {
+      return
+    }
+
+    // displayCursor / log-update relative-move basis only matters on
+    // main screen — alt-screen frames begin with absolute CSI H every
+    // frame so the next preamble naturally resets to (0,0). cursorDeclaration,
+    // however, IS still consulted on alt-screen — onRender's park branch
+    // emits an absolute CUP using `rect.x + decl.relativeX`, so a stale
+    // declaration in the deferred-setCur window would park the cursor
+    // at the pre-keystroke caret. We therefore skip ONLY the displayCursor
+    // half on alt-screen, not the declaration half.
+    if (!this.altScreenActive) {
+      if (this.displayCursor !== null) {
+        this.displayCursor = {
+          x: this.displayCursor.x + dx,
+          y: this.displayCursor.y + dy
+        }
+      } else {
+        // No prior parked position. Seed from frontFrame.cursor (where
+        // log-update parked the cursor at the end of the last frame) so
+        // the next preamble's relative move correctly cancels the
+        // external advance.
+        const baseX = this.frontFrame.cursor.x
+        const baseY = this.frontFrame.cursor.y
+        this.displayCursor = { x: baseX + dx, y: baseY + dy }
+      }
+    }
+
+    // Also advance the active cursor declaration if any. Without this,
+    // a TextInput that defers its React `cur` state update (16ms timer
+    // in textInput.tsx — perf optimization that batches re-renders
+    // during heavy typing) leaves `cursorDeclaration.relativeX` pointing
+    // at the pre-keystroke caret column. If an unrelated component
+    // re-renders before the deferred `setCur` flushes, the cursor-park
+    // branch at the end of onRender would move the hardware cursor back
+    // to that stale relativeX and visually undo the fast-echo's
+    // advance. Bumping relativeX here keeps the declared target in
+    // lock-step with the physical cursor until React state catches up.
+    // Applies to BOTH main-screen and alt-screen — the alt-screen park
+    // branch uses an absolute CUP to (rect.x + decl.relativeX), so a
+    // stale declaration there would still produce the wrong column.
+    const decl = this.cursorDeclaration
+
+    if (decl !== null) {
+      this.cursorDeclaration = {
+        node: decl.node,
+        relativeX: decl.relativeX + dx,
+        relativeY: decl.relativeY + dy
+      }
+    }
+  }
   render(node: ReactNode): void {
     this.currentNode = node
 
@@ -2086,6 +2308,7 @@ export default class Ink {
         exitOnCtrlC={this.options.exitOnCtrlC}
         getHyperlinkAt={this.getHyperlinkAt}
         onClickAt={this.dispatchClick}
+        onCursorAdvance={this.noteExternalCursorAdvance}
         onCursorDeclaration={this.setCursorDeclaration}
         onExit={this.unmount}
         onHoverAt={this.dispatchHover}

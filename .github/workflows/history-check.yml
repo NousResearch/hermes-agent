@@ -1,0 +1,58 @@
+name: History Check
+
+# Rejects PRs whose branch has no common ancestor with main.
+#
+# In May 2026 PR #25045 was merged from a branch that had been disconnected
+# from main's history (likely an accidental `git checkout --orphan` or
+# `.git/` re-init).  GitHub's merge UI does not refuse merges of unrelated
+# histories, so the PR landed cleanly with the intended one-file change —
+# but its parent-less root commit (413990c94) got grafted into main as a
+# second root, and ~1500 files' worth of `git blame` history collapsed
+# onto that single commit.
+#
+# This check catches the failure mode by requiring `git merge-base` between
+# the PR head and main to be non-empty.
+
+on:
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  check-common-ancestor:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
+        with:
+          fetch-depth: 0  # full history both sides for merge-base
+
+      - name: Reject PRs with no common ancestor on main
+        run: |
+          # `git merge-base` exits non-zero AND prints nothing when the two
+          # commits share no ancestor.  We check both conditions explicitly
+          # so the failure message is clear regardless of which signal fires
+          # first.
+          if ! BASE=$(git merge-base origin/main HEAD 2>/dev/null) || [ -z "$BASE" ]; then
+            echo ""
+            echo "::error::This PR has no common ancestor with main."
+            echo ""
+            echo "Your branch's history is disconnected from main.  Common causes:"
+            echo "  - the branch was created with 'git checkout --orphan'"
+            echo "  - '.git/' was re-initialized at some point during the work"
+            echo "  - the branch was force-pushed from an unrelated repository"
+            echo ""
+            echo "Merging an unrelated-history PR grafts a parent-less root commit"
+            echo "into main and collapses git blame for every file in that snapshot."
+            echo "Reference: PR #25045 caused this and re-rooted blame on ~1500"
+            echo "files to a single orphan commit."
+            echo ""
+            echo "To fix, rebase your changes onto current main:"
+            echo "  git fetch origin main"
+            echo "  git checkout -b fix-branch origin/main"
+            echo "  # re-apply your changes (cherry-pick, copy files, etc.)"
+            echo "  git push -f origin fix-branch"
+            exit 1
+          fi
+          echo "::notice::Common ancestor with main: $BASE"

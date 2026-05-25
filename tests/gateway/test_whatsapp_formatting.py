@@ -46,6 +46,10 @@ def _make_adapter():
     adapter._message_queue = asyncio.Queue()
     adapter._http_session = MagicMock()
     adapter._mention_patterns = []
+    adapter._dm_policy = "open"
+    adapter._allow_from = set()
+    adapter._group_policy = "open"
+    adapter._group_allow_from = set()
     return adapter
 
 
@@ -145,6 +149,21 @@ class TestMessageLimits:
         from gateway.platforms.whatsapp import WhatsAppAdapter
         assert WhatsAppAdapter.MAX_MESSAGE_LENGTH == 4096
 
+    def test_chunk_limit_reserves_default_self_chat_prefix(self, monkeypatch):
+        adapter = _make_adapter()
+        monkeypatch.delenv("WHATSAPP_REPLY_PREFIX", raising=False)
+        monkeypatch.setenv("WHATSAPP_MODE", "self-chat")
+
+        assert adapter._outgoing_chunk_limit() == (
+            adapter.MAX_MESSAGE_LENGTH - len(adapter.DEFAULT_REPLY_PREFIX)
+        )
+
+    def test_chunk_limit_does_not_reserve_prefix_in_bot_mode(self, monkeypatch):
+        adapter = _make_adapter()
+        monkeypatch.setenv("WHATSAPP_MODE", "bot")
+
+        assert adapter._outgoing_chunk_limit() == adapter.MAX_MESSAGE_LENGTH
+
 
 # ---------------------------------------------------------------------------
 # send() chunking tests
@@ -179,6 +198,24 @@ class TestSendChunking:
         assert result.success
         # Should have made multiple calls
         assert adapter._http_session.post.call_count > 1
+
+    @pytest.mark.asyncio
+    async def test_chunks_leave_room_for_bridge_prefix(self, monkeypatch):
+        adapter = _make_adapter()
+        monkeypatch.delenv("WHATSAPP_REPLY_PREFIX", raising=False)
+        monkeypatch.setenv("WHATSAPP_MODE", "self-chat")
+        resp = MagicMock(status=200)
+        resp.json = AsyncMock(return_value={"messageId": "msg1"})
+        adapter._http_session.post = MagicMock(return_value=_AsyncCM(resp))
+
+        long_msg = "a " * 3000
+
+        await adapter.send("chat1", long_msg)
+
+        for call in adapter._http_session.post.call_args_list:
+            payload = call.kwargs.get("json") or call[1].get("json")
+            final_text = adapter.DEFAULT_REPLY_PREFIX + payload["message"]
+            assert len(final_text) <= adapter.MAX_MESSAGE_LENGTH
 
     @pytest.mark.asyncio
     async def test_empty_message_no_send(self):
@@ -252,6 +289,41 @@ class TestSendChunking:
         result = await adapter.send("chat1", "hello")
         assert not result.success
         assert "Not connected" in result.error
+
+
+# ---------------------------------------------------------------------------
+# bridge event metadata
+# ---------------------------------------------------------------------------
+
+class TestBridgeEventMetadata:
+    """WhatsApp bridge metadata is preserved for downstream consumers."""
+
+    @pytest.mark.asyncio
+    async def test_quoted_reply_metadata_is_preserved_in_raw_message(self):
+        adapter = _make_adapter()
+        data = {
+            "messageId": "incoming-msg",
+            "chatId": "15551234567@s.whatsapp.net",
+            "senderId": "15551234567@s.whatsapp.net",
+            "senderName": "Tester",
+            "chatName": "Tester",
+            "isGroup": False,
+            "body": "approved",
+            "hasMedia": False,
+            "mediaUrls": [],
+            "quotedMessageId": "outbound-msg",
+            "quotedParticipant": "99999999999@s.whatsapp.net",
+            "quotedRemoteJid": "15551234567@s.whatsapp.net",
+            "hasQuotedMessage": True,
+        }
+
+        event = await adapter._build_message_event(data)
+
+        assert event is not None
+        assert event.raw_message["quotedMessageId"] == "outbound-msg"
+        assert event.raw_message["quotedParticipant"] == "99999999999@s.whatsapp.net"
+        assert event.raw_message["quotedRemoteJid"] == "15551234567@s.whatsapp.net"
+        assert event.raw_message["hasQuotedMessage"] is True
 
 
 # ---------------------------------------------------------------------------

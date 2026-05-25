@@ -264,6 +264,22 @@ For backward compatibility with older manifests, you can still type
 run the tests`. Free-form questions also work: `/hermes what's the
 weather?` is treated as a regular message.
 
+### Using commands inside threads (the `!cmd` prefix)
+
+Slack itself blocks native slash commands inside thread replies — try
+`/queue` in a thread and Slack responds with *"/queue is not supported
+in threads. Sorry!"* There is no app-side setting that re-enables them;
+Slack never delivers them to Hermes.
+
+As a workaround, Hermes recognises a leading `!` as an alternate
+command prefix that works in threads (and anywhere else). Type
+`!queue`, `!stop`, `!model gpt-5.4`, etc. as a regular thread reply —
+Hermes treats it identically to the slash form and replies in the same
+thread.
+
+Only the first token is checked against the known command list, so
+casual messages like `!nice work` pass through to the agent unchanged.
+
 ### Advanced: emit only the slash-commands array
 
 If you maintain your Slack manifest by hand and just want the slash
@@ -347,6 +363,14 @@ slack:
   # but you can set this explicitly for consistency with other platforms)
   require_mention: true
 
+  # Prevent thread auto-engagement: only reply to channel messages that
+  # contain an explicit @mention. With this OFF (default), Slack can
+  # "auto-engage" — remembering past mentions in a thread and following
+  # up on bot-message replies, and resuming active sessions without a
+  # fresh mention. With strict_mention ON, every new channel message
+  # must @mention the bot before Hermes will respond.
+  strict_mention: false
+
   # Custom mention patterns that trigger the bot
   # (in addition to the default @mention detection)
   mention_patterns:
@@ -356,6 +380,10 @@ slack:
   # Text prepended to every outgoing message
   reply_prefix: ""
 ```
+
+:::tip When to use `strict_mention`
+Set this to `true` in busy workspaces where Slack's default "the bot remembers this thread" behavior surprises users — for example, a long tech-support thread where the bot helped at the start and you'd rather it stay silent unless explicitly pinged again. DMs and active interactive sessions are unaffected.
+:::
 
 :::info
 Slack supports both patterns: `@mention` required to start a conversation by default, but you can opt specific channels out via `SLACK_FREE_RESPONSE_CHANNELS` (comma-separated channel IDs) or `slack.free_response_channels` in `config.yaml`. Once the bot has an active session in a thread, subsequent thread replies do not require a mention. In DMs the bot always responds without needing a mention.

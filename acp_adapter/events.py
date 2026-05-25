@@ -14,6 +14,7 @@ from collections import deque
 from typing import Any, Callable, Deque, Dict
 
 import acp
+from acp.schema import AgentPlanUpdate, PlanEntry
 
 from .tools import (
     build_tool_complete,
@@ -24,6 +25,65 @@ from .tools import (
 logger = logging.getLogger(__name__)
 
 
+def _json_loads_maybe_prefix(value: str) -> Any:
+    """Parse a JSON object even when Hermes appended a human hint after it."""
+    text = value.strip()
+    try:
+        return json.loads(text)
+    except Exception:
+        decoder = json.JSONDecoder()
+        data, _ = decoder.raw_decode(text)
+        return data
+
+
+def _build_plan_update_from_todo_result(result: Any) -> AgentPlanUpdate | None:
+    """Translate Hermes' todo tool result into ACP's native plan update.
+
+    Zed renders ``sessionUpdate: plan`` as its first-class task/todo panel. The
+    Hermes agent already maintains task state through the ``todo`` tool, so the
+    ACP adapter should expose that state natively instead of only as a generic
+    tool-call transcript block.
+    """
+    if not isinstance(result, str) or not result.strip():
+        return None
+
+    try:
+        data = _json_loads_maybe_prefix(result)
+    except Exception:
+        return None
+
+    if not isinstance(data, dict) or not isinstance(data.get("todos"), list):
+        return None
+
+    todos = data["todos"]
+    if not todos:
+        return AgentPlanUpdate(session_update="plan", entries=[])
+
+    status_map = {
+        "pending": "pending",
+        "in_progress": "in_progress",
+        "completed": "completed",
+        # ACP plans only support pending/in_progress/completed. Preserve
+        # cancelled tasks as terminal entries instead of dropping them and
+        # making the client's full-list replacement lose visible context.
+        "cancelled": "completed",
+    }
+    entries: list[PlanEntry] = []
+    for item in todos:
+        if not isinstance(item, dict):
+            continue
+        content = str(item.get("content") or item.get("id") or "").strip()
+        if not content:
+            continue
+        raw_status = str(item.get("status") or "pending").strip()
+        status = status_map.get(raw_status, "pending")
+        if raw_status == "cancelled":
+            content = f"[cancelled] {content}"
+        entries.append(PlanEntry(content=content, priority="medium", status=status))
+
+    return AgentPlanUpdate(session_update="plan", entries=entries)
+
+
 def _send_update(
     conn: acp.Client,
     session_id: str,
@@ -31,10 +91,17 @@ def _send_update(
     update: Any,
 ) -> None:
     """Fire-and-forget an ACP session update from a worker thread."""
+    from agent.async_utils import safe_schedule_threadsafe
+
+    future = safe_schedule_threadsafe(
+        conn.session_update(session_id, update),
+        loop,
+        logger=logger,
+        log_message="Failed to send ACP update",
+    )
+    if future is None:
+        return
     try:
-        future = asyncio.run_coroutine_threadsafe(
-            conn.session_update(session_id, update), loop
-        )
         future.result(timeout=5)
     except Exception:
         logger.debug("Failed to send ACP update", exc_info=True)
@@ -168,6 +235,10 @@ def make_step_cb(
                         snapshot=meta.get("snapshot"),
                     )
                     _send_update(conn, session_id, loop, update)
+                    if tool_name == "todo":
+                        plan_update = _build_plan_update_from_todo_result(result)
+                        if plan_update is not None:
+                            _send_update(conn, session_id, loop, plan_update)
                     if not queue:
                         tool_call_ids.pop(tool_name, None)
 

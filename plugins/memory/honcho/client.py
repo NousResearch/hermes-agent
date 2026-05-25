@@ -21,6 +21,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from hermes_constants import get_hermes_home
+from hermes_cli.profiles import _get_default_hermes_home
 from typing import Any, TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -73,7 +74,7 @@ def resolve_config_path() -> Path:
         return local_path
 
     # Default profile's config — host blocks accumulate here via setup/clone
-    default_path = Path.home() / ".hermes" / "honcho.json"
+    default_path = _get_default_hermes_home() / "honcho.json"
     if default_path != local_path and default_path.exists():
         return default_path
 
@@ -108,6 +109,17 @@ def _parse_context_tokens(host_val, root_val) -> int | None:
             except (ValueError, TypeError):
                 pass
     return None
+
+
+def _parse_int_config(host_val, root_val, default: int) -> int:
+    """Parse an integer config: host wins, then root, then default."""
+    for val in (host_val, root_val):
+        if val is not None:
+            try:
+                return int(val)
+            except (ValueError, TypeError):
+                pass
+    return default
 
 
 def _parse_dialectic_depth(host_val, root_val) -> int:
@@ -463,10 +475,10 @@ class HonchoClientConfig:
                 raw.get("dialecticDynamic"),
                 default=True,
             ),
-            dialectic_max_chars=int(
-                host_block.get("dialecticMaxChars")
-                or raw.get("dialecticMaxChars")
-                or 600
+            dialectic_max_chars=_parse_int_config(
+                host_block.get("dialecticMaxChars"),
+                raw.get("dialecticMaxChars"),
+                default=600,
             ),
             dialectic_depth=_parse_dialectic_depth(
                 host_block.get("dialecticDepth"),
@@ -487,15 +499,15 @@ class HonchoClientConfig:
                 or raw.get("reasoningLevelCap")
                 or "high"
             ),
-            message_max_chars=int(
-                host_block.get("messageMaxChars")
-                or raw.get("messageMaxChars")
-                or 25000
+            message_max_chars=_parse_int_config(
+                host_block.get("messageMaxChars"),
+                raw.get("messageMaxChars"),
+                default=25000,
             ),
-            dialectic_max_input_chars=int(
-                host_block.get("dialecticMaxInputChars")
-                or raw.get("dialecticMaxInputChars")
-                or 10000
+            dialectic_max_input_chars=_parse_int_config(
+                host_block.get("dialecticMaxInputChars"),
+                raw.get("dialecticMaxInputChars"),
+                default=10000,
             ),
             recall_mode=_normalize_recall_mode(
                 host_block.get("recallMode")
@@ -676,12 +688,28 @@ def get_honcho_client(config: HonchoClientConfig | None = None) -> Honcho:
             "For local instances, set HONCHO_BASE_URL instead."
         )
 
+    # Lazy-install the honcho SDK on demand. ensure() honors
+    # security.allow_lazy_installs (default true). On failure we surface
+    # the original ImportError-shape message so existing callers still get
+    # the "go run hermes honcho setup" hint they used to.
+    try:
+        from tools.lazy_deps import FeatureUnavailable, ensure as _lazy_ensure
+        _lazy_ensure("memory.honcho", prompt=False)
+    except ImportError:
+        # lazy_deps module missing — fall through to the raw import below.
+        pass
+    except Exception:
+        # FeatureUnavailable or unexpected error. Don't crash here; let the
+        # actual import attempt produce the canonical error message.
+        pass
+
     try:
         from honcho import Honcho
     except ImportError:
         raise ImportError(
             "honcho-ai is required for Honcho integration. "
-            "Install it with: pip install honcho-ai"
+            "Install it with: pip install honcho-ai  "
+            "(or run `hermes honcho setup` to configure)."
         )
 
     # Allow config.yaml honcho.base_url to override the SDK's environment

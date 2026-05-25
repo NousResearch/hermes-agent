@@ -316,6 +316,10 @@ class TurnController {
   }
 
   recordTodos(value: unknown) {
+    if (this.interrupted) {
+      return
+    }
+
     const todos = parseTodos(value)
 
     if (todos !== null) {
@@ -397,6 +401,10 @@ class TurnController {
   }
 
   pushTrail(line: string) {
+    if (this.interrupted) {
+      return
+    }
+
     patchTurnState(state => {
       if (state.turnTrail.at(-1) === line) {
         return state
@@ -423,7 +431,13 @@ class TurnController {
   recordMessageComplete(payload: { rendered?: string; reasoning?: string; text?: string }) {
     this.closeReasoningSegment()
 
-    const rawText = (payload.rendered ?? payload.text ?? this.bufRef).trimStart()
+    // Ink renders markdown via <Md>; the gateway's Rich-rendered ANSI
+    // (`payload.rendered`) is for terminals that can't.  Prioritising
+    // `rendered` here garbles output whenever a user opts into
+    // `display.final_response_markdown: render` because raw ANSI escapes
+    // pass through into the React tree.  Prefer raw text and fall back
+    // only when the gateway elected not to send any (#16391).
+    const rawText = (payload.text ?? payload.rendered ?? this.bufRef).trimStart()
     const split = splitReasoning(rawText)
     const finalText = finalTail(split.text, this.segmentMessages)
     const existingReasoning = this.reasoningText.trim() || String(payload.reasoning ?? '').trim()
@@ -508,15 +522,20 @@ class TurnController {
     return { finalMessages, finalText, wasInterrupted }
   }
 
-  recordMessageDelta({ rendered, text }: { rendered?: string; text?: string }) {
-    this.pruneTransient()
-    this.endReasoningPhase()
-
-    if (!text || this.interrupted) {
+  recordMessageDelta({ text }: { rendered?: string; text?: string }) {
+    if (this.interrupted || !text) {
       return
     }
 
-    this.bufRef = rendered ?? this.bufRef + text
+    this.pruneTransient()
+    this.endReasoningPhase()
+
+    // Always accumulate the raw text delta.  The pre-#16391 path replaced
+    // the entire buffer with `rendered` (an *incremental* Rich ANSI
+    // fragment), which on every tick discarded everything streamed so far
+    // — visible as overlapping coloured text and lost prose under
+    // `display.final_response_markdown: render`.
+    this.bufRef += text
 
     if (getUiState().streaming) {
       this.scheduleStreaming()
@@ -524,7 +543,7 @@ class TurnController {
   }
 
   recordReasoningAvailable(text: string) {
-    if (!getUiState().showReasoning) {
+    if (this.interrupted || !getUiState().showReasoning) {
       return
     }
 
@@ -542,7 +561,7 @@ class TurnController {
   }
 
   recordReasoningDelta(text: string) {
-    if (!getUiState().showReasoning) {
+    if (this.interrupted || !getUiState().showReasoning) {
       return
     }
 
@@ -570,6 +589,10 @@ class TurnController {
     duration?: number,
     todos?: unknown
   ) {
+    if (this.interrupted) {
+      return
+    }
+
     this.recordTodos(todos)
     const line = this.completeTool(toolId, fallbackName, error, summary, duration)
 
@@ -585,6 +608,10 @@ class TurnController {
     error?: string,
     duration?: number
   ) {
+    if (this.interrupted) {
+      return
+    }
+
     this.flushStreamingSegment()
     this.pushInlineDiffSegment(diffText, [this.completeTool(toolId, fallbackName, error, '', duration)])
     this.publishToolState()
@@ -626,6 +653,10 @@ class TurnController {
   }
 
   recordToolProgress(toolName: string, preview: string) {
+    if (this.interrupted) {
+      return
+    }
+
     const index = this.activeTools.findIndex(tool => tool.name === toolName)
 
     if (index < 0) {
@@ -645,6 +676,10 @@ class TurnController {
   }
 
   recordToolStart(toolId: string, name: string, context: string) {
+    if (this.interrupted) {
+      return
+    }
+
     this.flushStreamingSegment()
     this.closeReasoningSegment()
     this.pruneTransient()
@@ -716,6 +751,7 @@ class TurnController {
     this.reasoningSegmentIndex = null
     this.turnTools = []
     this.toolTokenAcc = 0
+    this.interrupted = false
     this.persistedToolLabels.clear()
     patchUiState({ busy: true })
     patchTurnState({ activity: [], outcome: '', subagents: [], toolTokens: 0, tools: [], turnTrail: [] })

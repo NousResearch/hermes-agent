@@ -10,37 +10,60 @@ on:
       - 'Dockerfile'
       - 'docker/**'
       - '.github/workflows/docker-publish.yml'
+      - '.github/actions/hermes-smoke-test/**'
+  pull_request:
+    branches: [main]
+    paths:
+      - '**/*.py'
+      - 'pyproject.toml'
+      - 'uv.lock'
+      - 'Dockerfile'
+      - 'docker/**'
+      - '.github/workflows/docker-publish.yml'
+      - '.github/actions/hermes-smoke-test/**'
   release:
     types: [published]
 
 permissions:
   contents: read
 
+# Concurrency: push/release runs are NEVER cancelled so every merge gets its
+# own SHA-tagged image; :main and :latest are guarded separately by the
+# move-main and move-latest jobs.  PR runs reuse a PR-scoped group with
+# cancel-in-progress: true so rapid pushes to the same PR collapse to the
+# latest commit.
 concurrency:
-  group: docker-${{ github.ref }}
-  cancel-in-progress: true
+  group: docker-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  IMAGE_NAME: nousresearch/hermes-agent
 
 jobs:
-  build-and-push:
+  # ---------------------------------------------------------------------------
+  # Build amd64 natively.  This job also runs the smoke tests (basic --help
+  # and the dashboard subcommand regression guard from #9153), because amd64
+  # is the only arch we can `load` into the local daemon on an amd64 runner.
+  # ---------------------------------------------------------------------------
+  build-amd64:
     # Only run on the upstream repository, not on forks
     if: github.repository == 'NousResearch/hermes-agent'
     runs-on: ubuntu-latest
-    timeout-minutes: 60
+    timeout-minutes: 45
+    outputs:
+      digest: ${{ steps.push.outputs.digest }}
     steps:
       - name: Checkout code
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
         with:
           submodules: recursive
 
-      - name: Set up QEMU
-        uses: docker/setup-qemu-action@c7c53464625b32c7a7e944ae62b3e17d2b600130  # v3
-
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f  # v3
 
-      # Build amd64 only so we can `load` the image for smoke testing.
-      # `load: true` cannot export a multi-arch manifest to the local daemon.
-      # The multi-arch build follows on push to main / release.
+      # Build once, load into the local daemon for smoke testing.  Cached
+      # to gha with a per-arch scope; the push step below reuses every
+      # layer from this build.
       - name: Build image (amd64, smoke test)
         uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8  # v6
         with:
@@ -48,24 +71,14 @@ jobs:
           file: Dockerfile
           load: true
           platforms: linux/amd64
-          tags: nousresearch/hermes-agent:test
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+          tags: ${{ env.IMAGE_NAME }}:test
+          cache-from: type=gha,scope=docker-amd64
+          cache-to: type=gha,mode=max,scope=docker-amd64
 
-      - name: Test image starts
-        run: |
-          # The image runs as the hermes user (UID 10000).  GitHub Actions
-          # creates /tmp/hermes-test root-owned by default, which hermes
-          # can't write to — chown it to match the in-container UID before
-          # bind-mounting.  Real users doing `docker run -v ~/.hermes:...`
-          # with their own UID hit the same issue and have their own
-          # remediations (HERMES_UID env var, or chown locally).
-          mkdir -p /tmp/hermes-test
-          sudo chown -R 10000:10000 /tmp/hermes-test
-          docker run --rm \
-            -v /tmp/hermes-test:/opt/data \
-            --entrypoint /opt/hermes/docker/entrypoint.sh \
-            nousresearch/hermes-agent:test --help
+      - name: Smoke test image
+        uses: ./.github/actions/hermes-smoke-test
+        with:
+          image: ${{ env.IMAGE_NAME }}:test
 
       - name: Log in to Docker Hub
         if: github.event_name == 'push' && github.ref == 'refs/heads/main' || github.event_name == 'release'
@@ -74,26 +87,448 @@ jobs:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
 
-      - name: Push multi-arch image (main branch)
-        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+      # Push amd64 by digest only (no tag).  The merge job assembles the
+      # tagged manifest list.  `push-by-digest=true` is docker's recommended
+      # pattern for multi-runner multi-platform builds.
+      #
+      # We apply the OCI revision label here (and again on arm64) because
+      # the move-main / move-latest jobs read it off the linux/amd64
+      # sub-manifest config of the floating tag to decide whether it's safe
+      # to advance.  The label must be on each per-arch image — manifest
+      # lists themselves don't carry image config labels.
+      - name: Push amd64 by digest
+        id: push
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main' || github.event_name == 'release'
         uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8  # v6
         with:
           context: .
           file: Dockerfile
-          push: true
-          platforms: linux/amd64,linux/arm64
-          tags: nousresearch/hermes-agent:latest
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+          platforms: linux/amd64
+          labels: |
+            org.opencontainers.image.revision=${{ github.sha }}
+          outputs: type=image,name=${{ env.IMAGE_NAME }},push-by-digest=true,name-canonical=true,push=true
+          cache-from: type=gha,scope=docker-amd64
+          cache-to: type=gha,mode=max,scope=docker-amd64
 
-      - name: Push multi-arch image (release)
-        if: github.event_name == 'release'
+      # Write the digest to a file and upload it as an artifact so the
+      # merge job can stitch both per-arch digests into a manifest list.
+      - name: Export digest
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main' || github.event_name == 'release'
+        run: |
+          mkdir -p /tmp/digests
+          digest="${{ steps.push.outputs.digest }}"
+          touch "/tmp/digests/${digest#sha256:}"
+
+      - name: Upload digest artifact
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main' || github.event_name == 'release'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4
+        with:
+          name: digest-amd64
+          path: /tmp/digests/*
+          if-no-files-found: error
+          retention-days: 1
+
+  # ---------------------------------------------------------------------------
+  # Build arm64 natively on GitHub's free arm64 runner.  This replaces the
+  # previous QEMU-emulated arm64 build, which was ~5-10x slower and shared
+  # a cache scope with amd64.  Matches the amd64 job's shape: build+load,
+  # smoke test, then on push/release push by digest.
+  # ---------------------------------------------------------------------------
+  build-arm64:
+    if: github.repository == 'NousResearch/hermes-agent'
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 45
+    outputs:
+      digest: ${{ steps.push.outputs.digest }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
+        with:
+          submodules: recursive
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f  # v3
+
+      # Build once, load into the local daemon for smoke testing.  Cached
+      # to gha with a per-arch scope; the push step below reuses every
+      # layer from this build.
+      - name: Build image (arm64, smoke test)
         uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8  # v6
         with:
           context: .
           file: Dockerfile
-          push: true
-          platforms: linux/amd64,linux/arm64
-          tags: nousresearch/hermes-agent:${{ github.event.release.tag_name }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+          load: true
+          platforms: linux/arm64
+          tags: ${{ env.IMAGE_NAME }}:test
+          cache-from: type=gha,scope=docker-arm64
+          cache-to: type=gha,mode=max,scope=docker-arm64
+
+      - name: Smoke test image
+        uses: ./.github/actions/hermes-smoke-test
+        with:
+          image: ${{ env.IMAGE_NAME }}:test
+
+      - name: Log in to Docker Hub
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main' || github.event_name == 'release'
+        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9  # v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Push arm64 by digest
+        id: push
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main' || github.event_name == 'release'
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8  # v6
+        with:
+          context: .
+          file: Dockerfile
+          platforms: linux/arm64
+          labels: |
+            org.opencontainers.image.revision=${{ github.sha }}
+          outputs: type=image,name=${{ env.IMAGE_NAME }},push-by-digest=true,name-canonical=true,push=true
+          cache-from: type=gha,scope=docker-arm64
+          cache-to: type=gha,mode=max,scope=docker-arm64
+
+      - name: Export digest
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main' || github.event_name == 'release'
+        run: |
+          mkdir -p /tmp/digests
+          digest="${{ steps.push.outputs.digest }}"
+          touch "/tmp/digests/${digest#sha256:}"
+
+      - name: Upload digest artifact
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main' || github.event_name == 'release'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4
+        with:
+          name: digest-arm64
+          path: /tmp/digests/*
+          if-no-files-found: error
+          retention-days: 1
+
+  # ---------------------------------------------------------------------------
+  # Stitch both per-arch digests into a single tagged multi-arch manifest.
+  # This is a registry-side operation — no building, no layer re-push —
+  # so it runs in ~30 seconds.  On main pushes it produces :sha-<sha>.
+  # On releases it produces :<release_tag_name>.
+  # ---------------------------------------------------------------------------
+  merge:
+    if: github.repository == 'NousResearch/hermes-agent' && (github.event_name == 'push' && github.ref == 'refs/heads/main' || github.event_name == 'release')
+    runs-on: ubuntu-latest
+    needs: [build-amd64, build-arm64]
+    timeout-minutes: 10
+    outputs:
+      pushed_sha_tag: ${{ steps.mark_pushed.outputs.pushed }}
+      pushed_release_tag: ${{ steps.mark_release_pushed.outputs.pushed }}
+      release_tag: ${{ steps.tag.outputs.tag }}
+    steps:
+      - name: Download digests
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093  # v4
+        with:
+          path: /tmp/digests
+          pattern: digest-*
+          merge-multiple: true
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f  # v3
+
+      - name: Log in to Docker Hub
+        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9  # v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      # Compute the tag for this run.  Main pushes use sha-<sha> (so every
+      # commit gets its own immutable tag); releases use the release tag name.
+      - name: Compute tag
+        id: tag
+        run: |
+          if [ "${{ github.event_name }}" = "release" ]; then
+            echo "tag=${{ github.event.release.tag_name }}" >> "$GITHUB_OUTPUT"
+          else
+            echo "tag=sha-${{ github.sha }}" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Create manifest list and push
+        working-directory: /tmp/digests
+        run: |
+          set -euo pipefail
+          # Build the arg array from each digest file (filename = the digest
+          # hex, with no sha256: prefix; empty file content, only the name
+          # matters).  Using an array avoids shellcheck SC2046 and keeps
+          # every digest a single argv token even under pathological names.
+          args=()
+          for digest_file in *; do
+            args+=("${IMAGE_NAME}@sha256:${digest_file}")
+          done
+          docker buildx imagetools create \
+            -t "${IMAGE_NAME}:${TAG}" \
+            "${args[@]}"
+        env:
+          IMAGE_NAME: ${{ env.IMAGE_NAME }}
+          TAG: ${{ steps.tag.outputs.tag }}
+
+      - name: Inspect image
+        run: |
+          docker buildx imagetools inspect "${IMAGE_NAME}:${TAG}"
+        env:
+          IMAGE_NAME: ${{ env.IMAGE_NAME }}
+          TAG: ${{ steps.tag.outputs.tag }}
+
+      # Signal to move-main that the SHA tag is live.  Only on main pushes;
+      # releases set pushed_release_tag instead.
+      - name: Mark SHA tag pushed
+        id: mark_pushed
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        run: echo "pushed=true" >> "$GITHUB_OUTPUT"
+
+      # Signal to move-latest that the release tag is live.
+      - name: Mark release tag pushed
+        id: mark_release_pushed
+        if: github.event_name == 'release'
+        run: echo "pushed=true" >> "$GITHUB_OUTPUT"
+
+  # ---------------------------------------------------------------------------
+  # Move :main to point at the SHA tag the merge job pushed.
+  #
+  # :main is the floating tag that tracks the tip of the main branch.  Every
+  # merge to main retags :main forward.  Users who want "latest dev build"
+  # pull :main; users who want stable releases pull :latest.
+  #
+  # The real serialization guarantee comes from the top-level concurrency
+  # group (`docker-${{ github.ref }}` with `cancel-in-progress: false`),
+  # which ensures at most one workflow run for this ref executes at a time.
+  # That means two move-main steps for the same ref cannot overlap.
+  #
+  # This job has its own concurrency group as defense-in-depth: if the
+  # top-level group is ever loosened, queued move-mains will run serially
+  # in arrival order, each one running the ancestor check below and either
+  # advancing :main or skipping.  `cancel-in-progress: false` matches the
+  # top-level setting — we don't want rapid pushes to cancel a queued
+  # move-main, because the ancestor check is the real safety mechanism
+  # and queueing is cheap (move-main is a ~30s registry op).
+  #
+  # Combined with the ancestor check, this means :main only ever moves
+  # forward in git history.
+  # ---------------------------------------------------------------------------
+  move-main:
+    if: |
+      github.repository == 'NousResearch/hermes-agent'
+      && github.event_name == 'push'
+      && github.ref == 'refs/heads/main'
+      && needs.merge.outputs.pushed_sha_tag == 'true'
+    needs: merge
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    concurrency:
+      group: docker-move-main-${{ github.ref }}
+      cancel-in-progress: false
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
+        with:
+          fetch-depth: 1000
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f  # v3
+
+      - name: Log in to Docker Hub
+        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9  # v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      # Read the git revision label off the current :main manifest, then
+      # use `git merge-base --is-ancestor` to check whether our commit is a
+      # descendant of it.  If :main doesn't exist yet, or its label is
+      # missing, we treat that as "safe to publish".  If another run already
+      # advanced :main past us (or diverged), we skip and leave it alone.
+      - name: Decide whether to move :main
+        id: main_check
+        run: |
+          set -euo pipefail
+          image=nousresearch/hermes-agent
+
+          # Pull the JSON for the linux/amd64 sub-manifest's config and extract
+          # the OCI revision label with jq — Go template field access can't
+          # handle dots in map keys, so using json+jq is the robust route.
+          image_json=$(
+            docker buildx imagetools inspect "${image}:main" \
+              --format '{{ json (index .Image "linux/amd64") }}' \
+              2>/dev/null || true
+          )
+
+          if [ -z "${image_json}" ]; then
+            echo "No existing :main (or inspect failed) — safe to publish."
+            echo "push_main=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          current_sha=$(
+            printf '%s' "${image_json}" \
+              | jq -r '.config.Labels."org.opencontainers.image.revision" // ""'
+          )
+
+          if [ -z "${current_sha}" ]; then
+            echo "Registry :main has no revision label — safe to publish."
+            echo "push_main=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          echo "Registry :main is at ${current_sha}"
+          echo "This run is at      ${GITHUB_SHA}"
+
+          if [ "${current_sha}" = "${GITHUB_SHA}" ]; then
+            echo ":main already points at our SHA — nothing to do."
+            echo "push_main=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          # Make sure we have the :main commit locally for merge-base.
+          if ! git cat-file -e "${current_sha}^{commit}" 2>/dev/null; then
+            git fetch --no-tags --prune origin \
+              "+refs/heads/main:refs/remotes/origin/main" \
+              || true
+          fi
+
+          if ! git cat-file -e "${current_sha}^{commit}" 2>/dev/null; then
+            echo "Registry :main points at an unknown commit (${current_sha}); refusing to overwrite."
+            echo "push_main=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          # Our SHA must be a descendant of the current :main to be safe.
+          if git merge-base --is-ancestor "${current_sha}" "${GITHUB_SHA}"; then
+            echo "Our commit is a descendant of :main — safe to advance."
+            echo "push_main=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "Another run advanced :main past us (or diverged) — leaving it alone."
+            echo "push_main=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      # Retag the already-pushed SHA manifest as :main.  This is a registry-
+      # side operation — no rebuild, no layer re-push — so it's quick and
+      # atomic per-tag.  The ancestor check above plus the cancel-in-progress
+      # concurrency on this job together guarantee we only ever move :main
+      # forward in git history.
+      - name: Move :main to this SHA
+        if: steps.main_check.outputs.push_main == 'true'
+        run: |
+          set -euo pipefail
+          image=nousresearch/hermes-agent
+          docker buildx imagetools create \
+            --tag "${image}:main" \
+            "${image}:sha-${GITHUB_SHA}"
+
+  # ---------------------------------------------------------------------------
+  # Move :latest to point at the release tag the merge job pushed.
+  #
+  # :latest is the floating tag that tracks the most recent stable release.
+  # Only `release: published` events advance it — never main pushes.
+  #
+  # We still run an ancestor check against the existing :latest so that a
+  # backport release on an older branch (e.g. patching v1.1.5 after v1.2.3
+  # is out) doesn't drag :latest backwards.  The check is the same shape as
+  # move-main: read the OCI revision label off the current :latest, look up
+  # that commit in git, and only advance if our release commit is a strict
+  # descendant.
+  # ---------------------------------------------------------------------------
+  move-latest:
+    if: |
+      github.repository == 'NousResearch/hermes-agent'
+      && github.event_name == 'release'
+      && needs.merge.outputs.pushed_release_tag == 'true'
+    needs: merge
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    concurrency:
+      group: docker-move-latest
+      cancel-in-progress: false
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
+        with:
+          fetch-depth: 1000
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f  # v3
+
+      - name: Log in to Docker Hub
+        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9  # v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Decide whether to move :latest
+        id: latest_check
+        run: |
+          set -euo pipefail
+          image=nousresearch/hermes-agent
+
+          image_json=$(
+            docker buildx imagetools inspect "${image}:latest" \
+              --format '{{ json (index .Image "linux/amd64") }}' \
+              2>/dev/null || true
+          )
+
+          if [ -z "${image_json}" ]; then
+            echo "No existing :latest (or inspect failed) — safe to publish."
+            echo "push_latest=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          current_sha=$(
+            printf '%s' "${image_json}" \
+              | jq -r '.config.Labels."org.opencontainers.image.revision" // ""'
+          )
+
+          if [ -z "${current_sha}" ]; then
+            echo "Registry :latest has no revision label — safe to publish."
+            echo "push_latest=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          echo "Registry :latest is at ${current_sha}"
+          echo "This release is at  ${GITHUB_SHA}"
+
+          if [ "${current_sha}" = "${GITHUB_SHA}" ]; then
+            echo ":latest already points at our SHA — nothing to do."
+            echo "push_latest=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          # Make sure we have the :latest commit locally for merge-base.
+          # Releases can be cut from any branch, so fetch broadly.
+          if ! git cat-file -e "${current_sha}^{commit}" 2>/dev/null; then
+            git fetch --no-tags --prune origin \
+              "+refs/heads/main:refs/remotes/origin/main" \
+              || true
+          fi
+
+          if ! git cat-file -e "${current_sha}^{commit}" 2>/dev/null; then
+            echo "Registry :latest points at an unknown commit (${current_sha}); refusing to overwrite."
+            echo "push_latest=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          # Our release SHA must be a descendant of the current :latest.
+          # Backport releases on older branches won't satisfy this and will
+          # be left alone — :latest stays on the newer release.
+          if git merge-base --is-ancestor "${current_sha}" "${GITHUB_SHA}"; then
+            echo "Our release commit is a descendant of :latest — safe to advance."
+            echo "push_latest=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "Existing :latest is newer than this release (likely a backport) — leaving it alone."
+            echo "push_latest=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      # Retag the already-pushed release manifest as :latest.
+      - name: Move :latest to this release tag
+        if: steps.latest_check.outputs.push_latest == 'true'
+        env:
+          RELEASE_TAG: ${{ needs.merge.outputs.release_tag }}
+        run: |
+          set -euo pipefail
+          image=nousresearch/hermes-agent
+          docker buildx imagetools create \
+            --tag "${image}:latest" \
+            "${image}:${RELEASE_TAG}"

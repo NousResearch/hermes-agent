@@ -1,11 +1,19 @@
+import { STARTUP_IMAGE, STARTUP_QUERY } from '../config/env.js'
 import { STREAM_BATCH_MS } from '../config/timing.js'
-import { buildSetupRequiredSections, SETUP_REQUIRED_TITLE } from '../content/setup.js'
-import type { CommandsCatalogResponse, DelegationStatusResponse, GatewayEvent, GatewaySkin } from '../gatewayTypes.js'
+import { SETUP_REQUIRED_TITLE, buildSetupRequiredSections } from '../content/setup.js'
+import type {
+  CommandsCatalogResponse,
+  ConfigFullResponse,
+  DelegationStatusResponse,
+  GatewayEvent,
+  GatewaySkin,
+  SessionMostRecentResponse
+} from '../gatewayTypes.js'
 import { rpcErrorMessage } from '../lib/rpc.js'
 import { topLevelSubagents } from '../lib/subagentTree.js'
 import { formatToolCall, stripAnsi } from '../lib/text.js'
 import { fromSkin } from '../theme.js'
-import type { Msg, SubagentProgress } from '../types.js'
+import type { Msg, SubagentProgress, SubagentStatus } from '../types.js'
 
 import { applyDelegationStatus, getDelegationState } from './delegationStore.js'
 import type { GatewayEventHandlerContext } from './interfaces.js'
@@ -46,6 +54,26 @@ const pushThinking = pushUnique(6)
 const pushNote = pushUnique(6)
 const pushTool = pushUnique(8)
 
+const KNOWN_SUBAGENT_STATUSES = new Set<SubagentStatus>([
+  'completed',
+  'error',
+  'failed',
+  'interrupted',
+  'queued',
+  'running',
+  'timeout'
+])
+
+const normalizeSubagentStatus = (status: unknown, fallback: SubagentStatus): SubagentStatus => {
+  if (typeof status !== 'string') {
+    return fallback
+  }
+
+  const normalized = status.toLowerCase() as SubagentStatus
+
+  return KNOWN_SUBAGENT_STATUSES.has(normalized) ? normalized : fallback
+}
+
 export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev: GatewayEvent) => void {
   const { rpc } = ctx.gateway
   const { STARTUP_RESUME_ID, newSession, resumeById, setCatalog } = ctx.session
@@ -57,6 +85,7 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
 
   let pendingThinkingStatus = ''
   let thinkingStatusTimer: null | ReturnType<typeof setTimeout> = null
+  let startupPromptSubmitted = false
 
   // Inject the disk-save callback into turnController so recordMessageComplete
   // can fire-and-forget a persist without having to plumb a gateway ref around.
@@ -139,10 +168,41 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
     }, ms)
   }
 
+  const scheduleStartupPrompt = () => {
+    if (startupPromptSubmitted || (!STARTUP_QUERY && !STARTUP_IMAGE)) {
+      return
+    }
+
+    startupPromptSubmitted = true
+    setTimeout(async () => {
+      let sid = getUiState().sid
+
+      for (let i = 0; !sid && i < 40; i += 1) {
+        await new Promise(resolve => setTimeout(resolve, 100))
+        sid = getUiState().sid
+      }
+
+      if (!sid) {
+        return sys('startup query skipped: no active session')
+      }
+
+      if (STARTUP_IMAGE) {
+        try {
+          await rpc('image.attach', { path: STARTUP_IMAGE, session_id: sid })
+        } catch (e) {
+          sys(`startup image attach failed: ${rpcErrorMessage(e)}`)
+        }
+      }
+
+      submitRef.current(STARTUP_QUERY || 'What do you see in this image?')
+    }, 0)
+  }
+
   // Terminal statuses are never overwritten by late-arriving live events —
   // otherwise a stale `subagent.start` / `spawn_requested` can clobber a
-  // `failed` or `interrupted` terminal state (Copilot review #14045).
-  const isTerminalStatus = (s: SubagentProgress['status']) => s === 'completed' || s === 'failed' || s === 'interrupted'
+  // terminal state from complete (failed/interrupted/timeout/error).
+  const isTerminalStatus = (s: SubagentProgress['status']) =>
+    s === 'completed' || s === 'error' || s === 'failed' || s === 'interrupted' || s === 'timeout'
 
   const keepTerminalElseRunning = (s: SubagentProgress['status']) => (isTerminalStatus(s) ? s : 'running')
 
@@ -171,15 +231,51 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
       })
       .catch((e: unknown) => turnController.pushActivity(`command catalog unavailable: ${rpcErrorMessage(e)}`, 'info'))
 
-    if (!STARTUP_RESUME_ID) {
-      patchUiState({ status: 'forging session…' })
-      newSession()
+    if (STARTUP_RESUME_ID) {
+      patchUiState({ status: 'resuming…' })
+      resumeById(STARTUP_RESUME_ID)
+      scheduleStartupPrompt()
 
       return
     }
 
-    patchUiState({ status: 'resuming…' })
-    resumeById(STARTUP_RESUME_ID)
+    // Opt-in: when `display.tui_auto_resume_recent` is true, look up
+    // the most recent human-facing session and resume it instead of
+    // forging a brand-new one.  Mirrors classic CLI's `hermes -c` /
+    // `hermes --tui` muscle memory and addresses the audit's "session
+    // unrecoverable after disconnection" gap.  Default off so existing
+    // users aren't surprised.
+    rpc<ConfigFullResponse>('config.get', { key: 'full' })
+      .then(cfg => {
+        if (!cfg?.config?.display?.tui_auto_resume_recent) {
+          patchUiState({ status: 'forging session…' })
+          newSession()
+          scheduleStartupPrompt()
+
+          return
+        }
+
+        return rpc<SessionMostRecentResponse>('session.most_recent', {}).then(r => {
+          const target = r?.session_id
+
+          if (target) {
+            patchUiState({ status: 'resuming most recent…' })
+            resumeById(target)
+            scheduleStartupPrompt()
+
+            return
+          }
+
+          patchUiState({ status: 'forging session…' })
+          newSession()
+          scheduleStartupPrompt()
+        })
+      })
+      .catch(() => {
+        patchUiState({ status: 'forging session…' })
+        newSession()
+        scheduleStartupPrompt()
+      })
   }
 
   return (ev: GatewayEvent) => {
@@ -244,6 +340,16 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
 
         setStatus(p.text)
 
+        if (p.kind === 'compressing') {
+          sys(p.text)
+          return
+        }
+
+        if (p.kind === 'goal') {
+          sys(p.text)
+          return
+        }
+
         if (!p.kind || p.kind === 'status') {
           return
         }
@@ -265,6 +371,16 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
         const line = String(ev.payload.line).slice(0, 120)
 
         turnController.pushActivity(line, 'info')
+
+        return
+      }
+
+      case 'browser.progress': {
+        const message = String(ev.payload?.message ?? '').trim()
+
+        if (message) {
+          sys(message)
+        }
 
         return
       }
@@ -321,11 +437,30 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
       }
 
       case 'gateway.start_timeout': {
-        const { cwd, python } = ev.payload ?? {}
+        const { cwd, python, stderr_tail: stderrTail } = ev.payload ?? {}
         const trace = python || cwd ? ` · ${String(python || '')} ${String(cwd || '')}`.trim() : ''
 
         setStatus('gateway startup timeout')
         turnController.pushActivity(`gateway startup timed out${trace} · /logs to inspect`, 'error')
+
+        // Surface the most useful stderr lines inline so users can tell
+        // "wrong python", "missing dep", and "config parse failure"
+        // apart without leaving the TUI.  Filter blank rows BEFORE
+        // taking the last N so trailing empty lines in the buffer
+        // don't crowd out actual content; truncate to match the
+        // 120-char clip used for `gateway.stderr` activity entries.
+        const STDERR_LINE_CAP = 120
+        const STDERR_LINES_MAX = 8
+
+        const tailLines = (stderrTail ?? '')
+          .split('\n')
+          .map(l => l.trim())
+          .filter(Boolean)
+          .slice(-STDERR_LINES_MAX)
+
+        for (const line of tailLines) {
+          turnController.pushActivity(line.slice(0, STDERR_LINE_CAP), 'error')
+        }
 
         return
       }
@@ -438,6 +573,20 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
 
         return
 
+      case 'review.summary': {
+        // Self-improvement background review emitted a persistent summary
+        // of what it saved to memory/skills. Surface it as a system line
+        // in the transcript so it never gets lost to a transient status
+        // flash. Python-side already formats it as "💾 Self-improvement
+        // review: …".
+        const text = String(ev.payload?.text ?? '').trim()
+        if (text) {
+          sys(text)
+        }
+
+        return
+      }
+
       case 'subagent.spawn_requested':
         // Child built but not yet running (waiting on ThreadPoolExecutor slot).
         // Preserve completed state if a later event races in before this one.
@@ -520,7 +669,7 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
           ev.payload,
           c => ({
             durationSeconds: ev.payload.duration_seconds ?? c.durationSeconds,
-            status: ev.payload.status ?? 'completed',
+            status: normalizeSubagentStatus(ev.payload.status, 'completed'),
             summary: ev.payload.summary || ev.payload.text || c.summary
           }),
           { createIfMissing: false }

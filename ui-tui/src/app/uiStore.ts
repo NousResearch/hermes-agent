@@ -1,17 +1,19 @@
-import { atom } from 'nanostores'
+import { atom, computed } from 'nanostores'
 
 import { MOUSE_TRACKING } from '../config/env.js'
 import { ZERO } from '../domain/usage.js'
 import { DEFAULT_THEME } from '../theme.js'
 
-import type { UiState } from './interfaces.js'
+import { DEFAULT_INDICATOR_STYLE, type UiState } from './interfaces.js'
 
 const buildUiState = (): UiState => ({
   bgTasks: new Set(),
   busy: false,
+  busyInputMode: 'queue',
   compact: false,
   detailsMode: 'collapsed',
   detailsModeCommandOverride: false,
+  indicatorStyle: DEFAULT_INDICATOR_STYLE,
   info: null,
   inlineDiffs: true,
   mouseTracking: MOUSE_TRACKING,
@@ -27,6 +29,9 @@ const buildUiState = (): UiState => ({
 })
 
 export const $uiState = atom<UiState>(buildUiState())
+
+export const $uiTheme = computed($uiState, state => state.theme)
+export const $uiSessionId = computed($uiState, state => state.sid)
 
 export const getUiState = () => $uiState.get()
 

@@ -131,6 +131,12 @@ class TestResolveChildPython(unittest.TestCase):
 
     def test_project_with_virtualenv_picks_venv_python(self):
         """Project mode + VIRTUAL_ENV pointing at a real venv → that python."""
+        if sys.platform == "win32":
+            pytest.skip(
+                "Creates symlinks and assumes POSIX venv layout (bin/python). "
+                "Windows venvs use Scripts/python.exe and symlink creation "
+                "requires elevated privileges (WinError 1314)."
+            )
         import tempfile, pathlib
         with tempfile.TemporaryDirectory() as td:
             fake_venv = pathlib.Path(td)
@@ -154,6 +160,12 @@ class TestResolveChildPython(unittest.TestCase):
 
     def test_project_prefers_virtualenv_over_conda(self):
         """If both VIRTUAL_ENV and CONDA_PREFIX are set, VIRTUAL_ENV wins."""
+        if sys.platform == "win32":
+            pytest.skip(
+                "Creates symlinks and assumes POSIX venv layout (bin/python). "
+                "Windows venvs use Scripts/python.exe and symlink creation "
+                "requires elevated privileges (WinError 1314)."
+            )
         import tempfile, pathlib
         with tempfile.TemporaryDirectory() as ve_td, tempfile.TemporaryDirectory() as conda_td:
             ve = pathlib.Path(ve_td)
@@ -257,7 +269,15 @@ class TestModeAwareSchema(unittest.TestCase):
 # Integration: what actually happens when execute_code runs per mode
 # ---------------------------------------------------------------------------
 
-@pytest.mark.skipif(sys.platform == "win32", reason="execute_code is POSIX-only")
+@pytest.mark.skipif(
+    sys.platform == "win32",
+    reason=(
+        "Assumes POSIX venv layout (bin/python) and symlink creation "
+        "privileges.  execute_code itself works on Windows — these "
+        "integration tests just haven't been ported to the Scripts/"
+        "python.exe layout yet."
+    ),
+)
 class TestExecuteCodeModeIntegration(unittest.TestCase):
     """End-to-end: verify the subprocess actually runs where we expect."""
 
@@ -351,7 +371,15 @@ class TestExecuteCodeModeIntegration(unittest.TestCase):
 # changes CWD + interpreter, not the security posture.
 # ---------------------------------------------------------------------------
 
-@pytest.mark.skipif(sys.platform == "win32", reason="execute_code is POSIX-only")
+@pytest.mark.skipif(
+    sys.platform == "win32",
+    reason=(
+        "Assumes POSIX venv layout (bin/python) and symlink creation "
+        "privileges.  execute_code itself works on Windows — these "
+        "integration tests just haven't been ported to the Scripts/"
+        "python.exe layout yet."
+    ),
+)
 class TestSecurityInvariantsAcrossModes(unittest.TestCase):
 
     def _run(self, code, mode):

@@ -434,6 +434,37 @@ class TestSendVoiceReply:
         assert call_args.kwargs.get("chat_id") == "123"
 
     @pytest.mark.asyncio
+    async def test_auto_voice_reply_uses_thread_metadata_helper(self, runner):
+        from gateway.config import Platform
+
+        mock_adapter = AsyncMock()
+        mock_adapter.send_voice = AsyncMock()
+        event = _make_event()
+        event.source.platform = Platform.TELEGRAM
+        event.source.chat_type = "dm"
+        event.source.thread_id = "20197"
+        event.message_id = "462"
+        runner.adapters[event.source.platform] = mock_adapter
+
+        tts_result = json.dumps({"success": True, "file_path": "/tmp/test.ogg"})
+
+        with patch("tools.tts_tool.text_to_speech_tool", return_value=tts_result), \
+             patch("tools.tts_tool._strip_markdown_for_tts", side_effect=lambda t: t), \
+             patch("os.path.isfile", return_value=True), \
+             patch("os.unlink"), \
+             patch("os.makedirs"):
+            await runner._send_voice_reply(event, "Hello world")
+
+        mock_adapter.send_voice.assert_called_once()
+        call_kwargs = mock_adapter.send_voice.call_args.kwargs
+        assert call_kwargs["reply_to"] == "462"
+        assert call_kwargs["metadata"] == {
+            "thread_id": "20197",
+            "telegram_dm_topic_reply_fallback": True,
+            "telegram_reply_to_message_id": "462",
+        }
+
+    @pytest.mark.asyncio
     async def test_empty_text_after_strip_skips(self, runner):
         event = _make_event()
 
@@ -953,6 +984,46 @@ class TestVoiceChannelCommands:
         msg = mock_channel.send.call_args[0][0]
         assert "Test transcript" in msg
         assert "42" in msg  # user_id in mention
+
+    @pytest.mark.asyncio
+    async def test_input_suppresses_duplicate_transcript(self, runner):
+        """Near-immediate duplicate STT output should not dispatch twice."""
+        from gateway.config import Platform
+
+        mock_adapter = AsyncMock()
+        mock_adapter._voice_text_channels = {111: 123}
+        mock_adapter._voice_sources = {}
+        mock_channel = AsyncMock()
+        mock_adapter._client = MagicMock()
+        mock_adapter._client.get_channel = MagicMock(return_value=mock_channel)
+        mock_adapter.handle_message = AsyncMock()
+        runner.adapters[Platform.DISCORD] = mock_adapter
+
+        await runner._handle_voice_channel_input(111, 42, "Hello from VC")
+        await runner._handle_voice_channel_input(111, 42, "Hello from VC")
+
+        mock_adapter.handle_message.assert_called_once()
+        mock_channel.send.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_input_suppresses_near_duplicate_transcript(self, runner):
+        """Small STT wording drift should still be treated as the same utterance."""
+        from gateway.config import Platform
+
+        mock_adapter = AsyncMock()
+        mock_adapter._voice_text_channels = {111: 123}
+        mock_adapter._voice_sources = {}
+        mock_channel = AsyncMock()
+        mock_adapter._client = MagicMock()
+        mock_adapter._client.get_channel = MagicMock(return_value=mock_channel)
+        mock_adapter.handle_message = AsyncMock()
+        runner.adapters[Platform.DISCORD] = mock_adapter
+
+        await runner._handle_voice_channel_input(111, 42, "This is a test of the voice system")
+        await runner._handle_voice_channel_input(111, 42, "This is a test for the voice system")
+
+        mock_adapter.handle_message.assert_called_once()
+        mock_channel.send.assert_called_once()
 
     # -- _get_guild_id --
 

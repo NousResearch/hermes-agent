@@ -1,14 +1,14 @@
 ---
-title: "Blogwatcher — Monitor blogs and RSS/Atom feeds for updates using the blogwatcher-cli tool"
+title: "Blogwatcher — Monitor blogs and RSS/Atom feeds via blogwatcher-cli tool"
 sidebar_label: "Blogwatcher"
-description: "Monitor blogs and RSS/Atom feeds for updates using the blogwatcher-cli tool"
+description: "Monitor blogs and RSS/Atom feeds via blogwatcher-cli tool"
 ---
 
 {/* This page is auto-generated from the skill's SKILL.md by website/scripts/generate-skill-docs.py. Edit the source SKILL.md, not this page. */}
 
 # Blogwatcher
 
-Monitor blogs and RSS/Atom feeds for updates using the blogwatcher-cli tool. Add blogs, scan for new articles, track read status, and filter by category.
+Monitor blogs and RSS/Atom feeds via blogwatcher-cli tool.
 
 ## Skill metadata
 
@@ -19,6 +19,7 @@ Monitor blogs and RSS/Atom feeds for updates using the blogwatcher-cli tool. Add
 | Version | `2.0.0` |
 | Author | JulienTant (fork of Hyaxia/blogwatcher) |
 | License | MIT |
+| Platforms | linux, macos, windows |
 | Tags | `RSS`, `Blogs`, `Feed-Reader`, `Monitoring` |
 
 ## Reference: full SKILL.md

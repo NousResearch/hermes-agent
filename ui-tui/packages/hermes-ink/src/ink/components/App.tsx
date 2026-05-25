@@ -1,4 +1,4 @@
-import React, { PureComponent, type ReactNode } from 'react'
+import { PureComponent, type ReactNode } from 'react'
 
 import { updateLastInteractionTime } from '../../bootstrap/state.js'
 import { logForDebugging } from '../../utils/debug.js'
@@ -33,6 +33,7 @@ import { DBP, DFE, DISABLE_MOUSE_TRACKING, EBP, EFE, SHOW_CURSOR } from '../term
 
 import AppContext from './AppContext.js'
 import { ClockProvider } from './ClockContext.js'
+import CursorAdvanceContext, { type CursorAdvanceNotifier } from './CursorAdvanceContext.js'
 import CursorDeclarationContext, { type CursorDeclarationSetter } from './CursorDeclarationContext.js'
 import ErrorOverview from './ErrorOverview.js'
 import StdinContext from './StdinContext.js'
@@ -100,6 +101,18 @@ type Props = {
   // Enables IME composition at the input caret and lets screen readers /
   // magnifiers track the input. Optional so testing.tsx doesn't stub it.
   readonly onCursorDeclaration?: CursorDeclarationSetter
+  // Receives notifications that the physical cursor was advanced out-of-band
+  // (e.g. TextInput's fast-echo bypass writing directly to stdout). The
+  // handler in ink.tsx updates two pieces of state from a single call:
+  //   - `displayCursor` (the relative-move basis log-update uses on the
+  //     next frame; skipped on alt-screen where CSI H resets it every
+  //     frame anyway), and
+  //   - the active `cursorDeclaration.relativeX/Y` (the target the cursor
+  //     parks at after every frame; bumped on BOTH screens because
+  //     onRender's alt-screen branch emits an absolute CUP from it and
+  //     a stale declaration there is still visibly wrong).
+  // Optional so testing.tsx doesn't need to stub it.
+  readonly onCursorAdvance?: CursorAdvanceNotifier
   // Dispatch a keyboard event through the DOM tree. Called for each
   // parsed key alongside the legacy EventEmitter path.
   readonly dispatchKeyboardEvent: (parsedKey: ParsedKey) => void
@@ -196,7 +209,9 @@ export default class App extends PureComponent<Props, State> {
             <TerminalFocusProvider>
               <ClockProvider>
                 <CursorDeclarationContext.Provider value={this.props.onCursorDeclaration ?? (() => {})}>
-                  {this.state.error ? <ErrorOverview error={this.state.error as Error} /> : this.props.children}
+                  <CursorAdvanceContext.Provider value={this.props.onCursorAdvance ?? (() => {})}>
+                    {this.state.error ? <ErrorOverview error={this.state.error as Error} /> : this.props.children}
+                  </CursorAdvanceContext.Provider>
                 </CursorDeclarationContext.Provider>
               </ClockProvider>
             </TerminalFocusProvider>
@@ -316,8 +331,10 @@ export default class App extends PureComponent<Props, State> {
     // Clear the timer reference
     this.incompleteEscapeTimer = null
 
-    // Only proceed if we have incomplete sequences
-    if (!this.keyParseState.incomplete) {
+    // Only proceed if we have an incomplete escape sequence or an unterminated
+    // bracketed paste. Missing paste-end markers otherwise leave every later
+    // keystroke trapped in the paste buffer.
+    if (!this.keyParseState.incomplete && this.keyParseState.mode !== 'IN_PASTE') {
       return
     }
 
@@ -330,13 +347,16 @@ export default class App extends PureComponent<Props, State> {
     // drain stdin next and clear this timer. Prevents both the spurious
     // Escape key and the lost scroll event.
     if (this.props.stdin.readableLength > 0) {
-      this.incompleteEscapeTimer = setTimeout(this.flushIncomplete, this.NORMAL_TIMEOUT)
+      this.incompleteEscapeTimer = setTimeout(
+        this.flushIncomplete,
+        this.keyParseState.mode === 'IN_PASTE' ? this.PASTE_TIMEOUT : this.NORMAL_TIMEOUT
+      )
 
       return
     }
 
-    // Process incomplete as a flush operation (input=null)
-    // This reuses all existing parsing logic
+    // Process incomplete/paste state as a flush operation (input=null).
+    // This reuses all existing parsing logic.
     this.processInput(null)
   }
 
@@ -355,8 +375,10 @@ export default class App extends PureComponent<Props, State> {
       reconciler.discreteUpdates(processKeysInBatch, this, keys, undefined, undefined)
     }
 
-    // If we have incomplete escape sequences, set a timer to flush them
-    if (this.keyParseState.incomplete) {
+    // If we have incomplete escape sequences or an unterminated paste, set a
+    // timer to flush/reset them. Paste starts are complete CSI sequences, so
+    // checking only `incomplete` would never arm the watchdog.
+    if (this.keyParseState.incomplete || this.keyParseState.mode === 'IN_PASTE') {
       // Cancel any existing timer first
       if (this.incompleteEscapeTimer) {
         clearTimeout(this.incompleteEscapeTimer)

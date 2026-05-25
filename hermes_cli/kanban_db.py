@@ -566,6 +566,8 @@ def remove_board(slug: str, *, archive: bool = True) -> dict:
     Returns a summary dict describing what happened (``{"slug", "action",
     "new_path"}``).
     """
+    _ensure_pytest_kanban_path_isolated(None)
+
     normed = _normalize_board_slug(slug)
     if not normed:
         raise ValueError("board slug is required")
@@ -6464,6 +6466,8 @@ def gc_worker_logs(
     log files live on disk, not in SQLite. Scoped to ``board`` (defaults
     to the active board) — per-board isolation means deleting logs from
     board A cannot touch board B's logs."""
+    _ensure_pytest_kanban_path_isolated(None)
+
     log_dir = worker_logs_dir(board=board)
     if not log_dir.exists():
         return 0

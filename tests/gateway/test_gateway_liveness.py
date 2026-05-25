@@ -22,8 +22,21 @@ def _runner_for_liveness() -> GatewayRunner:
     runner._liveness_stop = threading.Event()
     runner._liveness_thread = None
     runner._liveness_interval = 15.0
+    runner._liveness_last_progress_tuple = None
+    runner._liveness_last_forward_progress_mono = None
+    runner._liveness_last_forward_progress_at = None
     runner._liveness_forward_progress_counter = 0
+    runner._liveness_run_lifecycle_count = 0
     return runner
+
+
+def test_liveness_runner_helper_matches_constructor_state():
+    runner = _runner_for_liveness()
+
+    assert runner._liveness_last_forward_progress_mono is None
+    assert runner._liveness_last_forward_progress_at is None
+    assert runner._liveness_last_progress_tuple is None
+    assert runner._liveness_run_lifecycle_count == 0
 
 
 def test_liveness_snapshot_does_not_advance_forward_progress_without_activity(monkeypatch):

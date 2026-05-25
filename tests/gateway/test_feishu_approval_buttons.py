@@ -506,6 +506,7 @@ class TestCardActionCallbackResponse:
         adapter = _make_adapter()
         adapter._loop = MagicMock()
         adapter._loop.is_closed = MagicMock(return_value=False)
+        adapter._allowed_group_users = {"ou_user1"}
         adapter._approval_state[2] = {
             "session_key": "sess-2",
             "message_id": "msg-2",
@@ -552,6 +553,7 @@ class TestCardActionCallbackResponse:
         adapter = _make_adapter()
         adapter._loop = MagicMock()
         adapter._loop.is_closed = MagicMock(return_value=False)
+        adapter._allowed_group_users = {"ou_unknown"}
         adapter._approval_state[3] = {
             "session_key": "sess-3",
             "message_id": "msg-3",
@@ -572,6 +574,7 @@ class TestCardActionCallbackResponse:
         adapter = _make_adapter()
         adapter._loop = MagicMock()
         adapter._loop.is_closed = MagicMock(return_value=False)
+        adapter._allowed_group_users = {"ou_expired"}
         adapter._approval_state[4] = {
             "session_key": "sess-4",
             "message_id": "msg-4",

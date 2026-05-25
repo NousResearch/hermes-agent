@@ -484,7 +484,7 @@ def run_conversation(
             tools=agent.tools or None,
         )
 
-        if _preflight_tokens >= agent.context_compressor.threshold_tokens:
+        if agent.context_compressor.should_compress(_preflight_tokens):
             logger.info(
                 "Preflight compression: ~%s tokens >= %s threshold (model %s, ctx %s)",
                 f"{_preflight_tokens:,}",
@@ -2806,6 +2806,21 @@ def run_conversation(
                     # retryable=True mapping takes effect instead.
                     and not isinstance(api_error, ssl.SSLError)
                 )
+                # ``FailoverReason.billing`` (HTTP 402) is NOT in this
+                # exclusion set.  By the time we reach this block:
+                #   • credential-pool rotation (line ~2031) has already
+                #     fired for billing and either ``continue``d or
+                #     returned (False, ...) — pool is exhausted or absent.
+                #   • the eager-fallback branch above (line ~2422) also
+                #     fires on billing and ``continue``s if a fallback
+                #     provider is configured.
+                # Falling through to here means BOTH recovery paths
+                # gave up.  Treating 402 as retryable from this point
+                # just burns more paid requests against a depleted
+                # balance with no recovery mechanism left — see #31273
+                # (real-world: ~$40 in 48h on a 24/7 gateway).  Aborting
+                # mirrors how 401/403 (also ``should_fallback=True``)
+                # already behave once their recovery paths have failed.
                 is_client_error = (
                     is_local_validation_error
                     or (
@@ -2813,7 +2828,6 @@ def run_conversation(
                         and not classified.should_compress
                         and classified.reason not in {
                             FailoverReason.rate_limit,
-                            FailoverReason.billing,
                             FailoverReason.overloaded,
                             FailoverReason.context_overflow,
                             FailoverReason.payload_too_large,
@@ -2853,7 +2867,7 @@ def run_conversation(
                                 agent._vprint(f"{agent.log_prefix}      2. Then run `hermes auth` to re-authenticate.", force=True)
                             else:
                                 agent._vprint(f"{agent.log_prefix}   💡 xAI OAuth token was rejected (HTTP 401). To fix:", force=True)
-                                agent._vprint(f"{agent.log_prefix}      re-authenticate with xAI Grok OAuth (SuperGrok Subscription) from `hermes model`.", force=True)
+                                agent._vprint(f"{agent.log_prefix}      re-authenticate with xAI Grok OAuth (SuperGrok / Premium+) from `hermes model`.", force=True)
                         else:
                             agent._vprint(f"{agent.log_prefix}   💡 Your API key was rejected by the provider. Check:", force=True)
                             agent._vprint(f"{agent.log_prefix}      • Is the key valid? Run: hermes setup", force=True)
@@ -3470,6 +3484,19 @@ def run_conversation(
                         f"⚠️ Tool guardrail halted {decision.tool_name}: {decision.code}"
                     )
                     messages.append({"role": "assistant", "content": final_response})
+                    # Emit the halt message to the client so it's not
+                    # indistinguishable from a crash.  The stream display
+                    # was flushed (callback(None)) before tool execution,
+                    # but the callback is still alive — fire the text
+                    # through it so SSE/TUI clients see the explanation.
+                    if final_response:
+                        agent._safe_print(f"\n{final_response}\n")
+                        if agent.stream_delta_callback:
+                            try:
+                                agent.stream_delta_callback(final_response)
+                                agent.stream_delta_callback(None)
+                            except Exception:
+                                pass
                     break
 
                 # Reset per-turn retry counters after successful tool
@@ -4153,6 +4180,7 @@ def run_conversation(
         "estimated_cost_usd": agent.session_estimated_cost_usd,
         "cost_status": agent.session_cost_status,
         "cost_source": agent.session_cost_source,
+        "session_id": agent.session_id,
     }
     if agent._tool_guardrail_halt_decision is not None:
         result["guardrail"] = agent._tool_guardrail_halt_decision.to_metadata()

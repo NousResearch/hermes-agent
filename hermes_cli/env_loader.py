@@ -36,7 +36,9 @@ def get_secret_source(env_var: str) -> str | None:
     Returns ``"bitwarden"`` for keys pulled from Bitwarden Secrets Manager
     during the current process's ``load_hermes_dotenv()`` call.  Returns
     ``None`` for keys that came from ``.env``, the shell environment, or
-    aren't tracked.
+    aren't tracked.  The returned label is metadata only: credential-pool
+    persistence may store it to explain the origin of a borrowed secret, but
+    must never treat it as authorization to persist the raw value.
     """
     return _SECRET_SOURCES.get(env_var)
 
@@ -253,6 +255,7 @@ def _apply_external_secret_sources(home_path: Path) -> None:
         cache_ttl_seconds=float(bw_cfg.get("cache_ttl_seconds", 300)),
         auto_install=bool(bw_cfg.get("auto_install", True)),
         server_url=str(bw_cfg.get("server_url", "") or "").strip(),
+        home_path=home_path,
     )
 
     if result.applied:

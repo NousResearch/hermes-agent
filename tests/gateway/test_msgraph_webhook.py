@@ -77,7 +77,8 @@ class TestMSGraphValidationHandshake:
         adapter = MSGraphWebhookAdapter(PlatformConfig(enabled=True, extra={}))
         connected = await adapter.connect()
         assert connected is False
-        assert adapter.is_connected() is False
+        # is_connected is a @property on the base adapter, not a method.
+        assert adapter.is_connected is False
 
     @pytest.mark.anyio
     async def test_validation_token_echo_on_get(self):

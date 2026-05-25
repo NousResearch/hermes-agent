@@ -1009,6 +1009,7 @@ AUTHOR_MAP = {
     "lisanhu2014@hotmail.com": "lisanhu",
     "0668001438@zte.com.cn": "chenyunbo411",
     "steven_chanin@alum.mit.edu": "stevenchanin",
+    "steveonjava@gmail.com": "steveonjava",
     "fiver@example.com": "halmisen",
     "mayq0422@gmail.com": "yuqianma",
     "yuqian@zmetasoft.com": "yuqianma",

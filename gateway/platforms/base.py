@@ -3901,15 +3901,22 @@ class BasePlatformAdapter(ABC):
                 _prev = existing_cb
                 _new = callback
 
-                def _chained() -> None:
-                    try:
-                        _prev()
-                    except Exception:
-                        logger.debug("Post-delivery callback failed", exc_info=True)
-                    try:
-                        _new()
-                    except Exception:
-                        logger.debug("Post-delivery callback failed", exc_info=True)
+                async def _chained() -> None:
+                    # Both _prev and _new may be sync or async. The chained
+                    # wrapper itself must be async because the outer invoker
+                    # (``_handle_message`` etc.) awaits awaitable callbacks; a
+                    # sync wrapper here would call ``_prev()`` / ``_new()`` and
+                    # silently drop any returned coroutine, breaking chained
+                    # async post-delivery hooks (e.g. ``/goal`` continuations).
+                    for _cb in (_prev, _new):
+                        try:
+                            _result = _cb()
+                            if inspect.isawaitable(_result):
+                                await _result
+                        except Exception:
+                            logger.debug(
+                                "Post-delivery callback failed", exc_info=True
+                            )
 
                 callback = _chained
 

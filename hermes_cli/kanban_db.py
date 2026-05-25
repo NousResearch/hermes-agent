@@ -4371,6 +4371,88 @@ def edit_completed_task_result(
     return True
 
 
+def _resolve_skill_under_home(skill_name: str, hermes_home: Optional[str]) -> bool:
+    """Best-effort check that ``skill_name`` resolves under the worker's HERMES_HOME.
+
+    Returns True if the skill is loadable, False if it would fail with the
+    CLI's ``Unknown skill(s)`` startup error and crash the worker.
+
+    The check mirrors the resolver order used by ``--skills <name>``:
+      1. ``<home>/skills`` (the profile-scoped skills dir)
+      2. Each ``skills.external_dirs`` entry from ``<home>/config.yaml``
+
+    This is intentionally filesystem-only — no skill_view() call, no module
+    import — so the dispatcher (which runs under the *default* HERMES_HOME)
+    can validate against a *different* HERMES_HOME without contaminating
+    any cached module-level state in the skills resolver.
+    """
+    from pathlib import Path as _P
+
+    if not skill_name:
+        return True
+
+    base = _P(hermes_home) if hermes_home else (_P.home() / ".hermes")
+    roots: list[_P] = [base / "skills"]
+
+    # Pull external_dirs from the home's config.yaml without importing
+    # agent.skill_utils (which caches against the dispatcher's HERMES_HOME).
+    cfg = base / "config.yaml"
+    if cfg.is_file():
+        try:
+            from yaml import safe_load as _yaml_load
+            parsed = _yaml_load(cfg.read_text(encoding="utf-8")) or {}
+            ext = ((parsed.get("skills") or {}) if isinstance(parsed, dict) else {}).get("external_dirs") or []
+            if isinstance(ext, str):
+                ext = [ext]
+            for entry in ext:
+                if not isinstance(entry, str):
+                    continue
+                p = _P(os.path.expandvars(os.path.expanduser(entry)))
+                if p.is_dir():
+                    roots.append(p)
+        except Exception:
+            pass
+
+    for root in roots:
+        if not root.is_dir():
+            continue
+        # Canonical lookup is recursive: skills live as
+        # ``<root>/<category>/<name>/SKILL.md``. The same recursive scan is
+        # what the CLI resolver does, so this matches its semantics.
+        try:
+            for skill_md in root.rglob(f"{skill_name}/SKILL.md"):
+                if skill_md.is_file():
+                    return True
+        except OSError:
+            continue
+    return False
+
+
+def _validate_task_skills(
+    task: Task, hermes_home: Optional[str], *, include_kanban_worker: bool = True,
+) -> list[str]:
+    """Return the list of task-required skill names that do NOT resolve.
+
+    ``include_kanban_worker`` mirrors the dispatcher's auto-load behavior;
+    set False on review spawns where the review path overrides task.skills.
+    """
+    required: list[str] = []
+    if include_kanban_worker and _kanban_worker_skill_available(hermes_home):
+        # kanban-worker is auto-loaded only when it resolves, so no need
+        # to validate it here — but the dispatcher still adds it. We
+        # already gated that with _kanban_worker_skill_available, so the
+        # only failure surface is task.skills.
+        pass
+    for sk in (task.skills or []):
+        if not sk:
+            continue
+        if sk == "kanban-worker":
+            continue
+        required.append(sk)
+    missing = [sk for sk in required if not _resolve_skill_under_home(sk, hermes_home)]
+    return missing
+
+
 def block_task(
     conn: sqlite3.Connection,
     task_id: str,
@@ -7198,6 +7280,37 @@ def _dispatch_once_locked(
         if claimed.workspace_kind == "worktree":
             set_branch_name(conn, claimed.id, resolved_branch_name or (claimed.branch_name or "").strip() or f"wt/{claimed.id}")
         _maybe_emit_scratch_tip(conn, claimed.id, claimed.workspace_kind)
+        # Pre-flight: validate every task-required skill resolves under the
+        # worker's HERMES_HOME *before* spawning. A missing skill causes the
+        # CLI to abort at startup with `Unknown skill(s): ...`, which the
+        # dispatcher otherwise sees as an exit-code-1 crash and retries
+        # forever — burning 18+ runs over hours (issue surfaced as
+        # consecutive_crashes diagnostic in May 2026). Auto-block with a
+        # precise diagnostic so the operator can fix the missing skill
+        # (install it, or add the source dir to skills.external_dirs).
+        #
+        # Skipped when an injected spawn_fn is provided: tests stub the
+        # spawn out, so the CLI never runs, so the skill check is a
+        # spurious failure path.
+        if spawn_fn is None:
+            try:
+                from hermes_cli.profiles import resolve_profile_env as _resolve_profile_env
+                _worker_home = _resolve_profile_env(claimed.assignee) if claimed.assignee else None
+            except Exception:
+                _worker_home = None
+            _missing_skills = _validate_task_skills(claimed, _worker_home)
+            if _missing_skills:
+                _reason = (
+                    f"missing skills under HERMES_HOME={_worker_home or '<default>'}: "
+                    f"{', '.join(_missing_skills)}. Install them or add their source "
+                    f"dir to skills.external_dirs in the profile's config.yaml."
+                )
+                try:
+                    block_task(conn, claimed.id, reason=_reason)
+                except Exception:
+                    pass
+                result.auto_blocked.append(claimed.id)
+                continue
         _spawn = spawn_fn if spawn_fn is not None else _default_spawn
         try:
             # Back-compat: older spawn_fn signatures accept only
@@ -7296,6 +7409,27 @@ def _dispatch_once_locked(
         # prompt via KANBAN_GUIDANCE, so this is the only extra skill the
         # review agent needs.
         claimed.skills = ["sdlc-review"]
+        # Pre-flight: same missing-skill auto-block guard as the main
+        # spawn path (above). Skipped when spawn_fn is injected (tests).
+        if spawn_fn is None:
+            try:
+                from hermes_cli.profiles import resolve_profile_env as _resolve_profile_env
+                _worker_home = _resolve_profile_env(claimed.assignee) if claimed.assignee else None
+            except Exception:
+                _worker_home = None
+            _missing_skills = _validate_task_skills(claimed, _worker_home)
+            if _missing_skills:
+                _reason = (
+                    f"missing review skills under HERMES_HOME={_worker_home or '<default>'}: "
+                    f"{', '.join(_missing_skills)}. Install them or add their source "
+                    f"dir to skills.external_dirs in the profile's config.yaml."
+                )
+                try:
+                    block_task(conn, claimed.id, reason=_reason)
+                except Exception:
+                    pass
+                result.auto_blocked.append(claimed.id)
+                continue
         _spawn = spawn_fn if spawn_fn is not None else _default_spawn
         try:
             import inspect

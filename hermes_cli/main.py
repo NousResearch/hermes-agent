@@ -738,9 +738,25 @@ def _sync_bundled_skills_for_startup() -> bool:
     Hashing every bundled skill is safe but expensive on older Android
     storage. The git/ref stamp keeps post-update correctness: a changed
     checkout revision forces one real sync, then later starts skip it.
+
+    Honors the ``.no-bundled-skills`` opt-out marker: when present in the
+    active HERMES_HOME root, bundled-skill seeding is skipped so the
+    profile relies exclusively on ``skills.external_dirs`` (typically the
+    root install's ``~/.hermes/skills``). This prevents the
+    profile-vs-root collision crash that bricks workers with
+    ``Unknown skill(s): ...`` when both copies of a skill resolve.
     """
     if _is_termux_startup_environment() and not _termux_bundled_skills_sync_needed():
         return False
+
+    try:
+        from hermes_constants import get_hermes_home
+        from hermes_cli.profiles import NO_BUNDLED_SKILLS_MARKER
+        home = Path(get_hermes_home())
+        if (home / NO_BUNDLED_SKILLS_MARKER).exists():
+            return False
+    except Exception:
+        pass
 
     from tools.skills_sync import sync_skills
 

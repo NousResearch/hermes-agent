@@ -17405,12 +17405,23 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
             )
             return False
 
-    # Sync bundled skills on gateway start (fast -- skips unchanged)
+    # Sync bundled skills on gateway start (fast -- skips unchanged).
+    # Honors the ``.no-bundled-skills`` opt-out marker so profiles can
+    # rely exclusively on root-home skills via ``skills.external_dirs``
+    # without sync re-seeding stale local copies that collide on name.
     try:
-        from tools.skills_sync import sync_skills
-        sync_skills(quiet=True)
+        from hermes_constants import get_hermes_home
+        from hermes_cli.profiles import NO_BUNDLED_SKILLS_MARKER
+        from pathlib import Path as _SkipPath
+        _opt_out = (_SkipPath(get_hermes_home()) / NO_BUNDLED_SKILLS_MARKER).exists()
     except Exception:
-        pass
+        _opt_out = False
+    if not _opt_out:
+        try:
+            from tools.skills_sync import sync_skills
+            sync_skills(quiet=True)
+        except Exception:
+            pass
 
     # Centralized logging — agent.log (INFO+), errors.log (WARNING+),
     # and gateway.log (INFO+, gateway-component records only).

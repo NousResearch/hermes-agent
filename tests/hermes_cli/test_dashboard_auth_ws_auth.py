@@ -244,6 +244,54 @@ class TestWsAuthOkGated:
 # ---------------------------------------------------------------------------
 
 
+class TestWsRequestIsAllowedGated:
+    """Bug fix: in gated mode, the WS peer-IP loopback check must be
+    bypassed.
+
+    When the OAuth gate is active, ``start_server`` runs uvicorn with
+    ``proxy_headers=True`` so the dashboard can honour
+    ``X-Forwarded-Proto`` from Fly's TLS terminator. A side effect is that
+    ``ws.client.host`` is rewritten to the X-Forwarded-For value — the
+    real internet client IP, never loopback. The loopback peer guard
+    (intended only for unauthenticated loopback dev) must not also reject
+    those upgrades: the OAuth gate + single-use ticket is the auth.
+
+    Regression coverage: every WS endpoint (``/api/pty``, ``/api/ws``,
+    ``/api/pub``, ``/api/events``) calls ``_ws_request_is_allowed`` after
+    ``_ws_auth_ok``. If the peer-IP check rejects gated mode, the chat
+    tab + sidebar tool feed silently fail to connect even after a
+    successful OAuth login.
+    """
+
+    def test_non_loopback_peer_allowed_in_gated_mode(self, gated_app):
+        ws = _fake_ws(query={}, client_host="203.0.113.7")
+        # Host header matches the bound host so the DNS-rebinding guard
+        # passes; only the peer-IP check is under test.
+        ws.headers = {"host": "fly-app.fly.dev"}
+        assert web_server._ws_request_is_allowed(ws) is True
+
+    def test_non_loopback_peer_rejected_in_loopback_mode(self, loopback_app):
+        """Loopback mode still enforces the peer-IP guard — the legacy
+        token path is the only auth and we don't want random LAN hosts
+        guessing it."""
+        ws = _fake_ws(query={}, client_host="192.168.1.42")
+        ws.headers = {"host": "127.0.0.1:8080"}
+        assert web_server._ws_request_is_allowed(ws) is False
+
+    def test_loopback_peer_allowed_in_loopback_mode(self, loopback_app):
+        ws = _fake_ws(query={}, client_host="127.0.0.1")
+        ws.headers = {"host": "127.0.0.1:8080"}
+        assert web_server._ws_request_is_allowed(ws) is True
+
+    def test_host_origin_guard_still_runs_in_gated_mode(self, gated_app):
+        """Bypassing the peer-IP check must not bypass the DNS-rebinding
+        Host header guard — that one still protects against attacker
+        sites resolving DNS to the public IP."""
+        ws = _fake_ws(query={}, client_host="203.0.113.7")
+        ws.headers = {"host": "evil.example.com"}
+        assert web_server._ws_request_is_allowed(ws) is False
+
+
 class TestSidecarUrl:
     def test_loopback_uses_session_token(self, loopback_app):
         url = web_server._build_sidecar_url("ch-1")

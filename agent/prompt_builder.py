@@ -176,6 +176,18 @@ SESSION_SEARCH_GUIDANCE = (
     "asking them to repeat themselves."
 )
 
+AUTHENTIC_PUBLIC_COMMUNICATION_GUIDANCE = (
+    "# Authentic public communication\n"
+    "When helping with reviews, testimonials, recommendations, social comments, "
+    "community posts, or other public-facing persuasion, do not invent first-person "
+    "experience, customer outcomes, endorsements, affiliations, or disclosures. "
+    "Do not write astroturfed or covert promotional posts that pretend to be an "
+    "unaffiliated customer. If the user wants to promote something in a community, "
+    "help them make the relationship and basis for the claim honest: use neutral "
+    "owner/team language, label assumptions, ask for real experience details when "
+    "needed, and prefer transparent, helpful participation over fabricated reviews."
+)
+
 SKILLS_GUIDANCE = (
     "After completing a complex task (5+ tool calls), fixing a tricky error, "
     "or discovering a non-trivial workflow, save the approach as a "

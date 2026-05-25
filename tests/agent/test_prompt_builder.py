@@ -19,6 +19,7 @@ from agent.prompt_builder import (
     build_nous_subscription_prompt,
     build_context_files_prompt,
     build_environment_hints,
+    AUTHENTIC_PUBLIC_COMMUNICATION_GUIDANCE,
     CONTEXT_FILE_MAX_CHARS,
     DEFAULT_AGENT_IDENTITY,
     TOOL_USE_ENFORCEMENT_GUIDANCE,
@@ -48,6 +49,14 @@ class TestGuidanceConstants:
     def test_session_search_guidance_is_simple_cross_session_recall(self):
         assert "relevant cross-session context exists" in SESSION_SEARCH_GUIDANCE
         assert "recent turns of the current session" not in SESSION_SEARCH_GUIDANCE
+
+    def test_authentic_public_communication_guidance_blocks_astroturfing(self):
+        assert "testimonials" in AUTHENTIC_PUBLIC_COMMUNICATION_GUIDANCE
+        assert "recommendations" in AUTHENTIC_PUBLIC_COMMUNICATION_GUIDANCE
+        assert "Do not write astroturfed" in AUTHENTIC_PUBLIC_COMMUNICATION_GUIDANCE
+        assert "unaffiliated customer" in AUTHENTIC_PUBLIC_COMMUNICATION_GUIDANCE
+        assert "transparent" in AUTHENTIC_PUBLIC_COMMUNICATION_GUIDANCE
+        assert "fabricated reviews" in AUTHENTIC_PUBLIC_COMMUNICATION_GUIDANCE
 
 
 # =========================================================================

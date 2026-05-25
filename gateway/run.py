@@ -2187,6 +2187,32 @@ class GatewayRunner:
             session_id=session_entry.session_id,
         )
 
+    def _source_has_existing_session(self, source: SessionSource) -> bool:
+        """True when the source's own topic already has a session.
+
+        "Has a session" means either a running agent or a persisted session in
+        the session store for this exact source. Used by topic recovery to
+        avoid hijacking a topic the user is deliberately writing to.
+        """
+        try:
+            session_key = self._session_key_for_source(source)
+        except Exception:
+            return False
+        if not session_key:
+            return False
+        running = getattr(self, "_running_agents", None)
+        if running and session_key in running:
+            return True
+        store = getattr(self, "session_store", None)
+        if store is not None:
+            try:
+                store._ensure_loaded()
+                if session_key in store._entries:
+                    return True
+            except Exception:
+                logger.debug("topic-recover: session-store probe failed", exc_info=True)
+        return False
+
     def _recover_telegram_topic_thread_id(
         self,
         source: SessionSource,
@@ -2224,7 +2250,14 @@ class GatewayRunner:
         inbound = str(source.thread_id or "")
         is_lobby = not inbound or inbound in self._TELEGRAM_GENERAL_TOPIC_IDS
         known = {str(b.get("thread_id") or "") for b in bindings}
-        if not is_lobby and inbound in known:
+        # Leave a concrete (non-General) inbound topic alone if it is a known
+        # binding OR already has its own session. Telegram assigns DM "lobby"
+        # topics a dynamic thread_id that is neither in
+        # _TELEGRAM_GENERAL_TOPIC_IDS nor in the bindings table; without the
+        # session check such a topic falls through to the redirect below and
+        # gets collapsed into the user's newest named lane, breaking parallel
+        # multi-topic sessions (#30538).
+        if not is_lobby and (inbound in known or self._source_has_existing_session(source)):
             return None
         user_id = str(source.user_id)
         for b in bindings:  # newest-first

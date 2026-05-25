@@ -1193,6 +1193,46 @@ def test_recover_rewrites_lobby_thread_id_to_most_recent(tmp_path):
     assert runner._recover_telegram_topic_thread_id(_make_source(thread_id=None)) == "222"
 
 
+def test_recover_returns_none_when_inbound_topic_has_running_agent(tmp_path):
+    # Regression for #30538: a DM "lobby" topic whose thread_id is dynamically
+    # assigned by Telegram (not in _TELEGRAM_GENERAL_TOPIC_IDS and not a tracked
+    # binding) but which already has its own running agent must NOT be collapsed
+    # into the user's newest named lane.
+    db = SessionDB(db_path=tmp_path / "state.db")
+    _seed_two_topic_bindings(db)
+    runner = _make_runner(session_db=db)
+
+    lobby = _make_source(thread_id="494403")
+    runner._running_agents = {runner._session_key_for_source(lobby): object()}
+
+    # Without the guard this would redirect to the most-recent binding ("222").
+    assert runner._recover_telegram_topic_thread_id(lobby) is None
+
+
+def test_recover_returns_none_when_inbound_topic_has_persisted_session(tmp_path):
+    # Same as above but the topic only has a persisted (not running) session.
+    db = SessionDB(db_path=tmp_path / "state.db")
+    _seed_two_topic_bindings(db)
+    runner = _make_runner(session_db=db)
+
+    lobby = _make_source(thread_id="494403")
+    key = runner._session_key_for_source(lobby)
+    runner.session_store._ensure_loaded = MagicMock()
+    runner.session_store._entries = {key: object()}
+
+    assert runner._recover_telegram_topic_thread_id(lobby) is None
+
+
+def test_recover_still_rewrites_unknown_topic_without_session(tmp_path):
+    # The guard is scoped: an unknown inbound topic with NO session of its own
+    # is still recovered to the most-recent binding (cross-topic Reply leak).
+    db = SessionDB(db_path=tmp_path / "state.db")
+    _seed_two_topic_bindings(db)
+    runner = _make_runner(session_db=db)
+
+    assert runner._recover_telegram_topic_thread_id(_make_source(thread_id="9999")) == "222"
+
+
 def test_recover_returns_none_when_topic_mode_disabled(tmp_path):
     # Non-topic-mode DMs keep the existing strip-to-lobby behavior.
     db = SessionDB(db_path=tmp_path / "state.db")

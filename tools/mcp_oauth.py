@@ -28,6 +28,13 @@ Configuration in config.yaml::
           client_id: "pre-registered-id"        # skip dynamic registration
           client_secret: "secret"               # confidential clients only
           scope: "read write"                   # default: server-provided
+          redirect_host: "127.0.0.1"            # loopback host for redirect_uri
+                                                #   one of: localhost (binds
+                                                #   both 127.0.0.1 and ::1 so
+                                                #   dual-stack browsers reach
+                                                #   the listener regardless of
+                                                #   which family they pick),
+                                                #   127.0.0.1, ::1 (or [::1])
           redirect_port: 0                      # 0 = auto-pick free port
           client_name: "My Custom Client"       # default: "Hermes Agent"
 """
@@ -89,9 +96,16 @@ class OAuthNonInteractiveError(RuntimeError):
 # Module-level state
 # ---------------------------------------------------------------------------
 
-# Port used by the most recent build_oauth_auth() call.  Exposed so that
-# tests can verify the callback server and the redirect_uri share a port.
+# Port/host used by the most recent build_oauth_auth() call. Exposed so that
+# tests can verify the callback server and the redirect_uri share the same
+# listener settings. ``_oauth_bind_host`` is the bare HTTPServer bind address
+# (``::1``); ``_oauth_uri_host`` is the URI-authority form (``[::1]``) used in
+# the redirect_uri and SSH hint. These globals only back the legacy
+# ``_redirect_handler`` / ``_wait_for_callback`` entry points — provider
+# construction passes resolved values into per-provider closures instead.
 _oauth_port: int | None = None
+_oauth_bind_host: str = "127.0.0.1"
+_oauth_uri_host: str = "127.0.0.1"
 
 
 # ---------------------------------------------------------------------------
@@ -118,11 +132,176 @@ def _safe_filename(name: str) -> str:
     return re.sub(r"[^\w\-]", "_", name).strip("_")[:128] or "default"
 
 
-def _find_free_port() -> int:
-    """Find an available TCP port on localhost."""
-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-        s.bind(("127.0.0.1", 0))
-        return s.getsockname()[1]
+# Upper bound on probe retries when picking a port that must be free on
+# multiple loopback families simultaneously (only the ``localhost`` path
+# triggers a multi-family probe). 50 is generous: each retry is a single
+# bind/close pair on the loopback, so even a hostile host with a tight
+# port pool resolves quickly.
+_MAX_PORT_PROBE_ATTEMPTS = 50
+
+
+def _listener_specs(bind_host: str) -> list[tuple[int, str]]:
+    """Return ``(address_family, bind_address)`` pairs for the callback listener.
+
+    The OAuth ``redirect_uri`` advertises a single host string, but the
+    listener may need more than one socket behind it. ``localhost`` is the
+    only such case: a dual-stack OS resolves ``localhost`` to either
+    ``127.0.0.1`` or ``::1`` depending on platform/order/glibc-tuning, and
+    a browser following the OAuth redirect picks whichever the resolver
+    returned first. If we listened on only one family while the browser hit
+    the other, the callback would never arrive. So we expand ``localhost``
+    into BOTH loopback families and bind both. Literal addresses
+    (``127.0.0.1`` / ``::1``) keep their single-family behavior.
+    """
+    if bind_host == "localhost":
+        return [(socket.AF_INET, "127.0.0.1"), (socket.AF_INET6, "::1")]
+    if ":" in bind_host:
+        return [(socket.AF_INET6, bind_host)]
+    return [(socket.AF_INET, bind_host)]
+
+
+def _make_loopback_socket(family: int) -> socket.socket:
+    """Create a loopback probe socket; force IPV6_V6ONLY=1 on AF_INET6.
+
+    Without ``IPV6_V6ONLY`` the kernel may treat the IPv6 socket as
+    dual-stack — accepting IPv4-mapped addresses on the same port. That
+    would conflict with the AF_INET sibling we also want to bind for the
+    ``localhost`` path. Setting ``IPV6_V6ONLY=1`` keeps the two listeners
+    in separate accept queues so they coexist on the same port.
+
+    The socket option is best-effort: on platforms that don't expose it,
+    we fall back to default kernel behavior (which on macOS already
+    defaults to v6-only).
+    """
+    s = socket.socket(family, socket.SOCK_STREAM)
+    if family == socket.AF_INET6:
+        try:
+            s.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_V6ONLY, 1)
+        except (AttributeError, OSError):
+            pass
+    return s
+
+
+def _find_free_port(bind_host: str = "127.0.0.1") -> int:
+    """Find a TCP port free on every family the listener will bind.
+
+    For literal ``127.0.0.1`` / ``::1`` this is a single-family probe — the
+    address family of the probe socket must match the family the listener
+    will use, since "free on IPv4 127.0.0.1" tells you nothing about the
+    same port number's IPv6 in-use set (different sockets, different
+    namespaces).
+
+    For ``localhost`` we expand to both loopback families
+    (:func:`_listener_specs`) and only return a port we could
+    simultaneously bind on every spec; that simultaneous-bind step also
+    gives us a coarse race shield, since holding the head socket bound
+    while we probe the rest prevents a competing process from sniping the
+    port between probes within the same attempt. After all probes succeed
+    we close every socket and return the port — the listener's bind is
+    still racy against external processes (no different from the legacy
+    single-family probe), but the multi-family ordering is consistent.
+
+    Raises:
+        OSError: ``_MAX_PORT_PROBE_ATTEMPTS`` consecutive probes all
+            collided on at least one family. Surfaces a system-level
+            problem (port pool exhausted, IPv6 disabled, etc.) rather
+            than silently looping forever.
+    """
+    specs = _listener_specs(bind_host)
+    last_error: OSError | None = None
+    for _ in range(_MAX_PORT_PROBE_ATTEMPTS):
+        held: list[socket.socket] = []
+        try:
+            head_family, head_addr = specs[0]
+            head = _make_loopback_socket(head_family)
+            held.append(head)
+            head.bind((head_addr, 0))
+            port = head.getsockname()[1]
+
+            collision: OSError | None = None
+            for fam, addr in specs[1:]:
+                t = _make_loopback_socket(fam)
+                held.append(t)
+                try:
+                    t.bind((addr, port))
+                except OSError as exc:
+                    collision = exc
+                    break
+            if collision is None:
+                return port
+            last_error = collision
+        finally:
+            for s in held:
+                try:
+                    s.close()
+                except OSError:
+                    pass
+    raise OSError(
+        f"could not find a port free on all loopback families for "
+        f"redirect_host={bind_host!r} after {_MAX_PORT_PROBE_ATTEMPTS} "
+        f"attempts (last error: {last_error})"
+    )
+
+
+def _redact_oauth_callback_log_message(message: str) -> str:
+    """Redact OAuth callback secrets from HTTP request log lines."""
+    return re.sub(r"([?&](?:code|state)=)[^&\s\"']*", r"\1[REDACTED]", message)
+
+
+def _validate_redirect_host(host: Any) -> tuple[str, str]:
+    """Validate ``redirect_host`` and return ``(uri_host, bind_host)``.
+
+    The OAuth callback listener runs on the local machine; allowing the
+    user to point the listener at ``0.0.0.0`` or any non-loopback address
+    would expose the authorization-code endpoint to other hosts on the
+    network. Restrict ``redirect_host`` to the recognised loopback values
+    only:
+
+    - ``"localhost"`` — IPv4/IPv6 loopback resolver
+    - ``"127.0.0.1"`` — IPv4 loopback literal
+    - ``"::1"`` / ``"[::1]"`` — IPv6 loopback literal
+
+    The two return values differ only for IPv6: per RFC 3986 the URI
+    authority must bracket the address (``http://[::1]:PORT/...``) but the
+    ``HTTPServer`` bind tuple takes the bare address (``"::1"``).
+
+    Raises:
+        ValueError: ``host`` is non-string, empty, includes a scheme/path/
+            port, or is not one of the allowed loopback values.
+    """
+    if not isinstance(host, str):
+        raise ValueError(
+            f"redirect_host must be a string; got {type(host).__name__}"
+        )
+    raw = host.strip()
+    if not raw:
+        raise ValueError("redirect_host must be a non-empty string")
+    if "://" in raw or "/" in raw:
+        raise ValueError(
+            f"redirect_host must be a bare hostname (no scheme/path): {host!r}"
+        )
+
+    # IPv6 loopback: accept bare ``::1`` or bracketed ``[::1]``.
+    if raw == "::1" or raw == "[::1]":
+        return "[::1]", "::1"
+
+    # Anything else with a colon is either ``host:port`` (forbidden — the
+    # port goes in ``redirect_port``) or a non-loopback IPv6 literal like
+    # ``2001:db8::1``. Both are rejected so the only IPv6 we accept is
+    # the loopback handled above.
+    if ":" in raw or raw.startswith("[") or raw.endswith("]"):
+        raise ValueError(
+            f"redirect_host must be a loopback host "
+            f"(localhost, 127.0.0.1, ::1, [::1]); got {host!r}"
+        )
+
+    if raw in {"localhost", "127.0.0.1"}:
+        return raw, raw
+
+    raise ValueError(
+        f"redirect_host must be a loopback host "
+        f"(localhost, 127.0.0.1, ::1, [::1]); got {host!r}"
+    )
 
 
 def _is_interactive() -> bool:
@@ -301,7 +480,9 @@ class HermesTokenStorage:
             return None
 
     async def set_client_info(self, client_info: "OAuthClientInformationFull") -> None:
-        _write_json(self._client_info_path(), client_info.model_dump(mode="json", exclude_none=True))
+        payload = client_info.model_dump(mode="json", exclude_none=True)
+        payload["hermes_dynamic_client"] = True
+        _write_json(self._client_info_path(), payload)
         logger.debug("OAuth client info saved for %s", self._server_name)
 
     # -- oauth server metadata --------------------------------------------
@@ -377,7 +558,7 @@ def _make_callback_handler() -> tuple[type, dict]:
             self.wfile.write(body.encode())
 
         def log_message(self, fmt: str, *args: Any) -> None:
-            logger.debug("OAuth callback: %s", fmt % args)
+            logger.debug("OAuth callback: %s", _redact_oauth_callback_log_message(fmt % args))
 
     return _Handler, result
 
@@ -387,11 +568,39 @@ def _make_callback_handler() -> tuple[type, dict]:
 # ---------------------------------------------------------------------------
 
 
-async def _redirect_handler(authorization_url: str) -> None:
-    """Show the authorization URL to the user.
+def _format_ssh_tunnel_hint(uri_host: str, port: int) -> str:
+    """Build the SSH port-forward hint for a remote (SSH) OAuth session.
 
-    Opens the browser automatically when possible; always prints the URL
-    as a fallback for headless/SSH/gateway environments.
+    ``uri_host`` is the redirect host in *URI-authority* form: IPv6 literals
+    arrive bracketed (``[::1]``), ``localhost`` / ``127.0.0.1`` pass through
+    unchanged. That single form drops correctly into both the ``http://``
+    callback URL and the ``ssh -L`` forward spec — OpenSSH parses the bracket
+    form ``port:[::1]:port`` for IPv6 hosts, so we never have to special-case
+    the family here.
+    """
+    return (
+        f"  Remote session detected. The OAuth provider will redirect your browser to\n"
+        f"    http://{uri_host}:{port}/callback\n"
+        f"  which the callback listener on THIS machine is waiting on. If your browser\n"
+        f"  is on a different machine, forward the port first in a separate terminal:\n"
+        f"\n"
+        f"    ssh -N -L '{port}:{uri_host}:{port}' <user>@<this-host>\n"
+        f"\n"
+        f"  Then open the URL above. See: https://hermes-agent.nousresearch.com/docs/guides/oauth-over-ssh\n"
+    )
+
+
+async def _redirect_handler_impl(
+    authorization_url: str, uri_host: str | None, port: int | None
+) -> None:
+    """Show the authorization URL to the user (shared redirect-handler body).
+
+    Opens the browser automatically when possible; always prints the URL as a
+    fallback for headless/SSH/gateway environments. On an SSH session a
+    port-forward hint is printed using the ``uri_host`` / ``port`` resolved
+    for the provider that owns this handler — never module globals — so the
+    hint stays correct for a configured ``redirect_host`` (e.g. ``[::1]``)
+    and for multi-provider setups where each provider has its own port.
     """
     msg = (
         f"\n  MCP OAuth: authorization required.\n"
@@ -400,22 +609,11 @@ async def _redirect_handler(authorization_url: str) -> None:
     )
     print(msg, file=sys.stderr)
 
-    # On a remote SSH session the OAuth provider redirects to
-    # http://127.0.0.1:<port>/callback, which reaches the callback server on
-    # the *remote* machine — not the user's local machine where the browser
-    # opened.  Print a port-forward hint so the user knows to tunnel first.
-    if _oauth_port and (os.getenv("SSH_CLIENT") or os.getenv("SSH_TTY")):
-        print(
-            f"  Remote session detected. The OAuth provider will redirect your browser to\n"
-            f"    http://127.0.0.1:{_oauth_port}/callback\n"
-            f"  which the callback listener on THIS machine is waiting on. If your browser\n"
-            f"  is on a different machine, forward the port first in a separate terminal:\n"
-            f"\n"
-            f"    ssh -N -L {_oauth_port}:127.0.0.1:{_oauth_port} <user>@<this-host>\n"
-            f"\n"
-            f"  Then open the URL above. See: https://hermes-agent.nousresearch.com/docs/guides/oauth-over-ssh\n",
-            file=sys.stderr,
-        )
+    # On a remote SSH session the OAuth provider redirects to the callback
+    # server on the *remote* machine — not the user's local machine where the
+    # browser opened.  Print a port-forward hint so the user knows to tunnel.
+    if port and uri_host and (os.getenv("SSH_CLIENT") or os.getenv("SSH_TTY")):
+        print(_format_ssh_tunnel_hint(uri_host, port), file=sys.stderr)
 
     if _can_open_browser():
         try:
@@ -430,12 +628,175 @@ async def _redirect_handler(authorization_url: str) -> None:
         print("  (Headless environment detected — open the URL manually.)\n", file=sys.stderr)
 
 
-async def _wait_for_callback() -> tuple[str, str | None]:
-    """Wait for the OAuth callback to arrive on the local callback server.
+def _make_redirect_handler(uri_host: str, port: int):
+    """Return a per-provider redirect handler closure bound to ``(uri_host, port)``.
 
-    Uses the module-level ``_oauth_port`` which is set by ``build_oauth_auth``
-    before this is ever called.  Polls for the result without blocking the
-    event loop.
+    Mirrors :func:`_make_wait_for_callback`: provider construction uses this
+    so each provider's ``redirect_handler`` carries the redirect host/port
+    resolved for *that* provider. Without the closure the SSH hint would read
+    the module-global ``_oauth_port`` / ``_oauth_uri_host``, which a later
+    ``build_oauth_auth`` call for a different server overwrites — so the hint
+    could advertise the wrong port, or ``127.0.0.1`` for a provider actually
+    configured with ``redirect_host: ::1``.
+    """
+    async def redirect_handler(authorization_url: str) -> None:
+        await _redirect_handler_impl(authorization_url, uri_host, port)
+
+    return redirect_handler
+
+
+async def _redirect_handler(authorization_url: str) -> None:
+    """Legacy entry: read module-level globals set by ``build_oauth_auth``.
+
+    Retained for backward compatibility with the no-args ``redirect_handler``
+    signature the MCP SDK historically accepted, and with tests that drive the
+    handler via globals. New code paths build a provider-local closure via
+    :func:`_make_redirect_handler` instead.
+    """
+    await _redirect_handler_impl(authorization_url, _oauth_uri_host, _oauth_port)
+
+
+def _make_http_server_cls(family: int) -> type:
+    """Return an :class:`HTTPServer` subclass bound to ``family``.
+
+    The IPv6 subclass also forces ``IPV6_V6ONLY=1`` in ``server_bind`` so
+    the IPv4 sibling listener (used for ``redirect_host: localhost``) can
+    coexist on the same port. Without this, on Linux the IPv6 listener
+    might claim IPv4-mapped traffic on that port and the IPv4 bind would
+    fail with EADDRINUSE.
+    """
+    if family == socket.AF_INET:
+        return HTTPServer
+
+    class _IPv6HTTPServer(HTTPServer):
+        address_family = socket.AF_INET6
+
+        def server_bind(self) -> None:  # type: ignore[override]
+            try:
+                self.socket.setsockopt(
+                    socket.IPPROTO_IPV6, socket.IPV6_V6ONLY, 1
+                )
+            except (AttributeError, OSError):
+                pass
+            super().server_bind()
+
+    return _IPv6HTTPServer
+
+
+async def _wait_for_callback_impl(
+    bind_host: str, port: int
+) -> tuple[str, str | None]:
+    """Wait for the OAuth callback bound to an explicit ``(bind_host, port)``.
+
+    Starts one listener per spec returned by :func:`_listener_specs`. For
+    literal addresses that's a single listener; for ``localhost`` it's two
+    (IPv4 + IPv6 loopback) so the callback is reachable regardless of which
+    family the browser resolves ``localhost`` to.
+
+    All listeners share one ``(handler_cls, result)`` pair from
+    :func:`_make_callback_handler`, so whichever family the browser hits
+    writes into the same result dict the polling loop watches.
+
+    Raises:
+        OAuthNonInteractiveError: If any required listener fails to bind
+            (fail-fast — partial coverage on ``localhost`` would silently
+            drop callbacks on the missing family) or if the callback times
+            out.
+        RuntimeError: If the OAuth server signalled an authorization error.
+    """
+    handler_cls, result = _make_callback_handler()
+    specs = _listener_specs(bind_host)
+
+    servers: list[HTTPServer] = []
+    bind_errors: list[tuple[str, OSError]] = []
+    for family, addr in specs:
+        cls = _make_http_server_cls(family)
+        try:
+            servers.append(cls((addr, port), handler_cls))
+        except OSError as exc:
+            bind_errors.append((addr, exc))
+
+    if bind_errors:
+        # Either nothing bound at all, or — for ``localhost`` — one of the
+        # two families failed. In both cases the listener can't be relied
+        # on to receive the callback, so close any partial listeners and
+        # surface the bind error promptly. (Requirement: explicit
+        # ``redirect_port`` with ``localhost`` must fail fast when either
+        # loopback family can't bind.)
+        for s in servers:
+            try:
+                s.server_close()
+            except OSError:
+                pass
+        details = "; ".join(f"{addr}: {exc}" for addr, exc in bind_errors)
+        raise OAuthNonInteractiveError(
+            f"OAuth callback could not bind {bind_host}:{port} "
+            f"({details}). Free the port or change redirect_port and retry."
+        )
+
+    threads: list[threading.Thread] = []
+    for server in servers:
+        t = threading.Thread(target=server.handle_request, daemon=True)
+        t.start()
+        threads.append(t)
+
+    timeout = 300.0
+    poll_interval = 0.5
+    elapsed = 0.0
+    try:
+        while elapsed < timeout:
+            if result["auth_code"] is not None or result["error"] is not None:
+                break
+            await asyncio.sleep(poll_interval)
+            elapsed += poll_interval
+    finally:
+        # Close every listener — server_close on a thread-blocked accept
+        # unblocks the daemon thread, which then exits. Daemon threads
+        # also wouldn't keep the process alive, but we close anyway so
+        # the loopback port is released for the next flow.
+        for server in servers:
+            try:
+                server.server_close()
+            except OSError:
+                pass
+
+    if result["error"]:
+        raise RuntimeError(f"OAuth authorization failed: {result['error']}")
+    if result["auth_code"] is None:
+        raise OAuthNonInteractiveError(
+            "OAuth callback timed out — no authorization code received. "
+            "Ensure you completed the browser authorization flow."
+        )
+
+    return result["auth_code"], result["state"]
+
+
+def _make_wait_for_callback(bind_host: str, port: int):
+    """Return a per-provider callback handler closure bound to ``(bind_host, port)``.
+
+    Provider construction uses this so that each provider's
+    ``callback_handler`` carries its own resolved bind host/port. Without
+    the closure, all providers would share the module-global
+    ``_oauth_port`` / ``_oauth_bind_host`` and provider A could end up
+    binding the host/port that was last configured for provider B (the
+    cache in :class:`MCPOAuthManager` builds providers lazily, so a later
+    ``_configure_callback_port`` for provider B overwrites the globals
+    while provider A's advertised ``redirect_uri`` still points at A's
+    original values).
+    """
+    async def callback_handler() -> tuple[str, str | None]:
+        return await _wait_for_callback_impl(bind_host, port)
+
+    return callback_handler
+
+
+async def _wait_for_callback() -> tuple[str, str | None]:
+    """Legacy entry: read module-level globals set by ``build_oauth_auth``.
+
+    Retained for backward compatibility with tests that drive the callback
+    server via globals, and as the no-args signature the MCP SDK historically
+    accepted. New code paths build a provider-local closure via
+    :func:`_make_wait_for_callback` instead.
 
     Raises:
         OAuthNonInteractiveError: If the callback times out (no user present
@@ -449,46 +810,8 @@ async def _wait_for_callback() -> tuple[str, str | None]:
             "OAuth callback port not set — build_oauth_auth must be called "
             "before _wait_for_oauth_callback"
         )
-
-    # The callback server is already running (started in build_oauth_auth).
-    # We just need to poll for the result.
-    handler_cls, result = _make_callback_handler()
-
-    # Start a temporary server on the known port
-    try:
-        server = HTTPServer(("127.0.0.1", _oauth_port), handler_cls)
-    except OSError:
-        # Port already in use — the server from build_oauth_auth is running.
-        # Fall back to polling the server started by build_oauth_auth.
-        raise OAuthNonInteractiveError(
-            "OAuth callback timed out — could not bind callback port. "
-            "Complete the authorization in a browser first, then retry."
-        )
-
-    server_thread = threading.Thread(target=server.handle_request, daemon=True)
-    server_thread.start()
-
-    timeout = 300.0
-    poll_interval = 0.5
-    elapsed = 0.0
-    try:
-        while elapsed < timeout:
-            if result["auth_code"] is not None or result["error"] is not None:
-                break
-            await asyncio.sleep(poll_interval)
-            elapsed += poll_interval
-    finally:
-        server.server_close()
-
-    if result["error"]:
-        raise RuntimeError(f"OAuth authorization failed: {result['error']}")
-    if result["auth_code"] is None:
-        raise OAuthNonInteractiveError(
-            "OAuth callback timed out — no authorization code received. "
-            "Ensure you completed the browser authorization flow."
-        )
-
-    return result["auth_code"], result["state"]
+    bind_host = _oauth_bind_host or "127.0.0.1"
+    return await _wait_for_callback_impl(bind_host, _oauth_port)
 
 
 # ---------------------------------------------------------------------------
@@ -525,12 +848,45 @@ def _configure_callback_port(cfg: dict) -> int:
     flows); replacing it with a ContextVar is out of scope for this
     consolidation PR.
     """
-    global _oauth_port
+    global _oauth_port, _oauth_bind_host, _oauth_uri_host
+
+    # Validate redirect_host BEFORE auto-picking a port — the address
+    # family of the probe socket must match the family the callback
+    # listener will bind, or the port may be in-use on the bind family
+    # even though it's free on the probe family (e.g. picking a port
+    # via IPv4 127.0.0.1 and then binding ::1 on IPv6).
+    raw_host = cfg.get("redirect_host", "127.0.0.1")
+    uri_host, bind_host = _validate_redirect_host(raw_host)
+
     requested = int(cfg.get("redirect_port", 0))
-    port = _find_free_port() if requested == 0 else requested
+    port = _find_free_port(bind_host) if requested == 0 else requested
+
     cfg["_resolved_port"] = port
+    cfg["_resolved_uri_host"] = uri_host
+    cfg["_resolved_bind_host"] = bind_host
     _oauth_port = port  # legacy consumer: _wait_for_callback reads this
+    _oauth_bind_host = bind_host
+    _oauth_uri_host = uri_host  # legacy consumer: _redirect_handler reads this
     return port
+
+
+def _build_redirect_uri(cfg: dict) -> str:
+    """Build the OAuth ``redirect_uri`` from the resolved port + redirect_host.
+
+    Requires ``cfg['_resolved_port']`` to have been populated by
+    :func:`_configure_callback_port` first.
+    """
+    port = cfg.get("_resolved_port")
+    if port is None:
+        raise ValueError(
+            "_configure_callback_port() must be called before _build_redirect_uri()"
+        )
+    uri_host = cfg.get("_resolved_uri_host")
+    if uri_host is None:
+        # Defensive: re-validate if the caller skipped _configure_callback_port
+        # (shouldn't happen via the supported entry points).
+        uri_host, _ = _validate_redirect_host(cfg.get("redirect_host", "127.0.0.1"))
+    return f"http://{uri_host}:{port}/callback"
 
 
 def _build_client_metadata(cfg: dict) -> "OAuthClientMetadata":
@@ -539,14 +895,9 @@ def _build_client_metadata(cfg: dict) -> "OAuthClientMetadata":
     Requires ``cfg['_resolved_port']`` to have been populated by
     :func:`_configure_callback_port` first.
     """
-    port = cfg.get("_resolved_port")
-    if port is None:
-        raise ValueError(
-            "_configure_callback_port() must be called before _build_client_metadata()"
-        )
     client_name = cfg.get("client_name", "Hermes Agent")
     scope = cfg.get("scope")
-    redirect_uri = f"http://127.0.0.1:{port}/callback"
+    redirect_uri = _build_redirect_uri(cfg)
 
     metadata_kwargs: dict[str, Any] = {
         "client_name": client_name,
@@ -563,6 +914,114 @@ def _build_client_metadata(cfg: dict) -> "OAuthClientMetadata":
     return OAuthClientMetadata.model_validate(metadata_kwargs)
 
 
+def _stored_tokens_have_refresh_token(storage: "HermesTokenStorage") -> bool:
+    """Return True when stored tokens can plausibly refresh without browser auth."""
+    data = _read_json(storage._tokens_path())
+    if not isinstance(data, dict):
+        return False
+    return bool(data.get("refresh_token"))
+
+
+def _invalidate_stale_dynamic_client_info(
+    storage: "HermesTokenStorage",
+    cfg: dict,
+    client_metadata: "OAuthClientMetadata",
+) -> None:
+    """Drop on-disk client_info when it no longer matches cfg.
+
+    When the user edits ``redirect_host`` / ``redirect_port`` in
+    ``config.yaml``, ``<server>.client.json`` may still hold the previously
+    registered ``client_id`` paired with the old ``redirect_uri``. The MCP
+    SDK loads that file via ``storage.get_client_info()`` and would reuse
+    the old ``client_id`` against the new ``redirect_uri``, which OAuth
+    servers reject (or worse, accept while redirecting back to the stale
+    host/port).
+
+    Also handle the inverse of :func:`_maybe_preregister_client`: if the
+    config no longer has a pre-registered ``client_id``/``client_secret``
+    but the stored file was written by that path (or otherwise has a client
+    auth method that no longer matches the current metadata), delete it so
+    the SDK falls back to dynamic registration/public-client behavior. This
+    prevents a removed client secret from staying active via cached
+    ``client_info``. Legacy files written before Hermes added explicit
+    dynamic/pre-registered markers are removed once as a conservative
+    migration: they could be either dynamic registrations or removed
+    pre-registered clients, and re-registering is safer than silently
+    retaining a removed configured client_id. Redirect URI changes always
+    invalidate stored client_info, even when cached tokens include a refresh
+    token: if refresh is skipped or fails, reusing the old dynamic client_id
+    with the new redirect_uri makes the next browser flow fail against OAuth
+    servers that bind client registrations to exact redirect URIs.
+
+    The active pre-registered ``client_id`` path is intentionally skipped
+    here — :func:`_maybe_preregister_client` overwrites the file
+    unconditionally on that path, so deletion would be wasted I/O.
+    """
+    if cfg.get("client_id"):
+        return
+    path = storage._client_info_path()
+    if not path.exists():
+        return
+    existing = _read_json(path)
+    if existing is None:
+        return
+    stored_uris = [str(u) for u in (existing.get("redirect_uris") or [])]
+    new_uris = [str(u) for u in (client_metadata.redirect_uris or [])]
+    stored_auth_method = existing.get("token_endpoint_auth_method")
+    new_auth_method = client_metadata.token_endpoint_auth_method
+    is_dynamic_client = existing.get("hermes_dynamic_client") is True
+    has_refresh_token = _stored_tokens_have_refresh_token(storage)
+    legacy_confidential_client = (
+        not is_dynamic_client
+        and (
+            bool(existing.get("client_secret"))
+            or (
+                stored_auth_method is not None
+                and stored_auth_method != "none"
+                and stored_auth_method != new_auth_method
+            )
+        )
+    )
+
+    stale_reasons: list[str] = []
+    if set(stored_uris) != set(new_uris):
+        stale_reasons.append(f"redirect_uris {stored_uris} != {new_uris}")
+    if existing.get("hermes_preregistered_client") is True:
+        stale_reasons.append("stored client_info came from removed pre-registered config")
+    elif not is_dynamic_client:
+        if legacy_confidential_client:
+            stale_reasons.append(
+                "legacy unmarked confidential client_info could be removed pre-registered config"
+            )
+        elif has_refresh_token:
+            logger.debug(
+                "MCP OAuth '%s': keeping legacy unmarked client_info because "
+                "cached tokens include a refresh token",
+                storage._server_name,
+            )
+        else:
+            stale_reasons.append("legacy unmarked client_info could be removed pre-registered config")
+    elif stored_auth_method is not None and stored_auth_method != new_auth_method:
+        stale_reasons.append(
+            f"token_endpoint_auth_method {stored_auth_method!r} != {new_auth_method!r}"
+        )
+
+    if not stale_reasons:
+        return
+    try:
+        path.unlink()
+    except OSError as exc:
+        logger.warning(
+            "MCP OAuth '%s': failed to remove stale client_info at %s: %s",
+            storage._server_name, path, exc,
+        )
+        return
+    logger.info(
+        "MCP OAuth '%s': removed stale client_info (%s) so SDK will re-register",
+        storage._server_name, "; ".join(stale_reasons),
+    )
+
+
 def _maybe_preregister_client(
     storage: "HermesTokenStorage",
     cfg: dict,
@@ -572,8 +1031,7 @@ def _maybe_preregister_client(
     client_id = cfg.get("client_id")
     if not client_id:
         return
-    port = cfg["_resolved_port"]
-    redirect_uri = f"http://127.0.0.1:{port}/callback"
+    redirect_uri = _build_redirect_uri(cfg)
 
     info_dict: dict[str, Any] = {
         "client_id": client_id,
@@ -581,6 +1039,7 @@ def _maybe_preregister_client(
         "grant_types": client_metadata.grant_types,
         "response_types": client_metadata.response_types,
         "token_endpoint_auth_method": client_metadata.token_endpoint_auth_method,
+        "hermes_preregistered_client": True,
     }
     if cfg.get("client_secret"):
         info_dict["client_secret"] = cfg["client_secret"]
@@ -590,7 +1049,9 @@ def _maybe_preregister_client(
         info_dict["scope"] = cfg["scope"]
 
     client_info = OAuthClientInformationFull.model_validate(info_dict)
-    _write_json(storage._client_info_path(), client_info.model_dump(mode="json", exclude_none=True))
+    payload = client_info.model_dump(mode="json", exclude_none=True)
+    payload["hermes_preregistered_client"] = True
+    _write_json(storage._client_info_path(), payload)
     logger.debug("Pre-registered client_id=%s for '%s'", client_id, storage._server_name)
 
 
@@ -634,15 +1095,22 @@ def build_oauth_auth(
             server_name,
         )
 
-    _configure_callback_port(cfg)
+    port = _configure_callback_port(cfg)
     client_metadata = _build_client_metadata(cfg)
+    _invalidate_stale_dynamic_client_info(storage, cfg, client_metadata)
     _maybe_preregister_client(storage, cfg, client_metadata)
+
+    # Capture the resolved host/port in per-provider closures so a later
+    # ``build_oauth_auth`` call for a different server can't retarget this
+    # provider's callback listener or SSH hint via the module globals.
+    callback_handler = _make_wait_for_callback(cfg["_resolved_bind_host"], port)
+    redirect_handler = _make_redirect_handler(cfg["_resolved_uri_host"], port)
 
     return OAuthClientProvider(
         server_url=server_url,
         client_metadata=client_metadata,
         storage=storage,
-        redirect_handler=_redirect_handler,
-        callback_handler=_wait_for_callback,
+        redirect_handler=redirect_handler,
+        callback_handler=callback_handler,
         timeout=float(cfg.get("timeout", 300)),
     )

@@ -202,7 +202,6 @@ all = [
   "hermes-agent[homeassistant]",
   "hermes-agent[sms]",
   "hermes-agent[acp]",
-  "hermes-agent[xmpp]",
   "hermes-agent[google]",
   "hermes-agent[web]",
   "hermes-agent[youtube]",

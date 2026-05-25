@@ -21,7 +21,13 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Awaitable, Callable, Dict, List, Optional
 
-import slixmpp
+try:
+    import slixmpp
+
+    SLIXMPP_AVAILABLE = True
+except ImportError:
+    SLIXMPP_AVAILABLE = False
+    slixmpp = None  # type: ignore[assignment]
 
 from gateway.config import Platform, PlatformConfig
 from gateway.platforms.base import (
@@ -35,11 +41,24 @@ logger = logging.getLogger(__name__)
 
 
 def check_xmpp_requirements() -> bool:
-    """Confirm the [xmpp] extra is installed."""
-    try:
-        import slixmpp  # noqa: F401
-    except ImportError:
-        return False
+    """Confirm the [xmpp] extra is installed.
+
+    Lazy-installs slixmpp via ``tools.lazy_deps.ensure("platform.xmpp")``
+    on first call if not present.
+    """
+    global SLIXMPP_AVAILABLE, slixmpp
+    if not SLIXMPP_AVAILABLE:
+        try:
+            from tools.lazy_deps import ensure as _lazy_ensure
+            _lazy_ensure("platform.xmpp", prompt=False)
+        except Exception:
+            return False
+        try:
+            import slixmpp as _slixmpp
+        except ImportError:
+            return False
+        slixmpp = _slixmpp
+        SLIXMPP_AVAILABLE = True
     return True
 
 

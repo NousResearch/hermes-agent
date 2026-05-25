@@ -252,7 +252,10 @@ export function useMainApp(gw: GatewayClient) {
     return `${thinking}:${tools}`
   }, [ui.detailsMode, ui.detailsModeCommandOverride, ui.sections])
 
-  const detailsVisible = detailsLayoutKey !== 'hidden:hidden'
+  const [thinkingDetailsMode, toolsDetailsMode] = detailsLayoutKey.split(':')
+  const thinkingDetailsVisible = thinkingDetailsMode !== 'hidden'
+  const toolsDetailsVisible = toolsDetailsMode !== 'hidden'
+  const detailsVisible = thinkingDetailsVisible || toolsDetailsVisible
   const userPromptWidth = composerPromptWidth(ui.theme.brand.prompt)
   const heightCacheKey = `${ui.sid ?? 'draft'}:${cols}:${userPromptWidth}:${ui.compact ? '1' : '0'}:${detailsLayoutKey}`
 
@@ -281,10 +284,21 @@ export function useMainApp(gw: GatewayClient) {
       estimatedMsgHeight(virtualRows[index]!.msg, cols, {
         compact: ui.compact,
         details: detailsVisible,
+        thinkingVisible: thinkingDetailsVisible,
+        toolsVisible: toolsDetailsVisible,
         userPrompt: ui.theme.brand.prompt,
         withSeparator: virtualRows[index]!.msg.role === 'user' && firstUserIdx >= 0 && index > firstUserIdx
       }),
-    [cols, detailsVisible, firstUserIdx, ui.compact, ui.theme.brand.prompt, virtualRows]
+    [
+      cols,
+      detailsVisible,
+      firstUserIdx,
+      thinkingDetailsVisible,
+      toolsDetailsVisible,
+      ui.compact,
+      ui.theme.brand.prompt,
+      virtualRows
+    ]
   )
 
   const syncHeightCache = useCallback(

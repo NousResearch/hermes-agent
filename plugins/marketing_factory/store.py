@@ -264,6 +264,53 @@ class MarketingFactoryStore:
         self.audit("brand_profile.removed", slug, {"removed": deps})
         return {"app_slug": slug, "removed": deps}
 
+    def add_image_to_library(self, app_slug: str, url: str, reviewer: str = "human") -> Dict[str, Any]:
+        """Append a brand-approved image URL to the brand's image_library."""
+        slug = _require_slug(app_slug)
+        if not url or not url.strip():
+            raise ValueError("url is required")
+        state = self.load()
+        app = state["apps"].get(slug)
+        if not app:
+            raise KeyError(f"Unknown app slug: {slug}")
+        library = list(app.get("image_library") or [])
+        clean = url.strip()
+        if clean not in library:
+            library.append(clean)
+        app["image_library"] = library
+        app["updated_at"] = utc_now()
+        state["apps"][slug] = app
+        self._write_state(state)
+        self.audit("image_library.added", slug, {"url": clean, "library_size": len(library), "reviewer": reviewer})
+        return {"app_slug": slug, "library_size": len(library), "added": clean}
+
+    def remove_image_from_library(self, app_slug: str, url: str, reviewer: str = "human") -> Dict[str, Any]:
+        slug = _require_slug(app_slug)
+        state = self.load()
+        app = state["apps"].get(slug)
+        if not app:
+            raise KeyError(f"Unknown app slug: {slug}")
+        library = [u for u in (app.get("image_library") or []) if u != url]
+        app["image_library"] = library
+        app["updated_at"] = utc_now()
+        state["apps"][slug] = app
+        self._write_state(state)
+        self.audit("image_library.removed", slug, {"url": url, "library_size": len(library), "reviewer": reviewer})
+        return {"app_slug": slug, "library_size": len(library), "removed": url}
+
+    def set_image_style_guide(self, app_slug: str, style_guide: str, reviewer: str = "human") -> Dict[str, Any]:
+        slug = _require_slug(app_slug)
+        state = self.load()
+        app = state["apps"].get(slug)
+        if not app:
+            raise KeyError(f"Unknown app slug: {slug}")
+        app["image_style_guide"] = (style_guide or "").strip()
+        app["updated_at"] = utc_now()
+        state["apps"][slug] = app
+        self._write_state(state)
+        self.audit("image_style_guide.updated", slug, {"length": len(app["image_style_guide"]), "reviewer": reviewer})
+        return {"app_slug": slug, "image_style_guide": app["image_style_guide"]}
+
     def set_auto_generate(self, app_slug: str, enabled: bool, *, threshold: Optional[int] = None, reviewer: str = "human") -> Dict[str, Any]:
         """Toggle the per-app auto-generation flag and optionally update its threshold."""
         slug = _require_slug(app_slug)

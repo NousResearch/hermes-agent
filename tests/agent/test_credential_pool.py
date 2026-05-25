@@ -395,6 +395,324 @@ def test_load_pool_seeds_env_api_key(tmp_path, monkeypatch):
 
 
 
+def test_load_pool_does_not_persist_env_seeded_secret_value(tmp_path, monkeypatch):
+    """Runtime env keys may be used in memory but must not land in auth.json."""
+    sentinel = "S3NTINEL_DO_NOT_PERSIST_OPENROUTER"
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    monkeypatch.setenv("OPENROUTER_API_KEY", sentinel)
+    _write_auth_store(tmp_path, {"version": 1, "providers": {}})
+
+    from agent.credential_pool import load_pool
+
+    pool = load_pool("openrouter")
+    entry = pool.select()
+
+    assert entry is not None
+    assert entry.source == "env:OPENROUTER_API_KEY"
+    assert entry.access_token == sentinel
+
+    auth_text = (tmp_path / "hermes" / "auth.json").read_text()
+    assert sentinel not in auth_text
+    persisted = json.loads(auth_text)["credential_pool"]["openrouter"][0]
+    assert persisted["source"] == "env:OPENROUTER_API_KEY"
+    assert persisted["label"] == "OPENROUTER_API_KEY"
+    assert persisted["auth_type"] == "api_key"
+    assert persisted["priority"] == 0
+    assert "access_token" not in persisted
+    assert persisted["secret_fingerprint"].startswith("sha256:")
+
+
+
+def test_load_pool_persists_bitwarden_origin_metadata_without_secret(tmp_path, monkeypatch):
+    """Bitwarden-injected env vars retain source metadata but not raw values."""
+    sentinel = "S3NTINEL_DO_NOT_PERSIST_BITWARDEN"
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    monkeypatch.setenv("OPENROUTER_API_KEY", sentinel)
+    monkeypatch.setattr(
+        "hermes_cli.env_loader.get_secret_source",
+        lambda env_var: "bitwarden" if env_var == "OPENROUTER_API_KEY" else None,
+    )
+    _write_auth_store(tmp_path, {"version": 1, "providers": {}})
+
+    from agent.credential_pool import load_pool
+
+    pool = load_pool("openrouter")
+    entry = pool.select()
+
+    assert entry is not None
+    assert entry.access_token == sentinel
+    assert entry.source == "env:OPENROUTER_API_KEY"
+
+    auth_text = (tmp_path / "hermes" / "auth.json").read_text()
+    assert sentinel not in auth_text
+    persisted = json.loads(auth_text)["credential_pool"]["openrouter"][0]
+    assert persisted["source"] == "env:OPENROUTER_API_KEY"
+    assert persisted["secret_source"] == "bitwarden"
+    assert "access_token" not in persisted
+
+
+
+def test_load_pool_sanitizes_legacy_raw_borrowed_entry_when_value_unchanged(tmp_path, monkeypatch):
+    """Existing raw env-seeded pool entries are rewritten even if the env value matches."""
+    sentinel = "S3NTINEL_DO_NOT_PERSIST_LEGACY_RAW"
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    monkeypatch.setenv("OPENROUTER_API_KEY", sentinel)
+    _write_auth_store(
+        tmp_path,
+        {
+            "version": 1,
+            "credential_pool": {
+                "openrouter": [
+                    {
+                        "id": "legacy-env",
+                        "label": "OPENROUTER_API_KEY",
+                        "auth_type": "api_key",
+                        "priority": 0,
+                        "source": "env:OPENROUTER_API_KEY",
+                        "access_token": sentinel,
+                        "base_url": "https://openrouter.ai/api/v1",
+                    }
+                ]
+            },
+        },
+    )
+
+    from agent.credential_pool import load_pool
+
+    pool = load_pool("openrouter")
+    entry = pool.select()
+
+    assert entry is not None
+    assert entry.access_token == sentinel
+    auth_text = (tmp_path / "hermes" / "auth.json").read_text()
+    assert sentinel not in auth_text
+    persisted = json.loads(auth_text)["credential_pool"]["openrouter"][0]
+    assert persisted["id"] == "legacy-env"
+    assert "access_token" not in persisted
+    assert persisted["secret_fingerprint"].startswith("sha256:")
+
+
+
+def test_pooled_credential_to_dict_strips_borrowed_secret_fields():
+    from agent.credential_pool import PooledCredential
+
+    sentinel = "S3NTINEL_DO_NOT_PERSIST_TO_DICT"
+    credential = PooledCredential(
+        provider="openrouter",
+        id="borrowed-1",
+        label="vault-ref",
+        auth_type="api_key",
+        priority=3,
+        source="vault:openrouter/api-key",
+        access_token=sentinel,
+        refresh_token=f"refresh-{sentinel}",
+        agent_key=f"agent-{sentinel}",
+        request_count=7,
+        last_status="ok",
+        extra={
+            "api_key": f"extra-{sentinel}",
+            "client_secret": f"client-{sentinel}",
+            "secret_key": f"secret-key-{sentinel}",
+            "authToken": f"auth-token-{sentinel}",
+            "refreshToken": f"camel-refresh-{sentinel}",
+            "authorization": f"Bearer {sentinel}",
+            "tokens": {"access_token": f"nested-{sentinel}"},
+            "token_type": "Bearer",
+            "scope": "inference",
+        },
+    )
+
+    payload = credential.to_dict()
+    serialized = json.dumps(payload)
+
+    assert sentinel not in serialized
+    assert "access_token" not in payload
+    assert "refresh_token" not in payload
+    assert "agent_key" not in payload
+    assert "api_key" not in payload
+    assert "client_secret" not in payload
+    assert "secret_key" not in payload
+    assert "authToken" not in payload
+    assert "refreshToken" not in payload
+    assert "authorization" not in payload
+    assert "tokens" not in payload
+    assert payload["source"] == "vault:openrouter/api-key"
+    assert payload["label"] == "vault-ref"
+    assert payload["request_count"] == 7
+    assert payload["token_type"] == "Bearer"
+    assert payload["scope"] == "inference"
+    assert payload["secret_fingerprint"].startswith("sha256:")
+
+
+
+@pytest.mark.parametrize("source", [
+    "age://openrouter/api-key",
+    "systemd",
+    "keyring",
+    "1password",
+    "pass",
+    "sops",
+    "future_secret_store:openrouter",
+])
+def test_borrowed_source_variants_strip_secret_fields(source):
+    from agent.credential_pool import PooledCredential
+
+    sentinel = f"S3NTINEL_DO_NOT_PERSIST_{source.replace(':', '_').replace('/', '_')}"
+    credential = PooledCredential(
+        provider="openrouter",
+        id="borrowed-variant",
+        label="borrowed",
+        auth_type="api_key",
+        priority=0,
+        source=source,
+        access_token=sentinel,
+        refresh_token=f"refresh-{sentinel}",
+    )
+
+    payload = credential.to_dict()
+    serialized = json.dumps(payload)
+
+    assert sentinel not in serialized
+    assert "access_token" not in payload
+    assert "refresh_token" not in payload
+    assert payload["source"] == source
+    assert payload["secret_fingerprint"].startswith("sha256:")
+
+
+
+def test_load_pool_prunes_stale_borrowed_custom_config_entry(tmp_path, monkeypatch):
+    sentinel = "S3NTINEL_DO_NOT_PERSIST_STALE_CUSTOM"
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    _write_auth_store(
+        tmp_path,
+        {
+            "version": 1,
+            "credential_pool": {
+                "custom:foo": [
+                    {
+                        "id": "stale-custom",
+                        "label": "Foo",
+                        "auth_type": "api_key",
+                        "priority": 0,
+                        "source": "config:Foo",
+                        "access_token": sentinel,
+                        "base_url": "https://foo.example/v1",
+                    }
+                ]
+            },
+        },
+    )
+
+    from agent.credential_pool import load_pool
+
+    pool = load_pool("custom:foo")
+
+    assert pool.entries() == []
+    auth_text = (tmp_path / "hermes" / "auth.json").read_text()
+    assert sentinel not in auth_text
+    assert json.loads(auth_text)["credential_pool"]["custom:foo"] == []
+
+
+
+def test_write_credential_pool_sanitizes_borrowed_payload_at_disk_boundary(tmp_path, monkeypatch):
+    """Direct dictionary callers cannot bypass the borrowed-secret guard."""
+    sentinel = "S3NTINEL_DO_NOT_PERSIST_DIRECT_WRITE"
+    manual_secret = "MANUAL_SECRET_STAYS_PERSISTABLE"
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+
+    from hermes_cli.auth import write_credential_pool
+
+    write_credential_pool("openrouter", [
+        {
+            "id": "borrowed-1",
+            "label": "systemd-ref",
+            "auth_type": "api_key",
+            "priority": 0,
+            "source": "systemd://hermes/openrouter",
+            "access_token": sentinel,
+            "refresh_token": f"refresh-{sentinel}",
+            "agent_key": f"agent-{sentinel}",
+            "api_key": f"extra-{sentinel}",
+        },
+        {
+            "id": "manual-1",
+            "label": "manual",
+            "auth_type": "api_key",
+            "priority": 1,
+            "source": "manual",
+            "access_token": manual_secret,
+        },
+    ])
+
+    auth_text = (tmp_path / "hermes" / "auth.json").read_text()
+    assert sentinel not in auth_text
+    assert manual_secret in auth_text
+    entries = json.loads(auth_text)["credential_pool"]["openrouter"]
+    borrowed, manual = entries
+    assert borrowed["source"] == "systemd://hermes/openrouter"
+    assert "access_token" not in borrowed
+    assert "refresh_token" not in borrowed
+    assert "agent_key" not in borrowed
+    assert "api_key" not in borrowed
+    assert borrowed["secret_fingerprint"].startswith("sha256:")
+    assert manual["access_token"] == manual_secret
+
+
+
+def test_write_credential_pool_treats_unowned_oauth_source_as_borrowed(tmp_path, monkeypatch):
+    sentinel = "S3NTINEL_DO_NOT_PERSIST_UNOWNED_OAUTH"
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+
+    from hermes_cli.auth import write_credential_pool
+
+    write_credential_pool("openrouter", [
+        {
+            "id": "unowned-oauth",
+            "label": "unowned-oauth",
+            "auth_type": "oauth",
+            "priority": 0,
+            "source": "oauth",
+            "access_token": sentinel,
+            "refresh_token": f"refresh-{sentinel}",
+        }
+    ])
+
+    auth_text = (tmp_path / "hermes" / "auth.json").read_text()
+    assert sentinel not in auth_text
+    persisted = json.loads(auth_text)["credential_pool"]["openrouter"][0]
+    assert persisted["source"] == "oauth"
+    assert "access_token" not in persisted
+    assert "refresh_token" not in persisted
+    assert persisted["secret_fingerprint"].startswith("sha256:")
+
+
+
+def test_write_credential_pool_preserves_known_provider_owned_oauth_state(tmp_path, monkeypatch):
+    sentinel = "PROVIDER_OWNED_DEVICE_CODE_STAYS_PERSISTABLE"
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+
+    from hermes_cli.auth import write_credential_pool
+
+    write_credential_pool("nous", [
+        {
+            "id": "nous-device",
+            "label": "device-code",
+            "auth_type": "oauth",
+            "priority": 0,
+            "source": "device_code",
+            "access_token": sentinel,
+            "refresh_token": f"refresh-{sentinel}",
+            "agent_key": f"agent-{sentinel}",
+        }
+    ])
+
+    persisted = json.loads((tmp_path / "hermes" / "auth.json").read_text())["credential_pool"]["nous"][0]
+    assert persisted["access_token"] == sentinel
+    assert persisted["refresh_token"] == f"refresh-{sentinel}"
+    assert persisted["agent_key"] == f"agent-{sentinel}"
+
+
+
 def test_load_pool_prefers_dotenv_over_stale_os_environ(tmp_path, monkeypatch):
     """Regression for #18254: stale OPENROUTER_API_KEY in os.environ (inherited
     from a parent shell) must NOT shadow the fresh key in ~/.hermes/.env when

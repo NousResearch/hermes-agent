@@ -9,6 +9,7 @@ import pytest
 from gateway.platforms.base import (
     BasePlatformAdapter,
     GATEWAY_SECRET_CAPTURE_UNSUPPORTED_MESSAGE,
+    MEDIA_DELIVERY_SAFE_ROOTS,
     MessageEvent,
     MessageType,
     safe_url_for_log,
@@ -534,6 +535,15 @@ class TestMediaDeliveryPathValidation:
 
         out = BasePlatformAdapter.filter_local_delivery_paths([str(fresh)])
         assert out == [str(fresh.resolve())]
+
+    def test_default_roots_include_canonical_media_caches(self):
+        suffixes = {tuple(root.parts[-2:]) for root in MEDIA_DELIVERY_SAFE_ROOTS}
+
+        assert ("cache", "images") in suffixes
+        assert ("cache", "audio") in suffixes
+        assert ("cache", "videos") in suffixes
+        assert ("cache", "documents") in suffixes
+        assert ("cache", "screenshots") in suffixes
 
 
 # ---------------------------------------------------------------------------

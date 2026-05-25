@@ -506,19 +506,23 @@ def test_image_gen_disabled_via_env_skips_image_attachment(isolate_home, monkeyp
         assert not (draft.get("images") or []), "MF_AUTO_IMAGES=0 should suppress image generation"
 
 
-def test_image_gen_skips_non_visual_channels(isolate_home, monkeypatch):
-    """Phase 10: blog/email/linkedin/x drafts must NOT get auto-generated images."""
+def test_image_gen_skips_truly_text_only_channels(isolate_home, monkeypatch):
+    """linkedin/blog/email drafts must NOT get auto-generated images. X is
+    now a visual channel (post-2026-05 — images significantly boost X
+    engagement) so it IS allowed to attach images when the brand has
+    auto-gen enabled."""
     monkeypatch.setenv("MF_AUTO_IMAGES", "1")
     from plugins.marketing_factory.pipeline import MarketingFactoryPipeline
     from plugins.marketing_factory.store import MarketingFactoryStore
 
-    # SetVenue's channels are linkedin/x/blog/email — none are visual.
     store = MarketingFactoryStore()
     pipe = MarketingFactoryPipeline(store)
     pipe.initialize_samples()
     result = pipe.generate_campaign("setvenue", days=4)
+    text_only = {"linkedin", "blog", "email"}
     for draft in result["drafts"]:
-        assert not (draft.get("images") or []), f"{draft['channel']} should not get auto images"
+        if draft["channel"] in text_only:
+            assert not (draft.get("images") or []), f"{draft['channel']} (text-only) should not get images"
 
 
 def test_image_gen_url_uses_default_template_when_llm_disabled(isolate_home, monkeypatch):

@@ -4062,6 +4062,11 @@ _RESPAWN_GUARD_PR_URL_RE = re.compile(
     re.IGNORECASE,
 )
 
+# PR URL comments are duplicate-PR evidence for implementation lanes, but
+# QA/retest lanes routinely quote PR URLs as verification context and must
+# remain dispatchable.
+_RESPAWN_GUARD_PR_BYPASS_ASSIGNEES = {"tester", "qa"}
+
 
 @dataclass
 class DispatchResult:
@@ -4985,8 +4990,10 @@ def check_respawn_guard(conn: sqlite3.Connection, task_id: str) -> Optional[str]
 
     ``"active_pr"``
         A GitHub PR URL appears in a recent task comment (within
-        ``_RESPAWN_GUARD_PR_WINDOW`` seconds).  A prior worker already
-        opened a PR; re-spawning risks a duplicate PR on the same task.
+        ``_RESPAWN_GUARD_PR_WINDOW`` seconds) on an implementation lane.
+        A prior worker already opened a PR; re-spawning risks a duplicate
+        PR on the same task. QA/tester retest lanes bypass this check
+        because they quote PR URLs as verification context.
 
     Stale / dead claim locks are NOT a guard reason — they are handled
     by ``release_stale_claims`` and ``detect_crashed_workers`` which
@@ -4994,7 +5001,7 @@ def check_respawn_guard(conn: sqlite3.Connection, task_id: str) -> Optional[str]
     genuinely dead (no live PID on this host).
     """
     row = conn.execute(
-        "SELECT last_failure_error FROM tasks WHERE id = ?",
+        "SELECT assignee, last_failure_error FROM tasks WHERE id = ?",
         (task_id,),
     ).fetchone()
     if row is None:
@@ -5016,7 +5023,11 @@ def check_respawn_guard(conn: sqlite3.Connection, task_id: str) -> Optional[str]
     ).fetchone():
         return "recent_success"
 
-    # 3. GitHub PR URL in a recent comment — prior worker already opened a PR.
+    # 3. GitHub PR URL in a recent comment — prior implementation worker already opened a PR.
+    assignee = (row["assignee"] or "").casefold()
+    if assignee in _RESPAWN_GUARD_PR_BYPASS_ASSIGNEES:
+        return None
+
     pr_cutoff = now - _RESPAWN_GUARD_PR_WINDOW
     for c in conn.execute(
         "SELECT body FROM task_comments WHERE task_id = ? AND created_at >= ?",

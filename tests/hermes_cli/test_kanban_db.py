@@ -206,6 +206,35 @@ def test_init_db_rejects_explicit_board_as_pytest_isolation_override(monkeypatch
         kb.init_db(board="test-board")
 
 
+@pytest.mark.parametrize(
+    ("mutator", "args"),
+    [
+        (kb.set_current_board, ("test-board",)),
+        (kb.write_board_metadata, ("test-board",)),
+        (kb.create_board, ("test-board",)),
+    ],
+)
+def test_kanban_path_mutators_reject_unisolated_pytest_root_before_writes(
+    monkeypatch,
+    mutator,
+    args,
+):
+    monkeypatch.delenv("HERMES_KANBAN_HOME", raising=False)
+    monkeypatch.delenv("HERMES_KANBAN_DB", raising=False)
+    monkeypatch.delenv("HERMES_KANBAN_BOARD", raising=False)
+    realish_home = Path("/home/test-user")
+    monkeypatch.setattr(Path, "home", lambda: realish_home)
+    monkeypatch.setenv("HERMES_HOME", str(realish_home / ".hermes"))
+
+    def fail_if_mutator_tries_to_create(_self, *args, **kwargs):
+        raise AssertionError("kanban path mutator should fail before creating directories")
+
+    monkeypatch.setattr(Path, "mkdir", fail_if_mutator_tries_to_create)
+
+    with pytest.raises(RuntimeError, match="without HERMES_KANBAN_HOME or HERMES_KANBAN_DB"):
+        mutator(*args)
+
+
 def test_connect_rejects_tls_record_in_sqlite_header(tmp_path, monkeypatch):
     """Kanban should classify TLS-looking page-0 clobbers before WAL setup."""
     home = tmp_path / ".hermes"

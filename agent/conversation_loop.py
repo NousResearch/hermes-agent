@@ -54,6 +54,7 @@ from agent.model_metadata import (
     parse_context_limit_from_error,
     save_context_length,
 )
+from agent.post_response_watchdog import post_response_watchdog
 from agent.nous_rate_guard import (
     clear_nous_rate_limit,
     is_genuine_nous_rate_limit,
@@ -3066,11 +3067,22 @@ def run_conversation(
             break
 
         try:
-            _transport = agent._get_transport()
-            _normalize_kwargs = {}
-            if agent.api_mode == "anthropic_messages":
-                _normalize_kwargs["strip_tool_prefix"] = agent._is_anthropic_oauth
-            normalized = _transport.normalize_response(response, **_normalize_kwargs)
+            # Issue #32079: a successful Codex Responses turn has been
+            # observed wedging the gateway in ``_sre`` while the post-
+            # response normalize / leak-detect / MEDIA-extract pipeline
+            # holds the GIL.  Arm the diagnostic watchdog around the
+            # whole transport-normalize step so the next user report
+            # carries a per-thread stack dump pointing at the stuck
+            # phase.  Watchdog is non-cancelling — it only emits
+            # evidence so the bug becomes actionable.
+            with post_response_watchdog(
+                f"transport.normalize_response[{agent.api_mode or 'unknown'}]",
+            ):
+                _transport = agent._get_transport()
+                _normalize_kwargs = {}
+                if agent.api_mode == "anthropic_messages":
+                    _normalize_kwargs["strip_tool_prefix"] = agent._is_anthropic_oauth
+                normalized = _transport.normalize_response(response, **_normalize_kwargs)
             assistant_message = normalized
             finish_reason = normalized.finish_reason
             

@@ -1,3 +1,4 @@
+import { useSearchParams } from "react-router-dom";
 import { useEffect, useLayoutEffect, useRef, useState, useMemo } from "react";
 import {
   Code,
@@ -113,6 +114,8 @@ export default function ConfigPage() {
   );
   const [saving, setSaving] = useState(false);
   const [searchQuery, setSearchQuery] = useState("");
+  const [searchParams, setSearchParams] = useSearchParams();
+  const requestedCategory = searchParams.get("category") ?? "";
   const [yamlMode, setYamlMode] = useState(false);
   const [yamlText, setYamlText] = useState("");
   const [yamlLoading, setYamlLoading] = useState(false);
@@ -193,13 +196,6 @@ export default function ConfigPage() {
       .catch(() => {});
   }, []);
 
-  // Set active category when categories load
-  useEffect(() => {
-    if (categoryOrder.length > 0 && !activeCategory) {
-      setActiveCategory(categoryOrder[0]);
-    }
-  }, [categoryOrder, activeCategory]);
-
   // Load YAML when switching to YAML mode
   useEffect(() => {
     if (yamlMode) {
@@ -224,6 +220,25 @@ export default function ConfigPage() {
     const extra = allCats.filter((c) => !categoryOrder.includes(c)).sort();
     return [...ordered, ...extra];
   }, [schema, categoryOrder]);
+
+  // Set active category when categories load or when a ?category= deep link is present.
+  useEffect(() => {
+    if (categories.length === 0) return;
+    if (requestedCategory && categories.includes(requestedCategory)) {
+      setActiveCategory(requestedCategory);
+      setSearchQuery("");
+      return;
+    }
+    if (!activeCategory) {
+      setActiveCategory(categories[0]);
+    }
+  }, [categories, requestedCategory, activeCategory]);
+
+  const selectCategory = (category: string) => {
+    setSearchQuery("");
+    setActiveCategory(category);
+    setSearchParams({ category }, { replace: true });
+  };
 
   /* ---- Category field counts ---- */
   const categoryCounts = useMemo(() => {
@@ -561,10 +576,7 @@ export default function ConfigPage() {
                       <ListItem
                         key={cat}
                         active={isActive}
-                        onClick={() => {
-                          setSearchQuery("");
-                          setActiveCategory(cat);
-                        }}
+                        onClick={() => selectCategory(cat)}
                         className="rounded-none whitespace-nowrap px-2 py-1 text-xs"
                       >
                         <CategoryIcon

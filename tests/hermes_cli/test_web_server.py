@@ -3625,6 +3625,15 @@ class TestWebServerEndpoints:
 
 
 class TestBuildSchemaFromConfig:
+    def test_compression_section_reachable_in_config_ui(self):
+        """Regression for #15677: links can target the compression settings category."""
+        from hermes_cli.web_server import CONFIG_SCHEMA, _CATEGORY_ORDER
+
+        assert "compression" in _CATEGORY_ORDER
+        for key in ("compression.enabled", "compression.threshold"):
+            assert key in CONFIG_SCHEMA
+            assert CONFIG_SCHEMA[key]["category"] == "compression"
+
     def test_produces_expected_field_count(self):
         from hermes_cli.web_server import CONFIG_SCHEMA
         # DEFAULT_CONFIG has ~150+ leaf fields

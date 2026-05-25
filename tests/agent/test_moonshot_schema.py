@@ -560,3 +560,171 @@ class TestEnumNullStripping:
         assert db_type["type"] == "string"
         assert db_type["enum"] == ["mysql", "postgresql"], \
             "null/empty enum values must be stripped after anyOf collapse"
+
+
+class TestUnionTypeList:
+    """``type: ["number", "string"]`` union arrays must not crash the
+    set-membership test and must be normalised to the first concrete type."""
+
+    def test_union_type_list_normalises_to_first_concrete(self):
+        """``type: ["number", "string"]`` becomes ``"number"``."""
+        params = {
+            "type": "object",
+            "properties": {
+                "limit": {
+                    "type": ["number", "string"],
+                    "description": "Max results",
+                },
+            },
+        }
+        out = sanitize_moonshot_tool_parameters(params)
+        limit = out["properties"]["limit"]
+        assert limit["type"] == "number"
+        assert isinstance(limit["type"], str)
+
+    def test_union_type_null_first_picks_next_concrete(self):
+        """``type: ["null", "string"]`` skips null and picks ``"string"``."""
+        params = {
+            "type": "object",
+            "properties": {
+                "name": {
+                    "type": ["null", "string"],
+                },
+            },
+        }
+        out = sanitize_moonshot_tool_parameters(params)
+        assert out["properties"]["name"]["type"] == "string"
+
+    def test_union_type_all_falsy_falls_back_to_string(self):
+        """``type: [None, "", "null"]`` falls back to ``"string"``."""
+        params = {
+            "type": "object",
+            "properties": {
+                "desc": {"type": [None, "", "null"]},
+            },
+        }
+        out = sanitize_moonshot_tool_parameters(params)
+        assert out["properties"]["desc"]["type"] == "string"
+
+    def test_union_type_single_element(self):
+        """``type: ["boolean"]`` normalises to the sole concrete type."""
+        params = {
+            "type": "object",
+            "properties": {
+                "flag": {"type": ["boolean"]},
+            },
+        }
+        out = sanitize_moonshot_tool_parameters(params)
+        assert out["properties"]["flag"]["type"] == "boolean"
+
+    def test_union_type_in_nested_property(self):
+        """Union type arrays work inside nested objects too."""
+        params = {
+            "type": "object",
+            "properties": {
+                "config": {
+                    "type": "object",
+                    "properties": {
+                        "timeout": {
+                            "type": ["integer", "null"],
+                        },
+                    },
+                },
+            },
+        }
+        out = sanitize_moonshot_tool_parameters(params)
+        config = out["properties"]["config"]
+        assert config["properties"]["timeout"]["type"] == "integer"
+
+    def test_union_type_does_not_mutate_input(self):
+        """Original input is not mutated when normalising union types."""
+        params = {
+            "type": "object",
+            "properties": {
+                "limit": {
+                    "type": ["number", "string"],
+                },
+            },
+        }
+        original_type = params["properties"]["limit"]["type"]
+        sanitize_moonshot_tool_parameters(params)
+        # Original must still be the list, unchanged
+        assert original_type == ["number", "string"]
+        assert isinstance(original_type, list)
+
+    def test_union_type_inside_anyof_child(self):
+        """Union type arrays inside anyOf children are normalised
+        to their first concrete type."""
+        params = {
+            "type": "object",
+            "properties": {
+                "size": {
+                    "anyOf": [
+                        {"type": ["integer", "null"]},
+                        {"type": "object"},
+                    ],
+                },
+            },
+        }
+        out = sanitize_moonshot_tool_parameters(params)
+        size = out["properties"]["size"]
+        # The anyOf should still exist (two non-null branches),
+        # but the first child's list-type should be normalised to a string
+        child_type = size["anyOf"][0]["type"]
+        assert isinstance(child_type, str)
+        assert child_type == "integer"
+
+    def test_scalar_type_still_works(self):
+        """Plain scalar types are unaffected by the union-type guard."""
+        params = {
+            "type": "object",
+            "properties": {
+                "count": {"type": "integer"},
+                "name": {"type": "string"},
+                "active": {"type": "boolean"},
+            },
+        }
+        out = sanitize_moonshot_tool_parameters(params)
+        assert out["properties"]["count"]["type"] == "integer"
+        assert out["properties"]["name"]["type"] == "string"
+        assert out["properties"]["active"]["type"] == "boolean"
+
+    def test_repair_schema_does_not_crash_on_union_type_with_enum(self):
+        """``_repair_schema`` enum cleanup must not crash when the original
+        ``type`` is a union list.  ``_fill_missing_type`` (called first at
+        L138) normalises the list to the first concrete scalar, so the enum
+        cleanup guard at L147 sees a string and proceeds normally — it must
+        not crash on what was originally a list."""
+        from agent.moonshot_schema import _repair_schema
+
+        node = {
+            "type": ["string", "integer"],
+            "enum": ["a", "b", None, ""],
+        }
+        result = _repair_schema(node, is_schema=True)
+        # Type is normalised to first concrete scalar by _fill_missing_type
+        assert result["type"] == "string"
+        # Enum cleanup proceeds because the guard sees isinstance(str) == True;
+        # null/empty values are stripped, leaving only the valid entries
+        assert result["enum"] == ["a", "b"]
+
+    def test_end_to_end_union_type_parameter_with_enum(self):
+        """Full ``sanitize_moonshot_tool_parameters`` pipeline must not crash
+        when a union-type parameter also carries an ``enum`` — exercises both
+        the ``_repair_schema`` enum-cleanup guard and the
+        ``_fill_missing_type`` normalisation in one call."""
+        params = {
+            "type": "object",
+            "properties": {
+                "sort": {
+                    "type": ["string", "null"],
+                    "enum": ["asc", "desc", None],
+                    "description": "Sort direction",
+                },
+            },
+        }
+        out = sanitize_moonshot_tool_parameters(params)
+        sort = out["properties"]["sort"]
+        # Union type normalised to first concrete scalar
+        assert sort["type"] == "string"
+        assert "enum" in sort

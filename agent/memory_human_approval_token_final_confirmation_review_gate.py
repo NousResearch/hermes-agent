@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-import hashlib
-import json
 from copy import deepcopy
 from typing import Any, Mapping
 
@@ -11,6 +9,13 @@ from agent.memory_human_approval_token_final_confirmation_request import (
     explain_human_approval_token_final_confirmation_request,
     recommend_human_approval_token_final_confirmation_request_action,
     validate_human_approval_token_final_confirmation_request,
+)
+from agent.memory_read_only_candidate_utils import (
+    build_stable_digest,
+    deep_copy_mapping,
+    summarize_candidates,
+    validate_forbidden_true_keys_false_or_absent,
+    validate_policy_flags,
 )
 
 
@@ -249,12 +254,8 @@ def validate_human_approval_token_final_confirmation_review_outcome(
         errors.append("source_pattern_ids_must_match_source_final_confirmation_request_snapshot")
     if outcome_candidate.get("source_fact_ids") != list(source_snapshot.get("source_fact_ids", []) or []):
         errors.append("source_fact_ids_must_match_source_final_confirmation_request_snapshot")
-    for forbidden_key in _FORBIDDEN_TRUE_KEYS:
-        if outcome_candidate.get(forbidden_key) is True:
-            errors.append(f"{forbidden_key}_must_be_false_or_absent")
-    for key, expected in MEMORY_HUMAN_APPROVAL_TOKEN_FINAL_CONFIRMATION_REVIEW_POLICY.items():
-        if policy.get(key) is not expected:
-            errors.append(f"policy_{key}_must_be_{str(expected).lower()}")
+    errors.extend(validate_forbidden_true_keys_false_or_absent(outcome_candidate, _FORBIDDEN_TRUE_KEYS))
+    errors.extend(validate_policy_flags(policy, MEMORY_HUMAN_APPROVAL_TOKEN_FINAL_CONFIRMATION_REVIEW_POLICY))
 
     return {"valid": not errors, "errors": _dedupe(errors)}
 
@@ -343,30 +344,26 @@ def recommend_human_approval_token_final_confirmation_review_action(
 def summarize_human_approval_token_final_confirmation_review_outcomes(
     outcomes: list[Mapping[str, Any]] | tuple[Mapping[str, Any], ...],
 ) -> dict[str, Any]:
-    by_block_type: dict[str, int] = {}
-    by_status: dict[str, int] = {}
-    by_outcome: dict[str, int] = {}
+    candidate_summary = summarize_candidates(
+        outcomes,
+        "review_outcome_status",
+        type_key="outcome",
+    )
     valid_count = 0
     invalid_count = 0
     for outcome in outcomes:
-        block_type = str(outcome.get("block_type"))
-        by_block_type[block_type] = by_block_type.get(block_type, 0) + 1
-        status = str(outcome.get("review_outcome_status"))
-        by_status[status] = by_status.get(status, 0) + 1
-        outcome_label = str(outcome.get("outcome"))
-        by_outcome[outcome_label] = by_outcome.get(outcome_label, 0) + 1
         validation = validate_human_approval_token_final_confirmation_review_outcome(outcome)
         if validation["valid"]:
             valid_count += 1
         else:
             invalid_count += 1
     return {
-        "total": len(outcomes),
+        "total": candidate_summary["total"],
         "valid_count": valid_count,
         "invalid_count": invalid_count,
-        "by_block_type": dict(sorted(by_block_type.items())),
-        "by_status": dict(sorted(by_status.items())),
-        "by_outcome": dict(sorted(by_outcome.items())),
+        "by_block_type": candidate_summary["by_block_type"],
+        "by_status": candidate_summary["by_status"],
+        "by_outcome": candidate_summary["by_type"],
         "policy": dict(MEMORY_HUMAN_APPROVAL_TOKEN_FINAL_CONFIRMATION_REVIEW_POLICY),
     }
 
@@ -447,12 +444,14 @@ def _review_outcome_id(outcome_candidate: Mapping[str, Any]) -> str:
         "final_confirmation_request_validation": outcome_candidate.get("final_confirmation_request_validation", {}),
         "policy": outcome_candidate.get("policy", {}),
     }
-    payload = json.dumps(identity, sort_keys=True, separators=(",", ":"), default=str)
-    return f"memory-human-approval-token-final-confirmation-review-outcome:v0.1:{hashlib.sha256(payload.encode('utf-8')).hexdigest()[:16]}"
+    return build_stable_digest(
+        "memory-human-approval-token-final-confirmation-review-outcome:v0.1",
+        identity,
+    )
 
 
 def _as_dict(value: Any) -> dict[str, Any]:
-    return deepcopy(dict(value)) if isinstance(value, Mapping) else {}
+    return deep_copy_mapping(value)
 
 
 def _dedupe(values: list[str]) -> list[str]:

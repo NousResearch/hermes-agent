@@ -67,6 +67,18 @@ def test_valid_final_confirmation_review_required_request_becomes_confirm_token_
     assert outcome["next_step_recommendation"]["writes_approval_audit"] is False
 
 
+def test_valid_final_confirmation_review_outcome_id_matches_v0_1_baseline():
+    outcome = create_human_approval_token_final_confirmation_review_outcome(
+        _request(),
+        confirmer="human-confirmer",
+    )
+
+    assert (
+        outcome["review_outcome_id"]
+        == "memory-human-approval-token-final-confirmation-review-outcome:v0.1:13650d00f3a3edc4"
+    )
+
+
 def test_invalid_request_candidate_rejects():
     request = _request()
     request["request_kind"] = "wrong"

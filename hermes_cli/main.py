@@ -9887,7 +9887,7 @@ _BUILTIN_SUBCOMMANDS = frozenset(
         "dump", "fallback", "gateway", "hooks", "import", "insights",
         "kanban", "login", "logout", "logs", "lsp", "mcp", "memory",
         "model", "pairing", "plugins", "postinstall", "profile", "proxy",
-        "send", "sessions", "setup",
+        "secrets", "send", "sessions", "setup",
         "skills", "slack", "status", "tools", "uninstall", "update",
         "version", "webhook", "whatsapp", "chat",
         # Help-ish invocations — plugin commands not being listed in
@@ -10965,6 +10965,17 @@ Examples:
         help="One or more paste URLs to delete (e.g. https://paste.rs/abc123)",
     )
     debug_parser.set_defaults(func=cmd_debug)
+
+    # =========================================================================
+    # secrets command
+    # =========================================================================
+    secrets_parser = subparsers.add_parser(
+        "secrets",
+        help="Manage Hermes runtime secrets (BWS SSOT)",
+        description="Sync and check .env projections against the BWS secrets manifest.",
+    )
+    from hermes_cli.secrets import register_secrets_subparsers
+    register_secrets_subparsers(secrets_parser)
 
     # =========================================================================
     # backup command

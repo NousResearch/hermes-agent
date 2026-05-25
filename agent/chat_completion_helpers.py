@@ -1664,8 +1664,16 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
         # Per-attempt diagnostic dict for the retry block to consume.
         _diag = agent._stream_diag_init()
         request_client_holder["diag"] = _diag
-        # Use the Anthropic SDK's streaming context manager
-        with agent._anthropic_client.messages.stream(**api_kwargs) as stream:
+        # Use the Anthropic SDK's streaming context manager.  The sanitizer
+        # strips Codex/Responses-only kwargs that would otherwise raise
+        # ``TypeError: Messages.stream() got an unexpected keyword argument
+        # 'instructions'`` (issue #31673) — defensive guard against any
+        # upstream code path leaking ``instructions=``/``input=``/``store=``
+        # into the Anthropic kwargs after a vision-aux call.
+        from agent.anthropic_adapter import sanitize_anthropic_messages_kwargs
+        with agent._anthropic_client.messages.stream(
+            **sanitize_anthropic_messages_kwargs(api_kwargs)
+        ) as stream:
             # The Anthropic SDK exposes the raw httpx response on
             # ``stream.response``.  Snapshot diagnostic headers
             # immediately so they survive a stream that dies before the

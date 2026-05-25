@@ -2942,7 +2942,10 @@ class AIAgent:
     def _anthropic_messages_create(self, api_kwargs: dict):
         if self.api_mode == "anthropic_messages":
             self._try_refresh_anthropic_client_credentials()
-        return self._anthropic_client.messages.create(**api_kwargs)
+        from agent.anthropic_adapter import sanitize_anthropic_messages_kwargs
+        return self._anthropic_client.messages.create(
+            **sanitize_anthropic_messages_kwargs(api_kwargs)
+        )
 
     def _rebuild_anthropic_client(self) -> None:
         """Rebuild the Anthropic client after an interrupt or stale call.

@@ -1014,10 +1014,13 @@ class BlueBubblesAdapter(BasePlatformAdapter):
 
         if need_force:
             if chat_guid:
+                n_force = len(need_force)
                 try:
                     await self.send(
                         chat_guid,
-                        "📎 Fetching attachment from iCloud, this may take a minute…",
+                        f"📎 Fetching {n_force} attachment"
+                        f"{'s' if n_force != 1 else ''} from iCloud, "
+                        f"this may take a minute…",
                     )
                 except Exception:
                     logger.debug(
@@ -1033,6 +1036,7 @@ class BlueBubblesAdapter(BasePlatformAdapter):
                     source=source,
                     record=record,
                     payload=payload,
+                    chat_guid=chat_guid or "",
                 )
             )
             self._background_tasks.add(task)
@@ -1119,11 +1123,19 @@ class BlueBubblesAdapter(BasePlatformAdapter):
         source: Any,
         record: Dict[str, Any],
         payload: Dict[str, Any],
+        chat_guid: str = "",
     ) -> None:
         """Force-fetch attachments that missed the cached path, then deliver
         the full MessageEvent. Runs as a background task so the webhook
         handler can return immediately and the user-facing
-        "📎 Fetching from iCloud…" notice arrives before the long wait."""
+        "📎 Fetching from iCloud…" notice arrives before the long wait.
+
+        After the fetch settles, posts a result notice to the chat (success,
+        partial, or full failure) and — when any attachment failed —
+        augments the agent-facing text with a ``[System: …]`` note so the
+        agent knows the user's message arrived incomplete and can respond
+        accordingly (e.g. ask the user to resend).
+        """
         force_results = await asyncio.gather(
             *[
                 self._fetch_attachment_bytes(att["guid"], force=True)
@@ -1132,21 +1144,71 @@ class BlueBubblesAdapter(BasePlatformAdapter):
             return_exceptions=True,
         )
         synced_media = list(cached_media)
+        failed_count = 0
         for att, data in zip(need_force, force_results):
             if isinstance(data, BaseException) or data is None:
                 logger.warning(
                     "[bluebubbles] force-download failed for %s",
                     _redact(att.get("guid", "")),
                 )
+                failed_count += 1
                 continue
             path = self._cache_attachment_bytes(data, att)
             if path:
                 synced_media.append(
                     (att, path, (att.get("mimeType") or "").lower())
                 )
+            else:
+                # bytes arrived but caching failed — treat as a failure for
+                # user/agent reporting so neither side is silently lied to.
+                failed_count += 1
+
+        total_slow = len(need_force)
+        ok_slow = total_slow - failed_count
+
+        # User-facing result notice: closes the loop opened by the
+        # "📎 Fetching…" message so the user knows what happened.
+        if chat_guid:
+            if failed_count == 0:
+                notice = "✅ Got it — processing your message…"
+            elif ok_slow == 0:
+                notice = (
+                    f"❌ Couldn't fetch attachment"
+                    f"{'s' if total_slow != 1 else ''} from iCloud — "
+                    f"processing your message text only."
+                )
+            else:
+                notice = (
+                    f"⚠️ Got {ok_slow} of {total_slow} attachments from "
+                    f"iCloud ({failed_count} failed) — processing what "
+                    f"came through."
+                )
+            try:
+                await self.send(chat_guid, notice)
+            except Exception:
+                logger.debug(
+                    "[bluebubbles] result notification failed",
+                    exc_info=True,
+                )
+
+        # Agent-facing context: append a system note so the agent doesn't
+        # silently lose track of dropped attachments. Without this, hermes
+        # would either see fewer media URLs than the user sent (and not
+        # know to apologize / ask for a resend) or — in the attachment-only
+        # all-fail case — receive no message at all because
+        # _dispatch_message_event drops empty events.
+        if failed_count > 0:
+            note = (
+                f"[System: {failed_count} of {total_slow} attachment"
+                f"{'s' if total_slow != 1 else ''} failed to download from "
+                f"iCloud. User may want to resend.]"
+            )
+            text_for_agent = f"{text}\n\n{note}" if text else note
+        else:
+            text_for_agent = text
 
         self._dispatch_message_event(
-            text=text,
+            text=text_for_agent,
             synced_media=synced_media,
             source=source,
             record=record,

@@ -840,7 +840,8 @@ class TestBlueBubblesAttachmentLoopBehavior:
         """When any attachment misses the cached path, the '📎 Fetching…'
         status is sent SYNCHRONOUSLY before the webhook returns OK. The
         force-download is deferred to a background task so the message is
-        not yet delivered when the handler returns."""
+        not yet delivered when the handler returns. After the fetch
+        completes, a '✅ Got it' notice closes the loop."""
         adapter = _make_adapter(monkeypatch)
         adapter._private_api_enabled = True
         import asyncio
@@ -885,8 +886,12 @@ class TestBlueBubblesAttachmentLoopBehavior:
         loop.run_until_complete(adapter._handle_webhook(req))
 
         try:
-            notices = [m for _, m in sent_messages if "Fetching attachment" in m]
-            assert len(notices) == 1, sent_messages
+            fetching = [m for _, m in sent_messages if "Fetching" in m]
+            got_it = [m for _, m in sent_messages if "Got it" in m]
+            assert len(fetching) == 1, sent_messages
+            assert got_it == [], (
+                "success notice must arrive AFTER force-download completes"
+            )
             assert delivered_events == [], (
                 "message must NOT be delivered before force-download completes"
             )
@@ -896,8 +901,15 @@ class TestBlueBubblesAttachmentLoopBehavior:
         finally:
             self._drain_background(adapter)
 
+        got_it = [m for _, m in sent_messages if "Got it" in m]
+        assert len(got_it) == 1, (
+            f"expected one '✅ Got it' notice after success: {sent_messages}"
+        )
         assert len(delivered_events) == 1
         assert delivered_events[0].media_urls == ["/tmp/x.png"]
+        assert delivered_events[0].text == "hi", (
+            "no failures → text must NOT be augmented"
+        )
 
     def test_status_message_sent_once_for_multiple_force_attachments(
         self, monkeypatch
@@ -948,12 +960,19 @@ class TestBlueBubblesAttachmentLoopBehavior:
         asyncio.get_event_loop().run_until_complete(adapter._handle_webhook(req))
         self._drain_background(adapter)
 
-        notices = [m for _, m in sent_messages if "Fetching attachment" in m]
-        assert len(notices) == 1, (
-            f"expected 1 notice for 3 force-needed attachments, got "
-            f"{len(notices)}: {sent_messages}"
+        fetching = [m for _, m in sent_messages if "Fetching" in m]
+        assert len(fetching) == 1, (
+            f"expected 1 fetching notice for 3 force-needed attachments, "
+            f"got {len(fetching)}: {sent_messages}"
         )
-        # All 3 attachments should have arrived in the deferred MessageEvent.
+        assert "3 attachments" in fetching[0], (
+            f"fetching notice should pluralize: {fetching[0]!r}"
+        )
+        got_it = [m for _, m in sent_messages if "Got it" in m]
+        assert len(got_it) == 1, (
+            f"expected exactly one success notice after all 3 succeeded: "
+            f"{sent_messages}"
+        )
         assert len(delivered_events) == 1
         assert len(delivered_events[0].media_urls) == 3
 
@@ -994,8 +1013,14 @@ class TestBlueBubblesAttachmentLoopBehavior:
         asyncio.get_event_loop().run_until_complete(adapter._handle_webhook(req))
         self._drain_background(adapter)
 
-        notices = [m for _, m in sent_messages if "Fetching attachment" in m]
-        assert notices == []
+        fetching = [m for _, m in sent_messages if "Fetching" in m]
+        got_it = [m for _, m in sent_messages if "Got it" in m]
+        failed = [m for _, m in sent_messages if "Couldn't fetch" in m]
+        assert fetching == []
+        assert got_it == [], (
+            "cached path must not send the deferred-success notice"
+        )
+        assert failed == []
         assert len(delivered_events) == 1
         assert delivered_events[0].media_urls == ["/tmp/x.png"]
 
@@ -1134,10 +1159,13 @@ class TestBlueBubblesAttachmentLoopBehavior:
         self._drain_background(adapter)
         assert len(delivered_events) == 1
 
-    def test_failed_force_download_still_delivers_text(self, monkeypatch):
-        """If the force-download fails entirely, the user's text is still
-        delivered (without the attachment) so the agent at least sees the
-        message."""
+    def test_failed_force_download_still_delivers_text_with_note(
+        self, monkeypatch
+    ):
+        """Force-download fails entirely → user's text is delivered, but
+        with a [System: …] note appended so the agent knows attachments
+        dropped and can ask the user to resend. User also gets a
+        '❌ Couldn't fetch' notice."""
         adapter = _make_adapter(monkeypatch)
         adapter._private_api_enabled = True
         import asyncio
@@ -1172,8 +1200,140 @@ class TestBlueBubblesAttachmentLoopBehavior:
         self._drain_background(adapter)
 
         assert len(delivered_events) == 1
-        assert delivered_events[0].text == "what is this?"
+        delivered_text = delivered_events[0].text
+        assert delivered_text.startswith("what is this?"), delivered_text
+        assert "[System:" in delivered_text, delivered_text
+        assert "1 of 1 attachment failed" in delivered_text, delivered_text
+        assert "resend" in delivered_text.lower(), delivered_text
         assert delivered_events[0].media_urls == []
+
+        failed_notices = [m for _, m in sent_messages if "Couldn't fetch" in m]
+        got_it_notices = [m for _, m in sent_messages if "Got it" in m]
+        assert len(failed_notices) == 1, (
+            f"expected one user-facing failure notice: {sent_messages}"
+        )
+        assert got_it_notices == [], (
+            "no success notice when all attachments failed"
+        )
+
+    def test_attachment_only_all_force_fail_delivers_note_to_agent(
+        self, monkeypatch
+    ):
+        """Attachment-only message where ALL force-downloads fail must NOT
+        be silently dropped. The agent receives the [System: …] note as
+        the message body so hermes can ask the user to resend, instead of
+        the conversation going dark."""
+        adapter = _make_adapter(monkeypatch)
+        adapter._private_api_enabled = True
+        import asyncio
+        import httpx
+
+        sent_messages, delivered_events = self._install_message_recorder(
+            adapter, monkeypatch
+        )
+
+        class FailingResponse:
+            def raise_for_status(self):
+                raise httpx.HTTPError("500")
+
+        async def mock_get(url, **kwargs):
+            return FailingResponse()
+
+        self._install_http(adapter, monkeypatch, mock_get)
+
+        payload = {
+            "type": "new-message",
+            "data": {
+                "guid": "msg-att-only-fail",
+                "text": "",
+                "chatGuid": "iMessage;-;+15551234567",
+                "handle": {"address": "+15551234567"},
+                "isFromMe": False,
+                "attachments": [{"guid": "att-1", "mimeType": "image/png"}],
+            },
+        }
+        req = self._webhook_request(payload)
+        asyncio.get_event_loop().run_until_complete(adapter._handle_webhook(req))
+        self._drain_background(adapter)
+
+        assert len(delivered_events) == 1, (
+            "attachment-only all-fail must NOT be silently dropped"
+        )
+        delivered_text = delivered_events[0].text
+        assert delivered_text.startswith("[System:"), delivered_text
+        assert "failed to download" in delivered_text, delivered_text
+        assert delivered_events[0].media_urls == []
+
+        failed_notices = [m for _, m in sent_messages if "Couldn't fetch" in m]
+        assert len(failed_notices) == 1, sent_messages
+
+    def test_partial_failure_notice_and_text_augmentation(self, monkeypatch):
+        """Some attachments succeed, some fail → user gets a partial
+        notice with the count, agent gets text + failure note + the media
+        that did come through."""
+        adapter = _make_adapter(monkeypatch)
+        adapter._private_api_enabled = True
+        import asyncio
+        import httpx
+
+        sent_messages, delivered_events = self._install_message_recorder(
+            adapter, monkeypatch
+        )
+
+        forced_calls = {"n": 0}
+
+        class FailingResponse:
+            def raise_for_status(self):
+                raise httpx.HTTPError("500")
+
+        class SuccessResponse:
+            content = b"forced"
+
+            def raise_for_status(self):
+                pass
+
+        async def mock_get(url, **kwargs):
+            if "/download/force" in url:
+                # Succeed on the second forced attempt, fail on others.
+                forced_calls["n"] += 1
+                if forced_calls["n"] == 2:
+                    return SuccessResponse()
+                raise httpx.HTTPError("500")
+            return FailingResponse()
+
+        self._install_http(adapter, monkeypatch, mock_get)
+
+        payload = {
+            "type": "new-message",
+            "data": {
+                "guid": "msg-partial",
+                "text": "see these",
+                "chatGuid": "iMessage;-;+15551234567",
+                "handle": {"address": "+15551234567"},
+                "isFromMe": False,
+                "attachments": [
+                    {"guid": "att-1", "mimeType": "image/png"},
+                    {"guid": "att-2", "mimeType": "image/png"},
+                    {"guid": "att-3", "mimeType": "image/png"},
+                ],
+            },
+        }
+        req = self._webhook_request(payload)
+        asyncio.get_event_loop().run_until_complete(adapter._handle_webhook(req))
+        self._drain_background(adapter)
+
+        assert len(delivered_events) == 1
+        delivered_text = delivered_events[0].text
+        assert delivered_text.startswith("see these"), delivered_text
+        assert "2 of 3 attachments failed" in delivered_text, delivered_text
+        assert len(delivered_events[0].media_urls) == 1
+
+        partial_notices = [
+            m for _, m in sent_messages if m.startswith("⚠️")
+        ]
+        assert len(partial_notices) == 1, sent_messages
+        assert "1 of 3" in partial_notices[0], partial_notices[0]
+        assert "2 failed" in partial_notices[0], partial_notices[0]
 
     def test_attachment_only_message_passes_early_validation(self, monkeypatch):
         """An attachment-only message (no text) must not be rejected as

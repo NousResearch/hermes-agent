@@ -19,6 +19,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import time
 from types import SimpleNamespace
 from typing import Any, Dict, List
 
@@ -194,6 +195,11 @@ def run_codex_stream(agent, api_kwargs: dict, client: Any = None, on_first_delta
         try:
             with active_client.responses.stream(**api_kwargs) as stream:
                 for event in stream:
+                    # Mark stream activity for the TTFB watchdog in
+                    # interruptible_api_call. The Codex backend can accept the
+                    # connection but never emit a single event; this timestamp
+                    # staying None tells the watchdog no bytes are flowing.
+                    agent._codex_stream_last_event_ts = time.time()
                     agent._touch_activity("receiving stream response")
                     if agent._interrupt_requested:
                         break

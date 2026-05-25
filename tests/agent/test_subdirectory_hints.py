@@ -122,17 +122,75 @@ class TestSubdirectoryHintTracker:
         assert result is not None
         assert "Frontend rules" in result
 
-    def test_outside_working_dir_still_checked(self, tmp_path, project):
-        """Paths outside working_dir are still checked for hints."""
-        other_project = tmp_path / "other"
-        other_project.mkdir()
+    def test_outside_working_dir_rejected(self, tmp_path, project):
+        """Paths outside working_dir are rejected — no hints from outside workspace.
+
+        Note: project fixture returns tmp_path, so we need a path whose ancestor
+        is outside project. We simulate this by creating a directory at the same
+        level as project but not inside it — which requires creating a parent
+        tree. Since tmp_path / "other" IS inside tmp_path (=project), we need
+        a different approach: use tmp_path.parent as the reference for "outside".
+        """
+        # Create a directory at the same level as tmp_path (project),
+        # which means it's a sibling of project — not a child.
+        # Since tmp_path IS project, tmp_path.parent / "other" is a sibling.
+        parent = tmp_path.parent
+        other_project = parent / "other"
+        other_project.mkdir(exist_ok=True)
         (other_project / "AGENTS.md").write_text("Other project rules")
         tracker = SubdirectoryHintTracker(working_dir=str(project))
         result = tracker.check_tool_call(
             "read_file", {"path": str(other_project / "file.py")}
         )
+        # Outside workspace — should NOT load hints
+        assert result is None
+
+    def test_outside_working_dir_absolute_path_rejected(self, tmp_path, project):
+        """Absolute paths like ~/.codex/AGENTS.md are rejected."""
+        # Create a directory at the parent level of project, simulating ~/.codex
+        parent = tmp_path.parent
+        outside_dir = parent / ".test-codex"
+        outside_dir.mkdir(exist_ok=True)
+        (outside_dir / "AGENTS.md").write_text("Codex contamination rules")
+        tracker = SubdirectoryHintTracker(working_dir=str(project))
+        result = tracker.check_tool_call(
+            "read_file", {"path": str(outside_dir / "AGENTS.md")}
+        )
+        # Reading a hint file outside working_dir — should NOT load hints
+        assert result is None
+
+    def test_inside_workspace_subdir_allowed(self, project):
+        """Paths inside working_dir are still allowed."""
+        tracker = SubdirectoryHintTracker(working_dir=str(project))
+        result = tracker.check_tool_call(
+            "read_file", {"path": str(project / "backend" / "src" / "main.py")}
+        )
         assert result is not None
-        assert "Other project rules" in result
+        assert "Backend-specific instructions" in result
+
+    def test_sibling_repo_not_loaded_via_ancestor_walk(self, tmp_path, project):
+        """Ancestor walk from inside working_dir should NOT discover sibling repo hints."""
+        # Create a nested structure inside working_dir
+        deep_dir = project / "deep" / "nested" / "very" / "deep"
+        deep_dir.mkdir(parents=True)
+        (deep_dir / "file.py").write_text("deep file")
+        # Also create a sibling directory at the parent level
+        parent = tmp_path.parent
+        sibling = parent / "sibling-repo"
+        sibling.mkdir(exist_ok=True)
+        (sibling / "AGENTS.md").write_text("Sibling repo rules")
+        # Create a .cursorrules in the deep/nested/very dir so ancestor walk
+        # discovers it (fixture's deep/nested/path is NOT an ancestor of very/deep)
+        (deep_dir / ".cursorrules").write_text("Deep cursorrules")
+        tracker = SubdirectoryHintTracker(working_dir=str(project))
+        result = tracker.check_tool_call(
+            "read_file", {"path": str(deep_dir / "file.py")}
+        )
+        # Should discover deep cursorrules from the file's own directory
+        # but NOT sibling repo hints
+        assert result is not None
+        assert "Deep cursorrules" in result
+        assert "Sibling repo rules" not in result
 
     def test_workdir_arg(self, project):
         """The workdir argument from terminal tool is checked."""
@@ -232,3 +290,39 @@ class TestPermissionErrorHandling:
             )
             # Result may be None (backend skipped) — the key point is no crash
             assert result is None or isinstance(result, str)
+
+
+class TestOutsideWorkspaceRejection:
+    """Direct tests for _is_valid_subdir rejecting outside-workspace paths."""
+
+    def test_is_valid_subdir_rejects_outside_path(self, tmp_path, project):
+        """_is_valid_subdir should return False for paths outside working_dir.
+
+        Note: tmp_path / "other" is inside tmp_path (=project), so we use
+        tmp_path.parent / "other" to create a true outside-path sibling.
+        """
+        parent = tmp_path.parent
+        other_project = parent / "other"
+        other_project.mkdir(exist_ok=True)
+        tracker = SubdirectoryHintTracker(working_dir=str(project))
+        assert tracker._is_valid_subdir(other_project) is False
+
+    def test_is_valid_subdir_allows_inside_path(self, project):
+        """_is_valid_subdir should return True for paths inside working_dir."""
+        tracker = SubdirectoryHintTracker(working_dir=str(project))
+        backend = project / "backend"
+        assert tracker._is_valid_subdir(backend) is True
+
+    def test_is_valid_subdir_rejects_parent_dir(self, tmp_path, project):
+        """_is_valid_subdir should reject parent directories outside working_dir."""
+        parent = tmp_path.parent
+        tracker = SubdirectoryHintTracker(working_dir=str(project))
+        assert tracker._is_valid_subdir(parent) is False
+
+    def test_is_valid_subdir_rejects_sibling_dir(self, tmp_path, project):
+        """_is_valid_subdir should reject a sibling directory (simulating ~/.codex)."""
+        parent = tmp_path.parent
+        outside = parent / ".test-codex"
+        outside.mkdir(exist_ok=True)
+        tracker = SubdirectoryHintTracker(working_dir=str(project))
+        assert tracker._is_valid_subdir(outside) is False

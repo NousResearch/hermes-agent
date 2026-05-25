@@ -2706,6 +2706,11 @@ def release_stale_claims(
     Returns the number of stale claims actually reclaimed (live-pid
     extensions don't count). Safe to call often.
     """
+    # Clear side-channels from previous tick so stale data doesn't bleed
+    # into the current DispatchResult.
+    release_stale_claims._last_extended = []  # type: ignore[attr-defined]
+    release_stale_claims._last_stuck_pid = []  # type: ignore[attr-defined]
+
     now = int(time.time())
     reclaimed = 0
     host_prefix = f"{_claimer_id().split(':', 1)[0]}:"
@@ -2754,11 +2759,56 @@ def release_stale_claims(
                     },
                     run_id=run_id,
                 )
+            release_stale_claims._last_extended.append(row["id"])  # type: ignore[attr-defined]
             continue
 
         termination = _terminate_reclaimed_worker(
             row["worker_pid"], row["claim_lock"], signal_fn=signal_fn,
         )
+        # Guard: if SIGTERM+SIGKILL both failed and the PID is still alive
+        # (uninterruptible D-state or kernel anomaly), do NOT set the task to
+        # ``ready`` — a fresh spawn would create a second worker racing the
+        # unkillable one.  Instead, extend the claim one more TTL window and
+        # emit a ``stuck_pid_liveness`` event so the operator and diagnostics
+        # layer can surface the situation.
+        if (
+            termination.get("host_local")
+            and not termination.get("terminated")
+            and row["worker_pid"]
+            and _pid_alive(row["worker_pid"])
+        ):
+            new_expires = now + _resolve_claim_ttl_seconds()
+            with write_txn(conn):
+                cur = conn.execute(
+                    "UPDATE tasks SET claim_expires = ? "
+                    "WHERE id = ? AND status = 'running' AND claim_lock IS ?",
+                    (new_expires, row["id"], row["claim_lock"]),
+                )
+                if cur.rowcount == 1:
+                    run_id_stuck = _current_run_id(conn, row["id"])
+                    if run_id_stuck is not None:
+                        conn.execute(
+                            "UPDATE task_runs SET claim_expires = ? WHERE id = ?",
+                            (new_expires, run_id_stuck),
+                        )
+                    _append_event(
+                        conn, row["id"], "stuck_pid_liveness",
+                        {
+                            "reason": "termination_failed_pid_alive",
+                            "worker_pid": int(row["worker_pid"]),
+                            "claim_lock": row["claim_lock"],
+                            "claim_expires_was": int(row["claim_expires"]),
+                            "claim_expires_now": new_expires,
+                            "sigterm_attempted": termination.get(
+                                "termination_attempted", False
+                            ),
+                            "sigkill_attempted": termination.get("sigkill", False),
+                        },
+                        run_id=run_id_stuck,
+                    )
+            release_stale_claims._last_stuck_pid.append(row["id"])  # type: ignore[attr-defined]
+            continue
+
         with write_txn(conn):
             cur = conn.execute(
                 "UPDATE tasks SET status = 'ready', claim_lock = NULL, "
@@ -4263,6 +4313,31 @@ class DispatchResult:
     Reasons: ``"blocker_auth"`` (quota/auth error — also auto-blocked),
     ``"recent_success"`` (completed run within guard window),
     ``"active_pr"`` (GitHub PR URL in a recent comment)."""
+    claim_extended: list[str] = field(default_factory=list)
+    """Task ids whose expired TTL was extended rather than reclaimed because
+    the host-local worker PID was still alive.
+
+    These would have been falsely reclaimed on hosts without the live-PID
+    guard (#23025).  The ``claim_extended`` event in the task's event log
+    carries ``reason="pid_alive"`` with the old/new expiry timestamps so
+    operators can see the drift between the TTL and actual liveness."""
+    live_pid_reclaim_skipped: list[str] = field(default_factory=list)
+    """Task ids where a TTL-expired reclaim was skipped because the
+    host-local worker PID survived both SIGTERM and SIGKILL.
+
+    The task stays ``running``; the claim TTL is extended one more window
+    with a ``stuck_pid_liveness`` event to preserve the audit trail.
+    This condition requires human intervention — the process is stuck in
+    an uninterruptible kernel wait (D-state) or otherwise unkillable."""
+    reconciled: list[str] = field(default_factory=list)
+    """Task ids auto-reconciled from ``running`` to ``done`` after a
+    clean-exit (rc=0) with a recent heartbeat.
+
+    The worker completed its run but the ``kanban_complete`` DB write was
+    interrupted just before the status flip; the dispatcher infers
+    completion from the liveness signal and closes the task automatically.
+    The completed run carries ``metadata.auto_reconcile=True`` for
+    auditability."""
 
 
 # Bounded registry of recently-reaped worker child exits, populated by the
@@ -4626,6 +4701,15 @@ def enforce_max_runtime(
 # to match the original spec (">4h started + no commits in 1h").
 _STALE_HEARTBEAT_GAP_SECONDS = 3600
 
+# When a worker exits cleanly (rc=0) but the task is still ``running``,
+# the dispatcher checks whether the last heartbeat was recent enough to
+# infer that the worker completed successfully but the ``kanban_complete``
+# DB write was interrupted just before the status flip.  If the heartbeat
+# is within this window the task is auto-reconciled to ``done``; otherwise
+# the missing terminal-transition is treated as a protocol violation and
+# the task is auto-blocked on the first occurrence.
+_CLEAN_EXIT_RECONCILE_WINDOW = 120  # seconds
+
 
 def detect_stale_running(
     conn: sqlite3.Connection,
@@ -4800,9 +4884,13 @@ def detect_crashed_workers(conn: sqlite3.Connection) -> list[str]:
     # immediately instead of incrementing by 1.
     crash_details: list[tuple[str, int, str, bool, str]] = []
     # (task_id, pid, claimer, protocol_violation, error_text)
+    # Tasks whose clean exit happened close to a recent heartbeat —
+    # handled outside the main txn via auto-reconcile to 'done'.
+    reconcile_candidates: list[str] = []
+    now_ts = int(time.time())
     with write_txn(conn):
         rows = conn.execute(
-            "SELECT id, worker_pid, claim_lock FROM tasks "
+            "SELECT id, worker_pid, claim_lock, last_heartbeat_at FROM tasks "
             "WHERE status = 'running' AND worker_pid IS NOT NULL"
         ).fetchall()
         host_prefix = f"{_claimer_id().split(':', 1)[0]}:"
@@ -4818,9 +4906,40 @@ def detect_crashed_workers(conn: sqlite3.Connection) -> list[str]:
             kind, code = _classify_worker_exit(pid)
             if kind == "clean_exit":
                 # Worker subprocess returned 0 but its task is still
-                # ``running`` in the DB — it exited without calling
-                # ``kanban_complete`` / ``kanban_block``. Retrying won't
-                # help.
+                # ``running`` in the DB.  Two scenarios:
+                #
+                # (a) Worker completed successfully but the
+                #     ``kanban_complete`` DB write was interrupted between
+                #     the worker's last heartbeat and process exit.  When
+                #     the heartbeat is recent (< _CLEAN_EXIT_RECONCILE_WINDOW
+                #     seconds) we auto-reconcile to ``done`` instead of
+                #     auto-blocking — retrying is unnecessary and the
+                #     protocol violation is spurious.
+                #
+                # (b) Worker exited without ever calling a terminal tool.
+                #     No recent heartbeat → deterministic loop if retried →
+                #     trip the breaker immediately (existing behavior).
+                last_hb = row["last_heartbeat_at"]
+                if (
+                    last_hb is not None
+                    and (now_ts - int(last_hb)) < _CLEAN_EXIT_RECONCILE_WINDOW
+                ):
+                    # Recent heartbeat → infer successful completion.
+                    # Don't reclaim to ready here; complete_task handles
+                    # the running→done transition outside this write_txn.
+                    _append_event(
+                        conn, row["id"], "clean_exit_pending_reconcile",
+                        {
+                            "pid": pid,
+                            "claimer": row["claim_lock"],
+                            "exit_code": code,
+                            "last_heartbeat_at": int(last_hb),
+                            "heartbeat_age_seconds": int(now_ts - int(last_hb)),
+                        },
+                    )
+                    reconcile_candidates.append(row["id"])
+                    continue
+
                 protocol_violation = True
                 error_text = (
                     "worker exited cleanly (rc=0) without calling "
@@ -4908,6 +5027,32 @@ def detect_crashed_workers(conn: sqlite3.Connection) -> list[str]:
     # and tests that destructure the result; ``dispatch_once`` reads this
     # side-channel attribute to populate ``DispatchResult.auto_blocked``.
     detect_crashed_workers._last_auto_blocked = auto_blocked  # type: ignore[attr-defined]
+
+    # Auto-reconcile clean exits with recent heartbeats (outside the main
+    # write_txn so complete_task can open its own transaction).  Best-effort:
+    # if complete_task fails (e.g. another dispatcher tick already transitioned
+    # the task), we skip silently — the ``clean_exit_pending_reconcile`` event
+    # already landed and the next tick will see a non-running task.
+    reconciled_tasks: list[str] = []
+    for tid in reconcile_candidates:
+        try:
+            ok = complete_task(
+                conn, tid,
+                summary=(
+                    "auto-reconciled: worker exited cleanly (rc=0) "
+                    "with recent heartbeat — dispatcher inferred completion"
+                ),
+                metadata={
+                    "auto_reconcile": True,
+                    "trigger": "clean_exit_recent_heartbeat",
+                },
+            )
+            if ok:
+                reconciled_tasks.append(tid)
+        except Exception:
+            pass  # Leave for next tick; pending_reconcile event is the audit trail
+    detect_crashed_workers._last_reconciled = reconciled_tasks  # type: ignore[attr-defined]
+
     return crashed
 
 
@@ -5327,6 +5472,14 @@ def dispatch_once(
 
     result = DispatchResult()
     result.reclaimed = release_stale_claims(conn)
+    # release_stale_claims stashes liveness side-channels on itself; pull
+    # them into DispatchResult so callers and telemetry can see the detail.
+    _extended = getattr(release_stale_claims, "_last_extended", [])
+    if _extended:
+        result.claim_extended.extend(_extended)
+    _stuck = getattr(release_stale_claims, "_last_stuck_pid", [])
+    if _stuck:
+        result.live_pid_reclaim_skipped.extend(_stuck)
     result.stale = detect_stale_running(
         conn, stale_timeout_seconds=stale_timeout_seconds,
     )
@@ -5339,6 +5492,9 @@ def dispatch_once(
     )
     if _crash_auto_blocked:
         result.auto_blocked.extend(_crash_auto_blocked)
+    _reconciled = getattr(detect_crashed_workers, "_last_reconciled", [])
+    if _reconciled:
+        result.reconciled.extend(_reconciled)
     result.timed_out = enforce_max_runtime(conn)
     result.promoted = recompute_ready(conn)
 

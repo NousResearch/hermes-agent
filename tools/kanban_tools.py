@@ -578,7 +578,7 @@ def _handle_heartbeat(args: dict, **kw) -> str:
             # default _claimer_id() covers locally-driven workers that
             # never went through the dispatcher path.
             claim_lock = os.environ.get("HERMES_KANBAN_CLAIM_LOCK")
-            kb.heartbeat_claim(conn, tid, claimer=claim_lock)
+            claim_still_live = kb.heartbeat_claim(conn, tid, claimer=claim_lock)
 
             ok = kb.heartbeat_worker(
                 conn,
@@ -587,6 +587,20 @@ def _handle_heartbeat(args: dict, **kw) -> str:
                 expected_run_id=_worker_run_id(tid),
             )
             if not ok:
+                if not claim_still_live:
+                    # Claim expired before heartbeat arrived — the dispatcher
+                    # may have already reclaimed or auto-reconciled this task.
+                    # Surface a specific error so the worker can decide whether
+                    # to kanban_block with its current status rather than
+                    # continuing to work on a task it no longer owns.
+                    return tool_error(
+                        f"claim for task {tid} has already expired — the "
+                        f"dispatcher may have reclaimed or transitioned this "
+                        f"task while the worker was between tool calls. "
+                        f"Check the task status with kanban_show. If the task "
+                        f"is still running, call kanban_block with your "
+                        f"current status to release the claim cleanly."
+                    )
                 return tool_error(
                     f"could not heartbeat {tid} (unknown id or not running)"
                 )

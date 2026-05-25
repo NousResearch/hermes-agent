@@ -914,6 +914,149 @@ def _rule_stranded_in_ready(task, events, runs, now, cfg) -> list[Diagnostic]:
     )]
 
 
+def _rule_stuck_pid_liveness(task, events, runs, now, cfg) -> list[Diagnostic]:
+    """The dispatcher tried to reclaim a stale-TTL task but SIGTERM+SIGKILL
+    both failed — the worker PID is still alive (D-state / uninterruptible
+    kernel wait).  The task stays ``running`` with an extended TTL; the
+    dispatcher emits ``stuck_pid_liveness`` events each tick it observes
+    this condition.
+
+    This is a board/reality drift scenario: the board says ``running`` and
+    the PID is technically alive, but the process cannot be controlled.
+    Human intervention (manual kill, reboot, kernel investigation) is the
+    only remedy.
+
+    Auto-clears when the task leaves ``running`` (e.g. the kernel eventually
+    reaps the process and the next tick detects a dead PID).
+    """
+    if _task_field(task, "status") not in ("running",):
+        return []
+    hits = [ev for ev in events if _event_kind(ev) == "stuck_pid_liveness"]
+    if not hits:
+        return []
+    first = _event_ts(hits[0])
+    last = _event_ts(hits[-1])
+    last_payload = _parse_payload(hits[-1])
+    task_id = _task_field(task, "id") or "<task_id>"
+    pid = last_payload.get("worker_pid")
+    return [Diagnostic(
+        kind="stuck_pid_liveness",
+        severity="critical",
+        title=(
+            f"Worker PID {pid} survived SIGKILL — dispatcher cannot reclaim"
+            if pid else "Worker PID survived SIGKILL — dispatcher cannot reclaim"
+        ),
+        detail=(
+            f"The dispatcher attempted SIGTERM then SIGKILL on the worker "
+            f"process but it is still alive (D-state or uninterruptible "
+            f"kernel wait). The task remains running with an extended claim "
+            f"TTL. Manual intervention is required: kill the process directly, "
+            f"or wait for the kernel to reap it."
+        ),
+        actions=[
+            DiagnosticAction(
+                kind="cli_hint",
+                label=f"Check process: ps -p {pid}" if pid else "Check process state",
+                payload={"command": f"ps -p {pid} -o pid,stat,cmd" if pid else ""},
+                suggested=True,
+            ),
+            DiagnosticAction(
+                kind="reclaim",
+                label="Reclaim task (after killing the process)",
+                payload={},
+            ),
+        ],
+        first_seen_at=first,
+        last_seen_at=last,
+        count=len(hits),
+        data={
+            "worker_pid": pid,
+            "task_id": task_id,
+            "occurrences": len(hits),
+        },
+    )]
+
+
+def _rule_ttl_extensions_without_heartbeat(task, events, runs, now, cfg) -> list[Diagnostic]:
+    """The dispatcher has been extending the claim TTL because the worker PID
+    is alive, but no application-level heartbeat (``kanban_heartbeat`` tool
+    call) has been received within the staleness window.
+
+    This is a board/reality drift indicator: the process is alive but not
+    producing liveness signals, which may mean:
+
+    * The worker is stuck in a long blocking call (tool invocation, LLM
+      inference, subprocess) without calling ``kanban_heartbeat``.
+    * The worker's event loop is frozen.
+    * The process is alive but idle (spawned the worker but task loop never
+      started).
+
+    Threshold: cfg["ttl_extension_count_threshold"] (default 3) consecutive
+    ``claim_extended`` events with no intervening ``heartbeat`` event.
+    """
+    if _task_field(task, "status") != "running":
+        return []
+
+    threshold = int(cfg.get("ttl_extension_count_threshold", 3))
+
+    # Walk events newest-first, count claim_extended since last heartbeat.
+    ordered = sorted(events, key=_event_ts, reverse=True)
+    consecutive_extensions = 0
+    last_extension_ts = 0
+    for ev in ordered:
+        k = _event_kind(ev)
+        if k == "heartbeat":
+            break  # heartbeat resets the streak
+        if k == "claim_extended":
+            p = _parse_payload(ev)
+            if p.get("reason") == "pid_alive":
+                consecutive_extensions += 1
+                if last_extension_ts == 0:
+                    last_extension_ts = _event_ts(ev)
+
+    if consecutive_extensions < threshold:
+        return []
+
+    task_id = _task_field(task, "id") or "<task_id>"
+    return [Diagnostic(
+        kind="ttl_extensions_without_heartbeat",
+        severity="warning",
+        title=(
+            f"Claim extended {consecutive_extensions}x with no heartbeat "
+            f"— worker may be stuck"
+        ),
+        detail=(
+            f"The dispatcher extended the claim TTL {consecutive_extensions} "
+            f"time(s) in a row because the worker PID is alive, but no "
+            f"kanban_heartbeat has been received since. The worker may be "
+            f"blocked in a long tool call, LLM inference, or unresponsive "
+            f"loop. If this continues the dispatcher will eventually detect "
+            f"the worker as stale (no heartbeat > stale threshold)."
+        ),
+        actions=[
+            DiagnosticAction(
+                kind="cli_hint",
+                label=f"Tail worker events: hermes kanban tail {task_id}",
+                payload={"command": f"hermes kanban tail {task_id}"},
+                suggested=True,
+            ),
+            DiagnosticAction(
+                kind="reclaim",
+                label="Reclaim and restart the task",
+                payload={},
+            ),
+        ],
+        first_seen_at=last_extension_ts or now,
+        last_seen_at=last_extension_ts or now,
+        count=consecutive_extensions,
+        data={
+            "consecutive_extensions": consecutive_extensions,
+            "threshold": threshold,
+            "task_id": task_id,
+        },
+    )]
+
+
 # Registry — order matters: rules higher on the list render first when
 # severity ties. Add new rules here.
 _RULES: list[RuleFn] = [
@@ -924,6 +1067,8 @@ _RULES: list[RuleFn] = [
     _rule_repeated_crashes,
     _rule_stuck_in_blocked,
     _rule_stranded_in_ready,
+    _rule_stuck_pid_liveness,
+    _rule_ttl_extensions_without_heartbeat,
 ]
 
 
@@ -937,6 +1082,8 @@ DIAGNOSTIC_KINDS = (
     "repeated_crashes",
     "stuck_in_blocked",
     "stranded_in_ready",
+    "stuck_pid_liveness",
+    "ttl_extensions_without_heartbeat",
 )
 
 

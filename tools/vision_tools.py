@@ -210,6 +210,19 @@ async def _download_image(image_url: str, destination: Path, max_retries: int = 
             return destination
         except Exception as e:
             last_error = e
+            # Fail fast on non-retryable HTTP client errors. A 4xx (e.g. 404 Not
+            # Found, 403 Forbidden) means the same request will keep failing, so
+            # retrying the identical URL only wastes time and floods the logs.
+            # 429 (Too Many Requests) is the one 4xx worth retrying with backoff.
+            if isinstance(e, httpx.HTTPStatusError):
+                status = e.response.status_code
+                if 400 <= status < 500 and status != 429:
+                    logger.error(
+                        "Image download failed (HTTP %s, not retrying): %s",
+                        status,
+                        image_url,
+                    )
+                    raise
             if attempt < max_retries - 1:
                 wait_time = 2 ** (attempt + 1)  # 2s, 4s, 8s
                 logger.warning("Image download failed (attempt %s/%s): %s", attempt + 1, max_retries, str(e)[:50])

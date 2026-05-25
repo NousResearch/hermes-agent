@@ -293,6 +293,61 @@ class TestErrorLoggingExcInfo:
             assert error_records[0].exc_info is not None
 
     @pytest.mark.asyncio
+    async def test_download_does_not_retry_on_4xx(self, tmp_path):
+        """A 4xx client error (e.g. 404) is not transient and must not be retried."""
+        import httpx
+
+        from tools.vision_tools import _download_image
+
+        request = httpx.Request("GET", "https://example.com/missing.jpg")
+        response = httpx.Response(404, request=request)
+
+        with patch("tools.vision_tools.httpx.AsyncClient") as mock_client_cls:
+            mock_client = AsyncMock()
+            mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+            mock_client.__aexit__ = AsyncMock(return_value=False)
+            mock_client.get = AsyncMock(return_value=response)
+            mock_client_cls.return_value = mock_client
+
+            dest = tmp_path / "image.jpg"
+            with pytest.raises(httpx.HTTPStatusError):
+                await _download_image(
+                    "https://example.com/missing.jpg", dest, max_retries=3
+                )
+
+            # Exactly one GET despite max_retries=3 — no pointless retries on 404.
+            assert mock_client.get.call_count == 1
+
+    @pytest.mark.asyncio
+    async def test_download_retries_on_429(self, tmp_path):
+        """429 (Too Many Requests) is the one 4xx that should still be retried."""
+        import httpx
+
+        from tools.vision_tools import _download_image
+
+        request = httpx.Request("GET", "https://example.com/busy.jpg")
+        response = httpx.Response(429, request=request)
+
+        with (
+            patch("tools.vision_tools.httpx.AsyncClient") as mock_client_cls,
+            patch("asyncio.sleep", new_callable=AsyncMock),  # skip real backoff
+        ):
+            mock_client = AsyncMock()
+            mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+            mock_client.__aexit__ = AsyncMock(return_value=False)
+            mock_client.get = AsyncMock(return_value=response)
+            mock_client_cls.return_value = mock_client
+
+            dest = tmp_path / "image.jpg"
+            with pytest.raises(httpx.HTTPStatusError):
+                await _download_image(
+                    "https://example.com/busy.jpg", dest, max_retries=3
+                )
+
+            # All attempts used — 429 is retried, unlike other 4xx.
+            assert mock_client.get.call_count == 3
+
+    @pytest.mark.asyncio
     async def test_analysis_error_logs_exc_info(self, caplog):
         """When vision_analyze_tool encounters an error, it should log with exc_info."""
         with (

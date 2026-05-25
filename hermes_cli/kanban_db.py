@@ -4015,6 +4015,7 @@ def resolve_workspace(task: Task, *, board: Optional[str] = None) -> Path:
                 )
         else:
             p = workspaces_root(board=board) / task.id
+        _ensure_pytest_kanban_filesystem_path_isolated(p)
         p.mkdir(parents=True, exist_ok=True)
         return p
     if kind == "dir":
@@ -4029,6 +4030,7 @@ def resolve_workspace(task: Task, *, board: Optional[str] = None) -> Path:
                 f"{task.workspace_path!r}; use an absolute path "
                 f"(relative paths are ambiguous against the dispatcher's CWD)"
             )
+        _ensure_pytest_kanban_filesystem_path_isolated(p)
         p.mkdir(parents=True, exist_ok=True)
         return p
     if kind == "worktree":
@@ -5524,6 +5526,7 @@ def _rotate_worker_log(
     ``<log>`` moves to ``<log>.1`` and any previous ``.1`` is replaced.
     Higher values shift older generations up to ``backup_count``.
     """
+    _ensure_pytest_kanban_filesystem_path_isolated(log_path)
     try:
         if not log_path.exists():
             return
@@ -5872,6 +5875,7 @@ def _default_spawn(
     # `hermes kanban log` on a specific board reads its own file and
     # logs don't collide across boards that happen to share task ids.
     log_dir = worker_logs_dir(board=board)
+    _ensure_pytest_kanban_filesystem_path_isolated(log_dir)
     log_dir.mkdir(parents=True, exist_ok=True)
     log_path = log_dir / f"{task.id}.log"
     rotate_bytes, backup_count = worker_log_rotation_config()

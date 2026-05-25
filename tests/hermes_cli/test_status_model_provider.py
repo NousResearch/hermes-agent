@@ -2,7 +2,11 @@
 
 from types import SimpleNamespace
 
-from hermes_cli.nous_subscription import NousFeatureState, NousSubscriptionFeatures
+from hermes_cli.nous_subscription import (
+    NousFeatureState,
+    NousSubscriptionFeatures,
+    get_nous_subscription_features,
+)
 
 
 def _patch_common_status_deps(monkeypatch, status_mod, tmp_path, *, openai_base_url=""):
@@ -153,3 +157,63 @@ def test_show_status_reports_empty_lmstudio_listing_as_reachable(monkeypatch, ca
     out = capsys.readouterr().out
     assert "LM Studio" in out
     assert "reachable (0 model(s)) at http://127.0.0.1:1234/v1" in out
+
+
+def test_nous_subscription_tts_feature_detects_xai_provider(monkeypatch):
+    monkeypatch.setattr("hermes_cli.nous_subscription.load_config", lambda: {})
+    monkeypatch.setattr("hermes_cli.nous_subscription.get_nous_auth_status", lambda: {})
+    monkeypatch.setattr("hermes_cli.nous_subscription.managed_nous_tools_enabled", lambda: False)
+    monkeypatch.setattr("hermes_cli.nous_subscription._toolset_enabled", lambda *_args, **_kwargs: True)
+    monkeypatch.setattr("hermes_cli.nous_subscription.resolve_openai_audio_api_key", lambda: "")
+    monkeypatch.setattr("hermes_cli.nous_subscription.fal_key_is_configured", lambda: False)
+    monkeypatch.setattr("hermes_cli.nous_subscription.has_direct_modal_credentials", lambda: False)
+    monkeypatch.setattr("hermes_cli.nous_subscription.is_managed_tool_gateway_ready", lambda _name: False)
+    monkeypatch.setattr("hermes_cli.nous_subscription.normalize_browser_cloud_provider", lambda value: value or "local")
+    monkeypatch.setattr("hermes_cli.nous_subscription.normalize_modal_mode", lambda value: value)
+    monkeypatch.setattr(
+        "hermes_cli.nous_subscription.resolve_modal_backend_state",
+        lambda *_args, **_kwargs: {"selected_backend": "local"},
+    )
+    monkeypatch.setattr("hermes_cli.nous_subscription._has_agent_browser", lambda: False)
+
+    env = {"XAI_API_KEY": "xai-key"}
+
+    def fake_get_env_value(name: str):
+        return env.get(name, "")
+
+    monkeypatch.setattr("hermes_cli.nous_subscription.get_env_value", fake_get_env_value)
+
+    features = get_nous_subscription_features({"tts": {"provider": "xai"}})
+
+    assert features.tts.available is True
+    assert features.tts.active is True
+    assert features.tts.current_provider == "xAI TTS"
+
+
+def test_nous_subscription_tts_feature_requires_local_engine_for_kittentts(monkeypatch):
+    monkeypatch.setattr("hermes_cli.nous_subscription.load_config", lambda: {})
+    monkeypatch.setattr("hermes_cli.nous_subscription.get_nous_auth_status", lambda: {})
+    monkeypatch.setattr("hermes_cli.nous_subscription.managed_nous_tools_enabled", lambda: False)
+    monkeypatch.setattr("hermes_cli.nous_subscription._toolset_enabled", lambda *_args, **_kwargs: True)
+    monkeypatch.setattr("hermes_cli.nous_subscription.resolve_openai_audio_api_key", lambda: "")
+    monkeypatch.setattr("hermes_cli.nous_subscription.fal_key_is_configured", lambda: False)
+    monkeypatch.setattr("hermes_cli.nous_subscription.has_direct_modal_credentials", lambda: False)
+    monkeypatch.setattr("hermes_cli.nous_subscription.is_managed_tool_gateway_ready", lambda _name: False)
+    monkeypatch.setattr("hermes_cli.nous_subscription.normalize_browser_cloud_provider", lambda value: value or "local")
+    monkeypatch.setattr("hermes_cli.nous_subscription.normalize_modal_mode", lambda value: value)
+    monkeypatch.setattr(
+        "hermes_cli.nous_subscription.resolve_modal_backend_state",
+        lambda *_args, **_kwargs: {"selected_backend": "local"},
+    )
+    monkeypatch.setattr("hermes_cli.nous_subscription._has_agent_browser", lambda: False)
+    monkeypatch.setattr("hermes_cli.nous_subscription.get_env_value", lambda _name: "")
+    monkeypatch.setattr(
+        "hermes_cli.nous_subscription.importlib.util.find_spec",
+        lambda name: object() if name == "neutts" else None,
+    )
+
+    features = get_nous_subscription_features({"tts": {"provider": "kittentts"}})
+
+    assert features.tts.available is False
+    assert features.tts.active is False
+    assert features.tts.current_provider == "KittenTTS"

@@ -539,3 +539,35 @@ def test_setup_summary_does_not_mark_incomplete_browserbase_as_available(tmp_pat
     assert "Browser Automation (Browserbase)" not in output
     assert "Browser Automation" in output
     assert "BROWSERBASE_API_KEY/BROWSERBASE_PROJECT_ID" in output
+
+
+def test_setup_summary_shows_xai_tts_when_configured(tmp_path, monkeypatch, capsys):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    _clear_provider_env(monkeypatch)
+    monkeypatch.setenv("XAI_API_KEY", "xai-key")
+
+    cfg = load_config()
+    cfg["tts"] = {"provider": "xai"}
+    save_config(cfg)
+
+    monkeypatch.setattr(
+        "hermes_cli.setup.get_nous_subscription_features",
+        lambda config: NousSubscriptionFeatures(
+            subscribed=False,
+            nous_auth_present=False,
+            provider_is_nous=False,
+            features={
+                "web": NousFeatureState("web", "Web tools", True, False, False, False, False, True, ""),
+                "image_gen": NousFeatureState("image_gen", "Image generation", True, False, False, False, False, True, ""),
+                "tts": NousFeatureState("tts", "xAI TTS", True, True, True, False, True, True, "xAI TTS"),
+                "browser": NousFeatureState("browser", "Browser automation", True, False, False, False, False, True, ""),
+                "modal": NousFeatureState("modal", "Modal execution", False, False, False, False, False, True, "local"),
+            },
+        ),
+    )
+    monkeypatch.setattr("agent.auxiliary_client.get_available_vision_backends", lambda: [])
+
+    _print_setup_summary(load_config(), tmp_path)
+    output = capsys.readouterr().out
+
+    assert "Text-to-Speech (xAI)" in output

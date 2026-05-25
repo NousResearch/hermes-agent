@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import importlib.util
 from pathlib import Path
 from typing import Dict, Iterable, Optional, Set
 
@@ -153,10 +154,52 @@ def _tts_label(current_provider: str) -> str:
         "elevenlabs": "ElevenLabs",
         "edge": "Edge TTS",
         "xai": "xAI TTS",
+        "minimax": "MiniMax TTS",
         "mistral": "Mistral Voxtral TTS",
+        "gemini": "Google Gemini TTS",
         "neutts": "NeuTTS",
+        "kittentts": "KittenTTS",
+        "piper": "Piper",
     }
     return mapping.get(current_provider or "edge", current_provider or "Edge TTS")
+
+
+def _module_available(module_name: str) -> bool:
+    try:
+        return importlib.util.find_spec(module_name) is not None
+    except Exception:
+        return False
+
+
+def _tts_provider_available(
+    provider: str,
+    *,
+    managed_tts_available: bool,
+    direct_openai_tts: bool,
+    direct_elevenlabs: bool,
+) -> bool:
+    provider = provider or "edge"
+    if provider == "edge":
+        return True
+    if provider == "openai":
+        return bool(managed_tts_available or direct_openai_tts)
+    if provider == "elevenlabs":
+        return bool(direct_elevenlabs)
+    if provider == "xai":
+        return bool(get_env_value("XAI_API_KEY"))
+    if provider == "minimax":
+        return bool(get_env_value("MINIMAX_API_KEY"))
+    if provider == "gemini":
+        return bool(get_env_value("GEMINI_API_KEY") or get_env_value("GOOGLE_API_KEY"))
+    if provider == "mistral":
+        return bool(get_env_value("MISTRAL_API_KEY"))
+    if provider == "neutts":
+        return _module_available("neutts")
+    if provider == "kittentts":
+        return _module_available("kittentts")
+    if provider == "piper":
+        return _module_available("piper")
+    return False
 
 
 def _resolve_browser_feature_state(
@@ -353,11 +396,11 @@ def get_nous_subscription_features(
         and managed_tts_available
         and not direct_openai_tts
     )
-    tts_available = bool(
-        tts_current_provider in {"edge", "neutts"}
-        or (tts_current_provider == "openai" and (managed_tts_available or direct_openai_tts))
-        or (tts_current_provider == "elevenlabs" and direct_elevenlabs)
-        or (tts_current_provider == "mistral" and bool(get_env_value("MISTRAL_API_KEY")))
+    tts_available = _tts_provider_available(
+        tts_current_provider,
+        managed_tts_available=managed_tts_available,
+        direct_openai_tts=direct_openai_tts,
+        direct_elevenlabs=direct_elevenlabs,
     )
     tts_active = bool(tts_tool_enabled and tts_available)
 

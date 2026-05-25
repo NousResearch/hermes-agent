@@ -483,6 +483,8 @@ def _print_setup_summary(config: dict, hermes_home):
         get_env_value("VOICE_TOOLS_OPENAI_KEY") or get_env_value("OPENAI_API_KEY")
     ):
         tool_status.append(("Text-to-Speech (OpenAI)", True, None))
+    elif tts_provider == "xai" and get_env_value("XAI_API_KEY"):
+        tool_status.append(("Text-to-Speech (xAI)", True, None))
     elif tts_provider == "minimax" and get_env_value("MINIMAX_API_KEY"):
         tool_status.append(("Text-to-Speech (MiniMax)", True, None))
     elif tts_provider == "mistral" and get_env_value("MISTRAL_API_KEY"):

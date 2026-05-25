@@ -78,7 +78,23 @@ class TestDevicePathBlocking(unittest.TestCase):
 
     def test_proc_fd_other_not_blocked(self):
         self.assertFalse(_is_blocked_device("/proc/self/fd/3"))
-        self.assertFalse(_is_blocked_device("/proc/self/maps"))
+
+    def test_proc_sensitive_pseudo_files_blocked(self):
+        """environ/cmdline/maps under /proc/<pid> must be blocked (issue #4427)."""
+        for path in (
+            "/proc/self/environ",
+            "/proc/12345/environ",
+            "/proc/self/cmdline",
+            "/proc/99/cmdline",
+            "/proc/self/maps",
+            "/proc/1/maps",
+        ):
+            self.assertTrue(_is_blocked_device(path), f"{path} should be blocked")
+
+    def test_proc_legitimate_files_not_blocked(self):
+        """Top-level /proc files like cpuinfo and meminfo must remain accessible."""
+        for path in ("/proc/cpuinfo", "/proc/meminfo", "/proc/uptime", "/proc/version"):
+            self.assertFalse(_is_blocked_device(path), f"{path} should not be blocked")
 
     def test_normal_files_not_blocked(self):
         self.assertFalse(_is_blocked_device("/tmp/test.py"))

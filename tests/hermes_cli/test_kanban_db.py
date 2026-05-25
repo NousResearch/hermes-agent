@@ -20,6 +20,10 @@ def kanban_home(tmp_path, monkeypatch):
     home = tmp_path / ".hermes"
     home.mkdir()
     monkeypatch.setenv("HERMES_HOME", str(home))
+    # Test runners may inherit a live workstation HERMES_KANBAN_HOME. Pin the
+    # kanban root as well so this fixture is hermetic under the same env shape
+    # used by the gateway service.
+    monkeypatch.setenv("HERMES_KANBAN_HOME", str(home))
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
     kb.init_db()
     return home

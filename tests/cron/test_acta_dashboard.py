@@ -1980,6 +1980,18 @@ def test_run_history_published_rows_open_signed_detail_without_prompt_or_path_le
 
     assert 'data-open-url="https://acta.imperatr.com/r/run-details/daily-2026-05-20_08-00-00.html?exp=1&amp;sig=abc"' in html
     assert 'href="https://acta.imperatr.com/r/run-details/daily-2026-05-20_08-00-00.html?exp=1&amp;sig=abc"' in html
+    assert '<article class="output-row readable unread fresh" data-read-key="run:daily:2026-05-20_08-00-00" data-read-title="Daily Brief"' in html
+    assert re.search(r'<span class="read-state">UNREAD</span><span class="confidence-chip">[^<]+</span>', html)
+    assert "document.querySelectorAll('.output-row.readable')" in html
+    assert "el.querySelectorAll('.output-open-overlay')" in html
+    assert "setRead(el, true);" in html
+    assert "script-src 'sha256-" in html
+    assert "script-src 'unsafe-inline'" not in html
+    csp = re.search(r'Content-Security-Policy" content="([^"]+)"', html)
+    script = re.search(r"<script>(.*?)</script>", html, re.S)
+    assert csp and script
+    script_hash = base64.b64encode(hashlib.sha256(script.group(1).encode("utf-8")).digest()).decode("ascii")
+    assert f"script-src 'sha256-{script_hash}'" in csp.group(1)
     assert '<span class="open">SIGNED</span>' in html
     assert 'class="output-open-overlay"' in html
     assert "Visible response body only." in detail_html
@@ -2025,6 +2037,15 @@ def test_run_history_unsafe_or_missing_artifact_url_remains_disabled():
     assert html.count('aria-disabled="true"') == 3
     assert html.count('<span class="muted">HISTORY</span>') == 3
     assert '<span class="open">SIGNED</span>' not in html
+    articles = re.findall(r"<article class=\"output-row[^>]*>.*?</article>", html, re.S)
+    assert len(articles) == 3
+    for article in articles:
+        assert 'aria-disabled="true"' in article
+        assert "readable" not in article
+        assert "unread" not in article
+        assert "data-read-key" not in article
+        assert "data-read-title" not in article
+        assert "read-state" not in article
 
 
 def test_run_history_rejects_symlinked_run_files(tmp_path: Path):

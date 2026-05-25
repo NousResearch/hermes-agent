@@ -1637,26 +1637,33 @@ def render_runs_page(runs: Sequence[ActaRunItem], generated_at: datetime | None 
             if signed_href
             else ""
         )
+        read_key = f"run:{item.job_id}:{item.run_id}"
+        read_class = " readable unread" if signed_href else ""
+        read_key_attr = f' data-read-key="{html.escape(read_key, quote=True)}"' if signed_href else ""
+        read_title_attr = f' data-read-title="{html.escape(item.name, quote=True)}"' if signed_href else ""
+        read_state_chip = '<span class="read-state">UNREAD</span>' if signed_href else ""
         open_action = '<span class="open">SIGNED</span>' if signed_href else '<span class="muted">HISTORY</span>'
         rows.append(
             f"""
-<article class="output-row {_safe_text(item.status)}"{row_open_attr}>
+<article class="output-row{read_class} {_safe_text(item.status)}"{read_key_attr}{read_title_attr}{row_open_attr}>
   {open_overlay}
   <div class="output-rank">{index:02d}</div>
   <div class="output-main">
     <b>{_safe_text(item.name)}</b>
     <p>{_safe_text(item.excerpt)}</p>
-    <div class="output-meta"><span class="confidence-chip">{_safe_text(confidence)}</span><span>{_safe_text(item.status)}</span><span>{_safe_text(kind)}</span><span>{_safe_text(age)}</span><span>RUN {_safe_text(run_time)}</span><span>SOURCE {_safe_text(Path(item.source_name).name)}</span><span>JOB {_safe_text(item.job_id)}</span><span>SCHEDULE {_safe_text(item.schedule or 'manual')}</span><span>{_safe_text(item.deliver or 'local')}</span>{followup}</div>
+    <div class="output-meta">{read_state_chip}<span class="confidence-chip">{_safe_text(confidence)}</span><span>{_safe_text(item.status)}</span><span>{_safe_text(kind)}</span><span>{_safe_text(age)}</span><span>RUN {_safe_text(run_time)}</span><span>SOURCE {_safe_text(Path(item.source_name).name)}</span><span>JOB {_safe_text(item.job_id)}</span><span>SCHEDULE {_safe_text(item.schedule or 'manual')}</span><span>{_safe_text(item.deliver or 'local')}</span>{followup}</div>
   </div>
   <div class="output-actions">{open_action}</div>
 </article>"""
         )
+    read_state_script = _outputs_read_state_script()
+    runs_csp = _inline_script_csp(read_state_script)
     return f"""<!doctype html>
 <html lang="en">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, viewport-fit=cover, user-scalable=no">
-<meta http-equiv="Content-Security-Policy" content="{html.escape(CSP, quote=False)}">
+<meta http-equiv="Content-Security-Policy" content="{html.escape(runs_csp, quote=False)}">
 <title>Acta Runs</title>
 <style>{_acta_page_css()}</style>
 </head>
@@ -1674,6 +1681,7 @@ def render_runs_page(runs: Sequence[ActaRunItem], generated_at: datetime | None 
   <footer>Generated {html.escape(now.isoformat())}.</footer>
 </main>
 {_acta_mobile_module_nav('runs')}
+<script>{read_state_script}</script>
 </body>
 </html>
 """

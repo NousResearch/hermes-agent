@@ -3256,14 +3256,17 @@ def resolve_provider_client(
     # OpenRouter / Nous bills for side tasks they thought were running on
     # their xAI subscription.
     if provider == "xai-oauth":
-        client, default = _build_xai_oauth_aux_client(model)
+        # Title generation and some other auxiliary tasks may not pass an
+        # explicit model. Fall back to the user's main model in that case.
+        effective_model = model or _read_main_model()
+        client, default = _build_xai_oauth_aux_client(effective_model)
         if client is None:
             logger.warning(
                 "resolve_provider_client: xai-oauth requested but no xAI "
                 "OAuth token found (run: hermes model -> xAI Grok OAuth — SuperGrok / Premium+)"
             )
             return None, None
-        final_model = _normalize_resolved_model(model or default, provider)
+        final_model = _normalize_resolved_model(effective_model or default, provider)
         return (_to_async_client(client, final_model, is_vision=is_vision) if async_mode
                 else (client, final_model))
 

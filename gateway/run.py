@@ -7317,8 +7317,8 @@ class GatewayRunner:
             # delegate_task work. Demote to queue semantics when the
             # parent is currently driving subagents so a conversational
             # follow-up doesn't destroy minutes of subagent progress.
-            # /stop reaches its dedicated handler above (line ~6771), so
-            # the operator still has a clean escape hatch.
+            # /stop reaches its dedicated handler above, so the operator
+            # still has a clean escape hatch.
             if self._agent_has_active_subagents(running_agent):
                 logger.info(
                     "PRIORITY interrupt demoted to queue for session %s "

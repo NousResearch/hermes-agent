@@ -16,8 +16,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable, Optional
 
-from hermes_constants import get_hermes_home
 from hermes_cli.env_loader import load_hermes_dotenv
+from hermes_constants import get_hermes_home
 from utils import is_truthy_value
 from tui_gateway.transport import (
     StdioTransport,
@@ -153,8 +153,6 @@ except FileExistsError:
 except Exception:
     pass  # FIFO not available on this platform (e.g. Windows)
 
-import atexit as _atexit
-
 
 def _cleanup_kanban_fifo() -> None:
     try:
@@ -164,7 +162,7 @@ def _cleanup_kanban_fifo() -> None:
         pass
 
 
-_atexit.register(_cleanup_kanban_fifo)
+atexit.register(_cleanup_kanban_fifo)
 
 
 def _start_global_kanban_reader() -> threading.Thread:
@@ -177,7 +175,10 @@ def _start_global_kanban_reader() -> threading.Thread:
     survive gateway restart (they queue until a session starts).
     """
     global _kanban_global_reader_thread
-    if _kanban_global_reader_thread is not None and _kanban_global_reader_thread.is_alive():
+    if (
+        _kanban_global_reader_thread is not None
+        and _kanban_global_reader_thread.is_alive()
+    ):
         return _kanban_global_reader_thread
 
     def _reader() -> None:
@@ -191,8 +192,14 @@ def _start_global_kanban_reader() -> threading.Thread:
                         try:
                             _data = json.loads(_line)
                             _kanban_fifo_queue.put(_data, block=False)
+                        except queue.Full:
+                            logger.debug(
+                                "kanban_fifo_queue full; dropped notification"
+                            )
                         except Exception:
-                            pass
+                            logger.debug(
+                                "kanban_fifo_reader: bad JSON line", exc_info=True
+                            )
             except (OSError, IOError):
                 # FIFO removed or TUI shutting down — recreate if missing
                 # so future writers can connect.
@@ -200,7 +207,10 @@ def _start_global_kanban_reader() -> threading.Thread:
                     try:
                         os.mkfifo(_KANBAN_FIFO_PATH, 0o600)
                     except Exception:
-                        pass
+                        logger.warning(
+                            "kanban_fifo_reader: failed to recreate FIFO",
+                            exc_info=True,
+                        )
                 time.sleep(0.5)
             except Exception:
                 logger.exception("kanban_fifo_reader_error")
@@ -235,29 +245,45 @@ def _format_kanban_notification(ev, sub) -> "str | None":
             reason = f": {str(payload['reason'])[:160]}"
         return f"[IMPORTANT: Kanban task {task_id} blocked{reason}]"
     elif kind == "crashed":
-        return f"[IMPORTANT: Kanban task {task_id} worker crashed; dispatcher will retry]"
+        return (
+            f"[IMPORTANT: Kanban task {task_id} worker crashed;"
+            " dispatcher will retry]"
+        )
     elif kind == "timed_out":
-        payload = ev.payload if hasattr(ev, 'payload') else ev.get('payload', {})
+        payload = (
+            ev.payload if hasattr(ev, "payload") else ev.get("payload", {})
+        )
         limit = int(payload.get("limit_seconds", 0)) if payload else 0
-        return f"[IMPORTANT: Kanban task {task_id} timed out (max_runtime={limit}s); will retry]"
+        return (
+            f"[IMPORTANT: Kanban task {task_id} timed out"
+            f" (max_runtime={limit}s); will retry]"
+        )
     elif kind == "gave_up":
-        payload = ev.payload if hasattr(ev, 'payload') else ev.get('payload', {})
+        payload = (
+            ev.payload if hasattr(ev, "payload") else ev.get("payload", {})
+        )
         err = ""
         if payload and payload.get("error"):
             err = f"\n{str(payload['error'])[:200]}"
-        return f"[IMPORTANT: Kanban task {task_id} gave up after repeated spawn failures{err}]"
+        return (
+            f"[IMPORTANT: Kanban task {task_id} gave up after"
+            f" repeated spawn failures{err}]"
+        )
     return None
 
 
 def _dispatch_kanban_notification(sid: str, session: dict, data: dict) -> None:
-    """Query DB for CLI subscriptions matching ``data["task_id"]`` and
-    inject a formatted notification into the agent session.
+    """Query DB for CLI subscriptions matching ``data["task_id"]``.
+
+    Injects a formatted notification into the agent session.
+    Non-fatal — exceptions are logged at debug level so the poller loop
+    keeps running.
     """
     _task_id = data.get("task_id", "")
     if not _task_id:
         return
 
-    _FMT_KINDS = {"completed", "blocked", "gave_up", "crashed", "timed_out"}
+    _fmt_kinds = {"completed", "blocked", "gave_up", "crashed", "timed_out"}
 
     try:
         from hermes_cli import kanban_db as _kb
@@ -277,7 +303,7 @@ def _dispatch_kanban_notification(sid: str, session: dict, data: dict) -> None:
                     _conn, task_id=_task_id,
                     platform="cli", chat_id=_sub["chat_id"],
                     thread_id=_sub.get("thread_id") or "",
-                    kinds=_FMT_KINDS,
+                    kinds=_fmt_kinds,
                 )
                 if _events:
                     _max_id = max(
@@ -306,7 +332,7 @@ def _dispatch_kanban_notification(sid: str, session: dict, data: dict) -> None:
         finally:
             _conn.close()
     except Exception:
-        pass  # Non-fatal — don't break the poller loop
+        logger.debug("kanban_notification_dispatch failed", exc_info=True)
 
 
 def _start_kanban_fifo_reader(sid: str, session: dict) -> threading.Thread:

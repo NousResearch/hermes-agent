@@ -132,6 +132,33 @@ async def test_cron_mutation_without_profile_finds_named_profile_job(isolated_pr
 
 
 @pytest.mark.asyncio
+async def test_update_cron_job_rejects_id_mutation(isolated_profiles):
+    """Dashboard surfaces a 400 (not a 500 or silent rename) when an
+    id-mutation attempt is rejected by cron/jobs.update_job."""
+    from hermes_cli import web_server
+
+    worker_job = web_server._call_cron_for_profile(
+        "worker_alpha",
+        "create_job",
+        prompt="managed by named profile",
+        schedule="every 1h",
+        name="immutable-id-job",
+    )
+
+    with pytest.raises(HTTPException) as exc:
+        await web_server.update_cron_job(
+            worker_job["id"],
+            web_server.CronJobUpdate(updates={"id": "../escape"}),
+            profile="worker_alpha",
+        )
+
+    assert exc.value.status_code == 400
+    assert "id" in exc.value.detail
+    worker_jobs = await web_server.list_cron_jobs(profile="worker_alpha")
+    assert [job["id"] for job in worker_jobs] == [worker_job["id"]]
+
+
+@pytest.mark.asyncio
 async def test_cron_delete_with_profile_deletes_only_target_profile(isolated_profiles):
     from hermes_cli import web_server
 

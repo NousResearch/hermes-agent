@@ -217,6 +217,12 @@ class TestGatewayHelpLines:
 
 
 class TestTelegramBotCommands:
+    def test_includes_commands_with_required_args(self):
+        commands = dict(telegram_bot_commands())
+        for name in ("steer", "queue", "background"):
+            assert name in commands
+            assert "<" in commands[name]
+
     def test_returns_list_of_tuples(self):
         cmds = telegram_bot_commands()
         assert len(cmds) > 10
@@ -1707,8 +1713,8 @@ class TestPluginCommandEnumeration:
         names = {name for name, _desc in telegram_bot_commands()}
         assert "metricas" in names
 
-    def test_plugin_command_with_required_args_excluded_from_telegram_menu(self, monkeypatch):
-        """Telegram BotCommand selections cannot supply required arguments."""
+    def test_plugin_command_with_required_args_appears_in_telegram_menu(self, monkeypatch):
+        """Telegram menu should include plugin commands that require arguments."""
         self._patch_plugin_commands(monkeypatch, {
             "background-job": {
                 "handler": lambda _a: "ok",
@@ -1718,7 +1724,7 @@ class TestPluginCommandEnumeration:
             }
         })
         names = {name for name, _desc in telegram_bot_commands()}
-        assert "background_job" not in names
+        assert "background_job" in names
 
     def test_plugin_command_appears_in_slack_subcommand_map(self, monkeypatch):
         """/hermes metricas must route through the Slack subcommand map."""
@@ -1804,3 +1810,36 @@ class TestPluginCommandEnumeration:
         slack_names = set(slack_subcommand_map())
         assert "status" in tg_names
         assert "status" in slack_names
+
+
+def test_plugin_command_with_required_args_included_in_telegram_menu(monkeypatch):
+    from hermes_cli import commands as cmdmod
+
+    def fake_entries():
+        yield ("plugin", "Plugin command", "<value>")
+
+    monkeypatch.setattr(cmdmod, "_iter_plugin_command_entries", fake_entries)
+    commands = dict(cmdmod.telegram_bot_commands())
+    assert "plugin" in commands
+    assert "<value>" in commands["plugin"]
+
+
+def test_telegram_bot_commands_include_required_args_regression():
+    from hermes_cli.commands import telegram_bot_commands
+
+    commands = dict(telegram_bot_commands())
+    for name in ("steer", "queue", "background"):
+        assert name in commands
+        assert "<" in commands[name]
+
+
+def test_plugin_command_with_required_args_included_in_telegram_menu(monkeypatch):
+    from hermes_cli import commands as cmdmod
+
+    def fake_entries():
+        yield ("plugin", "Plugin command", "<value>")
+
+    monkeypatch.setattr(cmdmod, "_iter_plugin_command_entries", fake_entries)
+    commands = dict(cmdmod.telegram_bot_commands())
+    assert "plugin" in commands
+    assert "<value>" in commands["plugin"]

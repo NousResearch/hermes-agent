@@ -474,6 +474,19 @@ def _iter_plugin_command_entries() -> list[tuple[str, str, str]]:
     return entries
 
 
+_TG_DESCRIPTION_LIMIT = 256
+
+
+def _telegram_description(description: str, args_hint: str | None = None) -> str:
+    text = description or ""
+    hint = (args_hint or "").strip()
+    if hint:
+        suffix = f" {hint}"
+        if suffix not in text:
+            text = f"{text}{suffix}"
+    return text[:_TG_DESCRIPTION_LIMIT]
+
+
 def telegram_bot_commands() -> list[tuple[str, str]]:
     """Return (command_name, description) pairs for Telegram setMyCommands.
 
@@ -485,8 +498,8 @@ def telegram_bot_commands() -> list[tuple[str, str]]:
     are **included** because their handlers return usage text when selected
     without a payload, making them discoverable via autocomplete.
 
-    Plugin-registered slash commands that require arguments are **excluded**
-    because plugins may not provide a no-arg usage fallback.
+    Plugin-registered slash commands are likewise included so plugins get native
+    Telegram autocomplete without touching core code.
     """
     overrides = _resolve_config_gates()
     result: list[tuple[str, str]] = []
@@ -498,13 +511,11 @@ def telegram_bot_commands() -> list[tuple[str, str]]:
         # the menu hurts discoverability (issue #24312).
         tg_name = _sanitize_telegram_name(cmd.name)
         if tg_name:
-            result.append((tg_name, cmd.description))
+            result.append((tg_name, _telegram_description(cmd.description, cmd.args_hint)))
     for name, description, args_hint in _iter_plugin_command_entries():
-        if _requires_argument(args_hint):
-            continue
         tg_name = _sanitize_telegram_name(name)
         if tg_name:
-            result.append((tg_name, description))
+            result.append((tg_name, _telegram_description(description, args_hint)))
     return result
 
 

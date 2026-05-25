@@ -2668,49 +2668,15 @@ def _append_event(
     # Notify any listening TUI gateway via FIFO (event-driven, zero polling).
     # Only fires for notification-worthy event kinds — avoids waking the TUI
     # for internal events like "created", "edited", "heartbeat".
+    #
+    # The actual FIFO write is deferred to _flush_pending_fifo_writes(),
+    # which runs after COMMIT in write_txn.  Writing before commit creates a
+    # race: the TUI reader sees the event immediately but the event row is
+    # not yet visible to other connections (the query in
+    # _dispatch_kanban_notification returns nothing).
     _notify_kinds = {"completed", "blocked", "gave_up", "crashed", "timed_out"}
     if kind in _notify_kinds:
-        _fifo_path = os.path.expanduser("~/.hermes/tui_kanban.fifo")
-        if os.path.exists(_fifo_path):
-            # Mitigate symlink attacks: verify the path is actually a FIFO.
-            try:
-                if not stat.S_ISFIFO(os.lstat(_fifo_path).st_mode):
-                    _log.warning("kanban_fifo_not_fifo: %s is not a FIFO, skipping", _fifo_path)
-                    return
-            except OSError as _e:
-                _log.warning("kanban_fifo_lstat_error: %s", _e)
-                return
-            _fd = None
-            _fifo = None
-            try:
-                # O_NONBLOCK: open(2) on a FIFO blocks until a reader
-                # connects; in CI (and any headless context) there is no
-                # reader, so the write op deadlocks the caller.  Non-blocking
-                # open lets us bail gracefully when no reader is connected.
-                _fd = os.open(_fifo_path, os.O_WRONLY | os.O_NONBLOCK)
-                _fifo = os.fdopen(_fd, "w", encoding="utf-8")
-                _fifo.write(json.dumps({"task_id": task_id, "kind": kind}) + "\n")
-                _fifo.close()
-                _fifo = None
-                _fd = None
-            except OSError as _e:
-                if _e.errno == errno.ENXIO:
-                    _log.debug("kanban_fifo_no_reader: no TUI listening on %s", _fifo_path)
-                else:
-                    _log.warning("kanban_fifo_write_error: %s", _e)
-            except Exception as _e:
-                _log.warning("kanban_fifo_write_error: %s", _e)
-            finally:
-                if _fifo is not None:
-                    try:
-                        _fifo.close()
-                    except Exception:
-                        pass
-                elif _fd is not None:
-                    try:
-                        os.close(_fd)
-                    except Exception:
-                        pass
+        _pending_fifo_writes.append((task_id, kind))
 
 
 def _end_run(

@@ -337,10 +337,14 @@ def _dispatch_kanban_notification(sid: str, session: dict, data: dict) -> None:
                 for _ev in _events:
                     _msg = _format_kanban_notification(_ev, _sub)
                     if _msg:
-                        _emit("status.update", sid, {"kind": "process", "text": _msg})
                         with session["history_lock"]:
                             if session.get("running"):
+                                # Session is busy — queue for later and show a
+                                # brief status update so the user knows something
+                                # happened.  Full message is injected when the
+                                # session goes idle via _pending_kanban drain.
                                 session.setdefault("_pending_kanban", []).append(_msg)
+                                _emit("status.update", sid, {"kind": "process", "text": _msg})
                                 continue
                             session["running"] = True
                         _rid = f"__kanban__{int(time.time() * 1000)}"

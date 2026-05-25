@@ -317,8 +317,40 @@ TOOLSETS = {
     },
 
 
+    # -------------------------------------------------------------------------
+    # Cybersecurity toolset
+    # -------------------------------------------------------------------------
+
+    "cyber": {
+        "description": (
+            "Cybersecurity operations toolkit: CVE/IOC threat intelligence (NVD, "
+            "VirusTotal, AbuseIPDB, MITRE ATT&CK), IOC extraction from logs and "
+            "reports, vulnerability triage with CVSS + EPSS scoring, and an "
+            "in-session incident response playbook. Pair with 'delegation' to fan "
+            "out parallel subagent analysis tasks."
+        ),
+        "tools": [
+            "threat_intel",   # CVE lookup, IOC reputation, MITRE ATT&CK TTP
+            "extract_iocs",   # IOC extraction from freeform text / logs
+            "vuln_triage",    # CVSS + EPSS + asset correlation
+            "ir_incident",    # IR playbook: create, timeline, evidence, report
+        ],
+        "includes": [],
+    },
+
+    "live_usb": {
+        "description": (
+            "Live USB builder and provisioner: build a bootable Hermes AgentCyber "
+            "ISO, write it to a USB drive, and inject pre-configured credentials "
+            "so the gateway starts automatically on first boot. Requires Linux host "
+            "with debootstrap for build; write/provision require root."
+        ),
+        "tools": ["live_usb"],
+        "includes": [],
+    },
+
     # Scenario-specific toolsets
-    
+
     "debugging": {
         "description": "Debugging and troubleshooting toolkit",
         "tools": ["terminal", "process"],

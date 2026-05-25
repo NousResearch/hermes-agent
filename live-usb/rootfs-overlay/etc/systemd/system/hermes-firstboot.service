@@ -1,0 +1,23 @@
+[Unit]
+Description=Hermes AgentCyber First-Boot Configuration Wizard
+# Run before gateway, after network is up
+After=network-online.target
+Before=hermes-gateway.service
+ConditionPathExists=!/home/hermes/.hermes/.firstboot_complete
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+User=hermes
+Group=hermes
+StandardInput=tty
+StandardOutput=tty
+StandardError=tty
+TTYPath=/dev/tty1
+TTYReset=yes
+TTYVHangup=yes
+ExecStart=/usr/local/bin/hermes-firstboot
+TimeoutStartSec=600
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,246 @@
+#!/usr/bin/env bash
+# =============================================================================
+# Hermes AgentCyber — First-Boot Configuration Wizard
+# =============================================================================
+# Runs once on first boot to collect API keys and configure the gateway.
+# Called by hermes-firstboot.service (runs as hermes user).
+# =============================================================================
+
+set -euo pipefail
+
+HERMES_HOME="${HOME}/.hermes"
+FLAG_FILE="${HERMES_HOME}/.firstboot_complete"
+CONFIG_FILE="${HERMES_HOME}/config.yaml"
+VENV="/opt/hermes-venv"
+HERMES_BIN="${VENV}/bin/hermes"
+
+# ---- Guard: only run once ---------------------------------------------------
+if [[ -f "$FLAG_FILE" ]]; then
+  exit 0
+fi
+
+# ---- Wait for network (up to 30 s) -----------------------------------------
+_wait_net() {
+  local i=0
+  while ! ping -c1 -W1 8.8.8.8 &>/dev/null; do
+    (( i++ )) || true
+    [[ $i -ge 30 ]] && return 1
+    sleep 1
+  done
+  return 0
+}
+
+# ---- Install from PyPI if source not bundled --------------------------------
+if [[ -f /opt/hermes-install-on-firstboot ]]; then
+  echo ""
+  echo "  📦  Hermes not bundled — installing from PyPI..."
+  echo "  🌐  Waiting for network..."
+  if _wait_net; then
+    "${VENV}/bin/pip" install --quiet hermes-agentcyber 2>&1 || {
+      echo "  ❌  Install failed. Check network connectivity."
+      exit 1
+    }
+    rm /opt/hermes-install-on-firstboot
+    echo "  ✓  Hermes installed"
+  else
+    echo "  ❌  No network. Cannot install hermes. Exiting."
+    exit 1
+  fi
+fi
+
+# ---- Auto-load provisioned config ------------------------------------------
+for part in /dev/sd?3 /dev/nvme?n?p3; do
+  [[ -b "$part" ]] || continue
+  TMP_MNT=$(mktemp -d)
+  if mount -o ro "$part" "$TMP_MNT" 2>/dev/null; then
+    if [[ -f "${TMP_MNT}/hermes-config.tar.gz" ]]; then
+      echo ""
+      echo "  🔑  Found provisioned config — applying..."
+      mkdir -p "${HERMES_HOME}"
+      tar xzf "${TMP_MNT}/hermes-config.tar.gz" -C "$(dirname "$HERMES_HOME")" 2>/dev/null || true
+      umount "$TMP_MNT"
+      rm -rf "$TMP_MNT"
+      echo "  ✓  Config loaded from provision partition"
+      touch "$FLAG_FILE"
+      # Skip the wizard
+      systemctl start hermes-gateway.service 2>/dev/null || true
+      exit 0
+    fi
+    umount "$TMP_MNT"
+  fi
+  rm -rf "$TMP_MNT" 2>/dev/null || true
+done
+
+# =============================================================================
+# Interactive first-boot wizard
+# =============================================================================
+
+clear
+cat << 'BANNER'
+
+  ██╗  ██╗███████╗██████╗ ███╗   ███╗███████╗███████╗
+  ██║  ██║██╔════╝██╔══██╗████╗ ████║██╔════╝██╔════╝
+  ███████║█████╗  ██████╔╝██╔████╔██║█████╗  ███████╗
+  ██╔══██║██╔══╝  ██╔══██╗██║╚██╔╝██║██╔══╝  ╚════██║
+  ██║  ██║███████╗██║  ██║██║ ╚═╝ ██║███████╗███████║
+  ╚═╝  ╚═╝╚══════╝╚═╝  ╚═╝╚═╝     ╚═╝╚══════╝╚══════╝
+
+         AgentCyber — Live USB First-Boot Setup
+
+BANNER
+
+echo "  This wizard configures your Hermes AgentCyber instance."
+echo "  Settings are saved to ~/.hermes/config.yaml"
+echo ""
+echo "  Press Ctrl+C at any time to skip and configure manually later."
+echo "  Manual config: nano ~/.hermes/config.yaml && hermes-live start"
+echo ""
+echo "────────────────────────────────────────────────────────────"
+
+mkdir -p "${HERMES_HOME}"
+
+# ---- Collect configuration --------------------------------------------------
+
+prompt() {
+  local var_name="$1"
+  local prompt_text="$2"
+  local default_val="${3:-}"
+  local is_secret="${4:-false}"
+
+  if [[ -n "$default_val" ]]; then
+    echo -n "  ${prompt_text} [${default_val}]: "
+  else
+    echo -n "  ${prompt_text}: "
+  fi
+
+  if [[ "$is_secret" == "true" ]]; then
+    read -r -s value
+    echo ""
+  else
+    read -r value
+  fi
+
+  if [[ -z "$value" && -n "$default_val" ]]; then
+    value="$default_val"
+  fi
+  printf -v "$var_name" '%s' "$value"
+}
+
+echo ""
+echo "  [1/4] AI Model"
+echo "  ─────────────"
+echo "  Providers: anthropic, openai, openrouter, bedrock"
+prompt MODEL_PROVIDER "Provider" "anthropic"
+prompt MODEL_API_KEY  "API key"  "" true
+prompt MODEL_NAME     "Model"    "claude-opus-4-7-20251101"
+echo ""
+
+echo "  [2/4] Telegram Gateway (optional — leave blank to skip)"
+echo "  ────────────────────────────────────────────────────────"
+echo "  Create a bot at https://t.me/BotFather to get a token."
+prompt TG_TOKEN    "Telegram bot token" "" true
+prompt TG_USER_IDS "Allowed Telegram user IDs (comma-separated)" ""
+echo ""
+
+echo "  [3/4] Operation Mode"
+echo "  ─────────────────────"
+echo "  1) Gateway  — receive commands via Telegram/Slack (needs token above)"
+echo "  2) Terminal — interactive agent shell on this machine"
+echo "  3) Headless — automated cyber sweep on boot (uses built-in scan skill)"
+prompt OP_MODE "Mode [1/2/3]" "1"
+echo ""
+
+echo "  [4/4] Cyber Settings"
+echo "  ─────────────────────"
+prompt VT_KEY       "VirusTotal API key (optional)" "" true
+prompt ABUSE_KEY    "AbuseIPDB API key (optional)"  "" true
+prompt AUDIT_LOG    "Enable SOC audit log [y/N]"    "n"
+echo ""
+
+# ---- Write config.yaml -------------------------------------------------------
+cat > "${CONFIG_FILE}" << YAML
+# Hermes AgentCyber — Live USB configuration
+# Generated by first-boot wizard on $(date -u +"%Y-%m-%d %H:%M:%S UTC")
+
+model:
+  default: "${MODEL_PROVIDER}/${MODEL_NAME}"
+  provider: "${MODEL_PROVIDER}"
+  api_key: "${MODEL_API_KEY}"
+
+toolsets:
+  enabled:
+    - cyber
+    - web
+    - terminal
+    - file
+    - delegation
+    - todo
+    - memory
+YAML
+
+# Telegram config block
+if [[ -n "$TG_TOKEN" ]]; then
+  cat >> "${CONFIG_FILE}" << YAML
+
+telegram:
+  token: "${TG_TOKEN}"
+  allowed_users: [${TG_USER_IDS}]
+  busy_input_mode: interrupt
+YAML
+fi
+
+# .env file for secrets
+cat > "${HERMES_HOME}/.env" << ENV
+# Hermes AgentCyber environment — Live USB
+# Generated $(date -u +"%Y-%m-%d %H:%M:%S UTC")
+$([ -n "$VT_KEY"    ] && echo "VT_API_KEY=${VT_KEY}")
+$([ -n "$ABUSE_KEY" ] && echo "ABUSEIPDB_API_KEY=${ABUSE_KEY}")
+$([ "$AUDIT_LOG" == "y" ] || [ "$AUDIT_LOG" == "Y" ] && echo "HERMES_CYBER_AUDIT=true")
+ENV
+
+# Operation mode
+case "$OP_MODE" in
+  3)
+    echo "HERMES_LIVE_MODE=headless" >> "${HERMES_HOME}/.env"
+    ;;
+  2)
+    echo "HERMES_LIVE_MODE=terminal" >> "${HERMES_HOME}/.env"
+    ;;
+  *)
+    echo "HERMES_LIVE_MODE=gateway" >> "${HERMES_HOME}/.env"
+    ;;
+esac
+
+chmod 600 "${CONFIG_FILE}" "${HERMES_HOME}/.env"
+touch "$FLAG_FILE"
+
+echo ""
+echo "  ✅  Configuration saved to ~/.hermes/"
+echo ""
+
+# ---- Launch -----------------------------------------------------------------
+case "$OP_MODE" in
+  3)
+    echo "  🤖  Headless scan mode — starting automated cyber sweep..."
+    exec "${HERMES_BIN}" -p \
+      "You are an autonomous cybersecurity agent running from a live USB. \
+       Use the cyber toolset to: \
+       1. Scan the local network (ip route; nmap -sn <network>) \
+       2. For each discovered host, check for common CVEs in running services \
+       3. Generate an IR incident report \
+       Output findings to ~/hermes-scan-$(date +%Y%m%d-%H%M%S).md" \
+      --toolsets cyber,terminal,file,delegation
+    ;;
+  2)
+    echo "  💻  Terminal mode — launching interactive agent..."
+    exec "${HERMES_BIN}"
+    ;;
+  *)
+    echo "  🌐  Gateway mode — starting Hermes gateway service..."
+    systemctl start hermes-gateway.service 2>/dev/null || \
+      exec "${VENV}/bin/gateway" run --config "${CONFIG_FILE}"
+    echo "  ✓  Gateway running. Send a message to your Telegram bot to start."
+    echo ""
+    echo "  Use 'hermes-live status' to check the gateway."
+    ;;
+esac

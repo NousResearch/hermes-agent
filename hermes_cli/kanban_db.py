@@ -96,7 +96,7 @@ _log = logging.getLogger(__name__)
 # Constants
 # ---------------------------------------------------------------------------
 
-VALID_STATUSES = {"triage", "todo", "scheduled", "ready", "running", "blocked", "review", "done", "archived"}
+VALID_STATUSES = {"triage", "todo", "scheduled", "ready", "running", "blocked", "review", "done", "completed", "archived"}
 VALID_INITIAL_STATUSES = {"running", "blocked"}
 VALID_WORKSPACE_KINDS = {"scratch", "worktree", "dir"}
 KNOWN_TOOLSET_NAMES = frozenset(name.casefold() for name in get_toolset_names())
@@ -109,6 +109,18 @@ _IS_WINDOWS = sys.platform == "win32"
 # ``HERMES_KANBAN_CLAIM_TTL_SECONDS`` to raise the default claim window for
 # long single-call MCP workflows.
 DEFAULT_CLAIM_TTL_SECONDS = 15 * 60
+
+# Terminal (completed) statuses that satisfy parent-dependency checks.
+# "done" is the canonical terminal status written by complete_task().
+# "completed" is accepted too — some code paths or older dashboard versions
+# wrote it, and a hard-fail on "completed" leaves children permanently stuck
+# as "todo" because the dependency resolver only checks for "done" (#31717).
+_TERMINAL_TASK_STATUSES = frozenset({"done", "archived", "completed"})
+
+
+def _is_terminal(status: str) -> bool:
+    """Return True if *status* is a terminal/absorbed state for dependency purposes."""
+    return status in _TERMINAL_TASK_STATUSES
 
 
 def _resolve_claim_ttl_seconds(ttl_seconds: Optional[int] = None) -> int:
@@ -1694,7 +1706,7 @@ def create_task(
                             "(" + ",".join("?" * len(parents)) + ")",
                             parents,
                         ).fetchall()
-                        if any(r["status"] != "done" for r in rows):
+                        if any(not _is_terminal(r["status"]) for r in rows):
                             task_status = "todo"
                 # Even in triage mode we still need to validate parent ids
                 # so the eventual link rows don't dangle.
@@ -1899,7 +1911,7 @@ def link_tasks(conn: sqlite3.Connection, parent_id: str, child_id: str) -> None:
         parent_status = conn.execute(
             "SELECT status FROM tasks WHERE id = ?", (parent_id,)
         ).fetchone()["status"]
-        if parent_status != "done":
+        if not _is_terminal(parent_status):
             conn.execute(
                 "UPDATE tasks SET status = 'todo' WHERE id = ? AND status = 'ready'",
                 (child_id,),
@@ -3290,7 +3302,7 @@ def edit_completed_task_result(
         row = conn.execute(
             "SELECT status FROM tasks WHERE id = ?", (task_id,),
         ).fetchone()
-        if not row or row["status"] != "done":
+        if not row or not _is_terminal(row["status"]):
             return False
         conn.execute(
             "UPDATE tasks SET result = ? WHERE id = ?",
@@ -3506,7 +3518,7 @@ def unblock_task(conn: sqlite3.Connection, task_id: str) -> bool:
         undone_parents = conn.execute(
             "SELECT 1 FROM task_links l "
             "JOIN tasks p ON p.id = l.parent_id "
-            "WHERE l.child_id = ? AND p.status != 'done' LIMIT 1",
+            "WHERE l.child_id = ? AND p.status NOT IN ('done', 'archived', 'completed') LIMIT 1",
             (task_id,),
         ).fetchone()
         new_status = "todo" if undone_parents else "ready"
@@ -5997,7 +6009,7 @@ def build_worker_context(conn: sqlite3.Connection, task_id: str) -> str:
         wrote_header = False
         for pid in parent_ids:
             pt = get_task(conn, pid)
-            if not pt or pt.status != "done":
+            if not pt or not _is_terminal(pt.status):
                 continue
             runs = [r for r in list_runs(conn, pid) if r.outcome == "completed"]
             runs.sort(key=lambda r: r.started_at, reverse=True)

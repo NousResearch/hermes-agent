@@ -281,6 +281,25 @@ def get_subprocess_home() -> str | None:
     return None
 
 
+def expand_hermes_path(value: str) -> str:
+    """Expand ``~`` and ``$HOME`` using the subprocess HOME when active.
+
+    When profile isolation is enabled (``HERMES_HOME/home/`` exists),
+    subprocesses use that directory as HOME so tool configs (git, ssh,
+    npm …) land inside the Hermes data directory.  ``os.path.expanduser``
+    only knows about the Python process's HOME, so this helper replaces
+    ``~`` with the profile home first, then falls through to the standard
+    expansion for any remaining patterns.
+    """
+    profile_home = get_subprocess_home()
+    if profile_home:
+        if value.startswith("~/"):
+            value = profile_home + value[1:]
+        elif value == "~":
+            value = profile_home
+    return os.path.expanduser(os.path.expandvars(value))
+
+
 VALID_REASONING_EFFORTS = ("minimal", "low", "medium", "high", "xhigh")
 
 

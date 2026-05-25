@@ -12,7 +12,7 @@ import sys
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Set, Tuple
 
-from hermes_constants import get_config_path, get_skills_dir, is_termux
+from hermes_constants import expand_hermes_path, get_config_path, get_skills_dir, is_termux
 
 logger = logging.getLogger(__name__)
 
@@ -302,7 +302,7 @@ def get_external_skills_dirs() -> List[Path]:
         if not entry:
             continue
         # Expand ~ and environment variables
-        expanded = os.path.expanduser(os.path.expandvars(entry))
+        expanded = expand_hermes_path(entry)
         p = Path(expanded)
         # Resolve relative paths against HERMES_HOME, not cwd
         if not p.is_absolute():
@@ -505,7 +505,7 @@ def resolve_skill_config_values(
 
         # Expand ~ in path-like values
         if isinstance(value, str) and ("~" in value or "${" in value):
-            value = os.path.expanduser(os.path.expandvars(value))
+            value = expand_hermes_path(value)
 
         resolved[logical_key] = value
 

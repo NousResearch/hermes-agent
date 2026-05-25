@@ -1735,6 +1735,13 @@ class GatewayRunner:
         # Key: session_key, Value: parsed reasoning config dict.
         self._session_reasoning_overrides: Dict[str, Dict[str, Any]] = {}
         self._kanban_notifier_profile = self._active_profile_name()
+        # Shared per-board kanban DB connections. Prior code opened+closed
+        # short-lived connections in each watcher tick; when one connection
+        # closed as the last WAL holder, SQLite's in-process unixShmNode
+        # unlinked and recreated the -shm/-wal sidecars and the next fresh
+        # connection raised SQLITE_IOERR_SHMMAP. See #31158.
+        self._kanban_conn_cache: Dict[str, sqlite3.Connection] = {}
+        self._kanban_conn_lock = threading.Lock()
         # Teams meeting pipeline runtime (bound later when msgraph_webhook adapter exists).
         self._teams_pipeline_runtime = None
         self._teams_pipeline_runtime_error: Optional[str] = None
@@ -4782,66 +4789,63 @@ class GatewayRunner:
                             continue
                         seen_db_paths.add(resolved_db_path)
                         try:
-                            conn = _kb.connect(board=slug)
+                            conn = self._kb_conn(slug)
                         except Exception as exc:
                             logger.debug("kanban notifier: cannot open board %s: %s", slug, exc)
                             continue
-                        try:
-                            # `connect()` runs the schema + idempotent migration
-                            # on first open per process, so an explicit
-                            # `init_db()` here would be redundant. Worse:
-                            # `init_db()` deliberately busts the per-process
-                            # cache and re-runs the migration on a *second*
-                            # connection, which races the first and used to
-                            # log a benign but noisy `duplicate column name`
-                            # traceback (and intermittent "database is locked"
-                            # — issue #21378) on every gateway start against
-                            # a legacy DB. `_add_column_if_missing` now
-                            # tolerates that race, but we still skip the
-                            # redundant call to avoid the wasted work.
-                            subs = _kb.list_notify_subs(conn)
-                            if not subs:
-                                logger.debug("kanban notifier: board %s has no subscriptions", slug)
-                            for sub in subs:
-                                owner_profile = sub.get("notifier_profile") or None
-                                if owner_profile and owner_profile != notifier_profile:
-                                    logger.debug(
-                                        "kanban notifier: subscription for %s owned by profile %s; current profile %s skipping",
-                                        sub.get("task_id"), owner_profile, notifier_profile,
-                                    )
-                                    continue
-                                platform = (sub.get("platform") or "").lower()
-                                if platform not in active_platforms:
-                                    logger.debug(
-                                        "kanban notifier: subscription for %s on %s skipped; adapter not connected",
-                                        sub.get("task_id"), platform or "<missing>",
-                                    )
-                                    continue
-                                old_cursor, cursor, events = _kb.claim_unseen_events_for_sub(
-                                    conn,
-                                    task_id=sub["task_id"],
-                                    platform=sub["platform"],
-                                    chat_id=sub["chat_id"],
-                                    thread_id=sub.get("thread_id") or "",
-                                    kinds=TERMINAL_KINDS,
-                                )
-                                if not events:
-                                    continue
-                                task = _kb.get_task(conn, sub["task_id"])
+                        # `connect()` runs the schema + idempotent migration
+                        # on first open per process, so an explicit
+                        # `init_db()` here would be redundant. Worse:
+                        # `init_db()` deliberately busts the per-process
+                        # cache and re-runs the migration on a *second*
+                        # connection, which races the first and used to
+                        # log a benign but noisy `duplicate column name`
+                        # traceback (and intermittent "database is locked"
+                        # — issue #21378) on every gateway start against
+                        # a legacy DB. `_add_column_if_missing` now
+                        # tolerates that race, but we still skip the
+                        # redundant call to avoid the wasted work.
+                        subs = _kb.list_notify_subs(conn)
+                        if not subs:
+                            logger.debug("kanban notifier: board %s has no subscriptions", slug)
+                        for sub in subs:
+                            owner_profile = sub.get("notifier_profile") or None
+                            if owner_profile and owner_profile != notifier_profile:
                                 logger.debug(
-                                    "kanban notifier: claimed %d event(s) for %s on board %s cursor %s→%s",
-                                    len(events), sub["task_id"], slug, old_cursor, cursor,
+                                    "kanban notifier: subscription for %s owned by profile %s; current profile %s skipping",
+                                    sub.get("task_id"), owner_profile, notifier_profile,
                                 )
-                                deliveries.append({
-                                    "sub": sub,
-                                    "old_cursor": old_cursor,
-                                    "cursor": cursor,
-                                    "events": events,
-                                    "task": task,
-                                    "board": slug,
-                                })
-                        finally:
-                            conn.close()
+                                continue
+                            platform = (sub.get("platform") or "").lower()
+                            if platform not in active_platforms:
+                                logger.debug(
+                                    "kanban notifier: subscription for %s on %s skipped; adapter not connected",
+                                    sub.get("task_id"), platform or "<missing>",
+                                )
+                                continue
+                            old_cursor, cursor, events = _kb.claim_unseen_events_for_sub(
+                                conn,
+                                task_id=sub["task_id"],
+                                platform=sub["platform"],
+                                chat_id=sub["chat_id"],
+                                thread_id=sub.get("thread_id") or "",
+                                kinds=TERMINAL_KINDS,
+                            )
+                            if not events:
+                                continue
+                            task = _kb.get_task(conn, sub["task_id"])
+                            logger.debug(
+                                "kanban notifier: claimed %d event(s) for %s on board %s cursor %s→%s",
+                                len(events), sub["task_id"], slug, old_cursor, cursor,
+                            )
+                            deliveries.append({
+                                "sub": sub,
+                                "old_cursor": old_cursor,
+                                "cursor": cursor,
+                                "events": events,
+                                "task": task,
+                                "board": slug,
+                            })
                     return deliveries
 
                 deliveries = await asyncio.to_thread(_collect)
@@ -5034,32 +5038,26 @@ class GatewayRunner:
         subscription. Unsub cursors in one board can't touch another's.
         """
         from hermes_cli import kanban_db as _kb
-        conn = _kb.connect(board=board)
-        try:
-            _kb.advance_notify_cursor(
-                conn,
-                task_id=sub["task_id"],
-                platform=sub["platform"],
-                chat_id=sub["chat_id"],
-                thread_id=sub.get("thread_id") or "",
-                new_cursor=cursor,
-            )
-        finally:
-            conn.close()
+        conn = self._kb_conn(board)
+        _kb.advance_notify_cursor(
+            conn,
+            task_id=sub["task_id"],
+            platform=sub["platform"],
+            chat_id=sub["chat_id"],
+            thread_id=sub.get("thread_id") or "",
+            new_cursor=cursor,
+        )
 
     def _kanban_unsub(self, sub: dict, board: Optional[str] = None) -> None:
         from hermes_cli import kanban_db as _kb
-        conn = _kb.connect(board=board)
-        try:
-            _kb.remove_notify_sub(
-                conn,
-                task_id=sub["task_id"],
-                platform=sub["platform"],
-                chat_id=sub["chat_id"],
-                thread_id=sub.get("thread_id") or "",
-            )
-        finally:
-            conn.close()
+        conn = self._kb_conn(board)
+        _kb.remove_notify_sub(
+            conn,
+            task_id=sub["task_id"],
+            platform=sub["platform"],
+            chat_id=sub["chat_id"],
+            thread_id=sub.get("thread_id") or "",
+        )
 
     def _kanban_rewind(
         self,
@@ -5070,19 +5068,30 @@ class GatewayRunner:
     ) -> None:
         """Sync helper: undo a claimed notification cursor after send failure."""
         from hermes_cli import kanban_db as _kb
-        conn = _kb.connect(board=board)
-        try:
-            _kb.rewind_notify_cursor(
-                conn,
-                task_id=sub["task_id"],
-                platform=sub["platform"],
-                chat_id=sub["chat_id"],
-                thread_id=sub.get("thread_id") or "",
-                claimed_cursor=claimed_cursor,
-                old_cursor=old_cursor,
-            )
-        finally:
-            conn.close()
+        conn = self._kb_conn(board)
+        _kb.rewind_notify_cursor(
+            conn,
+            task_id=sub["task_id"],
+            platform=sub["platform"],
+            chat_id=sub["chat_id"],
+            thread_id=sub.get("thread_id") or "",
+            claimed_cursor=claimed_cursor,
+            old_cursor=old_cursor,
+        )
+
+    def _kb_conn(self, slug: Optional[str] = None) -> sqlite3.Connection:
+        """Return the shared per-board kanban connection, creating it if needed.
+
+        A single connection per board slug eliminates the WAL inode-rotation race
+        described in upstream issue #31158.
+        """
+        from hermes_cli import kanban_db as _kb
+        key = slug or _kb.DEFAULT_BOARD
+        with self._kanban_conn_lock:
+            if key not in self._kanban_conn_cache:
+                conn = _kb.connect(board=slug, check_same_thread=False)
+                self._kanban_conn_cache[key] = conn
+            return self._kanban_conn_cache[key]
 
     async def _deliver_kanban_artifacts(
         self,
@@ -5349,7 +5358,6 @@ class GatewayRunner:
             opened explicitly so concurrent boards never share a
             connection handle or accidentally claim across each other.
             """
-            conn = None
             fingerprint = _board_db_fingerprint(slug)
             disabled_fingerprint = disabled_corrupt_boards.get(slug)
             if disabled_fingerprint == fingerprint:
@@ -5361,7 +5369,7 @@ class GatewayRunner:
                 )
                 disabled_corrupt_boards.pop(slug, None)
             try:
-                conn = _kb.connect(board=slug)
+                conn = self._kb_conn(slug)
                 # `connect()` runs the schema + idempotent migration on
                 # first open per process; the previous explicit
                 # `init_db()` call here busted the per-process cache and
@@ -5394,12 +5402,6 @@ class GatewayRunner:
             except Exception:
                 logger.exception("kanban dispatcher: tick failed on board %s", slug)
                 return None
-            finally:
-                if conn is not None:
-                    try:
-                        conn.close()
-                    except Exception:
-                        pass
 
         def _tick_once() -> "list[tuple[str, Optional[object]]]":
             """Run one dispatch_once per board. Returns (slug, result) pairs.
@@ -5436,21 +5438,14 @@ class GatewayRunner:
                 boards = [_kb.read_board_metadata(_kb.DEFAULT_BOARD)]
             for b in boards:
                 slug = b.get("slug") or _kb.DEFAULT_BOARD
-                conn = None
                 try:
-                    conn = _kb.connect(board=slug)
+                    conn = self._kb_conn(slug)
                     if _kb.has_spawnable_ready(conn):
                         return True
                     if _kb.has_spawnable_review(conn):
                         return True
                 except Exception:
                     continue
-                finally:
-                    if conn is not None:
-                        try:
-                            conn.close()
-                        except Exception:
-                            pass
             return False
 
         # Auto-decompose: turn fresh triage tasks into ready workgraphs
@@ -6024,6 +6019,15 @@ class GatewayRunner:
                 "Shutdown phase: SessionDB close done at +%.2fs",
                 _phase_elapsed(),
             )
+
+            # Close shared kanban connections so WAL locks are released.
+            with self._kanban_conn_lock:
+                for _slug, _kconn in list(self._kanban_conn_cache.items()):
+                    try:
+                        _kconn.close()
+                    except Exception as _e:
+                        logger.debug("kanban conn close error (%s): %s", _slug, _e)
+                self._kanban_conn_cache.clear()
 
             from gateway.status import remove_pid_file, release_gateway_runtime_lock
             remove_pid_file()
@@ -9497,17 +9501,14 @@ class GatewayRunner:
                     if platform_str and chat_id:
                         def _sub():
                             from hermes_cli import kanban_db as _kb
-                            conn = _kb.connect(board=requested_board)
-                            try:
-                                _kb.add_notify_sub(
-                                    conn, task_id=task_id,
-                                    platform=platform_str, chat_id=chat_id,
-                                    thread_id=thread_id or None,
-                                    user_id=user_id,
-                                    notifier_profile=getattr(self, "_kanban_notifier_profile", None) or self._active_profile_name(),
-                                )
-                            finally:
-                                conn.close()
+                            conn = self._kb_conn(requested_board)
+                            _kb.add_notify_sub(
+                                conn, task_id=task_id,
+                                platform=platform_str, chat_id=chat_id,
+                                thread_id=thread_id or None,
+                                user_id=user_id,
+                                notifier_profile=getattr(self, "_kanban_notifier_profile", None) or self._active_profile_name(),
+                            )
                         await asyncio.to_thread(_sub)
                         output = (
                             output.rstrip()

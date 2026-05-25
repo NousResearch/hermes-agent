@@ -1,4 +1,5 @@
 import asyncio
+import threading
 from pathlib import Path
 
 import pytest
@@ -41,6 +42,8 @@ def _make_runner(adapter):
     runner._running = True
     runner.adapters = {Platform.TELEGRAM: adapter}
     runner._kanban_sub_fail_counts = {}
+    runner._kanban_conn_cache = {}
+    runner._kanban_conn_lock = threading.Lock()
     return runner
 
 
@@ -116,6 +119,8 @@ def test_kanban_notifier_rewinds_claim_if_adapter_disconnects(tmp_path, monkeypa
     runner._running = True
     runner.adapters = DisconnectedAdapters({Platform.TELEGRAM: RecordingAdapter()})
     runner._kanban_sub_fail_counts = {}
+    runner._kanban_conn_cache = {}
+    runner._kanban_conn_lock = threading.Lock()
 
     asyncio.run(_run_one_notifier_tick(monkeypatch, runner))
 

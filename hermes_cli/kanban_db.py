@@ -1136,6 +1136,7 @@ def connect(
     db_path: Optional[Path] = None,
     *,
     board: Optional[str] = None,
+    check_same_thread: bool = True,
 ) -> sqlite3.Connection:
     """Open (and initialize if needed) the kanban DB.
 
@@ -1168,7 +1169,12 @@ def connect(
     # via _INITIALIZED_PATHS so it only runs once per process per path.
     _guard_existing_db_is_healthy(path)
     resolved = str(path.resolve())
-    conn = sqlite3.connect(str(path), isolation_level=None, timeout=30)
+    conn = sqlite3.connect(
+        str(path),
+        isolation_level=None,
+        timeout=30,
+        check_same_thread=check_same_thread,
+    )
     try:
         conn.row_factory = sqlite3.Row
         with _INIT_LOCK:

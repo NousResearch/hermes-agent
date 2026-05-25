@@ -640,17 +640,36 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
             # Bridge: notify external memory provider of built-in memory writes
             if agent._memory_manager and function_args.get("action") in {"add", "replace"}:
                 try:
+                    _memory_metadata = agent._build_memory_write_metadata(
+                        task_id=effective_task_id,
+                        tool_call_id=getattr(tool_call, "id", None),
+                    )
                     agent._memory_manager.on_memory_write(
                         function_args.get("action", ""),
                         target,
                         function_args.get("content", ""),
-                        metadata=agent._build_memory_write_metadata(
-                            task_id=effective_task_id,
-                            tool_call_id=getattr(tool_call, "id", None),
-                        ),
+                        metadata=_memory_metadata,
                     )
                 except Exception:
                     pass
+            if function_args.get("action") in {"add", "replace"}:
+                try:
+                    _memory_result = json.loads(function_result)
+                except Exception:
+                    _memory_result = {}
+                if isinstance(_memory_result, dict) and _memory_result.get("success"):
+                    try:
+                        agent._capture_present_state_memory_write(
+                            action=function_args.get("action", ""),
+                            target=target,
+                            content=function_args.get("content", ""),
+                            metadata=agent._build_memory_write_metadata(
+                                task_id=effective_task_id,
+                                tool_call_id=getattr(tool_call, "id", None),
+                            ),
+                        )
+                    except Exception:
+                        pass
             tool_duration = time.time() - tool_start_time
             if agent._should_emit_quiet_tool_messages():
                 agent._vprint(f"  {_get_cute_tool_message_impl('memory', function_args, tool_duration, result=function_result)}")

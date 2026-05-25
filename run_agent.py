@@ -1151,6 +1151,29 @@ class AIAgent:
             tool_call_id=tool_call_id,
         )
 
+    def _capture_present_state_memory_write(
+        self,
+        *,
+        action: str,
+        target: str,
+        content: str,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> None:
+        """Mirror explicit memory writes into live present-state memory."""
+        present_state = getattr(self, "_present_state_memory", None)
+        if not present_state:
+            return
+        try:
+            present_state.capture_memory_write(
+                action,
+                target,
+                content,
+                session_id=self.session_id or "",
+                metadata=metadata or {},
+            )
+        except Exception:
+            pass
+
     def _apply_persist_user_message_override(self, messages: List[Dict]) -> None:
         """Rewrite the current-turn user message before persistence/return.
 
@@ -2038,6 +2061,28 @@ class AIAgent:
                 )
             except Exception:
                 pass
+
+    def _sync_present_state_for_turn(
+        self,
+        *,
+        original_user_message: Any,
+        final_response: Any,
+        interrupted: bool,
+    ) -> None:
+        """Capture obvious key facts into live present-state memory."""
+        if interrupted:
+            return
+        present_state = getattr(self, "_present_state_memory", None)
+        if not (present_state and final_response and original_user_message):
+            return
+        try:
+            present_state.capture_turn(
+                original_user_message,
+                final_response,
+                session_id=self.session_id or "",
+            )
+        except Exception:
+            pass
 
     def _sync_external_memory_for_turn(
         self,

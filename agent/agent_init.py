@@ -1056,6 +1056,7 @@ def init_agent(
 
     # Persistent memory (MEMORY.md + USER.md) -- loaded from disk
     agent._memory_store = None
+    agent._present_state_memory = None
     agent._memory_enabled = False
     agent._user_profile_enabled = False
     agent._memory_nudge_interval = 10
@@ -1076,6 +1077,23 @@ def init_agent(
                 agent._memory_store.load_from_disk()
         except Exception:
             pass  # Memory is optional -- don't break agent init
+
+    if not skip_memory:
+        try:
+            mem_config = _agent_cfg.get("memory", {}) if _agent_cfg else {}
+            if mem_config.get("present_state_enabled", True):
+                from agent.present_state_memory import PresentStateMemory
+                agent._present_state_memory = PresentStateMemory(
+                    max_profile_facts=mem_config.get("present_state_max_profile_facts", 80),
+                    max_session_facts=mem_config.get("present_state_max_session_facts", 80),
+                    max_fact_chars=mem_config.get("present_state_max_fact_chars", 360),
+                    render_char_budget=mem_config.get("present_state_render_char_budget", 5000),
+                    auto_capture=mem_config.get("present_state_auto_capture", True),
+                )
+                agent._present_state_memory.initialize(agent.session_id or "")
+        except Exception as _psm_err:
+            _ra().logger.debug("Present-state memory init failed: %s", _psm_err)
+            agent._present_state_memory = None
     
 
 

@@ -441,6 +441,18 @@ def compress_context(
             )
     except Exception as _me_err:
         logger.debug("memory manager on_session_switch (compression): %s", _me_err)
+    try:
+        _old_sid = locals().get("old_session_id")
+        _psm = getattr(agent, "_present_state_memory", None)
+        if _old_sid and _psm:
+            _psm.on_session_switch(
+                agent.session_id or "",
+                parent_session_id=_old_sid,
+                reset=False,
+                reason="compression",
+            )
+    except Exception as _psm_err:
+        logger.debug("present-state memory on_session_switch (compression): %s", _psm_err)
 
     # Warn on repeated compressions (quality degrades with each pass)
     _cc = agent.context_compressor.compression_count

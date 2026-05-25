@@ -796,6 +796,21 @@ def run_conversation(
             # never mutated, so nothing leaks into session persistence.
             if idx == current_turn_user_idx and msg.get("role") == "user":
                 _injections = []
+                _present_state_context = ""
+                if getattr(agent, "_present_state_memory", None):
+                    try:
+                        _present_state_context = (
+                            agent._present_state_memory.render_context(
+                                session_id=agent.session_id or ""
+                            )
+                            or ""
+                        )
+                    except Exception:
+                        _present_state_context = ""
+                if _present_state_context:
+                    _fenced = build_memory_context_block(_present_state_context)
+                    if _fenced:
+                        _injections.append(_fenced)
                 if _ext_prefetch_cache:
                     _fenced = build_memory_context_block(_ext_prefetch_cache)
                     if _fenced:
@@ -4210,6 +4225,11 @@ def run_conversation(
         agent._iters_since_skill = 0
 
     # External memory provider: sync the completed turn + queue next prefetch.
+    agent._sync_present_state_for_turn(
+        original_user_message=original_user_message,
+        final_response=final_response,
+        interrupted=interrupted,
+    )
     agent._sync_external_memory_for_turn(
         original_user_message=original_user_message,
         final_response=final_response,

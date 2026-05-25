@@ -754,3 +754,78 @@ class TestWaitForCallbackPasteIntegration:
                     asyncio.run(_wait_for_callback())
         err = capsys.readouterr().err
         assert "paste the redirect URL" not in err
+
+
+class TestPasteCallbackSkipToken:
+    """User can type `skip` (or similar) at the paste prompt to bail out."""
+
+    def _empty_result(self):
+        return {"auth_code": None, "state": None, "error": None}
+
+    @pytest.mark.parametrize("token", ["skip", "SKIP", "Skip", "cancel", "s", "n", "no", "q", "quit"])
+    def test_skip_tokens_set_sentinel(self, monkeypatch, token):
+        from tools.mcp_oauth import _USER_SKIPPED_SENTINEL
+        result = self._empty_result()
+        monkeypatch.setattr("sys.stdin", MagicMock(readline=lambda: token + "\n"))
+        _paste_callback_reader(result)
+        assert result["error"] == _USER_SKIPPED_SENTINEL
+        assert result["auth_code"] is None
+
+    def test_skip_message_printed(self, monkeypatch, capsys):
+        result = self._empty_result()
+        monkeypatch.setattr("sys.stdin", MagicMock(readline=lambda: "skip\n"))
+        _paste_callback_reader(result)
+        err = capsys.readouterr().err
+        assert "OAuth skipped" in err
+        assert "hermes mcp login" in err
+
+    def test_skip_does_not_overwrite_http_winner(self, monkeypatch):
+        """If HTTP listener already wrote a code, `skip` must not stomp it."""
+        result = {"auth_code": "from_http", "state": "x", "error": None}
+        monkeypatch.setattr("sys.stdin", MagicMock(readline=lambda: "skip\n"))
+        _paste_callback_reader(result)
+        assert result["auth_code"] == "from_http"
+        assert result["error"] is None
+
+    def test_skip_token_not_parsed_as_url(self, monkeypatch, capsys):
+        """`skip` must NOT fall through to URL parsing (which would silently no-op)."""
+        from tools.mcp_oauth import _USER_SKIPPED_SENTINEL
+        result = self._empty_result()
+        monkeypatch.setattr("sys.stdin", MagicMock(readline=lambda: "skip\n"))
+        _paste_callback_reader(result)
+        # Must take skip path, not the "did not contain code=" path
+        assert result["error"] == _USER_SKIPPED_SENTINEL
+        err = capsys.readouterr().err
+        assert "did not contain" not in err
+
+
+class TestWaitForCallbackSkipIntegration:
+    """_wait_for_callback maps the skip sentinel to OAuthNonInteractiveError."""
+
+    def test_skip_raises_non_interactive_error(self, monkeypatch):
+        """Skip token must raise OAuthNonInteractiveError (mcp_tool handles as non-fatal)."""
+        import tools.mcp_oauth as mod
+        mod._oauth_port = _find_free_port()
+        monkeypatch.setattr(mod, "_is_interactive", lambda: True)
+        monkeypatch.setattr("sys.stdin", MagicMock(readline=lambda: "skip\n"))
+
+        async def instant_sleep(_):
+            pass
+        with patch.object(mod.asyncio, "sleep", instant_sleep):
+            with pytest.raises(OAuthNonInteractiveError, match="user_skipped"):
+                asyncio.run(_wait_for_callback())
+
+    def test_paste_prompt_mentions_skip(self, monkeypatch, capsys):
+        """The interactive prompt must tell users about the skip option."""
+        import tools.mcp_oauth as mod
+        mod._oauth_port = _find_free_port()
+        monkeypatch.setattr(mod, "_is_interactive", lambda: True)
+        monkeypatch.setattr("sys.stdin", MagicMock(readline=lambda: "skip\n"))
+
+        async def instant_sleep(_):
+            pass
+        with patch.object(mod.asyncio, "sleep", instant_sleep):
+            with pytest.raises(OAuthNonInteractiveError):
+                asyncio.run(_wait_for_callback())
+        err = capsys.readouterr().err
+        assert "skip" in err.lower()

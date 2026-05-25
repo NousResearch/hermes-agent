@@ -94,6 +94,16 @@ class OAuthNonInteractiveError(RuntimeError):
 _oauth_port: int | None = None
 
 
+# Skip tokens accepted at the paste prompt — exit OAuth without auth.
+_SKIP_TOKENS = frozenset({"skip", "cancel", "s", "n", "no", "q", "quit"})
+
+# Sentinel value written to result["error"] when the user skipped via stdin.
+# _wait_for_callback maps this to OAuthNonInteractiveError ("user_skipped")
+# so the MCP setup path treats it as a non-fatal "continue without this
+# server" rather than a hard failure.
+_USER_SKIPPED_SENTINEL = "__hermes_user_skipped__"
+
+
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
@@ -490,7 +500,8 @@ async def _wait_for_callback() -> tuple[str, str | None]:
     if _is_interactive():
         print(
             "\n  Or paste the redirect URL here (or the ``?code=...&state=...`` "
-            "portion) and press Enter:",
+            "portion) and press Enter. Type ``skip`` + Enter to continue "
+            "without this server:",
             file=sys.stderr,
             flush=True,
         )
@@ -511,6 +522,8 @@ async def _wait_for_callback() -> tuple[str, str | None]:
     finally:
         server.server_close()
 
+    if result["error"] == _USER_SKIPPED_SENTINEL:
+        raise OAuthNonInteractiveError("user_skipped")
     if result["error"]:
         raise RuntimeError(f"OAuth authorization failed: {result['error']}")
     if result["auth_code"] is None:
@@ -529,6 +542,10 @@ def _paste_callback_reader(result: dict) -> None:
       - Full redirect URL: ``http://127.0.0.1:37949/callback?code=...&state=...``
       - The provider's own callback URL: ``https://mcp.example.com/callback?code=...&state=...``
       - Just the query string: ``?code=...&state=...`` or ``code=...&state=...``
+      - A skip token (``skip``, ``cancel``, ``s``, ``n``, ``no``, ``q``, ``quit``)
+        — exits the OAuth flow cleanly without auth. Caller raises
+        :class:`OAuthNonInteractiveError` so MCP connection setup treats this
+        as a non-fatal "user opted out" and continues without that server.
 
     Failures to parse, EOF, or interrupts are swallowed — this is best-effort
     fallback alongside the HTTP listener, which remains the primary path.
@@ -545,6 +562,22 @@ def _paste_callback_reader(result: dict) -> None:
 
     # Skip if HTTP listener already won.
     if result.get("auth_code") is not None or result.get("error") is not None:
+        return
+
+    # Skip token: user explicitly opted out of authorization. Mark the
+    # result with a sentinel error string that _wait_for_callback maps
+    # to OAuthNonInteractiveError (already handled by mcp_tool.py as a
+    # non-fatal "skip this server and continue startup" path).
+    if line.lower() in _SKIP_TOKENS:
+        if result.get("auth_code") is not None or result.get("error") is not None:
+            return
+        result["error"] = _USER_SKIPPED_SENTINEL
+        print(
+            "  OAuth skipped. Run `hermes mcp login <server>` later to "
+            "authenticate, or set ``enabled: false`` on that server in "
+            "config.yaml to disable persistently.",
+            file=sys.stderr,
+        )
         return
 
     # Strip a leading "?" if user pasted just a query string.

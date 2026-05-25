@@ -1516,6 +1516,13 @@ class TestSetupFilesSlashCommand:
 
 
 class TestUserOAuthHelper:
+    @staticmethod
+    def _assert_private_json_file(path, expected):
+        assert json.loads(path.read_text(encoding="utf-8")) == expected
+        assert list(path.parent.glob(f"{path.stem}.tmp.*")) == []
+        if os.name != "nt":
+            assert (path.stat().st_mode & 0o777) == 0o600
+
     def test_load_user_credentials_returns_none_when_no_token(self, tmp_path, monkeypatch):
         """Missing token file is the expected no-op case (user hasn't
         run /setup-files yet). Must NOT raise."""
@@ -1609,6 +1616,78 @@ class TestUserOAuthHelper:
         assert a != b
         assert a != legacy
         assert "google_chat_user_oauth_pending" in str(a.parent)
+
+    def test_persist_credentials_writes_private_json(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        from plugins.platforms.google_chat.oauth import _persist_credentials, _token_path
+
+        creds = type(
+            "Creds",
+            (),
+            {
+                "to_json": lambda self: json.dumps(
+                    {
+                        "client_id": "cid",
+                        "client_secret": "secret",
+                        "refresh_token": "rtok",
+                        "token": "atok",
+                    }
+                )
+            },
+        )()
+
+        path = _token_path("alice@example.com")
+        _persist_credentials(creds, path)
+
+        self._assert_private_json_file(
+            path,
+            {
+                "client_id": "cid",
+                "client_secret": "secret",
+                "refresh_token": "rtok",
+                "token": "atok",
+                "type": "authorized_user",
+            },
+        )
+
+    def test_store_client_secret_writes_private_json(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        src = tmp_path / "client_secret.json"
+        payload = {"installed": {"client_id": "cid", "client_secret": "secret"}}
+        src.write_text(json.dumps(payload), encoding="utf-8")
+
+        from plugins.platforms.google_chat.oauth import (
+            _client_secret_path,
+            store_client_secret,
+        )
+
+        store_client_secret(str(src))
+
+        self._assert_private_json_file(_client_secret_path(), payload)
+
+    def test_save_pending_auth_writes_private_json(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        from plugins.platforms.google_chat.oauth import (
+            _REDIRECT_URI,
+            _pending_auth_path,
+            _save_pending_auth,
+        )
+
+        _save_pending_auth(
+            state="state-123",
+            code_verifier="verifier-abc",
+            email="alice@example.com",
+        )
+
+        self._assert_private_json_file(
+            _pending_auth_path("alice@example.com"),
+            {
+                "state": "state-123",
+                "code_verifier": "verifier-abc",
+                "redirect_uri": _REDIRECT_URI,
+                "email": "alice@example.com",
+            },
+        )
 
 
 class TestPerUserAttachmentRouting:

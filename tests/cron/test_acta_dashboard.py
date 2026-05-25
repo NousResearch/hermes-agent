@@ -1329,6 +1329,153 @@ def test_catalog_outputs_import_static_acta_outputs_and_render_persistent_rows(t
     assert "script-src 'sha256-" in html
 
 
+def test_collect_catalog_outputs_preserves_unsafe_and_missing_catalog_hrefs_as_disabled_rows(tmp_path: Path):
+    catalog_path = tmp_path / "acta" / "catalog.json"
+    catalog_path.parent.mkdir(parents=True)
+    catalog_path.write_text(
+        json.dumps(
+            {
+                "version": 1,
+                "outputs": [
+                    {
+                        "id": "unsafe-js",
+                        "title": "Unsafe JS Output",
+                        "href": "javascript:alert(1)",
+                        "summary": "Unsafe href must render disabled.",
+                        "updated_at": "2026-05-24T16:00:00+00:00",
+                    },
+                    {
+                        "id": "missing-href",
+                        "title": "Missing Href Output",
+                        "summary": "Missing href must render disabled.",
+                        "updated_at": "2026-05-24T16:01:00+00:00",
+                    },
+                    {
+                        "id": "valid-output",
+                        "title": "Valid Output",
+                        "href": "/outputs/valid-output",
+                        "summary": "Valid href must remain openable.",
+                        "updated_at": "2026-05-24T16:02:00+00:00",
+                        "read": True,
+                    },
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    catalog_items = collect_catalog_outputs(tmp_path)
+    saved_after_first_collect = json.loads(catalog_path.read_text(encoding="utf-8"))
+    catalog_items = collect_catalog_outputs(tmp_path)
+    html = render_catalog_outputs_page(catalog_items, generated_at=datetime(2026, 5, 24, 17, tzinfo=timezone.utc))
+    rows = re.findall(r"<article class=\"output-row[^>]*>.*?</article>", html, re.S)
+    row_by_title = {}
+    for row in rows:
+        title_match = re.search(r"<b>(.*?)</b>", row, re.S)
+        assert title_match is not None
+        row_by_title[title_match.group(1)] = row
+
+    assert {item.id: item.href for item in catalog_items} == {
+        "valid-output": "/outputs/valid-output",
+        "missing-href": "",
+        "unsafe-js": "",
+    }
+    assert {entry["id"]: entry["href"] for entry in saved_after_first_collect["outputs"]} == {
+        "valid-output": "/outputs/valid-output",
+        "missing-href": "",
+        "unsafe-js": "",
+    }
+    assert '<div class="stat">Unread <b>0</b></div>' in html
+    assert "javascript:alert" not in html
+    for title in ("Unsafe JS Output", "Missing Href Output"):
+        row = row_by_title[title]
+        assert "readable" not in row
+        assert "data-open-url" not in row
+        assert "data-read-key" not in row
+        assert "output-open-overlay" not in row
+        assert '<span class="open">OPEN</span>' not in row
+        assert 'aria-disabled="true"' in row
+        assert "No public link" in row
+
+    valid_row = row_by_title["Valid Output"]
+    assert 'data-open-url="/outputs/valid-output"' in valid_row
+    assert 'data-read-key="output:valid-output"' in valid_row
+    assert '<a class="output-open-overlay" href="/outputs/valid-output"' in valid_row
+    assert '<span class="open">OPEN</span>' in valid_row
+    assert 'aria-disabled="true"' not in valid_row
+
+
+def test_catalog_outputs_invalid_hrefs_render_disabled_non_openable_rows():
+    item_cls = collect_catalog_outputs.__globals__["ActaOutputItem"]
+    catalog_items = [
+        item_cls(
+            id="unsafe-js",
+            title="Unsafe JS Output",
+            href="javascript:alert(1)",
+            summary="Unsafe href must not become clickable.",
+            tags=("security",),
+            source_name="catalog",
+            created_at="2026-05-24T16:00:00+00:00",
+            updated_at="2026-05-24T16:00:00+00:00",
+        ),
+        item_cls(
+            id="unsafe-protocol-relative",
+            title="Unsafe Protocol Output",
+            href="//evil.example/output",
+            summary="Protocol-relative href must not become clickable.",
+            tags=(),
+            source_name="catalog",
+            created_at="2026-05-24T16:00:00+00:00",
+            updated_at="2026-05-24T16:00:00+00:00",
+        ),
+    ]
+
+    html = render_catalog_outputs_page(catalog_items, generated_at=datetime(2026, 5, 24, 17, tzinfo=timezone.utc))
+    rows = re.findall(r"<article class=\"output-row[^>]*>.*?</article>", html, re.S)
+
+    assert len(rows) == 2
+    assert "javascript:alert" not in html
+    assert "//evil.example" not in html
+    for row in rows:
+        assert "readable" not in row
+        assert "data-read-key" not in row
+        assert "data-open-url" not in row
+        assert 'aria-disabled="true"' in row
+        assert "output-open-overlay" not in row
+        assert '<span class="open">OPEN</span>' not in row
+        assert "No public link" in row
+
+
+def test_catalog_outputs_valid_hrefs_remain_readable_openable_rows():
+    item_cls = collect_catalog_outputs.__globals__["ActaOutputItem"]
+    catalog_items = [
+        item_cls(
+            id="valid-output",
+            title="Valid Output",
+            href="/outputs/valid-output",
+            summary="Valid catalog output.",
+            tags=("acta",),
+            source_name="catalog",
+            created_at="2026-05-24T16:00:00+00:00",
+            updated_at="2026-05-24T16:00:00+00:00",
+            read=True,
+        )
+    ]
+
+    html = render_catalog_outputs_page(catalog_items, generated_at=datetime(2026, 5, 24, 17, tzinfo=timezone.utc))
+    match = re.search(r"<article class=\"output-row[^>]*>.*?</article>", html, re.S)
+    assert match is not None
+    row = match.group(0)
+
+    assert '<article class="output-row readable read fresh"' in row
+    assert 'data-read-key="output:valid-output"' in row
+    assert 'data-open-url="/outputs/valid-output"' in row
+    assert '<a class="output-open-overlay" href="/outputs/valid-output"' in row
+    assert '<span class="read-state">READ</span>' in row
+    assert '<span class="open">OPEN</span>' in row
+    assert 'aria-disabled="true"' not in row
+
+
 def test_run_history_scans_multiple_files_excludes_acta_and_joins_job_metadata(tmp_path: Path):
     for job_id in ("daily", "htmlonly", "acta-situation-room"):
         (tmp_path / "cron" / "output" / job_id).mkdir(parents=True)

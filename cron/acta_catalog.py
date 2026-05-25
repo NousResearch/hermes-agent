@@ -157,7 +157,7 @@ def normalize_entry(entry: Mapping[str, Any]) -> dict[str, Any]:
         ActaCatalogEntry(
             id=entry_id,
             title=str(entry.get("title") or entry_id.replace("-", " ").title()),
-            href=_safe_href(str(entry.get("href") or f"/outputs/{entry_id}")),
+            href=_safe_href(entry.get("href")),
             summary=str(entry.get("summary") or ""),
             tags=_normalize_tags(entry.get("tags")),
             source_ref=redact_source_ref(entry.get("source_ref") or entry.get("source") or {}),
@@ -270,17 +270,19 @@ def redact_source_ref(value: object) -> dict[str, str]:
     return redacted
 
 
-def _safe_href(value: str) -> str:
+def _safe_href(value: object) -> str:
+    if not isinstance(value, str):
+        return ""
     value = value.strip()
     if not value or any(ord(char) < 32 or ord(char) == 127 for char in value) or "\\" in value:
-        return "/outputs"
+        return ""
     if value == "/outputs":
-        return value
+        return ""
     if re.fullmatch(r"/outputs/[a-z0-9][a-z0-9-]*/?", value):
         return value.rstrip("/")
     if re.fullmatch(r"[a-z0-9][a-z0-9-]*", value):
         return f"/outputs/{value}"
-    return "/outputs"
+    return ""
 
 
 def _normalize_tags(value: object) -> list[str]:

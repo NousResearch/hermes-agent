@@ -121,7 +121,7 @@ def test_normalize_entry_redacts_public_source_refs_and_rejects_unsafe_href(tmp_
         }
     )
 
-    assert entry["href"] == "/outputs"
+    assert entry["href"] == ""
     assert entry["source_ref"] == {"kind": "acta-output", "name": "unsafe.html", "label": "Generated"}
     assert str(tmp_path) not in json.dumps(entry)
     assert entry["tags"] == ["hermes", "secret", "stuff"]
@@ -193,6 +193,31 @@ def test_load_catalog_fails_closed_for_malformed_json_and_version(tmp_path: Path
 
 
 def test_normalize_entry_rejects_catalog_path_escape_href():
-    assert normalize_entry({"id": "x", "href": "/outputs/../runs"})["href"] == "/outputs"
-    assert normalize_entry({"id": "x", "href": "/outputs/%2e%2e/runs"})["href"] == "/outputs"
+    assert normalize_entry({"id": "x", "href": "/outputs/../runs"})["href"] == ""
+    assert normalize_entry({"id": "x", "href": "/outputs/%2e%2e/runs"})["href"] == ""
     assert normalize_entry({"id": "x", "href": "/outputs/safe-slug"})["href"] == "/outputs/safe-slug"
+
+
+def test_normalize_entry_preserves_no_link_state_for_missing_unsafe_and_root_hrefs(tmp_path: Path):
+    path = tmp_path / "catalog.json"
+    save_catalog(
+        {
+            "version": 1,
+            "outputs": [
+                {"id": "missing", "title": "Missing"},
+                {"id": "unsafe", "title": "Unsafe", "href": "javascript:alert(1)"},
+                {"id": "root", "title": "Root", "href": "/outputs"},
+                {"id": "bare", "title": "Bare", "href": "bare-slug"},
+            ],
+        },
+        path,
+    )
+
+    loaded = {entry["id"]: entry["href"] for entry in load_catalog(path)["outputs"]}
+
+    assert loaded == {
+        "bare": "/outputs/bare-slug",
+        "missing": "",
+        "root": "",
+        "unsafe": "",
+    }

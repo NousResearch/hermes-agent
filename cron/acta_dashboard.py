@@ -569,7 +569,7 @@ def _parse_iso_datetime(value: object) -> datetime | None:
 
 
 def _is_safe_catalog_href(value: str | None) -> bool:
-    return bool(value and (value == "/outputs" or re.fullmatch(r"/outputs/[a-z0-9][a-z0-9-]*/?", value)))
+    return bool(value and re.fullmatch(r"/outputs/[a-z0-9][a-z0-9-]*/?", value))
 
 
 def collect_catalog_outputs(hermes_home: Path | None = None) -> list[ActaOutputItem]:
@@ -585,14 +585,15 @@ def collect_catalog_outputs(hermes_home: Path | None = None) -> list[ActaOutputI
     for entry in catalog.get("outputs", []):
         if not isinstance(entry, Mapping) or bool(entry.get("archived", False)):
             continue
+        entry_id = str(entry.get("id") or "output")
         href = str(entry.get("href") or "")
         if not _is_safe_catalog_href(href):
-            href = "/outputs"
+            href = ""
         raw_source_ref = entry.get("source_ref")
         source_ref: Mapping[str, Any] = raw_source_ref if isinstance(raw_source_ref, Mapping) else {}
         outputs.append(
             ActaOutputItem(
-                id=str(entry.get("id") or "output"),
+                id=entry_id,
                 title=str(entry.get("title") or entry.get("id") or "Output"),
                 href=href,
                 summary=str(entry.get("summary") or ""),
@@ -1437,7 +1438,7 @@ def render_catalog_outputs_page(
     now = generated_at or datetime.now(timezone.utc)
     rows: list[str] = []
     pinned = sum(1 for item in outputs if item.pinned)
-    unread = sum(1 for item in outputs if not item.read)
+    unread = sum(1 for item in outputs if not item.read and _is_safe_catalog_href(item.href))
     for index, item in enumerate(outputs, start=1):
         href = item.href if _is_safe_catalog_href(item.href) else ""
         escaped_href = html.escape(href, quote=True) if href else ""
@@ -1449,19 +1450,22 @@ def render_catalog_outputs_page(
             if escaped_href
             else ""
         )
-        read_class = " read" if item.read else " unread"
-        read_key = html.escape(f"output:{item.id}", quote=True)
+        row_open_attr = f' data-open-url="{escaped_href}"' if escaped_href else ' aria-disabled="true"'
+        read_class = f" readable{' read' if item.read else ' unread'}" if escaped_href else ""
+        read_key_attr = f' data-read-key="{html.escape(f"output:{item.id}", quote=True)}"' if escaped_href else ""
+        read_state_chip = f"<span class=\"read-state\">{'READ' if item.read else 'UNREAD'}</span>" if escaped_href else ""
+        open_action = '<span class="open">OPEN</span>' if escaped_href else '<span class="muted">No public link</span>'
         rows.append(
             f"""
-<article class="output-row readable{read_class} fresh" data-read-key="{read_key}" data-open-url="{escaped_href}">
+<article class="output-row{read_class} fresh"{read_key_attr}{row_open_attr}>
   {open_overlay}
   <div class="output-rank">{index:02d}</div>
   <div class="output-main">
     <b>{_safe_text(item.title)}</b>
     <p>{_safe_text(item.summary or "Persistent Acta output.")}</p>
-    <div class="output-meta"><span class="read-state">{'READ' if item.read else 'UNREAD'}</span><span class="confidence-chip">CATALOG</span><span>{'PINNED' if item.pinned else 'OUTPUT'}</span><span>{_safe_text(age)}</span><span>SOURCE {_safe_text(item.source_name)}</span><span>ID {_safe_text(item.id)}</span>{tags}</div>
+    <div class="output-meta">{read_state_chip}<span class="confidence-chip">CATALOG</span><span>{'PINNED' if item.pinned else 'OUTPUT'}</span><span>{_safe_text(age)}</span><span>SOURCE {_safe_text(item.source_name)}</span><span>ID {_safe_text(item.id)}</span>{tags}</div>
   </div>
-  <div class="output-actions"><span class="open">OPEN</span></div>
+  <div class="output-actions">{open_action}</div>
 </article>"""
         )
     read_state_script = _outputs_read_state_script()

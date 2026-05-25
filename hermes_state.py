@@ -578,8 +578,13 @@ class SessionDB:
         # makes the initial executescript fail on legacy DBs (the index's
         # WHERE clause references a column that doesn't exist yet).
         try:
+            # P30-10 FIX: made UNIQUE to prevent duplicate platform_message_id entries
+            # within a session. This prevents replay attacks where the same
+            # platform_message_id is inserted twice — the UNIQUE index ensures
+            # the second INSERT is rejected rather than silently creating a
+            # duplicate message record.
             cursor.execute(
-                "CREATE INDEX IF NOT EXISTS idx_messages_platform_msg_id "
+                "CREATE UNIQUE INDEX IF NOT EXISTS idx_messages_platform_msg_id "
                 "ON messages(session_id, platform_message_id) "
                 "WHERE platform_message_id IS NOT NULL"
             )
@@ -1499,8 +1504,13 @@ class SessionDB:
             num_tool_calls = len(tool_calls) if isinstance(tool_calls, list) else 1
 
         def _do(conn):
+            # P30-10 FIX: INSERT OR IGNORE ensures that a duplicate
+            # platform_message_id (caught by the UNIQUE index) does not
+            # raise an exception — the duplicate is silently skipped.
+            # This is safe for platform-level dedup where the second
+            # appearance of the same platform message should be ignored.
             cursor = conn.execute(
-                """INSERT INTO messages (session_id, role, content, tool_call_id,
+                """INSERT OR IGNORE INTO messages (session_id, role, content, tool_call_id,
                    tool_calls, tool_name, timestamp, token_count, finish_reason,
                    reasoning, reasoning_content, reasoning_details, codex_reasoning_items,
                    codex_message_items, platform_message_id, observed)
@@ -1590,7 +1600,7 @@ class SessionDB:
                 )
 
                 conn.execute(
-                    """INSERT INTO messages (session_id, role, content, tool_call_id,
+                    """INSERT OR IGNORE INTO messages (session_id, role, content, tool_call_id,
                        tool_calls, tool_name, timestamp, token_count, finish_reason,
                        reasoning, reasoning_content, reasoning_details, codex_reasoning_items,
                        codex_message_items, platform_message_id, observed)

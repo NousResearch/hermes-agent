@@ -21,7 +21,7 @@ Spotify: play, search, queue, manage playlists and devices.
 | License | MIT |
 | Platforms | linux, macos, windows |
 | Tags | `spotify`, `music`, `playback`, `playlists`, `media` |
-| Related skills | [`gif-search`](/docs/user-guide/skills/bundled/media/media-gif-search) |
+| Related skills | [`gif-search`](/user-guide/skills/bundled/media/media-gif-search) |
 
 ## Reference: full SKILL.md
 

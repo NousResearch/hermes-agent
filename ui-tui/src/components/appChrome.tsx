@@ -317,7 +317,7 @@ export function StatusRule({
   const { leftWidth, rightWidth, separatorWidth } = statusRuleWidths(cols, cwdLabel)
 
   return (
-    <Box height={1}>
+    <Box backgroundColor={t.color.statusBg} height={1}>
       <Box flexShrink={1} width={leftWidth}>
         <Text color={t.color.border} wrap="truncate-end">
           {'─ '}

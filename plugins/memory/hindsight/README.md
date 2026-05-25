@@ -118,8 +118,34 @@ Available in `hybrid` and `tools` memory modes:
 | Tool | Description |
 |------|-------------|
 | `hindsight_retain` | Store information with auto entity extraction; supports optional per-call `tags` |
-| `hindsight_recall` | Multi-strategy search (semantic + entity graph) |
+| `hindsight_recall` | Retrieve memories. Defaults to semantic/entity-graph recall; supports optional `method` (`recall`, `list`, `entity`) plus per-call `budget`, `max_tokens`, `types`, `tags`, `tags_match`, and exact-match `metadata` filters. `tag_groups` is passed through for `recall`/`entity`; `method="list"` uses the public list API and supports `limit`/`offset`; `method="entity"` supports `max_entity_tokens`. |
 | `hindsight_reflect` | Cross-memory synthesis (LLM-powered) |
+
+### `hindsight_recall` controls
+
+`hindsight_recall` defaults to `method="recall"`, which uses Hindsight's normal semantic/entity-graph recall. Unknown `method` values fall back to this default behavior.
+
+Supported methods:
+
+| Method | Behavior |
+|--------|----------|
+| `recall` | Ranked semantic/entity-graph recall. |
+| `list` | Raw memory listing through Hindsight's public `client.memory.list_memories(...)` API. Supports `limit` and `offset`. |
+| `entity` | Recall with entity observations formatted from the current Hindsight entity response shape. Supports `max_entity_tokens`. |
+
+Per-call controls:
+
+| Argument | Applies to | Description |
+|----------|------------|-------------|
+| `budget` | `recall`, `entity` | Recall budget override: `low`, `mid`, or `high`. Invalid values use the configured default. |
+| `max_tokens` | `recall`, `entity` | Token cap for recalled memory results. Invalid values use the configured default. |
+| `types` | all methods | Fact type filter: `world`, `experience`, or `observation`. Invalid values use configured `recall_types`. |
+| `tags` | all methods | Tag filter. Untagged list items are excluded when tags are explicitly configured or provided. |
+| `tags_match` | all methods | Tag matching mode: `any`, `all`, `any_strict`, or `all_strict`. |
+| `tag_groups` | `recall`, `entity` | Advanced Hindsight tag groups passed through to recall. The public list API does not accept tag groups. |
+| `metadata` | all methods | Exact key/value metadata filter applied to returned memories. Entity output is narrowed to metadata-scoped result entities. |
+| `limit` / `offset` | `list` | Pagination controls for raw list retrieval. `limit` is capped at 200 and `offset` is never negative. |
+| `max_entity_tokens` | `entity` | Token budget for entity observations. Invalid values use the default entity budget. |
 
 ## Environment Variables
 

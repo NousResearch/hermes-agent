@@ -73,6 +73,30 @@ def _make_mock_client():
     client.areflect = AsyncMock(
         return_value=SimpleNamespace(text="Synthesized answer")
     )
+    client.memory = MagicMock()
+    client.memory.list_memories = AsyncMock(
+        return_value=SimpleNamespace(
+            items=[
+                {
+                    "id": "m1",
+                    "text": "Keyword Memory 1",
+                    "fact_type": "world",
+                    "tags": ["tag1"],
+                    "metadata": {"tenant": "alpha"},
+                },
+                {
+                    "id": "m2",
+                    "content": "Keyword Memory 2",
+                    "fact_type": "experience",
+                    "tags": ["tag2"],
+                    "metadata": {"tenant": "beta"},
+                },
+            ],
+            total=2,
+            limit=50,
+            offset=0,
+        )
+    )
     client.aretain_batch = AsyncMock()
     client.aclose = AsyncMock()
     return client
@@ -163,9 +187,19 @@ class TestSchemas:
         assert "tags" in RETAIN_SCHEMA["parameters"]["properties"]
         assert "content" in RETAIN_SCHEMA["parameters"]["required"]
 
-    def test_recall_schema_has_query(self):
+    def test_recall_schema_has_query_and_optional_controls(self):
         assert RECALL_SCHEMA["name"] == "hindsight_recall"
-        assert "query" in RECALL_SCHEMA["parameters"]["properties"]
+        props = RECALL_SCHEMA["parameters"]["properties"]
+        assert "query" in props
+        assert props["method"]["enum"] == ["recall", "list", "entity"]
+        assert props["budget"]["enum"] == ["low", "mid", "high"]
+        assert "max_tokens" in props
+        assert props["types"]["items"]["enum"] == ["world", "experience", "observation"]
+        assert "tags" in props
+        assert props["tags_match"]["enum"] == ["any", "all", "any_strict", "all_strict"]
+        assert "tag_groups" in props
+        assert "metadata" in props
+        assert "max_entity_tokens" in props
         assert "query" in RECALL_SCHEMA["parameters"]["required"]
 
     def test_reflect_schema_has_query(self):
@@ -487,6 +521,367 @@ class TestToolHandlers:
         p.handle_tool_call("hindsight_recall", {"query": "test"})
         call_kwargs = p._client.arecall.call_args.kwargs
         assert call_kwargs["max_tokens"] == 2048
+
+    def test_recall_accepts_per_call_controls(self, provider_with_config):
+        p = provider_with_config(recall_tags=["configured"], recall_tags_match="all")
+        p.handle_tool_call(
+            "hindsight_recall",
+            {
+                "query": "test",
+                "budget": "high",
+                "max_tokens": 12288,
+                "types": ["world"],
+                "tags": ["override"],
+                "tags_match": "all_strict",
+                "tag_groups": [{"tags": ["grouped"], "match": "all"}],
+            },
+        )
+        call_kwargs = p._client.arecall.call_args.kwargs
+        assert call_kwargs["budget"] == "high"
+        assert call_kwargs["max_tokens"] == 12288
+        assert call_kwargs["types"] == ["world"]
+        assert call_kwargs["tags"] == ["override"]
+        assert call_kwargs["tags_match"] == "all_strict"
+        assert call_kwargs["tag_groups"] == [{"tags": ["grouped"], "match": "all"}]
+
+    def test_recall_invalid_controls_fall_back_to_config(self, provider_with_config):
+        p = provider_with_config(
+            recall_budget="mid",
+            recall_max_tokens=2048,
+            recall_types=["experience"],
+            recall_tags=["configured"],
+            recall_tags_match="all",
+        )
+        p.handle_tool_call(
+            "hindsight_recall",
+            {
+                "query": "test",
+                "budget": "ultra",
+                "max_tokens": "not-an-int",
+                "types": ["family"],
+                "tags": "not-a-list",
+                "tags_match": "invalid",
+            },
+        )
+        call_kwargs = p._client.arecall.call_args.kwargs
+        assert call_kwargs["budget"] == "mid"
+        assert call_kwargs["max_tokens"] == 2048
+        assert call_kwargs["types"] == ["experience"]
+        assert call_kwargs["tags"] == ["configured"]
+        assert call_kwargs["tags_match"] == "all"
+
+    def test_recall_invalid_method_falls_back_to_default_recall(self, provider):
+        result = json.loads(provider.handle_tool_call(
+            "hindsight_recall", {"query": "test", "method": "unknown"}
+        ))
+        assert "Memory 1" in result["result"]
+        assert "Memory 2" in result["result"]
+        provider._client.arecall.assert_called_once()
+        provider._client.memory.list_memories.assert_not_called()
+
+    def test_recall_list_method_uses_public_memory_api_and_formats_items(self, provider):
+        result = json.loads(provider.handle_tool_call(
+            "hindsight_recall", {"query": "keyword", "method": "list"}
+        ))
+
+        provider._client.memory.list_memories.assert_called_once_with(
+            bank_id="test-bank",
+            type=None,
+            q="keyword",
+            limit=50,
+            offset=0,
+            _request_timeout=120,
+        )
+        assert "Keyword Memory 1" in result["result"]
+        assert "Keyword Memory 2" in result["result"]
+        assert "{'id':" not in result["result"]
+        assert result["total"] == 2
+        provider._client.arecall.assert_not_called()
+
+    def test_recall_list_method_applies_configured_type_and_tag_filters(self, provider_with_config):
+        p = provider_with_config(
+            recall_types=["world", "experience"],
+            recall_tags=["tag1"],
+            recall_tags_match="all_strict",
+        )
+        result = json.loads(p.handle_tool_call(
+            "hindsight_recall", {"query": "keyword", "method": "list"}
+        ))
+
+        call_kwargs = p._client.memory.list_memories.call_args.kwargs
+        assert call_kwargs["q"] == "keyword"
+        assert call_kwargs["type"] is None
+        assert call_kwargs["_request_timeout"] == 120
+        assert "Keyword Memory 1" in result["result"]
+        assert "Keyword Memory 2" not in result["result"]
+        assert result["returned"] == 1
+
+    def test_recall_list_method_excludes_untagged_items_when_filtering_tags(self, provider_with_config):
+        p = provider_with_config(recall_tags=["tag1"])
+        p._client.memory.list_memories.return_value = SimpleNamespace(
+            items=[
+                {"text": "Tagged memory", "fact_type": "world", "tags": ["tag1"]},
+                {"text": "Wrong-tag memory", "fact_type": "world", "tags": ["tag2"]},
+                {"text": "Untagged memory", "fact_type": "world"},
+            ],
+            total=3,
+            limit=50,
+            offset=0,
+        )
+
+        result = json.loads(p.handle_tool_call(
+            "hindsight_recall", {"query": "keyword", "method": "list"}
+        ))
+
+        assert "Tagged memory" in result["result"]
+        assert "Wrong-tag memory" not in result["result"]
+        assert "Untagged memory" not in result["result"]
+        assert result["returned"] == 1
+
+    def test_recall_list_method_applies_metadata_filter(self, provider):
+        result = json.loads(provider.handle_tool_call(
+            "hindsight_recall",
+            {"query": "keyword", "method": "list", "metadata": {"tenant": "beta"}},
+        ))
+
+        assert "Keyword Memory 1" not in result["result"]
+        assert "Keyword Memory 2" in result["result"]
+        assert result["returned"] == 1
+
+    def test_recall_list_method_metadata_filter_requires_present_key(self, provider):
+        provider._client.memory.list_memories.return_value = SimpleNamespace(
+            items=[
+                {"text": "Missing tenant", "metadata": {}},
+                {"text": "Matching tenant", "metadata": {"tenant": "alpha"}},
+            ],
+            total=2,
+            limit=50,
+            offset=0,
+        )
+
+        result = json.loads(provider.handle_tool_call(
+            "hindsight_recall",
+            {"query": "keyword", "method": "list", "metadata": {"tenant": "alpha"}},
+        ))
+
+        assert "Matching tenant" in result["result"]
+        assert "Missing tenant" not in result["result"]
+        assert result["returned"] == 1
+
+    def test_recall_list_method_ignores_invalid_metadata_filter(self, provider):
+        result = json.loads(provider.handle_tool_call(
+            "hindsight_recall",
+            {"query": "keyword", "method": "list", "metadata": "not-json"},
+        ))
+
+        assert "Keyword Memory 1" in result["result"]
+        assert "Keyword Memory 2" in result["result"]
+
+    def test_recall_list_method_passes_pagination_controls(self, provider):
+        provider.handle_tool_call(
+            "hindsight_recall",
+            {"query": "keyword", "method": "list", "limit": 25, "offset": 10},
+        )
+
+        call_kwargs = provider._client.memory.list_memories.call_args.kwargs
+        assert call_kwargs["limit"] == 25
+        assert call_kwargs["offset"] == 10
+
+    def test_recall_list_method_invalid_types_fall_back_to_config(self, provider_with_config):
+        p = provider_with_config(recall_types=["world"])
+        result = json.loads(p.handle_tool_call(
+            "hindsight_recall",
+            {"query": "keyword", "method": "list", "types": ["invalid"]},
+        ))
+
+        call_kwargs = p._client.memory.list_memories.call_args.kwargs
+        assert call_kwargs["type"] == "world"
+        assert "Keyword Memory 1" in result["result"]
+        assert "Keyword Memory 2" not in result["result"]
+
+    def test_recall_list_method_filters_type_field_variants(self, provider_with_config):
+        p = provider_with_config(recall_types=["observation"])
+        p._client.memory.list_memories.return_value = SimpleNamespace(
+            items=[
+                {"text": "World-only memory", "type": "world"},
+                {"text": "Experience-only memory", "fact_type": "experience"},
+                {"text": "Observation-only memory", "factType": "observation"},
+            ],
+            total=3,
+            limit=50,
+            offset=0,
+        )
+
+        result = json.loads(p.handle_tool_call(
+            "hindsight_recall", {"query": "keyword", "method": "list"}
+        ))
+
+        assert "Observation-only memory" in result["result"]
+        assert "World-only memory" not in result["result"]
+        assert "Experience-only memory" not in result["result"]
+        assert result["returned"] == 1
+
+    def test_recall_list_method_bounds_invalid_pagination_controls(self, provider):
+        provider.handle_tool_call(
+            "hindsight_recall",
+            {"query": "keyword", "method": "list", "limit": 500, "offset": -10},
+        )
+
+        call_kwargs = provider._client.memory.list_memories.call_args.kwargs
+        assert call_kwargs["limit"] == 200
+        assert call_kwargs["offset"] == 0
+
+    def test_recall_method_applies_metadata_filter_to_returned_results(self, provider):
+        provider._client.arecall.return_value = SimpleNamespace(
+            results=[
+                SimpleNamespace(text="Alpha memory", metadata={"tenant": "alpha"}),
+                SimpleNamespace(text="Beta memory", metadata={"tenant": "beta"}),
+            ]
+        )
+        result = json.loads(provider.handle_tool_call(
+            "hindsight_recall", {"query": "tenant", "metadata": {"tenant": "alpha"}}
+        ))
+
+        assert "Alpha memory" in result["result"]
+        assert "Beta memory" not in result["result"]
+
+    def test_recall_entity_method_formats_entity_dict_response(self, provider_with_config):
+        p = provider_with_config(recall_tags=["configured"], recall_tags_match="all")
+        p._client.arecall.return_value = SimpleNamespace(
+            results=[SimpleNamespace(text="Related memory")],
+            entities={
+                "ent-1": SimpleNamespace(
+                    entity_id="ent-1",
+                    canonical_name="Alice Example",
+                    observations=[
+                        SimpleNamespace(text="Alice is Bob's mother.", mentioned_at="2026-04-30T10:00:00Z"),
+                        {"text": "Alice works at ExampleCo."},
+                    ],
+                )
+            },
+        )
+
+        result = json.loads(p.handle_tool_call(
+            "hindsight_recall", {"query": "who is Alice?", "method": "entity"}
+        ))
+        call_kwargs = p._client.arecall.call_args.kwargs
+        assert call_kwargs["include_entities"] is True
+        assert call_kwargs["max_entity_tokens"] == 2000
+        assert call_kwargs["types"] == ["world"]
+        assert call_kwargs["tags"] == ["configured"]
+        assert call_kwargs["tags_match"] == "all"
+        assert "Related memory" in result["result"]
+        assert "Alice Example" in result["result"]
+        assert "Alice is Bob's mother." in result["result"]
+        assert "Alice works at ExampleCo." in result["result"]
+
+    def test_recall_entity_method_allows_per_call_type_and_budget_overrides(self, provider_with_config):
+        p = provider_with_config(recall_types=["experience"], recall_max_tokens=2048)
+        p.handle_tool_call(
+            "hindsight_recall",
+            {
+                "query": "relationship",
+                "method": "entity",
+                "budget": "low",
+                "max_tokens": 512,
+                "types": ["observation"],
+                "max_entity_tokens": 512,
+            },
+        )
+
+        call_kwargs = p._client.arecall.call_args.kwargs
+        assert call_kwargs["budget"] == "low"
+        assert call_kwargs["max_tokens"] == 512
+        assert call_kwargs["types"] == ["observation"]
+        assert call_kwargs["max_entity_tokens"] == 512
+
+    def test_recall_entity_method_invalid_entity_budget_falls_back_to_default(self, provider):
+        provider.handle_tool_call(
+            "hindsight_recall",
+            {"query": "relationship", "method": "entity", "max_entity_tokens": -1},
+        )
+
+        call_kwargs = provider._client.arecall.call_args.kwargs
+        assert call_kwargs["max_entity_tokens"] == 2000
+
+    def test_recall_entity_method_filters_entities_to_metadata_scoped_results(self, provider):
+        provider._client.arecall.return_value = SimpleNamespace(
+            results=[
+                SimpleNamespace(
+                    text="Alpha memory",
+                    metadata={"tenant": "alpha"},
+                    entities=["ent-alpha"],
+                ),
+                SimpleNamespace(
+                    text="Beta memory",
+                    metadata={"tenant": "beta"},
+                    entities=["ent-beta"],
+                ),
+            ],
+            entities={
+                "ent-alpha": SimpleNamespace(
+                    entity_id="ent-alpha",
+                    canonical_name="Alpha Entity",
+                    observations=[SimpleNamespace(text="Alpha observation")],
+                ),
+                "ent-beta": SimpleNamespace(
+                    entity_id="ent-beta",
+                    canonical_name="Beta Entity",
+                    observations=[SimpleNamespace(text="Beta observation")],
+                ),
+            },
+        )
+
+        result = json.loads(provider.handle_tool_call(
+            "hindsight_recall",
+            {
+                "query": "tenant",
+                "method": "entity",
+                "metadata": {"tenant": "alpha"},
+            },
+        ))
+
+        assert "Alpha memory" in result["result"]
+        assert "Alpha Entity" in result["result"]
+        assert "Alpha observation" in result["result"]
+        assert "Beta memory" not in result["result"]
+        assert "Beta Entity" not in result["result"]
+        assert "Beta observation" not in result["result"]
+
+    def test_recall_entity_method_handles_current_client_model_shape(self, provider):
+        # Mirrors the fields exposed by current hindsight_client_api models without
+        # importing the optional Hindsight client package in the repo test suite.
+        provider._client.arecall.return_value = SimpleNamespace(
+            results=[
+                SimpleNamespace(
+                    id="r1",
+                    text="Model-backed memory",
+                    type="world",
+                    metadata={"tenant": "alpha"},
+                    entities=["ent-model"],
+                )
+            ],
+            entities={
+                "ent-model": SimpleNamespace(
+                    entity_id="ent-model",
+                    canonical_name="Model Entity",
+                    observations=[SimpleNamespace(text="Model observation", mentioned_at=None)],
+                )
+            },
+        )
+
+        result = json.loads(provider.handle_tool_call(
+            "hindsight_recall",
+            {
+                "query": "tenant",
+                "method": "entity",
+                "metadata": {"tenant": "alpha"},
+            },
+        ))
+
+        assert "Model-backed memory" in result["result"]
+        assert "Model Entity" in result["result"]
+        assert "Model observation" in result["result"]
 
     def test_recall_passes_tags(self, provider_with_config):
         p = provider_with_config(recall_tags=["tag1"], recall_tags_match="all")
@@ -994,7 +1389,6 @@ class TestSessionSwitchBufferFlush:
         old session to settle before clearing _prefetch_result, otherwise
         the thread can race and re-populate the field after the clear."""
         import threading
-        import time as _time
 
         gate = threading.Event()
         finished = threading.Event()
@@ -1548,4 +1942,3 @@ class TestShutdown:
         embedded.close.assert_called_once()
         assert embedded._client is None
         assert provider._client is None
-

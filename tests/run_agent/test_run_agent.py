@@ -600,6 +600,76 @@ class TestSessionJsonSnapshotOptIn:
         assert hasattr(agent, "logs_dir")
 
 
+class TestSaveSessionLogRedactsSecrets:
+    """Regression: session_*.json must not contain plaintext credentials (#19798, #19845)."""
+
+    @pytest.fixture(autouse=True)
+    def _ensure_redaction_enabled(self, monkeypatch):
+        """Force redaction on regardless of host HERMES_REDACT_SECRETS state.
+        The hermetic conftest blanks the env var; the module-level
+        ``_REDACT_ENABLED`` constant is captured at import time, so we
+        flip it directly for the duration of these tests."""
+        monkeypatch.delenv("HERMES_REDACT_SECRETS", raising=False)
+        monkeypatch.setattr("agent.redact._REDACT_ENABLED", True)
+
+    def test_redacts_api_key_in_tool_content(self, agent, tmp_path):
+        agent._session_json_enabled = True
+        agent.logs_dir = tmp_path
+        messages = [
+            {"role": "user", "content": "Hello"},
+            {
+                "role": "tool",
+                "content": "Response: Authorization: Bearer sk-proj-abc123def456ghi789jkl012mno",
+            },
+        ]
+        agent._save_session_log(messages)
+
+        snapshot = (tmp_path / f"session_{agent.session_id}.json").read_text(encoding="utf-8")
+        assert "sk-proj-abc123def456ghi789jkl012mno" not in snapshot
+
+    def test_redacts_api_key_in_user_message(self, agent, tmp_path):
+        agent._session_json_enabled = True
+        agent.logs_dir = tmp_path
+        messages = [
+            {"role": "user", "content": "My key is sk-ant-api03-abc123def456ghi789jkl012mno please use it"},
+        ]
+        agent._save_session_log(messages)
+
+        snapshot = (tmp_path / f"session_{agent.session_id}.json").read_text(encoding="utf-8")
+        assert "sk-ant-api03-abc123def456ghi789jkl012mno" not in snapshot
+
+    def test_redacts_system_prompt_credentials(self, agent, tmp_path):
+        agent._session_json_enabled = True
+        agent.logs_dir = tmp_path
+        agent._cached_system_prompt = "Use key sk-proj-realkey1234567890123456 for API calls"
+        agent._save_session_log([{"role": "user", "content": "test"}])
+
+        snapshot = (tmp_path / f"session_{agent.session_id}.json").read_text(encoding="utf-8")
+        assert "sk-proj-realkey1234567890123456" not in snapshot
+
+    def test_redacts_list_type_multimodal_content(self, agent, tmp_path):
+        """OpenAI/Anthropic multimodal shape: content = list of {type, text|image_url} parts."""
+        agent._session_json_enabled = True
+        agent.logs_dir = tmp_path
+        messages = [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": "Key: gsk_abc123def456ghi789jkl012mno"},
+                    {"type": "image_url", "image_url": {"url": "data:image/png;base64,abc"}},
+                ],
+            },
+        ]
+        agent._save_session_log(messages)
+
+        snapshot_text = (tmp_path / f"session_{agent.session_id}.json").read_text(encoding="utf-8")
+        snapshot = json.loads(snapshot_text)
+        parts = snapshot["messages"][0]["content"]
+        assert "gsk_abc123def456ghi789jkl012mno" not in parts[0]["text"]
+        # Image part preserved untouched
+        assert parts[1]["image_url"]["url"].startswith("data:image")
+
+
 class TestGetMessagesUpToLastAssistant:
     def test_empty_list(self, agent):
         assert agent._get_messages_up_to_last_assistant([]) == []

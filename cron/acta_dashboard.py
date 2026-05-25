@@ -350,6 +350,9 @@ class ActaRunItem:
     has_markdown: bool
     has_html: bool
     telegram_url: str | None = None
+    artifact_url: str | None = None
+    md_path: Path | None = None
+    html_path: Path | None = None
 
 
 def _safe_text(value: object) -> str:
@@ -512,7 +515,7 @@ def _extract_response_if_present(markdown: str) -> str | None:
     if not match:
         return None
     response = markdown[match.end():]
-    next_heading = re.search(r"\n## [A-Z][^\n]*\n", response)
+    next_heading = re.search(r"\n## [^\n]+\n", response)
     if next_heading:
         response = response[: next_heading.start()]
     return _strip_embedded_html_report(response)
@@ -679,11 +682,13 @@ def collect_run_history(hermes_home: Path | None = None, limit: int = 200) -> li
                 run_id=run_id,
                 run_time=run_time,
                 status=status,
-                excerpt=_plain_excerpt(response or "No visible Markdown response for this run."),
+                excerpt=_plain_excerpt(response or "No visible response was produced for this run."),
                 source_name=source_path.name if source_path else run_id,
                 has_markdown=md_path is not None,
                 has_html=html_path is not None,
                 telegram_url=_telegram_url_from_job(job),
+                md_path=md_path,
+                html_path=html_path,
             )
         )
     return sorted(runs, key=lambda item: item.run_time or datetime.min.replace(tzinfo=timezone.utc), reverse=True)[:limit]
@@ -1611,16 +1616,26 @@ def render_runs_page(runs: Sequence[ActaRunItem], generated_at: datetime | None 
             else '<span>NO FOLLOW-UP</span>'
         )
         kind = "+".join(part for part, present in (("MD", item.has_markdown), ("HTML", item.has_html)) if present) or "OUTPUT"
+        artifact_url = item.artifact_url if _is_safe_signed_acta_artifact_url(item.artifact_url) else ""
+        signed_href = html.escape(artifact_url, quote=True) if artifact_url else ""
+        row_open_attr = f' data-open-url="{signed_href}"' if signed_href else ' aria-disabled="true"'
+        open_overlay = (
+            f'<a class="output-open-overlay" href="{signed_href}" aria-label="Open run history for {html.escape(item.name, quote=True)}"></a>'
+            if signed_href
+            else ""
+        )
+        open_action = '<span class="open">SIGNED</span>' if signed_href else '<span class="muted">HISTORY</span>'
         rows.append(
             f"""
-<article class="output-row {_safe_text(item.status)}" aria-disabled="true">
+<article class="output-row {_safe_text(item.status)}"{row_open_attr}>
+  {open_overlay}
   <div class="output-rank">{index:02d}</div>
   <div class="output-main">
     <b>{_safe_text(item.name)}</b>
     <p>{_safe_text(item.excerpt)}</p>
-    <div class="output-meta"><span class="confidence-chip">{_safe_text(confidence)}</span><span>{_safe_text(item.status)}</span><span>{_safe_text(kind)}</span><span>{_safe_text(age)}</span><span>RUN {_safe_text(run_time)}</span><span>SOURCE {_safe_text(item.source_name)}</span><span>JOB {_safe_text(item.job_id)}</span><span>SCHEDULE {_safe_text(item.schedule or 'manual')}</span><span>{_safe_text(item.deliver or 'local')}</span>{followup}</div>
+    <div class="output-meta"><span class="confidence-chip">{_safe_text(confidence)}</span><span>{_safe_text(item.status)}</span><span>{_safe_text(kind)}</span><span>{_safe_text(age)}</span><span>RUN {_safe_text(run_time)}</span><span>SOURCE {_safe_text(Path(item.source_name).name)}</span><span>JOB {_safe_text(item.job_id)}</span><span>SCHEDULE {_safe_text(item.schedule or 'manual')}</span><span>{_safe_text(item.deliver or 'local')}</span>{followup}</div>
   </div>
-  <div class="output-actions"><span class="muted">HISTORY</span></div>
+  <div class="output-actions">{open_action}</div>
 </article>"""
         )
     return f"""<!doctype html>
@@ -1795,6 +1810,76 @@ def _html_detail_body(item: CronSituationItem) -> str:
     return _html_artifact_markdown_body(item.latest_html, title=item.name)
 
 
+def _run_detail_body(item: ActaRunItem) -> str:
+    if item.md_path is not None:
+        try:
+            text = item.md_path.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            text = ""
+        response = _extract_response_if_present(text) or ""
+        if not response or response.strip() == "[SILENT]":
+            return "No visible response was produced for this run."
+        return response
+    if item.html_path is not None:
+        return _html_artifact_markdown_body(item.html_path, title=item.name)
+    return "No visible response was produced for this run."
+
+
+def attach_run_artifact_urls(
+    runs: Sequence[ActaRunItem],
+    publish_settings: Mapping[str, Any],
+    output_dir: Path,
+) -> list[ActaRunItem]:
+    output_dir.mkdir(parents=True, exist_ok=True)
+    linked: list[ActaRunItem] = []
+    for item in runs:
+        url: str | None = None
+        source_path = item.md_path or item.html_path
+        if source_path is not None:
+            try:
+                safe_stem = re.sub(r"[^A-Za-z0-9._-]+", "-", f"{item.job_id}-{item.run_id}").strip(".-_") or "run"
+                temp_html = output_dir / f"{safe_stem}.html"
+                detail_html = render_acta_detail_report(
+                    _run_detail_body(item),
+                    HtmlReportMetadata(
+                        job_id=item.job_id,
+                        job_name=item.name,
+                        run_time=item.run_time.isoformat() if item.run_time else "",
+                        source_filename=Path(item.source_name).name,
+                    ),
+                    telegram_url=item.telegram_url,
+                )
+                temp_html.write_text(detail_html, encoding="utf-8")
+                url = publish_html_artifact(
+                    temp_html,
+                    {"id": item.job_id},
+                    {**publish_settings, "object_key": f"public/run-details/{safe_stem}.html"},
+                )
+            except (OSError, HtmlArtifactPublishError):
+                url = None
+        linked.append(
+            ActaRunItem(
+                job_id=item.job_id,
+                name=item.name,
+                schedule=item.schedule,
+                deliver=item.deliver,
+                enabled=item.enabled,
+                run_id=item.run_id,
+                run_time=item.run_time,
+                status=item.status,
+                excerpt=item.excerpt,
+                source_name=Path(item.source_name).name,
+                has_markdown=item.has_markdown,
+                has_html=item.has_html,
+                telegram_url=item.telegram_url,
+                artifact_url=url,
+                md_path=item.md_path,
+                html_path=item.html_path,
+            )
+        )
+    return linked
+
+
 def attach_artifact_urls(
     items: Sequence[CronSituationItem],
     publish_settings: Mapping[str, Any],
@@ -1941,7 +2026,9 @@ def build_dashboard(
             {**publish_settings, "object_key": "public/outputs/index.html"},
         )
         runs_path = output_dir / "runs.html"
-        runs_path.write_text(render_runs_page(collect_run_history(home), generated_at=generated_at), encoding="utf-8")
+        runs = collect_run_history(home)
+        runs = attach_run_artifact_urls(runs, publish_settings, output_dir / "run-details")
+        runs_path.write_text(render_runs_page(runs, generated_at=generated_at), encoding="utf-8")
         publish_html_artifact(
             runs_path,
             {"id": "acta-situation-room"},

@@ -10,6 +10,7 @@ from cron.acta_dashboard import (
     acta_dashboard_config,
     apply_feed_preferences,
     attach_artifact_urls,
+    attach_run_artifact_urls,
     available_run_dates,
     build_dashboard,
     collect_catalog_outputs,
@@ -1766,7 +1767,7 @@ def test_run_history_does_not_leak_prompt_when_response_heading_missing(tmp_path
 
     assert "SECRET PROMPT" not in html
     assert "internal trace" not in html
-    assert "No visible Markdown response" in html
+    assert "No visible response was produced for this run." in html
 
 
 def test_outputs_and_detail_do_not_leak_prompt_when_response_heading_missing(tmp_path: Path, monkeypatch):
@@ -1801,6 +1802,72 @@ def test_outputs_and_detail_do_not_leak_prompt_when_response_heading_missing(tmp
     assert 'href="https://acta.imperatr.com/r/daily/detail.html?sig=abc"' in outputs_html
     assert '<article class="report-body">' in detail_html
     assert 'name="viewport"' in detail_html
+
+
+def test_run_history_published_rows_open_signed_detail_without_prompt_or_path_leak(tmp_path: Path, monkeypatch):
+    (tmp_path / "cron" / "output" / "daily").mkdir(parents=True)
+    (tmp_path / "cron" / "jobs.json").write_text(json.dumps([{"id": "daily", "name": "Daily Brief"}]))
+    local_sentinel = "/Users/mozzie/private/raw.log"
+    (tmp_path / "cron" / "output" / "daily" / "2026-05-20_08-00-00.md").write_text(
+        "# Cron Job: Daily Brief\n\n"
+        "## Prompt\n\nSECRET PROMPT SHOULD NOT RENDER\n\n"
+        "## Response\n\nVisible response body only.\n\n"
+        "## tool output\n\ninternal trace " + local_sentinel,
+        encoding="utf-8",
+    )
+    uploaded: dict[str, str] = {}
+
+    def fake_publish(path, job, settings):
+        uploaded[str(settings.get("object_key"))] = Path(path).read_text(encoding="utf-8")
+        return "https://acta.imperatr.com/run-details/daily.html?exp=1&sig=abc"
+
+    monkeypatch.setattr("cron.acta_dashboard.publish_html_artifact", fake_publish)
+
+    runs = attach_run_artifact_urls(collect_run_history(tmp_path), {"enabled": True}, tmp_path / "details")
+    html = render_runs_page(runs, generated_at=datetime(2026, 5, 20, 12, tzinfo=timezone.utc))
+    detail_html = next(value for key, value in uploaded.items() if key.startswith("public/run-details/"))
+
+    assert 'data-open-url="https://acta.imperatr.com/run-details/daily.html?exp=1&amp;sig=abc"' in html
+    assert '<span class="open">SIGNED</span>' in html
+    assert 'class="output-open-overlay"' in html
+    assert "Visible response body only." in detail_html
+    assert "SECRET PROMPT" not in detail_html
+    assert "internal trace" not in detail_html
+    assert local_sentinel not in detail_html
+    assert str(tmp_path) not in html
+    assert str(tmp_path) not in detail_html
+    assert "2026-05-20_08-00-00.md" in html
+
+
+def test_run_history_unsafe_or_missing_artifact_url_remains_disabled():
+    item_cls = collect_run_history.__globals__["ActaRunItem"]
+    base = dict(
+        job_id="daily",
+        name="Daily Brief",
+        schedule="manual",
+        deliver="local",
+        enabled=True,
+        run_id="2026-05-20_08-00-00",
+        run_time=datetime(2026, 5, 20, 8, tzinfo=timezone.utc),
+        status="fresh",
+        excerpt="Visible excerpt.",
+        source_name="2026-05-20_08-00-00.md",
+        has_markdown=True,
+        has_html=False,
+    )
+    html = render_runs_page(
+        [
+            item_cls(**base, artifact_url="https://evil.example/run.html?sig=abc"),
+            item_cls(**{**base, "job_id": "missing", "artifact_url": None}),
+        ],
+        generated_at=datetime(2026, 5, 20, 12, tzinfo=timezone.utc),
+    )
+
+    assert "https://evil.example" not in html
+    assert 'data-open-url=' not in html
+    assert html.count('aria-disabled="true"') == 2
+    assert html.count('<span class="muted">HISTORY</span>') == 2
+    assert '<span class="open">SIGNED</span>' not in html
 
 
 def test_run_history_rejects_symlinked_run_files(tmp_path: Path):

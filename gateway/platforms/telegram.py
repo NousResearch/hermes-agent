@@ -4711,7 +4711,20 @@ class TelegramAdapter(BasePlatformAdapter):
         if not self._is_group_chat(message):
             return True
 
+        # P0 FIX (audit 100 passes): TELEGRAM_ALLOWED_USERS allowlist must be
+        # enforced on ALL inbound message types (text/command/media), not just
+        # callback/inline button actions.  The 6 _is_callback_user_authorized
+        # call sites cover button clicks; the main message path must also check.
         thread_id = getattr(message, "message_thread_id", None)
+        sender_id = str(getattr(getattr(message, "from_user", None), "id", None) or "")
+        if sender_id and not self._is_callback_user_authorized(
+            sender_id,
+            chat_type="dm",
+            thread_id=str(thread_id) if thread_id is not None else None,
+        ):
+            logger.debug("[%s] Message from unauthorized user %s dropped", self.name, sender_id)
+            return False
+
         allowed_topics = self._telegram_allowed_topics()
         if allowed_topics:
             topic_id = str(thread_id) if thread_id is not None else self._GENERAL_TOPIC_THREAD_ID

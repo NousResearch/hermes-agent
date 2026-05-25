@@ -765,6 +765,7 @@ def run_doctor(args):
             config_issues = validate_config_structure()
             if config_issues:
                 _section("Config Structure")
+                needs_cp_fix = False
                 for ci in config_issues:
                     if ci.severity == "error":
                         check_fail(ci.message)
@@ -774,6 +775,27 @@ def run_doctor(args):
                     for hint_line in ci.hint.splitlines():
                         check_info(hint_line)
                     issues.append(ci.message)
+                    # Track if we need to fix custom_providers dict→list
+                    if ci.message.startswith("custom_providers is a dict"):
+                        needs_cp_fix = True
+                
+                # Auto-fix custom_providers dict→list if requested
+                if should_fix and needs_cp_fix and config_path:
+                    import yaml as _yaml
+                    try:
+                        cfg = _yaml.safe_load(config_path.read_text(encoding="utf-8")) or {}
+                        cp = cfg.get("custom_providers")
+                        if isinstance(cp, dict):
+                            # Convert dict to list format
+                            cfg["custom_providers"] = [
+                                {"name": k, **v} for k, v in cp.items()
+                            ]
+                            from utils import atomic_yaml_write
+                            atomic_yaml_write(config_path, cfg)
+                            check_ok("Converted custom_providers from dict to list format")
+                            fixed_count += 1
+                    except Exception as e:
+                        check_fail(f"Failed to fix custom_providers structure: {e}")
         except Exception:
             pass
 

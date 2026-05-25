@@ -116,6 +116,25 @@ def test_valid_approve_executor_contract_outcome_creates_implementation_plan_req
     assert plan["next_step_recommendation"]["implements_real_token_write_executor"] is False
 
 
+def test_implementation_plan_id_is_canonical_for_valid_contract_review_outcome():
+    plan = create_human_approval_token_real_write_executor_implementation_plan(
+        _outcome(),
+        implementer="implementation-planner",
+    )
+
+    assert plan["plan_id"] == (
+        "memory-human-approval-token-real-write-executor-implementation-plan:"
+        "v0.1:20b98e1aeed54cf6"
+    )
+    assert (
+        create_human_approval_token_real_write_executor_implementation_plan(
+            _outcome(),
+            implementer="implementation-planner",
+        )["plan_id"]
+        == plan["plan_id"]
+    )
+
+
 def test_request_contract_changes_creates_locked_plan():
     plan = create_human_approval_token_real_write_executor_implementation_plan(
         _outcome(outcome="request_contract_changes")

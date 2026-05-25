@@ -4494,6 +4494,28 @@ class TelegramAdapter(BasePlatformAdapter):
                     return True
         return False
 
+    def _telegram_bot_sender(self, message) -> bool:
+        """Return True when the message sender is another bot.
+
+        Used for bot-to-bot communication: allows agents to see and respond to
+        each other's messages in shared groups without requiring human mention.
+        """
+        user = getattr(message, "from_user", None) or getattr(message, "from", None)
+        return bool(getattr(user, "is_bot", False))
+
+    def _telegram_allow_bots(self) -> str:
+        """Return the bot-to-bot admission policy.
+
+        Values: 'none' (default), 'mentions' (only when this bot is @-mentioned
+        by another bot), 'all' (process all bot messages as triggers).
+        Uses TELEGRAM_ALLOW_BOTS env var or config extra 'allow_bots'.
+        """
+        configured = self.config.extra.get("allow_bots")
+        if configured is not None:
+            if isinstance(configured, str):
+                return configured.lower().strip()
+        return os.getenv("TELEGRAM_ALLOW_BOTS", "none").lower().strip() or "none"
+
     def _is_guest_mention(self, message: Message) -> bool:
         """Return True for the narrow guest-mode bypass: explicit bot mention.
 
@@ -4697,6 +4719,18 @@ class TelegramAdapter(BasePlatformAdapter):
             return True
         if chat_id_str in self._telegram_free_response_chats():
             return True
+
+        # Bot-to-bot: bypass require_mention for other bot senders when
+        # TELEGRAM_ALLOW_BOTS is 'all'. When 'mentions', only process if
+        # the other bot @-mentions this bot (handled below).
+        allow_bots = self._telegram_allow_bots()
+        if allow_bots in {"all", "mentions"} and self._telegram_bot_sender(message):
+            if allow_bots == "all":
+                return True
+            # 'mentions' — only allow if bot mentioned this bot
+            if self._message_mentions_bot(message):
+                return True
+
         if not self._telegram_require_mention():
             return True
         if self._is_reply_to_bot(message):

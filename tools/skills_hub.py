@@ -991,7 +991,7 @@ class WellKnownSkillSource(SkillSource):
         }
 
     def _parse_index(self, index_url: str) -> Optional[dict]:
-        cache_key = f"well_known_index_{hashlib.md5(index_url.encode()).hexdigest()}"
+        cache_key = f"well_known_index_{hashlib.md5(index_url.encode(), usedforsecurity=False).hexdigest()}"
         cached = _read_index_cache(cache_key)
         if isinstance(cached, dict) and isinstance(cached.get("skills"), list):
             return cached
@@ -1243,7 +1243,7 @@ class SkillsShSource(SkillSource):
         if not query.strip():
             return self._featured_skills(limit)
 
-        cache_key = f"skills_sh_search_{hashlib.md5(f'{query}|{limit}'.encode()).hexdigest()}"
+        cache_key = f"skills_sh_search_{hashlib.md5(f'{query}|{limit}'.encode(), usedforsecurity=False).hexdigest()}"
         cached = _read_index_cache(cache_key)
         if cached is not None:
             return [SkillMeta(**item) for item in cached][:limit]
@@ -1379,7 +1379,7 @@ class SkillsShSource(SkillSource):
         )
 
     def _fetch_detail_page(self, identifier: str) -> Optional[dict]:
-        cache_key = f"skills_sh_detail_{hashlib.md5(identifier.encode()).hexdigest()}"
+        cache_key = f"skills_sh_detail_{hashlib.md5(identifier.encode(), usedforsecurity=False).hexdigest()}"
         cached = _read_index_cache(cache_key)
         if isinstance(cached, dict):
             return cached
@@ -1856,7 +1856,7 @@ class ClawHubSource(SkillSource):
                 return results
 
         # Empty query or catalog fallback failure: use the lightweight listing API.
-        cache_key = f"clawhub_search_listing_v1_{hashlib.md5(query.encode()).hexdigest()}_{limit}"
+        cache_key = f"clawhub_search_listing_v1_{hashlib.md5(query.encode(), usedforsecurity=False).hexdigest()}_{limit}"
         cached = _read_index_cache(cache_key)
         if cached is not None:
             return self._finalize_search_results(

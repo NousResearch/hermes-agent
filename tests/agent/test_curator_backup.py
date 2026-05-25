@@ -259,6 +259,28 @@ def test_rollback_rejects_unsafe_tarball(backup_env, monkeypatch):
     assert "unsafe" in msg.lower() or "refus" in msg.lower() or "extract" in msg.lower()
 
 
+def test_rollback_rejects_unsafe_tarball_symlink(backup_env):
+    """Fallback extraction must reject link members too, not just bad paths."""
+    cb = backup_env["cb"]
+    skills = backup_env["skills"]
+    _write_skill(skills, "alpha")
+    cb.snapshot_skills(reason="legit")
+
+    rows = cb.list_backups()
+    snap_dir = Path(rows[0]["path"])
+    mal = snap_dir / "skills.tar.gz"
+    mal.unlink()
+    with tarfile.open(mal, "w:gz") as tf:
+        link = tarfile.TarInfo("safe-looking-link")
+        link.type = tarfile.SYMTYPE
+        link.linkname = "/tmp/hermes-curator-escape"
+        tf.addfile(link)
+
+    ok, msg, _ = cb.rollback()
+    assert not ok
+    assert "unsafe" in msg.lower() or "refus" in msg.lower() or "extract" in msg.lower()
+
+
 # ---------------------------------------------------------------------------
 # Integration with run_curator_review
 # ---------------------------------------------------------------------------

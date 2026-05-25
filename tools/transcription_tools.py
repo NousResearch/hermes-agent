@@ -1203,12 +1203,21 @@ def _transcribe_local_command(file_path: str, model_name: str) -> Dict[str, Any]
                 language=shlex.quote(language),
                 model=shlex.quote(normalized_model),
             )
-            # User-provided templates (env var) may contain shell syntax; auto-detected commands are safe for list mode.
-            use_shell = bool(os.getenv(LOCAL_STT_COMMAND_ENV, "").strip())
-            if use_shell:
-                subprocess.run(command, shell=True, check=True, capture_output=True, text=True)
-            else:
-                subprocess.run(shlex.split(command), check=True, capture_output=True, text=True)
+            # Execute argv directly to avoid shell injection surfaces.
+            # If the configured template contains shell metacharacters, fail closed with
+            # a clear guidance message instead of treating them as literal argv values.
+            shell_tokens = {"|", "&&", ";", "||", "<", ">", "$(", "`"}
+            if any(tok in command for tok in shell_tokens):
+                return {
+                    "success": False,
+                    "transcript": "",
+                    "error": (
+                        f"{LOCAL_STT_COMMAND_ENV} contains shell metacharacters. "
+                        "Use a plain executable + arguments template only."
+                    ),
+                }
+
+            subprocess.run(shlex.split(command), check=True, capture_output=True, text=True)
             
 
             txt_files = sorted(Path(output_dir).glob("*.txt"))

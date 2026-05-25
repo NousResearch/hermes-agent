@@ -55,7 +55,16 @@ _DEFAULT_ROOTS = ["tests"]
 # Directories to skip during discovery — the e2e + integration suites
 # require real services and are run separately. Match exactly the
 # ``--ignore=`` flags the previous CI command used.
-_SKIP_PARTS = {"integration", "e2e"}
+#
+# ``docker`` joined this list in the salvage of PR #30136: the new
+# tests/docker/ harness builds the real Dockerfile in a session
+# fixture and runs ``docker run`` against it. On a CI runner where
+# Docker IS available (ubuntu-latest), the build can exceed
+# pytest-timeout's 180s ceiling and surface as a setup-timeout
+# instead of a real test failure. The harness has its own dedicated
+# action (.github/actions/hermes-smoke-test) plus the docker-lint
+# workflow; it is NOT meant to run in the regular ``test (N)`` shards.
+_SKIP_PARTS = {"integration", "e2e", "docker"}
 
 # Per-file wall-clock cap. Generous default — pytest-timeout still
 # enforces per-test caps inside each subprocess; this is just an outer

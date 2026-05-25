@@ -730,19 +730,12 @@ class ShellFileOperations(FileOperations):
         
         offset, limit = normalize_read_pagination(offset, limit)
         
-        # Check if file exists and get size (wc -c is POSIX, works on Linux + macOS)
-        stat_cmd = f"wc -c < {self._escape_shell_arg(path)} 2>/dev/null"
-        stat_result = self._exec(stat_cmd)
-        
-        if stat_result.exit_code != 0:
+        # Check if file exists and get size (stdlib, no shell process)
+        try:
+            file_size = os.path.getsize(path)
+        except OSError:
             # File not found - try to suggest similar files
             return self._suggest_similar_files(path)
-        
-        stat_output = _strip_terminal_fence_leaks(stat_result.stdout)
-        try:
-            file_size = int(stat_output.strip())
-        except ValueError:
-            file_size = 0
         
         # Check if file is too large
         if file_size > MAX_FILE_SIZE:
@@ -762,9 +755,12 @@ class ShellFileOperations(FileOperations):
             )
         
         # Read a sample to check for binary content
-        sample_cmd = f"head -c 1000 {self._escape_shell_arg(path)} 2>/dev/null"
-        sample_result = self._exec(sample_cmd)
-        sample_output = _strip_terminal_fence_leaks(sample_result.stdout)
+        try:
+            with open(path, 'rb') as f:
+                sample_bytes = f.read(1000)
+            sample_output = sample_bytes.decode('utf-8', errors='replace')
+        except OSError:
+            sample_output = ''
         
         if self._is_likely_binary(path, sample_output):
             return ReadResult(
@@ -773,23 +769,15 @@ class ShellFileOperations(FileOperations):
                 error="Binary file - cannot display as text. Use appropriate tools to handle this file type."
             )
         
-        # Read with pagination using sed
+        # Read with pagination using Python slice
         end_line = offset + limit - 1
-        read_cmd = f"sed -n '{offset},{end_line}p' {self._escape_shell_arg(path)}"
-        read_result = self._exec(read_cmd)
-        
-        if read_result.exit_code != 0:
-            return ReadResult(error=f"Failed to read file: {read_result.stdout}")
-        read_output = _strip_terminal_fence_leaks(read_result.stdout)
-        
-        # Get total line count
-        wc_cmd = f"wc -l < {self._escape_shell_arg(path)}"
-        wc_result = self._exec(wc_cmd)
-        wc_output = _strip_terminal_fence_leaks(wc_result.stdout)
         try:
-            total_lines = int(wc_output.strip())
-        except ValueError:
-            total_lines = 0
+            with open(path) as f:
+                all_lines = f.readlines()
+            read_output = ''.join(all_lines[offset - 1:end_line])
+            total_lines = len(all_lines)
+        except OSError:
+            return ReadResult(error=f"Failed to read file: {path}")
         
         # Check if truncated
         truncated = total_lines > end_line
@@ -814,12 +802,13 @@ class ShellFileOperations(FileOperations):
         lower_name = filename.lower()
 
         # List files in the target directory
-        ls_cmd = f"ls -1 {self._escape_shell_arg(dir_path)} 2>/dev/null | head -50"
-        ls_result = self._exec(ls_cmd)
-
+        try:
+            all_entries = os.listdir(dir_path)
+        except OSError:
+            all_entries = []
+        
         scored: list = []  # (score, filepath) — higher is better
-        if ls_result.exit_code == 0 and ls_result.stdout.strip():
-            for f in ls_result.stdout.strip().split('\n'):
+        for f in all_entries[:50]:
                 if not f:
                     continue
                 lf = f.lower()
@@ -864,29 +853,30 @@ class ShellFileOperations(FileOperations):
         Uses cat so the full file is returned regardless of size.
         """
         path = self._expand_path(path)
-        stat_cmd = f"wc -c < {self._escape_shell_arg(path)} 2>/dev/null"
-        stat_result = self._exec(stat_cmd)
-        if stat_result.exit_code != 0:
-            return self._suggest_similar_files(path)
-        stat_output = _strip_terminal_fence_leaks(stat_result.stdout)
         try:
-            file_size = int(stat_output.strip())
-        except ValueError:
-            file_size = 0
+            file_size = os.path.getsize(path)
+        except OSError:
+            return self._suggest_similar_files(path)
         if self._is_image(path):
             return ReadResult(is_image=True, is_binary=True, file_size=file_size)
-        sample_result = self._exec(f"head -c 1000 {self._escape_shell_arg(path)} 2>/dev/null")
-        sample_output = _strip_terminal_fence_leaks(sample_result.stdout)
+        try:
+            with open(path, 'rb') as f:
+                sample_bytes = f.read(1000)
+            sample_output = sample_bytes.decode('utf-8', errors='replace')
+        except OSError:
+            sample_output = ''
         if self._is_likely_binary(path, sample_output):
             return ReadResult(
                 is_binary=True, file_size=file_size,
                 error="Binary file — cannot display as text."
             )
-        cat_result = self._exec(f"cat {self._escape_shell_arg(path)}")
-        if cat_result.exit_code != 0:
-            return ReadResult(error=f"Failed to read file: {cat_result.stdout}")
+        try:
+            with open(path) as f:
+                content = f.read()
+        except OSError as e:
+            return ReadResult(error=f"Failed to read file: {e}")
         return ReadResult(
-            content=_strip_terminal_fence_leaks(cat_result.stdout),
+            content=content,
             file_size=file_size,
         )
 
@@ -1000,13 +990,10 @@ class ShellFileOperations(FileOperations):
         if write_result.exit_code != 0:
             return WriteResult(error=f"Failed to write file: {write_result.stdout}")
 
-        # Get bytes written (wc -c is POSIX, works on Linux + macOS)
-        stat_cmd = f"wc -c < {self._escape_shell_arg(path)} 2>/dev/null"
-        stat_result = self._exec(stat_cmd)
-
+        # Get bytes written (stdlib, no shell process)
         try:
-            bytes_written = int(stat_result.stdout.strip())
-        except ValueError:
+            bytes_written = os.path.getsize(path)
+        except OSError:
             bytes_written = len(content.encode('utf-8'))
 
         # Post-write lint with delta refinement.
@@ -1032,11 +1019,7 @@ class ShellFileOperations(FileOperations):
             lint=lint_result.to_dict() if lint_result else None,
             lsp_diagnostics=lsp_diagnostics,
         )
-    
-    # =========================================================================
-    # PATCH Implementation (Replace Mode)
-    # =========================================================================
-    
+
     def patch_replace(self, path: str, old_string: str, new_string: str,
                       replace_all: bool = False) -> PatchResult:
         """
@@ -1546,13 +1529,14 @@ class ShellFileOperations(FileOperations):
                 f"test -d {self._escape_shell_arg(parent)} && echo yes || echo no"
             )
             if "yes" in parent_check.stdout and basename_query:
-                ls_result = self._exec(
-                    f"ls -1 {self._escape_shell_arg(parent)} 2>/dev/null | head -20"
-                )
-                if ls_result.exit_code == 0 and ls_result.stdout.strip():
+                try:
+                    all_entries = os.listdir(parent)
+                except OSError:
+                    all_entries = []
+                if all_entries:
                     lower_q = basename_query.lower()
                     candidates = []
-                    for entry in ls_result.stdout.strip().split('\n'):
+                    for entry in all_entries[:20]:
                         if not entry:
                             continue
                         le = entry.lower()

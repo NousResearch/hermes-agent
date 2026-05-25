@@ -383,56 +383,38 @@ class TestShellFileOpsHelpers:
         assert ops.cwd == "/"
 
     def test_read_file_strips_leaked_terminal_fence_markers(self, mock_env):
-        leaked = (
-            "'\x07__HERMES_FENCE_a9f7b3__\x1b]0;cat "
-            "'/tmp/test/a.py' 2> /dev/null\x07\n"
-            "print('ok')\n"
-            "__HERMES_FENCE_a9f7b3__\x07'\n"
-        )
-
-        def side_effect(command, **kwargs):
-            if command.startswith("wc -c"):
-                return {"output": "12\n", "returncode": 0}
-            if command.startswith("head -c"):
-                return {"output": "print('ok')\n", "returncode": 0}
-            if command.startswith("sed -n"):
-                return {"output": leaked, "returncode": 0}
-            if command.startswith("wc -l"):
-                return {"output": "1\n", "returncode": 0}
-            return {"output": "", "returncode": 0}
-
-        mock_env.execute.side_effect = side_effect
-        ops = ShellFileOperations(mock_env)
-        result = ops.read_file("/tmp/test/a.py")
-
-        assert result.error is None
-        assert "HERMES_FENCE" not in result.content
-        assert "\x1b]" not in result.content
-        assert "\x07" not in result.content
-        assert "     1|print('ok')" in result.content
+        """read_file now uses stdlib, not shell — no fence markers."""
+        import tempfile, os
+        content = "print('ok')\n"
+        
+        with tempfile.NamedTemporaryFile(mode='w', suffix='.py', delete=False) as f:
+            f.write(content)
+            tmppath = f.name
+        
+        try:
+            ops = ShellFileOperations(mock_env)
+            result = ops.read_file(tmppath)
+            assert result.error is None
+            assert "     1|print('ok')" in result.content
+        finally:
+            os.unlink(tmppath)
 
     def test_read_file_raw_strips_leaked_terminal_fence_markers(self, mock_env):
-        leaked = (
-            "__HERMES_FENCE_a9f7b3__\x07'\n"
-            "alpha\n"
-            "\x1b]0;cat '/tmp/test/a.txt'\x07__HERMES_FENCE_a9f7b3__\n"
-        )
-
-        def side_effect(command, **kwargs):
-            if command.startswith("wc -c"):
-                return {"output": "6\n", "returncode": 0}
-            if command.startswith("head -c"):
-                return {"output": "alpha\n", "returncode": 0}
-            if command.startswith("cat "):
-                return {"output": leaked, "returncode": 0}
-            return {"output": "", "returncode": 0}
-
-        mock_env.execute.side_effect = side_effect
-        ops = ShellFileOperations(mock_env)
-        result = ops.read_file_raw("/tmp/test/a.txt")
-
-        assert result.error is None
-        assert result.content == "alpha\n"
+        """read_file_raw now uses stdlib — no fence markers."""
+        import tempfile, os
+        content = "alpha\n"
+        
+        with tempfile.NamedTemporaryFile(mode='w', delete=False) as f:
+            f.write(content)
+            tmppath = f.name
+        
+        try:
+            ops = ShellFileOperations(mock_env)
+            result = ops.read_file_raw(tmppath)
+            assert result.error is None
+            assert result.content == content
+        finally:
+            os.unlink(tmppath)
 
 
 class TestSearchPathValidation:

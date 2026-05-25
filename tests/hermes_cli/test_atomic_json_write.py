@@ -2,6 +2,7 @@
 
 import json
 import os
+import stat
 from pathlib import Path
 from unittest.mock import patch
 
@@ -35,6 +36,14 @@ class TestAtomicJsonWrite:
         atomic_json_write(target, {"new": True})
         result = json.loads(target.read_text())
         assert result == {"new": True}
+
+    @pytest.mark.skipif(os.name != "posix", reason="POSIX file permissions only")
+    def test_new_file_defaults_to_world_readable_mode(self, tmp_path):
+        target = tmp_path / "new.json"
+
+        atomic_json_write(target, {"mode": "default"})
+
+        assert stat.S_IMODE(target.stat().st_mode) == 0o644
 
     def test_preserves_original_on_serialization_error(self, tmp_path):
         target = tmp_path / "data.json"

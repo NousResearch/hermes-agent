@@ -4035,12 +4035,22 @@ def _is_managed_scratch_path(p: Path) -> bool:
 
 
 def _cleanup_workspace(conn: sqlite3.Connection, task_id: str) -> None:
-    """Remove a task's scratch workspace dir and kill its stale tmux session.
+    """Kill the worker's stale tmux session for a completed task.
 
     Called from :func:`complete_task` after the DB transaction commits.
     Best-effort — any error is swallowed so cleanup never blocks task completion.
-    Only ``scratch`` workspaces are removed; ``worktree`` and ``dir`` workspaces
-    are intentionally preserved.
+
+    HISTORICAL NOTE: this function used to also ``shutil.rmtree`` the scratch
+    workspace directory inline. That was unsafe because ``complete_task`` runs
+    inside the worker process itself, with cwd == the scratch dir; removing
+    the directory under the live worker caused every subsequent
+    ``os.getcwd()`` to raise ``FileNotFoundError`` and crash the worker
+    mid-completion (and again every 60 s in the terminal_tool cleanup
+    thread). The scratch dir is now reaped out-of-process by
+    :func:`gc_scratch_workspaces`, which the dispatcher calls on its
+    regular tick — by then the worker is gone and the inode is safe to
+    remove. See PR sahilm-ti/hermes-agent#4 for the symptom belt that
+    complements this root-cause fix.
     """
     try:
         row = conn.execute(
@@ -4074,26 +4084,15 @@ def _cleanup_workspace(conn: sqlite3.Connection, task_id: str) -> None:
                 task_id, path,
             )
             return
-        import shutil
-        wp = Path(path)
-        if wp.is_dir():
-            # Containment guard (#28818): a board's ``default_workdir`` can
-            # pair ``workspace_kind='scratch'`` with a user-supplied path
-            # pointing at a real source tree. Without this check, task
-            # completion would unconditionally ``shutil.rmtree`` that path
-            # and silently delete the user's source data.
-            if _is_managed_scratch_path(wp):
-                shutil.rmtree(wp, ignore_errors=True)
-                _log.debug("Removed scratch workspace: %s", wp)
-            else:
-                _log.warning(
-                    "Refusing to remove out-of-scratch workspace for task %s: %s "
-                    "(workspace_kind='scratch' but path is outside any "
-                    "kanban-managed workspaces root)",
-                    task_id, wp,
-                )
-        # Also kill the tmux session for the worker that owned this task,
-        # if the tmux session is now dead (worker process exited).
+        # NOTE: the scratch dir is NOT removed here. ``complete_task`` (this
+        # function's caller) runs inside the worker process with cwd == the
+        # scratch dir; ``shutil.rmtree``-ing it inline deletes the cwd out from
+        # under the live worker and crashes every subsequent ``os.getcwd()``
+        # (fork PR #6). The dir is reaped out-of-process by
+        # ``gc_scratch_workspaces`` on the dispatcher tick instead — which still
+        # honors the #28818 containment guard against user source trees. We only
+        # kill the now-dead tmux session here, and let a parent's deferred
+        # cleanup proceed (#33774).
         _cleanup_worker_tmux(conn, task_id)
         # After cleaning up this task's workspace, check if any parent
         # tasks now have all children done — their deferred cleanup can
@@ -4141,6 +4140,55 @@ def _try_cleanup_parent_workspaces(conn: sqlite3.Connection, task_id: str) -> No
                 _log.debug("Deferred cleanup: removed parent %s scratch workspace: %s", parent_id, wp)
     except Exception:
         pass  # best-effort
+
+
+def gc_scratch_workspaces(conn: sqlite3.Connection) -> int:
+    """Remove scratch workspace dirs for tasks that have settled.
+
+    Safe to call from the dispatcher (out-of-process from any worker).
+    Only removes scratch dirs whose owning task is in a terminal state
+    (``done``, ``blocked``, ``archived``) AND has no active claim. Returns
+    the count of directories reaped.
+
+    Replaces the inline ``shutil.rmtree`` that used to run inside
+    ``complete_task`` (which deleted the cwd out from under the live
+    worker process — see ``_cleanup_workspace`` docstring).
+    """
+    import shutil
+    rows = conn.execute(
+        "SELECT id, workspace_path FROM tasks "
+        "WHERE workspace_kind = 'scratch' "
+        "  AND workspace_path IS NOT NULL "
+        "  AND status IN ('done', 'blocked', 'archived') "
+        "  AND claim_lock IS NULL"
+    ).fetchall()
+    reaped = 0
+    for row in rows:
+        path = row["workspace_path"]
+        if not path:
+            continue
+        try:
+            wp = Path(path)
+            if wp.is_dir():
+                # Containment guard (#28818): a board's ``default_workdir`` can
+                # pair ``workspace_kind='scratch'`` with a user-supplied path
+                # pointing at a real source tree. Without this check, GC would
+                # unconditionally ``shutil.rmtree`` that path and silently
+                # delete the user's source data.
+                if not _is_managed_scratch_path(wp):
+                    _log.warning(
+                        "gc: refusing to remove out-of-scratch workspace for "
+                        "task %s: %s (workspace_kind='scratch' but path is "
+                        "outside any kanban-managed workspaces root)",
+                        row["id"], wp,
+                    )
+                    continue
+                shutil.rmtree(wp, ignore_errors=True)
+                reaped += 1
+                _log.debug("gc: removed scratch workspace for %s: %s", row["id"], wp)
+        except Exception:
+            pass  # best-effort
+    return reaped
 
 
 def _cleanup_worker_tmux(conn: sqlite3.Connection, task_id: str) -> None:
@@ -6671,6 +6719,14 @@ def _dispatch_once_locked(
         conn, stale_timeout_seconds=stale_timeout_seconds,
     )
     result.crashed = detect_crashed_workers(conn)
+    # Reap scratch workspaces from tasks that have settled. Safe to call
+    # here because the dispatcher is out-of-process from any worker — the
+    # in-process inline rmtree on complete_task was deleting the worker's
+    # own cwd, causing FileNotFoundError storms.
+    try:
+        gc_scratch_workspaces(conn)
+    except Exception:
+        pass  # best-effort
     # detect_crashed_workers stashes protocol-violation auto-blocks on
     # itself so the public list-return stays stable. Pull them into the
     # DispatchResult here so telemetry / tests see the trip.

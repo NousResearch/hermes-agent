@@ -13,6 +13,7 @@ import logging
 import os
 import shutil
 import sqlite3
+import stat
 import sys
 import tempfile
 import time
@@ -37,6 +38,7 @@ _EXCLUDED_DIRS = {
     ".git",             # nested git dirs (profiles shouldn't have these, but safety)
     "node_modules",     # js deps if website/ somehow leaks in
     "backups",          # prior auto-backups — don't nest backups exponentially
+    "browser-cdp-profile",  # live Chrome profile — contains sockets and locked SQLite DBs
     "checkpoints",      # session-local trajectory caches — regenerated per-session,
                         # session-hash-keyed so they don't port to another machine anyway
 }
@@ -83,6 +85,19 @@ def _should_exclude(rel_path: Path) -> bool:
         return True
 
     return False
+
+
+def _is_backupable_file(path: Path) -> bool:
+    """Return True only for regular files.
+
+    ``zipfile.write()`` follows symlinks. Runtime browser profiles can contain
+    symlinks to Unix sockets such as ``SingletonSocket``; following those can
+    block forever. Skip all symlinks and other special files.
+    """
+    try:
+        return stat.S_ISREG(path.lstat().st_mode)
+    except OSError:
+        return False
 
 
 # ---------------------------------------------------------------------------
@@ -174,6 +189,9 @@ def run_backup(args) -> None:
             rel = fpath.relative_to(hermes_root)
 
             if _should_exclude(rel):
+                continue
+
+            if not _is_backupable_file(fpath):
                 continue
 
             # Skip the output zip itself if it happens to be inside hermes root
@@ -727,6 +745,9 @@ def _write_full_zip_backup(out_path: Path, hermes_root: Path) -> Optional[Path]:
                     continue
 
                 if _should_exclude(rel):
+                    continue
+
+                if not _is_backupable_file(fpath):
                     continue
 
                 # Skip the output zip itself if it already exists inside root.

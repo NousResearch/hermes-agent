@@ -3375,6 +3375,12 @@ def _ws_client_is_allowed(ws: "WebSocket") -> bool:
     ``?token=<_SESSION_TOKEN>`` path is the only auth we have, so we
     don't want LAN hosts guessing tokens.
 
+    ``--insecure`` mode: non-loopback binding without an OAuth gate.
+    The operator has explicitly opted out of localhost-only mode, so
+    the loopback-only IP restriction is lifted here too. Without this,
+    ``--insecure`` is a no-op for WebSocket upgrades and every
+    non-loopback client gets 403 even though HTTP requests are allowed.
+
     Gated mode: any peer is allowed — uvicorn's ``proxy_headers=True``
     (enabled when the OAuth gate is active so cookies can pick up
     ``X-Forwarded-Proto``) rewrites ``ws.client.host`` to the
@@ -3384,6 +3390,8 @@ def _ws_client_is_allowed(ws: "WebSocket") -> bool:
     blocks DNS-rebinding here, not the peer IP.
     """
     if getattr(app.state, "auth_required", False):
+        return True
+    if getattr(app.state, "insecure", False):
         return True
     client_host = ws.client.host if ws.client else ""
     if not client_host:
@@ -4904,6 +4912,10 @@ def start_server(
     # PTY child uses to publish events to the dashboard sidebar.
     app.state.bound_host = host
     app.state.bound_port = port
+    # Expose allow_public on app.state so WebSocket security guards can read
+    # it at request time.  Without this, every getattr(app.state, "insecure",
+    # False) call evaluates to False regardless of the flag passed by the user.
+    app.state.insecure = allow_public
 
     if open_browser:
         import webbrowser

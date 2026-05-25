@@ -215,3 +215,43 @@ class TestWebSocketHostOriginGuard:
             },
         ):
             pass
+
+
+class TestInsecureMode:
+    """When --insecure is active, _ws_client_is_allowed must lift the
+    loopback-only IP restriction so that non-loopback clients can connect.
+    start_server() is responsible for writing allow_public to app.state so
+    every runtime guard can read it."""
+
+    def test_non_loopback_client_rejected_without_insecure(self, monkeypatch):
+        """Baseline: a non-loopback peer is blocked in normal mode."""
+        from unittest.mock import MagicMock
+        import hermes_cli.web_server as ws
+
+        monkeypatch.setattr(ws.app.state, "insecure", False, raising=False)
+        mock_ws = MagicMock()
+        mock_ws.client.host = "10.0.0.5"
+        assert not ws._ws_client_is_allowed(mock_ws)
+
+    def test_non_loopback_client_allowed_with_insecure(self, monkeypatch):
+        """With --insecure, any client IP must pass _ws_client_is_allowed."""
+        from unittest.mock import MagicMock
+        import hermes_cli.web_server as ws
+
+        monkeypatch.setattr(ws.app.state, "insecure", True, raising=False)
+        mock_ws = MagicMock()
+        mock_ws.client.host = "10.0.0.5"
+        assert ws._ws_client_is_allowed(mock_ws)
+
+    def test_start_server_writes_insecure_to_app_state(self, monkeypatch):
+        """start_server() must persist allow_public to app.state.insecure so
+        WebSocket guards can read it at request time."""
+        import hermes_cli.web_server as ws
+
+        monkeypatch.setattr("hermes_cli.web_server.uvicorn.run", lambda *a, **kw: None)
+
+        ws.start_server(host="127.0.0.1", port=9119, open_browser=False, allow_public=True)
+        assert ws.app.state.insecure is True
+
+        ws.start_server(host="127.0.0.1", port=9119, open_browser=False, allow_public=False)
+        assert ws.app.state.insecure is False

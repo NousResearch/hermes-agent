@@ -1148,6 +1148,27 @@ def list_diagnostics(
         conn.close()
 
 
+# ---------------------------------------------------------------------------
+# GET /db-info — board/DB resolution diagnostics
+# ---------------------------------------------------------------------------
+
+@router.get("/db-info")
+def get_db_info(
+    board: Optional[str] = Query(None, description="Kanban board slug (omit for current)"),
+):
+    """Return the board/DB resolution chain for the active (or named) board.
+
+    Exposes the same structured information that ``hermes kanban
+    diagnostics`` prints at the top of its fleet output: which board slug
+    was resolved, the absolute path to the ``kanban.db`` file, whether
+    that file exists on disk, and which step of the resolution chain won.
+
+    Useful for dashboard status pages and for operators debugging
+    "why is the CLI reading from a different database than the UI?"
+    """
+    board = _resolve_board(board)
+    return kanban_db.resolve_board_db_info(board=board)
+
 
 # ---------------------------------------------------------------------------
 # Worker visibility — cross-task active-worker list and per-run inspection

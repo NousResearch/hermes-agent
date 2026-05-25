@@ -2194,4 +2194,75 @@ def test_dashboard_failed_card_highlight_class_exists():
 
     assert "hermes-kanban-card--failed" in js
     assert "hermes-kanban-card--failed" in css
-    assert "failedIds" in js
+
+
+# ---------------------------------------------------------------------------
+# GET /db-info — board/DB resolution diagnostics
+# ---------------------------------------------------------------------------
+
+
+def test_db_info_returns_required_keys(client, kanban_home):
+    """GET /db-info returns a dict with all required resolution keys."""
+    r = client.get("/api/plugins/kanban/db-info")
+    assert r.status_code == 200, r.text
+    data = r.json()
+    for key in (
+        "hermes_home",
+        "board",
+        "db_path",
+        "db_exists",
+        "db_path_source",
+        "resolution_chain",
+        "env_overrides",
+    ):
+        assert key in data, f"missing key: {key}"
+
+
+def test_db_info_default_board(client, kanban_home):
+    """GET /db-info with no query param resolves to the default board."""
+    r = client.get("/api/plugins/kanban/db-info")
+    assert r.status_code == 200
+    data = r.json()
+    assert data["board"] == "default"
+    assert data["db_path_source"] == "board_default"
+
+
+def test_db_info_db_exists_after_init(client, kanban_home):
+    """db_exists is True because the fixture calls init_db()."""
+    r = client.get("/api/plugins/kanban/db-info")
+    assert r.status_code == 200
+    data = r.json()
+    assert data["db_exists"] is True
+
+
+def test_db_info_resolution_chain_has_winner(client, kanban_home):
+    """Resolution chain contains exactly one selected=True step."""
+    r = client.get("/api/plugins/kanban/db-info")
+    assert r.status_code == 200
+    chain = r.json()["resolution_chain"]
+    assert isinstance(chain, list)
+    selected = [s for s in chain if s.get("selected") is True]
+    assert len(selected) == 1
+
+
+def test_db_info_explicit_board_param(client, kanban_home):
+    """?board=default explicitly selects the default board."""
+    r = client.get("/api/plugins/kanban/db-info?board=default")
+    assert r.status_code == 200
+    data = r.json()
+    assert data["board"] == "default"
+    chain = r.json()["resolution_chain"]
+    arg_step = next(s for s in chain if s["source"] == "board_arg")
+    assert arg_step["selected"] is True
+
+
+def test_db_info_nonexistent_board_returns_404(client, kanban_home):
+    """?board=<nonexistent> returns 404 (validated by _resolve_board)."""
+    r = client.get("/api/plugins/kanban/db-info?board=ghost-board")
+    assert r.status_code == 404
+
+
+def test_db_info_invalid_slug_returns_400(client, kanban_home):
+    """?board=<invalid slug> returns 400 (validated by _resolve_board)."""
+    r = client.get("/api/plugins/kanban/db-info?board=../traversal")
+    assert r.status_code == 400

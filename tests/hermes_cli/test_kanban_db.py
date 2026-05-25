@@ -3339,3 +3339,178 @@ def test_maybe_emit_scratch_tip_skips_non_scratch_workspaces(kanban_home, caplog
             ).fetchall()
             assert "tip_scratch_workspace" not in [e["kind"] for e in events]
 
+
+# ---------------------------------------------------------------------------
+# resolve_board_db_info — board/DB resolution diagnostics
+# ---------------------------------------------------------------------------
+
+class TestResolveBoardDbInfo:
+    """Unit tests for kanban_db.resolve_board_db_info()."""
+
+    def test_default_board_no_env(self, tmp_path, monkeypatch):
+        """Clean environment → default board, legacy kanban.db path."""
+        home = tmp_path / ".hermes"
+        home.mkdir()
+        monkeypatch.setenv("HERMES_HOME", str(home))
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        for v in ("HERMES_KANBAN_DB", "HERMES_KANBAN_BOARD", "HERMES_KANBAN_HOME"):
+            monkeypatch.delenv(v, raising=False)
+
+        info = kb.resolve_board_db_info()
+
+        assert info["board"] == "default"
+        assert info["db_path"] == str(home / "kanban.db")
+        assert info["db_path_source"] == "board_default"
+        assert info["db_exists"] is False  # DB not yet created
+        assert info["hermes_home"] == str(home)
+        assert "HERMES_KANBAN_DB" not in info["env_overrides"]
+
+    def test_db_exists_after_init(self, tmp_path, monkeypatch):
+        """db_exists flips to True once init_db has created the file."""
+        home = tmp_path / ".hermes"
+        home.mkdir()
+        monkeypatch.setenv("HERMES_HOME", str(home))
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        for v in ("HERMES_KANBAN_DB", "HERMES_KANBAN_BOARD", "HERMES_KANBAN_HOME"):
+            monkeypatch.delenv(v, raising=False)
+
+        kb.init_db()
+        info = kb.resolve_board_db_info()
+
+        assert info["db_exists"] is True
+        assert info["board"] == "default"
+
+    def test_env_hermes_kanban_db_wins(self, tmp_path, monkeypatch):
+        """HERMES_KANBAN_DB env var overrides all other path resolution."""
+        home = tmp_path / ".hermes"
+        home.mkdir()
+        custom_db = tmp_path / "custom.db"
+        custom_db.write_text("")  # make it exist
+        monkeypatch.setenv("HERMES_HOME", str(home))
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        monkeypatch.setenv("HERMES_KANBAN_DB", str(custom_db))
+        monkeypatch.delenv("HERMES_KANBAN_BOARD", raising=False)
+
+        info = kb.resolve_board_db_info()
+
+        assert info["db_path"] == str(custom_db)
+        assert info["db_path_source"] == "env_HERMES_KANBAN_DB"
+        assert info["db_exists"] is True
+        assert "HERMES_KANBAN_DB" in info["env_overrides"]
+
+    def test_env_kanban_board_wins_when_board_exists(self, tmp_path, monkeypatch):
+        """HERMES_KANBAN_BOARD selects a non-default board when that board exists."""
+        home = tmp_path / ".hermes"
+        home.mkdir()
+        monkeypatch.setenv("HERMES_HOME", str(home))
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        monkeypatch.delenv("HERMES_KANBAN_DB", raising=False)
+        monkeypatch.delenv("HERMES_KANBAN_HOME", raising=False)
+
+        # Create the named board so board_exists() returns True.
+        kb.create_board("myproject", name="My Project")
+        monkeypatch.setenv("HERMES_KANBAN_BOARD", "myproject")
+
+        info = kb.resolve_board_db_info()
+
+        assert info["board"] == "myproject"
+        assert info["db_path_source"] == "board_named"
+        chain_sources = [s["source"] for s in info["resolution_chain"]]
+        assert "env_HERMES_KANBAN_BOARD" in chain_sources
+        selected = next(s for s in info["resolution_chain"] if s["source"] == "env_HERMES_KANBAN_BOARD")
+        assert selected["selected"] is True
+
+    def test_env_kanban_board_nonexistent_falls_through(self, tmp_path, monkeypatch):
+        """HERMES_KANBAN_BOARD pointing at a non-existent board falls back to default."""
+        home = tmp_path / ".hermes"
+        home.mkdir()
+        monkeypatch.setenv("HERMES_HOME", str(home))
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        monkeypatch.delenv("HERMES_KANBAN_DB", raising=False)
+        monkeypatch.delenv("HERMES_KANBAN_HOME", raising=False)
+        monkeypatch.setenv("HERMES_KANBAN_BOARD", "ghost-board")
+
+        info = kb.resolve_board_db_info()
+
+        assert info["board"] == "default"
+        chain = info["resolution_chain"]
+        env_step = next(s for s in chain if s["source"] == "env_HERMES_KANBAN_BOARD")
+        assert env_step["selected"] is False
+
+    def test_explicit_board_arg_wins(self, tmp_path, monkeypatch):
+        """Explicit board= argument takes precedence over env vars."""
+        home = tmp_path / ".hermes"
+        home.mkdir()
+        monkeypatch.setenv("HERMES_HOME", str(home))
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        monkeypatch.delenv("HERMES_KANBAN_DB", raising=False)
+        monkeypatch.delenv("HERMES_KANBAN_HOME", raising=False)
+        monkeypatch.setenv("HERMES_KANBAN_BOARD", "some-other")
+
+        kb.create_board("explicit-board", name="Explicit Board")
+        info = kb.resolve_board_db_info(board="explicit-board")
+
+        assert info["board"] == "explicit-board"
+        chain = info["resolution_chain"]
+        arg_step = next(s for s in chain if s["source"] == "board_arg")
+        assert arg_step["selected"] is True
+
+    def test_resolution_chain_structure(self, tmp_path, monkeypatch):
+        """Resolution chain is a list of dicts with required keys."""
+        home = tmp_path / ".hermes"
+        home.mkdir()
+        monkeypatch.setenv("HERMES_HOME", str(home))
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        for v in ("HERMES_KANBAN_DB", "HERMES_KANBAN_BOARD", "HERMES_KANBAN_HOME"):
+            monkeypatch.delenv(v, raising=False)
+
+        info = kb.resolve_board_db_info()
+
+        chain = info["resolution_chain"]
+        assert isinstance(chain, list)
+        assert len(chain) >= 1
+        for step in chain:
+            assert "source" in step
+            assert "selected" in step
+            assert isinstance(step["selected"], bool)
+        # Exactly one step is selected.
+        selected = [s for s in chain if s["selected"]]
+        assert len(selected) == 1
+
+    def test_current_file_wins_when_board_exists(self, tmp_path, monkeypatch):
+        """<root>/kanban/current points at a valid board → that board wins."""
+        home = tmp_path / ".hermes"
+        home.mkdir()
+        monkeypatch.setenv("HERMES_HOME", str(home))
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        monkeypatch.delenv("HERMES_KANBAN_DB", raising=False)
+        monkeypatch.delenv("HERMES_KANBAN_BOARD", raising=False)
+        monkeypatch.delenv("HERMES_KANBAN_HOME", raising=False)
+
+        kb.create_board("teamboard", name="Team Board")
+        kb.set_current_board("teamboard")
+
+        info = kb.resolve_board_db_info()
+
+        assert info["board"] == "teamboard"
+        chain = info["resolution_chain"]
+        cur_step = next(s for s in chain if s["source"] == "current_file")
+        assert cur_step["selected"] is True
+
+    def test_required_top_level_keys_present(self, tmp_path, monkeypatch):
+        """All documented keys are present in the returned dict."""
+        home = tmp_path / ".hermes"
+        home.mkdir()
+        monkeypatch.setenv("HERMES_HOME", str(home))
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        for v in ("HERMES_KANBAN_DB", "HERMES_KANBAN_BOARD", "HERMES_KANBAN_HOME"):
+            monkeypatch.delenv(v, raising=False)
+
+        info = kb.resolve_board_db_info()
+
+        for key in (
+            "hermes_home", "board", "db_path", "db_exists",
+            "db_path_source", "resolution_chain", "env_overrides",
+        ):
+            assert key in info, f"missing key: {key}"
+

@@ -1667,6 +1667,31 @@ def _cmd_diagnostics(args: argparse.Namespace) -> int:
 
     diag_config = kd.config_from_runtime_config(load_config())
 
+    # In fleet mode, always show the board/DB resolution summary first so
+    # operators know which database is being read. Suppressed in JSON mode
+    # (board_info is included in the JSON output instead) and in single-task
+    # mode (resolution is not ambiguous when a specific task is requested).
+    if not getattr(args, "task", None):
+        board_info = kb.resolve_board_db_info()
+        if getattr(args, "json", False):
+            # board_info will be merged into the JSON payload below.
+            _board_info_for_json = board_info
+        else:
+            _board_info_for_json = None
+            exists_mark = "✓" if board_info["db_exists"] else "✗ (not found)"
+            print(
+                f"Board: {board_info['board']}  "
+                f"DB: {board_info['db_path']}  [{exists_mark}]"
+            )
+            if board_info["env_overrides"]:
+                overrides = "  ".join(
+                    f"{k}={v}" for k, v in board_info["env_overrides"].items()
+                )
+                print(f"  env: {overrides}")
+            print()
+    else:
+        _board_info_for_json = None
+
     with kb.connect() as conn:
         # Either one-task mode or fleet mode.
         if getattr(args, "task", None):
@@ -1740,14 +1765,18 @@ def _cmd_diagnostics(args: argparse.Namespace) -> int:
                 }
 
     if getattr(args, "json", False):
-        out_json = [
-            {
-                "task_id": tid,
-                **meta.get(tid, {}),
-                "diagnostics": [d.to_dict() for d in dl],
-            }
-            for tid, dl in diags_by_task.items()
-        ]
+        out_json: dict = {
+            "tasks": [
+                {
+                    "task_id": tid,
+                    **meta.get(tid, {}),
+                    "diagnostics": [d.to_dict() for d in dl],
+                }
+                for tid, dl in diags_by_task.items()
+            ]
+        }
+        if _board_info_for_json is not None:
+            out_json["board_info"] = _board_info_for_json
         print(json.dumps(out_json, indent=2, ensure_ascii=False))
         return 0
 

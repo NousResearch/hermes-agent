@@ -595,6 +595,179 @@ def remove_board(slug: str, *, archive: bool = True) -> dict:
         return {"slug": normed, "action": "deleted", "new_path": ""}
 
 
+def resolve_board_db_info(board: Optional[str] = None) -> dict:
+    """Return a structured description of the board/DB resolution chain.
+
+    Mirrors the resolution logic of :func:`get_current_board` and
+    :func:`kanban_db_path` step by step, so operators can answer
+    "which database is the CLI actually reading from?" without
+    manually inspecting environment variables and the filesystem.
+
+    Returned keys:
+
+    ``hermes_home``
+        Absolute path to the kanban root (output of :func:`kanban_home`).
+    ``board``
+        The resolved board slug.
+    ``db_path``
+        Absolute path to the ``kanban.db`` the connection would open.
+    ``db_exists``
+        Whether ``db_path`` exists on disk right now.
+    ``db_path_source``
+        Which resolution step determined ``db_path``:
+        ``"env_HERMES_KANBAN_DB"`` | ``"board_default"`` | ``"board_named"``.
+    ``resolution_chain``
+        Ordered list of steps, each a dict with ``source``, ``value``
+        (what that source held, or ``None``), and ``selected`` (True for
+        the winning step). Steps after the winner are omitted.
+    ``env_overrides``
+        Kanban-related env vars that are currently set (empty values excluded).
+    """
+    home = kanban_home()
+
+    env_overrides: dict[str, str] = {}
+    for var in (
+        "HERMES_KANBAN_DB",
+        "HERMES_KANBAN_BOARD",
+        "HERMES_KANBAN_HOME",
+        "HERMES_KANBAN_WORKSPACES_ROOT",
+        "HERMES_HOME",
+    ):
+        val = os.environ.get(var, "").strip()
+        if val:
+            env_overrides[var] = val
+
+    chain: list[dict] = []
+    resolved_board: str
+
+    if board is not None:
+        # Explicit board= argument — highest precedence.
+        try:
+            normed = _normalize_board_slug(board)
+        except ValueError as exc:
+            chain.append({
+                "source": "board_arg",
+                "value": board,
+                "selected": False,
+                "error": str(exc),
+            })
+            normed = None
+        else:
+            chain.append({
+                "source": "board_arg",
+                "value": normed,
+                "selected": True,
+            })
+        resolved_board = normed or DEFAULT_BOARD
+    else:
+        chain.append({"source": "board_arg", "value": None, "selected": False})
+
+        # HERMES_KANBAN_BOARD env var.
+        env_board = os.environ.get("HERMES_KANBAN_BOARD", "").strip()
+        env_board_won = False
+        if env_board:
+            try:
+                normed_env = _normalize_board_slug(env_board)
+                if normed_env and board_exists(normed_env):
+                    chain.append({
+                        "source": "env_HERMES_KANBAN_BOARD",
+                        "value": normed_env,
+                        "selected": True,
+                    })
+                    resolved_board = normed_env
+                    env_board_won = True
+                else:
+                    chain.append({
+                        "source": "env_HERMES_KANBAN_BOARD",
+                        "value": env_board,
+                        "selected": False,
+                        "note": "board does not exist on disk",
+                    })
+            except ValueError as exc:
+                chain.append({
+                    "source": "env_HERMES_KANBAN_BOARD",
+                    "value": env_board,
+                    "selected": False,
+                    "error": str(exc),
+                })
+        else:
+            chain.append({
+                "source": "env_HERMES_KANBAN_BOARD",
+                "value": None,
+                "selected": False,
+            })
+
+        if not env_board_won:
+            # <root>/kanban/current file.
+            current_file = current_board_path()
+            current_val: Optional[str] = None
+            current_won = False
+            try:
+                if current_file.exists():
+                    raw = current_file.read_text(encoding="utf-8").strip()
+                    if raw:
+                        try:
+                            normed_cur = _normalize_board_slug(raw)
+                            if normed_cur and board_exists(normed_cur):
+                                current_val = normed_cur
+                                current_won = True
+                            else:
+                                current_val = raw
+                        except ValueError:
+                            current_val = raw
+            except OSError:
+                pass
+
+            if current_won:
+                chain.append({
+                    "source": "current_file",
+                    "value": current_val,
+                    "file": str(current_file),
+                    "selected": True,
+                })
+                resolved_board = current_val  # type: ignore[assignment]
+            else:
+                chain.append({
+                    "source": "current_file",
+                    "value": current_val,
+                    "file": str(current_file),
+                    "selected": False,
+                    "note": (
+                        "file absent or board no longer exists"
+                        if current_val else "file absent"
+                    ),
+                })
+                # Default board — final fallback.
+                chain.append({
+                    "source": "default",
+                    "value": DEFAULT_BOARD,
+                    "selected": True,
+                })
+                resolved_board = DEFAULT_BOARD
+
+    # Resolve DB path — same logic as kanban_db_path().
+    db_env = os.environ.get("HERMES_KANBAN_DB", "").strip()
+    if db_env:
+        db_path = Path(db_env).expanduser()
+        db_path_source = "env_HERMES_KANBAN_DB"
+    elif resolved_board == DEFAULT_BOARD:
+        db_path = home / "kanban.db"
+        db_path_source = "board_default"
+    else:
+        db_path = board_dir(resolved_board) / "kanban.db"
+        db_path_source = "board_named"
+
+    return {
+        "hermes_home": str(home),
+        "board": resolved_board,
+        "db_path": str(db_path),
+        "db_exists": db_path.is_file(),
+        "db_path_source": db_path_source,
+        "resolution_chain": chain,
+        "env_overrides": env_overrides,
+    }
+
+
 # ---------------------------------------------------------------------------
 # Data classes
 # ---------------------------------------------------------------------------

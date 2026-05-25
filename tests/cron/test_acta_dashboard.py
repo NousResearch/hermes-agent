@@ -363,14 +363,14 @@ def test_lead_brief_is_clickable_and_read_state_enabled(tmp_path: Path):
         latest_time=item.latest_time,
         status=item.status,
         excerpt=item.excerpt,
-        artifact_url="https://acta.example/lead.html",
+        artifact_url="https://acta.imperatr.com/r/lead/detail.html?exp=1&sig=abc",
     )
 
     html = render_dashboard([linked_item])
 
     assert '<article class="lead readable unread"' in html
-    assert 'data-open-url="https://acta.example/lead.html"' in html
-    assert '<a class="row-open-overlay" href="https://acta.example/lead.html" aria-label="Open briefing: Lead Brief"></a>' in html
+    assert 'data-open-url="https://acta.imperatr.com/r/lead/detail.html?exp=1&amp;sig=abc"' in html
+    assert '<a class="row-open-overlay" href="https://acta.imperatr.com/r/lead/detail.html?exp=1&amp;sig=abc" aria-label="Open briefing: Lead Brief"></a>' in html
     assert 'aria-label="Open briefing: Lead Brief"' in html
     assert 'data-read-key="lead:' in html
     assert '<span class="read-state">UNREAD</span>' in html
@@ -407,7 +407,7 @@ def test_feed_rows_are_keyboard_accessible_signed_links():
         latest_time=datetime(2026, 5, 19, 10, tzinfo=timezone.utc),
         status="fresh",
         excerpt="Lead briefing.",
-        artifact_url="https://acta.example/lead.html",
+        artifact_url="https://acta.imperatr.com/r/lead/detail.html?exp=1&sig=lead",
     )
     second = item_cls(
         job_id="second",
@@ -420,15 +420,139 @@ def test_feed_rows_are_keyboard_accessible_signed_links():
         latest_time=datetime(2026, 5, 19, 9, tzinfo=timezone.utc),
         status="fresh",
         excerpt="Follow-up briefing.",
-        artifact_url="https://acta.example/second.html?exp=1&sig=abc",
+        artifact_url="https://acta.imperatr.com/r/second/detail.html?exp=1&sig=abc",
     )
 
     html = render_dashboard([lead, second], generated_at=datetime(2026, 5, 19, 11, tzinfo=timezone.utc))
 
     assert '<section class="brief-row readable unread fresh"' in html
-    assert 'data-open-url="https://acta.example/second.html?exp=1&amp;sig=abc"' in html
-    assert '<a class="row-open-overlay" href="https://acta.example/second.html?exp=1&amp;sig=abc" aria-label="Open briefing: Second Brief"></a>' in html
+    assert 'data-open-url="https://acta.imperatr.com/r/second/detail.html?exp=1&amp;sig=abc"' in html
+    assert '<a class="row-open-overlay" href="https://acta.imperatr.com/r/second/detail.html?exp=1&amp;sig=abc" aria-label="Open briefing: Second Brief"></a>' in html
     assert 'aria-label="Open briefing: Second Brief"' in html
+
+
+def test_today_dashboard_requires_signed_acta_artifact_urls_for_open_overlays():
+    item_cls = collect_situation_items.__globals__["CronSituationItem"]
+    signed = item_cls(
+        job_id="signed",
+        name="Signed Brief",
+        schedule="daily",
+        deliver="telegram",
+        enabled=True,
+        latest_md=Path("/tmp/2026-05-19_10-00-00.md"),
+        latest_html=None,
+        latest_time=datetime(2026, 5, 19, 10, tzinfo=timezone.utc),
+        status="fresh",
+        excerpt="Valid signed detail.",
+        artifact_url="https://acta.imperatr.com/r/signed/detail.html?exp=1&sig=abc",
+        telegram_url="javascript:alert(1)",
+    )
+    unsigned = item_cls(
+        job_id="unsigned",
+        name="Unsigned Brief",
+        schedule="daily",
+        deliver="telegram",
+        enabled=True,
+        latest_md=Path("/tmp/2026-05-19_09-00-00.md"),
+        latest_html=None,
+        latest_time=datetime(2026, 5, 19, 9, tzinfo=timezone.utc),
+        status="fresh",
+        excerpt="Unsigned same-host detail should stay visible but not clickable.",
+        artifact_url="https://acta.imperatr.com/r/unsigned/detail.html?exp=1",
+    )
+    unsafe = item_cls(
+        job_id="unsafe",
+        name="Unsafe Brief",
+        schedule="daily",
+        deliver="telegram",
+        enabled=True,
+        latest_md=Path("/tmp/2026-05-19_08-00-00.md"),
+        latest_html=None,
+        latest_time=datetime(2026, 5, 19, 8, tzinfo=timezone.utc),
+        status="fresh",
+        excerpt="Protocol-relative detail must not become a row overlay.",
+        artifact_url="//evil.example/path?sig=abc",
+    )
+    signed_root = item_cls(
+        job_id="signed-root",
+        name="Signed Root Brief",
+        schedule="daily",
+        deliver="telegram",
+        enabled=True,
+        latest_md=Path("/tmp/2026-05-19_07-00-00.md"),
+        latest_html=None,
+        latest_time=datetime(2026, 5, 19, 7, tzinfo=timezone.utc),
+        status="fresh",
+        excerpt="Root-relative signed detail remains allowed.",
+        artifact_url="/r/root/detail.html?exp=1&sig=root",
+    )
+
+    html = render_dashboard([signed, unsigned, unsafe, signed_root], generated_at=datetime(2026, 5, 19, 11, tzinfo=timezone.utc))
+
+    assert 'data-open-url="https://acta.imperatr.com/r/signed/detail.html?exp=1&amp;sig=abc"' in html
+    assert 'href="https://acta.imperatr.com/r/signed/detail.html?exp=1&amp;sig=abc"' in html
+    assert 'data-open-url="/r/root/detail.html?exp=1&amp;sig=root"' in html
+    assert 'href="/r/root/detail.html?exp=1&amp;sig=root"' in html
+    assert "Unsigned Brief" in html
+    assert "Unsafe Brief" in html
+    assert "https://acta.imperatr.com/r/unsigned/detail.html?exp=1" not in html
+    assert "evil.example" not in html
+    assert "javascript:alert" not in html
+    assert "ASK TELEGRAM" not in html
+
+
+def test_today_dashboard_allows_only_safe_absolute_telegram_followup_links():
+    item_cls = collect_situation_items.__globals__["CronSituationItem"]
+    lead = item_cls(
+        job_id="lead",
+        name="Lead Brief",
+        schedule="daily",
+        deliver="telegram",
+        enabled=True,
+        latest_md=Path("/tmp/2026-05-19_10-00-00.md"),
+        latest_html=None,
+        latest_time=datetime(2026, 5, 19, 10, tzinfo=timezone.utc),
+        status="fresh",
+        excerpt="Lead with valid follow-up.",
+        artifact_url="https://acta.imperatr.com/r/lead/detail.html?exp=1&sig=lead",
+        telegram_url="https://t.me/c/3566991387/86",
+    )
+    invalid = item_cls(
+        job_id="invalid-followup",
+        name="Invalid Follow-up Brief",
+        schedule="daily",
+        deliver="telegram",
+        enabled=True,
+        latest_md=Path("/tmp/2026-05-19_09-00-00.md"),
+        latest_html=None,
+        latest_time=datetime(2026, 5, 19, 9, tzinfo=timezone.utc),
+        status="fresh",
+        excerpt="Invalid follow-up should not render an href.",
+        artifact_url="https://acta.imperatr.com/r/invalid/detail.html?exp=1&sig=invalid",
+        telegram_url="/c/3566991387/86",
+    )
+    unsafe = item_cls(
+        job_id="unsafe-followup",
+        name="Unsafe Follow-up Brief",
+        schedule="daily",
+        deliver="telegram",
+        enabled=True,
+        latest_md=Path("/tmp/2026-05-19_08-00-00.md"),
+        latest_html=None,
+        latest_time=datetime(2026, 5, 19, 8, tzinfo=timezone.utc),
+        status="fresh",
+        excerpt="Unsafe follow-up should not render an href.",
+        artifact_url="https://acta.imperatr.com/r/unsafe/detail.html?exp=1&sig=unsafe",
+        telegram_url="javascript:alert(1)",
+    )
+
+    html = render_dashboard([lead, invalid, unsafe], generated_at=datetime(2026, 5, 19, 11, tzinfo=timezone.utc))
+
+    assert 'href="https://t.me/c/3566991387/86"' in html
+    assert "Invalid Follow-up Brief" in html
+    assert "Unsafe Follow-up Brief" in html
+    assert 'href="/c/3566991387/86"' not in html
+    assert "javascript:alert" not in html
 
 
 def test_disabled_today_rows_do_not_get_keyboard_open_overlay():
@@ -769,6 +893,42 @@ def test_jobs_subpage_shows_active_relevant_last_runs(tmp_path: Path):
     assert "2026-05-19T08" in html
     assert "Disabled Brief" not in html
     assert "Hidden Brief" not in html
+
+
+def test_jobs_subpage_suppresses_unsafe_thread_links():
+    item_cls = collect_situation_items.__globals__["CronSituationItem"]
+    valid = item_cls(
+        job_id="valid",
+        name="Valid Thread Brief",
+        schedule="daily",
+        deliver="telegram",
+        enabled=True,
+        latest_md=Path("/tmp/2026-05-19_10-00-00.md"),
+        latest_html=None,
+        latest_time=datetime(2026, 5, 19, 10, tzinfo=timezone.utc),
+        status="fresh",
+        excerpt="Valid thread.",
+        telegram_url="https://t.me/c/3566991387/86",
+    )
+    unsafe = item_cls(
+        job_id="unsafe",
+        name="Unsafe Thread Brief",
+        schedule="daily",
+        deliver="telegram",
+        enabled=True,
+        latest_md=Path("/tmp/2026-05-19_09-00-00.md"),
+        latest_html=None,
+        latest_time=datetime(2026, 5, 19, 9, tzinfo=timezone.utc),
+        status="fresh",
+        excerpt="Unsafe thread.",
+        telegram_url="javascript:alert(1)",
+    )
+
+    html = render_jobs_page([valid, unsafe], generated_at=datetime(2026, 5, 19, 11, tzinfo=timezone.utc))
+
+    assert 'href="https://t.me/c/3566991387/86"' in html
+    assert "Unsafe Thread Brief" in html
+    assert "javascript:alert" not in html
 
 
 def test_outputs_page_uses_v9_shell_and_signed_source_rows():

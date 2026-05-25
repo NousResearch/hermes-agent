@@ -550,8 +550,9 @@ def _status_class(item: CronSituationItem) -> str:
 
 
 def _telegram_link_html(item: CronSituationItem, label: str = "THREAD") -> str:
-    if not item.telegram_url:
+    if not _is_safe_telegram_url(item.telegram_url):
         return ""
+    assert item.telegram_url is not None
     return (
         f' · <a class="thread-link" href="{html.escape(item.telegram_url, quote=True)}" '
         f'target="_blank" rel="noopener">{html.escape(label)}</a>'
@@ -701,11 +702,13 @@ def render_dashboard(
         age = _age_label(item.latest_time, now)
         confidence = _confidence_label(item, now)
         row_signal = _row_signal(item)
-        href = html.escape(item.artifact_url, quote=True) if item.enabled and item.artifact_url else ""
+        artifact_url = item.artifact_url if item.enabled and _is_safe_signed_acta_artifact_url(item.artifact_url) else None
+        href = html.escape(artifact_url, quote=True) if artifact_url else ""
         open_label = "OPEN" if href else "NO PAGE"
+        telegram_url = item.telegram_url if _is_safe_telegram_url(item.telegram_url) else None
         ask_link = (
-            f'<a class="ask-label" href="{html.escape(item.telegram_url, quote=True)}" target="_blank" rel="noopener">ASK</a>'
-            if item.telegram_url
+            f'<a class="ask-label" href="{html.escape(telegram_url, quote=True)}" target="_blank" rel="noopener">ASK</a>'
+            if telegram_url
             else ""
         )
         read_key = html.escape(_read_key(item), quote=True)
@@ -754,16 +757,22 @@ def render_dashboard(
 
     lead_title = lead_item.name if lead_item else "No briefing output yet"
     lead_excerpt = lead_item.excerpt if lead_item else "Acta is waiting for the next generated briefing packet."
-    lead_href = html.escape(lead_item.artifact_url, quote=True) if lead_item and lead_item.enabled and lead_item.artifact_url else ""
+    lead_artifact_url = (
+        lead_item.artifact_url
+        if lead_item and lead_item.enabled and _is_safe_signed_acta_artifact_url(lead_item.artifact_url)
+        else None
+    )
+    lead_href = html.escape(lead_artifact_url, quote=True) if lead_artifact_url else ""
     lead_href_attr = f' data-open-url="{lead_href}"' if lead_href else ' aria-disabled="true"'
     lead_open_overlay = (
         f'<a class="row-open-overlay" href="{lead_href}" aria-label="Open briefing: {html.escape(lead_item.name, quote=True)}"></a>'
         if lead_item and lead_href
         else ""
     )
+    lead_telegram_url = lead_item.telegram_url if lead_item and _is_safe_telegram_url(lead_item.telegram_url) else None
     lead_ask_link = (
-        f'<a class="ask-label" href="{html.escape(lead_item.telegram_url, quote=True)}" target="_blank" rel="noopener">ASK TELEGRAM</a>'
-        if lead_item and lead_item.telegram_url
+        f'<a class="ask-label" href="{html.escape(lead_telegram_url, quote=True)}" target="_blank" rel="noopener">ASK TELEGRAM</a>'
+        if lead_telegram_url
         else ""
     )
     lead_read_key = html.escape(_read_key(lead_item), quote=True) if lead_item else ""

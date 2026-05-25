@@ -181,8 +181,9 @@ class TestProviderEnvBlocklist:
             "HERMES_DASHBOARD_SESSION_TOKEN": "dashboard-session-secret",
             "BROWSERBASE_PROJECT_ID": "bb-project",
             "ELEVENLABS_API_KEY": "el-secret",
-            "GITHUB_TOKEN": "ghp_secret",
-            "GH_TOKEN": "gh_alias_secret",
+            # NOTE: GH_TOKEN / GITHUB_TOKEN are intentionally NOT in this list —
+            # they're general gh CLI / git auth vars and must pass through to
+            # subprocesses (see test_gh_and_github_token_not_blocklisted).
             "GATEWAY_ALLOW_ALL_USERS": "true",
             "GATEWAY_ALLOWED_USERS": "alice,bob",
             "MODAL_TOKEN_ID": "modal-id",
@@ -367,7 +368,7 @@ class TestBlocklistCoverage:
             "EMAIL_HOME_ADDRESS_NAME",
             "HERMES_DASHBOARD_SESSION_TOKEN",
             "GATEWAY_ALLOWED_USERS",
-            "GH_TOKEN",
+            # GH_TOKEN intentionally excluded — see test_gh_and_github_token_not_blocklisted
             "GITHUB_APP_ID",
             "GITHUB_APP_PRIVATE_KEY_PATH",
             "GITHUB_APP_INSTALLATION_ID",

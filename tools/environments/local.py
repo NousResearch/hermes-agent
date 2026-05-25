@@ -178,7 +178,14 @@ def _build_provider_env_blocklist() -> frozenset:
         "EMAIL_HOME_ADDRESS_NAME",
         "HERMES_DASHBOARD_SESSION_TOKEN",
         "GATEWAY_ALLOWED_USERS",
-        "GH_TOKEN",
+        # NOTE: GH_TOKEN / GITHUB_TOKEN are intentionally NOT blocklisted —
+        # they're the standard gh CLI / git auth env vars used by every git
+        # remote helper, CI job, and developer machine. Stripping them from
+        # terminal subprocesses by default breaks `gh pr create`, `git push`,
+        # `gh auth status`, etc. The Copilot provider deliberately doesn't
+        # list them in api_key_env_vars (see hermes_cli/auth.py) for the same
+        # reason. Copilot auth still finds them via COPILOT_ENV_VARS in
+        # hermes_cli/copilot_auth.py.
         "GITHUB_APP_ID",
         "GITHUB_APP_PRIVATE_KEY_PATH",
         "GITHUB_APP_INSTALLATION_ID",

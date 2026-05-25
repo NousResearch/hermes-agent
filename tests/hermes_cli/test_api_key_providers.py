@@ -68,7 +68,11 @@ class TestProviderRegistry:
 
     def test_copilot_env_vars(self):
         pconfig = PROVIDER_REGISTRY["copilot"]
-        assert pconfig.api_key_env_vars == ("COPILOT_GITHUB_TOKEN", "GH_TOKEN", "GITHUB_TOKEN")
+        # GH_TOKEN / GITHUB_TOKEN removed from api_key_env_vars so they don't
+        # propagate into the subprocess env blocklist (they're general gh CLI
+        # / git auth vars, not Copilot-only credentials). Copilot's own lookup
+        # via COPILOT_ENV_VARS in copilot_auth.py still falls back to them.
+        assert pconfig.api_key_env_vars == ("COPILOT_GITHUB_TOKEN",)
         assert pconfig.base_url_env_var == "COPILOT_API_BASE_URL"
 
     def test_kimi_env_vars(self):

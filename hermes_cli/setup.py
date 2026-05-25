@@ -19,7 +19,7 @@ import shutil
 import sys
 import copy
 from pathlib import Path
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, Tuple
 
 from hermes_cli.nous_subscription import get_nous_subscription_features
 from tools.tool_backend_helpers import managed_nous_tools_enabled
@@ -2211,7 +2211,19 @@ def _model_section_has_credentials(config: dict) -> bool:
         PROVIDER_REGISTRY = {}  # type: ignore[assignment]
 
     def _has_key(pconfig) -> bool:
-        for env_var in pconfig.api_key_env_vars:
+        env_vars: Tuple[str, ...] = pconfig.api_key_env_vars
+        # Copilot deliberately scopes api_key_env_vars to COPILOT_GITHUB_TOKEN
+        # so the subprocess env blocklist doesn't strip GH_TOKEN / GITHUB_TOKEN.
+        # But when the user has explicitly chosen copilot in config, those
+        # generic GitHub tokens DO count as valid copilot credentials — extend
+        # the lookup to the full COPILOT_ENV_VARS precedence list.
+        if pconfig.id == "copilot":
+            try:
+                from hermes_cli.copilot_auth import COPILOT_ENV_VARS
+                env_vars = COPILOT_ENV_VARS
+            except Exception:
+                pass
+        for env_var in env_vars:
             # CLAUDE_CODE_OAUTH_TOKEN is set by Claude Code itself, not by
             # the user — mirrors is_provider_explicitly_configured in auth.py.
             if env_var == "CLAUDE_CODE_OAUTH_TOKEN":

@@ -215,7 +215,16 @@ PROVIDER_REGISTRY: Dict[str, ProviderConfig] = {
         name="GitHub Copilot",
         auth_type="api_key",
         inference_base_url=DEFAULT_GITHUB_MODELS_BASE_URL,
-        api_key_env_vars=("COPILOT_GITHUB_TOKEN", "GH_TOKEN", "GITHUB_TOKEN"),
+        # NOTE: deliberately scoped to COPILOT_GITHUB_TOKEN only. GH_TOKEN /
+        # GITHUB_TOKEN are general-purpose gh CLI / git auth vars (used by every
+        # developer machine, CI job, and git remote helper) — listing them here
+        # would propagate them into _HERMES_PROVIDER_ENV_BLOCKLIST in
+        # tools/environments/local.py and silently strip them from every
+        # terminal subprocess, breaking `gh pr create`, `git push`, etc. for
+        # kanban workers. Copilot's own lookup precedence in copilot_auth.py
+        # (COPILOT_ENV_VARS) still falls back to GH_TOKEN / GITHUB_TOKEN, so
+        # users with a generic GitHub token are unaffected.
+        api_key_env_vars=("COPILOT_GITHUB_TOKEN",),
         base_url_env_var="COPILOT_API_BASE_URL",
     ),
     "copilot-acp": ProviderConfig(

@@ -217,6 +217,44 @@ class TestTerminalIntegration:
         finally:
             os.environ.pop(blocked_var, None)
 
+    def test_gh_and_github_token_not_blocklisted(self):
+        """Regression for t_e9b3a894: GH_TOKEN / GITHUB_TOKEN are general gh
+        CLI / git auth vars (not Hermes-managed provider credentials) and
+        must reach terminal subprocesses by default so workers can run
+        `gh pr create`, `git push`, etc. without per-profile env_passthrough
+        config. Only COPILOT_GITHUB_TOKEN should be in the Copilot provider
+        blocklist."""
+        from tools.environments.local import (
+            _sanitize_subprocess_env,
+            _HERMES_PROVIDER_ENV_BLOCKLIST,
+        )
+
+        assert "GH_TOKEN" not in _HERMES_PROVIDER_ENV_BLOCKLIST
+        assert "GITHUB_TOKEN" not in _HERMES_PROVIDER_ENV_BLOCKLIST
+        assert "COPILOT_GITHUB_TOKEN" in _HERMES_PROVIDER_ENV_BLOCKLIST
+
+        env = {
+            "GH_TOKEN": "ghp_test",
+            "GITHUB_TOKEN": "ghs_test",
+            "COPILOT_GITHUB_TOKEN": "copilot_secret",
+            "PATH": "/usr/bin",
+        }
+        result = _sanitize_subprocess_env(env)
+        assert result.get("GH_TOKEN") == "ghp_test"
+        assert result.get("GITHUB_TOKEN") == "ghs_test"
+        assert "COPILOT_GITHUB_TOKEN" not in result
+
+    def test_copilot_auth_lookup_still_finds_generic_github_tokens(self):
+        """Defense-in-depth: removing GH_TOKEN / GITHUB_TOKEN from the
+        Copilot provider's api_key_env_vars must NOT break the Copilot auth
+        fallback. copilot_auth.COPILOT_ENV_VARS is the lookup precedence and
+        must still include both generic names."""
+        from hermes_cli.copilot_auth import COPILOT_ENV_VARS
+
+        assert "COPILOT_GITHUB_TOKEN" in COPILOT_ENV_VARS
+        assert "GH_TOKEN" in COPILOT_ENV_VARS
+        assert "GITHUB_TOKEN" in COPILOT_ENV_VARS
+
     def test_non_hermes_api_key_still_registerable(self):
         """Third-party API keys (TENOR_API_KEY, NOTION_TOKEN, etc.) are NOT
         Hermes provider credentials and must still pass through — skills

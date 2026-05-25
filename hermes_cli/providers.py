@@ -91,7 +91,11 @@ HERMES_OVERLAYS: Dict[str, HermesOverlay] = {
     ),
     "github-copilot": HermesOverlay(
         transport="openai_chat",
-        extra_env_vars=("COPILOT_GITHUB_TOKEN", "GH_TOKEN"),
+        # Scoped to COPILOT_GITHUB_TOKEN to avoid stripping GH_TOKEN from
+        # terminal subprocesses via the provider blocklist (see auth.py copilot
+        # entry for the full rationale). Copilot's own lookup in copilot_auth.py
+        # still falls back to GH_TOKEN / GITHUB_TOKEN.
+        extra_env_vars=("COPILOT_GITHUB_TOKEN",),
     ),
     "anthropic": HermesOverlay(
         transport="anthropic_messages",

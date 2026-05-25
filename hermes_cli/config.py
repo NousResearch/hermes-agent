@@ -3388,11 +3388,15 @@ OPTIONAL_ENV_VARS = {
         "category": "tool",
     },
     "GITHUB_TOKEN": {
-        "description": "GitHub token for Skills Hub (higher API rate limits, skill publish)",
+        "description": "GitHub token for Skills Hub (higher API rate limits, skill publish) — also used by `gh` CLI and git",
         "prompt": "GitHub Token",
         "url": "https://github.com/settings/tokens",
         "password": True,
-        "category": "tool",
+        # category=\"skill\" (not \"tool\") so the subprocess env blocklist in
+        # tools/environments/local.py does NOT strip GITHUB_TOKEN. It's the
+        # standard gh / git auth var — kanban workers need it to reach
+        # `gh pr create`, `git push`, etc.
+        "category": "skill",
     },
 
     # ── Bundled skills (opt-in: only needed if the user uses that skill) ──

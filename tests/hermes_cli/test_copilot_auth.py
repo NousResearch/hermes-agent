@@ -194,8 +194,16 @@ class TestEnvVarOrder:
         assert copilot.api_key_env_vars[0] == "COPILOT_GITHUB_TOKEN"
 
     def test_copilot_env_vars_order_matches_docs(self):
+        # The provider's api_key_env_vars is intentionally scoped to
+        # COPILOT_GITHUB_TOKEN only (so GH_TOKEN / GITHUB_TOKEN don't enter
+        # the subprocess env blocklist via _build_provider_env_blocklist).
+        # The full lookup precedence lives in copilot_auth.COPILOT_ENV_VARS,
+        # which is what the docs document.
         from hermes_cli.auth import PROVIDER_REGISTRY
+        from hermes_cli.copilot_auth import COPILOT_ENV_VARS
+
         copilot = PROVIDER_REGISTRY["copilot"]
-        assert copilot.api_key_env_vars == (
+        assert copilot.api_key_env_vars == ("COPILOT_GITHUB_TOKEN",)
+        assert COPILOT_ENV_VARS == (
             "COPILOT_GITHUB_TOKEN", "GH_TOKEN", "GITHUB_TOKEN"
         )

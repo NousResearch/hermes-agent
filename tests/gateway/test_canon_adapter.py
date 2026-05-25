@@ -485,6 +485,32 @@ class TestCanonInbound:
         assert event.source.chat_name == "Research"
         assert event.source.user_id == "human-1"
         assert event.source.user_name == "Ada"
+        assert "did not structurally mention" in event.channel_prompt
+
+    @pytest.mark.asyncio
+    async def test_group_mentions_surface_in_channel_prompt(self):
+        adapter = CanonAdapter(_config(extra={"api_key": "key"}))
+        adapter._agent_id = "agent-1"
+        adapter._conversation_cache["convo-1"] = {
+            "id": "convo-1",
+            "type": "group",
+            "name": "Research",
+        }
+        adapter.handle_message = AsyncMock()
+
+        await adapter._handle_message_payload({
+            "conversationId": "convo-1",
+            "message": {
+                "id": "msg-mention",
+                "senderId": "human-1",
+                "senderName": "Ada",
+                "mentions": ["agent-1"],
+                "text": "@Leonardo can you check this?",
+            },
+        })
+
+        event = adapter.handle_message.await_args.args[0]
+        assert "explicitly mentioned this agent" in event.channel_prompt
 
     @pytest.mark.asyncio
     async def test_ignores_self_messages_and_duplicates(self):
@@ -1275,4 +1301,6 @@ class TestCanonRegister:
         assert recorded["standalone_sender_fn"] is _standalone_send
         assert recorded["allowed_users_env"] == "CANON_ALLOWED_USERS"
         assert recorded["allow_all_env"] == "CANON_ALLOW_ALL_USERS"
+        assert recorded["group_allowed_users_env"] == "CANON_GROUP_ALLOWED_USERS"
+        assert recorded["group_allowed_chats_env"] == "CANON_GROUP_ALLOWED_CONVERSATIONS"
         assert recorded["max_message_length"] == 8000

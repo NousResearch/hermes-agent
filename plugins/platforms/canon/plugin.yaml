@@ -44,6 +44,14 @@ optional_env:
     description: "Allow any Canon user to talk to Hermes"
     prompt: "Allow all users? (true/false)"
     password: false
+  - name: CANON_GROUP_ALLOWED_USERS
+    description: "Comma-separated Canon user IDs allowed only in group conversations"
+    prompt: "Allowed Canon group user IDs"
+    password: false
+  - name: CANON_GROUP_ALLOWED_CONVERSATIONS
+    description: "Comma-separated Canon group conversation IDs allowed for any sender"
+    prompt: "Allowed Canon group conversation IDs"
+    password: false
   - name: CANON_HISTORY_LIMIT
     description: "Messages to fetch when hydrating Canon conversation context"
     prompt: "Canon history limit"

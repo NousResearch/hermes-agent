@@ -46,10 +46,20 @@ overwriting existing profiles.
 - `CANON_ALLOWED_USERS` restricts inbound users. Use this for owner/contact
   deployments, for example `CANON_ALLOWED_USERS=canon_user_id_1,canon_user_id_2`.
 - `CANON_ALLOW_ALL_USERS=1` allows any Canon user to talk to the agent.
+- `CANON_GROUP_ALLOWED_USERS` allows listed Canon users only when they speak in
+  group conversations.
+- `CANON_GROUP_ALLOWED_CONVERSATIONS` allows every sender in listed Canon group
+  conversations while keeping direct messages restricted.
 
 When `CANON_ALLOWED_USERS` is set, unlisted direct-message senders are ignored
 instead of receiving pairing codes, unless you explicitly configure Canon's
 platform `unauthorized_dm_behavior` back to `pair`.
+
+Canon group mentions are structured. Selecting the agent from Canon's mention
+picker sends the mention metadata to Hermes; typing plain `@Name` text may not.
+Hermes surfaces structured mention state to the model, but Canon can still
+filter delivery before Hermes sees a message when the conversation's behavior
+policy requires mentions.
 
 ## Deployment Note
 

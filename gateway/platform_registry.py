@@ -88,6 +88,12 @@ class PlatformEntry:
     allowed_users_env: str = ""
     # E.g. "IRC_ALLOW_ALL_USERS" — if truthy, all users authorized.
     allow_all_env: str = ""
+    # E.g. "IRC_GROUP_ALLOWED_USERS" — checked only for group/forum/channel
+    # sender user IDs.
+    group_allowed_users_env: str = ""
+    # E.g. "IRC_GROUP_ALLOWED_CHATS" — authorizes entire group/forum/channel
+    # conversations by chat/conversation ID, even when no sender user ID exists.
+    group_allowed_chats_env: str = ""
 
     # ── Message limits ──
     # Max message length for smart-chunking.  0 = no limit.

@@ -1667,6 +1667,12 @@ class CanonAdapter(BasePlatformAdapter):
             media_urls=media_urls,
             media_types=media_types,
             reply_to_message_id=_first_string(message, "replyTo"),
+            channel_prompt=_canon_channel_prompt(
+                payload,
+                conversation,
+                self._agent_id,
+                self.profile_agent_name,
+            ),
         )
         await self.handle_message(event)
 
@@ -2285,6 +2291,42 @@ def _chat_type_from_conversation(conversation: Optional[dict[str, Any]]) -> str:
     return "dm"
 
 
+def _canon_channel_prompt(
+    payload: dict[str, Any],
+    conversation: Optional[dict[str, Any]],
+    agent_id: Optional[str],
+    agent_name: Optional[str],
+) -> Optional[str]:
+    """Surface Canon's structured group targeting metadata to the model."""
+    message = payload.get("message")
+    if not isinstance(message, dict) or _chat_type_from_conversation(conversation) != "group":
+        return None
+
+    provenance = payload.get("provenance")
+    if not isinstance(provenance, dict):
+        provenance = message.get("provenance") if isinstance(message.get("provenance"), dict) else {}
+
+    mentions = message.get("mentions") or payload.get("mentions") or []
+    if not isinstance(mentions, list):
+        mentions = []
+
+    mentioned_agent = bool(provenance.get("mentionedAgent"))
+    if agent_id and str(agent_id) in {str(item) for item in mentions}:
+        mentioned_agent = True
+
+    name_note = f" ({agent_name})" if agent_name else ""
+    if mentioned_agent:
+        return (
+            f"Canon group metadata: this message explicitly mentioned this agent{name_note}. "
+            "Treat it as addressed to you."
+        )
+
+    return (
+        f"Canon group metadata: this message did not structurally mention this agent{name_note}. "
+        "Answer only if the content clearly asks for your help or your configured group policy says to participate."
+    )
+
+
 def _message_text(message: dict[str, Any]) -> str:
     text = message.get("text")
     if isinstance(text, str) and text.strip():
@@ -2716,6 +2758,8 @@ def register(ctx):
         standalone_sender_fn=_standalone_send,
         allowed_users_env="CANON_ALLOWED_USERS",
         allow_all_env="CANON_ALLOW_ALL_USERS",
+        group_allowed_users_env="CANON_GROUP_ALLOWED_USERS",
+        group_allowed_chats_env="CANON_GROUP_ALLOWED_CONVERSATIONS",
         max_message_length=8000,
         pii_safe=False,
         allow_update_command=True,

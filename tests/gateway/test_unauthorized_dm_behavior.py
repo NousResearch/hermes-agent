@@ -26,6 +26,7 @@ def _clear_auth_env(monkeypatch) -> None:
         "DINGTALK_ALLOWED_USERS", "FEISHU_ALLOWED_USERS", "WECOM_ALLOWED_USERS",
         "QQ_ALLOWED_USERS", "QQ_GROUP_ALLOWED_USERS",
         "CANON_ALLOWED_USERS", "CANON_ALLOW_ALL_USERS",
+        "CANON_GROUP_ALLOWED_USERS", "CANON_GROUP_ALLOWED_CONVERSATIONS",
         "GATEWAY_ALLOWED_USERS",
         "TELEGRAM_ALLOW_ALL_USERS",
         "DISCORD_ALLOW_ALL_USERS",
@@ -49,6 +50,8 @@ def _registered_plugin_platform(
     *,
     allowed_users_env: str = "",
     allow_all_env: str = "",
+    group_allowed_users_env: str = "",
+    group_allowed_chats_env: str = "",
 ):
     from gateway.platform_registry import PlatformEntry, platform_registry
 
@@ -61,6 +64,8 @@ def _registered_plugin_platform(
             check_fn=lambda: True,
             allowed_users_env=allowed_users_env,
             allow_all_env=allow_all_env,
+            group_allowed_users_env=group_allowed_users_env,
+            group_allowed_chats_env=group_allowed_chats_env,
             source="plugin",
         )
     )
@@ -211,6 +216,64 @@ def test_plugin_platform_allowlist_ignores_unauthorized_dm(monkeypatch):
 
         behavior = runner._get_unauthorized_dm_behavior(platform)
         assert behavior == "ignore"
+
+
+def test_plugin_platform_group_user_allowlist_is_group_scoped(monkeypatch):
+    """Plugin platforms can allow a group sender without opening DMs."""
+    _clear_auth_env(monkeypatch)
+    monkeypatch.setenv("PLUGINCHAT_GROUP_ALLOWED_USERS", "member-1")
+
+    with _registered_plugin_platform(
+        "plugingroupusers",
+        group_allowed_users_env="PLUGINCHAT_GROUP_ALLOWED_USERS",
+    ) as platform:
+        runner, _adapter = _make_runner(
+            platform,
+            GatewayConfig(platforms={platform: PlatformConfig(enabled=True)}),
+        )
+
+        group_source = SessionSource(
+            platform=platform,
+            user_id="member-1",
+            chat_id="group-1",
+            user_name="Member",
+            chat_type="group",
+        )
+        dm_source = SessionSource(
+            platform=platform,
+            user_id="member-1",
+            chat_id="dm-1",
+            user_name="Member",
+            chat_type="dm",
+        )
+
+        assert runner._is_user_authorized(group_source) is True
+        assert runner._is_user_authorized(dm_source) is False
+
+
+def test_plugin_platform_group_chat_allowlist_authorizes_conversation(monkeypatch):
+    """Plugin platforms can allow an entire group by conversation ID."""
+    _clear_auth_env(monkeypatch)
+    monkeypatch.setenv("PLUGINCHAT_GROUP_ALLOWED_CHATS", "group-1")
+
+    with _registered_plugin_platform(
+        "plugingroupchat",
+        group_allowed_chats_env="PLUGINCHAT_GROUP_ALLOWED_CHATS",
+    ) as platform:
+        runner, _adapter = _make_runner(
+            platform,
+            GatewayConfig(platforms={platform: PlatformConfig(enabled=True)}),
+        )
+
+        source = SessionSource(
+            platform=platform,
+            user_id="member-2",
+            chat_id="group-1",
+            user_name="Member",
+            chat_type="group",
+        )
+
+        assert runner._is_user_authorized(source) is True
 
 
 def test_qq_group_allowlist_authorizes_group_chat_without_user_allowlist(monkeypatch):

@@ -89,7 +89,7 @@ def mdx_escape_body(body: str) -> str:
     for line in lines:
         stripped = line.lstrip()
         if mode == "text":
-            if stripped.startswith("```") or stripped.startswith("~~~"):
+            if stripped.startswith(("```", "~~~")):
                 # Opening fence
                 if buf:
                     segments.append(("text", "\n".join(buf)))
@@ -240,7 +240,7 @@ def rewrite_relative_links(body: str, meta: dict[str, Any]) -> str:
         text = m.group(1)
         url = m.group(2).strip()
         # Skip URLs that already start with a scheme or //
-        if re.match(r"^[a-z]+://", url) or url.startswith("#") or url.startswith("/"):
+        if re.match(r"^[a-z]+://", url) or url.startswith(("#", "/")):
             return m.group(0)
         # Skip mailto
         if url.startswith("mailto:"):

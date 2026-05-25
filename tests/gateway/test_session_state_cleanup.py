@@ -135,7 +135,7 @@ class TestNoMoreBareDeleteSites:
         for idx, line in enumerate(lines, start=1):
             stripped = line.strip()
             if not in_docstring:
-                if stripped.startswith('"""') or stripped.startswith("'''"):
+                if stripped.startswith(('"""', "'''")):
                     delim = stripped[:3]
                     # single-line docstring?
                     if stripped.count(delim) >= 2:

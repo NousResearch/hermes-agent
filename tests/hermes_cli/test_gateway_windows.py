@@ -193,7 +193,7 @@ def test_install_scheduled_task_success_start_now_uses_direct_spawn_not_task_run
         "_install_scheduled_task",
         lambda task_name, script_path: (True, "Created Scheduled Task 'Hermes_Gateway_alice'"),
     )
-    monkeypatch.setattr(gateway_windows, "_gateway_pids", lambda: [])
+    monkeypatch.setattr(gateway_windows, "_gateway_pids", list)
     monkeypatch.setattr(gateway_windows, "_exec_schtasks", lambda args: calls.append(("schtasks", tuple(args))) or (0, "", ""))
     monkeypatch.setattr(gateway_windows, "_spawn_detached", lambda path=None: calls.append(("spawn", path)) or 12345)
     monkeypatch.setattr(gateway_windows, "_report_gateway_start", lambda via: calls.append(("report_start", via)))
@@ -316,7 +316,7 @@ def test_install_start_now_without_login_autostart_never_escalates(monkeypatch, 
     calls = []
     monkeypatch.setattr(gateway_windows, "_assert_windows", lambda: None)
     monkeypatch.setattr(gateway_windows, "_prompt_install_choices", lambda *args, **kwargs: (True, False))
-    monkeypatch.setattr(gateway_windows, "_gateway_pids", lambda: [])
+    monkeypatch.setattr(gateway_windows, "_gateway_pids", list)
     monkeypatch.setattr(gateway_windows, "_spawn_detached", lambda path=None: calls.append(("spawn", path)) or 12345)
     monkeypatch.setattr(gateway_windows, "_report_gateway_start", lambda via: calls.append(("report_start", via)))
     monkeypatch.setattr(gateway_windows, "_install_scheduled_task", lambda *args, **kwargs: calls.append(("install_task", args)) or (True, "should not happen"))
@@ -404,7 +404,7 @@ def test_install_access_denied_declined_elevation_uses_startup_fallback(monkeypa
         lambda force=False, start_now=None, start_on_login=None: calls.append(("elevate", force, start_now, start_on_login)) or True,
     )
     monkeypatch.setattr(gateway_windows, "_install_startup_entry", lambda path: calls.append(("install_startup", path)) or path)
-    monkeypatch.setattr(gateway, "find_gateway_pids", lambda: [])
+    monkeypatch.setattr(gateway, "find_gateway_pids", list)
     monkeypatch.setattr(gateway, "_profile_arg", lambda: "--profile alice")
     monkeypatch.setattr(gateway_windows, "_print_next_steps", lambda: calls.append(("next_steps", None)))
 

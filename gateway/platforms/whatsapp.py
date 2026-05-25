@@ -338,7 +338,7 @@ class WhatsAppAdapter(BasePlatformAdapter):
             return True
         # @broadcast suffix covers status@broadcast plus any future
         # broadcast-list variants. @newsletter is the Channel JID suffix.
-        if cid.endswith("@broadcast") or cid.endswith("@newsletter"):
+        if cid.endswith(("@broadcast", "@newsletter")):
             return True
         return False
 

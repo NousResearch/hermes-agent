@@ -4741,7 +4741,7 @@ def test_background_agent_kwargs_falls_back_to_root_max_turns(monkeypatch):
 
 
 def test_background_agent_kwargs_defaults_to_25(monkeypatch):
-    monkeypatch.setattr(server, "_load_cfg", lambda: {})
+    monkeypatch.setattr(server, "_load_cfg", dict)
 
     kwargs = server._background_agent_kwargs(_FakeAgentForBackground(), "task_1")
 

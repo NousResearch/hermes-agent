@@ -833,7 +833,7 @@ class Migrator:
         # than attempting a partial write.
         if status in {STATUS_CONFLICT, STATUS_ERROR} and destination is not None:
             dest_str = str(destination)
-            if dest_str.endswith("config.yaml") or dest_str.endswith("config.yml"):
+            if dest_str.endswith(("config.yaml", "config.yml")):
                 self._config_apply_blocked = True
 
     def source_candidate(self, *relative_paths: str) -> Optional[Path]:

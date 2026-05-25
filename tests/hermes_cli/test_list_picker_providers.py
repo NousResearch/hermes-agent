@@ -225,7 +225,7 @@ def test_passthrough_kwargs_to_base(monkeypatch):
 
 def test_current_custom_endpoint_passthrough_marks_current_row(monkeypatch):
     """Interactive picker should preserve current custom endpoint semantics."""
-    monkeypatch.setattr("agent.models_dev.fetch_models_dev", lambda: {})
+    monkeypatch.setattr("agent.models_dev.fetch_models_dev", dict)
     monkeypatch.setattr("agent.models_dev.PROVIDER_TO_MODELS_DEV", {})
     monkeypatch.setattr("hermes_cli.providers.HERMES_OVERLAYS", {})
     monkeypatch.setattr("hermes_cli.models.fetch_openrouter_models",

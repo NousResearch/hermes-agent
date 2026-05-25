@@ -278,10 +278,9 @@ class IRCAdapter(BasePlatformAdapter):
 
     async def send_typing(self, chat_id: str, metadata=None) -> None:
         """IRC has no typing indicator — no-op."""
-        pass
 
     async def get_chat_info(self, chat_id: str) -> Dict[str, Any]:
-        is_channel = chat_id.startswith("#") or chat_id.startswith("&")
+        is_channel = chat_id.startswith(("#", "&"))
         return {
             "name": chat_id,
             "type": "group" if is_channel else "dm",
@@ -443,7 +442,7 @@ class IRCAdapter(BasePlatformAdapter):
                 return
 
             # Determine if this is a channel message or DM
-            is_channel = target.startswith("#") or target.startswith("&")
+            is_channel = target.startswith(("#", "&"))
             chat_id = target if is_channel else sender_nick
             chat_type = "group" if is_channel else "dm"
 

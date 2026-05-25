@@ -474,7 +474,7 @@ try:
         if _pp.name in {"copilot", "kimi-coding", "kimi-coding-cn", "zai", "openrouter", "custom"}:
             continue
         _api_key_vars = tuple(v for v in _pp.env_vars if not v.endswith("_BASE_URL") and not v.endswith("_URL"))
-        _base_url_var = next((v for v in _pp.env_vars if v.endswith("_BASE_URL") or v.endswith("_URL")), None)
+        _base_url_var = next((v for v in _pp.env_vars if v.endswith(("_BASE_URL", "_URL"))), None)
         PROVIDER_REGISTRY[_pp.name] = ProviderConfig(
             id=_pp.name,
             name=_pp.display_name or _pp.name,

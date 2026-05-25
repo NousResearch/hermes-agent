@@ -229,7 +229,7 @@ class TestEdgeCases:
         upload = MagicMock()
         delete = MagicMock()
         mgr = FileSyncManager(
-            get_files_fn=lambda: [],
+            get_files_fn=list,
             upload_fn=upload,
             delete_fn=delete,
         )

@@ -1209,7 +1209,7 @@ The user has requested that this compaction PRIORITISE preserving all informatio
     @staticmethod
     def _is_context_summary_content(content: Any) -> bool:
         text = _content_text_for_contains(content).lstrip()
-        return text.startswith(SUMMARY_PREFIX) or text.startswith(LEGACY_SUMMARY_PREFIX)
+        return text.startswith((SUMMARY_PREFIX, LEGACY_SUMMARY_PREFIX))
 
     @classmethod
     def _find_latest_context_summary(

@@ -1035,7 +1035,7 @@ class TeamsAdapter(BasePlatformAdapter):
             import mimetypes
             from microsoft_teams.api import Attachment, MessageActivityInput
 
-            if image_url.startswith("http://") or image_url.startswith("https://"):
+            if image_url.startswith(("http://", "https://")):
                 content_url = image_url
                 mime_type = "image/png"
             else:

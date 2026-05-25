@@ -321,7 +321,7 @@ def test_forward_env_overrides_docker_env_in_init_args(monkeypatch):
     env._env = {"MY_KEY": "static_value"}
 
     monkeypatch.setenv("MY_KEY", "dynamic_value")
-    monkeypatch.setattr(docker_env, "_load_hermes_env_vars", lambda: {})
+    monkeypatch.setattr(docker_env, "_load_hermes_env_vars", dict)
 
     args = env._build_init_env_args()
     args_str = " ".join(args)
@@ -336,7 +336,7 @@ def test_docker_env_and_forward_env_merge_in_init_args(monkeypatch):
     env._env = {"SSH_AUTH_SOCK": "/run/user/1000/agent.sock"}
 
     monkeypatch.setenv("TOKEN", "secret123")
-    monkeypatch.setattr(docker_env, "_load_hermes_env_vars", lambda: {})
+    monkeypatch.setattr(docker_env, "_load_hermes_env_vars", dict)
 
     args = env._build_init_env_args()
     args_str = " ".join(args)

@@ -928,7 +928,6 @@ class DingTalkAdapter(BasePlatformAdapter):
 
     async def send_typing(self, chat_id: str, metadata=None) -> None:
         """DingTalk does not support typing indicators."""
-        pass
 
     async def send_image(
         self,

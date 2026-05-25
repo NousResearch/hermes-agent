@@ -375,7 +375,7 @@ def _parse_pytest_summary(output: str) -> dict[str, int]:
             break
         # Stop at the short test summary header (if any) — everything above
         # that is individual failure details, not the counts line.
-        if line.startswith("FAILED") or line.startswith("SHORT TEST SUMMARY"):
+        if line.startswith(("FAILED", "SHORT TEST SUMMARY")):
             break
     return result
 

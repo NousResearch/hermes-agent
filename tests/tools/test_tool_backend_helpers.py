@@ -41,7 +41,7 @@ class TestManagedNousToolsEnabled:
     def test_disabled_when_not_logged_in(self, monkeypatch):
         monkeypatch.setattr(
             "hermes_cli.auth.get_nous_auth_status",
-            lambda: {},
+            dict,
         )
         assert managed_nous_tools_enabled() is False
 

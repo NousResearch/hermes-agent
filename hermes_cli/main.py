@@ -350,7 +350,7 @@ def _read_packed_ref(common_dir: Path, ref: str) -> str | None:
     except OSError:
         return None
     for line in text.splitlines():
-        if not line or line.startswith("#") or line.startswith("^"):
+        if not line or line.startswith(("#", "^")):
             continue
         parts = line.split(" ", 1)
         if len(parts) == 2 and parts[1].strip() == ref:

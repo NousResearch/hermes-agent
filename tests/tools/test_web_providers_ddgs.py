@@ -182,7 +182,7 @@ class TestDDGSBackendWiring:
     def test_ddgs_trails_paid_providers_in_auto_detect(self, monkeypatch):
         """Exa (priority) should win over ddgs in auto-detect."""
         from tools import web_tools
-        monkeypatch.setattr(web_tools, "_load_web_config", lambda: {})
+        monkeypatch.setattr(web_tools, "_load_web_config", dict)
         for key in ("FIRECRAWL_API_KEY", "FIRECRAWL_API_URL", "PARALLEL_API_KEY",
                     "TAVILY_API_KEY", "SEARXNG_URL", "BRAVE_SEARCH_API_KEY"):
             monkeypatch.delenv(key, raising=False)
@@ -193,7 +193,7 @@ class TestDDGSBackendWiring:
 
     def test_auto_detect_picks_ddgs_as_last_resort(self, monkeypatch):
         from tools import web_tools
-        monkeypatch.setattr(web_tools, "_load_web_config", lambda: {})
+        monkeypatch.setattr(web_tools, "_load_web_config", dict)
         for key in ("FIRECRAWL_API_KEY", "FIRECRAWL_API_URL", "PARALLEL_API_KEY",
                     "TAVILY_API_KEY", "EXA_API_KEY", "SEARXNG_URL", "BRAVE_SEARCH_API_KEY"):
             monkeypatch.delenv(key, raising=False)

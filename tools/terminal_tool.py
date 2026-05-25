@@ -1585,10 +1585,7 @@ def _looks_like_help_or_version_command(command: str) -> bool:
     """Return True for informational invocations that should never be blocked."""
     normalized = " ".join(command.lower().split())
     return (
-        " --help" in normalized
-        or normalized.endswith(" -h")
-        or " --version" in normalized
-        or normalized.endswith(" -v")
+        " --help" in normalized or normalized.endswith((" -h", " -v")) or " --version" in normalized
     )
 
 

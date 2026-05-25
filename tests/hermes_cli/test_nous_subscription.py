@@ -7,7 +7,7 @@ def test_get_nous_subscription_features_recognizes_direct_exa_backend(monkeypatc
     env = {"EXA_API_KEY": "exa-test"}
 
     monkeypatch.setattr(ns, "get_env_value", lambda name: env.get(name, ""))
-    monkeypatch.setattr(ns, "get_nous_auth_status", lambda: {})
+    monkeypatch.setattr(ns, "get_nous_auth_status", dict)
     monkeypatch.setattr(ns, "managed_nous_tools_enabled", lambda: False)
     monkeypatch.setattr(ns, "_toolset_enabled", lambda config, key: key == "web")
     monkeypatch.setattr(ns, "_has_agent_browser", lambda: False)
@@ -133,7 +133,7 @@ def test_get_nous_subscription_features_requires_agent_browser_for_browserbase(m
     }
 
     monkeypatch.setattr(ns, "get_env_value", lambda name: env.get(name, ""))
-    monkeypatch.setattr(ns, "get_nous_auth_status", lambda: {})
+    monkeypatch.setattr(ns, "get_nous_auth_status", dict)
     monkeypatch.setattr(ns, "managed_nous_tools_enabled", lambda: False)
     monkeypatch.setattr(ns, "_toolset_enabled", lambda config, key: key == "browser")
     monkeypatch.setattr(ns, "_has_agent_browser", lambda: False)

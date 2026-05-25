@@ -379,7 +379,7 @@ def _build_apikey_providers_list() -> list:
                 if not v.endswith("_BASE_URL") and not v.endswith("_URL")
             )
             _base_var = next(
-                (v for v in _pp.env_vars if v.endswith("_BASE_URL") or v.endswith("_URL")),
+                (v for v in _pp.env_vars if v.endswith(("_BASE_URL", "_URL"))),
                 None,
             )
             if not _key_vars:
@@ -599,7 +599,6 @@ def run_doctor(args):
                 known_providers = set(PROVIDER_REGISTRY.keys()) | {"openrouter", "custom", "auto"}
             except Exception:
                 _resolve_auth_provider = None
-                pass
             try:
                 from hermes_cli.config import get_compatible_custom_providers as _compatible_custom_providers
                 from hermes_cli.providers import (

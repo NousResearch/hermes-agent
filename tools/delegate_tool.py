@@ -288,7 +288,7 @@ def _looks_like_error_output(content: str) -> bool:
         return False
 
     head = content.lstrip()
-    if head.startswith("{") or head.startswith("["):
+    if head.startswith(("{", "[")):
         try:
             parsed = json.loads(content)
             if isinstance(parsed, dict):
@@ -302,10 +302,7 @@ def _looks_like_error_output(content: str) -> bool:
 
     first = content.splitlines()[0].strip().lower() if content.splitlines() else ""
     return (
-        first.startswith("error:")
-        or first.startswith("failed:")
-        or first.startswith("traceback ")
-        or first.startswith("exception:")
+        first.startswith(("error:", "failed:", "traceback ", "exception:"))
     )
 
 

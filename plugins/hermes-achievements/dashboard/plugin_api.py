@@ -841,7 +841,7 @@ def _build_pending_snapshot(now: int) -> Dict[str, Any]:
     Returns a structurally-complete response so the dashboard UI can render
     an empty achievement list + spinner without special-casing "no data yet".
     """
-    evaluated = [display_achievement({**d, **{"unlocked": False, "discovered": False, "state": "secret" if d.get("secret") else "discovered", "progress": 0, "progress_pct": 0, "next_tier": (d.get("tiers") or [{}])[0].get("name"), "next_threshold": (d.get("tiers") or [{}])[0].get("threshold", 1), "tier": None}}) for d in ACHIEVEMENTS]
+    evaluated = [display_achievement({**d, "unlocked": False, "discovered": False, "state": "secret" if d.get("secret") else "discovered", "progress": 0, "progress_pct": 0, "next_tier": (d.get("tiers") or [{}])[0].get("name"), "next_threshold": (d.get("tiers") or [{}])[0].get("threshold", 1), "tier": None}) for d in ACHIEVEMENTS]
     return {
         "achievements": evaluated,
         "sessions": [],

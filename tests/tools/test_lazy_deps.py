@@ -330,7 +330,7 @@ class TestActiveFeatures:
 
 class TestRefreshActiveFeatures:
     def test_no_active_features_returns_empty(self, monkeypatch):
-        monkeypatch.setattr(ld, "active_features", lambda: [])
+        monkeypatch.setattr(ld, "active_features", list)
         assert ld.refresh_active_features() == {}
 
     def test_already_current_is_noop(self, monkeypatch):

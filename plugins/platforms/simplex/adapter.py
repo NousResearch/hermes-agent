@@ -520,7 +520,6 @@ class SimplexAdapter(BasePlatformAdapter):
 
     async def send_typing(self, chat_id: str, metadata=None) -> None:
         """SimpleX does not expose a typing indicator API — no-op."""
-        pass
 
     async def send_image(
         self,

@@ -126,7 +126,7 @@ def _parse_requirements(text: str) -> list[tuple[str, str]]:
     pins: list[tuple[str, str]] = []
     for raw in text.splitlines():
         line = raw.strip()
-        if not line or line.startswith("#") or line.startswith("-"):
+        if not line or line.startswith(("#", "-")):
             continue
         m = _REQ_LINE.match(line)
         if m:

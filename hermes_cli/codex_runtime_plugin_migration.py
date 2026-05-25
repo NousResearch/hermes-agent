@@ -431,10 +431,7 @@ def _strip_existing_managed_block(toml_text: str) -> str:
                 continue
             stripped = line.lstrip()
             if not saw_end_marker and stripped.startswith("[") and not (
-                stripped.startswith("[mcp_servers")
-                or stripped.startswith("[plugins")
-                or stripped.startswith("[permissions]")
-                or stripped.startswith("[permissions.")
+                stripped.startswith(("[mcp_servers", "[plugins", "[permissions]", "[permissions."))
             ):
                 # Old-format managed block without end marker: bail back
                 # to user content as soon as we see a non-managed section.

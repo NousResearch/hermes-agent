@@ -23,22 +23,14 @@ def _restore_tool_and_agent_modules():
     original_modules = {
         name: module
         for name, module in sys.modules.items()
-        if name == "tools"
-        or name.startswith("tools.")
-        or name == "agent"
-        or name.startswith("agent.")
-        or name in {"fal_client", "openai"}
+        if name == "tools" or name.startswith(("tools.", "agent.")) or name == "agent" or name in {"fal_client", "openai"}
     }
     try:
         yield
     finally:
         for name in list(sys.modules):
             if (
-                name == "tools"
-                or name.startswith("tools.")
-                or name == "agent"
-                or name.startswith("agent.")
-                or name in {"fal_client", "openai"}
+                name == "tools" or name.startswith(("tools.", "agent.")) or name == "agent" or name in {"fal_client", "openai"}
             ):
                 sys.modules.pop(name, None)
         sys.modules.update(original_modules)
@@ -62,7 +54,7 @@ def _install_fake_tools_package():
             session_id="debug-session",
             log_call=lambda *a, **k: None,
             save=lambda: None,
-            get_session_info=lambda: {},
+            get_session_info=dict,
         )
     )
     sys.modules["tools.managed_tool_gateway"] = _load_tool_module(

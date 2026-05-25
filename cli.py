@@ -1429,7 +1429,7 @@ def _prune_orphaned_branches(repo_root: str) -> None:
     orphaned = [
         b for b in all_branches
         if b not in active_branches
-        and (b.startswith("hermes/hermes-") or b.startswith("pr-"))
+        and (b.startswith(("hermes/hermes-", "pr-")))
     ]
 
     if not orphaned:
@@ -2248,21 +2248,7 @@ def _detect_file_drop(user_input: str) -> "dict | None":
         return None
 
     starts_like_path = (
-        stripped.startswith("/")
-        or stripped.startswith("~")
-        or stripped.startswith("./")
-        or stripped.startswith("../")
-        or stripped.startswith("file://")
-        or (len(stripped) >= 3 and stripped[1] == ":" and stripped[2] in {"\\", "/"} and stripped[0].isalpha())
-        or stripped.startswith('"/')
-        or stripped.startswith('"~')
-        or stripped.startswith("'/")
-        or stripped.startswith("'~")
-        or stripped.startswith('"./')
-        or stripped.startswith('"../')
-        or stripped.startswith("'./")
-        or stripped.startswith("'../")
-        or (len(stripped) >= 4 and stripped[0] in {"'", '"'} and stripped[2] == ":" and stripped[3] in {"\\", "/"} and stripped[1].isalpha())
+        stripped.startswith(("/", "~", "./", "../", "file://", '"/', '"~', "'/", "'~", '"./', '"../', "'./", "'../")) or len(stripped) >= 3 and stripped[1] == ":" and stripped[2] in {"\\", "/"} and stripped[0].isalpha() or len(stripped) >= 4 and stripped[0] in {"'", '"'} and stripped[2] == ":" and stripped[3] in {"\\", "/"} and stripped[1].isalpha()
     )
     if not starts_like_path:
         return None
@@ -3982,12 +3968,7 @@ class HermesCLI:
             line_break = buf.rfind("\n")
             min_newline_flush = max(16, target_width // 3)
             if line_break != -1 and (
-                line_break >= min_newline_flush
-                or buf.endswith("\n\n")
-                or buf.endswith(".\n")
-                or buf.endswith("!\n")
-                or buf.endswith("?\n")
-                or buf.endswith(":\n")
+                line_break >= min_newline_flush or buf.endswith(("\n\n", ".\n", "!\n", "?\n", ":\n"))
             ):
                 flush_text = buf[: line_break + 1]
                 buf = buf[line_break + 1 :]

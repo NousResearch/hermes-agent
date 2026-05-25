@@ -105,7 +105,7 @@ def test_prune_nothing_to_do(monkeypatch, capsys):
     import hermes_cli.curator as curator_cli
     import tools.skill_usage as skill_usage
 
-    monkeypatch.setattr(skill_usage, "agent_created_report", lambda: [])
+    monkeypatch.setattr(skill_usage, "agent_created_report", list)
     rc = curator_cli._cmd_prune(_ns(days=30, yes=True, dry_run=False))
     assert rc == 0
     assert "nothing to prune" in capsys.readouterr().out

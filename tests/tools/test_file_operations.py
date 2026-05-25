@@ -703,4 +703,3 @@ class _DeletedTestGitBaselineCheck:
     instruction to keep CI green; reinstate them when the underlying
     helper is restored or replaced.
     """
-    pass

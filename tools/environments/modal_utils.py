@@ -145,7 +145,6 @@ class BaseModalExecutionEnvironment(BaseEnvironment):
 
     def _before_execute(self) -> None:
         """Hook for backends that need pre-exec sync or validation."""
-        pass
 
     def _prepare_modal_exec(
         self,

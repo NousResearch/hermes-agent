@@ -676,7 +676,7 @@ class TestCosignVerification:
         import urllib.request
 
         def _dl_side_effect(url, dest, timeout=10):
-            if url.endswith(".sig") or url.endswith(".pem"):
+            if url.endswith((".sig", ".pem")):
                 raise urllib.request.URLError("404 Not Found")
 
         mock_dl.side_effect = _dl_side_effect

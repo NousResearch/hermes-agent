@@ -191,7 +191,7 @@ def test_setup_same_provider_rotation_strategy_saved_for_multi_credential_pool(t
     monkeypatch.setattr(_setup_mod, "prompt_yes_no", fake_prompt_yes_no)
     monkeypatch.setattr(_setup_mod, "prompt", lambda *args, **kwargs: "")
     monkeypatch.setattr(_pool_mod, "load_pool", lambda provider: _Pool())
-    monkeypatch.setattr(_aux_mod, "get_available_vision_backends", lambda: [])
+    monkeypatch.setattr(_aux_mod, "get_available_vision_backends", list)
 
     setup_model_provider(config)
 
@@ -254,7 +254,7 @@ def test_setup_same_provider_fallback_can_add_another_credential(tmp_path, monke
     monkeypatch.setattr("hermes_cli.setup.prompt", lambda *args, **kwargs: "")
     monkeypatch.setattr("agent.credential_pool.load_pool", fake_load_pool)
     monkeypatch.setattr("hermes_cli.auth_commands.auth_add_command", fake_auth_add_command)
-    monkeypatch.setattr("agent.auxiliary_client.get_available_vision_backends", lambda: [])
+    monkeypatch.setattr("agent.auxiliary_client.get_available_vision_backends", list)
 
     setup_model_provider(config)
 
@@ -288,7 +288,7 @@ def test_setup_same_provider_single_credential_keeps_existing_rotation_strategy(
     _stub_tts(monkeypatch)
     monkeypatch.setattr("hermes_cli.setup.prompt", lambda *args, **kwargs: "")
     monkeypatch.setattr("agent.credential_pool.load_pool", lambda provider: _Pool())
-    monkeypatch.setattr("agent.auxiliary_client.get_available_vision_backends", lambda: [])
+    monkeypatch.setattr("agent.auxiliary_client.get_available_vision_backends", list)
 
     setup_model_provider(config)
 
@@ -335,7 +335,7 @@ def test_setup_pool_step_shows_manual_vs_auto_detected_counts(tmp_path, monkeypa
     monkeypatch.setattr("hermes_cli.setup.prompt_yes_no", lambda *args, **kwargs: False)
     monkeypatch.setattr("hermes_cli.setup.prompt", lambda *args, **kwargs: "")
     monkeypatch.setattr("agent.credential_pool.load_pool", lambda provider: _Pool())
-    monkeypatch.setattr("agent.auxiliary_client.get_available_vision_backends", lambda: [])
+    monkeypatch.setattr("agent.auxiliary_client.get_available_vision_backends", list)
 
     setup_model_provider(config)
 
@@ -370,7 +370,7 @@ def test_setup_copilot_acp_skips_same_provider_pool_step(tmp_path, monkeypatch):
     monkeypatch.setattr("hermes_cli.setup.prompt_yes_no", fake_prompt_yes_no)
     monkeypatch.setattr("hermes_cli.setup.prompt", lambda *args, **kwargs: "")
     monkeypatch.setattr("hermes_cli.auth.get_active_provider", lambda: None)
-    monkeypatch.setattr("agent.auxiliary_client.get_available_vision_backends", lambda: [])
+    monkeypatch.setattr("agent.auxiliary_client.get_available_vision_backends", list)
 
     setup_model_provider(config)
 
@@ -504,7 +504,7 @@ def test_setup_summary_shows_camofox_when_browser_feature_is_camofox(tmp_path, m
             },
         ),
     )
-    monkeypatch.setattr("agent.auxiliary_client.get_available_vision_backends", lambda: [])
+    monkeypatch.setattr("agent.auxiliary_client.get_available_vision_backends", list)
 
     _print_setup_summary(load_config(), tmp_path)
     output = capsys.readouterr().out
@@ -531,7 +531,7 @@ def test_setup_summary_does_not_mark_incomplete_browserbase_as_available(tmp_pat
             },
         ),
     )
-    monkeypatch.setattr("agent.auxiliary_client.get_available_vision_backends", lambda: [])
+    monkeypatch.setattr("agent.auxiliary_client.get_available_vision_backends", list)
 
     _print_setup_summary(load_config(), tmp_path)
     output = capsys.readouterr().out

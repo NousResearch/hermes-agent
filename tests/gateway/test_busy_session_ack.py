@@ -476,7 +476,7 @@ class TestBusySessionOnboardingHint:
         monkeypatch.setattr(_gr, "_hermes_home", tmp_path)
         # mark_seen imports utils.atomic_yaml_write; make sure it resolves
         # against a writable dir by pointing _hermes_home at tmp_path.
-        monkeypatch.setattr(_gr, "_load_gateway_config", lambda: {})
+        monkeypatch.setattr(_gr, "_load_gateway_config", dict)
 
         runner, _sentinel = _make_runner()
         runner._busy_input_mode = "interrupt"
@@ -559,7 +559,7 @@ class TestBusySessionOnboardingHint:
         import gateway.run as _gr
 
         monkeypatch.setattr(_gr, "_hermes_home", tmp_path)
-        monkeypatch.setattr(_gr, "_load_gateway_config", lambda: {})
+        monkeypatch.setattr(_gr, "_load_gateway_config", dict)
 
         runner, _sentinel = _make_runner()
         runner._busy_input_mode = "queue"

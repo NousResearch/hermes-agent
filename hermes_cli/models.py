@@ -2523,9 +2523,7 @@ def get_copilot_model_context(model_id: str, api_key: Optional[str] = None) -> O
 def _is_github_models_base_url(base_url: Optional[str]) -> bool:
     normalized = (base_url or "").strip().rstrip("/").lower()
     return (
-        normalized.startswith(COPILOT_BASE_URL)
-        or normalized.startswith("https://models.github.ai/inference")
-        or normalized.startswith("https://models.inference.ai.azure.com")
+        normalized.startswith((COPILOT_BASE_URL, "https://models.github.ai/inference", "https://models.inference.ai.azure.com"))
     )
 
 

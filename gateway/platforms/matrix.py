@@ -2833,10 +2833,7 @@ class MatrixAdapter(BasePlatformAdapter):
 
             # Blockquote
             if (
-                line.startswith("&gt; ")
-                or line == "&gt;"
-                or line.startswith("> ")
-                or line == ">"
+                line.startswith(("&gt; ", "> ")) or line == "&gt;" or line == ">"
             ):
                 bq_lines = []
                 while i < len(lines) and (

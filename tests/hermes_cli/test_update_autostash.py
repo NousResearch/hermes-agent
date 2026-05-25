@@ -302,7 +302,7 @@ def _setup_update_mocks(monkeypatch, tmp_path):
     monkeypatch.setattr(hermes_main, "_stash_local_changes_if_needed", lambda *a, **kw: None)
     monkeypatch.setattr(hermes_main, "_restore_stashed_changes", lambda *a, **kw: True)
     monkeypatch.setattr(hermes_config, "get_missing_env_vars", lambda required_only=True: [])
-    monkeypatch.setattr(hermes_config, "get_missing_config_fields", lambda: [])
+    monkeypatch.setattr(hermes_config, "get_missing_config_fields", list)
     monkeypatch.setattr(hermes_config, "check_config_version", lambda: (5, 5))
     monkeypatch.setattr(hermes_config, "migrate_config", lambda **kw: {"env_added": [], "config_added": []})
     monkeypatch.setattr(hermes_main, "_refresh_active_lazy_features", lambda: None)

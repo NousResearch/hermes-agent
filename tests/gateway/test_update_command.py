@@ -71,7 +71,6 @@ class TestHandleUpdateCommand:
             MockPath.return_value = MagicMock()
             MockPath.__truediv__ = Path.__truediv__
             # Easier: just patch the __file__ resolution in the method
-            pass
 
         # Simpler approach — mock at method level using a wrapper
         from gateway.run import GatewayRunner

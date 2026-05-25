@@ -79,7 +79,7 @@ def _extract_overview(body: str) -> str:
         if p.startswith(":::"):
             continue
         # Skip pure code fences and frontmatter-style blocks
-        if p.startswith("```") or p.startswith("~~~"):
+        if p.startswith(("```", "~~~")):
             continue
         # Trim to roughly 500 chars at a sentence boundary
         if len(p) > 500:

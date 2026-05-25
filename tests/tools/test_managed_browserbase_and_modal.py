@@ -50,10 +50,7 @@ def _restore_tool_and_agent_modules():
     original_modules = {
         name: module
         for name, module in sys.modules.items()
-        if name == "tools"
-        or name.startswith("tools.")
-        or name == "agent"
-        or name.startswith("agent.")
+        if name == "tools" or name.startswith(("tools.", "agent.")) or name == "agent"
     }
     try:
         yield
@@ -107,7 +104,7 @@ def _install_fake_tools_package():
     )
     sys.modules["agent.browser_registry"] = types.SimpleNamespace(
         get_provider=lambda name: None,
-        list_providers=lambda: [],
+        list_providers=list,
         register_provider=lambda provider: None,
         _resolve=lambda configured: None,
     )

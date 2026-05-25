@@ -145,7 +145,7 @@ def _is_signal_service_id(value: str) -> bool:
     """Return True if *value* already looks like a Signal service identifier."""
     if not value:
         return False
-    if value.startswith("PNI:") or value.startswith("u:"):
+    if value.startswith(("PNI:", "u:")):
         return True
     try:
         uuid.UUID(value)

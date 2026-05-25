@@ -30,7 +30,7 @@ def _patch_agent_bootstrap(monkeypatch):
             }
         ],
     )
-    monkeypatch.setattr(run_agent, "check_toolset_requirements", lambda: {})
+    monkeypatch.setattr(run_agent, "check_toolset_requirements", dict)
 
 
 def _codex_message_response(text: str):

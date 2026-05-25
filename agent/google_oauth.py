@@ -989,7 +989,7 @@ def _prompt_paste_fallback() -> Optional[str]:
     raw = input("Callback URL or code: ").strip()
     if not raw:
         return None
-    if raw.startswith("http://") or raw.startswith("https://"):
+    if raw.startswith(("http://", "https://")):
         parsed = urllib.parse.urlparse(raw)
         params = urllib.parse.parse_qs(parsed.query)
         return (params.get("code") or [""])[0] or None

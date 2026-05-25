@@ -443,7 +443,7 @@ class TestGatewayStopCleanup:
             lambda force=False, all_profiles=False: kill_calls.append(force) or 2,
         )
 
-        gateway_cli.gateway_command(SimpleNamespace(gateway_command="stop", **{"all": True}))
+        gateway_cli.gateway_command(SimpleNamespace(gateway_command="stop", all=True))
 
         assert service_calls == ["stop"]
         assert kill_calls == [False]
@@ -452,7 +452,7 @@ class TestGatewayStopCleanup:
 class TestLaunchdServiceRecovery:
     def test_get_restart_drain_timeout_prefers_env_then_config_then_default(self, monkeypatch):
         monkeypatch.delenv("HERMES_RESTART_DRAIN_TIMEOUT", raising=False)
-        monkeypatch.setattr(gateway_cli, "read_raw_config", lambda: {})
+        monkeypatch.setattr(gateway_cli, "read_raw_config", dict)
 
         assert (
             gateway_cli._get_restart_drain_timeout()
@@ -1082,7 +1082,7 @@ class TestGatewaySystemServiceRouting:
         monkeypatch.setattr(gateway_cli, "is_termux", lambda: True)
         monkeypatch.setattr(gateway_cli, "is_macos", lambda: False)
         monkeypatch.setattr(gateway_cli, "find_gateway_pids", lambda exclude_pids=None: [])
-        monkeypatch.setattr(gateway_cli, "_runtime_health_lines", lambda: [])
+        monkeypatch.setattr(gateway_cli, "_runtime_health_lines", list)
 
         gateway_cli.gateway_command(SimpleNamespace(gateway_command="status", deep=False, system=False))
 

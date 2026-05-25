@@ -2415,9 +2415,7 @@ def setup_gateway(config: dict):
     def _is_progress(status: str) -> bool:
         s = status.lower()
         return not (
-            s == "not configured"
-            or s.startswith("partially")
-            or s.startswith("plugin disabled")
+            s == "not configured" or s.startswith(("partially", "plugin disabled"))
         )
 
     any_messaging = any(

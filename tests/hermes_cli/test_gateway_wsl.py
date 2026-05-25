@@ -209,7 +209,7 @@ class TestGatewayCommandWSLMessages:
         monkeypatch.setattr(gateway, "is_termux", lambda: False)
         monkeypatch.setattr(gateway, "is_wsl", lambda: True)
         monkeypatch.setattr(gateway, "find_gateway_pids", lambda: [12345])
-        monkeypatch.setattr(gateway, "_runtime_health_lines", lambda: [])
+        monkeypatch.setattr(gateway, "_runtime_health_lines", list)
         # Stub out the systemd unit path check
         monkeypatch.setattr(
             gateway, "get_systemd_unit_path",
@@ -233,8 +233,8 @@ class TestGatewayCommandWSLMessages:
         monkeypatch.setattr(gateway, "is_macos", lambda: False)
         monkeypatch.setattr(gateway, "is_termux", lambda: False)
         monkeypatch.setattr(gateway, "is_wsl", lambda: True)
-        monkeypatch.setattr(gateway, "find_gateway_pids", lambda: [])
-        monkeypatch.setattr(gateway, "_runtime_health_lines", lambda: [])
+        monkeypatch.setattr(gateway, "find_gateway_pids", list)
+        monkeypatch.setattr(gateway, "_runtime_health_lines", list)
         monkeypatch.setattr(
             gateway, "get_systemd_unit_path",
             lambda system=False: SimpleNamespace(exists=lambda: False),

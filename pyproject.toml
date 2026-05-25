@@ -257,7 +257,7 @@ preview = true  # required for PLW1514 (unspecified-encoding) — preview rule
 # which silently corrupts any non-ASCII file content.  We had three
 # separate Windows sandbox regressions in one debug session before
 # adding the explicit encoding.  This rule keeps new code honest.
-select = ["PLW1514"]
+select = ["PIE", "PLW1514"]
 
 [tool.ruff.lint.per-file-ignores]
 # Tests can intentionally exercise locale-encoding edge cases.

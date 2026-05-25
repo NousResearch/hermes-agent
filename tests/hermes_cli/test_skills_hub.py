@@ -108,7 +108,7 @@ def test_do_list_initializes_hub_dir(monkeypatch, hub_env):
     import tools.skills_tool as skills_tool
 
     monkeypatch.setattr(skills_tool, "_find_all_skills", lambda **_kwargs: [])
-    monkeypatch.setattr(skills_sync, "_read_manifest", lambda: {})
+    monkeypatch.setattr(skills_sync, "_read_manifest", dict)
 
     hub_dir = hub_env
     assert not hub_dir.exists()

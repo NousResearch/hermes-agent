@@ -901,7 +901,7 @@ class TestOrphanedBranchPruning:
         orphaned = [
             b for b in all_branches
             if b not in active_branches
-            and (b.startswith("hermes/hermes-") or b.startswith("pr-"))
+            and (b.startswith(("hermes/hermes-", "pr-")))
         ]
         assert "hermes/hermes-deadbeef" in orphaned
 
@@ -986,7 +986,7 @@ class TestOrphanedBranchPruning:
         orphaned = [
             b for b in all_branches
             if b not in active_branches
-            and (b.startswith("hermes/hermes-") or b.startswith("pr-"))
+            and (b.startswith(("hermes/hermes-", "pr-")))
         ]
         assert "main" not in orphaned
 

@@ -249,7 +249,7 @@ def _normalize_multimodal_content(content: Any) -> Any:
                         "unsupported_content_type:Only image data URLs are supported. "
                         "Non-image data payloads are not supported."
                     )
-            elif not (lowered.startswith("http://") or lowered.startswith("https://")):
+            elif not (lowered.startswith(("http://", "https://"))):
                 raise ValueError(
                     "invalid_image_url:Image inputs must use http(s) URLs or data:image/... URLs."
                 )

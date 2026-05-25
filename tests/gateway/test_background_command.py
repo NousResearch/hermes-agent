@@ -289,7 +289,7 @@ class TestRunBackgroundTask:
         runner._run_in_executor_with_context = AsyncMock(
             return_value={"final_response": "done", "messages": []}
         )
-        monkeypatch.setattr(gateway_run, "_load_gateway_config", lambda: {})
+        monkeypatch.setattr(gateway_run, "_load_gateway_config", dict)
 
         mock_adapter = AsyncMock()
         mock_adapter.send = AsyncMock()

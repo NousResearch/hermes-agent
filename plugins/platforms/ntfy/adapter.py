@@ -420,7 +420,6 @@ class NtfyAdapter(BasePlatformAdapter):
 
     async def send_typing(self, chat_id: str, metadata=None) -> None:
         """ntfy does not support typing indicators."""
-        pass
 
     async def get_chat_info(self, chat_id: str) -> Dict[str, Any]:
         """Return basic info about an ntfy topic."""

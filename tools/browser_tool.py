@@ -1035,7 +1035,7 @@ def _url_is_private(url: str) -> bool:
         # names to avoid a DNS hop.
         if hostname in {"localhost",} or hostname.endswith(".localhost"):
             return True
-        if hostname.endswith(".local") or hostname.endswith(".lan") or hostname.endswith(".internal"):
+        if hostname.endswith((".local", ".lan", ".internal")):
             return True
         try:
             addr_info = socket.getaddrinfo(hostname, None, socket.AF_UNSPEC, socket.SOCK_STREAM)
@@ -3573,9 +3573,7 @@ def _chromium_installed() -> bool:
         # Playwright names them ``chromium-<build>`` and
         # ``chromium_headless_shell-<build>``; agent-browser accepts either.
         for entry in entries:
-            if entry.startswith("chromium-") or entry.startswith(
-                "chromium_headless_shell-"
-            ):
+            if entry.startswith(("chromium-", "chromium_headless_shell-")):
                 _cached_chromium_installed = True
                 return True
 

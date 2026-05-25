@@ -247,7 +247,7 @@ def fake_mcp_server(populated_sessions_dir, mock_session_db, monkeypatch):
 
     monkeypatch.setattr(mcp_serve, "_get_sessions_dir", lambda: populated_sessions_dir)
     monkeypatch.setattr(mcp_serve, "_get_session_db", lambda: mock_session_db)
-    monkeypatch.setattr(mcp_serve, "_load_channel_directory", lambda: {})
+    monkeypatch.setattr(mcp_serve, "_load_channel_directory", dict)
     monkeypatch.setattr(mcp_serve, "_MCP_SERVER_AVAILABLE", True)
     monkeypatch.setattr(mcp_serve, "FastMCP", _FakeFastMCP)
 
@@ -503,7 +503,7 @@ def mcp_server_e2e(populated_sessions_dir, mock_session_db, monkeypatch):
     import mcp_serve
     monkeypatch.setattr(mcp_serve, "_get_sessions_dir", lambda: populated_sessions_dir)
     monkeypatch.setattr(mcp_serve, "_get_session_db", lambda: mock_session_db)
-    monkeypatch.setattr(mcp_serve, "_load_channel_directory", lambda: {})
+    monkeypatch.setattr(mcp_serve, "_load_channel_directory", dict)
 
     bridge = mcp_serve.EventBridge()
     server = mcp_serve.create_mcp_server(event_bridge=bridge)

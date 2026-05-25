@@ -216,7 +216,7 @@ class TestWebServerEndpoints:
         assert resp.status_code == 200
         data = resp.json()
         # Should contain known env var names
-        assert any(k.endswith("_API_KEY") or k.endswith("_TOKEN") for k in data.keys())
+        assert any(k.endswith(("_API_KEY", "_TOKEN")) for k in data.keys())
 
     def test_reveal_env_var(self, tmp_path):
         """POST /api/env/reveal should return the real unredacted value."""

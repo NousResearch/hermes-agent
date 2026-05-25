@@ -48,7 +48,7 @@ def isolated_home(monkeypatch):
 
     # Strip all credential-shaped env vars so each scenario starts hermetic.
     for k in list(os.environ.keys()):
-        if k.endswith("_API_KEY") or k.endswith("_TOKEN"):
+        if k.endswith(("_API_KEY", "_TOKEN")):
             monkeypatch.delenv(k, raising=False)
 
     yield hermes_home

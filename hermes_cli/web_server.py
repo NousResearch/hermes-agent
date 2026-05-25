@@ -3304,7 +3304,6 @@ except ImportError as _pty_import_err:  # pragma: no cover - Windows-only path
 
     class PtyUnavailableError(RuntimeError):  # type: ignore[no-redef]
         """Stub on platforms where pty_bridge can't be imported."""
-        pass
 
 _RESIZE_RE = re.compile(rb"\x1b\[RESIZE:(\d+);(\d+)\]")
 _PTY_READ_CHUNK_TIMEOUT = 0.2

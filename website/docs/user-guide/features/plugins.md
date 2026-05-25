@@ -350,3 +350,13 @@ This enables plugins like remote control viewers, messaging bridges, or webhook 
 :::
 
 See the **[full guide](/docs/guides/build-a-hermes-plugin)** for handler contracts, schema format, hook behavior, error handling, and common mistakes.
+
+## Community plugins
+
+Plugins built by the community and distributed via pip. Install any of these and the tools appear automatically in your next session.
+
+| Plugin | Install | What it does | Author |
+|--------|---------|-------------|--------|
+| **[hermes-music](https://github.com/buckster123/hermes-music-plugin)** | `pip install hermes-music` | AI music generation via Suno, MIDI composition, music library management (10 tools) | [@buckster123](https://github.com/buckster123) |
+
+Have a plugin to share? Open a PR adding it to this table.

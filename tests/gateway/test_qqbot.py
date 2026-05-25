@@ -2,6 +2,7 @@
 
 import asyncio
 import json
+import math
 import os
 import sys
 from types import SimpleNamespace
@@ -407,6 +408,22 @@ class TestQQCloseError:
         err = QQCloseError(4008, "rate limit")
         assert "4008" in str(err)
         assert "rate limit" in str(err)
+
+
+# ---------------------------------------------------------------------------
+# Reconnect policy
+# ---------------------------------------------------------------------------
+
+class TestReconnectPolicy:
+    def test_reconnect_attempts_do_not_cap_transient_failures(self):
+        from gateway.platforms.qqbot.constants import MAX_RECONNECT_ATTEMPTS
+
+        assert math.isinf(MAX_RECONNECT_ATTEMPTS)
+
+    def test_reconnect_backoff_still_caps_delay(self):
+        from gateway.platforms.qqbot.constants import RECONNECT_BACKOFF
+
+        assert RECONNECT_BACKOFF[-1] == 60
 
 
 # ---------------------------------------------------------------------------

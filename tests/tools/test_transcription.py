@@ -23,6 +23,9 @@ def _fake_faster_whisper_module(mock_model):
 # ---------------------------------------------------------------------------
 
 
+pytestmark = pytest.mark.usefixtures("disable_lazy_stt_install")
+
+
 @pytest.fixture(autouse=True)
 def _clear_openai_env(monkeypatch):
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)

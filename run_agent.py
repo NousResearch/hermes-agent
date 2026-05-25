@@ -40,7 +40,7 @@ import threading
 from types import SimpleNamespace
 import urllib.request
 import uuid
-from typing import List, Dict, Any, Optional
+from typing import Callable, List, Dict, Any, Optional
 from urllib.parse import urlparse, parse_qs, urlunparse
 # NOTE: `from openai import OpenAI` is deliberately NOT at module top — the
 # SDK pulls ~240 ms of imports. We expose `OpenAI` as a thin proxy object
@@ -1102,6 +1102,7 @@ class AIAgent:
         checkpoint_max_total_size_mb: int = 500,
         checkpoint_max_file_size_mb: int = 10,
         pass_session_id: bool = False,
+        kanban_auto_close: Optional[Callable[[Dict[str, Any]], None]] = None,
     ):
         """
         Initialize the AI Agent.
@@ -1174,6 +1175,7 @@ class AIAgent:
         # would mangle the escape sequences.  None = use builtins.print.
         self._print_fn = None
         self.background_review_callback = None  # Optional sync callback for gateway delivery
+        self._kanban_auto_close = kanban_auto_close  # Kanban worker auto-close hook
         self.skip_context_files = skip_context_files
         self.load_soul_identity = load_soul_identity
         self.pass_session_id = pass_session_id
@@ -14645,6 +14647,21 @@ class AIAgent:
 
         # Clear stream callback so it doesn't leak into future calls
         self._stream_callback = None
+
+        # ── Kanban auto-close hook ──────────────────────────────────────
+        # After the conversation loop exits, if a kanban_auto_close callback
+        # is registered (injected by the CLI layer when HERMES_KANBAN_TASK
+        # is set), call it with the result dict. The callback checks whether
+        # the worker called kanban_complete/kanban_block and auto-completes
+        # the task if not. This is the PRIMARY layer of defense — it runs in
+        # the Python process after every run_conversation() exit, regardless
+        # of model behavior, and cannot be bypassed by the model failing to
+        # call the kanban_complete tool.
+        if self._kanban_auto_close is not None:
+            try:
+                self._kanban_auto_close(result)
+            except Exception as exc:
+                logger.warning("kanban_auto_close callback failed: %s", exc)
 
         # Check skill trigger NOW — based on how many tool iterations THIS turn used.
         _should_review_skills = False

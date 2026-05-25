@@ -1541,6 +1541,10 @@ DEFAULT_CONFIG = {
     # a plugin in plugins/context_engine/<name>/ or ~/.hermes/plugins/.
     "context": {
         "engine": "compressor",
+        # When True, context blocks (memory, user profile, skills list) use
+        # TOON-lite compact encoding to fit more information per token,
+        # removing decorative separators and XML-style nesting overhead.
+        "compact_format": False,
     },
 
     # Persistent memory -- bounded curated memory injected into system prompt

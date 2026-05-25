@@ -35,6 +35,9 @@ from typing import Dict, Any, List, Optional
 
 from utils import atomic_replace
 
+# TOON-lite compact encoding for context blocks (opt-in via context.compact_format)
+from agent.toon_lite import format_memory_block_toon as _toon_memory_block
+
 # fcntl is Unix-only; on Windows use msvcrt for file locking
 msvcrt = None
 try:
@@ -121,13 +124,15 @@ class MemoryStore:
         Tool responses always reflect this live state.
     """
 
-    def __init__(self, memory_char_limit: int = 2200, user_char_limit: int = 1375):
+    def __init__(self, memory_char_limit: int = 2200, user_char_limit: int = 1375,
+                 compact_format: bool = False):
         self.memory_entries: List[str] = []
         self.user_entries: List[str] = []
         self.memory_char_limit = memory_char_limit
         self.user_char_limit = user_char_limit
         # Frozen snapshot for system prompt -- set once at load_from_disk()
         self._system_prompt_snapshot: Dict[str, str] = {"memory": "", "user": ""}
+        self._compact_format = compact_format
 
     def load_from_disk(self):
         """Load entries from MEMORY.md and USER.md, capture system prompt snapshot.
@@ -473,7 +478,11 @@ class MemoryStore:
         return resp
 
     def _render_block(self, target: str, entries: List[str]) -> str:
-        """Render a system prompt block with header and usage indicator."""
+        """Render a system prompt block with header and usage indicator.
+
+        When self._compact_format is True, uses TOON-lite encoding to fit
+        more content per token by removing decorative separators.
+        """
         if not entries:
             return ""
 
@@ -481,6 +490,12 @@ class MemoryStore:
         content = ENTRY_DELIMITER.join(entries)
         current = len(content)
         pct = min(100, int((current / limit) * 100)) if limit > 0 else 0
+
+        if self._compact_format:
+            return _toon_memory_block(
+                entries, target,
+                usage_pct=pct, usage_cur=current, usage_max=limit,
+            )
 
         if target == "user":
             header = f"USER PROFILE (who the user is) [{pct}% — {current:,}/{limit:,} chars]"

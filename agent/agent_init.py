@@ -1075,9 +1075,11 @@ def init_agent(
             agent._memory_nudge_interval = int(mem_config.get("nudge_interval", 10))
             if agent._memory_enabled or agent._user_profile_enabled:
                 from tools.memory_tool import MemoryStore
+                _compact = bool(cfg_get("context.compact_format", False))
                 agent._memory_store = MemoryStore(
                     memory_char_limit=mem_config.get("memory_char_limit", 2200),
                     user_char_limit=mem_config.get("user_char_limit", 1375),
+                    compact_format=_compact,
                 )
                 agent._memory_store.load_from_disk()
         except Exception:

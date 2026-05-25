@@ -96,9 +96,19 @@ def test_kill_process_uses_cached_pgid_if_wrapper_already_exited(monkeypatch):
     assert killpg_calls == [(67890, signal.SIGTERM), (67890, 0)]
 
 
+@pytest.mark.timeout(90)
 def test_wait_for_process_kills_subprocess_on_keyboardinterrupt():
     """When KeyboardInterrupt arrives mid-poll, the subprocess group must be
-    killed before the exception is re-raised."""
+    killed before the exception is re-raised.
+
+    The test's internal timeouts sum to ~50s (5s subprocess discovery +
+    15s worker-thread join + 30s process-group-exit poll), which exceeds
+    the suite's 30s pytest-timeout default.  Under heavy xdist load the
+    cleanup chain (SIGTERM → reap → SIGKILL → reap) can take long enough
+    that the 30s cap fires before ``_wait_for_pgid_exit`` finishes its
+    first poll cycle.  A 90s ceiling gives the test its full budget plus
+    generous headroom for CI scheduling jitter.
+    """
     env = LocalEnvironment(cwd="/tmp")
     try:
         result_holder = {}

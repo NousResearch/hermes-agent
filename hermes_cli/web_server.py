@@ -2593,6 +2593,10 @@ class ApprovalCreate(BaseModel):
     rollback_or_verification: str
     created_by: str = "dashboard"
     expires_at: Optional[str] = None
+    source_surface: Optional[str] = None
+    source_ref: Optional[str] = None
+    conversation_excerpt: Optional[str] = None
+    related_paths: Optional[List[str]] = None
 
 
 class ApprovalDecision(BaseModel):
@@ -2629,6 +2633,14 @@ async def list_ops_approvals():
 async def create_ops_approval(body: ApprovalCreate):
     try:
         return _approval_store().create(_model_dump(body))
+    except Exception as exc:
+        raise _approval_error(exc) from exc
+
+
+@app.post("/api/ops/approvals/propose")
+async def propose_ops_approval(body: ApprovalCreate):
+    try:
+        return _approval_store().propose_from_context(_model_dump(body))
     except Exception as exc:
         raise _approval_error(exc) from exc
 

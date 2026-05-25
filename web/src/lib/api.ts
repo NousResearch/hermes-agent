@@ -150,6 +150,12 @@ export const api = {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(approval),
     }),
+  proposeOpsApproval: (approval: OpsApprovalCreate) =>
+    fetchJSON<OpsApproval>("/api/ops/approvals/propose", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(approval),
+    }),
   decideOpsApproval: (id: string, action: "approve" | "reject" | "clarify" | "snooze", body: OpsApprovalDecision) =>
     fetchJSON<OpsApproval>(`/api/ops/approvals/${encodeURIComponent(id)}/${action}`, {
       method: "POST",
@@ -594,6 +600,11 @@ export interface OpsApproval {
   execution_allowed: boolean;
   execution_result?: unknown;
   generated_command?: string | null;
+  proposal_kind?: "manual" | "gated_action" | string;
+  source_surface?: string | null;
+  source_ref?: string | null;
+  conversation_excerpt?: string | null;
+  related_paths?: string[];
 }
 
 export interface OpsApprovalCreate {
@@ -608,6 +619,10 @@ export interface OpsApprovalCreate {
   rollback_or_verification: string;
   created_by?: string;
   expires_at?: string;
+  source_surface?: string;
+  source_ref?: string;
+  conversation_excerpt?: string;
+  related_paths?: string[];
 }
 
 export interface OpsApprovalDecision {

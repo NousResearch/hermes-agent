@@ -86,6 +86,103 @@ def test_approval_store_marks_expired_items(_isolate_hermes_home):
     assert listed[0]["status"] == "expired"
 
 
+def test_proposal_ingestion_records_chat_context_and_stays_pending(_isolate_hermes_home):
+    from hermes_cli.ops_approvals import ApprovalStore
+
+    store = ApprovalStore()
+    proposal = store.propose_from_context({
+        "project": "Hermes Ops",
+        "profile": "default",
+        "risk_label": "Live-service",
+        "title": "Restart dashboard only",
+        "proposed_action": "Reload the dashboard process so a code change is active",
+        "target": "Hermes dashboard process",
+        "preview": "Dashboard reload only; messaging gateway remains untouched",
+        "reason": "New read-only API route needs process reload",
+        "rollback_or_verification": "GET /api/status and confirm gateway PID unchanged",
+        "created_by": "Jenny",
+        "source_surface": "discord",
+        "source_ref": "thread:1508516222545956966 message:abc123",
+        "conversation_excerpt": "Travis: proceed with the safe dashboard-only reload",
+        "related_paths": ["/home/jenny/.hermes/hermes-agent/hermes_cli/web_server.py"],
+    })
+
+    assert proposal["status"] == "pending"
+    assert proposal["proposal_kind"] == "gated_action"
+    assert proposal["source_surface"] == "discord"
+    assert proposal["source_ref"] == "thread:1508516222545956966 message:abc123"
+    assert proposal["conversation_excerpt"].startswith("Travis: proceed")
+    assert proposal["related_paths"] == ["/home/jenny/.hermes/hermes-agent/hermes_cli/web_server.py"]
+    assert proposal["execution_allowed"] is False
+
+
+def test_ops_approvals_module_cli_can_ingest_json_proposal(_isolate_hermes_home, tmp_path):
+    import json
+    import subprocess
+    import sys
+
+    payload_path = tmp_path / "proposal.json"
+    payload_path.write_text(json.dumps({
+        "project": "Tool & Tally",
+        "profile": "no-call-estimateready",
+        "risk_label": "Money/customer",
+        "title": "Send customer report",
+        "proposed_action": "Send prepared internal report to customer after Travis review",
+        "target": "hello@toolandtally.com outbound email",
+        "preview": "Email body and report path are ready for review",
+        "reason": "Customer-facing delivery requires explicit approval",
+        "rollback_or_verification": "Confirm sent email in tooltally mailbox; do not send before approval",
+        "created_by": "Jenny",
+        "source_surface": "discord",
+        "source_ref": "thread:test",
+        "conversation_excerpt": "Jenny identified a gated customer-facing action.",
+    }))
+
+    result = subprocess.run(
+        [sys.executable, "-m", "hermes_cli.ops_approvals", "propose", "--json-file", str(payload_path), "--json"],
+        check=True,
+        cwd=str(payload_path.parent),
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+    created = json.loads(result.stdout)
+
+    assert created["status"] == "pending"
+    assert created["project"] == "Tool & Tally"
+    assert created["source_surface"] == "discord"
+    assert created["execution_allowed"] is False
+
+
+def test_approval_api_can_ingest_context_proposal(_isolate_hermes_home):
+    try:
+        from starlette.testclient import TestClient
+    except ImportError:
+        pytest.skip("fastapi/starlette not installed")
+
+    from hermes_cli.web_server import app, _SESSION_HEADER_NAME, _SESSION_TOKEN
+
+    client = TestClient(app)
+    client.headers[_SESSION_HEADER_NAME] = _SESSION_TOKEN
+    payload = _valid_request(
+        title="Rotate API key",
+        risk_label="Credential/auth",
+        source_surface="discord",
+        source_ref="thread:ops message:123",
+        conversation_excerpt="Jenny identified a credential-changing action.",
+        related_paths=["/home/jenny/.hermes/.env"],
+    )
+
+    resp = client.post("/api/ops/approvals/propose", json=payload)
+
+    assert resp.status_code == 200
+    created = resp.json()
+    assert created["proposal_kind"] == "gated_action"
+    assert created["source_surface"] == "discord"
+    assert created["related_paths"] == ["/home/jenny/.hermes/.env"]
+    assert created["execution_allowed"] is False
+
+
 def test_approval_api_records_decision_but_has_no_execute_route(_isolate_hermes_home):
     try:
         from starlette.testclient import TestClient

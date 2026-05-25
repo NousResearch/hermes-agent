@@ -7,9 +7,11 @@ or agent to run in the normal chat/tool flow.
 
 from __future__ import annotations
 
+import argparse
 import json
 import os
 import secrets
+import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Dict, Iterable, Optional
@@ -69,6 +71,19 @@ def _required_text(data: Dict[str, Any], key: str) -> str:
     if not value:
         raise ApprovalError(f"Missing required field: {key}")
     return value
+
+
+def _optional_text(data: Dict[str, Any], key: str, default: str = "") -> str:
+    return str(data.get(key) or default).strip()
+
+
+def _string_list(data: Dict[str, Any], key: str) -> list[str]:
+    raw = data.get(key)
+    if raw is None or raw == "":
+        return []
+    if not isinstance(raw, list):
+        raise ApprovalError(f"{key} must be a list of strings")
+    return [str(item).strip() for item in raw if str(item).strip()]
 
 
 def _atomic_write_json(path: Path, payload: Any) -> None:
@@ -165,6 +180,11 @@ class ApprovalStore:
             "execution_allowed": False,
             "execution_result": None,
             "generated_command": None,
+            "proposal_kind": str(data.get("proposal_kind") or "manual").strip() or "manual",
+            "source_surface": _optional_text(data, "source_surface"),
+            "source_ref": _optional_text(data, "source_ref"),
+            "conversation_excerpt": _optional_text(data, "conversation_excerpt"),
+            "related_paths": _string_list(data, "related_paths"),
         }
         # Validate provided expiry if present.
         _parse_iso(approval["expires_at"])
@@ -173,6 +193,24 @@ class ApprovalStore:
         self._save_items(items)
         self._append_audit("created", approval, actor=approval["created_by"])
         return approval
+
+    def propose_from_context(self, data: Dict[str, Any]) -> Dict[str, Any]:
+        """Create a gated-action approval from a chat/tool workflow.
+
+        This is the ingestion path Jenny can use when normal work discovers a
+        side-effect boundary. It records source context and still creates only a
+        pending decision record; it never executes the proposed action.
+        """
+        payload = dict(data)
+        payload["proposal_kind"] = "gated_action"
+        proposal = self.create(payload)
+        self._append_audit(
+            "proposed_from_context",
+            proposal,
+            actor=proposal.get("created_by"),
+            note=proposal.get("source_ref"),
+        )
+        return proposal
 
     def decide(self, approval_id: str, status: str, *, decided_by: str, decision_note: Optional[str] = None) -> Dict[str, Any]:
         if status not in DECISION_STATUSES:
@@ -210,3 +248,41 @@ class ApprovalStore:
             f"{approval['rollback_or_verification']}. "
             "Do not perform any broader action."
         )
+
+
+def _load_json_payload(path: Optional[str]) -> Dict[str, Any]:
+    if path:
+        return json.loads(Path(path).read_text())
+    raw = sys.stdin.read()
+    if not raw.strip():
+        raise ApprovalError("No proposal JSON provided on stdin or --json-file")
+    return json.loads(raw)
+
+
+def main(argv: Optional[list[str]] = None) -> int:
+    parser = argparse.ArgumentParser(description="Hermes Ops approval ledger helper")
+    sub = parser.add_subparsers(dest="command")
+
+    propose = sub.add_parser("propose", help="Create a pending gated-action approval from JSON")
+    propose.add_argument("--json-file", help="Path to a JSON proposal payload; defaults to stdin")
+    propose.add_argument("--json", action="store_true", help="Print the created approval as JSON")
+
+    args = parser.parse_args(argv)
+    if args.command == "propose":
+        try:
+            created = ApprovalStore().propose_from_context(_load_json_payload(args.json_file))
+        except Exception as exc:
+            print(f"approval proposal failed: {exc}", file=sys.stderr)
+            return 2
+        if args.json:
+            print(json.dumps(created, sort_keys=True))
+        else:
+            print(f"created approval {created['id']} ({created['status']})")
+        return 0
+
+    parser.print_help()
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

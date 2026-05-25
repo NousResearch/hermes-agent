@@ -202,7 +202,7 @@ export default function ApprovalInboxPage() {
     setActioningId("new");
     setMessage(null);
     setError(null);
-    api.createOpsApproval({
+    api.proposeOpsApproval({
       title: "Review dashboard-only maintenance approval",
       project: "Hermes Ops",
       profile: "default",
@@ -213,6 +213,10 @@ export default function ApprovalInboxPage() {
       reason: "Validate the approval inbox workflow before connecting it to real Jenny proposals.",
       rollback_or_verification: "Refresh /approvals and verify the audit-backed decision remains visible; no gateway restart allowed.",
       created_by: "dashboard",
+      source_surface: "dashboard",
+      source_ref: "manual-test-button:/approvals",
+      conversation_excerpt: "Dashboard test proposal created to prove Jenny proposal ingestion and approval decision flow.",
+      related_paths: ["/home/jenny/.hermes/state/ops-center/approval-inbox.json"],
     })
       .then((item) => {
         setApprovals((current) => [item, ...current]);
@@ -284,7 +288,7 @@ export default function ApprovalInboxPage() {
             <div>
               <div className="flex items-center gap-2 text-amber-200"><ClipboardCheck className="h-5 w-5" /><H2 className="text-xl">Writable approval ledger</H2></div>
               <Typography className="mt-2 max-w-3xl text-sm leading-6 text-amber-50/90">
-                Approval records are stored under Hermes state with append-only audit events. Approving creates a copyable Jenny command; it does not run the command.
+                Approval records are stored under Hermes state with append-only audit events. Jenny can now ingest gated proposals from chat/tool workflows. Approving creates a copyable Jenny command; it does not run the command.
               </Typography>
             </div>
             <Button onClick={createSampleApproval} disabled={actioningId === "new"} className="w-fit gap-2">
@@ -322,6 +326,19 @@ export default function ApprovalInboxPage() {
                     <div className="rounded-xl border border-white/10 bg-black/25 p-3"><div className="mb-1 text-xs font-semibold uppercase tracking-wide text-text-secondary">Preview</div><div className="text-sm leading-6 text-text-primary">{item.preview}</div></div>
                     <div className="rounded-xl border border-white/10 bg-black/25 p-3"><div className="mb-1 text-xs font-semibold uppercase tracking-wide text-text-secondary">Verify / rollback</div><div className="text-sm leading-6 text-text-primary">{item.rollback_or_verification}</div></div>
                   </div>
+
+                  {(item.source_surface || item.source_ref || item.conversation_excerpt || (item.related_paths || []).length > 0) && (
+                    <div className="rounded-xl border border-cyan-400/20 bg-cyan-500/10 p-3 text-sm leading-6 text-cyan-50/90">
+                      <div className="mb-1 text-xs font-semibold uppercase tracking-wide text-cyan-200">Proposal source</div>
+                      <div>Kind: {item.proposal_kind || "manual"}</div>
+                      {item.source_surface && <div>Surface: {item.source_surface}</div>}
+                      {item.source_ref && <div className="break-all">Reference: {item.source_ref}</div>}
+                      {item.conversation_excerpt && <div className="mt-2 text-cyan-50">“{item.conversation_excerpt}”</div>}
+                      {(item.related_paths || []).length > 0 && (
+                        <div className="mt-2 break-all text-xs text-cyan-100/80">Paths: {(item.related_paths || []).join(", ")}</div>
+                      )}
+                    </div>
+                  )}
 
                   {item.status === "pending" && (
                     <div className="flex flex-wrap gap-2">

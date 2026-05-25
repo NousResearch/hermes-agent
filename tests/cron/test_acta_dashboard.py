@@ -1571,6 +1571,40 @@ def test_run_history_does_not_leak_prompt_when_response_heading_missing(tmp_path
     assert "No visible Markdown response" in html
 
 
+def test_outputs_and_detail_do_not_leak_prompt_when_response_heading_missing(tmp_path: Path, monkeypatch):
+    (tmp_path / "cron" / "output" / "daily").mkdir(parents=True)
+    (tmp_path / "cron" / "jobs.json").write_text(json.dumps([{"id": "daily", "name": "Daily Brief", "deliver": "telegram:-1003566991387:86"}]))
+    (tmp_path / "cron" / "output" / "daily" / "2026-05-20_08-00-00.md").write_text(
+        "# Cron Job: Daily Brief\n\n"
+        "## Prompt\n\nSECRET PROMPT SHOULD NOT RENDER\n\n"
+        "## Tool Output\n\ninternal trace /Users/mozzie/private/raw.log",
+        encoding="utf-8",
+    )
+    uploaded: dict[str, str] = {}
+
+    def fake_publish(path, job, settings):
+        uploaded["html"] = Path(path).read_text(encoding="utf-8")
+        return "https://acta.imperatr.com/r/daily/detail.html?sig=abc"
+
+    monkeypatch.setattr("cron.acta_dashboard.publish_html_artifact", fake_publish)
+
+    items = collect_situation_items(tmp_path)
+    items = attach_artifact_urls(items, {"enabled": True}, tmp_path / "details")
+    outputs_html = render_outputs_page(items, generated_at=datetime(2026, 5, 20, 12, tzinfo=timezone.utc))
+    detail_html = uploaded["html"]
+
+    for rendered in (outputs_html, detail_html):
+        assert "SECRET PROMPT" not in rendered
+        assert "internal trace" not in rendered
+        assert "/Users/mozzie/private" not in rendered
+        assert "No visible response was produced for this run." in rendered
+    assert items[0].status == "silent"
+    assert items[0].excerpt == "No visible response was produced for this run."
+    assert 'href="https://acta.imperatr.com/r/daily/detail.html?sig=abc"' in outputs_html
+    assert '<article class="report-body">' in detail_html
+    assert 'name="viewport"' in detail_html
+
+
 def test_run_history_rejects_symlinked_run_files(tmp_path: Path):
     output_dir = tmp_path / "cron" / "output" / "daily"
     output_dir.mkdir(parents=True)

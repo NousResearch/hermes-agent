@@ -527,7 +527,7 @@ def collect_situation_items(hermes_home: Path | None = None, run_date: date | No
         status = "silent"
         if latest_md:
             try:
-                response = _extract_response(latest_md.read_text(encoding="utf-8", errors="replace"))
+                response = _extract_response_if_present(latest_md.read_text(encoding="utf-8", errors="replace")) or ""
             except OSError:
                 response = ""
         if response and response.strip() != "[SILENT]":
@@ -549,7 +549,9 @@ def collect_situation_items(hermes_home: Path | None = None, run_date: date | No
                 latest_html=latest_html,
                 latest_time=latest_time,
                 status=status,
-                excerpt=_plain_excerpt(response or "No output yet."),
+                excerpt=_plain_excerpt(
+                    response or ("No visible response was produced for this run." if latest_md or latest_html else "No output yet.")
+                ),
                 telegram_url=_telegram_url_from_job(job),
             )
         )
@@ -1661,7 +1663,7 @@ def _detail_body(item: CronSituationItem) -> str:
     if not item.latest_md:
         return f"# {item.name}\n\nNo Markdown output exists yet."
     text = item.latest_md.read_text(encoding="utf-8", errors="replace")
-    response = _extract_response(text)
+    response = _extract_response_if_present(text) or ""
     if not response or response.strip() == "[SILENT]":
         response = "No visible response was produced for this run."
     return response

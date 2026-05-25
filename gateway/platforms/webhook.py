@@ -770,6 +770,14 @@ class WebhookAdapter(BasePlatformAdapter):
         if gl_token:
             return hmac.compare_digest(gl_token, secret)
 
+        # Notion: X-Notion-Signature = sha256=<hex HMAC-SHA256(secret, raw_body)>
+        notion_sig = _header("X-Notion-Signature")
+        if notion_sig:
+            expected = "sha256=" + hmac.new(
+                secret.encode(), body, hashlib.sha256
+            ).hexdigest()
+            return hmac.compare_digest(notion_sig, expected)
+
         # Generic: X-Webhook-Signature = <hex HMAC-SHA256>
         generic_sig = request.headers.get("X-Webhook-Signature", "")
         if generic_sig:

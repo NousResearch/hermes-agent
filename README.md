@@ -28,6 +28,21 @@ Use any model you want — [Nous Portal](https://portal.nousresearch.com), [Open
 
 ---
 
+## Built-in Skill Workflows
+
+Hermes ships reusable skills for common agent workflows. This release adds a standalone **Goal Prompt Pack** workflow for preparing high-quality autonomous app-build prompts before any code is written.
+
+Use `/goal-prompt-pack` when you want Hermes to create the strongest possible long-running goal prompt for Codex Goal Mode, Hermes workers, or another coding agent. The workflow can start from a rough app idea and produce:
+
+- a product spec and screen-level UI spec;
+- high-fidelity UI mockup prompts, with optional generated mockup references;
+- a translation of selected mockups back into written UI requirements;
+- a final copy-paste-ready goal prompt with acceptance criteria, verification checks, blocker rules, stop rules, and final report format.
+
+For broader product exploration, use `/idea-superpowers-suite`. It now has an optional Goal Prompt Pack stage that can plug the same spec → mockups → autonomous goal prompt process into an idea package. The standalone skill remains independent: you can run `/goal-prompt-pack` directly without using the idea or Superpowers workflows.
+
+---
+
 ## Quick Install
 
 ### Linux, macOS, WSL2, Termux

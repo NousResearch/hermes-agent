@@ -42,7 +42,8 @@ uv pip install mcp
 
 ## Quick Start
 
-Add MCP servers to `~/.hermes/config.yaml` under the `mcp_servers` key:
+Add MCP servers to the appropriate config file under the `mcp_servers` key. First check if you're using a profile-specific config at `~/.hermes/profiles/<profile-name>/config.yaml`, otherwise use the global config at `~/.hermes/config.yaml`:
+
 
 ```yaml
 mcp_servers:

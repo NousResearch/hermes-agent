@@ -37,6 +37,7 @@ from hermes_cli.config import (
     DEFAULT_CONFIG,
     OPTIONAL_ENV_VARS,
     get_config_path,
+    get_effective_default_config,
     get_env_path,
     get_hermes_home,
     load_config,
@@ -429,7 +430,7 @@ def _build_schema_from_config(
     return schema
 
 
-CONFIG_SCHEMA = _build_schema_from_config(DEFAULT_CONFIG)
+CONFIG_SCHEMA = _build_schema_from_config(get_effective_default_config())
 
 # Inject virtual fields that don't live in DEFAULT_CONFIG but are surfaced
 # by the normalize/denormalize cycle.  Insert model_context_length right after
@@ -868,7 +869,7 @@ async def get_config():
 
 @app.get("/api/config/defaults")
 async def get_defaults():
-    return DEFAULT_CONFIG
+    return get_effective_default_config()
 
 
 @app.get("/api/config/schema")

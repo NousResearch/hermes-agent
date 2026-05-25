@@ -5629,3 +5629,119 @@ _inject_platform_plugin_env_vars = _inject_plugin_env_vars
 
 # Eagerly inject so that plugin env vars show up in the dashboard / setup wizard.
 _inject_plugin_env_vars()
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Plugin-contributed config.yaml schema
+# ─────────────────────────────────────────────────────────────────────────────
+#
+# In addition to env-var declarations (requires_env / optional_env), a plugin
+# can opt into surfacing its configuration in the dashboard's CONFIG page (the
+# config.yaml editor) by declaring a top-level ``config_schema:`` block in its
+# plugin.yaml. The dict's keys become field names under a new section named
+# after the manifest's ``name``; values become defaults (types inferred by
+# :func:`_infer_type` in web_server).
+#
+# Example::
+#
+#     name: max-messenger
+#     config_schema:
+#       home_channel: ""
+#       allowed_users: ""
+#       allow_all_users: false
+#       parse_mode: markdown
+#       require_mention: false
+#
+# At runtime the plugin's adapter reads these via
+# ``cfg_get(load_config(), "max-messenger", "home_channel", default="")``.
+
+
+def _load_plugin_config_schemas() -> dict[str, dict]:
+    """Scan installed plugin manifests for ``config_schema:`` declarations.
+
+    Returns a mapping ``{section_key: schema_dict}`` suitable for merging
+    into :data:`DEFAULT_CONFIG`. ``section_key`` is the manifest's ``name``
+    field (a manifest may override with an explicit ``config_section:`` to
+    avoid collisions with bundled DEFAULT_CONFIG sections).
+
+    Reads from ``<hermes_home>/plugins/`` and supports both the flat layout
+    (``<name>/plugin.yaml``) and the category layout
+    (``<category>/<name>/plugin.yaml``), matching :func:`_inject_plugin_env_vars`.
+
+    All failures are swallowed so one bad manifest can't take down CLI import.
+    """
+    schemas: dict[str, dict] = {}
+    try:
+        import yaml  # type: ignore
+    except Exception:
+        return schemas
+
+    plugins_root = get_hermes_home() / "plugins"
+    if not plugins_root.is_dir():
+        return schemas
+
+    def _collect(manifest_path: Path) -> None:
+        try:
+            with open(manifest_path, "r", encoding="utf-8") as f:
+                manifest = yaml.safe_load(f)
+        except Exception:
+            return
+        if not isinstance(manifest, dict):
+            return
+        schema = manifest.get("config_schema")
+        if not isinstance(schema, dict) or not schema:
+            return
+        section = (
+            manifest.get("config_section")
+            or manifest.get("name")
+            or manifest_path.parent.name
+        )
+        if not isinstance(section, str) or not section:
+            return
+        # Last manifest wins on duplicate section names — caller may also
+        # log a warning when merging into DEFAULT_CONFIG.
+        schemas[section] = schema
+
+    for child in sorted(plugins_root.iterdir()):
+        if not child.is_dir() or child.name.startswith("."):
+            continue
+        for cand in (child / "plugin.yaml", child / "plugin.yml"):
+            if cand.exists():
+                _collect(cand)
+                break
+        else:
+            # Treat as category layout: scan one level deeper for
+            # `<category>/<plugin>/plugin.yaml`.
+            for grandchild in sorted(child.iterdir()):
+                if not grandchild.is_dir():
+                    continue
+                for cand in (grandchild / "plugin.yaml", grandchild / "plugin.yml"):
+                    if cand.exists():
+                        _collect(cand)
+                        break
+
+    return schemas
+
+
+def get_effective_default_config() -> dict:
+    """:data:`DEFAULT_CONFIG` merged with plugin-contributed ``config_schema:`` sections.
+
+    Plugin sections that would collide with an existing top-level key in
+    DEFAULT_CONFIG are dropped with a logged warning — bundled sections
+    always win. Callers should treat the return value as read-only;
+    DEFAULT_CONFIG itself is not mutated.
+    """
+    import copy
+
+    merged = copy.deepcopy(DEFAULT_CONFIG)
+    for section, schema in _load_plugin_config_schemas().items():
+        if section in merged:
+            logger.warning(
+                "Plugin config_schema for section '%s' collides with a bundled "
+                "DEFAULT_CONFIG section; ignoring the plugin contribution. "
+                "Use 'config_section:' in plugin.yaml to choose a unique name.",
+                section,
+            )
+            continue
+        merged[section] = schema
+    return merged

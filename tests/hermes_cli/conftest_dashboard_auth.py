@@ -31,24 +31,35 @@ from hermes_cli.dashboard_auth.base import (
 )
 
 _STUB_SECRET = b"stub-test-secret-not-for-prod"
+# Length of HMAC-SHA256 digest. We append this many trailing bytes of
+# signature after ``raw`` in ``_sign``; ``_unsign`` slices them back off
+# rather than splitting on a separator. (A separator byte chosen
+# arbitrarily, e.g. ``b"."``, fails ~12% of the time when the HMAC
+# digest happens to contain that byte — ``bytes.rsplit`` then splits at
+# the wrong index and HMAC verification spuriously rejects the token.)
+_SIG_LEN = hashlib.sha256().digest_size
 
 
 def _sign(payload: dict) -> str:
     """Produce a tamper-evident opaque token.
 
-    Not a real JWT — just a base64(JSON|HMAC-SHA256) blob with enough
-    structure to round-trip through verify_session.
+    Not a real JWT — just a base64(JSON || HMAC-SHA256) blob with enough
+    structure to round-trip through verify_session. The signature is
+    appended as a fixed-length suffix (no separator) so binary HMAC bytes
+    can't be confused with a delimiter.
     """
     raw = json.dumps(payload, separators=(",", ":")).encode()
     sig = hmac.new(_STUB_SECRET, raw, hashlib.sha256).digest()
-    return base64.urlsafe_b64encode(raw + b"." + sig).decode()
+    return base64.urlsafe_b64encode(raw + sig).decode()
 
 
 def _unsign(token: str) -> dict | None:
     """Inverse of ``_sign``; returns None on any tamper/decode failure."""
     try:
         blob = base64.urlsafe_b64decode(token.encode())
-        raw, sig = blob.rsplit(b".", 1)
+        if len(blob) <= _SIG_LEN:
+            return None
+        raw, sig = blob[:-_SIG_LEN], blob[-_SIG_LEN:]
         expected = hmac.new(_STUB_SECRET, raw, hashlib.sha256).digest()
         if not hmac.compare_digest(sig, expected):
             return None

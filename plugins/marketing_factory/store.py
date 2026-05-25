@@ -196,6 +196,12 @@ class MarketingFactoryStore:
         # tokens on apps the user isn't actively running. Threshold defaults to 3.
         merged.setdefault("auto_generate", existing.get("auto_generate", False))
         merged.setdefault("auto_generate_threshold", existing.get("auto_generate_threshold", 3))
+        # Per-brand visual identity. image_library = list of brand-approved URLs
+        # rotated through per draft (zero cost, always works, brand-authentic).
+        # image_style_guide = free-form text the ImageGenAgent weaves into the
+        # LLM image-prompt synth when library is empty and MF_AUTO_IMAGES=1.
+        merged.setdefault("image_library", existing.get("image_library", []))
+        merged.setdefault("image_style_guide", existing.get("image_style_guide", ""))
         state["apps"][slug] = merged
         state["brand_memories"].setdefault(slug, {"learnings": [], "summaries": []})
         self._write_state(state)

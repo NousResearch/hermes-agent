@@ -27,6 +27,7 @@ from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
 from hermes_constants import get_hermes_home
 from agent.skill_utils import is_excluded_skill_path
+from utils import atomic_json_write
 from typing import Any, Dict, List, Optional, Tuple, Union
 from urllib.parse import urljoin, urlparse, urlunparse
 
@@ -2836,8 +2837,7 @@ class HubLockFile:
             return {"version": 1, "installed": {}}
 
     def save(self, data: dict) -> None:
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        self.path.write_text(json.dumps(data, indent=2, ensure_ascii=False) + "\n")
+        atomic_json_write(self.path, data)
 
     def record_install(
         self,
@@ -2909,8 +2909,7 @@ class TapsManager:
             return []
 
     def save(self, taps: List[dict]) -> None:
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        self.path.write_text(json.dumps({"taps": taps}, indent=2) + "\n")
+        atomic_json_write(self.path, {"taps": taps})
 
     def add(self, repo: str, path: str = "skills/") -> bool:
         """Add a tap. Returns False if already exists."""

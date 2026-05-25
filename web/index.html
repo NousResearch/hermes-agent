@@ -1,11 +1,3 @@
-<!--
-INSTRUCTIONS:
-1. This is the entry point for your UI.
-2. Make sure your Python server serves THIS file at `/`.
-3. Ensure "styles.css" is in the same folder.
-4. Ensure "app.js" is in the same folder.
--->
-
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -13,15 +5,13 @@ INSTRUCTIONS:
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Hermes UI</title>
 
-  <!-- REQUIRED: stylesheet -->
-  <link rel="stylesheet" href="styles.css" />
+  <link rel="stylesheet" href="/static/styles.css">
 </head>
 
 <body>
 
 <div id="app">
 
-  <!-- Sidebar -->
   <aside id="sidebar" class="collapsed">
     <button id="toggleSidebar">☰</button>
 
@@ -36,7 +26,6 @@ INSTRUCTIONS:
     </nav>
   </aside>
 
-  <!-- Main -->
   <div id="main">
 
     <div id="leftPanel">
@@ -58,8 +47,9 @@ INSTRUCTIONS:
     </div>
 
   </div>
+
 </div>
 
-<script type="module" src="app.js"></script>
+<script type="module" src="/static/app.js"></script>
 </body>
 </html>

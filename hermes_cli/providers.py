@@ -196,6 +196,11 @@ HERMES_OVERLAYS: Dict[str, HermesOverlay] = {
         base_url_override="https://api.gmi-serving.com/v1",
         base_url_env_var="GMI_BASE_URL",
     ),
+    "groq": HermesOverlay(
+        transport="openai_chat",
+        base_url_override="https://api.groq.com/openai/v1",
+        base_url_env_var="GROQ_BASE_URL",
+    ),
     "ollama-cloud": HermesOverlay(
         transport="openai_chat",
         base_url_override="https://ollama.com/v1",
@@ -349,6 +354,10 @@ ALIASES: Dict[str, str] = {
     "arcee-ai": "arcee",
     "arceeai": "arcee",
 
+    # groq
+    "groqcloud": "groq",
+    "groq-cloud": "groq",
+
     # gmi
     "gmi-cloud": "gmi",
     "gmicloud": "gmi",
@@ -376,6 +385,7 @@ _LABEL_OVERRIDES: Dict[str, str] = {
     "stepfun": "StepFun Step Plan",
     "xiaomi": "Xiaomi MiMo",
     "gmi": "GMI Cloud",
+    "groq": "Groq",
     "tencent-tokenhub": "Tencent TokenHub",
     "lmstudio": "LM Studio",
     "local": "Local endpoint",

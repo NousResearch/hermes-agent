@@ -295,6 +295,14 @@ PROVIDER_REGISTRY: Dict[str, ProviderConfig] = {
         api_key_env_vars=("GMI_API_KEY",),
         base_url_env_var="GMI_BASE_URL",
     ),
+    "groq": ProviderConfig(
+        id="groq",
+        name="Groq",
+        auth_type="api_key",
+        inference_base_url="https://api.groq.com/openai/v1",
+        api_key_env_vars=("GROQ_API_KEY",),
+        base_url_env_var="GROQ_BASE_URL",
+    ),
     "minimax": ProviderConfig(
         id="minimax",
         name="MiniMax",
@@ -1413,6 +1421,7 @@ def resolve_provider(
         "step": "stepfun", "stepfun-coding-plan": "stepfun",
         "arcee-ai": "arcee", "arceeai": "arcee",
         "gmi-cloud": "gmi", "gmicloud": "gmi",
+        "groqcloud": "groq", "groq-cloud": "groq",
         "minimax-china": "minimax-cn", "minimax_cn": "minimax-cn",
         "minimax-portal": "minimax-oauth", "minimax-global": "minimax-oauth", "minimax_oauth": "minimax-oauth",
         "alibaba_coding": "alibaba-coding-plan", "alibaba-coding": "alibaba-coding-plan",

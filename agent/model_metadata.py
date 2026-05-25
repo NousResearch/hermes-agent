@@ -64,6 +64,7 @@ _PROVIDER_PREFIXES: frozenset[str] = frozenset({
     "tencent", "tokenhub", "tencent-cloud", "tencentmaas",
     "arcee-ai", "arceeai",
     "gmi-cloud", "gmicloud",
+    "groq", "groqcloud", "groq-cloud",
     "xai", "x-ai", "x.ai", "grok",
     "nvidia", "nim", "nvidia-nim", "nemotron",
     "qwen-portal", "novita-ai", "novitaai",

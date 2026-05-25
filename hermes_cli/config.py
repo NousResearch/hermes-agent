@@ -2020,6 +2020,22 @@ OPTIONAL_ENV_VARS = {
         "category": "provider",
         "advanced": True,
     },
+    "GROQ_API_KEY": {
+        "description": "Groq API key",
+        "prompt": "Groq API key",
+        "url": "https://console.groq.com/keys",
+        "password": True,
+        "category": "provider",
+        "advanced": True,
+    },
+    "GROQ_BASE_URL": {
+        "description": "Groq base URL override",
+        "prompt": "Groq base URL (leave empty for default)",
+        "url": None,
+        "password": False,
+        "category": "provider",
+        "advanced": True,
+    },
     "MINIMAX_API_KEY": {
         "description": "MiniMax API key (international)",
         "prompt": "MiniMax API key",

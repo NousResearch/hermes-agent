@@ -1378,3 +1378,81 @@ class TestMultimodalToolContentUnsupported:
         e = MockAPIError("bad request: missing field 'model'", status_code=400)
         result = classify_api_error(e, provider="openrouter", model="anthropic/claude-sonnet-4")
         assert result.reason != FailoverReason.multimodal_tool_content_unsupported
+class TestIsTransientTransportError:
+    """Coverage for the helper used by callers (e.g. context_compressor)
+    that retry network hiccups before giving up. (#16670)"""
+
+    def test_incomplete_chunked_read_is_transient(self):
+        from agent.error_classifier import is_transient_transport_error
+        assert is_transient_transport_error(
+            Exception("peer closed connection without sending complete message body (incomplete chunked read)")
+        )
+
+    def test_remote_protocol_error_class_name_matches_registry(self):
+        from agent.error_classifier import is_transient_transport_error
+        assert is_transient_transport_error(RemoteProtocolError("server disconnected"))
+
+    def test_connection_error_is_transient(self):
+        from agent.error_classifier import is_transient_transport_error
+        assert is_transient_transport_error(ConnectionError("refused"))
+
+    def test_typed_http_error_is_not_transient(self):
+        """4xx/5xx are server-side decisions, not transport hiccups —
+        retrying them at this layer just amplifies user-visible errors."""
+        from agent.error_classifier import is_transient_transport_error
+        assert not is_transient_transport_error(
+            MockAPIError("forbidden", status_code=403)
+        )
+        assert not is_transient_transport_error(
+            MockAPIError("rate limited", status_code=429)
+        )
+
+    def test_unrelated_runtime_error_is_not_transient(self):
+        from agent.error_classifier import is_transient_transport_error
+        assert not is_transient_transport_error(ValueError("bad config"))
+
+    def test_none_is_not_transient(self):
+        from agent.error_classifier import is_transient_transport_error
+        assert not is_transient_transport_error(None)  # type: ignore[arg-type]
+
+    def test_builtin_timeout_error_is_not_transient(self):
+        """Each retry pays the full timeout window; chaining 3 of them
+        against a 120s compression timeout would stall the user-visible
+        response for ~6 minutes before fallback. Reviewer feedback on
+        round-7 PR #16670 — keep timeouts on the cooldown path."""
+        from agent.error_classifier import is_transient_transport_error
+        assert not is_transient_transport_error(TimeoutError("hung"))
+
+    def test_read_timeout_class_name_is_not_transient(self):
+        from agent.error_classifier import is_transient_transport_error
+
+        class ReadTimeout(MockTransportError):
+            pass
+
+        assert not is_transient_transport_error(ReadTimeout("slow read"))
+
+    def test_api_timeout_error_class_name_is_not_transient(self):
+        from agent.error_classifier import is_transient_transport_error
+
+        class APITimeoutError(MockTransportError):
+            pass
+
+        assert not is_transient_transport_error(APITimeoutError("upstream slow"))
+
+    def test_pool_timeout_class_name_is_not_transient(self):
+        from agent.error_classifier import is_transient_transport_error
+
+        class PoolTimeout(MockTransportError):
+            pass
+
+        assert not is_transient_transport_error(PoolTimeout("pool exhausted"))
+
+    def test_connect_timeout_class_name_is_not_transient(self):
+        """ConnectTimeout *is* a timeout — keep it on the cooldown path
+        even though it's transport-flavoured."""
+        from agent.error_classifier import is_transient_transport_error
+
+        class ConnectTimeout(MockTransportError):
+            pass
+
+        assert not is_transient_transport_error(ConnectTimeout("connect timeout"))

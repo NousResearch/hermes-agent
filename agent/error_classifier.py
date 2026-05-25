@@ -385,6 +385,63 @@ _SSL_TRANSIENT_PATTERNS = [
 ]
 
 
+# Disconnect/protocol-class transport errors only — the subset where a
+# single immediate retry is genuinely cheap (failed mid-stream, fast-fail
+# reconnect). Excludes timeout-class types (ReadTimeout, ConnectTimeout,
+# PoolTimeout, APITimeoutError, TimeoutError) because retrying those costs
+# one full timeout window each — three back-to-back retries against a
+# 120 s compression timeout = ~6 minute stall before fallback.
+_DISCONNECT_TRANSPORT_TYPES = frozenset({
+    "ConnectError",
+    "RemoteProtocolError",
+    "ConnectionResetError",
+    "ConnectionAbortedError",
+    "BrokenPipeError",
+    "ReadError",
+    "ServerDisconnectedError",
+    "SSLError", "SSLZeroReturnError", "SSLWantReadError",
+    "SSLWantWriteError", "SSLEOFError", "SSLSyscallError",
+    "APIConnectionError",
+})
+
+
+def is_transient_transport_error(error: Exception) -> bool:
+    """True for fast-fail mid-stream transport errors that are worth one
+    cheap retry (incomplete chunked read, peer-closed connection, SSL
+    record-MAC mismatch).
+
+    Deliberately excludes timeout-class errors and explicit HTTP status
+    codes:
+    - Timeouts mean "the endpoint is genuinely slow / hung"; retrying
+      pays the full timeout window again and turns one missed compaction
+      into a multi-minute stall.
+    - HTTP-status errors are server-side decisions, not transport
+      hiccups, and have their own retry/fallback logic.
+
+    Used by callers (e.g. the auxiliary compressor) that want a bounded
+    in-call retry without the full ``classify_api_error`` machinery.
+    """
+    if error is None:
+        return False
+    if _extract_status_code(error) is not None:
+        return False
+    # ConnectionError (built-in) covers ConnectionResetError /
+    # ConnectionAbortedError / BrokenPipeError without dragging in
+    # TimeoutError. Importantly, isinstance(_, TimeoutError) is NOT
+    # checked here — see docstring.
+    if isinstance(error, ConnectionError):
+        return True
+    error_type = type(error).__name__
+    if error_type in _DISCONNECT_TRANSPORT_TYPES:
+        return True
+    msg = str(error).lower()
+    if any(pat in msg for pat in _SERVER_DISCONNECT_PATTERNS):
+        return True
+    if any(pat in msg for pat in _SSL_TRANSIENT_PATTERNS):
+        return True
+    return False
+
+
 # ── Classification pipeline ─────────────────────────────────────────────
 
 def classify_api_error(

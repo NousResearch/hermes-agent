@@ -25,6 +25,7 @@ from typing import Any, Dict, List, Optional
 
 from agent.auxiliary_client import call_llm, _is_connection_error
 from agent.context_engine import ContextEngine
+from agent.error_classifier import is_transient_transport_error
 from agent.model_metadata import (
     MINIMUM_CONTEXT_LENGTH,
     get_model_context_length,
@@ -74,6 +75,15 @@ _IMAGE_TOKEN_ESTIMATE = 1600
 # for tail-cut decisions.
 _IMAGE_CHAR_EQUIVALENT = _IMAGE_TOKEN_ESTIMATE * _CHARS_PER_TOKEN
 _SUMMARY_FAILURE_COOLDOWN_SECONDS = 600
+
+# Transient transport errors during compression (incomplete chunked read,
+# RemoteProtocolError, "peer closed connection", etc.) are common when the
+# auxiliary endpoint hiccups mid-stream. Without an in-call retry, every
+# such hiccup costs the user a real summary turn and inserts the fallback
+# context marker for the next 60 seconds. Two cheap retries with brief
+# backoff recover most of these cases. (#16670)
+_SUMMARY_TRANSIENT_MAX_RETRIES = 2
+_SUMMARY_TRANSIENT_BACKOFF_SECONDS = (1.0, 3.0)
 
 
 def _content_length_for_budget(raw_content: Any) -> int:
@@ -1069,7 +1079,36 @@ The user has requested that this compaction PRIORITISE preserving all informatio
             }
             if self.summary_model:
                 call_kwargs["model"] = self.summary_model
-            response = call_llm(**call_kwargs)
+
+            # Retry transient transport errors (incomplete chunked read,
+            # peer-closed-connection, etc.) before falling through to the
+            # cooldown path. Without this, a single network hiccup costs the
+            # user a real summary and a 60-second pause. (#16670)
+            response = None
+            last_transient_err: Optional[Exception] = None
+            for _attempt in range(_SUMMARY_TRANSIENT_MAX_RETRIES + 1):
+                try:
+                    response = call_llm(**call_kwargs)
+                    break
+                except Exception as call_err:
+                    if not is_transient_transport_error(call_err):
+                        raise
+                    last_transient_err = call_err
+                    if _attempt >= _SUMMARY_TRANSIENT_MAX_RETRIES:
+                        raise
+                    backoff = _SUMMARY_TRANSIENT_BACKOFF_SECONDS[
+                        min(_attempt, len(_SUMMARY_TRANSIENT_BACKOFF_SECONDS) - 1)
+                    ]
+                    logging.info(
+                        "Context compression: transient transport error (%s); "
+                        "retrying in %.1fs (attempt %d/%d)",
+                        call_err,
+                        backoff,
+                        _attempt + 1,
+                        _SUMMARY_TRANSIENT_MAX_RETRIES,
+                    )
+                    time.sleep(backoff)
+            assert response is not None  # loop only exits via break or raise
             content = response.choices[0].message.content
             # Handle cases where content is not a string (e.g., dict from llama.cpp)
             if not isinstance(content, str):

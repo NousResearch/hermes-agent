@@ -1942,3 +1942,121 @@ class TestTruncateToolCallArgsJson:
         parsed = _json.loads(shrunk)
         assert parsed["path"] == "~/.hermes/skills/shopping/browser-setup-notes.md"
         assert parsed["content"].endswith("...[truncated]")
+
+
+class TestSummaryTransientRetry:
+    """Regression coverage for #16670 — auxiliary compression must retry
+    transient transport errors (incomplete chunked read, peer-closed-
+    connection) before giving up and inserting the fallback marker.
+    """
+
+    @staticmethod
+    def _make_response(text: str = "summary text"):
+        mock = MagicMock()
+        mock.choices = [MagicMock()]
+        mock.choices[0].message.content = text
+        return mock
+
+    @staticmethod
+    def _messages():
+        return [
+            {"role": "user", "content": "long input"},
+            {"role": "assistant", "content": "long output"},
+        ]
+
+    def test_retries_incomplete_chunked_read_then_succeeds(self):
+        with patch("agent.context_compressor.get_model_context_length", return_value=100000):
+            c = ContextCompressor(model="test", quiet_mode=True)
+
+        success_response = self._make_response()
+        attempt_results = [
+            Exception("peer closed connection without sending complete message body (incomplete chunked read)"),
+            success_response,
+        ]
+
+        with patch("agent.context_compressor.call_llm", side_effect=attempt_results) as mock_call, \
+             patch("agent.context_compressor.time.sleep"):
+            result = c._generate_summary(self._messages())
+
+        assert result is not None, "must recover after a single transient retry"
+        assert mock_call.call_count == 2
+        # Cooldown must NOT be set after a successful retry — otherwise the
+        # next compaction would skip even though we have a working summary.
+        assert c._summary_failure_cooldown_until == 0.0
+        assert c._last_summary_error is None
+
+    def test_retries_remote_protocol_error_then_succeeds(self):
+        with patch("agent.context_compressor.get_model_context_length", return_value=100000):
+            c = ContextCompressor(model="test", quiet_mode=True)
+
+        # httpx.RemoteProtocolError is the actual class name reported in #16670.
+        # Use a custom class with that name so ``type(e).__name__`` matches the
+        # transport-error registry without requiring httpx in the test env.
+        class RemoteProtocolError(Exception):
+            pass
+
+        success_response = self._make_response()
+        attempt_results = [
+            RemoteProtocolError("server disconnected mid-stream"),
+            RemoteProtocolError("server disconnected mid-stream"),
+            success_response,
+        ]
+
+        with patch("agent.context_compressor.call_llm", side_effect=attempt_results) as mock_call, \
+             patch("agent.context_compressor.time.sleep"):
+            result = c._generate_summary(self._messages())
+
+        assert result is not None
+        assert mock_call.call_count == 3  # 1 initial + 2 retries
+
+    def test_non_transient_error_is_not_retried(self):
+        with patch("agent.context_compressor.get_model_context_length", return_value=100000):
+            c = ContextCompressor(model="test", quiet_mode=True)
+
+        # 401-style error carries an HTTP status — ``is_transient_transport_error``
+        # rejects these so they fall straight through to the cooldown path.
+        class _Auth(Exception):
+            status_code = 401
+
+        with patch("agent.context_compressor.call_llm", side_effect=_Auth("forbidden")) as mock_call, \
+             patch("agent.context_compressor.time.sleep") as mock_sleep:
+            result = c._generate_summary(self._messages())
+
+        assert result is None
+        assert mock_call.call_count == 1, "non-transient errors must not retry"
+        mock_sleep.assert_not_called()
+
+    def test_timeout_error_is_not_retried(self):
+        """Reviewer feedback on round-7 PR #16670: each retry pays the
+        full compression timeout window again. A 1+2 retry loop against
+        the 120 s default = ~6 min stalled compaction before fallback.
+        Keep timeouts on the existing cooldown path."""
+        with patch("agent.context_compressor.get_model_context_length", return_value=100000):
+            c = ContextCompressor(model="test", quiet_mode=True)
+
+        with patch("agent.context_compressor.call_llm", side_effect=TimeoutError("upstream hung")) as mock_call, \
+             patch("agent.context_compressor.time.sleep") as mock_sleep:
+            result = c._generate_summary(self._messages())
+
+        assert result is None
+        assert mock_call.call_count == 1, "TimeoutError must not enter the retry loop"
+        mock_sleep.assert_not_called()
+        # Cooldown still set so subsequent compactions don't hammer the
+        # slow endpoint.
+        assert c._summary_failure_cooldown_until > 0.0
+
+    def test_retries_exhausted_falls_through_to_cooldown(self):
+        with patch("agent.context_compressor.get_model_context_length", return_value=100000):
+            c = ContextCompressor(model="test", quiet_mode=True)
+
+        err = Exception("incomplete chunked read")
+
+        with patch("agent.context_compressor.call_llm", side_effect=err) as mock_call, \
+             patch("agent.context_compressor.time.sleep"):
+            result = c._generate_summary(self._messages())
+
+        assert result is None
+        # 1 initial attempt + 2 retries before giving up.
+        assert mock_call.call_count == 3
+        assert c._summary_failure_cooldown_until > 0.0
+        assert "incomplete chunked read" in (c._last_summary_error or "")

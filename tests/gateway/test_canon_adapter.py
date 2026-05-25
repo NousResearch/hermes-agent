@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
@@ -272,6 +272,7 @@ class TestCanonHttpClient:
                 "msg-1",
                 "accepted_now",
             )
+            await client.mark_as_read("convo-1")
             await client.create_runtime_input_request(
                 "convo-1",
                 input_id="input-1",
@@ -297,6 +298,7 @@ class TestCanonHttpClient:
             "/runtime/status",
             "/runtime/turn",
             "/conversations/convo-1/messages/msg-1/disposition",
+            "/conversations/convo-1/read",
             "/runtime-input/request",
             "/runtime-input/consume",
             "/runtime-approval/request",
@@ -311,7 +313,8 @@ class TestCanonHttpClient:
             "capabilities": {"supportsQueue": True},
         }
         assert calls[2][3] == {"inboundDisposition": "accepted_now"}
-        assert calls[3][3] == {
+        assert calls[3][3] is None
+        assert calls[4][3] == {
             "conversationId": "convo-1",
             "inputId": "input-1",
             "kind": "clarify",
@@ -322,6 +325,71 @@ class TestCanonHttpClient:
 
 
 class TestCanonInbound:
+    class FakeClient:
+        def __init__(self, *, fail_read: bool = False):
+            self.dispositions = []
+            self.reads = []
+            self.fail_read = fail_read
+
+        async def update_message_disposition(
+            self,
+            conversation_id,
+            message_id,
+            inbound_disposition,
+        ):
+            self.dispositions.append((conversation_id, message_id, inbound_disposition))
+
+        async def mark_as_read(self, conversation_id):
+            if self.fail_read:
+                raise RuntimeError("read failed")
+            self.reads.append(conversation_id)
+
+    @staticmethod
+    def _message_event(*, message_id="msg-1", metadata=None):
+        from gateway.config import Platform
+        from gateway.platforms.base import MessageEvent
+        from gateway.session import SessionSource
+
+        return MessageEvent(
+            text="hello",
+            source=SessionSource(
+                platform=Platform("canon"),
+                chat_id="convo-1",
+                user_id="human-1",
+            ),
+            message_id=message_id,
+            raw_message={"message": {"metadata": metadata or {}}},
+        )
+
+    @staticmethod
+    def _gateway_runner(adapter, *, authorized=True):
+        from gateway.config import GatewayConfig, PlatformConfig
+        from gateway.run import GatewayRunner
+
+        runner = object.__new__(GatewayRunner)
+        runner.config = GatewayConfig(
+            platforms={adapter.platform: PlatformConfig(enabled=True)}
+        )
+        runner.adapters = {adapter.platform: adapter}
+        runner.session_store = None
+        runner.pairing_store = MagicMock()
+        runner.pairing_store.is_approved.return_value = False
+        runner.pairing_store._is_rate_limited.return_value = False
+        runner._running_agents = {}
+        runner._running_agents_ts = {}
+        runner._pending_messages = {}
+        runner._queued_events = {}
+        runner._busy_ack_ts = {}
+        runner._update_prompt_pending = {}
+        runner._session_run_generation = {}
+        runner._draining = False
+        runner._is_user_authorized = MagicMock(return_value=authorized)
+        runner._get_unauthorized_dm_behavior = MagicMock(return_value="ignore")
+        runner._handle_message_with_agent = AsyncMock(
+            return_value={"final_response": "", "messages": []}
+        )
+        return runner
+
     @pytest.mark.asyncio
     async def test_message_created_normalizes_to_message_event(self):
         from gateway.platforms.base import MessageType
@@ -364,6 +432,8 @@ class TestCanonInbound:
     async def test_ignores_self_messages_and_duplicates(self):
         adapter = CanonAdapter(_config(extra={"api_key": "key"}))
         adapter._agent_id = "agent-1"
+        fake = self.FakeClient()
+        adapter._client = fake
         adapter.handle_message = AsyncMock()
 
         payload = {
@@ -382,6 +452,7 @@ class TestCanonInbound:
         await adapter._handle_message_payload(payload)
         await adapter._handle_message_payload(payload)
         adapter.handle_message.assert_awaited_once()
+        assert fake.reads == []
 
     @pytest.mark.asyncio
     async def test_attachment_only_message_gets_text_placeholder(self):
@@ -405,6 +476,8 @@ class TestCanonInbound:
     @pytest.mark.asyncio
     async def test_runtime_control_messages_do_not_dispatch_as_user_prompts(self):
         adapter = CanonAdapter(_config(extra={"api_key": "key"}))
+        fake = self.FakeClient()
+        adapter._client = fake
         adapter.handle_message = AsyncMock()
 
         await adapter._handle_message_payload({
@@ -422,6 +495,7 @@ class TestCanonInbound:
         })
 
         adapter.handle_message.assert_not_awaited()
+        assert fake.reads == []
 
     @pytest.mark.asyncio
     async def test_runtime_signal_dispatches_hermes_session_command(self):
@@ -571,6 +645,140 @@ class TestCanonInbound:
         assert event.message_type == MessageType.VOICE
         assert event.media_urls == ["/tmp/canon-audio.m4a", "/tmp/canon-video.mp4"]
         assert event.media_types == ["audio/mp4", "video/mp4"]
+
+    @pytest.mark.asyncio
+    async def test_gateway_message_accepted_marks_accepted_message_read(self):
+        adapter = CanonAdapter(_config(extra={"api_key": "key"}))
+        fake = self.FakeClient()
+        adapter._client = fake
+
+        await adapter.on_gateway_message_accepted(
+            self._message_event(metadata={"inboundDisposition": "queued"}),
+            "session-1",
+        )
+
+        assert fake.dispositions == [("convo-1", "msg-1", "accepted_now")]
+        assert fake.reads == ["convo-1"]
+
+    @pytest.mark.asyncio
+    async def test_runtime_turn_start_only_publishes_runtime_turn(self):
+        adapter = CanonAdapter(_config(extra={"api_key": "key"}))
+        fake = self.FakeClient()
+        adapter._client = fake
+        adapter._publish_runtime_turn = AsyncMock()
+
+        await adapter._on_runtime_turn_start(
+            self._message_event(metadata={"inboundDisposition": "queued"}),
+            "session-1",
+        )
+
+        assert fake.dispositions == []
+        assert fake.reads == []
+        adapter._publish_runtime_turn.assert_awaited_once_with(
+            "convo-1",
+            "thinking",
+            session_key="session-1",
+            active_message_ids=["msg-1"],
+        )
+
+    @pytest.mark.asyncio
+    async def test_gateway_message_accepted_read_failure_is_non_fatal(self):
+        adapter = CanonAdapter(_config(extra={"api_key": "key"}))
+        fake = self.FakeClient(fail_read=True)
+        adapter._client = fake
+
+        await adapter.on_gateway_message_accepted(self._message_event(), "session-1")
+
+        assert fake.dispositions == []
+        assert fake.reads == []
+
+    @pytest.mark.asyncio
+    async def test_unauthorized_gateway_message_does_not_mark_read(self, monkeypatch):
+        monkeypatch.setattr("hermes_cli.plugins.invoke_hook", lambda *args, **kwargs: [])
+        adapter = CanonAdapter(_config(extra={"api_key": "key"}))
+        fake = self.FakeClient()
+        adapter._client = fake
+        runner = self._gateway_runner(adapter, authorized=False)
+
+        result = await runner._handle_message(self._message_event())
+
+        assert result is None
+        assert fake.dispositions == []
+        assert fake.reads == []
+        runner._handle_message_with_agent.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_pre_gateway_dispatch_skip_does_not_mark_read(self, monkeypatch):
+        def fake_hook(name, **kwargs):
+            if name == "pre_gateway_dispatch":
+                return [{"action": "skip", "reason": "plugin-handled"}]
+            return []
+
+        monkeypatch.setattr("hermes_cli.plugins.invoke_hook", fake_hook)
+        adapter = CanonAdapter(_config(extra={"api_key": "key"}))
+        fake = self.FakeClient()
+        adapter._client = fake
+        runner = self._gateway_runner(adapter, authorized=True)
+
+        result = await runner._handle_message(self._message_event())
+
+        assert result is None
+        assert fake.dispositions == []
+        assert fake.reads == []
+        runner._is_user_authorized.assert_not_called()
+        runner._handle_message_with_agent.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_authorized_gateway_message_marks_read(self, monkeypatch):
+        monkeypatch.setattr("hermes_cli.plugins.invoke_hook", lambda *args, **kwargs: [])
+        adapter = CanonAdapter(_config(extra={"api_key": "key"}))
+        fake = self.FakeClient()
+        adapter._client = fake
+        runner = self._gateway_runner(adapter, authorized=True)
+
+        result = await runner._handle_message(self._message_event())
+
+        assert result == {"final_response": "", "messages": []}
+        assert fake.dispositions == []
+        assert fake.reads == ["convo-1"]
+        runner._handle_message_with_agent.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_queued_busy_message_waits_until_active_turn_to_mark_read(self, monkeypatch):
+        from gateway.session import build_session_key
+        from gateway.run import GatewayRunner
+
+        monkeypatch.setenv("HERMES_GATEWAY_BUSY_ACK_ENABLED", "false")
+        adapter = CanonAdapter(_config(extra={"api_key": "key"}))
+        fake = self.FakeClient()
+        adapter._client = fake
+        runner = self._gateway_runner(adapter, authorized=True)
+        runner._busy_input_mode = "interrupt"
+        event = self._message_event(
+            metadata={"deliveryIntent": "queue", "inboundDisposition": "queued"}
+        )
+        session_key = build_session_key(event.source)
+        runner._running_agents[session_key] = MagicMock()
+
+        result = await GatewayRunner._handle_active_session_busy_message(
+            runner,
+            event,
+            session_key,
+        )
+
+        assert result is True
+        assert adapter._pending_messages[session_key] is event
+        assert fake.dispositions == []
+        assert fake.reads == []
+
+        await adapter.on_gateway_message_accepted(
+            event,
+            session_key,
+            phase="queued_turn",
+        )
+
+        assert fake.dispositions == [("convo-1", "msg-1", "accepted_now")]
+        assert fake.reads == ["convo-1"]
 
 
 class TestCanonOutbound:

@@ -376,6 +376,9 @@ class CanonHttpClient:
             json_body={"inboundDisposition": inbound_disposition},
         )
 
+    async def mark_as_read(self, conversation_id: str) -> None:
+        await self._request_json("POST", f"/conversations/{conversation_id}/read")
+
     async def create_runtime_input_request(
         self,
         conversation_id: str,
@@ -1156,8 +1159,30 @@ class CanonAdapter(BasePlatformAdapter):
     async def _on_runtime_turn_start(self, event: MessageEvent, session_key: str) -> None:
         conversation_id = str(event.source.chat_id)
         self._session_conversation_ids[session_key] = conversation_id
-        metadata = _canon_message_metadata(event.raw_message)
-        if metadata.get("inboundDisposition") == "queued" and event.message_id and self._client is not None:
+        await self._publish_runtime_turn(
+            conversation_id,
+            "thinking",
+            session_key=session_key,
+            active_message_ids=[event.message_id] if event.message_id else None,
+        )
+
+    async def on_gateway_message_accepted(
+        self,
+        event: MessageEvent,
+        session_key: str,
+        *,
+        phase: str = "active",
+    ) -> None:
+        raw_message = getattr(event, "raw_message", None)
+        if not isinstance(raw_message, dict) or not isinstance(raw_message.get("message"), dict):
+            return
+        conversation_id = str(event.source.chat_id)
+        self._session_conversation_ids[session_key] = conversation_id
+        if self._client is None:
+            return
+
+        metadata = _canon_message_metadata(raw_message)
+        if metadata.get("inboundDisposition") == "queued" and event.message_id:
             try:
                 await self._client.update_message_disposition(
                     conversation_id,
@@ -1166,12 +1191,11 @@ class CanonAdapter(BasePlatformAdapter):
                 )
             except Exception:
                 logger.debug("Canon queued disposition update failed", exc_info=True)
-        await self._publish_runtime_turn(
-            conversation_id,
-            "thinking",
-            session_key=session_key,
-            active_message_ids=[event.message_id] if event.message_id else None,
-        )
+
+        try:
+            await self._client.mark_as_read(conversation_id)
+        except Exception:
+            logger.debug("Canon mark-as-read failed", exc_info=True)
 
     async def _on_runtime_turn_complete(
         self,

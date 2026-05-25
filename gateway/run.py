@@ -3133,6 +3133,33 @@ class GatewayRunner:
             return
         merge_pending_message_event(adapter._pending_messages, session_key, event)
 
+    async def _notify_adapter_message_accepted(
+        self,
+        event: MessageEvent,
+        session_key: str,
+        *,
+        phase: str = "active",
+    ) -> None:
+        """Notify an adapter after gateway auth/skip gates accept an inbound event."""
+        if not event or getattr(event, "internal", False):
+            return
+        source = getattr(event, "source", None)
+        platform = getattr(source, "platform", None)
+        if platform is None:
+            return
+        adapter = self.adapters.get(platform)
+        if adapter is None:
+            return
+        hook = getattr(adapter, "on_gateway_message_accepted", None)
+        if not callable(hook):
+            return
+        try:
+            result = hook(event, session_key, phase=phase)
+            if inspect.isawaitable(result):
+                await result
+        except Exception:
+            logger.debug("Adapter accepted-message hook failed", exc_info=True)
+
     async def _handle_active_session_busy_message(self, event: MessageEvent, session_key: str) -> bool:
         # --- Authorization gate (#17775) ---
         # The cold path (_handle_message) checks _is_user_authorized before
@@ -3242,6 +3269,8 @@ class GatewayRunner:
             if not steered:
                 # Fall back to queue (merge into pending messages, no interrupt)
                 effective_mode = "queue"
+            else:
+                await self._notify_adapter_message_accepted(event, session_key, phase="steer")
 
         # Store the message so it's processed as the next turn after the
         # current run finishes (or is interrupted).  Skip this for a
@@ -6952,6 +6981,9 @@ class GatewayRunner:
         # Otherwise control/session commands like /new or /help get silently
         # consumed as update answers instead of being dispatched normally.
         _quick_key = self._session_key_for_source(source)
+        if not is_internal:
+            await self._notify_adapter_message_accepted(event, _quick_key, phase="active")
+
         _update_prompts = getattr(self, "_update_prompt_pending", {})
         if _update_prompts.get(_quick_key):
             raw = (event.text or "").strip()
@@ -18099,6 +18131,11 @@ class GatewayRunner:
                         return result
                     next_message_id = self._reply_anchor_for_event(pending_event)
                     next_channel_prompt = getattr(pending_event, "channel_prompt", None)
+                    await self._notify_adapter_message_accepted(
+                        pending_event,
+                        session_key,
+                        phase="queued_turn",
+                    )
 
                 # Restart typing indicator so the user sees activity while
                 # the follow-up turn runs.  The outer _process_message_background

@@ -2732,6 +2732,15 @@ class BasePlatformAdapter(ABC):
     async def on_processing_start(self, event: MessageEvent) -> None:
         """Hook called when background processing begins."""
 
+    async def on_gateway_message_accepted(
+        self,
+        event: MessageEvent,
+        session_key: str,
+        *,
+        phase: str = "active",
+    ) -> None:
+        """Hook called after the gateway accepts an authorized inbound event."""
+
     async def on_processing_complete(self, event: MessageEvent, outcome: ProcessingOutcome) -> None:
         """Hook called when background processing completes."""
 

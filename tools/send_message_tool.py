@@ -251,7 +251,7 @@ def _handle_send(args):
     force_document_attachments = "[[as_document]]" in message
 
     media_files, cleaned_message = BasePlatformAdapter.extract_media(message)
-    media_files = BasePlatformAdapter.filter_media_delivery_paths(media_files)
+    media_files, skipped_media = BasePlatformAdapter.partition_media_delivery_paths(media_files)
     mirror_text = cleaned_message.strip() or _describe_media_for_mirror(media_files)
 
     used_home_channel = False
@@ -313,6 +313,15 @@ def _handle_send(args):
         )
         if used_home_channel and isinstance(result, dict) and result.get("success"):
             result["note"] = f"Sent to {platform_name} home channel (chat_id: {chat_id})"
+
+        # Surface skipped attachments to the user
+        if isinstance(result, dict) and skipped_media:
+            result["skipped_attachments"] = skipped_media
+            result.setdefault("warnings", []).append(
+                f"Attachment{'s' if len(skipped_media) > 1 else ''} skipped: outside allowed media roots. "
+                f"Set HERMES_MEDIA_ALLOW_DIRS to include your directory, "
+                f"or move files to a Hermes media cache."
+            )
 
         # Mirror the sent message into the target's gateway session
         if isinstance(result, dict) and result.get("success") and mirror_text:

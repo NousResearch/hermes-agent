@@ -472,7 +472,13 @@ async def _handle_yb_send_dm(args, **kw):
     embedded_media, message = BasePlatformAdapter.extract_media(message)
     if embedded_media:
         media_files.extend(embedded_media)
-    media_files = BasePlatformAdapter.filter_media_delivery_paths(media_files)
+    media_safe, media_skipped = BasePlatformAdapter.partition_media_delivery_paths(media_files)
+    if media_skipped:
+        logger.warning(
+            "Skipped MEDIA attachments outside allowed roots for Yuanbao: %s",
+            ", ".join(media_skipped),
+        )
+    media_files = media_safe
 
     return tool_result(await send_dm(
         group_code=group_code,        name=args.get("name", ""),

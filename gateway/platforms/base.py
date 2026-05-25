@@ -2235,27 +2235,67 @@ class BasePlatformAdapter(ABC):
         return validate_media_delivery_path(path)
 
     @staticmethod
-    def filter_media_delivery_paths(media_files) -> List[Tuple[str, bool]]:
-        """Drop unsafe MEDIA paths and normalize accepted paths."""
+    def partition_media_delivery_paths(media_files) -> Tuple[List[Tuple[str, bool]], List[str]]:
+        """Partition MEDIA paths into safe deliveries and skipped paths.
+
+        Returns a tuple of (safe_media, skipped_paths) where:
+        - safe_media is a list of (resolved_path, is_voice) tuples
+        - skipped_paths is a list of original path strings that were rejected
+        """
         safe_media: List[Tuple[str, bool]] = []
+        skipped: List[str] = []
         for media_path, is_voice in media_files or []:
             safe_path = validate_media_delivery_path(str(media_path))
             if safe_path:
                 safe_media.append((safe_path, bool(is_voice)))
             else:
-                logger.warning("Skipping unsafe MEDIA directive path outside allowed roots")
-        return safe_media
+                skipped.append(str(media_path))
+        return safe_media, skipped
 
     @staticmethod
-    def filter_local_delivery_paths(file_paths) -> List[str]:
-        """Drop unsafe bare local file paths and normalize accepted paths."""
+    def partition_local_delivery_paths(file_paths) -> Tuple[List[str], List[str]]:
+        """Partition local file paths into safe deliveries and skipped paths.
+
+        Returns a tuple of (safe_paths, skipped_paths).
+        """
         safe_paths: List[str] = []
+        skipped: List[str] = []
         for file_path in file_paths or []:
             safe_path = validate_media_delivery_path(str(file_path))
             if safe_path:
                 safe_paths.append(safe_path)
             else:
-                logger.warning("Skipping unsafe local file path outside allowed roots")
+                skipped.append(str(file_path))
+        return safe_paths, skipped
+
+    @staticmethod
+    def filter_media_delivery_paths(media_files) -> List[Tuple[str, bool]]:
+        """Drop unsafe MEDIA paths and normalize accepted paths.
+
+        Deprecated: use partition_media_delivery_paths() when you need to
+        report skipped attachments to the user.
+        """
+        safe_media, skipped = BasePlatformAdapter.partition_media_delivery_paths(media_files)
+        for skipped_path in skipped:
+            logger.warning(
+                "Skipping unsafe MEDIA directive path outside allowed roots: %s",
+                skipped_path,
+            )
+        return safe_media
+
+    @staticmethod
+    def filter_local_delivery_paths(file_paths) -> List[str]:
+        """Drop unsafe bare local file paths and normalize accepted paths.
+
+        Deprecated: use partition_local_delivery_paths() when you need to
+        report skipped attachments to the user.
+        """
+        safe_paths, skipped = BasePlatformAdapter.partition_local_delivery_paths(file_paths)
+        for skipped_path in skipped:
+            logger.warning(
+                "Skipping unsafe local file path outside allowed roots: %s",
+                skipped_path,
+            )
         return safe_paths
 
     @staticmethod

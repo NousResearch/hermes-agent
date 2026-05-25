@@ -578,7 +578,13 @@ def _send_media_via_adapter(
 
     from gateway.platforms.base import BasePlatformAdapter, should_send_media_as_audio
 
-    media_files = BasePlatformAdapter.filter_media_delivery_paths(media_files)
+    media_safe, media_skipped = BasePlatformAdapter.partition_media_delivery_paths(media_files)
+    if media_skipped:
+        logger.warning(
+            "Job '%s': skipped MEDIA attachments outside allowed roots: %s",
+            job.get("id", "?"), ", ".join(media_skipped),
+        )
+    media_files = media_safe
 
     for media_path, _is_voice in media_files:
         try:
@@ -663,7 +669,13 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
     # Extract MEDIA: tags so attachments are forwarded as files, not raw text
     from gateway.platforms.base import BasePlatformAdapter
     media_files, cleaned_delivery_content = BasePlatformAdapter.extract_media(delivery_content)
-    media_files = BasePlatformAdapter.filter_media_delivery_paths(media_files)
+    media_safe, media_skipped = BasePlatformAdapter.partition_media_delivery_paths(media_files)
+    if media_skipped:
+        logger.warning(
+            "Job '%s': skipped MEDIA attachments outside allowed roots: %s",
+            job.get("id", "?"), ", ".join(media_skipped),
+        )
+    media_files = media_safe
 
     try:
         config = load_gateway_config()

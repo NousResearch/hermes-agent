@@ -1679,10 +1679,20 @@ class WeixinAdapter(BasePlatformAdapter):
 
         # Extract MEDIA: tags and bare local file paths before text delivery.
         media_files, cleaned_content = self.extract_media(content)
-        media_files = self.filter_media_delivery_paths(media_files)
+        media_files, skipped_media = self.partition_media_delivery_paths(media_files)
+        if skipped_media:
+            logger.warning(
+                "[%s] Skipped MEDIA attachments outside allowed roots: %s",
+                self.name, ", ".join(skipped_media),
+            )
         _, image_cleaned = self.extract_images(cleaned_content)
         local_files, final_content = self.extract_local_files(image_cleaned)
-        local_files = self.filter_local_delivery_paths(local_files)
+        local_files, skipped_local = self.partition_local_delivery_paths(local_files)
+        if skipped_local:
+            logger.warning(
+                "[%s] Skipped local file attachments outside allowed roots: %s",
+                self.name, ", ".join(skipped_local),
+            )
 
         _AUDIO_EXTS = {".ogg", ".opus", ".mp3", ".wav", ".m4a", ".flac"}
         _VIDEO_EXTS = {".mp4", ".mov", ".avi", ".mkv", ".webm", ".3gp"}

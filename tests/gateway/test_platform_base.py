@@ -426,6 +426,56 @@ class TestMediaDeliveryPathValidation:
 
         assert BasePlatformAdapter.validate_media_delivery_path(str(media_file)) == str(media_file.resolve())
 
+    def test_partition_media_returns_safe_and_skipped(self, tmp_path, monkeypatch):
+        root = tmp_path / "media-cache"
+        safe = root / "ok.png"
+        unsafe = tmp_path / "outside.png"
+        safe.parent.mkdir(parents=True)
+        safe.write_bytes(b"PNG")
+        unsafe.write_bytes(b"PNG")
+        self._patch_roots(monkeypatch, root)
+
+        safe_media, skipped = BasePlatformAdapter.partition_media_delivery_paths([
+            (str(unsafe), False),
+            (str(safe), True),
+        ])
+
+        assert safe_media == [(str(safe.resolve()), True)]
+        assert skipped == [str(unsafe)]
+
+    def test_partition_local_returns_safe_and_skipped(self, tmp_path, monkeypatch):
+        root = tmp_path / "media-cache"
+        safe = root / "ok.txt"
+        unsafe = tmp_path / "outside.txt"
+        safe.parent.mkdir(parents=True)
+        safe.write_text("safe")
+        unsafe.write_text("unsafe")
+        self._patch_roots(monkeypatch, root)
+
+        safe_paths, skipped = BasePlatformAdapter.partition_local_delivery_paths([
+            str(unsafe),
+            str(safe),
+        ])
+
+        assert safe_paths == [str(safe.resolve())]
+        assert skipped == [str(unsafe)]
+
+    def test_filter_backward_compatible(self, tmp_path, monkeypatch):
+        root = tmp_path / "media-cache"
+        safe = root / "ok.png"
+        unsafe = tmp_path / "outside.png"
+        safe.parent.mkdir(parents=True)
+        safe.write_bytes(b"PNG")
+        unsafe.write_bytes(b"PNG")
+        self._patch_roots(monkeypatch, root)
+
+        filtered = BasePlatformAdapter.filter_media_delivery_paths([
+            (str(unsafe), False),
+            (str(safe), True),
+        ])
+
+        assert filtered == [(str(safe.resolve()), True)]
+
 
 # ---------------------------------------------------------------------------
 # should_send_media_as_audio

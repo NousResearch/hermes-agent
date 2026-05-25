@@ -5151,7 +5151,13 @@ class GatewayRunner:
             return
 
         from gateway.platforms.base import BasePlatformAdapter
-        candidates = BasePlatformAdapter.filter_local_delivery_paths(candidates)
+        candidates_safe, candidates_skipped = BasePlatformAdapter.partition_local_delivery_paths(candidates)
+        if candidates_skipped:
+            logger.warning(
+                "kanban notifier: skipped local file attachments outside allowed roots: %s",
+                ", ".join(candidates_skipped),
+            )
+        candidates = candidates_safe
         if not candidates:
             return
 
@@ -11347,10 +11353,20 @@ class GatewayRunner:
             from gateway.platforms.base import BasePlatformAdapter, should_send_media_as_audio
 
             media_files, _ = adapter.extract_media(response)
-            media_files = BasePlatformAdapter.filter_media_delivery_paths(media_files)
+            media_files, skipped_media = BasePlatformAdapter.partition_media_delivery_paths(media_files)
+            if skipped_media:
+                logger.warning(
+                    "Skipped MEDIA attachments outside allowed roots: %s",
+                    ", ".join(skipped_media),
+                )
             _, cleaned = adapter.extract_images(response)
             local_files, _ = adapter.extract_local_files(cleaned)
-            local_files = BasePlatformAdapter.filter_local_delivery_paths(local_files)
+            local_files, skipped_local = BasePlatformAdapter.partition_local_delivery_paths(local_files)
+            if skipped_local:
+                logger.warning(
+                    "Skipped local file attachments outside allowed roots: %s",
+                    ", ".join(skipped_local),
+                )
 
             _thread_meta = self._thread_metadata_for_source(event.source, self._reply_anchor_for_event(event))
 
@@ -11646,7 +11662,13 @@ class GatewayRunner:
             if response:
                 media_files, response = adapter.extract_media(response)
                 from gateway.platforms.base import BasePlatformAdapter
-                media_files = BasePlatformAdapter.filter_media_delivery_paths(media_files)
+                media_safe, media_skipped = BasePlatformAdapter.partition_media_delivery_paths(media_files)
+                if media_skipped:
+                    logger.warning(
+                        "Skipped MEDIA attachments outside allowed roots: %s",
+                        ", ".join(media_skipped),
+                    )
+                media_files = media_safe
                 images, text_content = adapter.extract_images(response)
 
                 preview = prompt[:60] + ("..." if len(prompt) > 60 else "")

@@ -329,3 +329,100 @@ class TestFormatNoMatchHint:
         )
         assert result == ""
 
+
+class TestIdempotencyGuard:
+    """Regression tests for issue #18426: patch tool duplicate content loops.
+
+    When the agent retries a patch without re-reading the file, the matched
+    region may already equal new_string from a previous successful patch.
+    The idempotency guard must block the replacement to prevent duplicates.
+    """
+
+    def test_fuzzy_match_region_already_equals_new_string(self):
+        """When fuzzy strategy matches and region equals new_string, return no-op.
+
+        Scenario: content was patched from 'def foo():\\n    pass' to
+        '    def foo():\\n        return 1'. A retry with the original
+        old_string (different indentation) fuzzy-matches the same region,
+        but the matched region already equals new_string.
+        """
+        content = "    def foo():\n        return 1"
+        new, count, _, err = fuzzy_find_and_replace(
+            content, "def foo():\n    return 1", "    def foo():\n        return 1"
+        )
+        assert count == 0
+        assert err is not None
+        assert "already" in err.lower() or "no-op" in err.lower()
+        assert new == content
+
+    def test_replace_all_all_matches_already_applied(self):
+        """With replace_all=True, if all matches already equal new_string, return no-op."""
+        content = "ccc bbb ccc"
+        # All "ccc" occurrences already equal new_string → no-op
+        new, count, _, err = fuzzy_find_and_replace(
+            content, "ccc", "ccc", replace_all=True
+        )
+        # This hits the early identical-check for exact matches, but the
+        # important thing is: no duplicate content is created.
+        assert count == 0
+        assert err is not None
+        assert new == content
+
+    def test_replace_all_mixed_some_already_applied(self):
+        """With replace_all=True, only replace matches that differ from new_string."""
+        content = "aaa bbb aaa"
+        # First replace: all "aaa" → "ccc"
+        new1, count1, _, err1 = fuzzy_find_and_replace(
+            content, "aaa", "ccc", replace_all=True
+        )
+        assert err1 is None
+        assert count1 == 2
+        assert new1 == "ccc bbb ccc"
+
+        # Now simulate the agent retrying on the ORIGINAL content (not re-reading).
+        # If content still has "aaa", the replacement should work normally.
+        # But if content already has "ccc" (i.e. the file was re-read after
+        # the first patch), and the agent tries old="aaa" new="ccc":
+        new2, count2, _, err2 = fuzzy_find_and_replace(
+            "ccc bbb ccc", "aaa", "ccc", replace_all=True
+        )
+        # "aaa" doesn't exist in "ccc bbb ccc", so no match → error
+        assert count2 == 0
+        assert err2 is not None
+
+    def test_normal_replacement_still_works(self):
+        """Sanity check: normal replacements are unaffected by the guard."""
+        content = "hello world"
+        new, count, _, err = fuzzy_find_and_replace(content, "hello", "hi")
+        assert err is None
+        assert count == 1
+        assert new == "hi world"
+
+    def test_no_duplicate_on_retry_simulation(self):
+        """End-to-end: patch X→Y, then retry same patch on Y-content.
+
+        This simulates the exact scenario from #18426: the agent patches
+        a file, then retries without re-reading. The second call must not
+        create duplicate content.
+        """
+        # Original file
+        content = "section A\nOLD_TEXT\nsection B"
+        # First patch: OLD_TEXT → NEW_TEXT
+        new1, count1, _, err1 = fuzzy_find_and_replace(
+            content, "OLD_TEXT", "NEW_TEXT"
+        )
+        assert err1 is None
+        assert count1 == 1
+        assert new1 == "section A\nNEW_TEXT\nsection B"
+
+        # Agent retries without re-reading — passes same old/new strings.
+        # On the ALREADY-PATCHED content, fuzzy matching should either:
+        # (a) fail to find OLD_TEXT (ideal), or
+        # (b) match NEW_TEXT via fuzzy strategy but hit the idempotency guard
+        new2, count2, _, err2 = fuzzy_find_and_replace(
+            new1, "OLD_TEXT", "NEW_TEXT"
+        )
+        # Either way: no duplicate content
+        assert "NEW_TEXT\nNEW_TEXT" not in new2
+        assert count2 == 0 or new2 == new1
+

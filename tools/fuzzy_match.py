@@ -93,6 +93,21 @@ def fuzzy_find_and_replace(content: str, old_string: str, new_string: str,
                     f"Provide more context to make it unique, or use replace_all=True."
                 )
 
+            # Idempotency guard: if the matched region already equals
+            # new_string, this patch has likely already been applied.
+            # Return a no-op so the caller re-reads instead of creating
+            # duplicate content in a retry loop (issue #18426).
+            matches_to_apply = [
+                m for m in matches
+                if content[m[0]:m[1]] != new_string
+            ]
+            if not matches_to_apply:
+                return content, 0, None, (
+                    "Matched region already equals new_string — the patch "
+                    "appears to have been applied already. Use read_file to "
+                    "verify the current content before retrying."
+                )
+
             # Escape-drift guard: when the matched strategy is NOT `exact`,
             # we matched via some form of normalization. If new_string
             # contains shell/JSON-style escape sequences (\' or \") that
@@ -108,9 +123,9 @@ def fuzzy_find_and_replace(content: str, old_string: str, new_string: str,
                 if drift_err:
                     return content, 0, None, drift_err
 
-            # Perform replacement
-            new_content = _apply_replacements(content, matches, new_string)
-            return new_content, len(matches), strategy_name, None
+            # Perform replacement (only on matches that actually differ)
+            new_content = _apply_replacements(content, matches_to_apply, new_string)
+            return new_content, len(matches_to_apply), strategy_name, None
 
     # No strategy found a match
     return content, 0, None, "Could not find a match for old_string in the file"

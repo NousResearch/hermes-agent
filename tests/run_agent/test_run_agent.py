@@ -52,6 +52,37 @@ def test_is_destructive_command_treats_install_as_mutating():
     assert run_agent._is_destructive_command("install template.env .env") is True
 
 
+def test_estimate_api_payload_tokens_rough_counts_chat_messages():
+    payload = {
+        "messages": [
+            {"role": "user", "content": "hello world"},
+            {"role": "assistant", "content": [{"type": "text", "text": "abc"}]},
+        ]
+    }
+
+    estimate = run_agent._estimate_api_payload_tokens_rough(payload)
+
+    assert estimate > 0
+
+
+def test_estimate_api_payload_tokens_rough_counts_responses_input_images_and_text():
+    payload = {
+        "input": [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "input_text", "text": "describe this image"},
+                    {"type": "input_image", "image_url": "data:image/png;base64,AAAA"},
+                ],
+            }
+        ]
+    }
+
+    estimate = run_agent._estimate_api_payload_tokens_rough(payload)
+
+    assert estimate >= len("describe this image") // 4
+
+
 @pytest.fixture()
 def agent():
     """Minimal AIAgent with mocked OpenAI client and tool loading."""

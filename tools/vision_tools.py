@@ -427,10 +427,17 @@ def _supports_media_in_tool_results(provider: str, model: str) -> bool:
         ``tool_result`` blocks accept ``image`` content blocks.
       * OpenAI Chat Completions: tool messages accept array content with
         ``image_url`` parts.
-      * OpenAI Responses (``openai-codex``): ``function_call_output.output``
-        accepts an array of ``input_text``/``input_image`` items.
       * Gemini 3 (and proxied via aggregators): supports multimodal tool
         results. Older Gemini does NOT.
+
+    Important caveat:
+      * ``openai-codex`` currently routes through the ChatGPT Codex Responses
+        backend, and we have empirical evidence that its
+        ``function_call_output`` + ``input_image(data URL)`` path rejects
+        otherwise-valid PNGs with ``400 invalid image``. Until that upstream
+        incompatibility is resolved, we conservatively disable the native
+        tool-result fast path for this provider and fall back to the auxiliary
+        vision model.
 
     For unknown / legacy providers we conservatively return False — the
     caller falls back to the legacy aux-LLM text path.
@@ -456,9 +463,13 @@ def _supports_media_in_tool_results(provider: str, model: str) -> bool:
     if p in {"anthropic", "claude", "anthropic-direct"}:
         return True
 
-    # OpenAI Chat Completions and Responses
-    if p in {"openai", "openai-chat", "openai-codex", "azure-openai"}:
+    # OpenAI Chat Completions and Azure OpenAI support array-content tool
+    # messages, but the ChatGPT Codex Responses backend currently does not
+    # reliably accept image-bearing function_call_output items.
+    if p in {"openai", "openai-chat", "azure-openai"}:
         return True
+    if p == "openai-codex":
+        return False
 
     # Gemini — gate on model name; older Gemini variants did not support
     # multimodal functionResponse. Gemini 3.x does.

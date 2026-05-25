@@ -18,15 +18,19 @@ Method reference: https://chromedevtools.github.io/devtools-protocol/
 from __future__ import annotations
 
 import asyncio
+import base64
 import json
 import logging
+import uuid
 from typing import Any, Dict, Optional
 
+from hermes_constants import get_hermes_dir
 from tools.registry import registry, tool_error
 
 logger = logging.getLogger(__name__)
 
 CDP_DOCS_URL = "https://chromedevtools.github.io/devtools-protocol/"
+_SCREENSHOT_METHODS = {"Page.captureScreenshot", "Page.startScreencast"}
 
 # ``websockets`` is a transitive dependency of hermes-agent (via fal_client
 # and firecrawl-py) and is already imported by gateway/platforms/feishu.py.
@@ -84,6 +88,53 @@ def _resolve_cdp_endpoint() -> str:
     except Exception as exc:  # pragma: no cover — defensive
         logger.debug("browser_cdp: failed to resolve CDP endpoint: %s", exc)
         return ""
+
+
+def _materialize_cdp_image_result(method: str, result: Dict[str, Any]) -> Dict[str, Any]:
+    """Decode inline screenshot payloads to files and return compact metadata.
+
+    ``Page.captureScreenshot`` returns a large base64 string under ``result.data``.
+    Keeping that inline in tool-visible JSON bloats context and can trigger
+    downstream provider stalls. For screenshot-style CDP methods we decode the
+    bytes into Hermes's screenshot cache and replace the raw base64 with a path.
+
+    If decoding or writing fails, the original result is returned unchanged so
+    the escape-hatch semantics stay lossless in unexpected environments.
+    """
+    if method not in _SCREENSHOT_METHODS or not isinstance(result, dict):
+        return result
+
+    b64_data = result.get("data")
+    if not isinstance(b64_data, str) or not b64_data:
+        return result
+
+    fmt = str(result.get("format") or "png").strip().lower() or "png"
+    ext = "jpg" if fmt == "jpeg" else fmt
+    try:
+        raw = base64.b64decode(b64_data, validate=True)
+    except Exception as exc:
+        logger.debug("browser_cdp: could not decode screenshot payload: %s", exc)
+        return result
+
+    screenshots_dir = get_hermes_dir("cache/screenshots", "browser_screenshots")
+    screenshots_dir.mkdir(parents=True, exist_ok=True)
+    screenshot_path = screenshots_dir / f"cdp_capture_{uuid.uuid4().hex}.{ext}"
+    try:
+        screenshot_path.write_bytes(raw)
+    except Exception as exc:
+        logger.debug("browser_cdp: could not write screenshot artifact: %s", exc)
+        return result
+
+    materialized = dict(result)
+    materialized.pop("data", None)
+    materialized["screenshot_path"] = str(screenshot_path)
+    materialized["screenshot_bytes"] = len(raw)
+    materialized["data_redacted"] = True
+    materialized["note"] = (
+        "Raw screenshot base64 was decoded to a file to avoid bloating model-visible context. "
+        "Use screenshot_path directly; re-encode the file only if raw bytes are truly required."
+    )
+    return materialized
 
 
 # ---------------------------------------------------------------------------
@@ -287,7 +338,7 @@ def _browser_cdp_via_supervisor(
         "method": method,
         "frame_id": frame_id,
         "session_id": child_sid,
-        "result": result_msg.get("result", {}),
+        "result": _materialize_cdp_image_result(method, result_msg.get("result", {})),
     }
     return json.dumps(payload, ensure_ascii=False)
 
@@ -406,7 +457,7 @@ def browser_cdp(
     payload: Dict[str, Any] = {
         "success": True,
         "method": method,
-        "result": result,
+        "result": _materialize_cdp_image_result(method, result),
     }
     if target_id:
         payload["target_id"] = target_id

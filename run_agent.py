@@ -189,6 +189,39 @@ from utils import atomic_json_write, base_url_host_matches, base_url_hostname, e
 from hermes_cli.config import cfg_get
 
 
+def _estimate_api_payload_text_chars(value: Any) -> int:
+    """Roughly estimate text-bearing payload size across chat and Responses shapes.
+
+    Stale-call logging previously looked only at ``api_kwargs['messages']`` which
+    undercounted Responses-API requests that primarily use ``input``.
+    This helper intentionally stays simple and cheap: recurse through common JSON
+    containers and add lengths for string/byte payloads while skipping numeric /
+    boolean scalars.
+    """
+    if value is None or isinstance(value, (bool, int, float)):
+        return 0
+    if isinstance(value, str):
+        return len(value)
+    if isinstance(value, bytes):
+        return len(value)
+    if isinstance(value, dict):
+        return sum(_estimate_api_payload_text_chars(v) for v in value.values())
+    if isinstance(value, (list, tuple, set)):
+        return sum(_estimate_api_payload_text_chars(v) for v in value)
+    return len(str(value))
+
+
+
+def _estimate_api_payload_tokens_rough(api_kwargs: Dict[str, Any]) -> int:
+    """Best-effort token estimate for stale-call diagnostics."""
+    char_count = 0
+    if isinstance(api_kwargs, dict):
+        char_count += _estimate_api_payload_text_chars(api_kwargs.get("messages"))
+        char_count += _estimate_api_payload_text_chars(api_kwargs.get("input"))
+        if char_count == 0:
+            char_count = _estimate_api_payload_text_chars(api_kwargs)
+    return max(0, char_count // 4)
+
 
 class _SafeWriter:
     """Transparent stdio wrapper that catches OSError/ValueError from broken pipes.
@@ -7488,7 +7521,7 @@ class AIAgent:
             # arrives within the configured timeout.
             _elapsed = time.time() - _call_start
             if _elapsed > _stale_timeout:
-                _est_ctx = sum(len(str(v)) for v in api_kwargs.get("messages", [])) // 4
+                _est_ctx = _estimate_api_payload_tokens_rough(api_kwargs)
                 logger.warning(
                     "Non-streaming API call stale for %.0fs (threshold %.0fs). "
                     "model=%s context=~%s tokens. Killing connection.",

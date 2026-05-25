@@ -362,10 +362,13 @@ def _is_blocked_device_path(path: str) -> bool:
         ("/fd/0", "/fd/1", "/fd/2")
     ):
         return True
-    # /proc/*/environ, /proc/*/cmdline, /proc/*/maps can leak secrets,
-    # command-line args, and memory layout from the host process (issue #4427)
+    # /proc/*/environ, /proc/*/cmdline, /proc/*/maps (and the maps variants
+    # smaps, smaps_rollup, numa_maps) can leak secrets, command-line args, and
+    # memory layout (ASLR bypass) from the host process (issue #4427).
+    # /proc/*/mem exposes raw process memory; block it as defense-in-depth even
+    # though it requires address knowledge to exploit usefully.
     if normalized.startswith("/proc/") and normalized.endswith(
-        ("/environ", "/cmdline", "/maps")
+        ("/environ", "/cmdline", "/maps", "/smaps", "/smaps_rollup", "/numa_maps", "/mem")
     ):
         return True
     return False

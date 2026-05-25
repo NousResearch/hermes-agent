@@ -2154,6 +2154,123 @@ class GatewayRunner:
             thread_sessions_per_user=getattr(config, "thread_sessions_per_user", False),
         )
 
+    def _rebind_discord_tool_created_thread(
+        self,
+        *,
+        source: SessionSource,
+        session_id: str,
+        thread_id: str,
+        thread_name: str | None = None,
+        agent: Any = None,
+    ) -> str | None:
+        """Route the active Discord gateway turn into a newly created thread."""
+        if source.platform != Platform.DISCORD:
+            return None
+
+        new_thread_id = str(thread_id or "").strip()
+        if not new_thread_id or new_thread_id == str(source.thread_id or ""):
+            return None
+
+        parent_chat_id = str(source.chat_id or "").strip() or None
+        new_chat_name = (thread_name or "").strip() or source.chat_name
+        new_source = SessionSource(
+            platform=source.platform,
+            chat_id=new_thread_id,
+            chat_name=new_chat_name,
+            chat_type="thread",
+            user_id=source.user_id,
+            user_name=source.user_name,
+            thread_id=new_thread_id,
+            chat_topic=source.chat_topic,
+            user_id_alt=source.user_id_alt,
+            chat_id_alt=source.chat_id_alt,
+            is_bot=source.is_bot,
+            guild_id=source.guild_id,
+            parent_chat_id=parent_chat_id,
+            message_id=source.message_id,
+        )
+        new_session_key = self._session_key_for_source(new_source)
+
+        if self.session_store is not None:
+            try:
+                self.session_store.get_or_create_session(new_source)
+                self.session_store.switch_session(new_session_key, session_id)
+            except Exception:
+                logger.debug(
+                    "Failed to bind Discord thread %s to session %s",
+                    new_thread_id,
+                    session_id,
+                    exc_info=True,
+                )
+
+        try:
+            self._cache_session_source(new_session_key, new_source)
+        except Exception:
+            logger.debug("Failed caching Discord thread source", exc_info=True)
+
+        adapter = self.adapters.get(source.platform) if hasattr(self, "adapters") else None
+        if adapter is not None:
+            try:
+                threads = getattr(adapter, "_threads", None)
+                if threads is not None and hasattr(threads, "mark"):
+                    threads.mark(new_thread_id)
+            except Exception:
+                logger.debug("Failed marking Discord thread participation", exc_info=True)
+
+        source.chat_id = new_source.chat_id
+        source.chat_name = new_source.chat_name
+        source.chat_type = new_source.chat_type
+        source.thread_id = new_source.thread_id
+        source.parent_chat_id = new_source.parent_chat_id
+
+        if agent is not None:
+            agent._chat_id = new_source.chat_id
+            agent._chat_name = new_source.chat_name
+            agent._chat_type = new_source.chat_type
+            agent._thread_id = new_source.thread_id
+            agent._gateway_session_key = new_session_key
+
+        return new_session_key
+
+    def _maybe_rebind_thread_after_tool_result(
+        self,
+        *,
+        source: SessionSource,
+        session_id: str,
+        tool_name: str,
+        tool_args: dict[str, Any] | None,
+        tool_result: Any,
+        agent: Any = None,
+    ) -> str | None:
+        """Handle tool results that should move the active gateway route."""
+        if source.platform != Platform.DISCORD or tool_name != "discord":
+            return None
+
+        args = tool_args or {}
+        if str(args.get("action") or "").strip() != "create_thread":
+            return None
+
+        payload = tool_result
+        if isinstance(payload, str):
+            try:
+                payload = json.loads(payload)
+            except Exception:
+                return None
+        if not isinstance(payload, dict) or not payload.get("success"):
+            return None
+
+        thread_id = payload.get("thread_id")
+        if not thread_id:
+            return None
+
+        return self._rebind_discord_tool_created_thread(
+            source=source,
+            session_id=session_id,
+            thread_id=str(thread_id),
+            thread_name=payload.get("thread_name") or payload.get("name"),
+            agent=agent,
+        )
+
     def _telegram_topic_mode_enabled(self, source: SessionSource) -> bool:
         """Return whether Telegram DM topic mode is active for this chat."""
         if source.platform != Platform.TELEGRAM or source.chat_type != "dm":
@@ -15840,30 +15957,63 @@ class GatewayRunner:
             
             progress_queue.put(msg)
         
+        def _compute_active_route_state() -> tuple[Optional[Dict[str, Any]], Optional[str], str, Optional[Dict[str, Any]]]:
+            # Threading metadata is platform-specific:
+            # - Slack DM threading needs event_message_id fallback (reply thread)
+            # - Telegram forum topics use message_thread_id; Hermes-created private
+            #   DM topic lanes require both thread metadata and a reply anchor
+            # - Feishu only honors reply_in_thread when sending a reply, so topic
+            #   progress uses the triggering event message as the reply target
+            # - Other platforms should use explicit source.thread_id only
+            if source.platform == Platform.SLACK:
+                progress_thread_id = source.thread_id or event_message_id
+            else:
+                progress_thread_id = source.thread_id
+            progress_metadata = (
+                self._thread_metadata_for_source(source, event_message_id)
+                if progress_thread_id == source.thread_id
+                else {"thread_id": progress_thread_id}
+            ) if progress_thread_id else None
+            progress_reply_to = (
+                event_message_id
+                if source.platform in (Platform.FEISHU, Platform.MATTERMOST) and source.thread_id and event_message_id
+                else None
+            )
+            if source.platform == Platform.FEISHU and source.thread_id and event_message_id:
+                status_thread_metadata: Optional[Dict[str, Any]] = {
+                    "thread_id": progress_thread_id,
+                    "reply_to_message_id": event_message_id,
+                }
+            else:
+                status_thread_metadata = (
+                    self._thread_metadata_for_source(source, event_message_id)
+                    if progress_thread_id
+                    else None
+                )
+            return progress_metadata, progress_reply_to, source.chat_id, status_thread_metadata
+
+        stream_consumer_holder = [None]  # Mutable container for stream consumer
+        _progress_metadata_ref = [None]
+        _progress_reply_to_ref = [None]
+        _status_chat_id_ref = [source.chat_id]
+        _status_thread_metadata_ref = [None]
+
+        def _refresh_active_route_state() -> None:
+            (
+                _progress_metadata_ref[0],
+                _progress_reply_to_ref[0],
+                _status_chat_id_ref[0],
+                _status_thread_metadata_ref[0],
+            ) = _compute_active_route_state()
+            _stream_consumer = stream_consumer_holder[0]
+            if _stream_consumer is not None:
+                _stream_consumer.chat_id = source.chat_id
+                _stream_consumer.metadata = _status_thread_metadata_ref[0]
+
+        _refresh_active_route_state()
+
         # Background task to send progress messages
         # Accumulates tool lines into a single message that gets edited.
-        #
-        # Threading metadata is platform-specific:
-        # - Slack DM threading needs event_message_id fallback (reply thread)
-        # - Telegram forum topics use message_thread_id; Hermes-created private
-        #   DM topic lanes require both thread metadata and a reply anchor
-        # - Feishu only honors reply_in_thread when sending a reply, so topic
-        #   progress uses the triggering event message as the reply target
-        # - Other platforms should use explicit source.thread_id only
-        if source.platform == Platform.SLACK:
-            _progress_thread_id = source.thread_id or event_message_id
-        else:
-            _progress_thread_id = source.thread_id
-        _progress_metadata = (
-            self._thread_metadata_for_source(source, event_message_id)
-            if _progress_thread_id == source.thread_id
-            else {"thread_id": _progress_thread_id}
-        ) if _progress_thread_id else None
-        _progress_reply_to = (
-            event_message_id
-            if source.platform in (Platform.FEISHU, Platform.MATTERMOST) and source.thread_id and event_message_id
-            else None
-        )
 
         async def send_progress_messages():
             if not progress_queue:
@@ -15909,7 +16059,7 @@ class GatewayRunner:
             # Detect whether the adapter's edit_message accepts metadata so
             # overflow edits preserve Telegram topic/thread routing (#27487).
             _edit_accepts_metadata = False
-            if _progress_metadata:
+            if _progress_metadata_ref[0]:
                 try:
                     _edit_params = inspect.signature(adapter.edit_message).parameters
                     _edit_accepts_metadata = (
@@ -15929,7 +16079,7 @@ class GatewayRunner:
                     "content": content,
                 }
                 if _edit_accepts_metadata:
-                    kwargs["metadata"] = _progress_metadata
+                    kwargs["metadata"] = _progress_metadata_ref[0]
                 return await adapter.edit_message(**kwargs)
 
             def _progress_text(lines: list) -> str:
@@ -15962,8 +16112,8 @@ class GatewayRunner:
                 result = await adapter.send(
                     chat_id=source.chat_id,
                     content=text,
-                    reply_to=_progress_reply_to,
-                    metadata=_progress_metadata,
+                    reply_to=_progress_reply_to_ref[0],
+                    metadata=_progress_metadata_ref[0],
                 )
                 _track_progress_result(result)
                 return result
@@ -16060,7 +16210,7 @@ class GatewayRunner:
                         _last_edit_ts = time.monotonic()
                         await asyncio.sleep(0.3)
                         if _run_still_current():
-                            await adapter.send_typing(source.chat_id, metadata=_progress_metadata)
+                            await adapter.send_typing(source.chat_id, metadata=_progress_metadata_ref[0])
                         continue
 
                     # Throttle edits: batch rapid tool updates into fewer
@@ -16109,8 +16259,8 @@ class GatewayRunner:
                             _flood_result = await adapter.send(
                                 chat_id=source.chat_id,
                                 content=msg,
-                                reply_to=_progress_reply_to,
-                                metadata=_progress_metadata,
+                                reply_to=_progress_reply_to_ref[0],
+                                metadata=_progress_metadata_ref[0],
                             )
                             if (
                                 _cleanup_progress
@@ -16125,16 +16275,16 @@ class GatewayRunner:
                             result = await adapter.send(
                                 chat_id=source.chat_id,
                                 content=full_text,
-                                reply_to=_progress_reply_to,
-                                metadata=_progress_metadata,
+                                reply_to=_progress_reply_to_ref[0],
+                                metadata=_progress_metadata_ref[0],
                             )
                         else:
                             # Editing unsupported: send just this line
                             result = await adapter.send(
                                 chat_id=source.chat_id,
                                 content=msg,
-                                reply_to=_progress_reply_to,
-                                metadata=_progress_metadata,
+                                reply_to=_progress_reply_to_ref[0],
+                                metadata=_progress_metadata_ref[0],
                             )
                         if result.success and result.message_id:
                             progress_msg_id = result.message_id
@@ -16146,7 +16296,7 @@ class GatewayRunner:
                     # Restore typing indicator
                     await asyncio.sleep(0.3)
                     if _run_still_current():
-                        await adapter.send_typing(source.chat_id, metadata=_progress_metadata)
+                        await adapter.send_typing(source.chat_id, metadata=_progress_metadata_ref[0])
 
                 except queue.Empty:
                     await asyncio.sleep(0.3)
@@ -16198,7 +16348,6 @@ class GatewayRunner:
         agent_holder = [None]  # Mutable container for the agent instance
         result_holder = [None]  # Mutable container for the result
         tools_holder = [None]   # Mutable container for the tool definitions
-        stream_consumer_holder = [None]  # Mutable container for stream consumer
         
         # Bridge sync step_callback → async hooks.emit for agent:step events
         _loop_for_step = asyncio.get_running_loop()
@@ -16232,18 +16381,6 @@ class GatewayRunner:
 
         # Bridge sync status_callback → async adapter.send for context pressure
         _status_adapter = self.adapters.get(source.platform)
-        _status_chat_id = source.chat_id
-        if source.platform == Platform.FEISHU and source.thread_id and event_message_id:
-            # Feishu topics only keep messages inside the topic when they are
-            # sent via the reply API with reply_in_thread=true. Status/interim,
-            # approval, and stream-consumer paths usually only receive metadata,
-            # so carry the triggering message id as a Feishu-specific fallback.
-            _status_thread_metadata: Optional[Dict[str, Any]] = {
-                "thread_id": _progress_thread_id,
-                "reply_to_message_id": event_message_id,
-            }
-        else:
-            _status_thread_metadata = self._thread_metadata_for_source(source, event_message_id) if _progress_thread_id else None
 
         def _status_callback_sync(event_type: str, message: str) -> None:
             if not _status_adapter or not _run_still_current():
@@ -16262,7 +16399,13 @@ class GatewayRunner:
                 )
                 return
             _fut = safe_schedule_threadsafe(
-                _send_or_update_status_coro(_status_adapter, _status_chat_id, event_type, prepared_message, _status_thread_metadata),
+                _send_or_update_status_coro(
+                    _status_adapter,
+                    _status_chat_id_ref[0],
+                    event_type,
+                    prepared_message,
+                    _status_thread_metadata_ref[0],
+                ),
                 _loop_for_step,
                 logger=logger,
                 log_message=f"status_callback ({event_type}) scheduling error",
@@ -16405,7 +16548,7 @@ class GatewayRunner:
                             adapter=_adapter,
                             chat_id=source.chat_id,
                             config=_consumer_cfg,
-                            metadata=_status_thread_metadata,
+                            metadata=_status_thread_metadata_ref[0],
                             on_new_message=(
                                 (lambda: progress_queue.put(("__reset__",)))
                                 if progress_queue is not None
@@ -16434,9 +16577,9 @@ class GatewayRunner:
                     return
                 safe_schedule_threadsafe(
                     _status_adapter.send(
-                        _status_chat_id,
+                        _status_chat_id_ref[0],
                         text,
-                        metadata=_status_thread_metadata,
+                        metadata=_status_thread_metadata_ref[0],
                     ),
                     _loop_for_step,
                     logger=logger,
@@ -16515,6 +16658,26 @@ class GatewayRunner:
             # Per-message state — callbacks and reasoning config change every
             # turn and must not be baked into the cached agent constructor.
             agent.tool_progress_callback = progress_callback if tool_progress_enabled else None
+            def _tool_complete_callback_sync(
+                _tool_call_id: str,
+                tool_name: str,
+                tool_args: dict[str, Any] | None,
+                tool_result: Any,
+            ) -> None:
+                if not _run_still_current():
+                    return
+                rebound_key = self._maybe_rebind_thread_after_tool_result(
+                    source=source,
+                    session_id=session_id,
+                    tool_name=tool_name,
+                    tool_args=tool_args,
+                    tool_result=tool_result,
+                    agent=agent,
+                )
+                if rebound_key:
+                    _refresh_active_route_state()
+
+            agent.tool_complete_callback = _tool_complete_callback_sync
             agent.step_callback = _step_callback_sync if _hooks_ref.loaded_hooks else None
             agent.stream_delta_callback = _stream_delta_cb
             agent.interim_assistant_callback = _interim_assistant_cb if _want_interim_messages else None
@@ -16532,9 +16695,9 @@ class GatewayRunner:
                     return
                 safe_schedule_threadsafe(
                     _status_adapter.send(
-                        _status_chat_id,
+                        _status_chat_id_ref[0],
                         message,
-                        metadata=_status_thread_metadata,
+                        metadata=_status_thread_metadata_ref[0],
                     ),
                     _loop_for_step,
                     logger=logger,
@@ -16606,19 +16769,19 @@ class GatewayRunner:
                 # an "Other" response on platforms that disable input while
                 # typing is active (Slack Assistant API).
                 try:
-                    _status_adapter.pause_typing_for_chat(_status_chat_id)
+                    _status_adapter.pause_typing_for_chat(_status_chat_id_ref[0])
                 except Exception:
                     pass
 
                 send_ok = False
                 fut = safe_schedule_threadsafe(
                     _status_adapter.send_clarify(
-                        chat_id=_status_chat_id,
+                        chat_id=_status_chat_id_ref[0],
                         question=question,
                         choices=list(choices) if choices else None,
                         clarify_id=clarify_id,
                         session_key=session_key or "",
-                        metadata=_status_thread_metadata,
+                        metadata=_status_thread_metadata_ref[0],
                     ),
                     _loop_for_step,
                     logger=logger,
@@ -16720,7 +16883,7 @@ class GatewayRunner:
                 # is active.  The approval message send auto-clears the Slack
                 # status; pausing prevents _keep_typing from re-setting it.
                 # Typing resumes in _handle_approve_command/_handle_deny_command.
-                _status_adapter.pause_typing_for_chat(_status_chat_id)
+                _status_adapter.pause_typing_for_chat(_status_chat_id_ref[0])
 
                 cmd = approval_data.get("command", "")
                 desc = approval_data.get("description", "dangerous command")
@@ -16732,11 +16895,11 @@ class GatewayRunner:
                     try:
                         _approval_fut = safe_schedule_threadsafe(
                             _status_adapter.send_exec_approval(
-                                chat_id=_status_chat_id,
+                                chat_id=_status_chat_id_ref[0],
                                 command=cmd,
                                 session_key=_approval_session_key,
                                 description=desc,
-                                metadata=_status_thread_metadata,
+                                metadata=_status_thread_metadata_ref[0],
                             ),
                             _loop_for_step,
                             logger=logger,
@@ -16768,9 +16931,9 @@ class GatewayRunner:
                 try:
                     _approval_send_fut = safe_schedule_threadsafe(
                         _status_adapter.send(
-                            _status_chat_id,
+                            _status_chat_id_ref[0],
                             msg,
-                            metadata=_status_thread_metadata,
+                            metadata=_status_thread_metadata_ref[0],
                         ),
                         _loop_for_step,
                         logger=logger,
@@ -17264,7 +17427,7 @@ class GatewayRunner:
                     _notify_res = await _notify_adapter.send(
                         source.chat_id,
                         f"⏳ Still working... ({_elapsed_mins} min elapsed{_status_detail})",
-                        metadata=_status_thread_metadata,
+                        metadata=_status_thread_metadata_ref[0],
                     )
                     if (
                         _cleanup_progress
@@ -17364,7 +17527,7 @@ class GatewayRunner:
                                     f"If the agent does not respond soon, it will "
                                     f"be timed out in {_remaining_mins} min. "
                                     f"You can continue waiting or use /reset.",
-                                    metadata=_status_thread_metadata,
+                                    metadata=_status_thread_metadata_ref[0],
                                 )
                             except Exception as _warn_err:
                                 logger.debug("Inactivity warning send error: %s", _warn_err)
@@ -17599,7 +17762,7 @@ class GatewayRunner:
                             await adapter.send(
                                 source.chat_id,
                                 first_response,
-                                metadata=_status_thread_metadata,
+                                metadata=_status_thread_metadata_ref[0],
                             )
                         except Exception as e:
                             logger.warning("Failed to send first response before queued message: %s", e)
@@ -17668,7 +17831,7 @@ class GatewayRunner:
                     try:
                         await _followup_adapter.send_typing(
                             source.chat_id,
-                            metadata=_status_thread_metadata,
+                            metadata=_status_thread_metadata_ref[0],
                         )
                     except Exception:
                         pass

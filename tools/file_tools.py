@@ -910,8 +910,24 @@ def patch_tool(mode: str = "replace", path: str = None, old_string: str = None,
         _paths_to_check.append(path)
     if mode == "patch" and patch:
         import re as _re
+        from tools.path_security import has_traversal_component
         for _m in _re.finditer(r'^\*\*\*\s+(?:Update|Add|Delete)\s+File:\s*(.+)$', patch, _re.MULTILINE):
-            _paths_to_check.append(_m.group(1).strip())
+            v4a_path = _m.group(1).strip()
+            # V4A path headers come from patch CONTENT, not the explicit
+            # ``path=`` arg — so they're more attacker-influenceable (skill
+            # content, web extract, prompt injection). Reject ``..`` traversal
+            # in V4A headers: a legitimate multi-file patch from a single cwd
+            # can always emit absolute paths or paths relative to the agent's
+            # cwd without ``..``. The explicit ``path=`` arg is unchanged
+            # because the agent uses relative ``..`` paths legitimately
+            # (e.g. ``patch path="../other_module/x.py"`` from a worktree).
+            if has_traversal_component(v4a_path):
+                return tool_error(
+                    f"V4A patch header contains '..' traversal: {v4a_path!r}. "
+                    "Use the agent's cwd-relative path (no '..') or an absolute "
+                    "path in '*** Update File:' / '*** Add File:' / '*** Delete File:' headers."
+                )
+            _paths_to_check.append(v4a_path)
     for _p in _paths_to_check:
         sensitive_err = _check_sensitive_path(_p, task_id)
         if sensitive_err:

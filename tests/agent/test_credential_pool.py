@@ -2422,3 +2422,120 @@ def test_codex_oauth_nonterminal_refresh_does_not_quarantine(tmp_path, monkeypat
     tokens = auth_payload["providers"]["openai-codex"].get("tokens", {})
     assert tokens.get("access_token") == "old-access-token"
     assert tokens.get("refresh_token") == "old-refresh-token"
+
+
+# ---------------------------------------------------------------------------
+# _load_config_safe() caching — regression for #31556
+# ---------------------------------------------------------------------------
+
+
+class TestLoadConfigSafeCache:
+    """_load_config_safe() must call load_config() only once when the config
+    file does not change between calls.
+
+    Before the fix, every call went straight to load_config(), which always
+    returns copy.deepcopy(cached_dict).  With 69 providers checked during a
+    single /model picker invocation this produced ~82 000 redundant deepcopy
+    operations and a ~17 s delay.
+    """
+
+    def test_repeated_calls_hit_cache_not_load_config(self, tmp_path, monkeypatch):
+        """N calls to _load_config_safe() with an unchanged file → load_config()
+        called only once."""
+        hermes_home = tmp_path / "hermes"
+        hermes_home.mkdir(parents=True, exist_ok=True)
+        (hermes_home / "config.yaml").write_text("model:\n  default: gpt-4o\n")
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+        import agent.credential_pool as cp_mod
+
+        # Reset the module-level cache so prior test runs don't interfere.
+        cp_mod._CONFIG_SAFE_CACHE.clear()
+
+        call_count = 0
+        original_load_config = None
+
+        def _counting_load_config():
+            nonlocal call_count
+            call_count += 1
+            return original_load_config()
+
+        from hermes_cli.config import load_config as _orig
+        original_load_config = _orig
+
+        monkeypatch.setattr("agent.credential_pool.load_config", _counting_load_config, raising=False)
+
+        # Patch inside the function's closure by replacing the import target.
+        # _load_config_safe does: from hermes_cli.config import ..., load_config
+        # We patch the name in the module's namespace after the first import.
+        import hermes_cli.config as cfg_mod
+        monkeypatch.setattr(cfg_mod, "load_config", _counting_load_config)
+
+        # Simulate 69 providers being checked (the /model picker workload).
+        for _ in range(69):
+            result = cp_mod._load_config_safe()
+            assert result is not None
+
+        assert call_count == 1, (
+            f"load_config() called {call_count} times for 69 _load_config_safe() "
+            f"calls on an unchanged config — expected exactly 1 (cache miss on first "
+            f"call, then 68 cache hits)."
+        )
+
+    def test_cache_invalidates_when_file_changes(self, tmp_path, monkeypatch):
+        """If the config file changes between calls, load_config() is re-invoked."""
+        hermes_home = tmp_path / "hermes"
+        hermes_home.mkdir(parents=True, exist_ok=True)
+        cfg_file = hermes_home / "config.yaml"
+        cfg_file.write_text("model:\n  default: gpt-4o\n")
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+        import agent.credential_pool as cp_mod
+
+        cp_mod._CONFIG_SAFE_CACHE.clear()
+
+        call_count = 0
+
+        import hermes_cli.config as cfg_mod
+        _orig = cfg_mod.load_config
+
+        def _counting(*a, **kw):
+            nonlocal call_count
+            call_count += 1
+            return _orig(*a, **kw)
+
+        monkeypatch.setattr(cfg_mod, "load_config", _counting)
+
+        # First call — cache miss.
+        cp_mod._load_config_safe()
+        assert call_count == 1
+
+        # Simulate the file changing (update content so mtime/size differ).
+        import time as _time
+        _time.sleep(0.01)  # ensure mtime differs on fast filesystems
+        cfg_file.write_text("model:\n  default: claude-opus-4-6\n")
+
+        # Second call — cache should be stale, load_config() called again.
+        result = cp_mod._load_config_safe()
+        assert call_count == 2, (
+            "load_config() should have been called again after the config file changed."
+        )
+        assert result is not None
+
+    def test_cache_returns_same_dict_reference(self, tmp_path, monkeypatch):
+        """Cached calls return the same dict object (no deepcopy on hit)."""
+        hermes_home = tmp_path / "hermes"
+        hermes_home.mkdir(parents=True, exist_ok=True)
+        (hermes_home / "config.yaml").write_text("model:\n  default: gpt-4o\n")
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+        import agent.credential_pool as cp_mod
+
+        cp_mod._CONFIG_SAFE_CACHE.clear()
+
+        first = cp_mod._load_config_safe()
+        second = cp_mod._load_config_safe()
+        third = cp_mod._load_config_safe()
+
+        assert first is second, "Second call should return the cached dict reference."
+        assert second is third, "Third call should return the cached dict reference."

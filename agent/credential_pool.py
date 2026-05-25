@@ -41,12 +41,60 @@ from hermes_cli.auth import (
 logger = logging.getLogger(__name__)
 
 
-def _load_config_safe() -> Optional[dict]:
-    """Load config.yaml, returning None on any error."""
-    try:
-        from hermes_cli.config import load_config
+# ---------------------------------------------------------------------------
+# Config read-only cache — avoids 69 × deepcopy() during list_authenticated_providers()
+#
+# load_config() already caches based on the config file's (mtime_ns, size),
+# but still returns copy.deepcopy() on every call so callers that mutate the
+# result get an independent copy.  All callers of _load_config_safe() inside
+# this module are read-only (.get() only, no mutation), so we can safely
+# re-use the same dict reference across calls.  We still stat() once per call
+# to detect config changes made by other processes, but skip the deep-copy
+# when the file hasn't changed — dropping ~68 redundant deepcopy() calls on
+# a /model picker invocation that checks 69 providers.
+# ---------------------------------------------------------------------------
+_CONFIG_SAFE_CACHE: Dict[str, Any] = {}   # keys: "path", "stat_key", "config"
+_CONFIG_SAFE_LOCK = threading.Lock()
 
-        return load_config()
+
+def _load_config_safe() -> Optional[dict]:
+    """Load config.yaml for read-only access, returning None on any error.
+
+    Caches the returned dict keyed on (config_path, mtime_ns, size) so that
+    callers that iterate over many providers (e.g. credential-pool checks
+    inside list_authenticated_providers) share one dict and avoid O(n)
+    deep-copy overhead.
+
+    All callers inside this module are read-only — they call .get() but never
+    mutate the returned dict — so returning the same reference is safe.
+    """
+    try:
+        from hermes_cli.config import get_config_path, load_config
+
+        config_path = get_config_path()
+        path_key = str(config_path)
+        try:
+            st = config_path.stat()
+            stat_key: Optional[Tuple[int, int]] = (st.st_mtime_ns, st.st_size)
+        except (FileNotFoundError, OSError):
+            stat_key = None
+
+        with _CONFIG_SAFE_LOCK:
+            cached = _CONFIG_SAFE_CACHE
+            if (
+                cached
+                and cached.get("path") == path_key
+                and stat_key is not None
+                and cached.get("stat_key") == stat_key
+            ):
+                return cached["config"]
+
+            # Miss or file changed — ask load_config() for a fresh copy, then
+            # store it so subsequent calls within this process skip deepcopy.
+            config = load_config()
+            _CONFIG_SAFE_CACHE.clear()
+            _CONFIG_SAFE_CACHE.update({"path": path_key, "stat_key": stat_key, "config": config})
+            return config
     except Exception:
         return None
 

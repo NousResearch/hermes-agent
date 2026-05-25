@@ -68,6 +68,7 @@ from agent.auxiliary_client import call_llm
 from hermes_constants import get_hermes_home
 from utils import is_truthy_value
 from hermes_cli.config import cfg_get
+from tools.environments.local import hermes_subprocess_env
 
 try:
     from tools.website_policy import check_website_access
@@ -127,6 +128,18 @@ _SANE_PATH_DIRS = (
     "/bin",
 )
 _SANE_PATH = os.pathsep.join(_SANE_PATH_DIRS)
+
+# Browser-specific tool keys that should be passed through to the
+# agent-browser subprocess after credential stripping.  Used by both
+# _run_chrome_fallback_command and _run_browser_command.
+_BROWSER_PASSTHROUGH_KEYS: tuple[str, ...] = (
+    "BROWSERBASE_API_KEY",
+    "BROWSERBASE_PROJECT_ID",
+    "BROWSER_USE_API_KEY",
+    "FIRECRAWL_API_KEY",
+    "FIRECRAWL_API_URL",
+    "FIRECRAWL_BROWSER_TTL",
+)
 
 
 @functools.lru_cache(maxsize=1)
@@ -857,7 +870,12 @@ def _run_chrome_fallback_command(
 
     task_socket_dir = os.path.join(_socket_safe_tmpdir(), f"agent-browser-{tmp_session}")
     os.makedirs(task_socket_dir, mode=0o700, exist_ok=True)
-    browser_env = {**os.environ, "AGENT_BROWSER_SOCKET_DIR": task_socket_dir}
+    browser_env = hermes_subprocess_env(inherit_credentials=False)
+    # Pass through browser-specific tool keys that the agent-browser needs.
+    for _key in _BROWSER_PASSTHROUGH_KEYS:
+        if _key in os.environ:
+            browser_env[_key] = os.environ[_key]
+    browser_env["AGENT_BROWSER_SOCKET_DIR"] = task_socket_dir
     browser_env["PATH"] = _merge_browser_path(browser_env.get("PATH", ""))
 
     if "AGENT_BROWSER_IDLE_TIMEOUT_MS" not in browser_env:
@@ -1991,7 +2009,13 @@ def _run_browser_command(
         logger.debug("browser cmd=%s task=%s socket_dir=%s (%d chars)",
                      command, task_id, task_socket_dir, len(task_socket_dir))
 
-        browser_env = {**os.environ}
+        # Strip provider credentials and tool secrets from the subprocess
+        # environment (issue #6032).  Pass through only the minimum set of
+        # browser-specific tool keys that the agent-browser worker needs.
+        browser_env = hermes_subprocess_env(inherit_credentials=False)
+        for _key in _BROWSER_PASSTHROUGH_KEYS:
+            if _key in os.environ:
+                browser_env[_key] = os.environ[_key]
 
         # Ensure subprocesses inherit the same browser-specific PATH fallbacks
         # used during CLI discovery.

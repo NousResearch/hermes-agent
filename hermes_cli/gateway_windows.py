@@ -38,7 +38,9 @@ import subprocess
 import sys
 import time
 from pathlib import Path
+from typing import Optional
 
+from tools.environments.local import hermes_subprocess_env
 # Short timeouts: schtasks occasionally wedges and we don't want to hang forever.
 _SCHTASKS_TIMEOUT_S = 15
 _SCHTASKS_NO_OUTPUT_TIMEOUT_S = 30
@@ -611,7 +613,8 @@ def _spawn_detached(script_path: Path | None = None) -> int:
     argv, working_dir, env_overlay = _build_gateway_argv()
 
     # Inherit PATH etc. from the current env, overlay our required vars.
-    env = {**os.environ, **env_overlay}
+    env = hermes_subprocess_env(inherit_credentials=False)
+    env.update(env_overlay)
 
     # DETACHED_PROCESS        0x00000008  — no console attached to child
     # CREATE_NEW_PROCESS_GROUP 0x00000200 — child gets its own group, won't

@@ -75,7 +75,7 @@ def _resolve_safe_cwd(cwd: str) -> str:
 # Hermes-internal env vars that should NOT leak into terminal subprocesses.
 _HERMES_PROVIDER_ENV_FORCE_PREFIX = "_HERMES_FORCE_"
 
-# Hermes-managed AWS *inference* credentials for ``auth_type="aws_sdk"``
+# Hermes-managed AWS *inference* credentials for ``auth_type="aws_sdk``
 # providers (Bedrock).  Scoped DELIBERATELY NARROW: this lists only the
 # Bedrock-specific bearer token, which is a Hermes inference secret exactly
 # analogous to ``OPENAI_API_KEY`` — nobody drives the ``aws``/``terraform``/
@@ -92,14 +92,93 @@ _HERMES_PROVIDER_ENV_FORCE_PREFIX = "_HERMES_FORCE_"
 # unconditionally — and (b) be unrecoverable, because env_passthrough.py
 # refuses to re-allow anything in this blocklist (GHSA-rhgp-j443-p4rf).  See
 # issue #32314 discussion.
-_AWS_SDK_CREDENTIAL_ENV_VARS = frozenset({
+_AWS_SDK_CREDENTIAL_ENV_VARS: frozenset[str] = frozenset({
     "AWS_BEARER_TOKEN_BEDROCK",
+})
+
+# Static baseline of provider, tool, and gateway env vars to strip.
+# Extended dynamically at import time by _build_provider_env_blocklist().
+# Serves as the fallback if dynamic extension raises an exception.
+_STATIC_PROVIDER_ENV_BLOCKLIST: frozenset[str] = frozenset({
+    "OPENAI_BASE_URL",
+    "OPENAI_API_KEY",
+    "OPENAI_API_BASE",
+    "OPENAI_ORG_ID",
+    "OPENAI_ORGANIZATION",
+    "OPENROUTER_API_KEY",
+    "ANTHROPIC_BASE_URL",
+    "ANTHROPIC_TOKEN",
+    "CLAUDE_CODE_OAUTH_TOKEN",
+    "LLM_MODEL",
+    "GOOGLE_API_KEY",
+    "DEEPSEEK_API_KEY",
+    "MISTRAL_API_KEY",
+    "GROQ_API_KEY",
+    "TOGETHER_API_KEY",
+    "PERPLEXITY_API_KEY",
+    "COHERE_API_KEY",
+    "FIREWORKS_API_KEY",
+    "XAI_API_KEY",
+    "HELICONE_API_KEY",
+    "PARALLEL_API_KEY",
+    "FIRECRAWL_API_KEY",
+    "FIRECRAWL_API_URL",
+    "TELEGRAM_HOME_CHANNEL",
+    "TELEGRAM_HOME_CHANNEL_NAME",
+    "DISCORD_HOME_CHANNEL",
+    "DISCORD_HOME_CHANNEL_NAME",
+    "DISCORD_REQUIRE_MENTION",
+    "DISCORD_FREE_RESPONSE_CHANNELS",
+    "DISCORD_AUTO_THREAD",
+    "SLACK_HOME_CHANNEL",
+    "SLACK_HOME_CHANNEL_NAME",
+    "SLACK_ALLOWED_USERS",
+    "WHATSAPP_ENABLED",
+    "WHATSAPP_MODE",
+    "WHATSAPP_ALLOWED_USERS",
+    "SIGNAL_HTTP_URL",
+    "SIGNAL_ACCOUNT",
+    "SIGNAL_ALLOWED_USERS",
+    "SIGNAL_GROUP_ALLOWED_USERS",
+    "SIGNAL_HOME_CHANNEL",
+    "SIGNAL_HOME_CHANNEL_NAME",
+    "SIGNAL_IGNORE_STORIES",
+    "HASS_TOKEN",
+    "HASS_URL",
+    "EMAIL_ADDRESS",
+    "EMAIL_PASSWORD",
+    "EMAIL_IMAP_HOST",
+    "EMAIL_SMTP_HOST",
+    "EMAIL_HOME_ADDRESS",
+    "EMAIL_HOME_ADDRESS_NAME",
+    "HERMES_DASHBOARD_SESSION_TOKEN",
+    "GATEWAY_ALLOWED_USERS",
+    "GH_TOKEN",
+    "GITHUB_TOKEN",
+    "GITHUB_APP_ID",
+    "GITHUB_APP_PRIVATE_KEY_PATH",
+    "GITHUB_APP_INSTALLATION_ID",
+    "MODAL_TOKEN_ID",
+    "MODAL_TOKEN_SECRET",
+    "DAYTONA_API_KEY",
+    "VERCEL_OIDC_TOKEN",
+    "VERCEL_TOKEN",
+    "VERCEL_PROJECT_ID",
+    "VERCEL_TEAM_ID",
+    *_AWS_SDK_CREDENTIAL_ENV_VARS,
 })
 
 
 def _build_provider_env_blocklist() -> frozenset:
-    """Derive the blocklist from provider, tool, and gateway config."""
-    blocked: set[str] = set()
+    """Derive the blocklist from provider, tool, and gateway config.
+
+    Starts from the static baseline (_STATIC_PROVIDER_ENV_BLOCKLIST) and
+    extends it dynamically from PROVIDER_REGISTRY and OPTIONAL_ENV_VARS.
+    Dynamic extension failures are silently ignored; the caller should
+    guard the top-level call with a try/except to ensure module load
+    never fails because of a registry import error.
+    """
+    blocked: set[str] = set(_STATIC_PROVIDER_ENV_BLOCKLIST)
 
     try:
         from hermes_cli.auth import PROVIDER_REGISTRY
@@ -123,72 +202,69 @@ def _build_provider_env_blocklist() -> frozenset:
     except ImportError:
         pass
 
-    blocked.update({
-        "OPENAI_BASE_URL",
-        "OPENAI_API_KEY",
-        "OPENAI_API_BASE",
-        "OPENAI_ORG_ID",
-        "OPENAI_ORGANIZATION",
-        "OPENROUTER_API_KEY",
-        "ANTHROPIC_BASE_URL",
-        "ANTHROPIC_TOKEN",
-        "CLAUDE_CODE_OAUTH_TOKEN",
-        "LLM_MODEL",
-        "GOOGLE_API_KEY",
-        "DEEPSEEK_API_KEY",
-        "MISTRAL_API_KEY",
-        "GROQ_API_KEY",
-        "TOGETHER_API_KEY",
-        "PERPLEXITY_API_KEY",
-        "COHERE_API_KEY",
-        "FIREWORKS_API_KEY",
-        "XAI_API_KEY",
-        "HELICONE_API_KEY",
-        "PARALLEL_API_KEY",
-        "FIRECRAWL_API_KEY",
-        "FIRECRAWL_API_URL",
-        "TELEGRAM_HOME_CHANNEL",
-        "TELEGRAM_HOME_CHANNEL_NAME",
-        "DISCORD_HOME_CHANNEL",
-        "DISCORD_HOME_CHANNEL_NAME",
-        "DISCORD_REQUIRE_MENTION",
-        "DISCORD_FREE_RESPONSE_CHANNELS",
-        "DISCORD_AUTO_THREAD",
-        "SLACK_HOME_CHANNEL",
-        "SLACK_HOME_CHANNEL_NAME",
-        "SLACK_ALLOWED_USERS",
-        "WHATSAPP_ENABLED",
-        "WHATSAPP_MODE",
-        "WHATSAPP_ALLOWED_USERS",
-        "SIGNAL_HTTP_URL",
-        "SIGNAL_ACCOUNT",
-        "SIGNAL_ALLOWED_USERS",
-        "SIGNAL_GROUP_ALLOWED_USERS",
-        "SIGNAL_HOME_CHANNEL",
-        "SIGNAL_HOME_CHANNEL_NAME",
-        "SIGNAL_IGNORE_STORIES",
-        "HASS_TOKEN",
-        "HASS_URL",
-        "EMAIL_ADDRESS",
-        "EMAIL_PASSWORD",
-        "EMAIL_IMAP_HOST",
-        "EMAIL_SMTP_HOST",
-        "EMAIL_HOME_ADDRESS",
-        "EMAIL_HOME_ADDRESS_NAME",
-        "HERMES_DASHBOARD_SESSION_TOKEN",
-        "GATEWAY_ALLOWED_USERS",
-        "GH_TOKEN",
-        "GITHUB_APP_ID",
-        "GITHUB_APP_PRIVATE_KEY_PATH",
-        "GITHUB_APP_INSTALLATION_ID",
-        "MODAL_TOKEN_ID",
-        "MODAL_TOKEN_SECRET",
-        "DAYTONA_API_KEY",
-    })
     return frozenset(blocked)
 
 
-_HERMES_PROVIDER_ENV_BLOCKLIST = _build_provider_env_blocklist()
+try:
+    _HERMES_PROVIDER_ENV_BLOCKLIST = _build_provider_env_blocklist()
+except Exception:
+    logger.warning(
+        "Failed to build dynamic provider env blocklist — "
+        "falling back to static baseline (%d keys).",
+        len(_STATIC_PROVIDER_ENV_BLOCKLIST),
+    )
+    _HERMES_PROVIDER_ENV_BLOCKLIST = _STATIC_PROVIDER_ENV_BLOCKLIST
+
+# Keys that are stripped unconditionally — even when inherit_credentials=True.
+# GitHub auth, gateway bot tokens, and infrastructure secrets should never
+# propagate to subprocesses regardless of the credential-inheritance flag.
+_ALWAYS_STRIP_KEYS: frozenset[str] = frozenset({
+    # GitHub auth — no spawned subprocess needs repo write access
+    "GH_TOKEN",
+    "GITHUB_TOKEN",
+    "GITHUB_APP_ID",
+    "GITHUB_APP_PRIVATE_KEY_PATH",
+    "GITHUB_APP_INSTALLATION_ID",
+    # Gateway / messaging bot tokens
+    "TELEGRAM_HOME_CHANNEL",
+    "TELEGRAM_HOME_CHANNEL_NAME",
+    "DISCORD_HOME_CHANNEL",
+    "DISCORD_HOME_CHANNEL_NAME",
+    "DISCORD_REQUIRE_MENTION",
+    "DISCORD_FREE_RESPONSE_CHANNELS",
+    "DISCORD_AUTO_THREAD",
+    "SLACK_HOME_CHANNEL",
+    "SLACK_HOME_CHANNEL_NAME",
+    "SLACK_ALLOWED_USERS",
+    "WHATSAPP_ENABLED",
+    "WHATSAPP_MODE",
+    "WHATSAPP_ALLOWED_USERS",
+    "SIGNAL_HTTP_URL",
+    "SIGNAL_ACCOUNT",
+    "SIGNAL_ALLOWED_USERS",
+    "SIGNAL_GROUP_ALLOWED_USERS",
+    "SIGNAL_HOME_CHANNEL",
+    "SIGNAL_HOME_CHANNEL_NAME",
+    "SIGNAL_IGNORE_STORIES",
+    "HASS_TOKEN",
+    "HASS_URL",
+    "EMAIL_ADDRESS",
+    "EMAIL_PASSWORD",
+    "EMAIL_IMAP_HOST",
+    "EMAIL_SMTP_HOST",
+    "EMAIL_HOME_ADDRESS",
+    "EMAIL_HOME_ADDRESS_NAME",
+    "HERMES_DASHBOARD_SESSION_TOKEN",
+    "GATEWAY_ALLOWED_USERS",
+    # Infrastructure / compute secrets
+    "MODAL_TOKEN_ID",
+    "MODAL_TOKEN_SECRET",
+    "DAYTONA_API_KEY",
+    "VERCEL_OIDC_TOKEN",
+    "VERCEL_TOKEN",
+    "VERCEL_PROJECT_ID",
+    "VERCEL_TEAM_ID",
+})
 
 
 def _inject_context_hermes_home(env: dict) -> None:
@@ -234,6 +310,74 @@ def _sanitize_subprocess_env(base_env: dict | None, extra_env: dict | None = Non
         sanitized["HOME"] = _profile_home
 
     return sanitized
+
+
+def hermes_subprocess_env(
+    *,
+    inherit_credentials: bool = False,
+) -> dict[str, str]:
+    """Build a sanitized environment dict for spawned subprocesses.
+
+    Centralized helper — use this at every subprocess spawn site instead of
+    copying ``os.environ`` directly.  Establishes strip-by-default as the
+    policy across the entire spawn surface (browser, RL training, terminal,
+    PTY, ACP/CLI executors, quick commands, etc.).
+
+    Two-tier stripping:
+
+    * **Tier 1 (always):** ``_ALWAYS_STRIP_KEYS`` — GitHub auth, gateway
+      bot tokens, and infrastructure secrets are *always* removed,
+      regardless of ``inherit_credentials``.
+    * **Tier 2 (conditional):** ``_HERMES_PROVIDER_ENV_BLOCKLIST`` —
+      provider API keys and tool secrets are removed unless the caller
+      explicitly opts in with ``inherit_credentials=True``.
+
+    Sets ``PYTHONUTF8`` for Windows UTF-8 safety.  Injects the
+    context-local Hermes home and per-profile HOME isolation.
+
+    Pass ``inherit_credentials=True`` **only** when the child process
+    legitimately needs LLM provider credentials — e.g. a user-blessed
+    ``claude`` / ``codex`` / ``gemini`` CLI executor.  Even with this
+    flag, Tier-1 secrets (GitHub auth, gateway tokens, infra secrets)
+    are still stripped.  The ``True`` flag is grep-able for audit:
+    ``grep -rn 'inherit_credentials=True'`` shows every spawn site
+    that receives provider credentials.
+
+    Callers that need *specific* non-provider secrets (e.g. browser
+    needs ``BROWSERBASE_API_KEY`` / ``FIRECRAWL_API_KEY``) should call
+    this function with ``inherit_credentials=False`` and then manually
+    copy the needed keys from ``os.environ`` into the returned dict.
+    """
+    env = os.environ.copy()
+
+    # Tier 1 — always strip: GitHub auth, gateway tokens, infra secrets.
+    # These should never propagate to subprocesses under any flag.
+    for key in _ALWAYS_STRIP_KEYS:
+        env.pop(key, None)
+
+    if not inherit_credentials:
+        # Tier 2 — strip provider API keys and tool secrets unless the
+        # caller explicitly opts into credential inheritance.
+        for key in _HERMES_PROVIDER_ENV_BLOCKLIST:
+            env.pop(key, None)
+        # Also strip _HERMES_FORCE_ prefixed keys — these are internal
+        # routing hints that should never leak to child processes.
+        for key in list(env):
+            if key.startswith(_HERMES_PROVIDER_ENV_FORCE_PREFIX):
+                env.pop(key, None)
+
+    # Windows UTF-8 safety for spawned processes (issue #31420).
+    env.setdefault("PYTHONUTF8", "1")
+
+    _inject_context_hermes_home(env)
+
+    # Per-profile HOME isolation for background processes.
+    from hermes_constants import get_subprocess_home
+    _profile_home = get_subprocess_home()
+    if _profile_home:
+        env["HOME"] = _profile_home
+
+    return env
 
 
 def _find_bash() -> str:

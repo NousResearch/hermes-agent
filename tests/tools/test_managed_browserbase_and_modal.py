@@ -182,7 +182,12 @@ def _install_fake_tools_package():
             return None
 
     sys.modules["tools.environments.base"] = types.SimpleNamespace(BaseEnvironment=_DummyEnvironment)
-    sys.modules["tools.environments.local"] = types.SimpleNamespace(LocalEnvironment=_DummyEnvironment)
+    sys.modules["tools.environments.local"] = types.SimpleNamespace(
+        LocalEnvironment=_DummyEnvironment,
+        # PR #31959: browser_tool.py imports hermes_subprocess_env from
+        # tools.environments.local.  Stub it so the import doesn't fail.
+        hermes_subprocess_env=lambda **kw: dict(os.environ),
+    )
     sys.modules["tools.environments.singularity"] = types.SimpleNamespace(
         _get_scratch_dir=lambda: Path(tempfile.gettempdir()),
         SingularityEnvironment=_DummyEnvironment,

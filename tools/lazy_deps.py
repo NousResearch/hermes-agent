@@ -61,6 +61,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Optional
 
+from tools.environments.local import hermes_subprocess_env
+
 logger = logging.getLogger(__name__)
 
 
@@ -356,7 +358,8 @@ def _venv_pip_install(specs: tuple[str, ...], *, timeout: int = 300) -> _Install
         return _InstallResult(True, "", "")
 
     venv_root = Path(sys.executable).parent.parent
-    uv_env = {**os.environ, "VIRTUAL_ENV": str(venv_root)}
+    uv_env = hermes_subprocess_env(inherit_credentials=False)
+    uv_env["VIRTUAL_ENV"] = str(venv_root)
 
     # Tier 1: uv (preferred — fast, doesn't need pip in the venv)
     uv_bin = shutil.which("uv")

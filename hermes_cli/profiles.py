@@ -31,6 +31,7 @@ from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import List, Optional
 
 from agent.skill_utils import is_excluded_skill_path
+from tools.environments.local import hermes_subprocess_env
 
 _PROFILE_ID_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,63}$")
 
@@ -850,7 +851,7 @@ def seed_profile_skills(profile_dir: Path, quiet: bool = False) -> Optional[dict
             [sys.executable, "-c",
              "import json; from tools.skills_sync import sync_skills; "
              "r = sync_skills(quiet=True); print(json.dumps(r))"],
-            env={**os.environ, "HERMES_HOME": str(profile_dir)},
+            env={**hermes_subprocess_env(inherit_credentials=False), "HERMES_HOME": str(profile_dir)},
             cwd=str(project_root),
             capture_output=True, text=True, timeout=60,
         )

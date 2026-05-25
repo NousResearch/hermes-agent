@@ -10,7 +10,55 @@ caused every message to be silently dropped (for ``allowed_channels``) or
 every ``free_response`` / ``ignored`` check to fail open.
 """
 
+from datetime import datetime, timezone
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, MagicMock
+import sys
 import unittest
+
+import pytest
+
+from gateway.config import PlatformConfig
+
+
+def _ensure_discord_mock():
+    """Install a mock discord module when discord.py isn't available."""
+    if "discord" in sys.modules and hasattr(sys.modules["discord"], "__file__"):
+        return
+
+    discord_mod = MagicMock()
+    discord_mod.Intents.default.return_value = MagicMock()
+    discord_mod.Client = MagicMock
+    discord_mod.File = MagicMock
+    discord_mod.DMChannel = type("DMChannel", (), {})
+    discord_mod.Thread = type("Thread", (), {})
+    discord_mod.ForumChannel = type("ForumChannel", (), {})
+    discord_mod.MessageType = SimpleNamespace(default=0, reply=1)
+    discord_mod.ui = SimpleNamespace(View=object, button=lambda *a, **k: (lambda fn: fn), Button=object)
+    discord_mod.ButtonStyle = SimpleNamespace(success=1, primary=2, secondary=2, danger=3, green=1, grey=2, blurple=2, red=3)
+    discord_mod.Color = SimpleNamespace(orange=lambda: 1, green=lambda: 2, blue=lambda: 3, red=lambda: 4, purple=lambda: 5)
+    discord_mod.Interaction = object
+    discord_mod.Embed = MagicMock
+    discord_mod.app_commands = SimpleNamespace(
+        describe=lambda **kwargs: (lambda fn: fn),
+        choices=lambda **kwargs: (lambda fn: fn),
+        Choice=lambda **kwargs: SimpleNamespace(**kwargs),
+    )
+
+    ext_mod = MagicMock()
+    commands_mod = MagicMock()
+    commands_mod.Bot = MagicMock
+    ext_mod.commands = commands_mod
+
+    sys.modules.setdefault("discord", discord_mod)
+    sys.modules.setdefault("discord.ext", ext_mod)
+    sys.modules.setdefault("discord.ext.commands", commands_mod)
+
+
+_ensure_discord_mock()
+
+import plugins.platforms.discord.adapter as discord_platform  # noqa: E402
+from plugins.platforms.discord.adapter import DiscordAdapter  # noqa: E402
 
 
 def _channel_is_allowed(channel_id: str, allowed_channels_raw: str) -> bool:
@@ -39,6 +87,51 @@ def _channel_is_free_response(channel_id: str, free_channels_raw: str) -> bool:
     return "*" in free_channels or bool({channel_id} & free_channels)
 
 
+class FakeTextChannel:
+    def __init__(self, channel_id: int = 1, name: str = "general", guild_name: str = "Hermes Server"):
+        self.id = channel_id
+        self.name = name
+        self.guild = SimpleNamespace(name=guild_name)
+        self.topic = None
+
+
+@pytest.fixture
+def adapter(monkeypatch):
+    monkeypatch.setattr(discord_platform.discord, "DMChannel", type("DMChannel", (), {}), raising=False)
+    monkeypatch.setattr(discord_platform.discord, "Thread", type("Thread", (), {}), raising=False)
+    monkeypatch.setattr(discord_platform.discord, "MessageType", SimpleNamespace(default=0, reply=1), raising=False)
+    for var in (
+        "DISCORD_REQUIRE_MENTION",
+        "DISCORD_ALLOWED_CHANNELS",
+        "DISCORD_FREE_RESPONSE_CHANNELS",
+        "DISCORD_IGNORED_CHANNELS",
+        "DISCORD_AUTO_THREAD",
+    ):
+        monkeypatch.delenv(var, raising=False)
+
+    config = PlatformConfig(enabled=True, token="fake-token")
+    adapter = DiscordAdapter(config)
+    adapter._client = SimpleNamespace(user=SimpleNamespace(id=999))
+    adapter._text_batch_delay_seconds = 0
+    adapter.handle_message = AsyncMock()
+    return adapter
+
+
+def make_message(*, channel, content: str):
+    author = SimpleNamespace(id=42, display_name="TestUser", name="TestUser", bot=False)
+    return SimpleNamespace(
+        id=123,
+        content=content,
+        mentions=[],
+        attachments=[],
+        reference=None,
+        created_at=datetime.now(timezone.utc),
+        channel=channel,
+        author=author,
+        type=discord_platform.discord.MessageType.default,
+    )
+
+
 class TestDiscordAllowedChannelsWildcard(unittest.TestCase):
     """Wildcard and channel-list behaviour for DISCORD_ALLOWED_CHANNELS."""
 
@@ -65,6 +158,51 @@ class TestDiscordAllowedChannelsWildcard(unittest.TestCase):
     def test_whitespace_only_entry_ignored(self):
         """Entries that are only whitespace are stripped and ignored."""
         self.assertFalse(_channel_is_allowed("1234567890", "  ,  "))
+
+
+def test_discord_allowed_channels_can_come_from_config_extra(adapter):
+    adapter.config.extra["allowed_channels"] = ["123", "456"]
+
+    assert adapter._discord_allowed_channels() == {"123", "456"}
+
+
+def test_discord_allowed_channels_env_overrides_config_extra(adapter, monkeypatch):
+    adapter.config.extra["allowed_channels"] = ["123"]
+    monkeypatch.setenv("DISCORD_ALLOWED_CHANNELS", "456")
+
+    assert adapter._discord_allowed_channels() == {"456"}
+
+
+def test_discord_allowed_channels_config_wildcard(adapter):
+    adapter.config.extra["allowed_channels"] = "*"
+
+    assert adapter._discord_allowed_channels() == {"*"}
+
+
+@pytest.mark.asyncio
+async def test_discord_allowed_channels_config_blocks_unlisted_channel(adapter, monkeypatch):
+    monkeypatch.setenv("DISCORD_REQUIRE_MENTION", "false")
+    monkeypatch.setenv("DISCORD_AUTO_THREAD", "false")
+    adapter.config.extra["allowed_channels"] = ["123"]
+
+    message = make_message(channel=FakeTextChannel(channel_id=999), content="blocked")
+
+    await adapter._handle_message(message)
+
+    adapter.handle_message.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_discord_allowed_channels_config_allows_listed_channel(adapter, monkeypatch):
+    monkeypatch.setenv("DISCORD_REQUIRE_MENTION", "false")
+    monkeypatch.setenv("DISCORD_AUTO_THREAD", "false")
+    adapter.config.extra["allowed_channels"] = ["123"]
+
+    message = make_message(channel=FakeTextChannel(channel_id=123), content="allowed")
+
+    await adapter._handle_message(message)
+
+    adapter.handle_message.assert_awaited_once()
 
 
 class TestDiscordIgnoredChannelsWildcard(unittest.TestCase):

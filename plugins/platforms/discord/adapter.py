@@ -2333,19 +2333,17 @@ class DiscordAdapter(BasePlatformAdapter):
                     if parent_id:
                         channel_ids.add(str(parent_id))
 
-            allowed_raw = os.getenv("DISCORD_ALLOWED_CHANNELS", "")
-            if allowed_raw:
-                allowed = {c.strip() for c in allowed_raw.split(",") if c.strip()}
-                if "*" not in allowed:
-                    if not channel_ids:
-                        # Channel policy is configured but the interaction
-                        # has no resolvable channel id. Fail closed.
-                        return (
-                            False,
-                            "channel id missing with DISCORD_ALLOWED_CHANNELS configured",
-                        )
-                    if not (channel_ids & allowed):
-                        return (False, "channel not in DISCORD_ALLOWED_CHANNELS")
+            allowed = self._discord_allowed_channels()
+            if allowed and "*" not in allowed:
+                if not channel_ids:
+                    # Channel policy is configured but the interaction
+                    # has no resolvable channel id. Fail closed.
+                    return (
+                        False,
+                        "channel id missing with DISCORD_ALLOWED_CHANNELS configured",
+                    )
+                if not (channel_ids & allowed):
+                    return (False, "channel not in DISCORD_ALLOWED_CHANNELS")
 
             # Ignored beats allowed: even when a thread's parent channel
             # is on the allowlist, an explicit DISCORD_IGNORED_CHANNELS
@@ -3663,6 +3661,22 @@ class DiscordAdapter(BasePlatformAdapter):
             return {part.strip() for part in s.split(",") if part.strip()}
         return set()
 
+    def _discord_allowed_channels(self) -> set:
+        """Return the whitelist of Discord channel IDs the bot responds in.
+
+        Empty set means no restriction. A single ``"*"`` entry is preserved so
+        callers can short-circuit on wildcard membership.
+        """
+        raw = os.getenv("DISCORD_ALLOWED_CHANNELS")
+        if raw is None or not str(raw).strip():
+            raw = self.config.extra.get("allowed_channels")
+        if isinstance(raw, list):
+            return {str(part).strip() for part in raw if str(part).strip()}
+        s = str(raw).strip() if raw is not None else ""
+        if s:
+            return {part.strip() for part in s.split(",") if part.strip()}
+        return set()
+
     def _discord_thread_require_mention(self) -> bool:
         """Return whether thread participation requires @mention to follow up.
 
@@ -4500,12 +4514,10 @@ class DiscordAdapter(BasePlatformAdapter):
                 channel_ids.add(parent_channel_id)
 
             # Check allowed channels - if set, only respond in these channels
-            allowed_channels_raw = os.getenv("DISCORD_ALLOWED_CHANNELS", "")
-            if allowed_channels_raw:
-                allowed_channels = {ch.strip() for ch in allowed_channels_raw.split(",") if ch.strip()}
-                if "*" not in allowed_channels and not (channel_ids & allowed_channels):
-                    logger.debug("[%s] Ignoring message in non-allowed channel: %s", self.name, channel_ids)
-                    return
+            allowed_channels = self._discord_allowed_channels()
+            if allowed_channels and "*" not in allowed_channels and not (channel_ids & allowed_channels):
+                logger.debug("[%s] Ignoring message in non-allowed channel: %s", self.name, channel_ids)
+                return
 
             # Check ignored channels - never respond even when mentioned
             ignored_channels_raw = os.getenv("DISCORD_IGNORED_CHANNELS", "")

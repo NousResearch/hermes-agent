@@ -84,7 +84,15 @@ The entrypoint starts `hermes dashboard` in the background (running as the non-r
 By default, the dashboard stays on loopback to avoid exposing the unauthenticated web surface over the network. To publish it intentionally, set `HERMES_DASHBOARD_HOST=0.0.0.0` and configure your own trusted network boundary/reverse proxy. In that case you must explicitly add `--insecure` behavior by passing host/flags in your command path (the entrypoint no longer auto-enables insecure mode).
 
 :::note
-The dashboard side-process is **not supervised** — if it crashes, it stays down until the container restarts. Running it as a separate container is not supported: the dashboard's gateway-liveness detection requires a shared PID namespace with the gateway process.
+The dashboard runs as a supervised s6 service inside the container. If
+the dashboard process crashes, s6-overlay restarts it automatically
+after a short backoff — you'll see a new PID without needing to
+restart the container. Logs and crash output are visible via
+`docker logs <container>` (s6 forwards service stdout/stderr there).
+
+Running the dashboard as a separate container is not supported: its
+gateway-liveness detection requires a shared PID namespace with the
+gateway process.
 :::
 
 ## Running interactively (CLI chat)
@@ -260,23 +268,50 @@ The official image is based on `debian:13.4` and includes:
 - Python 3 with all Hermes dependencies (`uv pip install -e ".[all]"`)
 - Node.js + npm (for browser automation and WhatsApp bridge)
 - Playwright with Chromium (`npx playwright install --with-deps chromium --only-shell`)
-- ripgrep, ffmpeg, git, and tini as system utilities
+- ripgrep, ffmpeg, git, and `xz-utils` as system utilities
 - **`docker-cli`** — so agents running inside the container can drive the host's Docker daemon (bind-mount `/var/run/docker.sock` to opt in) for `docker build`, `docker run`, container inspection, etc.
 - **`openssh-client`** — enables the [SSH terminal backend](/docs/user-guide/configuration#ssh-backend) from inside the container. The SSH backend shells out to the system `ssh` binary; without this, it failed silently in containerized installs.
 - The WhatsApp bridge (`scripts/whatsapp-bridge/`)
+- **[`s6-overlay`](https://github.com/just-containers/s6-overlay) v3** as PID 1 (replaces the older `tini`) — supervises the dashboard and per-profile gateways with auto-restart on crash, reaps zombie subprocesses, and forwards signals.
 
-The entrypoint script (`docker/entrypoint.sh`) bootstraps the data volume on first run:
-- Creates the directory structure (`sessions/`, `memories/`, `skills/`, etc.)
-- Copies `.env.example` → `.env` if no `.env` exists
-- Copies default `config.yaml` if missing
-- Copies default `SOUL.md` if missing
-- Syncs bundled skills using a manifest-based approach (preserves user edits)
-- Optionally launches `hermes dashboard` as a background side-process when `HERMES_DASHBOARD=1` (see [Running the dashboard](#running-the-dashboard))
-- Then runs `hermes` with whatever arguments you pass
+The container's `ENTRYPOINT` is s6-overlay's `/init`. On boot it:
+1. Runs `/etc/cont-init.d/01-hermes-setup` (= `docker/stage2-hook.sh`) as root: optional UID/GID remap, fixes volume ownership, seeds `.env` / `config.yaml` / `SOUL.md` on first boot, syncs bundled skills.
+2. Runs `/etc/cont-init.d/02-reconcile-profiles` (= `hermes_cli.container_boot`): walks `$HERMES_HOME/profiles/<name>/`, recreates the per-profile gateway s6 service slot under `/run/service/gateway-<profile>/`, and auto-starts only those whose last recorded state was `running` (see [Per-profile gateway supervision](#per-profile-gateway-supervision)).
+3. Starts the static `main-hermes` and `dashboard` s6-rc services.
+4. Exec's the container's CMD as the main program (`/opt/hermes/docker/main-wrapper.sh`), which routes the arguments the user passed to `docker run`:
+   - no args → `hermes` (the default)
+   - first arg is an executable on PATH (e.g. `sleep`, `bash`) → exec it directly
+   - anything else → `hermes <args>` (subcommand passthrough)
+   The container exits when this main program exits, with its exit code.
 
-:::warning
-Do not override the image entrypoint unless you keep `/opt/hermes/docker/entrypoint.sh` in the command chain. The entrypoint drops root privileges to the `hermes` user before gateway state files are created. Starting `hermes gateway run` as root inside the official image is refused by default because it can leave root-owned files in `/opt/data` and break later dashboard or gateway starts. Set `HERMES_ALLOW_ROOT_GATEWAY=1` only when you intentionally accept that risk.
+:::warning Breaking change vs. pre-s6 images
+The container ENTRYPOINT is now `/init` (s6-overlay), not `/usr/bin/tini`. All five documented `docker run` invocation patterns (no args, `chat -q "…"`, `sleep infinity`, `bash`, `--tui`) behave identically to the tini-based image. If you have a downstream wrapper that depended on tini-specific signal behavior or hard-coded `/usr/bin/tini --` invocation, pin to the previous image tag.
 :::
+
+:::warning Privilege model
+Do not override the image entrypoint unless you keep `/init` (or, equivalently, the legacy `docker/entrypoint.sh` shim that forwards to the stage2 hook) in the command chain. s6-overlay's `/init` runs as root so it can chown the volume on first boot, then drops to the `hermes` user via `s6-setuidgid` for every supervised service AND for the main program. Starting `hermes gateway run` as root inside the official image is refused by default because it can leave root-owned files in `/opt/data` and break later dashboard or gateway starts. Set `HERMES_ALLOW_ROOT_GATEWAY=1` only when you intentionally accept that risk.
+:::
+
+### Per-profile gateway supervision
+
+Inside the container, each profile created with `hermes profile create <name>` automatically gets an s6-supervised gateway service registered at `/run/service/gateway-<name>/`. The lifecycle commands you'd run on the host work the same way:
+
+```sh
+hermes profile create coder            # registers gateway-coder s6 slot
+hermes -p coder gateway start          # s6-svc -u  → supervised gateway
+hermes -p coder gateway stop           # s6-svc -d  → service down
+hermes -p coder gateway restart        # s6-svc -t  → SIGTERM the supervisor
+hermes profile delete coder            # tears down the s6 slot
+```
+
+**Supervision benefits over the pre-s6 image:**
+
+- Gateway crashes are auto-restarted by `s6-supervise` after a ~1s backoff.
+- Dashboard crashes are auto-restarted (set `HERMES_DASHBOARD=1` to start it).
+- `docker restart` preserves running gateways: the cont-init reconciler reads `$HERMES_HOME/profiles/<name>/gateway_state.json` and brings the slot back up if the last recorded state was `running`. Stopped gateways stay stopped.
+- Per-profile gateway logs persist under `$HERMES_HOME/logs/gateways/<profile>/current` (rotated by `s6-log`), and the reconciler's actions are appended to `$HERMES_HOME/logs/container-boot.log` per boot.
+
+`hermes status` inside the container reports `Manager: s6 (container supervisor)`. Use `/command/s6-svstat /run/service/gateway-<name>` for the raw supervisor view (note `/command/` is on PATH for supervision-tree processes only; pass the absolute path when calling from `docker exec`).
 
 ## Upgrading
 
@@ -528,7 +563,7 @@ Check logs: `docker logs hermes`. Common causes:
 
 ### "Permission denied" errors
 
-The container's entrypoint drops privileges to the non-root `hermes` user (UID 10000) via `gosu`. If your host `~/.hermes/` is owned by a different UID, set `HERMES_UID`/`HERMES_GID` to match your host user, or ensure the data directory is writable:
+The container's stage2 hook drops privileges to the non-root `hermes` user (UID 10000) via `s6-setuidgid` inside each supervised service. If your host `~/.hermes/` is owned by a different UID, set `HERMES_UID`/`HERMES_GID` to match your host user, or ensure the data directory is writable:
 
 ```sh
 chmod -R 755 ~/.hermes

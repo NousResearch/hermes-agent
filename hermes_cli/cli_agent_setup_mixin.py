@@ -405,6 +405,13 @@ class CLIAgentSetupMixin:
             # Route agent status output through prompt_toolkit so ANSI escape
             # sequences aren't garbled by patch_stdout's StdoutProxy (#2262).
             self.agent._print_fn = _cprint
+            # Incognito: a freshly-built agent must inherit the current session
+            # incognito state. The /incognito handler only flips persist_session
+            # on an already-existing agent; toggling BEFORE the first turn (when
+            # self.agent was still None) would otherwise leave the new agent at
+            # the default persist_session=True and the session would persist
+            # despite /incognito status reporting ON.
+            self.agent.persist_session = not getattr(self, "_incognito_mode", False)
             # Hydrate credits notices at session OPEN (parity with the TUI), so a
             # depletion / usage-band warning shows before the first message. The
             # notice_callback is bound above → _on_notice renders the line. Idempotent

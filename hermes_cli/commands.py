@@ -101,6 +101,8 @@ COMMAND_REGISTRY: list[CommandDef] = [
                gateway_only=True),
     CommandDef("background", "Run a prompt in the background", "Session",
                aliases=("bg", "btw"), args_hint="<prompt>"),
+    CommandDef("incognito", "Toggle incognito mode — subsequent turns are not persisted to state.db or sessions/*.jsonl (scratchpad for adversarial probing)", "Session",
+               aliases=("inc", "private"), args_hint="[on|off|status]"),
     CommandDef("agents", "Show active agents and running tasks", "Session",
                aliases=("tasks",)),
     CommandDef("queue", "Queue a prompt for the next turn (doesn't interrupt)", "Session",

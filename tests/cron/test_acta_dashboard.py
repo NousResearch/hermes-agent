@@ -6,6 +6,7 @@ from datetime import date, datetime, timezone
 from pathlib import Path
 
 from cron.acta_dashboard import (
+    _outputs_read_state_script,
     acta_dashboard_config,
     apply_feed_preferences,
     attach_artifact_urls,
@@ -1571,6 +1572,7 @@ def test_catalog_outputs_invalid_hrefs_render_disabled_non_openable_rows():
     for row in rows:
         assert "readable" not in row
         assert "data-read-key" not in row
+        assert "data-read-initial" not in row
         assert "data-open-url" not in row
         assert 'aria-disabled="true"' in row
         assert "output-open-overlay" not in row
@@ -1601,11 +1603,20 @@ def test_catalog_outputs_valid_hrefs_remain_readable_openable_rows():
 
     assert '<article class="output-row readable read fresh"' in row
     assert 'data-read-key="output:valid-output"' in row
+    assert 'data-read-initial="true"' in row
     assert 'data-open-url="/outputs/valid-output"' in row
     assert '<a class="output-open-overlay" href="/outputs/valid-output"' in row
     assert '<span class="read-state">READ</span>' in row
     assert '<span class="open">OPEN</span>' in row
     assert 'aria-disabled="true"' not in row
+
+
+def test_catalog_outputs_read_hydration_falls_back_to_server_initial_state():
+    script = _outputs_read_state_script()
+
+    assert "Object.prototype.hasOwnProperty.call(state,k)" in script
+    assert "el.dataset.readInitial==='true'" in script
+    assert "var isRead=!!state[k];" not in script
 
 
 def test_catalog_outputs_local_artifact_base_uses_file_clickable_html_sources():

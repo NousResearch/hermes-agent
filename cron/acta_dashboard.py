@@ -108,7 +108,7 @@ def _outputs_read_state_script() -> str:
   function save(){ try{ localStorage.setItem(KEY, JSON.stringify(state)); }catch(e){} writeToCookie(state); }
   function apply(el){
     var k=el.dataset.readKey || '';
-    var isRead=!!state[k];
+    var isRead=Object.prototype.hasOwnProperty.call(state,k) ? !!state[k] : el.dataset.readInitial==='true';
     el.classList.toggle('read', isRead);
     el.classList.toggle('unread', !isRead);
     var label=el.querySelector('.read-state');
@@ -1514,11 +1514,12 @@ def render_catalog_outputs_page(
         row_open_attr = f' data-open-url="{escaped_href}"' if escaped_href else ' aria-disabled="true"'
         read_class = f" readable{' read' if item.read else ' unread'}" if escaped_href else ""
         read_key_attr = f' data-read-key="{html.escape(f"output:{item.id}", quote=True)}"' if escaped_href else ""
+        read_initial_attr = f' data-read-initial="{str(bool(item.read)).lower()}"' if escaped_href else ""
         read_state_chip = f"<span class=\"read-state\">{'READ' if item.read else 'UNREAD'}</span>" if escaped_href else ""
         open_action = '<span class="open">OPEN</span>' if escaped_href else '<span class="muted">No public link</span>'
         rows.append(
             f"""
-<article class="output-row{read_class} fresh"{read_key_attr}{row_open_attr}>
+<article class="output-row{read_class} fresh"{read_key_attr}{read_initial_attr}{row_open_attr}>
   {open_overlay}
   <div class="output-rank">{index:02d}</div>
   <div class="output-main">

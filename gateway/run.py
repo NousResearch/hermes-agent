@@ -11354,8 +11354,11 @@ class GatewayRunner:
         import uuid as _uuid
         audio_path = None
         actual_path = None
+        converted_path = None
         try:
-            from tools.tts_tool import text_to_speech_tool, _strip_markdown_for_tts
+            from tools.tts_tool import (
+                text_to_speech_tool, _strip_markdown_for_tts, _convert_to_opus,
+            )
 
             tts_text = _strip_markdown_for_tts(text[:4000])
             if not tts_text:
@@ -11408,9 +11411,17 @@ class GatewayRunner:
                     thread_meta["notify"] = True
                 else:
                     thread_meta = {"notify": True}
+
+                # Feishu requires OGG Opus for voice bubbles — convert if needed.
+                send_path = actual_path
+                if event.source.platform == "feishu" and not actual_path.lower().endswith((".ogg", ".opus")):
+                    converted_path = _convert_to_opus(actual_path)
+                    if converted_path:
+                        send_path = converted_path
+
                 send_kwargs: Dict[str, Any] = {
                     "chat_id": event.source.chat_id,
-                    "audio_path": actual_path,
+                    "audio_path": send_path,
                     "reply_to": reply_anchor,
                     "metadata": thread_meta,
                 }
@@ -11418,7 +11429,7 @@ class GatewayRunner:
         except Exception as e:
             logger.warning("Auto voice reply failed: %s", e, exc_info=True)
         finally:
-            for p in {audio_path, actual_path} - {None}:
+            for p in {audio_path, actual_path, converted_path} - {None}:
                 try:
                     os.unlink(p)
                 except OSError:

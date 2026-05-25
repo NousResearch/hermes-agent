@@ -1861,6 +1861,30 @@ class GatewayRunner:
         # Track background tasks to prevent garbage collection mid-execution
         self._background_tasks: set = set()
 
+        # Per-thread SQLite connection cache for kanban DB access.
+        # Each asyncio.to_thread worker gets its own long-lived connection via
+        # threading.local() — avoids b-tree corruption from shared pager state.
+        self._kb_tls: threading.local = threading.local()
+
+    def _kb_conn(self, slug: Optional[str] = None) -> "sqlite3.Connection":
+        """Return a per-thread cached SQLite connection for the given board slug.
+
+        Each OS thread (including asyncio.to_thread workers) gets its own
+        connection. Connections are created on first access per thread and
+        kept alive for the thread's lifetime, so the SQLite WAL pager state
+        is never shared across threads (which causes b-tree corruption).
+        Do NOT close the returned connection after each query — that defeats
+        the cache and recreates the inode-rotation problem.
+        """
+        from hermes_cli import kanban_db as _kb
+        key = slug or "default"
+        cache = getattr(self._kb_tls, "cache", None)
+        if cache is None:
+            cache = {}
+            self._kb_tls.cache = cache
+        if key not in cache:
+            cache[key] = _kb.connect(board=slug)
+        return cache[key]
 
     def _wire_teams_pipeline_runtime(self) -> None:
         """Bind the Teams meeting pipeline runtime to Graph webhook ingress.
@@ -4868,7 +4892,7 @@ class GatewayRunner:
                             continue
                         seen_db_paths.add(resolved_db_path)
                         try:
-                            conn = _kb.connect(board=slug)
+                            conn = self._kb_conn(slug)
                         except Exception as exc:
                             logger.debug("kanban notifier: cannot open board %s: %s", slug, exc)
                             continue
@@ -5120,9 +5144,8 @@ class GatewayRunner:
         subscription. Unsub cursors in one board can't touch another's.
         """
         from hermes_cli import kanban_db as _kb
-        conn = _kb.connect(board=board)
-        try:
-            _kb.advance_notify_cursor(
+        conn = self._kb_conn(board)
+        _kb.advance_notify_cursor(
                 conn,
                 task_id=sub["task_id"],
                 platform=sub["platform"],
@@ -5130,22 +5153,17 @@ class GatewayRunner:
                 thread_id=sub.get("thread_id") or "",
                 new_cursor=cursor,
             )
-        finally:
-            conn.close()
 
     def _kanban_unsub(self, sub: dict, board: Optional[str] = None) -> None:
         from hermes_cli import kanban_db as _kb
-        conn = _kb.connect(board=board)
-        try:
-            _kb.remove_notify_sub(
+        conn = self._kb_conn(board)
+        _kb.remove_notify_sub(
                 conn,
                 task_id=sub["task_id"],
                 platform=sub["platform"],
                 chat_id=sub["chat_id"],
                 thread_id=sub.get("thread_id") or "",
             )
-        finally:
-            conn.close()
 
     def _kanban_rewind(
         self,
@@ -5156,9 +5174,8 @@ class GatewayRunner:
     ) -> None:
         """Sync helper: undo a claimed notification cursor after send failure."""
         from hermes_cli import kanban_db as _kb
-        conn = _kb.connect(board=board)
-        try:
-            _kb.rewind_notify_cursor(
+        conn = self._kb_conn(board)
+        _kb.rewind_notify_cursor(
                 conn,
                 task_id=sub["task_id"],
                 platform=sub["platform"],
@@ -5167,8 +5184,6 @@ class GatewayRunner:
                 claimed_cursor=claimed_cursor,
                 old_cursor=old_cursor,
             )
-        finally:
-            conn.close()
 
     async def _deliver_kanban_artifacts(
         self,
@@ -5447,7 +5462,7 @@ class GatewayRunner:
                 )
                 disabled_corrupt_boards.pop(slug, None)
             try:
-                conn = _kb.connect(board=slug)
+                conn = self._kb_conn(slug)
                 # `connect()` runs the schema + idempotent migration on
                 # first open per process; the previous explicit
                 # `init_db()` call here busted the per-process cache and
@@ -5522,21 +5537,14 @@ class GatewayRunner:
                 boards = [_kb.read_board_metadata(_kb.DEFAULT_BOARD)]
             for b in boards:
                 slug = b.get("slug") or _kb.DEFAULT_BOARD
-                conn = None
                 try:
-                    conn = _kb.connect(board=slug)
+                    conn = self._kb_conn(slug)
                     if _kb.has_spawnable_ready(conn):
                         return True
                     if _kb.has_spawnable_review(conn):
                         return True
                 except Exception:
                     continue
-                finally:
-                    if conn is not None:
-                        try:
-                            conn.close()
-                        except Exception:
-                            pass
             return False
 
         # Auto-decompose: turn fresh triage tasks into ready workgraphs
@@ -9600,17 +9608,14 @@ class GatewayRunner:
                     if platform_str and chat_id:
                         def _sub():
                             from hermes_cli import kanban_db as _kb
-                            conn = _kb.connect(board=requested_board)
-                            try:
-                                _kb.add_notify_sub(
+                            conn = self._kb_conn(requested_board)
+                            _kb.add_notify_sub(
                                     conn, task_id=task_id,
                                     platform=platform_str, chat_id=chat_id,
                                     thread_id=thread_id or None,
                                     user_id=user_id,
                                     notifier_profile=getattr(self, "_kanban_notifier_profile", None) or self._active_profile_name(),
                                 )
-                            finally:
-                                conn.close()
                         await asyncio.to_thread(_sub)
                         output = (
                             output.rstrip()

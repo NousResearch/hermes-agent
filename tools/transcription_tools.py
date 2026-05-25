@@ -79,6 +79,7 @@ def _safe_find_spec(module_name: str) -> bool:
 _HAS_FASTER_WHISPER = _safe_find_spec("faster_whisper")
 _HAS_OPENAI = _safe_find_spec("openai")
 _HAS_MISTRAL = _safe_find_spec("mistralai")
+_HAS_PILK = _safe_find_spec("pilk")
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -1019,8 +1020,8 @@ def _dispatch_to_plugin_provider(
 # ---------------------------------------------------------------------------
 
 
-def _validate_audio_file(file_path: str) -> Optional[Dict[str, Any]]:
-    """Validate the audio file.  Returns an error dict or None if OK."""
+def _validate_audio_source_file(file_path: str) -> Optional[Dict[str, Any]]:
+    """Validate source path safety and size before any decoder is invoked."""
     audio_path = Path(file_path)
 
     if os.path.islink(audio_path):
@@ -1029,24 +1030,66 @@ def _validate_audio_file(file_path: str) -> Optional[Dict[str, Any]]:
         return {"success": False, "transcript": "", "error": f"Audio file not found: {file_path}"}
     if not audio_path.is_file():
         return {"success": False, "transcript": "", "error": f"Path is not a file: {file_path}"}
+    try:
+        file_size = audio_path.stat().st_size
+    except OSError as exc:
+        return {"success": False, "transcript": "", "error": f"Failed to access file: {exc}"}
+    if file_size > MAX_FILE_SIZE:
+        return {
+            "success": False,
+            "transcript": "",
+            "error": f"File too large: {file_size / (1024*1024):.1f}MB (max {MAX_FILE_SIZE / (1024*1024):.0f}MB)",
+        }
+    return None
+
+
+def _validate_audio_file(file_path: str) -> Optional[Dict[str, Any]]:
+    """Validate a supported, decoder-safe audio file."""
+    source_error = _validate_audio_source_file(file_path)
+    if source_error:
+        return source_error
+
+    audio_path = Path(file_path)
     if audio_path.suffix.lower() not in SUPPORTED_FORMATS:
         return {
             "success": False,
             "transcript": "",
             "error": f"Unsupported format: {audio_path.suffix}. Supported: {', '.join(sorted(SUPPORTED_FORMATS))}",
         }
-    try:
-        file_size = audio_path.stat().st_size
-        if file_size > MAX_FILE_SIZE:
-            return {
-                "success": False,
-                "transcript": "",
-                "error": f"File too large: {file_size / (1024*1024):.1f}MB (max {MAX_FILE_SIZE / (1024*1024):.0f}MB)",
-            }
-    except OSError as e:
-        return {"success": False, "transcript": "", "error": f"Failed to access file: {e}"}
-
     return None
+
+
+def _prepare_audio_for_transcription(
+    file_path: str,
+) -> tuple[Optional[str], Optional[str], Optional[Dict[str, Any]]]:
+    """Convert a decoder-safe .silk source to a temporary supported WAV file."""
+    audio_path = Path(file_path)
+    if audio_path.suffix.lower() != ".silk":
+        return file_path, None, None
+    if not _HAS_PILK:
+        return None, None, {
+            "success": False,
+            "transcript": "",
+            "error": "Unsupported format: .silk. Install the optional 'pilk' dependency to enable WeChat voice transcription.",
+        }
+
+    temp_dir = tempfile.mkdtemp(prefix="hermes-silk-")
+    converted_path = os.path.join(temp_dir, f"{audio_path.stem}.wav")
+    try:
+        import pilk
+
+        pilk.silk_to_wav(file_path, converted_path)
+        if not Path(converted_path).is_file() or Path(converted_path).stat().st_size == 0:
+            raise RuntimeError("pilk did not produce a readable WAV file")
+        return converted_path, temp_dir, None
+    except Exception as exc:
+        shutil.rmtree(temp_dir, ignore_errors=True)
+        logger.error("Failed to convert .silk audio %s: %s", file_path, exc, exc_info=True)
+        return None, None, {
+            "success": False,
+            "transcript": "",
+            "error": f"Failed to convert .silk audio for transcription: {exc}",
+        }
 
 # ---------------------------------------------------------------------------
 # Provider: local (faster-whisper)
@@ -1621,7 +1664,7 @@ def _transcribe_elevenlabs(file_path: str, model_name: str) -> Dict[str, Any]:
 # ---------------------------------------------------------------------------
 
 
-def transcribe_audio(file_path: str, model: Optional[str] = None) -> Dict[str, Any]:
+def _transcribe_prepared_audio(file_path: str, model: Optional[str] = None) -> Dict[str, Any]:
     """
     Transcribe an audio file using the configured STT provider.
 
@@ -1640,10 +1683,7 @@ def transcribe_audio(file_path: str, model: Optional[str] = None) -> Dict[str, A
           - "error" (str, optional): Error message if success is False
           - "provider" (str, optional): Which provider was used
     """
-    # Validate input
-    error = _validate_audio_file(file_path)
-    if error:
-        return error
+    # `file_path` has already passed source and extension validation.
 
     # Load config and determine provider
     stt_config = _load_stt_config()
@@ -1749,6 +1789,32 @@ def transcribe_audio(file_path: str, model: Optional[str] = None) -> Dict[str, A
             "or OPENAI_API_KEY for the OpenAI Whisper API."
         ),
     }
+
+
+def transcribe_audio(file_path: str, model: Optional[str] = None) -> Dict[str, Any]:
+    """Safely validate, preprocess supported inputs, and dispatch transcription."""
+    source_error = _validate_audio_source_file(file_path)
+    if source_error:
+        return source_error
+
+    prepared_path, cleanup_dir, prep_error = _prepare_audio_for_transcription(file_path)
+    if prep_error:
+        return prep_error
+    if prepared_path is None:
+        return {
+            "success": False,
+            "transcript": "",
+            "error": "Audio preprocessing did not produce a file for transcription.",
+        }
+
+    try:
+        prepared_error = _validate_audio_file(prepared_path)
+        if prepared_error:
+            return prepared_error
+        return _transcribe_prepared_audio(prepared_path, model)
+    finally:
+        if cleanup_dir:
+            shutil.rmtree(cleanup_dir, ignore_errors=True)
 
 
 def _resolve_openai_audio_client_config() -> tuple[str, str]:

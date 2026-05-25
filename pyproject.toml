@@ -176,6 +176,7 @@ voice = [
   "faster-whisper==1.2.1",
   "sounddevice==0.5.5",
   "numpy==2.4.3",
+  "pilk>=0.2.4,<1",
 ]
 pty = [
   # Kept as a no-op back-compat alias — `ptyprocess` and `pywinpty` are now

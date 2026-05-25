@@ -8157,37 +8157,18 @@ def _install_psutil_android_compat(
     nothing is persisted in the repository.
 
     Stopgap: remove this once https://github.com/giampaolo/psutil/pull/2762
-    merges and ships in a release. ``scripts/install_psutil_android.py``
-    contains the same logic for ``scripts/install.sh`` (fresh installs).
-    Both copies should be removed together.
+    merges and ships in a release. The standalone installer script uses the
+    same shared helper and should be removed together.
     """
-    import tarfile
     import tempfile
     import urllib.request
-
-    psutil_url = (
-        "https://files.pythonhosted.org/packages/aa/c6/"
-        "d1ddf4abb55e93cebc4f2ed8b5d6dbad109ecb8d63748dd2b20ab5e57ebe/"
-        "psutil-7.2.2.tar.gz"
-    )
+    from hermes_cli.psutil_android import PSUTIL_URL, prepare_patched_psutil_sdist
 
     with tempfile.TemporaryDirectory() as tmp:
         tmp_path = Path(tmp)
         archive = tmp_path / "psutil.tar.gz"
-        urllib.request.urlretrieve(psutil_url, archive)
-        with tarfile.open(archive) as tar:
-            tar.extractall(tmp_path)
-
-        src_root = next(
-            p for p in tmp_path.iterdir() if p.is_dir() and p.name.startswith("psutil-")
-        )
-        common_py = src_root / "psutil" / "_common.py"
-        content = common_py.read_text(encoding="utf-8")
-        marker = 'LINUX = sys.platform.startswith("linux")'
-        replacement = 'LINUX = sys.platform.startswith(("linux", "android"))'
-        if marker not in content:
-            raise RuntimeError("psutil Android compatibility patch marker not found")
-        common_py.write_text(content.replace(marker, replacement), encoding="utf-8")
+        urllib.request.urlretrieve(PSUTIL_URL, archive)
+        src_root = prepare_patched_psutil_sdist(archive, tmp_path)
 
         _run_install_with_heartbeat(
             install_cmd_prefix + ["install", "--no-build-isolation", str(src_root)],
